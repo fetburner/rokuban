@@ -24,7 +24,7 @@ func TestRunRescue_FallsBackAndReportsSkippedGeneration(t *testing.T) {
 	if _, err := catalog.Write(mediaDir, &catalog.Document{
 		Version:    catalog.Version,
 		ExportedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
-	}, 7); err != nil {
+	}, 7, nil); err != nil {
 		t.Fatalf("writing the previous generation: %v", err)
 	}
 	// 書き込み途中で止まった世代（manifest 未着）。
@@ -154,7 +154,7 @@ func TestRunRescue_ReportsMissingCatalogFiles(t *testing.T) {
 		MediaAssets: []catalog.MediaAsset{{ID: 1, RecordingID: 1, Kind: "original", RelPath: "sites/default/missing.m2ts", State: "active", CreatedAt: at, UpdatedAt: at}},
 	}
 	mediaDir := t.TempDir()
-	if _, err := catalog.Write(mediaDir, doc, 7); err != nil {
+	if _, err := catalog.Write(mediaDir, doc, 7, nil); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer

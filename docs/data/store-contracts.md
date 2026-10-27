@@ -266,7 +266,7 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 - 既知パス一覧: `TestMediaStoreContract` の `audit lists every media asset path including reserved namespaces`
 - 孤児候補の経過時間: `TestMediaStoreContract` の `orphan ageing compares against the database clock`
 - 実体無し候補の経過時間と active でない行の除外: `TestMediaStoreContract` の `missing asset ageing compares against the database clock`
-- 孤児を報告し回収する仕組みと、実体無しを検出する仕組み: [storage contract](../storage/contract.md) §5「残量の観測」 / [retention contract](../storage/retention.md) §7「孤児の報告と回収」「孤児回収の逆」
+- 孤児を報告し回収する仕組みと、実体無しを検出する仕組み: [storage contract](../storage/contract.md) §5「残量の観測」 / [retention contract](../storage/retention.md) §7「孤児の報告と回収」 / [missing-assets](../storage/missing-assets.md)
 - `rel_path` の名前空間: [storage contract](../storage/contract.md) §5「rel_path の名前空間」
 
 </details>

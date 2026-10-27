@@ -48,6 +48,30 @@ func TestWalkMediaFiles_IgnoresRelPathLockDirectoryAndLegacyFiles(t *testing.T) 
 	}
 }
 
+func TestWalkMediaFilesIgnoresOnlyRootStoreMarker(t *testing.T) {
+	mediaDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mediaDir, ".rokuban-store"), []byte("tokyo"), 0o644); err != nil {
+		t.Fatalf("writing root store marker: %v", err)
+	}
+	nestedMarkerPath := filepath.Join(mediaDir, "nested", ".rokuban-store")
+	if err := os.MkdirAll(filepath.Dir(nestedMarkerPath), 0o755); err != nil {
+		t.Fatalf("creating nested directory: %v", err)
+	}
+	if err := os.WriteFile(nestedMarkerPath, []byte("media"), 0o644); err != nil {
+		t.Fatalf("writing nested media file: %v", err)
+	}
+
+	var got []string
+	if err := walkMediaFiles(mediaDir, func(relPath string, _ os.FileInfo) {
+		got = append(got, relPath)
+	}); err != nil {
+		t.Fatalf("walking media files: %v", err)
+	}
+	if len(got) != 1 || got[0] != "nested/.rokuban-store" {
+		t.Fatalf("walked files = %v, want only nested/.rokuban-store", got)
+	}
+}
+
 func entryNames(entries []os.DirEntry) []string {
 	names := make([]string, len(entries))
 	for i, entry := range entries {

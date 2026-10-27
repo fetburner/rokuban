@@ -16,15 +16,49 @@
 
 ローカル FS / JuiceFS / NFS は対象内である。ただし NFS export は `sync`、client mount は `hard` を推奨する。NFS の open 中 unlink による `.nfsXXXX`（silly rename）は、canonical orphan として報告されることがある。自動削除はせず、ファイルを閉じた後に状態を確認する。
 
-geesefs / s3fs / AWS Mountpoint など FUSE S3 は、原本 ingest 先に使わない。atomic rename、file / parent `fsync`、`Close` のエラー意味論を、原本の公開根拠として信頼できないためである。
-
-FUSE S3 の実機検証の範囲は、派生物専用の領域に限る。`storage.media_dir` を FUSE S3 にして probe が通ったとしても、設定契約違反を解消したことにはならない。
+geesefs / s3fs / AWS Mountpoint など FUSE S3 は、原本にも派生物にも使わない。atomic rename、file / parent `fsync`、`Close` のエラー、ロックの意味論を、ファイルの公開根拠として信頼できないためである。派生物を S3 に置く場合は API を使う。
 
 #### 起動時の probe
 
 ingest を引く worker は起動時に、実際の操作列が一度成功することを probe で確かめる。
 
 worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内 rename、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
+
+`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。`storage.media_store_name` が空の構成では照合しない。
+
+見送る操作は、ingest・encode・サムネイル・シークタイル・catalog の書き込みと、ファイルの削除・欠損の記録・孤児の回収である。
+
+目印を確認できないまま起動した worker は、ingest probe を保留する。probe は `media_dir/sites` を作る書き込みなので、最初の ingest ジョブが目印の照合を通った後に 1 回だけ走る。失敗した probe は固定せず、次の ingest ジョブが再試行する。
+
+目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印だけを書き、既存ファイルの割り当てはしない。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。置き場の名前変更は未対応である。
+
+導入と、`media_store_name` を設定済みの構成の移行手順は [runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
+
+<details><summary>根拠</summary>
+
+- ingest 抑止: `TestIngestWorkerWithholdsWhenStoreMarkerDoesNotMatch`
+- probe の遅延と再試行: `TestIngestWorkerProbesStorageAfterMarkerCheckAndRetriesFailure`
+- 起動時に済んだ probe を繰り返さない: `TestIngestWorkerSkipsStorageProbeAlreadyDoneAtStartup`
+- 生成物の公開抑止: `TestGeneratedMediaPublishDoesNotStageWhenStoreMarkerIsMissing`
+- encode の字幕 stage と lock の抑止: `TestPublishEncodedCreatesNoSubtitleTempOrLockWhenMarkerDisappearsAfterBodyStage`
+- unlink 抑止: `TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears`
+- 削除済みの確定抑止（unlink 成功）: `TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears`
+- 削除済みの確定抑止（`ErrNotExist`）: `TestDeleteMediaAssetWithholdsMarkDeletedAfterErrNotExistWhenMarkerDisappears`
+- deleting 行の決着抑止: `TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat`
+- 孤児の unlink 抑止: `TestOrphanUnlinkRechecksStoreMarkerImmediatelyBeforeRemoval`
+- 孤児の「無い」の記録抑止: `TestOrphanAbsentAfterUnlinkWithholdsRecordWhenMarkerDisappears`
+- 欠損・孤児操作の抑止: `TestStoreMarkerMismatchWithholdsMissingAssetAndOrphanActions`
+- 実体無しの記録の再照合: `TestMissingAssetRecordRechecksStoreMarkerImmediatelyBeforeWrite`
+- 孤児候補の記録の再照合: `TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk`
+- replay checkpoint 抑止: `TestInterruptedIngestReplayWithholdsCheckpointWhenMarkerDisappears`
+- catalog の途中中断: `TestWriteWithholdsManifestAndPruneWhenMarkerDisappearsMidway`
+- catalog の開始時の照合: `TestWriteCreatesNothingWhenMarkerIsAlreadyBroken`
+- catalog の prune 抑止: `TestPruneStopsWhenMarkerDisappearsBeforeDestructiveAction`
+- root の目印を `rel_path` にさせない: `TestResolve_ReservesRootStoreMarkerOnly`
+- adopt: `TestStorageAdoptWritesStoreMarker`
+- 異なる名前への adopt 拒否: `TestStorageAdoptDoesNotRenameExistingStoreMarker`
+
+</details>
 
 #### ingest の一時ファイルと orphan
 
@@ -155,7 +189,50 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 #### 再生時のシーク
 
-唯一レイテンシが人間に見えるのは、再生時のシークである（派生物を置いた S3 + FUSE の range read など）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る。
+唯一レイテンシが人間に見えるのは、再生時のシークである。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る。
+
+### S3 の置き場の運用要件
+
+S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
+
+適合テストが測るのは 4 つで、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range である。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。
+
+置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残るためである。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後にする。
+
+multipart の SHA-256 は、AWS では常に部品から作る composite checksum である。オブジェクト全体の SHA-256 にはならないので、HEAD で得た値を全体の SHA-256 と直接比較してはならない。アプリは、データを流しながら全体の SHA-256 を自分で計算し、照合にはその値を使う。
+
+#### 適合テストの回し方
+
+テスト用の bucket を 1 つ用意して、リポジトリのルートでテストを実行する。
+
+接続先は環境変数で渡す。`ROKUBAN_S3_CONFORMANCE_ENDPOINT`、`_REGION`、`_BUCKET`、`_ACCESS_KEY_ID`、`_SECRET_ACCESS_KEY` である。bucket をテストに作らせるときは `ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET=true` を足す。
+
+```bash
+go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
+```
+
+テストが呼ぶ操作は次のとおりで、これが必要な権限になる。
+
+- bucket 内のオブジェクトへの `PutObject`、`GetObject`、`HeadObject`、`DeleteObject`
+- multipart の `CreateMultipartUpload`、`UploadPart`、`CompleteMultipartUpload`、`AbortMultipartUpload`、`ListParts`
+- `CREATE_BUCKET=true` のときだけ `CreateBucket`
+
+テストが作るオブジェクトは `rokuban-conformance/{UUID}/` の下に置き、終わると削除する。
+
+結果は `-v` の出力の `S3_CONFORMANCE` で始まる行に、機能ごとの JSON で出る。`status` が `supported`、`unsupported`、`partial` のいずれかで、`checks` に内訳が入る。想定外のエラーで判定できなかった機能は `unknown` で、`note` に原因が入る。
+
+`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 4 機能すべてに `supported` を期待し、退行を検知する。
+
+<details><summary>根拠</summary>
+
+- 適合テスト: `internal/objstore/conformance/conformance_test.go`
+- CI の MinIO: `.github/workflows/ci.yml` `s3-conformance`
+- multipart の上限（部品の大きさと個数）: [S3 multipart upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
+- checksum の種類（SHA-256 は multipart で composite だけ）: [S3 object integrity](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)
+- abort の確認方法（`ListParts` の parts が空）: [AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)
+- 不完全な upload のライフサイクル規則: [Abort multipart upload](https://docs.aws.amazon.com/AmazonS3/latest/userguide/abort-mpu.html)
+
+</details>
 
 ### disaster recovery（catalog + rescue）
 

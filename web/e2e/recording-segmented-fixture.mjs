@@ -29,7 +29,9 @@ export const WORST_RESTART_NUMBER = 16
 export const RESTART_FROM_SECONDS = RESTART_NUMBER * SEGMENT_SECONDS
 export const SPLIT_SECONDS = RESTART_FROM_SECONDS + SEGMENT_SECONDS
 
-export const FIXTURE_ROOT = path.join(os.tmpdir(), 'rokuban-e2e-recording-segmented-v3')
+export const FIXTURE_ROOT = path.resolve(process.env.E2E_FIXTURE_DIR ?? path.join(os.tmpdir(), 'rokuban-e2e-recording-segmented-v3'))
+const FORMATS = process.env.E2E_FMP4 === '1' ? ['ts', 'fmp4'] : ['ts']
+const runName = (format, name) => (format === 'ts' ? name : `fmp4-${name}`)
 const GENERATED = path.join(FIXTURE_ROOT, 'generated')
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 // variant の添字は製品の -var_stream_map の並び（映像、標準、主、副）。
@@ -62,17 +64,19 @@ function generateRuns() {
   rmSync(GENERATED, { recursive: true, force: true })
   runOutput('go', ['test', './internal/streamer', '-run', '^TestWriteSegmentedPlaybackFixture$', '-count=1'], {
     cwd: REPO_ROOT,
-    env: { ...process.env, ROKUBAN_SEGMENTED_PLAYBACK_FIXTURE_DIR: GENERATED },
+    env: { ...process.env, ROKUBAN_SEGMENTED_PLAYBACK_FIXTURE_DIR: GENERATED, ROKUBAN_SEGMENTED_PLAYBACK_FMP4: FORMATS.includes('fmp4') ? '1' : '0' },
   })
   const manifest = JSON.parse(readFileSync(path.join(GENERATED, 'manifest.json'), 'utf8'))
   const expected = { fixtureSeconds: FIXTURE_SECONDS, segmentSeconds: SEGMENT_SECONDS, frameBits: FRAME_BITS, frameRate: '30000/1001' }
   for (const [key, value] of Object.entries(expected)) {
     if (manifest[key] !== value) throw new Error(`manifest.${key} = ${manifest[key]} が fixture の ${value} と違う`)
   }
-  for (const [kind, spec] of Object.entries(KINDS)) {
-    const run = spec.run ?? 'direct'
-    const startNumber = manifest.runs[run]?.startNumber
-    if (startNumber !== (spec.number ?? 0)) throw new Error(`${kind}: run ${run} の startNumber が ${startNumber} で ${spec.number ?? 0} と違う`)
+  for (const format of FORMATS) {
+    for (const [kind, spec] of Object.entries(KINDS)) {
+      const run = runName(format, spec.run ?? 'direct')
+      const startNumber = manifest.runs[run]?.startNumber
+      if (startNumber !== (spec.number ?? 0)) throw new Error(`${format}/${kind}: run ${run} の startNumber が ${startNumber} で ${spec.number ?? 0} と違う`)
+    }
   }
   return manifest
 }
@@ -89,7 +93,7 @@ function readSegments(manifest, run, variantIndex) {
     if (line.startsWith('#EXTINF:')) {
       pendingDuration = Number(line.slice('#EXTINF:'.length).split(',')[0])
     } else if (pendingDuration !== undefined && !line.startsWith('#')) {
-      const number = Number(/_seg(\d+)\.ts$/.exec(line)?.[1])
+      const number = Number(/_seg(\d+)\.(?:ts|m4s)$/.exec(line)?.[1])
       segments.push({ number, duration: pendingDuration, file: path.resolve(directory, line) })
       pendingDuration = undefined
     }
@@ -104,23 +108,24 @@ function readSegments(manifest, run, variantIndex) {
 }
 
 function copyEntry(outputDirectory, variant, segment, prefix, index) {
-  const name = `${prefix}-${variant}-${String(index).padStart(3, '0')}.ts`
+  const name = `${prefix}-${variant}-${String(index).padStart(3, '0')}${path.extname(segment.file)}`
   copyFileSync(segment.file, path.join(outputDirectory, 'segments', name))
   return name
 }
 
 // 境界に EXT-X-DISCONTINUITY は付けない。アプリは playlist を格子から先に合成するので、
 // ffmpeg をどこで再起動したかを知らず、付けられない。EXTINF も格子の長さ（最後だけ残り）で書く。
-function writeMediaPlaylist(outputDirectory, variant, names) {
+function writeMediaPlaylist(outputDirectory, variant, names, initNames) {
   const lines = [
     '#EXTM3U',
-    '#EXT-X-VERSION:3',
+    `#EXT-X-VERSION:${initNames ? 7 : 3}`,
     '#EXT-X-INDEPENDENT-SEGMENTS',
     `#EXT-X-TARGETDURATION:${SEGMENT_SECONDS}`,
     '#EXT-X-MEDIA-SEQUENCE:0',
     '#EXT-X-PLAYLIST-TYPE:VOD',
   ]
   names.forEach((name, index) => {
+    if (initNames && (index === 0 || initNames[index] !== initNames[index - 1])) lines.push(`#EXT-X-MAP:URI="${initNames[index]}"`)
     const mediaTime = index * SEGMENT_SECONDS
     const duration = index === names.length - 1 ? FIXTURE_SECONDS - mediaTime : SEGMENT_SECONDS
     lines.push(`#EXT-X-PROGRAM-DATE-TIME:${new Date(PROGRAM_DATE_TIME + mediaTime * 1000).toISOString()}`)
@@ -147,37 +152,54 @@ function writeMasterPlaylist(outputDirectory, codecs) {
   writeFileSync(path.join(outputDirectory, 'master.m3u8'), `${lines.join('\n')}\n`)
 }
 
-function writeFixture(manifest, kind) {
+function writeFixture(manifest, kind, format) {
   const spec = KINDS[kind]
-  const outputDirectory = path.join(FIXTURE_ROOT, 'ts', kind)
+  const outputDirectory = path.join(FIXTURE_ROOT, format, kind)
   rmSync(outputDirectory, { recursive: true, force: true })
   mkdirSync(path.join(outputDirectory, 'segments'), { recursive: true })
   VARIANTS.forEach((variant, variantIndex) => {
     let names
+    let initNames
+    const read = (name) => readSegments(manifest, runName(format, name), variantIndex)
+    const copyInit = (name) => {
+      const directory = path.join(GENERATED, manifest.runs[runName(format, name)].directory)
+      const filename = `${name}-${variant}.mp4`
+      copyFileSync(path.join(directory, `init_${variantIndex}.mp4`), path.join(outputDirectory, filename))
+      return filename
+    }
     if (spec.run === null) {
-      names = readSegments(manifest, 'direct', variantIndex).map((segment, index) => copyEntry(outputDirectory, variant, segment, 'continuous', index))
+      names = read('direct').map((segment, index) => copyEntry(outputDirectory, variant, segment, 'continuous', index))
+      if (format === 'fmp4') {
+        const init = copyInit('direct')
+        initNames = names.map(() => init)
+      }
     } else {
       // 再起動前は連続の run の先頭から、再起動の run が起動した番号まで（その番号の segment は再起動側が重複して作る）。
       // 再起動後は、再起動の run の 2 本目から。
-      const first = readSegments(manifest, 'direct', variantIndex).filter((segment) => segment.number <= spec.number)
-      const restarted = readSegments(manifest, spec.run, variantIndex).filter((segment) => segment.number > spec.number)
+      const first = read('direct').filter((segment) => segment.number <= spec.number)
+      const restarted = read(spec.run).filter((segment) => segment.number > spec.number)
       names = [
         ...first.map((segment, index) => copyEntry(outputDirectory, variant, segment, 'first', index)),
         ...restarted.map((segment, index) => copyEntry(outputDirectory, variant, segment, 'restart', index)),
       ]
+      if (format === 'fmp4') {
+        const firstInit = copyInit('direct')
+        // playlist は再起動位置を知らないので、init も境界で切り替えない。
+        initNames = names.map(() => firstInit)
+      }
     }
     if (names.length !== FIXTURE_SECONDS / SEGMENT_SECONDS) {
-      throw new Error(`ts/${kind}/${variant}: segment が ${names.length} 本で ${FIXTURE_SECONDS / SEGMENT_SECONDS} 本と合わない`)
+      throw new Error(`${format}/${kind}/${variant}: segment が ${names.length} 本で ${FIXTURE_SECONDS / SEGMENT_SECONDS} 本と合わない`)
     }
-    writeMediaPlaylist(outputDirectory, variant, names)
+    writeMediaPlaylist(outputDirectory, variant, names, initNames)
   })
   writeMasterPlaylist(outputDirectory, manifest.codecs)
   const boundary = spec.run === null ? undefined : (spec.number + 1) * SEGMENT_SECONDS
-  return { format: 'ts', kind, directory: outputDirectory, boundary }
+  return { format, kind, directory: outputDirectory, boundary }
 }
 
 function validateFixture(fixture) {
-  const label = `ts/${fixture.kind}`
+  const label = `${fixture.format}/${fixture.kind}`
   const master = readFileSync(path.join(fixture.directory, 'master.m3u8'), 'utf8')
   if ((master.match(/#EXT-X-MEDIA:TYPE=AUDIO/g) ?? []).length !== 3) throw new Error(`${label}: 音声 rendition が 3 本ではない`)
   const expectedSegments = FIXTURE_SECONDS / SEGMENT_SECONDS
@@ -192,7 +214,10 @@ function validateFixture(fixture) {
     if (playlist.includes('#EXT-X-DISCONTINUITY')) throw new Error(`${label}/${variant}: 再起動境界に discontinuity を付けてはならない`)
     const seconds = segments.reduce((total, line) => total + Number(line.slice('#EXTINF:'.length).split(',')[0]), 0)
     if (Math.abs(seconds - FIXTURE_SECONDS) > 1 / FRAME_RATE) throw new Error(`${label}/${variant}: playlist の尺が ${seconds.toFixed(3)} 秒で ${FIXTURE_SECONDS} 秒と合わない`)
-    for (const uri of lines.filter((line) => line.startsWith('segments/'))) {
+    const maps = lines.filter((line) => line.startsWith('#EXT-X-MAP:')).map((line) => /URI="([^"]+)"/.exec(line)?.[1])
+    const expectedMaps = fixture.format === 'fmp4' ? 1 : 0
+    if (maps.length !== expectedMaps || maps.some((uri) => !uri)) throw new Error(`${label}/${variant}: init map が不正`)
+    for (const uri of [...lines.filter((line) => line.startsWith('segments/')), ...maps]) {
       if (!existsSync(path.join(fixture.directory, uri))) throw new Error(`${label}/${variant}: segment がない (${uri})`)
     }
   }
@@ -200,12 +225,12 @@ function validateFixture(fixture) {
 
 /**
  * ensurePlaybackFixtures は Go のテストで製品のビルダーから run を作り、HLS fixture を組む。
- * 製品の出力は TS segment だけなので、fMP4 は作らない。負例は TS の run を 1 か所だけ変えたもの。
+ * E2E_FMP4=1 のときはコンテナだけを替えた比較用の fMP4 も作る。
  */
 export function ensurePlaybackFixtures() {
   mkdirSync(FIXTURE_ROOT, { recursive: true })
   const manifest = generateRuns()
-  const fixtures = Object.keys(KINDS).map((kind) => writeFixture(manifest, kind))
+  const fixtures = FORMATS.flatMap((format) => Object.keys(KINDS).map((kind) => writeFixture(manifest, kind, format)))
   for (const fixture of fixtures) validateFixture(fixture)
   return { root: FIXTURE_ROOT, source: path.join(GENERATED, manifest.source), fixtures }
 }

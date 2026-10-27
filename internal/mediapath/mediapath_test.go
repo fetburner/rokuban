@@ -205,3 +205,20 @@ func TestIsMediaRelPathLockFile(t *testing.T) {
 		})
 	}
 }
+
+func TestResolve_ReservesRootStoreMarkerOnly(t *testing.T) {
+	for _, relPath := range []string{StoreMarkerFileName, "./" + StoreMarkerFileName, "sub/../" + StoreMarkerFileName} {
+		if got, err := Resolve("/storage/media", relPath); !errors.Is(err, ErrReservedMediaPath) {
+			t.Errorf("Resolve(%q) = %q, %v; want ErrReservedMediaPath", relPath, got, err)
+		}
+	}
+	for relPath, want := range map[string]string{
+		"x/" + StoreMarkerFileName:       "/storage/media/x/" + StoreMarkerFileName,
+		StoreMarkerFileName + ".ts":      "/storage/media/" + StoreMarkerFileName + ".ts",
+		"sites/a/" + StoreMarkerFileName: "/storage/media/sites/a/" + StoreMarkerFileName,
+	} {
+		if got, err := Resolve("/storage/media", relPath); err != nil || got != want {
+			t.Errorf("Resolve(%q) = %q, %v; want %q", relPath, got, err, want)
+		}
+	}
+}

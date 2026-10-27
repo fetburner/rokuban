@@ -109,7 +109,7 @@ func quoteDSNValue(v string) string {
 // 同一 FS 内の atomic rename、rename 後の親ディレクトリ fsync）を満たす root に
 // 限る。worker は ingest キューを購読するとき起動時に操作プローブを行うが、
 // パス文字列から FS の種類を推測しない。geesefs / s3fs / Mountpoint のような
-// FUSE S3 を原本 ingest 先には使わず、派生物専用の領域でのみ使う。
+// FUSE S3 は原本にも派生物にも使わない。
 type StorageConfig struct {
 	MediaStoreName string `yaml:"media_store_name"`
 	MediaDir       string `yaml:"media_dir"`
@@ -170,7 +170,7 @@ type CleanupConfig struct {
 	// ログ）されるまでのエイジング期間。孤児回収の OrphanAge と同じ理由 ---
 	// 単発の走査揺れ・DB リストア直後の一時的な不整合を確認済みの異常と
 	// 区別する。0 なら既定値（24 時間）。自動削除の閾値ではない
-	// （docs/storage/retention.md §7「孤児回収の逆」。この検出は削除を一切
+	// （docs/storage/missing-assets.md「孤児回収の逆」。この検出は削除を一切
 	// 行わない）。
 	MissingAssetAge time.Duration `yaml:"missing_asset_age"`
 }

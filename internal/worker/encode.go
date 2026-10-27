@@ -94,14 +94,15 @@ import (
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
-	Media      store.MediaReconcile
-	Attempts   store.EncodeAttempts
-	Publisher  store.MediaPublish
-	Progress   store.EncodeProgressReporter
-	MediaDir   string
-	ScratchDir string
-	FFmpeg     string
-	FFprobe    string
+	Media          store.MediaReconcile
+	Attempts       store.EncodeAttempts
+	Publisher      store.MediaPublish
+	Progress       store.EncodeProgressReporter
+	MediaDir       string
+	MediaStoreName string
+	ScratchDir     string
+	FFmpeg         string
+	FFprobe        string
 	// Profiles は名前解決用。config.EncodeConfig.Profile を使う。
 	Profiles config.EncodeConfig
 
@@ -132,6 +133,9 @@ const encodeMinTimeout = time.Hour
 // jobq.ErrDiscard を返して、adapter に再配信不要と伝える。
 // POST /api/recordings/{id}/encode-profiles と cut 版の /reencode は failed 行を消して予算を戻す。
 func (w *EncodeWorker) Work(ctx context.Context, args jobs.EncodeJobArgs) error {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting encode"); err != nil {
+		return err
+	}
 	start, err := w.beginEncodeAttempt(ctx, args.RecordingID, args.Profile)
 	if err != nil {
 		return err
@@ -684,6 +688,8 @@ const encodeReplanDelay = 10 * time.Second
 // あるいは commit の失敗を注入するためのフックである（本番では何もしない）。
 // 引数は試行の scratch 出力パス（どの試行かをテストが見分けるため）。
 var (
+	// afterEncodeBodyStaged は本体の stage の後、字幕の stage と lock の前に呼ぶ。
+	afterEncodeBodyStaged = func(scratchOut string) {}
 	// beforeEncodeLock は stage（コピーと fsync）の後、rel_path lock を取る前に呼ぶ。
 	beforeEncodeLock = func(scratchOut string) {}
 	// beforeEncodeFilePublication は DB の fencing と計画判定の後、rename の前に呼ぶ。
@@ -731,6 +737,9 @@ type encodePublishInput struct {
 // canonical は消さない（commit が実は成功していた場合に、生きている行が指す実体を
 // 失う）。孤児として報告するか、次の試行の rename に任せる。
 func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded output"); err != nil {
+		return 0, false, err
+	}
 	// 親ディレクトリが無いと temp も lock file も作れない。ingest はストレージ層が
 	// commit 前に作るが、encode はここが最初の書き込みなので stage の前に作る。
 	if err := os.MkdirAll(filepath.Dir(in.finalPath), 0o755); err != nil {
@@ -742,6 +751,11 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	defer staged.discard()
+	afterEncodeBodyStaged(in.scratchOut)
+	// 本体の stage（数 GB のコピー）の後、字幕の CreateTemp と lock file の作成を 1 回で守る。
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded subtitle and locking"); err != nil {
+		return 0, false, err
+	}
 	var stagedSubtitle stagedMediaFile
 	if in.withSubtitles {
 		subtitleRelPath, err := mediapath.SubtitleSibling(in.relPath)
@@ -932,6 +946,11 @@ func nextCutGeneration(prevRelPath, profileName string) int {
 // して記録・報告する。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
 // 再試行が新しい世代をさらに作る。
 func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
+	// 旧本体と旧サイドカーの unlink はまとめて 1 回照合する。
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced encoded output"); err != nil {
+		log.Warn("encode: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
+		return
+	}
 	path, err := mediapath.Resolve(w.MediaDir, relPath)
 	if err != nil {
 		log.Warn("encode: could not resolve replaced path", "rel_path", relPath, "err", err)
@@ -944,7 +963,10 @@ func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
 	// サイドカーも同じ世代で置き換わる。
 	if sidecarRel, err := mediapath.SubtitleSibling(relPath); err == nil {
 		if sidecar, err := mediapath.Resolve(w.MediaDir, sidecarRel); err == nil {
-			_ = os.Remove(sidecar)
+			if removeErr := os.Remove(sidecar); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				log.Warn("encode: removing replaced subtitle failed; orphan reporting will expose it",
+					"rel_path", sidecarRel, "err", removeErr)
+			}
 		}
 	}
 }

@@ -40,7 +40,7 @@ type ListActiveMediaAssetsRow struct {
 }
 
 // 「active な media_asset の実体が無い」検出用（issue #343、
-// docs/storage/retention.md §7「孤児回収の逆」）。orphan_files の判定
+// docs/storage/missing-assets.md「孤児回収の逆」）。orphan_files の判定
 // （ListAllMediaAssetRelPaths）と対になる逆方向のクエリ: ここでは state が
 // active な行だけを対象にする（deleting/deleted は物理削除の途中・完了
 // なのでファイルが無くて当然であり検出対象ではない）。

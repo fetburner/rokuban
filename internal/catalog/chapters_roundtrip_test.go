@@ -58,7 +58,7 @@ VALUES ($1, int8range($2, $3), $4, $5)`, recID, span.start, span.end, span.label
 		t.Fatalf("exported chapters = %d ownerships / %d spans, want 1 / 3",
 			len(doc.RecordingChapterOwnerships), len(doc.RecordingChapterSpans))
 	}
-	if _, err := Write(mediaDir, doc, DefaultKeep); err != nil {
+	if _, err := Write(mediaDir, doc, DefaultKeep, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 

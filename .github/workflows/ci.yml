@@ -474,6 +474,60 @@ jobs:
     steps:
       - run: test "${{ needs.mirakc-conformance-shard.result }}" = success
 
+  # S3 API の互換性を MinIO の固定ソースリリースで検査する。
+  s3-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MINIO_ROOT_USER: rokuban
+      MINIO_ROOT_PASSWORD: rokuban-minio-conformance
+      ROKUBAN_S3_CONFORMANCE_ENDPOINT: http://127.0.0.1:9000
+      ROKUBAN_S3_CONFORMANCE_REGION: us-east-1
+      ROKUBAN_S3_CONFORMANCE_BUCKET: rokuban-conformance
+      ROKUBAN_S3_CONFORMANCE_ACCESS_KEY_ID: rokuban
+      ROKUBAN_S3_CONFORMANCE_SECRET_ACCESS_KEY: rokuban-minio-conformance
+      ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET: "true"
+      # MinIO は 4 機能すべて対応する。記録がこれと違えば退行として落とす。
+      ROKUBAN_S3_CONFORMANCE_EXPECT: conditional-writes=supported,multipart-upload-and-abort=supported,head-checksum-sha256=supported,presigned-get-range=supported
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # MinIO の公開 Community Edition イメージが取得できないため、固定した公式ソースからサーバーを作る。
+      - uses: actions/checkout@v7
+        with:
+          repository: minio/minio
+          ref: 07c3a429bfed433e49018cb0f78a52145d4bedeb # RELEASE.2025-09-07T16-13-09Z
+          path: minio-src
+      - name: Build MinIO
+        working-directory: minio-src
+        run: go build -trimpath -o "$RUNNER_TEMP/minio" .
+      - name: Start MinIO service
+        run: |
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          nohup "$RUNNER_TEMP/minio" server "$RUNNER_TEMP/minio-data" --address 127.0.0.1:9000 >"$RUNNER_TEMP/minio.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/minio.pid"
+          for _ in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/minio.log"
+          exit 1
+      - name: Run S3 API conformance tests
+        run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
+      - name: Stop MinIO service
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/minio.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null || true
+          fi
+
   # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
   # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。
   # ツール版は CLAUDE.md §ビルド・テストに固定した版に合わせる（版がずれると偽陽性で赤くなる）。
