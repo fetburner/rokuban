@@ -1,7 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -25,7 +29,12 @@ func newStorageAdoptCmd() *cobra.Command {
 		Short: "置き場の目印を書き、既存行を割り当てる",
 		Args:  cobra.ExactArgs(1),
 		Long: `media_dir の root に .rokuban-store を作成し、置き場名を書き込む。
-store が空の既存コピー・観測行を、この置き場へ割り当てる。`,
+コピーの無い論理資産にこの置き場のコピーを作り、store が空の観測行と
+取り込み進捗行をこの置き場へ割り当てる。
+
+目印が無い root に新しく目印を作る前に、DB にこの置き場のコピー行が
+あるかを確かめる。あれば、マウント漏れか別のボリュームの可能性があるので
+目印を書かずにエラーにする。同名の目印が既にあれば、そのまま成功する。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig(cmd)
 			if err != nil {
@@ -38,15 +47,37 @@ store が空の既存コピー・観測行を、この置き場へ割り当て�
 			if cfg.Storage.MediaStoreName != "" && cfg.Storage.MediaStoreName != name {
 				return fmt.Errorf("store name %q does not match storage.media_store_name %q", name, cfg.Storage.MediaStoreName)
 			}
-			if err := mediapath.WriteStoreMarker(cfg.Storage.MediaDir, name); err != nil {
-				return err
+			markerPath := filepath.Join(cfg.Storage.MediaDir, mediapath.StoreMarkerFileName)
+			_, statErr := os.Lstat(markerPath)
+			markerExists := statErr == nil
+			if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+				return fmt.Errorf("checking %s: %w", markerPath, statErr)
+			}
+			if markerExists {
+				// 異なる名前の目印は DB に触れる前に拒む。
+				if err := mediapath.CheckStoreMarker(cfg.Storage.MediaDir, name); err != nil {
+					return err
+				}
 			}
 			pool, err := db.NewPool(cmd.Context(), cfg.DB, nil, 0)
 			if err != nil {
 				return err
 			}
 			defer pool.Close()
-			if err := pgstore.NewMedia(pool, name).AdoptUnassignedStoreRows(cmd.Context()); err != nil {
+			media := pgstore.NewMedia(pool, name)
+			if !markerExists {
+				has, err := media.HasStoreCopies(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if has {
+					return fmt.Errorf("store %q already has media asset copies in the database but %s does not exist: the media root may not be mounted or may be a different volume; not writing a marker", name, markerPath)
+				}
+				if err := mediapath.WriteStoreMarker(cfg.Storage.MediaDir, name); err != nil {
+					return err
+				}
+			}
+			if err := media.AdoptUnassignedStoreRows(cmd.Context()); err != nil {
 				return fmt.Errorf("adopting unassigned media store rows: %w", err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %s for store %q\n", mediapath.StoreMarkerFileName, name)

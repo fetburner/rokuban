@@ -133,6 +133,17 @@ func (q *Queries) SetMediaAssetCopyState(ctx context.Context, arg SetMediaAssetC
 	return result.RowsAffected(), nil
 }
 
+const storeHasMediaAssetCopies = `-- name: StoreHasMediaAssetCopies :one
+SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = $1)
+`
+
+func (q *Queries) StoreHasMediaAssetCopies(ctx context.Context, store string) (bool, error) {
+	row := q.db.QueryRow(ctx, storeHasMediaAssetCopies, store)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const upsertMediaAssetCopy = `-- name: UpsertMediaAssetCopy :exec
 
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, deleted_at)

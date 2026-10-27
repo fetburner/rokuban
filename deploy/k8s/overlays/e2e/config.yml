@@ -31,6 +31,8 @@ mirakcs:
 storage:
   media_dir: /mnt/media
   scratch_dir: /var/tmp/rokuban
+  # base と同じ。rokuban-migrate Job の storage adopt がこの名前の目印を書く。
+  media_store_name: main
 
 # site ごとのライブ streamer も同じ ConfigMap を読む。ハーネスはライブ経路を
 # 実再生しないが、出荷構成と同じ live.enabled / full image の起動条件を検査する。

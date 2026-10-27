@@ -73,6 +73,9 @@ storage:
   # cleanup）を足すときに PVC を足す。
   media_dir: /mnt/media
   scratch_dir: /var/tmp/rokuban
+  # 置き場の目印の名前。worker では必須。rokuban-migrate Job の storage adopt が、
+  # media_dir の root にこの名前の目印を書く。
+  media_store_name: main
 
 # ライブ視聴は site/ の streamer が担当する。config は全 Pod で共有するため
 # enabled はここで有効にする。base の中央 streamer は --sites= で起動するので

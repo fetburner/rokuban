@@ -126,16 +126,21 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 
 目印は `rokuban storage adopt <store-name>` で作る。照合は完全一致で、末尾の改行も違いとして扱うので、`echo main > .rokuban-store` は改行を足して不一致になる。
 
-`storage.media_store_name` を設定した構成では、worker が media root の `.rokuban-store` を設定と照合し、一致しなければ書き込みと削除を見送る。照合の判断は [operations/storage.md](../operations/storage.md) にある。
+worker ロールでは `storage.media_store_name` が必須である。worker は media root の `.rokuban-store` を設定と照合し、一致しなければ書き込みと削除を見送る。照合の判断は [operations/storage.md](../operations/storage.md) にある。
 
 `adopt` は実際にマウントされた media root に対して実行する。マウントが外れた状態で実行すると、マウントポイントの下にあるローカルディスクに目印を書いてしまう。
 
-新しく導入するときの順序は次のとおりである。
+新しく導入するときの順序は次のとおりである。`adopt` は DB に接続するので、`migrate up` の後でないと失敗する。
 
 1. media root をマウントする
-2. `rokuban storage adopt <store-name>` を実行する
-3. `storage.media_store_name` に同じ名前を設定する
-4. 再起動する
+2. `storage.media_store_name` に置き場の名前を設定する
+3. `rokuban migrate up` を実行する
+4. `rokuban storage adopt <store-name>` を実行する
+5. worker を起動する
+
+compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体のコンテナ）では、名前 `main` でこの 3 と 4 が自動で走る。k8s の Job は `migrate up` を initContainer に、`storage adopt main` を本体のコンテナにしている。
+
+`adopt` は、目印の無い root に目印を新しく作る前に、DB にその置き場のコピー行があるかを確かめる。あれば、マウント漏れか別のボリュームなので、エラーにして目印を書かない。同名の目印が既にあれば成功する。
 
 `recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
 
@@ -148,7 +153,12 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 
 新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。
 
-worker ロールは `storage.media_store_name` を必須にした。この設定を持たない既存の構成は、更新すると worker が起動しなくなる。更新の前に、名前を設定に足す。
+worker ロールは `storage.media_store_name` が必須である。この設定を持たない既存の構成は、更新すると worker が起動しなくなる。更新の前に、名前を設定に足す。
+
+compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。移行の操作は次のとおりである。
+
+- compose: `docker compose stop rokuban` で旧 worker を止め、`docker compose up -d` で新しい版を起動する。`migrate` の後に `adopt-media` が走り、その後に `rokuban` が起動する。
+- k8s: 旧 worker の Job が残っていれば止めてから、`kubectl delete job rokuban-migrate --ignore-not-found` で消し、`kubectl apply` し直す。`rokuban-migrate` の中で `migrate up` の後に `storage adopt main` が走る。
 
 旧 worker が `adopt` の後も動いていると、次のことが起きる。新しい論理資産にはコピー行が作られず、次の起動時の検査が数える。既存の資産のコピーは旧 worker が進めたパスと状態に追いつかず、古いまま残る。encode の派生物の世代は、旧 worker がパスだけを進めて `derived_generation` を進めないので、新しい worker が同じ世代のパスを採りうる。旧 worker を止めてから `adopt` をもう一度実行すると、コピーのパス・状態と世代が追いつく。
 

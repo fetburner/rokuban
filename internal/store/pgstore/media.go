@@ -66,6 +66,16 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	return nil
 }
 
+// HasStoreCopies はこの置き場のコピー行が DB に 1 件でもあるかを返す。
+// storage adopt が、目印の無い root に目印を新しく作ってよいかの判断に使う。
+func (s *Media) HasStoreCopies(ctx context.Context) (bool, error) {
+	has, err := sqlcgen.New(s.pool).StoreHasMediaAssetCopies(ctx, s.storeName)
+	if err != nil {
+		return false, fmt.Errorf("checking media asset copies in store %q: %w", s.storeName, err)
+	}
+	return has, nil
+}
+
 // RequireAdoptedStoreRows は割り当て前の行やコピー欠落が残っていないことを確認する。
 func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
 	count, err := sqlcgen.New(s.pool).CountUnassignedStorageRows(ctx)

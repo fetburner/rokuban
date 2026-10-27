@@ -53,6 +53,9 @@ SET derived_generation = GREATEST(
 )
 WHERE kind <> 'original';
 
+-- name: StoreHasMediaAssetCopies :one
+SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = sqlc.arg('store'));
+
 -- name: AdoptUnassignedIngestTemps :exec
 UPDATE recording_ingest_progress SET temp_store = sqlc.arg('store') WHERE temp_store = '';
 

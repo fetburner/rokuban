@@ -8,7 +8,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
-// TestStore はテストが使う置き場の名前。コピー行は実在の置き場名を要る。
+// TestStore はテストが使う置き場の名前。コピー行は実在の置き場名が要る。
 const TestStore = dbtest.StoreName
 
 // Analysis はテスト用の既定値で Analysis を作る。

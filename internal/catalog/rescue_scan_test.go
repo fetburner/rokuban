@@ -3,7 +3,6 @@ package catalog
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -311,19 +310,23 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	}
 }
 
-func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
+func TestRescueStorage_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 	missingMediaDir := filepath.Join(t.TempDir(), "missing-media")
-	_, err := RescueLatest(context.Background(), nil, nil, missingMediaDir, "test-store", []string{"default"})
+	// RescueLatest は目印の照合が先に止めるので、symlink 解決の失敗は rescueStorage を
+	// 直接呼んで検査する（目印が先に止める挙動は
+	// TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker）。
+	_, err := rescueStorage(context.Background(), nil, missingMediaDir, []string{"default"})
 	if err == nil {
-		t.Fatal("RescueLatest with missing media_dir should return an error")
+		t.Fatal("rescueStorage with missing media_dir should return an error")
 	}
-	// 置き場の目印の照合が走査より先に止める（書き込みの前に ErrStoreMarkerMismatch）。
-	if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
-		t.Fatalf("RescueLatest with missing media_dir error = %v, want ErrStoreMarkerMismatch", err)
-	}
-	const want = "checking media store marker before rescue"
+	// symlink 解決の失敗（media_dir が無い）と catalog 読み取りの失敗を issue #665
+	// が求める通り文言で区別できることを見る。err == nil だけを見るアサーションだと
+	// EvalSymlinks を削除しても（filepath.WalkDir が root の lstat エラーを
+	// 返し、それを "scanning media_dir for rescue" が wrap するので）このテストは
+	// 通り続けてしまう。
+	const want = "resolving media_dir symlinks for rescue"
 	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("RescueLatest with missing media_dir error = %q, want it to contain %q", err.Error(), want)
+		t.Fatalf("rescueStorage with missing media_dir error = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
