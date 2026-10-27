@@ -706,6 +706,10 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
 	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
+	storeRoots := make(map[string]string)
+	if cfg.Storage.MediaStoreName != "" {
+		storeRoots[cfg.Storage.MediaStoreName] = cfg.Storage.MediaDir
+	}
 	recordingStore := pgstore.NewRecordings(pool)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)
@@ -768,8 +772,12 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		TSScan:                   mediaStore,
 		EncodeAttempts:           mediaStore,
 		StorageObservation:       mediaStore,
+		StorageTransfer:          mediaStore,
 		MediaDir:                 cfg.Storage.MediaDir,
 		MediaStoreName:           cfg.Storage.MediaStoreName,
+		DerivedStore:             cfg.Storage.Derived,
+		StorageConfig:            cfg.Storage,
+		StoreRoots:               storeRoots,
 		IngestStorageProbed:      ingestStorageProbed,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,

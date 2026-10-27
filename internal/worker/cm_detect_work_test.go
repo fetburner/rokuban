@@ -783,7 +783,7 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 		t.Fatal(err)
 	}
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {

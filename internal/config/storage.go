@@ -91,6 +91,9 @@ func (c StorageConfig) fsStoreNames() []string {
 	return names
 }
 
+// FSStoreNames はファイルシステム置き場の名前を昇順で返す。
+func (c StorageConfig) FSStoreNames() []string { return c.fsStoreNames() }
+
 // setSingleFSStoreCompatibilityName は規則を、今の単一 media_dir の実装へ橋渡しする。
 // FS 置き場がちょうど 1 つのときだけその名前を MediaStoreName に入れる。
 // 複数の置き場を扱う worker は置き場ごとのルートを使うので、この値から desired の置き場を推測してはならない。
@@ -251,6 +254,8 @@ func (c StorageConfig) validateTransfer(missingAssetAge time.Duration) []string 
 		}
 		if strings.TrimSpace(bandwidth) == "" {
 			errs = append(errs, fmt.Sprintf("storage.transfer.bandwidth.%s must not be empty", store))
+		} else if _, err := parseTransferBandwidth(bandwidth); err != nil {
+			errs = append(errs, fmt.Sprintf("storage.transfer.bandwidth.%s: %v", store, err))
 		}
 	}
 
@@ -346,6 +351,55 @@ func (c StorageConfig) OriginalRulesJSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(rules)
+}
+
+// TransferBandwidthBytesPerSecond は、指定した転送元の帯域上限を byte/s で返す。
+// 未設定なら 0 を返す（無制限）。
+func (c StorageConfig) TransferBandwidthBytesPerSecond(sourceStore string) (int64, error) {
+	raw, ok := c.Transfer.Bandwidth[sourceStore]
+	if !ok {
+		return 0, nil
+	}
+	return parseTransferBandwidth(raw)
+}
+
+func parseTransferBandwidth(raw string) (int64, error) {
+	value := strings.TrimSpace(raw)
+	units := map[string]float64{
+		"bps":   1.0 / 8,
+		"Kbps":  1_000.0 / 8,
+		"Mbps":  1_000_000.0 / 8,
+		"Gbps":  1_000_000_000.0 / 8,
+		"Bps":   1,
+		"KBps":  1_000,
+		"MBps":  1_000_000,
+		"GBps":  1_000_000_000,
+		"KiBps": 1 << 10,
+		"MiBps": 1 << 20,
+		"GiBps": 1 << 30,
+	}
+	unitNames := make([]string, 0, len(units))
+	for unit := range units {
+		unitNames = append(unitNames, unit)
+	}
+	sort.Slice(unitNames, func(i, j int) bool { return len(unitNames[i]) > len(unitNames[j]) })
+	for _, unit := range unitNames {
+		multiplier := units[unit]
+		if !strings.HasSuffix(value, unit) {
+			continue
+		}
+		number := strings.TrimSpace(strings.TrimSuffix(value, unit))
+		amount, err := strconv.ParseFloat(number, 64)
+		if err != nil || amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
+			return 0, fmt.Errorf("must be a positive number followed by a supported bandwidth unit")
+		}
+		bytesPerSecond := amount * multiplier
+		if bytesPerSecond < 1 || bytesPerSecond > float64(math.MaxInt64) {
+			return 0, fmt.Errorf("bandwidth is outside the supported byte-per-second range")
+		}
+		return int64(bytesPerSecond), nil
+	}
+	return 0, fmt.Errorf("unsupported bandwidth unit")
 }
 
 type storagePolicyFingerprintInput struct {

@@ -59,6 +59,23 @@ CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'dele
 
 一意の制約は 2 つある。`(store, rel_path) WHERE state <> 'deleted'` は、同じ置き場の生きているパスを 1 行に絞る。`UNIQUE (media_asset_id, store)` は、論理資産が 1 つの置き場に持てるコピーを 1 つに絞り、世代更新でパスが変わるときに行を足さず UPDATE させる。後者を置かずパスの索引だけで済ませると、パスが変わるたびに同じ論理資産と置き場の行が増え、現在のコピーを決められない。
 
+転送の失敗は `media_asset_transfer_attempts` にだけ残す。待機中や成功済みの行は作らず、成功時に失敗行を消す。主キーは `(media_asset_id, store)` で、宛先ごとに最大試行回数へ達したかを判定する。書き手は storage transfer worker である。
+
+```sql
+CREATE TABLE media_asset_transfer_attempts (
+    media_asset_id bigint NOT NULL,
+    store          text   NOT NULL,
+    attempt_count  integer NOT NULL CHECK (attempt_count > 0),
+    last_error     text   NOT NULL,
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (media_asset_id, store),
+    FOREIGN KEY (media_asset_id, store)
+        REFERENCES media_asset_copies (media_asset_id, store) ON DELETE CASCADE
+);
+```
+
+行があるのは転送失敗を観測したときだけである。空の待機行を作ると、再concile の対象と試行上限の判断が二重管理になる。
+
 コピーの無い論理資産が、未割り当てを表す。マイグレーションはコピー行を作らず、`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
 `storage adopt <store-name>` は、コピーの無い論理資産にコピーを作り、その置き場に既にあるコピーのパス・状態・派生世代を `media_assets` から同期する。別の置き場にだけコピーがある資産には触れない。観測表と進捗行の空の `store` も埋める。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。

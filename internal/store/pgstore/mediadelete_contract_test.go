@@ -40,15 +40,20 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 			return id
 		}
 		return contracttest.MediaDeleteFixture{
-			Store: NewMedia(pool, "tokyo"), Serving: NewMedia(pool, "tokyo"), Catalog: NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
+			Store: NewMedia(pool, "tokyo"), DerivedStore: "tokyo", Serving: NewMedia(pool, "tokyo"), Catalog: NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
 			NewUntilEncodedOriginal: func(t *testing.T) (int64, int64) {
 				t.Helper()
 				recordingID := newRecording(t)
 				originalID := newAsset(t, recordingID, store.AssetKindOriginal, nil)
 				profile := "h264"
-				newAsset(t, recordingID, store.AssetKindEncoded, &profile)
-				newAsset(t, recordingID, store.AssetKindThumbnail, nil)
-				newAsset(t, recordingID, store.AssetKindSeekTiles, nil)
+				encodedID := newAsset(t, recordingID, store.AssetKindEncoded, &profile)
+				thumbnailID := newAsset(t, recordingID, store.AssetKindThumbnail, nil)
+				seekTilesID := newAsset(t, recordingID, store.AssetKindSeekTiles, nil)
+				for _, assetID := range []int64{originalID, encodedID, thumbnailID, seekTilesID} {
+					if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
+						t.Fatalf("moving contract copy %d to desired store: %v", assetID, err)
+					}
+				}
 				if _, err := pool.Exec(context.Background(), `
 INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
 SELECT id, size_bytes FROM media_assets WHERE id = $1`, originalID); err != nil {

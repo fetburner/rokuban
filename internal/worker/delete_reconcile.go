@@ -118,6 +118,7 @@ type DeleteReconcileWorker struct {
 	Breakers       store.Breakers
 	MediaDir       string
 	MediaStoreName string
+	DerivedStore   string
 
 	TrashRetention    time.Duration
 	OrphanMTimeGrace  time.Duration
@@ -129,8 +130,19 @@ type DeleteReconcileWorker struct {
 	Webhook *webhook.Client
 }
 
+func (w *DeleteReconcileWorker) derivedStore() string {
+	if w.DerivedStore != "" {
+		return w.DerivedStore
+	}
+	return w.MediaStoreName
+}
+
 // Work は 1 パス分の削除 reconcile を実行する。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
+	derivedStore := w.DerivedStore
+	if derivedStore == "" {
+		derivedStore = w.MediaStoreName
+	}
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting delete reconcile"); err != nil {
 		return err
 	}
@@ -165,7 +177,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
 	// pending 経路の再評価（後述）もこの値を使う。
 	trashCutoff := time.Now().Add(-trashRetention)
-	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff); err != nil {
+	if err := w.restoreUnqualifiedDeletingAssets(ctx, derivedStore, trashCutoff); err != nil {
 		return err
 	}
 	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
@@ -175,7 +187,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	// restoreUnqualifiedDeletingAssets で該当しなくなった行は既に active か
 	// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
 	// ものだけ。
-	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, deleteReconcileRowLimit)
+	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, derivedStore, trashCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return err
 	}
@@ -195,7 +207,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if err := w.reconcileDeleteObservations(ctx, orphanMTimeGrace, orphanAge, missingAssetAge); err != nil {
 		return err
 	}
-	candidates, err := collectDeleteCandidates(ctx, w.MediaDelete, trashCutoff)
+	candidates, err := collectDeleteCandidates(ctx, w.MediaDelete, derivedStore, trashCutoff)
 	if err != nil {
 		return err
 	}

@@ -63,13 +63,13 @@ func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, brea
 // active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
 // 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
 // 罠で、revert 経路自身がこの窓を作らないようにする）。
-func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff time.Time) error {
-	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, trashCutoff, deleteReconcileRowLimit)
+func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, derivedStore string, trashCutoff time.Time) error {
+	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, derivedStore, trashCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting assets: %w", err)
 	}
 	for _, a := range rows {
-		w.resolveUnqualifiedDeletingAsset(ctx, a, trashCutoff)
+		w.resolveUnqualifiedDeletingAsset(ctx, a, derivedStore, trashCutoff)
 	}
 	return nil
 }
@@ -155,7 +155,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 	// API と同じ recordings 行ロックを取り、要求が commit されていないことを
 	// 名前付き述語で再確認してから deleting にする。
 	if source == "until_encoded" {
-		marked, err := w.MediaDelete.MarkUntilEncodedDeleting(ctx, t.RecordingID, t.ID)
+		marked, err := w.MediaDelete.MarkUntilEncodedDeleting(ctx, t.RecordingID, t.ID, w.derivedStore())
 		if err != nil {
 			log.Error("delete_reconcile: rechecking until_encoded eligibility", "err", err)
 			return
@@ -257,7 +257,7 @@ var afterDeletingAssetStat = func(string) {}
 // 確定する。ここで無条件に active へ戻すと、案 B（復元時に deleting を
 // 同期的に active へ戻す）を却下した理由そのもの ——「active なのにファイルが
 // 無い行」を作ってしまう。
-func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, graceCutoff time.Time) {
+func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, derivedStore string, graceCutoff time.Time) {
 	log := slog.With("media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
 
 	path, err := mediapath.Resolve(w.MediaDir, a.RelPath)
@@ -291,7 +291,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 		log.Warn("delete_reconcile: withholding deleting-state resolution because media store marker did not match", "err", err)
 		return
 	}
-	updated, err := w.MediaDelete.RevertToActive(ctx, a.ID, graceCutoff)
+	updated, err := w.MediaDelete.RevertToActive(ctx, a.ID, derivedStore, graceCutoff)
 	if err != nil {
 		log.Error("delete_reconcile: reverting asset to active", "err", err)
 		return

@@ -161,16 +161,16 @@ type markerTestMediaDelete struct {
 	revertCalls       int
 }
 
-func (*markerTestMediaDelete) ListPendingDeleteAssets(context.Context, time.Time, int32) ([]store.MediaDeleteAsset, error) {
+func (*markerTestMediaDelete) ListPendingDeleteAssets(context.Context, string, time.Time, int32) ([]store.MediaDeleteAsset, error) {
 	return nil, nil
 }
-func (*markerTestMediaDelete) ListUnqualifiedDeletingAssets(context.Context, time.Time, int32) ([]store.MediaDeleteRevertCandidate, error) {
+func (*markerTestMediaDelete) ListUnqualifiedDeletingAssets(context.Context, string, time.Time, int32) ([]store.MediaDeleteRevertCandidate, error) {
 	return nil, nil
 }
 func (*markerTestMediaDelete) ListTrashAssetsToDelete(context.Context, time.Time, int32) ([]store.MediaDeleteAsset, error) {
 	return nil, nil
 }
-func (*markerTestMediaDelete) ListUntilEncodedOriginalsToDelete(context.Context, int32) ([]store.MediaDeleteAsset, error) {
+func (*markerTestMediaDelete) ListUntilEncodedOriginalsToDelete(context.Context, string, int32) ([]store.MediaDeleteAsset, error) {
 	return nil, nil
 }
 func (*markerTestMediaDelete) ListRemovedEncodedAssetsToDelete(context.Context, int32) ([]store.MediaDeleteAsset, error) {
@@ -180,14 +180,14 @@ func (s *markerTestMediaDelete) MarkDeleting(context.Context, int64) error {
 	s.markDeletingCalls++
 	return nil
 }
-func (*markerTestMediaDelete) MarkUntilEncodedDeleting(context.Context, int64, int64) (bool, error) {
+func (*markerTestMediaDelete) MarkUntilEncodedDeleting(context.Context, int64, int64, string) (bool, error) {
 	return true, nil
 }
 func (s *markerTestMediaDelete) MarkDeleted(context.Context, int64) error {
 	s.markDeletedCalls++
 	return nil
 }
-func (s *markerTestMediaDelete) RevertToActive(context.Context, int64, time.Time) (bool, error) {
+func (s *markerTestMediaDelete) RevertToActive(context.Context, int64, string, time.Time) (bool, error) {
 	s.revertCalls++
 	return false, nil
 }
@@ -537,7 +537,7 @@ func TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat(t *t
 				metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 				worker.resolveUnqualifiedDeletingAsset(context.Background(),
-					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath}, time.Now())
+					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath}, "tokyo", time.Now())
 
 				if mediaDelete.markDeletedCalls != 0 || mediaDelete.revertCalls != 0 {
 					t.Errorf("DB calls = MarkDeleted:%d RevertToActive:%d, want 0:0", mediaDelete.markDeletedCalls, mediaDelete.revertCalls)

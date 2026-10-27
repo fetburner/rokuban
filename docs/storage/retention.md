@@ -66,12 +66,12 @@ ingest 完了後の override 変更は、その録画には反映されない。
 
 #### 削除条件
 
-削除するのは、ポリシーが「エンコードしたら原本を消す」で、望ましい派生物がすべてコミット済みの原本だけである。TS 解析の記録が無いか、記録したサイズが現在の原本と違えば消さない。実行中のジョブの有無は問わず、出力が未コミットの間は派生物の条件が原本を守る。
+削除するのは、ポリシーが「エンコードしたら原本を消す」で、望ましい派生物がすべてコミット済みの原本だけである。派生物は DB 行だけでなく、desired な派生物の置き場に active で実体のあるコピーが要る。TS 解析の記録が無いか、記録したサイズが現在の原本と違えば消さない。
 
 retention reconcile ループ（worker の cleanup 系ジョブ）が定期的に走り、次をすべて満たす原本アセットを削除する。
 
 1. ポリシーが `until_encoded`
-2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）が `media_assets` にコミット済みである。原本の `media_asset_ts_scans.scanned_size_bytes` が `media_assets.size_bytes` と一致することも求める
+2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）が `media_assets` にコミット済みで、各行に desired な派生物の置き場の active かつ欠損記録の無いコピーがある。原本の `media_asset_ts_scans.scanned_size_bytes` が `media_assets.size_bytes` と一致することも求める
 
 解析が恒久的に失敗する原本は保持され続ける。
 
@@ -83,7 +83,7 @@ desired を縮める経路があっても、この整理は保たれる。縮め
 
 上記の desired な派生物は凍結時点の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなったプロファイルを、まだエンコードしていない録画がある。この録画は `until_encoded` でも原本を保持し続ける。満たせない desired に対して原本を捨てないのが仕様で、設定の 1 行の編集で原本という不可逆な資産が削除可能になる事態を避けるためである。`rokuban_encode_reconcile_unsatisfiable` はプロファイル名別の該当録画数を出すが、`keep_original` を問わず数える（`always` の録画も含む）ため、この保持件数そのものとは一致しない。
 
-揃っているかは encode と共有する view `unencoded_desired_profiles` で判定し、設定では絞らない。
+エンコードの完備は encode と共有する view `unencoded_desired_profiles` で判定し、設定では絞らない。物理コピーの有無は、呼び出し側が渡す desired store に対して別に確認する。コピー中や欠損中の派生物を完備扱いすると、原本が先に消える。
 
 <details><summary>根拠</summary>
 
@@ -285,6 +285,29 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 原本の保持ポリシーによる削除は、ごみ箱を経由しない。原本はサイズが支配的で、経由させるとストレージ節約が猶予期間ぶん遅延する。安全条件は派生物完備で既に保証している。外したエンコード版の削除も、ごみ箱を経由しない（§6「凍結の 3 つ目の例外」）。公開前と分かる孤児は、予約名の temp / staging を回収する。canonical 名の孤児は、DB 喪失後も公開済みファイルを保持して調査するために、報告だけにする。
 
 一括削除サーキットブレーカーの閾値は、件数 / ライブラリ比率 / 総バイト数である（例: 5% or 100 GB）。孤児回収を含む物理削除が閾値を超えたら停止してアラートを出す。報告だけの canonical orphan は削除数に含めない。
+
+### 置き場間のコピーと旧コピーの削除
+
+複数の物理コピーは、現在の置き場方針に合わせて増やし、移行期間を過ぎた古いコピーだけを削除する。
+
+`media_assets` は論理資産を表し、実体のある置き場ごとの行は `media_asset_copies` に置く。storage transfer reconcile は現在の規則から desired store を求め、そこに active で欠損記録の無いコピーが無ければコピー job を投入する。コピーの投入は DB の読み取りが終わった後に行う。
+
+転送は destination の同じディレクトリに再開可能な temp を作る。source のサイズと SHA-256 を検証し、値が未計測なら logical asset に保存する。destination は上書きせずに公開し、ファイルと親 directory の同期後に DB 行を active にする。リストア後に同じ内容の destination file が残っていれば、サイズと SHA-256 が一致したときだけ再利用する。
+
+古いコピーは、新しい desired copy が active で実体あり、設定された overlap を過ぎるまで削除しない。削除時は `media_assets` 行をロックして現在の規則を再評価する。desired copy は active でなければならず、削除対象以外にも active で実体のあるコピーを要する。`deleting` は残るコピーとして数えない。規則変更中の古い job が、新しい規則で必要な最後のコピーを削除するのを防ぐ。
+
+転送失敗だけを `media_asset_transfer_attempts` に残し、10 回でその宛先への再投入を止める。成功すれば失敗行を消す。原本の内容不一致では原本を削除せず、派生物の不一致では破損コピーを退けて再生成に委ねる。
+
+<details><summary>根拠</summary>
+
+- destination の復旧後採用と SHA-256 の保存: `TestStorageTransferWorkerCopiesAndAdopts`
+- 原本の不一致を保持する: `TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource`
+- 古い規則の job を捨て、新しいコピー後に旧コピーを消す: `TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy`
+- overlap と欠損記録による削除延期: `TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap`
+- `until_encoded` で desired store の派生コピーを待つ: `TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore`
+- 古い / 新しい規則の削除を直列化する: `TestStorageTransferDeletionSerializesPolicySwitches`
+
+</details>
 
 ループのコードは、変わる理由ごとに 3 つのファイルへ分ける。候補の選定は保持ポリシーで、削除の実行はストレージの方式で、ストレージの監査はファイル配置の規則で変わる。監査は選定より先に呼ぶ。公開前と分かる孤児の候補は、監査が走査結果から出すためである。
 

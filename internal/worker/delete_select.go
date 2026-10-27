@@ -43,14 +43,14 @@ func (c deleteCandidateSet) total() int {
 // ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
 // 冪等チェックが原本を開かずに skip する（順序そのものは未検証。
 // docs/storage/retention.md 同箇所参照）。
-func collectDeleteCandidates(ctx context.Context, media store.MediaDelete, trashCutoff time.Time) (deleteCandidateSet, error) {
+func collectDeleteCandidates(ctx context.Context, media store.MediaDelete, derivedStore string, trashCutoff time.Time) (deleteCandidateSet, error) {
 	var c deleteCandidateSet
 	var err error
 	c.trash, err = media.ListTrashAssetsToDelete(ctx, trashCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return c, fmt.Errorf("listing trash assets past retention: %w", err)
 	}
-	c.untilEncoded, err = media.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
+	c.untilEncoded, err = media.ListUntilEncodedOriginalsToDelete(ctx, derivedStore, deleteReconcileRowLimit)
 	if err != nil {
 		return c, fmt.Errorf("listing until_encoded originals: %w", err)
 	}

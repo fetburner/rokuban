@@ -51,7 +51,10 @@ const (
 	catalogExportJobTimeout = 5 * time.Minute
 	// storage_sync は root ごとの statfs と DB upsert 高々 2 回で、tuner_sync と同じ理由で
 	// 既定を明示する。
-	storageSyncJobTimeout = time.Minute
+	storageSyncJobTimeout              = time.Minute
+	storageTransferReconcileJobTimeout = 5 * time.Minute
+	// FS 間コピーは GB 単位になりうる。queue adapter の timeout は 1 回の転送の締切。
+	storageTransferJobTimeout = 12 * time.Hour
 )
 
 // EncodeUnknownDurationTimeout is the execution limit for an encode job without a saved
@@ -216,4 +219,14 @@ func (a CatalogExportArgs) Spec() jobq.Spec {
 // 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a StorageSyncArgs) Spec() jobq.Spec {
 	return spec(StorageQueue, fixedTimeout(storageSyncJobTimeout), 1, true, 1)
+}
+
+// Spec は転送 reconcile の読み取りと enqueue に与える締切を返す。
+func (a StorageTransferReconcileArgs) Spec() jobq.Spec {
+	return spec(StorageQueue, fixedTimeout(storageTransferReconcileJobTimeout), 1, true, 1)
+}
+
+// Spec は 1 件の転送またはコピー削除の論理キューと締切を返す。
+func (a StorageTransferArgs) Spec() jobq.Spec {
+	return spec(TransferQueue, fixedTimeout(storageTransferJobTimeout), 1, true, 1)
 }

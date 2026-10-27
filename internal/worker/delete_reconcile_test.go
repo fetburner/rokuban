@@ -1169,8 +1169,8 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 
 	var eligible int
 	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM until_encoded_deletable_originals
-		WHERE asset_id = ANY($1::bigint[])`, []int64{missingScanID, staleScanID, currentScanID}).Scan(&eligible); err != nil {
+		SELECT count(*) FROM until_encoded_deletable_originals('test-store')
+		WHERE id = ANY($1::bigint[])`, []int64{missingScanID, staleScanID, currentScanID}).Scan(&eligible); err != nil {
 		t.Fatalf("querying current-scan eligibility: %v", err)
 	}
 	if eligible != 1 {
@@ -1195,7 +1195,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 // recording_encode_policy_check（issue #159 で recordings 側の CHECK から
 // 移設）を一時的に外す。encode_profiles が
 // 空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
-// 削除クエリ側ガード（until_encoded_deletable_originals view の
+// 削除クエリ側ガード（until_encoded_deletable_originals function の
 // cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
 // 足したものなので、CHECK が無い前提でもそれ単体で原本を守れることを確認する
 // 必要がある。テスト用パッケージ DB は TRUNCATE のみでスキーマは使い回すため、
@@ -1490,7 +1490,7 @@ func assertUntilEncodedQualifies(t *testing.T, pool *pgxpool.Pool, assetID int64
 	t.Helper()
 	var n int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM until_encoded_deletable_originals WHERE asset_id = $1`, assetID).Scan(&n); err != nil {
+		`SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE id = $1`, assetID).Scan(&n); err != nil {
 		t.Fatalf("querying until_encoded_deletable_originals: %v", err)
 	}
 	if (n == 1) != want {
@@ -1600,7 +1600,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 }
 
 // delete_reconcile.sql の 5 クエリが、削除可否の 2 腕（ごみ箱 / until_encoded）
-// を名前付き述語（until_encoded_deletable_originals view /
+// を名前付き述語（until_encoded_deletable_originals function /
 // trash_deletable_recordings 関数）への参照に統一していることの静的チェック
 // （issue #160）。生の predicate テキスト
 // （キー列や cardinality ガード）がクエリファイルに再度インライン化されると、

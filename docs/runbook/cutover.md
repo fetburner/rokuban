@@ -77,7 +77,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 
 <details><summary>根拠</summary>
 
-- 原本を消してよい条件の権威: view `until_encoded_deletable_originals`
+- 原本を消してよい条件の権威: `until_encoded_deletable_originals(desired_store)` 関数
 
 </details>
 

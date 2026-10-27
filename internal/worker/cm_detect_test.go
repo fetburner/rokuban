@@ -498,7 +498,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	count := func() int {
 		t.Helper()
 		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&n); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -590,7 +590,7 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 	stage := "adopt"
 	markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", &stage, nil)
 	var eligible int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
 		t.Fatal(err)
 	}
 	if eligible != 0 {
@@ -600,7 +600,7 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET stage = 'logo' WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
 		t.Fatal(err)
 	}
 	if eligible != 1 {

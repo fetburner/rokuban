@@ -138,8 +138,12 @@ type Deps struct {
 	TSScan                store.TSScan
 	EncodeAttempts        store.EncodeAttempts
 	StorageObservation    store.StorageObservation
+	StorageTransfer       store.StorageTransfer
 	MediaDir              string
 	MediaStoreName        string
+	DerivedStore          string
+	StorageConfig         config.StorageConfig
+	StoreRoots            map[string]string
 	// IngestStorageProbed は起動時に ProbeIngestStorage が成功したかを示す。
 	// false なら IngestWorker が最初の ingest で、目印を照合した後に probe する。
 	IngestStorageProbed bool
@@ -331,6 +335,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Storage:           deps.StorageObservation,
 		MediaDir:          deps.MediaDir,
 		MediaStoreName:    deps.MediaStoreName,
+		DerivedStore:      deps.DerivedStore,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
 		OrphanAge:         deps.Cleanup.OrphanAge,
@@ -342,6 +347,12 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Storage:    deps.StorageObservation,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
+	})
+	riveradapter.Register(workers, &StorageTransferReconcileWorker{
+		Enqueuer: deps.Enqueuer, Storage: deps.StorageTransfer, Config: deps.StorageConfig,
+	})
+	riveradapter.Register(workers, &StorageTransferWorker{
+		Storage: deps.StorageTransfer, Config: deps.StorageConfig, Roots: deps.StoreRoots,
 	})
 	riveradapter.Register(workers, &tsscan.ScanWorker{Media: deps.TSScan, MediaDir: deps.MediaDir})
 	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan})

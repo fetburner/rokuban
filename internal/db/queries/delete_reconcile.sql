@@ -7,7 +7,7 @@
 -- 「このアセットは消してよいか」の 3 つの腕（ごみ箱の猶予超過 or 今すぐ
 -- purge / until_encoded の派生物完備 / ユーザーが外したエンコード版）は、
 -- いずれもスキーマ側の名前付き述語を参照する。until_encoded 腕は
--- view `until_encoded_deletable_originals`、ごみ箱腕は set-returning 関数
+-- function `until_encoded_deletable_originals(desired_store)`、ごみ箱腕は set-returning 関数
 -- `trash_deletable_recordings(grace_cutoff)`、外した版の腕は view
 -- `removed_encoded_assets`。この 3 つが唯一の定義であり、
 -- 以下の入口・拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
@@ -43,7 +43,7 @@ WHERE a.state = 'deleting'
       WHERE t.recording_id = a.recording_id
     )
     OR EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+      SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) v WHERE v.id = a.id
     )
     OR EXISTS (
       SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
@@ -76,7 +76,7 @@ WHERE a.state = 'deleting'
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+    SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) v WHERE v.id = a.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
@@ -112,7 +112,7 @@ WHERE a.id = sqlc.arg('id')
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+    SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) v WHERE v.id = a.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
@@ -134,10 +134,10 @@ LIMIT sqlc.arg('row_limit');
 -- until_encoded_deletable_originals の定義を参照する。ごみ箱経由の録画は
 -- ListTrashMediaAssetsToDelete 側で扱う。
 -- name: ListUntilEncodedOriginalsToDelete :many
-SELECT v.asset_id AS id, v.recording_id, v.rel_path, v.size_bytes, 'original'::text AS kind
-FROM until_encoded_deletable_originals v
+SELECT v.id AS id, v.recording_id, v.rel_path, v.size_bytes, 'original'::text AS kind
+FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) v
 WHERE v.state = 'active'
-ORDER BY v.asset_id
+ORDER BY v.id
 LIMIT sqlc.arg('row_limit');
 
 -- ユーザーが外したエンコード版（名前付き述語 removed_encoded_assets への参照）。
@@ -198,7 +198,7 @@ UPDATE media_assets a SET state = 'deleting', updated_at = now()
 WHERE a.id = sqlc.arg('asset_id')
   AND a.state = 'active'
   AND EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+      SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) v WHERE v.id = a.id
   );
 
 -- 外した版の要求行（encoded_asset_removal_requests）を deleted の確定と同じ

@@ -46,6 +46,8 @@ const (
 	CleanupQueue = "cleanup"
 	// StorageQueue はストレージ観測ジョブのキュー名。
 	StorageQueue = "storage"
+	// TransferQueue は物理コピーの転送・削除ジョブの論理キュー名。
+	TransferQueue = "transfer"
 	// TSScanQueue は原本 TS の解析ジョブを site 非依存で処理するキュー名。
 	TSScanQueue = "ts_scan"
 )
@@ -95,6 +97,11 @@ func PhysicalQueueName(logical, boundSite string) string {
 	return qualifyQueueName(logical, boundSite)
 }
 
+// PhysicalStoreQueueName は置き場単位の仕事を `{queue}_{store}` に振り分ける。
+func PhysicalStoreQueueName(logical, storeName string) string {
+	return logical + "_" + storeName
+}
+
 // AllQueueNames はこのプロセスが知っている全キューの論理名をソートして返す。
 // worker.queues の許可リストと CLI の入力検証が同じ契約を使えるよう、キューを
 // 実行する worker ではなくこのパッケージに置く。
@@ -111,6 +118,7 @@ func AllQueueNames() []string {
 		CMDetectQueue,
 		CleanupQueue,
 		StorageQueue,
+		TransferQueue,
 		TSScanQueue,
 	}
 	slices.Sort(names)

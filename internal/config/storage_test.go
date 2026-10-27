@@ -239,6 +239,37 @@ func TestStoragePolicyOlderThanJSONNormalizesDuration(t *testing.T) {
 	}
 }
 
+func TestStorageTransferBandwidthBytesPerSecond(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  int64
+		bad   bool
+	}{
+		{value: "50Mbps", want: 6_250_000},
+		{value: "1.5MiBps", want: 1_572_864},
+		{value: "10MBps", want: 10_000_000},
+		{value: "8bps", want: 1},
+		{value: "1", bad: true},
+		{value: "0Mbps", bad: true},
+		{value: "NaNMbps", bad: true},
+		{value: "1tbps", bad: true},
+	} {
+		got, err := (StorageConfig{Transfer: StorageTransferConfig{Bandwidth: map[string]string{"source": tc.value}}}).TransferBandwidthBytesPerSecond("source")
+		if tc.bad {
+			if err == nil {
+				t.Errorf("bandwidth %q error = nil, want error", tc.value)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("bandwidth %q = %d, %v; want %d, nil", tc.value, got, err, tc.want)
+		}
+	}
+	if got, err := (StorageConfig{}).TransferBandwidthBytesPerSecond("source"); err != nil || got != 0 {
+		t.Errorf("unset bandwidth = %d, %v; want 0, nil", got, err)
+	}
+}
+
 func TestStoragePolicyFingerprint(t *testing.T) {
 	newStorage := func() StorageConfig {
 		return StorageConfig{

@@ -14,6 +14,7 @@ import (
 // MediaDeleteFixture はメディア削除契約と、その状態を作るための実装別フックをまとめる。
 type MediaDeleteFixture struct {
 	Store                         store.MediaDelete
+	DerivedStore                  string
 	Serving                       store.MediaServing
 	Catalog                       store.Catalog
 	NewUntilEncodedOriginal       func(t *testing.T) (recordingID, assetID int64)
@@ -69,7 +70,7 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	ctx := context.Background()
 	recordingID, assetID := f.NewUntilEncodedOriginal(t)
-	candidates, err := f.Store.ListUntilEncodedOriginalsToDelete(ctx, 10)
+	candidates, err := f.Store.ListUntilEncodedOriginalsToDelete(ctx, f.DerivedStore, 10)
 	if err != nil {
 		t.Fatalf("listing eligible until_encoded originals: %v", err)
 	}
@@ -86,7 +87,7 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 		err    error
 	}, 1)
 	go func() {
-		marked, err := f.Store.MarkUntilEncodedDeleting(ctx, recordingID, assetID)
+		marked, err := f.Store.MarkUntilEncodedDeleting(ctx, recordingID, assetID, f.DerivedStore)
 		result <- struct {
 			marked bool
 			err    error
@@ -115,7 +116,7 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 func runDeletedAssetIsNotReverted(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	recordingID, assetID := f.NewDeletedAsset(t)
-	updated, err := f.Store.RevertToActive(context.Background(), assetID, time.Now())
+	updated, err := f.Store.RevertToActive(context.Background(), assetID, f.DerivedStore, time.Now())
 	if err != nil {
 		t.Fatalf("RevertToActive(deleted) error = %v", err)
 	}
@@ -161,11 +162,11 @@ func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, as
 		t.Fatalf("serving lookup for deleted %s asset %d = %v, want ErrNotFound", kind, assetID, servingErr)
 	}
 	cutoff := time.Now().Add(time.Hour)
-	pending, err := f.Store.ListPendingDeleteAssets(context.Background(), cutoff, 100)
+	pending, err := f.Store.ListPendingDeleteAssets(context.Background(), f.DerivedStore, cutoff, 100)
 	if err != nil {
 		t.Fatalf("ListPendingDeleteAssets when checking deleted asset %d: %v", assetID, err)
 	}
-	unqualified, err := f.Store.ListUnqualifiedDeletingAssets(context.Background(), cutoff, 100)
+	unqualified, err := f.Store.ListUnqualifiedDeletingAssets(context.Background(), f.DerivedStore, cutoff, 100)
 	if err != nil {
 		t.Fatalf("ListUnqualifiedDeletingAssets when checking deleted asset %d: %v", assetID, err)
 	}

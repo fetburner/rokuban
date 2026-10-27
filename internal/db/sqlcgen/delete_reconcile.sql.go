@@ -264,19 +264,20 @@ WHERE a.state = 'deleting'
       WHERE t.recording_id = a.recording_id
     )
     OR EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+      SELECT 1 FROM until_encoded_deletable_originals($2) v WHERE v.id = a.id
     )
     OR EXISTS (
       SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
     )
   )
 ORDER BY a.id
-LIMIT $2
+LIMIT $3
 `
 
 type ListMediaAssetsPendingDeleteParams struct {
-	GraceCutoff time.Time
-	RowLimit    int32
+	GraceCutoff  time.Time
+	DerivedStore string
+	RowLimit     int32
 }
 
 type ListMediaAssetsPendingDeleteRow struct {
@@ -296,7 +297,7 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 「このアセットは消してよいか」の 3 つの腕（ごみ箱の猶予超過 or 今すぐ
 // purge / until_encoded の派生物完備 / ユーザーが外したエンコード版）は、
 // いずれもスキーマ側の名前付き述語を参照する。until_encoded 腕は
-// view `until_encoded_deletable_originals`、ごみ箱腕は set-returning 関数
+// function `until_encoded_deletable_originals(desired_store)`、ごみ箱腕は set-returning 関数
 // `trash_deletable_recordings(grace_cutoff)`、外した版の腕は view
 // `removed_encoded_assets`。この 3 つが唯一の定義であり、
 // 以下の入口・拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
@@ -322,7 +323,7 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 永久に deleting のまま止まる（ごみ箱条件にも until_encoded 条件にも
 // 該当しない扱いになってしまうため）。各条件を OR で残すこと。
 func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMediaAssetsPendingDeleteParams) ([]ListMediaAssetsPendingDeleteRow, error) {
-	rows, err := q.db.Query(ctx, listMediaAssetsPendingDelete, arg.GraceCutoff, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listMediaAssetsPendingDelete, arg.GraceCutoff, arg.DerivedStore, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -453,18 +454,19 @@ WHERE a.state = 'deleting'
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+    SELECT 1 FROM until_encoded_deletable_originals($2) v WHERE v.id = a.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
   )
 ORDER BY a.id
-LIMIT $2
+LIMIT $3
 `
 
 type ListUnqualifiedDeletingAssetsParams struct {
-	GraceCutoff time.Time
-	RowLimit    int32
+	GraceCutoff  time.Time
+	DerivedStore string
+	RowLimit     int32
 }
 
 type ListUnqualifiedDeletingAssetsRow struct {
@@ -489,7 +491,7 @@ type ListUnqualifiedDeletingAssetsRow struct {
 // 無い行」を作ってしまう。この SELECT + Go 側の stat + 分岐は、その窓を
 // revert 経路自身に持ち込まないための構成。
 func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnqualifiedDeletingAssetsParams) ([]ListUnqualifiedDeletingAssetsRow, error) {
-	rows, err := q.db.Query(ctx, listUnqualifiedDeletingAssets, arg.GraceCutoff, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listUnqualifiedDeletingAssets, arg.GraceCutoff, arg.DerivedStore, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -509,12 +511,17 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 }
 
 const listUntilEncodedOriginalsToDelete = `-- name: ListUntilEncodedOriginalsToDelete :many
-SELECT v.asset_id AS id, v.recording_id, v.rel_path, v.size_bytes, 'original'::text AS kind
-FROM until_encoded_deletable_originals v
+SELECT v.id AS id, v.recording_id, v.rel_path, v.size_bytes, 'original'::text AS kind
+FROM until_encoded_deletable_originals($1) v
 WHERE v.state = 'active'
-ORDER BY v.asset_id
-LIMIT $1
+ORDER BY v.id
+LIMIT $2
 `
+
+type ListUntilEncodedOriginalsToDeleteParams struct {
+	DerivedStore string
+	RowLimit     int32
+}
 
 type ListUntilEncodedOriginalsToDeleteRow struct {
 	ID          int64
@@ -527,8 +534,8 @@ type ListUntilEncodedOriginalsToDeleteRow struct {
 // keep_original='until_encoded' の原本削除候補。削除可否の条件は
 // until_encoded_deletable_originals の定義を参照する。ごみ箱経由の録画は
 // ListTrashMediaAssetsToDelete 側で扱う。
-func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, rowLimit int32) ([]ListUntilEncodedOriginalsToDeleteRow, error) {
-	rows, err := q.db.Query(ctx, listUntilEncodedOriginalsToDelete, rowLimit)
+func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, arg ListUntilEncodedOriginalsToDeleteParams) ([]ListUntilEncodedOriginalsToDeleteRow, error) {
+	rows, err := q.db.Query(ctx, listUntilEncodedOriginalsToDelete, arg.DerivedStore, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -657,15 +664,20 @@ UPDATE media_assets a SET state = 'deleting', updated_at = now()
 WHERE a.id = $1
   AND a.state = 'active'
   AND EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+      SELECT 1 FROM until_encoded_deletable_originals($2) v WHERE v.id = a.id
   )
 `
+
+type MarkUntilEncodedOriginalDeletingParams struct {
+	AssetID      int64
+	DerivedStore string
+}
 
 // until_encoded の候補は列挙後に利用者の再作成要求が追加されうるため、録画行を
 // ロックした tx 内で資格を再評価してから deleting にする。API の要求書き込みも
 // 同じ recordings 行を先にロックするため、要求の commit と原本削除は直列化される。
-func (q *Queries) MarkUntilEncodedOriginalDeleting(ctx context.Context, assetID int64) (int64, error) {
-	result, err := q.db.Exec(ctx, markUntilEncodedOriginalDeleting, assetID)
+func (q *Queries) MarkUntilEncodedOriginalDeleting(ctx context.Context, arg MarkUntilEncodedOriginalDeletingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markUntilEncodedOriginalDeleting, arg.AssetID, arg.DerivedStore)
 	if err != nil {
 		return 0, err
 	}
@@ -682,7 +694,7 @@ WHERE a.id = $1
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+    SELECT 1 FROM until_encoded_deletable_originals($3) v WHERE v.id = a.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
@@ -690,8 +702,9 @@ WHERE a.id = $1
 `
 
 type RevertMediaAssetToActiveParams struct {
-	ID          int64
-	GraceCutoff time.Time
+	ID           int64
+	GraceCutoff  time.Time
+	DerivedStore string
 }
 
 // ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
@@ -713,7 +726,7 @@ type RevertMediaAssetToActiveParams struct {
 // deleting → active へ即座に戻す案を採らなかったのはこの前提が無い
 // （進行中の unlink と非同期に競合しうる）ため。
 func (q *Queries) RevertMediaAssetToActive(ctx context.Context, arg RevertMediaAssetToActiveParams) (int64, error) {
-	result, err := q.db.Exec(ctx, revertMediaAssetToActive, arg.ID, arg.GraceCutoff)
+	result, err := q.db.Exec(ctx, revertMediaAssetToActive, arg.ID, arg.GraceCutoff, arg.DerivedStore)
 	if err != nil {
 		return 0, err
 	}
