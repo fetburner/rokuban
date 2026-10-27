@@ -361,6 +361,7 @@ export function RecordingDetail({
     wasPlaying: boolean,
     selection: ReturnType<typeof playbackSelectionFor>,
     allowSameSourceRetry: boolean,
+    resumePositionMs = recording.resumePositionMs,
   ) => {
     const current = playbackStateRef.current
     if (trigger === 'source-range-exit' && current.pinned) return false
@@ -375,13 +376,21 @@ export function RecordingDetail({
       if (retry.count >= 2) return false
       sourceRetryRef.current = { count: retry.count + 1, position: position ?? 0 }
     }
+    // 再生前エラーから初めて HLS に移ると、イベント位置と current state が両方 undefined になりうる。
+    // recording-detail.test.tsx の「初回再生前に追っかけから録画 API HLS へ移るとき」で見るとおり、
+    // この時点の保存位置を state に固定して、後の進捗更新で playback effect を張り直さない。
+    const hlsStartPosition = selected === 'recording-hls' && !current.startFromBeginning
+      ? resumePositionMs !== undefined && resumePositionMs >= PLAYBACK_POSITION_MINIMUM_MS
+        ? resumePositionMs / 1000
+        : 0
+      : undefined
     updatePlaybackState({
       source: selected,
       pinned: false,
       started: true,
       autoPlay: wasPlaying,
       startFromBeginning: position === undefined ? current.startFromBeginning : false,
-      positionSeconds: position ?? current.positionSeconds,
+      positionSeconds: position ?? current.positionSeconds ?? hlsStartPosition,
       generation: current.generation + 1,
     })
     return true
@@ -427,6 +436,7 @@ export function RecordingDetail({
           wasPlaying,
           playbackSelectionFor(latest),
           allowSameSourceRetry,
+          latest.resumePositionMs,
         )
       })
       .catch(() => false)

@@ -3680,6 +3680,64 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     expect(screen.queryByText('追っかけ再生中にエラーが発生しました')).not.toBeInTheDocument()
   })
 
+  it('初回再生前に追っかけから録画 API HLS へ移るとき、最新の保存位置を固定する', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
+    const mediaLoad = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    const urlFor = (generation: number) =>
+      `/api/media/stores/media/recordings/3/hls/v${generation}/hd/master.m3u8`
+    const fake = createFakeServer({
+      recording: sampleRecording({
+        ...FINISHED,
+        ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
+        encodedAssets: [],
+        hlsPlayback: [],
+        resumePositionMs: 0,
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { queryClient } = renderAt('/recordings/3#chase')
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1))
+
+    const latest = sampleRecording({
+      ...FINISHED,
+      ingest: { state: 'committed' },
+      encodedAssets: [],
+      hlsPlayback: [{ profile: 'hd', masterUrl: urlFor(1) }],
+      resumePositionMs: 12_500,
+    })
+    fake.setRecording(latest)
+    fireEvent.error(document.querySelector('video')!)
+
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain(urlFor(1)))
+    const hlsVideo = document.querySelector('video')!
+    let currentTime = 0
+    Object.defineProperty(hlsVideo, 'currentTime', {
+      get: () => currentTime,
+      set: (value: number) => { currentTime = value },
+      configurable: true,
+    })
+    fireEvent.loadedMetadata(hlsVideo)
+    expect(currentTime).toBe(12.5)
+    const mediaLoadsAfterHlsStart = mediaLoad.mock.calls.length
+
+    const recordingRequestsBeforeRefresh = fake.fetchMock.mock.calls.filter(([input, init]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3' && (init?.method ?? 'GET') === 'GET',
+    ).length
+    fake.setRecording({ ...latest, resumePositionMs: 20_000 })
+    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
+    await waitFor(() => {
+      expect(fake.fetchMock.mock.calls.filter(([input, init]) =>
+        new URL(String(input), 'http://localhost').pathname === '/api/recordings/3' && (init?.method ?? 'GET') === 'GET',
+      )).toHaveLength(recordingRequestsBeforeRefresh + 1)
+      expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
+        data: { resumePositionMs: 20_000 },
+      })
+    })
+    fireEvent.loadedMetadata(hlsVideo)
+    expect(currentTime).toBe(12.5)
+    expect(mediaLoad).toHaveBeenCalledTimes(mediaLoadsAfterHlsStart)
+  })
+
   it('追っかけ入力 cooldown 中でも commit 済みなら REST 最新状態で原本 HLS へ移る', async () => {
     vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('probably')
     const fake = createFakeServer({
