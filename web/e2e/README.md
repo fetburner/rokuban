@@ -77,8 +77,8 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
 | 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画 HLS の再起動境界（`recording-segmented-vod.mjs`） | [checks/playback.md](checks/playback.md) |
-| S3 からの 302 配信（`s3-302.mjs`） | [README.md](README.md) §S3 からの 302 配信 |
 | 原本 HLS から encoded への切替（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
+| S3 の署名付き URL への 302（`s3-302.mjs`） | [checks/playback.md](checks/playback.md) |
 | デザイン（`design.mjs`） | [checks/design.md](checks/design.md) |
 | README のスクリーンショット（`readme-screenshots.mjs`） | [checks/design.md](checks/design.md) |
 | フォントスケール（`font-scale.mjs`） | [checks/design.md](checks/design.md) |
@@ -135,36 +135,6 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | デザイン | [checks/design.md](checks/design.md) |
 | ⓪ 配っている bundle と dist/ の一致（lib.mjs・checks.mjs・live.mjs・design.mjs の「README.md 参照」） | [checks/programs.md](checks/programs.md) §参照バッジのリンク |
 
-## S3 からの 302 配信
-
-この判定は実 Chrome と Safari で、S3 から 302 された動画の Range 要求、期限切れ、字幕、シークと再開を調べる。結果は URL と要求を記録するローカル MinIO fixture で再現する。
-
-MinIO に 90 秒の H.264 MP4 と WebVTT を置く。判定用ページは再開位置をブラウザー内に保存し、302 後に読み込んだ動画で再生位置を復元する。これはブラウザー動作の測定で、製品 API の保存契約は対象外である。S3 の応答は別 port のプロキシで MinIO へ転送し、要求先・Range・status を記録する。
-
-MinIO の global CORS allowlist は http://127.0.0.1:4174 に固定する。community release の CORS は global 設定なので、VTT の Origin だけを落として bucket CORS が無い場合を再現する。
-
-必要なものは Node の固定版、Go、ffmpeg、MinIO である。MinIO は次の pinned release で起動する。
-
-```sh
-go install github.com/minio/minio@RELEASE.2025-10-15T17-29-55Z
-mkdir -p /tmp/rokuban-s3-302-minio
-MINIO_ROOT_USER=rokuban MINIO_ROOT_PASSWORD=rokuban-test-secret MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:4174 \
-  "$(go env GOPATH)/bin/minio" server /tmp/rokuban-s3-302-minio --address 127.0.0.1:9000 --console-address 127.0.0.1:9001
-```
-
-別の terminal から `web/` で実行する。
-
-```sh
-corepack pnpm install
-corepack pnpm e2e:s3-302                    # 実 Chrome
-safaridriver --enable                     # 初回だけ。Safari の Remote Automation を許可する
-E2E_BROWSER=safari corepack pnpm e2e:s3-302
-E2E_S3_DISABLE_CORS=1 corepack pnpm e2e:s3-302  # VTT の CORS 判定を壊す mutation。失敗が期待値
-E2E_S3_VIDEO_TTL_SECONDS=2 corepack pnpm e2e:s3-302  # 通常 URL の期限を 2 秒に縮める mutation。seek が失敗するのが期待値
-```
-
-最後の 2 コマンドは mutation 確認で、どちらも非 0 で終わるのが期待値。CI の `browser-s3-302` は MinIO と実 Chrome を使う。実 Safari の計測は macOS で上のコマンドを使う。
-
 ## CI で回す判定とそれ以外
 
 CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/` を配るサーバーへ Chromium を向ける。回す判定の一覧は `.github/workflows/ci.yml` の `browser-e2e` ジョブが権威で、ここには写さない。各判定は 1 本が落ちても残りを走らせる。選定基準は次の 3 つを全部満たすことである。
@@ -184,6 +154,8 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
     - `recording-playback-timeline` は fixture を Go のテストで作るので Go も要る
     - そのほか: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`
   - `design.mjs`: 63 枚のショットを撮るぶん重い
+
+`s3-302` は上の 3 類型のどれでもなく、`browser-e2e` と別のジョブ `browser-s3-302` で回す。固定した版の MinIO のビルドと実 Chrome が要り、選定基準の「Chromium だけで軽く終わる」を満たさないためである。実 Safari は CI に載せない。
 
 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない赤い定期ジョブは PR ごとに回す一部より信号として弱いためである。対象を増やすときは `.github/workflows/ci.yml` のコメントとこの節の類型を同じ PR で直す。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 

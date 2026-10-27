@@ -1,11 +1,12 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { chromium } from 'playwright'
+
+import { createPlaywrightAdapter, createSafariAdapter } from './lib.mjs'
 
 const MINIO_URL = new URL(process.env.E2E_MINIO_URL ?? 'http://127.0.0.1:9000')
 const ACCESS_KEY = process.env.E2E_MINIO_ACCESS_KEY ?? 'rokuban'
@@ -20,8 +21,9 @@ const RESUME_KEY = 'rokuban-s3-302-resume-position'
 const VIDEO_TTL_SECONDS = Number(process.env.E2E_S3_VIDEO_TTL_SECONDS ?? 600)
 const EXPIRED_TTL_SECONDS = 5
 const VIDEO_SECONDS = 90
-const FIXTURE_PORT = Number(process.env.E2E_FIXTURE_PORT ?? 4174)
-const S3_PROXY_PORT = Number(process.env.E2E_S3_PROXY_PORT ?? 4175)
+// MinIO の CORS 許可がこのオリジンに固定されているので、変えられない。
+const FIXTURE_PORT = 4174
+const S3_PROXY_PORT = 4175
 const TARGET_SEEK_SECONDS = 32
 const BROWSER = process.env.E2E_BROWSER ?? 'chrome'
 const requests = []
@@ -177,10 +179,7 @@ async function waitForMinio() {
 }
 
 async function createBucket(bucket) {
-  const response = await signedS3Request('PUT', '/' + bucket)
-  if (response.status !== 200 && response.status !== 409) {
-    throw new Error('Could not create MinIO bucket ' + bucket + ': ' + response.status)
-  }
+  await signedS3Request('PUT', '/' + bucket)
 }
 
 function makeVideo(tempDir) {
@@ -374,111 +373,14 @@ function startFixtureServers(videoKey, subtitleKey) {
   }
 }
 
-async function startChrome() {
-  const browser = await chromium.launch({ channel: 'chrome', headless: process.env.E2E_HEADLESS !== '0' })
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
-  return {
-    name: 'Chrome',
-    version: browser.version(),
-    async goto(url) { await page.goto(url, { waitUntil: 'load', timeout: 30000 }) },
-    async click(selector) { await page.locator(selector).click() },
-    async evaluate(expression) { return page.evaluate(expression) },
-    async waitFor(expression, timeout = 15000) {
-      await page.waitForFunction(expression, undefined, { timeout, polling: 100 })
-    },
-    close() { return browser.close() },
-  }
-}
-
-async function choosePort() {
-  const server = createServer()
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolve)
-  })
-  const port = server.address().port
-  await new Promise((resolve) => server.close(resolve))
-  return port
-}
-
-async function webdriverRequest(baseUrl, method, route, body) {
-  const response = await fetch(baseUrl + route, {
-    method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok || data.value?.error) {
-    throw new Error('Safari WebDriver ' + method + ' ' + route + ' failed: ' + JSON.stringify(data))
-  }
-  return data.value
-}
-
-async function startSafari() {
-  const port = await choosePort()
-  const baseUrl = 'http://127.0.0.1:' + port
-  const processHandle = spawn('safaridriver', ['--port=' + port], { stdio: ['ignore', 'ignore', 'pipe'] })
-  let stderr = ''
-  processHandle.stderr.setEncoding('utf8')
-  processHandle.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-4000) })
-  let status
-  const deadline = Date.now() + 20000
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(baseUrl + '/status')
-      if (response.ok) { status = await response.json(); break }
-    } catch {}
-    if (processHandle.exitCode !== null || processHandle.signalCode !== null) break
+/** waitFor は browser.evaluate(fn, arg) が真を返すまで 100 ms 間隔で繰り返す。 */
+async function waitFor(browser, fn, arg, timeout = 15000) {
+  const until = Date.now() + timeout
+  while (Date.now() < until) {
+    if (await browser.evaluate(fn, arg)) return
     await delay(100)
   }
-  if (!status) {
-    processHandle.kill('SIGTERM')
-    throw new Error('safaridriver did not start. Run safaridriver --enable, then retry. ' + stderr)
-  }
-
-  let session
-  let capabilities
-  try {
-    const value = await webdriverRequest(baseUrl, 'POST', '/session', {
-      capabilities: { alwaysMatch: { browserName: 'safari' } },
-    })
-    session = value.sessionId
-    capabilities = value.capabilities
-    if (!session) throw new Error('New Session returned no sessionId')
-    await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/timeouts', { pageLoad: 30000, script: 10000, implicit: 0 })
-  } catch (error) {
-    if (session) await fetch(baseUrl + '/session/' + session, { method: 'DELETE' }).catch(() => {})
-    processHandle.kill('SIGTERM')
-    throw new Error('Could not start Safari automation. Run safaridriver --enable and allow Remote Automation in Safari. ' + error.message + ' ' + stderr)
-  }
-
-  return {
-    name: 'Safari',
-    version: capabilities?.browserVersion ?? 'unknown',
-    async goto(url) { await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/url', { url }) },
-    async click(selector) {
-      const element = await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/element', { using: 'css selector', value: selector })
-      await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/element/' + element['element-6066-11e4-a52e-4f735466cecf'] + '/click', {})
-    },
-    async evaluate(expression) {
-      return webdriverRequest(baseUrl, 'POST', '/session/' + session + '/execute/sync', {
-        script: 'return (' + expression + ');',
-        args: [],
-      })
-    },
-    async waitFor(expression, timeout = 15000) {
-      const until = Date.now() + timeout
-      while (Date.now() < until) {
-        if (await this.evaluate(expression)) return
-        await delay(100)
-      }
-      throw new Error('Safari WebDriver wait timed out: ' + expression)
-    },
-    async close() {
-      await fetch(baseUrl + '/session/' + session, { method: 'DELETE' }).catch(() => {})
-      processHandle.kill('SIGTERM')
-    },
-  }
+  throw new Error('待ち条件が ' + timeout + ' ms 以内に成立しない: ' + fn.toString())
 }
 
 function expect(condition, message) {
@@ -522,39 +424,39 @@ async function main() {
     fixture = startFixtureServers(videoKey, subtitleKey)
     const origins = await fixture.start()
 
-    browser = BROWSER === 'chrome' ? await startChrome() : await startSafari()
-    console.log('Browser: ' + browser.name + ' ' + browser.version)
+    browser = BROWSER === 'chrome' ? await createPlaywrightAdapter('chrome') : await createSafariAdapter()
+    console.log('Browser: ' + BROWSER + ' ' + browser.version)
     console.log('Fixture: ' + origins.publicOrigin + ' -> ' + origins.s3Origin)
     console.log('MinIO: ' + MINIO_URL.origin + ', MP4 size: ' + video.length + ' bytes, duration: ' + VIDEO_SECONDS + 's')
 
     const normalRequestStart = requests.length
-    await browser.goto(origins.publicOrigin + '/probe?scenario=normal')
-    await browser.waitFor('window.__state && window.__state.metadata')
+    await browser.navigate(origins.publicOrigin + '/probe?scenario=normal')
+    await waitFor(browser, () => window.__state && window.__state.metadata)
     try {
-      await browser.waitFor('window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0', 20000)
+      await waitFor(browser, () => window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0, undefined, 20000)
     } catch (error) {
-      console.error('Subtitle state: ' + JSON.stringify(await browser.evaluate('window.__state')))
+      console.error('Subtitle state: ' + JSON.stringify(await browser.evaluate(() => window.__state)))
       throw error
     }
-    const normalReady = await browser.evaluate('window.__state')
+    const normalReady = await browser.evaluate(() => window.__state)
     expect(normalReady.crossOrigin === 'anonymous', 'fixture <video> is missing crossorigin="anonymous"')
     expect(normalReady.trackMode === 'showing', 'cross-origin WebVTT track did not enter showing mode')
     expect(normalReady.cueCount > 0, 'cross-origin WebVTT track loaded no cues')
 
-    await browser.evaluate('window.runRangeProbe()')
-    await browser.waitFor('window.__state && window.__state.rangeProbe && !window.__state.rangeProbe.pending')
-    const rangeProbe = await browser.evaluate('window.__state.rangeProbe')
+    await browser.evaluate(() => window.runRangeProbe())
+    await waitFor(browser, () => window.__state && window.__state.rangeProbe && !window.__state.rangeProbe.pending)
+    const rangeProbe = await browser.evaluate(() => window.__state.rangeProbe)
     expect(rangeProbe.status === 206, 'Range fetch after 302 returned ' + rangeProbe.status + ' ' + (rangeProbe.error ?? ''))
     expect(Boolean(rangeProbe.contentRange), 'Content-Range was not readable through CORS')
     expect(rangeProbe.acceptRanges === 'bytes', 'Accept-Ranges was not readable through CORS')
 
     await browser.click('#play')
-    await browser.waitFor('window.__state && window.__state.playing && window.__state.currentTime >= 1', 15000)
+    await waitFor(browser, () => window.__state && window.__state.playing && window.__state.currentTime >= 1)
     await delay(3000)
     const beforeSeek = requests.length
-    await browser.evaluate('window.seekTo(' + TARGET_SEEK_SECONDS + ')')
-    await browser.waitFor('window.__state && (window.__state.seekedCount > 0 || window.__state.mediaError)', 15000)
-    const afterSeek = await browser.evaluate('({ currentTime: document.querySelector("#player").currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError })')
+    await browser.evaluate((seconds) => window.seekTo(seconds), TARGET_SEEK_SECONDS)
+    await waitFor(browser, () => window.__state && (window.__state.seekedCount > 0 || window.__state.mediaError))
+    const afterSeek = await browser.evaluate(() => ({ currentTime: document.querySelector('#player').currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError }))
     expect(afterSeek.seekedCount > 0 && Math.abs(afterSeek.currentTime - TARGET_SEEK_SECONDS) < 0.5,
       'normal signed URL seek did not complete: ' + JSON.stringify(afterSeek))
     expect(!afterSeek.error, 'normal signed URL playback errored while seeking: ' + JSON.stringify(afterSeek.error))
@@ -566,49 +468,49 @@ async function main() {
     }
     expect(seekDestination.signedUrlRangeRequests > 0, 'seek produced no Range request at the signed S3 destination')
 
-    await browser.evaluate('window.savePosition()')
-    const savedPosition = await browser.evaluate('Number(localStorage.getItem(' + JSON.stringify(RESUME_KEY) + '))')
+    await browser.evaluate(() => window.savePosition())
+    const savedPosition = await browser.evaluate((key) => Number(localStorage.getItem(key)), RESUME_KEY)
     const restoreStart = requests.length
-    await browser.goto(origins.publicOrigin + '/probe?scenario=restore')
-    await browser.waitFor('window.__state && window.__state.metadata && window.__state.restoreTarget !== null')
-    await browser.waitFor('window.__state && window.__state.seekedCount > 0 && Math.abs(window.__state.lastSeekedTime - ' + savedPosition + ') < 0.5', 15000)
-    const restoredPosition = await browser.evaluate('({ saved: window.__state.restoreTarget, currentTime: document.querySelector("#player").currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError })')
+    await browser.navigate(origins.publicOrigin + '/probe?scenario=restore')
+    await waitFor(browser, () => window.__state && window.__state.metadata && window.__state.restoreTarget !== null)
+    await waitFor(browser, (saved) => window.__state && window.__state.seekedCount > 0 && Math.abs(window.__state.lastSeekedTime - saved) < 0.5, savedPosition)
+    const restoredPosition = await browser.evaluate(() => ({ saved: window.__state.restoreTarget, currentTime: document.querySelector('#player').currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError }))
     expect(Math.abs(restoredPosition.currentTime - savedPosition) < 0.5, 'saved playback position was not restored after a 302: ' + JSON.stringify(restoredPosition))
     expect(restoredPosition.seekedCount > 0 && !restoredPosition.error, 'restored position did not complete a seek: ' + JSON.stringify(restoredPosition))
     await browser.click('#play')
-    await browser.waitFor('window.__state && window.__state.playing && window.__state.currentTime > ' + savedPosition + ' + 0.5', 15000)
-    const resumedPlayback = await browser.evaluate('({ currentTime: document.querySelector("#player").currentTime, error: window.__state.mediaError })')
+    await waitFor(browser, (saved) => window.__state && window.__state.playing && window.__state.currentTime > saved + 0.5, savedPosition)
+    const resumedPlayback = await browser.evaluate(() => ({ currentTime: document.querySelector('#player').currentTime, error: window.__state.mediaError }))
     expect(resumedPlayback.currentTime > savedPosition + 0.5 && !resumedPlayback.error,
       'playback did not advance from the restored position: ' + JSON.stringify(resumedPlayback))
     const restoreRequests = requests.slice(restoreStart).filter((request) => request.route === 's3' && request.range)
     expect(restoreRequests.some((request) => request.status === 206), 'restoring the saved position made no successful Range request to the signed S3 destination')
 
     const negativeStart = requests.length
-    await browser.goto(origins.publicOrigin + '/probe?scenario=negative-cors')
-    await browser.waitFor('window.__state && window.__state.metadata')
-    await browser.waitFor('window.__state && window.__state.trackReadyState === 3', 15000)
-    const negative = await browser.evaluate('({ readyState: window.__state.trackReadyState, cueCount: window.__state.cueCount, mediaError: window.__state.mediaError })')
+    await browser.navigate(origins.publicOrigin + '/probe?scenario=negative-cors')
+    await waitFor(browser, () => window.__state && window.__state.metadata)
+    await waitFor(browser, () => window.__state && window.__state.trackReadyState === 3)
+    const negative = await browser.evaluate(() => ({ readyState: window.__state.trackReadyState, cueCount: window.__state.cueCount, mediaError: window.__state.mediaError }))
     expect(negative.readyState === 3 && negative.cueCount === 0, 'subtitle track unexpectedly loaded without bucket CORS: ' + JSON.stringify(negative))
     const negativeRequests = requests.slice(negativeStart).filter((request) => request.route === 's3' && request.bucket === BAD_BUCKET)
     expect(negativeRequests.some((request) => request.status === 200), 'no-CORS VTT object did not reach MinIO successfully; the browser failure may not be a CORS failure')
 
     const expiryStart = requests.length
-    await browser.goto(origins.publicOrigin + '/probe?scenario=expiry')
-    await browser.waitFor('window.__state && window.__state.metadata')
+    await browser.navigate(origins.publicOrigin + '/probe?scenario=expiry')
+    await waitFor(browser, () => window.__state && window.__state.metadata)
     await browser.click('#play')
-    await browser.waitFor('window.__state && window.__state.playing && window.__state.currentTime >= 1', 15000)
+    await waitFor(browser, () => window.__state && window.__state.playing && window.__state.currentTime >= 1)
     const expiringRedirect = requests.slice(expiryStart).find((request) => request.route === 'redirect' && request.path === '/media/video')
     if (!expiringRedirect) throw new Error('expiry scenario issued no signed redirect')
     await delay(Math.max(0, expiringRedirect.expiresAt - Date.now() + 300))
     const expiredAt = expiringRedirect.expiresAt
     const expirySeekStart = requests.length
-    await browser.evaluate('window.seekTo(64)')
+    await browser.evaluate(() => window.seekTo(64))
     const expiryDeadline = Date.now() + 15000
     let afterExpiry = []
     let expirySeek = null
     while (Date.now() < expiryDeadline) {
       afterExpiry = requests.slice(expirySeekStart).filter((request) => request.range && request.at >= expiredAt)
-      expirySeek = await browser.evaluate('({ currentTime: document.querySelector("#player").currentTime, error: window.__state.mediaError, seekedCount: window.__state.seekedCount })')
+      expirySeek = await browser.evaluate(() => ({ currentTime: document.querySelector('#player').currentTime, error: window.__state.mediaError, seekedCount: window.__state.seekedCount }))
       if (expirySeek.error || expirySeek.seekedCount > 0) break
       await delay(100)
     }
