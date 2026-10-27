@@ -47,11 +47,11 @@ rel_path lock は media root の `.rokuban-locks/` に置く。この directory 
 
 ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original 行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、temp の `flock` を保持したまま置き場の目印を照合して temp を unlink する。
 
-公開に `os.Rename` を使わないのは、宛先が既存でも無言で置き換えるからである。DB に行の無い canonical 名のファイルは、この契約が自動で消さないと決めたものなので、rename はそれを失わせる。`link` は宛先が既存なら `EEXIST` で失敗するので上書きしない。
+公開に `os.Rename` を使わないのは、宛先が既存でも無言で置き換えるからである。この契約は、DB に行の無い canonical 名のファイルを自動で消さないと決めている。rename はそのファイルを無言で置き換えて失わせる。`link` は宛先が既存なら `EEXIST` で失敗するので上書きしない。
 
 `renameat2(RENAME_NOREPLACE)` も使わない。Linux の NFS クライアントは flag 付きの rename を `EINVAL` で断る（`fs/nfs/dir.c` の `nfs_rename`）ので、NFS では必ず失敗する。この契約は条件を満たす NFS を置き場に含める。link なら全 OS で同じ経路になる。
 
-宛先が既存のときは、temp と canonical が同じ inode かを `os.SameFile` で判定する。同じなら前回の試行が link した後に commit で失敗した状態なので、公開済みとして commit へ進む。別の inode なら他人のファイルなので、temp を残し、mirakc の record を消さず、`media_assets` 行も作らずにエラーで止める。内容の照合も再利用もしない。
+宛先に既にファイルがあるときは、temp と canonical が同じ inode かを `os.SameFile` で判定する。同じなら前回の試行が link した後に commit で失敗した状態なので、公開済みとして commit へ進む。別の inode なら他人のファイルなので、temp を残し、mirakc の record を消さず、`media_assets` 行も作らずにエラーで止める。内容の照合も再利用もしない。
 
 `link(2)` の BUGS 節は、NFS では link が成功しても戻り値が失敗になりうると書く。そのためどの失敗でも `SameFile` で確かめる。JuiceFS での hard link の動作は未検証である。
 
@@ -66,9 +66,13 @@ link 後の temp は canonical と同じ inode である。temp は `O_APPEND` �
 
 ### 公開順序と失敗時の扱い
 
-公開点は DB commit であり、link と親ディレクトリの fsync の成功が先に来る。link の後で fsync か commit が失敗したら transaction を rollback し、canonical file は orphan として記録・報告する。名前だけでは公開済みか判定できないので、自動で消さない。
+公開点は DB commit であり、link と親ディレクトリの fsync の成功が先に来る。名前だけでは公開済みか判定できないので、canonical file は自動で消さない。
 
-temp は消さずに残し、次の試行が同じ inode を見て commit をやり直す。mirakc record は削除しない。中身の不一致または record の cancel / fail が分かった場合だけ temp を消し、それ以外の失敗では次の試行へ残す。commit 後の temp の unlink が失敗しても、ログだけで成功扱いにする。
+link 前の失敗では、temp を残して次の試行へ渡す。中身の不一致、または record の cancel / fail が分かった場合だけ temp を消す。
+
+link の後で fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行がそれを見て commit だけをやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。例えば temp が孤児回収で先に消えると、次の試行は別の inode の temp を作る。canonical は他人のファイルとして扱われて ingest が止まり、aging 後に orphan として報告される。この順序が実際に起きるかは未検証である。
+
+mirakc record は、commit が成功するまで削除しない。commit 後の temp の unlink が失敗しても、ログだけで成功扱いにする。
 
 **この順序を反転させない**。DB commit 後に link すると、行が指す実体の欠落を作る。
 

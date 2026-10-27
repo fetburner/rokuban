@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -781,6 +782,12 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 func (w *IngestWorker) removeLinkedTempAfterCommit(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, log *slog.Logger) {
 	_, fullPath, _, err := w.determineRelPath(ctx, args, client)
 	if err != nil {
+		// 前の試行が DeleteRecord まで終えていれば record は既に無い。通常の経路なので警告しない。
+		var apiErr *mirakc.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			log.Debug("ingest: mirakc record is already gone; skipping committed temp cleanup", "err", err)
+			return
+		}
 		log.Warn("ingest: could not resolve canonical path to clean up a committed temp", "err", err)
 		return
 	}

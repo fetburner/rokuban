@@ -94,17 +94,19 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 link 後の親ディレクトリ fsync または DB commit の失敗では、temp と canonical が同じ inode を指したまま残る。次の ingest は転送も replay もせず commit だけをやり直す。成功すると temp を消す。
 
-残った canonical orphan は、この再試行で行が付くか、報告されて人が調査・回復するまで残る。DB commit が成立して応答だけ失われた場合は、冪等性チェックで転送を省略し、残った temp が canonical と同じ inode ならそこで消す。replay 中は進捗行がまだ更新されないので、古い `observed_at` だけで worker 停止とは断定しない。
+行の無い canonical が残って報告されるのは、この再試行が成功しない場合である。DB commit が成立して応答だけ失われた場合は、冪等性チェックで転送を省略し、残った temp が canonical と同じ inode ならそこで消す。replay 中は進捗行がまだ更新されないので、古い `observed_at` だけで worker 停止とは断定しない。
 
 #### ingest が canonical path の既存ファイルで止まった
 
-ingest が失敗し続け、録画が取り込まれない。保存先の名前に、DB の行が無い別のファイルがあり、ingest はそれを上書きせずに止まっている。temp は残り、mirakc の record は消えない。
+ingest が失敗し続け、録画が取り込まれない。canonical path に、DB に行の無い別のファイルがあり、ingest はそれを上書きせずに止まっている。temp は残り、mirakc の record は消えない。
 
 worker のログに、`canonical_conflict=true` と `rel_path` を付けた Error が出る。メッセージは `canonical path is occupied by a file that is not this ingest's temp` である。`media_assets` 行は作られない。
 
 1. `rel_path` のファイルを調べる。`media_assets` に行が無く、`orphan_files` に載っているなら、過去の失敗や手動配置の残りである
-2. 中身がこの録画の原本と分かるなら、ファイルを別の場所へ移してから ingest を再投入する。temp を canonical 名へ手で rename しない。再投入された ingest は、移した後の名前へ temp を link する
+2. 中身がこの録画の原本と分かるなら、ファイルを別の場所へ移す。canonical path が空くので、ingest はその path へ temp を link する。temp を canonical 名へ手で rename すると、temp が無くなり、次の試行が作る別の temp とまた衝突する
 3. 中身が分からないなら残して調査する。ingest は自動では消さない
+
+再投入は要らない。ingest ジョブは再試行で戻る。再試行が尽きて捨てられても、5 分ごとの record_sweep が、mirakc に残った finished の record から ingest を投入し直す。
 
 ### エンコードが失敗している（理由を知りたい）
 

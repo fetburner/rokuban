@@ -2866,6 +2866,33 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 	}
 }
 
+// 前の試行が DeleteRecord まで終えて mirakc の record が無いのは通常の経路なので、警告しない。
+// 404 以外の失敗は警告する。
+func TestRemoveLinkedTempAfterCommit_WarnsOnlyForUnexpectedRecordLookupFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		wantWarn bool
+	}{
+		{"record already deleted", http.StatusNotFound, false},
+		{"mirakc failure", http.StatusInternalServerError, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const recordID = "already-committed-record-gone"
+			fake := mirakctest.New(t)
+			fake.FailNext(http.MethodGet, "/api/recording/records/"+recordID, 1, tc.status)
+			var logBuf bytes.Buffer
+			log := slog.New(slog.NewTextHandler(&logBuf, nil))
+			w := &IngestWorker{MediaDir: t.TempDir()}
+			w.removeLinkedTempAfterCommit(context.Background(), mirakc.NewClient(fake.URL(), nil),
+				jobs.IngestJobArgs{Site: "default", RecordID: recordID}, log)
+			if got := strings.Contains(logBuf.String(), "level=WARN"); got != tc.wantWarn {
+				t.Errorf("warn logged = %v, want %v; log:\n%s", got, tc.wantWarn, logBuf.String())
+			}
+		})
+	}
+}
+
 func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

@@ -64,7 +64,7 @@ worker は ingest キューを購読する起動時に、temp 作成、file `fsy
 
 ingest の一時ファイルは、canonical path と同じディレクトリに作られる。プロセス死で残った ingest temp は、mtime 猶予と aging（既定 7 日 + 14 日）の後に回収する。
 
-link 後の DB 失敗で残った canonical orphan は、aging 後に Warn と `rokuban_orphan_files_unresolved` で報告し、手動調査まで保持する。rescue の catalog 無し走査は、temp を original として復元しない。
+link 後の DB 失敗は temp を残し、再試行が commit をやり直す。再試行が成功せず行の無いまま残った canonical orphan は、aging 後に Warn と `rokuban_orphan_files_unresolved` で報告し、手動調査まで保持する。rescue の catalog 無し走査は、temp を original として復元しない。
 
 ### 録画バッファのサイジング
 

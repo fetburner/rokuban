@@ -131,7 +131,7 @@ flowchart LR
 
 その後の短い確定区間で、rel_path 固有 filesystem lock を取得し、original の media_assets 行を INSERT して一意性を予約する。INSERT は commit まで他セッションに見えない。lock と transaction を保持したまま temp を canonical へ link し、親ディレクトリを fsync してから DB transaction を commit する。commit が成功したら temp を unlink する。宛先に別のファイルがあれば、temp を残し、record を消さず、行も作らずにエラーで止める。
 
-link 前の失敗では、temp を残して次の試行へ渡し、pull を続けられる。ただし長さ / SHA-256 の不一致と `canceled` / `failed` は、中身が不採用と確定しているので temp を消す。link 後の親ディレクトリ fsync または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として aging 後に報告する。名前だけでは公開済みか判定できないため、自動削除はしない。temp も残す。mirakc record は削除しない。link と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
+link 前の失敗では、temp を残して次の試行へ渡し、pull を続けられる。ただし長さ / SHA-256 の不一致と `canceled` / `failed` は、中身が不採用と確定しているので temp を消す。link 後の親ディレクトリ fsync または DB commit が失敗した場合は transaction を rollback し、temp を残す。次の試行が commit だけをやり直す。canonical file は自動削除しない。mirakc record は削除しない。link と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
 
 ##### fsync の失敗と再試行
 
@@ -141,7 +141,7 @@ fsync を入れる理由には、電源断のほかに、Linux の遅延した�
 
 link 後の親ディレクトリ fsync は、新しい directory entry の永続化を確定する。
 
-link 後の親ディレクトリ fsync または DB commit の失敗では、temp と canonical は同じ inode を指す。次の ingest は temp を `flock` した後、転送の前にそれを見て、pull も replay もせずに commit だけをやり直す。temp に 1 バイトも書かないのは、`O_APPEND` で書くと公開済みの canonical が変わるからである。
+link 後の失敗の次の試行は、転送も replay もせずに commit だけをやり直す。理由と判定は [contract.md](../storage/contract.md) の「scratch と temp の置き場所」にある。
 
 DB commit が成立して応答だけ失われた場合は、次の冪等性チェックで転送を省略する。
 
@@ -235,7 +235,7 @@ ingest commit と通常削除は、同じ rel_path の予約 lock file に対す
 
 孤児と追加 I/O について、中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。ingest temp は mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。
 
-link 後に残った canonical orphan は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加しない。追加コストは replay・temp の link と unlink・親 directory fsync である。
+link 後の commit 失敗で残った canonical は、再試行が成功すれば行が付く。成功しないまま行が無い canonical は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加しない。追加コストは replay・temp の link と unlink・親 directory fsync である。
 
 ##### 弱い FS への直接書き込み
 
