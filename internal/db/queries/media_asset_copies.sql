@@ -47,6 +47,16 @@ ON CONFLICT (media_asset_id, store) DO UPDATE SET
     state = EXCLUDED.state,
     deleted_at = EXCLUDED.deleted_at;
 
+-- Old writers may advance a derived path after migration but before they stop.
+-- Keep the monotonic allocator ahead of the path that adoption copies forward.
+-- name: ReconcileDerivedGenerationFromLegacyPaths :exec
+UPDATE media_assets
+SET derived_generation = GREATEST(
+    COALESCE(derived_generation, 0),
+    COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
+)
+WHERE kind <> 'original';
+
 -- name: DeleteUnassignedMediaAssetCopies :exec
 DELETE FROM media_asset_copies WHERE store = '';
 

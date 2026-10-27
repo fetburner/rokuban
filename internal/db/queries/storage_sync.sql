@@ -36,3 +36,8 @@ WHERE store = sqlc.arg('store') AND NOT (root = ANY(sqlc.arg('roots')::text[]));
 -- name: ListStorageSync :many
 SELECT * FROM storage_sync WHERE store = $1
 ORDER BY root;
+
+-- API-only config may omit media_store_name. Keep its projection visible when no
+-- store filter is available.
+-- name: ListAllStorageSync :many
+SELECT * FROM storage_sync ORDER BY store, root;

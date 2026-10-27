@@ -31,6 +31,40 @@ func (q *Queries) DeleteStorageSyncExcept(ctx context.Context, arg DeleteStorage
 	return err
 }
 
+const listAllStorageSync = `-- name: ListAllStorageSync :many
+SELECT root, path, total_bytes, used_bytes, available_bytes, observed_at, store FROM storage_sync ORDER BY store, root
+`
+
+// API-only config may omit media_store_name. Keep its projection visible when no
+// store filter is available.
+func (q *Queries) ListAllStorageSync(ctx context.Context) ([]StorageSync, error) {
+	rows, err := q.db.Query(ctx, listAllStorageSync)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StorageSync
+	for rows.Next() {
+		var i StorageSync
+		if err := rows.Scan(
+			&i.Root,
+			&i.Path,
+			&i.TotalBytes,
+			&i.UsedBytes,
+			&i.AvailableBytes,
+			&i.ObservedAt,
+			&i.Store,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStorageSync = `-- name: ListStorageSync :many
 SELECT root, path, total_bytes, used_bytes, available_bytes, observed_at, store FROM storage_sync WHERE store = $1
 ORDER BY root

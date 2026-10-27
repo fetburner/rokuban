@@ -49,20 +49,29 @@ func TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations(t *testing.T) {
 	defer pool.Close()
 
 	type legacyAsset struct {
-		id      int64
-		kind    string
-		relPath string
-		state   string
+		id             int64
+		kind           string
+		relPath        string
+		state          string
+		wantGeneration int64
+		generationNull bool
 	}
 	cutProfile := "cut"
+	dottedProfile := "x.g2.hd"
+	uncutProfile := "h264"
 	fixtures := []struct {
 		kind, path, state string
 		profile           *string
+		wantGeneration    int64
+		generationNull    bool
 	}{
-		{kind: "original", path: "sites/default/original.m2ts", state: "active"},
-		{kind: "encoded", profile: &cutProfile, path: "sites/default/program_cut.g7.mp4", state: "active"},
-		{kind: "thumbnail", path: "thumbnails/7.g12.jpg", state: "deleted"},
-		{kind: "seek_tiles", path: "thumbnails/7_tiles.jpg", state: "active"},
+		{kind: "original", path: "sites/default/original.m2ts", state: "active", generationNull: true},
+		{kind: "encoded", profile: &cutProfile, path: "sites/default/program_cut.g7.mp4", state: "active", wantGeneration: 7},
+		{kind: "encoded", profile: &dottedProfile, path: "sites/default/program_x.g2.hd.g1.mp4", state: "active", wantGeneration: 1},
+		{kind: "encoded", profile: &uncutProfile, path: "sites/default/program_h264.u9.mp4", state: "active", wantGeneration: 9},
+		{kind: "encoded", profile: &cutProfile, path: "sites/default/program_cut.g99999999999999999999.mp4", state: "active", wantGeneration: 0},
+		{kind: "thumbnail", path: "thumbnails/7.g12.jpg", state: "deleted", wantGeneration: 12},
+		{kind: "seek_tiles", path: "thumbnails/7_tiles.jpg", state: "active", wantGeneration: 0},
 	}
 	assets := make([]legacyAsset, 0, len(fixtures))
 	for i, fixture := range fixtures {
@@ -81,7 +90,10 @@ VALUES ($1, $2, $3, $4, 10, $5, $6)
 RETURNING id`, recordingID, fixture.kind, fixture.profile, fixture.path, fixture.state, deletedAt).Scan(&id); err != nil {
 			t.Fatalf("inserting legacy %s asset: %v", fixture.kind, err)
 		}
-		assets = append(assets, legacyAsset{id: id, kind: fixture.kind, relPath: fixture.path, state: fixture.state})
+		assets = append(assets, legacyAsset{
+			id: id, kind: fixture.kind, relPath: fixture.path, state: fixture.state,
+			wantGeneration: fixture.wantGeneration, generationNull: fixture.generationNull,
+		})
 	}
 
 	if err := MigrateUp(ctx, dbURL); err != nil {
@@ -120,28 +132,7 @@ ON CONFLICT (root) DO UPDATE SET path = EXCLUDED.path`); err != nil {
 	}
 
 	for _, asset := range assets {
-		var generation *int64
-		if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, asset.id).Scan(&generation); err != nil {
-			t.Fatalf("reading derived generation for %s: %v", asset.kind, err)
-		}
-		switch asset.kind {
-		case "original":
-			if generation != nil {
-				t.Errorf("original derived_generation = %d, want NULL", *generation)
-			}
-		case "encoded":
-			if generation == nil || *generation != 7 {
-				t.Errorf("encoded derived_generation = %v, want 7", generation)
-			}
-		case "thumbnail":
-			if generation == nil || *generation != 12 {
-				t.Errorf("deleted thumbnail derived_generation = %v, want 12", generation)
-			}
-		case "seek_tiles":
-			if generation == nil || *generation != 0 {
-				t.Errorf("unversioned seek_tiles derived_generation = %v, want 0", generation)
-			}
-		}
+		assertMigratedAssetGeneration(t, pool, asset.id, asset.relPath, asset.wantGeneration, asset.generationNull)
 
 		var copyStore, copyRelPath, copyState string
 		var copyDeletedAt *time.Time
@@ -164,5 +155,24 @@ SELECT store, rel_path, state, deleted_at FROM media_asset_copies WHERE media_as
 	}
 	if copyCount != len(assets) {
 		t.Fatalf("backfilled copies = %d, want %d", copyCount, len(assets))
+	}
+}
+
+func assertMigratedAssetGeneration(t *testing.T, pool *pgxpool.Pool, assetID int64, relPath string, want int64, wantNull bool) {
+	t.Helper()
+	var got *int64
+	if err := pool.QueryRow(context.Background(), `SELECT derived_generation FROM media_assets WHERE id = $1`, assetID).Scan(&got); err != nil {
+		t.Fatalf("reading derived generation for %s: %v", relPath, err)
+	}
+	if wantNull {
+		if got != nil {
+			t.Errorf("%s derived_generation = %d, want NULL", relPath, *got)
+		}
+		return
+	}
+	if got == nil {
+		t.Errorf("%s derived_generation is NULL, want %d", relPath, want)
+	} else if *got != want {
+		t.Errorf("%s derived_generation = %d, want %d", relPath, *got, want)
 	}
 }

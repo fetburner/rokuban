@@ -33,8 +33,8 @@ func NewMedia(pool *pgxpool.Pool, storeNames ...string) *Media {
 	return &Media{pool: pool, storeName: storeName}
 }
 
-// AdoptUnassignedStoreRows は空の store を割り当て、旧 writer が作ったコピー欠落・
-// パス差分を media_assets から補う。
+// AdoptUnassignedStoreRows は空の store を割り当て、旧 writer が作ったコピー欠落を補い、
+// パス・状態・派生世代を media_assets から同期する（TestAdoptUnassignedStoreRows）。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
@@ -47,6 +47,9 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	q := sqlcgen.New(tx)
 	if err := q.AdoptUnassignedMediaAssetCopies(ctx, s.storeName); err != nil {
 		return fmt.Errorf("adopting legacy media asset copies: %w", err)
+	}
+	if err := q.ReconcileDerivedGenerationFromLegacyPaths(ctx); err != nil {
+		return fmt.Errorf("reconciling legacy derived media generations: %w", err)
 	}
 	if err := q.DeleteUnassignedMediaAssetCopies(ctx); err != nil {
 		return fmt.Errorf("removing unassigned media asset copies: %w", err)
@@ -610,9 +613,17 @@ func (s *Media) UpsertStorageSync(ctx context.Context, observation store.Storage
 	return nil
 }
 
-// ListStorageSync は現在の root 別観測値を返す。
+// ListStorageSync は現在の root 別観測値を返す。store 名未設定時の全件読み取りは
+// TestListStorageSyncWithoutConfiguredStoreIncludesNamedObservations で固定する。
 func (s *Media) ListStorageSync(ctx context.Context) ([]store.StorageSync, error) {
-	rows, err := sqlcgen.New(s.pool).ListStorageSync(ctx, s.storeName)
+	queries := sqlcgen.New(s.pool)
+	var rows []sqlcgen.StorageSync
+	var err error
+	if s.storeName == "" {
+		rows, err = queries.ListAllStorageSync(ctx)
+	} else {
+		rows, err = queries.ListStorageSync(ctx, s.storeName)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("listing storage sync: %w", err)
 	}

@@ -101,6 +101,22 @@ func (q *Queries) DeleteUnassignedMediaAssetCopies(ctx context.Context) error {
 	return err
 }
 
+const reconcileDerivedGenerationFromLegacyPaths = `-- name: ReconcileDerivedGenerationFromLegacyPaths :exec
+UPDATE media_assets
+SET derived_generation = GREATEST(
+    COALESCE(derived_generation, 0),
+    COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
+)
+WHERE kind <> 'original'
+`
+
+// Old writers may advance a derived path after migration but before they stop.
+// Keep the monotonic allocator ahead of the path that adoption copies forward.
+func (q *Queries) ReconcileDerivedGenerationFromLegacyPaths(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, reconcileDerivedGenerationFromLegacyPaths)
+	return err
+}
+
 const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
 SELECT a.id, $1, a.rel_path, $2, now(),

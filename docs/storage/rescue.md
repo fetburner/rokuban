@@ -71,7 +71,7 @@ catalog は `media_asset_cuts` の keep 区間を含めない。encoded のフ�
 
 古い catalog に `store` が無い場合、rescue は media root の `.rokuban-store` を割り当て先として使う。現在の置き場にある資産だけを実体確認し、別の置き場のファイルが無いことを欠損とは扱わない。既存 catalog の JSON キーを追加するだけなので、schemaVersion は据え置く。
 
-新しい worker の起動前に、旧 worker を止めてから `rokuban storage adopt <store-name>` を実行する。adopt は空のコピーを割り当て、旧 writer が作ったコピー欠落も `media_assets` から補い、指定置き場のパスと状態を同期する。旧 worker が動いたまま adopt すると、その後の旧書き込みがコピー表から外れる。
+新しい worker の起動前に、旧 worker を止めてから `rokuban storage adopt <store-name>` を実行する。adopt は空のコピーを割り当て、旧 writer が作ったコピー欠落を補い、指定置き場のパス・状態・派生世代を同期する。旧 worker が動いたまま adopt すると、その後の旧書き込みがコピー表から外れる。
 
 書き出しに失敗したときは River の再試行を使わず、次の日次投入で書き直す。それまでは前の世代が最新の catalog として残る。
 
@@ -81,6 +81,7 @@ catalog は `media_asset_cuts` の keep 区間を含めない。encoded のフ�
 
 - 書き出し先: `catalog/`
 - 差し替えても公開点にならない名前: `latest`
+- adopt による旧 writer のパス・状態・派生世代の同期: `TestAdoptUnassignedStoreRows`
 
 </details>
 

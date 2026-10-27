@@ -54,11 +54,11 @@ CREATE TABLE media_asset_copies (
 CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
 ```
 
-移行中の空 `store` は未割り当てを表し、`storage adopt <store-name>` が既存コピーと観測行に置き場を割り当てる。worker は未割り当て行とコピーの無い論理資産が残る間、処理を開始しない。adopt は旧 writer が作ったコピー欠落を補い、指定置き場のパスと状態を `media_assets` から同期する。旧 worker を止めてから実行する。
+移行中の空 `store` は未割り当てを表し、`storage adopt <store-name>` が既存コピーと観測行に置き場を割り当てる。worker は未割り当て行とコピーの無い論理資産が残る間、処理を開始しない。adopt は旧 writer のコピー欠落を補い、パス・状態・派生世代を `media_assets` から同期する。旧 worker を止めてから実行する。
 
 旧 binary の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)`、`missing_media_assets(media_asset_id)`、`storage_sync(root)` である。新しい複合キーと並存するため、同じ観測キーを複数置き場に持てない。旧 writer を退役した後に単一列キーを外す。
 
-`derived_generation` は派生物の相対パスに使う単調増加の世代で、削除済み行を再生成するときも進める。初期値 0 は未世代、正の値は過去の世代を表す。既存の世代付きパスは移行時に一度だけ読み取り、以降の採番は列から行う。encoded の `.g{n}` は cut、`.u{n}` は uncut 再生成を表す。世代が正かどうかで cut を判断すると、uncut の tombstone 再生成を誤判定する。
+`derived_generation` は派生物の相対パスに使う単調増加の世代で、削除済み行の再生成でも進める。初期値 0 は未世代、正の値は過去の世代を表す。移行時に既存パスから初期化し、旧 worker 停止後の adopt でも再照合する。以降の採番は列から行う。encoded の `.g{n}` は cut、`.u{n}` は uncut 再生成を表す。世代が正かどうかで cut を判断すると、uncut の tombstone 再生成を誤判定する。
 
 行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）だけで、衝突時は冪等に書く。削除済みへ遷移した後も行は消さない（tombstone）。ドロップ統計と元サイズは、原本削除後も UI で見られる。
 
@@ -76,6 +76,7 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 実体ファイルの不在を持つ衛星表: `missing_media_assets`（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）
 - 複製しない列: `rel_path` / `kind`
 - 走査時の状態: `state = 'active'`
+- 移行時と adopt 時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations` / `TestAdoptUnassignedStoreRows`
 
 </details>
 

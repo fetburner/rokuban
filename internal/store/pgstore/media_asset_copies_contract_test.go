@@ -33,6 +33,17 @@ VALUES ($1, 'original', 'sites/default/legacy-inserted.m2ts', 30)
 RETURNING id`, legacyWriterRecording).Scan(&legacyWriterAssetID); err != nil {
 		t.Fatalf("simulating legacy writer insert without a copy: %v", err)
 	}
+	derivedRecordingID := dbtest.Recording(t, pool)
+	var derivedAssetID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state, derived_generation)
+VALUES ($1, 'encoded', 'cut', 'sites/default/advanced_cut.g4.mp4', 40, 'active', 4)
+RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
+		t.Fatalf("seeding migrated derived asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = 'sites/default/advanced_cut.g5.mp4' WHERE id = $1`, derivedAssetID); err != nil {
+		t.Fatalf("simulating old writer advancing derived path: %v", err)
+	}
 
 	legacy := NewMedia(pool)
 	if err := legacy.UpsertIngestProgress(ctx, store.IngestProgress{
@@ -94,6 +105,7 @@ RETURNING id`, legacyWriterRecording).Scan(&legacyWriterAssetID); err != nil {
 	for assetID, wantRelPath := range map[int64]string{
 		assetID:             "sites/default/legacy-updated.m2ts",
 		legacyWriterAssetID: "sites/default/legacy-inserted.m2ts",
+		derivedAssetID:      "sites/default/advanced_cut.g5.mp4",
 	} {
 		var gotRelPath string
 		if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'tokyo'`, assetID).Scan(&gotRelPath); err != nil {
@@ -102,6 +114,33 @@ RETURNING id`, legacyWriterRecording).Scan(&legacyWriterAssetID); err != nil {
 		if gotRelPath != wantRelPath {
 			t.Errorf("adopted copy %d path = %q, want %q", assetID, gotRelPath, wantRelPath)
 		}
+	}
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, derivedAssetID).Scan(&generation); err != nil {
+		t.Fatalf("reading adopted derived generation: %v", err)
+	}
+	if generation != 5 {
+		t.Fatalf("adopted derived_generation = %d, want 5 from the legacy path", generation)
+	}
+}
+
+func TestListStorageSyncWithoutConfiguredStoreIncludesNamedObservations(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	workerMedia := NewMedia(pool, "tokyo")
+	if err := workerMedia.UpsertStorageSync(ctx, store.StorageObservationInput{
+		Root: "media", Path: "/media", TotalBytes: 100, UsedBytes: 25, AvailableBytes: 75,
+	}); err != nil {
+		t.Fatalf("recording worker storage observation: %v", err)
+	}
+
+	apiMedia := NewMedia(pool)
+	rows, err := apiMedia.ListStorageSync(ctx)
+	if err != nil {
+		t.Fatalf("listing storage observations without configured store: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Root != "media" || rows[0].Path != "/media" {
+		t.Fatalf("API-only storage observations = %+v, want named worker observation", rows)
 	}
 }
 

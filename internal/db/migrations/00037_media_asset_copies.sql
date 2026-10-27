@@ -10,12 +10,31 @@ ALTER TABLE media_assets
     ADD CONSTRAINT media_assets_sha256_length_check
         CHECK (sha256 IS NULL OR octet_length(sha256) = 32);
 
+-- Parse only a terminal generation suffix. A profile may itself contain strings
+-- such as ".g2", and malformed or out-of-range suffixes must not abort migration.
+CREATE FUNCTION media_asset_generation_from_rel_path(rel_path text)
+RETURNS bigint
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+    SELECT CASE
+        WHEN generation IS NULL THEN NULL
+        WHEN length(generation) < 19 THEN generation::bigint
+        WHEN length(generation) = 19
+         AND generation COLLATE "C" <= '9223372036854775807' COLLATE "C"
+            THEN generation::bigint
+        ELSE NULL
+    END
+    FROM (
+        SELECT (regexp_match(rel_path, '\.[gu]([1-9][0-9]*)\.[^./]+$'))[1] AS generation
+    ) AS parsed
+$$;
+
 -- Existing versioned paths seed the monotonic generation once. Writers use this
 -- column after this migration; they do not infer the next generation from rel_path.
 UPDATE media_assets
 SET derived_generation = CASE
     WHEN kind = 'original' THEN NULL
-    ELSE COALESCE(substring(rel_path FROM '\.g([1-9][0-9]*)\.[^/]+$')::bigint, 0)
+    ELSE COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
 END;
 
 CREATE TABLE media_asset_copies (
@@ -106,3 +125,4 @@ ALTER TABLE media_assets
     DROP CONSTRAINT media_assets_derived_generation_check,
     DROP COLUMN sha256,
     DROP COLUMN derived_generation;
+DROP FUNCTION media_asset_generation_from_rel_path(text);
