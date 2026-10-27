@@ -21,17 +21,16 @@ $$;
 COMMENT ON FUNCTION active_media_asset_copies(bigint, text) IS
     'active_media_asset_copies は、論理資産の active コピーを返す。p_store が NULL なら全置き場、指定すればその置き場だけを対象にする。順序は持たない。';
 
--- 1 件だけ選ぶ読み手が同じコピーを選べるよう、store 順に並べる唯一の定義。
--- 呼び出し側が LIMIT 1 を付ける（関数に LIMIT を入れると planner がインライン展開できない）。
-CREATE FUNCTION ordered_active_media_asset_copies(p_asset_id bigint, p_store text)
+-- 1 件だけ選ぶ読み手が同じコピーを選ぶための唯一の規則: active コピーのうち store 名順で先頭の 1 件。
+CREATE FUNCTION preferred_active_media_asset_copy(p_asset_id bigint, p_store text)
 RETURNS SETOF media_asset_copies
 LANGUAGE sql STABLE
 AS $$
-SELECT c.* FROM active_media_asset_copies(p_asset_id, p_store) c ORDER BY c.store
+SELECT c.* FROM active_media_asset_copies(p_asset_id, p_store) c ORDER BY c.store LIMIT 1
 $$;
 
-COMMENT ON FUNCTION ordered_active_media_asset_copies(bigint, text) IS
-    'ordered_active_media_asset_copies は、active_media_asset_copies を store 順に並べて返す。1 件選ぶ読み手が先頭を使う。';
+COMMENT ON FUNCTION preferred_active_media_asset_copy(bigint, text) IS
+    'preferred_active_media_asset_copy は、active_media_asset_copies のうち store 名順で先頭の 1 件を返す。コピーを 1 件選ぶ読み手が使う。';
 
 CREATE OR REPLACE VIEW encodable_recordings AS
 SELECT r.id AS recording_id
@@ -452,6 +451,6 @@ WHERE r.deleted_at IS NULL
   );
 
 DROP FUNCTION until_encoded_deletable_originals(text);
-DROP FUNCTION ordered_active_media_asset_copies(bigint, text);
+DROP FUNCTION preferred_active_media_asset_copy(bigint, text);
 DROP FUNCTION active_media_asset_copies(bigint, text);
 DROP INDEX media_asset_copies_active_asset_store_idx;

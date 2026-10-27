@@ -319,8 +319,7 @@ func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, sit
  JOIN recordings r ON r.id = a.recording_id
  JOIN LATERAL (
      SELECT copy.rel_path
-     FROM ordered_active_media_asset_copies(a.id, $1::text) copy
-     LIMIT 1
+     FROM preferred_active_media_asset_copy(a.id, $1::text) copy
  ) c ON true
  WHERE a.recording_id = $2 AND r.site = $3
  AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL("$1")+` AND `+recordingPlaybackVisibleSQL,
@@ -339,8 +338,7 @@ func (s *Media) GetRecordingHLSOriginalTarget(ctx context.Context, recordingID i
  FROM media_assets a JOIN recordings r ON r.id = a.recording_id
  JOIN LATERAL (
      SELECT copy.rel_path
-     FROM ordered_active_media_asset_copies(a.id, $1::text) copy
-     LIMIT 1
+     FROM preferred_active_media_asset_copy(a.id, $1::text) copy
  ) c ON true
  WHERE a.recording_id = $2
  AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL("$1")+` AND `+recordingPlaybackVisibleSQL, s.storeName, recordingID).

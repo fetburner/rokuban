@@ -370,8 +370,7 @@ LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
 LEFT JOIN media_asset_copies copy
   ON copy.media_asset_id = o.id
  AND copy.store = (SELECT c.store
-                   FROM ordered_active_media_asset_copies(o.id, $1::text) c
-                   LIMIT 1)
+                   FROM preferred_active_media_asset_copy(o.id, $1::text) c)
 WHERE r.id = $2
 `
 
@@ -391,7 +390,7 @@ type GetCMDetectionWorkItemRow struct {
 	Detected        bool
 }
 
-// 選ぶコピーは ordered_active_media_asset_copies の先頭。(media_asset_id, store) は一意なので 1 行に決まる。
+// 選ぶコピーは preferred_active_media_asset_copy の 1 件。(media_asset_id, store) は一意なので 1 行に決まる。
 func (q *Queries) GetCMDetectionWorkItem(ctx context.Context, arg GetCMDetectionWorkItemParams) (GetCMDetectionWorkItemRow, error) {
 	row := q.db.QueryRow(ctx, getCMDetectionWorkItem, arg.StoreName, arg.RecordingID)
 	var i GetCMDetectionWorkItemRow

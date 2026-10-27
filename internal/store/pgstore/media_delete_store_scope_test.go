@@ -489,6 +489,14 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 			}
 		}
 	}
+	var n int
+	var first string
+	if err := env.pool.QueryRow(ctx, `SELECT count(*), min(store) FROM preferred_active_media_asset_copy($1, NULL)`, kinds[store.AssetKindOriginal]).Scan(&n, &first); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || first != "b-store" {
+		t.Fatalf("preferred_active_media_asset_copy returned %d rows (first store %q), want exactly the b-store copy", n, first)
+	}
 	api := NewMedia(env.pool, "")
 	readers := map[string]func(*Media) (store.MediaAsset, error){
 		"original":      func(m *Media) (store.MediaAsset, error) { return m.GetOriginalMediaAssetForServing(ctx, rec) },

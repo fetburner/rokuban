@@ -56,8 +56,7 @@ SELECT a.id, c.rel_path, a.size_bytes, c.store
 FROM media_assets a
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM ordered_active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
-    LIMIT 1
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
 ) c ON true
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'original';
@@ -285,8 +284,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM ordered_active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
-    LIMIT 1
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
 ) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'original'
@@ -300,8 +298,7 @@ FROM media_assets asset
 JOIN recordings recording ON recording.id = asset.recording_id
 JOIN LATERAL (
     SELECT c.rel_path, c.store
-    FROM ordered_active_media_asset_copies(asset.id, sqlc.narg('store_name')::text) c
-    LIMIT 1
+    FROM preferred_active_media_asset_copy(asset.id, sqlc.narg('store_name')::text) c
 ) copy ON true
 WHERE asset.recording_id = $1
   AND asset.kind = 'thumbnail'
@@ -314,8 +311,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM ordered_active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
-    LIMIT 1
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
 ) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'seek_tiles'
@@ -328,8 +324,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM ordered_active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
-    LIMIT 1
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
 ) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'encoded'
