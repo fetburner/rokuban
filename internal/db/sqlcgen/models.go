@@ -418,6 +418,9 @@ type RecordingWatched struct {
 type RemovedEncodedAsset struct {
 	AssetID     int64
 	RecordingID int64
+	RelPath     string
+	SizeBytes   int64
+	State       string
 }
 
 type Reservation struct {
@@ -549,4 +552,12 @@ type UnsatisfiedEncodeRebuild struct {
 	RecordingID   int64
 	Profile       string
 	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+}
+
+type UntilEncodedDeletableOriginal struct {
+	AssetID     int64
+	RecordingID int64
+	RelPath     string
+	SizeBytes   int64
+	State       string
 }

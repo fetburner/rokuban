@@ -147,6 +147,60 @@ VALUES ($1, $2, $3)`, id, *o.PlaybackPositionMs, updatedAt); err != nil {
 	})
 }
 
+func TestRecordingQueryWithoutStoreNameUsesActiveCopies(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title = "API only copy visibility fixture"
+	})
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "api-only/original.ts"
+		p.SizeBytes = 1234
+	})
+	profile := "api-only"
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "api-only/encoded.mp4"
+		p.SizeBytes = 5678
+	})
+
+	query := NewRecordings(pool, "")
+	row, err := query.Get(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("Get(%d) without a configured store: %v", recordingID, err)
+	}
+	if row.OriginalSizeBytes == nil || *row.OriginalSizeBytes != 1234 {
+		t.Fatalf("original size = %v, want 1234 from an active copy in any store", row.OriginalSizeBytes)
+	}
+	var available []struct {
+		Profile   string `json:"profile"`
+		SizeBytes int64  `json:"sizeBytes"`
+	}
+	if err := json.Unmarshal(row.AvailableEncodedAssets, &available); err != nil {
+		t.Fatalf("decoding available encoded assets %s: %v", row.AvailableEncodedAssets, err)
+	}
+	if len(available) != 1 || available[0].Profile != profile || available[0].SizeBytes != 5678 {
+		t.Fatalf("available encoded assets = %+v, want %s at 5678 bytes", available, profile)
+	}
+
+	rows, err := query.List(ctx, store.RecordingFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("List() without a configured store: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != recordingID || rows[0].OriginalSizeBytes == nil || *rows[0].OriginalSizeBytes != 1234 {
+		t.Fatalf("List() = %+v, want recording %d with original size 1234", rows, recordingID)
+	}
+
+	shelves, err := query.Shelves(ctx, store.RecordingFilter{})
+	if err != nil {
+		t.Fatalf("Shelves() without a configured store: %v", err)
+	}
+	if len(shelves) != 1 || shelves[0].PlayableCount != 1 {
+		t.Fatalf("Shelves() = %+v, want one playable recording in its shelf", shelves)
+	}
+}
+
 func seedRecordingQueryReadbackFields(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64, options contracttest.RecordingQueryRecording) {
 	t.Helper()
 	if options.WatchedAt != nil {

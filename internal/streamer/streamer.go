@@ -42,7 +42,7 @@ type Config struct {
 	//
 	// 認可判定はアプリ、バイト転送は nginx という分担で、アプリ側のコストは
 	// ヘッダー 1 個。値は nginx の internal location（例: /_media/）で、
-	// store 名とその置き場の相対パスを連結した URI を返す。
+	// store があれば /stores/<名前>/ を挟んで相対パスを連結した URI を返す。
 	AccelLocation string
 
 	// FFmpeg / FFprobe はコマの切り出し（/frame）で使う。空なら PATH の
@@ -351,7 +351,7 @@ func accelURI(location, store, relPath string) string {
 	}
 	base := strings.TrimSuffix(location, "/")
 	if store != "" {
-		base += "/" + url.PathEscape(store)
+		base += "/stores/" + url.PathEscape(store)
 	}
 	return base + "/" + strings.Join(segments, "/")
 }

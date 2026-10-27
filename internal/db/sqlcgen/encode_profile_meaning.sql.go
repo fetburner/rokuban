@@ -10,16 +10,12 @@ import (
 )
 
 const listEncodedMeaningEvidence = `-- name: ListEncodedMeaningEvidence :many
-SELECT active.profile, active.rel_path
-FROM (
-    SELECT DISTINCT ON (a.profile) a.profile::text AS profile, c.rel_path::text AS rel_path
-    FROM media_assets a
-    JOIN media_asset_copies c
-      ON c.media_asset_id = a.id AND c.state = 'active'
-    WHERE a.kind = 'encoded'
-      AND ($1::text IS NULL OR c.store = $1)
-    ORDER BY a.profile, c.store = $1 DESC, c.store
-) active
+SELECT DISTINCT a.profile::text AS profile, c.rel_path::text AS rel_path
+FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id AND c.state = 'active'
+WHERE a.kind = 'encoded'
+  AND ($1::text IS NULL OR c.store = $1)
 UNION ALL
 SELECT q.profile::text, ''::text
 FROM encoded_asset_rebuild_requests q

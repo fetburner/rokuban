@@ -125,10 +125,14 @@ WHERE r.deleted_at IS NULL
       OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
   );
 
+-- Keep the legacy columns that old binaries select during rolling updates.
 DROP VIEW removed_encoded_assets;
 CREATE VIEW removed_encoded_assets AS
 SELECT a.id AS asset_id,
-       a.recording_id
+       a.recording_id,
+       a.rel_path,
+       a.size_bytes,
+       a.state
 FROM media_assets a
 JOIN encoded_asset_removal_requests q
     ON q.recording_id = a.recording_id AND q.profile = a.profile
@@ -159,7 +163,8 @@ WHERE a.kind = 'encoded'
         )
   );
 
-DROP VIEW until_encoded_deletable_originals;
+-- Keep the legacy relation shape while old binaries may still read it during a
+-- rolling update. New readers call the store-aware function below.
 CREATE FUNCTION until_encoded_deletable_originals(desired_store text)
 RETURNS TABLE (asset_id bigint, recording_id bigint)
 LANGUAGE sql STABLE
@@ -232,7 +237,7 @@ COMMENT ON FUNCTION until_encoded_deletable_originals(text) IS
 -- +goose Down
 
 DROP FUNCTION until_encoded_deletable_originals(text);
-CREATE VIEW until_encoded_deletable_originals AS
+CREATE OR REPLACE VIEW until_encoded_deletable_originals AS
 SELECT a.id AS asset_id,
        a.recording_id,
        a.rel_path,

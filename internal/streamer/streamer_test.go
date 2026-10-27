@@ -443,8 +443,8 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 	if strings.ContainsAny(got, " （）") {
 		t.Errorf("X-Accel-Redirect = %q, want URL-escaped path", got)
 	}
-	if !strings.HasPrefix(got, "/_media/"+dbtest.StoreName+"/20260725/") {
-		t.Errorf("X-Accel-Redirect = %q, want store-scoped /_media/ prefix", got)
+	if !strings.HasPrefix(got, "/_media/stores/"+dbtest.StoreName+"/20260725/") {
+		t.Errorf("X-Accel-Redirect = %q, want store-scoped /_media/stores/ prefix", got)
 	}
 }
 

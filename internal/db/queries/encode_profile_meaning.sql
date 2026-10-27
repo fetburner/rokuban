@@ -10,16 +10,12 @@
 --
 -- 証拠が無い名前は返らない（過去の意味が存在しない）。
 -- name: ListEncodedMeaningEvidence :many
-SELECT active.profile, active.rel_path
-FROM (
-    SELECT DISTINCT ON (a.profile) a.profile::text AS profile, c.rel_path::text AS rel_path
-    FROM media_assets a
-    JOIN media_asset_copies c
-      ON c.media_asset_id = a.id AND c.state = 'active'
-    WHERE a.kind = 'encoded'
-      AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
-    ORDER BY a.profile, c.store = sqlc.narg('store_name') DESC, c.store
-) active
+SELECT DISTINCT a.profile::text AS profile, c.rel_path::text AS rel_path
+FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id AND c.state = 'active'
+WHERE a.kind = 'encoded'
+  AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
 UNION ALL
 SELECT q.profile::text, ''::text
 FROM encoded_asset_rebuild_requests q;

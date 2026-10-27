@@ -39,7 +39,7 @@ CREATE INDEX ON media_assets (kind, state);
 CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
-`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。移行中の旧バイナリとの互換性のため `rel_path` / `state` / `deleted_at` も残し、新しい書き手は両表を更新する。現在の読み手は物理パスとライフサイクルを `media_asset_copies` から読み、コピーを増やしてもサイズや SHA-256 を重複させない。
+`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。移行中の旧バイナリとの互換性のため `rel_path` / `state` / `deleted_at` も残し、新しい書き手は両表を更新する。削除判定の `until_encoded_deletable_originals` と `removed_encoded_assets` も旧 binary が読む列を射影し続ける。新しい読み手は置き場を引数に持つ関数またはコピー表を使う。現在の読み手は物理パスとライフサイクルを `media_asset_copies` から読み、コピーを増やしてもサイズや SHA-256 を重複させない。
 
 ```sql
 CREATE TABLE media_asset_copies (

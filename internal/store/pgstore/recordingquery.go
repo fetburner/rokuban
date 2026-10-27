@@ -229,7 +229,9 @@ const (
           AND e.kind = 'encoded'
           AND EXISTS (
               SELECT 1 FROM media_asset_copies copy
-              WHERE copy.media_asset_id = e.id AND copy.store = $1 AND copy.state = 'active'
+              WHERE copy.media_asset_id = e.id
+                AND ($1::text IS NULL OR copy.store = $1)
+                AND copy.state = 'active'
           )
           AND e.profile IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = e.id)
@@ -241,7 +243,9 @@ FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND EXISTS (
         SELECT 1 FROM media_asset_copies copy
-        WHERE copy.media_asset_id = a.id AND copy.store = $1 AND copy.state <> 'deleted'
+        WHERE copy.media_asset_id = a.id
+          AND ($1::text IS NULL OR copy.store = $1)
+          AND copy.state <> 'deleted'
     )
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 -- 方針変更より前の試行は reconcile が削除するまで残ることがある。
@@ -277,12 +281,13 @@ LEFT JOIN LATERAL (
 // 触れるかの話で、絞り込みは読み出しの述語にすぎない。site 軸を service の
 // 識別子に混ぜないのは、混ぜると「あるサイトの録画を全部」がチャンネルの
 // 列挙でしか表せず、service だけが他の軸と違う意味論（組の選言）になるため。
+// storeName が空の api-only 設定では、全置き場の active copy を対象にする。
 func buildRecordingsQuery(f store.RecordingFilter, storeName string) (string, []any, error) {
 	if (f.Before == nil) != (f.BeforeID == nil) {
 		return "", nil, fmt.Errorf("before and beforeId must be given together")
 	}
 
-	args := []any{storeName}
+	args := []any{mediaStoreNameArg(storeName)}
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
@@ -506,7 +511,7 @@ func recordingsFilterWhere(f store.RecordingFilter, and func(string), arg func(a
 // 実データでの絶対値は未測定である。本番の playable_count は旧形の recording_count と
 // 全棚で一致し、絞り込みありの形は Go で別に集計した期待値と一致する（ハーネスが検査する）。
 func buildRecordingShelvesQuery(f store.RecordingFilter, storeName string) (string, []any) {
-	args := []any{storeName}
+	args := []any{mediaStoreNameArg(storeName)}
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
@@ -524,11 +529,15 @@ WITH playable_assets AS (
     FROM media_assets ma
     WHERE (ma.kind = 'original' AND EXISTS (
                SELECT 1 FROM media_asset_copies copy
-               WHERE copy.media_asset_id = ma.id AND copy.store = $1 AND copy.state = 'active'
+               WHERE copy.media_asset_id = ma.id
+                 AND ($1::text IS NULL OR copy.store = $1)
+                 AND copy.state = 'active'
            ))
        OR (ma.kind = 'encoded' AND EXISTS (
                SELECT 1 FROM media_asset_copies copy
-               WHERE copy.media_asset_id = ma.id AND copy.store = $1 AND copy.state = 'active'
+               WHERE copy.media_asset_id = ma.id
+                 AND ($1::text IS NULL OR copy.store = $1)
+                 AND copy.state = 'active'
            ))
 ),
 watched_events AS MATERIALIZED (
@@ -633,7 +642,7 @@ func (s *Recordings) Get(ctx context.Context, recordingID int64) (store.Recordin
 SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE r.id = $2 AND r.purged_at IS NULL`
 
-	fields, err := scanRecordingQueryRow(s.pool.QueryRow(ctx, sql, s.storeName, recordingID))
+	fields, err := scanRecordingQueryRow(s.pool.QueryRow(ctx, sql, mediaStoreNameArg(s.storeName), recordingID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.RecordingQueryRow{}, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)

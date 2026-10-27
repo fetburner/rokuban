@@ -190,7 +190,7 @@ storage:
   accel_location: /_media/     # 空なら Go が直接配る
 ```
 
-有効時に返すヘッダーは `X-Accel-Redirect: /_media/<相対パス>` である。nginx 側は `internal` な location で `media_dir` を alias する。
+有効時に返すヘッダーは `X-Accel-Redirect: /_media/stores/<store>/<相対パス>` である。nginx 側は `internal` な location で store 名を除き、`media_dir` を alias する。旧 binary が返す `/_media/<相対パス>` も同じ設定で処理する。
 
 パス検証を通した後にヘッダーを返す。検証前に返すと、細工された相対パスで nginx に任意ファイルを配らせられる。
 

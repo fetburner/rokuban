@@ -99,6 +99,38 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 	}
 }
 
+func TestCheckEncodeProfileMeaningChecksEveryActivePath(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	const profile = "multi-path"
+	first := dbtest.Recording(t, pool)
+	second := dbtest.Recording(t, pool)
+	seedEncodedAsset(t, pool, first, profile, "evidence/first_multi-path.mp4")
+	seedEncodedAsset(t, pool, second, profile, "evidence/second_multi-path.mkv")
+
+	evidence, err := pgstoretest.Media(pool).ListEncodedMeaningEvidence(ctx)
+	if err != nil {
+		t.Fatalf("ListEncodedMeaningEvidence(): %v", err)
+	}
+	paths := make(map[string]bool)
+	for _, item := range evidence {
+		if item.Profile == profile {
+			paths[item.RelPath] = true
+		}
+	}
+	if len(paths) != 2 || !paths["evidence/first_multi-path.mp4"] || !paths["evidence/second_multi-path.mkv"] {
+		t.Fatalf("active evidence paths for %q = %v, want both mp4 and mkv paths", profile, paths)
+	}
+
+	err = CheckEncodeProfileMeaning(ctx, pgstoretest.Media(pool), meaningCfg(profile, false, "mp4"))
+	if err == nil || !strings.Contains(err.Error(), "container") || !strings.Contains(err.Error(), "mkv") {
+		t.Fatalf("CheckEncodeProfileMeaning() error = %v, want incompatible mkv evidence to reject the profile", err)
+	}
+}
+
 // TestEncodedRelPathPreservesProfileAndContainer は受理する profile 名をそのまま
 // パスに書き、拡張子から container を読み戻せることを固定する。
 func TestEncodedRelPathPreservesProfileAndContainer(t *testing.T) {

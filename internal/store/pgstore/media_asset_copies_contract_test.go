@@ -18,6 +18,49 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+func TestMediaAssetCopyReaderMigrationKeepsLegacyRelations(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	queries := []struct {
+		name string
+		sql  string
+		args []any
+	}{
+		{
+			name: "legacy until-encoded relation",
+			sql: `SELECT count(*) FROM (
+    SELECT asset_id, recording_id, rel_path, size_bytes, state
+    FROM until_encoded_deletable_originals
+    LIMIT 0
+) legacy_rows`,
+		},
+		{
+			name: "store-aware until-encoded function",
+			sql:  `SELECT count(*) FROM until_encoded_deletable_originals($1)`,
+			args: []any{dbtest.StoreName},
+		},
+		{
+			name: "legacy removed-encoded relation",
+			sql: `SELECT count(*) FROM (
+    SELECT asset_id, recording_id, rel_path, size_bytes, state
+    FROM removed_encoded_assets
+    LIMIT 0
+) legacy_rows`,
+		},
+	}
+	for _, query := range queries {
+		t.Run(query.name, func(t *testing.T) {
+			var count int64
+			if err := pool.QueryRow(ctx, query.sql, query.args...).Scan(&count); err != nil {
+				t.Fatalf("legacy reader query failed: %v", err)
+			}
+			if count != 0 {
+				t.Fatalf("empty fixture query returned %d rows, want 0", count)
+			}
+		})
+	}
+}
+
 func TestAdoptUnassignedStoreRows(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
