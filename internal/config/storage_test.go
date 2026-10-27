@@ -102,6 +102,21 @@ func TestStoragePolicyValidation(t *testing.T) {
 			wantError: "exceeds 54 characters",
 		},
 		{
+			name:      "unsupported store kind",
+			policy:    strings.Replace(validStoragePolicy, "kind: s3", "kind: nfs", 1),
+			wantError: "kind must be fs or s3",
+		},
+		{
+			name:      "s3 store requires bucket",
+			policy:    strings.Replace(validStoragePolicy, "      bucket: rokuban-derived\n", "", 1),
+			wantError: "bucket is required",
+		},
+		{
+			name:      "fs store rejects s3 attributes",
+			policy:    strings.Replace(validStoragePolicy, "    archive:\n      kind: fs\n", "    archive:\n      kind: fs\n      endpoint: https://s3.example.com\n", 1),
+			wantError: "endpoint and bucket are only valid for kind s3",
+		},
+		{
 			name:      "unsupported time condition",
 			policy:    strings.Replace(validStoragePolicy, "older_than: 30d", "newer_than: 30d", 1),
 			wantError: "newer_than",
