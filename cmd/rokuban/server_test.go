@@ -36,7 +36,7 @@ func writeServerTestConfig(t *testing.T, content string) string {
 	t.Helper()
 	storeName := "test-store"
 	if strings.Contains(content, "storage:") && !strings.Contains(content, "stores:") {
-		policy := "  stores:\n    test-store:\n      kind: fs\n  originals:\n    - store: test-store\n  derived: test-store\n  transfer:\n    overlap: 48h\n"
+		policy := "  stores:\n    test-store:\n      kind: fs\n  originals:\n    - store: test-store\n  derived: test-store\n"
 		content = strings.Replace(content, "storage:\n", "storage:\n"+policy, 1)
 	} else {
 		lines := strings.Split(content, "\n")

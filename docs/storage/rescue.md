@@ -69,7 +69,7 @@ worker の定期ジョブが、このコアデータを JSON で各ファイル�
 
 catalog は `media_asset_cuts` の keep 区間を含めない。
 
-rescue が書く置き場の名前は、`storage.stores` に定義した FS 置き場が 1 つだけの場合にその名前になる。media root の目印と一致しなければ、何も書かずに止まる。古い catalog に `store` が無いときは、この名前を割り当てる。実体を確認するのは、この置き場にある資産だけである。別の置き場のファイルが無いことは欠損とは扱わない。既存の catalog に JSON キーを足すだけなので、schemaVersion は据え置く。
+rescue が書く置き場の名前は、`storage.stores` の FS 置き場の名前である。FS 置き場が 1 つでない構成では、`RequireStoreMarker` が名前を決められずにエラーにするので、何も書かずに止まる。media root の目印と一致しないときも、何も書かずに止まる。古い catalog に `store` が無いときは、この名前を割り当てる。実体を確認するのは、この置き場にある資産だけである。別の置き場のファイルが無いことは欠損とは扱わない。既存の catalog に JSON キーを足すだけなので、schemaVersion は据え置く。
 
 移行時に `rokuban storage adopt` を実行する順序は、[runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 

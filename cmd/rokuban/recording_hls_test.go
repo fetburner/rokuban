@@ -22,8 +22,6 @@ func TestServerRecordingHLSConfig(t *testing.T) {
   originals:
     - store: main-2
   derived: main-2
-  transfer:
-    overlap: 48h
 recording_hls:
   enabled: %t
   segment_dir: /tmp/recording-hls
@@ -116,8 +114,6 @@ func TestServerStreamerMountsRecordingHLS(t *testing.T) {
   originals:
     - store: main
   derived: main
-  transfer:
-    overlap: 48h
 recording_hls:
   enabled: %t
   segment_dir: %s

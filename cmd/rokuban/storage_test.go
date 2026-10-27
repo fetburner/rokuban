@@ -13,7 +13,7 @@ import (
 )
 
 func storagePolicyYAML(name string) string {
-	return fmt.Sprintf("  stores:\n    %s:\n      kind: fs\n  originals:\n    - store: %s\n  derived: %s\n  transfer:\n    overlap: 48h\n", name, name, name)
+	return fmt.Sprintf("  stores:\n    %s:\n      kind: fs\n  originals:\n    - store: %s\n  derived: %s\n", name, name, name)
 }
 
 func TestStorageAdoptWritesStoreMarker(t *testing.T) {
@@ -91,7 +91,7 @@ storage:
 	}
 }
 
-func TestStorageAdoptRejectsUnknownAndNonFSStoreInMultiStoreConfig(t *testing.T) {
+func TestStorageAdoptRejectsUnknownAndNonFSStoreName(t *testing.T) {
 	mediaDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.yml")
 	config := `db:
@@ -105,16 +105,12 @@ storage:
   stores:
     tokyo:
       kind: fs
-    osaka:
-      kind: fs
     s3main:
       kind: s3
       bucket: rokuban-derived
   originals:
     - store: tokyo
-  derived: s3main
-  transfer:
-    overlap: 48h
+  derived: tokyo
 mirakcs:
   - site: tokyo
     url: http://mirakc
@@ -127,8 +123,9 @@ mirakcs:
 		name      string
 		wantError string
 	}{
-		{name: "unknown", wantError: "not configured in storage.stores"},
-		{name: "s3main", wantError: "requires an fs store"},
+		// FS 置き場が 1 つの間は、その名前との照合が先に落とす。
+		{name: "unknown", wantError: "does not match the fs store in storage.stores"},
+		{name: "s3main", wantError: "does not match the fs store in storage.stores"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newRootCmd()

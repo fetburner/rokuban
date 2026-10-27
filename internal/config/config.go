@@ -328,6 +328,7 @@ func loadFromString(raw string) (*Config, error) {
 		d := time.Hour
 		cfg.Ruler.RetractGrace = &d
 	}
+	cfg.Storage.applyPolicyDefaults()
 	cfg.Storage.setSingleFSStoreCompatibilityName()
 
 	if missing := cfg.missingRequired(); len(missing) > 0 {

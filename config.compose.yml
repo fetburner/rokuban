@@ -27,8 +27,6 @@ storage:
   originals:
     - store: main
   derived: main
-  transfer:
-    overlap: 48h
   scratch_dir: /var/tmp/rokuban
 
 ingest:

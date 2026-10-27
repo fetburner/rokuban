@@ -82,9 +82,8 @@ func TestDesiredMediaStore(t *testing.T) {
 	})
 
 	t.Run("older_than is fixed elapsed time across daylight saving changes", func(t *testing.T) {
-		// Pick a timezone and day count for which subtracting calendar days differs
-		// from the same number of 24-hour periods. This stays deterministic across
-		// test dates while exercising the real desired_media_store function.
+		// 暦の日数を引いた時刻が、同じ日数の 24 時間を引いた時刻とずれるタイムゾーンと日数を選ぶ。
+		// 実行日に依らず決定的で、実物の desired_media_store を通る。
 		var zone string
 		var days int
 		var deltaSeconds float64

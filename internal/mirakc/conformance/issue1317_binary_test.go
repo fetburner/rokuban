@@ -74,8 +74,6 @@ storage:
   originals:
     - store: conformance
   derived: conformance
-  transfer:
-    overlap: 48h
 mirakcs:
   - site: default
     url: %s

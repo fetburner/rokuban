@@ -46,47 +46,91 @@ type StorageTransferConfig struct {
 	Overlap   time.Duration     `yaml:"overlap" json:"overlap"`
 }
 
-// MaxStoreNameLen は store 修飾を付けた queue が River の 64 文字制限に収まる上限。
-// 現行の store-bound queue で最長の `cm_detect` / `thumbnail` と区切りの `_` を残す。
+// MaxStoreNameLen は置き場の名前の最大長。
+// 原本を読み書きするジョブのキューは `{queue}_{store}` と置き場で修飾される。
+// 修飾されうるキューで最長の `cm_detect` / `thumbnail`（9 文字）と区切りの `_` を残す。
+// TestStorageQueueNameBudget が、jobs の全キュー名からこの導出を検査する。
 const MaxStoreNameLen = jobq.MaxQueueNameLen - len("cm_detect") - 1
 
-// DefaultMissingAssetAge is the observation window used when cleanup.missing_asset_age is 0.
+// DefaultMissingAssetAge は cleanup.missing_asset_age が 0 のときの実体無し猶予。
+// 24 時間は、単発の走査揺れや DB リストア直後の一時的な不整合を、確認済みの異常と区別するための長さである。
+// 削除の猶予ではないので、孤児回収の期間とは揃えない。通知の遅れを抑えるため短めにしている。
 const DefaultMissingAssetAge = 24 * time.Hour
+
+// DefaultTransferOverlap は storage.transfer.overlap を省略したときの値。
+// 既定の実体無し猶予と削除 reconcile の周期から導く下限（DefaultMissingAssetAge + 2 × DeleteReconcileInterval）より長い。
+// cleanup.missing_asset_age を延ばしてこの値が下限を割るときは、overlap の明示を求める。
+const DefaultTransferOverlap = 48 * time.Hour
 
 // DeleteReconcileInterval は削除 reconcile の周期。
 // transfer.overlap の下限と workerspec のスケジュールで共有する。
 const DeleteReconcileInterval = 15 * time.Minute
 
-// setSingleFSStoreCompatibilityName bridges the policy configuration to the current
-// single-root media_dir implementation. Multi-store workers use store-qualified roots
-// in a later integration step and must not infer a desired store from this field.
-func (c *StorageConfig) setSingleFSStoreCompatibilityName() {
-	c.MediaStoreName = ""
-	var fsNames []string
-	for name, store := range c.Stores {
-		if store.Kind == "fs" {
-			fsNames = append(fsNames, name)
-		}
-	}
-	if len(fsNames) == 1 {
-		c.MediaStoreName = fsNames[0]
+// policyConfigured は storage の置き場規則が 1 つでも書かれているかを返す。
+func (c StorageConfig) policyConfigured() bool {
+	return len(c.Stores) != 0 || len(c.Originals) != 0 || c.Derived != "" ||
+		c.Transfer.Overlap != 0 || len(c.Transfer.Bandwidth) != 0
+}
+
+// applyPolicyDefaults は置き場規則を書いたときだけ transfer.overlap の既定値を入れる。
+func (c *StorageConfig) applyPolicyDefaults() {
+	if c.policyConfigured() && c.Transfer.Overlap == 0 {
+		c.Transfer.Overlap = DefaultTransferOverlap
 	}
 }
 
-// validate checks storage definitions and desired-store rules.
+// fsStoreNames は FS 置き場の名前をソートして返す。
+func (c StorageConfig) fsStoreNames() []string {
+	var names []string
+	for name, store := range c.Stores {
+		if store.Kind == "fs" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// setSingleFSStoreCompatibilityName は規則を、今の単一 media_dir の実装へ橋渡しする。
+// FS 置き場がちょうど 1 つのときだけその名前を MediaStoreName に入れる。
+// 複数の置き場を扱う worker は置き場ごとのルートを使うので、この値から desired の置き場を推測してはならない。
+func (c *StorageConfig) setSingleFSStoreCompatibilityName() {
+	c.MediaStoreName = ""
+	if names := c.fsStoreNames(); len(names) == 1 {
+		c.MediaStoreName = names[0]
+	}
+}
+
+// validate は置き場の定義と desired の置き場規則を検査する。
 func (c StorageConfig) validate(sites []MirakcSite, missingAssetAge time.Duration) error {
-	policyConfigured := len(c.Stores) != 0 || len(c.Originals) != 0 || c.Derived != "" ||
-		c.Transfer.Overlap != 0 || len(c.Transfer.Bandwidth) != 0
-	if !policyConfigured {
+	if !c.policyConfigured() {
 		return nil
 	}
 
 	errs := c.validatePolicyRequirements()
 	errs = append(errs, c.validateStoreDefinitions()...)
 	errs = append(errs, c.validatePolicyTargets(sites)...)
+	errs = append(errs, c.validateSingleFSStore()...)
 	errs = append(errs, c.validateTransfer(missingAssetAge)...)
 	if len(errs) != 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// validateSingleFSStore は暫定の制限を強制する。
+// 今の worker は唯一の FS 置き場（MediaStoreName）にしか書かないので、
+// 別の置き場を指す規則は書き込みに効かないまま受け付けると誤解を生む。
+func (c StorageConfig) validateSingleFSStore() []string {
+	const limit = "not supported yet: workers currently write only to a single fs store"
+	fsNames := c.fsStoreNames()
+	if len(fsNames) != 1 {
+		return []string{fmt.Sprintf("storage.stores must define exactly one fs store (%s)", limit)}
+	}
+	// originals の store は FS に限られる（validatePolicyTargets）。FS 置き場が 1 つなら、規則は全てそれを指す。
+	only := fsNames[0]
+	if _, ok := c.Stores[c.Derived]; ok && c.Derived != only {
+		return []string{fmt.Sprintf("storage.derived %q must be the single fs store %q (%s)", c.Derived, only, limit)}
 	}
 	return nil
 }
@@ -219,7 +263,7 @@ func (c StorageConfig) validateTransfer(missingAssetAge time.Duration) []string 
 	} else {
 		minimumOverlap := missingAssetAge + deleteWindow
 		if c.Transfer.Overlap <= minimumOverlap {
-			errs = append(errs, fmt.Sprintf("storage.transfer.overlap must be greater than cleanup.missing_asset_age plus twice the delete reconcile interval (%s)", minimumOverlap))
+			errs = append(errs, fmt.Sprintf("storage.transfer.overlap must be greater than cleanup.missing_asset_age plus twice the delete reconcile interval (%s); set it explicitly when cleanup.missing_asset_age is raised", minimumOverlap))
 		}
 	}
 	return errs
@@ -268,8 +312,8 @@ type sqlOriginalStoreRule struct {
 }
 
 type sqlOriginalStoreMatch struct {
-	Site           string `json:"site,omitempty"`
-	OlderThanNanos int64  `json:"older_than_ns,omitempty"`
+	Site            string `json:"site,omitempty"`
+	OlderThanMicros int64  `json:"older_than_us,omitempty"`
 }
 
 func (c StorageConfig) sqlOriginalRules() ([]sqlOriginalStoreRule, error) {
@@ -283,9 +327,9 @@ func (c StorageConfig) sqlOriginalRules() ([]sqlOriginalStoreRule, error) {
 				if err != nil {
 					return nil, fmt.Errorf("storage.originals[%d].match.older_than: %w", i, err)
 				}
-				match.OlderThanNanos = int64(duration)
+				match.OlderThanMicros = duration.Microseconds()
 			}
-			if match.Site != "" || match.OlderThanNanos != 0 {
+			if match.Site != "" || match.OlderThanMicros != 0 {
 				converted.Match = match
 			}
 		}
@@ -294,7 +338,8 @@ func (c StorageConfig) sqlOriginalRules() ([]sqlOriginalStoreRule, error) {
 	return rules, nil
 }
 
-// OriginalRulesJSON returns the normalized rules argument accepted by desired_media_store.
+// OriginalRulesJSON は desired_media_store が受け取る、正規化済みの規則の JSON を返す。
+// 時間はマイクロ秒に揃える。
 func (c StorageConfig) OriginalRulesJSON() ([]byte, error) {
 	rules, err := c.sqlOriginalRules()
 	if err != nil {
@@ -304,20 +349,16 @@ func (c StorageConfig) OriginalRulesJSON() ([]byte, error) {
 }
 
 type storagePolicyFingerprintInput struct {
-	Version   int                        `json:"version"`
-	Stores    map[string]StoreConfig     `json:"stores"`
-	Originals []sqlOriginalStoreRule     `json:"originals"`
-	Derived   string                     `json:"derived"`
-	Transfer  storagePolicyTransferInput `json:"transfer"`
+	Version   int                    `json:"version"`
+	Stores    map[string]StoreConfig `json:"stores"`
+	Originals []sqlOriginalStoreRule `json:"originals"`
+	Derived   string                 `json:"derived"`
 }
 
-type storagePolicyTransferInput struct {
-	Bandwidth map[string]string `json:"bandwidth,omitempty"`
-	OverlapNS int64             `json:"overlap_ns"`
-}
-
-// PolicyFingerprint hashes only storage definitions and placement/transfer policy.
-// encoding/json sorts map keys, while duration values are represented as nanoseconds.
+// PolicyFingerprint は置き場の定義と原本・派生物の規則だけをハッシュした指紋を返す。
+// transfer は含めない。帯域と overlap は転送ジョブの宛先の判断に使わないので、
+// 変えても積み済みの転送ジョブを捨てさせない。
+// encoding/json が map のキーを整列し、時間はマイクロ秒で表す。
 func (c StorageConfig) PolicyFingerprint() (string, error) {
 	rules, err := c.sqlOriginalRules()
 	if err != nil {
@@ -327,19 +368,11 @@ func (c StorageConfig) PolicyFingerprint() (string, error) {
 	if len(stores) == 0 {
 		stores = map[string]StoreConfig{}
 	}
-	bandwidth := c.Transfer.Bandwidth
-	if len(bandwidth) == 0 {
-		bandwidth = nil
-	}
 	payload := storagePolicyFingerprintInput{
 		Version:   1,
 		Stores:    stores,
 		Originals: rules,
 		Derived:   c.Derived,
-		Transfer: storagePolicyTransferInput{
-			Bandwidth: bandwidth,
-			OverlapNS: int64(c.Transfer.Overlap),
-		},
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -348,6 +381,3 @@ func (c StorageConfig) PolicyFingerprint() (string, error) {
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
 }
-
-// normalizedOlderThanSeconds is kept here to make the SQL conversion explicit and
-// avoid copying the desired-store predicate into Go.

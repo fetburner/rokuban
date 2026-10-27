@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 const validStoragePolicy = `
@@ -15,19 +15,17 @@ storage:
     main:
       kind: fs
       internal_url: http://store-main.internal:8080
-    archive:
-      kind: fs
     s3main:
       kind: s3
       endpoint: https://s3.example.com
       bucket: rokuban-derived
   originals:
     - match: { site: default, older_than: 30d }
-      store: archive
+      store: main
     - match: { site: default }
       store: main
     - store: main
-  derived: s3main
+  derived: main
   transfer:
     bandwidth: { main: 50Mbps }
     overlap: 48h
@@ -44,13 +42,13 @@ func TestLoadStoragePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Storage.MediaStoreName; got != "" {
-		t.Fatalf("multi-fs compatibility name = %q, want empty", got)
+	if got := cfg.Storage.MediaStoreName; got != "main" {
+		t.Fatalf("single fs compatibility name = %q, want main", got)
 	}
 	if cfg.Storage.Originals[0].Match == nil || cfg.Storage.Originals[0].Match.Site != "default" || cfg.Storage.Originals[0].Match.OlderThan != "30d" {
 		t.Fatalf("originals[0].match = %+v, want site=default older_than=30d", cfg.Storage.Originals[0].Match)
 	}
-	if cfg.Storage.Stores["s3main"].Kind != "s3" || cfg.Storage.Derived != "s3main" {
+	if cfg.Storage.Stores["s3main"].Kind != "s3" || cfg.Storage.Derived != "main" {
 		t.Fatalf("stores/derived = %+v/%q", cfg.Storage.Stores, cfg.Storage.Derived)
 	}
 }
@@ -65,8 +63,6 @@ storage:
   originals:
     - store: main
   derived: main
-  transfer:
-    overlap: 48h
 `
 	cfg, err := loadStoragePolicy(t, policy)
 	if err != nil {
@@ -93,8 +89,13 @@ func TestStoragePolicyValidation(t *testing.T) {
 	}{
 		{
 			name:      "uppercase store name",
+			policy:    strings.Replace(validStoragePolicy, "    s3main:\n", "    S3main:\n", 1),
+			wantError: "storage.stores key \"S3main\"",
+		},
+		{
+			name:      "uppercase fs store name",
 			policy:    strings.Replace(validStoragePolicy, "    main:\n", "    Main:\n", 1),
-			wantError: "storage.stores key \"Main\"",
+			wantError: "storage.stores key must contain only lowercase",
 		},
 		{
 			name:      "store name longer than queue budget",
@@ -113,7 +114,7 @@ func TestStoragePolicyValidation(t *testing.T) {
 		},
 		{
 			name:      "fs store rejects s3 attributes",
-			policy:    strings.Replace(validStoragePolicy, "    archive:\n      kind: fs\n", "    archive:\n      kind: fs\n      endpoint: https://s3.example.com\n", 1),
+			policy:    strings.Replace(validStoragePolicy, "      internal_url: http://store-main.internal:8080\n", "      endpoint: https://s3.example.com\n", 1),
 			wantError: "endpoint and bucket are only valid for kind s3",
 		},
 		{
@@ -143,12 +144,12 @@ func TestStoragePolicyValidation(t *testing.T) {
 		},
 		{
 			name:      "original store must be fs",
-			policy:    strings.Replace(validStoragePolicy, "      store: archive\n", "      store: s3main\n", 1),
+			policy:    strings.Replace(validStoragePolicy, "      store: main\n    - match: { site: default }", "      store: s3main\n    - match: { site: default }", 1),
 			wantError: "must reference an fs store",
 		},
 		{
 			name:      "store must exist",
-			policy:    strings.Replace(validStoragePolicy, "      store: archive\n", "      store: missing\n", 1),
+			policy:    strings.Replace(validStoragePolicy, "      store: main\n    - match: { site: default }", "      store: missing\n    - match: { site: default }", 1),
 			wantError: "references unknown store",
 		},
 		{
@@ -160,6 +161,26 @@ func TestStoragePolicyValidation(t *testing.T) {
 			name:      "overlap honors configured missing age",
 			policy:    strings.Replace(validStoragePolicy, "overlap: 48h", "overlap: 12h30m", 1) + "cleanup:\n  missing_asset_age: 12h\n",
 			wantError: "overlap must be greater than",
+		},
+		{
+			name:      "second fs store is not supported yet",
+			policy:    strings.Replace(validStoragePolicy, "    s3main:\n", "    archive:\n      kind: fs\n    s3main:\n", 1),
+			wantError: "exactly one fs store",
+		},
+		{
+			name:      "no fs store is not supported",
+			policy:    strings.ReplaceAll(strings.Replace(validStoragePolicy, "    main:\n      kind: fs\n      internal_url: http://store-main.internal:8080\n", "", 1), "store: main", "store: s3main"),
+			wantError: "exactly one fs store",
+		},
+		{
+			name:      "originals pointing at another fs store is not supported yet",
+			policy:    strings.Replace(strings.Replace(validStoragePolicy, "    s3main:\n", "    archive:\n      kind: fs\n    s3main:\n", 1), "      store: main\n    - match: { site: default }", "      store: archive\n    - match: { site: default }", 1),
+			wantError: "exactly one fs store",
+		},
+		{
+			name:      "derived on s3 is not supported yet",
+			policy:    strings.Replace(validStoragePolicy, "derived: main", "derived: s3main", 1),
+			wantError: "storage.derived \"s3main\" must be the single fs store",
 		},
 		{
 			name:      "invalid internal url scheme",
@@ -217,7 +238,7 @@ func TestStoragePolicyOlderThanJSONNormalizesDuration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `[{"match":{"site":"default","older_than_ns":2592000000000000},"store":"archive"},{"store":"main"}]`
+	want := `[{"match":{"site":"default","older_than_us":2592000000000},"store":"archive"},{"store":"main"}]`
 	if string(got) != want {
 		t.Fatalf("rules JSON = %s, want %s", got, want)
 	}
@@ -274,12 +295,23 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 		}
 	}
 
+	changedTransfer := newStorage()
+	changedTransfer.Transfer.Bandwidth = map[string]string{"main": "10Mbps"}
+	changedTransfer.Transfer.Overlap = 72 * time.Hour
+	got, err := changedTransfer.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("fingerprint changed after transfer.bandwidth/overlap changes: got %s want %s", got, want)
+	}
+
 	changedNonPolicy := newStorage()
 	changedNonPolicy.MediaDir = "/mnt/other"
 	changedNonPolicy.ScratchDir = "/tmp/other"
 	changedNonPolicy.AccelLocation = "/private-media/"
 	changedNonPolicy.MediaStoreName = "other"
-	got, err := changedNonPolicy.PolicyFingerprint()
+	got, err = changedNonPolicy.PolicyFingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,8 +347,49 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	}
 }
 
+// TestStorageQueueNameBudget は、置き場で修飾されうるキューの最長名と置き場の名前の上限が、
+// River のキュー名の上限 64 文字に収まることを固定する。
+// 原本を読み書きしない 5 本（default / ruler / epg / reconciler / watcher）以外は、
+// 新しいキューも置き場で修飾されうるものとして数える。
 func TestStorageQueueNameBudget(t *testing.T) {
-	if got := len("cm_detect") + 1 + MaxStoreNameLen; got != jobq.MaxQueueNameLen {
-		t.Fatalf("queue length = %d, want jobq limit %d", got, jobq.MaxQueueNameLen)
+	notStoreBound := map[string]bool{"default": true, "ruler": true, "epg": true, "reconciler": true, "watcher": true}
+	longest := ""
+	for _, queue := range jobs.AllQueueNames() {
+		if notStoreBound[queue] {
+			continue
+		}
+		if len(queue) > len(longest) {
+			longest = queue
+		}
+		if got := len(queue) + 1 + MaxStoreNameLen; got > 64 {
+			t.Errorf("queue %q qualified by a %d-character store name is %d characters, want <= 64", queue, MaxStoreNameLen, got)
+		}
+	}
+	if len(longest) != 9 {
+		t.Fatalf("longest store-bound queue %q has %d characters, want 9 (update MaxStoreNameLen with it)", longest, len(longest))
+	}
+	if MaxStoreNameLen != 54 {
+		t.Fatalf("MaxStoreNameLen = %d, want 54", MaxStoreNameLen)
+	}
+}
+
+func TestStoragePolicyOverlapDefault(t *testing.T) {
+	policy := strings.Replace(validStoragePolicy, "  transfer:\n    bandwidth: { main: 50Mbps }\n    overlap: 48h\n", "", 1)
+	cfg, err := loadStoragePolicy(t, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Storage.Transfer.Overlap; got != 48*time.Hour {
+		t.Fatalf("default overlap = %s, want 48h", got)
+	}
+
+	// 長い実体無し猶予では既定の overlap が下限を割るので、明示を求める。
+	_, err = loadStoragePolicy(t, policy+"cleanup:\n  missing_asset_age: 48h\n")
+	if err == nil || !strings.Contains(err.Error(), "set it explicitly") {
+		t.Fatalf("error = %v, want a request to set overlap explicitly", err)
+	}
+	explicit := strings.Replace(validStoragePolicy, "overlap: 48h", "overlap: 72h", 1) + "cleanup:\n  missing_asset_age: 48h\n"
+	if _, err := loadStoragePolicy(t, explicit); err != nil {
+		t.Fatalf("explicit overlap: %v", err)
 	}
 }

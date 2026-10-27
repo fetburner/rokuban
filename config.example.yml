@@ -48,27 +48,33 @@ mirakcs:
 
 # ストレージ（media_dir は必須）
 storage:
+  # 置き場の規則。stores / originals / derived は一緒に書く。
+  # 今は FS の置き場を 1 つだけ定義でき、originals の全規則と derived はその置き場を指す
+  # （docs/configuration/keys.md「置き場の規則」）。
+  # 置き場の名前は英小文字・数字・- だけ。名前は media_dir の root の .rokuban-store に書く名前になる。
   stores:
-    tokyo:
-      kind: fs
-      internal_url: http://rokuban-store-tokyo.internal:8080
-    takamatsu:
-      kind: fs
-      internal_url: http://rokuban-store-takamatsu.internal:8080
-    s3main:
-      kind: s3
-      endpoint: https://s3.example.com
-      bucket: rokuban-derived
-  originals:                         # 上から順に最初に一致した規則。最後は無条件
-    - match: { site: default, older_than: 30d }
-      store: tokyo
-    - match: { site: default }
-      store: takamatsu
-    - store: tokyo
-  derived: s3main                   # 派生物は全 site 共通の置き場に置く
-  transfer:
-    bandwidth: { takamatsu: 50Mbps } # 転送元の置き場ごとの上限
-    overlap: 48h                     # 実体無し猶予 + 削除 reconcile 2 回分より長くする
+    main: { kind: fs }
+  originals:                         # 上から評価して最初に一致した規則を使う。最後は無条件
+    - store: main
+  derived: main
+  # transfer:                        # 置き場が 1 つの間は転送が起きないので省略してよい
+  #   overlap: 48h                   # 既定 48h。cleanup.missing_asset_age を延ばしたら、
+  #                                  # 実体無しの猶予 + 削除 reconcile 2 回分より長い値を明示する
+  #
+  # 次の形は複数の置き場に対応した後のもので、今は検証で拒否される（まだ使えない）。
+  # stores:
+  #   tokyo: { kind: fs, internal_url: http://rokuban-store-tokyo.internal:8080 }
+  #   takamatsu: { kind: fs, internal_url: http://rokuban-store-takamatsu.internal:8080 }
+  #   s3main: { kind: s3, endpoint: https://s3.example.com, bucket: rokuban-derived }
+  # originals:
+  #   - match: { site: takamatsu, older_than: 30d }   # 放送終了から 30 日を過ぎた高松の原本は
+  #     store: tokyo                                   # 中央へ
+  #   - match: { site: takamatsu }
+  #     store: takamatsu
+  #   - store: tokyo
+  # derived: s3main                  # 派生物は全 site 共通の置き場
+  # transfer:
+  #   bandwidth: { takamatsu: 50Mbps }   # 転送元の置き場ごとの上限
   media_dir: /mnt/media          # 原本 ingest 先。file fsync / Close / 同一 FS の
                                   # atomic rename / 親 directory fsync を信頼できる
                                   # ローカル FS / JuiceFS / NFS に限定する。geesefs / s3fs /

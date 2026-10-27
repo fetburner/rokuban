@@ -461,7 +461,7 @@ GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/i
 GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/{n}.ts
 ```
 
-`{store}` は `storage.stores` に定義した FS 置き場の名前と一致する必要がある。録画 HLS は現在、FS 置き場が 1 つの構成を要求する。振り分けの鍵を site ではなく置き場にするのは、規則によって 1 つの site の原本が複数の置き場に分かれうるからである。`{gen}` は原本アセットの `ingest_generation` で、NULL は 0 とする。今の世代と異なる URL は 410 にする。
+`{store}` は `storage.stores` に定義した FS 置き場の名前と一致する必要がある（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）。振り分けの鍵を site ではなく置き場にするのは、規則によって 1 つの site の原本が複数の置き場に分かれうるからである。`{gen}` は原本アセットの `ingest_generation` で、NULL は 0 とする。今の世代と異なる URL は 410 にする。
 
 #### playlist と原本の判定
 

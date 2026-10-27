@@ -31,7 +31,7 @@ func TestLoadRecordingHLS(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			data := minimalConfig + tc.setting
 			if tc.store != "" {
-				policy := "media_dir: /mnt/media\n  stores:\n    " + tc.store + ":\n      kind: fs\n  originals:\n    - store: " + tc.store + "\n  derived: " + tc.store + "\n  transfer:\n    overlap: 48h"
+				policy := "media_dir: /mnt/media\n  stores:\n    " + tc.store + ":\n      kind: fs\n  originals:\n    - store: " + tc.store + "\n  derived: " + tc.store
 				data = strings.Replace(data, "media_dir: /mnt/media", policy, 1)
 			}
 			cfg, err := Load(writeConfig(t, data))
