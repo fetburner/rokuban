@@ -234,9 +234,15 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 		return nil
 	}
 	if errors.Is(copyErr, errTransferSourceMismatch) {
-		sourceSHA, _, hashErr := hashTransferFile(ctx, sourcePath)
+		sourceSHA, sourceSize, hashErr := hashTransferFile(ctx, sourcePath)
 		if hashErr != nil {
 			return w.recordTransferFailure(ctx, transfer, args.Store, log, hashErr)
+		}
+		if sourceMatchesTransferMetadata(transfer, sourceSize, sourceSHA) {
+			if err := fsink.RemoveTemp(tempPath); err != nil {
+				return w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("discarding transfer temp that differs from the valid source: %w", err))
+			}
+			return w.recordTransferFailure(ctx, transfer, args.Store, log, errors.New("transfer temp differs from the current source"))
 		}
 		return w.sourceMismatch(ctx, transfer, args.Store, log, sourceSHA, tempPath, "source content or size differs from logical asset")
 	}
@@ -307,11 +313,39 @@ func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePa
 		return nil, 0, false, fmt.Errorf("stating transfer temp: %w", err)
 	}
 	if tempInfo.Size() > expectedSize {
+		if err := fsink.RemoveCheckpoint(tempPath); err != nil {
+			return nil, 0, false, fmt.Errorf("removing checkpoint for oversized transfer temp: %w", err)
+		}
 		if err := tempLock.Truncate(0); err != nil {
 			return nil, 0, false, fmt.Errorf("truncating oversized transfer temp: %w", err)
 		}
-		if err := fsink.RemoveCheckpoint(tempPath); err != nil {
-			return nil, 0, false, fmt.Errorf("removing checkpoint for oversized transfer temp: %w", err)
+	}
+	tempInfo, err = tempLock.Stat()
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("stating transfer temp after size check: %w", err)
+	}
+	checkpointHasher := sha256.New()
+	checkpointOffset, checkpointed := fsink.RestoreCheckpoint(tempPath, tempInfo.Size(), checkpointHasher)
+	if checkpointed && checkpointOffset > 0 {
+		tempPrefixHasher := sha256.New()
+		tempPrefixReader := io.NewSectionReader(tempLock, 0, checkpointOffset)
+		verifiedPrefixBytes, prefixErr := io.CopyN(tempPrefixHasher, &storageTransferContextReader{ctx: ctx, reader: tempPrefixReader}, checkpointOffset)
+		if ctx.Err() != nil {
+			return nil, verifiedPrefixBytes, true, nil
+		}
+		if prefixErr != nil {
+			return nil, verifiedPrefixBytes, false, fmt.Errorf("verifying checkpointed transfer temp prefix: %w", prefixErr)
+		}
+		if verifiedPrefixBytes != checkpointOffset {
+			return nil, verifiedPrefixBytes, false, fmt.Errorf("verifying checkpointed transfer temp prefix: read=%d expected=%d", verifiedPrefixBytes, checkpointOffset)
+		}
+		if !bytes.Equal(tempPrefixHasher.Sum(nil), checkpointHasher.Sum(nil)) {
+			if err := fsink.RemoveCheckpoint(tempPath); err != nil {
+				return nil, 0, false, fmt.Errorf("removing checkpoint for damaged transfer temp: %w", err)
+			}
+			if err := tempLock.Truncate(0); err != nil {
+				return nil, 0, false, fmt.Errorf("truncating damaged transfer temp: %w", err)
+			}
 		}
 	}
 	hasher := sha256.New()
@@ -454,6 +488,10 @@ func (w *StorageTransferWorker) sourceMismatch(ctx context.Context, transfer sto
 		}
 	}
 	return nil
+}
+
+func sourceMatchesTransferMetadata(transfer store.MediaAssetTransfer, sourceSize int64, sourceSHA []byte) bool {
+	return sourceSize == transfer.SizeBytes && (len(transfer.SHA256) == 0 || bytes.Equal(sourceSHA, transfer.SHA256))
 }
 
 func (w *StorageTransferWorker) recordTransferFailure(ctx context.Context, transfer store.MediaAssetTransfer, targetStore string, log *slog.Logger, cause error) error {

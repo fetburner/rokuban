@@ -193,6 +193,10 @@ WHERE a.id = (SELECT media_asset_id FROM discarded)
   AND NOT EXISTS (
       SELECT 1 FROM media_asset_copies c
       WHERE c.media_asset_id = a.id AND c.state IN ('active', 'pending')
+        AND NOT EXISTS (
+            SELECT 1 FROM discarded d
+            WHERE d.media_asset_id = c.media_asset_id AND d.store = c.store
+        )
   )
 `
 
@@ -443,6 +447,10 @@ WHERE a.id = (SELECT media_asset_id FROM deleted)
   AND NOT EXISTS (
       SELECT 1 FROM media_asset_copies c
       WHERE c.media_asset_id = a.id AND c.state = 'active'
+        AND NOT EXISTS (
+            SELECT 1 FROM deleted d
+            WHERE d.media_asset_id = c.media_asset_id AND d.store = c.store
+        )
   )
   AND NOT EXISTS (
       SELECT 1 FROM media_asset_copies c

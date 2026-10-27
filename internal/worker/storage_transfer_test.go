@@ -83,15 +83,17 @@ SET rel_path = EXCLUDED.rel_path, state = 'active', deleted_at = NULL, created_a
 
 func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		existing      bool
-		resume        bool
-		sourceChanged bool
+		name                      string
+		existing                  bool
+		resume                    bool
+		sourceChanged             bool
+		corruptCheckpointedPrefix bool
 	}{
 		{name: "copy computes and stores SHA-256"},
 		{name: "matching restored destination is adopted", existing: true},
 		{name: "checkpointed temp resumes", resume: true},
 		{name: "changed source prefix rejects checkpoint without deleting original", resume: true, sourceChanged: true},
+		{name: "damaged checkpointed temp prefix is recopied", resume: true, corruptCheckpointedPrefix: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
@@ -135,6 +137,13 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 				}
 				if err := fsink.WriteCheckpoint(tempPath, int64(len(partial)), hasher, nil); err != nil {
 					t.Fatalf("writing transfer checkpoint: %v", err)
+				}
+				if tc.corruptCheckpointedPrefix {
+					corrupted := bytes.Clone(partial)
+					corrupted[0] ^= 0xff
+					if err := os.WriteFile(tempPath, corrupted, 0o644); err != nil {
+						t.Fatalf("corrupting checkpointed transfer temp prefix: %v", err)
+					}
 				}
 				if tc.sourceChanged {
 					changedSource = bytes.Clone(content)
@@ -232,6 +241,127 @@ func TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource(t *te
 	}
 	if attempts != 1 {
 		t.Fatalf("transfer attempt count = %d, want 1", attempts)
+	}
+}
+
+func TestStorageTransferWorkerDeletesDerivedAssetAfterItsOnlyCopyIsCorrupt(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	recordingID := dbtest.Recording(t, pool)
+	relPath := "sites/default/transfer/thumbnail.jpg"
+	content := []byte("thumbnail bytes")
+	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, relPath, content)
+	wrongSHA := sha256.Sum256([]byte("different thumbnail bytes"))
+	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", wrongSHA[:], assetID); err != nil {
+		t.Fatalf("setting mismatched logical checksum: %v", err)
+	}
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store"), Config: cfg, Roots: roots}
+	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
+		Action: jobs.StorageTransferActionCopy, MediaAssetID: assetID,
+		Store: "archive", PolicyFingerprint: fingerprint,
+	}); err != nil {
+		t.Fatalf("Work with corrupt sole derived copy: %v", err)
+	}
+
+	var assetState, sourceState, targetState string
+	if err := pool.QueryRow(context.Background(),
+		"SELECT a.state, source.state, target.state FROM media_assets a JOIN media_asset_copies source ON source.media_asset_id = a.id AND source.store = $2 JOIN media_asset_copies target ON target.media_asset_id = a.id AND target.store = $3 WHERE a.id = $1",
+		assetID, "test-store", "archive").Scan(&assetState, &sourceState, &targetState); err != nil {
+		t.Fatalf("reading asset/copy states after derived source mismatch: %v", err)
+	}
+	if assetState != "deleted" || sourceState != "deleted" || targetState != "deleted" {
+		t.Fatalf("asset/source/target states = %q/%q/%q, want deleted/deleted/deleted", assetState, sourceState, targetState)
+	}
+	if fileExists(filepath.Join(roots["archive"], filepath.FromSlash(relPath))) {
+		t.Fatal("mismatched derived source was published to the destination")
+	}
+}
+
+func TestStorageTransferWorkerDoesNotInvalidateValidDerivedSourceForDamagedTemp(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	recordingID := dbtest.Recording(t, pool)
+	relPath := "sites/default/transfer/thumbnail.jpg"
+	content := []byte("thumbnail bytes that survive a damaged temporary transfer")
+	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, relPath, content)
+	expectedSHA := sha256.Sum256(content)
+	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", expectedSHA[:], assetID); err != nil {
+		t.Fatalf("setting logical checksum: %v", err)
+	}
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	rules := mustOriginalRules(t, cfg)
+	media := pgstore.NewMedia(pool, "test-store")
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.Derived, 10)
+	if err != nil || !ok {
+		t.Fatalf("preparing damaged resumed transfer = (%+v, %t, %v)", transfer, ok, err)
+	}
+	tempPath := filepath.Join(roots["archive"], filepath.Dir(filepath.FromSlash(relPath)), fmt.Sprintf(".rokuban-transfer-%d-%d", assetID, transfer.CopyID))
+	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	checkpointedPrefix := content[:len(content)/2]
+	damagedTemp := append(bytes.Clone(checkpointedPrefix), bytes.Clone(content[len(checkpointedPrefix):])...)
+	damagedTemp[len(checkpointedPrefix)] ^= 0xff
+	if err := os.WriteFile(tempPath, damagedTemp, 0o644); err != nil {
+		t.Fatalf("writing damaged transfer temp: %v", err)
+	}
+	checkpointHasher := sha256.New()
+	if _, err := checkpointHasher.Write(checkpointedPrefix); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsink.WriteCheckpoint(tempPath, int64(len(checkpointedPrefix)), checkpointHasher, nil); err != nil {
+		t.Fatalf("writing transfer checkpoint: %v", err)
+	}
+
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots}
+	args := jobs.StorageTransferArgs{Action: jobs.StorageTransferActionCopy, MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
+	if err := worker.Work(context.Background(), args); err != nil {
+		t.Fatalf("Work with damaged uncheckpointed temp tail: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("derived asset state after damaged temp = %q, want active", got)
+	}
+	var sourceState, targetState string
+	var attemptCount int32
+	if err := pool.QueryRow(context.Background(),
+		"SELECT source.state, target.state, attempts.attempt_count FROM media_asset_copies source JOIN media_asset_copies target ON target.media_asset_id = source.media_asset_id JOIN media_asset_transfer_attempts attempts ON attempts.media_asset_id = target.media_asset_id AND attempts.store = target.store WHERE source.media_asset_id = $1 AND source.store = $2 AND target.store = $3",
+		assetID, "test-store", "archive").Scan(&sourceState, &targetState, &attemptCount); err != nil {
+		t.Fatalf("reading copy/failure state after damaged temp: %v", err)
+	}
+	if sourceState != "active" || targetState != "pending" || attemptCount != 1 {
+		t.Fatalf("source/target/failure states = %q/%q/%d, want active/pending/1", sourceState, targetState, attemptCount)
+	}
+	if fileExists(filepath.Join(roots["archive"], filepath.FromSlash(relPath))) || fileExists(tempPath) {
+		t.Fatal("damaged transfer temp or destination remains after rejection")
+	}
+
+	if err := worker.Work(context.Background(), args); err != nil {
+		t.Fatalf("retrying transfer after damaged temp was discarded: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(relPath)))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("recovered destination bytes = %q, %v; want %q", got, err, content)
+	}
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("derived asset state after retry = %q, want active", got)
+	}
+	if err := pool.QueryRow(context.Background(),
+		"SELECT source.state, target.state FROM media_asset_copies source JOIN media_asset_copies target ON target.media_asset_id = source.media_asset_id WHERE source.media_asset_id = $1 AND source.store = $2 AND target.store = $3",
+		assetID, "test-store", "archive").Scan(&sourceState, &targetState); err != nil {
+		t.Fatalf("reading copy states after recovery: %v", err)
+	}
+	if sourceState != "active" || targetState != "active" {
+		t.Fatalf("copy states after retry = %q/%q, want active/active", sourceState, targetState)
 	}
 }
 
