@@ -91,6 +91,10 @@ VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
 UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
 					t.Fatalf("marking media asset deleted: %v", err)
 				}
+				if _, err := pool.Exec(context.Background(), `
+UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
+					t.Fatalf("marking media asset copy deleted: %v", err)
+				}
 				return recordingID, assetID
 			},
 			NewRemovedEncoded: func(t *testing.T) (int64, int64) {

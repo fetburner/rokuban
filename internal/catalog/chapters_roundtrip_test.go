@@ -20,7 +20,7 @@ import (
 func TestExportRescue_RoundTripsUserChapters(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 400

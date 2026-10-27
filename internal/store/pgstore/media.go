@@ -13,18 +13,68 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
 // Media はメディア配信・reconcile・API・ストレージ観測の契約を PostgreSQL で実装する。
 // pool を持ち、利用側の用途ごとに分けた interface を満たす。
 type Media struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	storeName string
 }
 
 // NewMedia は PostgreSQL を使う Media を作る。
-func NewMedia(pool *pgxpool.Pool) *Media {
-	return &Media{pool: pool}
+func NewMedia(pool *pgxpool.Pool, storeNames ...string) *Media {
+	var storeName string
+	if len(storeNames) > 0 {
+		storeName = storeNames[0]
+	}
+	return &Media{pool: pool, storeName: storeName}
+}
+
+// AdoptUnassignedStoreRows は空の store を持つコピー・観測行をこの置き場へ割り当てる。
+func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
+	if !mediapath.ValidStoreName(s.storeName) {
+		return fmt.Errorf("invalid media store name %q", s.storeName)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning media store adoption: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	if err := q.AdoptUnassignedMediaAssetCopies(ctx, s.storeName); err != nil {
+		return fmt.Errorf("assigning unowned media asset copies: %w", err)
+	}
+	if err := q.AdoptUnassignedIngestTemps(ctx, s.storeName); err != nil {
+		return fmt.Errorf("assigning unowned ingest temps: %w", err)
+	}
+	if err := q.AdoptUnassignedOrphans(ctx, s.storeName); err != nil {
+		return fmt.Errorf("assigning unowned orphan observations: %w", err)
+	}
+	if err := q.AdoptUnassignedMissingMediaAssets(ctx, s.storeName); err != nil {
+		return fmt.Errorf("assigning unowned missing asset observations: %w", err)
+	}
+	if err := q.AdoptUnassignedStorageSync(ctx, s.storeName); err != nil {
+		return fmt.Errorf("assigning unowned storage observations: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing media store adoption: %w", mapDatabaseError(err))
+	}
+	return nil
+}
+
+// RequireAdoptedStoreRows は割り当て前のコピー・観測行が残っていないことを確認する。
+func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
+	count, err := sqlcgen.New(s.pool).CountUnassignedStorageRows(ctx)
+	if err != nil {
+		return fmt.Errorf("checking for unassigned media store rows: %w", err)
+	}
+	if count != 0 {
+		return fmt.Errorf("%d media store row(s) have no store; run `rokuban storage adopt <store-name>` before starting workers", count)
+	}
+	return nil
 }
 
 var (
@@ -207,7 +257,9 @@ func (s *Media) GetEncodedPublishState(
 		Profile:     &profile,
 	})
 	if err == nil {
-		asset := store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State}
+		asset := store.EncodedAssetObservation{
+			ID: row.ID, RelPath: row.RelPath, State: row.State, DerivedGeneration: row.DerivedGeneration,
+		}
 		if cut {
 			asset.KeepRanges, err = assetKeepRanges(ctx, q, row.ID)
 			if err != nil {
@@ -343,9 +395,25 @@ func (s *Media) ListEncodedMeaningEvidence(ctx context.Context) ([]store.Encoded
 	}
 	out := make([]store.EncodedMeaningEvidence, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, store.EncodedMeaningEvidence{Profile: row.Profile, RelPath: row.RelPath})
+		out = append(out, store.EncodedMeaningEvidence{
+			Profile: row.Profile, RelPath: row.RelPath, DerivedGeneration: row.DerivedGeneration,
+		})
 	}
 	return out, nil
+}
+
+// GetDerivedMediaAssetGeneration は派生アセットの現在世代を返す。
+func (s *Media) GetDerivedMediaAssetGeneration(ctx context.Context, recordingID int64, kind string) (int64, bool, error) {
+	generation, err := sqlcgen.New(s.pool).GetDerivedMediaAssetGeneration(ctx, sqlcgen.GetDerivedMediaAssetGenerationParams{
+		RecordingID: recordingID, Kind: kind,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("getting %s generation for recording %d: %w", kind, recordingID, err)
+	}
+	return generation, true, nil
 }
 
 // ListMissingThumbnailRecordings はサムネイルが無い録画をページ単位で返す。
@@ -383,6 +451,7 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 			OriginalRelPath:       row.OriginalRelPath,
 			ThumbnailMediaAssetID: row.ThumbnailMediaAssetID,
 			ThumbnailRelPath:      row.ThumbnailRelPath,
+			ThumbnailGeneration:   row.ThumbnailGeneration,
 			SeekMs:                row.SeekMs,
 		}
 		var err error
@@ -514,7 +583,9 @@ func (s *Media) ListRecordingDropPositions(ctx context.Context, recordingID int6
 
 // DeleteStorageSyncExcept は今回の config が要求しない root の観測行を削除する。
 func (s *Media) DeleteStorageSyncExcept(ctx context.Context, roots []string) error {
-	if err := sqlcgen.New(s.pool).DeleteStorageSyncExcept(ctx, nonNilStrings(roots)); err != nil {
+	if err := sqlcgen.New(s.pool).DeleteStorageSyncExcept(ctx, sqlcgen.DeleteStorageSyncExceptParams{
+		Store: s.storeName, Roots: nonNilStrings(roots),
+	}); err != nil {
 		return fmt.Errorf("deleting stale storage roots: %w", err)
 	}
 	return nil
@@ -523,6 +594,7 @@ func (s *Media) DeleteStorageSyncExcept(ctx context.Context, roots []string) err
 // UpsertStorageSync は 1 root の最新観測値を保存する。
 func (s *Media) UpsertStorageSync(ctx context.Context, observation store.StorageObservationInput) error {
 	if err := sqlcgen.New(s.pool).UpsertStorageSync(ctx, sqlcgen.UpsertStorageSyncParams{
+		Store:          s.storeName,
 		Root:           observation.Root,
 		Path:           observation.Path,
 		TotalBytes:     observation.TotalBytes,
@@ -536,7 +608,7 @@ func (s *Media) UpsertStorageSync(ctx context.Context, observation store.Storage
 
 // ListStorageSync は現在の root 別観測値を返す。
 func (s *Media) ListStorageSync(ctx context.Context) ([]store.StorageSync, error) {
-	rows, err := sqlcgen.New(s.pool).ListStorageSync(ctx)
+	rows, err := sqlcgen.New(s.pool).ListStorageSync(ctx, s.storeName)
 	if err != nil {
 		return nil, fmt.Errorf("listing storage sync: %w", err)
 	}
@@ -565,7 +637,7 @@ func (s *Media) ListAllMediaAssetRelPaths(ctx context.Context) ([]string, error)
 
 // UpsertOrphanFile は孤児候補を記録し、既存候補の first_seen を保持する。
 func (s *Media) UpsertOrphanFile(ctx context.Context, relPath string) error {
-	if err := sqlcgen.New(s.pool).UpsertOrphanFile(ctx, relPath); err != nil {
+	if err := sqlcgen.New(s.pool).UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: s.storeName, RelPath: relPath}); err != nil {
 		return fmt.Errorf("recording orphan path %q: %w", relPath, err)
 	}
 	return nil
@@ -573,7 +645,7 @@ func (s *Media) UpsertOrphanFile(ctx context.Context, relPath string) error {
 
 // DeleteOrphanFile は解消した孤児候補を消す。
 func (s *Media) DeleteOrphanFile(ctx context.Context, relPath string) error {
-	if err := sqlcgen.New(s.pool).DeleteOrphanFile(ctx, relPath); err != nil {
+	if err := sqlcgen.New(s.pool).DeleteOrphanFile(ctx, sqlcgen.DeleteOrphanFileParams{Store: s.storeName, RelPath: relPath}); err != nil {
 		return fmt.Errorf("deleting orphan path %q: %w", relPath, err)
 	}
 	return nil
@@ -581,7 +653,7 @@ func (s *Media) DeleteOrphanFile(ctx context.Context, relPath string) error {
 
 // ListAllOrphanFiles は記録中の孤児候補を返す。
 func (s *Media) ListAllOrphanFiles(ctx context.Context) ([]store.OrphanFile, error) {
-	rows, err := sqlcgen.New(s.pool).ListAllOrphanFiles(ctx)
+	rows, err := sqlcgen.New(s.pool).ListAllOrphanFiles(ctx, s.storeName)
 	if err != nil {
 		return nil, fmt.Errorf("listing orphan candidates: %w", err)
 	}
@@ -594,7 +666,9 @@ func (s *Media) ListAllOrphanFiles(ctx context.Context) ([]store.OrphanFile, err
 
 // ListAgedOrphanFiles は指定期間より前から記録されている孤児候補を返す。
 func (s *Media) ListAgedOrphanFiles(ctx context.Context, age time.Duration) ([]string, error) {
-	rows, err := sqlcgen.New(s.pool).ListAgedOrphanFiles(ctx, age.Microseconds())
+	rows, err := sqlcgen.New(s.pool).ListAgedOrphanFiles(ctx, sqlcgen.ListAgedOrphanFilesParams{
+		Store: s.storeName, Age: age.Microseconds(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing aged orphan candidates: %w", err)
 	}
@@ -616,7 +690,9 @@ func (s *Media) ListActiveMediaAssets(ctx context.Context) ([]store.ActiveMediaA
 
 // UpsertMissingMediaAsset は実体無し候補を記録し、既存候補の first_seen を保持する。
 func (s *Media) UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	if err := sqlcgen.New(s.pool).UpsertMissingMediaAsset(ctx, mediaAssetID); err != nil {
+	if err := sqlcgen.New(s.pool).UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{
+		MediaAssetID: mediaAssetID, Store: s.storeName,
+	}); err != nil {
 		return fmt.Errorf("recording missing media asset %d: %w", mediaAssetID, err)
 	}
 	return nil
@@ -624,7 +700,9 @@ func (s *Media) UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64)
 
 // DeleteMissingMediaAsset は実体が再び観測された候補を消す。
 func (s *Media) DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	if err := sqlcgen.New(s.pool).DeleteMissingMediaAsset(ctx, mediaAssetID); err != nil {
+	if err := sqlcgen.New(s.pool).DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{
+		MediaAssetID: mediaAssetID, Store: s.storeName,
+	}); err != nil {
 		return fmt.Errorf("deleting missing media asset %d: %w", mediaAssetID, err)
 	}
 	return nil
@@ -632,7 +710,7 @@ func (s *Media) DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64)
 
 // ListAllMissingMediaAssetIDs は記録中の実体無し候補 ID を返す。
 func (s *Media) ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error) {
-	rows, err := sqlcgen.New(s.pool).ListAllMissingMediaAssetIDs(ctx)
+	rows, err := sqlcgen.New(s.pool).ListAllMissingMediaAssetIDs(ctx, s.storeName)
 	if err != nil {
 		return nil, fmt.Errorf("listing missing media asset candidates: %w", err)
 	}
@@ -641,7 +719,9 @@ func (s *Media) ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error
 
 // ListAgedMissingMediaAssets は指定期間より前から見つからない active 行を返す。
 func (s *Media) ListAgedMissingMediaAssets(ctx context.Context, age time.Duration) ([]store.AgedMissingMediaAsset, error) {
-	rows, err := sqlcgen.New(s.pool).ListAgedMissingMediaAssets(ctx, age.Microseconds())
+	rows, err := sqlcgen.New(s.pool).ListAgedMissingMediaAssets(ctx, sqlcgen.ListAgedMissingMediaAssetsParams{
+		Store: s.storeName, Age: age.Microseconds(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing aged missing media assets: %w", err)
 	}

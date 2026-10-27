@@ -26,6 +26,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -33,10 +34,38 @@ import (
 
 func writeServerTestConfig(t *testing.T, content string) string {
 	t.Helper()
+	storeName := "test-store"
+	if strings.Contains(content, "storage:") && !strings.Contains(content, "media_store_name:") {
+		content = strings.Replace(content, "storage:\n", "storage:\n  media_store_name: "+storeName+"\n", 1)
+	} else if i := strings.Index(content, "media_store_name:"); i >= 0 {
+		lineEnd := strings.IndexByte(content[i:], '\n')
+		if lineEnd >= 0 {
+			storeName = strings.Trim(strings.TrimSpace(content[i+len("media_store_name:"):i+lineEnd]), "\"'")
+		}
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yml")
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
+	}
+	for _, line := range strings.Split(content, "\n") {
+		field := strings.TrimSpace(line)
+		if !strings.HasPrefix(field, "media_dir:") {
+			continue
+		}
+		mediaDir := strings.Trim(strings.TrimSpace(strings.TrimPrefix(field, "media_dir:")), "\"'")
+		rel, err := filepath.Rel(os.TempDir(), mediaDir)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if err := os.MkdirAll(mediaDir, 0755); err != nil {
+				t.Fatalf("creating test media directory: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(mediaDir, ".rokuban-store")); os.IsNotExist(err) {
+				if err := mediapath.WriteStoreMarker(mediaDir, storeName); err != nil {
+					t.Fatalf("writing test media store marker: %v", err)
+				}
+			}
+		}
+		break
 	}
 	return path
 }
@@ -257,20 +286,23 @@ func TestServerCmd_WorkerRequiresScratchDir(t *testing.T) {
 	}
 }
 
-func TestServerCmd_IngestWorkerProbesStorageBeforeDatabase(t *testing.T) {
+func TestServerCmd_IngestWorkerDefersStorageProbeWithoutStoreMarker(t *testing.T) {
 	mediaDir := filepath.Join(t.TempDir(), "missing-media")
 	configText := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: "+mediaDir, 1)
 	path := writeServerTestConfig(t, configText)
+	if err := os.RemoveAll(mediaDir); err != nil {
+		t.Fatalf("removing test media directory: %v", err)
+	}
 
 	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites", "tokyo", "--queues=ingest")
 	if err == nil {
-		t.Fatal("missing media_dir should fail before the database connection")
+		t.Fatal("unavailable database should fail after deferring the probe")
 	}
-	if !strings.Contains(err.Error(), "validating ingest storage") {
-		t.Errorf("err = %v, want ingest storage probe error", err)
+	if !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v, want the marker check to defer the probe until ingest", err)
 	}
-	if strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("err = %v: database connection was attempted before the ingest storage probe", err)
+	if strings.Contains(err.Error(), "validating ingest storage") {
+		t.Errorf("err = %v: probe ran before the store marker was verified", err)
 	}
 }
 
@@ -286,6 +318,9 @@ func TestServerCmd_IngestWorkerProbeSucceedsWithReadOnlyMediaRoot(t *testing.T) 
 		t.Skip("POSIX permission bits only")
 	}
 	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, "test-store"); err != nil {
+		t.Fatalf("writing test media store marker: %v", err)
+	}
 	if err := os.Mkdir(filepath.Join(mediaDir, "sites"), 0o755); err != nil {
 		t.Fatalf("creating sites dir: %v", err)
 	}
@@ -327,9 +362,12 @@ func TestServerCmd_WorkerRejectsBareMediaAssetRelPath(t *testing.T) {
 		fixtureParams.ProgramDurationMs = 60_000
 	})
 
-	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "archive/old.m2ts"
 	})
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET store = 'test-store' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("assigning fixture media store: %v", err)
+	}
 
 	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
 	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites=", "--queues=cleanup")
@@ -366,11 +404,13 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
 	profile := "cutp"
+	generation := int64(1)
 	if _, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
-		RecordingID: recordingID,
-		Profile:     &profile,
-		RelPath:     relPath,
-		SizeBytes:   1,
+		RecordingID:       recordingID,
+		Profile:           &profile,
+		RelPath:           relPath,
+		SizeBytes:         1,
+		DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("UpsertEncodedMediaAsset: %v", err)
 	}

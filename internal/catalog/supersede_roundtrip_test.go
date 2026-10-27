@@ -57,7 +57,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 		t.Fatalf("exported recordings = %d, want 2", len(doc.Recordings))
 	}
 
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	genDir, err := Write(mediaDir, doc, 7, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)

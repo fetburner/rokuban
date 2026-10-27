@@ -56,7 +56,7 @@ func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 		t.Fatal("transient playback positions were included in catalog")
 	}
 
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	genDir, err := Write(mediaDir, doc, DefaultKeep, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)

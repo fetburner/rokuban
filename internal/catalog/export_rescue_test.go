@@ -219,7 +219,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 			p, recID)
 	}
 
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	if _, err := Write(mediaDir, doc, 7, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -461,12 +461,25 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 		t.Fatalf("decode document fields: %v", err)
 	}
 	delete(fields, "mediaAssetTsScans")
+	var legacyAssets []map[string]json.RawMessage
+	if err := json.Unmarshal(fields["mediaAssets"], &legacyAssets); err != nil {
+		t.Fatalf("decode legacy media assets: %v", err)
+	}
+	for _, asset := range legacyAssets {
+		delete(asset, "store")
+		delete(asset, "sha256")
+		delete(asset, "derivedGeneration")
+	}
+	fields["mediaAssets"], err = json.Marshal(legacyAssets)
+	if err != nil {
+		t.Fatalf("marshal legacy media assets: %v", err)
+	}
 	legacyJSON, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatalf("marshal legacy document: %v", err)
 	}
 
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	assetPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
 		t.Fatalf("create media directory: %v", err)
@@ -485,6 +498,13 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 	}
 	if result.MediaAssetTSScans != 1 {
 		t.Fatalf("rescued media_asset_ts_scans = %d, want 1", result.MediaAssetTSScans)
+	}
+	var restoredStore string
+	if err := pool.QueryRow(ctx, `SELECT store FROM media_asset_copies WHERE media_asset_id = $1 AND store <> ''`, assetID).Scan(&restoredStore); err != nil {
+		t.Fatalf("query restored media asset store: %v", err)
+	}
+	if restoredStore != "test-store" {
+		t.Fatalf("legacy media asset store = %q, want marker value test-store", restoredStore)
 	}
 	var scannedSize int64
 	if err := pool.QueryRow(ctx,
@@ -616,7 +636,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	}
 
 	// フルパイプライン: 最後に取れた Document を rescue しても FK 違反が出ないこと。
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	if _, err := Write(mediaDir, lastDoc, 7, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}

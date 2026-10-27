@@ -54,16 +54,21 @@ func (q *Queries) GetRecordSyncIngestTarget(ctx context.Context, arg GetRecordSy
 const getRecordingIngestTempState = `-- name: GetRecordingIngestTempState :one
 SELECT temp_rel_path, temp_generation
 FROM recording_ingest_progress
-WHERE recording_id = $1
+WHERE recording_id = $1 AND temp_store = $2
 `
+
+type GetRecordingIngestTempStateParams struct {
+	RecordingID int64
+	TempStore   string
+}
 
 type GetRecordingIngestTempStateRow struct {
 	TempRelPath    string
 	TempGeneration int64
 }
 
-func (q *Queries) GetRecordingIngestTempState(ctx context.Context, recordingID int64) (GetRecordingIngestTempStateRow, error) {
-	row := q.db.QueryRow(ctx, getRecordingIngestTempState, recordingID)
+func (q *Queries) GetRecordingIngestTempState(ctx context.Context, arg GetRecordingIngestTempStateParams) (GetRecordingIngestTempStateRow, error) {
+	row := q.db.QueryRow(ctx, getRecordingIngestTempState, arg.RecordingID, arg.TempStore)
 	var i GetRecordingIngestTempStateRow
 	err := row.Scan(&i.TempRelPath, &i.TempGeneration)
 	return i, err
@@ -82,13 +87,14 @@ func (q *Queries) NextIngestTempGeneration(ctx context.Context) (int64, error) {
 
 const upsertRecordingIngestProgress = `-- name: UpsertRecordingIngestProgress :exec
 INSERT INTO recording_ingest_progress (
-    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, observed_at
-) VALUES ($1, $2, $3, $4, $5, now())
+    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, temp_store, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
 ON CONFLICT (recording_id) DO UPDATE SET
     written_bytes  = EXCLUDED.written_bytes,
     expected_bytes = EXCLUDED.expected_bytes,
     temp_rel_path  = EXCLUDED.temp_rel_path,
     temp_generation = EXCLUDED.temp_generation,
+    temp_store      = EXCLUDED.temp_store,
     observed_at    = now()
 `
 
@@ -98,6 +104,7 @@ type UpsertRecordingIngestProgressParams struct {
 	ExpectedBytes  *int64
 	TempRelPath    string
 	TempGeneration int64
+	TempStore      string
 }
 
 // 転送中の進捗を上書きする。行の存在そのものが「転送中」の主張なので
@@ -115,6 +122,7 @@ func (q *Queries) UpsertRecordingIngestProgress(ctx context.Context, arg UpsertR
 		arg.ExpectedBytes,
 		arg.TempRelPath,
 		arg.TempGeneration,
+		arg.TempStore,
 	)
 	return err
 }

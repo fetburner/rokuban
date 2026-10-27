@@ -56,22 +56,14 @@ func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 	}
 	createAsset := func(recordingID int64, kind string, profile *string, size int64) int64 {
 		t.Helper()
-		assetOpts := func(params *dbtest.MediaAssetParams) {
-			params.RelPath = fmt.Sprintf("migration-test/%d", recordingID)
-			params.SizeBytes = size
-		}
 		switch kind {
 		case "original":
-			return dbtest.MediaAsset(t, pool, recordingID, assetOpts)
+			return createPre24MediaAsset(t, pool, recordingID, kind, nil, fmt.Sprintf("migration-test/%d", recordingID), size)
 		case "encoded":
 			if profile == nil {
 				t.Fatal("encoded migration fixture requires a profile")
 			}
-			return dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
-				params.Kind = "encoded"
-				params.Profile = profile
-				assetOpts(params)
-			})
+			return createPre24MediaAsset(t, pool, recordingID, kind, profile, fmt.Sprintf("migration-test/%d", recordingID), size)
 		default:
 			t.Fatalf("unsupported media asset kind %q", kind)
 			return 0
@@ -157,10 +149,7 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 	}
 	createOriginal := func(recordingID int64, size int64) int64 {
 		t.Helper()
-		return dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
-			params.RelPath = fmt.Sprintf("retention-migration-test/%d", recordingID)
-			params.SizeBytes = size
-		})
+		return createPre24MediaAsset(t, pool, recordingID, "original", nil, fmt.Sprintf("retention-migration-test/%d", recordingID), size)
 	}
 	addDropStat := func(assetID int64) {
 		t.Helper()
@@ -182,12 +171,7 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 		t.Fatalf("creating existing scan marker: %v", err)
 	}
 	profile := "mobile"
-	encodedID := dbtest.MediaAsset(t, pool, createRecording(23104), func(params *dbtest.MediaAssetParams) {
-		params.Kind = "encoded"
-		params.Profile = &profile
-		params.RelPath = "retention-migration-test/encoded"
-		params.SizeBytes = 21
-	})
+	encodedID := createPre24MediaAsset(t, pool, createRecording(23104), "encoded", &profile, "retention-migration-test/encoded", 21)
 	addDropStat(encodedID)
 
 	if err := MigrateUp(ctx, dbURL); err != nil {
@@ -219,4 +203,17 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("scan markers = %v, want %v (only missing originals with existing drop_stats are backfilled)", got, want)
 	}
+}
+
+func createPre24MediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind string, profile *string, relPath string, sizeBytes int64) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(), `
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id`, recordingID, kind, profile, relPath, sizeBytes).Scan(&id)
+	if err != nil {
+		t.Fatalf("creating pre-24 media asset: %v", err)
+	}
+	return id
 }

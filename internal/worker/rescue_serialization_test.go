@@ -15,6 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -50,6 +51,9 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			mediaDir := t.TempDir()
+			if err := mediapath.WriteStoreMarker(mediaDir, "test-store"); err != nil {
+				t.Fatalf("writing test media store marker: %v", err)
+			}
 			const relPath = "sites/default/show.m2ts"
 			prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, relPath, nil, []byte("original"))
 			var assetID int64

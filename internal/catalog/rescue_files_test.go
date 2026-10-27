@@ -15,7 +15,7 @@ import (
 
 func TestRescueCatalogMissingFiles(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	doc := &Document{Version: Version, ExportedAt: fixedTime(),
 		Recordings: []Recording{{ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1,
 			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test", ProgramStartAt: fixedTime(), Status: "finished",
@@ -58,7 +58,7 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 
 func TestRescueScanCandidateRemoved(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	const rel = "sites/default/show.m2ts"
 	path := filepath.Join(mediaDir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

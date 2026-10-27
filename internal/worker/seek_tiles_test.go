@@ -308,6 +308,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 	if row.SizeBytes != int64(len(tinyJPEG)) {
 		t.Errorf("size_bytes = %d, want %d", row.SizeBytes, len(tinyJPEG))
 	}
+	assertMediaAssetCopy(t, pool, row.ID, "", row.RelPath, "active")
 	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err != nil {
 		t.Errorf("tile sheet not written to media: %v", err)
 	}

@@ -14,7 +14,7 @@ import (
 func TestRescueLegacyQualityEvents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	legacyEvents := json.RawMessage(`[
 		{"at":"2026-07-29T12:01:00Z","event":"recording.failed","reason":{"type":"io-error","message":"disk full"}},
@@ -71,7 +71,7 @@ func TestRescueLegacyQualityEvents(t *testing.T) {
 func TestRescueNullQualityEvents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	doc := &Document{
 		Version:    Version,

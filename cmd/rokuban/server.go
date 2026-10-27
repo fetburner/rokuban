@@ -277,6 +277,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if slices.Contains(roles, "worker") && cfg.Storage.ScratchDir == "" {
 		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
 	}
+	if slices.Contains(roles, "worker") && cfg.Storage.MediaStoreName == "" {
+		return fmt.Errorf("validating config: worker role requires storage.media_store_name")
+	}
 	storeMarkerVerified := true
 	if slices.Contains(roles, "worker") {
 		if err := worker.VerifyMediaStoreMarker(cfg.Storage.MediaDir, cfg.Storage.MediaStoreName); err != nil {
@@ -343,8 +346,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// River の defer が先に実行される。
 	defer pool.Close()
 
-	mediaStore := pgstore.NewMedia(pool)
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
 	if slices.Contains(roles, "worker") {
+		if err := mediaStore.RequireAdoptedStoreRows(ctx); err != nil {
+			return fmt.Errorf("validating media store assignment: %w", err)
+		}
 		// ProbeIngestStorage は media_dir の FS 操作列を DB 接続前に検査する。
 		// こちらは DB にしかない rel_path の名前空間を検査する対応する guard で、
 		// 前置導入前の行や移行前バックアップから復元した行を worker が読む前に
@@ -496,7 +502,7 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group) (*http.Server, error) {
-	mediaStore := pgstore.NewMedia(pool)
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
@@ -648,13 +654,13 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
-	mediaStore := pgstore.NewMedia(pool)
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
 	recordingStore := pgstore.NewRecordings(pool)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)
 	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
 	scheduleSyncStore := pgstore.NewScheduleSync(pool)
-	catalogStore := pgstore.NewCatalog(pool, registryNames(cfg.Registry()))
+	catalogStore := pgstore.NewCatalog(pool, registryNames(cfg.Registry()), cfg.Storage.MediaStoreName)
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err

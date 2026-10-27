@@ -56,7 +56,24 @@ SELECT * FROM recording_purge_requests ORDER BY recording_id;
 SELECT * FROM recording_watched ORDER BY recording_id;
 
 -- name: CatalogListMediaAssets :many
-SELECT * FROM media_assets ORDER BY id;
+SELECT a.id, a.recording_id, a.kind, a.profile,
+       COALESCE(c.rel_path, a.rel_path)::text AS rel_path,
+       a.size_bytes,
+       COALESCE(c.state, a.state)::text AS state,
+       COALESCE(c.deleted_at, a.deleted_at) AS deleted_at,
+       a.created_at, a.updated_at,
+       COALESCE(a.derived_generation, 0)::bigint AS derived_generation,
+       a.sha256,
+       COALESCE(c.store, sqlc.arg('store_name'))::text AS store
+FROM media_assets a
+LEFT JOIN LATERAL (
+    SELECT copy.store, copy.rel_path, copy.state, copy.deleted_at
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+    ORDER BY (copy.store = sqlc.arg('store_name')) DESC, copy.store
+    LIMIT 1
+) c ON true
+ORDER BY a.id;
 
 -- name: CatalogListDropStats :many
 SELECT * FROM drop_stats ORDER BY media_asset_id, pid;
@@ -338,11 +355,11 @@ ON CONFLICT (recording_id) DO UPDATE SET watched_at = EXCLUDED.watched_at;
 -- name: CatalogUpsertMediaAsset :exec
 INSERT INTO media_assets (
     id, recording_id, kind, profile, rel_path, size_bytes,
-    state, deleted_at, created_at, updated_at
+    state, deleted_at, created_at, updated_at, derived_generation, sha256
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10
+    $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (id) DO UPDATE SET
     recording_id = EXCLUDED.recording_id,
@@ -353,7 +370,9 @@ ON CONFLICT (id) DO UPDATE SET
     state        = EXCLUDED.state,
     deleted_at   = EXCLUDED.deleted_at,
     created_at   = EXCLUDED.created_at,
-    updated_at   = EXCLUDED.updated_at;
+    updated_at   = EXCLUDED.updated_at,
+    derived_generation = EXCLUDED.derived_generation,
+    sha256       = EXCLUDED.sha256;
 
 -- name: CatalogUpsertDropStat :exec
 INSERT INTO drop_stats (

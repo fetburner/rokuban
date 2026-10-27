@@ -198,12 +198,15 @@ CREATE TABLE recording_ingest_progress (
     written_bytes  bigint      NOT NULL CHECK (written_bytes >= 0),
     expected_bytes bigint      CHECK (expected_bytes IS NULL OR expected_bytes >= 0),
     temp_rel_path  text        NOT NULL,
+    temp_store     text        NOT NULL DEFAULT '',
     temp_generation bigint     NOT NULL CHECK (temp_generation > 0),
     observed_at    timestamptz NOT NULL DEFAULT now()
 );
 ```
 
-`temp_rel_path` は media root からの相対パスで、`temp_generation` は `ingest_temp_generation_seq` から採番する。世代が要るのは、作り直した temp は前と違うバイト列でありうるので、前の temp から作ったセグメントを同じ再生 URL で配らないためである。世代が変わるのは「この試行で temp を作った」ときと「進捗行が無い」ときの 2 つだけで、replay や SHA-256 待ちをまたいでも同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
+`temp_rel_path` は media root からの相対パスで、`temp_store` は一時ファイルがある置き場を示す。空の `temp_store` は移行前の未割り当てで、`storage adopt <store-name>` が埋める。worker は空の置き場が残っている間、処理を開始しない。
+
+`temp_generation` は `ingest_temp_generation_seq` から採番する。世代が要るのは、作り直した temp は前と違うバイト列でありうるので、前の temp から作ったセグメントを同じ再生 URL で配らないためである。世代が変わるのは「この試行で temp を作った」ときと「進捗行が無い」ときの 2 つだけで、replay や SHA-256 待ちをまたいでも同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
 
 転送していない（temp を持っていない）ことを表す行は作らない。行が消えるのは次の場合だけである。
 

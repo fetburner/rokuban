@@ -13,9 +13,9 @@
 
 -- name: UpsertStorageSync :exec
 INSERT INTO storage_sync (
-    root, path, total_bytes, used_bytes, available_bytes, observed_at
-) VALUES ($1, $2, $3, $4, $5, now())
-ON CONFLICT (root) DO UPDATE SET
+    store, root, path, total_bytes, used_bytes, available_bytes, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT (store, root) DO UPDATE SET
     path            = EXCLUDED.path,
     total_bytes     = EXCLUDED.total_bytes,
     used_bytes      = EXCLUDED.used_bytes,
@@ -30,8 +30,9 @@ ON CONFLICT (root) DO UPDATE SET
 -- この DELETE の後で UpsertStorageSync を呼ばないだけで実現している
 -- （storage.go の StorageSyncWorker.Work 参照）。
 -- name: DeleteStorageSyncExcept :exec
-DELETE FROM storage_sync WHERE NOT (root = ANY($1::text[]));
+DELETE FROM storage_sync
+WHERE store = sqlc.arg('store') AND NOT (root = ANY(sqlc.arg('roots')::text[]));
 
 -- name: ListStorageSync :many
-SELECT * FROM storage_sync
+SELECT * FROM storage_sync WHERE store = $1
 ORDER BY root;

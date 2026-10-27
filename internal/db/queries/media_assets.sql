@@ -1,6 +1,6 @@
 -- name: CreateMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, $2, $3, $4, $5, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
 RETURNING id;
 
 -- 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
@@ -65,11 +65,18 @@ WHERE recording_id = $1
 -- 世代番号を読む（次のカット版が同じパスを再利用しないため）。UNIQUE
 -- (recording_id, kind, profile) があるので高々 1 行。
 -- name: GetEncodedMediaAssetForProfile :one
-SELECT id, rel_path, state
+SELECT id, rel_path, state, COALESCE(derived_generation, 0)::bigint AS derived_generation
 FROM media_assets
 WHERE recording_id = $1
   AND kind = 'encoded'
   AND profile = $2;
+
+-- GetDerivedMediaAssetGeneration returns the current counter, including tombstones.
+-- name: GetDerivedMediaAssetGeneration :one
+SELECT COALESCE(derived_generation, 0)::bigint AS derived_generation
+FROM media_assets
+WHERE recording_id = sqlc.arg('recording_id')
+  AND kind = sqlc.arg('kind');
 
 -- 置き換えの同一 tx 内でパスとサイズを差し替える。**行は消さない** --- 消して
 -- 作り直すと rel_path の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを
@@ -78,6 +85,7 @@ WHERE recording_id = $1
 UPDATE media_assets
 SET rel_path   = sqlc.arg('rel_path'),
     size_bytes = sqlc.arg('size_bytes'),
+    derived_generation = sqlc.arg('derived_generation'),
     updated_at = now()
 WHERE id = sqlc.arg('id');
 
@@ -110,11 +118,12 @@ WHERE c.media_asset_id = sqlc.arg('media_asset_id');
 -- tombstone（state='deleted'）がある場合は active に戻してパスとサイズを更新する。
 -- 既に active な行がある場合の上書きは worker 側の事前チェックで避ける。
 -- name: UpsertEncodedMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-VALUES ($1, 'encoded', $2, $3, $4)
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'encoded', $2, $3, $4, $5)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = EXCLUDED.derived_generation,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -136,22 +145,24 @@ RETURNING id;
 -- 既に active な行がある場合の上書きは worker 側の事前チェック
 -- （GetActiveThumbnailMediaAssetID）で避ける。
 -- name: UpsertThumbnailMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-VALUES ($1, 'thumbnail', $2, $3)
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'thumbnail', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = EXCLUDED.derived_generation,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
 RETURNING id;
 
 -- name: UpsertSeekTilesMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-VALUES ($1, 'seek_tiles', $2, $3)
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'seek_tiles', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = EXCLUDED.derived_generation,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -167,7 +178,7 @@ WHERE recording_id = $1
 -- thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
 -- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
 -- name: LockActiveThumbnailMediaAsset :one
-SELECT a.id, a.rel_path, s.seek_ms
+SELECT a.id, a.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = sqlc.arg('recording_id')
@@ -180,6 +191,7 @@ FOR UPDATE OF a;
 UPDATE media_assets
 SET rel_path   = sqlc.arg('rel_path'),
     size_bytes = sqlc.arg('size_bytes'),
+    derived_generation = sqlc.arg('derived_generation'),
     updated_at = now()
 WHERE id = sqlc.arg('id')
   AND kind = 'thumbnail'

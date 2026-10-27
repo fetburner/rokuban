@@ -326,18 +326,51 @@ func (q *Queries) CatalogListMediaAssetTSScans(ctx context.Context) ([]MediaAsse
 }
 
 const catalogListMediaAssets = `-- name: CatalogListMediaAssets :many
-SELECT id, recording_id, kind, profile, rel_path, size_bytes, state, deleted_at, created_at, updated_at, ingest_generation FROM media_assets ORDER BY id
+SELECT a.id, a.recording_id, a.kind, a.profile,
+       COALESCE(c.rel_path, a.rel_path)::text AS rel_path,
+       a.size_bytes,
+       COALESCE(c.state, a.state)::text AS state,
+       COALESCE(c.deleted_at, a.deleted_at) AS deleted_at,
+       a.created_at, a.updated_at,
+       COALESCE(a.derived_generation, 0)::bigint AS derived_generation,
+       a.sha256,
+       COALESCE(c.store, $1)::text AS store
+FROM media_assets a
+LEFT JOIN LATERAL (
+    SELECT copy.store, copy.rel_path, copy.state, copy.deleted_at
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+    ORDER BY (copy.store = $1) DESC, copy.store
+    LIMIT 1
+) c ON true
+ORDER BY a.id
 `
 
-func (q *Queries) CatalogListMediaAssets(ctx context.Context) ([]MediaAsset, error) {
-	rows, err := q.db.Query(ctx, catalogListMediaAssets)
+type CatalogListMediaAssetsRow struct {
+	ID                int64
+	RecordingID       int64
+	Kind              string
+	Profile           *string
+	RelPath           string
+	SizeBytes         int64
+	State             string
+	DeletedAt         *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	DerivedGeneration int64
+	Sha256            []byte
+	Store             string
+}
+
+func (q *Queries) CatalogListMediaAssets(ctx context.Context, storeName string) ([]CatalogListMediaAssetsRow, error) {
+	rows, err := q.db.Query(ctx, catalogListMediaAssets, storeName)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []MediaAsset
+	var items []CatalogListMediaAssetsRow
 	for rows.Next() {
-		var i MediaAsset
+		var i CatalogListMediaAssetsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.RecordingID,
@@ -349,7 +382,9 @@ func (q *Queries) CatalogListMediaAssets(ctx context.Context) ([]MediaAsset, err
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.IngestGeneration,
+			&i.DerivedGeneration,
+			&i.Sha256,
+			&i.Store,
 		); err != nil {
 			return nil, err
 		}
@@ -982,11 +1017,11 @@ func (q *Queries) CatalogUpsertLabelRule(ctx context.Context, arg CatalogUpsertL
 const catalogUpsertMediaAsset = `-- name: CatalogUpsertMediaAsset :exec
 INSERT INTO media_assets (
     id, recording_id, kind, profile, rel_path, size_bytes,
-    state, deleted_at, created_at, updated_at
+    state, deleted_at, created_at, updated_at, derived_generation, sha256
 ) OVERRIDING SYSTEM VALUE
 VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10
+    $7, $8, $9, $10, $11, $12
 )
 ON CONFLICT (id) DO UPDATE SET
     recording_id = EXCLUDED.recording_id,
@@ -997,20 +1032,24 @@ ON CONFLICT (id) DO UPDATE SET
     state        = EXCLUDED.state,
     deleted_at   = EXCLUDED.deleted_at,
     created_at   = EXCLUDED.created_at,
-    updated_at   = EXCLUDED.updated_at
+    updated_at   = EXCLUDED.updated_at,
+    derived_generation = EXCLUDED.derived_generation,
+    sha256       = EXCLUDED.sha256
 `
 
 type CatalogUpsertMediaAssetParams struct {
-	ID          int64
-	RecordingID int64
-	Kind        string
-	Profile     *string
-	RelPath     string
-	SizeBytes   int64
-	State       string
-	DeletedAt   *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID                int64
+	RecordingID       int64
+	Kind              string
+	Profile           *string
+	RelPath           string
+	SizeBytes         int64
+	State             string
+	DeletedAt         *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	DerivedGeneration *int64
+	Sha256            []byte
 }
 
 func (q *Queries) CatalogUpsertMediaAsset(ctx context.Context, arg CatalogUpsertMediaAssetParams) error {
@@ -1025,6 +1064,8 @@ func (q *Queries) CatalogUpsertMediaAsset(ctx context.Context, arg CatalogUpsert
 		arg.DeletedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.DerivedGeneration,
+		arg.Sha256,
 	)
 	return err
 }

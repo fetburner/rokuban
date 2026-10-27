@@ -95,6 +95,30 @@ func CheckStoreMarker(mediaDir, expected string) error {
 	return nil
 }
 
+// ReadStoreMarker は mediaDir の置き場名を返す。
+func ReadStoreMarker(mediaDir string) (string, error) {
+	markerPath := filepath.Join(mediaDir, StoreMarkerFileName)
+	info, err := os.Lstat(markerPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: %s is missing", ErrStoreMarkerMismatch, markerPath)
+		}
+		return "", fmt.Errorf("stating store marker %q: %w", markerPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%w: %s is not a regular file", ErrStoreMarkerMismatch, markerPath)
+	}
+	contents, err := os.ReadFile(markerPath)
+	if err != nil {
+		return "", fmt.Errorf("reading store marker %q: %w", markerPath, err)
+	}
+	name := string(contents)
+	if !ValidStoreName(name) {
+		return "", fmt.Errorf("%w: %s contains invalid store name %q", ErrStoreMarkerMismatch, markerPath, name)
+	}
+	return name, nil
+}
+
 // WriteStoreMarker は marker が無い mediaDir の root に expected を書き、ファイルと root を同期する。
 // 既存の同名 marker は成功とし、別名の marker は置き場の改名になるため上書きしない。
 func WriteStoreMarker(mediaDir, expected string) error {

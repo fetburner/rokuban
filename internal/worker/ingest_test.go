@@ -4034,6 +4034,11 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	); err != nil {
 		t.Fatalf("marking media_asset deleted: %v", err)
 	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1", deletedAssetID,
+	); err != nil {
+		t.Fatalf("marking media_asset_copy deleted: %v", err)
+	}
 
 	// 新規: 同じ rel_path になる録画。
 	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {

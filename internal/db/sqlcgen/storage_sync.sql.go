@@ -10,8 +10,14 @@ import (
 )
 
 const deleteStorageSyncExcept = `-- name: DeleteStorageSyncExcept :exec
-DELETE FROM storage_sync WHERE NOT (root = ANY($1::text[]))
+DELETE FROM storage_sync
+WHERE store = $1 AND NOT (root = ANY($2::text[]))
 `
+
+type DeleteStorageSyncExceptParams struct {
+	Store string
+	Roots []string
+}
 
 // 現在の config が要求する root 集合の外側を消す（config 変更で root が減った
 // ときの掃除）。$1 は config だけから決まる root 名の集合で、今回の statfs の
@@ -20,18 +26,18 @@ DELETE FROM storage_sync WHERE NOT (root = ANY($1::text[]))
 // させる（「最後にいつ観測できたか」が UI から見える鮮度情報になる）のは、
 // この DELETE の後で UpsertStorageSync を呼ばないだけで実現している
 // （storage.go の StorageSyncWorker.Work 参照）。
-func (q *Queries) DeleteStorageSyncExcept(ctx context.Context, dollar_1 []string) error {
-	_, err := q.db.Exec(ctx, deleteStorageSyncExcept, dollar_1)
+func (q *Queries) DeleteStorageSyncExcept(ctx context.Context, arg DeleteStorageSyncExceptParams) error {
+	_, err := q.db.Exec(ctx, deleteStorageSyncExcept, arg.Store, arg.Roots)
 	return err
 }
 
 const listStorageSync = `-- name: ListStorageSync :many
-SELECT root, path, total_bytes, used_bytes, available_bytes, observed_at FROM storage_sync
+SELECT root, path, total_bytes, used_bytes, available_bytes, observed_at, store FROM storage_sync WHERE store = $1
 ORDER BY root
 `
 
-func (q *Queries) ListStorageSync(ctx context.Context) ([]StorageSync, error) {
-	rows, err := q.db.Query(ctx, listStorageSync)
+func (q *Queries) ListStorageSync(ctx context.Context, store string) ([]StorageSync, error) {
+	rows, err := q.db.Query(ctx, listStorageSync, store)
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +52,7 @@ func (q *Queries) ListStorageSync(ctx context.Context) ([]StorageSync, error) {
 			&i.UsedBytes,
 			&i.AvailableBytes,
 			&i.ObservedAt,
+			&i.Store,
 		); err != nil {
 			return nil, err
 		}
@@ -60,9 +67,9 @@ func (q *Queries) ListStorageSync(ctx context.Context) ([]StorageSync, error) {
 const upsertStorageSync = `-- name: UpsertStorageSync :exec
 
 INSERT INTO storage_sync (
-    root, path, total_bytes, used_bytes, available_bytes, observed_at
-) VALUES ($1, $2, $3, $4, $5, now())
-ON CONFLICT (root) DO UPDATE SET
+    store, root, path, total_bytes, used_bytes, available_bytes, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT (store, root) DO UPDATE SET
     path            = EXCLUDED.path,
     total_bytes     = EXCLUDED.total_bytes,
     used_bytes      = EXCLUDED.used_bytes,
@@ -71,6 +78,7 @@ ON CONFLICT (root) DO UPDATE SET
 `
 
 type UpsertStorageSyncParams struct {
+	Store          string
 	Root           string
 	Path           string
 	TotalBytes     int64
@@ -92,6 +100,7 @@ type UpsertStorageSyncParams struct {
 // scratch_dir では起動しないので、本番で 'scratch' が外れる経路は今は無い）。
 func (q *Queries) UpsertStorageSync(ctx context.Context, arg UpsertStorageSyncParams) error {
 	_, err := q.db.Exec(ctx, upsertStorageSync,
+		arg.Store,
 		arg.Root,
 		arg.Path,
 		arg.TotalBytes,

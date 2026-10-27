@@ -220,7 +220,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	// 置き換えでは新しい世代のパスに置いてから旧パスを消す（世代と旧パスは
 	// planEncodePublish が冒頭の観測から導く）。
 	prevRelPath, generation := observed.replaced, observed.generation
-	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container, generation)
+	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container, int(generation))
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
 	}
@@ -791,6 +791,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		Attempt:           in.attempt,
 		RelPath:           in.relPath,
 		SizeBytes:         staged.size,
+		DerivedGeneration: in.observed.generation,
 		ObservedRelPath:   in.observed.observedRelPath,
 		Cut:               cut,
 		KeepRanges:        keep,
@@ -889,8 +890,8 @@ func truncateEncodeAttemptError(msg string) string {
 type encodePlan struct {
 	// observedRelPath は行の rel_path（state は問わない）。行が無ければ ""。
 	observedRelPath string
-	// generation は cut のときにこの試行が使う世代（cut でなければ 0）。
-	generation int
+	// generation はこの試行が使う派生世代。初回の cut は 1、他の初回出力は 0。
+	generation int64
 	// replaced は commit の後に unlink する旧パス。cut で旧行が active のときだけ
 	// 非空（tombstone / deleting のファイルは自分のものではない）。
 	replaced string
@@ -916,27 +917,20 @@ func planEncodePublishFromState(
 		skipReason:      plan.SkipReason,
 		stale:           plan.Stale,
 	}
+	if state.EncodedAsset != nil {
+		p.generation = state.EncodedAsset.DerivedGeneration
+		if plan.Replaces || state.EncodedAsset.State != "active" {
+			p.generation++
+		}
+	} else if in.Cut {
+		p.generation = 1
+	}
 	if in.Cut {
-		p.generation = nextCutGeneration(p.observedRelPath, in.Profile)
 		if plan.Replaces && state.EncodedAsset != nil {
 			p.replaced = state.EncodedAsset.RelPath
 		}
 	}
 	return p
-}
-
-// nextCutGeneration は旧 rel_path の世代番号 +1 を返す（無ければ 1）。
-//
-// **1 世代目から `.g1` を付ける。** 「世代番号の無いパス」という例外を作ると、
-// 置き換えのたびに「旧パスに世代が付いているか」を分岐で扱うことになる。
-// 番号が読めないパス（EncodedRelPath が書かない形）は 1 に戻す --- 衝突したら部分一意索引が
-// 弾くので、黙って他人のファイルを上書きすることはない。
-func nextCutGeneration(prevRelPath, profileName string) int {
-	n, ok := cutGeneration(prevRelPath, profileName)
-	if !ok {
-		return 1
-	}
-	return n + 1
 }
 
 // removeReplacedEncoded は置き換えで不要になった旧ファイルを消す。
@@ -1104,14 +1098,15 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 //
 //	→ "20240101/120000_title_1024_h264.mp4"
 //
-// generation が正なら `_{profile}.g{n}.{container}` になる（cut プロファイルの
-// 世代。1 世代目から必ず付く）。置き換えは「新しいパスに置いてから旧パスを消す」
+// generation が正なら `_{profile}.g{n}.{container}` になる。cut の初回は世代 1、
+// 他の初回出力は 0 で、置き換えと tombstone からの再生成は DB の世代を進める。
+// 置き換えは「新しいパスに置いてから旧パスを消す」
 // ので、同じパスへ上書きしてはならない（ストレージ契約の「置くのは一回」。
 // 生きている行の rel_path 部分一意索引とも衝突する）。
 //
 // profile 名は、そのまま 1 つのパス成分として入れる。入らない名前は、設定と同じ規則
-// （config.ValidateEncodeProfileName）でエラーにする。サニタイズして入れると、
-// 別の名前と同じパスになったり、rel_path から cut の世代を読めなくなったりする。
+// （config.ValidateEncodeProfileName）でエラーにする。サニタイズすると別の名前と同じ
+// パスになりうる。
 // 階層は原本の dir のみ。
 func EncodedRelPath(originalRel, profileName, container string, generation int) (string, error) {
 	if originalRel == "" {
@@ -1141,25 +1136,6 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 		return contentpath.SanitizeContentPath(name), nil
 	}
 	return contentpath.SanitizeContentPath(dir + "/" + name), nil
-}
-
-// cutGeneration は EncodedRelPath の逆で、rel_path が cut の世代 n（n >= 1）の
-// `…_{profile}.g{n}.{ext}` なら (n, true) を返す。EncodedRelPath が書く形
-// （`_` の境界、`%d` の正規の整数）以外は false にする。世代番号の読み手は
-// nextCutGeneration と起動時の意味の検査（CheckEncodeProfileMeaning）で、
-// 両方がここを通る。どちらも設定にあるプロファイル名（EncodedRelPath が書ける名前）
-// だけを渡す。
-//
-// 拡張子は見ない（container の読み取りは呼び出し側が path.Ext で行う）。
-// プロファイル名まで含めて照合するので、名前に `.g<数字>` を含む cut でない
-// プロファイルを取り違えない。
-func cutGeneration(relPath, profileName string) (int, bool) {
-	base := pathBaseSlash(filepath.ToSlash(relPath))
-	head, n, ok := config.SplitCutGeneration(strings.TrimSuffix(base, filepath.Ext(base)))
-	if !ok || !strings.HasSuffix(head, "_"+profileName) {
-		return 0, false
-	}
-	return n, true
 }
 
 func pathDirSlash(p string) string {

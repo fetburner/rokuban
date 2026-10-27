@@ -95,13 +95,26 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, path 
 	if err != nil {
 		return nil, err
 	}
+	storeName, err := mediapath.ReadStoreMarker(mediaDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading media store marker: %w", err)
+	}
+	for i := range doc.MediaAssets {
+		asset := &doc.MediaAssets[i]
+		if asset.Store == "" {
+			asset.Store = storeName
+		}
+		if !mediapath.ValidStoreName(asset.Store) {
+			return nil, fmt.Errorf("catalog media asset %d has invalid store name %q", asset.ID, asset.Store)
+		}
+	}
 
 	// Acquire file locks before DB row locks and retain them through commit.
 	// deleted の行は active 行を作らない（ファイルも見ない）ので、ロック対象から外す。
 	// 墓石は運用とともに増えるため、ロック数を live な行に抑える。
 	paths := make([]string, 0, len(doc.MediaAssets))
 	for _, asset := range doc.MediaAssets {
-		if asset.State != "deleted" {
+		if asset.State != "deleted" && asset.Store == storeName {
 			paths = append(paths, asset.RelPath)
 		}
 	}
@@ -113,7 +126,7 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, path 
 
 	missing := make(map[int64]struct{})
 	for _, asset := range doc.MediaAssets {
-		if asset.State == "deleted" {
+		if asset.State == "deleted" || asset.Store != storeName {
 			continue
 		}
 		fullPath, err := mediapath.Resolve(mediaDir, asset.RelPath)

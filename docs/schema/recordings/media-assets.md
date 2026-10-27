@@ -13,6 +13,8 @@ CREATE TABLE media_assets (
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
     rel_path     text   NOT NULL,     -- ストレージルートからの相対パス（不変条件: 絶対パス禁止）
     size_bytes   bigint NOT NULL,
+    sha256       bytea,                -- 内容の SHA-256。コピー数によらず 1 回だけ持つ
+    derived_generation bigint,         -- 派生物のパス世代。original は NULL
     ingest_generation bigint,         -- kind = 'original' のみ: 原本にした temp の世代
     CHECK (ingest_generation IS NULL OR ingest_generation > 0),
     CHECK (kind = 'original' OR ingest_generation IS NULL),
@@ -35,9 +37,30 @@ CREATE INDEX ON media_assets (kind, state);
 CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
+`media_assets` は論理アセットと既存読み手の互換用パスを保つ。物理コピーの場所と状態は別表に持ち、コピーを増やしてもサイズや SHA-256 を重複させない。
+
+```sql
+CREATE TABLE media_asset_copies (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    media_asset_id bigint NOT NULL REFERENCES media_assets (id) ON DELETE CASCADE,
+    store          text   NOT NULL,
+    rel_path       text   NOT NULL,
+    state          text   NOT NULL CHECK (state IN ('pending', 'active', 'deleting', 'deleted')),
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    deleted_at     timestamptz,
+    UNIQUE (media_asset_id, store)
+);
+
+CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
+```
+
+移行中の空 `store` は未割り当てを表し、`storage adopt <store-name>` が既存コピーと観測行に置き場を割り当てる。worker は未割り当て行が残る間、処理を開始しない。`store` とコピーの状態は、この段階では旧列にも同じトランザクションで書く。
+
+`derived_generation` は派生物の相対パスに使う単調増加の世代で、削除済み行を再生成するときも進める。初期値 0 は未世代、正の値は過去の世代を表す。既存の世代付きパスは移行時に一度だけ読み取り、以降は列を読む。
+
 行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）だけで、衝突時は冪等に書く。削除済みへ遷移した後も行は消さない（tombstone）。ドロップ統計と元サイズは、原本削除後も UI で見られる。
 
-ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。
+ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。`sha256` は未計測なら NULL とし、コピー単位には複製しない。
 
 物理削除に至る 4 ソースは、すべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。4 ソースは、ごみ箱の猶予超過、原本の保持を派生物の完備までとした録画の派生物完備、ユーザーが外したエンコード結果、孤児回収である。
 

@@ -82,6 +82,7 @@ type EncodedPublishInput struct {
 	Attempt           int32
 	RelPath           string
 	SizeBytes         int64
+	DerivedGeneration int64
 	ObservedRelPath   string
 	Cut               bool
 	KeepRanges        []chapters.Range
@@ -91,26 +92,29 @@ type EncodedPublishInput struct {
 
 // ThumbnailObservation は再選択前に読んだサムネイルを表す。
 type ThumbnailObservation struct {
-	ID      int64
-	RelPath string
-	SeekMs  *int64
+	ID                int64
+	RelPath           string
+	SeekMs            *int64
+	DerivedGeneration int64
 }
 
 // ThumbnailPublishInput はサムネイルを公開する判断材料を表す。
 type ThumbnailPublishInput struct {
-	RecordingID  int64
-	RelPath      string
-	SizeBytes    int64
-	SeekMs       int64
-	InputAssetID int64
-	Expected     *ThumbnailObservation
+	RecordingID       int64
+	RelPath           string
+	SizeBytes         int64
+	SeekMs            int64
+	InputAssetID      int64
+	DerivedGeneration int64
+	Expected          *ThumbnailObservation
 }
 
 // SeekTilesPublishInput はシークタイルを公開する判断材料を表す。
 type SeekTilesPublishInput struct {
-	RecordingID int64
-	RelPath     string
-	SizeBytes   int64
+	RecordingID       int64
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration int64
 }
 
 // InPlaceRecording は既存ファイル群を登録する録画メタデータを表す。

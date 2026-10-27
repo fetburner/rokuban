@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -60,13 +59,14 @@ type ThumbnailWorker struct {
 }
 
 type thumbnailWorkPlan struct {
-	inputID   int64
-	inputPath string
-	inputSeek time.Duration
-	seekMs    int64
-	relPath   string
-	expected  *thumbnailObserved
-	replaced  string
+	inputID    int64
+	inputPath  string
+	inputSeek  time.Duration
+	seekMs     int64
+	relPath    string
+	generation int64
+	expected   *thumbnailObserved
+	replaced   string
 }
 
 // Work は thumbnail ジョブを実行する。
@@ -117,13 +117,17 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 
 	expected := (*store.ThumbnailObservation)(nil)
 	if plan.expected != nil {
-		expected = &store.ThumbnailObservation{ID: plan.expected.ID, RelPath: plan.expected.RelPath, SeekMs: plan.expected.SeekMs}
+		expected = &store.ThumbnailObservation{
+			ID: plan.expected.ID, RelPath: plan.expected.RelPath,
+			SeekMs: plan.expected.SeekMs, DerivedGeneration: plan.expected.DerivedGeneration,
+		}
 	}
 	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, plan.relPath, scratchPath,
 		func(size int64, publish func() error) (bool, error) {
 			return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 				RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
-				SeekMs: plan.seekMs, InputAssetID: plan.inputID, Expected: expected,
+				SeekMs: plan.seekMs, InputAssetID: plan.inputID,
+				DerivedGeneration: plan.generation, Expected: expected,
 			}, publish)
 		})
 	if err != nil {
@@ -199,9 +203,20 @@ func (w *ThumbnailWorker) initialThumbnailPlan(
 	seek := thumbnailSeek(duration)
 	seekMs := int64(math.Round(float64(seek) / float64(time.Millisecond)))
 	inputSeek := time.Duration(seekMs) * time.Millisecond
+	generation, found, err := w.Media.GetDerivedMediaAssetGeneration(ctx, recordingID, "thumbnail")
+	if err != nil {
+		return thumbnailWorkPlan{}, false, fmt.Errorf("loading thumbnail generation: %w", err)
+	}
+	if found {
+		generation++
+	}
+	relPath, generation, err := w.nextUnusedThumbnailRelPath(recordingID, generation)
+	if err != nil {
+		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail path: %w", err)
+	}
 	return thumbnailWorkPlan{
 		inputID: orig.ID, inputPath: inputPath, inputSeek: inputSeek,
-		seekMs: seekMs, relPath: thumbnailRelPath(recordingID),
+		seekMs: seekMs, relPath: relPath, generation: generation,
 	}, true, nil
 }
 
@@ -233,57 +248,51 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		return thumbnailWorkPlan{}, false, fmt.Errorf("active thumbnail planning state is incomplete")
 	}
 	expected := &thumbnailObserved{
-		ID:      *state.ThumbnailMediaAssetID,
-		RelPath: *state.ThumbnailRelPath,
-		SeekMs:  state.SeekMs,
+		ID:                *state.ThumbnailMediaAssetID,
+		RelPath:           *state.ThumbnailRelPath,
+		SeekMs:            state.SeekMs,
+		DerivedGeneration: state.ThumbnailGeneration,
 	}
-	relPath, err := w.nextUnusedThumbnailRelPath(state.RecordingID, expected.RelPath)
+	generation := state.ThumbnailGeneration + 1
+	relPath, generation, err := w.nextUnusedThumbnailRelPath(state.RecordingID, generation)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail replacement path: %w", err)
 	}
 	return thumbnailWorkPlan{
 		inputID: plan.Source.MediaAssetID, inputPath: inputPath,
 		inputSeek: time.Duration(plan.InputSeekMs) * time.Millisecond,
-		seekMs:    plan.RecordedSeek, relPath: relPath,
+		seekMs:    plan.RecordedSeek, relPath: relPath, generation: generation,
 		expected: expected, replaced: expected.RelPath,
 	}, true, nil
 }
 
-// thumbnailRelPath は初回サムネイルの相対パスを返す。recording_id を使うため、
-// 原本の contentPath や原本削除に依存しない。
-func thumbnailRelPath(recordingID int64) string {
-	return fmt.Sprintf("thumbnails/%d.jpg", recordingID)
-}
-
-// nextThumbnailRelPath gives each replacement a never-reused path. The initial
-// thumbnail keeps the legacy path without a generation suffix.
-func nextThumbnailRelPath(recordingID int64, previous string) string {
-	stem := strings.TrimSuffix(filepath.Base(previous), filepath.Ext(previous))
-	prefix := fmt.Sprintf("%d.g", recordingID)
-	generation := 1
-	if strings.HasPrefix(stem, prefix) {
-		if n, err := strconv.Atoi(strings.TrimPrefix(stem, prefix)); err == nil && n > 0 {
-			generation = n + 1
-		}
+// thumbnailRelPath returns the path for a persisted generation. Generation zero
+// retains the original filename for compatibility with existing files.
+func thumbnailRelPath(recordingID, generation int64) string {
+	if generation <= 0 {
+		return fmt.Sprintf("thumbnails/%d.jpg", recordingID)
 	}
 	return fmt.Sprintf("thumbnails/%d.g%d.jpg", recordingID, generation)
 }
 
-func (w *ThumbnailWorker) nextUnusedThumbnailRelPath(recordingID int64, previous string) (string, error) {
-	candidate := nextThumbnailRelPath(recordingID, previous)
+func (w *ThumbnailWorker) nextUnusedThumbnailRelPath(recordingID, generation int64) (string, int64, error) {
 	for {
+		candidate := thumbnailRelPath(recordingID, generation)
 		path, err := mediapath.Resolve(w.MediaDir, candidate)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		_, err = os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) {
-			return candidate, nil
+			return candidate, generation, nil
 		}
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
-		candidate = nextThumbnailRelPath(recordingID, candidate)
+		if generation == int64(^uint64(0)>>1) {
+			return "", 0, fmt.Errorf("thumbnail generation is exhausted")
+		}
+		generation++
 	}
 }
 
@@ -300,9 +309,10 @@ func thumbnailSeek(duration time.Duration) time.Duration {
 }
 
 type thumbnailObserved struct {
-	ID      int64
-	RelPath string
-	SeekMs  *int64
+	ID                int64
+	RelPath           string
+	SeekMs            *int64
+	DerivedGeneration int64
 }
 
 func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logger) {

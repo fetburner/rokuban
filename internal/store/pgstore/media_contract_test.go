@@ -28,7 +28,7 @@ func TestMediaStoreContract(t *testing.T) {
 
 func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool)
+	media := NewMedia(pool, "tokyo")
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	tempRelPath := fmt.Sprintf("sites/%s/test/.rokuban-ingest-generation-test", store.DefaultSite)
@@ -52,6 +52,13 @@ func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	if state.TempRelPath != tempRelPath || state.TempGeneration != generation {
 		t.Fatalf("ingest temp state = %+v, want path %q and generation %d", state, tempRelPath, generation)
 	}
+	var tempStore string
+	if err := pool.QueryRow(ctx, `SELECT temp_store FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&tempStore); err != nil {
+		t.Fatalf("reading ingest temp store: %v", err)
+	}
+	if tempStore != "tokyo" {
+		t.Fatalf("ingest temp store = %q, want tokyo", tempStore)
+	}
 
 	if err := media.CommitOriginal(ctx, store.CommitOriginalInput{
 		RecordingID: recordingID, RelPath: "sites/default/generation-test.m2ts", SizeBytes: 17,
@@ -68,6 +75,17 @@ func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	}
 	if committedGeneration != generation {
 		t.Fatalf("original ingest_generation = %d, want progress generation %d", committedGeneration, generation)
+	}
+	var copyStore, copyRelPath, copyState string
+	if err := pool.QueryRow(ctx, `
+SELECT c.store, c.rel_path, c.state
+FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id
+WHERE a.recording_id = $1 AND a.kind = 'original'`, recordingID,
+	).Scan(&copyStore, &copyRelPath, &copyState); err != nil {
+		t.Fatalf("reading committed original copy: %v", err)
+	}
+	if copyStore != "tokyo" || copyRelPath != "sites/default/generation-test.m2ts" || copyState != "active" {
+		t.Fatalf("committed original copy = %q/%q/%q, want tokyo active copy", copyStore, copyRelPath, copyState)
 	}
 	state, err = media.GetIngestTempState(ctx, recordingID)
 	if err != nil || state != nil {
@@ -141,8 +159,15 @@ func newMediaContractAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, 
 	})
 
 	if state != "active" {
-		if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = $1 WHERE id = $2", state, id); err != nil {
+		if _, err := pool.Exec(context.Background(), `
+UPDATE media_assets SET state = $1, deleted_at = CASE WHEN $1 = 'deleted' THEN now() ELSE NULL END WHERE id = $2`, state, id); err != nil {
 			t.Fatalf("setting media asset state to %s: %v", state, err)
+		}
+		if _, err := pool.Exec(context.Background(), `
+UPDATE media_asset_copies
+SET state = $1, deleted_at = CASE WHEN $1 = 'deleted' THEN now() ELSE NULL END
+WHERE media_asset_id = $2`, state, id); err != nil {
+			t.Fatalf("setting media asset copy state to %s: %v", state, err)
 		}
 	}
 	return id

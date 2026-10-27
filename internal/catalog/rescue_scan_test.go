@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -17,7 +18,7 @@ import (
 
 func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	at := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
 
 	write := func(rel, body string) {
@@ -122,7 +123,7 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 
 func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	for _, rel := range []string{"archive/old.m2ts", "archive/old.mp4"} {
 		path := filepath.Join(mediaDir, filepath.FromSlash(rel))
@@ -171,7 +172,7 @@ func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
 
 func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	path := filepath.Join(mediaDir, "sites", "default", "archive", "show.m2ts")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -260,6 +261,9 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(realMediaDir, "sites", "default", "archive"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := mediapath.WriteStoreMarker(realMediaDir, "test-store"); err != nil {
+		t.Fatalf("writing test media store marker: %v", err)
+	}
 	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +333,7 @@ func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 // あるが復元は止めない。前置の無いファイルは site を決められないため登録しない。
 func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	at := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
 
 	write := func(rel string) {

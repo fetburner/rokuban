@@ -509,6 +509,7 @@ func roundTripCatalogDocument() *catalogdoc.Document {
 	ruleID, spanLabel := int64(10), "CM"
 	description := "round trip description"
 	profile, deletedProfile, pidType, elapsed := "h264", "h265", "video", int64(1500)
+	zeroGeneration := int64(0)
 	return &catalogdoc.Document{
 		Version: catalogdoc.Version, ExportedAt: at,
 		Rules: []catalogdoc.Rule{{
@@ -547,10 +548,10 @@ func roundTripCatalogDocument() *catalogdoc.Document {
 			SizeBytes: 100, State: "active", CreatedAt: at, UpdatedAt: at,
 		}, {
 			ID: 41, RecordingID: 30, Kind: "encoded", Profile: &profile, RelPath: "sites/default/round-trip.mp4",
-			SizeBytes: 80, State: "active", CreatedAt: at, UpdatedAt: at,
+			SizeBytes: 80, State: "active", CreatedAt: at, UpdatedAt: at, DerivedGeneration: &zeroGeneration,
 		}, {
 			ID: 42, RecordingID: 30, Kind: "encoded", Profile: &deletedProfile, RelPath: "sites/default/deleted.mp4",
-			SizeBytes: 70, State: "deleted", DeletedAt: &deletedAt, CreatedAt: at, UpdatedAt: at,
+			SizeBytes: 70, State: "deleted", DeletedAt: &deletedAt, CreatedAt: at, UpdatedAt: at, DerivedGeneration: &zeroGeneration,
 		}},
 		DropStats:                  []catalogdoc.DropStat{{MediaAssetID: 40, Pid: 256, Packets: 100, Drops: 2, Errors: 1, Scrambled: 0, PidType: &pidType}},
 		DropPositions:              []catalogdoc.DropPosition{{MediaAssetID: 40, ByteOffset: 188, Pid: 256, ElapsedMs: &elapsed}},

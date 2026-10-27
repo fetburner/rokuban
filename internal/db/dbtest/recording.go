@@ -91,5 +91,10 @@ func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64
 	if err != nil {
 		return 0, fmt.Errorf("create test media asset: %w", err)
 	}
+	if err := sqlcgen.New(db).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: id, Store: "", RelPath: params.RelPath, State: "active",
+	}); err != nil {
+		return 0, fmt.Errorf("create test media asset copy: %w", err)
+	}
 	return id, nil
 }

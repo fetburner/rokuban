@@ -22,7 +22,7 @@ func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
 
 func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {
 	t.Helper()
-	rows, err := sqlcgen.New(pool).ListStorageSync(context.Background())
+	rows, err := sqlcgen.New(pool).ListStorageSync(context.Background(), "")
 	if err != nil {
 		t.Fatalf("ListStorageSync: %v", err)
 	}

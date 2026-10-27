@@ -29,7 +29,7 @@ import (
 // アサーションはそこまで到達しない。
 func TestRescueFile_MalformedSnapshotIsSkippedAndAssetsSurvive(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	dir := t.TempDir()
+	dir := newTestMediaDir(t)
 
 	doc := Document{
 		Version:    Version,

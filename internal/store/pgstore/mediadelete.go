@@ -91,8 +91,23 @@ func (s *Media) ListRemovedEncodedAssetsToDelete(ctx context.Context, limit int3
 
 // MarkDeleting は active アセットを deleting にする。
 func (s *Media) MarkDeleting(ctx context.Context, assetID int64) error {
-	if _, err := sqlcgen.New(s.pool).MarkMediaAssetDeleting(ctx, assetID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning media asset delete transition: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	updated, err := q.MarkMediaAssetDeleting(ctx, assetID)
+	if err != nil {
 		return fmt.Errorf("marking media asset %d deleting: %w", assetID, mapDatabaseError(err))
+	}
+	if updated > 0 {
+		if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "deleting"); err != nil {
+			return fmt.Errorf("marking media asset copy %d deleting: %w", assetID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing media asset delete transition: %w", mapDatabaseError(err))
 	}
 	return nil
 }
@@ -119,6 +134,9 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, asset
 	if marked == 0 {
 		return false, nil
 	}
+	if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "deleting"); err != nil {
+		return false, fmt.Errorf("marking until_encoded media asset copy %d deleting: %w", assetID, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing until_encoded delete for media asset %d: %w", assetID, mapDatabaseError(err))
 	}
@@ -127,19 +145,61 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, asset
 
 // MarkDeleted は deleting アセットを deleted にし、外した encoded の削除要求も同時に消す。
 func (s *Media) MarkDeleted(ctx context.Context, assetID int64) error {
-	if _, err := sqlcgen.New(s.pool).MarkMediaAssetDeleted(ctx, assetID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning media asset delete completion: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	updated, err := q.MarkMediaAssetDeleted(ctx, assetID)
+	if err != nil {
 		return fmt.Errorf("marking media asset %d deleted: %w", assetID, mapDatabaseError(err))
+	}
+	if updated > 0 {
+		if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "deleted"); err != nil {
+			return fmt.Errorf("marking media asset copy %d deleted: %w", assetID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing media asset delete completion: %w", mapDatabaseError(err))
 	}
 	return nil
 }
 
 // RevertToActive は削除条件から外れた deleting アセットを active に戻す。
 func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff time.Time) (bool, error) {
-	updated, err := sqlcgen.New(s.pool).RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning media asset restore transition: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	updated, err := q.RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
 		ID: assetID, GraceCutoff: graceCutoff,
 	})
 	if err != nil {
 		return false, fmt.Errorf("reverting media asset %d to active: %w", assetID, mapDatabaseError(err))
 	}
+	if updated > 0 {
+		if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "active"); err != nil {
+			return false, fmt.Errorf("reverting media asset copy %d to active: %w", assetID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing media asset restore transition: %w", mapDatabaseError(err))
+	}
 	return updated > 0, nil
+}
+
+func setMediaAssetCopyState(ctx context.Context, q *sqlcgen.Queries, assetID int64, storeName, state string) error {
+	updated, err := q.SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
+		MediaAssetID: assetID, Store: storeName, State: state,
+	})
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return fmt.Errorf("updated %d rows, want exactly one copy", updated)
+	}
+	return nil
 }

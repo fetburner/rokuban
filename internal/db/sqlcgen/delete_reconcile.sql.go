@@ -11,20 +11,30 @@ import (
 )
 
 const deleteMissingMediaAsset = `-- name: DeleteMissingMediaAsset :exec
-DELETE FROM missing_media_assets WHERE media_asset_id = $1
+DELETE FROM missing_media_assets WHERE media_asset_id = $1 AND store = $2
 `
 
-func (q *Queries) DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	_, err := q.db.Exec(ctx, deleteMissingMediaAsset, mediaAssetID)
+type DeleteMissingMediaAssetParams struct {
+	MediaAssetID int64
+	Store        string
+}
+
+func (q *Queries) DeleteMissingMediaAsset(ctx context.Context, arg DeleteMissingMediaAssetParams) error {
+	_, err := q.db.Exec(ctx, deleteMissingMediaAsset, arg.MediaAssetID, arg.Store)
 	return err
 }
 
 const deleteOrphanFile = `-- name: DeleteOrphanFile :exec
-DELETE FROM orphan_files WHERE rel_path = $1
+DELETE FROM orphan_files WHERE store = $1 AND rel_path = $2
 `
 
-func (q *Queries) DeleteOrphanFile(ctx context.Context, relPath string) error {
-	_, err := q.db.Exec(ctx, deleteOrphanFile, relPath)
+type DeleteOrphanFileParams struct {
+	Store   string
+	RelPath string
+}
+
+func (q *Queries) DeleteOrphanFile(ctx context.Context, arg DeleteOrphanFileParams) error {
+	_, err := q.db.Exec(ctx, deleteOrphanFile, arg.Store, arg.RelPath)
 	return err
 }
 
@@ -79,10 +89,16 @@ const listAgedMissingMediaAssets = `-- name: ListAgedMissingMediaAssets :many
 SELECT m.media_asset_id AS id, a.recording_id, a.rel_path, a.kind, m.first_seen
 FROM missing_media_assets m
 JOIN media_assets a ON a.id = m.media_asset_id
-WHERE m.first_seen <= now() - ($1::bigint * interval '1 microsecond')
+WHERE m.store = $1
+  AND m.first_seen <= now() - ($2::bigint * interval '1 microsecond')
   AND a.state = 'active'
 ORDER BY m.media_asset_id
 `
+
+type ListAgedMissingMediaAssetsParams struct {
+	Store string
+	Age   int64
+}
 
 type ListAgedMissingMediaAssetsRow struct {
 	ID          int64
@@ -99,8 +115,8 @@ type ListAgedMissingMediaAssetsRow struct {
 // 再確認するのは、対象行がその後 deleting/deleted に遷移した、または
 // resolveUnqualifiedDeletingAsset 等で active に戻った場合に、報告の瞬間の
 // 状態を見るため（適用の瞬間の再評価。不変条件 9）。
-func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, age int64) ([]ListAgedMissingMediaAssetsRow, error) {
-	rows, err := q.db.Query(ctx, listAgedMissingMediaAssets, age)
+func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, arg ListAgedMissingMediaAssetsParams) ([]ListAgedMissingMediaAssetsRow, error) {
+	rows, err := q.db.Query(ctx, listAgedMissingMediaAssets, arg.Store, arg.Age)
 	if err != nil {
 		return nil, err
 	}
@@ -127,13 +143,19 @@ func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, age int64) ([]
 
 const listAgedOrphanFiles = `-- name: ListAgedOrphanFiles :many
 SELECT rel_path FROM orphan_files
-WHERE first_seen <= now() - ($1::bigint * interval '1 microsecond')
+WHERE store = $1
+  AND first_seen <= now() - ($2::bigint * interval '1 microsecond')
 `
+
+type ListAgedOrphanFilesParams struct {
+	Store string
+	Age   int64
+}
 
 // エイジング済みの孤児（first_seen が指定期間以上前）。DB が記録した first_seen と
 // 同じ DB の時計で比較し、呼び出し側ホストの時計差を持ち込まない。
-func (q *Queries) ListAgedOrphanFiles(ctx context.Context, age int64) ([]string, error) {
-	rows, err := q.db.Query(ctx, listAgedOrphanFiles, age)
+func (q *Queries) ListAgedOrphanFiles(ctx context.Context, arg ListAgedOrphanFilesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAgedOrphanFiles, arg.Store, arg.Age)
 	if err != nil {
 		return nil, err
 	}
@@ -179,11 +201,11 @@ func (q *Queries) ListAllMediaAssetRelPaths(ctx context.Context) ([]string, erro
 }
 
 const listAllMissingMediaAssetIDs = `-- name: ListAllMissingMediaAssetIDs :many
-SELECT media_asset_id FROM missing_media_assets
+SELECT media_asset_id FROM missing_media_assets WHERE store = $1
 `
 
-func (q *Queries) ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listAllMissingMediaAssetIDs)
+func (q *Queries) ListAllMissingMediaAssetIDs(ctx context.Context, store string) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listAllMissingMediaAssetIDs, store)
 	if err != nil {
 		return nil, err
 	}
@@ -203,18 +225,23 @@ func (q *Queries) ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, err
 }
 
 const listAllOrphanFiles = `-- name: ListAllOrphanFiles :many
-SELECT rel_path, first_seen FROM orphan_files
+SELECT rel_path, first_seen FROM orphan_files WHERE store = $1
 `
 
-func (q *Queries) ListAllOrphanFiles(ctx context.Context) ([]OrphanFile, error) {
-	rows, err := q.db.Query(ctx, listAllOrphanFiles)
+type ListAllOrphanFilesRow struct {
+	RelPath   string
+	FirstSeen time.Time
+}
+
+func (q *Queries) ListAllOrphanFiles(ctx context.Context, store string) ([]ListAllOrphanFilesRow, error) {
+	rows, err := q.db.Query(ctx, listAllOrphanFiles, store)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []OrphanFile
+	var items []ListAllOrphanFilesRow
 	for rows.Next() {
-		var i OrphanFile
+		var i ListAllOrphanFilesRow
 		if err := rows.Scan(&i.RelPath, &i.FirstSeen); err != nil {
 			return nil, err
 		}
@@ -694,25 +721,35 @@ func (q *Queries) RevertMediaAssetToActive(ctx context.Context, arg RevertMediaA
 }
 
 const upsertMissingMediaAsset = `-- name: UpsertMissingMediaAsset :exec
-INSERT INTO missing_media_assets (media_asset_id) VALUES ($1)
-ON CONFLICT (media_asset_id) DO NOTHING
+INSERT INTO missing_media_assets (media_asset_id, store) VALUES ($1, $2)
+ON CONFLICT (media_asset_id, store) DO NOTHING
 `
+
+type UpsertMissingMediaAssetParams struct {
+	MediaAssetID int64
+	Store        string
+}
 
 // 実体無し候補を記録する。既存行があれば first_seen を保持する
 // （DO NOTHING。エイジングの起点は「最初に実体無しだと気づいた時刻」）。
-func (q *Queries) UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	_, err := q.db.Exec(ctx, upsertMissingMediaAsset, mediaAssetID)
+func (q *Queries) UpsertMissingMediaAsset(ctx context.Context, arg UpsertMissingMediaAssetParams) error {
+	_, err := q.db.Exec(ctx, upsertMissingMediaAsset, arg.MediaAssetID, arg.Store)
 	return err
 }
 
 const upsertOrphanFile = `-- name: UpsertOrphanFile :exec
-INSERT INTO orphan_files (rel_path) VALUES ($1)
-ON CONFLICT (rel_path) DO NOTHING
+INSERT INTO orphan_files (store, rel_path) VALUES ($1, $2)
+ON CONFLICT (store, rel_path) DO NOTHING
 `
+
+type UpsertOrphanFileParams struct {
+	Store   string
+	RelPath string
+}
 
 // 孤児候補を記録する。既存行があれば first_seen を保持する
 // （DO NOTHING。エイジングの起点は「最初に孤児だと気づいた時刻」）。
-func (q *Queries) UpsertOrphanFile(ctx context.Context, relPath string) error {
-	_, err := q.db.Exec(ctx, upsertOrphanFile, relPath)
+func (q *Queries) UpsertOrphanFile(ctx context.Context, arg UpsertOrphanFileParams) error {
+	_, err := q.db.Exec(ctx, upsertOrphanFile, arg.Store, arg.RelPath)
 	return err
 }

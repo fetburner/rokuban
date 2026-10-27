@@ -15,7 +15,7 @@ import (
 // deleted の行は active 行を作らないのでロックしない。他者が path を握っていても待たない。
 func TestRescueFile_DoesNotLockDeletedAssets(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	profile := "p"
 	at := fixedTime()
 	doc := &Document{Version: Version, ExportedAt: fixedTime(),
