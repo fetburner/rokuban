@@ -110,7 +110,14 @@ func TestServerStreamerMountsRecordingHLS(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			base := startTestServer(t, "streamer", fmt.Sprintf(`  media_store_name: main
+			base := startTestServer(t, "streamer", fmt.Sprintf(`  stores:
+    main:
+      kind: fs
+  originals:
+    - store: main
+  derived: main
+  transfer:
+    overlap: 48h
 recording_hls:
   enabled: %t
   segment_dir: %s
