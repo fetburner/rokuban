@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
@@ -214,7 +215,7 @@ func (s stagedMediaFile) publish() error {
 	if err := os.Rename(s.tempPath, s.finalPath); err != nil {
 		return fmt.Errorf("publishing staged output to canonical path: %w", err)
 	}
-	if err := syncIngestDirectory(s.finalPath); err != nil {
+	if err := fsink.SyncParentDir(s.finalPath); err != nil {
 		return fmt.Errorf("syncing canonical parent directory: %w", err)
 	}
 	return nil

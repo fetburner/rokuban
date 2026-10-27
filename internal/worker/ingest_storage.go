@@ -13,14 +13,14 @@ import (
 
 // ProbeIngestStorage は ingest の確定プロトコルが要求する操作列
 // （media_dir 配下へのファイル作成 → fsync → Close → 同一ディレクトリ内の
-// atomic rename → 親ディレクトリ fsync）を起動時に 1 回通す。パス文字列から
+// hard link による公開 → 親ディレクトリ fsync）を起動時に 1 回通す。パス文字列から
 // ファイルシステムの種類を推測しない。probe が 1 回成功したことは、この操作列が
-// 動くことの証拠に過ぎず、rename/fsync の意味論を信頼できないファイルシステムを
+// 動くことの証拠に過ぎず、link/fsync の意味論を信頼できないファイルシステムを
 // 設定契約が除外する判断そのものは変わらない。
 //
-// rename と親ディレクトリ fsync は commit と同じ renameIngestFile /
+// link と親ディレクトリ fsync は commit と同じ linkIngestFile /
 // syncIngestParentDir フックを経由する。権威を 1 つにすることで、probe が
-// commit と異なる経路を検査してしまう（rename/fsync を落とす変異が probe の
+// commit と異なる経路を検査してしまう（link/fsync を落とす変異が probe の
 // テストだけをすり抜ける）事態を防ぐ。
 //
 // 書き込みを検査するのは media_dir の root ではなく、determineRelPath が原本を
@@ -61,8 +61,8 @@ func ProbeIngestStorage(mediaDir string) error {
 	if err := tempPath.Close(); err != nil {
 		return fmt.Errorf("closing ingest storage probe file: %w", err)
 	}
-	if err := renameIngestFile(tempName, finalPath); err != nil {
-		return fmt.Errorf("renaming ingest storage probe file: %w", err)
+	if err := linkIngestFile(tempName, finalPath); err != nil {
+		return fmt.Errorf("linking ingest storage probe file: %w", err)
 	}
 	if err := syncIngestParentDir(finalPath); err != nil {
 		return fmt.Errorf("fsyncing ingest storage probe parent directory: %w", err)

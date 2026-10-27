@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -228,9 +229,9 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 	releaseRename := make(chan struct{})
 	var releaseRenameOnce sync.Once
 	release := func() { releaseRenameOnce.Do(func() { close(releaseRename) }) }
-	originalRename := renameIngestFile
-	t.Cleanup(func() { renameIngestFile = originalRename })
-	renameIngestFile = func(src, dst string) error {
+	originalRename := linkIngestFile
+	t.Cleanup(func() { linkIngestFile = originalRename })
+	linkIngestFile = func(src, dst string) error {
 		close(renameStarted)
 		<-releaseRename
 		return originalRename(src, dst)
@@ -481,27 +482,25 @@ func runCanonicalOrphanSurvives(
 	}
 }
 
-// TestIngestWorker_CommitStopPointsKeepMirakcRecord は、公開プロトコルの 3 つの
-// 停止点を検証する。rename 前の失敗では temp を残し、rename 後の fsync/DB
-// callback / fsync 失敗では canonical が孤児として残る。どの場合も DB 行と mirakc の
-// 削除は公開点（DB commit）まで発生せず、同じジョブを再試行できる。
+// TestIngestWorker_CommitStopPointsKeepMirakcRecord は、公開プロトコルの 4 つの
+// 停止点を検証する。どの停止点でも temp を残す。link 後の fsync / DB callback / commit 失敗では
+// canonical が孤児として残り、temp と同じ inode になる。DB 行と mirakc の削除は公開点
+// （DB commit）まで発生せず、同じジョブを再試行できる。
 func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 	setFastIngestFollow(t)
 	tests := []struct {
 		name             string
 		canonicalOnError bool
-		tempOnError      bool
 		installFailure   func(t *testing.T, pool *pgxpool.Pool)
 	}{
 		{
-			name:        "rename before publication",
-			tempOnError: true,
+			name: "link before publication",
 			installFailure: func(t *testing.T, pool *pgxpool.Pool) {
-				renameIngestFile = func(string, string) error { return errors.New("injected rename failure") }
+				linkIngestFile = func(string, string) error { return errors.New("injected link failure") }
 			},
 		},
 		{
-			name:             "parent fsync after rename",
+			name:             "parent fsync after link",
 			canonicalOnError: true,
 			installFailure: func(t *testing.T, pool *pgxpool.Pool) {
 				original := syncIngestParentDir
@@ -514,7 +513,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			},
 		},
 		{
-			name:             "database commit after rename",
+			name:             "database commit after link",
 			canonicalOnError: true,
 			installFailure: func(t *testing.T, pool *pgxpool.Pool) {
 				original := afterIngestFilePublication
@@ -528,7 +527,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			},
 		},
 		{
-			name:             "publication callback after rename",
+			name:             "publication callback after link",
 			canonicalOnError: true,
 			installFailure: func(t *testing.T, pool *pgxpool.Pool) {
 				original := afterIngestFilePublication
@@ -566,11 +565,11 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			w.CMDetectionStore = pgstoretest.Analysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
-			originalRename := renameIngestFile
+			originalRename := linkIngestFile
 			originalSync := syncIngestParentDir
 			originalAfter := afterIngestFilePublication
 			restoreHooks := func() {
-				renameIngestFile = originalRename
+				linkIngestFile = originalRename
 				syncIngestParentDir = originalSync
 				afterIngestFilePublication = originalAfter
 			}
@@ -597,16 +596,15 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				t.Errorf("canonical file stat error = %v, want not exist", err)
 			}
 			tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
-			if tt.tempOnError {
-				got, err := os.ReadFile(tempPath)
-				if err != nil {
-					t.Fatalf("reading preserved ingest temp: %v", err)
-				}
-				if !bytes.Equal(got, tsData) {
-					t.Errorf("preserved ingest temp differs from transferred bytes")
-				}
-			} else {
-				assertNoIngestTempFiles(t, mediaDir)
+			got, err := os.ReadFile(tempPath)
+			if err != nil {
+				t.Fatalf("reading preserved ingest temp: %v", err)
+			}
+			if !bytes.Equal(got, tsData) {
+				t.Errorf("preserved ingest temp differs from transferred bytes")
+			}
+			if tt.canonicalOnError && !fsink.SameFile(tempPath, fullPath) {
+				t.Errorf("preserved ingest temp is not linked to the orphan canonical file")
 			}
 
 			restoreHooks()
@@ -617,7 +615,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord calls after retry = %d, want 1", got)
 			}
-			got, err := os.ReadFile(fullPath)
+			got, err = os.ReadFile(fullPath)
 			if err != nil {
 				t.Fatalf("reading retried canonical file: %v", err)
 			}
