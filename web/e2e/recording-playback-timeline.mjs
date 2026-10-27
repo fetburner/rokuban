@@ -1124,15 +1124,18 @@ async function runRecordingApiHlsCheck() {
   const box = await slider.boundingBox()
   const axisMax = Number(await slider.getAttribute('aria-valuemax'))
   const frameSeconds = 1 / SOURCE_FRAME_RATE
-  // 窓の端を避ける余白。クリックの遅れで axisMax が伸びる分（数 ms）を吸収する。
-  const margin = 0.006
+  // 窓の端を避ける余白。表示されるフレームの mediaTime は原本 TS の PTS より約 7 ms 後（encoded の PTS と
+  // 同じ側）なので、下側は広く取る（CI で 6 ms 後の秒を指すと 1 つ前のフレームが出て落ちた）。
+  // 上側は、時間軸が 1 秒ごとに伸びて axisMax が変わる分を吸収する。
+  const marginLow = 0.012
+  const marginHigh = 0.006
   const picks = []
   for (const marker of markerTimes) {
     if (picks.length === 2) break
     if (!(marker.legacySeconds < mediaState.seekableEnd - 1)) continue
     for (let x = Math.ceil(box.x); x < box.x + box.width; x += 1) {
       const seconds = (x - box.x) / box.width * axisMax
-      if (seconds >= marker.legacySeconds + margin && seconds < marker.legacySeconds + frameSeconds - margin) {
+      if (seconds >= marker.legacySeconds + marginLow && seconds < marker.legacySeconds + frameSeconds - marginHigh) {
         picks.push({ marker, x, seconds })
         break
       }
@@ -1155,6 +1158,19 @@ async function runRecordingApiHlsCheck() {
     }))
     log(`  中間シーク frame ${marker.frame}: x=${x} 目標=${seconds.toFixed(4)}s / currentTime=${observed.currentTime.toFixed(4)}s / 表示=${observed.slot} (期待 ${marker.markerSlot})`)
     if (!landed) {
+      // 診断: 同じ位置へ再 seek して表示が直るか（WebKit の native HLS の既知の問題と同じ現象かの見分け）。
+      const again = await page.locator('video').evaluate(async (video) => {
+        const t = video.currentTime
+        video.pause()
+        await new Promise((resolve) => {
+          video.addEventListener('seeked', resolve, { once: true })
+          video.currentTime = t
+          setTimeout(resolve, 3000)
+        })
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        return { t, now: video.currentTime, slot: window.__displayedMarkerSlot() }
+      })
+      log(`  診断 frame ${marker.frame}: 同じ位置へ再 seek 後 ${JSON.stringify(again)}`)
       ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${marker.frame} ではない (${JSON.stringify(observed)}, want=${marker.legacySeconds})`)
     }
   }
