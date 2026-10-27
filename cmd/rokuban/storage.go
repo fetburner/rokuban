@@ -45,7 +45,7 @@ func newStorageAdoptCmd() *cobra.Command {
 				return fmt.Errorf("invalid store name %q: use lowercase ASCII letters, digits, and hyphens", name)
 			}
 			if cfg.Storage.MediaStoreName != "" && cfg.Storage.MediaStoreName != name {
-				return fmt.Errorf("store name %q does not match storage.media_store_name %q", name, cfg.Storage.MediaStoreName)
+				return fmt.Errorf("store name %q does not match the fs store in storage.stores %q", name, cfg.Storage.MediaStoreName)
 			}
 			markerPath := filepath.Join(cfg.Storage.MediaDir, mediapath.StoreMarkerFileName)
 			_, statErr := os.Lstat(markerPath)

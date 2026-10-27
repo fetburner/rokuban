@@ -35,8 +35,8 @@ const listAllStorageSync = `-- name: ListAllStorageSync :many
 SELECT root, path, total_bytes, used_bytes, available_bytes, observed_at, store FROM storage_sync ORDER BY store, root
 `
 
-// API-only config may omit media_store_name. Keep its projection visible when no
-// store filter is available.
+// API-only config may have no mounted filesystem store. Keep all store rows
+// visible when no store filter is available.
 func (q *Queries) ListAllStorageSync(ctx context.Context) ([]StorageSync, error) {
 	rows, err := q.db.Query(ctx, listAllStorageSync)
 	if err != nil {

@@ -460,7 +460,7 @@ func validateWorkerStorageConfig(roles []string, cfg *config.Config) error {
 		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
 	}
 	if cfg.Storage.MediaStoreName == "" {
-		return fmt.Errorf("validating config: worker role requires storage.media_store_name")
+		return fmt.Errorf("validating config: worker role requires exactly one fs store in storage.stores")
 	}
 	return nil
 }

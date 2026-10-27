@@ -176,7 +176,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 非ゼロは調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
 
-`rokuban_missing_asset_scan_suspected_storage_failure_total` は、`storage.media_store_name` が空の構成でだけ進む。走査でファイルを 1 件も観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
+`rokuban_missing_asset_scan_suspected_storage_failure_total` は、`storage.stores` から単一の FS 置き場を決められない構成でだけ進む。走査でファイルを 1 件も観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
 
 `rokuban_storage_sync_last_success_timestamp_seconds` は、1 root でも失敗した部分成功では進まない。root ごとのゲージと対で見る。root（`media` / `scratch`）ごとの最終観測時刻は、片方だけ恒久的に動かなくなっているケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で容量アラートを組むために出す。
 

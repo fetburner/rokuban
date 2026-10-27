@@ -12,6 +12,10 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+func storagePolicyYAML(name string) string {
+	return fmt.Sprintf("  stores:\n    %s:\n      kind: fs\n  originals:\n    - store: %s\n  derived: %s\n  transfer:\n    overlap: 48h\n", name, name, name)
+}
+
 func TestStorageAdoptWritesStoreMarker(t *testing.T) {
 	testutil.SetupDB(t)
 	dbCfg := testutil.DatabaseConfig(t)
@@ -34,8 +38,7 @@ func TestStorageAdoptWritesStoreMarker(t *testing.T) {
   sslmode: %q
 storage:
   media_dir: `+mediaDir+`
-  media_store_name: tokyo
-mirakcs:
+`+storagePolicyYAML("tokyo")+`mirakcs:
   - site: tokyo
     url: http://mirakc
 `, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode)
@@ -70,8 +73,7 @@ func TestStorageAdoptRejectsNameDifferentFromConfig(t *testing.T) {
   database: postgres
 storage:
   media_dir: ` + mediaDir + `
-  media_store_name: tokyo
-mirakcs:
+` + storagePolicyYAML("tokyo") + `mirakcs:
   - site: tokyo
     url: http://mirakc
 `
@@ -81,7 +83,7 @@ mirakcs:
 
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", "osaka"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "does not match storage.media_store_name") {
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "does not match the fs store in storage.stores") {
 		t.Fatalf("storage adopt wrong name error = %v, want config mismatch", err)
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, mediapath.StoreMarkerFileName)); !os.IsNotExist(err) {
@@ -102,8 +104,7 @@ func TestStorageAdoptDoesNotRenameExistingStoreMarker(t *testing.T) {
   database: postgres
 storage:
   media_dir: ` + mediaDir + `
-  media_store_name: tokyo
-mirakcs:
+` + storagePolicyYAML("tokyo") + `mirakcs:
   - site: tokyo
     url: http://mirakc
 `
@@ -149,8 +150,7 @@ func TestStorageAdoptRefusesNewMarkerWhenStoreHasCopies(t *testing.T) {
   sslmode: %q
 storage:
   media_dir: `+mediaDir+`
-  media_store_name: test-store
-mirakcs:
+`+storagePolicyYAML("test-store")+`mirakcs:
   - site: tokyo
     url: http://mirakc
 `, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode)

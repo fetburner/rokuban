@@ -30,6 +30,11 @@
 | `db.api_statement_timeout` | `0`（= 30s） | api を含むプロセスの statement timeout |
 | `mirakcs` | —（必須。既定なし） | mirakc の `{site, url}` 配列 |
 | `storage.media_dir` | —（必須） | 原本の ingest 先 |
+| `storage.stores` | なし | 名前付き FS / S3 置き場の定義 |
+| `storage.originals` | なし | 上から評価する原本の置き場規則 |
+| `storage.derived` | なし | 派生物の共通置き場 |
+| `storage.transfer.bandwidth` | なし | 転送元の置き場ごとの帯域上限 |
+| `storage.transfer.overlap` | —（置き場規則を使う場合は必須） | コピー切替後、旧コピーを保持する猶予 |
 | `storage.scratch_dir` | `/var/tmp/rokuban` | ローカルスクラッチ |
 | `storage.accel_location` | `""`（Go が直接配る） | X-Accel-Redirect の location |
 | `ingest.concurrency` | `3` | mirakc サイトあたりの同時転送数 |
@@ -48,6 +53,12 @@
 | `cm_detect.binary_dir` | `/usr/local/bin` | JLSE のコマンドの配置先 |
 
 `mirakcs` は `site` も既定なしで各要素に必須である。`storage.media_dir` は、fsync・close・同一 FS rename・親ディレクトリ fsync を保証するローカル FS / JuiceFS / NFS を指す。FUSE S3 は原本にも派生物にも使わない。`storage.scratch_dir` は worker ロールでは空にできず、起動時に拒否する。
+
+`storage.stores` の map key が置き場の名前になる。小文字 ASCII・数字・ハイフンだけを使い、最大 54 文字にする。`kind` は `fs` または `s3` で、`internal_url` を書く場合は host を持つ絶対 HTTP(S) URL にする。FS 置き場には `endpoint` と `bucket` を書かない。S3 置き場には `bucket` を指定する。
+
+`storage.originals` は上から最初に一致した規則を使う。条件は `site` と `older_than` だけで、`older_than` は番組の放送終了時刻からの経過時間を表す。最後の規則は無条件にする。原本の規則が選べるのは FS 置き場だけである。`storage.derived` はエンコードやサムネイルなど全派生物の置き場を 1 つ指定する。
+
+`storage.transfer.overlap` は `cleanup.missing_asset_age`（0 なら 24 時間）に削除 reconcile の周期 15 分を 2 回加えた値より長くする。既定の欠損猶予なら 24 時間 30 分を超える値が必要である。
 
 `ingest.concurrency` は `チューナー数 + 全速 pull の許容本数（1〜2）` で決める。既定 3 は 2 チューナー機の下端で（[録画](../recording.md) §5.4）、4 チューナー機では 5〜6 になる。接続プールの予算はこの値に追随する（[DB 運用](../operations/database.md)）。
 

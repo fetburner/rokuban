@@ -48,15 +48,32 @@ mirakcs:
 
 # ストレージ（media_dir は必須）
 storage:
+  stores:
+    tokyo:
+      kind: fs
+      internal_url: http://rokuban-store-tokyo.internal:8080
+    takamatsu:
+      kind: fs
+      internal_url: http://rokuban-store-takamatsu.internal:8080
+    s3main:
+      kind: s3
+      endpoint: https://s3.example.com
+      bucket: rokuban-derived
+  originals:                         # 上から順に最初に一致した規則。最後は無条件
+    - match: { site: default, older_than: 30d }
+      store: tokyo
+    - match: { site: default }
+      store: takamatsu
+    - store: tokyo
+  derived: s3main                   # 派生物は全 site 共通の置き場に置く
+  transfer:
+    bandwidth: { takamatsu: 50Mbps } # 転送元の置き場ごとの上限
+    overlap: 48h                     # 実体無し猶予 + 削除 reconcile 2 回分より長くする
   media_dir: /mnt/media          # 原本 ingest 先。file fsync / Close / 同一 FS の
                                   # atomic rename / 親 directory fsync を信頼できる
                                   # ローカル FS / JuiceFS / NFS に限定する。geesefs / s3fs /
                                   # Mountpoint など FUSE S3 は原本・派生物とも対象外
                                   # （docs/storage/contract.md）。
-  # media_store_name: main      # 置き場の目印 .rokuban-store に書く名前。英小文字・数字・- のみ。
-                                # worker ロールと rescue・import、および
-                                # recording_hls.enabled=true では必須。それ以外で空なら目印の照合をしない。
-                                # ingress の Prefix /api/media/stores/<名前>/ と一致させる。
   scratch_dir: /var/tmp/rokuban  # ローカルスクラッチ
   # accel_location: /_media/     # X-Accel-Redirect の internal location。
                                  # 設定すると録画ファイルのバイト転送を nginx に委ねる。
