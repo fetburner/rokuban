@@ -9,8 +9,9 @@ import { sendPlaybackLeaveHint } from '@/lib/live'
  * url には画質や再読み込みのキーを入れない。入れると切替のたびに離脱が飛ぶ
  * （`docs/frontend/live/quality.md` §切替と URL）。
  */
-export function usePlaybackLeave(url: string): void {
+export function usePlaybackLeave(url: string | null): void {
   useEffect(() => {
+    if (url === null) return
     const leave = () => sendPlaybackLeaveHint(url)
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') leave()

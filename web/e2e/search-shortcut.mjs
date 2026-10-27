@@ -166,6 +166,7 @@ const detailRecording = {
   durationMs: 1_800_000,
   status: 'finished',
   keepOriginal: 'always',
+  hlsPlayback: [],
   cmDetection: { state: 'detected', ranges: [] },
   sizeBytes: 3_200_000_000,
   encodedAssets: [{ profile: 'h264-720p', sizeBytes: 572_000_000 }],

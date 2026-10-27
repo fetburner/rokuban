@@ -15,7 +15,7 @@ import type { PlaybackTimeline } from '@/lib/playback-timeline'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
 
 /** PlaybackMode は LivePlayer が切り替える再生経路を表す。 */
-export type PlaybackMode = 'live' | 'chase' | 'original-vod'
+export type PlaybackMode = 'live' | 'chase' | 'original-vod' | 'recording-hls'
 
 type LiveProgramInput = Omit<Parameters<typeof liveProgramPlaybackTimeline>[0], 'hoverSeconds'>
 type ChaseTimelineInput = Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
@@ -44,6 +44,10 @@ export type PlaybackStrategyInput =
       recordingId: number
       recordingDurationMs: number
     }
+  | {
+      mode: 'recording-hls'
+      recordingDurationMs: number
+    }
 
 /** recordingDurationSeconds は原本の実尺（ミリ秒）を秒へ直す。不正な値は 0（シーク不可）にする。 */
 export function recordingDurationSeconds(durationMs: number | undefined): number {
@@ -70,9 +74,9 @@ export type PlaybackStrategy = {
   errorMessages: PlaybackErrorMessages
   /** 録画再生の strategy だけが持つ。seekTarget はシークできないとき undefined を返す。 */
   recording?: {
-    seekTarget: (axisSeconds: number) => number | undefined
+    seekTarget: (axisSeconds: number, playlistEndSeconds?: number) => number | undefined
   }
-  leaveURL: (offsetSeconds: number) => string
+  leaveURL: (offsetSeconds: number) => string | null
   originSeconds: (offsetSeconds: number) => number
 }
 
@@ -171,6 +175,36 @@ export function playbackStrategy(input: PlaybackStrategyInput): PlaybackStrategy
         },
         leaveURL: (offsetSeconds) => originalVODLeaveURL(site, recordingId, offsetSeconds),
         originSeconds: originalVODSessionOriginSeconds,
+      }
+    }
+    case 'recording-hls': {
+      const durationSeconds = recordingDurationSeconds(input.recordingDurationMs)
+      return {
+        axis: () => fixedPlaybackTimeline(durationSeconds),
+        classifyLoadError: classifyLiveLoadError,
+        errorMessages: {
+          capacity: {
+            title: 'いま録画を再生できません。',
+            guidance: 'しばらく待ってから再読み込みしてください。',
+          },
+          otherTitle: '録画 HLS の再生でエラーが発生しました。',
+          fatalTitle: '録画 HLS の再生中にエラーが発生しました',
+          mediaError: '録画映像を再生できませんでした（映像データを読み込めません）',
+          stalled: '録画映像が届いていません（映像データが途絶えました）',
+          unsupported: 'このブラウザは録画 HLS に対応していません',
+        },
+        recording: {
+          seekTarget: (axisSeconds, playlistEndSeconds) => {
+            if (durationSeconds <= 0) return undefined
+            const requested = Number.isFinite(axisSeconds) ? Math.max(0, axisSeconds) : 0
+            const recordingEnd = playlistEndSeconds !== undefined && Number.isFinite(playlistEndSeconds)
+              ? Math.min(durationSeconds, Math.max(0, playlistEndSeconds))
+              : durationSeconds
+            return Math.min(requested, recordingEnd)
+          },
+        },
+        leaveURL: () => null,
+        originSeconds: identityOriginSeconds,
       }
     }
   }

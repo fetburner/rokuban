@@ -17,6 +17,10 @@ describe('playbackStrategy', () => {
       recordingId: 42,
       recordingDurationMs: 3_600_000,
     }),
+    'recording-hls': playbackStrategy({
+      mode: 'recording-hls',
+      recordingDurationMs: 3_600_000,
+    }),
   }
 
   const expectedErrorMessages = {
@@ -52,6 +56,17 @@ describe('playbackStrategy', () => {
       mediaError: '録画映像を再生できませんでした（映像データを読み込めません）',
       stalled: '録画映像が届いていません（映像データが途絶えました）',
       unsupported: 'このブラウザは原本 TS の再生（HLS）に対応していません',
+    },
+    'recording-hls': {
+      capacity: {
+        title: 'いま録画を再生できません。',
+        guidance: 'しばらく待ってから再読み込みしてください。',
+      },
+      otherTitle: '録画 HLS の再生でエラーが発生しました。',
+      fatalTitle: '録画 HLS の再生中にエラーが発生しました',
+      mediaError: '録画映像を再生できませんでした（映像データを読み込めません）',
+      stalled: '録画映像が届いていません（映像データが途絶えました）',
+      unsupported: 'このブラウザは録画 HLS に対応していません',
     },
   }
 
@@ -160,5 +175,23 @@ describe('playbackStrategy', () => {
     expect(playbackStrategy({ mode: 'original-vod', site: 'default', recordingId: 42, recordingDurationMs: 0 }).recording?.seekTarget(10)).toBeUndefined()
     expect(strategy.leaveURL(90)).toBe('/api/sites/default/recordings/42/original-vod/offset/90/leave')
     expect(strategy.originSeconds(10)).toBeCloseTo(9.976633333, 9)
+  })
+
+  it('recording-hls は currentTime の秒をそのまま使い、録画尺と playlist の終端で clamp する', () => {
+    const strategy = playbackStrategy({ mode: 'recording-hls', recordingDurationMs: 45_000 })
+
+    expect(strategy.axis(null)).toEqual({
+      kind: 'fixed',
+      minSeconds: 0,
+      maxSeconds: 45,
+      canSeek: true,
+      extended: false,
+    })
+    expect(strategy.recording?.seekTarget(12.75)).toBe(12.75)
+    expect(strategy.recording?.seekTarget(80)).toBe(45)
+    expect(strategy.recording?.seekTarget(80, 20)).toBe(20)
+    expect(strategy.recording?.seekTarget(-2)).toBe(0)
+    expect(strategy.leaveURL(0)).toBeNull()
+    expect(strategy.originSeconds(12)).toBe(12)
   })
 })

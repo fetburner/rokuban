@@ -2,30 +2,41 @@
 
 ## 録画のブラウザ再生
 
-詳細画面の再生枠にはプレイヤーを 1 つだけ置き、再生元は録画の状態から 1 か所で選ぶ。録画中はライブ能力が有効なら追っかけを使う。完了後は cut でない active な encoded があれば encoded MP4、無くてライブ能力と原本があれば原本 HLS を使う。ごみ箱・失敗・キャンセルの録画にはプレイヤーを出さない。
+詳細画面の再生枠にはプレイヤーを 1 つだけ置く。ごみ箱・失敗・キャンセルの録画にはプレイヤーを出さない。録画中と、原本からの再生は、API が返す世代付き録画 HLS の URL があればそれを使い、無ければ従来の追っかけと原本 HLS を使う。完了後に cut でない encoded があれば、これまでどおり encoded MP4 を使う。
 
 ### 再生元の選び方
 
-再生元は、録画の状態・取り込みの進み具合・ライブ能力の有無・原本と encoded の有無から決める。決める場所を 1 か所にして、状態ごとに別々の再生面や開始操作を増やさない。
+再生元は、録画の状態・取り込みの進み具合・世代付き録画 HLS の有無・ライブ能力の有無・原本と encoded の有無から決める。決める場所を 1 か所にして、状態ごとに別々の再生面や開始操作を増やさない。
 
 ```mermaid
 flowchart TD
-  A{ごみ箱・失敗・キャンセル?} -->|はい| N[プレイヤーなし]
-  A -->|いいえ| B{録画中、または commit 前の取り込み中で<br>ライブ能力が有効?}
-  B -->|はい| C[追っかけ]
-  B -->|いいえ| D{cut でない active な encoded がある?}
-  D -->|はい| E[encoded MP4]
-  D -->|いいえ| F{原本があり、ライブ能力が有効?}
-  F -->|はい| G[原本 HLS]
-  F -->|いいえ| H{active な encoded がある?}
-  H -->|はい| I[cut 版の encoded MP4]
-  H -->|いいえ| J[既存の空状態と原本リンク]
+  A{ごみ箱?} -->|はい| N[プレイヤーなし]
+  A -->|いいえ| D{失敗・キャンセル?}
+  D -->|はい| N
+  D -->|いいえ| E{録画中、または commit 前の取り込み中?}
+  E -->|はい| E2{hlsPlayback がある?}
+  E2 -->|はい| C[世代付き録画 HLS]
+  E2 -->|いいえ| E3{ライブ能力が有効?}
+  E3 -->|はい| F[追っかけ]
+  E3 -->|いいえ| G
+  E -->|いいえ| G{cut でない active な encoded がある?}
+  G -->|はい| H[encoded MP4]
+  G -->|いいえ| I{原本がある?}
+  I -->|はい| I2{hlsPlayback がある?}
+  I2 -->|はい| C
+  I2 -->|いいえ| I3{ライブ能力が有効?}
+  I3 -->|はい| J[原本 HLS]
+  I3 -->|いいえ| K
+  I -->|いいえ| K{active な encoded がある?}
+  K -->|はい| L[cut 版の encoded MP4]
+  K -->|いいえ| M[既存の空状態と原本リンク]
 ```
 
-原本と cut 版の両方がある録画では、「版」タブから各 encoded を再生できる。原本が残り、ライブ能力が有効なら、同じタブから原本 HLS へ戻れる。cut だけの録画は原本 HLS を既定にして編集できるようにし、比較・確認のため cut 版を選んだ間はチャプター編集を止める。
+原本と cut 版の両方がある録画では、「版」タブから各 encoded を再生できる。原本が残り、`hlsPlayback` があるか、ライブ能力が有効なら、同じタブから原本 HLS へ戻れる。cut だけの録画は原本 HLS を既定にして編集できるようにし、比較・確認のため cut 版を選んだ間はチャプター編集を止める。
 
 <details><summary>根拠</summary>
 
+- 世代付き録画 HLS の選択（完了後の encoded 優先、失敗・キャンセルとごみ箱は出さない、ライブ能力が不要）: `recording-playback-source.test.ts`
 - 取り込み中の追っかけ条件: `finished`、`ingest.state`、`pending`、`transferring`
 
 </details>
@@ -98,6 +109,36 @@ idle GC で消えた追っかけの再取得も、通常の経路に含む。追
 active な encoded がある完了録画は、MP4 の progressive 再生と Range で再生する。原本だけが残る完了録画は、streamer が一時 HLS に変換してブラウザで再生する。
 
 encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を、controls の無い `<video>` の src に渡す。映像の下端には自前の再生操作バーを重ねる。encoded MP4 の経路では HLS / hls.js を使わない。原本だけが残る完了録画は、streamer の一時 HLS 経路（`/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8`）で再生する。原本自体は MPEG-2 TS のまま読み、変換したファイルは保存しない。原本 HLS の詳細は [api/media.md](../../api/media.md)「録画原本のブラウザ再生」にある。
+
+`hlsPlayback` がある録画の追っかけと原本 HLS は、API が返す master URL をそのまま HLS の入力にし、録画中から commit 後まで同じ URL で再生を続ける。`hlsPlayback` が空の録画だけ上記の従来経路を使う。URL の置き場の名前（store）と世代はサーバーしか知らないので、フロントは URL を組み立てない。
+
+### 世代付き録画 HLS の時間軸と復旧
+
+再生位置は録画開始からの秒をそのまま使い、シークはその秒を代入するだけにする。シークできる範囲の末尾を越える要求は、その末尾へ収める。時間軸の長さは録画済み時間で決め、シークできる範囲の末尾は上限にだけ使う。HLS 応答が 410 になったら、最新の URL で続きから再生する。
+
+ブラウザも `seekable` の末尾へ丸めるが、アプリが先に丸める。丸めた値を、再生元を替えるときに引き継ぐ位置と時間軸の表示にも使うためである。
+
+録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。録画の終了後は、commit 前も含めて、`startedAt` から `endedAt` までの時間を使い、取れなければ予定尺を使う。
+
+hls.js の経路は、現在の世代の HLS 応答が 410 になったことを直接見て、詳細 API を取り直す。ネイティブ HLS の経路は、再生中に `currentTime` が `liveStallTimeoutMs` のあいだ進まなければ止まったとみなし、詳細 API を取り直す。Playwright WebKit は再生中の 410 を `error` にせず、バッファの終わりで `waiting` の直後に進まない `playing` を出して、その後は何も出さない。そのため `stalled` / `waiting` で張るタイマーだけでは止まりに気付かない。止まりは計器と同じ 1 秒の刻みで見て、別のタイマーは作らない。
+
+どちらの経路でも、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。
+
+世代を替える間は `hlsPlayback` が空になり、SSE も来ない。temp を捨てて取り込みをやり直す間がこれに当たる。この間は最後に知っている URL を持ち続け、再生元も世代付き録画 HLS のままにする。空になった時点でプレイヤーを外すと、次の世代で作り直したときに位置がセッション開始へ戻る。選び直しで空の `hlsPlayback` をそのまま見ると、追っかけへ逸れる。失敗・キャンセル・ごみ箱になったら、従来どおりプレイヤーを出さない。
+
+<details><summary>根拠</summary>
+
+- 再生元の選択: `recording-playback-source.test.ts`
+- 410 後の位置保持: `recording-detail.test.tsx`
+- 世代を替える間の空の `hlsPlayback`（プレイヤーを外さない、追っかけへ逸れない、エラー表示の後も次の世代で続ける、失敗・キャンセル・ごみ箱では出さない）: `recording-detail.test.tsx` の「世代の切り替え中」
+- ネイティブ経路の 1 秒刻みの停止検知と、その範囲が世代付き録画 HLS だけであること: `live-player.test.tsx` の「世代付き録画 HLS のネイティブ経路の停止検知」
+- アプリの `seekTarget` による playlist 末尾への丸め: `playback-mode.test.ts`
+- 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
+- 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸: `recording-playback-timeline.mjs`
+- v1 → 空 → v2 の切り替えで、止まる直前の位置（±1 秒）から続けること: `recording-playback-timeline.mjs` の「世代の切り替え」
+- 上の 2 つの判定は Chrome と Playwright WebKit（`E2E_BROWSER=webkit`）で通る。Safari 実機は未測定。WebKit では 410 の後もバッファの終わりまで再生し、そこから 1 秒刻みの検知が拾う
+
+</details>
 
 原本 TS 自体は `<video>` の src に渡さない。VLC 等で開ける原本リンクは残すが、プレイヤー内のダウンロードには置かない。
 

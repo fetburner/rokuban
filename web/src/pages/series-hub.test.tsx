@@ -31,6 +31,7 @@ function recording(over: Partial<Recording> & { id: number }): Recording {
     status: 'finished',
     source: 'manual',
     keepOriginal: 'always',
+    hlsPlayback: [],
     createdAt: '2026-09-01T12:00:00Z',
     cmDetection: { state: 'disabled' },
     ingest: { state: 'committed' },
