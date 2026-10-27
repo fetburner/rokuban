@@ -70,7 +70,7 @@ link 後の temp は canonical と同じ inode である。temp は `O_APPEND` �
 
 link 前の失敗では、temp を残して次の試行へ渡す。中身の不一致、または record の cancel / fail が分かった場合だけ temp を消す。
 
-link の後で fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行がそれを見て commit だけをやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。例えば temp が孤児回収で先に消えると、次の試行は別の inode の temp を作る。canonical は他人のファイルとして扱われて ingest が止まり、aging 後に orphan として報告される。この順序が実際に起きるかは未検証である。
+link の後で fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行がそれを見て commit だけをやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。例えば再試行が成功しないまま temp が mtime 猶予と aging を過ぎると、孤児回収が temp を消す。次の試行は別の inode の temp を作るので、canonical は他人のファイルとして扱われて ingest が止まり、aging 後に orphan として報告される。
 
 mirakc record は、commit が成功するまで削除しない。commit 後の temp の unlink が失敗しても、ログだけで成功扱いにする。
 
