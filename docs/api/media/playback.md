@@ -482,9 +482,9 @@ temp の URL 世代は `recording_ingest_progress.temp_generation`、原本の U
 
 55 秒は NFS 4.1、500 kbit/s の測定で観測した追記可視遅延の最大値である。D を加えて 1 セグメント分の余裕を置く。この根拠は録画中の `segment_seconds` の設定コメントにも記す。K 以下のセグメントがまだ変換できないときは要求を待つ。期限を超えた要求には 503 と `Retry-After` を返す。
 
-temp を読む FFmpeg は `-follow 1 -rw_timeout 90000000` を使う。終端は FFmpeg の終了コードから推定しない。原本が commit されたら最終長を使い `ENDLIST` を付ける。DB が `record_sync.status` を `canceled` / `failed` と示した temp も録れた範囲を示して `ENDLIST` を付ける。status が欠落または未知なら終端とせず、`ENDLIST` を付けない。
+書き込み中の temp を読む FFmpeg は `-follow 1 -rw_timeout 90000000` を使う。終端は FFmpeg の終了コードから推定しない。原本が commit されたら最終長を使い `ENDLIST` を付ける。DB が `record_sync.status` を `canceled` / `failed` と示しても、ingest worker が開いていた Range の読み取りを終えるまでは playlist を開いたままにする。worker が進捗行へ確定した temp サイズを記録してから、録れた範囲に `ENDLIST` を付ける。確定サイズが変わったら metadata を probe し直す。status が欠落または未知なら終端とせず、`ENDLIST` を付けない。
 
-映像、標準・主・副の音声は MPEG-TS の rendition にする。字幕を有効にして原本に字幕ストリームがある場合は、WebVTT の字幕 rendition も master に載せる。映像・音声は `.ts`、字幕は `.vtt` のセグメントを返す。playlist は常に `EVENT` とし、終端を DB で確認したときだけ `ENDLIST` を付ける。変換の組には入力種別も含めるため、commit 後の原本変換が temp を追従中の変換へ合流しない。
+映像、標準・主・副の音声は MPEG-TS の rendition にする。字幕を有効にして原本に字幕ストリームがある場合は、WebVTT の字幕 rendition も master に載せる。映像・音声は `.ts`、字幕は `.vtt` のセグメントを返す。playlist は常に `EVENT` とし、終端を DB で確認したときだけ `ENDLIST` を付ける。変換の組には入力種別と temp の追従状態を含めるため、終端済みの有限 temp は追従変換へ合流せず、commit 後の原本変換も temp を追従中の変換へ合流しない。
 
 要求ごとに DB で、ごみ箱・完全削除・置換でないこと、および原本または配信可能な ingest temp があることを確かめる。原本は完了していて有効な行を持つ場合だけ配信する。条件に合わないときの応答は原因ごとに違う。
 

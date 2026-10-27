@@ -37,6 +37,7 @@ type RecordingHLSInputTarget struct {
 	RelPath          string
 	StoreName        string
 	SizeBytes        int64
+	TempFinalized    bool
 	IngestGeneration int64
 	StartedAt        *time.Time
 	RecordStatus     string

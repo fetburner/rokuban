@@ -77,6 +77,7 @@ type segmentTransformGroup struct {
 	generation  string
 	profile     string
 	inputKind   store.RecordingHLSInputKind
+	growing     bool
 }
 
 type segmentTransformResult struct {
@@ -98,6 +99,8 @@ type SegmentTransformInput struct {
 	OpenFile  func(context.Context) (*os.File, error)
 	Path      string
 	InputArgs []string
+	// Growing は録画 temp の末尾を追従中であることを表し、追従変換と終端 temp の有限変換を分ける。
+	Growing bool
 	// OriginPTS は最初の映像 PTS（90 kHz の MPEG-TS tick）。
 	OriginPTS int64
 	// VideoDurationPTS は原点から録画の末尾までの映像の長さ（90 kHz tick）。0 は未確定を表す。
@@ -331,7 +334,10 @@ func (m *SegmentManager) getOnce(
 		m.mu.Unlock()
 		return nil, false, errSegmentManagerClosed
 	}
-	group := segmentTransformGroup{recordingID: key.RecordingID, generation: key.Generation, profile: key.Profile, inputKind: input.Kind}
+	group := segmentTransformGroup{
+		recordingID: key.RecordingID, generation: key.Generation, profile: key.Profile,
+		inputKind: input.Kind, growing: input.Growing,
+	}
 	if lease, ok, err := m.cache.acquire(key); err != nil {
 		m.mu.Unlock()
 		return nil, false, err
@@ -1034,7 +1040,7 @@ func (m *SegmentManager) finishTask(task *segmentTransformTask, processErr error
 		waiterErr = errSegmentNotCached
 	} else if task.stopping && !errors.Is(processErr, errSegmentManagerClosed) {
 		waiterErr = errSegmentTransformStopped
-	} else if task.input.Kind == store.RecordingHLSInputTemp {
+	} else if task.input.Growing {
 		slog.Warn("streamer: growing recording HLS transform ended before the requested segment was ready", "recording_id", task.group.recordingID, "generation", task.group.generation, "profile", task.group.profile, "err", processErr, "stderr", task.stderr.String())
 		waiterErr = fmt.Errorf("%w: %w", errSegmentGrowingInputRetry, processErr)
 	} else {

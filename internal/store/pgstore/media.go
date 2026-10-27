@@ -311,10 +311,11 @@ func (s *Media) GetRecordingHLSTarget(ctx context.Context, recordingID int64) (s
 	var originalRelPath pgtype.Text
 	var tempRelPath, tempStore pgtype.Text
 	var tempSize, tempGeneration pgtype.Int8
+	var tempFinalized bool
 	var hasOriginal bool
 	err := s.pool.QueryRow(ctx, `SELECT r.started_at, COALESCE(rs.status, ''),
        a.id, a.rel_path, a.size_bytes, COALESCE(a.ingest_generation, 0)::bigint,
-       p.temp_rel_path, p.temp_store, p.written_bytes, p.temp_generation,
+       p.temp_rel_path, p.temp_store, p.written_bytes, p.temp_generation, COALESCE(p.temp_finalized, false),
        EXISTS (SELECT 1 FROM media_assets any_original
                WHERE any_original.recording_id = r.id AND any_original.kind = 'original')
 FROM recordings r
@@ -328,7 +329,7 @@ WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
   )))`, recordingID).Scan(
 		&startedAt, &recordStatus,
 		&originalID, &originalRelPath, &originalSize, &originalGeneration,
-		&tempRelPath, &tempStore, &tempSize, &tempGeneration,
+		&tempRelPath, &tempStore, &tempSize, &tempGeneration, &tempFinalized,
 		&hasOriginal,
 	)
 	if err != nil {
@@ -353,6 +354,7 @@ WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
 		RelPath:          tempRelPath.String,
 		StoreName:        tempStore.String,
 		SizeBytes:        tempSize.Int64,
+		TempFinalized:    tempFinalized,
 		IngestGeneration: tempGeneration.Int64,
 		StartedAt:        startedAt,
 		RecordStatus:     recordStatus,

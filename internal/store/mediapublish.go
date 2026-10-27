@@ -196,6 +196,8 @@ type MediaPublish interface {
 	RegisterInPlace(ctx context.Context, input InPlaceInput) (InPlaceResult, error)
 	// UpsertIngestProgress は転送中の進捗を記録する。tx を持たず、失敗は ingest を止めない。
 	UpsertIngestProgress(ctx context.Context, progress IngestProgress) error
+	// FinalizeIngestProgress は terminal record の ingest が書き込みを止めた後、temp の正確な長さを確定する。
+	FinalizeIngestProgress(ctx context.Context, recordingID, tempGeneration, writtenBytes int64) error
 }
 
 // EncodedPublishSkipReason はエンコード公開を飛ばす理由を表す。

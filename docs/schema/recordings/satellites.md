@@ -202,11 +202,14 @@ CREATE TABLE recording_ingest_progress (
     temp_rel_path  text        NOT NULL,
     temp_store     text        NOT NULL DEFAULT '',
     temp_generation bigint     NOT NULL CHECK (temp_generation > 0),
+    temp_finalized boolean     NOT NULL DEFAULT false,
     observed_at    timestamptz NOT NULL DEFAULT now()
 );
 ```
 
 `temp_rel_path` は media root からの相対パスで、`temp_store` は一時ファイルがある置き場を示す。`temp_store` が空の行は移行前の行で、`storage adopt <store-name>` が埋める。`temp_store` が空の行が残る間、worker は起動を拒む。
+
+`temp_finalized` は cancel / fail を ingest worker が追従し終え、temp へ追加書き込みをしない状態を表す。worker は現在の Range 転送が止まった後に、同じ UPDATE で `written_bytes` を正確な末尾へ合わせて true にする。次の転送開始時の upsert は false に戻す。`record_sync.status` だけでは watcher が先に終端を観測する窓に書き込み中か判定できないため、録画 HLS はこの印がある temp にだけ ENDLIST を付ける。
 
 `temp_generation` は `ingest_temp_generation_seq` から採番する。世代が要るのは、作り直した temp は前と違うバイト列でありうるので、前の temp から作ったセグメントを同じ再生 URL で配らないためである。世代が変わるのは「この試行で temp を作った」ときと「進捗行が無い」ときの 2 つだけで、replay や SHA-256 待ちをまたいでも同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
 
@@ -222,7 +225,7 @@ record の cancel / fail では進捗行を残し、途中までの temp を追�
 
 書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。あちらは mirakc 側の観測で書き手は watcher、こちらは Rokuban 側のファイルに何バイト書けたかで、1 表 2 書き手になる（不変条件 12）。
 
-書き込みバイト数は、単調に増えない。ジョブ内リトライ（Range 再開）とプロセス死後の temp replay では、値が積み上がる。サイズや SHA-256 の不一致で temp を捨てると、次の試行は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。cancel / fail では部分 temp と最後に観測した値を残す。これは、いま temp に書けているバイト数の観測である。累積の転送実績ではない。
+書き込みバイト数は、単調に増えない。ジョブ内リトライ（Range 再開）とプロセス死後の temp replay では、値が積み上がる。サイズや SHA-256 の不一致で temp を捨てると、次の試行は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。通常の転送中は最後に観測した値であり、累積の転送実績ではない。cancel / fail の終端後だけは、worker が追従を止めた時点の実際の末尾を保存し、`temp_finalized` と組にして配信の終端判定に使う。
 
 期待バイト数は、同期表の長さのコピーで、転送開始時に読む。mirakc が長さを返さなければ NULL のままにする。でっち上げた分母を置かない。ジョブが失敗して River のバックオフ待ちに入ると、行は観測時刻が古いまま残る。これは意図した挙動で、`river_job` を API 契約に露出させない代わりに、停滞を読ませる唯一の材料になる（[recording/ingest-followup.md](../../recording/ingest-followup.md) §5.6）。
 

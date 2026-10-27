@@ -589,6 +589,20 @@ func (s *Media) UpsertIngestProgress(ctx context.Context, progress store.IngestP
 	return nil
 }
 
+// FinalizeIngestProgress は temp への書き込み終了と最終サイズを記録する。
+func (s *Media) FinalizeIngestProgress(ctx context.Context, recordingID, tempGeneration, writtenBytes int64) error {
+	updated, err := sqlcgen.New(s.pool).FinalizeRecordingIngestProgress(ctx, sqlcgen.FinalizeRecordingIngestProgressParams{
+		RecordingID: recordingID, WrittenBytes: writtenBytes, TempGeneration: tempGeneration, TempStore: s.storeName,
+	})
+	if err != nil {
+		return fmt.Errorf("finalizing ingest progress for recording %d: %w", recordingID, err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("finalizing ingest progress for recording %d generation %d: updated %d rows", recordingID, tempGeneration, updated)
+	}
+	return nil
+}
+
 func upsertMediaAssetCopy(
 	ctx context.Context,
 	q *sqlcgen.Queries,

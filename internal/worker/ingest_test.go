@@ -822,13 +822,18 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 
 			var tempRelPath string
 			var tempGeneration int64
+			var writtenBytes int64
+			var tempFinalized bool
 			if err := pool.QueryRow(context.Background(),
-				"SELECT temp_rel_path, temp_generation FROM recording_ingest_progress WHERE recording_id = $1", recordingID,
-			).Scan(&tempRelPath, &tempGeneration); err != nil {
+				"SELECT temp_rel_path, temp_generation, written_bytes, temp_finalized FROM recording_ingest_progress WHERE recording_id = $1", recordingID,
+			).Scan(&tempRelPath, &tempGeneration, &writtenBytes, &tempFinalized); err != nil {
 				t.Fatalf("reading retained recording_ingest_progress: %v", err)
 			}
 			if tempRelPath == "" || tempGeneration <= 0 {
 				t.Errorf("retained temp target = (%q, %d), want a path and positive generation", tempRelPath, tempGeneration)
+			}
+			if !tempFinalized || writtenBytes != int64(len(tsData)) {
+				t.Errorf("retained temp snapshot = finalized %v, written %d; want finalized with exact %d byte end", tempFinalized, writtenBytes, len(tsData))
 			}
 
 			var assetRows int

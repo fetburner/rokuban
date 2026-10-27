@@ -392,6 +392,8 @@ type RecordingIngestProgress struct {
 	TempGeneration int64
 	// Store containing the current ingest temporary file
 	TempStore string
+	// True after the ingest writer has stopped appending to this temp generation
+	TempFinalized bool
 }
 
 type RecordingPlaybackPosition struct {

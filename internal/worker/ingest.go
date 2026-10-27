@@ -568,6 +568,16 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		if errors.Is(err, errIngestRecordEndedAbnormally) {
 			// 再試行に戻さない。進捗行と temp は、録画された範囲を追っかけ再生
 			// できるよう残す。原本アセットにはせず、temp 自体は orphan aging に委ねる。
+			// Range の io.Copy が戻った後、部分 temp を同期・close してから最終サイズを確定する。
+			if err := f.Sync(); err != nil {
+				return fmt.Errorf("syncing canceled or failed ingest temp: %w", err)
+			}
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("closing canceled or failed ingest temp: %w", err)
+			}
+			if err := progress.finalize(ctx, offset); err != nil {
+				return fmt.Errorf("finalizing canceled or failed ingest temp: %w", err)
+			}
 			// 取り消し・失敗は「転送が壊れた」ではないので、失敗として数えない。
 			// 同じ result="failure" に混ぜると、利用者が止めた録画が失敗率に
 			// 積まれて本物の失敗が埋もれる。

@@ -260,6 +260,11 @@ func TestRecordingHLSTempPlaylistEndsOnlyForKnownTerminalStateOrCommit(t *testin
 	target.RelPath = "ingest/temp.ts"
 	target.StoreName = "main"
 	target.StartedAt = &startedAt
+	tempInfo, err := os.Stat(filepath.Join(h.root, "ingest", "temp.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.SizeBytes = tempInfo.Size()
 	target.RecordStatus = "recording"
 	h.store.setTarget(target)
 	path := recordingHLSRequestPath("main", 42, 7, "video/index.m3u8")
@@ -274,11 +279,19 @@ func TestRecordingHLSTempPlaylistEndsOnlyForKnownTerminalStateOrCommit(t *testin
 	}
 	for _, status := range []string{"canceled", "failed"} {
 		target.RecordStatus = status
+		target.TempFinalized = false
 		h.store.setTarget(target)
 		response := h.get(t, path)
 		body := response.Body.String()
+		if response.Code != http.StatusOK || !strings.Contains(body, "#EXT-X-PLAYLIST-TYPE:EVENT") || strings.Contains(body, "#EXT-X-ENDLIST") {
+			t.Errorf("record status %q before ingest stops playlist = %d %s, want open EVENT", status, response.Code, body)
+		}
+		target.TempFinalized = true
+		h.store.setTarget(target)
+		response = h.get(t, path)
+		body = response.Body.String()
 		if response.Code != http.StatusOK || !strings.Contains(body, "#EXT-X-PLAYLIST-TYPE:EVENT") || !strings.Contains(body, "#EXT-X-ENDLIST") {
-			t.Errorf("record status %q playlist = %d %s, want ended EVENT", status, response.Code, body)
+			t.Errorf("record status %q after ingest stops playlist = %d %s, want ended EVENT", status, response.Code, body)
 		}
 	}
 
@@ -294,6 +307,59 @@ func TestRecordingHLSTempPlaylistEndsOnlyForKnownTerminalStateOrCommit(t *testin
 	response := h.get(t, path)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "#EXT-X-ENDLIST") || !strings.Contains(response.Body.String(), "#EXT-X-PLAYLIST-TYPE:EVENT") {
 		t.Fatalf("committed playlist at unchanged URL = %d %s, want final EVENT", response.Code, response.Body.String())
+	}
+}
+
+// 壊し方: terminal metadata を temp の最終サイズが変わっても再利用する。
+func TestRecordingHLSTerminalTempSnapshotChangeReprobesMetadata(t *testing.T) {
+	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
+	startedAt := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	target := h.store.target
+	target.Kind = store.RecordingHLSInputTemp
+	target.ID = 0
+	target.RelPath = "ingest/temp.ts"
+	target.StoreName = "main"
+	target.RecordStatus = "canceled"
+	target.TempFinalized = true
+	target.StartedAt = &startedAt
+	path := filepath.Join(h.root, "ingest", "temp.ts")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.SizeBytes = info.Size()
+	h.store.setTarget(target)
+
+	if _, err := h.h.metadataForTarget(context.Background(), 42, 7, target); err != nil {
+		t.Fatalf("probing initial finalized temp: %v", err)
+	}
+	key := recordingHLSKey{recordingID: 42, generation: 7, kind: store.RecordingHLSInputTemp}
+	metadata, ok := h.h.meta.get(key)
+	if !ok || metadata.tempSize != info.Size() {
+		t.Fatalf("cached temp size = (%d, %v), want %d", metadata.tempSize, ok, info.Size())
+	}
+
+	appended := []byte(" more captured bytes")
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(appended); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target.SizeBytes += int64(len(appended))
+	h.store.setTarget(target)
+
+	if _, err := h.h.metadataForTarget(context.Background(), 42, 7, target); err != nil {
+		t.Fatalf("reprobing changed finalized temp: %v", err)
+	}
+	metadata, ok = h.h.meta.get(key)
+	if !ok || metadata.tempSize != target.SizeBytes {
+		t.Fatalf("cached temp size after append = (%d, %v), want %d", metadata.tempSize, ok, target.SizeBytes)
 	}
 }
 
@@ -387,6 +453,59 @@ func TestRecordingHLSTempTransformErrorsAreRetryableAndDoNotEndPlaylist(t *testi
 			response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))
 			if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "1" {
 				t.Fatalf("growing input segment response = %d retry-after=%q %s, want 503 + Retry-After", response.Code, response.Header().Get("Retry-After"), response.Body.String())
+			}
+		})
+	}
+}
+
+func TestRecordingHLSTerminalTempUsesFiniteTransform(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     string
+		finalized  bool
+		wantFollow bool
+		wantStatus int
+	}{
+		{name: "growing", status: "recording", wantFollow: true, wantStatus: http.StatusServiceUnavailable},
+		{name: "terminal", status: "canceled", finalized: true, wantStatus: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argsPath := filepath.Join(t.TempDir(), "ffmpeg-args")
+			ffmpeg := filepath.Join(t.TempDir(), "fake-ffmpeg")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit 7\n", argsPath)
+			if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			h := newRecordingHLSTestHarness(t, false, false, time.Second, ffmpeg)
+			target := h.store.target
+			target.Kind = store.RecordingHLSInputTemp
+			target.ID = 0
+			target.RelPath = "ingest/temp.ts"
+			target.StoreName = "main"
+			target.RecordStatus = tc.status
+			target.TempFinalized = tc.finalized
+			info, err := os.Stat(filepath.Join(h.root, "ingest", "temp.ts"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			target.SizeBytes = info.Size()
+			h.store.setTarget(target)
+
+			response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))
+			if response.Code != tc.wantStatus {
+				t.Fatalf("segment response = %d %s, want %d", response.Code, response.Body.String(), tc.wantStatus)
+			}
+			args, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatalf("reading ffmpeg arguments: %v", err)
+			}
+			gotFollow := strings.Contains(string(args), "-follow\n")
+			if gotFollow != tc.wantFollow {
+				t.Errorf("ffmpeg args contain -follow = %v, want %v: %s", gotFollow, tc.wantFollow, args)
+			}
+			gotTimeout := strings.Contains(string(args), "-rw_timeout\n")
+			if gotTimeout != tc.wantFollow {
+				t.Errorf("ffmpeg args contain -rw_timeout = %v, want %v: %s", gotTimeout, tc.wantFollow, args)
 			}
 		})
 	}

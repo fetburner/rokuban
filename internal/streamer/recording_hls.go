@@ -76,6 +76,7 @@ type recordingHLSTiming struct {
 
 type recordingHLSMetadata struct {
 	startedAt    time.Time
+	tempSize     int64
 	timing       recordingHLSTiming
 	hasSubtitles bool
 	final        bool
@@ -277,10 +278,13 @@ func (h *RecordingHLS) Segment(w http.ResponseWriter, r *http.Request) {
 		HasSubtitles:     request.metadata.hasSubtitles,
 	}
 	if request.inputKind == store.RecordingHLSInputTemp {
-		input.InputArgs = []string{
-			"-skip_estimate_duration_from_pts", "1",
-			"-follow", "1",
-			"-rw_timeout", strconv.FormatInt(recordingHLSTempReadTimeout.Microseconds(), 10),
+		input.Growing = !request.metadata.final
+		if input.Growing {
+			input.InputArgs = []string{
+				"-skip_estimate_duration_from_pts", "1",
+				"-follow", "1",
+				"-rw_timeout", strconv.FormatInt(recordingHLSTempReadTimeout.Microseconds(), 10),
+			}
 		}
 	}
 	if request.dbUnavailable {
@@ -425,10 +429,27 @@ func (h *RecordingHLS) request(w http.ResponseWriter, r *http.Request, needMetad
 
 func (h *RecordingHLS) metadataForTarget(ctx context.Context, recordingID, generation int64, target store.RecordingHLSInputTarget) (recordingHLSMetadata, error) {
 	key := recordingHLSKey{recordingID: recordingID, generation: generation, kind: target.Kind}
-	final := target.Kind == store.RecordingHLSInputOriginal || recordingHLSTempEnded(target.RecordStatus)
+	final := target.Kind == store.RecordingHLSInputOriginal || (target.TempFinalized && recordingHLSTempEnded(target.RecordStatus))
 	if metadata, ok := h.meta.get(key); ok {
 		if target.StartedAt != nil && metadata.startedAt.Equal(*target.StartedAt) && metadata.final == final {
-			return metadata, nil
+			if target.Kind != store.RecordingHLSInputTemp || !final {
+				return metadata, nil
+			}
+			file, err := h.openTemp(ctx, recordingID, target)
+			if err != nil {
+				return recordingHLSMetadata{}, err
+			}
+			info, statErr := file.Stat()
+			closeErr := file.Close()
+			if statErr != nil {
+				return recordingHLSMetadata{}, fmt.Errorf("stating finalized recording HLS temp: %w", statErr)
+			}
+			if closeErr != nil {
+				return recordingHLSMetadata{}, fmt.Errorf("closing checked recording HLS temp: %w", closeErr)
+			}
+			if metadata.tempSize == target.SizeBytes && info.Size() == target.SizeBytes {
+				return metadata, nil
+			}
 		}
 		h.meta.remove(key)
 	}
@@ -456,7 +477,10 @@ func (h *RecordingHLS) metadataForTarget(ctx context.Context, recordingID, gener
 	if target.Kind == store.RecordingHLSInputTemp && !final {
 		timing.videoDurationPTS = 0
 	}
-	metadata := recordingHLSMetadata{startedAt: *target.StartedAt, timing: timing, hasSubtitles: timing.hasSubtitles, final: final}
+	metadata := recordingHLSMetadata{
+		startedAt: *target.StartedAt, tempSize: target.SizeBytes, timing: timing,
+		hasSubtitles: timing.hasSubtitles, final: final,
+	}
 	h.meta.put(key, metadata)
 	return metadata, nil
 }
@@ -547,6 +571,11 @@ func (h *RecordingHLS) openTemp(ctx context.Context, recordingID int64, target s
 	if current.Kind != store.RecordingHLSInputTemp || current.RelPath != target.RelPath || current.StoreName != target.StoreName {
 		_ = file.Close()
 		return nil, fmt.Errorf("recording HLS temp changed while opening: %w", errRecordingHLSTempNotReady)
+	}
+	if target.TempFinalized && recordingHLSTempEnded(target.RecordStatus) &&
+		(!current.TempFinalized || current.RecordStatus != target.RecordStatus || current.SizeBytes != target.SizeBytes || info.Size() != target.SizeBytes) {
+		_ = file.Close()
+		return nil, fmt.Errorf("recording HLS terminal temp snapshot changed while opening: %w", errRecordingHLSTempNotReady)
 	}
 	return file, nil
 }
