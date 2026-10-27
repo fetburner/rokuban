@@ -428,7 +428,7 @@ async function startSafari() {
       const response = await fetch(baseUrl + '/status')
       if (response.ok) { status = await response.json(); break }
     } catch {}
-    if (processHandle.exitCode !== null) break
+    if (processHandle.exitCode !== null || processHandle.signalCode !== null) break
     await delay(100)
   }
   if (!status) {
@@ -437,21 +437,24 @@ async function startSafari() {
   }
 
   let session
+  let capabilities
   try {
     const value = await webdriverRequest(baseUrl, 'POST', '/session', {
       capabilities: { alwaysMatch: { browserName: 'safari' } },
     })
     session = value.sessionId
+    capabilities = value.capabilities
+    if (!session) throw new Error('New Session returned no sessionId')
+    await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/timeouts', { pageLoad: 30000, script: 10000, implicit: 0 })
   } catch (error) {
+    if (session) await fetch(baseUrl + '/session/' + session, { method: 'DELETE' }).catch(() => {})
     processHandle.kill('SIGTERM')
     throw new Error('Could not start Safari automation. Run safaridriver --enable and allow Remote Automation in Safari. ' + error.message + ' ' + stderr)
   }
 
-  await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/timeouts', { pageLoad: 30000, script: 10000, implicit: 0 })
-  const capabilities = await webdriverRequest(baseUrl, 'GET', '/session/' + session)
   return {
     name: 'Safari',
-    version: capabilities.capabilities?.browserVersion ?? 'unknown',
+    version: capabilities?.browserVersion ?? 'unknown',
     async goto(url) { await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/url', { url }) },
     async click(selector) {
       const element = await webdriverRequest(baseUrl, 'POST', '/session/' + session + '/element', { using: 'css selector', value: selector })
@@ -460,6 +463,7 @@ async function startSafari() {
     async evaluate(expression) {
       return webdriverRequest(baseUrl, 'POST', '/session/' + session + '/execute/sync', {
         script: 'return (' + expression + ');',
+        args: [],
       })
     },
     async waitFor(expression, timeout = 15000) {
@@ -564,11 +568,20 @@ async function main() {
 
     await browser.evaluate('window.savePosition()')
     const savedPosition = await browser.evaluate('Number(localStorage.getItem(' + JSON.stringify(RESUME_KEY) + '))')
+    const restoreStart = requests.length
     await browser.goto(origins.publicOrigin + '/probe?scenario=restore')
     await browser.waitFor('window.__state && window.__state.metadata && window.__state.restoreTarget !== null')
-    await browser.waitFor('window.__state && Math.abs(document.querySelector("#player").currentTime - ' + savedPosition + ') < 0.5', 15000)
-    const restoredPosition = await browser.evaluate('({ saved: window.__state.restoreTarget, currentTime: document.querySelector("#player").currentTime })')
+    await browser.waitFor('window.__state && window.__state.seekedCount > 0 && Math.abs(window.__state.lastSeekedTime - ' + savedPosition + ') < 0.5', 15000)
+    const restoredPosition = await browser.evaluate('({ saved: window.__state.restoreTarget, currentTime: document.querySelector("#player").currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError })')
     expect(Math.abs(restoredPosition.currentTime - savedPosition) < 0.5, 'saved playback position was not restored after a 302: ' + JSON.stringify(restoredPosition))
+    expect(restoredPosition.seekedCount > 0 && !restoredPosition.error, 'restored position did not complete a seek: ' + JSON.stringify(restoredPosition))
+    await browser.click('#play')
+    await browser.waitFor('window.__state && window.__state.playing && window.__state.currentTime > ' + savedPosition + ' + 0.5', 15000)
+    const resumedPlayback = await browser.evaluate('({ currentTime: document.querySelector("#player").currentTime, error: window.__state.mediaError })')
+    expect(resumedPlayback.currentTime > savedPosition + 0.5 && !resumedPlayback.error,
+      'playback did not advance from the restored position: ' + JSON.stringify(resumedPlayback))
+    const restoreRequests = requests.slice(restoreStart).filter((request) => request.route === 's3' && request.range)
+    expect(restoreRequests.some((request) => request.status === 206), 'restoring the saved position made no successful Range request to the signed S3 destination')
 
     const negativeStart = requests.length
     await browser.goto(origins.publicOrigin + '/probe?scenario=negative-cors')
@@ -590,20 +603,25 @@ async function main() {
     const expiredAt = expiringRedirect.expiresAt
     const expirySeekStart = requests.length
     await browser.evaluate('window.seekTo(64)')
-    const expiryDeadline = Date.now() + 10000
+    const expiryDeadline = Date.now() + 15000
     let afterExpiry = []
+    let expirySeek = null
     while (Date.now() < expiryDeadline) {
       afterExpiry = requests.slice(expirySeekStart).filter((request) => request.range && request.at >= expiredAt)
-      if (afterExpiry.some((request) => request.status !== null)) break
+      expirySeek = await browser.evaluate('({ currentTime: document.querySelector("#player").currentTime, error: window.__state.mediaError, seekedCount: window.__state.seekedCount })')
+      if (expirySeek.error || expirySeek.seekedCount > 0) break
       await delay(100)
     }
-    const expirySeek = await browser.evaluate('({ currentTime: document.querySelector("#player").currentTime, error: window.__state.mediaError, seekedCount: window.__state.seekedCount })')
+    if (!expirySeek) throw new Error('could not read media state after the expired seek')
     expect(afterExpiry.length > 0, 'could not observe a ranged media request after the signed URL expired')
     const refreshedAtOrigin = afterExpiry.some((request) => request.route === 'redirect')
     const rejectedByMinIO = afterExpiry.some((request) => request.route === 's3' && request.status === 403)
+    const settledRange = afterExpiry.some((request) => request.route === 's3' && request.status !== null)
     expect(refreshedAtOrigin || rejectedByMinIO, 'the expired-range result was neither a fresh origin redirect nor MinIO 403')
-    if (rejectedByMinIO) expect(Boolean(expirySeek.error), 'MinIO rejected the expired signed URL but the video reported no media error')
-    if (refreshedAtOrigin) expect(!expirySeek.error, 'the browser refreshed the signed URL at the origin but playback errored')
+    expect(settledRange, 'the expired seek did not receive a final response from the signed S3 destination')
+    expect(Boolean(expirySeek.error) || expirySeek.seekedCount > 0, 'the expired seek produced neither a media error nor a completed seek')
+    if (rejectedByMinIO && !refreshedAtOrigin) expect(Boolean(expirySeek.error), 'MinIO rejected the expired signed URL but the video reported no media error')
+    if (refreshedAtOrigin) expect(!expirySeek.error && expirySeek.seekedCount > 0, 'the browser refreshed at the origin but the new signed URL did not complete the seek: ' + JSON.stringify(expirySeek))
     const expiryResult = {
       signedUrlExpiresAt: new Date(expiringRedirect.expiresAt).toISOString(),
       rangedRequestsAfterExpiry: conciseRequests(afterExpiry),
@@ -622,6 +640,7 @@ async function main() {
     console.log('Seek destination after 302: ' + JSON.stringify(seekDestination))
     console.log('Seeked to: ' + JSON.stringify(afterSeek))
     console.log('Saved position restore: ' + JSON.stringify(restoredPosition))
+    console.log('Playback after restore: ' + JSON.stringify(resumedPlayback))
     console.log('No-CORS negative: ' + JSON.stringify(negative))
     console.log('Short-expiry result: ' + JSON.stringify(expiryResult))
     console.log('Observed browser requests: ' + JSON.stringify(conciseRequests(requests.slice(normalRequestStart))))
