@@ -36,23 +36,39 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "sites/default/recording-hls-generation.m2ts"
 	})
+	selectedCopyPath := "sites/default/store-copy-recording-hls-generation.m2ts"
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET rel_path = $2 WHERE media_asset_id = $1 AND store = $3`,
+		assetID, selectedCopyPath, dbtest.StoreName); err != nil {
+		t.Fatalf("setting selected-store copy path: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: "secondary", RelPath: "sites/default/secondary-copy-recording-hls-generation.m2ts", State: "active",
+	}); err != nil {
+		t.Fatalf("creating secondary-store copy: %v", err)
+	}
 	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET ingest_generation = 19 WHERE id = $1`, assetID); err != nil {
 		t.Fatalf("setting committed ingest generation: %v", err)
 	}
 
-	target, err := NewMedia(pool, "tokyo").GetRecordingHLSOriginalTarget(context.Background(), recordingID)
+	target, err := NewMedia(pool, dbtest.StoreName).GetRecordingHLSOriginalTarget(context.Background(), recordingID)
 	if err != nil {
 		t.Fatalf("GetRecordingHLSOriginalTarget(%d): %v", recordingID, err)
 	}
-	if target.ID != assetID || target.IngestGeneration != 19 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
-		t.Fatalf("target = %+v, want asset %d, generation 19 and start %s", target, assetID, startedAt)
+	if target.ID != assetID || target.RelPath != selectedCopyPath || target.IngestGeneration != 19 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
+		t.Fatalf("target = %+v, want asset %d at %q, generation 19 and start %s", target, assetID, selectedCopyPath, startedAt)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName); err != nil {
+		t.Fatalf("deleting selected-store copy: %v", err)
+	}
+	if _, err := NewMedia(pool, dbtest.StoreName).GetRecordingHLSOriginalTarget(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSOriginalTarget(without selected-store active copy) error = %v, want ErrNotFound", err)
 	}
 
 	unfinishedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Status = "recording"
 	})
 	dbtest.MediaAsset(t, pool, unfinishedID)
-	if _, err := NewMedia(pool, "tokyo").GetRecordingHLSOriginalTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := NewMedia(pool, dbtest.StoreName).GetRecordingHLSOriginalTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetRecordingHLSOriginalTarget(unfinished) error = %v, want ErrNotFound", err)
 	}
 }
@@ -139,11 +155,11 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		Precheck:  NewMedia(pool, "tokyo"),
 		Storage:   NewMedia(pool, "tokyo"),
 		Reader:    NewMedia(pool, "tokyo"),
-		Query:     NewRecordings(pool),
+		Query:     NewRecordings(pool, "tokyo"),
 		Catalog:   NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
 		Publisher: NewMedia(pool, "tokyo"),
 		Progress:  NewMedia(pool, "tokyo"),
-		Chapters:  NewAnalysis(pool),
+		Chapters:  NewAnalysis(pool, dbtest.StoreName),
 		Site:      store.DefaultSite,
 		NewRecording: func(t *testing.T) int64 {
 			return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -188,6 +204,9 @@ func newMediaContractAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, 
 		fixtureParams.Profile = profile
 		fixtureParams.RelPath = relPath
 	})
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, id); err != nil {
+		t.Fatalf("setting media asset copy store to tokyo: %v", err)
+	}
 
 	if state != "active" {
 		if _, err := pool.Exec(context.Background(), `
@@ -465,10 +484,7 @@ func configureMediaStorageFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		}
 	}
 	fixture.SetAssetState = func(t *testing.T, assetID int64, state string) {
-		t.Helper()
-		if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = $1 WHERE id = $2", state, assetID); err != nil {
-			t.Fatalf("setting media asset state to %s: %v", state, err)
-		}
+		dbtest.SetMediaAssetState(t, pool, assetID, state)
 	}
 	fixture.SetMediaAssetKeepRanges = func(t *testing.T, assetID int64, keep []chapters.Range) {
 		t.Helper()

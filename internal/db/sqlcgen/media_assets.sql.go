@@ -74,71 +74,117 @@ func (q *Queries) DeleteMediaAssetCuts(ctx context.Context, mediaAssetID int64) 
 }
 
 const getActiveEncodedMediaAssetID = `-- name: GetActiveEncodedMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'encoded'
   AND profile = $2
-  AND state = 'active'
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies c
+      WHERE c.media_asset_id = media_assets.id
+        AND c.state = 'active'
+        AND ($3::text IS NULL OR c.store = $3)
+  )
 `
 
 type GetActiveEncodedMediaAssetIDParams struct {
 	RecordingID int64
 	Profile     *string
+	StoreName   *string
 }
 
 // encode の冪等性チェック。active な encoded が既にあれば ffmpeg を走らせない。
 func (q *Queries) GetActiveEncodedMediaAssetID(ctx context.Context, arg GetActiveEncodedMediaAssetIDParams) (int64, error) {
-	row := q.db.QueryRow(ctx, getActiveEncodedMediaAssetID, arg.RecordingID, arg.Profile)
+	row := q.db.QueryRow(ctx, getActiveEncodedMediaAssetID, arg.RecordingID, arg.Profile, arg.StoreName)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
 }
 
 const getActiveOriginalMediaAsset = `-- name: GetActiveOriginalMediaAsset :one
-SELECT id, rel_path, size_bytes
-FROM media_assets
-WHERE recording_id = $1 AND kind = 'original' AND state = 'active'
+SELECT a.id, c.rel_path, a.size_bytes, c.store
+FROM media_assets a
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+      AND copy.state = 'active'
+      AND ($1::text IS NULL OR copy.store = $1)
+    LIMIT 1
+) c ON true
+WHERE a.recording_id = $2
+  AND a.kind = 'original'
 `
+
+type GetActiveOriginalMediaAssetParams struct {
+	StoreName   *string
+	RecordingID int64
+}
 
 type GetActiveOriginalMediaAssetRow struct {
 	ID        int64
 	RelPath   string
 	SizeBytes int64
+	Store     string
 }
 
-// encode / thumbnail が読む原本(パスとサイズ)。active のみ。tombstone や未 commit は対象外。
-func (q *Queries) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (GetActiveOriginalMediaAssetRow, error) {
-	row := q.db.QueryRow(ctx, getActiveOriginalMediaAsset, recordingID)
+// encode / thumbnail が読む原本（パスとサイズ）。active コピーのみ。tombstone や未 commit は対象外。
+func (q *Queries) GetActiveOriginalMediaAsset(ctx context.Context, arg GetActiveOriginalMediaAssetParams) (GetActiveOriginalMediaAssetRow, error) {
+	row := q.db.QueryRow(ctx, getActiveOriginalMediaAsset, arg.StoreName, arg.RecordingID)
 	var i GetActiveOriginalMediaAssetRow
-	err := row.Scan(&i.ID, &i.RelPath, &i.SizeBytes)
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.Store,
+	)
 	return i, err
 }
 
 const getActiveSeekTilesMediaAssetID = `-- name: GetActiveSeekTilesMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'seek_tiles'
-  AND state = 'active'
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies c
+      WHERE c.media_asset_id = media_assets.id
+        AND c.state = 'active'
+        AND ($2::text IS NULL OR c.store = $2)
+  )
 `
 
+type GetActiveSeekTilesMediaAssetIDParams struct {
+	RecordingID int64
+	StoreName   *string
+}
+
 // seek_tiles の冪等性チェック用。active な seek_tiles 行があれば id を返す。
-func (q *Queries) GetActiveSeekTilesMediaAssetID(ctx context.Context, recordingID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, getActiveSeekTilesMediaAssetID, recordingID)
+func (q *Queries) GetActiveSeekTilesMediaAssetID(ctx context.Context, arg GetActiveSeekTilesMediaAssetIDParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getActiveSeekTilesMediaAssetID, arg.RecordingID, arg.StoreName)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
 }
 
 const getActiveThumbnailMediaAssetID = `-- name: GetActiveThumbnailMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'thumbnail'
-  AND state = 'active'
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies c
+      WHERE c.media_asset_id = media_assets.id
+        AND c.state = 'active'
+        AND ($2::text IS NULL OR c.store = $2)
+  )
 `
 
+type GetActiveThumbnailMediaAssetIDParams struct {
+	RecordingID int64
+	StoreName   *string
+}
+
 // thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
-func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, recordingID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, getActiveThumbnailMediaAssetID, recordingID)
+func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, arg GetActiveThumbnailMediaAssetIDParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getActiveThumbnailMediaAssetID, arg.RecordingID, arg.StoreName)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -167,14 +213,23 @@ func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDer
 }
 
 const getEncodedMediaAssetForProfile = `-- name: GetEncodedMediaAssetForProfile :one
-SELECT id, rel_path, state, COALESCE(derived_generation, 0)::bigint AS derived_generation
-FROM media_assets
-WHERE recording_id = $1
-  AND kind = 'encoded'
-  AND profile = $2
+SELECT a.id, c.rel_path, c.state, c.store,
+       COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+FROM media_assets a
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.state, copy.store
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+      AND ($1::text IS NULL OR copy.store = $1)
+    LIMIT 1
+) c ON true
+WHERE a.recording_id = $2
+  AND a.kind = 'encoded'
+  AND a.profile = $3
 `
 
 type GetEncodedMediaAssetForProfileParams struct {
+	StoreName   *string
 	RecordingID int64
 	Profile     *string
 }
@@ -183,39 +238,45 @@ type GetEncodedMediaAssetForProfileRow struct {
 	ID                int64
 	RelPath           string
 	State             string
+	Store             string
 	DerivedGeneration int64
 }
 
-// 置き換え（cut プロファイルの作り直し）で、旧パスの unlink と世代番号の導出に
-// 要る行。**state を問わない**: tombstone（state='deleted'）の rel_path からも
-// 世代番号を読む（次のカット版が同じパスを再利用しないため）。UNIQUE
-// (recording_id, kind, profile) があるので高々 1 行。
 func (q *Queries) GetEncodedMediaAssetForProfile(ctx context.Context, arg GetEncodedMediaAssetForProfileParams) (GetEncodedMediaAssetForProfileRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.RecordingID, arg.Profile)
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.StoreName, arg.RecordingID, arg.Profile)
 	var i GetEncodedMediaAssetForProfileRow
 	err := row.Scan(
 		&i.ID,
 		&i.RelPath,
 		&i.State,
+		&i.Store,
 		&i.DerivedGeneration,
 	)
 	return i, err
 }
 
 const getEncodedMediaAssetForServing = `-- name: GetEncodedMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title, a.profile
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, a.profile, c.store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+      AND copy.state = 'active'
+      AND ($3::text IS NULL OR copy.store = $3)
+    LIMIT 1
+) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'encoded'
   AND a.profile = $2
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
 `
 
 type GetEncodedMediaAssetForServingParams struct {
 	RecordingID int64
 	Profile     *string
+	StoreName   *string
 }
 
 type GetEncodedMediaAssetForServingRow struct {
@@ -225,11 +286,12 @@ type GetEncodedMediaAssetForServingRow struct {
 	UpdatedAt time.Time
 	Title     string
 	Profile   *string
+	Store     string
 }
 
 // 配信対象の encoded 派生物を引く（?profile= 付き）。原本と同じ配信規律。
 func (q *Queries) GetEncodedMediaAssetForServing(ctx context.Context, arg GetEncodedMediaAssetForServingParams) (GetEncodedMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedMediaAssetForServing, arg.RecordingID, arg.Profile)
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForServing, arg.RecordingID, arg.Profile, arg.StoreName)
 	var i GetEncodedMediaAssetForServingRow
 	err := row.Scan(
 		&i.ID,
@@ -238,14 +300,24 @@ func (q *Queries) GetEncodedMediaAssetForServing(ctx context.Context, arg GetEnc
 		&i.UpdatedAt,
 		&i.Title,
 		&i.Profile,
+		&i.Store,
 	)
 	return i, err
 }
 
 const getLiveMediaAssetByRelPath = `-- name: GetLiveMediaAssetByRelPath :one
-SELECT recording_id FROM media_assets
-WHERE rel_path = $1 AND state <> 'deleted'
+SELECT a.recording_id
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+WHERE c.rel_path = $1
+  AND c.state <> 'deleted'
+  AND ($2::text IS NULL OR c.store = $2)
 `
+
+type GetLiveMediaAssetByRelPathParams struct {
+	RelPath   string
+	StoreName *string
+}
 
 // ingest の転送前ヒント用（issue #197）。worker/ingest.go の Work が
 // record 固有の一時ファイルを開く前に、別のまだ削除されていない
@@ -269,8 +341,8 @@ WHERE rel_path = $1 AND state <> 'deleted'
 // 述語と同じにする --- 削除済みの行が使っていた rel_path は正当に再利用できるので、
 // 削除済み行と衝突させてはいけない。呼び出し側は recording_id しか使わないので
 // id は選択しない。該当行が無ければ pgx.ErrNoRows を返す。
-func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, relPath string) (int64, error) {
-	row := q.db.QueryRow(ctx, getLiveMediaAssetByRelPath, relPath)
+func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, arg GetLiveMediaAssetByRelPathParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getLiveMediaAssetByRelPath, arg.RelPath, arg.StoreName)
 	var recording_id int64
 	err := row.Scan(&recording_id)
 	return recording_id, err
@@ -299,14 +371,26 @@ func (q *Queries) GetMediaAssetKeepRangesJSON(ctx context.Context, mediaAssetID 
 }
 
 const getOriginalMediaAssetForServing = `-- name: GetOriginalMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, c.store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+      AND copy.state = 'active'
+      AND ($2::text IS NULL OR copy.store = $2)
+    LIMIT 1
+) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
 `
+
+type GetOriginalMediaAssetForServingParams struct {
+	RecordingID int64
+	StoreName   *string
+}
 
 type GetOriginalMediaAssetForServingRow struct {
 	ID        int64
@@ -314,11 +398,12 @@ type GetOriginalMediaAssetForServingRow struct {
 	SizeBytes int64
 	UpdatedAt time.Time
 	Title     string
+	Store     string
 }
 
 // 配信対象の原本を引く。ごみ箱に入った録画・削除済みアセットは配らない。
-func (q *Queries) GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (GetOriginalMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getOriginalMediaAssetForServing, recordingID)
+func (q *Queries) GetOriginalMediaAssetForServing(ctx context.Context, arg GetOriginalMediaAssetForServingParams) (GetOriginalMediaAssetForServingRow, error) {
+	row := q.db.QueryRow(ctx, getOriginalMediaAssetForServing, arg.RecordingID, arg.StoreName)
 	var i GetOriginalMediaAssetForServingRow
 	err := row.Scan(
 		&i.ID,
@@ -326,12 +411,13 @@ func (q *Queries) GetOriginalMediaAssetForServing(ctx context.Context, recording
 		&i.SizeBytes,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.Store,
 	)
 	return i, err
 }
 
 const getOriginalMediaAssetID = `-- name: GetOriginalMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original'
 `
 
@@ -404,14 +490,26 @@ func (q *Queries) GetRecordingEncodeTimes(ctx context.Context, id int64) (GetRec
 }
 
 const getSeekTilesMediaAssetForServing = `-- name: GetSeekTilesMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, c.store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+      AND copy.state = 'active'
+      AND ($2::text IS NULL OR copy.store = $2)
+    LIMIT 1
+) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'seek_tiles'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
 `
+
+type GetSeekTilesMediaAssetForServingParams struct {
+	RecordingID int64
+	StoreName   *string
+}
 
 type GetSeekTilesMediaAssetForServingRow struct {
 	ID        int64
@@ -419,11 +517,12 @@ type GetSeekTilesMediaAssetForServingRow struct {
 	SizeBytes int64
 	UpdatedAt time.Time
 	Title     string
+	Store     string
 }
 
 // 配信対象のシークタイルを引く。ごみ箱・削除済みは配らない。
-func (q *Queries) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (GetSeekTilesMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForServing, recordingID)
+func (q *Queries) GetSeekTilesMediaAssetForServing(ctx context.Context, arg GetSeekTilesMediaAssetForServingParams) (GetSeekTilesMediaAssetForServingRow, error) {
+	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForServing, arg.RecordingID, arg.StoreName)
 	var i GetSeekTilesMediaAssetForServingRow
 	err := row.Scan(
 		&i.ID,
@@ -431,38 +530,51 @@ func (q *Queries) GetSeekTilesMediaAssetForServing(ctx context.Context, recordin
 		&i.SizeBytes,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.Store,
 	)
 	return i, err
 }
 
 const getThumbnailMediaAssetForServing = `-- name: GetThumbnailMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-WHERE a.recording_id = $1
-  AND a.kind = 'thumbnail'
-  AND a.state = 'active'
-  AND r.deleted_at IS NULL
+SELECT asset.id AS asset_id, copy.rel_path,
+       asset.size_bytes, asset.updated_at, recording.title, copy.store
+FROM media_assets asset
+JOIN recordings recording ON recording.id = asset.recording_id
+JOIN media_asset_copies copy
+  ON copy.media_asset_id = asset.id
+ AND copy.state = 'active'
+ AND ($2::text IS NULL OR copy.store = $2)
+WHERE asset.recording_id = $1
+  AND asset.kind = 'thumbnail'
+  AND recording.deleted_at IS NULL
+LIMIT 1
 `
 
+type GetThumbnailMediaAssetForServingParams struct {
+	RecordingID int64
+	StoreName   *string
+}
+
 type GetThumbnailMediaAssetForServingRow struct {
-	ID        int64
+	AssetID   int64
 	RelPath   string
 	SizeBytes int64
 	UpdatedAt time.Time
 	Title     string
+	Store     string
 }
 
 // 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
-func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, recordingID int64) (GetThumbnailMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, recordingID)
+func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, arg GetThumbnailMediaAssetForServingParams) (GetThumbnailMediaAssetForServingRow, error) {
+	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, arg.RecordingID, arg.StoreName)
 	var i GetThumbnailMediaAssetForServingRow
 	err := row.Scan(
-		&i.ID,
+		&i.AssetID,
 		&i.RelPath,
 		&i.SizeBytes,
 		&i.UpdatedAt,
 		&i.Title,
+		&i.Store,
 	)
 	return i, err
 }
@@ -491,30 +603,49 @@ SELECT EXISTS (
     FROM media_assets a
     WHERE a.id = $1
       AND a.kind IN ('original', 'encoded')
-      AND a.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies c
+          WHERE c.media_asset_id = a.id
+            AND c.store = $2
+            AND c.state = 'active'
+      )
       AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+          SELECT 1 FROM missing_media_assets m
+          WHERE m.media_asset_id = a.id AND m.store = $2
       )
 )
 `
 
+type IsActiveThumbnailInputParams struct {
+	MediaAssetID int64
+	StoreName    string
+}
+
 // 生成に使ったファイルがまだ使えるかを commit tx 内で確認する。
-func (q *Queries) IsActiveThumbnailInput(ctx context.Context, mediaAssetID int64) (bool, error) {
-	row := q.db.QueryRow(ctx, isActiveThumbnailInput, mediaAssetID)
+func (q *Queries) IsActiveThumbnailInput(ctx context.Context, arg IsActiveThumbnailInputParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isActiveThumbnailInput, arg.MediaAssetID, arg.StoreName)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
 }
 
 const lockActiveThumbnailMediaAsset = `-- name: LockActiveThumbnailMediaAsset :one
-SELECT a.id, a.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = $1
+ AND c.state = 'active'
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
-WHERE a.recording_id = $1
+WHERE a.recording_id = $2
   AND a.kind = 'thumbnail'
-  AND a.state = 'active'
-FOR UPDATE OF a
+FOR UPDATE OF a, c
 `
+
+type LockActiveThumbnailMediaAssetParams struct {
+	StoreName   string
+	RecordingID int64
+}
 
 type LockActiveThumbnailMediaAssetRow struct {
 	ID                int64
@@ -525,8 +656,8 @@ type LockActiveThumbnailMediaAssetRow struct {
 
 // thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
 // seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
-func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (LockActiveThumbnailMediaAssetRow, error) {
-	row := q.db.QueryRow(ctx, lockActiveThumbnailMediaAsset, recordingID)
+func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, arg LockActiveThumbnailMediaAssetParams) (LockActiveThumbnailMediaAssetRow, error) {
+	row := q.db.QueryRow(ctx, lockActiveThumbnailMediaAsset, arg.StoreName, arg.RecordingID)
 	var i LockActiveThumbnailMediaAssetRow
 	err := row.Scan(
 		&i.ID,
@@ -567,15 +698,20 @@ func (q *Queries) UpdateEncodedMediaAssetPath(ctx context.Context, arg UpdateEnc
 }
 
 const updateThumbnailMediaAssetPath = `-- name: UpdateThumbnailMediaAssetPath :exec
-UPDATE media_assets
+UPDATE media_assets AS asset
 SET rel_path   = $1,
     size_bytes = $2,
     derived_generation = $3,
     sha256     = NULL,
     updated_at = now()
-WHERE id = $4
-  AND kind = 'thumbnail'
-  AND state = 'active'
+WHERE asset.id = $4
+  AND asset.kind = 'thumbnail'
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies c
+      WHERE c.media_asset_id = asset.id
+        AND c.store = $5
+        AND c.state = 'active'
+  )
 `
 
 type UpdateThumbnailMediaAssetPathParams struct {
@@ -583,6 +719,7 @@ type UpdateThumbnailMediaAssetPathParams struct {
 	SizeBytes         int64
 	DerivedGeneration *int64
 	ID                int64
+	StoreName         string
 }
 
 // thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
@@ -592,6 +729,7 @@ func (q *Queries) UpdateThumbnailMediaAssetPath(ctx context.Context, arg UpdateT
 		arg.SizeBytes,
 		arg.DerivedGeneration,
 		arg.ID,
+		arg.StoreName,
 	)
 	return err
 }

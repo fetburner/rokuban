@@ -169,7 +169,7 @@ func requireSingleSite(registry []config.MirakcSite, cmdName string) (config.Mir
 func newBoundBacklogCollectors(pool *pgxpool.Pool, bound []config.MirakcSite) []prometheus.Collector {
 	collectors := make([]prometheus.Collector, 0, len(bound))
 	for _, s := range bound {
-		collectors = append(collectors, metrics.NewBacklogCollector(pgstore.NewRecordings(pool), s.Site))
+		collectors = append(collectors, metrics.NewBacklogCollector(pgstore.NewRecordings(pool, ""), s.Site))
 	}
 	return collectors
 }

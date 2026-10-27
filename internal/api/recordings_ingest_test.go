@@ -47,7 +47,6 @@ func seedIngestProgress(t *testing.T, pool *pgxpool.Pool, recordingID, written i
 func TestListRecordingsIngestState(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
-	ctx := context.Background()
 
 	base := time.Now().Truncate(time.Second)
 
@@ -62,10 +61,7 @@ func TestListRecordingsIngestState(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除済み", base.Add(-2*time.Hour), "finished", 2
 	})
 	assetID := seedIngested(t, pool, deletedOriginal, 8192, nil)
-	if _, err := pool.Exec(ctx,
-		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
-		t.Fatalf("marking original deleted: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 
 	// (3) 転送中（進捗行あり）
 	expected := int64(1000)

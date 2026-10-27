@@ -18,7 +18,9 @@ var _ store.CMDetection = (*Analysis)(nil)
 
 // GetWorkItem は録画と有効な原本の CM 検出入力を返す。
 func (s *Analysis) GetWorkItem(ctx context.Context, recordingID int64) (store.CMDetectionWorkItem, error) {
-	row, err := sqlcgen.New(s.pool).GetCMDetectionWorkItem(ctx, recordingID)
+	row, err := sqlcgen.New(s.pool).GetCMDetectionWorkItem(ctx, sqlcgen.GetCMDetectionWorkItemParams{
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.CMDetectionWorkItem{}, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
@@ -65,7 +67,9 @@ func (s *Analysis) BeginAttempt(ctx context.Context, recordingID int64, maxAttem
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	item, err := q.GetCMDetectionWorkItem(ctx, recordingID)
+	item, err := q.GetCMDetectionWorkItem(ctx, sqlcgen.GetCMDetectionWorkItemParams{
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.CMDetectionAttempt{}, false, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
@@ -259,7 +263,9 @@ func (s *Analysis) RetryDetection(ctx context.Context, recordingID int64) (store
 	if recording.PurgedAt != nil {
 		return store.CMDetectionRetry{}, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
 	}
-	active, err := q.GetCMRetryOriginal(ctx, recordingID)
+	active, err := q.GetCMRetryOriginal(ctx, sqlcgen.GetCMRetryOriginalParams{
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+	})
 	if err != nil {
 		return store.CMDetectionRetry{}, fmt.Errorf("checking active original for recording %d: %w", recordingID, err)
 	}

@@ -21,7 +21,6 @@ WHERE rs.site = $1
       SELECT 1 FROM media_assets a
       WHERE a.recording_id = rs.recording_id
         AND a.kind = 'original'
-        AND a.state <> 'deleted'
   )
 `
 

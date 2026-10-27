@@ -336,11 +336,20 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	generation := int64(0)
-	if _, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
+	assetID, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
 		RecordingID: id, RelPath: relPath, SizeBytes: int64(len(prior)),
 		DerivedGeneration: &generation,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID,
+		Store:        dbtest.StoreName,
+		RelPath:      relPath,
+		State:        "active",
+	}); err != nil {
+		t.Fatalf("seeding active thumbnail copy: %v", err)
 	}
 
 	size, published, err := publishThumbnailForTest(pool, mediaDir, id, writeScratchForTest(t, []byte("late attempt bytes")))
@@ -366,10 +375,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/skip-orig.m2ts", nil, []byte("original"))
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1 AND kind = 'original'`, id); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleting")
 
 	_, published, err := publishThumbnailForTest(pool, mediaDir, id, writeScratchForTest(t, []byte("orphan bytes")))
 	if err != nil {

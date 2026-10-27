@@ -139,7 +139,7 @@ VALUES ($1, $2, $3)`, id, *o.PlaybackPositionMs, updatedAt); err != nil {
 			return id
 		}
 		return contracttest.RecordingQueryFixture{
-			Store:        NewRecordings(pool),
+			Store:        NewRecordings(pool, dbtest.StoreName),
 			NewRecording: newRecording,
 			RuleID:       ruleID,
 			OtherRuleID:  otherRuleID,

@@ -20,12 +20,13 @@ import (
 // Analysis は録画の解析と局単位 CM ロゴ状態の store 契約を PostgreSQL で実装する。
 // pool を持ち、このドメインの interface をまとめて満たす。
 type Analysis struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	storeName string
 }
 
-// NewAnalysis は PostgreSQL を使う Analysis を作る。
-func NewAnalysis(pool *pgxpool.Pool) *Analysis {
-	return &Analysis{pool: pool}
+// NewAnalysis は PostgreSQL とこのプロセスの置き場名を使う Analysis を作る。
+func NewAnalysis(pool *pgxpool.Pool, storeName string) *Analysis {
+	return &Analysis{pool: pool, storeName: storeName}
 }
 
 // Read は現在のチャプター層と、楽観的並行制御用の不透明な版を返す。

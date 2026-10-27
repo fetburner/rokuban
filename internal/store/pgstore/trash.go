@@ -16,12 +16,13 @@ import (
 // Recordings は録画ドメインの永続化を PostgreSQL で実装する。
 // 1 つの pool を持ち、ごみ箱・完全削除・record の観測・取り込み先・滞留量の各契約をまとめて実装する。
 type Recordings struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	storeName string
 }
 
-// NewRecordings は PostgreSQL を使う Recordings を作る。
-func NewRecordings(pool *pgxpool.Pool) *Recordings {
-	return &Recordings{pool: pool}
+// NewRecordings は PostgreSQL と指定置き場を使う Recordings を作る。
+func NewRecordings(pool *pgxpool.Pool, storeName string) *Recordings {
+	return &Recordings{pool: pool, storeName: storeName}
 }
 
 // SoftDelete は録画を論理削除する。既にごみ箱にある場合も成功する。

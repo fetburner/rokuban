@@ -18,6 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -75,7 +76,7 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 		p.RelPath = "test/inactive_observed.mp4"
 		p.SizeBytes = 1000
 	})
-	exec(`UPDATE media_assets SET state = 'deleting' WHERE id = $1`, cAsset)
+	dbtest.SetMediaAssetState(t, pool, cAsset, "deleting")
 
 	d := mk("失敗 count 0", "h264")
 	seedEncodeAttempt(t, pool, d, "h264", "failed", nil)
@@ -103,7 +104,7 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 
 	io := mk("active 原本なしの running", "h264")
 	seedEncodeAttempt(t, pool, io, "h264", "running", nil)
-	exec(`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'original'`, io)
+	dbtest.SetRecordingMediaAssetState(t, pool, io, store.AssetKindOriginal, "deleted")
 
 	mk("未確認 cut", "cut")
 	co := mk("確認済み cut", "cut")
@@ -310,7 +311,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	}
 	trash := func(id int64) { exec(`UPDATE recordings SET deleted_at = now() WHERE id = $1`, id) }
 	dropOriginal := func(id int64) {
-		exec(`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'original'`, id)
+		dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleted")
 	}
 
 	seed("不足", "h264")
@@ -322,7 +323,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 		p.RelPath = "test/agree_deleting.mp4"
 		p.SizeBytes = 1000
 	})
-	exec(`UPDATE media_assets SET state = 'deleting' WHERE id = $1`, deletingAsset)
+	dbtest.SetMediaAssetState(t, pool, deletingAsset, "deleting")
 	trash(seed("ごみ箱", "h264"))
 	dropOriginal(seed("原本なし", "h264"))
 	seed("設定に無い", "gone")

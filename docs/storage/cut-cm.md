@@ -4,7 +4,7 @@
 
 カット版は、利用者がチャプターを確認するまで作らない。チャプターを直した後も自動では作り直さず、利用者が明示的に要求したときだけ作り直す。CM 検出を有効にした録画では、CM 検出の結果か最終失敗の記録が揃うまで、原本は消さない。
 
-`cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は関数 `encodable_profile` が持ち、削除側の view `until_encoded_deletable_originals` は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。
+`cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は関数 `encodable_profile` が持ち、削除側の関数 `until_encoded_deletable_originals` は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。
 
 確認していない録画では、カット版のプロファイルが view `unencoded_desired_profiles` に残る。`until_encoded_deletable_originals` はこの view に行がある録画を除くので、原本は消えない。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
 

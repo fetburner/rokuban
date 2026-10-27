@@ -259,14 +259,7 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	// 削除済みの行（rel_path = target）から始める。行なしだと B は (a) で止まる。
 	encRel := "20240101/t2_h264.mp4"
 	seedEncodedAsset(t, pool, recordingID, "h264", encRel)
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted', deleted_at = now()
-		WHERE recording_id = $1 AND kind = 'encoded'`, recordingID); err != nil {
-		t.Fatalf("marking the seeded row deleted: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now()
-		WHERE media_asset_id = (SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'encoded')`, recordingID); err != nil {
-		t.Fatalf("marking the seeded copy deleted: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, recordingID, store.AssetKindEncoded, "deleted")
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash("20240101/t2_h264.u1.mp4"))
 
 	reached, release := pauseBeforeEncodeLock(t, inEncodeScratchAttempt(recordingID, "h264", 1))
@@ -461,16 +454,12 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if err := os.WriteFile(abs(g3), []byte("g3 output"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = $2 WHERE id = $1`, assetID, g3); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetMediaAssetRelPath(t, pool, assetID, g3)
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 500}}); err != nil {
 		t.Fatal(err)
 	}
 	if rowState != "active" {
-		if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $2, deleted_at = now() WHERE id = $1`, assetID, rowState); err != nil {
-			t.Fatal(err)
-		}
+		dbtest.SetMediaAssetState(t, pool, assetID, rowState)
 	}
 
 	release()
@@ -1203,9 +1192,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	}
 	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
 	// 観測の後に、別の公開が要求どおりの版へ置き換えた状況を作る。
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = 'rebuild/txskip_cut.g2.mp4' WHERE id = $1`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetMediaAssetRelPath(t, pool, assetID, "rebuild/txskip_cut.g2.mp4")
 	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
 		t.Fatal(err)
 	}

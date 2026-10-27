@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -192,19 +193,17 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 	var recordingID, assetID int64
 	if err := pool.QueryRow(context.Background(), `
 		SELECT r.id, a.id
-		FROM recordings r JOIN media_assets a ON a.recording_id = r.id
-		WHERE a.rel_path = $1
+		FROM recordings r
+		JOIN media_assets a ON a.recording_id = r.id
+		JOIN media_asset_copies c ON c.media_asset_id = a.id AND c.store = 'test-store'
+		WHERE c.rel_path = $1
 	`, "sites/default/archive/show.m2ts").Scan(&recordingID, &assetID); err != nil {
 		t.Fatal(err)
 	}
 
 	// Reconcile can mark the asset deleted while the physical file remains. A later
 	// rescue must treat that file as the same recording even if its mtime changed.
-	if _, err := pool.Exec(context.Background(), `
-		UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1
-	`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 	if err := os.Chtimes(path, secondAt, secondAt); err != nil {
 		t.Fatal(err)
 	}

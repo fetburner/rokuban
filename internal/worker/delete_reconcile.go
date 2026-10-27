@@ -38,7 +38,7 @@ const (
 	// エイジング済み候補は解消するまで定期パス間隔（既定
 	// 15 分 = 1 日 96 パス）ごとに全件が再送されるので、上限が無ければ
 	// 「候補数 × 96」行/日になる（劣化したマウントを放置すると候補数は
-	// active な media_assets 全件まで伸びうる。実測はしていない算術）。
+	// active な media_asset_copies 全件まで伸びうる。実測はしていない算術）。
 	// 超過分は件数だけを 1 行にまとめる。deleteReconcileNotifyBudget が
 	// 時間の予算なのに対し、こちらは件数の予算（別物）。
 	missingAssetLogBudget = 20
@@ -68,7 +68,7 @@ const (
 // DeleteReconcileWorker は物理 unlink に至る 4 ソース（ごみ箱 / until_encoded /
 // ユーザーが外したエンコード版 / 孤児）を 1 本の reconcile ループに統一する queue worker（docs/storage.md §7）。
 //
-// 削除プロトコルは冪等: media_assets.state を active → deleting → deleted と
+// 削除プロトコルは冪等: media_asset_copies.state を active → deleting → deleted と
 // 遷移させる。deleting のまま落ちても次パスの MediaDelete.ListPendingDeleteAssets が
 // 拾い直すので、途中失敗しても残骸は蓄積しない。
 //

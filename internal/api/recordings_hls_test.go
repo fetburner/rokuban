@@ -20,7 +20,7 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			srv := httptest.NewServer(NewRouter(RouterConfig{
 				RecordingQuery:      pgstoretest.Recordings(pool),
-				RecordingHLSEnabled: enabled, MediaStoreName: "disk-2",
+				RecordingHLSEnabled: enabled, MediaStoreName: dbtest.StoreName,
 				LiveProfiles: []LiveProfileSummary{{Name: "sd"}, {Name: "hd"}},
 			}))
 			defer srv.Close()
@@ -58,7 +58,8 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 						dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.Kind = "encoded"; p.Profile = new("hd") })
 					} else if tc.asset != "" {
 						asset := seedIngested(t, pool, id, 123, nil)
-						if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state=$2, ingest_generation=$3 WHERE id=$1`, asset, tc.asset, tc.generation); err != nil {
+						dbtest.SetMediaAssetState(t, pool, asset, tc.asset)
+						if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET ingest_generation=$2 WHERE id=$1`, asset, tc.generation); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -81,7 +82,7 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 					want := make([]RecordingHLSPlayback, 0)
 					if enabled && tc.playable {
 						for _, profile := range []string{"sd", "hd"} {
-							want = append(want, RecordingHLSPlayback{Profile: profile, MasterUrl: fmt.Sprintf("/api/media/stores/disk-2/recordings/%d/hls/v%d/%s/master.m3u8", id, tc.wantGen, profile)})
+							want = append(want, RecordingHLSPlayback{Profile: profile, MasterUrl: fmt.Sprintf("/api/media/stores/%s/recordings/%d/hls/v%d/%s/master.m3u8", dbtest.StoreName, id, tc.wantGen, profile)})
 						}
 					}
 					hidden := tc.removal == "purged_at"

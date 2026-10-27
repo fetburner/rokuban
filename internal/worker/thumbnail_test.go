@@ -247,14 +247,16 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	}
 
 	// DB 行が 1 つ。
-	id, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), recordingID)
+	id, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), sqlcgen.GetActiveThumbnailMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	})
 	if err != nil {
 		t.Fatalf("thumbnail asset missing: %v", err)
 	}
 	if id == 0 {
 		t.Fatal("thumbnail asset id is 0")
 	}
-	state, err := sqlcgen.New(pool).LockActiveThumbnailMediaAsset(context.Background(), recordingID)
+	state, err := sqlcgen.New(pool).LockActiveThumbnailMediaAsset(context.Background(), sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
 	if err != nil {
 		t.Fatalf("loading thumbnail seek: %v", err)
 	}
@@ -341,7 +343,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 		t.Errorf("ffmpeg -ss = %q, want 89.993 seconds", gotInputSeek)
 	}
 
-	state, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
+	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
 	if err != nil {
 		t.Fatalf("loading thumbnail planning state: %v", err)
 	}
@@ -361,7 +363,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	if data, err := os.ReadFile(newPath); err != nil || !bytesEqual(data, tinyJPEG) {
 		t.Errorf("new thumbnail file = %v, err = %v", data, err)
 	}
-	if active, err := q.IsActiveThumbnailInput(ctx, originalID); err != nil || !active {
+	if active, err := q.IsActiveThumbnailInput(ctx, sqlcgen.IsActiveThumbnailInputParams{MediaAssetID: originalID, StoreName: dbtest.StoreName}); err != nil || !active {
 		t.Errorf("original input active after replacement = %v, err = %v", active, err)
 	}
 }
@@ -423,7 +425,7 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 	if gotInputSeek != "30.000" {
 		t.Errorf("cut input -ss = %q, want 30.000 seconds", gotInputSeek)
 	}
-	state, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
+	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
 	if err != nil {
 		t.Fatalf("loading thumbnail planning state: %v", err)
 	}
@@ -494,7 +496,7 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 	if gotInputPath != wantInputPath {
 		t.Errorf("ffmpeg input path = %q, want uncut encoded file %q", gotInputPath, wantInputPath)
 	}
-	state, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
+	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
 	if err != nil {
 		t.Fatalf("loading thumbnail planning state: %v", err)
 	}
@@ -684,15 +686,12 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 		fixtureParams.Kind = store.AssetKindThumbnail
 		fixtureParams.RelPath = rel
 	})
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1 AND kind = 'thumbnail'`,
-		recordingID,
-	); err != nil {
-		t.Fatalf("marking tombstone deleted: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, recordingID, store.AssetKindThumbnail, "deleted")
 
 	// tombstone がある状態では GetActiveThumbnailMediaAssetID は空を返す。
-	if _, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), recordingID); !errors.Is(err, pgx5.ErrNoRows) {
+	if _, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), sqlcgen.GetActiveThumbnailMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); !errors.Is(err, pgx5.ErrNoRows) {
 		t.Fatalf("precondition: active thumbnail err = %v, want ErrNoRows", err)
 	}
 
@@ -710,7 +709,9 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	}
 
 	// tombstone が active に戻り、GetActiveThumbnailMediaAssetID が引ける。
-	id, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), recordingID)
+	id, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), sqlcgen.GetActiveThumbnailMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	})
 	if err != nil {
 		t.Fatalf("thumbnail asset not revived to active: %v", err)
 	}
@@ -976,7 +977,7 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 		if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 			t.Fatalf("Work(%d) error: %v", id, err)
 		}
-		cur, err := q.LockActiveThumbnailMediaAsset(ctx, id)
+		cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: id, StoreName: dbtest.StoreName})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -10,6 +10,7 @@ import (
 // MediaAsset は配信または解析に使う確定済みメディアアセットを表す。
 type MediaAsset struct {
 	ID        int64
+	Store     string
 	RelPath   string
 	SizeBytes int64
 }

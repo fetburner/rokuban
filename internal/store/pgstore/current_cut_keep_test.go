@@ -66,7 +66,7 @@ func TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot(t *testing.T) {
 		}
 	}
 
-	want, wantOwned, err := NewMedia(pool, "tokyo").GetCurrentCutKeep(ctx, recordingID)
+	want, wantOwned, err := NewMedia(pool, dbtest.StoreName).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !wantOwned || len(want) != 2 {
 		t.Fatalf("pre-reset current keep = (%v, %v, %v), want two owned ranges", want, wantOwned, err)
 	}
@@ -96,7 +96,7 @@ func TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("GetCurrentCutKeep did not read chapter ownership")
 	}
-	if err := NewAnalysis(pool).Reset(ctx, recordingID); err != nil {
+	if err := NewAnalysis(pool, dbtest.StoreName).Reset(ctx, recordingID); err != nil {
 		t.Fatalf("resetting chapters between the two reads: %v", err)
 	}
 	close(tracer.continueRead)

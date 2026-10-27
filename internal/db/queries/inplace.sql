@@ -2,19 +2,20 @@
 -- Bytes are already under storage.media_dir; these queries only publish DB rows.
 
 -- name: GetInPlaceAssetByRelPath :one
-SELECT id, recording_id, kind, profile,
-       state
-FROM media_assets
-WHERE rel_path = $1
--- media_assets_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
--- deleted 行もそのファイルの所属を示すという理由でここは意図的に述語を外し、索引を使えず
+SELECT a.id, a.recording_id, a.kind, a.profile, c.state
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+WHERE c.rel_path = sqlc.arg('rel_path')
+  AND c.store = sqlc.arg('store_name')
+-- media_asset_copies_store_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
+-- deleted copy もそのファイルの所属を示すという理由でここは意図的に述語を外し、索引を使えず
 -- seq scan になる。述語を戻すと deleted 行を見落とし、mtime が変わった rescue 再実行で
 -- 同じファイルに live な recordings が 2 行できる（issue #662。
 -- TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges が検出する）。実測 (media_assets 3000 行、EXPLAIN (ANALYZE, TIMING OFF)): 旧クエリ
 -- (述語あり) Index Scan 0.010 ms → 新クエリ (述語なし) Seq Scan 0.123 ms。Register は
 -- asset 1 件ごとに呼ぶので rescue 全体ではアセット数に比例するが、家庭用サーバー規模を
 -- 前提に許容する。増えたら非部分索引の追加が上げ幅。
-ORDER BY (state <> 'deleted')::boolean DESC, id DESC
+ORDER BY (c.state <> 'deleted')::boolean DESC, a.id DESC
 LIMIT 1;
 
 -- name: UpsertInPlaceRecording :one
@@ -70,5 +71,10 @@ DO UPDATE SET
     updated_at = now()
 -- A tuple is immutable once published. A different path here means a synthetic identity
 -- collision or conflicting import; fail (RETURNING no row) instead of orphaning the old file.
-WHERE media_assets.rel_path = EXCLUDED.rel_path
+WHERE EXISTS (
+    SELECT 1 FROM media_asset_copies c
+    WHERE c.media_asset_id = media_assets.id
+      AND c.store = sqlc.arg('store_name')
+      AND c.rel_path = EXCLUDED.rel_path
+)
 RETURNING id;

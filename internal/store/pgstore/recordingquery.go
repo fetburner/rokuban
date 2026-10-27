@@ -32,8 +32,8 @@ const (
     r.program_start_at, r.program_duration_ms, r.status,
     r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at,
     a.size_bytes                        AS original_size_bytes,
-    -- 副問い合わせの a は外側の LEFT JOIN a を隠す。外側は state <> 'deleted' で deleting も
-    -- 含むので、active だけを見る共有述語 activePlaybackOriginalSQL（別名 a 前提）には使えない。
+    -- 副問い合わせの a は外側の LEFT JOIN a を隠す。外側は削除途中のコピーも含むので、
+    -- active だけを見る共有述語 activePlaybackOriginalSQL（別名 a 前提）には使えない。
     CASE WHEN ` + recordingPlaybackVisibleSQL + ` THEN COALESCE(
         (SELECT COALESCE(a.ingest_generation, 0)::bigint FROM media_assets a
          WHERE a.recording_id = r.id AND ` + activePlaybackOriginalSQL + `),
@@ -69,8 +69,8 @@ const (
     -- 導出（ingestProgressFromFields）を DB なしで単体テストできる形に
     -- 保つため。
     --
-    -- has_original_asset は上の LEFT JOIN a とは述語が違う（a は
-    -- state <> 'deleted' で絞るが、こちらは state を問わない）。**この違いが
+    -- has_original_asset は上の LEFT JOIN a とは述語が違う（a は削除途中のコピーも
+    -- 含むが、こちらはコピー状態を問わない）。**この違いが
     -- 「まだ取り込めていない」と「取り込んだ後に削除した」を分ける唯一の材料**
     -- なので、a.id IS NOT NULL で代用してはならない（issue #211）。
     EXISTS (
@@ -227,7 +227,10 @@ const (
         FROM media_assets e
         WHERE e.recording_id = r.id
           AND e.kind = 'encoded'
-          AND e.state = 'active'
+          AND EXISTS (
+              SELECT 1 FROM media_asset_copies copy
+              WHERE copy.media_asset_id = e.id AND copy.store = $1 AND copy.state = 'active'
+          )
           AND e.profile IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = e.id)
     ) AS available_encoded_assets`
@@ -236,7 +239,10 @@ const (
 	recordingsFromJoins = `
 FROM recordings r
 LEFT JOIN media_assets a
-    ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
+    ON a.recording_id = r.id AND a.kind = 'original' AND EXISTS (
+        SELECT 1 FROM media_asset_copies copy
+        WHERE copy.media_asset_id = a.id AND copy.store = $1 AND copy.state <> 'deleted'
+    )
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 -- 方針変更より前の試行は reconcile が削除するまで残ることがある。
 -- 現在の世代の試行だけを view 越しに射影する。
@@ -271,12 +277,12 @@ LEFT JOIN LATERAL (
 // 触れるかの話で、絞り込みは読み出しの述語にすぎない。site 軸を service の
 // 識別子に混ぜないのは、混ぜると「あるサイトの録画を全部」がチャンネルの
 // 列挙でしか表せず、service だけが他の軸と違う意味論（組の選言）になるため。
-func buildRecordingsQuery(f store.RecordingFilter) (string, []any, error) {
+func buildRecordingsQuery(f store.RecordingFilter, storeName string) (string, []any, error) {
 	if (f.Before == nil) != (f.BeforeID == nil) {
 		return "", nil, fmt.Errorf("before and beforeId must be given together")
 	}
 
-	args := make([]any, 0, 16)
+	args := []any{storeName}
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
@@ -499,8 +505,8 @@ func recordingsFilterWhere(f store.RecordingFilter, and func(string), arg func(a
 //
 // 実データでの絶対値は未測定である。本番の playable_count は旧形の recording_count と
 // 全棚で一致し、絞り込みありの形は Go で別に集計した期待値と一致する（ハーネスが検査する）。
-func buildRecordingShelvesQuery(f store.RecordingFilter) (string, []any) {
-	var args []any
+func buildRecordingShelvesQuery(f store.RecordingFilter, storeName string) (string, []any) {
+	args := []any{storeName}
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
@@ -516,8 +522,14 @@ func buildRecordingShelvesQuery(f store.RecordingFilter) (string, []any) {
 WITH playable_assets AS (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
+    WHERE (ma.kind = 'original' AND EXISTS (
+               SELECT 1 FROM media_asset_copies copy
+               WHERE copy.media_asset_id = ma.id AND copy.store = $1 AND copy.state = 'active'
+           ))
+       OR (ma.kind = 'encoded' AND EXISTS (
+               SELECT 1 FROM media_asset_copies copy
+               WHERE copy.media_asset_id = ma.id AND copy.store = $1 AND copy.state = 'active'
+           ))
 ),
 watched_events AS MATERIALIZED (
     -- 印を束ねる側は live / playable / 絞り込みを当てない。ごみ箱・supersede 済みの印も読む。
@@ -590,7 +602,7 @@ ORDER BY recording_count DESC, l.value ASC NULLS LAST`, args
 // この崖に落ちる。
 
 func (s *Recordings) List(ctx context.Context, filter store.RecordingFilter) ([]store.RecordingQueryRow, error) {
-	sql, args, err := buildRecordingsQuery(filter)
+	sql, args, err := buildRecordingsQuery(filter, s.storeName)
 	if err != nil {
 		return nil, err
 	}
@@ -619,9 +631,9 @@ func (s *Recordings) List(ctx context.Context, filter store.RecordingFilter) ([]
 func (s *Recordings) Get(ctx context.Context, recordingID int64) (store.RecordingQueryRow, error) {
 	const sql = `
 SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
-WHERE r.id = $1 AND r.purged_at IS NULL`
+WHERE r.id = $2 AND r.purged_at IS NULL`
 
-	fields, err := scanRecordingQueryRow(s.pool.QueryRow(ctx, sql, recordingID))
+	fields, err := scanRecordingQueryRow(s.pool.QueryRow(ctx, sql, s.storeName, recordingID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.RecordingQueryRow{}, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
@@ -633,7 +645,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 
 // Shelves は実効シリーズごとの棚集計を返す。
 func (s *Recordings) Shelves(ctx context.Context, filter store.RecordingFilter) ([]store.RecordingShelf, error) {
-	sql, args := buildRecordingShelvesQuery(filter)
+	sql, args := buildRecordingShelvesQuery(filter, s.storeName)
 	rows, err := s.pool.Query(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording shelves: %w", err)

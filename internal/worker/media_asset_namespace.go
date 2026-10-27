@@ -8,7 +8,7 @@ import (
 )
 
 // ValidateMediaAssetRelPathNamespace は worker が起動する前に、原本と encoded の
-// 生きた media_assets 行が `sites/{site}/` 名前空間に入っていることを検査する。
+// 生きた media_asset_copies 行が `sites/{site}/` 名前空間に入っていることを検査する。
 //
 // 述語は前方一致ではなく空でない site セグメント 1 つを要求する正規表現である。
 // `LIKE 'sites/%'` は `sites/show.m2ts` を、`LIKE 'sites/_%/%'` は `_` が `/` にも
@@ -21,7 +21,7 @@ import (
 // 読むと、ingest・encode・rescue・delete_reconcile の各処理が同じ storage 契約を
 // 共有できない。worker はファイルを書き / 移動する唯一のロールなので、最初の
 // 仕事を始める前に拒否して、移行漏れをその場で発見できるようにする（streamer は
-// `media_assets.rel_path` を読んで配信するが、書きはしない）。thumbnail と seek_tiles は
+// 選択中 store の `media_asset_copies.rel_path` を読んで配信するが、書きはしない）。thumbnail と seek_tiles は
 // `thumbnails/` 配下の別の名前空間なので検査対象にしない。
 func ValidateMediaAssetRelPathNamespace(ctx context.Context, media store.MediaReconcile) error {
 	violation, err := media.FindInvalidMediaAssetRelPath(ctx)

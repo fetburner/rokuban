@@ -66,9 +66,14 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 1. 試験用のルールを 1 本作り、プロファイルを 1 つと `keepOriginal: until_encoded` を設定する。短い番組に当たる条件にする
 2. 録画が終わったら録画 ID を控え、アセットの状態を見る。エンコードが終わるまでは `original` が `active` で残る。これが項目 2 の前半である
 
+`<store>` は `storage.media_store_name` の値に置き換える。
+
    ```sql
-   SELECT kind, profile, state, rel_path FROM media_assets
-    WHERE recording_id = <ID> ORDER BY id;
+   SELECT a.kind, a.profile, c.state, c.rel_path
+     FROM media_assets a
+     JOIN media_asset_copies c ON c.media_asset_id = a.id
+    WHERE a.recording_id = <ID> AND c.store = '<store>'
+    ORDER BY a.id;
    ```
 
 3. 派生物が揃ったら、削除 reconcile の次のパス（既定 15 分間隔）を待つ。原本はエンコード完了だけでは消えない。サムネイルや TS 計測なども待つ。条件の権威は DB の view で、判断は [storage/retention.md](../storage/retention.md) §6 §7 にある。待たずに確かめるなら `docker compose exec rokuban rokuban enqueue delete-reconcile --config /config.yml`
@@ -77,7 +82,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 
 <details><summary>根拠</summary>
 
-- 原本を消してよい条件の権威: view `until_encoded_deletable_originals`
+- 原本を消してよい条件の権威: 関数 `until_encoded_deletable_originals('<store>')`
 
 </details>
 
@@ -102,8 +107,8 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 <details><summary>根拠</summary>
 
 - 復元で消す印: `recordings.deleted_at`
-- 状態を見る列: `media_assets.state`
-- 相対パスの列: `rel_path`
+- 状態を見る列: 選択中 store の `media_asset_copies.state`
+- 相対パスの列: `media_asset_copies.rel_path`
 
 </details>
 
@@ -159,7 +164,11 @@ live の DB に向けると、catalog の内容で上書きする。
 
    ```sql
    SELECT count(*) FROM recordings WHERE deleted_at IS NULL;
-   SELECT kind, count(*) FROM media_assets WHERE state = 'active' GROUP BY kind;
+   SELECT a.kind, count(*)
+     FROM media_assets a
+     JOIN media_asset_copies c ON c.media_asset_id = a.id
+    WHERE c.store = '<store>' AND c.state = 'active'
+    GROUP BY a.kind;
    ```
 
 4. 練習 DB を消す: `docker compose exec postgres sh -c 'dropdb -U "$POSTGRES_USER" rokuban_drill'`
@@ -262,8 +271,12 @@ EPGStation の録画ディレクトリをメディアの置き場の配下に置
 1. 件数を比べる。EPGStation 側は切替手順 5 で控えた値を使う。Rokuban 側はマウント先の前置で数える。
 
    ```sql
-   SELECT count(DISTINCT recording_id) FROM media_assets
-    WHERE rel_path LIKE 'sites/<site>/epgstation/%' AND state <> 'deleted';
+   SELECT count(DISTINCT a.recording_id)
+     FROM media_assets a
+     JOIN media_asset_copies c ON c.media_asset_id = a.id
+    WHERE c.store = '<store>'
+      AND c.rel_path LIKE 'sites/<site>/epgstation/%'
+      AND c.state <> 'deleted';
    ```
 
    差は、取り込みの警告（encoded しか無い録画など）で説明できるはずである
@@ -272,8 +285,10 @@ EPGStation の録画ディレクトリをメディアの置き場の配下に置
    ```sh
    docker compose exec -T rokuban sh -c 'cd /mnt/media && find sites/<site>/epgstation -type f' | sort > files.txt
    docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At' <<'SQL' | sort > assets.txt
-   SELECT rel_path FROM media_assets
-    WHERE rel_path LIKE 'sites/<site>/epgstation/%' AND state <> 'deleted';
+   SELECT c.rel_path FROM media_asset_copies c
+    WHERE c.store = '<store>'
+      AND c.rel_path LIKE 'sites/<site>/epgstation/%'
+      AND c.state <> 'deleted';
    SQL
    comm -23 files.txt assets.txt
    ```

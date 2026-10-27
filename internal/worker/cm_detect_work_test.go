@@ -783,7 +783,7 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 		t.Fatal(err)
 	}
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -842,7 +842,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	if err != nil || !second.ShouldRun || second.AttemptCount != 2 {
 		t.Fatalf("rescued attempt = %#v, %v", second, err)
 	}
-	item, err := q.GetCMDetectionWorkItem(ctx, late)
+	item, err := q.GetCMDetectionWorkItem(ctx, sqlcgen.GetCMDetectionWorkItemParams{RecordingID: late})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +957,7 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 		t.Fatalf("attempt generations old=%d new=%d, want 0 and 2", oldAttempt.PolicyGeneration, newAttempt.PolicyGeneration)
 	}
 
-	item, err := q.GetCMDetectionWorkItem(ctx, id)
+	item, err := q.GetCMDetectionWorkItem(ctx, sqlcgen.GetCMDetectionWorkItemParams{RecordingID: id})
 	if err != nil {
 		t.Fatal(err)
 	}

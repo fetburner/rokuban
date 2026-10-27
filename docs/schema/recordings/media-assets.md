@@ -39,7 +39,7 @@ CREATE INDEX ON media_assets (kind, state);
 CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
-`media_assets` は論理資産と、この段の読み手が読む `rel_path` / `state` / `deleted_at` を持つ。物理コピーの場所と状態は別表に持ち、コピーを増やしてもサイズや SHA-256 を重複させない。この段でコピー表から読むのは、catalog の `store` だけである。
+`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。移行中の旧バイナリとの互換性のため `rel_path` / `state` / `deleted_at` も残し、新しい書き手は両表を更新する。現在の読み手は物理パスとライフサイクルを `media_asset_copies` から読み、コピーを増やしてもサイズや SHA-256 を重複させない。
 
 ```sql
 CREATE TABLE media_asset_copies (
@@ -54,8 +54,11 @@ CREATE TABLE media_asset_copies (
 );
 
 CREATE INDEX ON media_asset_copies (media_asset_id);
+CREATE INDEX ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
 CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
 ```
+
+配信・エンコード可能性・スキャン・削除の読み手は、対象の `store` にある active コピーを条件にする。棚卸しと rescue は全コピーを `store` ごとに扱い、削除判定は必要な派生物のコピーが設定済みの置き場に揃ったことを確認する。
 
 一意の制約は 2 つある。`(store, rel_path) WHERE state <> 'deleted'` は、同じ置き場の生きているパスを 1 行に絞る。`UNIQUE (media_asset_id, store)` は、論理資産が 1 つの置き場に持てるコピーを 1 つに絞り、世代更新でパスが変わるときに行を足さず UPDATE させる。後者を置かずパスの索引だけで済ませると、パスが変わるたびに同じ論理資産と置き場の行が増え、現在のコピーを決められない。
 

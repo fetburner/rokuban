@@ -1,7 +1,7 @@
 -- 削除 reconcile（M3-8、docs/storage.md §7）。物理 unlink に至る 3 ソース
 -- （ごみ箱 / until_encoded / 孤児）を 1 本のループに統一するためのクエリ群。
 --
--- 削除プロトコルは冪等: active → deleting → deleted。deleting のまま
+-- 削除プロトコルは冪等: コピーの active → deleting → deleted。deleting のまま
 -- プロセスが落ちても ListMediaAssetsPendingDelete が次パスで拾い直す。
 --
 -- 「このアセットは消してよいか」の 3 つの腕（ごみ箱の猶予超過 or 今すぐ
@@ -34,16 +34,20 @@
 -- 永久に deleting のまま止まる（ごみ箱条件にも until_encoded 条件にも
 -- 該当しない扱いになってしまうため）。各条件を OR で残すこと。
 -- name: ListMediaAssetsPendingDelete :many
-SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
+SELECT a.id, a.recording_id, copy.rel_path, a.size_bytes, a.kind
 FROM media_assets a
-WHERE a.state = 'deleting'
-  AND (
+JOIN media_asset_copies copy
+  ON copy.media_asset_id = a.id
+ AND copy.store = sqlc.arg('store_name')
+ AND copy.state = 'deleting'
+WHERE (
     EXISTS (
       SELECT 1 FROM trash_deletable_recordings(sqlc.arg('grace_cutoff')::timestamptz) t
       WHERE t.recording_id = a.recording_id
     )
     OR EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+      SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+      WHERE v.asset_id = a.id
     )
     OR EXISTS (
       SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
@@ -68,15 +72,19 @@ LIMIT sqlc.arg('row_limit');
 -- 無い行」を作ってしまう。この SELECT + Go 側の stat + 分岐は、その窓を
 -- revert 経路自身に持ち込まないための構成。
 -- name: ListUnqualifiedDeletingAssets :many
-SELECT a.id, a.recording_id, a.rel_path
+SELECT a.id, a.recording_id, copy.rel_path
 FROM media_assets a
-WHERE a.state = 'deleting'
-  AND NOT EXISTS (
+JOIN media_asset_copies copy
+  ON copy.media_asset_id = a.id
+ AND copy.store = sqlc.arg('store_name')
+ AND copy.state = 'deleting'
+WHERE NOT EXISTS (
     SELECT 1 FROM trash_deletable_recordings(sqlc.arg('grace_cutoff')::timestamptz) t
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+    SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+    WHERE v.asset_id = a.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
@@ -96,7 +104,7 @@ LIMIT sqlc.arg('row_limit');
 -- 経路が続行する）。
 --
 -- ここで active に戻すのは deleting → active の遷移のみで、進行中の unlink
--- とは競合しない: このワーカー自身が media_assets.state の唯一の書き手
+-- とは競合しない: このワーカー自身が copy.state の唯一の書き手
 -- （InsertOpts の UniqueOpts により同時に 1 パスしか走らない）であり、
 -- deleting のまま次パスに持ち越された行は前パスのプロセスが既に終了して
 -- いるので、いま unlink が進行中の行と衝突しようがない。復元 API から
@@ -106,13 +114,19 @@ LIMIT sqlc.arg('row_limit');
 UPDATE media_assets a
 SET state = 'active', updated_at = now()
 WHERE a.id = sqlc.arg('id')
-  AND a.state = 'deleting'
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies copy
+      WHERE copy.media_asset_id = a.id
+        AND copy.store = sqlc.arg('store_name')
+        AND copy.state = 'deleting'
+  )
   AND NOT EXISTS (
     SELECT 1 FROM trash_deletable_recordings(sqlc.arg('grace_cutoff')::timestamptz) t
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+    SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+    WHERE v.asset_id = a.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
@@ -122,11 +136,14 @@ WHERE a.id = sqlc.arg('id')
 -- の行）の対象
 -- （名前付き述語 trash_deletable_recordings への参照。issue #160）。
 -- name: ListTrashMediaAssetsToDelete :many
-SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
+SELECT a.id, a.recording_id, copy.rel_path, a.size_bytes, a.kind
 FROM media_assets a
 JOIN trash_deletable_recordings(sqlc.arg('grace_cutoff')::timestamptz) t
     ON t.recording_id = a.recording_id
-WHERE a.state = 'active'
+JOIN media_asset_copies copy
+  ON copy.media_asset_id = a.id
+ AND copy.store = sqlc.arg('store_name')
+ AND copy.state = 'active'
 ORDER BY a.id
 LIMIT sqlc.arg('row_limit');
 
@@ -134,20 +151,28 @@ LIMIT sqlc.arg('row_limit');
 -- until_encoded_deletable_originals の定義を参照する。ごみ箱経由の録画は
 -- ListTrashMediaAssetsToDelete 側で扱う。
 -- name: ListUntilEncodedOriginalsToDelete :many
-SELECT v.asset_id AS id, v.recording_id, v.rel_path, v.size_bytes, 'original'::text AS kind
-FROM until_encoded_deletable_originals v
-WHERE v.state = 'active'
-ORDER BY v.asset_id
+SELECT v.asset_id::bigint AS id, v.recording_id::bigint, copy.rel_path, a.size_bytes, 'original'::text AS kind
+FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+JOIN media_assets a ON a.id = v.asset_id
+JOIN media_asset_copies copy
+  ON copy.media_asset_id = a.id
+ AND copy.store = sqlc.arg('store_name')
+ AND copy.state = 'active'
+ORDER BY a.id
 LIMIT sqlc.arg('row_limit');
 
 -- ユーザーが外したエンコード版（名前付き述語 removed_encoded_assets への参照）。
 -- ごみ箱は経由しない。容量を空けるための操作で、他の版が残ることは view が
 -- 要求しているので、猶予で守るものが無い。
 -- name: ListRemovedEncodedAssetsToDelete :many
-SELECT x.asset_id AS id, x.recording_id, x.rel_path, x.size_bytes, 'encoded'::text AS kind
+SELECT x.asset_id AS id, x.recording_id, copy.rel_path, a.size_bytes, 'encoded'::text AS kind
 FROM removed_encoded_assets x
-WHERE x.state = 'active'
-ORDER BY x.asset_id
+JOIN media_assets a ON a.id = x.asset_id
+JOIN media_asset_copies copy
+  ON copy.media_asset_id = a.id
+ AND copy.store = sqlc.arg('store_name')
+ AND copy.state = 'active'
+ORDER BY a.id
 LIMIT sqlc.arg('row_limit');
 
 -- 「完全削除が完了した」という不可逆な事実を確定する（issue #135）。
@@ -161,7 +186,7 @@ LIMIT sqlc.arg('row_limit');
 -- recordings を起点に引く（media_assets を起点にすると、アセットを 1 行も
 -- 持ったことがない録画が NOT EXISTS の対象になりようがなく、永久に拾えない。
 -- issue #135 の実測 id 6/7/10/86 がこのケース）。判定は「state <> 'deleted'
--- の media_assets が 1 行もない」であって「media_assets が 0 行」ではない
+-- のコピーが 1 つもない」であって「media_assets が 0 行」ではない
 -- （NOT EXISTS は両方を等しく真にするので実装上は同じ式になるが、意図は
 -- 前者 —— deleting は「消えた」に数えない。deleting はまだ unlink 待ちで、
 -- issue #105 の経路で active に戻りうる）。
@@ -182,23 +207,35 @@ WHERE r.purged_at IS NULL
   )
   AND NOT EXISTS (
     SELECT 1 FROM media_assets a
-    WHERE a.recording_id = r.id AND a.state <> 'deleted'
+    WHERE a.recording_id = r.id
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = a.id AND copy.state <> 'deleted'
+      )
   )
 RETURNING r.id, r.site, r.title;
 
 -- name: MarkMediaAssetDeleting :execrows
-UPDATE media_assets SET state = 'deleting', updated_at = now()
-WHERE id = $1 AND state = 'active';
+UPDATE media_assets AS a SET state = 'deleting', updated_at = now()
+FROM media_asset_copies copy
+WHERE a.id = sqlc.arg('asset_id')
+  AND copy.media_asset_id = sqlc.arg('asset_id')
+  AND copy.store = sqlc.arg('store_name')
+  AND copy.state = 'active';
 
 -- until_encoded の候補は列挙後に利用者の再作成要求が追加されうるため、録画行を
 -- ロックした tx 内で資格を再評価してから deleting にする。API の要求書き込みも
 -- 同じ recordings 行を先にロックするため、要求の commit と原本削除は直列化される。
 -- name: MarkUntilEncodedOriginalDeleting :execrows
 UPDATE media_assets a SET state = 'deleting', updated_at = now()
+FROM media_asset_copies copy
 WHERE a.id = sqlc.arg('asset_id')
-  AND a.state = 'active'
+  AND copy.media_asset_id = sqlc.arg('asset_id')
+  AND copy.store = sqlc.arg('store_name')
+  AND copy.state = 'active'
   AND EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+      SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+      WHERE v.asset_id = sqlc.arg('asset_id')
   );
 
 -- 外した版の要求行（encoded_asset_removal_requests）を deleted の確定と同じ
@@ -208,17 +245,28 @@ WITH cleared_removal_request AS (
     DELETE FROM encoded_asset_removal_requests q
     USING media_assets a
     WHERE a.id = sqlc.arg('id')
-      AND a.state = 'deleting'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = a.id
+            AND copy.store = sqlc.arg('store_name')
+            AND copy.state = 'deleting'
+      )
       AND q.recording_id = a.recording_id
       AND q.profile = a.profile
 )
 UPDATE media_assets m SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE m.id = sqlc.arg('id') AND m.state = 'deleting';
+WHERE m.id = sqlc.arg('id')
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies copy
+      WHERE copy.media_asset_id = m.id
+        AND copy.store = sqlc.arg('store_name')
+        AND copy.state = 'deleting'
+  );
 
 -- 孤児判定用。テーブル全体を読んで Go 側でファイル一覧と突き合わせる
 -- （家庭用サーバー規模の行数を前提。件数が増えたら bloom filter 等の検討対象）。
 -- name: ListAllMediaAssetRelPaths :many
-SELECT rel_path FROM media_assets;
+SELECT rel_path FROM media_asset_copies WHERE store = sqlc.arg('store_name');
 
 -- 孤児候補を記録する。既存行があれば first_seen を保持する
 -- （DO NOTHING。エイジングの起点は「最初に孤児だと気づいた時刻」）。
@@ -239,9 +287,9 @@ SELECT rel_path FROM orphan_files
 WHERE store = sqlc.arg('store')
   AND first_seen <= now() - (sqlc.arg('age')::bigint * interval '1 microsecond');
 
--- 「active な media_asset の実体が無い」検出用（issue #343、
+-- 「active な media_asset_copy の実体が無い」検出用（issue #343、
 -- docs/storage/missing-assets.md「孤児回収の逆」）。orphan_files の判定
--- （ListAllMediaAssetRelPaths）と対になる逆方向のクエリ: ここでは state が
+-- （ListAllMediaAssetRelPaths）と対になる逆方向のクエリ: ここでは copy.state が
 -- active な行だけを対象にする（deleting/deleted は物理削除の途中・完了
 -- なのでファイルが無くて当然であり検出対象ではない）。
 --
@@ -251,7 +299,11 @@ WHERE store = sqlc.arg('store')
 -- internal/worker/storage_audit.go の reconcileMissingAssets の
 -- doc コメント。
 -- name: ListActiveMediaAssets :many
-SELECT id, recording_id, rel_path, kind FROM media_assets WHERE state = 'active';
+SELECT a.id, a.recording_id, copy.rel_path, a.kind
+FROM media_assets a
+JOIN media_asset_copies copy ON copy.media_asset_id = a.id
+WHERE copy.store = sqlc.arg('store_name')
+  AND copy.state = 'active';
 
 -- 実体無し候補を記録する。既存行があれば first_seen を保持する
 -- （DO NOTHING。エイジングの起点は「最初に実体無しだと気づいた時刻」）。
@@ -268,15 +320,18 @@ SELECT media_asset_id FROM missing_media_assets WHERE store = $1;
 -- エイジング済み（first_seen が指定期間以上前）で、なお active な行。経過時間は
 -- 候補を記録した DB の時計で比べる。
 -- rel_path / recording_id / kind は missing_media_assets に複製せず
--- media_assets との JOIN で引く（不変条件 9）。JOIN で state = 'active' を
+-- media_assets / media_asset_copies との JOIN で引く（不変条件 9）。JOIN で copy.state = 'active' を
 -- 再確認するのは、対象行がその後 deleting/deleted に遷移した、または
 -- resolveUnqualifiedDeletingAsset 等で active に戻った場合に、報告の瞬間の
 -- 状態を見るため（適用の瞬間の再評価。不変条件 9）。
 -- name: ListAgedMissingMediaAssets :many
-SELECT m.media_asset_id AS id, a.recording_id, a.rel_path, a.kind, m.first_seen
+SELECT a.id, a.recording_id, copy.rel_path, a.kind, m.first_seen
 FROM missing_media_assets m
 JOIN media_assets a ON a.id = m.media_asset_id
+JOIN media_asset_copies copy
+  ON copy.media_asset_id = a.id
+ AND copy.store = sqlc.arg('store')
+ AND copy.state = 'active'
 WHERE m.store = sqlc.arg('store')
   AND m.first_seen <= now() - (sqlc.arg('age')::bigint * interval '1 microsecond')
-  AND a.state = 'active'
 ORDER BY m.media_asset_id;

@@ -52,9 +52,7 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 	seedEncodedAsset(t, pool, recID, "x.g2.hd", mustEncodedRelPath(t, orig, "x.g2.hd", "mp4", 0, false))
 	// deleted の encoded は過去の意味に数えない。
 	delID := seedEncodedAsset(t, pool, recID, "gone", mustEncodedRelPath(t, orig, "gone", "mp4", 0, false))
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted' WHERE id = $1`, delID); err != nil {
-		t.Fatalf("deleting asset: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, delID, "deleted")
 	// "reqonly" は作り直し要求の行だけがある（active な encoded は無い）。
 	if _, err := pool.Exec(ctx, `INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		VALUES ($1, 'reqonly', '{[0,1000)}'::int8multirange)`, recID); err != nil {

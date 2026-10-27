@@ -71,9 +71,7 @@ func removalRequestExists(t *testing.T, pool *pgxpool.Pool, recordingID int64, p
 
 func setAssetState(t *testing.T, pool *pgxpool.Pool, id int64, state string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = $2 WHERE id = $1`, id, state); err != nil {
-		t.Fatalf("setting asset %d state: %v", id, err)
-	}
+	dbtest.SetMediaAssetState(t, pool, id, state)
 }
 
 // 名前付き述語 removed_encoded_assets を両方向で固定する。「desired に無い」だけでも
@@ -106,7 +104,9 @@ func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 	requestEncodedRemoval(t, pool, lastCopy.recordingID, "h265")
 	setAssetState(t, pool, lastCopy.originalID, "deleted")
 
-	rows, err := q.ListRemovedEncodedAssetsToDelete(context.Background(), deleteReconcileRowLimit)
+	rows, err := q.ListRemovedEncodedAssetsToDelete(context.Background(), sqlcgen.ListRemovedEncodedAssetsToDeleteParams{
+		StoreName: dbtest.StoreName, RowLimit: deleteReconcileRowLimit,
+	})
 	if err != nil {
 		t.Fatalf("ListRemovedEncodedAssetsToDelete: %v", err)
 	}

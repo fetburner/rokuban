@@ -191,11 +191,7 @@ func TestTSScan_InPlaceOriginalAndSizeChangeReplaceStatistics(t *testing.T) {
 	if err := os.WriteFile(fullPath, secondBytes, 0o600); err != nil {
 		t.Fatalf("replacing in-place original: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
-		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, first.AssetIDs[0],
-	); err != nil {
-		t.Fatalf("marking original as removed before rescue: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, first.AssetIDs[0], "deleted")
 	second, err := inplace.Register(ctx, pgstoretest.Media(pool), mediaDir, input)
 	if err != nil {
 		t.Fatalf("second inplace.Register: %v", err)

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -28,7 +29,15 @@ live:
       audio_codec: aac
 `, enabled))
 			id := dbtest.Recording(t, pool)
-			dbtest.MediaAsset(t, pool, id)
+			assetID := dbtest.MediaAsset(t, pool, id)
+			if err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
+				MediaAssetID: assetID,
+				Store:        "main-2",
+				RelPath:      fmt.Sprintf("test-original/%d.ts", assetID),
+				State:        "active",
+			}); err != nil {
+				t.Fatalf("seeding selected-store copy: %v", err)
+			}
 			resp, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", base, id))
 			if err != nil {
 				t.Fatal(err)

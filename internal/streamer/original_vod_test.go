@@ -578,10 +578,11 @@ func TestOriginalVODUnavailableTargetsReturn404WithoutSession(t *testing.T) {
 	fullURL := originalVODOffsetPlaylistURL(srv.URL, recordingID, 60, "hd")
 
 	checks := []struct {
-		name   string
-		update string
+		name       string
+		update     string
+		assetState string
 	}{
-		{name: "missing original", update: "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1"},
+		{name: "missing original", assetState: "deleted"},
 		{name: "trash", update: "UPDATE recordings SET deleted_at = now() WHERE id = $1"},
 		{name: "purged", update: "UPDATE recordings SET purged_at = now() WHERE id = $1"},
 		{name: "failed recording", update: "UPDATE recordings SET status = 'failed' WHERE id = $1"},
@@ -592,10 +593,10 @@ func TestOriginalVODUnavailableTargetsReturn404WithoutSession(t *testing.T) {
 			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET status = 'finished', deleted_at = NULL, purged_at = NULL, superseded_at = NULL WHERE id = $1`, recordingID); err != nil {
 				t.Fatalf("resetting recording: %v", err)
 			}
-			if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = 'active', deleted_at = NULL WHERE recording_id = $1`, recordingID); err != nil {
-				t.Fatalf("resetting original asset: %v", err)
-			}
-			if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
+			dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", "active")
+			if tc.assetState != "" {
+				dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", tc.assetState)
+			} else if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
 				t.Fatalf("making target unavailable: %v", err)
 			}
 
@@ -692,8 +693,8 @@ func TestOriginalVODTrashInvalidatesRetainedSessionAndScratch(t *testing.T) {
 // before the DB recheck must still end in 404 (delete_reconcile marks deleting
 // before it unlinks; trash hides the recording).
 func TestOriginalVODVerifiesDBTargetAfterOpen(t *testing.T) {
-	for _, tc := range []struct{ name, update string }{
-		{name: "asset deleting", update: "UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1"},
+	for _, tc := range []struct{ name, update, assetState string }{
+		{name: "asset deleting", assetState: "deleting"},
 		{name: "trash", update: "UPDATE recordings SET deleted_at = now() WHERE id = $1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -703,7 +704,9 @@ func TestOriginalVODVerifiesDBTargetAfterOpen(t *testing.T) {
 			var opens atomic.Int32
 			ls.afterOriginalVODOpen = func() {
 				opens.Add(1)
-				if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
+				if tc.assetState != "" {
+					dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", tc.assetState)
+				} else if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
 					t.Errorf("changing target after open: %v", err)
 				}
 			}
@@ -749,9 +752,7 @@ func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 	if _, err := os.Stat(originalPath); !os.IsNotExist(err) {
 		t.Fatalf("original canonical path still exists after the open hook, stat err = %v", err)
 	}
-	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
-		t.Fatalf("deleting original asset: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", "deleted")
 
 	base := fmt.Sprintf("%s/api/sites/default/recordings/%d/original-vod/offset/90", srv.URL, recordingID)
 	resp, body = get(t, base+"/segments/hd.0_seg00001.ts", nil)

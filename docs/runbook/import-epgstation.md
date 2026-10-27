@@ -208,15 +208,37 @@ site の前置を自動で付ける前のバージョンでライブラリを取
 1. 対象行を出す。`site` は import 時に指定した site 名である。
 
    ```sql
-   SELECT a.id, a.rel_path, r.site
-     FROM media_assets a JOIN recordings r ON r.id = a.recording_id
-    WHERE a.state <> 'deleted'
+   SELECT a.id, c.rel_path, r.site
+     FROM media_assets a
+     JOIN media_asset_copies c ON c.media_asset_id = a.id
+     JOIN recordings r ON r.id = a.recording_id
+    WHERE c.store = '<store>'
+      AND c.state <> 'deleted'
       AND a.kind = 'original'
-      AND a.rel_path NOT LIKE 'sites/%';
+      AND c.rel_path NOT LIKE 'sites/%';
    ```
 
 2. 各行について `{media_dir}/{rel_path}` を `{media_dir}/sites/{site}/{rel_path}` へ `mkdir -p` + `mv` する（同一 FS 内なので rename）。
-3. 全ファイルの `mv` が終わったら、1 トランザクションで `UPDATE media_assets SET rel_path = 'sites/' || r.site || '/' || a.rel_path` を対象行に適用する。`deleting` 状態の行も対象に含める。含めないと delete_reconcile が旧パスを unlink しに行き、実体無しと誤検出する。
+3. 全ファイルの `mv` が終わったら、1 トランザクションでコピーのパスと互換用の `media_assets.rel_path` を同時に更新する。`deleting` 状態のコピーも対象に含める。含めないと delete_reconcile が旧パスを unlink しに行き、実体無しと誤検出する。
+
+   ```sql
+   WITH moved AS (
+       UPDATE media_asset_copies c
+          SET rel_path = 'sites/' || r.site || '/' || c.rel_path
+         FROM media_assets a
+         JOIN recordings r ON r.id = a.recording_id
+        WHERE c.media_asset_id = a.id
+          AND c.store = '<store>'
+          AND c.state <> 'deleted'
+          AND a.kind = 'original'
+          AND c.rel_path NOT LIKE 'sites/%'
+       RETURNING c.media_asset_id, c.rel_path
+   )
+   UPDATE media_assets a
+      SET rel_path = moved.rel_path
+     FROM moved
+    WHERE a.id = moved.media_asset_id;
+   ```
 4. 旧パスを指す孤児候補の行が残っていれば削除する（導出された一覧なので次パスで作り直される）。
 5. `rokuban enqueue catalog-export` で新しい catalog 世代を書き、`rokuban catalog verify` で完成を確認する。以後 rescue が移行前の `rel_path` を持つ旧世代を選ばないよう、確認後に旧世代を消す。
 

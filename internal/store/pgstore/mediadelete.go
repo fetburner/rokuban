@@ -13,7 +13,7 @@ import (
 // ListPendingDeleteAssets は削除条件を満たす deleting アセットを返す。
 func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
-		GraceCutoff: graceCutoff, RowLimit: limit,
+		GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: s.storeName, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending media asset deletes: %w", err)
@@ -30,7 +30,7 @@ func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff time.Ti
 // ListUnqualifiedDeletingAssets は現在どの削除条件も満たさない deleting アセットを返す。
 func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
 	rows, err := sqlcgen.New(s.pool).ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
-		GraceCutoff: graceCutoff, RowLimit: limit,
+		GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: s.storeName, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing unqualified deleting media assets: %w", err)
@@ -45,7 +45,7 @@ func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff t
 // ListTrashAssetsToDelete はごみ箱の猶予を過ぎたか即時削除を要求されたアセットを返す。
 func (s *Media) ListTrashAssetsToDelete(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
-		GraceCutoff: graceCutoff, RowLimit: limit,
+		GraceCutoff: graceCutoff, StoreName: s.storeName, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing trash media assets to delete: %w", err)
@@ -61,14 +61,16 @@ func (s *Media) ListTrashAssetsToDelete(ctx context.Context, graceCutoff time.Ti
 
 // ListUntilEncodedOriginalsToDelete は派生物が揃った until_encoded 原本を返す。
 func (s *Media) ListUntilEncodedOriginalsToDelete(ctx context.Context, limit int32) ([]store.MediaDeleteAsset, error) {
-	rows, err := sqlcgen.New(s.pool).ListUntilEncodedOriginalsToDelete(ctx, limit)
+	rows, err := sqlcgen.New(s.pool).ListUntilEncodedOriginalsToDelete(ctx, sqlcgen.ListUntilEncodedOriginalsToDeleteParams{
+		DesiredStore: s.storeName, StoreName: s.storeName, RowLimit: limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing until_encoded originals to delete: %w", err)
 	}
 	out := make([]store.MediaDeleteAsset, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, store.MediaDeleteAsset{
-			ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath, SizeBytes: row.SizeBytes, Kind: row.Kind,
+			ID: row.ID, RecordingID: row.VRecordingID, RelPath: row.RelPath, SizeBytes: row.SizeBytes, Kind: row.Kind,
 		})
 	}
 	return out, nil
@@ -76,7 +78,9 @@ func (s *Media) ListUntilEncodedOriginalsToDelete(ctx context.Context, limit int
 
 // ListRemovedEncodedAssetsToDelete は利用者が外した encoded アセットを返す。
 func (s *Media) ListRemovedEncodedAssetsToDelete(ctx context.Context, limit int32) ([]store.MediaDeleteAsset, error) {
-	rows, err := sqlcgen.New(s.pool).ListRemovedEncodedAssetsToDelete(ctx, limit)
+	rows, err := sqlcgen.New(s.pool).ListRemovedEncodedAssetsToDelete(ctx, sqlcgen.ListRemovedEncodedAssetsToDeleteParams{
+		StoreName: s.storeName, RowLimit: limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing removed encoded assets to delete: %w", err)
 	}
@@ -97,7 +101,9 @@ func (s *Media) MarkDeleting(ctx context.Context, assetID int64) error {
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	updated, err := q.MarkMediaAssetDeleting(ctx, assetID)
+	updated, err := q.MarkMediaAssetDeleting(ctx, sqlcgen.MarkMediaAssetDeletingParams{
+		AssetID: assetID, StoreName: s.storeName,
+	})
 	if err != nil {
 		return fmt.Errorf("marking media asset %d deleting: %w", assetID, mapDatabaseError(err))
 	}
@@ -127,7 +133,9 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, asset
 		}
 		return false, fmt.Errorf("locking recording %d before until_encoded delete: %w", recordingID, err)
 	}
-	marked, err := q.MarkUntilEncodedOriginalDeleting(ctx, assetID)
+	marked, err := q.MarkUntilEncodedOriginalDeleting(ctx, sqlcgen.MarkUntilEncodedOriginalDeletingParams{
+		AssetID: assetID, StoreName: s.storeName, DesiredStore: s.storeName,
+	})
 	if err != nil {
 		return false, fmt.Errorf("marking until_encoded original %d deleting: %w", assetID, mapDatabaseError(err))
 	}
@@ -151,7 +159,9 @@ func (s *Media) MarkDeleted(ctx context.Context, assetID int64) error {
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	updated, err := q.MarkMediaAssetDeleted(ctx, assetID)
+	updated, err := q.MarkMediaAssetDeleted(ctx, sqlcgen.MarkMediaAssetDeletedParams{
+		ID: assetID, StoreName: s.storeName,
+	})
 	if err != nil {
 		return fmt.Errorf("marking media asset %d deleted: %w", assetID, mapDatabaseError(err))
 	}
@@ -175,7 +185,7 @@ func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff t
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 	updated, err := q.RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
-		ID: assetID, GraceCutoff: graceCutoff,
+		ID: assetID, GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: s.storeName,
 	})
 	if err != nil {
 		return false, fmt.Errorf("reverting media asset %d to active: %w", assetID, mapDatabaseError(err))

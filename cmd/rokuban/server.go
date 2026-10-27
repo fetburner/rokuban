@@ -440,7 +440,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}
-	superviseSingletons(egCtx, roles, bound, eg, pool, watcherEnqueuer, webhookClient)
+	superviseSingletons(egCtx, roles, bound, cfg.Storage.MediaStoreName, eg, pool, watcherEnqueuer, webhookClient)
 
 	eg.Go(func() error {
 		<-egCtx.Done()
@@ -530,8 +530,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool)
-	recordingStore := pgstore.NewRecordings(pool)
+	analysisStore := pgstore.NewAnalysis(pool, cfg.Storage.MediaStoreName)
+	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
@@ -540,7 +540,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		// まで待って 503 になりうる（未測定。Acquire が待つことからの帰結）。DB 断と輻輳を
 		// この応答で区別することはできない。
 		Ready:               pool.Ping,
-		ChapterStore:        pgstore.NewAnalysis(pool),
+		ChapterStore:        analysisStore,
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
 		RecordingTrashStore: recordingStore,
 		RecordingQuery:      recordingStore,
@@ -706,7 +706,7 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
 	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
-	recordingStore := pgstore.NewRecordings(pool)
+	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)
 	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
@@ -739,7 +739,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 	}
 	deferred := &jobq.Deferred{}
 	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool)
+	analysisStore := pgstore.NewAnalysis(pool, cfg.Storage.MediaStoreName)
 	workers := worker.NewWorkers(&worker.Deps{
 		Enqueuer:                 deferred,
 		EPGSync:                  pgstore.NewEPG(pool),
@@ -821,7 +821,7 @@ func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onc
 
 // superviseSingletons はシングルトンロールをサイトごとの監督 goroutine に登録する。
 // 各サイトに独立した mirakc クライアントと advisory lock を割り当てる。
-func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
+func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, mediaStoreName string, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
 	for _, roleName := range roles {
 		if !slices.Contains(singletonRoles, roleName) {
 			continue
@@ -830,7 +830,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, webhookClient)
+				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool, mediaStoreName), pgstore.NewReservations(pool), enqueuer, webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

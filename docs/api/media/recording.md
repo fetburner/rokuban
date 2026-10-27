@@ -120,10 +120,10 @@ URL には site ではなく置き場の名前を入れる。規則しだいで 
 <details><summary>根拠</summary>
 
 - 配らない録画: `recordings.deleted_at IS NOT NULL`
-- 配らないアセット: `media_assets.state <> 'active'`
+- 配らないアセット: 選択中 store の `media_asset_copies.state <> 'active'`
 - 未 ingest の判定: 指定 kind の `media_assets` 行なし
 - ingest と共有するパス検証: `internal/mediapath.Resolve`
-- 相対パスの列: `rel_path`
+- 相対パスの列: `media_asset_copies.rel_path`
 - 配信時に照合するサイズ: `media_assets.size_bytes`
 
 </details>

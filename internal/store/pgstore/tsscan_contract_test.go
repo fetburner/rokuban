@@ -22,8 +22,8 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
 	return contracttest.TSScanFixture{
-		Store:   NewMedia(pool, "tokyo"),
-		Catalog: NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
+		Store:   NewMedia(pool, dbtest.StoreName),
+		Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
 		NewOriginal: func(t *testing.T, sizeBytes int64, trashed bool) (int64, int64) {
 			t.Helper()
 			ctx := context.Background()
@@ -65,10 +65,7 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 			}
 		},
 		SetAssetState: func(t *testing.T, assetID int64, state string) {
-			t.Helper()
-			if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = $2 WHERE id = $1`, assetID, state); err != nil {
-				t.Fatalf("setting media asset state: %v", err)
-			}
+			dbtest.SetMediaAssetState(t, pool, assetID, state)
 		},
 		SetScannedSize: func(t *testing.T, assetID, scannedSizeBytes int64) {
 			t.Helper()
@@ -121,9 +118,7 @@ func beginTSScanContractAssetStateChange(t *testing.T, pool *pgxpool.Pool, asset
 		t.Fatalf("beginning media asset state change: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
-	if _, err := tx.Exec(ctx, `UPDATE media_assets SET state = $2 WHERE id = $1`, assetID, state); err != nil {
-		t.Fatalf("changing media asset state in blocker transaction: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, tx, assetID, state)
 	var commitOnce sync.Once
 	return func() {
 		commitOnce.Do(func() {
