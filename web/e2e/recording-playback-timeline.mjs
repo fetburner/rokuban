@@ -8,6 +8,7 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
 //   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
 //   E2E_TIMELINE_CHAPTER_SEEK_ONLY=1 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
+//   E2E_TIMELINE_API_HLS_ONLY=1 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
 //
 // 変異確認: E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 を付けると、期待時刻を 1 フレーム
 // ずらした判定が落ちる。原本 HLS の offset セッションでは、表示中フレームの境界が
@@ -44,6 +45,7 @@ const CHAPTER_SEEK_ONLY = process.env.E2E_TIMELINE_CHAPTER_SEEK_ONLY === '1'
 const BOUNDARY_SEEK_ONLY = process.env.E2E_TIMELINE_BOUNDARY_SEEK_ONLY === '1'
 const RAW_SEEK_ONLY = process.env.E2E_TIMELINE_RAW_SEEK_ONLY === '1'
 const RAW_SEEK_DIAGNOSTICS = RAW_SEEK_ONLY || process.env.E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS === '1'
+const API_HLS_ONLY = process.env.E2E_TIMELINE_API_HLS_ONLY === '1'
 const REAL_HLS_URL = process.env.E2E_TIMELINE_REAL_HLS_URL ?? ''
 const REAL_HLS_BOUNDARY_MS = Math.round((Number(process.env.E2E_TIMELINE_REAL_HLS_BOUNDARY_SECONDS ?? '1') || 1) * 1000)
 if (REAL_HLS_URL) {
@@ -83,6 +85,18 @@ const recording = {
   sizeBytes: 2_000_000,
   encodedAssets: [],
 }
+const apiHlsStartedAt = new Date(Date.now() - 30_000).toISOString()
+const apiHlsPath = (generation, profile = 'hd') =>
+  `/api/media/stores/media/recordings/${RECORDING_ID}/hls/v${generation}/${profile}/master.m3u8`
+const apiHlsRecording = {
+  ...recording,
+  startAt: apiHlsStartedAt,
+  startedAt: apiHlsStartedAt,
+  durationMs: 120_000,
+  endedAt: undefined,
+  status: 'recording',
+  hlsPlayback: [{ profile: 'hd', masterUrl: apiHlsPath(1) }],
+}
 const encodedRecording = {
   ...recording,
   encodedAssets: [{ profile: ENCODE_PROFILE, sizeBytes: 1_000_000 }],
@@ -91,6 +105,7 @@ const encodedRecording = {
 await validateFixturesOrExit([
   ['original-only recording', ListRecordingsResponseItem, recording],
   ['encoded recording', ListRecordingsResponseItem, encodedRecording],
+  ['recording API HLS', ListRecordingsResponseItem, apiHlsRecording],
 ], ng)
 await verifyBundleMatchesOrExit(URL_BASE, ng)
 
@@ -182,6 +197,7 @@ const browser = engine === 'chrome'
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' })
 const playlistRequests = []
 const mp4Requests = []
+const recordingHlsRequests = []
 
 function growingPlaylist(text) {
   const out = []
@@ -890,6 +906,30 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
   if (requestPath === `/api/media/recordings/${RECORDING_ID}/seek-tiles`) return route.fulfill({ status: 404 })
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) return route.fulfill({ status: 404 })
 
+  const apiHlsMatch = new RegExp(`^/api/media/stores/media/recordings/${RECORDING_ID}/hls/v\\d+/[^/]+/(.+)$`).exec(requestPath)
+  if (apiHlsMatch) {
+    const resource = apiHlsMatch[1]
+    const fixtureMaster = path.join(fixtureDir, manifest.hls.offset0)
+    const outputDir = path.dirname(fixtureMaster)
+    recordingHlsRequests.push({ url: requestPath, resource })
+    if (resource === 'master.m3u8') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/vnd.apple.mpegurl',
+        body: readFileSync(fixtureMaster),
+      })
+    }
+    const file = path.join(outputDir, resource)
+    if (!existsSync(file)) return route.fulfill({ status: 404, body: `fixture missing: ${resource}` })
+    let body = readFileSync(file)
+    if (resource === 'hd.0.m3u8') body = Buffer.from(growingPlaylist(body.toString('utf8')))
+    return route.fulfill({
+      status: 200,
+      contentType: resource.endsWith('.ts') ? 'video/mp2t' : 'application/vnd.apple.mpegurl',
+      body,
+    })
+  }
+
   const originalPrefix = `/api/sites/${SITE}/recordings/${RECORDING_ID}/original-vod/`
   if (requestPath.startsWith(originalPrefix)) {
     const relative = requestPath.slice(originalPrefix.length)
@@ -960,6 +1000,114 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
     })
   }
   return json([])
+}
+
+async function runRecordingApiHlsCheck() {
+  activeRecording = apiHlsRecording
+  recordingHlsRequests.length = 0
+  playlistRequests.length = 0
+  const page = await context.newPage()
+  await installApiStubs(page, timelineHandler)
+  await page.addInitScript(() => {
+    const eventSources = []
+    class StubEventSource extends EventTarget {
+      constructor(url) {
+        super()
+        this.url = url
+        eventSources.push(this)
+      }
+      close() {}
+    }
+    window.EventSource = StubEventSource
+    window.__recordingEventSources = eventSources
+    window.__sendRecordingEvent = (topic) => {
+      for (const source of eventSources) source.dispatchEvent(new Event(topic))
+    }
+  })
+  await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+  await page.getByTestId('recording-playback-start').click()
+  await page.locator('video').waitFor({ timeout: 15000 })
+
+  const mediaReady = await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.seekable.length > 0
+  }, undefined, { timeout: 20000 }).then(() => true).catch(() => false)
+  if (!mediaReady) {
+    ng.push(`録画 API HLS の映像データが届かない (requests=${JSON.stringify(recordingHlsRequests)})`)
+    await page.close()
+    return
+  }
+
+  const slider = page.getByRole('slider', { name: 'シークバー' })
+  const timelineSeconds = Number(await slider.getAttribute('aria-valuemax'))
+  const mediaState = await page.locator('video').evaluate((video) => ({
+    currentTime: video.currentTime,
+    seekableEnd: video.seekable.end(video.seekable.length - 1),
+    readyState: video.readyState,
+    videoWidth: video.videoWidth,
+  }))
+  const recordedProgressSeconds = (Date.now() - Date.parse(apiHlsStartedAt)) / 1000
+  log(`\n=== 録画 API HLS: 録画中の時間軸 ===`)
+  log(`  右端=${timelineSeconds.toFixed(2)}s / 壁時計の録画済み=${recordedProgressSeconds.toFixed(2)}s / HLS seekable=${mediaState.seekableEnd.toFixed(2)}s`)
+  if (Math.abs(timelineSeconds - recordedProgressSeconds) > 2.5) {
+    ng.push(`録画中の時間軸の右端が録画済み時間ではない (axis=${timelineSeconds}, recorded=${recordedProgressSeconds})`)
+  }
+  if (!(timelineSeconds > mediaState.seekableEnd + 2)) {
+    ng.push(`録画中の時間軸が EVENT playlist の末尾で止まっている (axis=${timelineSeconds}, seekable=${mediaState.seekableEnd})`)
+  }
+  if (!recordingHlsRequests.some(({ url }) => url === apiHlsPath(1))) {
+    ng.push(`Recording.hlsPlayback.masterUrl を直接要求しない (${JSON.stringify(recordingHlsRequests)})`)
+  }
+
+  await slider.focus()
+  await page.keyboard.press('End')
+  const clamped = await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    if (!video || video.seekable.length === 0) return false
+    const end = video.seekable.end(video.seekable.length - 1)
+    return Math.abs(video.currentTime - end) < 0.5
+  }, undefined, { timeout: 5000 }).then(() => true).catch(() => false)
+  if (!clamped) {
+    const afterSeek = await page.locator('video').evaluate((video) => ({
+      currentTime: video.currentTime,
+      seeking: video.seeking,
+      seekableEnd: video.seekable.length ? video.seekable.end(video.seekable.length - 1) : null,
+    }))
+    ng.push(`時間軸の末尾への seek が現在の playlist 末尾に丸まらない (${JSON.stringify(afterSeek)})`)
+  }
+  if (playlistRequests.length > 0) ng.push(`録画 API HLS が従来の原本 VOD URL へ逸れる (${JSON.stringify(playlistRequests)})`)
+
+  const masterRequestsBeforeCommit = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  activeRecording = {
+    ...apiHlsRecording,
+    status: 'finished',
+    endedAt: new Date().toISOString(),
+    // ingest commit 後も API が返す master URL は維持される。
+    hlsPlayback: apiHlsRecording.hlsPlayback,
+  }
+  const eventSourceCount = await page.evaluate(() => window.__recordingEventSources.length)
+  if (eventSourceCount === 0) ng.push('録画状態の SSE を購読していない')
+  const refreshed = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return response.request().method() === 'GET' && responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 })
+  await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  const refreshedSuccessfully = await refreshed.then((response) => response.ok()).catch(() => false)
+  if (!refreshedSuccessfully) ng.push('commit 後の詳細 API を取り直せない')
+  await page.waitForTimeout(250)
+  const masterRequestsAfterCommit = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  log(`  commit 前後の master 要求数=${masterRequestsBeforeCommit}/${masterRequestsAfterCommit}`)
+  if (masterRequestsAfterCommit !== masterRequestsBeforeCommit) {
+    ng.push('ingest commit をまたぐとき、同じ master URL を維持した再生を張り直した')
+  }
+
+  await page.evaluate(() => localStorage.clear())
+  await page.close()
+}
+
+if (API_HLS_ONLY) {
+  await runRecordingApiHlsCheck()
+  await finish(ng, browser)
 }
 
 async function runRawSeekDiagnostics() {

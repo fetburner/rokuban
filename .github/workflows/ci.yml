@@ -39,6 +39,7 @@ jobs:
   # recordings-selection は実ブラウザ判定の前に 20 件の録画 fixture を Zod 契約で検査する。
   #
   # 回すのは web/e2e/*.mjs の判定スクリプト（共有部品を除く）のうち 14 本。
+  # recording-playback-timeline は既存の全時間軸判定とは別に、録画 API HLS の短いブラウザ判定も回す。
   # 選定基準は次の 3 つを全部満たすこと。
   #   - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり・実画素コントラスト・計算済み文字サイズ・キー操作によるネイティブのスクロール・safe-area inset の解決・`navigator.sendBeacon` の実送信・実メディアの `currentTime`）
   #   - /api/** を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
@@ -179,6 +180,9 @@ jobs:
         working-directory: web
       - if: ${{ !cancelled() }}
         run: pnpm e2e:live-player-modes
+        working-directory: web
+      - if: ${{ !cancelled() }}
+        run: E2E_TIMELINE_API_HLS_ONLY=1 pnpm e2e:recording-playback-timeline
         working-directory: web
       - name: Show API server log
         if: failure()

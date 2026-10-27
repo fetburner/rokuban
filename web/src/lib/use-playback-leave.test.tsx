@@ -44,4 +44,18 @@ describe('usePlaybackLeave', () => {
     unmount()
     visibility.mockRestore()
   })
+
+  it('URL を持たない再生元では離脱要求を送らない', () => {
+    const beacon = vi.fn(() => true)
+    vi.stubGlobal('navigator', { sendBeacon: beacon })
+    const { unmount } = renderHook(() => usePlaybackLeave(null))
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    unmount()
+
+    expect(beacon).not.toHaveBeenCalled()
+  })
 })

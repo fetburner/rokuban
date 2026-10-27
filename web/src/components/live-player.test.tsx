@@ -12,10 +12,12 @@ import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-po
 type LiveProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'live' }>
 type ChaseProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'chase' }>
 type OriginalVODProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'original-vod' }>
+type RecordingHLSProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'recording-hls' }>
 type LivePlayerTestProps =
   | (Partial<Omit<LiveProps, 'mode'>> & { mode?: 'live' })
   | (Partial<Omit<ChaseProps, 'mode'>> & { mode: 'chase' })
   | (Partial<Omit<OriginalVODProps, 'mode'>> & { mode: 'original-vod' })
+  | (Partial<Omit<RecordingHLSProps, 'mode'>> & { mode: 'recording-hls' })
 
 /** LivePlayer は各モードの必須 props を fixture の既定値で補う。 */
 function LivePlayer(props: LivePlayerTestProps) {
@@ -52,6 +54,18 @@ function LivePlayer(props: LivePlayerTestProps) {
       site,
       recordingId: props.recordingId ?? 42,
       recordingDurationMs: props.recordingDurationMs ?? 60_000,
+    } satisfies ComponentProps<typeof LivePlayerComponent>
+    return <LivePlayerComponent {...completeProps} />
+  }
+  if (props.mode === 'recording-hls') {
+    const completeProps = {
+      ...props,
+      mode: 'recording-hls' as const,
+      site,
+      recordingId: props.recordingId ?? 42,
+      recordingDurationMs: props.recordingDurationMs ?? 60_000,
+      recordingHlsUrl: props.recordingHlsUrl ?? '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8',
+      recordingHlsStartSeconds: props.recordingHlsStartSeconds ?? 0,
     } satisfies ComponentProps<typeof LivePlayerComponent>
     return <LivePlayerComponent {...completeProps} />
   }
@@ -102,6 +116,16 @@ describe('LivePlayer のモード別 props', () => {
     // @ts-expect-error original-vod は録画 ID が必須
     const invalidOriginalIdentity: ComponentProps<typeof LivePlayerComponent> = missingOriginalRecordingId
 
+    const missingRecordingHlsUrl = {
+      mode: 'recording-hls',
+      site: 'default',
+      recordingId: 42,
+      recordingDurationMs: 60_000,
+      recordingHlsStartSeconds: 0,
+    } as const
+    // @ts-expect-error recording-hls は API が返した master URL が必須
+    const invalidRecordingHls: ComponentProps<typeof LivePlayerComponent> = missingRecordingHlsUrl
+
     expect(invalidModeLessHelperProps).toEqual(modeLessChaseProps)
     expect(invalidChase.mode).toBe('chase')
     expect(invalidChaseIdentity.mode).toBe('chase')
@@ -110,6 +134,7 @@ describe('LivePlayer のモード別 props', () => {
     expect(invalidLive.mode).toBe('live')
     expect(invalidOriginalVOD.mode).toBe('original-vod')
     expect(invalidOriginalIdentity.mode).toBe('original-vod')
+    expect(invalidRecordingHls.mode).toBe('recording-hls')
   })
 })
 
@@ -1240,6 +1265,75 @@ describe('LivePlayer の状態遷移', () => {
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
     })
 
+    it('recording-hls は API URL をそのまま使い、シークと profile 切替で同じ位置を保つ', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+      vi.stubGlobal('fetch', fetchMock)
+      const onRecordingPositionChange = vi.fn()
+      const props = {
+        mode: 'recording-hls' as const,
+        site: 'default',
+        recordingId: 42,
+        recordingDurationMs: 60_000,
+        recordingHlsStartSeconds: 12.5,
+        profile: 'hd',
+        availableProfiles: [{ name: 'hd' }, { name: 'sd' }],
+        onRecordingPositionChange,
+      }
+      const { rerender } = render(
+        <LivePlayer
+          {...props}
+          recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v7/hd/master.m3u8"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      let currentTime = 0
+      Object.defineProperty(video, 'currentTime', {
+        get: () => currentTime,
+        set: (value: number) => { currentTime = value },
+        configurable: true,
+      })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      expect(currentTime).toBe(12.5)
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+        '/api/media/stores/media/recordings/42/hls/v7/hd/master.m3u8',
+      )
+      expect(hlsMockState.constructorArgs[0]![0]).toEqual({ startPosition: 12.5 })
+
+      const slider = screen.getByRole('slider', { name: 'シークバー' })
+      fireEvent.keyDown(slider, { key: 'ArrowRight' })
+      fireEvent.keyUp(slider, { key: 'ArrowRight' })
+      expect(currentTime).toBe(12.5)
+
+      Object.defineProperty(video, 'seekable', {
+        value: { length: 1, end: () => 20 },
+        configurable: true,
+      })
+      fireEvent.keyDown(slider, { key: 'ArrowRight' })
+      fireEvent.keyUp(slider, { key: 'ArrowRight' })
+      expect(currentTime).toBe(20)
+      expect(onRecordingPositionChange).toHaveBeenLastCalledWith(20)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(hlsMockState.instances).toHaveLength(1)
+
+      currentTime = 20
+      rerender(
+        <LivePlayer
+          {...props}
+          profile="sd"
+          recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v7/sd/master.m3u8"
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/media/stores/media/recordings/42/hls/v7/sd/master.m3u8',
+      )
+      expect(hlsMockState.constructorArgs[1]![0]).toEqual({ startPosition: 20 })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
+
     it('原本 VOD は保存位置を秒に切り下げた offset のセッションで開き、端数だけを startPosition に渡す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       render(
@@ -1840,6 +1934,41 @@ describe('LivePlayer の状態遷移', () => {
       await act(async () => errorHandler('hlsError', { fatal: true }))
 
       expect(onRecordingPlaybackError).toHaveBeenCalledWith(undefined, true, true)
+    })
+
+    it('recording-hls の playlist が 410 を返すと現在位置を持って再選択を親へ渡す', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const onRecordingPlaybackError = vi.fn(() => true)
+      render(
+        <LivePlayer
+          mode="recording-hls"
+          site="default"
+          recordingId={75}
+          recordingDurationMs={60_000}
+          recordingHlsUrl="/api/media/stores/media/recordings/75/hls/v2/hd/master.m3u8"
+          recordingHlsStartSeconds={12}
+          onRecordingPlaybackError={onRecordingPlaybackError}
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'paused', { value: false, configurable: true })
+      Object.defineProperty(video, 'currentTime', { value: 12, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      fireEvent.playing(video)
+      video.currentTime = 23
+
+      const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (
+        event: string,
+        data: { fatal: boolean; response?: { code?: number } },
+      ) => void
+      await act(async () => errorHandler('hlsError', { fatal: false, response: { code: 410 } }))
+
+      expect(onRecordingPlaybackError).toHaveBeenCalledWith(23, true, true)
+      expect(hlsMockState.instances[0]!.destroy).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
     })
 
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {

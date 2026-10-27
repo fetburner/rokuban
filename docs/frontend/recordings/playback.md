@@ -2,7 +2,7 @@
 
 ## 録画のブラウザ再生
 
-詳細画面の再生枠にはプレイヤーを 1 つだけ置き、再生元は録画の状態から 1 か所で選ぶ。録画中はライブ能力が有効なら追っかけを使う。完了後は cut でない active な encoded があれば encoded MP4、無くてライブ能力と原本があれば原本 HLS を使う。ごみ箱・失敗・キャンセルの録画にはプレイヤーを出さない。
+詳細画面の再生枠にはプレイヤーを 1 つだけ置き、API が示す再生元を先に使う。API に HLS URL が無い録画は状態と資産から従来の再生元を選ぶ。
 
 ### 再生元の選び方
 
@@ -10,16 +10,20 @@
 
 ```mermaid
 flowchart TD
-  A{ごみ箱・失敗・キャンセル?} -->|はい| N[プレイヤーなし]
-  A -->|いいえ| B{録画中、または commit 前の取り込み中で<br>ライブ能力が有効?}
-  B -->|はい| C[追っかけ]
-  B -->|いいえ| D{cut でない active な encoded がある?}
-  D -->|はい| E[encoded MP4]
-  D -->|いいえ| F{原本があり、ライブ能力が有効?}
-  F -->|はい| G[原本 HLS]
-  F -->|いいえ| H{active な encoded がある?}
-  H -->|はい| I[cut 版の encoded MP4]
-  H -->|いいえ| J[既存の空状態と原本リンク]
+  A{ごみ箱?} -->|はい| N[プレイヤーなし]
+  A -->|いいえ| B{hlsPlayback がある?}
+  B -->|はい| C[録画 API HLS]
+  B -->|いいえ| D{失敗・キャンセル?}
+  D -->|はい| N
+  D -->|いいえ| E{録画中、または commit 前の取り込み中で<br>ライブ能力が有効?}
+  E -->|はい| F[追っかけ]
+  E -->|いいえ| G{cut でない active な encoded がある?}
+  G -->|はい| H[encoded MP4]
+  G -->|いいえ| I{原本があり、ライブ能力が有効?}
+  I -->|はい| J[原本 HLS]
+  I -->|いいえ| K{active な encoded がある?}
+  K -->|はい| L[cut 版の encoded MP4]
+  K -->|いいえ| M[既存の空状態と原本リンク]
 ```
 
 原本と cut 版の両方がある録画では、「版」タブから各 encoded を再生できる。原本が残り、ライブ能力が有効なら、同じタブから原本 HLS へ戻れる。cut だけの録画は原本 HLS を既定にして編集できるようにし、比較・確認のため cut 版を選んだ間はチャプター編集を止める。
@@ -98,6 +102,27 @@ idle GC で消えた追っかけの再取得も、通常の経路に含む。追
 active な encoded がある完了録画は、MP4 の progressive 再生と Range で再生する。原本だけが残る完了録画は、streamer が一時 HLS に変換してブラウザで再生する。
 
 encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を、controls の無い `<video>` の src に渡す。映像の下端には自前の再生操作バーを重ねる。encoded MP4 の経路では HLS / hls.js を使わない。原本だけが残る完了録画は、streamer の一時 HLS 経路（`/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8`）で再生する。原本自体は MPEG-2 TS のまま読み、変換したファイルは保存しない。原本 HLS の詳細は [api/media.md](../../api/media.md)「録画原本のブラウザ再生」にある。
+
+`hlsPlayback` がある録画は、API が返す master URL をそのまま HLS の入力にする。録画中の追っかけと commit 後の原本 HLS をこの URL で続け、`hlsPlayback` が空の録画だけ上記の従来経路を使う。URL をフロントで組み立てると一時世代と commit 世代の切替に追いつけず、再生が途切れる。
+
+### 録画 API HLS の時間軸と復旧
+
+録画 API HLS は録画の秒をそのまま使い、読める範囲と実尺を分けて扱う。世代が変わったときは最新 URL へ位置を引き継ぐ。
+
+この再生元の `currentTime` は録画先頭からの秒である。seek は同じ playlist の `currentTime` を更新し、現在の playlist が読める末尾を越える要求はその末尾へ丸める。
+
+録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。commit 後は録画ファイルの実尺を使う。
+
+現在の世代の HLS 応答が `410` になったら詳細 API を取り直し、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。
+
+<details><summary>根拠</summary>
+
+- API HLS の優先: `recording-playback-source.test.ts`
+- 410 後の位置保持: `recording-detail.test.tsx`
+- playlist 末尾への丸め: `live-player.test.tsx`
+- 実メディアの時間軸: `recording-playback-timeline.mjs`
+
+</details>
 
 原本 TS 自体は `<video>` の src に渡さない。VLC 等で開ける原本リンクは残すが、プレイヤー内のダウンロードには置かない。
 
