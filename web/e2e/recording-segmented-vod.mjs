@@ -1,12 +1,11 @@
 // 録画 HLS の固定長 segment と ffmpeg 再起動境界を実ブラウザで測る。使い方は web/e2e/checks/playback.md。
 import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { launchBrowser, log } from './lib.mjs'
+import { createPlaywrightAdapter, createSafariAdapter, log } from './lib.mjs'
 import {
   ensurePlaybackFixtures,
   FIXTURE_ROOT,
@@ -491,103 +490,6 @@ async function startServer(upstream) {
       holds.set(requestPath, hold)
       return hold
     },
-  }
-}
-
-async function createPlaywrightAdapter(engine) {
-  const browser = engine === 'chrome'
-    ? await launchBrowser('chromium', { channel: 'chrome', args: ['--autoplay-policy=no-user-gesture-required'] })
-    : await launchBrowser('webkit')
-  const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
-  return {
-    version: browser.version(),
-    navigate: (url) => page.goto(url, { waitUntil: 'domcontentloaded' }),
-    click: (selector) => page.locator(selector).click(),
-    evaluate: (fn, arg) => page.evaluate(fn, arg),
-    close: () => browser.close(),
-  }
-}
-
-async function createSafariAdapter() {
-  const port = Number(process.env.E2E_SAFARI_PORT ?? 44444)
-  const base = `http://127.0.0.1:${port}`
-  const child = spawn('safaridriver', ['--port', String(port)], { stdio: 'ignore' })
-  let spawnError
-  child.once('error', (error) => { spawnError = error })
-  const request = async (method, url, body) => {
-    const response = await fetch(base + url, {
-      method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    const result = await response.json().catch(() => ({}))
-    if (!response.ok || result.value?.error) {
-      throw new Error(`Safari WebDriver ${method} ${url}: ${JSON.stringify(result)}`)
-    }
-    return result.value
-  }
-
-  let ready = false
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 20_000) {
-    if (spawnError) throw new Error(`safaridriver を起動できない: ${spawnError.message}`)
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(`safaridriver が ${child.exitCode ?? child.signalCode} で終了した`)
-    }
-    try {
-      await request('GET', '/status')
-      ready = true
-      break
-    } catch {
-      await delay(200)
-    }
-  }
-  if (!ready) {
-    child.kill('SIGTERM')
-    throw new Error('safaridriver が起動しない。checks/playback.md の Safari の設定を確認する')
-  }
-
-  try {
-    const session = await request('POST', '/session', {
-      capabilities: { alwaysMatch: { browserName: 'safari', acceptInsecureCerts: true } },
-    })
-    const sessionId = session.sessionId
-    let caseWindow
-    await request('POST', `/session/${sessionId}/timeouts`, { script: 30_000, pageLoad: 30_000, implicit: 0 })
-    return {
-      version: `Safari ${session.capabilities?.browserVersion ?? '(version unavailable)'}`,
-      navigate: async (url) => {
-        const window = await request('POST', `/session/${sessionId}/window/new`, { type: 'window' })
-        if (caseWindow) {
-          await request('POST', `/session/${sessionId}/window`, { handle: caseWindow })
-          await request('DELETE', `/session/${sessionId}/window`)
-        }
-        await request('POST', `/session/${sessionId}/window`, { handle: window.handle })
-        caseWindow = window.handle
-        await request('POST', `/session/${sessionId}/url`, { url })
-      },
-      click: async (selector) => {
-        const element = await request('POST', `/session/${sessionId}/element`, { using: 'css selector', value: selector })
-        const elementId = element['element-6066-11e4-a52e-4f735466cecf'] ?? element.ELEMENT
-        if (!elementId) throw new Error(`Safari WebDriver が要素を返さない: ${JSON.stringify(element)}`)
-        await request('POST', `/session/${sessionId}/element/${elementId}/click`, {})
-      },
-      evaluate: async (fn, arg) => {
-        const value = await request('POST', `/session/${sessionId}/execute/async`, {
-          script: `const done = arguments[arguments.length - 1]; Promise.resolve((${fn.toString()})(arguments[0])).then((value) => done({ ok: true, value }), (error) => done({ ok: false, error: String(error && error.stack || error) }));`,
-          args: [arg],
-        })
-        if (!value?.ok) throw new Error(value?.error ?? 'Safari WebDriver script failed')
-        return value.value
-      },
-      close: async () => {
-        await request('DELETE', `/session/${sessionId}`).catch(() => {})
-        child.kill('SIGTERM')
-      },
-    }
-  } catch (error) {
-    child.kill('SIGTERM')
-    throw error
   }
 }
 

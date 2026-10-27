@@ -67,6 +67,7 @@
     "e2e:issue-1229-switches": "node e2e/issue-1229-switches.mjs",
     "e2e:search-shortcut": "node e2e/search-shortcut.mjs",
     "e2e:subtitles": "node e2e/subtitles.mjs",
+    "e2e:s3-302": "node e2e/s3-302.mjs",
     "e2e:shelves-split": "node e2e/shelves-split.mjs",
     "e2e:fixtures": "node e2e/validate-fixtures.mjs",
     "screenshots:readme": "node e2e/readme-screenshots.mjs"

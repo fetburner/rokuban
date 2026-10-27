@@ -1,0 +1,21 @@
+name: Build MinIO
+description: 固定した公式ソースから MinIO サーバーを作り、実行ファイルのパスを返す。呼び出し元で actions/checkout と actions/setup-go を済ませておく。
+outputs:
+  path:
+    description: 作った minio の実行ファイルのパス
+    value: ${{ steps.build.outputs.path }}
+runs:
+  using: composite
+  steps:
+    # MinIO の公開 Community Edition イメージが取得できないため、固定した公式ソースからサーバーを作る。
+    - uses: actions/checkout@v7
+      with:
+        repository: minio/minio
+        ref: 07c3a429bfed433e49018cb0f78a52145d4bedeb # RELEASE.2025-09-07T16-13-09Z
+        path: minio-src
+    - id: build
+      shell: bash
+      working-directory: minio-src
+      run: |
+        go build -trimpath -o "$RUNNER_TEMP/minio" .
+        echo "path=$RUNNER_TEMP/minio" >> "$GITHUB_OUTPUT"
