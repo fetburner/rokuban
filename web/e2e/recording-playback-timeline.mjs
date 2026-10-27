@@ -161,7 +161,9 @@ const encodedTimes = runFFprobe([
   '-v', 'error', '-select_streams', 'v:0',
   '-show_entries', 'frame=pts_time,best_effort_timestamp_time', '-of', 'json', encodedPath,
 ]).frames.map((frame) => Number(frame.best_effort_timestamp_time ?? frame.pts_time)).sort((a, b) => a - b)
-if (encodedTimes.length !== decodedFrames.length) {
+// API_HLS_ONLY は原本 HLS の fixture だけを使う。原本と encoded のフレーム対応は
+// 通常の時間軸判定でだけ必要であり、API HLS 専用判定を別環境の encoder 差で落とさない。
+if (!API_HLS_ONLY && encodedTimes.length !== decodedFrames.length) {
   ng.push(`encoded の frame 数が原本と違う (encoded=${encodedTimes.length}, source=${decodedFrames.length})`)
 }
 const markerTimes = manifest.markerFrames.map((frameIndex, markerSlot) => {
