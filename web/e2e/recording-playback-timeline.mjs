@@ -169,7 +169,8 @@ if (!(audioStart < videoStart) || Math.abs((videoStart - audioStart) - 0.7) > 0.
 }
 
 const decodedFrames = probe.frames ?? []
-const encodedTimes = runFFprobe([
+// API_HLS_ONLY は encoded を使わない（期待値は原本 TS 自身の PTS）ので、encoded の生成物は読まない。
+const encodedTimes = API_HLS_ONLY ? [] : runFFprobe([
   '-v', 'error', '-select_streams', 'v:0',
   '-show_entries', 'frame=pts_time,best_effort_timestamp_time', '-of', 'json', encodedPath,
 ]).frames.map((frame) => Number(frame.best_effort_timestamp_time ?? frame.pts_time)).sort((a, b) => a - b)
@@ -187,11 +188,11 @@ const markerTimes = manifest.markerFrames.map((frameIndex, markerSlot) => {
   }
   // 目印の i 番目の frame は、encoded でも表示順の i 番目（frame 数の一致は下で検査する）。
   const encodedPts = encodedTimes[frameIndex]
-  if (!Number.isFinite(encodedPts)) ng.push(`encoded の目印 frame ${frameIndex} の PTS を得られない`)
+  if (!API_HLS_ONLY && !Number.isFinite(encodedPts)) ng.push(`encoded の目印 frame ${frameIndex} の PTS を得られない`)
   return { frame: frameIndex, markerSlot, pts, legacySeconds: pts - earliestStart, expectedSeconds: encodedPts }
 })
 log(`  ffprobe: fps=${videoStream?.r_frame_rate}, earliest=${earliestStart.toFixed(6)}s, audio lead=${(videoStart - audioStart).toFixed(6)}s`)
-log(`  目印 encoded PTS (主判定の基準): ${markerTimes.map((item) => `${item.frame}:${item.expectedSeconds.toFixed(6)}`).join(', ')}`)
+if (!API_HLS_ONLY) log(`  目印 encoded PTS (主判定の基準): ${markerTimes.map((item) => `${item.frame}:${item.expectedSeconds.toFixed(6)}`).join(', ')}`)
 log(`  目印 原本 PTS - earliest start_time (参考): ${markerTimes.map((item) => `${item.frame}:${item.legacySeconds.toFixed(6)}`).join(', ')}`)
 
 recording.encodedAssets = [{ profile: ENCODE_PROFILE, sizeBytes: statSync(encodedPath).size }]
@@ -1109,10 +1110,11 @@ async function runRecordingApiHlsCheck() {
   }
 
   // 途中の位置へのシーク: 目印フレームの中央へ時間軸をクリックし、currentTime が録画開始からの秒に
-  // なり、表示中のフレームがその目印であることを測る。encoded の PTS が録画の秒の基準。
+  // なり、表示中のフレームがその目印であることを測る。期待値は HLS fixture の原本 TS 自身の
+  // 目印 PTS - 最早 start_time（legacySeconds）で、encoded には依存しない。
   for (const frame of [106, 240]) {
     const marker = markerTimes.find((item) => item.frame === frame)
-    const target = marker.expectedSeconds + 1 / (2 * SOURCE_FRAME_RATE)
+    const target = marker.legacySeconds + 1 / (2 * SOURCE_FRAME_RATE)
     await page.locator('video').evaluate((video) => video.pause())
     const box = await slider.boundingBox()
     const axisMax = Number(await slider.getAttribute('aria-valuemax'))
@@ -1121,7 +1123,7 @@ async function runRecordingApiHlsCheck() {
       const video = document.querySelector('video')
       return video && !video.seeking && video.currentTime >= from && video.currentTime < to &&
         window.__displayedMarkerSlot() === slot
-    }, { slot: marker.markerSlot, from: marker.expectedSeconds, to: marker.expectedSeconds + 1 / SOURCE_FRAME_RATE }, { timeout: 5000 })
+    }, { slot: marker.markerSlot, from: marker.legacySeconds, to: marker.legacySeconds + 1 / SOURCE_FRAME_RATE }, { timeout: 5000 })
       .then(() => true).catch(() => false)
     const observed = await page.evaluate(() => ({
       currentTime: document.querySelector('video').currentTime,
@@ -1129,7 +1131,7 @@ async function runRecordingApiHlsCheck() {
     }))
     log(`  中間シーク frame ${frame}: 目標=${target.toFixed(4)}s / currentTime=${observed.currentTime.toFixed(4)}s / 表示=${observed.slot} (期待 ${marker.markerSlot})`)
     if (!landed) {
-      ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${frame} ではない (${JSON.stringify(observed)}, want=${marker.expectedSeconds})`)
+      ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${frame} ではない (${JSON.stringify(observed)}, want=${marker.legacySeconds})`)
     }
   }
 

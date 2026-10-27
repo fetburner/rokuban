@@ -116,11 +116,11 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 
 再生位置は録画開始からの秒をそのまま使い、シークはその秒を代入するだけにする。シークできる範囲の末尾を越える要求は、その末尾へ収める。時間軸の長さは録画済み時間で決め、シークできる範囲の末尾は上限にだけ使う。HLS 応答が 410 になったら、最新の URL で続きから再生する。
 
-`seekable` の末尾を越える要求は、アプリが末尾へ丸めてから `currentTime` に渡す。
+ブラウザも `seekable` の末尾へ丸めるが、アプリが先に丸める。丸めた値を、保存位置の報告と時間軸の表示にも使うためである。
 
 録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。録画の終了後は、commit 前も含めて、`startedAt` から `endedAt` までの時間を使い、取れなければ予定尺を使う。
 
-現在の世代の HLS 応答が 410 になったら詳細 API を取り直し、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。
+現在の世代の HLS 応答が 410 になったら詳細 API を取り直し、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。未解決: Safari のネイティブ HLS での 410 復旧。
 
 <details><summary>根拠</summary>
 
@@ -129,7 +129,7 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 - アプリの `seekTarget` による playlist 末尾への丸め: `playback-mode.test.ts`
 - 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
 - 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸、410 後の復旧: `recording-playback-timeline.mjs`
-- 上記の実ブラウザ判定は Chrome で通る。WebKit（`E2E_BROWSER=webkit`）では 1 回の測定で、410 後に詳細 API の再取得を観測できず、途中シークの `currentTime` も目標から 6〜26 ms ずれて 1 つの目印を外した。未解決: Safari のネイティブ HLS での 410 復旧
+- WebKit での判定は、410 復旧と途中シークで落ちる（`E2E_BROWSER=webkit`）
 
 </details>
 
