@@ -21,10 +21,28 @@ func TestAllQueueNames(t *testing.T) {
 		"ruler",
 		"storage",
 		"thumbnail",
+		"transfer",
 		"ts_scan",
 		"watcher",
 	}; !reflect.DeepEqual(got, want) {
 		t.Errorf("AllQueueNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPhysicalStoreQueueNameAndValidation(t *testing.T) {
+	if got := PhysicalStoreQueueName("transfer", "tokyo"); got != "transfer_tokyo" {
+		t.Fatalf("PhysicalStoreQueueName() = %q, want literal %q", got, "transfer_tokyo")
+	}
+	if got, err := PhysicalQueueFor(StorageTransferArgs{}); err != nil || got != "transfer_default" {
+		t.Fatalf("PhysicalQueueFor(zero transfer args) = (%q, %v), want transfer_default for worker registration", got, err)
+	}
+	args := StorageTransferArgs{Store: strings.Repeat("a", config.MaxStoreNameLen)}
+	if got, err := PhysicalQueueFor(args); err != nil || len(got) != 63 {
+		t.Fatalf("PhysicalQueueFor(max store) = (%q, %v), want a 63-character queue", got, err)
+	}
+	args.Store = "bad_store"
+	if _, err := PhysicalQueueFor(args); err == nil {
+		t.Fatal("PhysicalQueueFor(invalid store) succeeded, want error")
 	}
 }
 

@@ -84,6 +84,27 @@ ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取�
 
 canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
 
+### FS 置き場間の転送
+
+置き場の間でファイルを複製し、DB の判定と公開順を守ってコピーを切り替える。
+
+転送は原本の source path と destination path の rel_path lock を、置き場名と相対パスの順で取る。destination の同じディレクトリに `.rokuban-transfer-{media_asset_id}-{copy_id}` を作り、checkpoint から再開する。帯域上限は source store の設定で適用する。
+
+temp を replay した後も source 全体を読み、期待サイズと SHA-256 を照合する。SHA-256 が未計測なら、コピーの完了時に `media_assets.sha256` へ一度だけ書く。既存 destination は size と SHA-256 が一致するときだけ採用する。異なるファイルを rename や link で上書きしない。
+
+temp の fsync と Close、canonical への no-overwrite link、親 directory の fsync を行う。その後に DB transaction で destination copy を active にする。DB commit が公開点である。commit 前に失敗した canonical は自動削除しない。再試行時は canonical を再照合して採用を試みる。
+
+失敗理由は宛先ごとの試行表に記録し、上限 10 回で再投入を止める。元の SHA と合わない原本は report-only で、source を残す。派生物の破損はコピーを deleted にして、encode / thumbnail reconcile に再生成させる。
+
+旧コピーの unlink は transfer worker が行う。desired copy の active・存在・overlap を `media_assets` 行の lock の下で再確認し、条件を満たせば `deleting` にする。unlink と親 directory の fsync 後に `deleted` を commit する。並行する policy switch では、古い job が見た desired copy を別 worker が `deleting` に進めることがある。新しい判定は deleting copy を desired と数えないため、もう一方の削除を止める。
+
+<details><summary>根拠</summary>
+
+- 再開、hash、no-overwrite 公開、復旧後の採用: `TestStorageTransferWorkerCopiesAndAdopts`
+- unlink 前の logical row lock と再判定: `TestStorageTransferDeletionSerializesPolicySwitches`
+
+</details>
+
 ### rel_path lock file の寿命
 
 パスごとの lock file は、通常終了のときに削除してから解放するので、何度処理しても残らない。異常終了で残った lock file は、次の lock 取得時の掃除が回収する。

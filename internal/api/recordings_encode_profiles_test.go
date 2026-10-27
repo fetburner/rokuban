@@ -512,6 +512,9 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
 	defer srv.Close()
 	mediaDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mediaDir, ".rokuban-store"), []byte(dbtest.StoreName), 0o644); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "reconcile で原本削除", time.Now().Truncate(time.Second), "finished", 605
@@ -547,7 +550,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
-	w := &worker.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
+	w := &worker.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, MediaStoreName: dbtest.StoreName, DerivedStore: dbtest.StoreName}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}

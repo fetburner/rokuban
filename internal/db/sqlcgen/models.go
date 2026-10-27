@@ -221,6 +221,15 @@ type MediaAssetThumbnailSeek struct {
 	SeekMs       int64
 }
 
+// Failure observations for a transfer from a logical media asset to one store; successful transfers delete the row.
+type MediaAssetTransferAttempt struct {
+	MediaAssetID int64
+	Store        string
+	AttemptCount int32
+	LastError    string
+	UpdatedAt    time.Time
+}
+
 type MediaAssetTsScan struct {
 	MediaAssetID     int64
 	ScannedSizeBytes int64

@@ -126,7 +126,40 @@ func physicalQueue(t *testing.T, w workload) (string, bool) {
 	if jobs.RequiresSiteBinding([]string{q}) {
 		return q + "_" + baseSiteName, true
 	}
+	if q == jobs.TransferQueue {
+		return jobs.PhysicalStoreQueueName(q, configuredFSStore(t)), true
+	}
 	return q, true
+}
+
+// configuredFSStore は base ConfigMap の唯一の FS 置き場を返す。Kubernetes
+// ScaledJob の transfer trigger は store ごとの物理キュー名を直接監視する。
+func configuredFSStore(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(baseDir, configFileName))
+	if err != nil {
+		t.Fatalf("reading %s/%s: %v", baseDir, configFileName, err)
+	}
+	var config struct {
+		Storage struct {
+			Stores map[string]struct {
+				Kind string `yaml:"kind"`
+			} `yaml:"stores"`
+		} `yaml:"storage"`
+	}
+	if err := yaml.Unmarshal(raw, &config); err != nil {
+		t.Fatalf("decoding %s/%s: %v", baseDir, configFileName, err)
+	}
+	var names []string
+	for name, store := range config.Storage.Stores {
+		if store.Kind == "fs" {
+			names = append(names, name)
+		}
+	}
+	if len(names) != 1 {
+		t.Fatalf("base config has %d FS stores, want one for the transfer ScaledJob: %v", len(names), names)
+	}
+	return names[0]
 }
 
 // --- ScaledJob --------------------------------------------------------------

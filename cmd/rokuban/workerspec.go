@@ -34,6 +34,14 @@ func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
 	queue := func(logical string, maxWorkers int) jobq.QueueSpec {
 		return jobq.QueueSpec{Logical: logical, Physical: physicalQueueNames(logical, sites), MaxWorkers: maxWorkers}
 	}
+	storeQueue := func(logical string, maxWorkers int) jobq.QueueSpec {
+		stores := cfg.Storage.FSStoreNames()
+		physical := make([]string, 0, len(stores))
+		for _, name := range stores {
+			physical = append(physical, jobs.PhysicalStoreQueueName(logical, name))
+		}
+		return jobq.QueueSpec{Logical: logical, Physical: physical, MaxWorkers: maxWorkers}
+	}
 	return []jobq.QueueSpec{
 		queue(jobs.DefaultQueue, 100),
 		queue(jobs.IngestQueue, cfg.Ingest.Concurrency),
@@ -56,6 +64,8 @@ func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
 		queue(jobs.CleanupQueue, 2),
 		// UniqueOpts{ByArgs} が重複実行を防ぐので 1 本で足りる。
 		queue(jobs.StorageQueue, 1),
+		// 1 つの置き場のファイルを読む・書く job は、その置き場に束縛して処理する。
+		storeQueue(jobs.TransferQueue, 1),
 		// ts_scan は原本全体を読み直すため、同時 I/O を 1 件に抑える。
 		queue(jobs.TSScanQueue, 1),
 	}
@@ -130,5 +140,6 @@ func workerPeriodicJobSpecs(cfg *config.Config, sites []string) []jobq.PeriodicJ
 	// ない（未検証。record_sweep の 5 分に合わせただけの初期値）。専用の設定キーは設けて
 	// いない --- 運用者が調整する理由が今のところ無い。
 	specs = append(specs, jobq.PeriodicJobSpec{Interval: 5 * time.Minute, Args: jobs.StorageSyncArgs{}})
+	specs = append(specs, jobq.PeriodicJobSpec{Interval: config.DeleteReconcileInterval, Args: jobs.StorageTransferReconcileArgs{}})
 	return specs
 }

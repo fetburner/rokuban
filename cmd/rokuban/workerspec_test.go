@@ -84,6 +84,7 @@ func TestNewWorkerSpec_Queues(t *testing.T) {
 		{Logical: "cm_detect", Physical: []string{"cm_detect"}, MaxWorkers: 1},
 		{Logical: "cleanup", Physical: []string{"cleanup"}, MaxWorkers: 2},
 		{Logical: "storage", Physical: []string{"storage"}, MaxWorkers: 1},
+		{Logical: "transfer", Physical: []string{"transfer_test-store"}, MaxWorkers: 1},
 		{Logical: "ts_scan", Physical: []string{"ts_scan"}, MaxWorkers: 1},
 	}
 	if len(spec.Queues) != len(want) {
@@ -131,10 +132,30 @@ func TestNewWorkerSpec_PeriodicJobs(t *testing.T) {
 		{"thumbnail_reconcile", "", 15 * time.Minute, "thumbnail"},
 		{"ts_scan_reconcile", "", 15 * time.Minute, "ts_scan"},
 		{"storage_sync", "", 5 * time.Minute, "storage"},
+		{"storage_transfer_reconcile", "", 15 * time.Minute, "storage"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("periodic jobs =\n%v\nwant\n%v", got, want)
 	}
+}
+
+func TestWorkerQueueSpecsQualifyTransferByFSStore(t *testing.T) {
+	cfg := workerSpecTestConfig(t)
+	cfg.Storage.Stores = map[string]config.StoreConfig{
+		"tokyo":     {Kind: "fs"},
+		"takamatsu": {Kind: "fs"},
+		"s3main":    {Kind: "s3"},
+	}
+	for _, spec := range workerQueueSpecs(cfg, registryNames(cfg.Registry())) {
+		if spec.Logical != "transfer" {
+			continue
+		}
+		if want := []string{"transfer_takamatsu", "transfer_tokyo"}; !slices.Equal(spec.Physical, want) {
+			t.Fatalf("transfer physical queues = %v, want literal %v", spec.Physical, want)
+		}
+		return
+	}
+	t.Fatal("transfer queue spec missing")
 }
 
 func TestWorkerPeriodicJobSpecs_MaxAttempts(t *testing.T) {
@@ -204,8 +225,8 @@ func TestNewWorkerSpec_NoSites(t *testing.T) {
 			t.Errorf("queue %q Physical = %v, empty want %v", q.Logical, q.Physical, wantEmpty)
 		}
 	}
-	if got := len(spec.PeriodicJobs); got != 7 {
-		t.Errorf("periodic jobs with 0 sites = %d, want 7 (site-independent only)", got)
+	if got := len(spec.PeriodicJobs); got != 8 {
+		t.Errorf("periodic jobs with 0 sites = %d, want 8 (site-independent only)", got)
 	}
 }
 
@@ -240,7 +261,7 @@ func TestNewWorkerClientConfig_StartupShape(t *testing.T) {
 		if !slices.Equal(got.Queues, []string{"ruler"}) || got.SoftStopTimeout != 9*time.Second {
 			t.Errorf("Queues/SoftStopTimeout = %v / %s", got.Queues, got.SoftStopTimeout)
 		}
-		if len(got.Spec.PeriodicJobs) != 17 {
+		if len(got.Spec.PeriodicJobs) != 18 {
 			t.Errorf("Spec.PeriodicJobs = %d with periodic_jobs=%v, want 17", len(got.Spec.PeriodicJobs), periodic)
 		}
 	}

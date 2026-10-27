@@ -104,6 +104,8 @@
 
 `storage.transfer.overlap` の下限は、実体無しの猶予（`cleanup.missing_asset_age`）に削除 reconcile の周期の 2 倍を足した値である。新しいコピーの実体無しの判定が確定する前に、旧コピーを消さないためである。省略すると `48h` になり、既定の猶予ならこの下限を満たす。猶予を延ばして下限を割るときは、検証が overlap の明示を求める。
 
+`storage.transfer.bandwidth` は転送元ごとの正の帯域値である。`bps` / `Bps` は 1 秒あたりの bit / byte、`Kbps` / `Mbps` / `Gbps` と `KBps` / `MBps` / `GBps` は 10 進、`KiBps` / `MiBps` / `GiBps` は 2 進で読む。たとえば `50Mbps` は毎秒 6.25 MB である。
+
 `storage.transfer` は規則の指紋に含めない。帯域と overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
 `storage.originals` の参照先には FS 置き場を 1 つだけ指定できる。`storage.derived` は、その FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // IngestJobArgs は ingest ジョブの引数。mirakc サイトと record ID を指定する。
@@ -189,9 +191,38 @@ type StorageSyncArgs struct{}
 // Kind はジョブ種別名を返す。
 func (StorageSyncArgs) Kind() string { return "storage_sync" }
 
+// StorageTransferReconcileArgs requests a level-triggered copy placement pass.
+type StorageTransferReconcileArgs struct{}
+
+// Kind はジョブ種別名を返す。
+func (StorageTransferReconcileArgs) Kind() string { return "storage_transfer_reconcile" }
+
+// StorageTransferActionCopy and StorageTransferActionDelete are storage transfer operations.
+const (
+	StorageTransferActionCopy   = "copy"
+	StorageTransferActionDelete = "delete"
+)
+
+// StorageTransferArgs identifies one physical copy transfer or stale-copy deletion.
+type StorageTransferArgs struct {
+	Action            string `json:"action"`
+	MediaAssetID      int64  `json:"media_asset_id"`
+	CopyID            int64  `json:"copy_id,omitempty"`
+	Store             string `json:"store"`
+	PolicyFingerprint string `json:"policy_fingerprint"`
+}
+
+// QueueStore は書き込みまたは削除する物理コピーの置き場を返す。
+func (a StorageTransferArgs) QueueStore() string { return a.Store }
+
+// Kind はジョブ種別名を返す。
+func (StorageTransferArgs) Kind() string { return "storage_transfer" }
+
 // siteBound は site 束縛キューに載る Args が実装する。site 修飾に使う site の取り出しは
 // この 1 か所だけにする。RulerPassArgs は site 単位キューに載らないため実装しない。
 type siteBound interface{ QueueSite() string }
+
+type storeBound interface{ QueueStore() string }
 
 // PhysicalQueueFor は args が実際に投入される物理キュー名を返す。
 // site 束縛キューの Args が QueueSite を実装しない場合は error を返す。
@@ -200,6 +231,26 @@ func PhysicalQueueFor(args jobq.Args) (string, error) {
 		return "", fmt.Errorf("jobs: args are nil")
 	}
 	logical := args.Spec().Queue
+	if logical == TransferQueue {
+		bound, ok := args.(storeBound)
+		if !ok {
+			return "", fmt.Errorf("jobs: %s queue args %T do not implement QueueStore", logical, args)
+		}
+		storeName := bound.QueueStore()
+		if storeName == "" {
+			// River validates a registered worker with its zero-value Args. Route that
+			// registration probe to the same fallback name used for an unbound site.
+			storeName = store.DefaultSite
+		}
+		if !mediapath.ValidStoreName(storeName) {
+			return "", fmt.Errorf("jobs: %s queue args %T contain invalid store name %q", logical, args, storeName)
+		}
+		physical := PhysicalStoreQueueName(logical, storeName)
+		if len(physical) > jobq.MaxQueueNameLen {
+			return "", fmt.Errorf("jobs: physical queue name %q exceeds %d characters", physical, jobq.MaxQueueNameLen)
+		}
+		return physical, nil
+	}
 	if slices.Contains(siteBoundQueueNames, logical) {
 		bound, ok := args.(siteBound)
 		if !ok {
@@ -230,4 +281,6 @@ var (
 	_ jobq.Args = DeleteReconcileArgs{}
 	_ jobq.Args = CatalogExportArgs{}
 	_ jobq.Args = StorageSyncArgs{}
+	_ jobq.Args = StorageTransferReconcileArgs{}
+	_ jobq.Args = StorageTransferArgs{}
 )
