@@ -33,7 +33,7 @@ storage:
   media_store_name: main
   scratch_dir: /var/tmp/rokuban
 
-# 完了録画 HLS は base と同じ dedicated Deployment で起動する。
+# 世代付き録画 HLS は base と同じ dedicated Deployment で起動する。
 recording_hls:
   enabled: true
   segment_dir: /dev/shm/rokuban-recording-hls

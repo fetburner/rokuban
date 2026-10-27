@@ -65,17 +65,16 @@ storage:
 # enabled=true なら live.profiles が必須（live.enabled が false でも）。
 recording_hls:
   enabled: false
-  # segment_dir: /dev/shm/rokuban-recording-hls # 変換 scratch と LRU キャッシュ。
+  # segment_dir: /dev/shm/rokuban-recording-hls # 変換 scratch とセグメントキャッシュ。
                                                 # enabled なら必須。起動時に中身を掃除する。
                                                 # emptyDir (Memory) など専用 tmpfs に置き、
                                                 # 複数プロセスで共有しない。
-  # cache_bytes: 1073741824                    # バイト単位。既定 1 GiB。
+  # cache_bytes: 1073741824                    # バイト単位。既定 1 GiB。下限の式と tmpfs の
+                                                # 大きさは docs/operations/k8s-streamer.md
+                                                # 「世代付き録画 HLS の scratch」。
   # max_concurrent: 2                          # 生きている ffmpeg の上限。既定 2。
   # wait_timeout: 30s                          # セグメント待ちの期限。超過は 503 と Retry-After。
                                                 # 既定 30 秒。
-                                                # キャッシュは max_concurrent × (先読み 5 + 要求 1)
-                                                # × 最大 5 rendition (字幕を含む) × 16 MiB の見積もりより大きくする。
-                                                # 16 MiB は下限計算用の見積もりで、実サイズの上限ではない。
 
 # ingest
 ingest:

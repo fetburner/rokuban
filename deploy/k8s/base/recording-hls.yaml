@@ -1,4 +1,4 @@
-# 完了した原本録画を世代付き VOD HLS に変換して配信する専用 streamer。
+# 世代付き録画 HLS を配信する専用 streamer。
 # 録画ごとの変換状態とセグメントキャッシュはプロセス内にあるため replicas は 1。
 # 増やすときは録画 id で consistent hash する Ingress/controller が必要になる。
 apiVersion: apps/v1
@@ -38,7 +38,7 @@ spec:
       containers:
         - name: recording-hls
           image: ghcr.io/fetburner/rokuban-full:latest
-          args: ["server", "--roles", "streamer", "--sites=", "--recording-hls-only", "--config", "/etc/rokuban/config.yml"]
+          args: ["server", "--roles", "streamer", "--sites=", "--config", "/etc/rokuban/config.yml"]
           ports:
             - name: http
               containerPort: 40773

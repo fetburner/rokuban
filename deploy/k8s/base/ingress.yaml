@@ -33,7 +33,7 @@ spec:
                 name: rokuban-streamer
                 port:
                   name: http
-          # 世代付き完了録画 HLS は置き場名を固定深さに持ち、専用 Deployment へ送る。
+          # 世代付き録画 HLS は置き場名を固定深さに持ち、専用 Deployment へ送る。
           - path: /api/media/stores/main
             pathType: Prefix
             backend:

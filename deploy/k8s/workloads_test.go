@@ -1147,8 +1147,8 @@ func TestRecordingHLSWorkloadKeepsStatePodLocal(t *testing.T) {
 		t.Errorf("%s image = %q, want %q for ffmpeg/ffprobe", deploymentID, image, fullImage)
 	}
 	args := argsOf(container)
-	if !slices.Contains(args, "--recording-hls-only") {
-		t.Errorf("%s args do not select the recording HLS handler: %v", deploymentID, args)
+	if slices.Contains(args, "--no-recording-hls") {
+		t.Errorf("%s args opt out of the recording HLS handler it exists to serve: %v", deploymentID, args)
 	}
 	if !slices.Contains(args, "--sites=") {
 		t.Errorf("%s args must be site independent: %v", deploymentID, args)
@@ -1397,5 +1397,26 @@ func TestBaseIsSiteIndependent(t *testing.T) {
 	if got := fmt.Sprint(doc.Mirakcs[0]["site"]); got != baseSiteName {
 		t.Errorf("%s/%s names site %q, want %q (deploy/k8s/site binds --sites %s)",
 			baseDir, configFileName, got, baseSiteName, baseSiteName)
+	}
+}
+
+// TestStreamersOptOutOfRecordingHLS は、config を全 Pod で共有するため
+// recording_hls.enabled が全 streamer に届く中で、世代付き録画 HLS を載せるのが
+// rokuban-recording-hls だけであることを argv で固定する。
+func TestStreamersOptOutOfRecordingHLS(t *testing.T) {
+	for _, id := range []string{"Deployment/rokuban-streamer", "Deployment/rokuban-live-streamer"} {
+		var found bool
+		for _, w := range loadWorkloads(t) {
+			if w.id() != id {
+				continue
+			}
+			found = true
+			if args := argsOf(soleContainer(t, w)); !slices.Contains(args, "--no-recording-hls") {
+				t.Errorf("%s args = %v, want --no-recording-hls", id, args)
+			}
+		}
+		if !found {
+			t.Errorf("%s not found", id)
+		}
 	}
 }

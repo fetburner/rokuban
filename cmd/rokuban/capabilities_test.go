@@ -76,7 +76,7 @@ live:
 // 生成ルート自体はロールに関わらず生えるため、notifier 単独のプロセスに聞くと
 // live:false が返っていた）。config → 公開面の写しを部分的に再現するテストでは
 // この配線ミスを一度も通らない。
-func startTestServer(t *testing.T, roles string, liveYAML string) string {
+func startTestServer(t *testing.T, roles string, liveYAML string, extraArgs ...string) string {
 	t.Helper()
 
 	// パッケージ専用のテスト DB を用意し、その接続情報で config を書く。
@@ -118,7 +118,7 @@ storage:
 	var exitErr error
 	go func() {
 		root := newRootCmd()
-		root.SetArgs([]string{"server", "--roles", roles, "--config", path})
+		root.SetArgs(append([]string{"server", "--roles", roles, "--config", path}, extraArgs...))
 		exitErr = root.ExecuteContext(ctx)
 		close(exited)
 	}()

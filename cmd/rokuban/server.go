@@ -227,7 +227,9 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().StringSlice("roles", nil, "roles to run (comma-separated: api,worker,watcher,streamer,notifier)")
 	cmd.MarkFlagsMutuallyExclusive("all", "roles")
 	cmd.MarkFlagsOneRequired("all", "roles")
-	cmd.Flags().Bool("recording-hls-only", false, "run only the completed-recording HLS routes from the streamer role")
+	// 世代付き録画 HLS は streamer ロールで recording_hls.enabled のとき既定で載る。
+	// config は全 Pod で共有するので、載せない Pod はこの argv で外す。
+	cmd.Flags().Bool("no-recording-hls", false, "do not mount the generation-scoped recording HLS routes on the streamer role (needs the streamer role)")
 	// --sites はプロセスの束縛を表す起動形態フラグで、config キーにしない
 	// （resolveSiteBinding のコメント、docs/configuration.md §やらないこと）。
 	// 未指定（デフォルト値 nil）と `--sites=`（空スライス）は
@@ -270,9 +272,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	recordingHLSOnly, err := cmd.Flags().GetBool("recording-hls-only")
+	noRecordingHLS, err := cmd.Flags().GetBool("no-recording-hls")
 	if err != nil {
-		return fmt.Errorf("reading --recording-hls-only: %w", err)
+		return fmt.Errorf("reading --no-recording-hls: %w", err)
 	}
 	cfg, err := loadConfig(cmd)
 	if err != nil {
@@ -371,7 +373,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	eg, egCtx := errgroup.WithContext(ctx)
 
-	srv, err := buildHTTPServer(egCtx, cfg, roles, bound, pool, eg, recordingHLSOnly)
+	srv, err := buildHTTPServer(egCtx, cfg, roles, bound, pool, eg, noRecordingHLS)
 	if err != nil {
 		return err
 	}
@@ -499,7 +501,7 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // 呼ばずに return する。登録済みの goroutine は誰にも回収されないまま、
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
-func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group, recordingHLSOnly bool) (*http.Server, error) {
+func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
 	mediaStore := pgstore.NewMedia(pool)
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
@@ -582,17 +584,15 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 
 	var mounters api.Mounters
 	if slices.Contains(roles, "streamer") {
-		if !recordingHLSOnly {
-			mounters = append(mounters, streamer.New(mediaStore, streamer.Config{
-				MediaDir:      cfg.Storage.MediaDir,
-				AccelLocation: cfg.Storage.AccelLocation,
-				// コマの切り出し（/frame）は encode と同じ ffmpeg を使う。ライブを
-				// 切った構成でも要るので、live.ffmpeg ではなくここから渡す。
-				FFmpeg:  cfg.Encode.FFmpeg,
-				FFprobe: cfg.Encode.FFprobe,
-			}))
-		}
-		if !recordingHLSOnly && cfg.Live.Enabled {
+		mounters = append(mounters, streamer.New(mediaStore, streamer.Config{
+			MediaDir:      cfg.Storage.MediaDir,
+			AccelLocation: cfg.Storage.AccelLocation,
+			// コマの切り出し（/frame）は encode と同じ ffmpeg を使う。ライブを
+			// 切った構成でも要るので、live.ffmpeg ではなくここから渡す。
+			FFmpeg:  cfg.Encode.FFmpeg,
+			FFprobe: cfg.Encode.FFprobe,
+		}))
+		if cfg.Live.Enabled {
 			// live.enabled が true のときだけ ffmpeg の LookPath 検査を行う ---
 			// 公式イメージ（ffmpeg 無し）で streamer を起動する構成
 			// （録画配信 / サムネイルのみ）を壊さない（不変条件 4）。
@@ -607,11 +607,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。
 			eg.Go(func() error { return liveStreamers.Run(egCtx) })
 		}
-		if recordingHLSOnly {
-			if !cfg.RecordingHLS.Enabled {
-				return nil, fmt.Errorf("--recording-hls-only requires recording_hls.enabled=true")
-			}
-			// 完了録画 HLS は streamer ロールの中で独立した manager を持つ。
+		if cfg.RecordingHLS.Enabled && !noRecordingHLS {
+			// 世代付き録画 HLS は streamer ロールの中で独立した manager を持つ。
 			// live.enabled=false でも live.profiles を利用するため、FFmpeg の MPEG-2
 			// decoder 検査と ffprobe の存在確認をこの経路でも行う。
 			liveTools := cfg.Live
@@ -852,13 +849,13 @@ func resolveRoles(cmd *cobra.Command) ([]string, error) {
 		}
 		resolved = deduped
 	}
-	if cmd.Flags().Lookup("recording-hls-only") != nil {
-		recordingHLSOnly, err := cmd.Flags().GetBool("recording-hls-only")
+	if cmd.Flags().Lookup("no-recording-hls") != nil {
+		noRecordingHLS, err := cmd.Flags().GetBool("no-recording-hls")
 		if err != nil {
-			return nil, fmt.Errorf("reading --recording-hls-only: %w", err)
+			return nil, fmt.Errorf("reading --no-recording-hls: %w", err)
 		}
-		if recordingHLSOnly && !slices.Contains(resolved, "streamer") {
-			return nil, fmt.Errorf("--recording-hls-only requires the streamer role")
+		if noRecordingHLS && !slices.Contains(resolved, "streamer") {
+			return nil, fmt.Errorf("--no-recording-hls requires the streamer role")
 		}
 	}
 	return resolved, nil

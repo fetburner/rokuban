@@ -124,7 +124,7 @@ func TestResolveRoles_RejectsJobNameAsRole(t *testing.T) {
 	}
 }
 
-func TestResolveRoles_RecordingHLSOnlyRequiresStreamer(t *testing.T) {
+func TestResolveRoles_NoRecordingHLSRequiresStreamer(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		role      string
@@ -138,7 +138,7 @@ func TestResolveRoles_RecordingHLSOnlyRequiresStreamer(t *testing.T) {
 			if err := cmd.Flags().Set("roles", tc.role); err != nil {
 				t.Fatal(err)
 			}
-			if err := cmd.Flags().Set("recording-hls-only", "true"); err != nil {
+			if err := cmd.Flags().Set("no-recording-hls", "true"); err != nil {
 				t.Fatal(err)
 			}
 			roles, err := resolveRoles(cmd)

@@ -80,7 +80,7 @@ spec:
           # **アーカイブは単一なので録画配信は site 非依存**（docs/operations.md
           # §5）。`recordings.id` は surrogate でサイト間で曖昧にならないので、
           # どの Pod でもどの録画を配れる。
-          args: ["server", "--roles", "streamer", "--sites=", "--config", "/etc/rokuban/config.yml"]
+          args: ["server", "--roles", "streamer", "--sites=", "--no-recording-hls", "--config", "/etc/rokuban/config.yml"]
           ports:
             - name: http
               containerPort: 40773

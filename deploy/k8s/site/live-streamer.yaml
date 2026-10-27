@@ -51,7 +51,7 @@ spec:
           image: ghcr.io/fetburner/rokuban-full:latest
           # **argv の 5 番目（index 4）が site 名。** site overlay の patch は
           # watcher と同じ位置を差し替える。
-          args: ["server", "--roles", "streamer", "--sites", "default", "--config", "/etc/rokuban/config.yml"]
+          args: ["server", "--roles", "streamer", "--sites", "default", "--no-recording-hls", "--config", "/etc/rokuban/config.yml"]
           ports:
             - name: http
               containerPort: 40773

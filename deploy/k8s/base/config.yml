@@ -75,8 +75,8 @@ storage:
   media_store_name: main
   scratch_dir: /var/tmp/rokuban
 
-# 完了した原本録画は専用の rokuban-recording-hls Deployment で変換して配る。
-# central streamer と site streamer は --recording-hls-only を付けないため対象外。
+# 世代付き録画 HLS は専用の rokuban-recording-hls Deployment が配る。config は全 Pod が
+# 共有するので、他の streamer（central / site）は argv の --no-recording-hls で外している。
 recording_hls:
   enabled: true
   segment_dir: /dev/shm/rokuban-recording-hls

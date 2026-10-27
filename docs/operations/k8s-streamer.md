@@ -8,13 +8,15 @@ streamer は録画配信とライブ視聴を担い、置き場所もスケー�
 
 | | 置き場所 | レプリカ | 前段 | イメージ |
 |---|---|---|---|---|
-| 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
-| 完了録画 HLS | メディアストレージの隣 | 既定 1 | `/api/media/stores/<store>` Prefix | `Dockerfile.full` |
+| 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | `Dockerfile.full`（共有 config が `live.enabled: true` で、起動時に ffmpeg を検査するため） |
+| 世代付き録画 HLS | メディアストレージの隣 | 既定 1 | 単一 Pod（増やすときは録画 id の consistent hash） | `Dockerfile.full` |
 | ライブ視聴 | mirakc に到達できる場所（WAN 越しの pull を許す） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
 
-単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。録画配信は現行の `/api/media/recordings`、完了録画 HLS は `/api/media/stores/<store>` の Prefix で分ける。ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して streamer Service へ振り分け、既存の URL を維持する。
+単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。録画配信は現行の `/api/media/recordings`、世代付き録画 HLS は `/api/media/stores/<store>` の Prefix で分ける。ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して streamer Service へ振り分け、既存の URL を維持する。
 
-完了録画 HLS の変換と cache はプロセス内にある。同じ録画の master・playlist・segment 要求は同じ `rokuban-recording-hls` Pod に届く必要があるため、Deployment は 1 replica にする。複数 store を追加するときは store の Prefix と専用 Pod / Service の組を追加する。replica を増やすときは固定深さの URL から録画 id を取り、前段の consistent hash で同じ録画を同じ Pod に送る。cookie や ClientIP affinity は使わない。
+世代付き録画 HLS の変換とキャッシュはプロセス内にある。同じ録画の master・playlist・セグメントの要求は同じ `rokuban-recording-hls` Pod に届く必要があるため、Deployment は 1 replica にする。置き場を追加するときは、その置き場の Prefix と専用 Pod / Service の組を追加する。replica を増やすときは、固定深さの URL から録画 id を取り、前段の consistent hash で同じ録画を同じ Pod に送る。cookie や ClientIP affinity は使わない。
+
+この経路を載せるかどうかは argv で決める。`recording_hls.enabled` は全 Pod が共有する config のキーなので、config では Pod ごとに切り替えられない。streamer ロールは `recording_hls.enabled` なら既定で載せ、`--no-recording-hls` で外す。中央 streamer と site ごとのライブ streamer はこの引数を付ける。専用の tmpfs とメモリ予算を持たない Pod にも、変換とキャッシュの状態が載ってしまうからである。ingress はこの経路を `rokuban-recording-hls` にしか送らない。単一ホストで `server --all` を使うときは何も付けず、API が返す URL をそのプロセスが応答する。
 
 streamer は 1 プロセスが N サイトを束縛できる。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。`deploy/k8s/` では中央 streamer と site ごとのライブ streamer を別 Pod として出荷し、overlay が単一 Ingress に site 名を具体化した Prefix を追加する。
 
@@ -124,6 +126,16 @@ memory limit は `sizeLimit` + 512Mi（ffmpeg の実測 peak 173Mi の約 3 倍�
 - 原本 VOD は録画パスのロックを取らない: `rel_path` / `.rokuban-locks`
 
 </details>
+
+##### 世代付き録画 HLS の scratch
+
+キャッシュの下限は式で決まり、tmpfs の大きさは見積もりと未検証の余白で決めている。
+
+世代付き録画 HLS は専用 Pod の tmpfs（`recording_hls.segment_dir`、Pod の `recording-hls-scratch`）に 2 つを置く。バイト上限付きのセグメントキャッシュ（`recording_hls.cache_bytes`）と、変換ごとの作業 scratch（ffmpeg の出力がキャッシュへ公開されるまでの置き場）である。`live.segment_dir` とは別の volume で、ライブ・追っかけ・原本 VOD の scratch とは合算しない。
+
+キャッシュの下限は `max_concurrent × (先読み 5 + 要求 1) × 最大 5 rendition（映像・音声 3・字幕）× 16 MiB` である。`cache_bytes` はこの値より大きくし、起動時の検証が下回る設定を弾く。同梱設定は 2 × 6 × 5 × 16 MiB = 960 MiB に対して 1 GiB である。16 MiB は下限を計算するための見積もりで、実セグメントの上限ではない。見積もりを超えるセグメントも配信は止めず、キャッシュ全体より大きい場合だけエラーにする。この式はここだけに置き、[playback.md](../api/media/playback.md) と `config.example.yml` はここを参照する。
+
+同梱の `sizeLimit: 2Gi` は、キャッシュの 1Gi に同じ大きさの余白を足した値である。作業 scratch の実測値は無い（未検証）ので、余白の 1Gi は見積もりにとどまる。memory limit の `3Gi` は、ライブと同じ式 `sizeLimit` + 512Mi × 同時変換数（2Gi + 2 × 512Mi）で決めた。512Mi はライブの ffmpeg の実測 peak に由来し、この経路の ffmpeg の peak は未測定（未検証）である。tmpfs が満杯になったときにこの経路の変換とキャッシュがどう振る舞うかも未検証である。
 
 ##### 追っかけ再生の scratch
 
