@@ -156,14 +156,16 @@ function presignedGetUrl(bucket, key, expiresIn, publicOrigin) {
   return { url: url.toString(), issuedAt: now.getTime(), expiresAt: now.getTime() + expiresIn * 1000 }
 }
 
-/** throttle は通した累計バイト数が bytesPerSecond の速度を超えないように、各チャンクを遅らせて流す。 */
+/**
+ * throttle は各チャンクを、前のチャンクの送り出し予定（過ぎていれば今）から chunk.length / bytesPerSecond 後に流す。
+ * 起点を開始時刻に固定すると、ブラウザが読むのを止めていた分をまとめて流せてしまう。
+ */
 function throttle(bytesPerSecond) {
-  const startedAt = Date.now()
-  let sent = 0
+  let nextAt = Date.now()
   return new Transform({
     transform(chunk, _encoding, done) {
-      sent += chunk.length
-      setTimeout(() => done(null, chunk), Math.max(0, startedAt + sent / bytesPerSecond * 1000 - Date.now()))
+      nextAt = Math.max(Date.now(), nextAt) + chunk.length / bytesPerSecond * 1000
+      setTimeout(() => done(null, chunk), nextAt - Date.now())
     },
   })
 }
@@ -511,8 +513,12 @@ async function main() {
     const seekDestination = {
       originRangeRequests: after302Range.filter((request) => request.route === 'redirect').length,
       signedUrlRangeRequests: after302Range.filter((request) => request.route === 's3').length,
+      signedUrl206: after302Range.filter((request) => request.route === 's3' && request.status === 206).length,
     }
-    if (!normalSeekCached) expect(seekDestination.signedUrlRangeRequests > 0, 'seek produced no Range request at the signed S3 destination')
+    if (!normalSeekCached) {
+      expect(seekDestination.signedUrlRangeRequests > 0, 'seek produced no Range request at the signed S3 destination')
+      expect(seekDestination.signedUrl206 > 0, 'seek made no successful Range request to the signed S3 destination')
+    }
 
     await browser.evaluate(() => window.savePosition())
     const savedPosition = await browser.evaluate((key) => Number(localStorage.getItem(key)), RESUME_KEY)
@@ -565,20 +571,22 @@ async function main() {
     const refreshedAtOrigin = afterExpiry.some((request) => request.route === 'redirect')
     const rejectedByMinIO = afterExpiry.some((request) => request.route === 's3' && request.status === 403)
     const settledRange = afterExpiry.some((request) => request.route === 's3' && request.status !== null)
+    // 期限切れの結果はブラウザごとに違うので、良し悪しを判定せず 3 つのどれかに分類して記録する。
+    const outcome = refreshedAtOrigin ? 'refreshed-at-origin'
+      : !rejectedByMinIO ? null
+        : expirySeek.error ? 'media-error' : '403-without-error'
     if (!expirySeekCached) {
       expect(afterExpiry.length > 0, 'could not observe a ranged media request after the signed URL expired')
-      expect(refreshedAtOrigin || rejectedByMinIO, 'the expired-range result was neither a fresh origin redirect nor MinIO 403')
+      expect(outcome !== null, 'the expired-range result fits none of refreshed-at-origin / media-error / 403-without-error')
       expect(settledRange, 'the expired seek did not receive a final response from the signed S3 destination')
     }
     expect(Boolean(expirySeek.error) || expirySeek.seekedCount > 0, 'the expired seek produced neither a media error nor a completed seek')
-    if (rejectedByMinIO && !refreshedAtOrigin) expect(Boolean(expirySeek.error), 'MinIO rejected the expired signed URL but the video reported no media error')
     if (refreshedAtOrigin) expect(!expirySeek.error && expirySeek.seekedCount > 0, 'the browser refreshed at the origin but the new signed URL did not complete the seek: ' + JSON.stringify(expirySeek))
     const expiryResult = {
       signedUrlExpiresAt: new Date(expiringRedirect.expiresAt).toISOString(),
       rangedRequestsAfterExpiry: conciseRequests(afterExpiry),
       mediaState: expirySeek,
-      refreshedAtOrigin,
-      rejectedByMinIO,
+      outcome,
     }
 
     console.log('Normal subtitle: ' + JSON.stringify({
