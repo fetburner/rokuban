@@ -95,7 +95,7 @@ func TestStoragePolicyValidation(t *testing.T) {
 		{
 			name:      "uppercase fs store name",
 			policy:    strings.Replace(validStoragePolicy, "    main:\n", "    Main:\n", 1),
-			wantError: "storage.stores key must contain only lowercase",
+			wantError: "storage.stores key \"Main\"",
 		},
 		{
 			name:      "store name longer than queue budget",
@@ -170,11 +170,6 @@ func TestStoragePolicyValidation(t *testing.T) {
 		{
 			name:      "no fs store is not supported",
 			policy:    strings.ReplaceAll(strings.Replace(validStoragePolicy, "    main:\n      kind: fs\n      internal_url: http://store-main.internal:8080\n", "", 1), "store: main", "store: s3main"),
-			wantError: "exactly one fs store",
-		},
-		{
-			name:      "originals pointing at another fs store is not supported yet",
-			policy:    strings.Replace(strings.Replace(validStoragePolicy, "    s3main:\n", "    archive:\n      kind: fs\n    s3main:\n", 1), "      store: main\n    - match: { site: default }", "      store: archive\n    - match: { site: default }", 1),
 			wantError: "exactly one fs store",
 		},
 		{

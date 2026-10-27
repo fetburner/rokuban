@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"math"
 	"time"
-
-	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
 const (
@@ -74,9 +72,6 @@ func (c Config) validateRecordingHLS() error {
 		if c.RecordingHLS.CacheBytes <= minimum {
 			return fmt.Errorf("recording_hls.cache_bytes must be greater than %d", minimum)
 		}
-	}
-	if name != "" && !mediapath.ValidStoreName(name) {
-		return fmt.Errorf("storage.stores key must contain only lowercase ASCII letters, digits and hyphens")
 	}
 	return nil
 }

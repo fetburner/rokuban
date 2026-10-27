@@ -22,11 +22,11 @@ func TestLoadRecordingHLS(t *testing.T) {
 		{name: "disabled live rejects empty profile name", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: ''\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects duplicate names", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n    - name: hd\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects incomplete transform profile", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n", store: "main", wantError: "video_codec"},
-		{name: "uppercase", store: "Disk", wantError: "storage.stores"},
-		{name: "slash", store: "a/b", wantError: "storage.stores"},
-		{name: "underscore", store: "a_b", wantError: "storage.stores"},
-		{name: "unicode", store: "録画", wantError: "storage.stores"},
-		{name: "space", store: "a b", wantError: "storage.stores"},
+		{name: "uppercase", store: "Disk", wantError: "storage.stores key \"Disk\""},
+		{name: "slash", store: "a/b", wantError: "storage.stores key \"a/b\""},
+		{name: "underscore", store: "a_b", wantError: "storage.stores key \"a_b\""},
+		{name: "unicode", store: "録画", wantError: "storage.stores key \"録画\""},
+		{name: "space", store: "a b", wantError: "storage.stores key \"a b\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := minimalConfig + tc.setting
