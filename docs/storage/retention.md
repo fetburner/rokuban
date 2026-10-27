@@ -292,7 +292,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 #### ingest の temp と公開前ファイル
 
-ingest の temp は、record ごとに固有の名前を持つ。孤児候補になるのは、プロセス死や rename 後の DB 失敗で残った temp と canonical file である。予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
+ingest の temp は、record ごとに固有の名前を持つ。孤児候補になるのは、プロセス死や link 後の DB 失敗で残った temp と canonical file である。予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
 
 ingest は canonical file と同じディレクトリに、record 固有の `.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。
 

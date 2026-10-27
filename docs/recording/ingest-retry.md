@@ -113,34 +113,35 @@ mirakc が finished 後にハッシュを計算中のとき、`content.sha256` �
 
 ##### 公開の順序
 
-公開は、一時ファイルの永続化、ロックの取得、予約の INSERT、rename、DB commit の順に行う。この順序を入れ替えて、DB が指す実体を先に公開してはならない。
+公開は、一時ファイルの永続化、ロックの取得、予約の INSERT、link、DB commit、temp の unlink の順に行う。この順序を入れ替えて、DB が指す実体を先に公開してはならない。
 
 ```mermaid
 flowchart LR
   A[長さと SHA-256 を照合] --> B[temp を fsync して Close]
   B --> C[rel_path のロックを取得]
   C --> D[original 行を INSERT して予約]
-  D --> E[canonical へ rename]
+  D --> E[canonical へ link]
   E --> F[親ディレクトリを fsync]
   F --> G[DB commit: 公開点]
-  G --> H[mirakc の record を削除]
+  G --> H[temp を unlink]
+  H --> I[mirakc の record を削除]
 ```
 
 照合を通ったら、canonical rel_path と同じディレクトリに作った record 固有 temp の fsync と Close を行う。区切りでの fsync（checkpoint 保存の直前）とは別に、replay した既存部分を含めて完了時にも行う。バッファごとには行わない。
 
-その後の短い確定区間で、rel_path 固有 filesystem lock を取得し、original の media_assets 行を INSERT して一意性を予約する。INSERT は commit まで他セッションに見えない。lock と transaction を保持したまま temp を canonical に atomic rename し、親ディレクトリを fsync してから DB transaction を commit する。
+その後の短い確定区間で、rel_path 固有 filesystem lock を取得し、original の media_assets 行を INSERT して一意性を予約する。INSERT は commit まで他セッションに見えない。lock と transaction を保持したまま temp を canonical へ link し、親ディレクトリを fsync してから DB transaction を commit する。commit が成功したら temp を unlink する。宛先に別のファイルがあれば、temp を残し、record を消さず、行も作らずにエラーで止める。
 
-rename 前の失敗では、temp を残して次の試行へ渡し、pull を続けられる。ただし長さ / SHA-256 の不一致と `canceled` / `failed` は、中身が不採用と確定しているので temp を消す。rename 後の親ディレクトリ fsync または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として aging 後に報告する。名前だけでは公開済みか判定できないため、自動削除はしない。mirakc record は削除しない。rename と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
+link 前の失敗では、temp を残して次の試行へ渡し、pull を続けられる。ただし長さ / SHA-256 の不一致と `canceled` / `failed` は、中身が不採用と確定しているので temp を消す。link 後の親ディレクトリ fsync または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として aging 後に報告する。名前だけでは公開済みか判定できないため、自動削除はしない。temp も残す。mirakc record は削除しない。link と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
 
 ##### fsync の失敗と再試行
 
-ファイルの fsync・Close・rename・親ディレクトリの fsync のどれかが失敗したら、DB 登録も record 削除も行わず、ジョブを失敗させる。mirakc の record は削除しないので、データ喪失は構造的に起きない。
+ファイルの fsync・Close・link・親ディレクトリの fsync のどれかが失敗したら、DB 登録も record 削除も行わず、ジョブを失敗させる。mirakc の record は削除しないので、データ喪失は構造的に起きない。
 
 fsync を入れる理由には、電源断のほかに、Linux の遅延した書き込みエラーがある。ENOSPC や I/O エラーは Close では報告されず、fsync でしか上がらない。
 
-rename 後の親ディレクトリ fsync は、新しい directory entry の永続化を確定する。
+link 後の親ディレクトリ fsync は、新しい directory entry の永続化を確定する。
 
-rename 後の親ディレクトリ fsync または DB commit の失敗では、temp はすでに canonical へ移動済みである。DB commit が成立しなかった場合、次の ingest は orphan 回収を待たずに全量 pull を開始し、同じ rel_path へ再度 rename する。残った canonical orphan は、再試行の rename で置き換わるか、人が調査して回復・削除するまで残る。
+link 後の親ディレクトリ fsync または DB commit の失敗では、temp と canonical は同じ inode を指す。次の ingest は temp を `flock` した後、転送の前にそれを見て、pull も replay もせずに commit だけをやり直す。temp に 1 バイトも書かないのは、`O_APPEND` で書くと公開済みの canonical が変わるからである。
 
 DB commit が成立して応答だけ失われた場合は、次の冪等性チェックで転送を省略する。
 
@@ -210,7 +211,7 @@ DB の一意な予約を先に取った取り込みが公開を完了して採�
 
 canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの record 固有 temp へ並行して pull できる。同じ record は temp の flock で直列化する。公開時は rel_path filesystem lock と DB の一意 reservation を使い、同じ canonical path の ingest と通常削除の競合を直列化する。canonical orphan は削除せず、aging 後に報告する。通常削除も同じ lock を使うため、公開と unlink の競合は直列化される。
 
-各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory fsync・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
+各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が link・親 directory fsync・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
 
 転送前の判定は安価なヒントにすぎず、転送中は lock を保持しない。最終判断は一意索引と適用時の状態遷移に残る。
 
@@ -218,7 +219,7 @@ canonical path へ転送中のバイトが存在しないため、異なる reco
 
 rel_path の filesystem lock は、公開と通常削除の区間だけに使う。canonical path に直接転送しないので、転送全体の job lock heartbeat や lock 喪失による cancel は不要である。
 
-ingest commit と通常削除は、同じ rel_path の予約 lock file に対する POSIX `flock` を保持する。対象区間は rename / unlink から DB commit までである。
+ingest commit と通常削除は、同じ rel_path の予約 lock file に対する POSIX `flock` を保持する。対象区間は link / unlink から DB commit までである。
 
 ##### RWX 越しの排他
 
@@ -234,7 +235,7 @@ ingest commit と通常削除は、同じ rel_path の予約 lock file に対す
 
 孤児と追加 I/O について、中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。ingest temp は mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。
 
-rename 後に残った canonical orphan は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加しない。追加コストは replay・temp の rename・親 directory fsync である。
+link 後に残った canonical orphan は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加しない。追加コストは replay・temp の link と unlink・親 directory fsync である。
 
 ##### 弱い FS への直接書き込み
 

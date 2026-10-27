@@ -90,11 +90,21 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 `written_bytes` は temp replay で再開した試行なら末尾から続く。サイズ / ハッシュ不一致や record の cancel / fail で temp を捨てた次の試行だけは 0 に戻る（[recording/ingest-retry.md](../recording/ingest-retry.md) §5.3）。
 
-#### rename 後の失敗
+#### link 後の失敗
 
-rename 後の親ディレクトリ fsync または DB commit の失敗では、temp が canonical へ移動済みになる。次の ingest は orphan 回収を待たず全量 pull を開始する。
+link 後の親ディレクトリ fsync または DB commit の失敗では、temp と canonical が同じ inode を指したまま残る。次の ingest は転送も replay もせず commit だけをやり直す。成功すると temp を消す。
 
-残った canonical orphan は、再試行の rename で置き換わるか、報告されて人が調査・回復するまで残る。DB commit が成立して応答だけ失われた場合は、冪等性チェックで転送を省略する。replay 中は進捗行がまだ更新されないので、古い `observed_at` だけで worker 停止とは断定しない。
+残った canonical orphan は、この再試行で行が付くか、報告されて人が調査・回復するまで残る。DB commit が成立して応答だけ失われた場合は、冪等性チェックで転送を省略し、残った temp が canonical と同じ inode ならそこで消す。replay 中は進捗行がまだ更新されないので、古い `observed_at` だけで worker 停止とは断定しない。
+
+#### ingest が canonical path の既存ファイルで止まった
+
+ingest が失敗し続け、録画が取り込まれない。保存先の名前に、DB の行が無い別のファイルがあり、ingest はそれを上書きせずに止まっている。temp は残り、mirakc の record は消えない。
+
+worker のログに、`canonical_conflict=true` と `rel_path` を付けた Error が出る。メッセージは `canonical path is occupied by a file that is not this ingest's temp` である。`media_assets` 行は作られない。
+
+1. `rel_path` のファイルを調べる。`media_assets` に行が無く、`orphan_files` に載っているなら、過去の失敗や手動配置の残りである
+2. 中身がこの録画の原本と分かるなら、ファイルを別の場所へ移してから ingest を再投入する。temp を canonical 名へ手で rename しない。再投入された ingest は、移した後の名前へ temp を link する
+3. 中身が分からないなら残して調査する。ingest は自動では消さない
 
 ### エンコードが失敗している（理由を知りたい）
 
