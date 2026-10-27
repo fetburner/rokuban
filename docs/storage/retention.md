@@ -71,7 +71,7 @@ ingest 完了後の override 変更は、その録画には反映されない。
 retention reconcile ループ（worker の cleanup 系ジョブ）が定期的に走り、次をすべて満たす原本アセットを削除する。
 
 1. ポリシーが `until_encoded`
-2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）の active コピーが、原本を消す対象の置き場にある。現段階では、その置き場に worker 自身の `storage.media_store_name` の置き場を渡している。原本の `media_asset_ts_scans.scanned_size_bytes` が論理資産の `media_assets.size_bytes` と一致することも求める
+2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）の active コピーが、原本を消す対象の置き場にある。現段階では、worker 自身の `storage.media_store_name` を渡している。原本の `media_asset_ts_scans.scanned_size_bytes` が論理資産の `media_assets.size_bytes` と一致することも求める
 
 解析が恒久的に失敗する原本は保持され続ける。
 

@@ -5,8 +5,8 @@
 CREATE INDEX media_asset_copies_active_asset_store_idx
     ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
 
--- 「論理資産 + 置き場 → active コピー」を返す唯一の定義。p_store が NULL なら全置き場。
--- 1 件だけ選ぶ読み手が同じコピーを選べるよう store 順に並べる。
+-- 「論理資産 + 置き場 → active コピー」の唯一の定義。p_store が NULL なら全置き場。
+-- 存在判定に順序は要らない。ORDER BY を持たないので、planner が呼び出し側へ平坦化できる。
 CREATE FUNCTION active_media_asset_copies(p_asset_id bigint, p_store text)
 RETURNS SETOF media_asset_copies
 LANGUAGE sql STABLE
@@ -16,11 +16,22 @@ FROM media_asset_copies c
 WHERE c.media_asset_id = p_asset_id
   AND c.state = 'active'
   AND (p_store IS NULL OR c.store = p_store)
-ORDER BY c.store
 $$;
 
 COMMENT ON FUNCTION active_media_asset_copies(bigint, text) IS
-    'active_media_asset_copies は、論理資産の active コピーを store 順に返す。p_store が NULL なら全置き場、指定すればその置き場だけを対象にする。';
+    'active_media_asset_copies は、論理資産の active コピーを返す。p_store が NULL なら全置き場、指定すればその置き場だけを対象にする。順序は持たない。';
+
+-- 1 件だけ選ぶ読み手が同じコピーを選べるよう、store 順に並べる唯一の定義。
+-- 呼び出し側が LIMIT 1 を付ける（関数に LIMIT を入れると planner がインライン展開できない）。
+CREATE FUNCTION ordered_active_media_asset_copies(p_asset_id bigint, p_store text)
+RETURNS SETOF media_asset_copies
+LANGUAGE sql STABLE
+AS $$
+SELECT c.* FROM active_media_asset_copies(p_asset_id, p_store) c ORDER BY c.store
+$$;
+
+COMMENT ON FUNCTION ordered_active_media_asset_copies(bigint, text) IS
+    'ordered_active_media_asset_copies は、active_media_asset_copies を store 順に並べて返す。1 件選ぶ読み手が先頭を使う。';
 
 CREATE OR REPLACE VIEW encodable_recordings AS
 SELECT r.id AS recording_id
@@ -181,7 +192,8 @@ WHERE a.kind = 'encoded'
   );
 
 -- 削除判定の定義はこの関数 1 つ。置き場ごとに評価するので、新しい読み手は
--- 置き場を渡して呼ぶ。
+-- 置き場を渡して呼ぶ。取り返せない削除を決めるので、desired_store が NULL なら
+-- 全置き場には倒さず、何も返さない（消さない側）。
 CREATE FUNCTION until_encoded_deletable_originals(desired_store text)
 RETURNS TABLE (asset_id bigint, recording_id bigint)
 LANGUAGE sql STABLE
@@ -190,7 +202,8 @@ SELECT a.id, a.recording_id
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN recording_encode_policy p ON p.recording_id = r.id
-WHERE a.kind = 'original'
+WHERE desired_store IS NOT NULL
+  AND a.kind = 'original'
   AND p.keep_original = 'until_encoded'
   AND r.deleted_at IS NULL
   AND cardinality(p.encode_profiles) > 0
@@ -439,5 +452,6 @@ WHERE r.deleted_at IS NULL
   );
 
 DROP FUNCTION until_encoded_deletable_originals(text);
+DROP FUNCTION ordered_active_media_asset_copies(bigint, text);
 DROP FUNCTION active_media_asset_copies(bigint, text);
 DROP INDEX media_asset_copies_active_asset_store_idx;

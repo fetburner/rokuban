@@ -511,3 +511,20 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 		}
 	}
 }
+
+// 原本の削除は取り返せないので、desired_store が欠けた（NULL の）ときは全置き場には倒さず、何も返さない。
+func TestUntilEncodedDeletableReturnsNothingForNullDesiredStore(t *testing.T) {
+	env := newStoreScopeEnv(t)
+	_, originalID, _ := env.untilEncodedFixture(t)
+	if got := env.functionAssetIDs(t); !slices.Equal(got, []int64{originalID}) {
+		t.Fatalf("until_encoded_deletable_originals(%q) = %v, want [%d]", dbtest.StoreName, got, originalID)
+	}
+	var n int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM until_encoded_deletable_originals(NULL)`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("until_encoded_deletable_originals(NULL) returned %d rows, want 0 (must not fall open to all stores)", n)
+	}
+}

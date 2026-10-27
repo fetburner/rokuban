@@ -527,8 +527,10 @@ func buildRecordingShelvesQuery(f store.RecordingFilter, storeName string) (stri
 WITH playable_assets AS (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
-    WHERE ma.kind IN ('original', 'encoded')
-      AND EXISTS (SELECT 1 FROM active_media_asset_copies(ma.id, $1::text))
+    -- kind ごとに EXISTS を分ける。1 つの EXISTS にまとめると semi join になり、棚クエリが
+    -- 分けた形より遅い（コピー 6 万行で中央値 193 ms 対 181 ms。generic plan）。
+    WHERE (ma.kind = 'original' AND EXISTS (SELECT 1 FROM active_media_asset_copies(ma.id, $1::text)))
+       OR (ma.kind = 'encoded' AND EXISTS (SELECT 1 FROM active_media_asset_copies(ma.id, $1::text)))
 ),
 watched_events AS MATERIALIZED (
     -- 印を束ねる側は live / playable / 絞り込みを当てない。ごみ箱・supersede 済みの印も読む。
