@@ -66,6 +66,64 @@ jobs:
   # 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
   # 誰も見ない赤い定期ジョブは PR ごとに回す 14 本より信号として弱いため。
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
+  # MinIO + branded Chrome の dedicated probe。実 Safari の測定は macOS のローカル判定で行う。
+  browser-s3-302:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      # Install the pinned upstream MinIO release as a binary.
+      - run: mkdir -p "${RUNNER_TEMP}/minio-bin" && GOBIN="${RUNNER_TEMP}/minio-bin" go install github.com/minio/minio@RELEASE.2025-10-15T17-29-55Z
+      - run: pnpm exec playwright install --with-deps chrome
+        working-directory: web
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Start MinIO
+        run: |
+          minio_data="${RUNNER_TEMP}/rokuban-s3-302-minio"
+          minio_log="${RUNNER_TEMP}/rokuban-s3-302-minio.log"
+          mkdir -p "${minio_data}"
+          MINIO_ROOT_USER=rokuban MINIO_ROOT_PASSWORD=rokuban-test-secret MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:4174 \
+            "${RUNNER_TEMP}/minio-bin/minio" server "${minio_data}" --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >"${minio_log}" 2>&1 &
+          minio_pid=$!
+          echo "${minio_pid}" > "${RUNNER_TEMP}/rokuban-s3-302-minio.pid"
+          for _ in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              echo "MinIO is ready at http://127.0.0.1:9000"
+              exit 0
+            fi
+            if ! kill -0 "${minio_pid}" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          echo "::error::MinIO did not become ready; server log follows"
+          cat "${minio_log}"
+          exit 1
+      - run: pnpm e2e:s3-302
+        working-directory: web
+        env:
+          E2E_MINIO_URL: http://127.0.0.1:9000
+      - name: Stop MinIO
+        if: always()
+        run: |
+          if [ -f "${RUNNER_TEMP}/rokuban-s3-302-minio.pid" ]; then
+            read -r minio_pid < "${RUNNER_TEMP}/rokuban-s3-302-minio.pid"
+            kill "${minio_pid}" 2>/dev/null || true
+          fi
+
   browser-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
