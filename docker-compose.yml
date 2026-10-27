@@ -47,6 +47,23 @@ services:
       - ./config.compose.yml:/config.yml:ro
     command: ["migrate", "up", "--config", "/config.yml"]
 
+  # 置き場の目印を書き、既存の行を割り当てる。migrate の後、rokuban の前に 1 回だけ走る。
+  # worker は目印が無いと FS 操作をすべて見送る（docs/runbook/setup.md「置き場の目印」）。
+  adopt-media:
+    image: ${ROKUBAN_IMAGE:-ghcr.io/fetburner/rokuban:latest}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rokuban}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-rokuban}
+      MIRAKC_URL: ${MIRAKC_URL}
+    volumes:
+      - ./config.compose.yml:/config.yml:ro
+      - media:/mnt/media
+    command: ["storage", "adopt", "main", "--config", "/config.yml"]
+
   rokuban:
     # server --all は worker ロールを含み ffmpeg を要求する（不変条件 4）。
     # 公式イメージは ffmpeg 非同梱のまま保ち、Dockerfile.full をローカルビルドする。
@@ -59,7 +76,7 @@ services:
     image: ${ROKUBAN_IMAGE:-rokuban:full}
     restart: unless-stopped
     depends_on:
-      migrate:
+      adopt-media:
         condition: service_completed_successfully
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-rokuban}

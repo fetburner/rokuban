@@ -316,7 +316,7 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 
 	recID := dbtest.Recording(t, pool)
 
-	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+	firstAssetID := dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "same/path.m2ts"
 		p.SizeBytes = 1024
 	})
@@ -332,6 +332,10 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1`, recID)
 	if err != nil {
 		t.Fatalf("update to deleted: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, firstAssetID); err != nil {
+		t.Fatalf("update copy to deleted: %v", err)
 	}
 	dbtest.MediaAsset(t, pool, recID2, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "same/path.m2ts"

@@ -7,7 +7,12 @@ metadata:
     app.kubernetes.io/component: migrate
 spec:
   # マイグレーションは Pod のレプリカ数に関係なく 1 回だけ走らせる
-  # （docker-compose.yml の migrate サービスと同じ役）。
+  # （docker-compose.yml の migrate と adopt-media サービスをまとめた役）。
+  # `migrate up` を initContainer、`storage adopt main` を本体のコンテナにして、
+  # 1 つの Job の中で順に走らせる。adopt を別の Job にすると、kubectl apply が
+  # 両方を同時に起こして順序が保てず、immutable な Job の delete → apply → wait の
+  # 手順も 2 倍になる。代償: adopt が media_dir の PVC を要るので、PVC が付かないと
+  # migrate も走らない。
   backoffLimit: 3
   # 完走した Job を自分で片付ける。Job の spec は immutable なので、残っていると
   # 次のリリースで同名を apply できない（`kubectl apply` が field is immutable で
@@ -36,9 +41,12 @@ spec:
         runAsNonRoot: true
         runAsUser: 65534
         runAsGroup: 65534
+        # adopt が PVC の root に目印を書くため（worker-scaledjobs.yaml と同じ理由）。
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
-      containers:
+      initContainers:
         - name: migrate
           # ffmpeg を要求しない役なので公式イメージで足りる（不変条件 4）。
           image: ghcr.io/fetburner/rokuban:latest
@@ -61,7 +69,36 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+      containers:
+        # 置き場の目印を書き、既存の行を割り当てる。migrate up の後に走る。
+        - name: adopt
+          image: ghcr.io/fetburner/rokuban:latest
+          args: ["storage", "adopt", "main", "--config", "/etc/rokuban/config.yml"]
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+            # 目印を書くので読み書きで挿す。
+            - name: media
+              mountPath: /mnt/media
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
       volumes:
         - name: config
           configMap:
             name: rokuban-config
+        - name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media

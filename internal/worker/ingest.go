@@ -6,20 +6,18 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -99,62 +97,14 @@ func ingestSHA256WaitDeadline(size int64, endTime *mirakc.Milliseconds, tempModT
 	return startedAt.Add(ingestSHA256WaitFor(size))
 }
 
-// ingestFile は ingest の出力ファイルを抽象化する。os.File の全 API は
-// 必要ない。テストでは Sync / Close の失敗を注入して、失敗時に DB 登録と
-// エッジ原本削除へ進まないことを確認する。実装側の openIngestFile は
-// lockIngestTempFile が開いた fd を dup するため、ロック対象と追記先が別 inode
-// になることはない。
-type ingestFile interface {
-	io.Writer
-	Sync() error
-	Close() error
-}
-
-// hashingWriter は下流 writer が受理したバイトだけを hash に流す。
-//
-// 下流が (n > 0, err != nil) の部分書き込みを返しても、次の Range 再開は
-// その n バイトの直後から始まる。hash を io.MultiWriter の 2 番目に置くと
-// 1 番目の writer のエラーで hash への Write が呼ばれないため、受理済みの
-// バイトがハッシュから欠落する。
-type hashingWriter struct {
-	w io.Writer
-	h hash.Hash
-}
-
-func (w *hashingWriter) Write(p []byte) (int, error) {
-	n, err := w.w.Write(p)
-	if n > 0 {
-		_, hashErr := w.h.Write(p[:n])
-		if err == nil {
-			err = hashErr
-		}
-	}
-	return n, err
-}
-
-// openIngestFile は flock 済みの temp fd を dup して ingestFile として返す。
+// openIngestFile は flock 済みの temp fd を dup して fsink.File として返す。
 // 同じ record の別試行は既存のファイルを共有して続きから書くので、元 fd も複製
 // fd も O_APPEND で開かれている。dup は同じ inode / open file description を
 // 共有するため、writer の Close で flock を先に解放せず、tempLock が commit
 // 終了まで排他を保持できる。path はテストのログやエラーメッセージに使えるよう
 // 引数に残しているが、ここで別のパスを開いてはならない。
-var openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
-	return duplicateIngestFile(locked)
-}
-
-func duplicateIngestFile(locked *os.File) (*os.File, error) {
-	// F_DUPFD_CLOEXEC で複製と close-on-exec を原子的に行う。Dup の後に
-	// CloseOnExec を呼ぶだけでは、その間の exec に fd が継承されうる。
-	fd, err := unix.FcntlInt(locked.Fd(), unix.F_DUPFD_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	dup := os.NewFile(uintptr(fd), locked.Name())
-	if dup == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("creating duplicate ingest fd")
-	}
-	return dup, nil
+var openIngestFile = func(_ string, locked *os.File) (fsink.File, error) {
+	return fsink.OpenFileFromLock(locked)
 }
 
 // lockIngestTempFile は temp を作成し、同時に 1 つの ingest だけが掴めるように
@@ -170,7 +120,15 @@ func duplicateIngestFile(locked *os.File) (*os.File, error) {
 // open 直後に別プロセスが同名 temp を unlink / rename する競合もある。flock を
 // 取得した後で fd とパスの inode が同じかを確認し、見えない inode を返さない。
 func lockIngestTempFile(path string) (*os.File, bool, error) {
-	return lockIngestTempFileWithFlags(path, os.O_CREATE)
+	lock, created, err := fsink.LockTempFile(path)
+	if err != nil || !created {
+		return lock, created, err
+	}
+	if err := afterIngestTempCreate(); err != nil {
+		_ = lock.Close()
+		return nil, false, fmt.Errorf("after creating ingest temporary file %q: %w", path, err)
+	}
+	return lock, created, nil
 }
 
 // lockExistingIngestTempFile は既存 temp だけをロックする。orphan 回収が
@@ -178,63 +136,11 @@ func lockIngestTempFile(path string) (*os.File, bool, error) {
 // 瞬間に回収側が作った空ファイルを「新しい temp」と誤認してしまうため、回収側
 // ではこちらを使う。
 func lockExistingIngestTempFile(path string) (*os.File, error) {
-	lock, _, err := lockIngestTempFileWithFlags(path, 0)
-	return lock, err
-}
-
-func lockIngestTempFileWithFlags(path string, createFlag int) (*os.File, bool, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		flags := os.O_RDWR | os.O_APPEND
-		created := false
-		var lock *os.File
-		var err error
-		if createFlag&os.O_CREATE != 0 {
-			lock, err = os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o666)
-			if err == nil {
-				created = true
-				if err := afterIngestTempCreate(); err != nil {
-					_ = lock.Close()
-					return nil, false, fmt.Errorf("after creating ingest temporary file %q: %w", path, err)
-				}
-			} else if errors.Is(err, os.ErrExist) {
-				lock, err = os.OpenFile(path, flags, 0o666)
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-			}
-		} else {
-			lock, err = os.OpenFile(path, flags, 0o666)
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			_ = lock.Close()
-			return nil, false, err
-		}
-
-		lockedInfo, err := lock.Stat()
-		pathInfo, pathErr := os.Stat(path)
-		if err == nil && pathErr == nil && os.SameFile(lockedInfo, pathInfo) {
-			return lock, created, nil
-		}
-
-		// パスが別 inode になったか、unlink された。ロックした fd は
-		// visible temp ではないので、解放して現在のパスを取り直す。
-		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		_ = lock.Close()
-		if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
-			return nil, false, pathErr
-		}
-		if err != nil {
-			return nil, false, err
-		}
-	}
-	return nil, false, fmt.Errorf("ingest temporary file %q was replaced while acquiring its lock", path)
+	return fsink.LockExistingTempFile(path)
 }
 
 func ingestTempLockBusy(err error) bool {
-	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+	return fsink.TempLockBusy(err)
 }
 
 // ingestTempFilePath は同じ site / record_id の再配送が同じ temp を開くための
@@ -266,10 +172,8 @@ func (w *IngestWorker) removeUnstartedIngestTemp(tempPath string, log *slog.Logg
 		log.Warn("ingest: skipping cleanup because media store marker did not match", "err", err)
 		return
 	}
-	for _, path := range []string{tempPath, ingestCheckpointPath(tempPath)} {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Warn("ingest: removing unstarted temp failed", "path", path, "err", err)
-		}
+	if err := fsink.RemoveTemp(tempPath); err != nil {
+		log.Warn("ingest: removing unstarted temp failed", "path", tempPath, "err", err)
 	}
 }
 
@@ -277,58 +181,11 @@ func shouldAllocateIngestTempGeneration(created bool, state *store.IngestTempSta
 	return created || state == nil
 }
 
-// ingestReplayReader は read の境界で context cancellation を確認する。
-// io.Copy に *os.File を直接渡すと File.WriteTo が選ばれて context を確認できない
-// ため、Read だけを公開するラッパーにして chunk 単位で再生を止める。
-type ingestReplayReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (r *ingestReplayReader) Read(p []byte) (int, error) {
-	select {
-	case <-r.ctx.Done():
-		return 0, r.ctx.Err()
-	default:
-	}
-	return r.r.Read(p)
-}
-
-// replayIngestTempFile は既存 temp の全バイトを hasher に通して SHA-256 の状態を復元する。
-// 読み出しは context のキャンセルを chunk 境界で検知し、temp は残す。
-func replayIngestTempFile(ctx context.Context, path string, hasher hash.Hash) (int64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, fmt.Errorf("replaying ingest temporary file: %w", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, fmt.Errorf("stating ingest temporary file: %w", err)
-	}
-	want := info.Size()
-
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, fmt.Errorf("opening ingest temporary file for replay: %w", err)
-	}
-	n, copyErr := io.Copy(hasher, &ingestReplayReader{ctx: ctx, r: f})
-	closeErr := f.Close()
-	if copyErr != nil {
-		return n, fmt.Errorf("replaying ingest temporary file: %w", copyErr)
-	}
-	if closeErr != nil {
-		return n, fmt.Errorf("closing ingest temporary file after replay: %w", closeErr)
-	}
-	if n != want {
-		return n, fmt.Errorf("ingest temporary file changed during replay: read=%d size=%d", n, want)
-	}
-	return n, nil
-}
-
-// renameIngestFile / syncIngestParentDir は確定プロトコルの OS 操作をテストから
-// 観測・失敗注入できるようにする。実装の順序（DB INSERT → rename → 親 dir fsync
-// → DB commit）を、ファイルシステムの実体に依存せず検証するためのフックである。
-var renameIngestFile = os.Rename
-var syncIngestParentDir = syncIngestDirectory
+// linkIngestFile / syncIngestParentDir は確定プロトコルの OS 操作をテストから
+// 観測・失敗注入できるようにする。実装の順序（DB INSERT → link → 親 dir fsync
+// → DB commit → temp の unlink）を、ファイルシステムの実体に依存せず検証するためのフックである。
+var linkIngestFile = fsink.PublishLink
+var syncIngestParentDir = fsink.SyncParentDir
 
 // beforeIngestFilePublication / afterIngestFilePublication はファイル公開 callback を
 // テストから止めるためのフック。tx は store の内側に置き、フックへ渡さない。
@@ -337,21 +194,6 @@ var afterIngestFilePublication = func() error { return nil }
 
 // afterIngestTempCreate は temp の作成直後（進捗行を書く前）に止まった状態をテストで再現する。
 var afterIngestTempCreate = func() error { return nil }
-
-func syncIngestDirectory(path string) error {
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return fmt.Errorf("opening parent directory: %w", err)
-	}
-	if err := dir.Sync(); err != nil {
-		_ = dir.Close()
-		return fmt.Errorf("syncing parent directory: %w", err)
-	}
-	if err := dir.Close(); err != nil {
-		return fmt.Errorf("closing parent directory: %w", err)
-	}
-	return nil
-}
 
 // IngestWorker は mirakc からの TS ファイル転送を行う queue worker。
 type IngestWorker struct {
@@ -558,7 +400,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing stale ingest checkpoint"); err != nil {
 			return err
 		}
-		if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := fsink.RemoveCheckpoint(tempPath); err != nil {
 			return fmt.Errorf("removing stale ingest checkpoint before creating temp: %w", err)
 		}
 		tempLock, tempCreated, err = lockIngestTempFile(tempPath)
@@ -598,8 +440,8 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}
 	// temp はプロセス死・ctx キャンセル・一時的な I/O / DB 失敗では残す。次の
 	// job delivery が同じファイルを replay して続けるためである。中身が悪いと確定
-	// した場合だけ下の removeTemp を立てる。rename 後は tempPath が存在しないので
-	// cleanup の Remove は no-op になり、canonical file は orphan として報告される。
+	// した場合だけ下の removeTemp を立てる。link 後の DB commit 失敗でも temp は残す。
+	// canonical と同じ inode なので、次の試行が転送せずに commit だけをやり直す。
 	removeTemp := false
 	defer func() {
 		if removeTemp {
@@ -607,14 +449,11 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "discarding ingest temp"); markerErr != nil {
 				log.Warn("ingest: skipping temp cleanup because media store marker did not match", "err", markerErr)
 			} else {
-				if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-					log.Warn("ingest: removing discarded temp failed", "path", tempPath, "err", err)
-				}
 				// tempLock は f の dup 元 fd で、commit 終了まで flock を保持する。
 				// 別の試行が同名パスを作ってから古い cleanup がそれを消すことが
 				// ないよう、ロックを保持したまま unlink してから lock fd を閉じる。
-				if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-					log.Warn("ingest: removing discarded checkpoint failed", "err", err)
+				if err := fsink.RemoveTemp(tempPath); err != nil {
+					log.Warn("ingest: removing discarded temp failed", "path", tempPath, "err", err)
 				}
 				if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
 					// 捨てた temp を指す進捗行を残さない。消せなくても次の試行が temp 無しを
@@ -622,19 +461,23 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 					log.Warn("ingest: clearing progress after discarding temp failed", "recording_id", recordingID, "err", err)
 				}
 			}
-		} else if _, statErr := os.Stat(tempPath); errors.Is(statErr, os.ErrNotExist) {
-			// commit の rename 後に失敗した場合も checkpoint は temp と同じ寿命で終える。
-			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing published ingest checkpoint"); markerErr != nil {
-				log.Warn("ingest: skipping checkpoint cleanup because media store marker did not match", "err", markerErr)
-			} else if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Warn("ingest: removing checkpoint after temp publication failed", "err", err)
-			}
 		}
 		_ = f.Close()
 		// openIngestFile のテスト差し替えが underlying fd を閉じずに失敗
 		// する場合にもロックを残さない。
 		_ = tempLock.Close()
 	}()
+	// 前の試行が link した後に commit で失敗した場合、temp は canonical と同じ inode である。
+	// temp は O_APPEND で開いているので、ここから 1 バイトでも書くと公開済みの canonical が変わる。
+	// replay も転送もせず、commit だけをやり直す。
+	if fsink.SameFile(tempPath, fullPath) {
+		info, err := tempLock.Stat()
+		if err != nil {
+			return fmt.Errorf("stat ingest temp already linked to canonical path: %w", err)
+		}
+		log.Info("ingest: temp is already linked to canonical path, retrying commit only", "bytes", info.Size())
+		return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, info.Size(), log, result)
+	}
 	progress := &ingestProgressReporter{
 		publisher:      w.Publisher,
 		recordingID:    recordingID,
@@ -675,7 +518,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
 	defer cancelSlice()
 	hasher := sha256.New()
-	offset, replayComplete, err := replayIngestTempFileWithCheckpoint(
+	offset, replayComplete, err := fsink.ReplayTempFileWithCheckpoint(
 		sliceCtx, tempPath, f, hasher,
 		func() error {
 			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving replay ingest checkpoint")
@@ -692,7 +535,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		return fmt.Errorf("replaying ingest temp ended without completion")
 	}
 	// 既存 temp の SHA-256 を復元してから、新規転送の受理バイトを追記先と hasher に流す。
-	sink := &hashingWriter{w: f, h: hasher}
+	sink := fsink.NewHashingWriter(f, hasher)
 
 	// 転送の途中経過を recording_ingest_progress に写す（issue #212）。行の存在
 	// そのものが「転送中」の主張なので（不変条件 10）、1 バイトも流れる前に
@@ -711,7 +554,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	offset, expectedSHA256, observedEndTime, err = w.transferIngestRecord(sliceCtx, client, args.RecordID, dst, progress, offset)
 	if err != nil {
 		if isIngestSliceDeadline(err, sliceCtx, ctx) {
-			if err := persistIngestCheckpoint(tempPath, f, offset, hasher,
+			if err := fsink.PersistCheckpoint(tempPath, f, offset, hasher,
 				func() error {
 					return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "persisting ingest checkpoint")
 				}); err != nil {
@@ -751,7 +594,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		}
 		if waiting {
 			// maybeWaitForSHA256 が temp を Sync した後なので、hash 状態をその末尾へ合わせて保存する。
-			if err := writeIngestCheckpoint(tempPath, offset, hasher,
+			if err := fsink.WriteCheckpoint(tempPath, offset, hasher,
 				func() error {
 					return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint")
 				}); err != nil {
@@ -799,9 +642,26 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 
 	recordIngestMetrics(offset)
 
-	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, offset); err != nil {
+	return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, offset, log, result)
+}
+
+// commitAndFinish は原本を commit し、成功したら temp を片付けてエッジ record の後続処理を投入する。
+// 呼び出し元は temp の flock を保持している。
+//
+// link した後の temp は canonical と同じ inode なので、DB commit が失敗した間は消さない。
+// 消してよいのは commit 成功後だけで、その unlink は canonical を残したままリンク数を 1 に戻す。
+// unlink に失敗しても ingest は成功として扱う（行がコミットされており、残った temp は孤児回収の対象）。
+func (w *IngestWorker) commitAndFinish(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, relPath, tempPath, fullPath string, size int64, log *slog.Logger, result *string) error {
+	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, size); err != nil {
+		if errors.Is(err, fsink.ErrForeignDestination) {
+			// temp・mirakc の record・media_assets のいずれにも触れずに止まる。運用者の調査対象
+			// （docs/runbook/troubleshooting.md）なので、他の失敗と区別できる key を付ける。
+			log.Error("ingest: canonical path is occupied by a file that is not this ingest's temp",
+				"canonical_conflict", true, "rel_path", relPath, "err", err)
+		}
 		return fmt.Errorf("committing ingest: %w", err)
 	}
+	w.removePublishedIngestTemp(tempPath, log)
 
 	// エッジ record の削除は失敗しても ingest は成功（コミット済み）。
 	*result = "success"
@@ -811,8 +671,20 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	return nil
 }
 
+// removePublishedIngestTemp は commit 済みの temp と checkpoint を消す。
+// 呼び出し元は temp の flock を保持している。置き場の目印を照合してから消し、失敗はログだけにする。
+func (w *IngestWorker) removePublishedIngestTemp(tempPath string, log *slog.Logger) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing committed ingest temp"); err != nil {
+		log.Warn("ingest: skipping committed temp cleanup because media store marker did not match", "err", err)
+		return
+	}
+	if err := fsink.RemoveTemp(tempPath); err != nil {
+		log.Warn("ingest: removing committed temp failed", "path", tempPath, "err", err)
+	}
+}
+
 // preflightIngestSHA256 は完成済み temp が既に揃っている場合、再生前に SHA-256 待ちを判定する。
-func (w *IngestWorker) preflightIngestSHA256(ctx context.Context, client *mirakc.Client, recordID string, initialRecord *mirakc.Record, tempPath string, file ingestFile, log *slog.Logger) (*string, bool, error) {
+func (w *IngestWorker) preflightIngestSHA256(ctx context.Context, client *mirakc.Client, recordID string, initialRecord *mirakc.Record, tempPath string, file fsink.File, log *slog.Logger) (*string, bool, error) {
 	if initialRecord.Recording.Status != store.RecordingStatusFinished || initialRecord.Content.Sha256 != nil {
 		return nil, false, nil
 	}
@@ -835,7 +707,7 @@ func (w *IngestWorker) preflightIngestSHA256(ctx context.Context, client *mirakc
 
 // maybeWaitForSHA256 は完成済み temp のハッシュ待ち期限を判定する。
 // 待つ場合は temp を同期し、呼び出し元に同じ job の snooze を返させる。進捗行は commit まで残す（世代を変えないため）。
-func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Client, recordID string, tempPath string, file ingestFile, expectedLen, size int64, observedEndTime *mirakc.Milliseconds, log *slog.Logger) (*string, bool, error) {
+func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Client, recordID string, tempPath string, file fsink.File, expectedLen, size int64, observedEndTime *mirakc.Milliseconds, log *slog.Logger) (*string, bool, error) {
 	// HEAD の長さが不明なら転送済みを判定できない。content.length は照合の根拠に
 	// 使わず、待たずに timeout_skipped で commit する。
 	if expectedLen < 0 || size != expectedLen {
@@ -895,11 +767,47 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
 		log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", err)
 	}
+	w.removeLinkedTempAfterCommit(ctx, client, args, log)
 	// 原本があるなら対象を絞った reconcile をヒントとして投入する。
 	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 	}
+}
+
+// removeLinkedTempAfterCommit は、commit は成功したが temp の unlink に失敗した（または unlink 前に
+// 止まった）ingest の temp を片付ける。temp が canonical と同じ inode の場合だけ消す。
+// 同名で別の inode の temp は別の試行のものなので触らない。flock を取れなければ何もしない。
+// 失敗はログだけにする。
+func (w *IngestWorker) removeLinkedTempAfterCommit(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, log *slog.Logger) {
+	_, fullPath, _, err := w.determineRelPath(ctx, args, client)
+	if err != nil {
+		// 前の試行が DeleteRecord まで終えていれば record は既に無い。通常の経路なので警告しない。
+		var apiErr *mirakc.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			log.Debug("ingest: mirakc record is already gone; skipping committed temp cleanup", "err", err)
+			return
+		}
+		log.Warn("ingest: could not resolve canonical path to clean up a committed temp", "err", err)
+		return
+	}
+	tempPath := ingestTempFilePath(filepath.Dir(fullPath), args.Site, args.RecordID)
+	if !fsink.SameFile(tempPath, fullPath) {
+		return
+	}
+	lock, err := lockExistingIngestTempFile(tempPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && !ingestTempLockBusy(err) {
+			log.Warn("ingest: locking committed temp for cleanup failed", "path", tempPath, "err", err)
+		}
+		return
+	}
+	defer func() { _ = lock.Close() }()
+	// flock を取る間に差し替えられていないかを確かめ直す。
+	if !fsink.SameFile(tempPath, fullPath) {
+		return
+	}
+	w.removePublishedIngestTemp(tempPath, log)
 }
 
 // transferIngestRecord は mirakc の追従 reader から record 固有の一時ファイルへ転送する。
@@ -1122,17 +1030,19 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 
 // commit は原本の公開プロトコルを 1 回実行する。
 //
-// rel_path 固有 filesystem lock を保持し、media_assets の行予約・rename・親ディレクトリ
-// fsync・commit を store の 1 transaction に渡す。store は DB transaction を先に開始し、
-// 行を作った後に callback を呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、
-// この関数が返るまで filesystem lock を保持する。
+// rel_path lock を保持し、media_assets の行予約・link・親ディレクトリ fsync・commit を
+// store の 1 transaction に渡す。store は DB transaction を先に開始し、行を作った後に callback を
+// 呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、この関数が返るまで
+// rel_path lock を保持する。
 // 進捗行は原本の行と同じ tx で消す。コミット = DB 行なので、原本の行が生まれる瞬間に進捗行が消え、
 // 「原本があるのに取り込み中」という中間状態が読み手から見えない。
 //
-// rename 後の fsync / DB commit が失敗した場合は canonical file を消さない。tempPath
-// は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
-// aging 後に報告される。一方 rename 前の失敗では、呼び出し側が中身の不一致や record の
-// cancel / fail と確定した場合だけ tempPath を消し、それ以外は次の試行へ残す。
+// 公開は fsink.PublishLink で、宛先に別のファイルがあれば fsink.ErrForeignDestination で止まる。
+// そのとき tx は rollback され、temp も canonical も変わらない。link 後の fsync / DB commit が
+// 失敗した場合も canonical file は消さず、temp も残す（呼び出し側が commit 成功後にだけ unlink する）。
+// 次の試行は temp と canonical が同じ inode であることを見て、転送せずにこの関数だけをやり直す。
+// link 前の失敗では、中身の不一致や record の cancel / fail と確定した場合だけ呼び出し側が
+// tempPath を消し、それ以外は次の試行へ残す。
 func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "locking original for publication"); err != nil {
 		return err
@@ -1148,8 +1058,8 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 		if err := beforeIngestFilePublication(); err != nil {
 			return fmt.Errorf("preparing canonical file publication: %w", err)
 		}
-		if err := renameIngestFile(tempPath, fullPath); err != nil {
-			return fmt.Errorf("renaming ingest temporary file into canonical path: %w", err)
+		if err := linkIngestFile(tempPath, fullPath); err != nil {
+			return fmt.Errorf("linking ingest temporary file into canonical path: %w", err)
 		}
 		if err := syncIngestParentDir(fullPath); err != nil {
 			return fmt.Errorf("syncing canonical parent directory: %w", err)

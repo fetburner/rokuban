@@ -7,6 +7,7 @@ mirakcs:
   - site: default
     url: http://localhost:40772
 storage:
+  media_store_name: ci
   # 既定値と同じパスにする。docker-compose.test.yml がここにフレッシュな
   # named volume をマウントし、起動直後の catalog_export が実バイナリとして
   # nobody で書き込めることを smoke test で検査する（/tmp のような 1777 の

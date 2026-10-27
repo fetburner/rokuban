@@ -263,7 +263,11 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 		WHERE recording_id = $1 AND kind = 'encoded'`, recordingID); err != nil {
 		t.Fatalf("marking the seeded row deleted: %v", err)
 	}
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now()
+		WHERE media_asset_id = (SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'encoded')`, recordingID); err != nil {
+		t.Fatalf("marking the seeded copy deleted: %v", err)
+	}
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash("20240101/t2_h264.u1.mp4"))
 
 	reached, release := pauseBeforeEncodeLock(t, inEncodeScratchAttempt(recordingID, "h264", 1))
 	origCommit := beforeEncodeCommit
@@ -325,7 +329,7 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	ownerID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r_a.m2ts", []string{"b"}, []byte("owner original"))
 	candidateID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r.m2ts", []string{"a_b"}, []byte("candidate original"))
 	const sharedRelPath = "20240101/r_a_b.mp4"
-	if got, err := EncodedRelPath("20240101/r.m2ts", "a_b", "mp4", 0); err != nil || got != sharedRelPath {
+	if got, err := EncodedRelPath("20240101/r.m2ts", "a_b", "mp4", 0, false); err != nil || got != sharedRelPath {
 		t.Fatalf("candidate EncodedRelPath = %q, err %v; want %q", got, err, sharedRelPath)
 	}
 	const previous = "owner encoded bytes"

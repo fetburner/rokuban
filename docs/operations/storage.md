@@ -6,9 +6,9 @@
 
 ### 原本 ingest 先の FS 契約
 
-原本の ingest 先は、ファイルの同期、クローズ時のエラー報告、同一 FS 内の atomic rename、rename 後の親ディレクトリの同期を信頼できる FS に限る。ingest を引く worker は起動時に、実際の操作列が一度成功することを probe で確かめる。
+原本の ingest 先は、ファイルの同期、クローズ時のエラー報告、同一 FS 内の atomic rename と hard link、公開後の親ディレクトリの同期を信頼できる FS に限る。ingest を引く worker は起動時に、実際の操作列が一度成功することを probe で確かめる。
 
-この契約が対象にするのは `storage.media_dir` である。ファイル `fsync`、`Close` のエラー報告、同一 FS 内の atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる root に限定する。
+この契約が対象にするのは `storage.media_dir` である。ファイル `fsync`、`Close` のエラー報告、同一 FS 内の atomic rename と hard link、公開後の親ディレクトリ `fsync` を信頼できる root に限定する。
 
 #### 対象内と対象外
 
@@ -22,15 +22,15 @@ geesefs / s3fs / AWS Mountpoint など FUSE S3 は、原本にも派生物にも
 
 ingest を引く worker は起動時に、実際の操作列が一度成功することを probe で確かめる。
 
-worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内 rename、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
+worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内の hard link、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
-`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。`storage.media_store_name` が空の構成では照合しない。
+`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。worker ロールでは `storage.media_store_name` が必須で、worker 以外で空の構成では照合しない。
 
 見送る操作は、ingest・encode・サムネイル・シークタイル・catalog の書き込みと、ファイルの削除・欠損の記録・孤児の回収である。
 
 目印を確認できないまま起動した worker は、ingest probe を保留する。probe は `media_dir/sites` を作る書き込みなので、最初の ingest ジョブが目印の照合を通った後に 1 回だけ走る。失敗した probe は固定せず、次の ingest ジョブが再試行する。
 
-目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印だけを書き、既存ファイルの割り当てはしない。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。置き場の名前変更は未対応である。
+目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印を書き、DB にも接続して、コピーの無い論理資産と `store` が空の観測行をその置き場に割り当てる。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。目印が無い root に目印を新しく作る前に、DB にその置き場のコピー行が 1 件でもあるかを確かめる。あれば、マウント漏れか別のボリュームの可能性があるので、エラーにして目印を書かない。置き場の名前変更は未対応である。
 
 導入と、`media_store_name` を設定済みの構成の移行手順は [runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 
@@ -64,7 +64,7 @@ worker は ingest キューを購読する起動時に、temp 作成、file `fsy
 
 ingest の一時ファイルは、canonical path と同じディレクトリに作られる。プロセス死で残った ingest temp は、mtime 猶予と aging（既定 7 日 + 14 日）の後に回収する。
 
-rename 後の DB 失敗で残った canonical orphan は、aging 後に Warn と `rokuban_orphan_files_unresolved` で報告し、手動調査まで保持する。rescue の catalog 無し走査は、temp を original として復元しない。
+link 後の DB 失敗は temp を残し、再試行が commit をやり直す。再試行が成功せず行の無いまま残った canonical orphan は、aging 後に Warn と `rokuban_orphan_files_unresolved` で報告し、手動調査まで保持する。rescue の catalog 無し走査は、temp を original として復元しない。
 
 ### 録画バッファのサイジング
 

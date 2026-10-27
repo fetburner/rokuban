@@ -1758,3 +1758,53 @@ func strAt(v any, keys ...string) string {
 	s, _ := cur.(string)
 	return s
 }
+
+// migration Job は `migrate up`（initContainer）の後に `storage adopt main`（本体）を
+// 走らせ、adopt のコンテナにだけ media の PVC を読み書きで挿すこと。
+//
+// 目印が無いと worker は FS 操作をすべて見送り、adopt が migrate より先に走ると DB 側で
+// 失敗する。initContainers と containers の別がその順序を保つ。
+func TestMigrateJobAdoptsStoreAfterMigrate(t *testing.T) {
+	specs := podSpecs(loadBase(t))
+	spec := specs["Job/rokuban-migrate"]
+	if spec == nil {
+		t.Fatal("Job/rokuban-migrate not found")
+	}
+	var initNames, mainNames []string
+	for _, c := range sliceAt(spec, "initContainers") {
+		initNames = append(initNames, strAt(c.(map[string]any), "name"))
+	}
+	for _, c := range sliceAt(spec, "containers") {
+		mainNames = append(mainNames, strAt(c.(map[string]any), "name"))
+	}
+	if strings.Join(initNames, ",") != "migrate" || strings.Join(mainNames, ",") != "adopt" {
+		t.Fatalf("initContainers = %v, containers = %v; want [migrate] then [adopt]", initNames, mainNames)
+	}
+	adopt := container(t, specs, "Job/rokuban-migrate", "adopt")
+	var args []string
+	for _, a := range sliceAt(adopt, "args") {
+		args = append(args, fmt.Sprint(a))
+	}
+	if len(args) < 3 || strings.Join(args[:3], " ") != "storage adopt main" {
+		t.Errorf("adopt args = %q, want `storage adopt main` first", strings.Join(args, " "))
+	}
+	var media map[string]any
+	for _, m := range sliceAt(adopt, "volumeMounts") {
+		if mm := m.(map[string]any); strAt(mm, "name") == "media" {
+			media = mm
+		}
+	}
+	if media == nil || strAt(media, "mountPath") != "/mnt/media" || media["readOnly"] == true {
+		t.Errorf("adopt media mount = %v, want a read-write mount at /mnt/media", media)
+	}
+	sc := mapAt(spec, "securityContext")
+	if fmt.Sprint(sc["fsGroup"]) != "65534" || strAt(sc, "fsGroupChangePolicy") != "OnRootMismatch" {
+		t.Errorf("pod securityContext = %v, want fsGroup 65534 and fsGroupChangePolicy OnRootMismatch", sc)
+	}
+	mig := container(t, specs, "Job/rokuban-migrate", "migrate")
+	for _, m := range sliceAt(mig, "volumeMounts") {
+		if strAt(m.(map[string]any), "name") == "media" {
+			t.Errorf("migrate container mounts media; only adopt should")
+		}
+	}
+}

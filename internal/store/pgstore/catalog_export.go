@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -66,7 +67,7 @@ func (s *Catalog) Export(ctx context.Context) (*catalogdoc.Document, error) {
 	if doc.RecordingEncodePolicies, err = exportRecordingEncodePolicies(ctx, q); err != nil {
 		return nil, err
 	}
-	if doc.MediaAssets, err = exportMediaAssets(ctx, q); err != nil {
+	if doc.MediaAssets, err = exportMediaAssets(ctx, q, s.storeName); err != nil {
 		return nil, err
 	}
 	if doc.DropStats, err = exportDropStats(ctx, q); err != nil {
@@ -266,8 +267,8 @@ func exportRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries) ([]c
 }
 
 // exportMediaAssets は media_assets を文書の型付き行に変換する。
-func exportMediaAssets(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.MediaAsset, error) {
-	rows, err := q.CatalogListMediaAssets(ctx)
+func exportMediaAssets(ctx context.Context, q *sqlcgen.Queries, storeName string) ([]catalogdoc.MediaAsset, error) {
+	rows, err := q.CatalogListMediaAssets(ctx, storeName)
 	if err != nil {
 		return nil, fmt.Errorf("listing media_assets: %w", err)
 	}
@@ -497,17 +498,34 @@ func recordingFromRow(r sqlcgen.Recording) catalogdoc.Recording {
 	}
 }
 
-func mediaAssetFromRow(a sqlcgen.MediaAsset) catalogdoc.MediaAsset {
-	return catalogdoc.MediaAsset{
-		ID:          a.ID,
-		RecordingID: a.RecordingID,
-		Kind:        a.Kind,
-		Profile:     a.Profile,
-		RelPath:     a.RelPath,
-		SizeBytes:   a.SizeBytes,
-		State:       a.State,
-		DeletedAt:   a.DeletedAt,
-		CreatedAt:   a.CreatedAt,
-		UpdatedAt:   a.UpdatedAt,
+func mediaAssetFromRow(a sqlcgen.CatalogListMediaAssetsRow) catalogdoc.MediaAsset {
+	var derivedGeneration *int64
+	if a.Kind != "original" {
+		derivedGeneration = int64Pointer(a.DerivedGeneration)
 	}
+	return catalogdoc.MediaAsset{
+		ID:                a.ID,
+		RecordingID:       a.RecordingID,
+		Kind:              a.Kind,
+		Profile:           a.Profile,
+		RelPath:           a.RelPath,
+		SizeBytes:         a.SizeBytes,
+		State:             a.State,
+		DeletedAt:         a.DeletedAt,
+		CreatedAt:         a.CreatedAt,
+		UpdatedAt:         a.UpdatedAt,
+		DerivedGeneration: derivedGeneration,
+		SHA256:            sha256String(a.Sha256),
+		Store:             a.Store,
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
+func sha256String(raw []byte) *string {
+	if len(raw) == 0 {
+		return nil
+	}
+	value := hex.EncodeToString(raw)
+	return &value
 }

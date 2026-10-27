@@ -3,7 +3,7 @@
 
 -- name: GetInPlaceAssetByRelPath :one
 SELECT id, recording_id, kind, profile,
-       (state <> 'deleted')::boolean AS published
+       state
 FROM media_assets
 WHERE rel_path = $1
 -- media_assets_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
@@ -54,14 +54,17 @@ RETURNING id;
 
 -- name: UpsertInPlaceMediaAsset :one
 INSERT INTO media_assets (
-    recording_id, kind, profile, rel_path, size_bytes, state
+    recording_id, kind, profile, rel_path, size_bytes, state, derived_generation
 ) VALUES (
     sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
-    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), 'active'
+    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), 'active',
+    CASE WHEN sqlc.arg('kind')::text = 'original' THEN NULL ELSE 0 END
 )
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()

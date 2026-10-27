@@ -29,6 +29,21 @@ type cancelDuringCopyReader struct {
 	reads  int
 }
 
+func assertMediaAssetCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, wantRelPath string) {
+	t.Helper()
+	var gotStore, gotRelPath, gotState string
+	if err := pool.QueryRow(context.Background(), `
+SELECT store, rel_path, state
+FROM media_asset_copies
+	WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName,
+	).Scan(&gotStore, &gotRelPath, &gotState); err != nil {
+		t.Fatalf("reading media asset copy %d in store %q: %v", assetID, dbtest.StoreName, err)
+	}
+	if gotRelPath != wantRelPath || gotState != "active" {
+		t.Fatalf("media asset copy = %q/%q/%q, want %s/%q/active", gotStore, gotRelPath, gotState, dbtest.StoreName, wantRelPath)
+	}
+}
+
 func (r *cancelDuringCopyReader) Read(p []byte) (int, error) {
 	r.reads++
 	if r.reads == 1 {
@@ -87,7 +102,7 @@ func activeAssetSize(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind s
 // want とそのサイズが公開されることを検証する。
 func assertWorkerPublishesUnderRelPathLock(
 	t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64,
-	kind, relPath string, run func() error, want []byte,
+	kind, relPath string, hasPrior bool, run func() error, want []byte,
 ) {
 	t.Helper()
 	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
@@ -95,8 +110,10 @@ func assertWorkerPublishesUnderRelPathLock(
 		t.Fatal(err)
 	}
 	prior := []byte("previous orphan bytes")
-	if err := os.WriteFile(canonicalPath, prior, 0o644); err != nil {
-		t.Fatal(err)
+	if hasPrior {
+		if err := os.WriteFile(canonicalPath, prior, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	lock, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
 	if err != nil {
@@ -123,11 +140,15 @@ func assertWorkerPublishesUnderRelPathLock(
 		}
 	}
 	got, err := os.ReadFile(canonicalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, prior) {
-		t.Fatalf("canonical bytes changed while rel_path lock held: got %q, want %q", got, prior)
+	if hasPrior {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, prior) {
+			t.Fatalf("canonical bytes changed while rel_path lock held: got %q, want %q", got, prior)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical file appeared while rel_path lock held: bytes %q, err %v", got, err)
 	}
 	if _, ok := activeAssetSize(t, pool, recordingID, kind); ok {
 		t.Fatalf("active %s row visible while rel_path lock held", kind)
@@ -164,14 +185,32 @@ func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
+	deletedID := dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
+		p.Kind = store.AssetKindThumbnail
+		p.RelPath = thumbnailRelPath(id, 0)
+	})
+	if _, err := pool.Exec(context.Background(), `
+UPDATE media_assets SET state = 'deleted', deleted_at = now(), derived_generation = 0 WHERE id = $1`, deletedID); err != nil {
+		t.Fatalf("seeding deleted thumbnail tombstone: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, deletedID); err != nil {
+		t.Fatalf("seeding deleted thumbnail copy: %v", err)
+	}
 	w := &ThumbnailWorker{
 		Publisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
-	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "thumbnail", thumbnailRelPath(id),
+	relPath := thumbnailRelPath(id, 1)
+	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "thumbnail", relPath, false,
 		func() error {
 			return runWorkerViaJobQFake(context.Background(), w,
 				ThumbnailJobArgs{RecordingID: id})
 		}, tinyJPEG)
+	var assetID int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail' AND state = 'active'`, id).Scan(&assetID); err != nil {
+		t.Fatalf("reading active thumbnail id: %v", err)
+	}
+	assertMediaAssetCopy(t, pool, assetID, relPath)
 }
 
 func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
@@ -254,7 +293,7 @@ func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
 	cmd := &countingRunCmd{duration: "100"}
 	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
-	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "seek_tiles", seekTilesRelPath(id),
+	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "seek_tiles", seekTilesRelPath(id, 0), false,
 		func() error { return runSeekTilesJob(t, w, id) }, tinyJPEG)
 }
 
@@ -264,7 +303,7 @@ func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scra
 	if orig, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
 		inputID = orig.ID
 	}
-	relPath := thumbnailRelPath(id)
+	relPath := thumbnailRelPath(id, 0)
 	return publishGeneratedMediaAsset(context.Background(), mediaDir, "", relPath, scratch,
 		func(size int64, publish func() error) (bool, error) {
 			return pgstoretest.Media(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
@@ -287,7 +326,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/skip-active.m2ts", nil, []byte("original"))
-	relPath := thumbnailRelPath(id)
+	relPath := thumbnailRelPath(id, 0)
 	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -296,8 +335,10 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	if err := os.WriteFile(canonicalPath, prior, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	generation := int64(0)
 	if _, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
 		RecordingID: id, RelPath: relPath, SizeBytes: int64(len(prior)),
+		DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +378,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 	if published {
 		t.Fatal("published = true, want false")
 	}
-	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(thumbnailRelPath(id)))
+	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(thumbnailRelPath(id, 0)))
 	if _, err := os.Stat(canonicalPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("canonical exists after skipped publish: %v", err)
 	}

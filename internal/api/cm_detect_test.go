@@ -634,8 +634,8 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 		})
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO missing_media_assets (media_asset_id)
-		SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, missingOriginal); err != nil {
+		INSERT INTO missing_media_assets (media_asset_id, store)
+		SELECT id, 'test-store' FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, missingOriginal); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{id1, id2, failedRecording} {

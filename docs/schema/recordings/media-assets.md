@@ -13,6 +13,10 @@ CREATE TABLE media_assets (
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
     rel_path     text   NOT NULL,     -- ストレージルートからの相対パス（不変条件: 絶対パス禁止）
     size_bytes   bigint NOT NULL,
+    sha256       bytea,                -- 内容の SHA-256。コピー数によらず 1 回だけ持つ
+    derived_generation bigint,         -- 派生物のパスに最後に採った世代。original は NULL
+    CHECK (derived_generation IS NULL OR (kind <> 'original' AND derived_generation >= 0)),
+    CHECK (sha256 IS NULL OR octet_length(sha256) = 32),
     ingest_generation bigint,         -- kind = 'original' のみ: 原本にした temp の世代
     CHECK (ingest_generation IS NULL OR ingest_generation > 0),
     CHECK (kind = 'original' OR ingest_generation IS NULL),
@@ -35,9 +39,39 @@ CREATE INDEX ON media_assets (kind, state);
 CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
+`media_assets` は論理資産と、この段の読み手が読む `rel_path` / `state` / `deleted_at` を持つ。物理コピーの場所と状態は別表に持ち、コピーを増やしてもサイズや SHA-256 を重複させない。この段でコピー表から読むのは、catalog の `store` だけである。
+
+```sql
+CREATE TABLE media_asset_copies (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    media_asset_id bigint NOT NULL REFERENCES media_assets (id) ON DELETE CASCADE,
+    store          text   NOT NULL CHECK (store ~ '^[a-z0-9-]+$'),
+    rel_path       text   NOT NULL,
+    state          text   NOT NULL CHECK (state IN ('pending', 'active', 'deleting', 'deleted')),
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    deleted_at     timestamptz,
+    UNIQUE (media_asset_id, store)
+);
+
+CREATE INDEX ON media_asset_copies (media_asset_id);
+CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
+```
+
+一意の制約は 2 つある。`(store, rel_path) WHERE state <> 'deleted'` は、同じ置き場の生きているパスを 1 行に絞る。`UNIQUE (media_asset_id, store)` は、論理資産が 1 つの置き場に持てるコピーを 1 つに絞り、世代更新でパスが変わるときに行を足さず UPDATE させる。後者を置かずパスの索引だけで済ませると、パスが変わるたびに同じ論理資産と置き場の行が増え、現在のコピーを決められない。
+
+コピーの無い論理資産が、未割り当てを表す。マイグレーションはコピー行を作らず、`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
+
+`storage adopt <store-name>` は、コピーの無い論理資産にコピーを作り、その置き場に既にあるコピーのパス・状態・派生世代を `media_assets` から同期する。別の置き場にだけコピーがある資産には触れない。観測表と進捗行の空の `store` も埋める。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+
+旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)`、`missing_media_assets(media_asset_id)`、`storage_sync(root)` である。新しい複合キーと並存するため、同じ `rel_path` を 2 つの置き場の孤児として記録できない。同じ論理資産は 2 つの置き場の実体無しにならず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
+
+`derived_generation` は派生物のパスに最後に採った世代で、original は NULL、派生物は 0 以上である。削除済みの行を再生成するときも進め、減らさない。移行時に既存パスの `.g{n}` / `.u{n}` から初期化し、印の無いパスは 0 にする。旧 worker は列を進めずパスだけを進めるので、adopt が旧 worker の停止後に、旧パスの印から列を引き上げる。以降の採番は列から行う。
+
+uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
+
 行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）だけで、衝突時は冪等に書く。削除済みへ遷移した後も行は消さない（tombstone）。ドロップ統計と元サイズは、原本削除後も UI で見られる。
 
-ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。
+ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。`sha256` は未計測なら NULL とし、コピー単位には複製しない。
 
 物理削除に至る 4 ソースは、すべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。4 ソースは、ごみ箱の猶予超過、原本の保持を派生物の完備までとした録画の派生物完備、ユーザーが外したエンコード結果、孤児回収である。
 
@@ -51,6 +85,7 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 実体ファイルの不在を持つ衛星表: `missing_media_assets`（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）
 - 複製しない列: `rel_path` / `kind`
 - 走査時の状態: `state = 'active'`
+- 移行時と adopt 時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations` / `TestAdoptUnassignedStoreRows`
 
 </details>
 

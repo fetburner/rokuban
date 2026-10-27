@@ -144,6 +144,7 @@ WITH planning AS (
         COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
         thumbnail.id AS thumbnail_media_asset_id,
         thumbnail.rel_path AS thumbnail_rel_path,
+        COALESCE(thumbnail.derived_generation, 0)::bigint AS thumbnail_generation,
         thumbnail_seek.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (
@@ -186,7 +187,7 @@ WITH planning AS (
     WHERE r.purged_at IS NULL
       AND ($3::bigint IS NULL OR r.id = $3::bigint)
 )
-SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, seek_ms
+SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, thumbnail_generation, seek_ms
 FROM planning
 WHERE recording_id > $1::bigint
   AND NOT trashed
@@ -215,6 +216,7 @@ type ListThumbnailReselectCandidatesRow struct {
 	EncodedAssets         json.RawMessage
 	ThumbnailMediaAssetID *int64
 	ThumbnailRelPath      *string
+	ThumbnailGeneration   int64
 	SeekMs                *int64
 }
 
@@ -247,6 +249,7 @@ func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListT
 			&i.EncodedAssets,
 			&i.ThumbnailMediaAssetID,
 			&i.ThumbnailRelPath,
+			&i.ThumbnailGeneration,
 			&i.SeekMs,
 		); err != nil {
 			return nil, err

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -19,7 +20,7 @@ import (
 // こと（docs/storage.md §8。黙って古い世代へ落ちない）。
 func TestRunRescue_FallsBackAndReportsSkippedGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newRescueTestMediaDir(t)
 
 	if _, err := catalog.Write(mediaDir, &catalog.Document{
 		Version:    catalog.Version,
@@ -37,7 +38,7 @@ func TestRunRescue_FallsBackAndReportsSkippedGeneration(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}, &out); err != nil {
+	if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}, &out); err != nil {
 		t.Fatalf("runRescue: %v", err)
 	}
 	got := out.String()
@@ -56,7 +57,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 
 	t.Run("no catalog at all", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), t.TempDir(), []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), newRescueTestMediaDir(t), "test-store", []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "catalog not found") {
@@ -65,14 +66,14 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 	})
 
 	t.Run("only incomplete generations", func(t *testing.T) {
-		mediaDir := t.TempDir()
+		mediaDir := newRescueTestMediaDir(t)
 		torn := filepath.Join(catalog.Dir(mediaDir), "catalog-20260702T000000Z")
 		if err := os.MkdirAll(torn, 0o755); err != nil {
 			t.Fatal(err)
 		}
 
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "no complete catalog generation") {
@@ -153,15 +154,24 @@ func TestRunRescue_ReportsMissingCatalogFiles(t *testing.T) {
 		Recordings:  []catalog.Recording{{ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1, ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test", ProgramStartAt: at, Status: "finished", CreatedAt: at, UpdatedAt: at}},
 		MediaAssets: []catalog.MediaAsset{{ID: 1, RecordingID: 1, Kind: "original", RelPath: "sites/default/missing.m2ts", State: "active", CreatedAt: at, UpdatedAt: at}},
 	}
-	mediaDir := t.TempDir()
+	mediaDir := newRescueTestMediaDir(t)
 	if _, err := catalog.Write(mediaDir, doc, 7, nil); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runRescue(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}, &out); err != nil {
+	if err := runRescue(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "warning: 1 media file(s) missing; not restored as active") {
 		t.Fatalf("missing-file warning absent: %s", out.String())
 	}
+}
+
+func newRescueTestMediaDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(dir, "test-store"); err != nil {
+		t.Fatalf("writing test media store marker: %v", err)
+	}
+	return dir
 }

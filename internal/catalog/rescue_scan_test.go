@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -17,7 +18,7 @@ import (
 
 func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	at := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
 
 	write := func(rel, body string) {
@@ -40,7 +41,7 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 	// catalog/ は拡張子が動画でも必ず除外する。
 	write("catalog/old-backup.mp4", "not a media asset")
 
-	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest without catalog: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 	}
 
 	// 再実行で同じ合成 identity / asset tuple を upsert し、増殖しない。
-	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
 	}
 	var recordingCount, assetCount int
@@ -122,7 +123,7 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 
 func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	for _, rel := range []string{"archive/old.m2ts", "archive/old.mp4"} {
 		path := filepath.Join(mediaDir, filepath.FromSlash(rel))
@@ -139,7 +140,7 @@ func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
-	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
 
 func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	path := filepath.Join(mediaDir, "sites", "default", "archive", "show.m2ts")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -185,7 +186,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
 		t.Fatalf("first RescueLatest: %v", err)
 	}
 	var recordingID, assetID int64
@@ -208,7 +209,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
 	}
 
@@ -260,6 +261,9 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(realMediaDir, "sites", "default", "archive"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := mediapath.WriteStoreMarker(realMediaDir, "test-store"); err != nil {
+		t.Fatalf("writing test media store marker: %v", err)
+	}
 	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +281,7 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest through media_dir symlink: %v", err)
 	}
@@ -306,11 +310,14 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	}
 }
 
-func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
+func TestRescueStorage_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 	missingMediaDir := filepath.Join(t.TempDir(), "missing-media")
-	_, err := RescueLatest(context.Background(), nil, nil, missingMediaDir, []string{"default"})
+	// RescueLatest は目印の照合が先に止めるので、symlink 解決の失敗は rescueStorage を
+	// 直接呼んで検査する（目印が先に止める挙動は
+	// TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker）。
+	_, err := rescueStorage(context.Background(), nil, missingMediaDir, []string{"default"})
 	if err == nil {
-		t.Fatal("RescueLatest with missing media_dir should return an error")
+		t.Fatal("rescueStorage with missing media_dir should return an error")
 	}
 	// symlink 解決の失敗（media_dir が無い）と catalog 読み取りの失敗を issue #665
 	// が求める通り文言で区別できることを見る。err == nil だけを見るアサーションだと
@@ -319,7 +326,7 @@ func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 	// 通り続けてしまう。
 	const want = "resolving media_dir symlinks for rescue"
 	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("RescueLatest with missing media_dir error = %q, want it to contain %q", err.Error(), want)
+		t.Fatalf("rescueStorage with missing media_dir error = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
@@ -329,7 +336,7 @@ func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 // あるが復元は止めない。前置の無いファイルは site を決められないため登録しない。
 func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	at := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
 
 	write := func(rel string) {
@@ -358,7 +365,7 @@ func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 
 	// takamatsu / junkdir 前置のファイルもそれぞれの site として復元されなければ
 	// ならない。registrySites には junkdir を含めない（レジストリに無い typo の形）。
-	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"tokyo", "takamatsu"}...), pgstoretest.Media(pool), mediaDir, []string{"tokyo", "takamatsu"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"tokyo", "takamatsu"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"tokyo", "takamatsu"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -432,5 +439,28 @@ func TestClassifySiteForRescuedFile(t *testing.T) {
 					tt.relPath, site, unknownSite, tt.wantSite, tt.wantUnknownSite)
 			}
 		})
+	}
+}
+
+// 目印と違う名前・空の名前では、走査も catalog 復元も書く前に止まり、行を作らない。
+func TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t) // 目印は "test-store"
+	path := filepath.Join(mediaDir, "sites", "default", "a.m2ts")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"other-store", ""} {
+		_, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, name, []string{"default"})
+		if err == nil {
+			t.Fatalf("RescueLatest(store %q) succeeded, want refusal before writing", name)
+		}
+		var count int
+		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("media_assets after refused rescue (store %q) = %d (err %v), want 0", name, count, err)
+		}
 	}
 }

@@ -223,20 +223,21 @@ SELECT rel_path FROM media_assets;
 -- 孤児候補を記録する。既存行があれば first_seen を保持する
 -- （DO NOTHING。エイジングの起点は「最初に孤児だと気づいた時刻」）。
 -- name: UpsertOrphanFile :exec
-INSERT INTO orphan_files (rel_path) VALUES ($1)
-ON CONFLICT (rel_path) DO NOTHING;
+INSERT INTO orphan_files (store, rel_path) VALUES ($1, $2)
+ON CONFLICT (store, rel_path) DO NOTHING;
 
 -- name: DeleteOrphanFile :exec
-DELETE FROM orphan_files WHERE rel_path = $1;
+DELETE FROM orphan_files WHERE store = $1 AND rel_path = $2;
 
 -- name: ListAllOrphanFiles :many
-SELECT rel_path, first_seen FROM orphan_files;
+SELECT rel_path, first_seen FROM orphan_files WHERE store = $1;
 
 -- エイジング済みの孤児（first_seen が指定期間以上前）。DB が記録した first_seen と
 -- 同じ DB の時計で比較し、呼び出し側ホストの時計差を持ち込まない。
 -- name: ListAgedOrphanFiles :many
 SELECT rel_path FROM orphan_files
-WHERE first_seen <= now() - (sqlc.arg('age')::bigint * interval '1 microsecond');
+WHERE store = sqlc.arg('store')
+  AND first_seen <= now() - (sqlc.arg('age')::bigint * interval '1 microsecond');
 
 -- 「active な media_asset の実体が無い」検出用（issue #343、
 -- docs/storage/missing-assets.md「孤児回収の逆」）。orphan_files の判定
@@ -255,14 +256,14 @@ SELECT id, recording_id, rel_path, kind FROM media_assets WHERE state = 'active'
 -- 実体無し候補を記録する。既存行があれば first_seen を保持する
 -- （DO NOTHING。エイジングの起点は「最初に実体無しだと気づいた時刻」）。
 -- name: UpsertMissingMediaAsset :exec
-INSERT INTO missing_media_assets (media_asset_id) VALUES ($1)
-ON CONFLICT (media_asset_id) DO NOTHING;
+INSERT INTO missing_media_assets (media_asset_id, store) VALUES ($1, $2)
+ON CONFLICT (media_asset_id, store) DO NOTHING;
 
 -- name: DeleteMissingMediaAsset :exec
-DELETE FROM missing_media_assets WHERE media_asset_id = $1;
+DELETE FROM missing_media_assets WHERE media_asset_id = $1 AND store = $2;
 
 -- name: ListAllMissingMediaAssetIDs :many
-SELECT media_asset_id FROM missing_media_assets;
+SELECT media_asset_id FROM missing_media_assets WHERE store = $1;
 
 -- エイジング済み（first_seen が指定期間以上前）で、なお active な行。経過時間は
 -- 候補を記録した DB の時計で比べる。
@@ -275,6 +276,7 @@ SELECT media_asset_id FROM missing_media_assets;
 SELECT m.media_asset_id AS id, a.recording_id, a.rel_path, a.kind, m.first_seen
 FROM missing_media_assets m
 JOIN media_assets a ON a.id = m.media_asset_id
-WHERE m.first_seen <= now() - (sqlc.arg('age')::bigint * interval '1 microsecond')
+WHERE m.store = sqlc.arg('store')
+  AND m.first_seen <= now() - (sqlc.arg('age')::bigint * interval '1 microsecond')
   AND a.state = 'active'
 ORDER BY m.media_asset_id;

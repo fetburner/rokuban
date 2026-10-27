@@ -66,7 +66,7 @@ func TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot(t *testing.T) {
 		}
 	}
 
-	want, wantOwned, err := NewMedia(pool).GetCurrentCutKeep(ctx, recordingID)
+	want, wantOwned, err := NewMedia(pool, "tokyo").GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !wantOwned || len(want) != 2 {
 		t.Fatalf("pre-reset current keep = (%v, %v, %v), want two owned ranges", want, wantOwned, err)
 	}
@@ -87,7 +87,7 @@ func TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		keep, owned, err := NewMedia(tracedPool).GetCurrentCutKeep(ctx, recordingID)
+		keep, owned, err := NewMedia(tracedPool, "tokyo").GetCurrentCutKeep(ctx, recordingID)
 		resultCh <- result{keep: keep, owned: owned, err: err}
 	}()
 

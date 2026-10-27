@@ -131,19 +131,36 @@ func TestThumbnailPlanForInputs(t *testing.T) {
 	}
 }
 
-func TestNextThumbnailRelPath(t *testing.T) {
-	tests := []struct {
-		previous string
-		want     string
+func TestThumbnailRelPathUsesPersistedGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		generation int64
+		want       string
 	}{
-		{"thumbnails/12.jpg", "thumbnails/12.g1.jpg"},
-		{"thumbnails/12.g1.jpg", "thumbnails/12.g2.jpg"},
-		{"thumbnails/12.g8.jpg", "thumbnails/12.g9.jpg"},
-	}
-	for _, tt := range tests {
-		if got := nextThumbnailRelPath(12, tt.previous); got != tt.want {
-			t.Errorf("nextThumbnailRelPath(%q) = %q, want %q", tt.previous, got, tt.want)
+		{0, "thumbnails/12.jpg"},
+		{1, "thumbnails/12.g1.jpg"},
+		{8, "thumbnails/12.g8.jpg"},
+	} {
+		if got := thumbnailRelPath(12, tc.generation); got != tc.want {
+			t.Errorf("thumbnailRelPath(12, %d) = %q, want %q", tc.generation, got, tc.want)
 		}
+	}
+}
+
+func TestNextUnusedThumbnailRelPathAdvancesPastExistingFile(t *testing.T) {
+	mediaDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mediaDir, "thumbnails"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "thumbnails", "12.g3.jpg"), tinyJPEG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := &ThumbnailWorker{MediaDir: mediaDir}
+	path, generation, err := w.nextUnusedThumbnailRelPath(12, 3)
+	if err != nil {
+		t.Fatalf("nextUnusedThumbnailRelPath: %v", err)
+	}
+	if path != "thumbnails/12.g4.jpg" || generation != 4 {
+		t.Fatalf("nextUnusedThumbnailRelPath = (%q, %d), want (%q, 4)", path, generation, "thumbnails/12.g4.jpg")
 	}
 }
 
@@ -244,6 +261,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	if state.SeekMs == nil || *state.SeekMs != 10000 {
 		t.Errorf("initial thumbnail seek_ms = %v, want 10000", state.SeekMs)
 	}
+	assertMediaAssetCopy(t, pool, id, state.RelPath)
 
 	// メディア上に JPEG がある。
 	dest := filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d.jpg", recordingID))
@@ -276,7 +294,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	scratchDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "reselect/original.ts", []byte("fake-ts"))
-	oldRelPath := thumbnailRelPath(recordingID)
+	oldRelPath := thumbnailRelPath(recordingID, 0)
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
 	q := sqlcgen.New(pool)
@@ -365,7 +383,7 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 		cutAssetID, "{[60000,960000)}"); err != nil {
 		t.Fatalf("seeding cut keep ranges: %v", err)
 	}
-	oldRelPath := thumbnailRelPath(recordingID)
+	oldRelPath := thumbnailRelPath(recordingID, 0)
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
 	q := sqlcgen.New(pool)
@@ -431,7 +449,7 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindEncoded, &profile, encodedRelPath, []byte("fake-mp4"))
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), tinyJPEG)
+		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), tinyJPEG)
 	q := sqlcgen.New(pool)
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
@@ -603,7 +621,7 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	})
 
 	// 先に active な thumbnail 行を入れておく（別経路で先に着地したケースを模す）。
-	rel := thumbnailRelPath(recordingID)
+	rel := thumbnailRelPath(recordingID, 0)
 	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindThumbnail
 		fixtureParams.RelPath = rel
@@ -611,10 +629,12 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	})
 
 	// 同じ値で再度 upsert しても既存行の conflict にならず成功する。
+	generation := int64(0)
 	if _, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
-		RecordingID: recordingID,
-		RelPath:     rel,
-		SizeBytes:   int64(len(tinyJPEG)),
+		RecordingID:       recordingID,
+		RelPath:           rel,
+		SizeBytes:         int64(len(tinyJPEG)),
+		DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("UpsertThumbnailMediaAsset over existing active row: %v", err)
 	}
@@ -659,7 +679,7 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 
 	// tombstone を作る: いったん active な thumbnail 行を作り、削除プロトコル
 	// の最終状態（state='deleted', deleted_at 有り）に直接遷移させる。
-	rel := thumbnailRelPath(recordingID)
+	rel := thumbnailRelPath(recordingID, 0)
 	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindThumbnail
 		fixtureParams.RelPath = rel
@@ -922,7 +942,7 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 	seed := func(name string, ranges string) (int64, string) {
 		id := dbtest.Recording(t, pool)
 		seedOriginalAsset(t, pool, mediaDir, id, name+"/original.ts", []byte("fake-ts"))
-		rel := thumbnailRelPath(id)
+		rel := thumbnailRelPath(id, 0)
 		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, rel, tinyJPEG)
 		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 			MediaAssetID: thumbID, SeekMs: 30000,

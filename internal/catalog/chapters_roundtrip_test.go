@@ -20,7 +20,7 @@ import (
 func TestExportRescue_RoundTripsUserChapters(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 400
@@ -67,7 +67,7 @@ VALUES ($1, int8range($2, $3), $4, $5)`, recID, span.start, span.end, span.label
 		t.Fatalf("simulating DB loss: %v", err)
 	}
 
-	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -137,7 +137,7 @@ ORDER BY lower(span)`, recID)
 	}
 
 	// 2 回目の rescue で増殖せず、落ちもしない。
-	if _, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
 		t.Fatalf("RescueLatest second: %v", err)
 	}
 	var spanCount int

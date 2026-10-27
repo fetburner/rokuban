@@ -13,7 +13,7 @@ import (
 const getInPlaceAssetByRelPath = `-- name: GetInPlaceAssetByRelPath :one
 
 SELECT id, recording_id, kind, profile,
-       (state <> 'deleted')::boolean AS published
+       state
 FROM media_assets
 WHERE rel_path = $1
 ORDER BY (state <> 'deleted')::boolean DESC, id DESC
@@ -25,7 +25,7 @@ type GetInPlaceAssetByRelPathRow struct {
 	RecordingID int64
 	Kind        string
 	Profile     *string
-	Published   bool
+	State       string
 }
 
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
@@ -46,21 +46,24 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, relPath string) 
 		&i.RecordingID,
 		&i.Kind,
 		&i.Profile,
-		&i.Published,
+		&i.State,
 	)
 	return i, err
 }
 
 const upsertInPlaceMediaAsset = `-- name: UpsertInPlaceMediaAsset :one
 INSERT INTO media_assets (
-    recording_id, kind, profile, rel_path, size_bytes, state
+    recording_id, kind, profile, rel_path, size_bytes, state, derived_generation
 ) VALUES (
     $1, $2, $3,
-    $4, $5, 'active'
+    $4, $5, 'active',
+    CASE WHEN $2::text = 'original' THEN NULL ELSE 0 END
 )
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()

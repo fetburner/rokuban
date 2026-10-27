@@ -21,7 +21,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 500
@@ -63,7 +63,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		t.Fatalf("hits after losing the rules = %d (err %v), want 0", hits, err)
 	}
 
-	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 
 	// rescue が実際に書く行（分類ルールと録画）を用意する。空の文書だと、ロックを
 	// どこで取っても書き込み前に待つので、位置の検査にならない。
@@ -151,7 +151,7 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+		_, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 		done <- err
 	}()
 	select {

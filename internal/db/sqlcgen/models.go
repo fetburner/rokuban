@@ -195,6 +195,21 @@ type MediaAsset struct {
 	UpdatedAt   time.Time
 	// Generation of the ingest temp whose bytes were committed as this original
 	IngestGeneration *int64
+	// Monotonic generation for derived output paths; NULL for original assets
+	DerivedGeneration *int64
+	// Observed SHA-256 of the logical asset bytes, stored once for all physical copies
+	Sha256 []byte
+}
+
+// Physical copies of logical media assets; an asset without a copy row has not been assigned by storage adopt
+type MediaAssetCopy struct {
+	ID           int64
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	State        string
+	CreatedAt    time.Time
+	DeletedAt    *time.Time
 }
 
 type MediaAssetCut struct {
@@ -215,6 +230,8 @@ type MediaAssetTsScan struct {
 type MissingMediaAsset struct {
 	MediaAssetID int64
 	FirstSeen    time.Time
+	// Store where the asset copy was missing; empty until storage adopt
+	Store string
 }
 
 type NeverScheduledEvent struct {
@@ -228,6 +245,8 @@ type NeverScheduledEvent struct {
 type OrphanFile struct {
 	RelPath   string
 	FirstSeen time.Time
+	// Store where the orphan path was observed; empty until storage adopt
+	Store string
 }
 
 type ProgramIntent struct {
@@ -371,6 +390,8 @@ type RecordingIngestProgress struct {
 	TempRelPath string
 	// Generation of the current ingest temp file
 	TempGeneration int64
+	// Store containing the current ingest temporary file
+	TempStore string
 }
 
 type RecordingPlaybackPosition struct {
@@ -506,6 +527,8 @@ type StorageSync struct {
 	UsedBytes      int64
 	AvailableBytes int64
 	ObservedAt     time.Time
+	// Store whose filesystem root was observed; empty until storage adopt
+	Store string
 }
 
 type TunerSync struct {
