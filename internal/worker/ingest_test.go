@@ -28,6 +28,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -79,7 +80,7 @@ func makeTSDataFill(fill byte) []byte {
 	return data
 }
 
-// ingestTestFile は ingest.go の ingestFile を差し替えるテストダブル。
+// ingestTestFile は ingest.go の fsink.File を差し替えるテストダブル。
 // Work は正常系でも Close を 2 回呼ぶ（明示 Close 1 回 + 早期 return 用 defer
 // 1 回。*os.File の 2 回目の Close は ErrClosed を返すだけで無害）ので、
 // onClose は 2 回目を鳴らさないよう closed で冪等にする。
@@ -1553,8 +1554,8 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 	run.tempSyncs = &atomic.Int32{}
 	originalOpenFile := openIngestFile
 	t.Cleanup(func() { openIngestFile = originalOpenFile })
-	openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
-		file, err := duplicateIngestFile(locked)
+	openIngestFile = func(_ string, locked *os.File) (fsink.File, error) {
+		file, err := fsink.DuplicateFile(locked)
 		if err != nil {
 			return nil, err
 		}
@@ -1854,8 +1855,8 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	originalOpenFile := openIngestFile
 	t.Cleanup(func() { openIngestFile = originalOpenFile })
 	var published atomic.Bool
-	openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
-		file, err := duplicateIngestFile(locked)
+	openIngestFile = func(_ string, locked *os.File) (fsink.File, error) {
+		file, err := fsink.DuplicateFile(locked)
 		if err != nil {
 			return nil, err
 		}
@@ -1983,27 +1984,6 @@ func (w partialErrorWriter) Write(p []byte) (int, error) {
 	return w.n, w.err
 }
 
-func TestHashingWriterHashesAcceptedBytes(t *testing.T) {
-	input := []byte("accepted prefix plus rejected suffix")
-	injectedErr := errors.New("injected partial write")
-	hasher := sha256.New()
-	w := &hashingWriter{
-		w: partialErrorWriter{n: len("accepted prefix"), err: injectedErr},
-		h: hasher,
-	}
-
-	n, err := w.Write(input)
-	if !errors.Is(err, injectedErr) {
-		t.Fatalf("Write() error = %v, want injected partial write", err)
-	}
-	if n != len("accepted prefix") {
-		t.Fatalf("Write() bytes = %d, want %d", n, len("accepted prefix"))
-	}
-	if got, want := hex.EncodeToString(hasher.Sum(nil)), sha256Hex(input[:n]); got != want {
-		t.Errorf("hash of accepted bytes = %s, want %s", got, want)
-	}
-}
-
 // TestIngestWorker_PersistsBeforeCommitAndDelete は原本ファイルの Sync/Close 前は
 // media_assets 行がなく、mirakc の DeleteRecord 時点では行があることをイベント列で検証する。
 // 転送途中の定期 fsync を入れる変異も、イベント列が変わるため検出する。
@@ -2049,8 +2029,8 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	originalOpenFile := openIngestFile
 	t.Cleanup(func() { openIngestFile = originalOpenFile })
 
-	openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
-		file, err := duplicateIngestFile(locked)
+	openIngestFile = func(_ string, locked *os.File) (fsink.File, error) {
+		file, err := fsink.DuplicateFile(locked)
 		if err != nil {
 			return nil, err
 		}
@@ -2121,8 +2101,8 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			originalOpenFile := openIngestFile
 			t.Cleanup(func() { openIngestFile = originalOpenFile })
 
-			openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
-				file, err := duplicateIngestFile(locked)
+			openIngestFile = func(_ string, locked *os.File) (fsink.File, error) {
+				file, err := fsink.DuplicateFile(locked)
 				if err != nil {
 					return nil, err
 				}
@@ -2428,124 +2408,164 @@ func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, 
 	assertRecordSyncProgramMatchesRecording(t, pool, "insertTestRecordSyncForSite", site, recordingID, programID)
 }
 
-func TestIngestWorker_DoesNotOverwriteExistingCanonicalOrphan(t *testing.T) {
-	tsData := makeTSData(50)
-	const recordID = "rec-reexec"
-	fake := newFullTransferFake(t, recordID, tsData, "test/reexec.m2ts")
+// linkedIngestEnv は ingest の Work を何度でも走らせるための共通の準備。
+type linkedIngestEnv struct {
+	pool        *pgxpool.Pool
+	w           *IngestWorker
+	fake        *mirakctest.Fake
+	recordID    string
+	recordingID int64
+	fullPath    string
+	tempPath    string
+	tsData      []byte
+}
 
-	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(fake.URL(), nil)
-
+func newLinkedIngestEnv(t *testing.T, recordID, contentPath string) *linkedIngestEnv {
+	t.Helper()
 	pool := setupTestPool(t)
 	if pool == nil {
-		return
+		t.Skip("no test database")
 	}
-
-	recordingID := dbtest.Recording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, recordID)
-
-	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "reexec.m2ts")
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+	env := &linkedIngestEnv{pool: pool, recordID: recordID, tsData: makeTSData(50)}
+	env.fake = newFullTransferFake(t, recordID, env.tsData, contentPath)
+	mediaDir := t.TempDir()
+	env.recordingID = dbtest.Recording(t, pool)
+	insertTestRecordSync(t, pool, env.recordingID, recordID)
+	env.fullPath = filepath.Join(mediaDir, "sites", "default", filepath.FromSlash(contentPath))
+	if err := os.MkdirAll(filepath.Dir(env.fullPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	garbage := []byte("this is leftover data from a crashed previous attempt that is longer than the real file")
-	if err := os.WriteFile(fullPath, garbage, 0o644); err != nil {
-		t.Fatal(err)
+	env.tempPath = ingestTempFilePath(filepath.Dir(env.fullPath), "default", recordID)
+	env.w = &IngestWorker{
+		Publisher:        pgstoretest.Media(pool),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(env.fake.URL(), nil)),
+		RecordTarget:     pgstoretest.Recordings(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
+		Precheck:         pgstoretest.Media(pool),
+		CMDetectionStore: pgstoretest.Analysis(pool),
 	}
+	return env
+}
 
-	w := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("", mc),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
-		Precheck:      pgstoretest.Media(pool),
-	}
-	w.CMDetectionStore = pgstoretest.Analysis(pool)
+func (e *linkedIngestEnv) run() error {
+	return runWorkerViaJobQFake(context.Background(), e.w, IngestJobArgs{Site: "default", RecordID: e.recordID})
+}
 
-	job := IngestJobArgs{Site: "default", RecordID: recordID}
-
-	err := runWorkerViaJobQFake(context.Background(), w, job)
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("Work() error = %v, want canonical path conflict", err)
-	}
-
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading preserved canonical orphan: %v", err)
-	}
-	if !bytes.Equal(data, garbage) {
-		t.Errorf("canonical orphan changed: got %d bytes, want preserved %d-byte content", len(data), len(garbage))
-	}
-	tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
-	if temp, err := os.ReadFile(tempPath); err != nil || !bytes.Equal(temp, tsData) {
-		t.Errorf("completed ingest temp = (%d bytes, %v), want preserved transferred bytes", len(temp), err)
-	}
-	var assetCount int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
+func (e *linkedIngestEnv) assetCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := e.pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", e.recordingID).Scan(&n); err != nil {
 		t.Fatalf("counting media assets: %v", err)
 	}
-	if assetCount != 0 {
-		t.Errorf("media_assets rows = %d, want 0 after rejecting the orphan collision", assetCount)
-	}
-	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
-		t.Errorf("mirakc DeleteRecord calls = %d, want 0 after publication conflict", got)
+	return n
+}
+
+func (e *linkedIngestEnv) streamGets() int {
+	return e.fake.CallCount(http.MethodGet, "/api/recording/records/"+e.recordID+"/stream")
+}
+
+// failFirstPublication は最初の link 後の公開 callback だけを失敗させる。DB commit は rollback される。
+func failFirstPublication(t *testing.T) {
+	t.Helper()
+	original := afterIngestFilePublication
+	t.Cleanup(func() { afterIngestFilePublication = original })
+	failed := false
+	afterIngestFilePublication = func() error {
+		if !failed {
+			failed = true
+			return errors.New("injected commit failure after link")
+		}
+		return nil
 	}
 }
 
-func TestIngestWorker_ReusesMatchingCanonicalOrphan(t *testing.T) {
-	tsData := makeTSData(50)
-	const recordID = "rec-reuse-orphan"
-	fake := newFullTransferFake(t, recordID, tsData, "test/reuse-orphan.m2ts")
-	mediaDir := t.TempDir()
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	recordingID := dbtest.Recording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, recordID)
-	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "reuse-orphan.m2ts")
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+// 同じ大きさで内容の違う canonical は他人のファイルとして扱い、何も変えずに止まる。
+func TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent(t *testing.T) {
+	env := newLinkedIngestEnv(t, "rec-foreign-canonical", "test/foreign.m2ts")
+	foreign := bytes.Repeat([]byte{0xAA}, len(env.tsData))
+	if err := os.WriteFile(env.fullPath, foreign, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fullPath, tsData, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	beforeInfo, err := os.Stat(fullPath)
+	before, err := os.Stat(env.fullPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	w := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
-		Precheck:      pgstoretest.Media(pool),
+	err = env.run()
+	if !errors.Is(err, fsink.ErrForeignDestination) || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("Work() error = %v, want fsink.ErrForeignDestination wrapping os.ErrExist", err)
 	}
-	w.CMDetectionStore = pgstoretest.Analysis(pool)
-	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
-		t.Fatalf("Work() error = %v, want matching canonical orphan to be reused", err)
+	after, statErr := os.Stat(env.fullPath)
+	if statErr != nil || !os.SameFile(before, after) {
+		t.Errorf("canonical inode changed: stat err = %v", statErr)
 	}
-	afterInfo, err := os.Stat(fullPath)
+	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, foreign) {
+		t.Errorf("canonical bytes changed (%d bytes, %v)", len(data), err)
+	}
+	if temp, err := os.ReadFile(env.tempPath); err != nil || !bytes.Equal(temp, env.tsData) {
+		t.Errorf("completed ingest temp = (%d bytes, %v), want preserved transferred bytes", len(temp), err)
+	}
+	if n := env.assetCount(t); n != 0 {
+		t.Errorf("media_assets rows = %d, want 0", n)
+	}
+	if got := env.fake.CallCount(http.MethodDelete, "/api/recording/records/"+env.recordID); got != 0 {
+		t.Errorf("mirakc DeleteRecord calls = %d, want 0", got)
+	}
+}
+
+// link 後に commit が失敗しても、次の試行は転送せず commit だけをやり直して成功する。
+func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T) {
+	env := newLinkedIngestEnv(t, "rec-linked-retry", "test/linked-retry.m2ts")
+	failFirstPublication(t)
+
+	if err := env.run(); err == nil {
+		t.Fatal("first Work() succeeded, want the injected commit failure")
+	}
+	first, err := os.Stat(env.fullPath)
 	if err != nil {
-		t.Fatalf("stat canonical file after commit: %v", err)
+		t.Fatalf("canonical missing after the linked-but-uncommitted attempt: %v", err)
 	}
-	if !os.SameFile(beforeInfo, afterInfo) {
-		t.Error("canonical file was replaced instead of reused")
+	if n := env.assetCount(t); n != 0 {
+		t.Fatalf("media_assets rows after failed commit = %d, want 0", n)
 	}
-	tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
-	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("ingest temp after successful reuse stat error = %v, want os.ErrNotExist", err)
+	getsAfterFirst := env.streamGets()
+
+	if err := env.run(); err != nil {
+		t.Fatalf("second Work() error = %v, want commit-only retry to succeed", err)
 	}
-	var assetCount int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media assets: %v", err)
+	if n := env.assetCount(t); n != 1 {
+		t.Errorf("media_assets rows = %d, want 1", n)
 	}
-	if assetCount != 1 {
-		t.Errorf("media_assets rows = %d, want 1 after reusing canonical orphan", assetCount)
+	second, err := os.Stat(env.fullPath)
+	if err != nil || !os.SameFile(first, second) {
+		t.Errorf("canonical inode changed across retry (err = %v)", err)
+	}
+	if got := env.streamGets(); got != getsAfterFirst {
+		t.Errorf("stream GET calls = %d after retry, want %d (no transfer)", got, getsAfterFirst)
+	}
+	for _, p := range []string{env.tempPath, ingestCheckpointPath(env.tempPath)} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("stat(%q) error = %v, want os.ErrNotExist after the committed retry", p, err)
+		}
+	}
+	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
+		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
+	}
+}
+
+// 公開済みの canonical は、mirakc が長い stream を返しても 1 バイトも変わらない。
+func TestIngestWorker_NeverAppendsToLinkedTempOnRetry(t *testing.T) {
+	env := newLinkedIngestEnv(t, "rec-linked-no-append", "test/linked-no-append.m2ts")
+	failFirstPublication(t)
+	if err := env.run(); err == nil {
+		t.Fatal("first Work() succeeded, want the injected commit failure")
+	}
+	env.fake.SetRecordStream(env.recordID, append(append([]byte(nil), env.tsData...), makeTSData(5)...))
+
+	_ = env.run()
+	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
+		t.Fatalf("canonical bytes = (%d bytes, %v), want unchanged %d bytes", len(data), err, len(env.tsData))
 	}
 }
 
@@ -2792,6 +2812,57 @@ func setReservationBase(t *testing.T, pool *pgxpool.Pool, programID int64, base 
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE reservations SET base = $2 WHERE site = 'default' AND program_id = $1", programID, base); err != nil {
 		t.Fatalf("setting reservation base: %v", err)
+	}
+}
+
+// commit 済みの再配送では、canonical と同じ inode の temp だけを消す。同名でも別の inode の temp は残す。
+func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
+	for _, linked := range []bool{true, false} {
+		t.Run(fmt.Sprintf("linked=%v", linked), func(t *testing.T) {
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			const recordID = "already-committed-linked-temp"
+			mediaDir := t.TempDir()
+			recordingID := dbtest.Recording(t, pool)
+			fake := newFullTransferFake(t, recordID, []byte("x"), "test/linked-temp.m2ts")
+			fullPath := filepath.Join(mediaDir, "sites", "default", "test", "linked-temp.m2ts")
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("canonical"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
+			if linked {
+				if err := os.Link(fullPath, tempPath); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(tempPath, []byte("another attempt"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(ingestCheckpointPath(tempPath), []byte("checkpoint"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: newRecordingEnqueuer(), Precheck: pgstoretest.Media(pool), MediaDir: mediaDir}
+			w.handleAlreadyCommittedIngest(context.Background(), mirakc.NewClient(fake.URL(), nil),
+				jobs.IngestJobArgs{Site: "default", RecordID: recordID}, recordingID, slog.Default())
+
+			if data, err := os.ReadFile(fullPath); err != nil || string(data) != "canonical" {
+				t.Errorf("canonical = (%q, %v), want unchanged", data, err)
+			}
+			for _, p := range []string{tempPath, ingestCheckpointPath(tempPath)} {
+				_, err := os.Stat(p)
+				if linked && !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("stat(%q) error = %v, want os.ErrNotExist for the linked temp", p, err)
+				}
+				if !linked && err != nil {
+					t.Errorf("stat(%q) error = %v, want the unrelated temp to remain", p, err)
+				}
+			}
+		})
 	}
 }
 

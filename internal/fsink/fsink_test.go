@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding"
 	"encoding/hex"
 	"errors"
 	"hash"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,163 +129,82 @@ func TestReplayTempFileWithCheckpointInterruptedReplaySavesAndUsesOffset(t *test
 	}
 }
 
-func TestRenameNoReplaceDoesNotOverwriteCanonicalFile(t *testing.T) {
+func inodeOf(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func TestPublishLinkRefusesDifferentInodeAtDestination(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "temp")
 	dst := filepath.Join(dir, "canonical")
-	if err := os.WriteFile(src, []byte("new content"), 0o600); err != nil {
+	// 同じ大きさで内容が違う。大きさだけを見る実装は見分けられない。
+	if err := os.WriteFile(src, []byte("new content!"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dst, []byte("existing content"), 0o600); err != nil {
+	if err := os.WriteFile(dst, []byte("old content!"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	dstBefore := inodeOf(t, dst)
 
-	err := RenameNoReplace(src, dst)
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("RenameNoReplace() error = %v, want os.ErrExist", err)
+	err := PublishLink(src, dst)
+	if !errors.Is(err, os.ErrExist) || !errors.Is(err, ErrForeignDestination) {
+		t.Fatalf("PublishLink() error = %v, want os.ErrExist and ErrForeignDestination", err)
 	}
-	if got, err := os.ReadFile(dst); err != nil || string(got) != "existing content" {
-		t.Fatalf("canonical file = (%q, %v), want existing content", got, err)
+	if got, err := os.ReadFile(dst); err != nil || string(got) != "old content!" {
+		t.Fatalf("canonical file = (%q, %v), want old content", got, err)
 	}
-	if got, err := os.ReadFile(src); err != nil || string(got) != "new content" {
+	if got, err := os.ReadFile(src); err != nil || string(got) != "new content!" {
 		t.Fatalf("temp file = (%q, %v), want new content", got, err)
+	}
+	if !os.SameFile(dstBefore, inodeOf(t, dst)) || os.SameFile(inodeOf(t, src), inodeOf(t, dst)) {
+		t.Fatal("canonical inode changed or became the temp inode")
 	}
 }
 
-func TestRenameNoReplaceMovesFileWhenCanonicalDoesNotExist(t *testing.T) {
+func TestPublishLinkTreatsSameInodeAtDestinationAsPublished(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "temp")
 	dst := filepath.Join(dir, "canonical")
 	if err := os.WriteFile(src, []byte("complete content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenameNoReplace(src, dst); err != nil {
-		t.Fatalf("RenameNoReplace() error = %v", err)
+	if err := os.Link(src, dst); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(src); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("source stat error = %v, want os.ErrNotExist", err)
+	if err := PublishLink(src, dst); err != nil {
+		t.Fatalf("PublishLink() with an already linked destination error = %v, want nil", err)
+	}
+}
+
+func TestPublishLinkLinksWhenDestinationDoesNotExist(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "temp")
+	dst := filepath.Join(dir, "canonical")
+	if err := os.WriteFile(src, []byte("complete content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PublishLink(src, dst); err != nil {
+		t.Fatalf("PublishLink() error = %v", err)
+	}
+	if !os.SameFile(inodeOf(t, src), inodeOf(t, dst)) {
+		t.Fatal("src and dst are not the same inode")
 	}
 	if got, err := os.ReadFile(dst); err != nil || string(got) != "complete content" {
 		t.Fatalf("canonical file = (%q, %v), want complete content", got, err)
 	}
 }
 
-func TestRenameNoReplaceNeverTreatsExistingIdenticalFileAsRenamed(t *testing.T) {
+func TestPublishLinkFailsWhenSourceIsMissing(t *testing.T) {
 	dir := t.TempDir()
-	src := filepath.Join(dir, "temp")
-	dst := filepath.Join(dir, "canonical")
-	content := []byte("same completed content")
-	if err := os.WriteFile(src, content, 0o600); err != nil {
-		t.Fatal(err)
+	err := PublishLink(filepath.Join(dir, "missing"), filepath.Join(dir, "canonical"))
+	if err == nil || errors.Is(err, ErrForeignDestination) {
+		t.Fatalf("PublishLink() error = %v, want a plain link failure", err)
 	}
-	if err := os.WriteFile(dst, content, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	err := RenameNoReplace(src, dst)
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("RenameNoReplace() with identical destination error = %v, want os.ErrExist", err)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Errorf("source temp stat error = %v, want it to remain", err)
-	}
-	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, content) {
-		t.Fatalf("canonical file = (%q, %v), want unchanged content", got, err)
-	}
-}
-
-func TestVerifyExistingFileMatchesCanonicalContent(t *testing.T) {
-	dir := t.TempDir()
-	temp := filepath.Join(dir, "temp")
-	dst := filepath.Join(dir, "canonical")
-	content := []byte("same completed content")
-	if err := os.WriteFile(temp, content, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dst, content, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(content)
-
-	reused, err := VerifyExistingFile(context.Background(), temp, dst, int64(len(content)), digest[:], nil)
-	if err != nil || !reused {
-		t.Fatalf("VerifyExistingFile() = (%v, %v), want (true, nil)", reused, err)
-	}
-	if _, err := os.Stat(temp); err != nil {
-		t.Errorf("source temp stat error = %v, want it to remain until DB commit", err)
-	}
-	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, content) {
-		t.Errorf("canonical file = (%q, %v), want unchanged content", got, err)
-	}
-}
-
-func TestReplayFileWithCheckpointResumesAfterContextCancellation(t *testing.T) {
-	data := bytes.Repeat([]byte("verify-this-content"), 4096)
-	checkpoint := filepath.Join(t.TempDir(), "canonical.checkpoint")
-	ctx, cancel := context.WithCancel(context.Background())
-	reader := &cancelAfterReadSeeker{
-		ReadSeeker: bytes.NewReader(data),
-		cancel:     cancel,
-		cancelAt:   32 << 10,
-	}
-
-	hasher := sha256.New()
-	offset, complete, err := replayReaderWithCheckpoint(ctx, reader, int64(len(data)), checkpoint, "canonical-v1", hasher, nil)
-	if !errors.Is(err, context.Canceled) || complete {
-		t.Fatalf("first replay = (%d, %v, %v), want incomplete cancellation", offset, complete, err)
-	}
-	if offset == 0 || offset >= int64(len(data)) {
-		t.Fatalf("checkpoint offset = %d, want partial progress", offset)
-	}
-
-	resumedReader := &countingReadSeeker{ReadSeeker: bytes.NewReader(data)}
-	resumedHasher := sha256.New()
-	got, complete, err := replayReaderWithCheckpoint(context.Background(), resumedReader, int64(len(data)), checkpoint, "canonical-v1", resumedHasher, nil)
-	if err != nil || !complete || got != int64(len(data)) {
-		t.Fatalf("resumed replay = (%d, %v, %v), want complete", got, complete, err)
-	}
-	if want := int64(len(data)) - offset; resumedReader.read != want {
-		t.Errorf("resumed bytes read = %d, want %d after checkpoint restore", resumedReader.read, want)
-	}
-	if got, want := hex.EncodeToString(resumedHasher.Sum(nil)), digest(data); got != want {
-		t.Errorf("resumed SHA-256 = %s, want %s", got, want)
-	}
-
-	changedIdentityReader := &countingReadSeeker{ReadSeeker: bytes.NewReader(data)}
-	changedIdentityHasher := sha256.New()
-	if _, complete, err := replayReaderWithCheckpoint(context.Background(), changedIdentityReader, int64(len(data)), checkpoint, "canonical-v2", changedIdentityHasher, nil); err != nil || !complete {
-		t.Fatalf("replay after identity change = (complete=%v, err=%v), want complete", complete, err)
-	}
-	if changedIdentityReader.read != int64(len(data)) {
-		t.Errorf("bytes read after identity change = %d, want full size %d", changedIdentityReader.read, len(data))
-	}
-}
-
-type cancelAfterReadSeeker struct {
-	io.ReadSeeker
-	cancel   context.CancelFunc
-	cancelAt int64
-	read     int64
-}
-
-func (r *cancelAfterReadSeeker) Read(p []byte) (int, error) {
-	n, err := r.ReadSeeker.Read(p)
-	r.read += int64(n)
-	if r.read >= r.cancelAt {
-		r.cancel()
-	}
-	return n, err
-}
-
-type countingReadSeeker struct {
-	io.ReadSeeker
-	read int64
-}
-
-func (r *countingReadSeeker) Read(p []byte) (int, error) {
-	n, err := r.ReadSeeker.Read(p)
-	r.read += int64(n)
-	return n, err
 }
 
 func TestRemoveTempRemovesTempAndCheckpoint(t *testing.T) {
@@ -294,13 +215,10 @@ func TestRemoveTempRemovesTempAndCheckpoint(t *testing.T) {
 	if err := os.WriteFile(CheckpointPath(path), []byte("checkpoint"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(CheckpointPath(VerificationCheckpointPath(path)), []byte("verification checkpoint"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if err := RemoveTemp(path); err != nil {
 		t.Fatalf("RemoveTemp() error = %v", err)
 	}
-	for _, candidate := range []string{path, CheckpointPath(path), CheckpointPath(VerificationCheckpointPath(path))} {
+	for _, candidate := range []string{path, CheckpointPath(path)} {
 		if _, err := os.Stat(candidate); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("stat(%q) error = %v, want os.ErrNotExist", candidate, err)
 		}
@@ -361,15 +279,12 @@ func (h *cancelAfterFirstWriteHash) Write(p []byte) (int, error) {
 }
 
 func (h *cancelAfterFirstWriteHash) MarshalBinary() ([]byte, error) {
-	return h.Hash.(encodingBinaryMarshaler).MarshalBinary()
+	return h.Hash.(encoding.BinaryMarshaler).MarshalBinary()
 }
 
 func (h *cancelAfterFirstWriteHash) UnmarshalBinary(data []byte) error {
-	return h.Hash.(encodingBinaryUnmarshaler).UnmarshalBinary(data)
+	return h.Hash.(encoding.BinaryUnmarshaler).UnmarshalBinary(data)
 }
-
-type encodingBinaryMarshaler interface{ MarshalBinary() ([]byte, error) }
-type encodingBinaryUnmarshaler interface{ UnmarshalBinary([]byte) error }
 
 func digest(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -377,3 +292,18 @@ func digest(data []byte) string {
 }
 
 var _ io.Writer = (*HashingWriter)(nil)
+
+func TestReadContextHonorsCancellationBetweenChunks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := strings.NewReader("abcdef")
+	buf := make([]byte, 3)
+
+	n, err := ReadContext(ctx, reader, buf)
+	if err != nil || n != 3 || string(buf) != "abc" {
+		t.Fatalf("first read = (%d, %v, %q), want (3, nil, %q)", n, err, buf, "abc")
+	}
+	cancel()
+	if n, err := ReadContext(ctx, reader, buf); n != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled read = (%d, %v), want (0, context.Canceled)", n, err)
+	}
+}

@@ -2,7 +2,7 @@ package worker
 
 import (
 	"context"
-	"hash"
+	"errors"
 	"path/filepath"
 	"strings"
 
@@ -27,17 +27,8 @@ func ingestTempPathForCheckpoint(path string) string {
 	return strings.TrimSuffix(path, ingestCheckpointSuffix)
 }
 
-// writeIngestCheckpoint は fsink の checkpoint writer への互換 shim。
-func writeIngestCheckpoint(tempPath string, offset int64, hasher hash.Hash, check func() error) error {
-	return fsink.WriteCheckpoint(tempPath, offset, hasher, check)
-}
-
-// restoreIngestCheckpoint は fsink の checkpoint reader への互換 shim。
-func restoreIngestCheckpoint(tempPath string, tempSize int64, hasher hash.Hash) (int64, bool) {
-	return fsink.RestoreCheckpoint(tempPath, tempSize, hasher)
-}
-
-// replayIngestTempFileWithCheckpoint は fsink の再開処理への互換 shim。
-func replayIngestTempFileWithCheckpoint(ctx context.Context, tempPath string, temp ingestFile, hasher hash.Hash, check func() error) (int64, bool, error) {
-	return fsink.ReplayTempFileWithCheckpoint(ctx, tempPath, temp, hasher, check)
+// isIngestSliceDeadline は slice context だけが deadline で終わり、親 context は生きているかを返す。
+// 4 分の区切りは ingest 固有なので fsink ではなくここに置く。
+func isIngestSliceDeadline(err error, sliceCtx, workCtx context.Context) bool {
+	return errors.Is(err, context.DeadlineExceeded) && sliceCtx.Err() == context.DeadlineExceeded && workCtx.Err() == nil
 }

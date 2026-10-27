@@ -139,9 +139,6 @@ func RemoveTemp(path string) error {
 	if err := RemoveCheckpoint(path); err != nil {
 		errs = append(errs, err)
 	}
-	if err := RemoveVerificationCheckpoint(path); err != nil {
-		errs = append(errs, err)
-	}
 	return errors.Join(errs...)
 }
 
@@ -154,19 +151,43 @@ func RemoveCheckpoint(tempPath string) error {
 	return nil
 }
 
-// RenameNoReplace は dst を既存ファイルで上書きせずに公開する。
-// os.Rename は既存 dst を置き換えるため、予約済みの canonical file を失わせる可能性がある。
-// Linux では renameat2(RENAME_NOREPLACE) を使い、対象 filesystem が flag を実装しない場合は失敗する。
-// NFS での flag 対応は未検証。非 Linux の開発環境では hard link と unlink を使う。
-func RenameNoReplace(src, dst string) error {
+// ErrForeignDestination は PublishLink の宛先に、src と別の file が既にあることを表す。
+// 宛先が既存であることは os.ErrExist でも判定できる。
+var ErrForeignDestination = errors.New("destination is occupied by a different file")
+
+// SameFile は a と b がどちらも存在し、同じ inode を指すかを返す。
+// symlink は辿らない。どちらかを stat できなければ false を返す。
+func SameFile(a, b string) bool {
+	infoA, errA := os.Lstat(a)
+	infoB, errB := os.Lstat(b)
+	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
+}
+
+// PublishLink は src の inode を dst の名前でも見えるようにし、src は消さない。
+// 呼び出し側が DB commit の成功後に src を unlink する。
+//
+// 公開手段に link を選んだ理由は 2 つある。os.Rename は宛先が既存でも黙って置き換えるので、
+// DB に行の無い canonical 名のファイルを失わせる。renameat2(RENAME_NOREPLACE) は Linux の
+// NFS クライアントが flag 付きの rename を EINVAL で断るため、NFS 上の置き場で必ず失敗する。
+// link(2) は宛先が既存なら EEXIST で失敗するので上書きしない。
+//
+// link(2) の BUGS 節は、NFS では link が成功していても戻り値が失敗になりうると書く。
+// そのため、どの失敗でも src と dst が同じ inode かを確かめ、同じなら公開済みとして nil を返す。
+// 同じ inode が既にある場合（前回の試行が link した後に commit に失敗した場合）もここで成功になる。
+// 別の inode なら他人のファイルなので、何も変えずに ErrForeignDestination と os.ErrExist を包んで返す。
+// JuiceFS での hard link の動作は未検証。
+func PublishLink(src, dst string) error {
 	if filepath.Clean(src) == filepath.Clean(dst) {
 		return fmt.Errorf("source and destination paths are identical: %q", src)
 	}
-	return renameNoReplace(src, dst)
-}
-
-func errDestinationExists(src, dst string) error {
-	return fmt.Errorf("publishing %q: destination %q already exists: %w", src, dst, os.ErrExist)
+	err := os.Link(src, dst)
+	if err == nil || SameFile(src, dst) {
+		return nil
+	}
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("publishing %q: destination %q already exists: %w: %w", src, dst, ErrForeignDestination, os.ErrExist)
+	}
+	return fmt.Errorf("linking %q to %q: %w", src, dst, err)
 }
 
 // SyncParentDir は path の親 directory entry を fsync する。

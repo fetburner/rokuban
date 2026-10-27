@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -142,7 +143,7 @@ func TestInterruptedIngestReplayWithholdsCheckpointWhenMarkerDisappears(t *testi
 		mismatchStoreMarker(t, mediaDir, "missing")
 		return requireMediaStoreMarker(mediaDir, "tokyo", "saving replay ingest checkpoint")
 	}
-	offset, complete, err := replayIngestTempFileWithCheckpoint(ctx, tempPath, temp, sha256.New(), check)
+	offset, complete, err := fsink.ReplayTempFileWithCheckpoint(ctx, tempPath, temp, sha256.New(), check)
 	if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) || complete {
 		t.Fatalf("interrupted replay = offset:%d complete:%t err:%v, want marker mismatch and incomplete", offset, complete, err)
 	}

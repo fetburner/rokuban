@@ -2076,6 +2076,57 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 	}
 }
 
+// link した後に commit できなかった ingest の temp は canonical と同じ inode を指す。
+// 孤児回収が古い temp を消しても、unlink はリンク数を減らすだけで canonical の中身は残る。
+func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	const canonicalRel = "sites/default/test/linked-orphan.m2ts"
+	const tempRel = "sites/default/test/.rokuban-ingest-linked-orphan"
+	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(canonicalRel))
+	tempPath := filepath.Join(mediaDir, filepath.FromSlash(tempRel))
+	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("linked canonical content")
+	if err := os.WriteFile(canonicalPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(canonicalPath, tempPath); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(canonicalPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &DeleteReconcileWorker{
+		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
+		RecordingPurge:   pgstoretest.Recordings(pool),
+		Breakers:         pgstoretest.Breakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+		OrphanAge:        14 * 24 * time.Hour,
+	}
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("first Work() error: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1", tempRel, time.Now().Add(-20*24*time.Hour)); err != nil {
+		t.Fatalf("aging ingest temp orphan row: %v", err)
+	}
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("second Work() error: %v", err)
+	}
+	if fileExists(tempPath) {
+		t.Fatal("aged linked ingest temp still exists")
+	}
+	if got, err := os.ReadFile(canonicalPath); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("canonical after temp cleanup = (%q, %v), want unchanged content", got, err)
+	}
+}
+
 // ingest の record 固有 temp は canonical file と同じ走査対象に残し、プロセス死後に
 // orphan_files へ記録して aging 回収する。ここで walk から除外すると、壊れた試行の
 // 部分ファイルが永久に残る。
@@ -2263,9 +2314,9 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	}
 }
 
-// canonicalPublishWhileWorkPaused は、ingest temp と同じ内容の古い canonical 孤児に対して
+// canonicalPublishWhileWorkPaused は、ingest temp と hard link された古い canonical 孤児に対して
 // worker.Work を走らせ、候補収集後の同期点で止めている間に ingest commit で公開する。
-// 既存内容を上書きせず再利用し、Work 再開後も canonical が残ることを確かめる。
+// commit は Work の完了を待たずに終わらねばならず、Work 再開後も公開内容が残らねばならない。
 // beforeResume は Work が止まった直後・公開前に呼ばれる。
 func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *DeleteReconcileWorker, mediaDir, relPath string, beforeResume func()) {
 	t.Helper()
@@ -2288,10 +2339,9 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	}
 	recordingID := dbtest.Recording(t, pool)
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-while-work-paused")
-	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(tempPath, old, old); err != nil {
+	// 前の試行が link した後に commit で失敗した状態。temp と canonical は同じ inode で、
+	// 再試行の commit は上書きせずにそれを公開済みとして扱う。
+	if err := os.Link(fullPath, tempPath); err != nil {
 		t.Fatal(err)
 	}
 	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)

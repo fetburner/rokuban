@@ -55,7 +55,7 @@ func TestProbeIngestStorage_WritesUnderSitesNotRoot(t *testing.T) {
 }
 
 // TestProbeIngestStorage_UsesSharedRenameAndFsyncHooks は probe が commit と同じ
-// renameIngestFile / syncIngestParentDir フックを経由することを固定する。probe が
+// linkIngestFile / syncIngestParentDir フックを経由することを固定する。probe が
 // 独自に os.Rename / syncIngestDirectory を直呼びする実装に戻すと、rename や
 // 親ディレクトリ fsync が壊れていても probe だけ気付かず起動できてしまう。
 // 実測: rename と親ディレクトリ fsync を ProbeIngestStorage から落とす変異は、
@@ -65,9 +65,9 @@ func TestProbeIngestStorage_WritesUnderSitesNotRoot(t *testing.T) {
 func TestProbeIngestStorage_UsesSharedRenameAndFsyncHooks(t *testing.T) {
 	t.Run("rename failure surfaces", func(t *testing.T) {
 		mediaDir := t.TempDir()
-		original := renameIngestFile
-		t.Cleanup(func() { renameIngestFile = original })
-		renameIngestFile = func(string, string) error {
+		original := linkIngestFile
+		t.Cleanup(func() { linkIngestFile = original })
+		linkIngestFile = func(string, string) error {
 			return errors.New("injected probe rename failure")
 		}
 
