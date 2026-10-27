@@ -3056,14 +3056,14 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 
 // cleanup.missing_asset_age の設定値が実際に反映されていることを検証する。
 // 既存のエイジング系テストはいずれも MissingAssetAge に既定値
-// (defaultMissingAssetAge = 24h) と同じ値を渡しているため、設定を無視して
+// (config.DefaultMissingAssetAge = 24h) と同じ値を渡しているため、設定を無視して
 // 既定値にフォールバックする実装でも見分けがつかない（CLAUDE.md「実装の
 // 定数と比較するテストは何も主張していない」）。ここでは既定値と区別できる
 // 短い値 (1h) を渡し、first_seen を 2h 前にすることで「既定 24h では未エイジ
 // ングだが設定した 1h ではエイジング済み」という向きで検証する。
 //
 // このテストが検出すべき変異: Work が w.MissingAssetAge を無視して
-// defaultMissingAssetAge を使う。その場合 2h 前の候補は 24h 未満なので
+// config.DefaultMissingAssetAge を使う。その場合 2h 前の候補は 24h 未満なので
 // 報告されず、最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Reported(t *testing.T) {
 	pool := setupTestPool(t)

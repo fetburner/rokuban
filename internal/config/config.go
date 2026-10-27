@@ -111,7 +111,19 @@ func quoteDSNValue(v string) string {
 // パス文字列から FS の種類を推測しない。geesefs / s3fs / Mountpoint のような
 // FUSE S3 は原本にも派生物にも使わない。
 type StorageConfig struct {
-	MediaStoreName string `yaml:"media_store_name"`
+	// Stores は置き場名から定義への対応。map key が外部から使う置き場名になる。
+	Stores map[string]StoreConfig `yaml:"stores"`
+	// Originals は上から最初に一致する原本の desired 置き場規則。
+	Originals []OriginalStoreRule `yaml:"originals"`
+	// Derived は全 site 共通の派生物置き場。
+	Derived string `yaml:"derived"`
+	// Transfer は置き場間転送の上限と、旧コピーを消すまでの猶予。
+	Transfer StorageTransferConfig `yaml:"transfer"`
+
+	// MediaStoreName は現在の単一 media_dir 実装へ渡す互換値。
+	// Load は storage.stores に FS が 1 つだけある場合にその名前を設定する。
+	// desired の置き場を決める用途には使わない。
+	MediaStoreName string `yaml:"-"`
 	MediaDir       string `yaml:"media_dir"`
 	ScratchDir     string `yaml:"scratch_dir"`
 
@@ -316,6 +328,8 @@ func loadFromString(raw string) (*Config, error) {
 		d := time.Hour
 		cfg.Ruler.RetractGrace = &d
 	}
+	cfg.Storage.applyPolicyDefaults()
+	cfg.Storage.setSingleFSStoreCompatibilityName()
 
 	if missing := cfg.missingRequired(); len(missing) > 0 {
 		return nil, &ValidationError{missing: missing}
@@ -346,6 +360,9 @@ func loadFromString(raw string) (*Config, error) {
 	// missingRequired のコメント参照）。
 	if err := cfg.validateMirakcRegistry(); err != nil {
 		return nil, err
+	}
+	if err := cfg.Storage.validate(cfg.Mirakcs, cfg.Cleanup.MissingAssetAge); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
 	// 0 / 未設定は既定 1 に寄せてからプロファイル定義を検査する。

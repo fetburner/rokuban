@@ -35,12 +35,29 @@ import (
 func writeServerTestConfig(t *testing.T, content string) string {
 	t.Helper()
 	storeName := "test-store"
-	if strings.Contains(content, "storage:") && !strings.Contains(content, "media_store_name:") {
-		content = strings.Replace(content, "storage:\n", "storage:\n  media_store_name: "+storeName+"\n", 1)
-	} else if i := strings.Index(content, "media_store_name:"); i >= 0 {
-		lineEnd := strings.IndexByte(content[i:], '\n')
-		if lineEnd >= 0 {
-			storeName = strings.Trim(strings.TrimSpace(content[i+len("media_store_name:"):i+lineEnd]), "\"'")
+	if strings.Contains(content, "storage:") && !strings.Contains(content, "stores:") {
+		policy := "  stores:\n    test-store:\n      kind: fs\n  originals:\n    - store: test-store\n  derived: test-store\n"
+		content = strings.Replace(content, "storage:\n", "storage:\n"+policy, 1)
+	} else {
+		lines := strings.Split(content, "\n")
+		for i, line := range lines {
+			if strings.TrimSpace(line) != "stores:" {
+				continue
+			}
+			for _, candidate := range lines[i+1:] {
+				trimmed := strings.TrimSpace(candidate)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				if strings.HasPrefix(trimmed, "-") {
+					break
+				}
+				if key, _, ok := strings.Cut(trimmed, ":"); ok {
+					storeName = strings.Trim(key, "\"'")
+				}
+				break
+			}
+			break
 		}
 	}
 	dir := t.TempDir()

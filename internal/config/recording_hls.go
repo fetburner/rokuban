@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"math"
 	"time"
-
-	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
 const (
@@ -43,7 +41,7 @@ func (c *RecordingHLSConfig) applyDefaults() {
 func (c Config) validateRecordingHLS() error {
 	name := c.Storage.MediaStoreName
 	if name == "" && c.RecordingHLS.Enabled {
-		return fmt.Errorf("storage.media_store_name is required when recording_hls.enabled is true")
+		return fmt.Errorf("storage.stores must contain exactly one fs store when recording_hls.enabled is true")
 	}
 	if c.RecordingHLS.MaxConcurrent < 1 {
 		return fmt.Errorf("recording_hls.max_concurrent must be >= 1, got %d", c.RecordingHLS.MaxConcurrent)
@@ -74,9 +72,6 @@ func (c Config) validateRecordingHLS() error {
 		if c.RecordingHLS.CacheBytes <= minimum {
 			return fmt.Errorf("recording_hls.cache_bytes must be greater than %d", minimum)
 		}
-	}
-	if name != "" && !mediapath.ValidStoreName(name) {
-		return fmt.Errorf("storage.media_store_name must contain only lowercase ASCII letters, digits and hyphens")
 	}
 	return nil
 }

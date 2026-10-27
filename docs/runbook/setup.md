@@ -126,14 +126,14 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 
 目印は `rokuban storage adopt <store-name>` で作る。照合は完全一致で、末尾の改行も違いとして扱うので、`echo main > .rokuban-store` は改行を足して不一致になる。
 
-worker ロールでは `storage.media_store_name` が必須である。worker は media root の `.rokuban-store` を設定と照合し、一致しなければ書き込みと削除を見送る。照合の判断は [operations/storage.md](../operations/storage.md) にある。
+worker ロールでは `storage.stores` に FS 置き場を定義する（今は 1 つだけ。[置き場の規則](../configuration/keys.md#置き場の規則)）。worker は media root の `.rokuban-store` をその名前と照合し、一致しなければ書き込みと削除を見送る。照合の判断は [operations/storage.md](../operations/storage.md) にある。
 
 `adopt` は実際にマウントされた media root に対して実行する。マウントが外れた状態で実行すると、マウントポイントの下にあるローカルディスクに目印を書いてしまう。
 
 新しく導入するときの順序は次のとおりである。`adopt` は DB に接続するので、`migrate up` の後でないと失敗する。
 
 1. media root をマウントする
-2. `storage.media_store_name` に置き場の名前を設定する
+2. `storage.stores` に FS 置き場を定義し、その map key を目印に使う名前にする
 3. `rokuban migrate up` を実行する
 4. `rokuban storage adopt <store-name>` を実行する
 5. worker を起動する
@@ -153,7 +153,23 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。
 
-`storage.media_store_name` を持たない既存の構成は、更新すると worker が起動しなくなる。更新の前に、名前を設定に足す。
+更新の前に、設定へ `storage.stores` / `originals` / `derived` を書く。旧キー `storage.media_store_name` は廃止した。設定は厳密に読むので、残したまま新しい版を起動すると、全ロールで設定の読み込みが失敗する。`media_store_name: X` を持つ構成は、それを消して `X` を置き場の名前にする。持たない構成は、worker が使う FS 置き場の名前を決めて書く。どちらも下の形になる。`transfer.overlap` は省略すると 48 時間になるので、`cleanup.missing_asset_age` を延ばしているときだけ書く。
+
+```yaml
+# 旧
+storage:
+  media_dir: /mnt/media
+  media_store_name: main
+
+# 新
+storage:
+  media_dir: /mnt/media
+  stores:
+    main: { kind: fs }
+  originals:
+    - store: main
+  derived: main
+```
 
 compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。移行の操作は次のとおりである。
 

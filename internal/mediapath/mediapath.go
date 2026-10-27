@@ -99,7 +99,7 @@ func CheckStoreMarker(mediaDir, expected string) error {
 // CheckStoreMarker と違い、空の name は検査省略ではなくエラーにする（置き場を決めずに書かせない）。
 func RequireStoreMarker(mediaDir, name string) error {
 	if !ValidStoreName(name) {
-		return fmt.Errorf("invalid media store name %q: set storage.media_store_name", name)
+		return fmt.Errorf("invalid media store name %q: define one fs store in storage.stores", name)
 	}
 	return CheckStoreMarker(mediaDir, name)
 }
