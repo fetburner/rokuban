@@ -14,8 +14,8 @@ const (
 	RecordingHLSMaxSegmentBytes    int64 = 16 << 20
 	recordingHLSPrefetchSegments         = 5
 	recordingHLSRenditionCount           = 5 // video, three audio tracks, and optional subtitles
-	defaultRecordingHLSCacheBytes        = 1 << 30
-	defaultRecordingHLSConcurrency       = 2
+	defaultRecordingHLSCacheBytes        = 1536 << 20
+	defaultRecordingHLSConcurrency       = 3
 	defaultRecordingHLSWaitTimeout       = 30 * time.Second
 )
 

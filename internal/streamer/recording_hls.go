@@ -27,17 +27,23 @@ import (
 
 const (
 	// RecordingHLSRoutePattern は世代付き録画 HLS の固定深さパスである。
-	RecordingHLSRoutePattern  = "/api/media/stores/{store}/recordings/{id}/hls/{version}/{profile}"
-	recordingHLSProbeTimeout  = 30 * time.Second
-	recordingHLSCacheControl  = "private, max-age=31536000, immutable"
-	recordingHLSRetryAfter    = "1"
-	recordingHLSMetadataLimit = 256
+	RecordingHLSRoutePattern        = "/api/media/stores/{store}/recordings/{id}/hls/{version}/{profile}"
+	recordingHLSProbeTimeout        = 30 * time.Second
+	recordingHLSCacheControl        = "private, max-age=31536000, immutable"
+	recordingHLSRetryAfter          = "1"
+	recordingHLSMetadataLimit       = 256
+	recordingHLSTempReadTimeout     = 90 * time.Second
+	recordingHLSTempVisibilityDelay = 55 * time.Second
 )
 
-var errRecordingHLSDBUnavailable = errors.New("recording HLS database is unavailable")
+var (
+	errRecordingHLSDBUnavailable = errors.New("recording HLS database is unavailable")
+	errRecordingHLSTempNotReady  = errors.New("recording HLS temp is not ready")
+	errRecordingHLSStaleVersion  = errors.New("recording HLS version is stale")
+)
 
 type recordingHLSStore interface {
-	GetRecordingHLSOriginalTarget(context.Context, int64) (store.RecordingHLSOriginalTarget, error)
+	GetRecordingHLSTarget(context.Context, int64) (store.RecordingHLSInputTarget, error)
 }
 
 // RecordingHLSConfig は世代付き録画 HLS 配信の設定を表す。
@@ -58,6 +64,7 @@ type RecordingHLSConfig struct {
 type recordingHLSKey struct {
 	recordingID int64
 	generation  int64
+	kind        store.RecordingHLSInputKind
 }
 
 type recordingHLSTiming struct {
@@ -71,6 +78,7 @@ type recordingHLSMetadata struct {
 	startedAt    time.Time
 	timing       recordingHLSTiming
 	hasSubtitles bool
+	final        bool
 }
 
 type recordingHLSMetadataEntry struct {
@@ -84,7 +92,7 @@ type recordingHLSMetadataCache struct {
 	lru     list.List
 }
 
-// RecordingHLS は完了録画の固定長 HLS セグメントを配信する。
+// RecordingHLS は録画中の temp と commit 済み原本を同じ世代付き URL で配信する。
 type RecordingHLS struct {
 	media   recordingHLSStore
 	cfg     RecordingHLSConfig
@@ -177,7 +185,7 @@ func (h *RecordingHLS) updateMetrics() {
 	metrics.RecordingHLSActiveTransforms.Set(float64(activeTransforms))
 }
 
-// MasterPlaylist は全 rendition を参照する VOD master playlist を即時に返す。
+// MasterPlaylist は全 rendition を参照する master playlist を即時に返す。
 func (h *RecordingHLS) MasterPlaylist(w http.ResponseWriter, r *http.Request) {
 	request, ok := h.request(w, r, h.cfg.Captions)
 	if !ok {
@@ -194,7 +202,7 @@ func (h *RecordingHLS) MasterPlaylist(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(playlist)
 }
 
-// RenditionPlaylist は録画全体の VOD playlist を即時に返す。
+// RenditionPlaylist は入力の長さと状態に応じた EVENT playlist を即時に返す。
 func (h *RecordingHLS) RenditionPlaylist(w http.ResponseWriter, r *http.Request) {
 	request, ok := h.request(w, r, true)
 	if !ok {
@@ -206,7 +214,13 @@ func (h *RecordingHLS) RenditionPlaylist(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	playlist, err := buildRecordingHLSRenditionPlaylist(request.metadata, profile, rendition)
+	var playlist []byte
+	var err error
+	if request.inputKind == store.RecordingHLSInputTemp {
+		playlist, err = buildRecordingHLSTempPlaylist(request.metadata, profile, rendition, time.Now())
+	} else {
+		playlist, err = buildRecordingHLSRenditionPlaylist(request.metadata, profile, rendition)
+	}
 	if err != nil {
 		http.Error(w, "recording HLS playlist could not be built", http.StatusInternalServerError)
 		return
@@ -256,10 +270,18 @@ func (h *RecordingHLS) Segment(w http.ResponseWriter, r *http.Request) {
 		Number:      number,
 	}
 	input := SegmentTransformInput{
+		Kind:             request.inputKind,
 		OriginPTS:        request.metadata.timing.originPTS,
 		VideoDurationPTS: request.metadata.timing.videoDurationPTS,
 		AudioStreamCount: request.metadata.timing.audioStreamCount,
 		HasSubtitles:     request.metadata.hasSubtitles,
+	}
+	if request.inputKind == store.RecordingHLSInputTemp {
+		input.InputArgs = []string{
+			"-skip_estimate_duration_from_pts", "1",
+			"-follow", "1",
+			"-rw_timeout", strconv.FormatInt(recordingHLSTempReadTimeout.Microseconds(), 10),
+		}
 	}
 	if request.dbUnavailable {
 		input.OpenFile = func(context.Context) (*os.File, error) { return nil, errRecordingHLSDBUnavailable }
@@ -267,7 +289,7 @@ func (h *RecordingHLS) Segment(w http.ResponseWriter, r *http.Request) {
 		target := request.target
 		recordingID := request.recordingID
 		input.OpenFile = func(ctx context.Context) (*os.File, error) {
-			return h.openOriginal(ctx, recordingID, target)
+			return h.openInput(ctx, recordingID, target)
 		}
 	}
 	waitCtx, cancel := context.WithTimeout(r.Context(), h.cfg.WaitTimeout)
@@ -310,7 +332,8 @@ func (h *RecordingHLS) Segment(w http.ResponseWriter, r *http.Request) {
 type recordingHLSRequest struct {
 	recordingID   int64
 	generation    int64
-	target        store.RecordingHLSOriginalTarget
+	target        store.RecordingHLSInputTarget
+	inputKind     store.RecordingHLSInputKind
 	metadata      recordingHLSMetadata
 	dbUnavailable bool
 }
@@ -335,83 +358,117 @@ func (h *RecordingHLS) request(w http.ResponseWriter, r *http.Request, needMetad
 		http.NotFound(w, r)
 		return recordingHLSRequest{}, false
 	}
-	target, err := h.media.GetRecordingHLSOriginalTarget(r.Context(), recordingID)
+	target, err := h.media.GetRecordingHLSTarget(r.Context(), recordingID)
 	if errors.Is(err, store.ErrNotFound) {
 		h.manager.StopRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10))
-		h.meta.remove(recordingHLSKey{recordingID: recordingID, generation: generation})
+		h.meta.removeRecording(recordingID, generation)
 		http.NotFound(w, r)
 		return recordingHLSRequest{}, false
 	}
 	if err != nil {
-		cacheKey := recordingHLSKey{recordingID: recordingID, generation: generation}
-		metadata, cached := h.meta.get(cacheKey)
+		cacheKey, metadata, cached := h.meta.getAny(recordingID, generation)
 		if !h.manager.HasRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10)) || (needMetadata && !cached) {
 			slog.Warn("streamer: checking recording HLS target failed", "recording_id", recordingID, "generation", generation, "err", err)
 			h.writeUnavailable(w)
 			return recordingHLSRequest{}, false
 		}
-		return recordingHLSRequest{recordingID: recordingID, generation: generation, metadata: metadata, dbUnavailable: true}, true
+		if cacheKey.kind == store.RecordingHLSInputTemp {
+			metadata.final = false
+			metadata.timing.videoDurationPTS = 0
+		}
+		return recordingHLSRequest{recordingID: recordingID, generation: generation, inputKind: cacheKey.kind, metadata: metadata, dbUnavailable: true}, true
+	}
+	if target.Kind == store.RecordingHLSInputTemp && target.StoreName != h.cfg.StoreName {
+		h.manager.StopRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10))
+		h.meta.removeRecording(recordingID, generation)
+		http.NotFound(w, r)
+		return recordingHLSRequest{}, false
 	}
 	if target.IngestGeneration != generation {
 		h.manager.StopRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10))
-		h.meta.remove(recordingHLSKey{recordingID: recordingID, generation: generation})
+		h.meta.removeRecording(recordingID, generation)
 		http.Error(w, "recording HLS generation is stale", http.StatusGone)
 		return recordingHLSRequest{}, false
 	}
 	if !needMetadata {
-		return recordingHLSRequest{recordingID: recordingID, generation: generation, target: target}, true
+		return recordingHLSRequest{recordingID: recordingID, generation: generation, target: target, inputKind: target.Kind}, true
 	}
 	metadata, err := h.metadataForTarget(r.Context(), recordingID, generation, target)
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		h.manager.StopRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10))
-		h.meta.remove(recordingHLSKey{recordingID: recordingID, generation: generation})
+		h.meta.removeRecording(recordingID, generation)
 		http.NotFound(w, r)
 		return recordingHLSRequest{}, false
 	}
 	if err != nil {
-		if errors.Is(err, errRecordingHLSDBUnavailable) {
-			if cached, ok := h.meta.get(recordingHLSKey{recordingID: recordingID, generation: generation}); ok && h.manager.HasRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10)) {
-				return recordingHLSRequest{recordingID: recordingID, generation: generation, metadata: cached, target: target, dbUnavailable: true}, true
+		if errors.Is(err, errRecordingHLSDBUnavailable) || errors.Is(err, errRecordingHLSTempNotReady) {
+			if cached, ok := h.meta.get(recordingHLSKey{recordingID: recordingID, generation: generation, kind: target.Kind}); ok && h.manager.HasRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10)) {
+				if target.Kind == store.RecordingHLSInputTemp {
+					cached.final = false
+					cached.timing.videoDurationPTS = 0
+				}
+				return recordingHLSRequest{recordingID: recordingID, generation: generation, metadata: cached, target: target, inputKind: target.Kind, dbUnavailable: true}, true
 			}
 			h.writeUnavailable(w)
 			return recordingHLSRequest{}, false
 		}
-		slog.Error("streamer: probing recording HLS original", "recording_id", recordingID, "generation", generation, "err", err)
+		if errors.Is(err, errRecordingHLSStaleVersion) {
+			http.Error(w, "recording HLS generation is stale", http.StatusGone)
+			return recordingHLSRequest{}, false
+		}
+		slog.Error("streamer: inspecting recording HLS input", "recording_id", recordingID, "generation", generation, "err", err)
 		http.Error(w, "recording HLS source could not be inspected", http.StatusInternalServerError)
 		return recordingHLSRequest{}, false
 	}
-	return recordingHLSRequest{recordingID: recordingID, generation: generation, target: target, metadata: metadata}, true
+	return recordingHLSRequest{recordingID: recordingID, generation: generation, target: target, inputKind: target.Kind, metadata: metadata}, true
 }
 
-func (h *RecordingHLS) metadataForTarget(ctx context.Context, recordingID, generation int64, target store.RecordingHLSOriginalTarget) (recordingHLSMetadata, error) {
-	key := recordingHLSKey{recordingID: recordingID, generation: generation}
+func (h *RecordingHLS) metadataForTarget(ctx context.Context, recordingID, generation int64, target store.RecordingHLSInputTarget) (recordingHLSMetadata, error) {
+	key := recordingHLSKey{recordingID: recordingID, generation: generation, kind: target.Kind}
+	final := target.Kind == store.RecordingHLSInputOriginal || recordingHLSTempEnded(target.RecordStatus)
 	if metadata, ok := h.meta.get(key); ok {
-		if target.StartedAt != nil && metadata.startedAt.Equal(*target.StartedAt) {
+		if target.StartedAt != nil && metadata.startedAt.Equal(*target.StartedAt) && metadata.final == final {
 			return metadata, nil
 		}
 		h.meta.remove(key)
 	}
 	if target.StartedAt == nil {
+		if target.Kind == store.RecordingHLSInputTemp {
+			return recordingHLSMetadata{}, fmt.Errorf("%w: recording start time is not available", errRecordingHLSTempNotReady)
+		}
 		return recordingHLSMetadata{}, errors.New("recording HLS target has no recording start time")
 	}
-	file, err := h.openOriginal(ctx, recordingID, target)
+	file, err := h.openInput(ctx, recordingID, target)
 	if err != nil {
 		return recordingHLSMetadata{}, err
 	}
 	timing, err := probeRecordingHLSTiming(ctx, h.cfg.FFprobe, file)
 	closeErr := file.Close()
 	if err != nil {
+		if target.Kind == store.RecordingHLSInputTemp {
+			return recordingHLSMetadata{}, fmt.Errorf("%w: probing growing recording HLS temp: %w", errRecordingHLSTempNotReady, err)
+		}
 		return recordingHLSMetadata{}, err
 	}
 	if closeErr != nil {
 		return recordingHLSMetadata{}, fmt.Errorf("closing probed recording HLS original: %w", closeErr)
 	}
-	metadata := recordingHLSMetadata{startedAt: *target.StartedAt, timing: timing, hasSubtitles: timing.hasSubtitles}
+	if target.Kind == store.RecordingHLSInputTemp && !final {
+		timing.videoDurationPTS = 0
+	}
+	metadata := recordingHLSMetadata{startedAt: *target.StartedAt, timing: timing, hasSubtitles: timing.hasSubtitles, final: final}
 	h.meta.put(key, metadata)
 	return metadata, nil
 }
 
-func (h *RecordingHLS) openOriginal(ctx context.Context, recordingID int64, target store.RecordingHLSOriginalTarget) (*os.File, error) {
+func (h *RecordingHLS) openInput(ctx context.Context, recordingID int64, target store.RecordingHLSInputTarget) (*os.File, error) {
+	if target.Kind == store.RecordingHLSInputTemp {
+		return h.openTemp(ctx, recordingID, target)
+	}
+	return h.openOriginal(ctx, recordingID, target)
+}
+
+func (h *RecordingHLS) openOriginal(ctx context.Context, recordingID int64, target store.RecordingHLSInputTarget) (*os.File, error) {
 	path, err := mediapath.Resolve(h.cfg.MediaDir, target.RelPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving recording HLS original path: %w", err)
@@ -431,7 +488,7 @@ func (h *RecordingHLS) openOriginal(ctx context.Context, recordingID int64, targ
 		}
 		return nil, store.ErrNotFound
 	}
-	current, err := h.media.GetRecordingHLSOriginalTarget(ctx, recordingID)
+	current, err := h.media.GetRecordingHLSTarget(ctx, recordingID)
 	if err != nil {
 		_ = file.Close()
 		if errors.Is(err, store.ErrNotFound) {
@@ -439,9 +496,57 @@ func (h *RecordingHLS) openOriginal(ctx context.Context, recordingID int64, targ
 		}
 		return nil, fmt.Errorf("%w: verifying recording HLS original: %w", errRecordingHLSDBUnavailable, err)
 	}
-	if current.ID != target.ID || current.RelPath != target.RelPath || current.IngestGeneration != target.IngestGeneration {
+	if current.Kind != store.RecordingHLSInputOriginal || current.ID != target.ID || current.RelPath != target.RelPath || current.IngestGeneration != target.IngestGeneration {
 		_ = file.Close()
+		if current.IngestGeneration != target.IngestGeneration {
+			return nil, errRecordingHLSStaleVersion
+		}
 		return nil, store.ErrNotFound
+	}
+	return file, nil
+}
+
+func (h *RecordingHLS) openTemp(ctx context.Context, recordingID int64, target store.RecordingHLSInputTarget) (*os.File, error) {
+	if target.StoreName != h.cfg.StoreName {
+		return nil, store.ErrNotFound
+	}
+	path, err := mediapath.Resolve(h.cfg.MediaDir, target.RelPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving recording HLS temp path: %w", err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if recordingHLSTempEnded(target.RecordStatus) {
+				return nil, store.ErrNotFound
+			}
+			return nil, fmt.Errorf("opening recording HLS temp: %w", errRecordingHLSTempNotReady)
+		}
+		return nil, fmt.Errorf("opening recording HLS temp: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = file.Close()
+		if err != nil {
+			return nil, fmt.Errorf("stating recording HLS temp: %w", err)
+		}
+		return nil, fmt.Errorf("recording HLS temp is not regular: %w", errRecordingHLSTempNotReady)
+	}
+	current, err := h.media.GetRecordingHLSTarget(ctx, recordingID)
+	if err != nil {
+		_ = file.Close()
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("verifying recording HLS temp: %w", errRecordingHLSTempNotReady)
+		}
+		return nil, fmt.Errorf("%w: verifying recording HLS temp: %w", errRecordingHLSDBUnavailable, err)
+	}
+	if current.IngestGeneration != target.IngestGeneration {
+		_ = file.Close()
+		return nil, errRecordingHLSStaleVersion
+	}
+	if current.Kind != store.RecordingHLSInputTemp || current.RelPath != target.RelPath || current.StoreName != target.StoreName {
+		_ = file.Close()
+		return nil, fmt.Errorf("recording HLS temp changed while opening: %w", errRecordingHLSTempNotReady)
 	}
 	return file, nil
 }
@@ -461,15 +566,19 @@ func (h *RecordingHLS) writeSegmentError(w http.ResponseWriter, r *http.Request,
 	}
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		h.manager.StopRecording(strconv.FormatInt(request.recordingID, 10), strconv.FormatInt(request.generation, 10))
-		h.meta.remove(recordingHLSKey{recordingID: request.recordingID, generation: request.generation})
+		h.meta.removeRecording(request.recordingID, request.generation)
 		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, errRecordingHLSStaleVersion) {
+		http.Error(w, "recording HLS generation is stale", http.StatusGone)
 		return
 	}
 	if errors.Is(err, errSegmentBeyondEnd) {
 		http.Error(w, "recording HLS segment is outside the recording", http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errRecordingHLSDBUnavailable) || errors.Is(err, errSegmentTransformStopped) || errors.Is(err, errSegmentNotCached) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errRecordingHLSDBUnavailable) || errors.Is(err, errRecordingHLSTempNotReady) || errors.Is(err, errSegmentTransformStopped) || errors.Is(err, errSegmentNotCached) || errors.Is(err, errSegmentGrowingInputRetry) {
 		h.writeUnavailable(w)
 		return
 	}
@@ -492,6 +601,19 @@ func (c *recordingHLSMetadataCache) get(key recordingHLSKey) (recordingHLSMetada
 	}
 	c.lru.MoveToFront(element)
 	return element.Value.(recordingHLSMetadataEntry).metadata, true
+}
+
+func (c *recordingHLSMetadataCache) getAny(recordingID, generation int64) (recordingHLSKey, recordingHLSMetadata, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for element := c.lru.Front(); element != nil; element = element.Next() {
+		entry := element.Value.(recordingHLSMetadataEntry)
+		if entry.key.recordingID == recordingID && entry.key.generation == generation {
+			c.lru.MoveToFront(element)
+			return entry.key, entry.metadata, true
+		}
+	}
+	return recordingHLSKey{}, recordingHLSMetadata{}, false
 }
 
 func (c *recordingHLSMetadataCache) put(key recordingHLSKey, metadata recordingHLSMetadata) {
@@ -517,6 +639,17 @@ func (c *recordingHLSMetadataCache) remove(key recordingHLSKey) {
 	if element := c.entries[key]; element != nil {
 		delete(c.entries, key)
 		c.lru.Remove(element)
+	}
+}
+
+func (c *recordingHLSMetadataCache) removeRecording(recordingID, generation int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, element := range c.entries {
+		if key.recordingID == recordingID && key.generation == generation {
+			delete(c.entries, key)
+			c.lru.Remove(element)
+		}
 	}
 }
 
@@ -554,12 +687,50 @@ func buildRecordingHLSRenditionPlaylist(metadata recordingHLSMetadata, profile L
 	if last < 0 {
 		return nil, errors.New("recording HLS video duration is unavailable")
 	}
+	return buildRecordingHLSPlaylist(metadata, profile, rendition, last, true)
+}
+
+func buildRecordingHLSTempPlaylist(metadata recordingHLSMetadata, profile LiveProfile, rendition string, now time.Time) ([]byte, error) {
+	if (!supportedSegmentRendition(rendition) || (rendition == "subtitles" && !metadata.hasSubtitles)) || profile.SegmentSeconds < 1 {
+		return nil, errors.New("invalid recording HLS rendition or segment duration")
+	}
+	last := recordingHLSTempLastSegmentNumber(metadata.startedAt, now, profile.SegmentSeconds)
+	if metadata.final {
+		last = finalSegmentNumber(metadata.timing.videoDurationPTS, profile.SegmentSeconds)
+		if last < 0 {
+			return nil, errors.New("recording HLS final temp duration is unavailable")
+		}
+	}
+	return buildRecordingHLSPlaylist(metadata, profile, rendition, last, metadata.final)
+}
+
+// 壊し方: 55 秒の余裕を引かず、録画の実時間とともに末尾が増える判定をなくす。
+func recordingHLSTempLastSegmentNumber(startedAt, now time.Time, segmentSeconds int) int64 {
+	if segmentSeconds < 1 {
+		return -1
+	}
+	margin := recordingHLSTempVisibilityDelay + time.Duration(segmentSeconds)*time.Second
+	elapsed := now.Sub(startedAt) - margin
+	if elapsed < 0 {
+		return -1
+	}
+	return int64(elapsed / (time.Duration(segmentSeconds) * time.Second))
+}
+
+func recordingHLSTempEnded(status string) bool {
+	return status == "canceled" || status == "failed"
+}
+
+func buildRecordingHLSPlaylist(metadata recordingHLSMetadata, profile LiveProfile, rendition string, last int64, endlist bool) ([]byte, error) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n", profile.SegmentSeconds)
+	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n", profile.SegmentSeconds)
 	remaining := float64(metadata.timing.videoDurationPTS) / float64(mpegTSTimestampClock)
 	programDateTime := metadata.startedAt
 	for number := int64(0); number <= last; number++ {
-		segmentSeconds := math.Min(float64(profile.SegmentSeconds), remaining)
+		segmentSeconds := float64(profile.SegmentSeconds)
+		if endlist {
+			segmentSeconds = math.Min(float64(profile.SegmentSeconds), remaining)
+		}
 		if segmentSeconds <= 0 {
 			return nil, errors.New("recording HLS segment duration is not positive")
 		}
@@ -569,10 +740,14 @@ func buildRecordingHLSRenditionPlaylist(metadata recordingHLSMetadata, profile L
 		}
 		fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n#EXTINF:%s,\n%d%s\n",
 			programDateTime.Format(time.RFC3339Nano), strconv.FormatFloat(segmentSeconds, 'f', 3, 64), number, extension)
-		remaining -= segmentSeconds
+		if endlist {
+			remaining -= segmentSeconds
+		}
 		programDateTime = programDateTime.Add(time.Duration(profile.SegmentSeconds) * time.Second)
 	}
-	b.WriteString("#EXT-X-ENDLIST\n")
+	if endlist {
+		b.WriteString("#EXT-X-ENDLIST\n")
+	}
 	return []byte(b.String()), nil
 }
 

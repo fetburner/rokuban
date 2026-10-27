@@ -91,7 +91,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("original VOD target is scoped to the recording's site", func(t *testing.T) { runMediaOriginalVODTarget(t, newFixture) })
-	t.Run("recording HLS target shares the original VOD visibility predicate", func(t *testing.T) { runMediaRecordingHLSOriginalTarget(t, newFixture) })
+	t.Run("recording HLS original target shares the original VOD visibility predicate", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
 	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
 	t.Run("chase target requires a record and a recording outside the trash", func(t *testing.T) { runMediaChaseTarget(t, newFixture) })
 	t.Run("namespace guard accepts site paths and rejects malformed ones", func(t *testing.T) { runMediaNamespaceMalformed(t, newFixture) })
@@ -638,7 +638,7 @@ func runMediaOriginalVODTarget(t *testing.T, newFixture NewMediaFixture) {
 	}
 }
 
-func runMediaRecordingHLSOriginalTarget(t *testing.T, newFixture NewMediaFixture) {
+func runMediaRecordingHLSTarget(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
 	startedAt := time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC)
@@ -646,21 +646,21 @@ func runMediaRecordingHLSOriginalTarget(t *testing.T, newFixture NewMediaFixture
 	f.SetRecordingEncodeTimes(t, id, &startedAt, nil)
 	assetID := f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "active")
 
-	target, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, id)
+	target, err := f.Serving.GetRecordingHLSTarget(ctx, id)
 	if err != nil {
-		t.Fatalf("GetRecordingHLSOriginalTarget(%d): %v", id, err)
+		t.Fatalf("GetRecordingHLSTarget(%d): %v", id, err)
 	}
-	if target.ID != assetID || target.IngestGeneration != 0 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
+	if target.Kind != store.RecordingHLSInputOriginal || target.ID != assetID || target.IngestGeneration != 0 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
 		t.Fatalf("target = %+v, want asset %d, generation 0 and start %s", target, assetID, startedAt)
 	}
 
-	if _, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, -1); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSOriginalTarget(missing) error = %v, want ErrNotFound", err)
+	if _, err := f.Serving.GetRecordingHLSTarget(ctx, -1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSTarget(missing) error = %v, want ErrNotFound", err)
 	}
 
 	missingOriginalID := f.NewRecording(t)
-	if _, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, missingOriginalID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSOriginalTarget(without original) error = %v, want ErrNotFound", err)
+	if _, err := f.Serving.GetRecordingHLSTarget(ctx, missingOriginalID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSTarget(without input) error = %v, want ErrNotFound", err)
 	}
 
 	removedAt := time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC)
@@ -682,8 +682,8 @@ func runMediaRecordingHLSOriginalTarget(t *testing.T, newFixture NewMediaFixture
 			if tc.deletedAt != nil || tc.purgedAt != nil || tc.supersededAt != nil {
 				f.SetRecordingRemovalTimes(t, removedID, tc.deletedAt, tc.purgedAt, tc.supersededAt)
 			}
-			if _, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, removedID); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("GetRecordingHLSOriginalTarget(%s) error = %v, want ErrNotFound", tc.name, err)
+			if _, err := f.Serving.GetRecordingHLSTarget(ctx, removedID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetRecordingHLSTarget(%s) error = %v, want ErrNotFound", tc.name, err)
 			}
 		})
 	}

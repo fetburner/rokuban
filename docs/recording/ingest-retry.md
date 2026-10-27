@@ -131,7 +131,7 @@ flowchart LR
 
 その後の短い確定区間で、rel_path 固有 filesystem lock を取得し、original の media_assets 行を INSERT して一意性を予約する。INSERT は commit まで他セッションに見えない。lock と transaction を保持したまま temp を canonical へ link し、親ディレクトリを fsync してから DB transaction を commit する。commit が成功したら temp を unlink する。宛先に別のファイルがあれば、temp を残し、record を消さず、行も作らずにエラーで止める。
 
-link 前の失敗では、temp を残して次の試行へ渡し、pull を続けられる。ただし長さ / SHA-256 の不一致と `canceled` / `failed` は、中身が不採用と確定しているので temp を消す。link 後の親ディレクトリ fsync または DB commit が失敗した場合は transaction を rollback し、temp を残す。次の試行が commit だけをやり直す。canonical file は自動削除しない。mirakc record は削除しない。link と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
+link 前の一時障害では、temp を残して次の試行へ渡し、pull を続けられる。長さ / SHA-256 の不一致では中身が不採用と確定するため temp を消す。`canceled` / `failed` では原本として commit しないが、途中までの temp と進捗行は追っかけ再生用に残す。temp は公開前 orphan の aging で回収する。link 後の親ディレクトリ fsync または DB commit が失敗した場合は transaction を rollback し、temp を残す。次の試行が commit だけをやり直す。canonical file は自動削除しない。mirakc record は削除しない。link と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
 
 ##### fsync の失敗と再試行
 
@@ -147,13 +147,15 @@ DB commit が成立して応答だけ失われた場合は、次の冪等性チ�
 
 ##### 途中で終わった record の扱い
 
-**取消または失敗で終わった record の、途中までのバイトは資産にしない。** 原本行の存在は「録れた」と読まれて後継の録画が取り消されうる上、エッジの部分ファイルは後継の試行に上書きされうる安定しない事実でもあるからである。
+取り消し・失敗で終わった録画も、受け取った部分を原本扱いせずに一時的に再生できる。
+
+原本行の存在は「録れた」と読まれて後継の録画が取り消されうる上、mirakc の部分ファイルは後継の試行に上書きされうる安定しない事実でもある。Rokuban が受信済みの temp は worker が終了した時点のローカルコピーなので、`recording_ingest_progress` 行とともに一時的な HLS 追っかけ再生へ使う。
 
 理由は次の 3 つである。
 
 - original 行の存在は「その放送イベントは録れた」と読まれる。ruler は status を見ずに original の有無で予約を外す。取消した番組を録画中に再予約した場合、前の試行の部分を commit すると、予約が外れて後継の録画が取り消される
 - エッジの部分ファイルは安定した事実ではない。content path は番組ごとに決まり、mirakc は同じ番組の次の試行で同じファイルを切り詰めて書く。終端を観測した後の最後の drain は、後継のバイトを読みうる
-- 後継の無い `failed` でも、完結していない原本の行は何も主張できない（不変条件 10）。取消は予約を手放した結果であり、部分を残す意図を表す書き込みは存在しない
+- 後継の無い `failed` でも、完結していない原本の行は何も主張できない（不変条件 10）。進捗行は未 commit の temp を一時再生する状態だけを指し、録画完了は主張しない
 
 ##### 転送失敗が続いたときの滞留
 
@@ -233,7 +235,7 @@ ingest commit と通常削除は、同じ rel_path の予約 lock file に対す
 
 再試行は録画固有の一時ファイルで再開し、ロックが同時書き込みを防ぐ。一時ファイルの孤児は、mtime 猶予とエイジングの後に回収される。
 
-孤児と追加 I/O について、中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。ingest temp は mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。
+中身の不一致では temp を消す。record の cancel / fail では部分 temp を HLS 追っかけ再生用に残す。それ以外の失敗も次の試行へ temp を渡す。いずれの temp も mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。
 
 link 後の commit 失敗で残った canonical は、再試行が成功すれば行が付く。成功しないまま行が無い canonical は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加しない。追加コストは replay・temp の link と unlink・親 directory fsync である。
 

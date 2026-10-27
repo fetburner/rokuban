@@ -294,7 +294,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 ingest の temp は、record ごとに固有の名前を持つ。孤児候補になるのは、プロセス死や link 後の DB 失敗で残った temp と canonical file である。予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
 
-ingest は canonical file と同じディレクトリに、record 固有の `.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。
+ingest は canonical file と同じディレクトリに、record 固有の `.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の一時障害後の再試行はその temp を replay して末尾から続ける。中身の不一致では temp を消す。record の cancel / fail では commit せず、部分 temp を HLS 追っかけ再生に使った後、通常の orphan aging で回収する。
 
 名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しの rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。temp の物理削除時は ingest と同じ flock を非 blocking で取得し、replay や追記中の temp は次の reconcile pass へ延期する。ロック取得後に inode と mtime を再確認してから unlink するので、同名パスの差し替えで別の temp を削除しない。
 

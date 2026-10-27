@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
@@ -53,8 +55,9 @@ const (
 )
 
 var (
-	errSegmentManagerClosed    = errors.New("segment manager is closed")
-	errSegmentTransformStopped = errors.New("segment transform stopped before requested segment was ready")
+	errSegmentManagerClosed     = errors.New("segment manager is closed")
+	errSegmentTransformStopped  = errors.New("segment transform stopped before requested segment was ready")
+	errSegmentGrowingInputRetry = errors.New("growing segment input ended before the requested segment was ready")
 	// errSegmentRetry は、待っていた変換が止められたので Get が最初からやり直すための内部の印。
 	errSegmentRetry = errors.New("segment request must be retried")
 	// errSegmentBeyondEnd は、録画の最後のセグメントより後ろを要求したときのエラー。
@@ -73,6 +76,7 @@ type segmentTransformGroup struct {
 	recordingID string
 	generation  string
 	profile     string
+	inputKind   store.RecordingHLSInputKind
 }
 
 type segmentTransformResult struct {
@@ -90,6 +94,7 @@ type segmentTransformWaiter struct {
 // InputArgs は -i の前に入るので、伸びるファイルの入力は変換の管理を変えずに
 // file プロトコルの引数を足せる。
 type SegmentTransformInput struct {
+	Kind      store.RecordingHLSInputKind
 	OpenFile  func(context.Context) (*os.File, error)
 	Path      string
 	InputArgs []string
@@ -152,7 +157,7 @@ type SegmentTransformOptions struct {
 	PollInterval     time.Duration
 }
 
-// SegmentManager は、完成した原本の録画を固定長の HLS セグメントへ変換し、
+// SegmentManager は、録画入力を固定長の HLS セグメントへ変換し、
 // そのファイルをバイト数上限の LRU に保つ。
 //
 // 同時に生きている ffmpeg は、SIGSTOP で止めているものも含めて MaxConcurrent 本までである。
@@ -326,7 +331,7 @@ func (m *SegmentManager) getOnce(
 		m.mu.Unlock()
 		return nil, false, errSegmentManagerClosed
 	}
-	group := segmentTransformGroup{recordingID: key.RecordingID, generation: key.Generation, profile: key.Profile}
+	group := segmentTransformGroup{recordingID: key.RecordingID, generation: key.Generation, profile: key.Profile, inputKind: input.Kind}
 	if lease, ok, err := m.cache.acquire(key); err != nil {
 		m.mu.Unlock()
 		return nil, false, err
@@ -1029,6 +1034,9 @@ func (m *SegmentManager) finishTask(task *segmentTransformTask, processErr error
 		waiterErr = errSegmentNotCached
 	} else if task.stopping && !errors.Is(processErr, errSegmentManagerClosed) {
 		waiterErr = errSegmentTransformStopped
+	} else if task.input.Kind == store.RecordingHLSInputTemp {
+		slog.Warn("streamer: growing recording HLS transform ended before the requested segment was ready", "recording_id", task.group.recordingID, "generation", task.group.generation, "profile", task.group.profile, "err", processErr, "stderr", task.stderr.String())
+		waiterErr = fmt.Errorf("%w: %w", errSegmentGrowingInputRetry, processErr)
 	} else {
 		waiterErr = fmt.Errorf("segment ffmpeg exited: %w: %s", processErr, task.stderr.String())
 	}

@@ -82,8 +82,8 @@ storage:
 recording_hls:
   enabled: true
   segment_dir: /dev/shm/rokuban-recording-hls
-  cache_bytes: 1073741824
-  max_concurrent: 2
+  cache_bytes: 1610612736
+  max_concurrent: 3
   wait_timeout: 30s
 
 # ライブ視聴は site/ の streamer が担当する。config は全 Pod で共有するため

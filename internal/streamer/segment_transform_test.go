@@ -1,6 +1,7 @@
 package streamer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *testing.T) {
@@ -63,6 +66,206 @@ func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *
 	if ss > indexOf(args, "-i") {
 		t.Fatalf("-ss must be an input-side option: %v", args)
 	}
+}
+
+func TestSegmentTransformDoesNotJoinDifferentInputKinds(t *testing.T) {
+	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inputPath := filepath.Join(t.TempDir(), "input.ts")
+	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
+	manager, err := NewSegmentManager(SegmentTransformOptions{
+		Config:           LiveConfig{FFmpeg: ffmpeg, Profiles: []LiveProfile{profile}},
+		ScratchRoot:      t.TempDir(),
+		CacheBytes:       1 << 20,
+		MaxSegmentBytes:  1,
+		MaxConcurrent:    2,
+		PrefetchSegments: 0,
+		IdleTimeout:      time.Minute,
+		PollInterval:     time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmentManager: %v", err)
+	}
+	defer closeSegmentManager(t, manager)
+	input := SegmentTransformInput{
+		OpenFile:         func(context.Context) (*os.File, error) { return os.Open(inputPath) },
+		AudioStreamCount: 1,
+		Kind:             store.RecordingHLSInputTemp,
+	}
+	key := SegmentKey{RecordingID: "recording", Generation: "generation", Profile: "test", Rendition: "video", Number: 0}
+	for _, kind := range []store.RecordingHLSInputKind{store.RecordingHLSInputTemp, store.RecordingHLSInputOriginal} {
+		input.Kind = kind
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+		_, getErr := manager.Get(ctx, key, input)
+		cancel()
+		if !errors.Is(getErr, context.DeadlineExceeded) {
+			t.Fatalf("Get(input kind %d) error = %v, want deadline while fake ffmpeg sleeps", kind, getErr)
+		}
+	}
+	if _, active := manager.Stats(); active != 2 {
+		t.Fatalf("active transforms after same URL requested from temp and original = %d, want 2", active)
+	}
+}
+
+func TestBuildSegmentTransformArgsKeepsGrowingInputOptionsBeforeFD(t *testing.T) {
+	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
+	args, err := buildSegmentTransformArgs(
+		LiveConfig{FFmpeg: "ffmpeg", Profiles: []LiveProfile{profile}},
+		profile,
+		SegmentTransformInput{
+			Kind:             store.RecordingHLSInputTemp,
+			Path:             "/dev/fd/3",
+			InputArgs:        []string{"-follow", "1", "-rw_timeout", "90000000"},
+			OriginPTS:        5400 * mpegTSTimestampClock,
+			AudioStreamCount: 1,
+		},
+		0,
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("buildSegmentTransformArgs: %v", err)
+	}
+	inputIndex := indexOf(args, "-i")
+	for _, pair := range [][2]string{{"-follow", "1"}, {"-rw_timeout", "90000000"}} {
+		index := indexOf(args, pair[0])
+		if index < 0 || index+1 >= inputIndex || args[index+1] != pair[1] {
+			t.Errorf("input option %q is not before -i with value %q: %v", pair[0], pair[1], args)
+		}
+	}
+}
+
+func TestGrowingTempFollowReadsAppendedBytesThroughFD3WithRealFFmpeg(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	fullPath := filepath.Join(t.TempDir(), "full.ts")
+	writeAlignedTestTS(t, ffmpeg, fullPath, 4)
+	fullBytes, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const tsPacketBytes = 188
+	partialBytes := len(fullBytes) / 2 / tsPacketBytes * tsPacketBytes
+	if partialBytes < tsPacketBytes || partialBytes >= len(fullBytes) {
+		t.Fatalf("TS prefix length %d is invalid for %d bytes", partialBytes, len(fullBytes))
+	}
+	partialPath := filepath.Join(t.TempDir(), "growing.ts")
+	if err := os.WriteFile(partialPath, fullBytes[:partialBytes], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expectedFrames := framehashVideoFrameCount(t, ffmpeg, fullPath)
+	prefixFrames := framehashVideoFrameCount(t, ffmpeg, partialPath)
+	if prefixFrames <= 0 || prefixFrames >= expectedFrames {
+		t.Fatalf("static TS prefix has %d frames; want between 1 and %d", prefixFrames, expectedFrames-1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpeg,
+		"-v", "error",
+		"-skip_estimate_duration_from_pts", "1",
+		"-follow", "1",
+		"-rw_timeout", "5000000",
+		"-i", "/dev/fd/3",
+		"-map", "0:v:0", "-an", "-fps_mode", "passthrough",
+		"-f", "framehash", "-hash", "md5", "pipe:1",
+	)
+	input, err := os.Open(partialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.ExtraFiles = []*os.File{input}
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		_ = input.Close()
+		t.Fatalf("starting real ffmpeg with /dev/fd/3: %v", err)
+	}
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	appended := false
+	processFinished := false
+	var waitErr error
+	deadline := time.Now().Add(3 * time.Second)
+	for !appended && time.Now().Before(deadline) {
+		select {
+		case waitErr = <-waitCh:
+			processFinished = true
+		default:
+		}
+		if processFinished {
+			break
+		}
+		offset, seekErr := input.Seek(0, io.SeekCurrent)
+		if seekErr != nil {
+			_ = cmd.Process.Kill()
+			_ = input.Close()
+			t.Fatalf("reading child fd 3 offset: %v", seekErr)
+		}
+		if offset >= int64(partialBytes) {
+			writer, openErr := os.OpenFile(partialPath, os.O_WRONLY|os.O_APPEND, 0)
+			if openErr != nil {
+				_ = cmd.Process.Kill()
+				_ = input.Close()
+				t.Fatal(openErr)
+			}
+			_, writeErr := writer.Write(fullBytes[partialBytes:])
+			closeErr := writer.Close()
+			if writeErr != nil || closeErr != nil {
+				_ = cmd.Process.Kill()
+				_ = input.Close()
+				t.Fatalf("appending TS bytes: write=%v close=%v", writeErr, closeErr)
+			}
+			appended = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = input.Close()
+	if !appended && !processFinished {
+		_ = cmd.Process.Kill()
+		waitErr = <-waitCh
+	}
+	if appended {
+		waitErr = <-waitCh
+	}
+	if !appended {
+		t.Fatalf("ffmpeg did not read the %d-byte initial prefix before it exited: %v; stderr=%s", partialBytes, waitErr, stderr.String())
+	}
+	frames := 0
+	for _, line := range strings.Split(output.String(), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			frames++
+		}
+	}
+	if frames != expectedFrames {
+		t.Fatalf("real ffmpeg decoded %d frames from the growing /dev/fd/3 input, want %d after append; exit=%v stderr=%s", frames, expectedFrames, waitErr, stderr.String())
+	}
+}
+
+func framehashVideoFrameCount(t *testing.T, ffmpeg, path string) int {
+	t.Helper()
+	cmd := exec.Command(ffmpeg,
+		"-v", "error", "-i", path, "-map", "0:v:0", "-an", "-fps_mode", "passthrough",
+		"-f", "framehash", "-hash", "md5", "pipe:1",
+	)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("counting framehash output for %s: %v", path, err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(output), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			count++
+		}
+	}
+	return count
 }
 
 func TestBuildSegmentTransformArgsMapsOnlyPresentSubtitles(t *testing.T) {
@@ -490,7 +693,7 @@ func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
 		t.Fatal("request for the last prefetched segment replaced the paused transform")
 	}
 	manager.mu.Lock()
-	taskCount := len(manager.tasks[segmentTransformGroup{"recording", "generation-1", "test"}])
+	taskCount := len(manager.tasks[segmentTransformGroup{"recording", "generation-1", "test", 0}])
 	manager.mu.Unlock()
 	if taskCount != 1 {
 		t.Fatalf("transforms after requesting segment %d = %d, want 1", bound, taskCount)
@@ -1435,7 +1638,7 @@ func TestSegmentTransformEndlistMakesOnlyTheRecordingsLastSegmentFinal(t *testin
 				t.Fatal(err)
 			}
 			task := &segmentTransformTask{
-				group:   segmentTransformGroup{"recording", "generation", "test"},
+				group:   segmentTransformGroup{"recording", "generation", "test", 0},
 				profile: LiveProfile{Name: "test", SegmentSeconds: 2},
 				input:   SegmentTransformInput{VideoDurationPTS: tc.durationPTS},
 				workDir: workDir, requestStart: 2, startNumber: 1, currentNumber: 1, maxRequested: 2,
@@ -1538,7 +1741,7 @@ func TestSegmentTransformOversizedSegmentIsDeliveredAndHugeSegmentFailsWithoutWa
 				t.Fatal(err)
 			}
 		}
-		group := segmentTransformGroup{"recording", "generation", "test"}
+		group := segmentTransformGroup{"recording", "generation", "test", 0}
 		key := SegmentKey{"recording", "generation", "test", "video", 1}
 		waiter := &segmentTransformWaiter{ctx: context.Background(), ch: make(chan segmentTransformResult, 1)}
 		task := &segmentTransformTask{
@@ -1613,7 +1816,7 @@ func TestSegmentTransformDeletesPreRollSegmentOnceNextSegmentStarts(t *testing.T
 		}
 	}
 	task := &segmentTransformTask{
-		group:   segmentTransformGroup{"recording", "generation", "test"},
+		group:   segmentTransformGroup{"recording", "generation", "test", 0},
 		profile: LiveProfile{Name: "test", SegmentSeconds: 2},
 		workDir: workDir, requestStart: 2, startNumber: 1, currentNumber: 1, maxRequested: 2,
 	}
@@ -1749,7 +1952,7 @@ func TestSegmentTransformStopAtCachedPositionKeepsTransformsStillProducingAWaite
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager := newBareSegmentManager(t, 1<<20)
-			group := segmentTransformGroup{"recording", "generation", "test"}
+			group := segmentTransformGroup{"recording", "generation", "test", 0}
 			for _, rendition := range segmentRenditions {
 				path := filepath.Join(manager.cache.root, "tmp-"+rendition)
 				if err := os.WriteFile(path, []byte("cached-"+rendition), 0o600); err != nil {

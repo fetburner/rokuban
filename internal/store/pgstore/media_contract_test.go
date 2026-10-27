@@ -27,7 +27,7 @@ func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
 }
 
-func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
+func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	startedAt := time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC)
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -40,11 +40,11 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 		t.Fatalf("setting committed ingest generation: %v", err)
 	}
 
-	target, err := NewMedia(pool, "tokyo").GetRecordingHLSOriginalTarget(context.Background(), recordingID)
+	target, err := NewMedia(pool, "tokyo").GetRecordingHLSTarget(context.Background(), recordingID)
 	if err != nil {
-		t.Fatalf("GetRecordingHLSOriginalTarget(%d): %v", recordingID, err)
+		t.Fatalf("GetRecordingHLSTarget(%d): %v", recordingID, err)
 	}
-	if target.ID != assetID || target.IngestGeneration != 19 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
+	if target.Kind != store.RecordingHLSInputOriginal || target.ID != assetID || target.IngestGeneration != 19 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
 		t.Fatalf("target = %+v, want asset %d, generation 19 and start %s", target, assetID, startedAt)
 	}
 
@@ -52,8 +52,8 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 		p.Status = "recording"
 	})
 	dbtest.MediaAsset(t, pool, unfinishedID)
-	if _, err := NewMedia(pool, "tokyo").GetRecordingHLSOriginalTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSOriginalTarget(unfinished) error = %v, want ErrNotFound", err)
+	if _, err := NewMedia(pool, "tokyo").GetRecordingHLSTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSTarget(unfinished) error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -76,6 +76,13 @@ func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("writing ingest progress: %v", err)
 	}
+	target, err := media.GetRecordingHLSTarget(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("GetRecordingHLSTarget(%d) while ingesting: %v", recordingID, err)
+	}
+	if target.Kind != store.RecordingHLSInputTemp || target.RelPath != tempRelPath || target.StoreName != "tokyo" || target.IngestGeneration != generation {
+		t.Fatalf("ingest HLS target = %+v, want temp path %q in tokyo at generation %d", target, tempRelPath, generation)
+	}
 	state, err := media.GetIngestTempState(ctx, recordingID)
 	if err != nil || state == nil {
 		t.Fatalf("GetIngestTempState() = (%+v, %v), want a row", state, err)
@@ -97,6 +104,13 @@ func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{}}, nil
 	}, func() error { return nil }); err != nil {
 		t.Fatalf("committing original: %v", err)
+	}
+	target, err = media.GetRecordingHLSTarget(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("GetRecordingHLSTarget(%d) after commit: %v", recordingID, err)
+	}
+	if target.Kind != store.RecordingHLSInputOriginal || target.IngestGeneration != generation {
+		t.Fatalf("committed HLS target = %+v, want original at unchanged generation %d", target, generation)
 	}
 	var committedGeneration int64
 	if err := pool.QueryRow(ctx,

@@ -733,12 +733,13 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 
 // TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry は、録画中に
 // observe した mirakc record が canceled / failed へ遷移したとき、Work が
-// jobq.ErrDiscard でジョブを終端し、temp を破棄して再試行へ戻さないことを
+// jobq.ErrDiscard でジョブを終端し、部分 temp を再試行へ戻さず保持することを
 // 固定する。
 //
-// jobq.ErrDiscard を返すこと・進捗行が消えること・原本 media_asset が
+// 壊し方: 異常終端で removeTemp を true にする。
+// jobq.ErrDiscard を返すこと・進捗行と temp が残ること・原本 media_asset が
 // 作られていない（部分ファイルを commit していない）こと・エッジの record を
-// 削除しないことの 4 点を固定する。
+// 削除しないことを固定する。
 // 単に「error が非 nil」だけを見るテストにはしない --- それでは
 // jobq.ErrDiscard を外して素の error を返すだけの変異も通ってしまう。
 func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T) {
@@ -755,6 +756,8 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 
 			var recordGets, deletes atomic.Int32
+			var streamGets atomic.Int32
+			tsData := makeTSData(4)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.Method == http.MethodDelete:
@@ -764,7 +767,12 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = w.Write([]byte(`{"recordRemoved":true,"contentRemoved":true}`))
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-					// 追い付いた状態のまま：このテストは status 遷移だけを見る。
+					if streamGets.Add(1) == 1 {
+						w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+						w.WriteHeader(http.StatusPartialContent)
+						_, _ = w.Write(tsData)
+						return
+					}
 					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 					n := recordGets.Add(1)
@@ -812,14 +820,15 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 				t.Fatalf("Work() = %v (%T), want jobq.ErrDiscard (job must be terminated, not retried)", err, err)
 			}
 
-			var progressRows int
+			var tempRelPath string
+			var tempGeneration int64
 			if err := pool.QueryRow(context.Background(),
-				"SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID,
-			).Scan(&progressRows); err != nil {
-				t.Fatalf("counting recording_ingest_progress: %v", err)
+				"SELECT temp_rel_path, temp_generation FROM recording_ingest_progress WHERE recording_id = $1", recordingID,
+			).Scan(&tempRelPath, &tempGeneration); err != nil {
+				t.Fatalf("reading retained recording_ingest_progress: %v", err)
 			}
-			if progressRows != 0 {
-				t.Errorf("recording_ingest_progress rows = %d, want 0 (stale progress row must be cleared on cancel/fail)", progressRows)
+			if tempRelPath == "" || tempGeneration <= 0 {
+				t.Errorf("retained temp target = (%q, %d), want a path and positive generation", tempRelPath, tempGeneration)
 			}
 
 			var assetRows int
@@ -835,8 +844,12 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 				t.Errorf("DELETE requests = %d, want 0 (edge record must be kept: purging it can remove a successor's content file)", n)
 			}
 			tempPath := ingestTempFilePath(filepath.Join(w.MediaDir, "sites", "default", "test"), "default", tt.recordID)
-			if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("ingest temp after %s record termination: err=%v, want os.ErrNotExist", tt.name, err)
+			info, err := os.Stat(tempPath)
+			if err != nil {
+				t.Fatalf("stat ingest temp after %s record termination: %v", tt.name, err)
+			}
+			if info.Size() != int64(len(tsData)) {
+				t.Errorf("ingest temp size after %s record termination = %d, want captured %d bytes", tt.name, info.Size(), len(tsData))
 			}
 		})
 	}

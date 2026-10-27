@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadRecordingHLS(t *testing.T) {
@@ -16,7 +17,7 @@ func TestLoadRecordingHLS(t *testing.T) {
 		{name: "enabled missing store", setting: "recording_hls:\n  enabled: true\n", wantError: "storage.media_store_name"},
 		{name: "enabled requires scratch", setting: "recording_hls:\n  enabled: true\n", store: "main", wantError: "recording_hls.segment_dir"},
 		{name: "enabled", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n      video_codec: libx264\n      audio_codec: aac\n", store: "disk-2", wantEnabled: true},
-		{name: "cache lower bound is strict", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\n  max_concurrent: 2\n  cache_bytes: 1006632960\n", store: "main", wantError: "recording_hls.cache_bytes"},
+		{name: "cache lower bound is strict", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\n  max_concurrent: 3\n  cache_bytes: 1509949440\n", store: "main", wantError: "recording_hls.cache_bytes"},
 		{name: "disabled live rejects no profiles", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects dot segment", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: ..\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects empty profile name", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: ''\n", store: "main", wantError: "live.profiles"},
@@ -46,7 +47,7 @@ func TestLoadRecordingHLS(t *testing.T) {
 			if cfg.RecordingHLS.Enabled != tc.wantEnabled || cfg.Storage.MediaStoreName != tc.store {
 				t.Fatalf("recording_hls=%+v, store=%q", cfg.RecordingHLS, cfg.Storage.MediaStoreName)
 			}
-			if cfg.RecordingHLS.CacheBytes != defaultRecordingHLSCacheBytes || cfg.RecordingHLS.MaxConcurrent != defaultRecordingHLSConcurrency || cfg.RecordingHLS.WaitTimeout != defaultRecordingHLSWaitTimeout {
+			if cfg.RecordingHLS.CacheBytes != 1610612736 || cfg.RecordingHLS.MaxConcurrent != 3 || cfg.RecordingHLS.WaitTimeout != 30*time.Second {
 				t.Errorf("recording HLS defaults = %+v", cfg.RecordingHLS)
 			}
 		})

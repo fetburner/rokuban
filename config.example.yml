@@ -70,10 +70,10 @@ recording_hls:
                                                 # enabled なら必須。起動時に中身を掃除する。
                                                 # emptyDir (Memory) など専用 tmpfs に置き、
                                                 # 複数プロセスで共有しない。
-  # cache_bytes: 1073741824                    # バイト単位。既定 1 GiB。下限の式と tmpfs の
+  # cache_bytes: 1610612736                    # バイト単位。既定 1.5 GiB。下限の式と tmpfs の
                                                 # 大きさは docs/operations/k8s-streamer.md
                                                 # 「世代付き録画 HLS の scratch」。
-  # max_concurrent: 2                          # 生きている ffmpeg の上限。既定 2。
+  # max_concurrent: 3                          # 生きている ffmpeg の上限。既定 3。
   # wait_timeout: 30s                          # セグメント待ちの期限。超過は 503 と Retry-After。
                                                 # 既定 30 秒。
 
@@ -286,7 +286,9 @@ live:
   #     height: 720               # 0 or omit = スケールしない
   #     deinterlace: true         # インターレース解除。scaler=software なら yadif
   #     preset: veryfast          # optional
-  #     segment_seconds: 2        # 0 なら既定値 2
+  #     segment_seconds: 2        # 0 なら既定値 2。録画中 HLS は末尾を「追記の可視遅延
+                                  # 最大 55 秒 + D」だけ遅らせる。NFS 4.1、500 kbit/s
+                                  # の測定で最大 55 秒。式と条件は playback.md を参照。
   #     playlist_size: 6          # 0 なら既定値 6
   #   # VAAPI（scaler/crf/qp はプロファイル毎 --- 出力側オプションなので出力ごとに違ってよい）
   #   - name: h264_vaapi
