@@ -80,6 +80,27 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	return count, err
 }
 
+const lockMediaAssetCopy = `-- name: LockMediaAssetCopy :exec
+SELECT 1 FROM media_asset_copies
+WHERE media_asset_id = $1
+  AND store = $2
+FOR UPDATE
+`
+
+type LockMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+}
+
+// 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
+// ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。
+// ロックしない判定は READ COMMITTED の再評価でも古い版を見て、deleted を deleting に戻しうる。
+// 行が無ければ何もロックしない（後続の UPDATE が 0 行になる）。
+func (q *Queries) LockMediaAssetCopy(ctx context.Context, arg LockMediaAssetCopyParams) error {
+	_, err := q.db.Exec(ctx, lockMediaAssetCopy, arg.MediaAssetID, arg.Store)
+	return err
+}
+
 const reconcileDerivedGenerationFromCopyPaths = `-- name: ReconcileDerivedGenerationFromCopyPaths :exec
 UPDATE media_assets AS asset
 SET derived_generation = GREATEST(

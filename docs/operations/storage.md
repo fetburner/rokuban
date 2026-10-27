@@ -24,7 +24,7 @@ ingest を引く worker は起動時に、実際の操作列が一度成功す�
 
 worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内の hard link、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
-`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。worker ロールでは `storage.media_store_name` が必須で、worker 以外で空の構成では照合しない。
+`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。worker ロールと streamer ロールでは `storage.media_store_name` が必須で、どちらも無い構成で空なら照合しない。
 
 見送る操作は、ingest・encode・サムネイル・シークタイル・catalog の書き込みと、ファイルの削除・欠損の記録・孤児の回収である。
 

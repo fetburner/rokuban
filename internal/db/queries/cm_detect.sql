@@ -35,10 +35,12 @@ SELECT r.id, r.network_id, r.service_id, copy.rel_path,
 FROM recordings r
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
+-- 選ぶコピーは active_media_asset_copies の先頭。(media_asset_id, store) は一意なので 1 行に決まる。
 LEFT JOIN media_asset_copies copy
   ON copy.media_asset_id = o.id
- AND copy.state = 'active'
- AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+ AND copy.store = (SELECT c.store
+                   FROM active_media_asset_copies(o.id, sqlc.narg('store_name')::text) c
+                   LIMIT 1)
 WHERE r.id = sqlc.arg('recording_id');
 
 -- name: GetCMRetryOriginal :one

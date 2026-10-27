@@ -317,18 +317,14 @@ func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, sit
 	err := s.pool.QueryRow(ctx, `SELECT a.id, c.rel_path, a.size_bytes, r.site
  FROM media_assets a
  JOIN recordings r ON r.id = a.recording_id
-	 JOIN LATERAL (
-	     SELECT copy.rel_path
-	     FROM media_asset_copies copy
-	     WHERE copy.media_asset_id = a.id
-	       AND ($1::text IS NULL OR copy.store = $1)
-	       AND copy.state = 'active'
-	     ORDER BY copy.store
-	     LIMIT 1
-	 ) c ON true
-	 WHERE a.recording_id = $2 AND r.site = $3
-	 AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL+` AND `+recordingPlaybackVisibleSQL,
-		mediaStoreNameArg(s.storeName), recordingID, site).Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.Site)
+ JOIN LATERAL (
+     SELECT copy.rel_path
+     FROM active_media_asset_copies(a.id, $1::text) copy
+     LIMIT 1
+ ) c ON true
+ WHERE a.recording_id = $2 AND r.site = $3
+ AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL("$1")+` AND `+recordingPlaybackVisibleSQL,
+		s.storeName, recordingID, site).Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.Site)
 	if err != nil {
 		return store.OriginalVODTarget{}, mediaQueryError(err, fmt.Sprintf("loading original VOD target for recording %d site %q", recordingID, site))
 	}
@@ -341,9 +337,13 @@ func (s *Media) GetRecordingHLSOriginalTarget(ctx context.Context, recordingID i
 	err := s.pool.QueryRow(ctx, `SELECT a.id, c.rel_path, a.size_bytes,
  COALESCE(a.ingest_generation, 0)::bigint, r.started_at
  FROM media_assets a JOIN recordings r ON r.id = a.recording_id
-	JOIN media_asset_copies c ON c.media_asset_id = a.id AND c.store = $1
-	WHERE a.recording_id = $2
-	AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL+` AND `+recordingPlaybackVisibleSQL, s.storeName, recordingID).
+ JOIN LATERAL (
+     SELECT copy.rel_path
+     FROM active_media_asset_copies(a.id, $1::text) copy
+     LIMIT 1
+ ) c ON true
+ WHERE a.recording_id = $2
+ AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL("$1")+` AND `+recordingPlaybackVisibleSQL, s.storeName, recordingID).
 		Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.IngestGeneration, &target.StartedAt)
 	if err != nil {
 		return store.RecordingHLSOriginalTarget{}, mediaQueryError(err, fmt.Sprintf("loading recording HLS original target for recording %d", recordingID))

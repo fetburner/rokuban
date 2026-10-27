@@ -233,9 +233,9 @@ worker のジョブは `MediaReconcile` から、再計算する候補と、エ�
 
 ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にする。`rel_path` の衝突確認は 'deleting' の行も衝突に数える。`state = 'active'` に絞ると、'deleting' の行が使っている `rel_path` を ingest が上書きし、「DB は active、実体は別番組」の状態が再び生まれるためである。`rel_path` の衝突確認はヒントにすぎず、一意性の最終判定は原本を公開する `CommitOriginal` が行う。転送前に衝突を見落としても、`CommitOriginal` が `ErrConflict` で拒む。
 
-起動時の検査は 2 つある。1 つは profile の意味の検査で、過去の encoded と作り直し要求を証拠として読む。api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。選択中 store の原本と encoded のうち `deleted` でないコピーを見て、`rel_path` が `sites/{site}/` で始まらない行があれば起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
+起動時の検査は 2 つある。1 つは profile の意味の検査で、過去の encoded と作り直し要求を証拠として読む。api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。`storage.media_store_name` の置き場の原本と encoded のうち `deleted` でないコピーを見て、`rel_path` が `sites/{site}/` で始まらない行があれば起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
 
-worker は `StorageObservation` に置き場単位の `storage_sync` と、孤児・実体無しの候補を記録する。API は同じ interface から観測値を読む。孤児の判定に使う既知パスの一覧は、選択中 store の `media_asset_copies` から状態に関係なく全て返す。パスは `sites/{site}/` を含めたままにする。接頭辞を落とすと、全ての原本が孤児候補になる。`thumbnails/` のように `sites/` の外にある予約名前空間も含める。除くと、サムネイルが孤児として記録される。削除途中のファイルも一覧に残す。外すと、削除エンジンが消している途中のファイルが孤児候補になる。
+worker は `StorageObservation` に置き場単位の `storage_sync` と、孤児・実体無しの候補を記録する。API は同じ interface から観測値を読む。孤児の判定に使う既知パスの一覧は、`storage.media_store_name` の置き場の `media_asset_copies` から状態に関係なく全て返す。パスは `sites/{site}/` を含めたままにする。接頭辞を落とすと、全ての原本が孤児候補になる。`thumbnails/` のように `sites/` の外にある予約名前空間も含める。除くと、サムネイルが孤児として記録される。削除途中のファイルも一覧に残す。外すと、削除エンジンが消している途中のファイルが孤児候補になる。
 
 候補の経過時間は DB の時計で比べる。契約は時刻ではなく `time.Duration` を受け取るので、worker の時計がずれても、公開前の名前の孤児を自動削除する時期（`agedUnpublishedOrphans`）と、孤児・実体無しを報告する時期は変わらない。一般則は [時刻](#時刻) にある。
 

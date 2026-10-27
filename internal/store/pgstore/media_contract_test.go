@@ -73,10 +73,10 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 	}
 }
 
-func TestOriginalVODTargetWithoutStoreNameUsesDeterministicActiveCopy(t *testing.T) {
+func TestOriginalVODTargetUsesOnlyConfiguredStoreCopy(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	assetID := dbtest.MediaAsset(t, pool, recordingID)
 
 	for _, copy := range []struct {
@@ -93,12 +93,17 @@ func TestOriginalVODTargetWithoutStoreNameUsesDeterministicActiveCopy(t *testing
 		}
 	}
 
-	target, err := NewMedia(pool, "").GetOriginalVODTarget(ctx, recordingID, "default")
+	target, err := NewMedia(pool, "z-store").GetOriginalVODTarget(ctx, recordingID, "default")
 	if err != nil {
-		t.Fatalf("GetOriginalVODTarget() without a configured store: %v", err)
+		t.Fatalf("GetOriginalVODTarget(z-store): %v", err)
 	}
-	if target.ID != assetID || target.RelPath != "sites/default/vod-a-copy.m2ts" {
-		t.Fatalf("target = %+v, want the active copy from lexically first store a-store", target)
+	if target.ID != assetID || target.RelPath != "sites/default/vod-z-copy.m2ts" {
+		t.Fatalf("target = %+v, want the copy in z-store, not the lexically first a-store", target)
+	}
+	for _, name := range []string{"", "missing-store"} {
+		if _, err := NewMedia(pool, name).GetOriginalVODTarget(ctx, recordingID, "default"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("GetOriginalVODTarget(store %q) error = %v, want ErrNotFound", name, err)
+		}
 	}
 }
 

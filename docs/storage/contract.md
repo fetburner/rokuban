@@ -222,14 +222,14 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きている行の `rel_path` 部分一意索引とも衝突するからである。
 
 - 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時に読み、旧 worker 停止後の adopt でも再照合する
-- 新しいファイルを置く。1 つの tx で論理サイズと互換用パスを更新し、選択中 store のコピーと `media_asset_cuts` を差し替える。commit 後に旧パスを unlink する
+- 新しいファイルを置く。1 つの tx で論理サイズと旧 binary が読む `media_assets.rel_path` を更新し、`storage.media_store_name` の置き場のコピーと `media_asset_cuts` を差し替える。commit 後に旧パスを unlink する
 - **unlink を commit の前にしない**。commit が失敗すると、生きている行が指すファイルを失う（ルール 3 の「DB commit が公開点」と同じ向き）。旧ファイルの unlink に失敗した場合は canonical orphan として報告し、手動調査まで残す
 - 行は消さずに UPDATE する。消して作り直すと `rel_path` の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを取れる
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
 - 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は `derived_generation` から進める
-- 新しい JPEG を置く。1 つの tx で論理サイズと互換用パスを更新し、選択中 store のコピーと `media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
+- 新しい JPEG を置く。1 つの tx で論理サイズと旧 binary が読む `media_assets.rel_path` を更新する。同じ tx で `storage.media_store_name` の置き場のコピーと `media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
 - 行は消さずに UPDATE する。行 id と配信対象を保ったまま世代を進める。unlink は commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
 
 <details><summary>根拠</summary>

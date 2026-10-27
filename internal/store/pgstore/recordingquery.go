@@ -24,7 +24,10 @@ import (
 // 列が増えた表なので、次に一覧側だけ列を足したときに同じ drift が再発しうる
 // （issue #232 のレビュー指摘）。共有の定数に切り出すことで、列を足す変更は
 // 両方のクエリに自動的に効く。
-const (
+// recordingStoreParam は一覧・単体取得クエリが置き場名を束縛する位置（buildRecordingsQuery と Get の第 1 引数）。
+const recordingStoreParam = "$1"
+
+var (
 	// recordingsSelectColumns は両クエリ共通の SELECT リスト（末尾カンマ無し）。
 	recordingsSelectColumns = `
     r.id, r.site, r.rule_id, r.source, r.service_name, r.channel_type, r.channel,
@@ -36,7 +39,7 @@ const (
     -- active だけを見る共有述語 activePlaybackOriginalSQL（別名 a 前提）には使えない。
     CASE WHEN ` + recordingPlaybackVisibleSQL + ` THEN COALESCE(
         (SELECT COALESCE(a.ingest_generation, 0)::bigint FROM media_assets a
-         WHERE a.recording_id = r.id AND ` + activePlaybackOriginalSQL + `),
+         WHERE a.recording_id = r.id AND ` + activePlaybackOriginalSQL(recordingStoreParam) + `),
         ip.temp_generation
     ) END AS hls_generation,
     -- 計測済みでも drop_stats 行が無ければ 0 を返す。未計測を 0 と混同しない判定は
@@ -228,10 +231,7 @@ const (
         WHERE e.recording_id = r.id
           AND e.kind = 'encoded'
           AND EXISTS (
-              SELECT 1 FROM media_asset_copies copy
-              WHERE copy.media_asset_id = e.id
-                AND ($1::text IS NULL OR copy.store = $1)
-                AND copy.state = 'active'
+              SELECT 1 FROM active_media_asset_copies(e.id, ` + recordingStoreParam + `::text)
           )
           AND e.profile IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = e.id)
@@ -527,18 +527,8 @@ func buildRecordingShelvesQuery(f store.RecordingFilter, storeName string) (stri
 WITH playable_assets AS (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
-    WHERE (ma.kind = 'original' AND EXISTS (
-               SELECT 1 FROM media_asset_copies copy
-               WHERE copy.media_asset_id = ma.id
-                 AND ($1::text IS NULL OR copy.store = $1)
-                 AND copy.state = 'active'
-           ))
-       OR (ma.kind = 'encoded' AND EXISTS (
-               SELECT 1 FROM media_asset_copies copy
-               WHERE copy.media_asset_id = ma.id
-                 AND ($1::text IS NULL OR copy.store = $1)
-                 AND copy.state = 'active'
-           ))
+    WHERE ma.kind IN ('original', 'encoded')
+      AND EXISTS (SELECT 1 FROM active_media_asset_copies(ma.id, $1::text))
 ),
 watched_events AS MATERIALIZED (
     -- 印を束ねる側は live / playable / 絞り込みを当てない。ごみ箱・supersede 済みの印も読む。
@@ -638,7 +628,7 @@ func (s *Recordings) List(ctx context.Context, filter store.RecordingFilter) ([]
 
 // Get は録画の素の射影を返す。ごみ箱行も含み、purged の tombstone は返さない。
 func (s *Recordings) Get(ctx context.Context, recordingID int64) (store.RecordingQueryRow, error) {
-	const sql = `
+	sql := `
 SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE r.id = $2 AND r.purged_at IS NULL`
 

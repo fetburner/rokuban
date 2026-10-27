@@ -255,7 +255,7 @@ rescue は破壊的な操作なので、健全性の確認には使わない。�
 <details><summary>根拠</summary>
 
 - 上書きされる録画の列: `recordings.status` / `deleted_at` / `purged_at`
-- 上書きされる asset の列: `media_assets` の互換状態と各 store の `media_asset_copies.state` / `deleted_at`
+- 上書きされる asset の列: 旧 binary が読む `media_assets.state` / `deleted_at` と、全置き場の `media_asset_copies.state` / `deleted_at`
 
 </details>
 

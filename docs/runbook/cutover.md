@@ -66,7 +66,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 1. 試験用のルールを 1 本作り、プロファイルを 1 つと `keepOriginal: until_encoded` を設定する。短い番組に当たる条件にする
 2. 録画が終わったら録画 ID を控え、アセットの状態を見る。エンコードが終わるまでは `original` が `active` で残る。これが項目 2 の前半である
 
-`<store>` は `storage.media_store_name` の値に置き換える。
+   `<store>` は `storage.media_store_name` の値に置き換える。
 
    ```sql
    SELECT a.kind, a.profile, c.state, c.rel_path
@@ -76,7 +76,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
     ORDER BY a.id;
    ```
 
-3. 派生物が揃ったら、削除 reconcile の次のパス（既定 15 分間隔）を待つ。原本はエンコード完了だけでは消えない。サムネイルや TS 計測なども待つ。条件の権威は DB の view で、判断は [storage/retention.md](../storage/retention.md) §6 §7 にある。待たずに確かめるなら `docker compose exec rokuban rokuban enqueue delete-reconcile --config /config.yml`
+3. 派生物が揃ったら、削除 reconcile の次のパス（既定 15 分間隔）を待つ。原本はエンコード完了だけでは消えない。サムネイルや TS 計測なども待つ。条件の権威は DB の関数 `until_encoded_deletable_originals` で、判断は [storage/retention.md](../storage/retention.md) §6 §7 にある。待たずに確かめるなら `docker compose exec rokuban rokuban enqueue delete-reconcile --config /config.yml`
 4. 同じ SQL で `original` が `deleted`、`encoded` が `active` になっていることを見る
 5. 録画詳細の画面で encoded 版を末尾までシークして再生する（項目 1）
 
@@ -107,7 +107,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 <details><summary>根拠</summary>
 
 - 復元で消す印: `recordings.deleted_at`
-- 状態を見る列: 選択中 store の `media_asset_copies.state`
+- 状態を見る列: `storage.media_store_name` の置き場の `media_asset_copies.state`
 - 相対パスの列: `media_asset_copies.rel_path`
 
 </details>

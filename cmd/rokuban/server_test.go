@@ -286,6 +286,30 @@ func TestServerCmd_WorkerRequiresScratchDir(t *testing.T) {
 	}
 }
 
+func TestServerCmd_StreamerRequiresMediaStoreName(t *testing.T) {
+	emptyStore := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: /mnt/media\n  media_store_name: \"\"", 1)
+	path := writeServerTestConfig(t, emptyStore)
+
+	err := runServerCmdForTest(t, path, "--roles", "streamer", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "streamer role requires storage.media_store_name") {
+		t.Fatalf("streamer startup error = %v, want media_store_name validation error", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("streamer reached the database before rejecting the empty store name: %v", err)
+	}
+
+	err = runServerCmdForTest(t, path, "--roles", "api", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("api startup error = %v, want an empty store name to pass and reach the database", err)
+	}
+
+	named := writeServerTestConfig(t, serverCmdTestConfig)
+	err = runServerCmdForTest(t, named, "--roles", "streamer", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("streamer startup error = %v, want a configured store name to reach the database", err)
+	}
+}
+
 func TestServerCmd_IngestWorkerDefersStorageProbeWithoutStoreMarker(t *testing.T) {
 	mediaDir := filepath.Join(t.TempDir(), "missing-media")
 	configText := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: "+mediaDir, 1)

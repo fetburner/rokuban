@@ -8,11 +8,9 @@ const recordingPlaybackVisibleSQL = `r.deleted_at IS NULL AND r.purged_at IS NUL
 // 録画 API の一覧は録画中も返すため recordingPlaybackVisibleSQL には含めない。
 const recordingPlaybackFinishedSQL = `r.status = 'finished'`
 
-// activePlaybackOriginalSQL は一覧と再生が共有する原本コピーの述語。a は media_assets の別名。
-// storeName が NULL の構成では、置き場を限定しない。
-const activePlaybackOriginalSQL = `a.kind = 'original' AND EXISTS (
-    SELECT 1 FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND ($1::text IS NULL OR copy.store = $1)
-      AND copy.state = 'active'
-)`
+// activePlaybackOriginalSQL は一覧と再生が共有する原本コピーの述語を返す。a は media_assets の別名。
+// storeParam は置き場名を束縛したプレースホルダ（例 "$1"）で、呼び出し側が自分の引数の位置を渡す。
+// プレースホルダが NULL なら置き場を限定しない。
+func activePlaybackOriginalSQL(storeParam string) string {
+	return "a.kind = 'original' AND EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, " + storeParam + "::text))"
+}

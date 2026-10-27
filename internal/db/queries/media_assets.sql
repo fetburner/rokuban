@@ -56,10 +56,7 @@ SELECT a.id, c.rel_path, a.size_bytes, c.store
 FROM media_assets a
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND copy.state = 'active'
-      AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+    FROM active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
     LIMIT 1
 ) c ON true
 WHERE a.recording_id = sqlc.arg('recording_id')
@@ -71,13 +68,10 @@ SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'encoded'
   AND profile = $2
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = media_assets.id
-        AND c.state = 'active'
-        AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
-  );
+  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
+-- publish が tombstone も含めて既存の行を見るため、active に限らない。置き場を限定しない読み手に
+-- 備え、active を先に、同順位は store 順に 1 件だけ選ぶ。
 -- name: GetEncodedMediaAssetForProfile :one
 SELECT a.id, c.rel_path, c.state, c.store,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation
@@ -87,6 +81,7 @@ JOIN LATERAL (
     FROM media_asset_copies copy
     WHERE copy.media_asset_id = a.id
       AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+    ORDER BY (copy.state = 'active') DESC, copy.store
     LIMIT 1
 ) c ON true
 WHERE a.recording_id = sqlc.arg('recording_id')
@@ -200,12 +195,7 @@ RETURNING id;
 SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'thumbnail'
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = media_assets.id
-        AND c.state = 'active'
-        AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
-  );
+  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
 -- thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
 -- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
@@ -268,12 +258,7 @@ ON CONFLICT (media_asset_id) DO UPDATE SET seek_ms = EXCLUDED.seek_ms;
 SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'seek_tiles'
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = media_assets.id
-        AND c.state = 'active'
-        AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
-  );
+  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
 -- pid_type は分類できなかった PID では NULL（空文字を入れない）。
 -- 値の権威は internal/tsstat（列に CHECK は無い）。
@@ -300,10 +285,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND copy.state = 'active'
-      AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+    FROM active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
     LIMIT 1
 ) c ON true
 WHERE a.recording_id = $1
@@ -316,14 +298,14 @@ SELECT asset.id AS asset_id, copy.rel_path,
        asset.size_bytes, asset.updated_at, recording.title, copy.store
 FROM media_assets asset
 JOIN recordings recording ON recording.id = asset.recording_id
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = asset.id
- AND copy.state = 'active'
- AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+JOIN LATERAL (
+    SELECT c.rel_path, c.store
+    FROM active_media_asset_copies(asset.id, sqlc.narg('store_name')::text) c
+    LIMIT 1
+) copy ON true
 WHERE asset.recording_id = $1
   AND asset.kind = 'thumbnail'
-  AND recording.deleted_at IS NULL
-LIMIT 1;
+  AND recording.deleted_at IS NULL;
 
 -- 配信対象のシークタイルを引く。ごみ箱・削除済みは配らない。
 -- name: GetSeekTilesMediaAssetForServing :one
@@ -332,10 +314,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND copy.state = 'active'
-      AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+    FROM active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
     LIMIT 1
 ) c ON true
 WHERE a.recording_id = $1
@@ -349,10 +328,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND copy.state = 'active'
-      AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+    FROM active_media_asset_copies(a.id, sqlc.narg('store_name')::text) copy
     LIMIT 1
 ) c ON true
 WHERE a.recording_id = $1

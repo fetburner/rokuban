@@ -305,7 +305,7 @@ lock を取らなくても open した inode と active な原本行を照合で
 
 <details><summary>根拠</summary>
 
-- 引く録画と原本の条件: `finished`、選択中 store のコピーが `active`
+- 引く録画と原本の条件: `finished`、`storage.media_store_name` の置き場のコピーが `active`
 - open-then-verify で inode と DB 対象を照合: `TestOriginalVODVerifiesDBTargetAfterOpen`
 - live な行がある `rel_path` へ別の書き手が公開できない: `media_assets_rel_path_idx`
 - unlink は deleting 状態の commit より後にしか起きない: `MarkMediaAssetDeleting`

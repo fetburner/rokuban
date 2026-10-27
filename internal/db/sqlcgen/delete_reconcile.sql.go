@@ -309,10 +309,13 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 「このアセットは消してよいか」の 3 つの腕（ごみ箱の猶予超過 or 今すぐ
 // purge / until_encoded の派生物完備 / ユーザーが外したエンコード版）は、
 // いずれもスキーマ側の名前付き述語を参照する。until_encoded 腕は
-// view `until_encoded_deletable_originals`、ごみ箱腕は set-returning 関数
-// `trash_deletable_recordings(grace_cutoff)`、外した版の腕は view
-// `removed_encoded_assets`。この 3 つが唯一の定義であり、
+// set-returning 関数 `until_encoded_deletable_originals(desired_store)`、
+// ごみ箱腕は set-returning 関数 `trash_deletable_recordings(grace_cutoff)`、
+// 外した版の腕は view `removed_encoded_assets`。この 3 つが唯一の定義であり、
 // 以下の入口・拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
+// 同名の旧 view `until_encoded_deletable_originals` は、ローリングアップデート中の
+// 旧 binary が旧列を読むための関数の包みで、このファイルは参照しない。旧列を消す
+// 変更（#1620）で view ごと消える。
 // 前パスで deleting にマークしたまま unlink できずに終わった行を拾い直す。
 //
 // WHERE の 3 つの EXISTS は名前付き述語（上記）への参照であって複製ではない

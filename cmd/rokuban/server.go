@@ -294,7 +294,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateWorkerStorageConfig(roles, cfg); err != nil {
+	if err := validateRoleStorageConfig(roles, cfg); err != nil {
 		return err
 	}
 	storeMarkerVerified := verifyStoreMarkerAtStartup(roles, cfg)
@@ -452,7 +452,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	return err
 }
 
-func validateWorkerStorageConfig(roles []string, cfg *config.Config) error {
+// validateRoleStorageConfig は worker と streamer が起動前に要る storage 設定を検査する。
+// streamer は完了録画の原本と世代付き HLS を storage.media_store_name の置き場のコピーから引く。
+// api は空でも起動でき、その場合は読み取りが全置き場の active コピーを対象にする。
+func validateRoleStorageConfig(roles []string, cfg *config.Config) error {
+	if slices.Contains(roles, "streamer") && cfg.Storage.MediaStoreName == "" {
+		return fmt.Errorf("validating config: streamer role requires storage.media_store_name")
+	}
 	if !slices.Contains(roles, "worker") {
 		return nil
 	}

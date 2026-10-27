@@ -1183,7 +1183,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 // recording_encode_policy_check（issue #159 で recordings 側の CHECK から
 // 移設）を一時的に外す。encode_profiles が
 // 空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
-// 削除クエリ側ガード（until_encoded_deletable_originals view の
+// 削除クエリ側ガード（until_encoded_deletable_originals 関数の
 // cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
 // 足したものなので、CHECK が無い前提でもそれ単体で原本を守れることを確認する
 // 必要がある。テスト用パッケージ DB は TRUNCATE のみでスキーマは使い回すため、
@@ -1347,7 +1347,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 // 旧条件 3（キューの pending 状態を直接見るガード）は issue #516 で削除した ---
 // この安全性は until_encoded_deletable_originals（条件 2）が代わりに担保する。
 // recordingA は desired なプロファイル h264 が未コミット（判定はジョブの有無を
-// 見ない）。条件 2 は SQL 側（view）で判定するので A は untilEncodedRows に一度も現れない --- した
+// 見ない）。条件 2 は SQL 側（関数）で判定するので A は untilEncodedRows に一度も現れない --- した
 // がって条件 2 側の完備候補を recordingB 1 件にすると、until_encoded ループが
 // 複数件のうち先頭 1 件だけを処理して残りを無視する変異を注入しても
 // untilEncodedRows の要素数が 1 のままで検出できない。recordingC も条件 2 を
@@ -1582,7 +1582,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 }
 
 // delete_reconcile.sql の 5 クエリが、削除可否の 2 腕（ごみ箱 / until_encoded）
-// を名前付き述語（until_encoded_deletable_originals view /
+// を名前付き述語（until_encoded_deletable_originals 関数 /
 // trash_deletable_recordings 関数）への参照に統一していることの静的チェック
 // （issue #160）。生の predicate テキスト
 // （キー列や cardinality ガード）がクエリファイルに再度インライン化されると、
@@ -1603,7 +1603,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 		"r.deleted_at IS NOT NULL",
 	} {
 		if strings.Contains(text, needle) {
-			t.Errorf("delete_reconcile.sql contains %q; the predicate should live only in the named view/function (until_encoded_deletable_originals / trash_deletable_recordings), not be re-inlined into a consumer query", needle)
+			t.Errorf("delete_reconcile.sql contains %q; the predicate should live only in the named functions/views (until_encoded_deletable_originals / trash_deletable_recordings), not be re-inlined into a consumer query", needle)
 		}
 	}
 

@@ -5,6 +5,23 @@
 CREATE INDEX media_asset_copies_active_asset_store_idx
     ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
 
+-- 「論理資産 + 置き場 → active コピー」を返す唯一の定義。p_store が NULL なら全置き場。
+-- 1 件だけ選ぶ読み手が同じコピーを選べるよう store 順に並べる。
+CREATE FUNCTION active_media_asset_copies(p_asset_id bigint, p_store text)
+RETURNS SETOF media_asset_copies
+LANGUAGE sql STABLE
+AS $$
+SELECT c.*
+FROM media_asset_copies c
+WHERE c.media_asset_id = p_asset_id
+  AND c.state = 'active'
+  AND (p_store IS NULL OR c.store = p_store)
+ORDER BY c.store
+$$;
+
+COMMENT ON FUNCTION active_media_asset_copies(bigint, text) IS
+    'active_media_asset_copies は、論理資産の active コピーを store 順に返す。p_store が NULL なら全置き場、指定すればその置き場だけを対象にする。';
+
 CREATE OR REPLACE VIEW encodable_recordings AS
 SELECT r.id AS recording_id
 FROM recordings r
@@ -163,8 +180,8 @@ WHERE a.kind = 'encoded'
         )
   );
 
--- Keep the legacy relation shape while old binaries may still read it during a
--- rolling update. New readers call the store-aware function below.
+-- 削除判定の定義はこの関数 1 つ。置き場ごとに評価するので、新しい読み手は
+-- 置き場を渡して呼ぶ。
 CREATE FUNCTION until_encoded_deletable_originals(desired_store text)
 RETURNS TABLE (asset_id bigint, recording_id bigint)
 LANGUAGE sql STABLE
@@ -195,29 +212,23 @@ WHERE a.kind = 'original'
       WHERE NOT EXISTS (
           SELECT 1
           FROM media_assets e
-          JOIN media_asset_copies copy ON copy.media_asset_id = e.id
           WHERE e.recording_id = r.id
             AND e.kind = 'encoded'
             AND e.profile = want.profile
-            AND copy.store = desired_store
-            AND copy.state = 'active'
+            AND EXISTS (SELECT 1 FROM active_media_asset_copies(e.id, desired_store))
       )
   )
   AND EXISTS (
       SELECT 1 FROM media_assets t
-      JOIN media_asset_copies copy ON copy.media_asset_id = t.id
       WHERE t.recording_id = r.id
         AND t.kind = 'thumbnail'
-        AND copy.store = desired_store
-        AND copy.state = 'active'
+        AND EXISTS (SELECT 1 FROM active_media_asset_copies(t.id, desired_store))
   )
   AND EXISTS (
       SELECT 1 FROM media_assets s
-      JOIN media_asset_copies copy ON copy.media_asset_id = s.id
       WHERE s.recording_id = r.id
         AND s.kind = 'seek_tiles'
-        AND copy.store = desired_store
-        AND copy.state = 'active'
+        AND EXISTS (SELECT 1 FROM active_media_asset_copies(s.id, desired_store))
   )
   AND (
       NOT p.cm_detect
@@ -234,9 +245,21 @@ $$;
 COMMENT ON FUNCTION until_encoded_deletable_originals(text) IS
     'until_encoded_deletable_originals は、desired_store に必要な active 派生コピーが揃い、保持条件を満たす原本を返す。';
 
+-- ローリングアップデート中の旧 binary は、同名の旧 view を引数なしで読み、旧列
+-- （rel_path / size_bytes / state）を使う。旧列を削除するまでの互換として、
+-- view を関数の薄い包みにする。置き場ごとに関数を 1 回評価し、コピー行ごとには評価しない。
+CREATE OR REPLACE VIEW until_encoded_deletable_originals AS
+SELECT DISTINCT a.id AS asset_id,
+       a.recording_id,
+       a.rel_path,
+       a.size_bytes,
+       a.state
+FROM (SELECT DISTINCT store FROM media_asset_copies) s
+CROSS JOIN LATERAL until_encoded_deletable_originals(s.store) d
+JOIN media_assets a ON a.id = d.asset_id;
+
 -- +goose Down
 
-DROP FUNCTION until_encoded_deletable_originals(text);
 CREATE OR REPLACE VIEW until_encoded_deletable_originals AS
 SELECT a.id AS asset_id,
        a.recording_id,
@@ -415,4 +438,6 @@ WHERE r.deleted_at IS NULL
         AND o.state = 'active'
   );
 
+DROP FUNCTION until_encoded_deletable_originals(text);
+DROP FUNCTION active_media_asset_copies(bigint, text);
 DROP INDEX media_asset_copies_active_asset_store_idx;

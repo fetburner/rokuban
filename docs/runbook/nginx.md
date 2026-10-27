@@ -42,7 +42,7 @@ nginx から、次の 2 つが読めるようにする。1 つは Rokuban の `s
 
 SPA は Go バイナリのビルド時に go:embed で埋め込まれるため、nginx へは渡さない。
 
-`/_media/` は外部から直接読めない。アプリの認可を通った X-Accel-Redirect だけが内部リダイレクトで到達する。新しい binary は `/_media/stores/<store>/<相対パス>` を返し、設定は旧 binary の `/_media/<相対パス>` も受ける。アプリを新しい版へ切り替える前に、store 用 location を含む nginx 設定を適用する。旧設定の alias は store 名をファイルパスの一部として扱う。
+`/_media/` は外部から直接読めない。アプリの認可を通った X-Accel-Redirect だけが内部リダイレクトで到達する。新しい binary は `/_media/stores/<store>/<相対パス>` を返し、設定は旧 binary の `/_media/<相対パス>` も受ける。アプリを新しい版へ切り替える前に、store 用 location を含む nginx 設定を適用する。旧設定のままアプリを先に切り替えると、nginx は store 名をファイルパスの一部として解釈し、ファイルが見つからず配信できない。
 
 ## TLS と認証の準備
 

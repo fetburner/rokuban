@@ -101,6 +101,9 @@ func (s *Media) MarkDeleting(ctx context.Context, assetID int64) error {
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
+	if err := lockMediaAssetCopy(ctx, q, assetID, s.storeName); err != nil {
+		return err
+	}
 	updated, err := q.MarkMediaAssetDeleting(ctx, sqlcgen.MarkMediaAssetDeletingParams{
 		AssetID: assetID, StoreName: s.storeName,
 	})
@@ -133,6 +136,9 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, asset
 		}
 		return false, fmt.Errorf("locking recording %d before until_encoded delete: %w", recordingID, err)
 	}
+	if err := lockMediaAssetCopy(ctx, q, assetID, s.storeName); err != nil {
+		return false, err
+	}
 	marked, err := q.MarkUntilEncodedOriginalDeleting(ctx, sqlcgen.MarkUntilEncodedOriginalDeletingParams{
 		AssetID: assetID, StoreName: s.storeName, DesiredStore: s.storeName,
 	})
@@ -159,6 +165,9 @@ func (s *Media) MarkDeleted(ctx context.Context, assetID int64) error {
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
+	if err := lockMediaAssetCopy(ctx, q, assetID, s.storeName); err != nil {
+		return err
+	}
 	updated, err := q.MarkMediaAssetDeleted(ctx, sqlcgen.MarkMediaAssetDeletedParams{
 		ID: assetID, StoreName: s.storeName,
 	})
@@ -184,6 +193,9 @@ func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff t
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
+	if err := lockMediaAssetCopy(ctx, q, assetID, s.storeName); err != nil {
+		return false, err
+	}
 	updated, err := q.RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
 		ID: assetID, GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: s.storeName,
 	})
@@ -199,6 +211,15 @@ func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff t
 		return false, fmt.Errorf("committing media asset restore transition: %w", mapDatabaseError(err))
 	}
 	return updated > 0, nil
+}
+
+// lockMediaAssetCopy は削除遷移の判定の前に対象コピー行をロックする。
+// 別の tx が遷移の途中なら commit まで待ち、続く文はその結果を見て判定する。
+func lockMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64, storeName string) error {
+	if err := q.LockMediaAssetCopy(ctx, sqlcgen.LockMediaAssetCopyParams{MediaAssetID: assetID, Store: storeName}); err != nil {
+		return fmt.Errorf("locking media asset copy %d: %w", assetID, mapDatabaseError(err))
+	}
+	return nil
 }
 
 func setMediaAssetCopyState(ctx context.Context, q *sqlcgen.Queries, assetID int64, storeName, state string) error {

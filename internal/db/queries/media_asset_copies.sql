@@ -26,6 +26,16 @@ SET state = sqlc.arg('state'),
 WHERE media_asset_id = sqlc.arg('media_asset_id')
   AND store = sqlc.arg('store');
 
+-- 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
+-- ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。
+-- ロックしない判定は READ COMMITTED の再評価でも古い版を見て、deleted を deleting に戻しうる。
+-- 行が無ければ何もロックしない（後続の UPDATE が 0 行になる）。
+-- name: LockMediaAssetCopy :exec
+SELECT 1 FROM media_asset_copies
+WHERE media_asset_id = sqlc.arg('media_asset_id')
+  AND store = sqlc.arg('store')
+FOR UPDATE;
+
 -- name: AdoptUnassignedMediaAssetCopies :exec
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
 SELECT a.id, sqlc.arg('store'), a.rel_path, a.state, a.created_at, a.deleted_at

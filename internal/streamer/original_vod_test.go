@@ -153,20 +153,28 @@ func newOriginalVODTestServer(t *testing.T, pool *pgxpool.Pool, cfg LiveConfig) 
 	return ls, srv
 }
 
-func TestOriginalVODStartsWithoutConfiguredStoreName(t *testing.T) {
+// streamer は storage.media_store_name の置き場のコピーだけを配る。コピーが別の置き場にしか無い録画は
+// ファイルが同じ MediaDir にあっても 404 にする（起動時に空の store 名は拒否するので、空は扱わない）。
+func TestOriginalVODIgnoresCopiesInOtherStores(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
 	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
-	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool, ""), chaseTestLiveClient{}, testSite, cfg)
+
+	_, own := newOriginalVODTestServer(t, pool, cfg)
+	resp, body := get(t, originalVODPlaylistURL(own.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "#EXTM3U") {
+		t.Fatalf("original VOD playlist from the configured store = %d %q, want a playlist", resp.StatusCode, body)
+	}
+
+	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool, "other-store"), chaseTestLiveClient{}, testSite, cfg)
 	t.Cleanup(ls.shutdown)
 	router := chi.NewRouter()
 	ls.Mount(router)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
-
-	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "#EXTM3U") {
-		t.Fatalf("original VOD playlist status/body = %d %q, want a playlist from an active copy", resp.StatusCode, body)
+	resp, _ = get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("original VOD playlist for a store without a copy = %d, want 404", resp.StatusCode)
 	}
 }
 

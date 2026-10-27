@@ -205,7 +205,7 @@ site の前置を自動で付ける前のバージョンでライブラリを取
 
 検査の契約は docs/storage/contract.md §「rel_path の名前空間」にある。止めてから行うのは、動かしたまま `mv` すると、有効な行が一時的に実体無しと誤検出されるからである。
 
-1. 対象行を出す。`site` は import 時に指定した site 名である。
+1. 対象行を出す。`site` は import 時に指定した site 名である。SQL の `<store>` は、`storage.media_store_name` の値に置き換える。
 
    ```sql
    SELECT a.id, c.rel_path, r.site
@@ -219,7 +219,7 @@ site の前置を自動で付ける前のバージョンでライブラリを取
    ```
 
 2. 各行について `{media_dir}/{rel_path}` を `{media_dir}/sites/{site}/{rel_path}` へ `mkdir -p` + `mv` する（同一 FS 内なので rename）。
-3. 全ファイルの `mv` が終わったら、1 トランザクションでコピーのパスと互換用の `media_assets.rel_path` を同時に更新する。`deleting` 状態のコピーも対象に含める。含めないと delete_reconcile が旧パスを unlink しに行き、実体無しと誤検出する。
+3. 全ファイルの `mv` が終わったら、1 トランザクションでコピーのパスと、旧 binary が読む `media_assets.rel_path` を同時に更新する。`deleting` 状態のコピーも対象に含める。含めないと delete_reconcile が旧パスを unlink しに行き、実体無しと誤検出する。
 
    ```sql
    WITH moved AS (
