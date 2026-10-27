@@ -9,7 +9,7 @@ const recordingPlaybackVisibleSQL = `r.deleted_at IS NULL AND r.purged_at IS NUL
 const recordingPlaybackFinishedSQL = `r.status = 'finished'`
 
 // activePlaybackOriginalSQL は一覧と再生が共有する原本コピーの述語。a は media_assets の別名。
-// storeName が NULL の api-only 設定では、置き場を限定しない。
+// storeName が NULL の構成では、置き場を限定しない。
 const activePlaybackOriginalSQL = `a.kind = 'original' AND EXISTS (
     SELECT 1 FROM media_asset_copies copy
     WHERE copy.media_asset_id = a.id

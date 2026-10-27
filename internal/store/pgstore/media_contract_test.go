@@ -73,6 +73,35 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 	}
 }
 
+func TestOriginalVODTargetWithoutStoreNameUsesDeterministicActiveCopy(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID)
+
+	for _, copy := range []struct {
+		store string
+		path  string
+	}{
+		{store: "z-store", path: "sites/default/vod-z-copy.m2ts"},
+		{store: "a-store", path: "sites/default/vod-a-copy.m2ts"},
+	} {
+		if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+			MediaAssetID: assetID, Store: copy.store, RelPath: copy.path, State: "active",
+		}); err != nil {
+			t.Fatalf("creating %s copy: %v", copy.store, err)
+		}
+	}
+
+	target, err := NewMedia(pool, "").GetOriginalVODTarget(ctx, recordingID, "default")
+	if err != nil {
+		t.Fatalf("GetOriginalVODTarget() without a configured store: %v", err)
+	}
+	if target.ID != assetID || target.RelPath != "sites/default/vod-a-copy.m2ts" {
+		t.Fatalf("target = %+v, want the active copy from lexically first store a-store", target)
+	}
+}
+
 func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	media := NewMedia(pool, "tokyo")

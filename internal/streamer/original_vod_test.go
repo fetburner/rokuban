@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -150,6 +151,23 @@ func newOriginalVODTestServer(t *testing.T, pool *pgxpool.Pool, cfg LiveConfig) 
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 	return ls, srv
+}
+
+func TestOriginalVODStartsWithoutConfiguredStoreName(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
+	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool, ""), chaseTestLiveClient{}, testSite, cfg)
+	t.Cleanup(ls.shutdown)
+	router := chi.NewRouter()
+	ls.Mount(router)
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "#EXTM3U") {
+		t.Fatalf("original VOD playlist status/body = %d %q, want a playlist from an active copy", resp.StatusCode, body)
+	}
 }
 
 func originalVODPlaylistURL(serverURL string, recordingID int64, profile string) string {
