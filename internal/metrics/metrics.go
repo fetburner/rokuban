@@ -720,6 +720,26 @@ var (
 	})
 )
 
+// 世代付き録画 HLS のプロセス内キャッシュと変換。
+var (
+	RecordingHLSCacheBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_recording_hls_cache_bytes",
+		Help: "Bytes currently indexed in this process's recording HLS segment cache.",
+	})
+	RecordingHLSCacheRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_recording_hls_cache_requests_total",
+		Help: "Recording HLS segment requests by cache result (hit or miss).",
+	}, []string{"result"})
+	RecordingHLSActiveTransforms = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_recording_hls_active_transforms",
+		Help: "Number of recording HLS FFmpeg transforms alive in this process, including paused transforms.",
+	})
+	RecordingHLSUnavailable = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_recording_hls_unavailable_total",
+		Help: "Recording HLS requests returned 503 because a transform or database result was unavailable.",
+	})
+)
+
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
 //
 // dbCollectors は scrape のたびに DB から値を取り直す collector 群。未 ingest
@@ -737,6 +757,10 @@ var (
 // interface 値）呼び出し規約を壊さないための後方互換でしかない。
 func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 	reg := prometheus.NewRegistry()
+	// CounterVec は label を初めて使うまで scrape に現れないため、両方の結果を
+	// 初期化して dashboards が未発生と未登録を区別できるようにする。
+	RecordingHLSCacheRequests.WithLabelValues("hit")
+	RecordingHLSCacheRequests.WithLabelValues("miss")
 
 	reg.MustRegister(
 		collectors.NewGoCollector(),
@@ -818,6 +842,11 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		LiveIdleGCReclaimed,
 		LiveLeaveHints,
 		LiveIdleGCLastPass,
+
+		RecordingHLSCacheBytes,
+		RecordingHLSCacheRequests,
+		RecordingHLSActiveTransforms,
+		RecordingHLSUnavailable,
 	)
 
 	for _, collector := range dbCollectors {

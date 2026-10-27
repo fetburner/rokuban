@@ -239,6 +239,21 @@ func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, sit
 	return target, nil
 }
 
+// GetRecordingHLSOriginalTarget は完了録画の配信可能な原本と世代を返す。
+func (s *Media) GetRecordingHLSOriginalTarget(ctx context.Context, recordingID int64) (store.RecordingHLSOriginalTarget, error) {
+	var target store.RecordingHLSOriginalTarget
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.rel_path, a.size_bytes,
+ COALESCE(a.ingest_generation, 0)::bigint, r.started_at
+ FROM media_assets a JOIN recordings r ON r.id = a.recording_id
+ WHERE a.recording_id = $1 AND r.status = 'finished'
+ AND `+activePlaybackOriginalSQL+` AND `+recordingPlaybackVisibleSQL, recordingID).
+		Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.IngestGeneration, &target.StartedAt)
+	if err != nil {
+		return store.RecordingHLSOriginalTarget{}, mediaQueryError(err, fmt.Sprintf("loading recording HLS original target for recording %d", recordingID))
+	}
+	return target, nil
+}
+
 // GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。
 func (s *Media) GetRecordingRemovalState(ctx context.Context, recordingID int64) (store.RecordingRemovalState, error) {
 	row, err := sqlcgen.New(s.pool).GetRecordingByID(ctx, recordingID)

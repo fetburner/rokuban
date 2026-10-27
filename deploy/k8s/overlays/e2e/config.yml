@@ -30,7 +30,13 @@ mirakcs:
 
 storage:
   media_dir: /mnt/media
+  media_store_name: main
   scratch_dir: /var/tmp/rokuban
+
+# 完了録画 HLS は base と同じ dedicated Deployment で起動する。
+recording_hls:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-recording-hls
 
 # site ごとのライブ streamer も同じ ConfigMap を読む。ハーネスはライブ経路を
 # 実再生しないが、出荷構成と同じ live.enabled / full image の起動条件を検査する。

@@ -9,9 +9,12 @@ streamer は録画配信とライブ視聴を担い、置き場所もスケー�
 | | 置き場所 | レプリカ | 前段 | イメージ |
 |---|---|---|---|---|
 | 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
+| 完了録画 HLS | メディアストレージの隣 | 既定 1 | `/api/media/stores/<store>` Prefix | `Dockerfile.full` |
 | ライブ視聴 | mirakc に到達できる場所（WAN 越しの pull を許す） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
 
-単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。録画配信は現行の `/api/media/recordings` を streamer Service へ振り分ける。ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して streamer Service へ振り分け、既存の URL を維持する。
+単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。録画配信は現行の `/api/media/recordings`、完了録画 HLS は `/api/media/stores/<store>` の Prefix で分ける。ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して streamer Service へ振り分け、既存の URL を維持する。
+
+完了録画 HLS の変換と cache はプロセス内にある。同じ録画の master・playlist・segment 要求は同じ `rokuban-recording-hls` Pod に届く必要があるため、Deployment は 1 replica にする。複数 store を追加するときは store の Prefix と専用 Pod / Service の組を追加する。replica を増やすときは固定深さの URL から録画 id を取り、前段の consistent hash で同じ録画を同じ Pod に送る。cookie や ClientIP affinity は使わない。
 
 streamer は 1 プロセスが N サイトを束縛できる。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。`deploy/k8s/` では中央 streamer と site ごとのライブ streamer を別 Pod として出荷し、overlay が単一 Ingress に site 名を具体化した Prefix を追加する。
 

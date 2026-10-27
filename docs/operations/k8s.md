@@ -68,10 +68,12 @@ media をマウントする Pod には、securityContext で所有グループ�
 
 参照実装は `deploy/k8s/` に置く。**中身の索引はそちらの [README](../../deploy/k8s/README.md)** で、ここには判断だけを置く。分け方は次の 2 つである。
 
-- `base/` は中央（site 非依存）1 式。api / notifier / 録画配信 streamer / media の PVC / migration Job / ConfigMap が入る。site 非依存キューの ScaledJob と、site 非依存ジョブの CronJob もこちら
+- `base/` は中央（site 非依存）1 式。api / notifier / 録画配信 streamer / 完了録画 HLS / media の PVC / migration Job / ConfigMap が入る。site 非依存キューの ScaledJob と、site 非依存ジョブの CronJob もこちら
 - `site/` はサイト 1 組ぶん（watcher / site 束縛キューの ScaledJob / site 束縛ジョブの CronJob）。overlay がサイトの数だけ生やす
 
 base は複数サイトを知らない。レジストリは常に 1 要素、どの Pod も site に束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。サイトを増やす差分は「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つ。`site/` は site 名 `default`（`base/config.yml` の `mirakcs:` 1 要素目と同じ名前）で書いてあり、単一サイトの overlay はそのまま使える。
+
+完了録画 HLS は original のファイル配信 streamer と別の Deployment に置く。cache と変換が process-local なので既定 replica は 1 とし、置き場 Prefix で Service を選ぶ。拡張時の録画 id hash と scratch の判断は [streamer のスケール](k8s-streamer.md) にまとめる。
 
 中央（site 非依存）の Pod には `--sites=`（明示的な空）を書く。省略しても単一サイト構成では動くが、レジストリに 2 サイト目を足した時点で起動しなくなる（束縛の暗黙の「全部」を許していない）。つまり気付くのが最も遅い形で止まるので、単一サイト構成のうちから明示する。
 

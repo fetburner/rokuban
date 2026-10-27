@@ -17,6 +17,7 @@ func TestServerRecordingHLSConfig(t *testing.T) {
 			base := startTestServer(t, "api", fmt.Sprintf(`  media_store_name: main-2
 recording_hls:
   enabled: %t
+  segment_dir: /tmp/recording-hls
 live:
   enabled: false
   profiles:

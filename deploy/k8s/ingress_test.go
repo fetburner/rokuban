@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// base の入口は site 名を知らない共通 3 経路だけを持つ。具体的なライブ経路は
+// base の入口は site 名を知らない共通 4 経路だけを持つ。具体的なライブ経路は
 // overlay が site ごとに追加するため、単一ホストの routing table が method / query /
 // header / regex に依存しないことをここで固定する。
 func TestBaseIngressUsesOnlyFixedCommonRoutes(t *testing.T) {
@@ -38,9 +38,10 @@ func TestBaseIngressUsesOnlyFixedCommonRoutes(t *testing.T) {
 		pathType string
 		service  string
 	}{
-		"/api/events":           {pathType: "Exact", service: "rokuban-notifier"},
-		"/api/media/recordings": {pathType: "Prefix", service: "rokuban-streamer"},
-		"/":                     {pathType: "Prefix", service: "rokuban-api"},
+		"/api/events":            {pathType: "Exact", service: "rokuban-notifier"},
+		"/api/media/recordings":  {pathType: "Prefix", service: "rokuban-streamer"},
+		"/api/media/stores/main": {pathType: "Prefix", service: "rokuban-recording-hls"},
+		"/":                      {pathType: "Prefix", service: "rokuban-api"},
 	}
 	paths := sliceAt(mapAt(rule, "http"), "paths")
 	if len(paths) != len(want) {

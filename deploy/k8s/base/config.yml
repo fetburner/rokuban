@@ -72,7 +72,17 @@ storage:
   # PVC は挿していない。media_dir を実際に読み書きする役（worker / streamer /
   # cleanup）を足すときに PVC を足す。
   media_dir: /mnt/media
+  media_store_name: main
   scratch_dir: /var/tmp/rokuban
+
+# 完了した原本録画は専用の rokuban-recording-hls Deployment で変換して配る。
+# central streamer と site streamer は --recording-hls-only を付けないため対象外。
+recording_hls:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-recording-hls
+  cache_bytes: 1073741824
+  max_concurrent: 2
+  wait_timeout: 30s
 
 # ライブ視聴は site/ の streamer が担当する。config は全 Pod で共有するため
 # enabled はここで有効にする。base の中央 streamer は --sites= で起動するので

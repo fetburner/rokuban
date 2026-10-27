@@ -24,7 +24,7 @@ import (
 const (
 	// defaultSegmentPrefetchSegments は、変換が要求済みの最大番号より先へ進める本数の初期値。
 	// 5 本 × 2 秒 = 10 秒先まで作っておけば、連続再生が次々に数セグメント先を要求しても変換を止めずに
-	// 追従でき、1 つの視聴位置が scratch に溜める量も (先読み + 1) 本 × 4 レンディションに収まる。
+	// 追従でき、1 つの視聴位置が scratch に溜める量も (先読み + 1) 本 × 最大 5 rendition に収まる。
 	// 測定して決めた値ではなく初期値であり、実運用の CPU と scratch の実測で見直す。
 	defaultSegmentPrefetchSegments = 5
 	// defaultSegmentWaitWindow は、変換中の位置 p に対して p ≤ m ≤ p + 窓 の要求を新しい変換を
@@ -49,7 +49,7 @@ const (
 	// defaultSegmentTransformConcurrency は生きている ffmpeg の同時数の初期値。一時停止中も数える。
 	// 2 本なら、1 本が先読みで止まっていても別の視聴位置をもう 1 本進められる。
 	defaultSegmentTransformConcurrency = 2
-	segmentTransformRenditionCount     = 4
+	segmentTransformRenditionCount     = 5
 )
 
 var (
@@ -102,6 +102,8 @@ type SegmentTransformInput struct {
 	// ffmpeg は終了コード 0 で ENDLIST を書くため）。
 	VideoDurationPTS int64
 	AudioStreamCount int
+	// HasSubtitles は captions 設定が有効な入力に WebVTT rendition があることを表す。
+	HasSubtitles bool
 }
 
 // finalSegmentNumber は、映像の長さ（tick）から最後のセグメント番号を返す。未確定は -1。
@@ -135,8 +137,8 @@ type segmentTransformTask struct {
 }
 
 // SegmentTransformOptions は、メモリ上のキャッシュと ffmpeg の同時実行を設定する。
-// CacheBytes は MaxConcurrent × (PrefetchSegments + 1) × 4 レンディション × MaxSegmentBytes
-// より大きくする。要求されたセグメントと先読み分を、映像と音声の出力ぶん保持できる下限である。
+// CacheBytes は MaxConcurrent × (PrefetchSegments + 1) × 最大 5 rendition × MaxSegmentBytes
+// より大きくする。要求されたセグメントと先読み分を、映像・音声・字幕の出力ぶん保持できる下限である。
 // MaxSegmentBytes はこの下限の見積もりにだけ使い、実際のセグメントが超えても配信は止めない
 // （キャッシュ全体より大きいときだけ、待たずにエラーを返す）。
 type SegmentTransformOptions struct {
@@ -273,37 +275,43 @@ func NewSegmentManager(opts SegmentTransformOptions) (*SegmentManager, error) {
 // 返した記述子は呼び出し側のもので、キャッシュが path を unlink した後も読み続けられる。
 // 録画の最後より後ろの番号は、待たずにすぐエラーを返す。
 func (m *SegmentManager) Get(ctx context.Context, key SegmentKey, input SegmentTransformInput) (*os.File, error) {
+	file, _, err := m.GetWithCacheStatus(ctx, key, input)
+	return file, err
+}
+
+// GetWithCacheStatus はセグメントを返し、要求時点でキャッシュにあったかを示す。
+func (m *SegmentManager) GetWithCacheStatus(ctx context.Context, key SegmentKey, input SegmentTransformInput) (*os.File, bool, error) {
 	if err := key.validate(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !supportedSegmentRendition(key.Rendition) {
-		return nil, fmt.Errorf("unsupported segment rendition %q", key.Rendition)
+		return nil, false, fmt.Errorf("unsupported segment rendition %q", key.Rendition)
 	}
 	if input.OpenFile == nil {
-		return nil, errors.New("segment transform input has no file opener")
+		return nil, false, errors.New("segment transform input has no file opener")
 	}
 	if input.AudioStreamCount < 1 {
-		return nil, fmt.Errorf("segment transform audio stream count must be positive: %d", input.AudioStreamCount)
+		return nil, false, fmt.Errorf("segment transform audio stream count must be positive: %d", input.AudioStreamCount)
 	}
 	if ctx == nil {
-		return nil, errors.New("segment request context is nil")
+		return nil, false, errors.New("segment request context is nil")
 	}
 	profile, ok := m.cfg.profile(key.Profile)
 	if !ok {
-		return nil, fmt.Errorf("unknown segment transform profile %q", key.Profile)
+		return nil, false, fmt.Errorf("unknown segment transform profile %q", key.Profile)
 	}
 	if final := finalSegmentNumber(input.VideoDurationPTS, profile.SegmentSeconds); final >= 0 && key.Number > final {
-		return nil, fmt.Errorf("%w: segment %d, last segment %d", errSegmentBeyondEnd, key.Number, final)
+		return nil, false, fmt.Errorf("%w: segment %d, last segment %d", errSegmentBeyondEnd, key.Number, final)
 	}
 	for {
-		file, err := m.getOnce(ctx, key, profile, input)
+		file, cached, err := m.getOnce(ctx, key, profile, input)
 		if errors.Is(err, errSegmentRetry) {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
+				return nil, false, ctxErr
 			}
 			continue
 		}
-		return file, err
+		return file, cached, err
 	}
 }
 
@@ -312,20 +320,20 @@ func (m *SegmentManager) getOnce(
 	key SegmentKey,
 	profile LiveProfile,
 	input SegmentTransformInput,
-) (*os.File, error) {
+) (*os.File, bool, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return nil, errSegmentManagerClosed
+		return nil, false, errSegmentManagerClosed
 	}
 	group := segmentTransformGroup{recordingID: key.RecordingID, generation: key.Generation, profile: key.Profile}
 	if lease, ok, err := m.cache.acquire(key); err != nil {
 		m.mu.Unlock()
-		return nil, err
+		return nil, false, err
 	} else if ok {
 		m.touchTasksForCachedSegmentLocked(group, key.Number)
 		m.mu.Unlock()
-		return lease.file, nil
+		return lease.file, true, nil
 	}
 
 	task := m.findTaskLocked(group, key.Number, profile.SegmentSeconds)
@@ -336,17 +344,17 @@ func (m *SegmentManager) getOnce(
 			m.mu.Unlock()
 			select {
 			case <-capacity:
-				return nil, errSegmentRetry
+				return nil, false, errSegmentRetry
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, false, ctx.Err()
 			case <-m.ctx.Done():
-				return nil, errSegmentManagerClosed
+				return nil, false, errSegmentManagerClosed
 			}
 		}
 		newTask, err := m.startTaskLocked(ctx, group, profile, input, key, waiter)
 		if err != nil {
 			m.mu.Unlock()
-			return nil, err
+			return nil, false, err
 		}
 		task = newTask
 	} else {
@@ -354,21 +362,67 @@ func (m *SegmentManager) getOnce(
 		if err := m.touchTaskLocked(task, key.Number); err != nil {
 			m.removeWaiterLocked(task, key, waiter)
 			m.mu.Unlock()
-			return nil, err
+			return nil, false, err
 		}
 	}
 	m.mu.Unlock()
 
 	select {
 	case result := <-waiter.ch:
-		return result.file, result.err
+		return result.file, false, result.err
 	case <-ctx.Done():
 		m.removeWaiter(task, key, waiter)
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	case <-m.ctx.Done():
 		m.removeWaiter(task, key, waiter)
-		return nil, errSegmentManagerClosed
+		return nil, false, errSegmentManagerClosed
 	}
+}
+
+// StopRecording は録画世代の変換を止め、その世代のキャッシュを破棄する。
+func (m *SegmentManager) StopRecording(recordingID, generation string) {
+	m.mu.Lock()
+	for group, tasks := range m.tasks {
+		if group.recordingID != recordingID || group.generation != generation {
+			continue
+		}
+		for task := range tasks {
+			m.stopTaskLocked(task)
+		}
+	}
+	m.cache.removeRecording(recordingID, generation)
+	m.mu.Unlock()
+}
+
+// HasRecording は世代のキャッシュまたは変換が残っているかを返す。
+func (m *SegmentManager) HasRecording(recordingID, generation string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for group, tasks := range m.tasks {
+		if group.recordingID != recordingID || group.generation != generation {
+			continue
+		}
+		for task := range tasks {
+			if !task.finished {
+				return true
+			}
+		}
+	}
+	return m.cache.hasRecording(recordingID, generation)
+}
+
+// Stats はキャッシュ使用量と生きている変換数を返す。
+func (m *SegmentManager) Stats() (cacheBytes int64, activeTransforms int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, tasks := range m.tasks {
+		for task := range tasks {
+			if !task.finished {
+				activeTransforms++
+			}
+		}
+	}
+	return m.cache.usedBytes(), activeTransforms
 }
 
 // Close は、子プロセスを止め、監視の終了を待ち、自分の scratch を消す。
@@ -672,10 +726,26 @@ func (m *SegmentManager) watch(task *segmentTransformTask) {
 func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bool) error {
 	entries := make(map[string][]int64, segmentTransformRenditionCount)
 	endList := make(map[string]bool, segmentTransformRenditionCount)
-	for _, rendition := range segmentRenditions {
-		variant := segmentVariantForRendition[rendition]
-		playlist := filepath.Join(task.workDir, task.profile.Name+"."+variant+".m3u8")
-		segments, hasEndList, err := readSegmentPlaylist(playlist, task.profile.Name, variant)
+	renditions := segmentRenditionsForInput(task.input)
+	for _, rendition := range renditions {
+		var playlist string
+		var segments []int64
+		var hasEndList bool
+		var err error
+		if rendition == "subtitles" {
+			playlist = filepath.Join(task.workDir, "subtitles_0.m3u8")
+			segments, hasEndList, err = readSubtitleSegmentPlaylist(playlist)
+		} else {
+			variant := segmentVariantForRendition[rendition]
+			prefix := task.profile.Name
+			playlistName := prefix + "." + variant + ".m3u8"
+			if m.cfg.Captions {
+				prefix = ""
+				playlistName = "playlist_" + variant + ".m3u8"
+			}
+			playlist = filepath.Join(task.workDir, playlistName)
+			segments, hasEndList, err = readSegmentPlaylist(playlist, prefix, variant)
+		}
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -690,14 +760,24 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 	maxCacheNumber := task.maxRequested + int64(m.prefetchSegments)
 	m.mu.Unlock()
 	finalNumber := finalSegmentNumber(task.input.VideoDurationPTS, task.profile.SegmentSeconds)
-	for _, rendition := range segmentRenditions {
+	for _, rendition := range renditions {
 		variant := segmentVariantForRendition[rendition]
 		for _, number := range entries[rendition] {
 			if number > maxCacheNumber {
 				continue
 			}
-			path := filepath.Join(task.workDir, "segments", fmt.Sprintf("%s.%s_seg%05d.ts", task.profile.Name, variant, number))
-			nextPath := filepath.Join(task.workDir, "segments", fmt.Sprintf("%s.%s_seg%05d.ts", task.profile.Name, variant, number+1))
+			var path, nextPath string
+			if rendition == "subtitles" {
+				path = filepath.Join(task.workDir, fmt.Sprintf("seg%d.vtt", number))
+				nextPath = filepath.Join(task.workDir, fmt.Sprintf("seg%d.vtt", number+1))
+			} else {
+				prefix := task.profile.Name + "."
+				if m.cfg.Captions {
+					prefix = ""
+				}
+				path = filepath.Join(task.workDir, "segments", fmt.Sprintf("%s%s_seg%05d.ts", prefix, variant, number))
+				nextPath = filepath.Join(task.workDir, "segments", fmt.Sprintf("%s%s_seg%05d.ts", prefix, variant, number+1))
+			}
 			nextStarted := fileExists(nextPath) || fileExists(nextPath+".tmp")
 			if number < task.requestStart {
 				// pre-roll のセグメントはキャッシュに入れない。完成したら scratch から消す。
@@ -731,11 +811,19 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries map[string][]int64) {
 	highest := task.startNumber
 	for _, variant := range segmentVariantForRendition {
-		pattern := filepath.Join(task.workDir, "segments", task.profile.Name+"."+variant+"_seg*.ts*")
+		prefix := task.profile.Name + "."
+		if m.cfg.Captions {
+			prefix = ""
+		}
+		pattern := filepath.Join(task.workDir, "segments", prefix+variant+"_seg*.ts*")
 		matches, _ := filepath.Glob(pattern)
 		for _, match := range matches {
 			base := filepath.Base(match)
-			number, ok := parseOutputSegmentNumber(base, task.profile.Name, variant)
+			profileName := task.profile.Name
+			if m.cfg.Captions {
+				profileName = ""
+			}
+			number, ok := parseOutputSegmentNumber(base, profileName, variant)
 			if ok && number > highest {
 				highest = number
 			}
@@ -865,7 +953,7 @@ func (m *SegmentManager) maybeStopAtCachedSegment(task *segmentTransformTask) {
 	current := task.currentNumber
 	m.mu.Unlock()
 
-	for _, rendition := range segmentRenditions {
+	for _, rendition := range segmentRenditionsForInput(task.input) {
 		key := SegmentKey{
 			RecordingID: task.group.recordingID,
 			Generation:  task.group.generation,
@@ -960,8 +1048,18 @@ var segmentVariantForRendition = map[string]string{
 }
 
 func supportedSegmentRendition(rendition string) bool {
+	if rendition == "subtitles" {
+		return true
+	}
 	_, ok := segmentVariantForRendition[rendition]
 	return ok
+}
+
+func segmentRenditionsForInput(input SegmentTransformInput) []string {
+	if !input.HasSubtitles {
+		return segmentRenditions
+	}
+	return append(append([]string(nil), segmentRenditions...), "subtitles")
 }
 
 func buildSegmentTransformArgs(
@@ -997,7 +1095,7 @@ func buildSegmentTransformArgs(
 	trimSeconds := strconv.FormatFloat(float64(trimPTS)/float64(mpegTSTimestampClock), 'f', 9, 64)
 
 	cfg.Profiles = []LiveProfile{profile}
-	cfg.Captions = false
+	withSubtitles := cfg.Captions && input.HasSubtitles
 	inputPath := input.Path
 	if inputPath == "" {
 		inputPath = originalVODFFmpegInputPath
@@ -1005,7 +1103,7 @@ func buildSegmentTransformArgs(
 	// オフセット 1 は共有ビルダーに入力側の -ss を出させるための仮の値で、
 	// pre-roll を引いた絶対秒を下で差し込む。
 	args := buildHLSFFmpegArgsForPlaylistType(
-		cfg, workDir, false, hlsOriginalEventPlaylist, inputPath, 1, input.AudioStreamCount,
+		cfg, workDir, withSubtitles, hlsOriginalEventPlaylist, inputPath, 1, input.AudioStreamCount,
 	)
 	var err error
 	ssIndex := indexOf(args, "-ss")
@@ -1065,18 +1163,33 @@ func buildSegmentTransformArgs(
 }
 
 func appendSegmentOutputFilter(args []string, option, filter string) ([]string, error) {
-	if index := indexOf(args, option); index >= 0 {
-		if index+1 >= len(args) {
-			return nil, fmt.Errorf("segment HLS args have no value after %s", option)
+	options := []string{option}
+	if option == "-vf" {
+		// 字幕付き HLS は複数 video stream を 1 つの出力に含めるため、共有
+		// ビルダーが型付き -filter:v:0 を使う。
+		options = append(options, "-filter:v:0")
+	}
+	for _, candidate := range options {
+		if index := indexOf(args, candidate); index >= 0 {
+			if index+1 >= len(args) {
+				return nil, fmt.Errorf("segment HLS args have no value after %s", candidate)
+			}
+			args[index+1] += "," + filter
+			return args, nil
 		}
-		args[index+1] += "," + filter
-		return args, nil
 	}
 	index := indexOf(args, "-force_key_frames")
 	if index < 0 {
+		index = indexOf(args, "-force_key_frames:v:0")
+	}
+	if index < 0 {
 		return nil, errors.New("segment HLS args do not contain -force_key_frames")
 	}
-	return append(args[:index], append([]string{option, filter}, args[index:]...)...), nil
+	insertOption := option
+	if option == "-vf" && indexOf(args, "-force_key_frames:v:0") >= 0 {
+		insertOption = "-filter:v:0"
+	}
+	return append(args[:index], append([]string{insertOption, filter}, args[index:]...)...), nil
 }
 
 func indexOf(args []string, target string) int {
@@ -1151,8 +1264,56 @@ func readSegmentPlaylist(path, profile, variant string) ([]int64, bool, error) {
 	return segments, endList, nil
 }
 
+func readSubtitleSegmentPlaylist(path string) ([]int64, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	var segments []int64
+	scanner := bufio.NewScanner(file)
+	needURI := false
+	endList := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "#EXT-X-ENDLIST" {
+			endList = true
+		}
+		if strings.HasPrefix(line, "#EXTINF:") {
+			needURI = true
+			continue
+		}
+		if !needURI || line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if number, ok := parseSubtitleSegmentNumber(filepath.Base(line)); ok {
+			segments = append(segments, number)
+		}
+		needURI = false
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, false, fmt.Errorf("reading HLS subtitle segment playlist: %w", err)
+	}
+	return segments, endList, nil
+}
+
+func parseSubtitleSegmentNumber(name string) (int64, bool) {
+	text, ok := strings.CutPrefix(name, "seg")
+	if !ok {
+		return 0, false
+	}
+	text, ok = strings.CutSuffix(text, ".vtt")
+	if !ok {
+		return 0, false
+	}
+	return parseCanonicalRecordingID(text)
+}
+
 func parseOutputSegmentNumber(name, profile, variant string) (int64, bool) {
-	prefix := profile + "." + variant + "_seg"
+	prefix := variant + "_seg"
+	if profile != "" {
+		prefix = profile + "." + prefix
+	}
 	if !strings.HasPrefix(name, prefix) {
 		return 0, false
 	}
