@@ -35,6 +35,9 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 	if size < 0 {
 		return fmt.Errorf("negative object size %d", size)
 	}
+	if mediapath.IsGeneratedAssetTempFile(key) {
+		return fmt.Errorf("object key %q uses the reserved staging prefix", key)
+	}
 	finalPath, err := mediapath.Resolve(s.root, key)
 	if err != nil {
 		return fmt.Errorf("resolving object key %q: %w", key, err)
@@ -164,6 +167,9 @@ func (s *Store) List(ctx context.Context, prefix string) ([]objstore.Object, err
 			return err
 		}
 		if entry.IsDir() {
+			return nil
+		}
+		if mediapath.IsGeneratedAssetTempFile(entry.Name()) {
 			return nil
 		}
 		info, err := entry.Info()

@@ -26,10 +26,12 @@ type fakeAPI struct {
 	abortCalls    int
 	putPartCalls  int
 	putCalls      int
+	mutationCalls int
 }
 
 func (f *fakeAPI) PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	f.putCalls++
+	f.mutationCalls++
 	return &s3.PutObjectOutput{}, nil
 }
 
@@ -47,7 +49,8 @@ func (f *fakeAPI) GetObject(ctx context.Context, in *s3.GetObjectInput, _ ...fun
 	return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
 }
 
-func (*fakeAPI) DeleteObject(context.Context, *s3.DeleteObjectInput, ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+func (f *fakeAPI) DeleteObject(context.Context, *s3.DeleteObjectInput, ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	f.mutationCalls++
 	return &s3.DeleteObjectOutput{}, nil
 }
 
@@ -55,11 +58,13 @@ func (*fakeAPI) ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*
 	return &s3.ListObjectsV2Output{}, nil
 }
 
-func (*fakeAPI) CreateMultipartUpload(context.Context, *s3.CreateMultipartUploadInput, ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error) {
+func (f *fakeAPI) CreateMultipartUpload(context.Context, *s3.CreateMultipartUploadInput, ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error) {
+	f.mutationCalls++
 	return &s3.CreateMultipartUploadOutput{UploadId: aws.String("upload-1")}, nil
 }
 
 func (f *fakeAPI) UploadPart(_ context.Context, in *s3.UploadPartInput, _ ...func(*s3.Options)) (*s3.UploadPartOutput, error) {
+	f.mutationCalls++
 	if _, err := io.ReadAll(in.Body); err != nil {
 		return nil, err
 	}
@@ -69,11 +74,13 @@ func (f *fakeAPI) UploadPart(_ context.Context, in *s3.UploadPartInput, _ ...fun
 
 func (f *fakeAPI) CompleteMultipartUpload(context.Context, *s3.CompleteMultipartUploadInput, ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error) {
 	f.completeCalls++
+	f.mutationCalls++
 	return &s3.CompleteMultipartUploadOutput{}, f.completeErr
 }
 
 func (f *fakeAPI) AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error) {
 	f.abortCalls++
+	f.mutationCalls++
 	return &s3.AbortMultipartUploadOutput{}, nil
 }
 
@@ -85,6 +92,33 @@ func (fakePresigner) PresignGetObject(context.Context, *s3.GetObjectInput, ...fu
 
 func (fakePresigner) PresignHeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 	return &v4.PresignedHTTPRequest{URL: "https://objects.example.test/signed-head"}, nil
+}
+
+func TestReaderConstructorSkipsWriteProbeAndRejectsWrites(t *testing.T) {
+	client := &fakeAPI{}
+	store, err := newReaderWithClient(client, fakePresigner{}, "derived")
+	if err != nil {
+		t.Fatalf("newReaderWithClient: %v", err)
+	}
+	if client.mutationCalls != 0 {
+		t.Fatalf("constructor made %d mutation calls, want none for read-only credentials", client.mutationCalls)
+	}
+
+	if _, err := store.Head(context.Background(), "encoded/1.mp4"); !errors.Is(err, objstore.ErrNotFound) {
+		t.Fatalf("Head with reader store error = %v, want ErrNotFound from the read-capable fake", err)
+	}
+	if _, err := store.Presign(context.Background(), "encoded/1.mp4", "GET", time.Hour, "", ""); err != nil {
+		t.Fatalf("Presign with reader store: %v", err)
+	}
+	if err := store.Put(context.Background(), "encoded/1.mp4", bytes.NewReader(nil), 0, sha256.Sum256(nil), "video/mp4"); !errors.Is(err, objstore.ErrReadOnly) {
+		t.Fatalf("Put with reader store error = %v, want ErrReadOnly", err)
+	}
+	if err := store.Delete(context.Background(), "encoded/1.mp4"); !errors.Is(err, objstore.ErrReadOnly) {
+		t.Fatalf("Delete with reader store error = %v, want ErrReadOnly", err)
+	}
+	if client.mutationCalls != 0 {
+		t.Fatalf("read-only store made %d mutation calls, want none", client.mutationCalls)
+	}
 }
 
 func TestPutAbortsMultipartUploadWhenFullObjectChecksumDiffers(t *testing.T) {

@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/objstore"
 )
@@ -62,6 +64,23 @@ func TestStoreRejectsChecksumMismatchBeforePublication(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsReservedStagingKey(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "encoded/.rokuban-media-asset-user-file"
+	data := []byte("canonical object")
+	if err := store.Put(ctx, key, bytes.NewReader(data), int64(len(data)), sha256.Sum256(data), "video/mp4"); err == nil {
+		t.Fatalf("Put accepted key %q from the reserved staging namespace", key)
+	}
+	if _, err := os.Stat(filepath.Join(root, key)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reserved object stat error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestStoreListAndDeleteAreIdempotent(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(t.TempDir())
@@ -88,4 +107,70 @@ func TestStoreListAndDeleteAreIdempotent(t *testing.T) {
 	if _, err := store.Head(ctx, "encoded/a.mp4"); !errors.Is(err, objstore.ErrNotFound) {
 		t.Fatalf("Head after Delete error = %v, want ErrNotFound", err)
 	}
+}
+
+func TestListDoesNotExposeInProgressPut(t *testing.T) {
+	ctx := context.Background()
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("completed object")
+	reader := &blockedReader{started: make(chan struct{}), release: make(chan struct{}), data: data}
+	var releaseOnce sync.Once
+	releaseReader := func() { releaseOnce.Do(func() { close(reader.release) }) }
+	putDone := make(chan error, 1)
+	go func() {
+		putDone <- store.Put(ctx, "encoded/in-progress.mp4", reader, int64(len(data)), sha256.Sum256(data), "video/mp4")
+	}()
+	defer releaseReader()
+
+	select {
+	case <-reader.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Put did not reach its blocked source read")
+	}
+
+	objects, err := store.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List while Put is blocked: %v", err)
+	}
+	if len(objects) != 0 {
+		t.Fatalf("List while Put is blocked = %+v, want no visible incomplete object", objects)
+	}
+
+	releaseReader()
+	select {
+	case err := <-putDone:
+		if err != nil {
+			t.Fatalf("Put after releasing source: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Put did not finish after releasing its source")
+	}
+
+	objects, err = store.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List after Put completes: %v", err)
+	}
+	if len(objects) != 1 || objects[0].Key != "encoded/in-progress.mp4" || objects[0].Size != int64(len(data)) {
+		t.Fatalf("List after Put = %+v, want the complete encoded/in-progress.mp4 object", objects)
+	}
+}
+
+type blockedReader struct {
+	started chan struct{}
+	release chan struct{}
+	data    []byte
+	done    bool
+}
+
+func (r *blockedReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	close(r.started)
+	<-r.release
+	r.done = true
+	return copy(p, r.data), nil
 }

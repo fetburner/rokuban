@@ -543,6 +543,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	tunerStore := pgstore.NewTuners(pool)
 	analysisStore := pgstore.NewAnalysis(pool, cfg.Storage.MediaStoreName)
 	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
+	// API は storage の配置先を知らない。active なコピーがある全置き場を検索する。
+	recordingQuery := pgstore.NewRecordings(pool, "")
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
@@ -554,7 +556,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		ChapterStore:        analysisStore,
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
 		RecordingTrashStore: recordingStore,
-		RecordingQuery:      recordingStore,
+		RecordingQuery:      recordingQuery,
 		TunerReader:         tunerStore,
 		CapacityStore:       tunerStore,
 		ReservationStore:    pgstore.NewReservations(pool),
@@ -620,7 +622,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	if slices.Contains(roles, "streamer") {
 		objectStores := make(map[string]objstore.Store)
 		if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok && derived.Kind == "s3" {
-			objects, err := s3store.New(egCtx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+			objects, err := s3store.NewReader(egCtx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
 			if err != nil {
 				return nil, fmt.Errorf("connecting derived S3 store %q: %w", cfg.Storage.Derived, err)
 			}

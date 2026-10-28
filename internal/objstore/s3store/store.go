@@ -64,21 +64,42 @@ type Store struct {
 	presigner         presigner
 	bucket            string
 	conditionalWrites bool
+	readOnly          bool
 }
 
-// New loads credentials from the AWS default provider chain and connects to one bucket.
+// New loads credentials from the AWS default provider chain, probes write capabilities,
+// and connects to one bucket.
 // Credentials are supplied by the process environment, workload identity, or the standard
 // AWS shared credential providers; they are not stored in config files.
 func New(ctx context.Context, cfg Config) (*Store, error) {
+	client, signer, err := newClient(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newWithClient(ctx, client, signer, cfg.Bucket)
+}
+
+// NewReader loads credentials from the AWS default provider chain and connects to one bucket
+// without probing write capabilities. Its returned store rejects Put and Delete calls.
+// It is intended for streamer processes that only need to inspect objects and create signed URLs.
+func NewReader(ctx context.Context, cfg Config) (*Store, error) {
+	client, signer, err := newClient(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newReaderWithClient(client, signer, cfg.Bucket)
+}
+
+func newClient(ctx context.Context, cfg Config) (api, presigner, error) {
 	if strings.TrimSpace(cfg.Bucket) == "" {
-		return nil, errors.New("S3 bucket is empty")
+		return nil, nil, errors.New("S3 bucket is empty")
 	}
 	if cfg.Region == "" {
 		cfg.Region = "us-east-1"
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
 	if err != nil {
-		return nil, fmt.Errorf("loading AWS credentials and config: %w", err)
+		return nil, nil, fmt.Errorf("loading AWS credentials and config: %w", err)
 	}
 	client := s3.NewFromConfig(awsCfg, func(options *s3.Options) {
 		if cfg.Endpoint != "" {
@@ -86,7 +107,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 			options.UsePathStyle = true
 		}
 	})
-	return newWithClient(ctx, client, s3.NewPresignClient(client), cfg.Bucket)
+	return client, s3.NewPresignClient(client), nil
 }
 
 func newWithClient(ctx context.Context, client api, signer presigner, bucket string) (*Store, error) {
@@ -103,8 +124,21 @@ func newWithClient(ctx context.Context, client api, signer presigner, bucket str
 	return &Store{client: client, presigner: signer, bucket: bucket, conditionalWrites: conditional}, nil
 }
 
+func newReaderWithClient(client api, signer presigner, bucket string) (*Store, error) {
+	if client == nil || signer == nil {
+		return nil, errors.New("S3 client and presigner are required")
+	}
+	if strings.TrimSpace(bucket) == "" {
+		return nil, errors.New("S3 bucket is empty")
+	}
+	return &Store{client: client, presigner: signer, bucket: bucket, readOnly: true}, nil
+}
+
 // Put uploads a complete object using multipart upload and verifies the full SHA-256 in the process.
 func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, wantSHA [32]byte, contentType string) error {
+	if s.readOnly {
+		return objstore.ErrReadOnly
+	}
 	if err := validateKey(key); err != nil {
 		return fmt.Errorf("invalid S3 object key %q: %w", key, err)
 	}
@@ -279,6 +313,9 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 
 // Delete removes key idempotently.
 func (s *Store) Delete(ctx context.Context, key string) error {
+	if s.readOnly {
+		return objstore.ErrReadOnly
+	}
 	if err := validateKey(key); err != nil {
 		return fmt.Errorf("invalid S3 object key %q: %w", key, err)
 	}
