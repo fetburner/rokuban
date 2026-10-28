@@ -180,7 +180,7 @@ func assetState(t *testing.T, pool *pgxpool.Pool, id int64) string {
 	t.Helper()
 	var state string
 	if err := pool.QueryRow(context.Background(),
-		"SELECT state FROM media_assets WHERE id = $1", id).Scan(&state); err != nil {
+		"SELECT state FROM media_asset_copies WHERE media_asset_id = $1", id).Scan(&state); err != nil {
 		t.Fatalf("querying asset state: %v", err)
 	}
 	return state
@@ -690,7 +690,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 
 // 削除の進行中（deleting）にごみ箱から復元された録画は、次パスでファイルが
 // 消えない（issue #105）。復元は recordings.deleted_at だけを消す
-// （internal/api RestoreRecording）ので media_assets.state は deleting の
+// （internal/api RestoreRecording）ので media_asset_copies.state は deleting の
 // まま残る。ここで pending 経路が判定を再評価せず「既に決めた削除」として
 // 無条件に続行すると、「復元しました」と表示された直後にファイルが消える
 // （issue #105 の失敗シナリオそのもの）。ListUnqualifiedDeletingAssets /
@@ -1680,7 +1680,7 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	// （TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered 参照）、
 	// mtime が新しいままだと rel_path の突き合わせが実際に走らずこのテストが
 	// 何も保証しないテストになる。3 ファイルとも古くして突き合わせ自体を
-	// 通過させることで、「walkMediaFiles が返す relPath と media_assets.rel_path
+	// 通過させることで、「walkMediaFiles が返す relPath と media_asset_copies.rel_path
 	// の突き合わせが両方の形（前置あり/なし）で成立する」ことを固定する。
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	for _, rel := range []string{
@@ -2391,7 +2391,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 		t.Fatalf("canonical after Work = %q, %v; want published bytes", got, err)
 	}
 	var state string
-	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT state FROM media_asset_copies WHERE rel_path = $1", relPath).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "active" {
@@ -2703,7 +2703,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 		t.Fatalf("rescued file = %q, %v; want original bytes preserved", got, err)
 	}
 	var state string
-	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT state FROM media_asset_copies WHERE rel_path = $1", relPath).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "active" {
@@ -2761,7 +2761,7 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 		t.Fatalf("canonical after insert commit = %q, %v; want file preserved", got, err)
 	}
 	var state string
-	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT state FROM media_asset_copies WHERE rel_path = $1", relPath).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "active" {
@@ -2950,7 +2950,7 @@ func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 	if err := os.Rename(legacyPath, copyPath); err != nil {
 		t.Fatalf("moving physical file to the copy path: %v", err)
 	}
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET rel_path = 'stale/logical-path.m2ts' WHERE id = $1`, assetID); err != nil {
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET rel_path = 'stale/logical-path.m2ts' WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("making logical path stale: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET rel_path = $2 WHERE media_asset_id = $1 AND store = 'test-store'`, assetID, copyRelPath); err != nil {
@@ -3413,7 +3413,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 	}
 }
 
-// ListAgedMissingMediaAssets の `AND a.state = 'active'` は不変条件 9
+// ListAgedMissingMediaAssets の `AND copy.state = 'active'` は不変条件 9
 // 「適用の瞬間の再評価」そのもの --- missing_media_assets の行は一度
 // 記録されると、対象の media_asset が後から active でなくなっても
 // reconcileMissingAssets の掃除ループが必ず先に走るとは限らない
@@ -3422,7 +3422,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 // 削除済みの資産が「実体無し」として報告され続ける。
 //
 // このテストが検出すべき変異: ListAgedMissingMediaAssets の
-// `AND a.state = 'active'` を外す。その場合、対象が deleted に遷移した後も
+// `AND copy.state = 'active'` を外す。その場合、対象が deleted に遷移した後も
 // 報告され続け、最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *testing.T) {
 	pool := setupTestPool(t)

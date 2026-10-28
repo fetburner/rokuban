@@ -44,7 +44,6 @@ func (s *Media) CommitOriginal(
 
 	assetID, err := q.CreateOriginalMediaAsset(ctx, sqlcgen.CreateOriginalMediaAssetParams{
 		RecordingID: in.RecordingID,
-		RelPath:     in.RelPath,
 		SizeBytes:   in.SizeBytes,
 	})
 	if err != nil {
@@ -250,7 +249,6 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
 		RecordingID:       in.RecordingID,
 		Profile:           &in.Profile,
-		RelPath:           in.RelPath,
 		SizeBytes:         in.SizeBytes,
 		DerivedGeneration: &derivedGeneration,
 	})
@@ -390,7 +388,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		}
 		derivedGeneration := in.DerivedGeneration
 		assetID, err = q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
-			RecordingID: in.RecordingID, RelPath: in.RelPath, SizeBytes: in.SizeBytes,
+			RecordingID: in.RecordingID, SizeBytes: in.SizeBytes,
 			DerivedGeneration: &derivedGeneration,
 		})
 		if err != nil {
@@ -422,7 +420,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		assetID = current.ID
 		derivedGeneration := in.DerivedGeneration
 		if err := q.UpdateThumbnailMediaAssetPath(ctx, sqlcgen.UpdateThumbnailMediaAssetPathParams{
-			RelPath: in.RelPath, SizeBytes: in.SizeBytes, DerivedGeneration: &derivedGeneration,
+			SizeBytes: in.SizeBytes, DerivedGeneration: &derivedGeneration,
 			ID: assetID, StoreName: s.storeName,
 		}); err != nil {
 			return false, fmt.Errorf("updating thumbnail media path: %w", mapDatabaseError(err))
@@ -490,7 +488,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 	}
 	derivedGeneration := in.DerivedGeneration
 	assetID, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
-		RecordingID: in.RecordingID, RelPath: in.RelPath, SizeBytes: in.SizeBytes,
+		RecordingID: in.RecordingID, SizeBytes: in.SizeBytes,
 		DerivedGeneration: &derivedGeneration,
 	})
 	if err != nil {
@@ -618,12 +616,12 @@ func upsertMediaAssetCopyState(
 	assetID int64,
 	storeName, relPath, state string,
 ) error {
-	return q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+	return mapDatabaseError(q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
 		Store:        storeName,
 		RelPath:      relPath,
 		State:        state,
-	})
+	}))
 }
 
 // ReportEncodeProgress は encode-progress 通知を PostgreSQL NOTIFY で送る。

@@ -42,7 +42,7 @@ func (ls *LiveStreamer) lookupOriginalVODTarget(ctx context.Context, recordingID
 // Why this holds the right inode without a lock: target was read as active, so its
 // canonical file was renamed into place before its row committed, and the path
 // keeps that inode until delete_reconcile unlinks it, which happens only after
-// MarkMediaAssetDeleting has committed (deleteMediaAsset). media_assets_rel_path_idx
+// MarkMediaAssetDeleting has committed (deleteMediaAsset). media_asset_copies_store_rel_path_idx
 // forbids another live row at the same rel_path, so nobody else publishes there
 // while target is live. If the row is still active after open, the path cannot have
 // been unlinked before the open; if it is not, we return store.ErrNotFound. A later

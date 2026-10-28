@@ -1010,21 +1010,18 @@ func (q *Queries) CatalogUpsertLabelRule(ctx context.Context, arg CatalogUpsertL
 
 const catalogUpsertMediaAsset = `-- name: CatalogUpsertMediaAsset :exec
 INSERT INTO media_assets (
-    id, recording_id, kind, profile, rel_path, size_bytes,
-    state, deleted_at, created_at, updated_at, derived_generation, sha256
+    id, recording_id, kind, profile, size_bytes,
+    created_at, updated_at, derived_generation, sha256
 ) OVERRIDING SYSTEM VALUE
 VALUES (
-    $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9
 )
 ON CONFLICT (id) DO UPDATE SET
     recording_id = EXCLUDED.recording_id,
     kind         = EXCLUDED.kind,
     profile      = EXCLUDED.profile,
-    rel_path     = EXCLUDED.rel_path,
     size_bytes   = EXCLUDED.size_bytes,
-    state        = EXCLUDED.state,
-    deleted_at   = EXCLUDED.deleted_at,
     created_at   = EXCLUDED.created_at,
     updated_at   = EXCLUDED.updated_at,
     derived_generation = EXCLUDED.derived_generation,
@@ -1036,10 +1033,7 @@ type CatalogUpsertMediaAssetParams struct {
 	RecordingID       int64
 	Kind              string
 	Profile           *string
-	RelPath           string
 	SizeBytes         int64
-	State             string
-	DeletedAt         *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	DerivedGeneration *int64
@@ -1052,10 +1046,7 @@ func (q *Queries) CatalogUpsertMediaAsset(ctx context.Context, arg CatalogUpsert
 		arg.RecordingID,
 		arg.Kind,
 		arg.Profile,
-		arg.RelPath,
 		arg.SizeBytes,
-		arg.State,
-		arg.DeletedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.DerivedGeneration,

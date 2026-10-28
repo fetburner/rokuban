@@ -47,7 +47,7 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 			t.Fatalf("result = %+v", result)
 		}
 		var active, deleted int
-		if err := pool.QueryRow(context.Background(), "SELECT count(*) FILTER (WHERE state <> 'deleted'), count(*) FILTER (WHERE state='deleted' AND deleted_at IS NOT NULL) FROM media_assets").Scan(&active, &deleted); err != nil {
+		if err := pool.QueryRow(context.Background(), "SELECT count(*) FILTER (WHERE state <> 'deleted'), count(*) FILTER (WHERE state='deleted' AND deleted_at IS NOT NULL) FROM media_asset_copies").Scan(&active, &deleted); err != nil {
 			t.Fatal(err)
 		}
 		if active != 1 || deleted != 3 {
@@ -99,7 +99,7 @@ func TestRescueScanCandidateRemoved(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	var count int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE state='active'").Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_asset_copies WHERE state='active'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {

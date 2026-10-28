@@ -298,8 +298,10 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 		t.Errorf("canonical = %d bytes, want A's %d bytes", len(got), len(contentA))
 	}
 	var size int64
-	if err := pool.QueryRow(ctx, `SELECT size_bytes FROM media_assets
-		WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264' AND state = 'active'`, recordingID).Scan(&size); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT a.size_bytes FROM media_assets a
+		JOIN media_asset_copies c ON c.media_asset_id = a.id AND c.store = $2
+		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`,
+		recordingID, dbtest.StoreName).Scan(&size); err != nil {
 		t.Fatal(err)
 	}
 	if size != int64(len(contentA)) {
@@ -345,7 +347,7 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	}
 	var ownerIDAfter int64
 	var ownerProfile, ownerState string
-	if err := pool.QueryRow(ctx, `SELECT recording_id, profile, state FROM media_assets WHERE id = $1`, ownerAssetID).
+	if err := pool.QueryRow(ctx, `SELECT a.recording_id, a.profile, c.state FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.id = $1`, ownerAssetID).
 		Scan(&ownerIDAfter, &ownerProfile, &ownerState); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +374,8 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	if attemptError == nil {
 		t.Fatal("candidate attempt error is NULL, want the rel_path reservation failure")
 	}
-	if !strings.Contains(*attemptError, "upserting encoded media asset: conflict") {
+	if !strings.Contains(*attemptError, "recording encoded media asset copy: conflict") ||
+		!strings.Contains(*attemptError, "media_asset_copies_store_rel_path_idx") {
 		t.Errorf("candidate attempt error = %s, want the rel_path reservation failure", *attemptError)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
@@ -475,7 +478,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 		t.Fatalf("publishEncoded err = %v, want a successful skip", r.err)
 	}
 	var rel string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_assets WHERE id = $1`, assetID).Scan(&rel); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&rel); err != nil {
 		t.Fatal(err)
 	}
 	if rel != g3 {
@@ -952,7 +955,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		t.Fatal("delete did not reach the unlink boundary")
 	}
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_assets WHERE id = $1`, assetID).Scan(&state); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&state); err != nil {
 		release()
 		<-deleteDone
 		t.Fatal(err)
@@ -1005,7 +1008,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 	}
 	var finalState string
 	var size int64
-	if err := pool.QueryRow(ctx, `SELECT state, size_bytes FROM media_assets WHERE id = $1`, assetID).Scan(&finalState, &size); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.id = $1`, assetID).Scan(&finalState, &size); err != nil {
 		t.Fatal(err)
 	}
 	if finalState != "active" || size != int64(len(next)) {
@@ -1149,8 +1152,8 @@ func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
 	}
 	var state string
 	var size int64
-	if err := pool.QueryRow(ctx, `SELECT state, size_bytes FROM media_assets
-		WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264'`, recordingID).Scan(&state, &size); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.recording_id = $1 AND kind = 'encoded' AND profile = 'h264'`, recordingID).Scan(&state, &size); err != nil {
 		t.Fatal(err)
 	}
 	if state != "active" || size != int64(len(contentB)) {

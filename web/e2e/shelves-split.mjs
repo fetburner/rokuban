@@ -43,8 +43,13 @@ SELECT 'manual', 'default', 32736, 1024, i, 'NHK Eテレ', 'GR', '13',
        ELSE 'NHK高校講座　化学　第' || (i - 6) || '回' END,
   now() - (i || ' hours')::interval, 1800000, 'finished'
 FROM generate_series(1, 12) i;
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-SELECT id, 'original', 'sites/default/e2e/' || id, 1, 'active' FROM recordings;`
+WITH assets AS (
+  INSERT INTO media_assets (recording_id, kind, size_bytes)
+  SELECT id, 'original', 1 FROM recordings
+  RETURNING id
+)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+SELECT id, 'main', 'sites/default/e2e/' || id, 'active' FROM assets;`
   execFileSync('psql', [DATABASE_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], { stdio: 'pipe' })
 }
 

@@ -59,10 +59,10 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAs
 
 const upsertInPlaceMediaAsset = `-- name: UpsertInPlaceMediaAsset :one
 INSERT INTO media_assets (
-    recording_id, kind, profile, rel_path, size_bytes, state, derived_generation
+    recording_id, kind, profile, size_bytes, derived_generation
 ) VALUES (
     $1, $2, $3,
-    $4, $5, 'active',
+    $4,
     CASE WHEN $2::text = 'original' THEN NULL ELSE 0 END
 )
 ON CONFLICT (recording_id, kind, profile)
@@ -70,14 +70,12 @@ DO UPDATE SET
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
     sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
     updated_at = now()
 WHERE EXISTS (
     SELECT 1 FROM media_asset_copies c
     WHERE c.media_asset_id = media_assets.id
-      AND c.store = $6
-      AND c.rel_path = EXCLUDED.rel_path
+      AND c.store = $5
+      AND c.rel_path = $6
 )
 RETURNING id
 `
@@ -86,9 +84,9 @@ type UpsertInPlaceMediaAssetParams struct {
 	RecordingID int64
 	Kind        string
 	Profile     *string
-	RelPath     string
 	SizeBytes   int64
 	StoreName   string
+	RelPath     string
 }
 
 // A tuple is immutable once published. A different path here means a synthetic identity
@@ -98,9 +96,9 @@ func (q *Queries) UpsertInPlaceMediaAsset(ctx context.Context, arg UpsertInPlace
 		arg.RecordingID,
 		arg.Kind,
 		arg.Profile,
-		arg.RelPath,
 		arg.SizeBytes,
 		arg.StoreName,
+		arg.RelPath,
 	)
 	var id int64
 	err := row.Scan(&id)

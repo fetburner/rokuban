@@ -622,14 +622,11 @@ WITH cleared_removal_request AS (
       AND q.recording_id = a.recording_id
       AND q.profile = a.profile
 )
-UPDATE media_assets m SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE m.id = $1
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = m.id
-        AND copy.store = $2
-        AND copy.state = 'deleting'
-  )
+UPDATE media_asset_copies copy
+SET state = 'deleted', deleted_at = COALESCE(copy.deleted_at, now())
+WHERE copy.media_asset_id = $1
+  AND copy.store = $2
+  AND copy.state = 'deleting'
 `
 
 type MarkMediaAssetDeletedParams struct {
@@ -648,10 +645,9 @@ func (q *Queries) MarkMediaAssetDeleted(ctx context.Context, arg MarkMediaAssetD
 }
 
 const markMediaAssetDeleting = `-- name: MarkMediaAssetDeleting :execrows
-UPDATE media_assets AS a SET state = 'deleting', updated_at = now()
-FROM media_asset_copies copy
-WHERE a.id = $1
-  AND copy.media_asset_id = $1
+UPDATE media_asset_copies copy
+SET state = 'deleting', deleted_at = NULL
+WHERE copy.media_asset_id = $1
   AND copy.store = $2
   AND copy.state = 'active'
 `
@@ -737,10 +733,9 @@ func (q *Queries) MarkPurgedRecordings(ctx context.Context, graceCutoff time.Tim
 }
 
 const markUntilEncodedOriginalDeleting = `-- name: MarkUntilEncodedOriginalDeleting :execrows
-UPDATE media_assets a SET state = 'deleting', updated_at = now()
-FROM media_asset_copies copy
-WHERE a.id = $1
-  AND copy.media_asset_id = $1
+UPDATE media_asset_copies copy
+SET state = 'deleting', deleted_at = NULL
+WHERE copy.media_asset_id = $1
   AND copy.store = $2
   AND copy.state = 'active'
   AND EXISTS (
@@ -767,15 +762,13 @@ func (q *Queries) MarkUntilEncodedOriginalDeleting(ctx context.Context, arg Mark
 }
 
 const revertMediaAssetToActive = `-- name: RevertMediaAssetToActive :execrows
-UPDATE media_assets a
-SET state = 'active', updated_at = now()
+UPDATE media_asset_copies copy
+SET state = 'active', deleted_at = NULL
+FROM media_assets a
 WHERE a.id = $1
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = a.id
-        AND copy.store = $2
-        AND copy.state = 'deleting'
-  )
+  AND copy.media_asset_id = a.id
+  AND copy.store = $2
+  AND copy.state = 'deleting'
   AND NOT EXISTS (
     SELECT 1 FROM trash_deletable_recordings($3::timestamptz) t
     WHERE t.recording_id = a.recording_id

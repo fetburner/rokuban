@@ -244,10 +244,6 @@ func newMediaContractAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, 
 
 	if state != "active" {
 		if _, err := pool.Exec(context.Background(), `
-UPDATE media_assets SET state = $1, deleted_at = CASE WHEN $1 = 'deleted' THEN now() ELSE NULL END WHERE id = $2`, state, id); err != nil {
-			t.Fatalf("setting media asset state to %s: %v", state, err)
-		}
-		if _, err := pool.Exec(context.Background(), `
 UPDATE media_asset_copies
 SET state = $1, deleted_at = CASE WHEN $1 = 'deleted' THEN now() ELSE NULL END
 WHERE media_asset_id = $2`, state, id); err != nil {

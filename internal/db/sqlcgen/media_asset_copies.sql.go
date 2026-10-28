@@ -19,21 +19,6 @@ func (q *Queries) AdoptUnassignedIngestTemps(ctx context.Context, store string) 
 	return err
 }
 
-const adoptUnassignedMediaAssetCopies = `-- name: AdoptUnassignedMediaAssetCopies :exec
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-SELECT a.id, $1, a.rel_path, a.state, a.created_at, a.deleted_at
-FROM media_assets a
-WHERE NOT EXISTS (
-    SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
-)
-ON CONFLICT (media_asset_id, store) DO NOTHING
-`
-
-func (q *Queries) AdoptUnassignedMediaAssetCopies(ctx context.Context, store string) error {
-	_, err := q.db.Exec(ctx, adoptUnassignedMediaAssetCopies, store)
-	return err
-}
-
 const adoptUnassignedMissingMediaAssets = `-- name: AdoptUnassignedMissingMediaAssets :exec
 UPDATE missing_media_assets SET store = $1 WHERE store = ''
 `
@@ -59,6 +44,21 @@ UPDATE storage_sync SET store = $1 WHERE store = ''
 func (q *Queries) AdoptUnassignedStorageSync(ctx context.Context, store string) error {
 	_, err := q.db.Exec(ctx, adoptUnassignedStorageSync, store)
 	return err
+}
+
+const countUnassignedMediaAssetCopies = `-- name: CountUnassignedMediaAssetCopies :one
+SELECT count(*)
+FROM media_assets a
+WHERE NOT EXISTS (
+    SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+)
+`
+
+func (q *Queries) CountUnassignedMediaAssetCopies(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countUnassignedMediaAssetCopies)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countUnassignedStorageRows = `-- name: CountUnassignedStorageRows :one
@@ -138,9 +138,8 @@ type SetMediaAssetCopyStateParams struct {
 	Store        string
 }
 
-// Keep the rolling-migration mirror's lifecycle state in sync without re-reading
-// the logical media_assets columns. The copy row must exist before a transition
-// can start, as enforced by the worker's adoption check and the transition query.
+// The copy row must exist before a transition can start, as enforced by the
+// worker's adoption check and the transition query.
 func (q *Queries) SetMediaAssetCopyState(ctx context.Context, arg SetMediaAssetCopyStateParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setMediaAssetCopyState, arg.State, arg.MediaAssetID, arg.Store)
 	if err != nil {

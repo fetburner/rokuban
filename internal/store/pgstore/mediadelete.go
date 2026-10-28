@@ -104,16 +104,11 @@ func (s *Media) MarkDeleting(ctx context.Context, assetID int64) error {
 	if err := lockMediaAssetCopy(ctx, q, assetID, s.storeName); err != nil {
 		return err
 	}
-	updated, err := q.MarkMediaAssetDeleting(ctx, sqlcgen.MarkMediaAssetDeletingParams{
+	_, err = q.MarkMediaAssetDeleting(ctx, sqlcgen.MarkMediaAssetDeletingParams{
 		AssetID: assetID, StoreName: s.storeName,
 	})
 	if err != nil {
 		return fmt.Errorf("marking media asset %d deleting: %w", assetID, mapDatabaseError(err))
-	}
-	if updated > 0 {
-		if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "deleting"); err != nil {
-			return fmt.Errorf("marking media asset copy %d deleting: %w", assetID, err)
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing media asset delete transition: %w", mapDatabaseError(err))
@@ -148,9 +143,6 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, asset
 	if marked == 0 {
 		return false, nil
 	}
-	if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "deleting"); err != nil {
-		return false, fmt.Errorf("marking until_encoded media asset copy %d deleting: %w", assetID, err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing until_encoded delete for media asset %d: %w", assetID, mapDatabaseError(err))
 	}
@@ -168,16 +160,11 @@ func (s *Media) MarkDeleted(ctx context.Context, assetID int64) error {
 	if err := lockMediaAssetCopy(ctx, q, assetID, s.storeName); err != nil {
 		return err
 	}
-	updated, err := q.MarkMediaAssetDeleted(ctx, sqlcgen.MarkMediaAssetDeletedParams{
+	_, err = q.MarkMediaAssetDeleted(ctx, sqlcgen.MarkMediaAssetDeletedParams{
 		ID: assetID, StoreName: s.storeName,
 	})
 	if err != nil {
 		return fmt.Errorf("marking media asset %d deleted: %w", assetID, mapDatabaseError(err))
-	}
-	if updated > 0 {
-		if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "deleted"); err != nil {
-			return fmt.Errorf("marking media asset copy %d deleted: %w", assetID, err)
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing media asset delete completion: %w", mapDatabaseError(err))
@@ -202,11 +189,6 @@ func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff t
 	if err != nil {
 		return false, fmt.Errorf("reverting media asset %d to active: %w", assetID, mapDatabaseError(err))
 	}
-	if updated > 0 {
-		if err := setMediaAssetCopyState(ctx, q, assetID, s.storeName, "active"); err != nil {
-			return false, fmt.Errorf("reverting media asset copy %d to active: %w", assetID, err)
-		}
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing media asset restore transition: %w", mapDatabaseError(err))
 	}
@@ -218,19 +200,6 @@ func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff t
 func lockMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64, storeName string) error {
 	if err := q.LockMediaAssetCopy(ctx, sqlcgen.LockMediaAssetCopyParams{MediaAssetID: assetID, Store: storeName}); err != nil {
 		return fmt.Errorf("locking media asset copy %d: %w", assetID, mapDatabaseError(err))
-	}
-	return nil
-}
-
-func setMediaAssetCopyState(ctx context.Context, q *sqlcgen.Queries, assetID int64, storeName, state string) error {
-	updated, err := q.SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
-		MediaAssetID: assetID, Store: storeName, State: state,
-	})
-	if err != nil {
-		return err
-	}
-	if updated != 1 {
-		return fmt.Errorf("updated %d rows, want exactly one copy", updated)
 	}
 	return nil
 }

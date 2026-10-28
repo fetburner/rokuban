@@ -140,18 +140,21 @@ worker ロールでは `storage.stores` に FS 置き場を定義する（今は
 
 compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体のコンテナ）では、名前 `main` でこの 3 と 4 が自動で走る。k8s の Job は `migrate up` を initContainer に、`storage adopt main` を本体のコンテナにしている。
 
+コピー表を導入する既存 DB では、コピー表を追加して読み手を移した版で先に `migrate up` と `storage adopt` を完了する。互換列を削除する版の migration は、未割り当ての論理資産が残っていれば停止する。
+
 `adopt` は、目印の無い root に目印を新しく作る前に、DB にその置き場のコピー行があるかを確かめる。あれば、マウント漏れか別のボリュームなので、エラーにして目印を書かない。同名の目印が既にあれば成功する。
 
 `recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
 
-コピー表を持たない版から録画を持つ構成を移すときの順序は次のとおりである。
+コピー表を持たない版から録画を持つ構成を移すときは、互換列を削除する版より前に次を行う。
 
-1. `rokuban migrate up` で DB を移行する
-2. 旧 worker を止める
-3. `rokuban storage adopt <store-name>` を実行する。media root と設定ファイルは worker と同じ構成にし、DB にも接続できるようにする
+1. コピー表と新しい読み手を含み、互換列を残す版をデプロイする
+2. 旧 worker を止めて `rokuban migrate up` を実行する
+3. 同じ版の `rokuban storage adopt <store-name>` を実行する。media root と設定ファイルは worker と同じ構成にし、DB にも接続できるようにする
 4. 新しい worker を起動する
+5. 既存資産のコピーが割り当て済みになった後、互換列を削除する版へ更新する
 
-新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。
+新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。互換列の削除後は `storage adopt` で既存資産のコピーを復元できない。
 
 更新の前に、設定へ `storage.stores` / `originals` / `derived` を書く。旧キー `storage.media_store_name` は廃止した。設定は厳密に読むので、残したまま新しい版を起動すると、全ロールで設定の読み込みが失敗する。`media_store_name: X` を持つ構成は、それを消して `X` を置き場の名前にする。持たない構成は、worker が使う FS 置き場の名前を決めて書く。どちらも下の形になる。`transfer.overlap` は省略すると 48 時間になるので、`cleanup.missing_asset_age` を延ばしているときだけ書く。
 
@@ -176,7 +179,7 @@ compose と k8s の標準の構成には、この名前（`main`）と adopt の
 - compose: `docker compose stop rokuban` で旧 worker を止め、`docker compose up -d` で新しい版を起動する。`migrate` の後に `adopt-media` が走り、その後に `rokuban` が起動する。
 - k8s: 旧 worker の Job が残っていれば止めてから、`kubectl delete job rokuban-migrate --ignore-not-found` で消し、`kubectl apply` し直す。`rokuban-migrate` の中で `migrate up` の後に `storage adopt main` が走る。
 
-旧 worker が `adopt` の後も動いていると、次のことが起きる。新しい論理資産にはコピー行が作られず、次の起動時の検査が数える。既存の資産のコピーは旧 worker が進めたパスと状態に追いつかず、古いまま残る。encode の派生物の世代は、旧 worker がパスだけを進めて `derived_generation` を進めないので、新しい worker が同じ世代のパスを採りうる。旧 worker を止めてから `adopt` をもう一度実行すると、コピーのパス・状態と世代が追いつく。
+旧 worker が `adopt` の後も動いていると、新しい論理資産にはコピー行が作られず、既存資産のコピーは旧 worker が進めたパスと状態に追いつかない。encode の派生物の世代も、旧 worker がパスだけを進めて `derived_generation` を進めないため、新しい worker が同じ世代のパスを採りうる。互換列を削除する前に旧 worker を止め、`adopt` をもう一度実行してから新しい worker だけを動かす。
 
 置き場の名前は変えられない。名前を変えるときは、新しい置き場として導入し直す。
 

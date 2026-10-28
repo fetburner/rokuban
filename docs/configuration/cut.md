@@ -67,7 +67,7 @@ cut の世代付きパスは `.g{n}`、uncut の削除後再生成パスは `.u{
 <details><summary>根拠</summary>
 
 - 公開が `rel_path` の予約を rename より先に行うこと: `publishEncoded`
-- 削除済みでない行がパスを予約し続けること: 一意索引 `media_assets_rel_path_idx`（`WHERE state <> 'deleted'`）
+- 削除済みでない行がパスを予約し続けること: 一意索引 `media_asset_copies_store_rel_path_idx`（`(store, rel_path) WHERE state <> 'deleted'`）
 - active の行とパスが衝突したとき、ファイルを保護して試行を失敗として記録すること: `TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite`
 
 </details>

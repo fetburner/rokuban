@@ -11,7 +11,6 @@ CREATE TABLE media_assets (
     kind         text   NOT NULL CHECK (kind IN ('original', 'encoded', 'thumbnail', 'seek_tiles')),
     profile      text,                -- kind = 'encoded' のみ: エンコードプロファイル名
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
-    rel_path     text   NOT NULL,     -- ストレージルートからの相対パス（不変条件: 絶対パス禁止）
     size_bytes   bigint NOT NULL,
     sha256       bytea,                -- 内容の SHA-256。コピー数によらず 1 回だけ持つ
     derived_generation bigint,         -- 派生物のパスに最後に採った世代。original は NULL
@@ -21,11 +20,6 @@ CREATE TABLE media_assets (
     CHECK (ingest_generation IS NULL OR ingest_generation > 0),
     CHECK (kind = 'original' OR ingest_generation IS NULL),
 
-    -- 物理削除プロトコル: active → deleting → deleted（冪等。どこで落ちても reconcile が拾い直す）
-    state        text NOT NULL DEFAULT 'active'
-                      CHECK (state IN ('active', 'deleting', 'deleted')),
-    deleted_at   timestamptz,         -- 物理削除の完了時刻（tombstone）
-
     created_at   timestamptz NOT NULL DEFAULT now(),
     updated_at   timestamptz NOT NULL DEFAULT now(),
 
@@ -34,12 +28,9 @@ CREATE TABLE media_assets (
 );
 
 CREATE INDEX ON media_assets (recording_id);
-CREATE INDEX ON media_assets (kind, state);
--- 生きているアセットのパス衝突を防ぐ（tombstone のパスは再利用可）
-CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
-`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。ローリングアップデート中の旧 binary が読むため、`rel_path` / `state` / `deleted_at` も残し、新しい書き手は両表を更新する。同じ理由で、view `removed_encoded_assets` と、関数と同名の旧 view `until_encoded_deletable_originals` が旧列を射影する。後者の旧 view は、置き場を引数に取る同名の関数を呼ぶ。現在の読み手は物理パスとライフサイクルを `media_asset_copies` から読む。コピーの数が増えても、サイズと SHA-256 は論理資産の 1 か所にしか置かない。
+`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。物理パスとライフサイクルは `media_asset_copies` だけに置き、コピー数によらずサイズと SHA-256 は論理資産に 1 つだけ持つ。移行時の既存資産は、互換列を使う版で `storage adopt` を済ませてから列を削除する。未割り当て資産が残っていれば、列削除の migration は失敗する。
 
 ```sql
 CREATE TABLE media_asset_copies (
@@ -64,7 +55,7 @@ CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'dele
 
 コピーの無い論理資産が、未割り当てを表す。マイグレーションはコピー行を作らず、`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
-`storage adopt <store-name>` は、コピーの無い論理資産にコピーを作り、その置き場に既にあるコピーのパス・状態・派生世代を `media_assets` から同期する。別の置き場にだけコピーがある資産には触れない。観測表と進捗行の空の `store` も埋める。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+`storage adopt <store-name>` は、互換列がある間に既存の物理コピーを割り当てる。列削除後はコピーの無い論理資産を復元できないため、migration がその状態を拒む。観測表と進捗行の空の `store` は、列削除後もこのコマンドで埋められる。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
 
 旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)`、`missing_media_assets(media_asset_id)`、`storage_sync(root)` である。新しい複合キーと並存するため、同じ `rel_path` を 2 つの置き場の孤児として記録できない。同じ論理資産は 2 つの置き場の実体無しにならず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
 
@@ -72,7 +63,7 @@ CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'dele
 
 uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
 
-行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）だけで、衝突時は冪等に書く。削除済みへ遷移した後も行は消さない（tombstone）。ドロップ統計と元サイズは、原本削除後も UI で見られる。
+論理資産の行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）だけで、衝突時は冪等に書く。物理コピーの状態はコピー行だけで遷移し、削除済みの行も消さない（tombstone）。ドロップ統計と元サイズは、原本コピーの削除後も UI で見られる。
 
 ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。`sha256` は未計測なら NULL とし、コピー単位には複製しない。
 
@@ -82,13 +73,14 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 
 <details><summary>根拠</summary>
 
-- 削除済みの tombstone の列: `state`、`deleted_at`
+- コピーの tombstone の列: `media_asset_copies.state`、`media_asset_copies.deleted_at`
 - ドロップ統計: `drop_stats`
 - 原本の保持を派生物の完備までとした設定: `until_encoded`
 - 実体ファイルの不在を持つ衛星表: `missing_media_assets`（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）
 - 複製しない列: `rel_path` / `kind`
 - 走査時の状態: `state = 'active'`
-- 移行時と adopt 時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations` / `TestAdoptUnassignedStoreRows`
+- 移行時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations`
+- adopt 時のコピー必須検査: `TestAdoptRejectsCopylessAssets`
 
 </details>
 
@@ -117,7 +109,7 @@ CREATE TABLE media_asset_cuts (
 
 - カットするプロファイル: `cut: true`
 - 主キー: `media_asset_id`
-- 同時に書くパス: `rel_path`、書き手 `EncodeWorker`
+- 同時に書くコピーのパス: `media_asset_copies.rel_path`、書き手 `EncodeWorker`
 - 残す区間: `keep_ranges`、同じ単位の表 `recording_chapter_spans`
 - カット版の切り出し: `internal/ffargs/cut.go`、プレイヤーの時刻: `currentTime`
 - API への写し方: `encodedAssets[].cut`

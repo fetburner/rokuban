@@ -55,10 +55,10 @@ RETURNING id;
 
 -- name: UpsertInPlaceMediaAsset :one
 INSERT INTO media_assets (
-    recording_id, kind, profile, rel_path, size_bytes, state, derived_generation
+    recording_id, kind, profile, size_bytes, derived_generation
 ) VALUES (
     sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
-    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), 'active',
+    sqlc.arg('size_bytes'),
     CASE WHEN sqlc.arg('kind')::text = 'original' THEN NULL ELSE 0 END
 )
 ON CONFLICT (recording_id, kind, profile)
@@ -66,8 +66,6 @@ DO UPDATE SET
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
     sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
     updated_at = now()
 -- A tuple is immutable once published. A different path here means a synthetic identity
 -- collision or conflicting import; fail (RETURNING no row) instead of orphaning the old file.
@@ -75,6 +73,6 @@ WHERE EXISTS (
     SELECT 1 FROM media_asset_copies c
     WHERE c.media_asset_id = media_assets.id
       AND c.store = sqlc.arg('store_name')
-      AND c.rel_path = EXCLUDED.rel_path
+      AND c.rel_path = sqlc.arg('rel_path')
 )
 RETURNING id;

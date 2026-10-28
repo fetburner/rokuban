@@ -83,7 +83,9 @@ func TestRegister_IdempotentExistingFile(t *testing.T) {
 	var relPath, kind, gotProfile string
 	var size int64
 	if err := pool.QueryRow(context.Background(), `
-		SELECT rel_path, kind, profile, size_bytes FROM media_assets WHERE id = $1
+		SELECT c.rel_path, a.kind, a.profile, a.size_bytes
+		FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.id = $1
 	`, first.AssetIDs[0]).Scan(&relPath, &kind, &gotProfile, &size); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +165,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 	}
 
 	var assetCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets WHERE rel_path = $1`, relPath).Scan(&assetCount); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE rel_path = $1`, relPath).Scan(&assetCount); err != nil {
 		t.Fatal(err)
 	}
 	if assetCount != 2 {

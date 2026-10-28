@@ -45,7 +45,7 @@ ingest は同じ root・同じディレクトリの record 固有 temp へ書く
 
 rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。置き場の目印の root の `.rokuban-store` も同じく予約する。ネストした同名ファイルは予約しない。
 
-ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original 行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、temp の `flock` を保持したまま置き場の目印を照合して temp を unlink する。
+ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original の論理資産とコピー行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、temp の `flock` を保持したまま置き場の目印を照合して temp を unlink する。
 
 公開に `os.Rename` を使わないのは、宛先が既存でも無言で置き換えるからである。この契約は、DB に行の無い canonical 名のファイルを自動で消さないと決めている。rename はそのファイルを無言で置き換えて失わせる。`link` は宛先が既存なら `EEXIST` で失敗するので上書きしない。
 
@@ -219,17 +219,17 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 カット版とサムネイルを作り直すときは、同じパスへ上書きせず、世代番号を入れた新しいパスへ置く。行は消さずに 1 つの transaction で更新し、旧パスの unlink は commit の後にする。
 
-カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きている行の `rel_path` 部分一意索引とも衝突するからである。
+カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きているコピーの `(store, rel_path)` 部分一意索引とも衝突するからである。
 
 - 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時に読み、旧 worker 停止後の adopt でも再照合する
-- 新しいファイルを置く。1 つの tx で論理サイズと旧 binary が読む `media_assets.rel_path` を更新し、[`storage.stores` の FS 置き場](../configuration/keys.md#置き場の規則)のコピーと `media_asset_cuts` を差し替える。commit 後に旧パスを unlink する
+- 新しいファイルを置く。1 つの tx で論理サイズとコピーの `rel_path` を更新し、[`storage.stores` の FS 置き場](../configuration/keys.md#置き場の規則)のコピーと `media_asset_cuts` を差し替える。commit 後に旧パスを unlink する
 - **unlink を commit の前にしない**。commit が失敗すると、生きている行が指すファイルを失う（ルール 3 の「DB commit が公開点」と同じ向き）。旧ファイルの unlink に失敗した場合は canonical orphan として報告し、手動調査まで残す
-- 行は消さずに UPDATE する。消して作り直すと `rel_path` の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを取れる
+- 行は消さずに UPDATE する。消して作り直すと `(store, rel_path)` の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを取れる
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
 - 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は `derived_generation` から進める
-- 新しい JPEG を置く。1 つの tx で論理サイズと旧 binary が読む `media_assets.rel_path` を更新する。同じ tx で `storage.stores` の FS 置き場のコピーと `media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
+- 新しい JPEG を置く。1 つの tx で論理サイズとコピーの `rel_path` を更新する。同じ tx で `storage.stores` の FS 置き場のコピーと `media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
 - 行は消さずに UPDATE する。行 id と配信対象を保ったまま世代を進める。unlink は commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
 
 <details><summary>根拠</summary>
@@ -300,7 +300,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 原本の相対パスは、取り込みが先頭に固定の予約ディレクトリとサイト名を前置する。site 名だけを先頭にすると、既存行の先頭成分と偶然一致して衝突するからである。
 
-アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると、同じ実ファイルを取り合う。DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて失われる。そのため原本は `sites/{site}/` を前置する。
+アーカイブの論理資産（`media_assets`）は `site` 列を持たず単一だが、原本コピーの `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。同じ置き場で 2 サイトが同じ contentPath から録ると、同じ実ファイルを取り合う。DB は `media_asset_copies` の `(store, rel_path)` 一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて失われる。そのため原本コピーは `sites/{site}/` を前置する。
 
 #### 予約ディレクトリと前置の規則
 

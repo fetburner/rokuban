@@ -565,7 +565,8 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	// media_assets 行が 1 件。
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264' AND state = 'active'`,
+		`SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		 WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`,
 		recordingID,
 	).Scan(&count); err != nil {
 		t.Fatal(err)

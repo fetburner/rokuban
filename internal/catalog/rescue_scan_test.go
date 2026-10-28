@@ -52,9 +52,10 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 
 	rows, err := pool.Query(context.Background(), `
 		SELECT r.title, r.source, r.network_id, r.service_name,
-		       a.kind, COALESCE(a.profile, ''), a.rel_path, a.size_bytes
+		       a.kind, COALESCE(a.profile, ''), c.rel_path, a.size_bytes
 		FROM recordings r JOIN media_assets a ON a.recording_id = r.id
-		ORDER BY a.rel_path
+		JOIN media_asset_copies c ON c.media_asset_id = a.id
+		ORDER BY c.rel_path
 	`)
 	if err != nil {
 		t.Fatal(err)
@@ -235,9 +236,10 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 	var deletedAtIsNull bool
 	var programStartAt time.Time
 	if err := pool.QueryRow(context.Background(), `
-		SELECT a.id, a.recording_id, a.state, a.deleted_at IS NULL, r.program_start_at
+		SELECT a.id, a.recording_id, c.state, c.deleted_at IS NULL, r.program_start_at
 		FROM media_assets a JOIN recordings r ON r.id = a.recording_id
-		WHERE a.rel_path = $1
+		JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE c.rel_path = $1
 	`, "sites/default/archive/show.m2ts").Scan(
 		&gotAssetID, &gotRecordingID, &state, &deletedAtIsNull, &programStartAt,
 	); err != nil {
@@ -289,19 +291,19 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	}
 
 	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path = 'sites/default/archive/show.m2ts'`).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE rel_path = 'sites/default/archive/show.m2ts'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
 		t.Fatalf("rescued asset count = %d, want 1", count)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path LIKE 'catalog/%'`).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE rel_path LIKE 'catalog/%'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
 		t.Fatalf("catalog assets registered = %d, want 0", count)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path LIKE '%/.rokuban-media-asset-%'`).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE rel_path LIKE '%/.rokuban-media-asset-%'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -377,7 +379,8 @@ func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 		var site string
 		err := pool.QueryRow(context.Background(), `
 			SELECT r.site FROM recordings r JOIN media_assets a ON a.recording_id = r.id
-			WHERE a.rel_path = $1
+			JOIN media_asset_copies c ON c.media_asset_id = a.id
+			WHERE c.rel_path = $1
 		`, relPath).Scan(&site)
 		if err != nil {
 			t.Fatalf("querying site for %s: %v", relPath, err)
@@ -396,7 +399,7 @@ func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 			"(unregistered prefix site still restores, just under a different log level)", got)
 	}
 	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path = 'legacy/old.m2ts'`).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE rel_path = 'legacy/old.m2ts'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {

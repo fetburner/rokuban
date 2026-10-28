@@ -1253,7 +1253,7 @@ func TestRunPass_FulfilledDeletesDoNotCountTowardBreaker(t *testing.T) {
 }
 
 // insertFulfilledRecording は対象番組に対応する finished 録画と原本 media_asset を作り、
-// ingest 完了後の recordings / media_assets を模す。assetState は原本の state
+// ingest 完了後の recordings / media_assets を模す。assetState は原本コピーの state
 // （active / deleted）で、tombstone 済み原本のケースを test から指定できる。
 func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, programID int64, assetState string) {
 	t.Helper()

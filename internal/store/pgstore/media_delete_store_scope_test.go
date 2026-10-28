@@ -125,17 +125,6 @@ func (e storeScopeEnv) functionAssetIDs(t *testing.T) []int64 {
 	return scanInt64s(t, rows)
 }
 
-func (e storeScopeEnv) legacyViewAssetIDs(t *testing.T) []int64 {
-	t.Helper()
-	rows, err := e.pool.Query(context.Background(),
-		`SELECT asset_id FROM until_encoded_deletable_originals ORDER BY asset_id`)
-	if err != nil {
-		t.Fatalf("querying legacy until_encoded_deletable_originals view: %v", err)
-	}
-	defer rows.Close()
-	return scanInt64s(t, rows)
-}
-
 type int64Rows interface {
 	Next() bool
 	Scan(...any) error
@@ -183,49 +172,6 @@ func TestUntilEncodedDeletableRequiresDerivedCopiesInDesiredStore(t *testing.T) 
 				t.Fatalf("%s copy back in %s: originals = %v, want [%d]", kind, dbtest.StoreName, got, originalID)
 			}
 		})
-	}
-}
-
-// 旧 binary が読む旧 view は、関数と同じ原本を返す（対象になる録画とならない録画の両方）。
-func TestLegacyUntilEncodedViewMatchesFunction(t *testing.T) {
-	env := newStoreScopeEnv(t)
-	_, qualifying, _ := env.untilEncodedFixture(t)
-	_, incompleteOriginal, incompleteDerived := env.untilEncodedFixture(t)
-	env.setCopyState(t, incompleteDerived[store.AssetKindThumbnail], dbtest.StoreName, "deleted")
-
-	fn := env.functionAssetIDs(t)
-	view := env.legacyViewAssetIDs(t)
-	if !slices.Equal(fn, []int64{qualifying}) {
-		t.Fatalf("function originals = %v, want [%d] (and not %d)", fn, qualifying, incompleteOriginal)
-	}
-	if !slices.Equal(view, fn) {
-		t.Fatalf("legacy view originals = %v, function originals = %v, want equal", view, fn)
-	}
-
-	var relPath, state string
-	var size int64
-	if err := env.pool.QueryRow(context.Background(),
-		`SELECT rel_path, size_bytes, state FROM until_encoded_deletable_originals WHERE asset_id = $1`, qualifying).Scan(&relPath, &size, &state); err != nil {
-		t.Fatalf("reading legacy view columns: %v", err)
-	}
-	if relPath == "" || size != 1 || state != "active" {
-		t.Fatalf("legacy view columns = (%q, %d, %q), want the media_assets row's rel_path, size 1, active", relPath, size, state)
-	}
-}
-
-// 2 つの置き場で資格を満たす原本も、旧 view は 1 行しか返さない。
-func TestLegacyUntilEncodedViewReturnsOneRowPerOriginal(t *testing.T) {
-	env := newStoreScopeEnv(t)
-	_, originalID, derived := env.untilEncodedFixture(t)
-	for _, id := range []int64{originalID, derived[store.AssetKindEncoded], derived[store.AssetKindThumbnail], derived[store.AssetKindSeekTiles]} {
-		if err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
-			MediaAssetID: id, Store: otherStoreName, RelPath: fmt.Sprintf("sites/default/store-scope-other-%d", id), State: "active",
-		}); err != nil {
-			t.Fatalf("adding other-store copy for asset %d: %v", id, err)
-		}
-	}
-	if got := env.legacyViewAssetIDs(t); !slices.Equal(got, []int64{originalID}) {
-		t.Fatalf("legacy view originals = %v, want one row [%d]", got, originalID)
 	}
 }
 

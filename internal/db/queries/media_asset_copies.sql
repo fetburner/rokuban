@@ -13,9 +13,8 @@ ON CONFLICT (media_asset_id, store) DO UPDATE SET
     created_at = COALESCE(sqlc.narg('created_at')::timestamptz, media_asset_copies.created_at),
     deleted_at = EXCLUDED.deleted_at;
 
--- Keep the rolling-migration mirror's lifecycle state in sync without re-reading
--- the logical media_assets columns. The copy row must exist before a transition
--- can start, as enforced by the worker's adoption check and the transition query.
+-- The copy row must exist before a transition can start, as enforced by the
+-- worker's adoption check and the transition query.
 -- name: SetMediaAssetCopyState :execrows
 UPDATE media_asset_copies
 SET state = sqlc.arg('state'),
@@ -35,15 +34,6 @@ SELECT 1 FROM media_asset_copies
 WHERE media_asset_id = sqlc.arg('media_asset_id')
   AND store = sqlc.arg('store')
 FOR UPDATE;
-
--- name: AdoptUnassignedMediaAssetCopies :exec
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-SELECT a.id, sqlc.arg('store'), a.rel_path, a.state, a.created_at, a.deleted_at
-FROM media_assets a
-WHERE NOT EXISTS (
-    SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
-)
-ON CONFLICT (media_asset_id, store) DO NOTHING;
 
 -- A path's generation belongs to its physical copy. Include deleted copies because their
 -- generation remains part of the allocator's history.
@@ -73,6 +63,13 @@ UPDATE missing_media_assets SET store = sqlc.arg('store') WHERE store = '';
 
 -- name: AdoptUnassignedStorageSync :exec
 UPDATE storage_sync SET store = sqlc.arg('store') WHERE store = '';
+
+-- name: CountUnassignedMediaAssetCopies :one
+SELECT count(*)
+FROM media_assets a
+WHERE NOT EXISTS (
+    SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+);
 
 -- A worker must not start while any migrated row still lacks its physical store.
 -- name: CountUnassignedStorageRows :one

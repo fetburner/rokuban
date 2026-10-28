@@ -114,15 +114,13 @@ LIMIT sqlc.arg('row_limit');
 -- deleting → active へ即座に戻す案を採らなかったのはこの前提が無い
 -- （進行中の unlink と非同期に競合しうる）ため。
 -- name: RevertMediaAssetToActive :execrows
-UPDATE media_assets a
-SET state = 'active', updated_at = now()
+UPDATE media_asset_copies copy
+SET state = 'active', deleted_at = NULL
+FROM media_assets a
 WHERE a.id = sqlc.arg('id')
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = a.id
-        AND copy.store = sqlc.arg('store_name')
-        AND copy.state = 'deleting'
-  )
+  AND copy.media_asset_id = a.id
+  AND copy.store = sqlc.arg('store_name')
+  AND copy.state = 'deleting'
   AND NOT EXISTS (
     SELECT 1 FROM trash_deletable_recordings(sqlc.arg('grace_cutoff')::timestamptz) t
     WHERE t.recording_id = a.recording_id
@@ -219,10 +217,9 @@ WHERE r.purged_at IS NULL
 RETURNING r.id, r.site, r.title;
 
 -- name: MarkMediaAssetDeleting :execrows
-UPDATE media_assets AS a SET state = 'deleting', updated_at = now()
-FROM media_asset_copies copy
-WHERE a.id = sqlc.arg('asset_id')
-  AND copy.media_asset_id = sqlc.arg('asset_id')
+UPDATE media_asset_copies copy
+SET state = 'deleting', deleted_at = NULL
+WHERE copy.media_asset_id = sqlc.arg('asset_id')
   AND copy.store = sqlc.arg('store_name')
   AND copy.state = 'active';
 
@@ -230,10 +227,9 @@ WHERE a.id = sqlc.arg('asset_id')
 -- ロックした tx 内で資格を再評価してから deleting にする。API の要求書き込みも
 -- 同じ recordings 行を先にロックするため、要求の commit と原本削除は直列化される。
 -- name: MarkUntilEncodedOriginalDeleting :execrows
-UPDATE media_assets a SET state = 'deleting', updated_at = now()
-FROM media_asset_copies copy
-WHERE a.id = sqlc.arg('asset_id')
-  AND copy.media_asset_id = sqlc.arg('asset_id')
+UPDATE media_asset_copies copy
+SET state = 'deleting', deleted_at = NULL
+WHERE copy.media_asset_id = sqlc.arg('asset_id')
   AND copy.store = sqlc.arg('store_name')
   AND copy.state = 'active'
   AND EXISTS (
@@ -257,14 +253,11 @@ WITH cleared_removal_request AS (
       AND q.recording_id = a.recording_id
       AND q.profile = a.profile
 )
-UPDATE media_assets m SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE m.id = sqlc.arg('id')
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = m.id
-        AND copy.store = sqlc.arg('store_name')
-        AND copy.state = 'deleting'
-  );
+UPDATE media_asset_copies copy
+SET state = 'deleted', deleted_at = COALESCE(copy.deleted_at, now())
+WHERE copy.media_asset_id = sqlc.arg('id')
+  AND copy.store = sqlc.arg('store_name')
+  AND copy.state = 'deleting';
 
 -- 孤児判定用。テーブル全体を読んで Go 側でファイル一覧と突き合わせる
 -- （家庭用サーバー規模の行数を前提。件数が増えたら bloom filter 等の検討対象）。

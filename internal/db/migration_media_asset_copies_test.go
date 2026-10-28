@@ -96,8 +96,19 @@ RETURNING id`, recordingID, fixture.kind, fixture.profile, fixture.path, fixture
 		})
 	}
 
-	if err := MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("applying media asset copies migration: %v", err)
+	migrateUpTo(t, dbURL, 39)
+	for _, asset := range assets {
+		assertMigratedAssetGeneration(t, pool, asset.id, asset.relPath, asset.wantGeneration, asset.generationNull)
+
+		// 00037 leaves logical assets unassigned; the compatibility release's
+		// storage adopt creates their physical copy rows before 00040 removes these columns.
+		var copies int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1`, asset.id).Scan(&copies); err != nil {
+			t.Fatalf("counting pre-adoption copies for %s: %v", asset.kind, err)
+		}
+		if copies != 0 {
+			t.Errorf("%s has %d copy row(s) before adoption, want none", asset.kind, copies)
+		}
 	}
 
 	// Old workers keep using the former single-column conflict targets during a
@@ -131,19 +142,122 @@ ON CONFLICT (root) DO UPDATE SET path = EXCLUDED.path`); err != nil {
 		t.Fatalf("legacy conflict target rows = orphan %d / missing %d / storage %d, want 1 / 1 / 1", legacyOrphanCount, legacyMissingCount, legacyStorageCount)
 	}
 
-	for _, asset := range assets {
-		assertMigratedAssetGeneration(t, pool, asset.id, asset.relPath, asset.wantGeneration, asset.generationNull)
+	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
+		t.Fatalf("adopting legacy media asset copies before dropping their source columns: %v", err)
+	}
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("applying media asset copy compatibility cleanup: %v", err)
+	}
+	assertMediaAssetCopyColumnsRetired(t, pool)
 
-		// コピー行が無いことが未割り当てを表す。マイグレーションは行を作らない。
-		var copies int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1`, asset.id).Scan(&copies); err != nil {
-			t.Fatalf("counting copies for %s: %v", asset.kind, err)
+	for _, asset := range assets {
+		var relPath, state string
+		if err := pool.QueryRow(ctx, `
+SELECT rel_path, state
+FROM media_asset_copies
+WHERE media_asset_id = $1 AND store = 'migration-test'`, asset.id).Scan(&relPath, &state); err != nil {
+			t.Fatalf("reading adopted %s copy after migration: %v", asset.kind, err)
 		}
-		if copies != 0 {
-			t.Errorf("%s has %d copy row(s) after migration, want none until storage adopt", asset.kind, copies)
+		if relPath != asset.relPath || state != asset.state {
+			t.Errorf("%s copy = (%q, %q), want (%q, %q)", asset.kind, relPath, state, asset.relPath, asset.state)
 		}
 	}
+}
 
+func assertMediaAssetCopyColumnsRetired(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, column := range []string{"rel_path", "state", "deleted_at"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'media_assets' AND column_name = $1
+)`, column).Scan(&exists); err != nil {
+			t.Fatalf("checking media_assets.%s: %v", column, err)
+		}
+		if exists {
+			t.Errorf("media_assets.%s should not exist after compatibility cleanup", column)
+		}
+	}
+	for _, index := range []string{"media_assets_kind_state_idx", "media_assets_rel_path_idx"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1)`, index).Scan(&exists); err != nil {
+			t.Fatalf("checking %s: %v", index, err)
+		}
+		if exists {
+			t.Errorf("%s should not exist after compatibility cleanup", index)
+		}
+	}
+}
+
+func TestMediaAssetCopyCleanupRefusesUnadoptedAssets(t *testing.T) {
+	ctx := context.Background()
+	dbURL := testDatabaseURL(t)
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("migrating to latest before setup: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening test database before setup: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
+		pool.Close()
+		t.Fatalf("clearing prior media fixtures: %v", err)
+	}
+	pool.Close()
+	migrateDownTo(t, dbURL, 39)
+	t.Cleanup(func() {
+		cleanupPool, err := pgxpool.New(context.Background(), dbURL)
+		if err != nil {
+			t.Errorf("opening test database for cleanup: %v", err)
+			return
+		}
+		if _, err := cleanupPool.Exec(context.Background(), `TRUNCATE recordings CASCADE`); err != nil {
+			t.Errorf("clearing migration fixtures: %v", err)
+		}
+		cleanupPool.Close()
+		if err := MigrateUp(context.Background(), dbURL); err != nil {
+			t.Errorf("restoring latest schema: %v", err)
+		}
+	})
+
+	pool, err = pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening test database: %v", err)
+	}
+	defer pool.Close()
+	recordingID := dbtest.Recording(t, pool)
+	var assetID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+VALUES ($1, 'original', 'sites/default/unadopted.m2ts', 1)
+RETURNING id`, recordingID).Scan(&assetID); err != nil {
+		t.Fatalf("inserting unadopted legacy asset: %v", err)
+	}
+
+	if err := MigrateUp(ctx, dbURL); err == nil {
+		t.Fatal("migration succeeded with a logical asset that had no copy")
+	}
+	var stillHasLegacyPath bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'media_assets' AND column_name = 'rel_path'
+)`).Scan(&stillHasLegacyPath); err != nil {
+		t.Fatalf("checking rollback after blocked migration: %v", err)
+	}
+	if !stillHasLegacyPath {
+		t.Fatal("blocked migration removed rel_path before adoption completed")
+	}
+
+	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
+		t.Fatalf("adopting fixture before retrying migration: %v", err)
+	}
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("migration failed after adoption: %v", err)
+	}
+	assertMediaAssetCopyColumnsRetired(t, pool)
 }
 
 func assertMigratedAssetGeneration(t *testing.T, pool *pgxpool.Pool, assetID int64, relPath string, want int64, wantNull bool) {

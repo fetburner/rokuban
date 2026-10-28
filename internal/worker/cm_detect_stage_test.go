@@ -55,11 +55,8 @@ esac
 		}},
 		{"original path escapes the media dir", "setup", func(t *testing.T, _ cmToolset, _ string, id int64) string {
 			if _, err := pool.Exec(ctx, `
-WITH logical AS (
-    UPDATE media_assets SET rel_path = '../escape.ts' WHERE recording_id = $1 RETURNING id
-)
 UPDATE media_asset_copies copy SET rel_path = '../escape.ts'
-FROM logical WHERE copy.media_asset_id = logical.id`, id); err != nil {
+FROM media_assets a WHERE copy.media_asset_id = a.id AND a.recording_id = $1`, id); err != nil {
 				t.Fatal(err)
 			}
 			return ""

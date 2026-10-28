@@ -934,12 +934,12 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // （state <> 'deleted'。'active' に限らず、削除処理中の 'deleting' も含む）
 // media_asset があれば、その recording_id を返す（無ければ 0, nil）。これは
 // 転送前の安価なヒントであり、同時 ingest の決着ではない。採用の根拠は commit
-// 内の media_assets INSERT と部分一意索引である。
+// 内の media_asset_copies INSERT と部分一意索引である。
 //
 // 通常削除も同じ rel_path の filesystem lock の下で状態更新と unlink を行うため、
 // 公開・削除の確定区間はこの SELECT と独立に直列化される。canonical 孤児は自動で
 // unlink しない。ただしこの関数自体は転送前の安価なヒントであり、ingest 同士の
-// 決着は commit 内の lock と media_assets の一意索引に任せる。ここを一意性の
+// 決着は commit 内の lock と media_asset_copies の一意索引に任せる。ここを一意性の
 // 最終判定に使わない。
 //
 // WHERE state <> 'deleted' はその一意索引の述語と同じにする。削除済み
@@ -1030,9 +1030,9 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 
 // commit は原本の公開プロトコルを 1 回実行する。
 //
-// rel_path lock を保持し、media_assets の行予約・link・親ディレクトリ fsync・commit を
-// store の 1 transaction に渡す。store は DB transaction を先に開始し、行を作った後に callback を
-// 呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、この関数が返るまで
+// rel_path lock を保持し、論理資産とコピーの行予約・link・親ディレクトリ fsync・commit を
+// store の 1 transaction に渡す。store は DB transaction を先に開始し、2 つの行を作った後に
+// callback を呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、この関数が返るまで
 // rel_path lock を保持する。
 // 進捗行は原本の行と同じ tx で消す。コミット = DB 行なので、原本の行が生まれる瞬間に進捗行が消え、
 // 「原本があるのに取り込み中」という中間状態が読み手から見えない。

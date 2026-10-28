@@ -43,8 +43,8 @@ func mediaStoreNameArg(storeName string) *string {
 	return &storeName
 }
 
-// AdoptUnassignedStoreRows は未割り当ての論理資産にコピー行を作り、既存コピーを保ったまま、
-// コピーのパスから派生世代を補正する（TestAdoptUnassignedStoreRows）。
+// AdoptUnassignedStoreRows は未割り当ての観測行を置き場に割り当て、既存コピーの
+// パスから派生世代を補正する。コピーの無い論理資産は互換列を使える版で先に adopt する。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
@@ -55,8 +55,12 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	if err := q.AdoptUnassignedMediaAssetCopies(ctx, s.storeName); err != nil {
-		return fmt.Errorf("adopting legacy media asset copies: %w", err)
+	unassigned, err := q.CountUnassignedMediaAssetCopies(ctx)
+	if err != nil {
+		return fmt.Errorf("checking unassigned media asset copies: %w", err)
+	}
+	if unassigned != 0 {
+		return fmt.Errorf("%d media asset(s) have no physical copy; run `storage adopt` with the compatibility release before applying the media asset copy cleanup migration", unassigned)
 	}
 	if err := q.ReconcileDerivedGenerationFromCopyPaths(ctx); err != nil {
 		return fmt.Errorf("reconciling derived media generations from copy paths: %w", err)
@@ -89,6 +93,19 @@ func (s *Media) HasStoreCopies(ctx context.Context) (bool, error) {
 	return has, nil
 }
 
+// RequireMediaAssetCopiesAssigned は、互換列を削除した後に復元できない
+// 未割り当ての論理資産が残っていないことを確認する。
+func (s *Media) RequireMediaAssetCopiesAssigned(ctx context.Context) error {
+	count, err := sqlcgen.New(s.pool).CountUnassignedMediaAssetCopies(ctx)
+	if err != nil {
+		return fmt.Errorf("checking for unassigned media asset copies: %w", err)
+	}
+	if count != 0 {
+		return fmt.Errorf("%d media asset(s) have no physical copy; run `storage adopt` with the compatibility release before applying the media asset copy cleanup migration", count)
+	}
+	return nil
+}
+
 // RequireAdoptedStoreRows は割り当て前の行やコピー欠落が残っていないことを確認する。
 func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
 	count, err := sqlcgen.New(s.pool).CountUnassignedStorageRows(ctx)
@@ -96,7 +113,7 @@ func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
 		return fmt.Errorf("checking for unassigned media store rows: %w", err)
 	}
 	if count != 0 {
-		return fmt.Errorf("%d media store row(s) have no store or media asset copy; run `rokuban storage adopt <store-name>` before starting workers", count)
+		return fmt.Errorf("%d media store row(s) have no store or media asset copy; run `rokuban storage adopt <store-name>` before removing the media asset compatibility columns", count)
 	}
 	return nil
 }

@@ -54,11 +54,22 @@ case "$recording_id" in
     exit 0 ;;
 esac
 
-if ! psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-              VALUES (${recording_id}, 'original', '${E2E_ENCODE_REL_PATH}', ${size}, 'active')" >/dev/null ||
-   ! psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-              VALUES (${recording_id}, 'thumbnail', 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_thumb.jpg', 1, 'active'),
-                     (${recording_id}, 'seek_tiles', 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_tiles.jpg', 1, 'active')" >/dev/null ||
+if ! psql_q "WITH assets AS (
+                INSERT INTO media_assets (recording_id, kind, size_bytes)
+                VALUES (${recording_id}, 'original', ${size}),
+                       (${recording_id}, 'thumbnail', 1),
+                       (${recording_id}, 'seek_tiles', 1)
+                RETURNING id, kind
+              )
+              INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+              SELECT id, 'main',
+                     CASE kind
+                       WHEN 'original' THEN '${E2E_ENCODE_REL_PATH}'
+                       WHEN 'thumbnail' THEN 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_thumb.jpg'
+                       ELSE 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_tiles.jpg'
+                     END,
+                     'active'
+              FROM assets" >/dev/null ||
    ! psql_q "INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
               VALUES (${recording_id}, 'until_encoded', ARRAY['${profile}'])" >/dev/null ||
    ! psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)

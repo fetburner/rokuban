@@ -558,7 +558,6 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 	assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
 		RecordingID:       recordingID,
 		Profile:           &profileName,
-		RelPath:           relPath,
 		SizeBytes:         1,
 		DerivedGeneration: generation,
 	})
