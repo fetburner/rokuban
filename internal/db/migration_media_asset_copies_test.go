@@ -421,10 +421,11 @@ RETURNING id`, recordingID, fmt.Sprintf("sites/default/lossy-%d.m2ts", i)).Scan(
 			assertMediaAssetCopyCleanupCurrentRelations(t, pool)
 
 			var version int64
-			if err := pool.QueryRow(ctx, `
-SELECT max(version_id)
-FROM goose_db_version
-WHERE is_applied`).Scan(&version); err != nil {
+			if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, provider *goose.Provider) error {
+				var err error
+				version, err = provider.GetDBVersion(ctx)
+				return err
+			}); err != nil {
 				t.Fatalf("reading applied migration version after refused rollback: %v", err)
 			}
 			if version != 40 {
