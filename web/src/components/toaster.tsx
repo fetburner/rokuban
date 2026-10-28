@@ -102,6 +102,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     }
   }, [schedule])
 
+  // 子コンポーネントの破棄後にタイマーが残ると、画面を閉じた後でも dismiss が
+  // setState を呼ぶ。StrictMode の effect 再実行時は、cleanup が止めた分を再開する。
+  useEffect(() => {
+    if (!paused.current.hover && !paused.current.focus) resumeTimers()
+    return pauseTimers
+  }, [pauseTimers, resumeTimers])
+
   const pause = useCallback(
     (reason: PauseReason) => {
       paused.current[reason] = true
