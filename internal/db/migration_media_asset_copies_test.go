@@ -3,10 +3,12 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pressly/goose/v3"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 )
@@ -258,6 +260,263 @@ SELECT EXISTS (
 		t.Fatalf("migration failed after adoption: %v", err)
 	}
 	assertMediaAssetCopyColumnsRetired(t, pool)
+}
+
+func TestMediaAssetCopyCleanupDownRestoresLegacyCopyState(t *testing.T) {
+	ctx, dbURL, pool := prepareMediaAssetCopyCleanupAtVersion39(t)
+	defer pool.Close()
+
+	deletedAt := time.Date(2026, 10, 2, 3, 4, 5, 0, time.UTC)
+	fixtures := []struct {
+		state     string
+		deletedAt *time.Time
+	}{
+		{state: "active"},
+		{state: "deleting"},
+		{state: "deleted", deletedAt: &deletedAt},
+	}
+	assets := make([]int64, 0, len(fixtures))
+	for i, fixture := range fixtures {
+		recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
+			params.EventID = int32(52000 + i)
+		})
+		var assetID int64
+		if err := pool.QueryRow(ctx, `
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state, deleted_at)
+VALUES ($1, 'original', $2, 10, $3, $4)
+RETURNING id`, recordingID, fmt.Sprintf("sites/default/down-%d.m2ts", i), fixture.state, fixture.deletedAt).Scan(&assetID); err != nil {
+			t.Fatalf("inserting legacy %s asset: %v", fixture.state, err)
+		}
+		assets = append(assets, assetID)
+	}
+	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
+		t.Fatalf("adopting legacy media asset copies: %v", err)
+	}
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("applying media asset copy cleanup: %v", err)
+	}
+	assertMediaAssetCopyColumnsRetired(t, pool)
+
+	migrateDownTo(t, dbURL, 39)
+	for i, assetID := range assets {
+		var gotPath, gotState string
+		var gotDeletedAt *time.Time
+		if err := pool.QueryRow(ctx, `
+SELECT rel_path, state, deleted_at
+FROM media_assets
+WHERE id = $1`, assetID).Scan(&gotPath, &gotState, &gotDeletedAt); err != nil {
+			t.Fatalf("reading restored legacy %s asset: %v", fixtures[i].state, err)
+		}
+		wantPath := fmt.Sprintf("sites/default/down-%d.m2ts", i)
+		if gotPath != wantPath || gotState != fixtures[i].state {
+			t.Errorf("restored asset = (%q, %q), want (%q, %q)", gotPath, gotState, wantPath, fixtures[i].state)
+		}
+		if fixtures[i].deletedAt == nil {
+			if gotDeletedAt != nil {
+				t.Errorf("restored %s asset deleted_at = %s, want NULL", fixtures[i].state, gotDeletedAt)
+			}
+		} else if gotDeletedAt == nil || !gotDeletedAt.Equal(*fixtures[i].deletedAt) {
+			t.Errorf("restored deleted asset deleted_at = %v, want %s", gotDeletedAt, fixtures[i].deletedAt)
+		}
+	}
+	assertMediaAssetCopyCleanupLegacyRelations(t, pool)
+
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("reapplying media asset copy cleanup after rollback: %v", err)
+	}
+	assertMediaAssetCopyColumnsRetired(t, pool)
+}
+
+func TestMediaAssetCopyCleanupDownRefusesLossyCopyState(t *testing.T) {
+	tests := []struct {
+		name       string
+		assetCount int
+		wantError  string
+		mutate     func(context.Context, *pgxpool.Pool, []int64) error
+	}{
+		{
+			name:       "no copy",
+			assetCount: 1,
+			wantError:  "zero or multiple copies",
+			mutate: func(ctx context.Context, pool *pgxpool.Pool, assetIDs []int64) error {
+				_, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, assetIDs[0])
+				return err
+			},
+		},
+		{
+			name:       "multiple copies",
+			assetCount: 1,
+			wantError:  "zero or multiple copies",
+			mutate: func(ctx context.Context, pool *pgxpool.Pool, assetIDs []int64) error {
+				_, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, 'secondary', 'sites/default/second.m2ts', 'active')`, assetIDs[0])
+				return err
+			},
+		},
+		{
+			name:       "pending copy",
+			assetCount: 1,
+			wantError:  "while a copy is pending",
+			mutate: func(ctx context.Context, pool *pgxpool.Pool, assetIDs []int64) error {
+				_, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'pending' WHERE media_asset_id = $1`, assetIDs[0])
+				return err
+			},
+		},
+		{
+			name:       "same live path in different stores",
+			assetCount: 2,
+			wantError:  "while active copies share a path",
+			mutate: func(ctx context.Context, pool *pgxpool.Pool, assetIDs []int64) error {
+				_, err := pool.Exec(ctx, `
+UPDATE media_asset_copies AS target
+SET store = 'secondary', rel_path = source.rel_path
+FROM media_asset_copies AS source
+WHERE target.media_asset_id = $1 AND source.media_asset_id = $2`, assetIDs[1], assetIDs[0])
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, dbURL, pool := prepareMediaAssetCopyCleanupAtVersion39(t)
+			defer pool.Close()
+
+			assetIDs := make([]int64, 0, tt.assetCount)
+			for i := range tt.assetCount {
+				recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
+					params.EventID = int32(52100 + i)
+				})
+				var assetID int64
+				if err := pool.QueryRow(ctx, `
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+VALUES ($1, 'original', $2, 10)
+RETURNING id`, recordingID, fmt.Sprintf("sites/default/lossy-%d.m2ts", i)).Scan(&assetID); err != nil {
+					t.Fatalf("inserting legacy original asset: %v", err)
+				}
+				assetIDs = append(assetIDs, assetID)
+			}
+			if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
+				t.Fatalf("adopting legacy media asset copies: %v", err)
+			}
+			if err := MigrateUp(ctx, dbURL); err != nil {
+				t.Fatalf("applying media asset copy cleanup: %v", err)
+			}
+			if err := tt.mutate(ctx, pool, assetIDs); err != nil {
+				t.Fatalf("creating lossy copy state: %v", err)
+			}
+
+			err := runGooseMigration(ctx, dbURL, func(ctx context.Context, provider *goose.Provider) error {
+				_, err := provider.DownTo(ctx, 39)
+				return err
+			})
+			if err == nil {
+				t.Fatal("migration down succeeded for a copy state the legacy schema cannot represent")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("migration down error = %q, want it to contain %q", err, tt.wantError)
+			}
+			assertMediaAssetCopyColumnsRetired(t, pool)
+			assertMediaAssetCopyCleanupCurrentRelations(t, pool)
+
+			var version int64
+			if err := pool.QueryRow(ctx, `
+SELECT max(version_id)
+FROM goose_db_version
+WHERE is_applied`).Scan(&version); err != nil {
+				t.Fatalf("reading applied migration version after refused rollback: %v", err)
+			}
+			if version != 40 {
+				t.Fatalf("applied migration version after refused rollback = %d, want 40", version)
+			}
+		})
+	}
+}
+
+func prepareMediaAssetCopyCleanupAtVersion39(t *testing.T) (context.Context, string, *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	dbURL := testDatabaseURL(t)
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("migrating to latest before setup: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening test database before setup: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
+		pool.Close()
+		t.Fatalf("clearing prior migration fixtures: %v", err)
+	}
+	pool.Close()
+	t.Cleanup(func() {
+		cleanupPool, err := pgxpool.New(context.Background(), dbURL)
+		if err != nil {
+			t.Errorf("opening test database for cleanup: %v", err)
+			return
+		}
+		if _, err := cleanupPool.Exec(context.Background(), `TRUNCATE recordings CASCADE`); err != nil {
+			t.Errorf("clearing migration fixtures: %v", err)
+		}
+		cleanupPool.Close()
+		if err := MigrateUp(context.Background(), dbURL); err != nil {
+			t.Errorf("restoring latest schema: %v", err)
+		}
+	})
+
+	migrateDownTo(t, dbURL, 39)
+	pool, err = pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening test database at migration 39: %v", err)
+	}
+	return ctx, dbURL, pool
+}
+
+func assertMediaAssetCopyCleanupLegacyRelations(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, view := range []string{"until_encoded_deletable_originals", "removed_encoded_assets"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.views
+    WHERE table_schema = 'public' AND table_name = $1
+)`, view).Scan(&exists); err != nil {
+			t.Fatalf("checking restored view %s: %v", view, err)
+		}
+		if !exists {
+			t.Errorf("legacy view %s was not restored", view)
+		}
+	}
+	for _, index := range []string{"media_assets_kind_state_idx", "media_assets_rel_path_idx"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'public' AND indexname = $1
+)`, index).Scan(&exists); err != nil {
+			t.Fatalf("checking restored index %s: %v", index, err)
+		}
+		if !exists {
+			t.Errorf("legacy index %s was not restored", index)
+		}
+	}
+}
+
+func assertMediaAssetCopyCleanupCurrentRelations(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.views
+    WHERE table_schema = 'public' AND table_name = 'removed_encoded_assets'
+)`).Scan(&exists); err != nil {
+		t.Fatalf("checking the current removed_encoded_assets view after refused rollback: %v", err)
+	}
+	if !exists {
+		t.Fatal("refused rollback removed the current removed_encoded_assets view")
+	}
 }
 
 func assertMigratedAssetGeneration(t *testing.T, pool *pgxpool.Pool, assetID int64, relPath string, want int64, wantNull bool) {
