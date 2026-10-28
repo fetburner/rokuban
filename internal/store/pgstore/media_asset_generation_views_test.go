@@ -12,30 +12,32 @@ import (
 
 func TestNamedMediaViewsIgnoreStaleGenerationCopies(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	viewHasRecording := func(view string, recordingID int64) bool {
-		t.Helper()
-		var exists bool
-		query := "SELECT EXISTS (SELECT 1 FROM " + view + " WHERE recording_id = $1)"
-		if err := pool.QueryRow(ctx, query, recordingID).Scan(&exists); err != nil {
-			t.Fatalf("checking %s for recording %d: %v", view, recordingID, err)
-		}
-		return exists
-	}
+	testEncodableRecordingView(t, pool)
+	testEncodedProfileViews(t, pool)
+	testCMDesiredViews(t, pool)
+	testRemovedEncodedAssetsView(t, pool)
+}
 
+func testEncodableRecordingView(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
 	originalRecordingID := dbtest.Recording(t, pool)
 	originalID := dbtest.MediaAsset(t, pool, originalRecordingID)
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET ingest_generation = 1 WHERE id = $1`, originalID); err != nil {
 		t.Fatalf("advancing logical original generation: %v", err)
 	}
-	if viewHasRecording("encodable_recordings", originalRecordingID) {
+	if viewHasRecording(t, pool, "encodable_recordings", originalRecordingID) {
 		t.Fatal("encodable_recordings included a recording whose active original copy is stale")
 	}
 	setCopyGeneration(t, pool, originalID, 1)
-	if !viewHasRecording("encodable_recordings", originalRecordingID) {
+	if !viewHasRecording(t, pool, "encodable_recordings", originalRecordingID) {
 		t.Fatal("encodable_recordings excluded a recording after its original copy reached the current generation")
 	}
+}
 
+func testEncodedProfileViews(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
 	encodedRecordingID := dbtest.Recording(t, pool)
 	dbtest.MediaAsset(t, pool, encodedRecordingID)
 	profile := "h264"
@@ -62,20 +64,24 @@ VALUES ($1, $2::int8multirange)`, encodedID, keepRanges); err != nil {
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 2 WHERE id = $1`, encodedID); err != nil {
 		t.Fatalf("advancing logical encoded generation: %v", err)
 	}
-	if !viewHasRecording("unencoded_desired_profiles", encodedRecordingID) {
+	if !viewHasRecording(t, pool, "unencoded_desired_profiles", encodedRecordingID) {
 		t.Fatal("unencoded_desired_profiles considered a stale encoded copy satisfied")
 	}
-	if !viewHasRecording("unsatisfied_encode_rebuilds", encodedRecordingID) {
+	if !viewHasRecording(t, pool, "unsatisfied_encode_rebuilds", encodedRecordingID) {
 		t.Fatal("unsatisfied_encode_rebuilds considered a stale encoded copy satisfied")
 	}
 	setCopyGeneration(t, pool, encodedID, 2)
-	if viewHasRecording("unencoded_desired_profiles", encodedRecordingID) {
+	if viewHasRecording(t, pool, "unencoded_desired_profiles", encodedRecordingID) {
 		t.Fatal("unencoded_desired_profiles reported a profile missing after the copy reached the current generation")
 	}
-	if viewHasRecording("unsatisfied_encode_rebuilds", encodedRecordingID) {
+	if viewHasRecording(t, pool, "unsatisfied_encode_rebuilds", encodedRecordingID) {
 		t.Fatal("unsatisfied_encode_rebuilds reported a request unsatisfied after the current copy matched it")
 	}
+}
 
+func testCMDesiredViews(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
 	cmRecordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
 		params.NetworkID = 32001
 		params.ServiceID = 1001
@@ -94,7 +100,7 @@ VALUES (32001, 1001, 0, 0, 10, 10, 100, 100)`); err != nil {
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET ingest_generation = 1 WHERE id = $1`, cmOriginalID); err != nil {
 		t.Fatalf("advancing logical CM original generation: %v", err)
 	}
-	if viewHasRecording("cm_detection_desired", cmRecordingID) {
+	if viewHasRecording(t, pool, "cm_detection_desired", cmRecordingID) {
 		t.Fatal("cm_detection_desired included a recording with a stale original copy")
 	}
 	var staleLogoCandidateExists bool
@@ -109,7 +115,7 @@ SELECT EXISTS (
 		t.Fatal("cm_logo_candidate_desired returned a candidate with a stale original copy")
 	}
 	setCopyGeneration(t, pool, cmOriginalID, 1)
-	if !viewHasRecording("cm_detection_desired", cmRecordingID) {
+	if !viewHasRecording(t, pool, "cm_detection_desired", cmRecordingID) {
 		t.Fatal("cm_detection_desired excluded a recording after its original copy reached the current generation")
 	}
 	var logoCandidateRecordingID int64
@@ -121,7 +127,11 @@ WHERE network_id = 32001 AND service_id = 1001`).Scan(&logoCandidateRecordingID)
 	if logoCandidateRecordingID != cmRecordingID {
 		t.Fatalf("cm_logo_candidate_desired recording = %v, want %d", logoCandidateRecordingID, cmRecordingID)
 	}
+}
 
+func testRemovedEncodedAssetsView(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
 	removedRecordingID := dbtest.Recording(t, pool)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
@@ -180,6 +190,16 @@ VALUES ($1, 'h264')`, removedWithOriginalRecordingID); err != nil {
 	if !viewHasAsset(t, pool, removedOriginalBackedID) {
 		t.Fatal("removed_encoded_assets excluded the target after the original copy reached the current generation")
 	}
+}
+
+func viewHasRecording(t *testing.T, pool *pgxpool.Pool, view string, recordingID int64) bool {
+	t.Helper()
+	var exists bool
+	query := "SELECT EXISTS (SELECT 1 FROM " + view + " WHERE recording_id = $1)"
+	if err := pool.QueryRow(context.Background(), query, recordingID).Scan(&exists); err != nil {
+		t.Fatalf("checking %s for recording %d: %v", view, recordingID, err)
+	}
+	return exists
 }
 
 func setCopyGeneration(t *testing.T, pool *pgxpool.Pool, assetID, generation int64) {

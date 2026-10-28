@@ -75,6 +75,9 @@ WHERE r.deleted_at IS NULL
         AND EXISTS (SELECT 1 FROM active_media_asset_copies(o.id, NULL::text))
   );
 
+COMMENT ON VIEW encodable_recordings IS
+    'encodable_recordings は、ごみ箱になく現在世代の原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。';
+
 CREATE OR REPLACE VIEW unencoded_desired_profiles AS
 SELECT p.recording_id,
        want.profile::text AS profile,
@@ -89,6 +92,9 @@ WHERE NOT EXISTS (
       AND e.profile = want.profile
       AND EXISTS (SELECT 1 FROM active_media_asset_copies(e.id, NULL::text))
 );
+
+COMMENT ON VIEW unencoded_desired_profiles IS
+    'unencoded_desired_profiles は、凍結済みの desired のうち現在世代の encoded コピーが無い (recording_id, profile) を表す。現在の設定では絞らない。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。';
 
 CREATE OR REPLACE VIEW unsatisfied_encode_rebuilds AS
 SELECT q.recording_id,
