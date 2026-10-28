@@ -134,32 +134,6 @@ func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	if target.Kind != store.RecordingHLSInputTemp || target.RelPath != tempRelPath || target.StoreName != "tokyo" || target.IngestGeneration != generation {
 		t.Fatalf("ingest HLS target = %+v, want temp path %q in tokyo at generation %d", target, tempRelPath, generation)
 	}
-	if target.TempFinalized {
-		t.Fatal("new ingest temp target is finalized before the writer stops")
-	}
-	if err := media.FinalizeIngestProgress(ctx, recordingID, generation, 17); err != nil {
-		t.Fatalf("finalizing terminal ingest temp: %v", err)
-	}
-	target, err = media.GetRecordingHLSTarget(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("GetRecordingHLSTarget(%d) after temp finalization: %v", recordingID, err)
-	}
-	if !target.TempFinalized || target.SizeBytes != 17 {
-		t.Fatalf("finalized ingest HLS target = %+v, want final size 17", target)
-	}
-	if err := media.UpsertIngestProgress(ctx, store.IngestProgress{
-		RecordingID: recordingID, WrittenBytes: 17,
-		TempRelPath: tempRelPath, TempGeneration: generation,
-	}); err != nil {
-		t.Fatalf("restarting ingest progress: %v", err)
-	}
-	target, err = media.GetRecordingHLSTarget(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("GetRecordingHLSTarget(%d) after transfer restart: %v", recordingID, err)
-	}
-	if target.TempFinalized {
-		t.Fatal("restarted ingest temp target remained finalized")
-	}
 	state, err := media.GetIngestTempState(ctx, recordingID)
 	if err != nil || state == nil {
 		t.Fatalf("GetIngestTempState() = (%+v, %v), want a row", state, err)

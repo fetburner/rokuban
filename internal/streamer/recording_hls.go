@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -27,13 +28,12 @@ import (
 
 const (
 	// RecordingHLSRoutePattern は世代付き録画 HLS の固定深さパスである。
-	RecordingHLSRoutePattern        = "/api/media/stores/{store}/recordings/{id}/hls/{version}/{profile}"
-	recordingHLSProbeTimeout        = 30 * time.Second
-	recordingHLSCacheControl        = "private, max-age=31536000, immutable"
-	recordingHLSRetryAfter          = "1"
-	recordingHLSMetadataLimit       = 256
-	recordingHLSTempReadTimeout     = 90 * time.Second
-	recordingHLSTempVisibilityDelay = 55 * time.Second
+	RecordingHLSRoutePattern    = "/api/media/stores/{store}/recordings/{id}/hls/{version}/{profile}"
+	recordingHLSProbeTimeout    = 30 * time.Second
+	recordingHLSCacheControl    = "private, max-age=31536000, immutable"
+	recordingHLSRetryAfter      = "1"
+	recordingHLSMetadataLimit   = 256
+	recordingHLSTempReadTimeout = 90 * time.Second
 )
 
 var (
@@ -69,6 +69,8 @@ type recordingHLSKey struct {
 	kind        store.RecordingHLSInputKind
 }
 
+// recordingHLSTiming は入力の先頭から決まる値と、観測した映像の長さを持つ。
+// videoDurationPTS は原本では確定した長さ、temp では観測した最大値（0 は未観測）である。
 type recordingHLSTiming struct {
 	originPTS        int64
 	videoDurationPTS int64
@@ -78,10 +80,10 @@ type recordingHLSTiming struct {
 
 type recordingHLSMetadata struct {
 	startedAt    time.Time
-	tempSize     int64
 	timing       recordingHLSTiming
 	hasSubtitles bool
-	final        bool
+	// observedSize は temp の videoDurationPTS を測ったときのファイルサイズ。
+	observedSize int64
 }
 
 type recordingHLSMetadataEntry struct {
@@ -101,6 +103,8 @@ type RecordingHLS struct {
 	cfg     RecordingHLSConfig
 	manager *SegmentManager
 	meta    recordingHLSMetadataCache
+	// observe は録画・世代・入力種別ごとの観測を 1 本にまとめる。
+	observe singleflight.Group
 }
 
 // NewRecordingHLS は録画 HLS 配信とプロセス内のセグメント管理を作る。
@@ -222,7 +226,7 @@ func (h *RecordingHLS) RenditionPlaylist(w http.ResponseWriter, r *http.Request)
 	var playlist []byte
 	var err error
 	if request.inputKind == store.RecordingHLSInputTemp {
-		playlist, err = buildRecordingHLSTempPlaylist(request.metadata, profile, rendition, time.Now())
+		playlist, err = buildRecordingHLSTempPlaylist(request.metadata, profile, rendition)
 	} else {
 		playlist, err = buildRecordingHLSRenditionPlaylist(request.metadata, profile, rendition)
 	}
@@ -277,19 +281,18 @@ func (h *RecordingHLS) Segment(w http.ResponseWriter, r *http.Request) {
 	input := SegmentTransformInput{
 		Kind:             request.inputKind,
 		OriginPTS:        request.metadata.timing.originPTS,
-		VideoDurationPTS: request.metadata.timing.videoDurationPTS,
 		AudioStreamCount: request.metadata.timing.audioStreamCount,
 		HasSubtitles:     request.metadata.hasSubtitles,
 	}
 	if request.inputKind == store.RecordingHLSInputTemp {
-		input.Growing = !request.metadata.final
-		if input.Growing {
-			input.InputArgs = []string{
-				"-skip_estimate_duration_from_pts", "1",
-				"-follow", "1",
-				"-rw_timeout", strconv.FormatInt(recordingHLSTempReadTimeout.Microseconds(), 10),
-			}
+		// 伸びる temp の長さは未確定として渡す（観測値は playlist の公開境界であり、終端ではない）。
+		input.InputArgs = []string{
+			"-skip_estimate_duration_from_pts", "1",
+			"-follow", "1",
+			"-rw_timeout", strconv.FormatInt(recordingHLSTempReadTimeout.Microseconds(), 10),
 		}
+	} else {
+		input.VideoDurationPTS = request.metadata.timing.videoDurationPTS
 	}
 	if request.dbUnavailable {
 		input.OpenFile = func(context.Context) (*os.File, error) { return nil, errRecordingHLSDBUnavailable }
@@ -380,10 +383,6 @@ func (h *RecordingHLS) request(w http.ResponseWriter, r *http.Request, needMetad
 			h.writeUnavailable(w)
 			return recordingHLSRequest{}, false
 		}
-		if cacheKey.kind == store.RecordingHLSInputTemp {
-			metadata.final = false
-			metadata.timing.videoDurationPTS = 0
-		}
 		return recordingHLSRequest{recordingID: recordingID, generation: generation, inputKind: cacheKey.kind, metadata: metadata, dbUnavailable: true}, true
 	}
 	if target.Kind == store.RecordingHLSInputTemp && target.StoreName != h.cfg.StoreName {
@@ -411,10 +410,6 @@ func (h *RecordingHLS) request(w http.ResponseWriter, r *http.Request, needMetad
 	if err != nil {
 		if errors.Is(err, errRecordingHLSDBUnavailable) || errors.Is(err, errRecordingHLSTempNotReady) {
 			if cached, ok := h.meta.get(recordingHLSKey{recordingID: recordingID, generation: generation, kind: target.Kind}); ok && h.manager.HasRecording(strconv.FormatInt(recordingID, 10), strconv.FormatInt(generation, 10)) {
-				if target.Kind == store.RecordingHLSInputTemp {
-					cached.final = false
-					cached.timing.videoDurationPTS = 0
-				}
 				return recordingHLSRequest{recordingID: recordingID, generation: generation, metadata: cached, target: target, inputKind: target.Kind, dbUnavailable: true}, true
 			}
 			h.writeUnavailable(w)
@@ -433,57 +428,78 @@ func (h *RecordingHLS) request(w http.ResponseWriter, r *http.Request, needMetad
 
 func (h *RecordingHLS) metadataForTarget(ctx context.Context, recordingID, generation int64, target store.RecordingHLSInputTarget) (recordingHLSMetadata, error) {
 	key := recordingHLSKey{recordingID: recordingID, generation: generation, kind: target.Kind}
-	final := target.Kind == store.RecordingHLSInputOriginal || (target.TempFinalized && recordingHLSTempEnded(target.RecordStatus))
-	if metadata, ok := h.meta.get(key); ok {
-		if target.StartedAt != nil && metadata.startedAt.Equal(*target.StartedAt) && metadata.final == final {
-			if target.Kind != store.RecordingHLSInputTemp || !final {
-				return metadata, nil
-			}
-			file, err := h.openTemp(ctx, recordingID, target)
-			if err != nil {
-				return recordingHLSMetadata{}, err
-			}
-			info, statErr := file.Stat()
-			closeErr := file.Close()
-			if statErr != nil {
-				return recordingHLSMetadata{}, fmt.Errorf("stating finalized recording HLS temp: %w", statErr)
-			}
-			if closeErr != nil {
-				return recordingHLSMetadata{}, fmt.Errorf("closing checked recording HLS temp: %w", closeErr)
-			}
-			if metadata.tempSize == target.SizeBytes && info.Size() == target.SizeBytes {
-				return metadata, nil
-			}
-		}
-		h.meta.remove(key)
-	}
 	if target.StartedAt == nil {
 		if target.Kind == store.RecordingHLSInputTemp {
 			return recordingHLSMetadata{}, fmt.Errorf("%w: recording start time is not available", errRecordingHLSTempNotReady)
 		}
 		return recordingHLSMetadata{}, errors.New("recording HLS target has no recording start time")
 	}
-	file, err := h.openInput(ctx, recordingID, target)
-	if err != nil {
-		return recordingHLSMetadata{}, err
-	}
-	timing, err := probeRecordingHLSTiming(ctx, h.cfg.FFprobe, file)
-	closeErr := file.Close()
-	if err != nil {
-		if target.Kind == store.RecordingHLSInputTemp {
-			return recordingHLSMetadata{}, fmt.Errorf("%w: probing growing recording HLS temp: %w", errRecordingHLSTempNotReady, err)
+	if metadata, ok := h.meta.get(key); ok {
+		if !metadata.startedAt.Equal(*target.StartedAt) {
+			h.meta.remove(key)
+		} else if target.Kind == store.RecordingHLSInputOriginal {
+			return metadata, nil
 		}
+	}
+	// 呼び出し元が切れても、同じ観測を待つ他の要求を巻き込まない。ffprobe は自分の期限を持つ。
+	observeCtx := context.WithoutCancel(ctx)
+	result, err, _ := h.observe.Do(fmt.Sprintf("%d/%d/%d", recordingID, generation, target.Kind), func() (any, error) {
+		return h.observeInput(observeCtx, key, target)
+	})
+	if err != nil {
 		return recordingHLSMetadata{}, err
 	}
-	if closeErr != nil {
-		return recordingHLSMetadata{}, fmt.Errorf("closing probed recording HLS original: %w", closeErr)
+	return result.(recordingHLSMetadata), nil
+}
+
+// observeInput は入力の映像の長さを測って metadata cache に入れる。原本は 1 度だけ測る。
+// temp はサイズが前回と同じなら前の値を使い、測った値が前回より小さくても最大値を保つ。
+func (h *RecordingHLS) observeInput(ctx context.Context, key recordingHLSKey, target store.RecordingHLSInputTarget) (recordingHLSMetadata, error) {
+	cached, haveCached := h.meta.get(key)
+	if haveCached && !cached.startedAt.Equal(*target.StartedAt) {
+		h.meta.remove(key)
+		cached, haveCached = recordingHLSMetadata{}, false
 	}
-	if target.Kind == store.RecordingHLSInputTemp && !final {
-		timing.videoDurationPTS = 0
+	if haveCached && key.kind == store.RecordingHLSInputOriginal {
+		return cached, nil
+	}
+	file, err := h.openInput(ctx, key.recordingID, target)
+	if err != nil {
+		return recordingHLSMetadata{}, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return recordingHLSMetadata{}, fmt.Errorf("stating recording HLS input: %w", err)
+	}
+	if haveCached && cached.observedSize == info.Size() {
+		return cached, nil
+	}
+	timing := cached.timing
+	if !haveCached {
+		timing, err = probeRecordingHLSTiming(ctx, h.cfg.FFprobe, file)
+		if err != nil {
+			if key.kind == store.RecordingHLSInputTemp {
+				return recordingHLSMetadata{}, fmt.Errorf("%w: probing growing recording HLS temp: %w", errRecordingHLSTempNotReady, err)
+			}
+			return recordingHLSMetadata{}, err
+		}
+	}
+	duration, err := measureRecordingHLSVideoDuration(ctx, h.cfg.FFprobe, file, info.Size(), timing.originPTS)
+	switch {
+	case err == nil:
+		if duration > timing.videoDurationPTS {
+			timing.videoDurationPTS = duration
+		}
+	case key.kind == store.RecordingHLSInputTemp && errors.Is(err, errRecordingHLSNoVideoPacket):
+		// 末尾の窓を広げても映像パケットが無い。前回の値を使い、次のサイズ変化で測り直す。
+	case key.kind == store.RecordingHLSInputTemp:
+		return recordingHLSMetadata{}, fmt.Errorf("%w: measuring growing recording HLS temp: %w", errRecordingHLSTempNotReady, err)
+	default:
+		return recordingHLSMetadata{}, err
 	}
 	metadata := recordingHLSMetadata{
-		startedAt: *target.StartedAt, tempSize: target.SizeBytes, timing: timing,
-		hasSubtitles: timing.hasSubtitles, final: final,
+		startedAt: *target.StartedAt, timing: timing, hasSubtitles: timing.hasSubtitles, observedSize: info.Size(),
 	}
 	h.meta.put(key, metadata)
 	return metadata, nil
@@ -545,9 +561,6 @@ func (h *RecordingHLS) openTemp(ctx context.Context, recordingID int64, target s
 	file, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if recordingHLSTempEnded(target.RecordStatus) {
-				return nil, store.ErrNotFound
-			}
 			return nil, fmt.Errorf("opening recording HLS temp: %w", errRecordingHLSTempNotReady)
 		}
 		return nil, fmt.Errorf("opening recording HLS temp: %w", err)
@@ -575,11 +588,6 @@ func (h *RecordingHLS) openTemp(ctx context.Context, recordingID int64, target s
 	if current.Kind != store.RecordingHLSInputTemp || current.RelPath != target.RelPath || current.StoreName != target.StoreName {
 		_ = file.Close()
 		return nil, fmt.Errorf("recording HLS temp changed while opening: %w", errRecordingHLSTempNotReady)
-	}
-	if target.TempFinalized && recordingHLSTempEnded(target.RecordStatus) &&
-		(!current.TempFinalized || current.RecordStatus != target.RecordStatus || current.SizeBytes != target.SizeBytes || info.Size() != target.SizeBytes) {
-		_ = file.Close()
-		return nil, fmt.Errorf("recording HLS terminal temp snapshot changed while opening: %w", errRecordingHLSTempNotReady)
 	}
 	return file, nil
 }
@@ -636,17 +644,31 @@ func (c *recordingHLSMetadataCache) get(key recordingHLSKey) (recordingHLSMetada
 	return element.Value.(recordingHLSMetadataEntry).metadata, true
 }
 
+// getAny は録画と世代に対応する metadata を返す。原本があれば temp より優先する
+// （付けた ENDLIST を、DB に問い合わせられない間も外さないため）。
 func (c *recordingHLSMetadataCache) getAny(recordingID, generation int64) (recordingHLSKey, recordingHLSMetadata, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var found *list.Element
 	for element := c.lru.Front(); element != nil; element = element.Next() {
 		entry := element.Value.(recordingHLSMetadataEntry)
-		if entry.key.recordingID == recordingID && entry.key.generation == generation {
-			c.lru.MoveToFront(element)
-			return entry.key, entry.metadata, true
+		if entry.key.recordingID != recordingID || entry.key.generation != generation {
+			continue
+		}
+		if entry.key.kind == store.RecordingHLSInputOriginal {
+			found = element
+			break
+		}
+		if found == nil {
+			found = element
 		}
 	}
-	return recordingHLSKey{}, recordingHLSMetadata{}, false
+	if found == nil {
+		return recordingHLSKey{}, recordingHLSMetadata{}, false
+	}
+	c.lru.MoveToFront(found)
+	entry := found.Value.(recordingHLSMetadataEntry)
+	return entry.key, entry.metadata, true
 }
 
 func (c *recordingHLSMetadataCache) put(key recordingHLSKey, metadata recordingHLSMetadata) {
@@ -723,35 +745,15 @@ func buildRecordingHLSRenditionPlaylist(metadata recordingHLSMetadata, profile L
 	return buildRecordingHLSPlaylist(metadata, profile, rendition, last, true)
 }
 
-func buildRecordingHLSTempPlaylist(metadata recordingHLSMetadata, profile LiveProfile, rendition string, now time.Time) ([]byte, error) {
+// buildRecordingHLSTempPlaylist は、観測した映像に全体が収まるセグメントだけを、全て D 秒で載せる。
+// 最後の短いセグメントと ENDLIST は載せない。原本へ切り替わる commit で足される。
+func buildRecordingHLSTempPlaylist(metadata recordingHLSMetadata, profile LiveProfile, rendition string) ([]byte, error) {
 	if (!supportedSegmentRendition(rendition) || (rendition == "subtitles" && !metadata.hasSubtitles)) || profile.SegmentSeconds < 1 {
 		return nil, errors.New("invalid recording HLS rendition or segment duration")
 	}
-	last := recordingHLSTempLastSegmentNumber(metadata.startedAt, now, profile.SegmentSeconds)
-	if metadata.final {
-		last = finalSegmentNumber(metadata.timing.videoDurationPTS, profile.SegmentSeconds)
-		if last < 0 {
-			return nil, errors.New("recording HLS final temp duration is unavailable")
-		}
-	}
-	return buildRecordingHLSPlaylist(metadata, profile, rendition, last, metadata.final)
-}
-
-// 壊し方: 55 秒の余裕を引かず、録画の実時間とともに末尾が増える判定をなくす。
-func recordingHLSTempLastSegmentNumber(startedAt, now time.Time, segmentSeconds int) int64 {
-	if segmentSeconds < 1 {
-		return -1
-	}
-	margin := recordingHLSTempVisibilityDelay + time.Duration(segmentSeconds)*time.Second
-	elapsed := now.Sub(startedAt) - margin
-	if elapsed < 0 {
-		return -1
-	}
-	return int64(elapsed / (time.Duration(segmentSeconds) * time.Second))
-}
-
-func recordingHLSTempEnded(status string) bool {
-	return status == "canceled" || status == "failed"
+	segmentPTS := int64(profile.SegmentSeconds) * mpegTSTimestampClock
+	last := metadata.timing.videoDurationPTS/segmentPTS - 1
+	return buildRecordingHLSPlaylist(metadata, profile, rendition, last, false)
 }
 
 func buildRecordingHLSPlaylist(metadata recordingHLSMetadata, profile LiveProfile, rendition string, last int64, endlist bool) ([]byte, error) {
@@ -812,7 +814,7 @@ func probeRecordingHLSTiming(ctx context.Context, ffprobe string, file *os.File)
 		return recordingHLSTiming{}, fmt.Errorf("rewinding recording HLS original: %w", err)
 	}
 	streamCmd := exec.CommandContext(probeCtx, ffprobe,
-		"-v", "error", "-show_entries", "stream=codec_type,start_time,duration", "-of", "json", "-i", originalVODFFmpegInputPath,
+		"-v", "error", "-show_entries", "stream=codec_type", "-of", "json", "-i", originalVODFFmpegInputPath,
 	)
 	streamCmd.ExtraFiles = []*os.File{file}
 	streamOutput, err := streamCmd.Output()
@@ -820,31 +822,22 @@ func probeRecordingHLSTiming(ctx context.Context, ffprobe string, file *os.File)
 		if probeCtx.Err() != nil {
 			return recordingHLSTiming{}, probeCtx.Err()
 		}
-		return recordingHLSTiming{}, fmt.Errorf("probing recording HLS streams and duration: %w", err)
+		return recordingHLSTiming{}, fmt.Errorf("probing recording HLS streams: %w", err)
 	}
 	var result struct {
 		Streams []struct {
 			CodecType string `json:"codec_type"`
-			StartTime string `json:"start_time"`
-			Duration  string `json:"duration"`
 		} `json:"streams"`
 	}
 	if err := json.Unmarshal(streamOutput, &result); err != nil {
 		return recordingHLSTiming{}, fmt.Errorf("decoding recording HLS stream probe: %w", err)
 	}
-	var ok bool
-	var videoStart, videoDuration float64
-	var hasVideo bool
-	var resultHasSubtitles bool
+	var hasVideo, resultHasSubtitles bool
 	audioCount := 0
 	for _, stream := range result.Streams {
 		switch stream.CodecType {
 		case "video":
-			if !hasVideo {
-				videoStart, hasVideo = finiteFloat(stream.StartTime)
-				videoDuration, ok = finiteFloat(stream.Duration)
-				hasVideo = hasVideo && ok
-			}
+			hasVideo = true
 		case "audio":
 			audioCount++
 		case "subtitle":
@@ -854,18 +847,5 @@ func probeRecordingHLSTiming(ctx context.Context, ffprobe string, file *os.File)
 	if !hasVideo || audioCount == 0 {
 		return recordingHLSTiming{}, errors.New("recording HLS probe did not find a video and audio stream")
 	}
-	// SegmentManager は originPTS を n=0 の境界にするため、映像 stream の終端から
-	// その同じ PTS 原点を引く。format.start_time を使うと先頭に古い音声 PES がある
-	// TS で、その隙間ぶんだけ VOD playlist に存在しない segment を足してしまう。
-	durationSeconds := videoStart + videoDuration - float64(originPTS)/float64(mpegTSTimestampClock)
-	if durationSeconds <= 0 || math.IsNaN(durationSeconds) || math.IsInf(durationSeconds, 0) || durationSeconds > float64(math.MaxInt64)/float64(mpegTSTimestampClock) {
-		return recordingHLSTiming{}, fmt.Errorf("recording HLS probe returned invalid video duration %v", durationSeconds)
-	}
-	durationPTS := int64(math.Round(durationSeconds * float64(mpegTSTimestampClock)))
-	return recordingHLSTiming{originPTS: originPTS, videoDurationPTS: durationPTS, audioStreamCount: audioCount, hasSubtitles: resultHasSubtitles}, nil
-}
-
-func finiteFloat(raw string) (float64, bool) {
-	value, err := strconv.ParseFloat(raw, 64)
-	return value, err == nil && !math.IsNaN(value) && !math.IsInf(value, 0)
+	return recordingHLSTiming{originPTS: originPTS, audioStreamCount: audioCount, hasSubtitles: resultHasSubtitles}, nil
 }

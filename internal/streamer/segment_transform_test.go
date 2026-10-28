@@ -69,7 +69,7 @@ func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *
 	}
 }
 
-func TestSegmentTransformDoesNotJoinGrowingAndFiniteInputs(t *testing.T) {
+func TestSegmentTransformDoesNotJoinTempAndOriginalInputs(t *testing.T) {
 	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
 	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -99,17 +99,14 @@ func TestSegmentTransformDoesNotJoinGrowingAndFiniteInputs(t *testing.T) {
 	}
 	key := SegmentKey{RecordingID: "recording", Generation: "generation", Profile: "test", Rendition: "video", Number: 0}
 	for _, tc := range []struct {
-		name    string
-		kind    store.RecordingHLSInputKind
-		growing bool
+		name string
+		kind store.RecordingHLSInputKind
 	}{
-		{name: "growing temp", kind: store.RecordingHLSInputTemp, growing: true},
-		{name: "finite temp", kind: store.RecordingHLSInputTemp},
+		{name: "temp", kind: store.RecordingHLSInputTemp},
 		{name: "original", kind: store.RecordingHLSInputOriginal},
 	} {
 		input := baseInput
 		input.Kind = tc.kind
-		input.Growing = tc.growing
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 		_, getErr := manager.Get(ctx, key, input)
 		cancel()
@@ -117,8 +114,8 @@ func TestSegmentTransformDoesNotJoinGrowingAndFiniteInputs(t *testing.T) {
 			t.Fatalf("Get(input %q) error = %v, want deadline while fake ffmpeg sleeps", tc.name, getErr)
 		}
 	}
-	if _, active := manager.Stats(); active != 3 {
-		t.Fatalf("active transforms after same URL requested from growing temp, finite temp, and original = %d, want 3", active)
+	if _, active := manager.Stats(); active != 2 {
+		t.Fatalf("active transforms after same URL requested from temp and original = %d, want 2", active)
 	}
 }
 
@@ -743,7 +740,7 @@ func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
 		t.Fatal("request for the last prefetched segment replaced the paused transform")
 	}
 	manager.mu.Lock()
-	taskCount := len(manager.tasks[segmentTransformGroup{"recording", "generation-1", "test", 0, false}])
+	taskCount := len(manager.tasks[segmentTransformGroup{"recording", "generation-1", "test", 0}])
 	manager.mu.Unlock()
 	if taskCount != 1 {
 		t.Fatalf("transforms after requesting segment %d = %d, want 1", bound, taskCount)
@@ -1688,7 +1685,7 @@ func TestSegmentTransformEndlistMakesOnlyTheRecordingsLastSegmentFinal(t *testin
 				t.Fatal(err)
 			}
 			task := &segmentTransformTask{
-				group:   segmentTransformGroup{"recording", "generation", "test", 0, false},
+				group:   segmentTransformGroup{"recording", "generation", "test", 0},
 				profile: LiveProfile{Name: "test", SegmentSeconds: 2},
 				input:   SegmentTransformInput{VideoDurationPTS: tc.durationPTS},
 				workDir: workDir, requestStart: 2, startNumber: 1, currentNumber: 1, maxRequested: 2,
@@ -1791,7 +1788,7 @@ func TestSegmentTransformOversizedSegmentIsDeliveredAndHugeSegmentFailsWithoutWa
 				t.Fatal(err)
 			}
 		}
-		group := segmentTransformGroup{"recording", "generation", "test", 0, false}
+		group := segmentTransformGroup{"recording", "generation", "test", 0}
 		key := SegmentKey{"recording", "generation", "test", "video", 1}
 		waiter := &segmentTransformWaiter{ctx: context.Background(), ch: make(chan segmentTransformResult, 1)}
 		task := &segmentTransformTask{
@@ -1866,7 +1863,7 @@ func TestSegmentTransformDeletesPreRollSegmentOnceNextSegmentStarts(t *testing.T
 		}
 	}
 	task := &segmentTransformTask{
-		group:   segmentTransformGroup{"recording", "generation", "test", 0, false},
+		group:   segmentTransformGroup{"recording", "generation", "test", 0},
 		profile: LiveProfile{Name: "test", SegmentSeconds: 2},
 		workDir: workDir, requestStart: 2, startNumber: 1, currentNumber: 1, maxRequested: 2,
 	}
@@ -1973,22 +1970,14 @@ func taskForRecording(t *testing.T, manager *SegmentManager, recordingID string)
 	return nil
 }
 
+// videoDurationPTS は、製品が長さの定義に使う関数（末尾の映像パケットの最大の pts + duration − 原点）で測る。
 func videoDurationPTS(t *testing.T, ffprobe, path string) int64 {
 	t.Helper()
-	out, err := exec.Command(ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration",
-		"-of", "default=nw=1:nk=1", path).Output()
+	duration, err := measureTestFile(t, ffprobe, path)
 	if err != nil {
-		t.Fatalf("probing video duration from %s: %v", path, err)
+		t.Fatalf("measuring video duration of %s: %v", path, err)
 	}
-	fields := strings.Fields(string(out))
-	if len(fields) == 0 {
-		t.Fatalf("no video duration in ffprobe output %q", out)
-	}
-	seconds, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil {
-		t.Fatalf("parsing video duration %q: %v", out, err)
-	}
-	return int64(math.Round(seconds * float64(mpegTSTimestampClock)))
+	return duration
 }
 
 func TestSegmentTransformStopAtCachedPositionKeepsTransformsStillProducingAWaitedSegment(t *testing.T) {
@@ -2002,7 +1991,7 @@ func TestSegmentTransformStopAtCachedPositionKeepsTransformsStillProducingAWaite
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager := newBareSegmentManager(t, 1<<20)
-			group := segmentTransformGroup{"recording", "generation", "test", 0, false}
+			group := segmentTransformGroup{"recording", "generation", "test", 0}
 			for _, rendition := range segmentRenditions {
 				path := filepath.Join(manager.cache.root, "tmp-"+rendition)
 				if err := os.WriteFile(path, []byte("cached-"+rendition), 0o600); err != nil {

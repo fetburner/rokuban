@@ -33,11 +33,9 @@ import (
 // Work が errors.Is で拾う）。
 //
 // **これを queue の再試行に戻してはならない。** cancel / fail は中身が不採用と
-// 確定した終端なので、Work は進捗行と temp を保持したまま再試行を止める。
-// 進捗行は部分 temp の一時的な追っかけ再生に使い、原本アセットとしては commit しない。
-// temp は既存の orphan aging で回収する。Spec の MaxAttempts は既定のまま（25）で、
-// エッジの record は commit 成功時にしか消えないため、取り消した長時間録画が
-// 全量再取得を繰り返す形にしてはいけない。
+// 確定した終端なので、Work は temp を破棄して再試行を止める。Spec の MaxAttempts
+// は既定のまま（25）で、エッジの record は commit 成功時にしか消えないため、
+// 取り消した長時間録画が全量再取得を繰り返す形にしてはいけない。
 //
 // 部分ファイルは資産として commit せず、エッジの record も消さない（purge すると
 // content path を共有する後継録画のファイルまで消える）。理由は
@@ -566,18 +564,9 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			return errIngestSliceElapsed
 		}
 		if errors.Is(err, errIngestRecordEndedAbnormally) {
-			// 再試行に戻さない。進捗行と temp は、録画された範囲を追っかけ再生
-			// できるよう残す。原本アセットにはせず、temp 自体は orphan aging に委ねる。
-			// Range の io.Copy が戻った後、部分 temp を同期・close してから最終サイズを確定する。
-			if err := f.Sync(); err != nil {
-				return fmt.Errorf("syncing canceled or failed ingest temp: %w", err)
-			}
-			if err := f.Close(); err != nil {
-				return fmt.Errorf("closing canceled or failed ingest temp: %w", err)
-			}
-			if err := progress.finalize(ctx, offset); err != nil {
-				return fmt.Errorf("finalizing canceled or failed ingest temp: %w", err)
-			}
+			removeTemp = true
+			// 再試行に戻さない（errIngestRecordEndedAbnormally の doc コメント
+			// 参照）。進捗行は上の removeTemp の cleanup が消す。
 			// 取り消し・失敗は「転送が壊れた」ではないので、失敗として数えない。
 			// 同じ result="failure" に混ぜると、利用者が止めた録画が失敗率に
 			// 積まれて本物の失敗が埋もれる。

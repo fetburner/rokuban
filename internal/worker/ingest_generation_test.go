@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
@@ -46,7 +47,7 @@ func TestShouldAllocateIngestTempGeneration(t *testing.T) {
 }
 
 func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
-	for _, mode := range []string{"size mismatch", "hash mismatch"} {
+	for _, mode := range []string{"size mismatch", "hash mismatch", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			setFastIngestFollow(t)
 			pool := setupTestPool(t)
@@ -59,6 +60,7 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 			goodHash := sha256Hex(data)
 			badAttempt := atomic.Bool{}
 			badAttempt.Store(true)
+			var recordGets atomic.Int32
 			const contentPath = "test/generation.m2ts"
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
@@ -73,6 +75,13 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 					status := "finished"
+					if mode == "cancel" && badAttempt.Load() {
+						if recordGets.Add(1) == 1 {
+							status = "recording"
+						} else {
+							status = "canceled"
+						}
+					}
 					hash := goodHash
 					if mode == "hash mismatch" && badAttempt.Load() {
 						hash = wrongHash
@@ -116,14 +125,17 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 			if err == nil {
 				t.Fatal("first Work() succeeded; want temp invalidation")
 			}
-			if !strings.Contains(err.Error(), mode) {
+			if mode == "cancel" && !errors.Is(err, jobq.ErrDiscard) {
+				t.Fatalf("canceled Work() error = %v, want jobq.ErrDiscard", err)
+			}
+			if mode != "cancel" && !strings.Contains(err.Error(), mode) {
 				t.Fatalf("first Work() error = %v, want %q", err, mode)
 			}
 			firstGeneration := media.firstGeneration(t)
 			if firstGeneration <= 0 {
 				t.Fatalf("first temp generation = %d, want a positive sequence value", firstGeneration)
 			}
-			// 不一致で temp を捨てたので、それを指す進捗行も残さない。
+			// temp を捨てたので、それを指す進捗行も残さない。
 			if _, ok := readIngestProgress(t, pool, recordingID); ok {
 				t.Fatalf("progress row remained after %s discarded the temp", mode)
 			}

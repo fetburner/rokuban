@@ -94,19 +94,6 @@ func (r *ingestProgressReporter) flush(ctx context.Context, written int64) {
 	r.write(ctx, written)
 }
 
-// finalize は terminal record の追従が終わった後に temp の正確な長さと書き込み終了を保存する。
-func (r *ingestProgressReporter) finalize(ctx context.Context, written int64) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := r.publisher.FinalizeIngestProgress(ctx, r.recordingID, r.tempGeneration, written); err != nil {
-		r.log.Error("ingest: failed to finalize transfer progress",
-			"recording_id", r.recordingID, "written_bytes", written, "err", err)
-		return err
-	}
-	return nil
-}
-
 // write は進捗行を書き直す。失敗はログだけに残し、ingest 本体を失敗させない。
 func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 	// ctx が既に死んでいるなら書きに行かない（ジョブのキャンセル時に無駄な

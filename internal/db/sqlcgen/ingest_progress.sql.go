@@ -13,40 +13,12 @@ const deleteRecordingIngestProgress = `-- name: DeleteRecordingIngestProgress :e
 DELETE FROM recording_ingest_progress WHERE recording_id = $1
 `
 
-// temp の行を消す。原本 media_asset を INSERT するのと同じ tx で呼ぶことで、
-// 「原本があるのに未 commit temp を指す」という中間状態を読者に見せない（不変条件 3）。
+// 進捗行を消す。原本 media_asset を INSERT するのと同じ tx で呼ぶことで、
+// 「原本があるのに取り込み中」という中間状態を読者に見せない（不変条件 3）。
 // 行が無くても成功する（冪等）。
 func (q *Queries) DeleteRecordingIngestProgress(ctx context.Context, recordingID int64) error {
 	_, err := q.db.Exec(ctx, deleteRecordingIngestProgress, recordingID)
 	return err
-}
-
-const finalizeRecordingIngestProgress = `-- name: FinalizeRecordingIngestProgress :execrows
-UPDATE recording_ingest_progress
-SET written_bytes = $2, temp_finalized = TRUE, observed_at = now()
-WHERE recording_id = $1 AND temp_generation = $3 AND temp_store = $4
-`
-
-type FinalizeRecordingIngestProgressParams struct {
-	RecordingID    int64
-	WrittenBytes   int64
-	TempGeneration int64
-	TempStore      string
-}
-
-// cancel / fail の record を worker が追従し終えた後、部分 temp の正確な長さと
-// 「以後この世代へ書かない」状態を同じ行に記録する。
-func (q *Queries) FinalizeRecordingIngestProgress(ctx context.Context, arg FinalizeRecordingIngestProgressParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finalizeRecordingIngestProgress,
-		arg.RecordingID,
-		arg.WrittenBytes,
-		arg.TempGeneration,
-		arg.TempStore,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const getRecordSyncIngestTarget = `-- name: GetRecordSyncIngestTarget :one
@@ -115,15 +87,14 @@ func (q *Queries) NextIngestTempGeneration(ctx context.Context) (int64, error) {
 
 const upsertRecordingIngestProgress = `-- name: UpsertRecordingIngestProgress :exec
 INSERT INTO recording_ingest_progress (
-    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, temp_store, temp_finalized, observed_at
-) VALUES ($1, $2, $3, $4, $5, $6, FALSE, now())
+    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, temp_store, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
 ON CONFLICT (recording_id) DO UPDATE SET
     written_bytes  = EXCLUDED.written_bytes,
     expected_bytes = EXCLUDED.expected_bytes,
     temp_rel_path  = EXCLUDED.temp_rel_path,
     temp_generation = EXCLUDED.temp_generation,
     temp_store      = EXCLUDED.temp_store,
-    temp_finalized  = FALSE,
     observed_at    = now()
 `
 
@@ -136,15 +107,14 @@ type UpsertRecordingIngestProgressParams struct {
 	TempStore      string
 }
 
-// 未 commit temp の進捗を上書きする。行の存在そのものが temp の置き場と世代を指す
-// （不変条件 10）。転送中の written_bytes = 0 は「転送を開始した」ことを表し、
-// record の cancel / fail 後も部分 temp を一時再生する間は行を残す。
+// 転送中の進捗を上書きする。行の存在そのものが「転送中」の主張なので
+// （不変条件 10）、written_bytes = 0 の初回書き込みにも意味がある
+// （「転送を開始した」）。
 //
 // written_bytes は GREATEST を取らない --- ジョブ再試行（層 2）は temp replay 後の
-// 実ファイル末尾から続くため、通常は戻らない。サイズ / ハッシュ不一致で temp を
-// 捨てた次の試行は 0 から始まる。転送中の written_bytes は単調増加を保証しない
-// （docs/schema/recordings/satellites.md「recording_ingest_progress」参照）。
-// upsert は writer の再開を表し、終端後の確定状態を解除する。
+// 実ファイル末尾から続くため、通常は戻らない。サイズ / ハッシュ不一致や record の
+// cancel / fail で temp を捨てた次の試行は 0 から始まる（written_bytes は単調増加を
+// 保証しない。docs/schema/recordings/satellites.md「recording_ingest_progress」参照）。
 func (q *Queries) UpsertRecordingIngestProgress(ctx context.Context, arg UpsertRecordingIngestProgressParams) error {
 	_, err := q.db.Exec(ctx, upsertRecordingIngestProgress,
 		arg.RecordingID,

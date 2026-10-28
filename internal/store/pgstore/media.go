@@ -340,20 +340,17 @@ func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, sit
 // GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。
 func (s *Media) GetRecordingHLSTarget(ctx context.Context, recordingID int64) (store.RecordingHLSInputTarget, error) {
 	var startedAt *time.Time
-	var recordStatus string
 	var originalID, originalSize, originalGeneration pgtype.Int8
 	var originalRelPath pgtype.Text
 	var tempRelPath, tempStore pgtype.Text
 	var tempSize, tempGeneration pgtype.Int8
-	var tempFinalized bool
 	var hasOriginal bool
-	err := s.pool.QueryRow(ctx, `SELECT r.started_at, COALESCE(rs.status, ''),
+	err := s.pool.QueryRow(ctx, `SELECT r.started_at,
        a.id, c.rel_path, a.size_bytes, COALESCE(a.ingest_generation, 0)::bigint,
-       p.temp_rel_path, p.temp_store, p.written_bytes, p.temp_generation, COALESCE(p.temp_finalized, false),
+       p.temp_rel_path, p.temp_store, p.written_bytes, p.temp_generation,
        EXISTS (SELECT 1 FROM media_assets any_original
                WHERE any_original.recording_id = r.id AND any_original.kind = 'original')
 FROM recordings r
-LEFT JOIN record_sync rs ON rs.recording_id = r.id
 LEFT JOIN media_assets a ON a.recording_id = r.id AND `+activePlaybackOriginalSQL("$2")+`
 LEFT JOIN LATERAL (SELECT copy.rel_path FROM preferred_active_media_asset_copy(a.id, $2::text) copy) c ON true
 LEFT JOIN recording_ingest_progress p ON p.recording_id = r.id
@@ -362,9 +359,9 @@ WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
       SELECT 1 FROM media_assets any_original
       WHERE any_original.recording_id = r.id AND any_original.kind = 'original'
   )))`, recordingID, s.storeName).Scan(
-		&startedAt, &recordStatus,
+		&startedAt,
 		&originalID, &originalRelPath, &originalSize, &originalGeneration,
-		&tempRelPath, &tempStore, &tempSize, &tempGeneration, &tempFinalized,
+		&tempRelPath, &tempStore, &tempSize, &tempGeneration,
 		&hasOriginal,
 	)
 
@@ -379,7 +376,6 @@ WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
 			SizeBytes:        originalSize.Int64,
 			IngestGeneration: originalGeneration.Int64,
 			StartedAt:        startedAt,
-			RecordStatus:     recordStatus,
 		}, nil
 	}
 	if hasOriginal || !tempRelPath.Valid || !tempStore.Valid || !tempGeneration.Valid {
@@ -390,10 +386,8 @@ WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
 		RelPath:          tempRelPath.String,
 		StoreName:        tempStore.String,
 		SizeBytes:        tempSize.Int64,
-		TempFinalized:    tempFinalized,
 		IngestGeneration: tempGeneration.Int64,
 		StartedAt:        startedAt,
-		RecordStatus:     recordStatus,
 	}, nil
 }
 
