@@ -312,7 +312,7 @@ lock を取らなくても open した inode と active な原本行を照合で
 
 <details><summary>根拠</summary>
 
-- 引く録画と原本の条件: `finished`、`state='active'`
+- 引く録画と原本の条件: `finished`、`storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）のコピーが `active`
 - open-then-verify で inode と DB 対象を照合: `TestOriginalVODVerifiesDBTargetAfterOpen`
 - live な行がある `rel_path` へ別の書き手が公開できない: `media_assets_rel_path_idx`
 - unlink は deleting 状態の commit より後にしか起きない: `MarkMediaAssetDeleting`
@@ -468,7 +468,7 @@ GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/i
 GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/{n}.ts
 ```
 
-`{store}` は `storage.media_store_name` と一致する必要がある。振り分けの鍵を site ではなく置き場にするのは、規則によって 1 つの site の原本が複数の置き場に分かれうるからである。`{gen}` は現在の入力元にある世代である。temp は `temp_generation`、原本は `ingest_generation`（NULL は 0）を使う。今の世代と異なる URL は 410 にする。
+`{store}` は `storage.stores` に定義した FS 置き場の名前と一致する必要がある。振り分けの鍵を site ではなく置き場にするのは、規則によって 1 つの site の原本が複数の置き場に分かれうるからである。`{gen}` は現在の入力元にある世代であり、temp は `temp_generation`、原本は `ingest_generation`（NULL は 0）を使う。今の世代と異なる URL は 410 にする。
 
 #### 入力、playlist と世代
 

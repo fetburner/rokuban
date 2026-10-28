@@ -17,6 +17,11 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
+func testStoreNameArg() *string {
+	name := dbtest.StoreName
+	return &name
+}
+
 // TestSeekTileCount は枚数の決定を実装の定数ではなくリテラルで固定する。
 //
 // 形（間隔 10 秒・上限 1080 枚）は web/src/lib/seek-tiles.ts にも同じ値があり、
@@ -308,7 +313,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 		t.Errorf("ffmpeg calls = %d, want 11 (10 tiles + 1 compose)", cmd.calls)
 	}
 
-	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(context.Background(), recordingID)
+	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(context.Background(), sqlcgen.GetSeekTilesMediaAssetForServingParams{RecordingID: recordingID})
 	if err != nil {
 		t.Fatalf("seek_tiles asset missing: %v", err)
 	}
@@ -418,7 +423,7 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("recreating seek_tiles: %v", err)
 	}
-	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(ctx, recordingID)
+	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(ctx, sqlcgen.GetSeekTilesMediaAssetForServingParams{RecordingID: recordingID})
 	if err != nil {
 		t.Fatalf("loading recreated seek_tiles: %v", err)
 	}
@@ -472,7 +477,9 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 		t.Fatal("Work() succeeded, want an error from the injected extraction failure")
 	}
 
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err == nil {
 		t.Error("seek_tiles row was committed even though the extraction failed partway")
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err == nil {
@@ -501,7 +508,9 @@ func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error when ffprobe fails")
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err == nil {
 		t.Error("seek_tiles row was committed even though the duration was unknown")
 	}
 	if cmd.calls != 0 {
@@ -526,7 +535,9 @@ func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error when a tile was not written")
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err == nil {
 		t.Error("seek_tiles row was committed with a missing tile")
 	}
 }
@@ -567,7 +578,9 @@ func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 	if want := []string{"0.000", "10.000", "20.000", "29.020"}; !slices.Equal(cmd.seeks, want) {
 		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err != nil {
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err != nil {
 		t.Errorf("seek_tiles row was not committed: %v", err)
 	}
 }
@@ -584,7 +597,9 @@ func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error for a zero duration")
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err == nil {
 		t.Error("seek_tiles row was committed for a zero duration")
 	}
 }
@@ -607,7 +622,9 @@ func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 	if want := []string{"0.000", "10.000", "20.000", "30.000", "39.007"}; !slices.Equal(cmd.seeks, want) {
 		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err != nil {
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err != nil {
 		t.Errorf("seek_tiles row was not committed: %v", err)
 	}
 }
@@ -628,7 +645,9 @@ func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error when the only tile fails")
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err == nil {
 		t.Error("seek_tiles row was committed without any extracted tile")
 	}
 }

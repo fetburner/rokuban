@@ -18,7 +18,7 @@ func TestCatalogContract(t *testing.T) {
 	contracttest.RunCatalog(t, func(t *testing.T) contracttest.CatalogFixture {
 		pool := testutil.SetupDB(t)
 		siteNames := []string{"site-b", "default", "site-a", "site-b"}
-		catalogStore := NewCatalog(pool, siteNames, "tokyo")
+		catalogStore := NewCatalog(pool, siteNames, dbtest.StoreName)
 		revisionStore := NewReservations(pool)
 		return contracttest.CatalogFixture{
 			Store:                  catalogStore,

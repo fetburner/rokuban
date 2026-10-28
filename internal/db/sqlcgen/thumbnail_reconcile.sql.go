@@ -13,27 +13,36 @@ import (
 const listMissingSeekTilesRecordings = `-- name: ListMissingSeekTilesRecordings :many
 SELECT o.recording_id
 FROM media_assets o
+JOIN media_asset_copies original_copy
+  ON original_copy.media_asset_id = o.id
+ AND original_copy.store = $1
+ AND original_copy.state = 'active'
 JOIN recordings r ON r.id = o.recording_id
-WHERE o.recording_id > $1::bigint
-  AND ($2::bigint IS NULL OR o.recording_id = $2::bigint)
+WHERE o.recording_id > $2::bigint
+  AND ($3::bigint IS NULL OR o.recording_id = $3::bigint)
   AND o.kind = 'original'
-  AND o.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM media_assets s
     WHERE s.recording_id = o.recording_id
       AND s.kind = 'seek_tiles'
-      AND s.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = s.id
+            AND copy.store = $1
+            AND copy.state = 'active'
+      )
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = o.id
+    WHERE m.media_asset_id = o.id AND m.store = $1
   )
 ORDER BY o.recording_id
-LIMIT $3
+LIMIT $4
 `
 
 type ListMissingSeekTilesRecordingsParams struct {
+	StoreName        string
 	AfterRecordingID int64
 	RecordingID      *int64
 	RowLimit         int32
@@ -43,7 +52,12 @@ type ListMissingSeekTilesRecordingsParams struct {
 // 定期的に埋めるための候補。poster と同じ形（同じ窓・同じ missing_media_assets の
 // 除外）だが、再開位置は呼び出し側が種類ごとに別に持つ。
 func (q *Queries) ListMissingSeekTilesRecordings(ctx context.Context, arg ListMissingSeekTilesRecordingsParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listMissingSeekTilesRecordings, arg.AfterRecordingID, arg.RecordingID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listMissingSeekTilesRecordings,
+		arg.StoreName,
+		arg.AfterRecordingID,
+		arg.RecordingID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -65,27 +79,36 @@ func (q *Queries) ListMissingSeekTilesRecordings(ctx context.Context, arg ListMi
 const listMissingThumbnailRecordings = `-- name: ListMissingThumbnailRecordings :many
 SELECT o.recording_id
 FROM media_assets o
+JOIN media_asset_copies original_copy
+  ON original_copy.media_asset_id = o.id
+ AND original_copy.store = $1
+ AND original_copy.state = 'active'
 JOIN recordings r ON r.id = o.recording_id
-WHERE o.recording_id > $1::bigint
-  AND ($2::bigint IS NULL OR o.recording_id = $2::bigint)
+WHERE o.recording_id > $2::bigint
+  AND ($3::bigint IS NULL OR o.recording_id = $3::bigint)
   AND o.kind = 'original'
-  AND o.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM media_assets t
     WHERE t.recording_id = o.recording_id
       AND t.kind = 'thumbnail'
-      AND t.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = t.id
+            AND copy.store = $1
+            AND copy.state = 'active'
+      )
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = o.id
+    WHERE m.media_asset_id = o.id AND m.store = $1
   )
 ORDER BY o.recording_id
-LIMIT $3
+LIMIT $4
 `
 
 type ListMissingThumbnailRecordingsParams struct {
+	StoreName        string
 	AfterRecordingID int64
 	RecordingID      *int64
 	RowLimit         int32
@@ -98,7 +121,12 @@ type ListMissingThumbnailRecordingsParams struct {
 // ものなので、ファイルが戻るまで定期パスからは除外する。マーカーが stale に
 // なった場合は delete_reconcile が消し、次のパスで再び候補になる。
 func (q *Queries) ListMissingThumbnailRecordings(ctx context.Context, arg ListMissingThumbnailRecordingsParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listMissingThumbnailRecordings, arg.AfterRecordingID, arg.RecordingID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listMissingThumbnailRecordings,
+		arg.StoreName,
+		arg.AfterRecordingID,
+		arg.RecordingID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -145,15 +173,21 @@ WITH planning AS (
         thumbnail.id AS thumbnail_media_asset_id,
         thumbnail.rel_path AS thumbnail_rel_path,
         COALESCE(thumbnail.derived_generation, 0)::bigint AS thumbnail_generation,
-        thumbnail_seek.seek_ms
+        thumbnail.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (
-        SELECT a.id, a.rel_path
+        SELECT a.id, copy.rel_path
         FROM media_assets a
+        JOIN media_asset_copies copy
+          ON copy.media_asset_id = a.id
+         AND copy.store = $3
+         AND copy.state = 'active'
         WHERE a.recording_id = r.id
           AND a.kind = 'original'
-          AND a.state = 'active'
-          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+          AND NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m
+              WHERE m.media_asset_id = a.id AND m.store = $3
+          )
         LIMIT 1
     ) original ON true
     LEFT JOIN LATERAL (
@@ -161,12 +195,16 @@ WITH planning AS (
             jsonb_build_object(
                 'mediaAssetId', a.id,
                 'profile', a.profile,
-                'relPath', a.rel_path,
+                'relPath', copy.rel_path,
                 'cut', c.media_asset_id IS NOT NULL,
                 'keepRanges', COALESCE(frozen.ranges, '[]'::jsonb)
             ) ORDER BY a.profile
         ) AS assets
         FROM media_assets a
+        JOIN media_asset_copies copy
+          ON copy.media_asset_id = a.id
+         AND copy.store = $3
+         AND copy.state = 'active'
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
             SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
@@ -175,17 +213,25 @@ WITH planning AS (
         ) frozen ON true
         WHERE a.recording_id = r.id
           AND a.kind = 'encoded'
-          AND a.state = 'active'
-          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+          AND NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m
+              WHERE m.media_asset_id = a.id AND m.store = $3
+          )
     ) encoded ON true
-    LEFT JOIN media_assets thumbnail
-      ON thumbnail.recording_id = r.id
-     AND thumbnail.kind = 'thumbnail'
-     AND thumbnail.state = 'active'
-    LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek
-      ON thumbnail_seek.media_asset_id = thumbnail.id
+    LEFT JOIN LATERAL (
+        SELECT a.id, copy.rel_path, a.derived_generation, thumbnail_seek.seek_ms
+        FROM media_assets a
+        JOIN media_asset_copies copy
+          ON copy.media_asset_id = a.id
+         AND copy.store = $3
+         AND copy.state = 'active'
+        LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
+        WHERE a.recording_id = r.id
+          AND a.kind = 'thumbnail'
+        LIMIT 1
+    ) thumbnail ON true
     WHERE r.purged_at IS NULL
-      AND ($3::bigint IS NULL OR r.id = $3::bigint)
+      AND ($4::bigint IS NULL OR r.id = $4::bigint)
 )
 SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, thumbnail_generation, seek_ms
 FROM planning
@@ -200,6 +246,7 @@ LIMIT $2
 type ListThumbnailReselectCandidatesParams struct {
 	AfterRecordingID int64
 	RowLimit         int32
+	StoreName        string
 	RecordingID      *int64
 }
 
@@ -214,8 +261,8 @@ type ListThumbnailReselectCandidatesRow struct {
 	OriginalMediaAssetID  int64
 	OriginalRelPath       string
 	EncodedAssets         json.RawMessage
-	ThumbnailMediaAssetID *int64
-	ThumbnailRelPath      *string
+	ThumbnailMediaAssetID int64
+	ThumbnailRelPath      string
 	ThumbnailGeneration   int64
 	SeekMs                *int64
 }
@@ -228,7 +275,12 @@ type ListThumbnailReselectCandidatesRow struct {
 // 入力は active かつ missing_media_assets に無いものだけを返す。cut 版の尺と
 // UnmapMs 用区間は media_asset_cuts.keep_ranges の凍結値から作り、ffprobe は呼ばない。
 func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListThumbnailReselectCandidatesParams) ([]ListThumbnailReselectCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listThumbnailReselectCandidates, arg.AfterRecordingID, arg.RowLimit, arg.RecordingID)
+	rows, err := q.db.Query(ctx, listThumbnailReselectCandidates,
+		arg.AfterRecordingID,
+		arg.RowLimit,
+		arg.StoreName,
+		arg.RecordingID,
+	)
 	if err != nil {
 		return nil, err
 	}

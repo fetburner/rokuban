@@ -37,7 +37,7 @@ WHERE store = sqlc.arg('store') AND NOT (root = ANY(sqlc.arg('roots')::text[]));
 SELECT * FROM storage_sync WHERE store = $1
 ORDER BY root;
 
--- API-only config may omit media_store_name. Keep its projection visible when no
--- store filter is available.
+-- api ロールの設定には、マウントした FS 置き場が無いことがある。
+-- 置き場で絞れないときは、全置き場の行を見せる。
 -- name: ListAllStorageSync :many
 SELECT * FROM storage_sync ORDER BY store, root;

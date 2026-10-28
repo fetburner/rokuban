@@ -52,9 +52,7 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 	seedEncodedAsset(t, pool, recID, "x.g2.hd", mustEncodedRelPath(t, orig, "x.g2.hd", "mp4", 0, false))
 	// deleted の encoded は過去の意味に数えない。
 	delID := seedEncodedAsset(t, pool, recID, "gone", mustEncodedRelPath(t, orig, "gone", "mp4", 0, false))
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted' WHERE id = $1`, delID); err != nil {
-		t.Fatalf("deleting asset: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, delID, "deleted")
 	// "reqonly" は作り直し要求の行だけがある（active な encoded は無い）。
 	if _, err := pool.Exec(ctx, `INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		VALUES ($1, 'reqonly', '{[0,1000)}'::int8multirange)`, recID); err != nil {
@@ -98,6 +96,38 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 				t.Fatalf("error = %v, want it to contain %q and the rename hint", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestCheckEncodeProfileMeaningChecksEveryActivePath(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	const profile = "multi-path"
+	first := dbtest.Recording(t, pool)
+	second := dbtest.Recording(t, pool)
+	seedEncodedAsset(t, pool, first, profile, "evidence/first_multi-path.mp4")
+	seedEncodedAsset(t, pool, second, profile, "evidence/second_multi-path.mkv")
+
+	evidence, err := pgstoretest.Media(pool).ListEncodedMeaningEvidence(ctx)
+	if err != nil {
+		t.Fatalf("ListEncodedMeaningEvidence(): %v", err)
+	}
+	paths := make(map[string]bool)
+	for _, item := range evidence {
+		if item.Profile == profile {
+			paths[item.RelPath] = true
+		}
+	}
+	if len(paths) != 2 || !paths["evidence/first_multi-path.mp4"] || !paths["evidence/second_multi-path.mkv"] {
+		t.Fatalf("active evidence paths for %q = %v, want both mp4 and mkv paths", profile, paths)
+	}
+
+	err = CheckEncodeProfileMeaning(ctx, pgstoretest.Media(pool), meaningCfg(profile, false, "mp4"))
+	if err == nil || !strings.Contains(err.Error(), "container") || !strings.Contains(err.Error(), "mkv") {
+		t.Fatalf("CheckEncodeProfileMeaning() error = %v, want incompatible mkv evidence to reject the profile", err)
 	}
 }
 

@@ -107,9 +107,7 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 			})
 
 			if tt.state != "active" {
-				if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $1 WHERE id = $2`, tt.state, assetID); err != nil {
-					t.Fatalf("updating media asset state: %v", err)
-				}
+				dbtest.SetMediaAssetState(t, pool, assetID, tt.state)
 			}
 
 			err := ValidateMediaAssetRelPathNamespace(ctx, pgstoretest.Media(pool))

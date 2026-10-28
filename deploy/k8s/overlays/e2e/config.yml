@@ -31,8 +31,11 @@ mirakcs:
 storage:
   media_dir: /mnt/media
   scratch_dir: /var/tmp/rokuban
-  # base と同じ。rokuban-migrate Job の storage adopt がこの名前の目印を書く。
-  media_store_name: main
+  stores:
+    main: { kind: fs }
+  originals:
+    - store: main
+  derived: main
 
 # 世代付き録画 HLS は base と同じ dedicated Deployment で起動する。
 recording_hls:

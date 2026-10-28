@@ -108,7 +108,7 @@ func workerPeriodicJobSpecs(cfg *config.Config, sites []string) []jobq.PeriodicJ
 	specs = append(specs,
 		// catalog エクスポートは日次相当（docs/storage.md §8「日次 + 世代保持」）。
 		jobq.PeriodicJobSpec{Interval: 24 * time.Hour, Args: jobs.CatalogExportArgs{}},
-		jobq.PeriodicJobSpec{Interval: 15 * time.Minute, Args: jobs.DeleteReconcileArgs{}},
+		jobq.PeriodicJobSpec{Interval: config.DeleteReconcileInterval, Args: jobs.DeleteReconcileArgs{}},
 		// 必須の窓閉じである。分類ルールの編集の前後でコミットした録画は、旧ルールで
 		// 評価された当たりを持ったままになる（トリガーは自分の行しか見ない）。
 		// encode 系の定期パスと同じ 15 分に揃える。

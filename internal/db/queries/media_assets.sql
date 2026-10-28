@@ -17,7 +17,7 @@ RETURNING id;
 -- （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
 -- 該当行が無ければ pgx.ErrNoRows を返す。
 -- name: GetOriginalMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original';
 
 -- ingest の転送前ヒント用（issue #197）。worker/ingest.go の Work が
@@ -43,33 +43,49 @@ WHERE recording_id = $1 AND kind = 'original';
 -- 削除済み行と衝突させてはいけない。呼び出し側は recording_id しか使わないので
 -- id は選択しない。該当行が無ければ pgx.ErrNoRows を返す。
 -- name: GetLiveMediaAssetByRelPath :one
-SELECT recording_id FROM media_assets
-WHERE rel_path = $1 AND state <> 'deleted';
+SELECT a.recording_id
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+WHERE c.rel_path = sqlc.arg('rel_path')
+  AND c.state <> 'deleted'
+  AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'));
 
--- encode / thumbnail が読む原本(パスとサイズ)。active のみ。tombstone や未 commit は対象外。
+-- encode / thumbnail が読む原本（パスとサイズ）。active コピーのみ。tombstone や未 commit は対象外。
 -- name: GetActiveOriginalMediaAsset :one
-SELECT id, rel_path, size_bytes
-FROM media_assets
-WHERE recording_id = $1 AND kind = 'original' AND state = 'active';
+SELECT a.id, c.rel_path, a.size_bytes, c.store
+FROM media_assets a
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
+) c ON true
+WHERE a.recording_id = sqlc.arg('recording_id')
+  AND a.kind = 'original';
 
 -- encode の冪等性チェック。active な encoded が既にあれば ffmpeg を走らせない。
 -- name: GetActiveEncodedMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'encoded'
   AND profile = $2
-  AND state = 'active';
+  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
--- 置き換え（cut プロファイルの作り直し）で、旧パスの unlink と世代番号の導出に
--- 要る行。**state を問わない**: tombstone（state='deleted'）の rel_path からも
--- 世代番号を読む（次のカット版が同じパスを再利用しないため）。UNIQUE
--- (recording_id, kind, profile) があるので高々 1 行。
+-- publish が tombstone も含めて既存の行を見るため、active に限らない。置き場を限定しない読み手に
+-- 備え、active を先に、同順位は store 順に 1 件だけ選ぶ。
 -- name: GetEncodedMediaAssetForProfile :one
-SELECT id, rel_path, state, COALESCE(derived_generation, 0)::bigint AS derived_generation
-FROM media_assets
-WHERE recording_id = $1
-  AND kind = 'encoded'
-  AND profile = $2;
+SELECT a.id, c.rel_path, c.state, c.store,
+       COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+FROM media_assets a
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.state, copy.store
+    FROM media_asset_copies copy
+    WHERE copy.media_asset_id = a.id
+      AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+    ORDER BY (copy.state = 'active') DESC, copy.store
+    LIMIT 1
+) c ON true
+WHERE a.recording_id = sqlc.arg('recording_id')
+  AND a.kind = 'encoded'
+  AND a.profile = sqlc.arg('profile');
 
 -- GetDerivedMediaAssetGeneration returns the current counter, including tombstones.
 -- Only kinds without a profile (thumbnail, seek_tiles) have a single row.
@@ -175,33 +191,41 @@ RETURNING id;
 
 -- thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
 -- name: GetActiveThumbnailMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'thumbnail'
-  AND state = 'active';
+  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
 -- thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
 -- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
 -- name: LockActiveThumbnailMediaAsset :one
-SELECT a.id, a.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = sqlc.arg('store_name')
+ AND c.state = 'active'
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'thumbnail'
-  AND a.state = 'active'
-FOR UPDATE OF a;
+FOR UPDATE OF a, c;
 
 -- thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
 -- name: UpdateThumbnailMediaAssetPath :exec
-UPDATE media_assets
+UPDATE media_assets AS asset
 SET rel_path   = sqlc.arg('rel_path'),
     size_bytes = sqlc.arg('size_bytes'),
     derived_generation = sqlc.arg('derived_generation'),
     sha256     = NULL,
     updated_at = now()
-WHERE id = sqlc.arg('id')
-  AND kind = 'thumbnail'
-  AND state = 'active';
+WHERE asset.id = sqlc.arg('id')
+  AND asset.kind = 'thumbnail'
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies c
+      WHERE c.media_asset_id = asset.id
+        AND c.store = sqlc.arg('store_name')
+        AND c.state = 'active'
+  );
 
 -- 生成に使ったファイルがまだ使えるかを commit tx 内で確認する。
 -- name: IsActiveThumbnailInput :one
@@ -210,9 +234,15 @@ SELECT EXISTS (
     FROM media_assets a
     WHERE a.id = sqlc.arg('media_asset_id')
       AND a.kind IN ('original', 'encoded')
-      AND a.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies c
+          WHERE c.media_asset_id = a.id
+            AND c.store = sqlc.arg('store_name')
+            AND c.state = 'active'
+      )
       AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+          SELECT 1 FROM missing_media_assets m
+          WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
       )
 );
 
@@ -224,10 +254,10 @@ ON CONFLICT (media_asset_id) DO UPDATE SET seek_ms = EXCLUDED.seek_ms;
 
 -- seek_tiles の冪等性チェック用。active な seek_tiles 行があれば id を返す。
 -- name: GetActiveSeekTilesMediaAssetID :one
-SELECT id FROM media_assets
+SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'seek_tiles'
-  AND state = 'active';
+  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
 -- pid_type は分類できなかった PID では NULL（空文字を入れない）。
 -- 値の権威は internal/tsstat（列に CHECK は無い）。
@@ -249,41 +279,54 @@ SELECT started_at, ended_at, program_duration_ms FROM recordings WHERE id = $1;
 
 -- 配信対象の原本を引く。ごみ箱に入った録画・削除済みアセットは配らない。
 -- name: GetOriginalMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, c.store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
+) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL;
 
 -- 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
 -- name: GetThumbnailMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-WHERE a.recording_id = $1
-  AND a.kind = 'thumbnail'
-  AND a.state = 'active'
-  AND r.deleted_at IS NULL;
+SELECT asset.id AS asset_id, copy.rel_path,
+       asset.size_bytes, asset.updated_at, recording.title, copy.store
+FROM media_assets asset
+JOIN recordings recording ON recording.id = asset.recording_id
+JOIN LATERAL (
+    SELECT c.rel_path, c.store
+    FROM preferred_active_media_asset_copy(asset.id, sqlc.narg('store_name')::text) c
+) copy ON true
+WHERE asset.recording_id = $1
+  AND asset.kind = 'thumbnail'
+  AND recording.deleted_at IS NULL;
 
 -- 配信対象のシークタイルを引く。ごみ箱・削除済みは配らない。
 -- name: GetSeekTilesMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, c.store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
+) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'seek_tiles'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL;
 
 -- 配信対象の encoded 派生物を引く（?profile= 付き）。原本と同じ配信規律。
 -- name: GetEncodedMediaAssetForServing :one
-SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title, a.profile
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, a.profile, c.store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL (
+    SELECT copy.rel_path, copy.store
+    FROM preferred_active_media_asset_copy(a.id, sqlc.narg('store_name')::text) copy
+) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'encoded'
   AND a.profile = $2
-  AND a.state = 'active'
   AND r.deleted_at IS NULL;

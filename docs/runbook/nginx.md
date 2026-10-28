@@ -15,6 +15,7 @@ DOMAIN=rokuban.example.com
 TLS_ROOT=/tmp/rokuban-nginx-tls
 TMP=/tmp/rokuban-nginx-check
 MEDIA_DIR=/tmp/rokuban-nginx-media
+MEDIA_STORE_NAME=main
 mkdir -p "$TLS_ROOT/live/$DOMAIN" "$TLS_ROOT/archive/$DOMAIN" \
   "$TMP/certbot/.well-known/acme-challenge" "$MEDIA_DIR"
 ```
@@ -33,6 +34,11 @@ server:
 
 storage:
   media_dir: /mnt/media
+  stores:
+    main: { kind: fs }
+  originals:
+    - store: main
+  derived: main
   accel_location: /_media/
 ```
 
@@ -40,7 +46,7 @@ nginx から、次の 2 つが読めるようにする。1 つは Rokuban の `s
 
 SPA は Go バイナリのビルド時に go:embed で埋め込まれるため、nginx へは渡さない。
 
-`/_media/` は外部から直接読めない。アプリの認可を通った X-Accel-Redirect だけが内部リダイレクトで到達する。
+`/_media/` は外部から直接読めない。アプリの認可を通った X-Accel-Redirect だけが内部リダイレクトで到達する。新しい binary は `/_media/stores/<store>/<相対パス>` を返し、設定は旧 binary の `/_media/<相対パス>` も受ける。アプリを新しい版へ切り替える前に、store 用 location を含む nginx 設定を適用する。旧設定のままアプリを先に切り替えると、nginx は store 名をファイルパスの一部として解釈し、ファイルが見つからず配信できない。
 
 ## TLS と認証の準備
 
@@ -71,7 +77,7 @@ nginx -s reload
 
 Rokuban を 127.0.0.1:40773 で起動し、その前段に nginx を起動する。nginx はホストでも Docker でも動かせるが、実測があるのは Docker 経路だけで、ホストで起動する経路は未検証である。
 
-Rokuban は `127.0.0.1:40773` で起動する。DB と Rokuban の起動は [setup.md](setup.md) に従う。検証用の録画は、既存の録画から 1 件選ぶか、日本語・空白・括弧に加えて `%` を含む相対パスの fixture を DB と `MEDIA_DIR` に用意する。`%` はパスのサニタイザを通り抜ける数少ない文字で、エスケープの有無を分ける鍵になる。以下の確認では、実際に使う録画 ID と相対パスをそれぞれ `$ID` と `$REL_PATH` に入れる。
+Rokuban は `127.0.0.1:40773` で起動する。DB と Rokuban の起動は [setup.md](setup.md) に従う。検証用の録画は、既存の録画から 1 件選ぶか、日本語・空白・括弧に加えて `%` を含む相対パスの fixture を DB と `MEDIA_DIR` に用意する。`%` はパスのサニタイザを通り抜ける数少ない文字で、エスケープの有無を分ける鍵になる。以下の確認では、実際に使う録画 ID と相対パスをそれぞれ `$ID` と `$REL_PATH` に入れる。`$MEDIA_STORE_NAME` は `storage.stores` の FS 置き場の名前と同じ値にする。
 
 nginx をホストで起動する場合、証明書・認証ファイル・media・certbot webroot を `nginx.conf` が読む実パスへ配置してから `nginx -t` を通す。**この経路は未検証。実測は次項の Docker 経路のみ。**
 
@@ -194,7 +200,7 @@ wc -c "$TMP/app.body"
 
 ```sh
 curl -sk -u "$AUTH" -o /dev/null -w '%{http_code}\n' \
-  "$URL/_media/$REL_PATH"
+  "$URL/_media/stores/$MEDIA_STORE_NAME/$REL_PATH"
 ```
 
 ### `accel_location` 無効時の経路

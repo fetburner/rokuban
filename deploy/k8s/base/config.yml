@@ -73,9 +73,11 @@ storage:
   # cleanup）を足すときに PVC を足す。
   media_dir: /mnt/media
   scratch_dir: /var/tmp/rokuban
-  # 置き場の目印の名前。worker では必須。rokuban-migrate Job の storage adopt が、
-  # media_dir の root にこの名前の目印を書く。
-  media_store_name: main
+  stores:
+    main: { kind: fs }
+  originals:
+    - store: main
+  derived: main
 
 # 世代付き録画 HLS は専用の rokuban-recording-hls Deployment が配る。config は全 Pod が
 # 共有するので、他の streamer（central / site）は argv の --no-recording-hls で外している。

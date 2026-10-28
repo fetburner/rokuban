@@ -42,7 +42,7 @@ type Config struct {
 	//
 	// 認可判定はアプリ、バイト転送は nginx という分担で、アプリ側のコストは
 	// ヘッダー 1 個。値は nginx の internal location（例: /_media/）で、
-	// MediaDir 配下の相対パスを連結した URI を返す。
+	// store があれば /stores/<名前>/ を挟んで相対パスを連結した URI を返す。
 	AccelLocation string
 
 	// FFmpeg / FFprobe はコマの切り出し（/frame）で使う。空なら PATH の
@@ -95,6 +95,7 @@ func (s *Streamer) Mount(r chi.Router) {
 // serveAsset は DB から解決した 1 アセットをディスクから（または X-Accel で）配信する。
 type serveAsset struct {
 	relPath   string
+	store     string
 	sizeBytes int64
 	// sidecar は WebVTT 字幕サイドカーかどうか。サイドカーは encoded 行の
 	// 隣接ファイルであり、独立した media_assets 行（size_bytes・存在の保証）を
@@ -175,6 +176,7 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 
 	s.serveAsset(w, r, id, serveAsset{
 		relPath:     row.RelPath,
+		store:       row.Store,
 		sizeBytes:   row.SizeBytes,
 		contentType: thumbnailContentType,
 	})
@@ -205,6 +207,7 @@ func (s *Streamer) RecordingSeekTiles(w http.ResponseWriter, r *http.Request) {
 
 	s.serveAsset(w, r, id, serveAsset{
 		relPath:     row.RelPath,
+		store:       row.Store,
 		sizeBytes:   row.SizeBytes,
 		contentType: thumbnailContentType,
 	})
@@ -233,7 +236,7 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 	// パス検証を通した後に返すのが要点（検証前に返すと任意ファイルを配らせられる）。
 	if s.cfg.AccelLocation != "" {
 		w.Header().Set("Content-Type", asset.contentType)
-		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.relPath))
+		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.store, asset.relPath))
 		return
 	}
 
@@ -302,6 +305,7 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 		}
 		return serveAsset{
 			relPath:     row.RelPath,
+			store:       row.Store,
 			sizeBytes:   row.SizeBytes,
 			contentType: contentTypeOriginal,
 		}, nil
@@ -313,6 +317,7 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 	}
 	return serveAsset{
 		relPath:     row.RelPath,
+		store:       row.Store,
 		sizeBytes:   row.SizeBytes,
 		contentType: contentTypeForPath(row.RelPath),
 	}, nil
@@ -339,10 +344,14 @@ func contentTypeForPath(relPath string) string {
 //
 // nginx は X-Accel-Redirect の値を URI として解釈するため、パス要素は
 // URL エスケープする。番組名由来のファイル名には空白・括弧・日本語が入る。
-func accelURI(location, relPath string) string {
+func accelURI(location, store, relPath string) string {
 	segments := strings.Split(filepath.ToSlash(relPath), "/")
 	for i, seg := range segments {
 		segments[i] = url.PathEscape(seg)
 	}
-	return strings.TrimSuffix(location, "/") + "/" + strings.Join(segments, "/")
+	base := strings.TrimSuffix(location, "/")
+	if store != "" {
+		base += "/stores/" + url.PathEscape(store)
+	}
+	return base + "/" + strings.Join(segments, "/")
 }

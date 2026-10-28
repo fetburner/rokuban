@@ -94,15 +94,13 @@ SELECT status FROM record_sync WHERE site = $1 AND record_id = $2`, site, record
 			})
 
 			if state != "active" {
-				if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = $1 WHERE id = $2`, state, assetID); err != nil {
-					t.Fatalf("setting original asset state to %q: %v", state, err)
-				}
+				dbtest.SetMediaAssetState(t, pool, assetID, state)
 			}
 		}
 		return contracttest.RecordObservationFixture{
-			Store: NewRecordings(pool), Catalog: NewCatalog(pool, []string{"contract-site"}, "tokyo"),
+			Store: NewRecordings(pool, dbtest.StoreName), Catalog: NewCatalog(pool, []string{"contract-site"}, dbtest.StoreName),
 			Reservations: NewReservations(pool), RulerPass: NewReservations(pool), Rules: NewRules(pool, []string{"contract-site"}),
-			IngestTarget: NewRecordings(pool), Backlog: NewRecordings(pool), NewObservation: newObservation,
+			IngestTarget: NewRecordings(pool, dbtest.StoreName), Backlog: NewRecordings(pool, dbtest.StoreName), NewObservation: newObservation,
 			SeedProgramSnapshot: seedProgramSnapshot, SeedRecordSync: seedRecordSync, SeedReservation: seedReservation,
 			NewOriginalAsset: newOriginalAsset, RecordSyncStatus: recordSyncStatus,
 			SetRecordSyncObservedAt: setObservedAt, SetAfterRecordAcquired: setAfterAcquired,

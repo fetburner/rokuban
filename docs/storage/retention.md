@@ -71,7 +71,7 @@ ingest 完了後の override 変更は、その録画には反映されない。
 retention reconcile ループ（worker の cleanup 系ジョブ）が定期的に走り、次をすべて満たす原本アセットを削除する。
 
 1. ポリシーが `until_encoded`
-2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）が `media_assets` にコミット済みである。原本の `media_asset_ts_scans.scanned_size_bytes` が `media_assets.size_bytes` と一致することも求める
+2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）の active コピーが、原本を消す対象の置き場にある。現段階では、`storage.derived` の置き場を渡す。worker が読み書きする置き場の名前は使わない。原本の `media_asset_ts_scans.scanned_size_bytes` が論理資産の `media_assets.size_bytes` と一致することも求める
 
 解析が恒久的に失敗する原本は保持され続ける。
 
@@ -351,15 +351,15 @@ UI の削除は削除日時を立てるだけの論理削除で、ファイル�
 
 完全削除が完了したという不可逆な事実は、専用の列に 1 度だけ立てる。毎パス導出する案は採らない。アセットを一度も持たない録画では、導出した条件が削除前から真になり、「消した」と「元から無い」を区別できないからである。
 
-`recordings.purged_at` がその列である。削除 reconcile がパス末尾で、条件を満たす録画に一度だけ立てる。条件は「ごみ箱条件を満たし、かつ物理削除が終わっていない `media_assets` が 1 行も残っていない」ことである。
+`recordings.purged_at` がその列である。削除 reconcile がパス末尾で、条件を満たす録画に一度だけ立てる。条件は「ごみ箱条件を満たし、かつ `state <> 'deleted'` の `media_asset_copies` が 1 行も残っていない」ことである。
 
-tombstone は残り続けるが、ごみ箱一覧（`GET /api/recordings?trash=true`）は `purged_at IS NULL` も要求する。purge が完了した録画は、ごみ箱一覧には出ない。「`media_assets` に未削除行が 0」を毎パス導出する案は採らない。アセットを一度も持ったことがない録画では、この条件が purge 前から真になる。「消した」と「元から無い」を区別できないためである（CLAUDE.md 不変条件 9）。
+tombstone は残り続けるが、ごみ箱一覧（`GET /api/recordings?trash=true`）は `purged_at IS NULL` も要求する。purge が完了した録画は、ごみ箱一覧には出ない。「未削除のコピーが 0」を毎パス導出する案は採らない。アセットを一度も持ったことがない録画では、この条件が purge 前から真になる。「消した」と「元から無い」を区別できないためである（CLAUDE.md 不変条件 9）。
 
 #### 復元と物理削除の競合
 
 復元は物理削除の状態に触れないので、復元したのに次のパスで消える窓ができうる。そこで拾い直しの時点で、削除してよい条件を再評価し、条件を外れた行は消さない。ファイルが残っていれば有効に戻し、既に無ければ削除済みを確定する。
 
-`media_assets.state = 'deleting'` は、unlink 待ちの間しか続かない一時状態である。復元は `media_assets` に一切触れない（`recordings.deleted_at` を消して即時削除の要求行を消すだけ）。そのため unlink が失敗して `deleting` のまま次パスに持ち越されると、「復元したのに次パスで消える」窓ができうる。前パスの `deleting` 行を拾い直す経路（`ListMediaAssetsPendingDelete`）は、無条件に unlink へ進まない。
+`media_asset_copies.state = 'deleting'` は、unlink 待ちの間しか続かない一時状態である。復元は `media_asset_copies` に一切触れない（`recordings.deleted_at` を消して即時削除の要求行を消すだけ）。そのため unlink が失敗して `deleting` のまま次パスに持ち越されると、「復元したのに次パスで消える」窓ができうる。前パスの `deleting` コピーを拾い直す経路（`ListMediaAssetsPendingDelete`）は、無条件に unlink へ進まない。
 
 trash 猶予超過 / until_encoded 派生物完備の判定（上記「削除可否の述語に名前を与える」の 2 つの名前付き述語）を、適用の瞬間に再評価する。該当しなくなった行は `ListUnqualifiedDeletingAssets`（この 2 述語への `NOT EXISTS`）で候補として挙げる。`resolveUnqualifiedDeletingAsset` がファイルの現存を `stat` で確認したうえで、まだ存在すれば `active` に戻す。
 

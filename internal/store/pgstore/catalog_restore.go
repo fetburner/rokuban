@@ -445,7 +445,7 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		}
 		if err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
-			State: a.State, DeletedAt: a.DeletedAt,
+			State: a.State, CreatedAt: &a.CreatedAt, DeletedAt: a.DeletedAt,
 		}); err != nil {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
 		}

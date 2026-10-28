@@ -10,10 +10,12 @@ import (
 )
 
 const listEncodedMeaningEvidence = `-- name: ListEncodedMeaningEvidence :many
-SELECT a.profile::text AS profile, a.rel_path::text AS rel_path
+SELECT DISTINCT a.profile::text AS profile, c.rel_path::text AS rel_path
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id AND c.state = 'active'
 WHERE a.kind = 'encoded'
-  AND a.state = 'active'
+  AND ($1::text IS NULL OR c.store = $1)
 UNION ALL
 SELECT q.profile::text, ''::text
 FROM encoded_asset_rebuild_requests q
@@ -35,8 +37,8 @@ type ListEncodedMeaningEvidenceRow struct {
 //     プロファイルにだけ要求を書く。container は分からない
 //
 // 証拠が無い名前は返らない（過去の意味が存在しない）。
-func (q *Queries) ListEncodedMeaningEvidence(ctx context.Context) ([]ListEncodedMeaningEvidenceRow, error) {
-	rows, err := q.db.Query(ctx, listEncodedMeaningEvidence)
+func (q *Queries) ListEncodedMeaningEvidence(ctx context.Context, storeName *string) ([]ListEncodedMeaningEvidenceRow, error) {
+	rows, err := q.db.Query(ctx, listEncodedMeaningEvidence, storeName)
 	if err != nil {
 		return nil, err
 	}

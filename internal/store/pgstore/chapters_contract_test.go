@@ -52,7 +52,7 @@ VALUES ($1, 'always', '{}', true)`, id); err != nil {
 			return id
 		}
 		return contracttest.Fixture{
-			Store:        NewAnalysis(pool),
+			Store:        NewAnalysis(pool, dbtest.StoreName),
 			NewRecording: newRecording,
 			SaveCMDetection: func(t *testing.T, id int64, ranges []chapters.Range) {
 				t.Helper()

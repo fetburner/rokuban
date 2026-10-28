@@ -35,12 +35,29 @@ import (
 func writeServerTestConfig(t *testing.T, content string) string {
 	t.Helper()
 	storeName := "test-store"
-	if strings.Contains(content, "storage:") && !strings.Contains(content, "media_store_name:") {
-		content = strings.Replace(content, "storage:\n", "storage:\n  media_store_name: "+storeName+"\n", 1)
-	} else if i := strings.Index(content, "media_store_name:"); i >= 0 {
-		lineEnd := strings.IndexByte(content[i:], '\n')
-		if lineEnd >= 0 {
-			storeName = strings.Trim(strings.TrimSpace(content[i+len("media_store_name:"):i+lineEnd]), "\"'")
+	if strings.Contains(content, "storage:") && !strings.Contains(content, "stores:") {
+		policy := "  stores:\n    test-store:\n      kind: fs\n  originals:\n    - store: test-store\n  derived: test-store\n"
+		content = strings.Replace(content, "storage:\n", "storage:\n"+policy, 1)
+	} else {
+		lines := strings.Split(content, "\n")
+		for i, line := range lines {
+			if strings.TrimSpace(line) != "stores:" {
+				continue
+			}
+			for _, candidate := range lines[i+1:] {
+				trimmed := strings.TrimSpace(candidate)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				if strings.HasPrefix(trimmed, "-") {
+					break
+				}
+				if key, _, ok := strings.Cut(trimmed, ":"); ok {
+					storeName = strings.Trim(key, "\"'")
+				}
+				break
+			}
+			break
 		}
 	}
 	dir := t.TempDir()
@@ -283,6 +300,33 @@ func TestServerCmd_WorkerRequiresScratchDir(t *testing.T) {
 	err = runServerCmdForTest(t, path, "--roles", "streamer", "--sites", "tokyo")
 	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
 		t.Errorf("streamer startup error = %v, want to pass scratch validation and reach the database", err)
+	}
+}
+
+func TestServerCmd_StreamerRequiresSingleFSStore(t *testing.T) {
+	// writeServerTestConfig は stores を足すので、置き場の無い構成は直接書く。
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(serverCmdTestConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runServerCmdForTest(t, path, "--roles", "streamer", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "streamer role requires exactly one fs store in storage.stores") {
+		t.Fatalf("streamer startup error = %v, want the single fs store validation error", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("streamer reached the database before rejecting a config without an fs store: %v", err)
+	}
+
+	err = runServerCmdForTest(t, path, "--roles", "api", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("api startup error = %v, want a config without an fs store to pass and reach the database", err)
+	}
+
+	named := writeServerTestConfig(t, serverCmdTestConfig)
+	err = runServerCmdForTest(t, named, "--roles", "streamer", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("streamer startup error = %v, want a single fs store to reach the database", err)
 	}
 }
 
@@ -1582,4 +1626,51 @@ func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
 			t.Errorf("err = %v, want to fail at the DB (= 下限の検査を通ったこと)", err)
 		}
 	})
+}
+
+// worker の起動経路（buildWorkerAdapter）が storage.derived を until_encoded の削除判定へ渡す。
+// 派生物のコピーが storage.derived の置き場に揃った原本は、実際に起動した worker の削除
+// reconcile で削除済みになる。配線が抜けて desired の置き場が空になると、原本は消えないまま
+// エラーも出ない。
+func TestServerCmd_WorkerPassesDerivedStoreToUntilEncodedDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Site = "home" })
+	seed := func(kind string, profile *string, relPath string) int64 {
+		return dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+			p.Kind, p.Profile, p.RelPath = kind, profile, relPath
+		})
+	}
+	profile := "h264"
+	originalID := seed("original", nil, "sites/home/derived-wiring.m2ts")
+	seed("encoded", &profile, "sites/home/derived-wiring.mp4")
+	seed("thumbnail", nil, "thumbnails/derived-wiring.jpg")
+	seed("seek_tiles", nil, "thumbnails/derived-wiring-tiles.jpg")
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
+SELECT id, size_bytes FROM media_assets WHERE id = $1`, originalID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	var enqueueOut bytes.Buffer
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &enqueueOut); err != nil {
+		t.Fatalf("enqueueing delete-reconcile: %v", err)
+	}
+
+	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
+	if _, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=2s"); err != nil {
+		t.Fatalf("worker once run: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1`, originalID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "deleted" {
+		t.Fatalf("original copy state = %q, want deleted (storage.derived must reach the until_encoded delete judgment)", state)
+	}
 }

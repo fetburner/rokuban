@@ -16,7 +16,7 @@ var _ store.CMStation = (*Analysis)(nil)
 
 // ListCMLogoStates は局ごとの CM ロゴ状態を返す。
 func (s *Analysis) ListCMLogoStates(ctx context.Context) ([]store.CMLogoState, error) {
-	rows, err := sqlcgen.New(s.pool).ListCMLogoStates(ctx)
+	rows, err := sqlcgen.New(s.pool).ListCMLogoStates(ctx, mediaStoreNameArg(s.storeName))
 	if err != nil {
 		return nil, fmt.Errorf("listing CM logo states: %w", err)
 	}
@@ -110,7 +110,9 @@ func (s *Analysis) GetLogoCandidate(ctx context.Context, station store.CMStation
 
 // GetCandidateRecording は候補解析に必要な録画と原本の状態を返す。
 func (s *Analysis) GetCandidateRecording(ctx context.Context, recordingID int64) (store.CMLogoCandidateRecording, error) {
-	row, err := sqlcgen.New(s.pool).GetCMDetectionWorkItem(ctx, recordingID)
+	row, err := sqlcgen.New(s.pool).GetCMDetectionWorkItem(ctx, sqlcgen.GetCMDetectionWorkItemParams{
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.CMLogoCandidateRecording{}, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
@@ -145,6 +147,7 @@ func (s *Analysis) SaveLogoArea(ctx context.Context, station store.CMStationRef,
 	}
 	activeOriginal, err := q.HasCMRecordingOriginal(ctx, sqlcgen.HasCMRecordingOriginalParams{
 		RecordingID: input.RecordingID, NetworkID: station.NetworkID, ServiceID: station.ServiceID,
+		StoreName: mediaStoreNameArg(s.storeName),
 	})
 	if err != nil {
 		return store.CMLogoCandidateJob{}, fmt.Errorf("checking analysis recording %d: %w", input.RecordingID, err)
@@ -225,7 +228,9 @@ func (s *Analysis) DeleteLogo(ctx context.Context, station store.CMStationRef) (
 		if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{NetworkID: station.NetworkID, ServiceID: station.ServiceID}); err != nil {
 			return store.CMLogoDeleteResult{}, fmt.Errorf("clearing CM logo candidate for network %d service %d: %w", station.NetworkID, station.ServiceID, mapDatabaseError(err))
 		}
-		recording, recordingErr := q.GetCMLogoAnalysisRecording(ctx, sqlcgen.GetCMLogoAnalysisRecordingParams{NetworkID: station.NetworkID, ServiceID: station.ServiceID})
+		recording, recordingErr := q.GetCMLogoAnalysisRecording(ctx, sqlcgen.GetCMLogoAnalysisRecordingParams{
+			NetworkID: station.NetworkID, ServiceID: station.ServiceID, StoreName: mediaStoreNameArg(s.storeName),
+		})
 		if recordingErr == nil {
 			durationMs, err := q.GetCMRecordingDuration(ctx, recording.ID)
 			if err != nil {
@@ -314,7 +319,7 @@ func (s *Analysis) AdoptLogoCandidate(ctx context.Context, station store.CMStati
 	}
 	if redetect {
 		if err := q.DeleteCMDetectionsForStationWithActiveOriginal(ctx, sqlcgen.DeleteCMDetectionsForStationWithActiveOriginalParams{
-			NetworkID: station.NetworkID, ServiceID: station.ServiceID,
+			NetworkID: station.NetworkID, ServiceID: station.ServiceID, StoreName: mediaStoreNameArg(s.storeName),
 		}); err != nil {
 			return fmt.Errorf("clearing active CM detections after adoption: %w", mapDatabaseError(err))
 		}

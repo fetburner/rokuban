@@ -14,7 +14,7 @@ func TestLoadRecordingHLS(t *testing.T) {
 	}{
 		{name: "default"},
 		{name: "disabled", setting: "recording_hls:\n  enabled: false\n"},
-		{name: "enabled missing store", setting: "recording_hls:\n  enabled: true\n", wantError: "storage.media_store_name"},
+		{name: "enabled missing store", setting: "recording_hls:\n  enabled: true\n", wantError: "storage.stores"},
 		{name: "enabled requires scratch", setting: "recording_hls:\n  enabled: true\n", store: "main", wantError: "recording_hls.segment_dir"},
 		{name: "enabled", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n      video_codec: libx264\n      audio_codec: aac\n", store: "disk-2", wantEnabled: true},
 		{name: "cache lower bound is strict", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\n  max_concurrent: 3\n  cache_bytes: 1509949440\n", store: "main", wantError: "recording_hls.cache_bytes"},
@@ -23,16 +23,17 @@ func TestLoadRecordingHLS(t *testing.T) {
 		{name: "disabled live rejects empty profile name", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: ''\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects duplicate names", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n    - name: hd\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects incomplete transform profile", setting: "recording_hls:\n  enabled: true\n  segment_dir: /tmp/hls\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n", store: "main", wantError: "video_codec"},
-		{name: "uppercase", store: "Disk", wantError: "storage.media_store_name"},
-		{name: "slash", store: "a/b", wantError: "storage.media_store_name"},
-		{name: "underscore", store: "a_b", wantError: "storage.media_store_name"},
-		{name: "unicode", store: "録画", wantError: "storage.media_store_name"},
-		{name: "space", store: "a b", wantError: "storage.media_store_name"},
+		{name: "uppercase", store: "Disk", wantError: "storage.stores key \"Disk\""},
+		{name: "slash", store: "a/b", wantError: "storage.stores key \"a/b\""},
+		{name: "underscore", store: "a_b", wantError: "storage.stores key \"a_b\""},
+		{name: "unicode", store: "録画", wantError: "storage.stores key \"録画\""},
+		{name: "space", store: "a b", wantError: "storage.stores key \"a b\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := minimalConfig + tc.setting
 			if tc.store != "" {
-				data = strings.Replace(data, "media_dir: /mnt/media", "media_dir: /mnt/media\n  media_store_name: "+tc.store, 1)
+				policy := "media_dir: /mnt/media\n  stores:\n    " + tc.store + ":\n      kind: fs\n  originals:\n    - store: " + tc.store + "\n  derived: " + tc.store
+				data = strings.Replace(data, "media_dir: /mnt/media", policy, 1)
 			}
 			cfg, err := Load(writeConfig(t, data))
 			if tc.wantError != "" {

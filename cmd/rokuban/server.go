@@ -294,7 +294,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateWorkerStorageConfig(roles, cfg); err != nil {
+	if err := validateRoleStorageConfig(roles, cfg); err != nil {
 		return err
 	}
 	storeMarkerVerified := verifyStoreMarkerAtStartup(roles, cfg)
@@ -356,7 +356,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// River の defer が先に実行される。
 	defer pool.Close()
 
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
+	// 起動時の検査だけに使い、削除の判定はしないので derived は渡さない。
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, "")
 	if slices.Contains(roles, "worker") {
 		if err := mediaStore.RequireAdoptedStoreRows(ctx); err != nil {
 			return fmt.Errorf("validating media store assignment: %w", err)
@@ -440,7 +441,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}
-	superviseSingletons(egCtx, roles, bound, eg, pool, watcherEnqueuer, webhookClient)
+	superviseSingletons(egCtx, roles, bound, cfg.Storage.MediaStoreName, eg, pool, watcherEnqueuer, webhookClient)
 
 	eg.Go(func() error {
 		<-egCtx.Done()
@@ -452,7 +453,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	return err
 }
 
-func validateWorkerStorageConfig(roles []string, cfg *config.Config) error {
+// validateRoleStorageConfig は worker と streamer が起動前に要る storage 設定を検査する。
+// streamer は完了録画の原本と世代付き HLS を、storage.stores の FS 置き場のコピーから引く。
+// api は空でも起動でき、その場合は読み取りが全置き場の active コピーを対象にする。
+func validateRoleStorageConfig(roles []string, cfg *config.Config) error {
+	if slices.Contains(roles, "streamer") && cfg.Storage.MediaStoreName == "" {
+		return fmt.Errorf("validating config: streamer role requires exactly one fs store in storage.stores")
+	}
 	if !slices.Contains(roles, "worker") {
 		return nil
 	}
@@ -460,7 +467,7 @@ func validateWorkerStorageConfig(roles []string, cfg *config.Config) error {
 		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
 	}
 	if cfg.Storage.MediaStoreName == "" {
-		return fmt.Errorf("validating config: worker role requires storage.media_store_name")
+		return fmt.Errorf("validating config: worker role requires exactly one fs store in storage.stores")
 	}
 	return nil
 }
@@ -525,13 +532,14 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
+	// api ロールは削除の判定をしないので derived は渡さない。
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, "")
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool)
-	recordingStore := pgstore.NewRecordings(pool)
+	analysisStore := pgstore.NewAnalysis(pool, cfg.Storage.MediaStoreName)
+	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
@@ -540,7 +548,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		// まで待って 503 になりうる（未測定。Acquire が待つことからの帰結）。DB 断と輻輳を
 		// この応答で区別することはできない。
 		Ready:               pool.Ping,
-		ChapterStore:        pgstore.NewAnalysis(pool),
+		ChapterStore:        analysisStore,
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
 		RecordingTrashStore: recordingStore,
 		RecordingQuery:      recordingStore,
@@ -705,8 +713,9 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
-	recordingStore := pgstore.NewRecordings(pool)
+	// until_encoded の原本の削除判定は storage.derived を使う（MediaStoreName は使わない）。
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
+	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)
 	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
@@ -739,7 +748,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 	}
 	deferred := &jobq.Deferred{}
 	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool)
+	analysisStore := pgstore.NewAnalysis(pool, cfg.Storage.MediaStoreName)
 	workers := worker.NewWorkers(&worker.Deps{
 		Enqueuer:                 deferred,
 		EPGSync:                  pgstore.NewEPG(pool),
@@ -821,7 +830,7 @@ func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onc
 
 // superviseSingletons はシングルトンロールをサイトごとの監督 goroutine に登録する。
 // 各サイトに独立した mirakc クライアントと advisory lock を割り当てる。
-func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
+func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, mediaStoreName string, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
 	for _, roleName := range roles {
 		if !slices.Contains(singletonRoles, roleName) {
 			continue
@@ -830,7 +839,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, webhookClient)
+				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool, mediaStoreName), pgstore.NewReservations(pool), enqueuer, webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

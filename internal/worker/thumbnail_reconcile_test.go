@@ -201,7 +201,9 @@ func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testi
 	if err := runWorkerViaJobQFake(context.Background(), thumbnailWorker, job); err != nil {
 		t.Fatalf("ThumbnailWorker.Work: %v", err)
 	}
-	if _, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), recordingID); err != nil {
+	if _, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), sqlcgen.GetActiveThumbnailMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err != nil {
 		t.Fatalf("thumbnail was not born after periodic recovery: %v", err)
 	}
 }
@@ -446,7 +448,7 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 	if err := os.Remove(filepath.Join(mediaDir, "missing", "original.m2ts")); err != nil {
 		t.Fatalf("removing original fixture: %v", err)
 	}
-	if err := q.UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: ""}); err != nil {
+	if err := q.UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
@@ -459,7 +461,7 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 		t.Fatalf("thumbnail reconcile candidates for known-missing original = %v, want 0", got)
 	}
 
-	if err := q.DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{MediaAssetID: originalID, Store: ""}); err != nil {
+	if err := q.DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
 		t.Fatalf("clearing restored original marker: %v", err)
 	}
 	runThumbnailReconcilePass(t, w)
@@ -479,7 +481,7 @@ func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t
 	q := sqlcgen.New(pool)
 	recordingID := dbtest.Recording(t, pool)
 	originalID := seedOriginalAsset(t, pool, t.TempDir(), recordingID, "targeted-recovery/original.m2ts", []byte("fake-ts"))
-	if err := q.UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: ""}); err != nil {
+	if err := q.UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
@@ -492,7 +494,7 @@ func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t
 		t.Fatalf("seek_tiles jobs for targeted known-missing original = %d, want 0", got)
 	}
 
-	if err := q.DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{MediaAssetID: originalID, Store: ""}); err != nil {
+	if err := q.DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
 		t.Fatalf("clearing restored original marker: %v", err)
 	}
 	runThumbnailReconcilePassArgs(t, w, ThumbnailReconcileArgs{RecordingID: recordingID})
@@ -890,7 +892,7 @@ func TestThumbnailReconcile_SeekTilesSkipsKnownMissingOriginal(t *testing.T) {
 	if err := os.Remove(filepath.Join(mediaDir, "seek-missing", "original.m2ts")); err != nil {
 		t.Fatalf("removing original fixture: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: ""}); err != nil {
+	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
@@ -1002,7 +1004,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
-	cur, err := q.LockActiveThumbnailMediaAsset(ctx, noChapters)
+	cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: noChapters, StoreName: dbtest.StoreName})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1053,7 +1055,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
-	cur, err := q.LockActiveThumbnailMediaAsset(ctx, id)
+	cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: id, StoreName: dbtest.StoreName})
 	if err != nil {
 		t.Fatal(err)
 	}

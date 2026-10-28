@@ -24,13 +24,13 @@ type StorageObservationInput struct {
 	AvailableBytes int64
 }
 
-// OrphanFile はファイルシステム上にあるが media_assets に無いパスを表す。
+// OrphanFile はファイルシステム上にあるが、この置き場の media_asset_copies に無いパスを表す。
 type OrphanFile struct {
 	RelPath   string
 	FirstSeen time.Time
 }
 
-// ActiveMediaAsset は実体無しの監査対象になる active 行を表す。
+// ActiveMediaAsset は実体無しの監査対象になる active コピーと論理資産の属性を表す。
 type ActiveMediaAsset struct {
 	ID          int64
 	RecordingID int64
@@ -38,7 +38,7 @@ type ActiveMediaAsset struct {
 	Kind        string
 }
 
-// AgedMissingMediaAsset は一定期間見つからない active 行を表す。
+// AgedMissingMediaAsset は一定期間見つからない active コピーを表す。
 type AgedMissingMediaAsset struct {
 	ID          int64
 	RecordingID int64
@@ -55,7 +55,7 @@ type StorageObservation interface {
 	UpsertStorageSync(ctx context.Context, observation StorageObservationInput) error
 	// ListStorageSync は現在の root 別観測値を返す。
 	ListStorageSync(ctx context.Context) ([]StorageSync, error)
-	// ListAllMediaAssetRelPaths は孤児との差集合に使う全 media_assets パスを返す。
+	// ListAllMediaAssetRelPaths は孤児との差集合に使う、この置き場の全コピーのパスを返す。
 	ListAllMediaAssetRelPaths(ctx context.Context) ([]string, error)
 	// UpsertOrphanFile は孤児候補を記録し、既存候補の first_seen を保持する。
 	UpsertOrphanFile(ctx context.Context, relPath string) error
@@ -66,7 +66,7 @@ type StorageObservation interface {
 	// ListAgedOrphanFiles は指定期間より前から記録されている孤児候補を返す。
 	// 経過時間は候補を書いた DB の時計で比べる。
 	ListAgedOrphanFiles(ctx context.Context, age time.Duration) ([]string, error)
-	// ListActiveMediaAssets は実体無しの差集合に使う全 active 行を返す。
+	// ListActiveMediaAssets は実体無しの差集合に使う、この置き場の全 active コピーを返す。
 	ListActiveMediaAssets(ctx context.Context) ([]ActiveMediaAsset, error)
 	// UpsertMissingMediaAsset は実体無し候補を記録し、既存候補の first_seen を保持する。
 	UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64) error
@@ -74,7 +74,7 @@ type StorageObservation interface {
 	DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64) error
 	// ListAllMissingMediaAssetIDs は記録中の実体無し候補 ID を返す。
 	ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error)
-	// ListAgedMissingMediaAssets は指定期間より前から見つからない active 行を返す。
+	// ListAgedMissingMediaAssets は指定期間より前から見つからない active コピーを返す。
 	// 経過時間は候補を書いた DB の時計で比べる。
 	ListAgedMissingMediaAssets(ctx context.Context, age time.Duration) ([]AgedMissingMediaAsset, error)
 }

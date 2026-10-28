@@ -5,14 +5,17 @@ VALUES (sqlc.arg('media_asset_id'), sqlc.arg('scanned_size_bytes'))
 ON CONFLICT (media_asset_id) DO UPDATE
 SET scanned_size_bytes = EXCLUDED.scanned_size_bytes;
 
--- 読み出し前に active な原本のパスと期待サイズを取る。
+-- 読み出し前にこの置き場の active な原本コピーのパスと期待サイズを取る。
 -- name: GetActiveOriginalForTSScan :one
-SELECT a.id, a.rel_path, a.size_bytes
+SELECT a.id, c.rel_path, a.size_bytes
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = sqlc.arg('store_name')
+ AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id = sqlc.arg('recording_id')::bigint
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
@@ -20,7 +23,8 @@ WHERE a.recording_id = sqlc.arg('recording_id')::bigint
     WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
   );
 
 -- 読み出し後に原本がまだ有効で同じサイズか、stats の置き換え前に検査する。
@@ -28,10 +32,13 @@ WHERE a.recording_id = sqlc.arg('recording_id')::bigint
 -- name: LockActiveOriginalForTSScan :one
 SELECT a.size_bytes
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = sqlc.arg('store_name')
+ AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.id = sqlc.arg('media_asset_id')::bigint
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
@@ -39,19 +46,23 @@ WHERE a.id = sqlc.arg('media_asset_id')::bigint
     WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
   )
-FOR UPDATE OF a;
+FOR UPDATE OF a, c;
 
 -- active な original のうち、計測記録がないか保存サイズが古いものを、
 -- reconciler が recording_id の keyset pagination で拾う。
 -- name: ListMissingTSScanRecordings :many
 SELECT a.recording_id
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = sqlc.arg('store_name')
+ AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id > sqlc.arg('after_recording_id')::bigint
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
@@ -59,7 +70,8 @@ WHERE a.recording_id > sqlc.arg('after_recording_id')::bigint
     WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
   )
 ORDER BY a.recording_id
 LIMIT sqlc.arg('row_limit');

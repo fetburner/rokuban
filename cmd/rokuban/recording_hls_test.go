@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -16,7 +17,12 @@ func TestServerRecordingHLSConfig(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			base := startTestServer(t, "api", fmt.Sprintf(`  media_store_name: main-2
+			base := startTestServer(t, "api", fmt.Sprintf(`  stores:
+    main-2:
+      kind: fs
+  originals:
+    - store: main-2
+  derived: main-2
 recording_hls:
   enabled: %t
   segment_dir: /tmp/recording-hls
@@ -28,7 +34,15 @@ live:
       audio_codec: aac
 `, enabled))
 			id := dbtest.Recording(t, pool)
-			dbtest.MediaAsset(t, pool, id)
+			assetID := dbtest.MediaAsset(t, pool, id)
+			if err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
+				MediaAssetID: assetID,
+				Store:        "main-2",
+				RelPath:      fmt.Sprintf("test-original/%d.ts", assetID),
+				State:        "active",
+			}); err != nil {
+				t.Fatalf("seeding selected-store copy: %v", err)
+			}
 			resp, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", base, id))
 			if err != nil {
 				t.Fatal(err)
@@ -103,7 +117,12 @@ func TestServerStreamerMountsRecordingHLS(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			base := startTestServer(t, "streamer", fmt.Sprintf(`  media_store_name: main
+			base := startTestServer(t, "streamer", fmt.Sprintf(`  stores:
+    main:
+      kind: fs
+  originals:
+    - store: main
+  derived: main
 recording_hls:
   enabled: %t
   segment_dir: %s
@@ -115,7 +134,15 @@ live:
       audio_codec: aac
 `, tc.enabled, t.TempDir(), writeFakeFFTools(t)), tc.args...)
 			id := dbtest.Recording(t, pool)
-			dbtest.MediaAsset(t, pool, id)
+			assetID := dbtest.MediaAsset(t, pool, id)
+			if err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
+				MediaAssetID: assetID,
+				Store:        "main",
+				RelPath:      "sites/default/server-recording-hls-test.m2ts",
+				State:        "active",
+			}); err != nil {
+				t.Fatalf("seeding main-store copy: %v", err)
+			}
 			resp, err := http.Get(fmt.Sprintf("%s/api/media/stores/main/recordings/%d/hls/v7/hd/master.m3u8", base, id))
 			if err != nil {
 				t.Fatal(err)

@@ -22,9 +22,11 @@ mirakcs:
 
 storage:
   media_dir: /mnt/media
-  # 置き場の目印 .rokuban-store の名前。worker では必須。docker-compose.yml の
-  # adopt-media サービスが、migrate の後・rokuban の前に目印を書く。
-  media_store_name: main
+  stores:
+    main: { kind: fs }
+  originals:
+    - store: main
+  derived: main
   scratch_dir: /var/tmp/rokuban
 
 ingest:

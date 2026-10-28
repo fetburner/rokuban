@@ -285,9 +285,7 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	assetID := dbtest.MediaAsset(t, pool, purgedWatched, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "test/purged"
 	})
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted' WHERE id = $1`, assetID); err != nil {
-		t.Fatalf("marking purged asset deleted: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, purgedWatched); err != nil {
 		t.Fatalf("marking purged broadcast watched: %v", err)
 	}

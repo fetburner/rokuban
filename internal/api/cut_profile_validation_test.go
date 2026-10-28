@@ -655,12 +655,12 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`,
 		`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		 VALUES ($1, 'cut', '{[0,1800000)}'::int8multirange)`,
-		`UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1 AND kind = 'original'`,
 	} {
 		if _, err := pool.Exec(ctx, sql, id); err != nil {
 			t.Fatalf("%s: %v", sql, err)
 		}
 	}
+	dbtest.SetRecordingMediaAssetState(t, pool, id, "original", "deleting")
 	queued := func() int64 {
 		t.Helper()
 		var got struct {
@@ -680,9 +680,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	if got := queued(); got != 0 {
 		t.Fatalf("queue without active original = %d, want 0", got)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'active' WHERE recording_id = $1 AND kind = 'original'`, id); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, id, "original", "active")
 	if got := queued(); got != 1 {
 		t.Fatalf("queue with active original = %d, want 1", got)
 	}

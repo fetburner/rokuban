@@ -220,6 +220,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: in.RecordingID,
 		Profile:     &in.Profile,
+		StoreName:   mediaStoreNameArg(s.storeName),
 	})
 	if err == nil {
 		observation := store.EncodedAssetObservation{
@@ -368,12 +369,16 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 
 	var assetID int64
 	if in.Expected == nil {
-		if _, err := q.GetActiveThumbnailMediaAssetID(ctx, in.RecordingID); err == nil {
+		if _, err := q.GetActiveThumbnailMediaAssetID(ctx, sqlcgen.GetActiveThumbnailMediaAssetIDParams{
+			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+		}); err == nil {
 			return false, nil
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return false, fmt.Errorf("checking active thumbnail: %w", err)
 		}
-		original, err := q.GetActiveOriginalMediaAsset(ctx, in.RecordingID)
+		original, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
+			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
@@ -392,7 +397,9 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, fmt.Errorf("upserting thumbnail media asset: %w", mapDatabaseError(err))
 		}
 	} else {
-		current, err := q.LockActiveThumbnailMediaAsset(ctx, in.RecordingID)
+		current, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{
+			RecordingID: in.RecordingID, StoreName: s.storeName,
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
@@ -403,7 +410,9 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			current.DerivedGeneration != in.Expected.DerivedGeneration || !sameOptionalInt64(current.SeekMs, in.Expected.SeekMs) {
 			return false, nil
 		}
-		active, err := q.IsActiveThumbnailInput(ctx, in.InputAssetID)
+		active, err := q.IsActiveThumbnailInput(ctx, sqlcgen.IsActiveThumbnailInputParams{
+			MediaAssetID: in.InputAssetID, StoreName: s.storeName,
+		})
 		if err != nil {
 			return false, fmt.Errorf("checking thumbnail input asset: %w", err)
 		}
@@ -413,7 +422,8 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		assetID = current.ID
 		derivedGeneration := in.DerivedGeneration
 		if err := q.UpdateThumbnailMediaAssetPath(ctx, sqlcgen.UpdateThumbnailMediaAssetPathParams{
-			RelPath: in.RelPath, SizeBytes: in.SizeBytes, DerivedGeneration: &derivedGeneration, ID: assetID,
+			RelPath: in.RelPath, SizeBytes: in.SizeBytes, DerivedGeneration: &derivedGeneration,
+			ID: assetID, StoreName: s.storeName,
 		}); err != nil {
 			return false, fmt.Errorf("updating thumbnail media path: %w", mapDatabaseError(err))
 		}
@@ -464,28 +474,29 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 	if locked.IsTrashed || locked.IsPurged {
 		return false, nil
 	}
-	if _, err := q.GetActiveSeekTilesMediaAssetID(ctx, in.RecordingID); err == nil {
+	if _, err := q.GetActiveSeekTilesMediaAssetID(ctx, sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+	}); err == nil {
 		return false, nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("checking active seek tiles: %w", err)
 	}
-	if _, err := q.GetActiveOriginalMediaAsset(ctx, in.RecordingID); errors.Is(err, pgx.ErrNoRows) {
+	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
+		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+	}); errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	} else if err != nil {
 		return false, fmt.Errorf("loading active original for seek tiles: %w", err)
 	}
 	derivedGeneration := in.DerivedGeneration
-	if _, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
+	assetID, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
 		RecordingID: in.RecordingID, RelPath: in.RelPath, SizeBytes: in.SizeBytes,
 		DerivedGeneration: &derivedGeneration,
-	}); err != nil {
+	})
+	if err != nil {
 		return false, fmt.Errorf("upserting seek tiles media asset: %w", mapDatabaseError(err))
 	}
-	asset, err := q.GetActiveSeekTilesMediaAssetID(ctx, in.RecordingID)
-	if err != nil {
-		return false, fmt.Errorf("loading published seek tiles media asset: %w", err)
-	}
-	if err := upsertMediaAssetCopy(ctx, q, asset, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
 		return false, fmt.Errorf("recording seek tiles media asset copy: %w", err)
 	}
 	if err := publish(); err != nil {
@@ -514,7 +525,9 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	assets := make([]*sqlcgen.GetInPlaceAssetByRelPathRow, len(in.Assets))
 	var recordingID int64
 	for i, asset := range in.Assets {
-		row, err := q.GetInPlaceAssetByRelPath(ctx, asset.RelPath)
+		row, err := q.GetInPlaceAssetByRelPath(ctx, sqlcgen.GetInPlaceAssetByRelPathParams{
+			RelPath: asset.RelPath, StoreName: s.storeName,
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
@@ -558,7 +571,8 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 			continue
 		}
 		assetID, err := q.UpsertInPlaceMediaAsset(ctx, sqlcgen.UpsertInPlaceMediaAssetParams{
-			RecordingID: recordingID, Kind: asset.Kind, Profile: asset.Profile, RelPath: asset.RelPath, SizeBytes: asset.SizeBytes,
+			RecordingID: recordingID, Kind: asset.Kind, Profile: asset.Profile, RelPath: asset.RelPath,
+			SizeBytes: asset.SizeBytes, StoreName: s.storeName,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

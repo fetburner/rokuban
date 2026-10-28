@@ -67,9 +67,13 @@ func TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording(t *testing.T)
   database: %s
   sslmode: disable
 storage:
-  media_store_name: conformance
   media_dir: %s
   scratch_dir: %s
+  stores:
+    conformance: { kind: fs }
+  originals:
+    - store: conformance
+  derived: conformance
 mirakcs:
   - site: default
     url: %s

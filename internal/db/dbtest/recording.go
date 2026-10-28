@@ -101,3 +101,61 @@ func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64
 	}
 	return id, nil
 }
+
+// SetMediaAssetState はテスト資産とすべてのコピーの状態を同じ tx で変更する。
+func SetMediaAssetState(t testing.TB, db sqlcgen.DBTX, assetID int64, state string) {
+	t.Helper()
+	_, err := db.Exec(t.Context(), `
+WITH logical AS (
+    UPDATE media_assets
+    SET state = $2,
+        deleted_at = CASE WHEN $2 = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+    WHERE id = $1
+    RETURNING id
+)
+UPDATE media_asset_copies copy
+SET state = $2,
+    deleted_at = CASE WHEN $2 = 'deleted' THEN COALESCE(copy.deleted_at, now()) ELSE NULL END
+FROM logical
+WHERE copy.media_asset_id = logical.id`, assetID, state)
+	if err != nil {
+		t.Fatalf("setting media asset %d and copy state to %s: %v", assetID, state, err)
+	}
+}
+
+// SetRecordingMediaAssetState は録画の指定種別のテスト資産とコピーの状態を同じ tx で変更する。
+func SetRecordingMediaAssetState(t testing.TB, db sqlcgen.DBTX, recordingID int64, kind, state string) {
+	t.Helper()
+	_, err := db.Exec(t.Context(), `
+WITH logical AS (
+    UPDATE media_assets
+    SET state = $3,
+        deleted_at = CASE WHEN $3 = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+    WHERE recording_id = $1 AND ($2 = '' OR kind = $2)
+    RETURNING id
+)
+UPDATE media_asset_copies copy
+SET state = $3,
+    deleted_at = CASE WHEN $3 = 'deleted' THEN COALESCE(copy.deleted_at, now()) ELSE NULL END
+FROM logical
+WHERE copy.media_asset_id = logical.id`, recordingID, kind, state)
+	if err != nil {
+		t.Fatalf("setting recording %d %s media asset and copy states to %s: %v", recordingID, kind, state, err)
+	}
+}
+
+// SetMediaAssetRelPath はテスト資産とすべてのコピーの相対パスを同じ tx で変更する。
+func SetMediaAssetRelPath(t testing.TB, db sqlcgen.DBTX, assetID int64, relPath string) {
+	t.Helper()
+	_, err := db.Exec(t.Context(), `
+WITH logical AS (
+    UPDATE media_assets SET rel_path = $2 WHERE id = $1 RETURNING id
+)
+UPDATE media_asset_copies copy
+SET rel_path = $2
+FROM logical
+WHERE copy.media_asset_id = logical.id`, assetID, relPath)
+	if err != nil {
+		t.Fatalf("setting media asset %d and copy path to %q: %v", assetID, relPath, err)
+	}
+}

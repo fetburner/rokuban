@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -20,8 +21,8 @@ func TestRecordingTrashContract(t *testing.T) {
 	contracttest.RunTrash(t, func(t *testing.T) contracttest.TrashFixture {
 		pool := testutil.SetupDB(t)
 		return contracttest.TrashFixture{
-			Trash: NewRecordings(pool), Purge: NewRecordings(pool),
-			Serving: NewMedia(pool, "tokyo"), Catalog: NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
+			Trash: NewRecordings(pool, dbtest.StoreName), Purge: NewRecordings(pool, dbtest.StoreName),
+			Serving: NewMedia(pool, dbtest.StoreName, ""), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
 			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
 				return newContractRecording(t, pool, options, &trashContractEventID)
 			},

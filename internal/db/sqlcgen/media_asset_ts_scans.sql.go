@@ -29,12 +29,15 @@ func (q *Queries) DeleteDropStatsForTSScan(ctx context.Context, mediaAssetID int
 }
 
 const getActiveOriginalForTSScan = `-- name: GetActiveOriginalForTSScan :one
-SELECT a.id, a.rel_path, a.size_bytes
+SELECT a.id, c.rel_path, a.size_bytes
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = $1
+ AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
-WHERE a.recording_id = $1::bigint
+WHERE a.recording_id = $2::bigint
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
@@ -42,9 +45,15 @@ WHERE a.recording_id = $1::bigint
     WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = a.id AND m.store = $1
   )
 `
+
+type GetActiveOriginalForTSScanParams struct {
+	StoreName   string
+	RecordingID int64
+}
 
 type GetActiveOriginalForTSScanRow struct {
 	ID        int64
@@ -52,9 +61,9 @@ type GetActiveOriginalForTSScanRow struct {
 	SizeBytes int64
 }
 
-// 読み出し前に active な原本のパスと期待サイズを取る。
-func (q *Queries) GetActiveOriginalForTSScan(ctx context.Context, recordingID int64) (GetActiveOriginalForTSScanRow, error) {
-	row := q.db.QueryRow(ctx, getActiveOriginalForTSScan, recordingID)
+// 読み出し前にこの置き場の active な原本コピーのパスと期待サイズを取る。
+func (q *Queries) GetActiveOriginalForTSScan(ctx context.Context, arg GetActiveOriginalForTSScanParams) (GetActiveOriginalForTSScanRow, error) {
+	row := q.db.QueryRow(ctx, getActiveOriginalForTSScan, arg.StoreName, arg.RecordingID)
 	var i GetActiveOriginalForTSScanRow
 	err := row.Scan(&i.ID, &i.RelPath, &i.SizeBytes)
 	return i, err
@@ -63,10 +72,13 @@ func (q *Queries) GetActiveOriginalForTSScan(ctx context.Context, recordingID in
 const listMissingTSScanRecordings = `-- name: ListMissingTSScanRecordings :many
 SELECT a.recording_id
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = $1
+ AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
-WHERE a.recording_id > $1::bigint
+WHERE a.recording_id > $2::bigint
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
@@ -74,13 +86,15 @@ WHERE a.recording_id > $1::bigint
     WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = a.id AND m.store = $1
   )
 ORDER BY a.recording_id
-LIMIT $2
+LIMIT $3
 `
 
 type ListMissingTSScanRecordingsParams struct {
+	StoreName        string
 	AfterRecordingID int64
 	RowLimit         int32
 }
@@ -88,7 +102,7 @@ type ListMissingTSScanRecordingsParams struct {
 // active な original のうち、計測記録がないか保存サイズが古いものを、
 // reconciler が recording_id の keyset pagination で拾う。
 func (q *Queries) ListMissingTSScanRecordings(ctx context.Context, arg ListMissingTSScanRecordingsParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listMissingTSScanRecordings, arg.AfterRecordingID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listMissingTSScanRecordings, arg.StoreName, arg.AfterRecordingID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -110,10 +124,13 @@ func (q *Queries) ListMissingTSScanRecordings(ctx context.Context, arg ListMissi
 const lockActiveOriginalForTSScan = `-- name: LockActiveOriginalForTSScan :one
 SELECT a.size_bytes
 FROM media_assets a
+JOIN media_asset_copies c
+  ON c.media_asset_id = a.id
+ AND c.store = $1
+ AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
-WHERE a.id = $1::bigint
+WHERE a.id = $2::bigint
   AND a.kind = 'original'
-  AND a.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
@@ -121,15 +138,21 @@ WHERE a.id = $1::bigint
     WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = a.id AND m.store = $1
   )
-FOR UPDATE OF a
+FOR UPDATE OF a, c
 `
+
+type LockActiveOriginalForTSScanParams struct {
+	StoreName    string
+	MediaAssetID int64
+}
 
 // 読み出し後に原本がまだ有効で同じサイズか、stats の置き換え前に検査する。
 // 長い TS 読み出しの間に in-place 更新や削除があった結果を記録しない。
-func (q *Queries) LockActiveOriginalForTSScan(ctx context.Context, mediaAssetID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, lockActiveOriginalForTSScan, mediaAssetID)
+func (q *Queries) LockActiveOriginalForTSScan(ctx context.Context, arg LockActiveOriginalForTSScanParams) (int64, error) {
+	row := q.db.QueryRow(ctx, lockActiveOriginalForTSScan, arg.StoreName, arg.MediaAssetID)
 	var size_bytes int64
 	err := row.Scan(&size_bytes)
 	return size_bytes, err

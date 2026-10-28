@@ -280,7 +280,7 @@ type ListMissingEncodeProfilesRow struct {
 //
 // # until_encoded_deletable_originals との関係
 //
-// 削除側の view `until_encoded_deletable_originals` も、「desired が揃っている」を
+// 削除側の関数 `until_encoded_deletable_originals(desired_store)` も、「desired が揃っている」を
 // unencoded_desired_profiles に行が無いことで判定する。設定での絞り（known_profiles）
 // は encodable_profile にだけ置き、unencoded_desired_profiles には足さない。足すと、
 // 設定からプロファイルを消す編集だけで、それを凍結した until_encoded 録画の原本が

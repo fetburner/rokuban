@@ -13,7 +13,7 @@ const TestStore = dbtest.StoreName
 
 // Analysis はテスト用の既定値で Analysis を作る。
 func Analysis(pool *pgxpool.Pool) *pgstore.Analysis {
-	return pgstore.NewAnalysis(pool)
+	return pgstore.NewAnalysis(pool, TestStore)
 }
 
 // Breakers はテスト用の既定値で Breakers を作る。
@@ -41,7 +41,7 @@ func LabelRules(pool *pgxpool.Pool) *pgstore.LabelRules {
 
 // Media はテスト用の既定値で Media を作る。
 func Media(pool *pgxpool.Pool) *pgstore.Media {
-	return pgstore.NewMedia(pool, TestStore)
+	return pgstore.NewMedia(pool, TestStore, TestStore)
 }
 
 // NeverScheduledEvents はテスト用の既定値で NeverScheduledEvents を作る。
@@ -56,7 +56,7 @@ func Playback(pool *pgxpool.Pool) *pgstore.Playback {
 
 // Recordings はテスト用の既定値で Recordings を作る。
 func Recordings(pool *pgxpool.Pool) *pgstore.Recordings {
-	return pgstore.NewRecordings(pool)
+	return pgstore.NewRecordings(pool, TestStore)
 }
 
 // Reservations はテスト用の既定値で Reservations を作る。

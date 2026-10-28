@@ -481,11 +481,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	// (e) 原本が物理削除済み（until_encoded の後始末）→ 候補にしない。
 	originalGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/gone.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := pool.Exec(ctx,
-		`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'original'`,
-		originalGone); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, originalGone, store.AssetKindOriginal, "deleted")
 
 	// (f) ごみ箱の録画 → 候補にしない。
 	trashed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/trashed.m2ts", []string{"h265"}, []byte("x"))
@@ -502,11 +498,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "q/encgone_h264.mp4"
 	})
-	if _, err := pool.Exec(ctx,
-		`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'encoded'`,
-		encodedGone); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, encodedGone, store.AssetKindEncoded, "deleted")
 
 	// (h) desired が現在の設定に無いプロファイル（改名 / 削除された）→ 候補に
 	// しない。投入しても EncodeWorker が `unknown encode profile` で弾くだけで
@@ -1211,9 +1203,7 @@ func TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued(t *testi
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
 	setOriginal := func(state string) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $2 WHERE recording_id = $1 AND kind = 'original'`, id, state); err != nil {
-			t.Fatal(err)
-		}
+		dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, state)
 	}
 	setOriginal("deleting")
 

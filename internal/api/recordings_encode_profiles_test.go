@@ -583,11 +583,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 		t.Fatalf("setting initial until_encoded policy: %v", err)
 	}
 	originalPath := writePolicyTestFile(t, mediaDir, fmt.Sprintf("test/%d.m2ts", id))
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleting' WHERE id = $1`, originalID,
-	); err != nil {
-		t.Fatalf("marking original deleting: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, originalID, "deleting")
 
 	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "always")
 	if resp.StatusCode != http.StatusNoContent {
@@ -940,12 +936,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除済み", time.Now().Truncate(time.Second), "finished", 203
 	})
 	seedIngested(t, pool, id, 500, nil)
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleted', deleted_at = now()
-		 WHERE recording_id = $1 AND kind = 'original'`, id,
-	); err != nil {
-		t.Fatalf("marking original deleted: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleted")
 
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
 	if resp.StatusCode != http.StatusConflict {
@@ -985,12 +976,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本 unlink 待ち", time.Now().Truncate(time.Second), "finished", 204
 	})
 	seedIngested(t, pool, id, 500, nil)
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleting'
-		 WHERE recording_id = $1 AND kind = 'original'`, id,
-	); err != nil {
-		t.Fatalf("marking original deleting: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleting")
 
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
 	if resp.StatusCode != http.StatusConflict {

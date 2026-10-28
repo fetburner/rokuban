@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -25,20 +26,13 @@ const (
 	// defaultDeleteReconcileMaxPerPass は一括削除サーキットブレーカーの既定閾値。
 	defaultDeleteReconcileMaxPerPass = 100
 
-	// defaultMissingAssetAge は「active なのに実体が無い」候補が確認済みとして
-	// 報告されるまでの既定エイジング期間（issue #343）。孤児回収の
-	// defaultOrphanAge と同じ理由（単発の走査揺れ・DB リストア直後の一時的な
-	// 不整合を確認済みの異常と区別する）で持つが、削除を目的とした猶予では
-	// ないため長さを揃える必要はなく、通知の遅れを抑える短めの値にしている。
-	defaultMissingAssetAge = 24 * time.Hour
-
 	// missingAssetLogBudget は 1 パスで reportAgedMissingAssets が Warn ログを
 	// 個別に出す件数の上限。件数（rokuban_media_assets_missing）は既にメトリクス
 	// が持っているので、ログの役目は同定（media_asset_id / rel_path）だけ ---
 	// エイジング済み候補は解消するまで定期パス間隔（既定
 	// 15 分 = 1 日 96 パス）ごとに全件が再送されるので、上限が無ければ
 	// 「候補数 × 96」行/日になる（劣化したマウントを放置すると候補数は
-	// active な media_assets 全件まで伸びうる。実測はしていない算術）。
+	// active な media_asset_copies 全件まで伸びうる。実測はしていない算術）。
 	// 超過分は件数だけを 1 行にまとめる。deleteReconcileNotifyBudget が
 	// 時間の予算なのに対し、こちらは件数の予算（別物）。
 	missingAssetLogBudget = 20
@@ -68,7 +62,7 @@ const (
 // DeleteReconcileWorker は物理 unlink に至る 4 ソース（ごみ箱 / until_encoded /
 // ユーザーが外したエンコード版 / 孤児）を 1 本の reconcile ループに統一する queue worker（docs/storage.md §7）。
 //
-// 削除プロトコルは冪等: media_assets.state を active → deleting → deleted と
+// 削除プロトコルは冪等: media_asset_copies.state を active → deleting → deleted と
 // 遷移させる。deleting のまま落ちても次パスの MediaDelete.ListPendingDeleteAssets が
 // 拾い直すので、途中失敗しても残骸は蓄積しない。
 //
@@ -162,7 +156,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	}
 	missingAssetAge := w.MissingAssetAge
 	if missingAssetAge <= 0 {
-		missingAssetAge = defaultMissingAssetAge
+		missingAssetAge = config.DefaultMissingAssetAge
 	}
 	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, site)
 	if err != nil {
