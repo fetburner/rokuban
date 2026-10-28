@@ -80,6 +80,7 @@ JOIN LATERAL (
     FROM media_asset_copies copy
     WHERE copy.media_asset_id = a.id
       AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
+      AND copy.state <> 'pending'
     ORDER BY (copy.state = 'active') DESC, copy.store
     LIMIT 1
 ) c ON true

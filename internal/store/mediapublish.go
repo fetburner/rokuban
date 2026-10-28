@@ -105,6 +105,7 @@ type ThumbnailPublishInput struct {
 	SizeBytes         int64
 	SeekMs            int64
 	InputAssetID      int64
+	InputStore        string
 	DerivedGeneration int64
 	Expected          *ThumbnailObservation
 }

@@ -64,6 +64,7 @@ WITH planning AS (
             WHERE s.recording_id = r.id
         ), '[]'::jsonb)::jsonb AS user_spans,
         COALESCE(original.id, 0)::bigint AS original_media_asset_id,
+        COALESCE(original.store, '')::text AS original_store,
         COALESCE(original.rel_path, '')::text AS original_rel_path,
         COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
         thumbnail.id AS thumbnail_media_asset_id,
@@ -72,7 +73,7 @@ WITH planning AS (
         thumbnail.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (
-        SELECT a.id, copy.rel_path
+        SELECT a.id, copy.rel_path, copy.store
         FROM media_assets a
         JOIN media_asset_copies copy
           ON copy.media_asset_id = a.id
@@ -90,6 +91,7 @@ WITH planning AS (
         SELECT jsonb_agg(
             jsonb_build_object(
                 'mediaAssetId', a.id,
+                'store', copy.store,
                 'profile', a.profile,
                 'relPath', copy.rel_path,
                 'cut', c.media_asset_id IS NOT NULL,

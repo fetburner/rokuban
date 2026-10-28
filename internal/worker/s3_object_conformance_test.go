@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -17,6 +18,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/store"
@@ -42,11 +46,54 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	media := pgstore.NewMediaWithStores(pool, "s3main", dbtest.StoreName, "s3main")
 	prefix := fmt.Sprintf("thumbnails/issue-1625-%d", time.Now().UnixNano())
+	encodedKey := fmt.Sprintf("encoded/issue-1625-%d.mp4", time.Now().UnixNano())
+	thumbnailInputKey := fmt.Sprintf("encoded/issue-1625-%d-thumbnail-source.mp4", time.Now().UnixNano())
 	t.Cleanup(func() {
-		for _, key := range []string{prefix + "-active.jpg", prefix + "-pending.jpg", prefix + "-unknown.jpg"} {
+		for _, key := range []string{prefix + "-active.jpg", prefix + "-pending.jpg", prefix + "-unknown.jpg", encodedKey, thumbnailInputKey} {
 			if err := objects.Delete(context.Background(), key); err != nil {
 				t.Errorf("deleting S3 test key %q: %v", key, err)
 			}
+		}
+	})
+
+	t.Run("initial encoded output activates its pending S3 copy", func(t *testing.T) {
+		recordingID := dbtest.Recording(t, pool)
+		profile := "h264"
+		seedEncodePolicy(t, pool, recordingID, []string{profile})
+		if _, err := sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
+			RecordingID: recordingID, Profile: profile,
+		}); err != nil {
+			t.Fatalf("seeding running encode attempt: %v", err)
+		}
+		payload := []byte("first encoded object bytes")
+		scratchPath := filepath.Join(t.TempDir(), "encoded.mp4")
+		if err := os.WriteFile(scratchPath, payload, 0o600); err != nil {
+			t.Fatalf("writing encoded fixture: %v", err)
+		}
+		pending := store.PendingMediaAssetCopy{
+			RecordingID: recordingID, Kind: store.AssetKindEncoded, Profile: &profile, RelPath: encodedKey,
+		}
+		size, published, err := publishGeneratedObject(ctx, objects, media, pending, scratchPath, "video/mp4",
+			func(size int64, publish func() error) (bool, error) {
+				return media.PublishEncoded(ctx, store.EncodedPublishInput{
+					RecordingID: recordingID, Profile: profile, Attempt: 1, RelPath: encodedKey, SizeBytes: size,
+					ObservedRelPath: "",
+				}, publish)
+			})
+		if err != nil {
+			t.Fatalf("publishing initial S3 encoded asset: %v", err)
+		}
+		if !published || size != int64(len(payload)) {
+			t.Fatalf("publish result = (%d, %t), want (%d, true)", size, published, len(payload))
+		}
+		row, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+			RecordingID: recordingID, Profile: &profile,
+		})
+		if err != nil {
+			t.Fatalf("loading committed encoded asset: %v", err)
+		}
+		if row.RelPath != encodedKey || row.State != "active" {
+			t.Fatalf("committed encoded copy = (%q, %q), want (%q, active)", row.RelPath, row.State, encodedKey)
 		}
 	})
 
@@ -120,6 +167,114 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		}
 		if state != "deleted" {
 			t.Fatalf("reclaimed copy state = %q, want deleted", state)
+		}
+	})
+
+	t.Run("thumbnail reselection reads encoded input from S3", func(t *testing.T) {
+		recordingID := dbtest.Recording(t, pool)
+		profile := "h264"
+		encodedPayload := []byte("remote encoded thumbnail input")
+		encodedDigest := sha256.Sum256(encodedPayload)
+		assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+			RecordingID: recordingID, Profile: &profile, RelPath: thumbnailInputKey,
+			SizeBytes: int64(len(encodedPayload)),
+		})
+		if err != nil {
+			t.Fatalf("seeding encoded media asset: %v", err)
+		}
+		if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+			MediaAssetID: assetID, Store: "s3main", RelPath: thumbnailInputKey, State: "active",
+		}); err != nil {
+			t.Fatalf("seeding active encoded copy: %v", err)
+		}
+		if err := objects.Put(ctx, thumbnailInputKey, strings.NewReader(string(encodedPayload)), int64(len(encodedPayload)), encodedDigest, "video/mp4"); err != nil {
+			t.Fatalf("uploading encoded thumbnail input: %v", err)
+		}
+
+		oldThumbnailKey := prefix + "-reselect.jpg"
+		newThumbnailKey := fmt.Sprintf("thumbnails/%d.g1.jpg", recordingID)
+		t.Cleanup(func() {
+			for _, key := range []string{oldThumbnailKey, newThumbnailKey} {
+				if err := objects.Delete(context.Background(), key); err != nil {
+					t.Errorf("deleting S3 test key %q: %v", key, err)
+				}
+			}
+		})
+		oldThumbnail := []byte("old thumbnail")
+		oldDigest := sha256.Sum256(oldThumbnail)
+		thumbnailID, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
+			RecordingID: recordingID, RelPath: oldThumbnailKey, SizeBytes: int64(len(oldThumbnail)),
+		})
+		if err != nil {
+			t.Fatalf("seeding current thumbnail asset: %v", err)
+		}
+		if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+			MediaAssetID: thumbnailID, Store: "s3main", RelPath: oldThumbnailKey, State: "active",
+		}); err != nil {
+			t.Fatalf("seeding current thumbnail copy: %v", err)
+		}
+		if err := sqlcgen.New(pool).UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+			MediaAssetID: thumbnailID, SeekMs: 30000,
+		}); err != nil {
+			t.Fatalf("seeding current thumbnail seek: %v", err)
+		}
+		if err := sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+			RecordingID: recordingID, CmRanges: "{[0,60000)}",
+		}); err != nil {
+			t.Fatalf("seeding CM ranges: %v", err)
+		}
+		if err := objects.Put(ctx, oldThumbnailKey, strings.NewReader(string(oldThumbnail)), int64(len(oldThumbnail)), oldDigest, "image/jpeg"); err != nil {
+			t.Fatalf("uploading current thumbnail: %v", err)
+		}
+
+		mediaDir := t.TempDir()
+		if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+			t.Fatalf("writing local media store marker: %v", err)
+		}
+		verifiedRemoteInput := false
+		worker := &ThumbnailWorker{
+			Media: media, Publisher: media, Objects: objects, MediaDir: mediaDir,
+			MediaStoreName: dbtest.StoreName, DerivedStoreName: "s3main", ScratchDir: t.TempDir(),
+			runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if containsArg(args, "format=duration") {
+					t.Fatal("chapter-aware reselection must not probe duration")
+				}
+				inputIndex := indexOfArg(args, "-i")
+				if inputIndex < 0 || inputIndex+1 >= len(args) {
+					t.Fatalf("ffmpeg args have no input path: %v", args)
+				}
+				got, err := os.ReadFile(args[inputIndex+1])
+				if err != nil {
+					t.Fatalf("reading materialized S3 thumbnail input %q: %v", args[inputIndex+1], err)
+				}
+				if !bytes.Equal(got, encodedPayload) {
+					t.Fatalf("materialized thumbnail input = %q, want remote object bytes %q", got, encodedPayload)
+				}
+				verifiedRemoteInput = true
+				if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o600); err != nil {
+					t.Fatalf("writing generated thumbnail: %v", err)
+				}
+				return nil, nil
+			},
+		}
+		if err := worker.Work(ctx, jobs.ThumbnailJobArgs{RecordingID: recordingID}); err != nil {
+			t.Fatalf("reselecting thumbnail from S3 encoded input: %v", err)
+		}
+		if !verifiedRemoteInput {
+			t.Fatal("thumbnail generation did not read the S3 encoded input")
+		}
+		row, err := sqlcgen.New(pool).LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{
+			RecordingID: recordingID, StoreName: "s3main",
+		})
+		if err != nil {
+			t.Fatalf("loading replacement thumbnail: %v", err)
+		}
+		if row.RelPath != newThumbnailKey || row.SeekMs == nil || *row.SeekMs != 89993 {
+			t.Fatalf("replacement thumbnail = (%q, %v), want (%q, 89993)", row.RelPath, row.SeekMs, newThumbnailKey)
+		}
+		object, err := objects.Head(ctx, newThumbnailKey)
+		if err != nil || object.Size != int64(len(tinyJPEG)) {
+			t.Fatalf("replacement S3 thumbnail = (%+v, %v), want uploaded JPEG", object, err)
 		}
 	})
 

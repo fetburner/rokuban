@@ -470,8 +470,15 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			current.DerivedGeneration != in.Expected.DerivedGeneration || !sameOptionalInt64(current.SeekMs, in.Expected.SeekMs) {
 			return false, nil
 		}
+		inputStore := in.InputStore
+		if inputStore == "" {
+			inputStore = s.originalStoreName()
+		}
+		if inputStore != s.originalStoreName() && inputStore != s.storeName {
+			return false, fmt.Errorf("thumbnail input store %q is neither the original nor publishing store", inputStore)
+		}
 		active, err := q.IsActiveThumbnailInput(ctx, sqlcgen.IsActiveThumbnailInputParams{
-			MediaAssetID: in.InputAssetID, StoreName: s.originalStoreName(),
+			MediaAssetID: in.InputAssetID, StoreName: inputStore,
 		})
 		if err != nil {
 			return false, fmt.Errorf("checking thumbnail input asset: %w", err)
@@ -698,12 +705,14 @@ func upsertMediaAssetCopyState(
 		if copyRow.State == state {
 			return nil
 		}
-		updated, err := q.SetMediaAssetCopyStateByID(ctx, sqlcgen.SetMediaAssetCopyStateByIDParams{ID: copyRow.ID, State: state})
+		updated, err := q.SetMediaAssetCopyStateByID(ctx, sqlcgen.SetMediaAssetCopyStateByIDParams{
+			ID: copyRow.ID, FromState: copyRow.State, State: state,
+		})
 		if err != nil {
 			return err
 		}
 		if updated != 1 {
-			return fmt.Errorf("updated %d rows for media asset copy %d, want one", updated, copyRow.ID)
+			return fmt.Errorf("media asset copy %d changed from %q before transition to %q: %w", copyRow.ID, copyRow.State, state, store.ErrConflict)
 		}
 		return nil
 	}

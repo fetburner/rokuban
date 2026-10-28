@@ -536,6 +536,7 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 			Detected:              row.Detected,
 			Owned:                 row.Owned,
 			OriginalMediaAssetID:  row.OriginalMediaAssetID,
+			OriginalStore:         row.OriginalStore,
 			OriginalRelPath:       row.OriginalRelPath,
 			ThumbnailMediaAssetID: &row.ThumbnailMediaAssetID,
 			ThumbnailRelPath:      &row.ThumbnailRelPath,
@@ -569,6 +570,7 @@ func decodeThumbnailTimeline(cmRanges, userSpans []byte) ([]chapters.Range, []ch
 func decodeThumbnailEncodedAssets(raw []byte) ([]store.ThumbnailEncodedAsset, error) {
 	var rows []struct {
 		MediaAssetID int64            `json:"mediaAssetId"`
+		Store        string           `json:"store"`
 		Profile      string           `json:"profile"`
 		RelPath      string           `json:"relPath"`
 		Cut          bool             `json:"cut"`
@@ -579,7 +581,10 @@ func decodeThumbnailEncodedAssets(raw []byte) ([]store.ThumbnailEncodedAsset, er
 	}
 	out := make([]store.ThumbnailEncodedAsset, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, store.ThumbnailEncodedAsset{MediaAssetID: r.MediaAssetID, Profile: r.Profile, RelPath: r.RelPath, Cut: r.Cut, KeepRanges: r.KeepRanges})
+		out = append(out, store.ThumbnailEncodedAsset{
+			MediaAssetID: r.MediaAssetID, Store: r.Store, Profile: r.Profile, RelPath: r.RelPath,
+			Cut: r.Cut, KeepRanges: r.KeepRanges,
+		})
 	}
 	return out, nil
 }

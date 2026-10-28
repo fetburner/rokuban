@@ -40,6 +40,11 @@ type Store interface {
 	List(ctx context.Context, prefix string) ([]Object, error)
 }
 
+// Reader is implemented by stores that can stream a completed object's contents.
+type Reader interface {
+	Get(ctx context.Context, key string) (io.ReadCloser, error)
+}
+
 // Local is implemented by stores that can serve objects from a seekable reader.
 type Local interface {
 	Open(ctx context.Context, key string) (io.ReadSeekCloser, Object, error)

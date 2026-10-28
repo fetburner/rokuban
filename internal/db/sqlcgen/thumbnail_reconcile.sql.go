@@ -172,6 +172,7 @@ WITH planning AS (
             WHERE s.recording_id = r.id
         ), '[]'::jsonb)::jsonb AS user_spans,
         COALESCE(original.id, 0)::bigint AS original_media_asset_id,
+        COALESCE(original.store, '')::text AS original_store,
         COALESCE(original.rel_path, '')::text AS original_rel_path,
         COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
         thumbnail.id AS thumbnail_media_asset_id,
@@ -180,7 +181,7 @@ WITH planning AS (
         thumbnail.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (
-        SELECT a.id, copy.rel_path
+        SELECT a.id, copy.rel_path, copy.store
         FROM media_assets a
         JOIN media_asset_copies copy
           ON copy.media_asset_id = a.id
@@ -198,6 +199,7 @@ WITH planning AS (
         SELECT jsonb_agg(
             jsonb_build_object(
                 'mediaAssetId', a.id,
+                'store', copy.store,
                 'profile', a.profile,
                 'relPath', copy.rel_path,
                 'cut', c.media_asset_id IS NOT NULL,
@@ -237,7 +239,7 @@ WITH planning AS (
     WHERE r.purged_at IS NULL
       AND ($5::bigint IS NULL OR r.id = $5::bigint)
 )
-SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, thumbnail_generation, seek_ms
+SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_store, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, thumbnail_generation, seek_ms
 FROM planning
 WHERE recording_id > $1::bigint
   AND NOT trashed
@@ -264,6 +266,7 @@ type ListThumbnailReselectCandidatesRow struct {
 	CmRanges              json.RawMessage
 	UserSpans             json.RawMessage
 	OriginalMediaAssetID  int64
+	OriginalStore         string
 	OriginalRelPath       string
 	EncodedAssets         json.RawMessage
 	ThumbnailMediaAssetID int64
@@ -303,6 +306,7 @@ func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListT
 			&i.CmRanges,
 			&i.UserSpans,
 			&i.OriginalMediaAssetID,
+			&i.OriginalStore,
 			&i.OriginalRelPath,
 			&i.EncodedAssets,
 			&i.ThumbnailMediaAssetID,

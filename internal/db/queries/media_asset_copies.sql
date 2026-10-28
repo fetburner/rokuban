@@ -70,7 +70,8 @@ WHERE media_asset_id = sqlc.arg('media_asset_id')
 UPDATE media_asset_copies
 SET state = sqlc.arg('state'),
     deleted_at = CASE WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
-WHERE id = sqlc.arg('id');
+WHERE id = sqlc.arg('id')
+  AND state = sqlc.arg('from_state');
 
 -- name: UpdateMediaAssetCopyPathStateByID :execrows
 UPDATE media_asset_copies
@@ -84,21 +85,19 @@ INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
 VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('state'))
 ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
 
+-- Lock the logical asset and copy before a separate state transition and finalizer.
+-- The parent lock serializes finalizers for different copies of the same asset.
+-- name: LockMediaAssetForCopyFinalizationByID :one
+SELECT a.id
+FROM media_assets a
+JOIN media_asset_copies copy ON copy.media_asset_id = a.id
+WHERE copy.id = sqlc.arg('id')
+FOR UPDATE OF a, copy;
+
 -- name: MarkPendingMediaAssetCopyDeletedByID :execrows
-WITH deleted AS (
-    UPDATE media_asset_copies AS copy
-    SET state = 'deleted', deleted_at = COALESCE(copy.deleted_at, now())
-    WHERE copy.id = sqlc.arg('id') AND copy.state = 'pending'
-    RETURNING copy.media_asset_id
-)
-UPDATE media_assets a
-SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
-WHERE a.id IN (SELECT media_asset_id FROM deleted)
-  AND a.state IN ('active', 'deleting')
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
-  );
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE id = sqlc.arg('id') AND state = 'pending';
 
 -- name: ClaimAgedPendingMediaAssetCopyByID :execrows
 UPDATE media_asset_copies
@@ -132,16 +131,18 @@ WHERE copy.store = sqlc.arg('store') AND copy.state = 'deleting'
 ORDER BY copy.id
 LIMIT sqlc.arg('row_limit');
 
--- name: MarkMediaAssetCopyDeletedByID :exec
-WITH deleted AS (
-    UPDATE media_asset_copies copy
-    SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
-    WHERE copy.id = sqlc.arg('id') AND copy.state = 'deleting'
-    RETURNING media_asset_id
-), completed AS (
+-- name: MarkMediaAssetCopyDeletedByID :execrows
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE id = sqlc.arg('id') AND state = 'deleting';
+
+-- This runs after the copy update as a separate statement so READ COMMITTED gets a
+-- fresh snapshot. The caller locks the parent asset first to serialize finalizers.
+-- name: FinalizeMediaAssetAfterCopyDelete :exec
+WITH completed AS (
     UPDATE media_assets a
     SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
-    WHERE a.id IN (SELECT media_asset_id FROM deleted)
+    WHERE a.id = sqlc.arg('media_asset_id')
       AND a.state IN ('active', 'deleting')
       AND NOT EXISTS (
           SELECT 1 FROM media_asset_copies copy

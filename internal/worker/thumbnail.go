@@ -46,14 +46,15 @@ const (
 // の doc コメント参照。
 type ThumbnailWorker struct {
 	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
-	Media          store.MediaReconcile
-	Publisher      store.DerivedMediaPublisher
-	Objects        objstore.Store
-	MediaDir       string
-	MediaStoreName string
-	ScratchDir     string
-	FFmpeg         string
-	FFprobe        string
+	Media            store.MediaReconcile
+	Publisher        store.DerivedMediaPublisher
+	Objects          objstore.Store
+	MediaDir         string
+	MediaStoreName   string
+	DerivedStoreName string
+	ScratchDir       string
+	FFmpeg           string
+	FFprobe          string
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	// stdout を返す（ffprobe）。ffmpeg はファイル副作用だけを使う。
@@ -61,14 +62,15 @@ type ThumbnailWorker struct {
 }
 
 type thumbnailWorkPlan struct {
-	inputID    int64
-	inputPath  string
-	inputSeek  time.Duration
-	seekMs     int64
-	relPath    string
-	generation int64
-	expected   *thumbnailObserved
-	replaced   string
+	inputID      int64
+	inputRelPath string
+	inputStore   string
+	inputSeek    time.Duration
+	seekMs       int64
+	relPath      string
+	generation   int64
+	expected     *thumbnailObserved
+	replaced     string
 }
 
 // Work は thumbnail ジョブを実行する。
@@ -104,8 +106,12 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 	}
 	defer func() { _ = os.RemoveAll(scratchDir) }()
 	scratchPath := filepath.Join(scratchDir, "thumbnail.jpg")
+	inputPath, err := w.resolveThumbnailInput(ctx, plan.inputRelPath, plan.inputStore, scratchDir)
+	if err != nil {
+		return fmt.Errorf("resolving thumbnail input: %w", err)
+	}
 
-	if err := w.extractFrame(ctx, plan.inputPath, scratchPath, plan.inputSeek); err != nil {
+	if err := w.extractFrame(ctx, inputPath, scratchPath, plan.inputSeek); err != nil {
 		return fmt.Errorf("extracting frame: %w", err)
 	}
 
@@ -135,7 +141,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 			func(size int64, publish func() error) (bool, error) {
 				return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 					RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
-					SeekMs: plan.seekMs, InputAssetID: plan.inputID,
+					SeekMs: plan.seekMs, InputAssetID: plan.inputID, InputStore: plan.inputStore,
 					DerivedGeneration: plan.generation, Expected: expected,
 				}, publish)
 			})
@@ -234,7 +240,7 @@ func (w *ThumbnailWorker) initialThumbnailPlan(
 		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail path: %w", err)
 	}
 	return thumbnailWorkPlan{
-		inputID: orig.ID, inputPath: inputPath, inputSeek: inputSeek,
+		inputID: orig.ID, inputRelPath: orig.RelPath, inputStore: orig.Store, inputSeek: inputSeek,
 		seekMs: seekMs, relPath: relPath, generation: generation,
 	}, true, nil
 }
@@ -260,10 +266,6 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		log.Info("thumbnail: no usable input, skipping")
 		return thumbnailWorkPlan{}, false, nil
 	}
-	inputPath, err := mediapath.Resolve(w.MediaDir, plan.Source.RelPath)
-	if err != nil {
-		return thumbnailWorkPlan{}, false, fmt.Errorf("resolving thumbnail input path: %w", err)
-	}
 	if state.ThumbnailRelPath == nil || state.ThumbnailMediaAssetID == nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("active thumbnail planning state is incomplete")
 	}
@@ -279,11 +281,48 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail replacement path: %w", err)
 	}
 	return thumbnailWorkPlan{
-		inputID: plan.Source.MediaAssetID, inputPath: inputPath,
+		inputID: plan.Source.MediaAssetID, inputRelPath: plan.Source.RelPath, inputStore: plan.Source.Store,
 		inputSeek: time.Duration(plan.InputSeekMs) * time.Millisecond,
 		seekMs:    plan.RecordedSeek, relPath: relPath, generation: generation,
 		expected: expected, replaced: expected.RelPath,
 	}, true, nil
+}
+
+func (w *ThumbnailWorker) resolveThumbnailInput(ctx context.Context, relPath, storeName, scratchDir string) (string, error) {
+	if w.Objects == nil || storeName == w.MediaStoreName {
+		return mediapath.Resolve(w.MediaDir, relPath)
+	}
+	if w.DerivedStoreName == "" || storeName != w.DerivedStoreName {
+		return "", fmt.Errorf("thumbnail input store %q is not readable by this worker", storeName)
+	}
+	reader, ok := w.Objects.(objstore.Reader)
+	if !ok {
+		return "", fmt.Errorf("object store %q does not support streaming reads", storeName)
+	}
+	body, err := reader.Get(ctx, relPath)
+	if err != nil {
+		metrics.ObjectStoreErrors.WithLabelValues("get").Inc()
+		return "", fmt.Errorf("getting thumbnail input object %q: %w", relPath, err)
+	}
+	defer func() { _ = body.Close() }()
+	inputPath := filepath.Join(scratchDir, "input"+filepath.Ext(relPath))
+	file, err := os.OpenFile(inputPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("creating scratch thumbnail input: %w", err)
+	}
+	n, copyErr := io.Copy(file, body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		metrics.ObjectStoreErrors.WithLabelValues("get").Inc()
+		return "", fmt.Errorf("downloading thumbnail input object %q: %w", relPath, copyErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("closing scratch thumbnail input: %w", closeErr)
+	}
+	if n == 0 {
+		return "", fmt.Errorf("thumbnail input object %q is empty", relPath)
+	}
+	return inputPath, nil
 }
 
 // thumbnailRelPath returns the path for a persisted generation. Generation zero

@@ -296,6 +296,88 @@ func TestMediaAssetCopiesAcceptLeadingHyphenStoreName(t *testing.T) {
 	}
 }
 
+func TestMarkDeletingMediaAssetCopyDeletedFinalizesLogicalAssetAndRemovalRequest(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	generation := int64(0)
+	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+		RecordingID: recordingID, Profile: &profile, RelPath: "encoded/finalize.mp4", SizeBytes: 1,
+		DerivedGeneration: &generation,
+	})
+	if err != nil {
+		t.Fatalf("seeding encoded media asset: %v", err)
+	}
+	if err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: "encoded/finalize.mp4", State: "active",
+	}); err != nil {
+		t.Fatalf("seeding active media asset copy: %v", err)
+	}
+	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{
+		RecordingID: recordingID, Profile: profile,
+	}); err != nil {
+		t.Fatalf("seeding encoded removal request: %v", err)
+	}
+	media := NewMedia(pool, dbtest.StoreName, "")
+	if err := media.MarkDeleting(ctx, assetID); err != nil {
+		t.Fatalf("marking encoded media asset deleting: %v", err)
+	}
+	copyRow, err := q.GetMediaAssetCopyByPath(ctx, sqlcgen.GetMediaAssetCopyByPathParams{
+		Store: dbtest.StoreName, RelPath: "encoded/finalize.mp4",
+	})
+	if err != nil {
+		t.Fatalf("loading deleting media asset copy: %v", err)
+	}
+	if err := media.MarkDeletingMediaAssetCopyDeleted(ctx, copyRow.ID); err != nil {
+		t.Fatalf("marking deleting media asset copy deleted: %v", err)
+	}
+	var assetState, copyState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_assets WHERE id = $1`, assetID).Scan(&assetState); err != nil {
+		t.Fatalf("reading logical media asset state: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyRow.ID).Scan(&copyState); err != nil {
+		t.Fatalf("reading physical copy state: %v", err)
+	}
+	var requestExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM encoded_asset_removal_requests WHERE recording_id = $1 AND profile = $2)`, recordingID, profile).Scan(&requestExists); err != nil {
+		t.Fatalf("reading encoded removal request: %v", err)
+	}
+	if assetState != "deleted" || copyState != "deleted" || requestExists {
+		t.Fatalf("asset/copy/request = %q/%q/%t, want deleted/deleted/false", assetState, copyState, requestExists)
+	}
+}
+
+func TestMarkPendingMediaAssetCopyDeletedFinalizesLogicalAsset(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	profile := "h264"
+	media := NewMedia(pool, "s3main", "")
+	if err := media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+		RecordingID: dbtest.Recording(t, pool), Kind: store.AssetKindEncoded, Profile: &profile,
+		RelPath: "encoded/pending-finalize.mp4", SizeBytes: 1,
+	}); err != nil {
+		t.Fatalf("preparing pending media asset copy: %v", err)
+	}
+	copyRow, err := sqlcgen.New(pool).GetMediaAssetCopyByPath(ctx, sqlcgen.GetMediaAssetCopyByPathParams{
+		Store: "s3main", RelPath: "encoded/pending-finalize.mp4",
+	})
+	if err != nil {
+		t.Fatalf("loading pending media asset copy: %v", err)
+	}
+	if err := media.MarkPendingMediaAssetCopyDeleted(ctx, copyRow.ID); err != nil {
+		t.Fatalf("marking pending media asset copy deleted: %v", err)
+	}
+	var assetState, copyState string
+	if err := pool.QueryRow(ctx, `SELECT a.state, c.state FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE c.id = $1`, copyRow.ID).Scan(&assetState, &copyState); err != nil {
+		t.Fatalf("reading finalized pending asset state: %v", err)
+	}
+	if assetState != "deleted" || copyState != "deleted" {
+		t.Fatalf("asset/copy state = %q/%q, want deleted/deleted", assetState, copyState)
+	}
+}
+
 func TestRegisterInPlacePreservesDeletingCopyState(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

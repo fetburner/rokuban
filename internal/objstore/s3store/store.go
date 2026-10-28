@@ -44,6 +44,7 @@ type Config struct {
 type api interface {
 	PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	HeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	DeleteObject(context.Context, *s3.DeleteObjectInput, ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
 	CreateMultipartUpload(context.Context, *s3.CreateMultipartUploadInput, ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error)
@@ -256,6 +257,24 @@ func (s *Store) Head(ctx context.Context, key string) (objstore.Object, error) {
 		}
 	}
 	return object, nil
+}
+
+// Get opens a completed object's response body for streaming.
+func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := validateKey(key); err != nil {
+		return nil, fmt.Errorf("invalid S3 object key %q: %w", key, err)
+	}
+	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
+	if err != nil {
+		if isMissingObject(err) {
+			return nil, objstore.ErrNotFound
+		}
+		return nil, fmt.Errorf("getting S3 object %q: %w", key, err)
+	}
+	if output.Body == nil {
+		return nil, fmt.Errorf("getting S3 object %q: server returned an empty body", key)
+	}
+	return output.Body, nil
 }
 
 // Delete removes key idempotently.

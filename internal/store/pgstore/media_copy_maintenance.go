@@ -2,8 +2,11 @@ package pgstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
@@ -46,8 +49,30 @@ func (s *Media) ListDeletingMediaAssetCopies(ctx context.Context, limit int32) (
 
 // MarkPendingMediaAssetCopyDeleted records cleanup after the pending key was removed.
 func (s *Media) MarkPendingMediaAssetCopyDeleted(ctx context.Context, copyID int64) error {
-	if _, err := sqlcgen.New(s.pool).MarkPendingMediaAssetCopyDeletedByID(ctx, copyID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning pending media asset copy finalization: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	assetID, err := q.LockMediaAssetForCopyFinalizationByID(ctx, copyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("locking pending media asset copy %d for finalization: %w", copyID, err)
+	}
+	updated, err := q.MarkPendingMediaAssetCopyDeletedByID(ctx, copyID)
+	if err != nil {
 		return fmt.Errorf("marking pending media asset copy %d deleted: %w", copyID, err)
+	}
+	if updated > 0 {
+		if err := q.FinalizeMediaAssetAfterCopyDelete(ctx, assetID); err != nil {
+			return fmt.Errorf("finalizing media asset %d after pending copy deletion: %w", assetID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing pending media asset copy finalization: %w", err)
 	}
 	return nil
 }
@@ -65,8 +90,30 @@ func (s *Media) ClaimAgedPendingMediaAssetCopy(ctx context.Context, copyID int64
 
 // MarkDeletingMediaAssetCopyDeleted records object removal and finalizes its logical asset if no copies remain.
 func (s *Media) MarkDeletingMediaAssetCopyDeleted(ctx context.Context, copyID int64) error {
-	if err := sqlcgen.New(s.pool).MarkMediaAssetCopyDeletedByID(ctx, copyID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning deleting media asset copy finalization: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	assetID, err := q.LockMediaAssetForCopyFinalizationByID(ctx, copyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("locking deleting media asset copy %d for finalization: %w", copyID, err)
+	}
+	updated, err := q.MarkMediaAssetCopyDeletedByID(ctx, copyID)
+	if err != nil {
 		return fmt.Errorf("marking deleting media asset copy %d deleted: %w", copyID, err)
+	}
+	if updated > 0 {
+		if err := q.FinalizeMediaAssetAfterCopyDelete(ctx, assetID); err != nil {
+			return fmt.Errorf("finalizing media asset %d after copy deletion: %w", assetID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing deleting media asset copy finalization: %w", err)
 	}
 	return nil
 }

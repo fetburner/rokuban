@@ -131,6 +131,7 @@ type MediaReconcilePage struct {
 // Cut の行は、その encoded を作った時点で凍結した keep 区間を持つ。
 type ThumbnailEncodedAsset struct {
 	MediaAssetID int64
+	Store        string
 	Profile      string
 	RelPath      string
 	Cut          bool
@@ -150,6 +151,7 @@ type ThumbnailReselectCandidate struct {
 	CMRanges              []chapters.Range
 	UserSpans             []chapters.Span
 	OriginalMediaAssetID  int64
+	OriginalStore         string
 	OriginalRelPath       string
 	EncodedAssets         []ThumbnailEncodedAsset
 	ThumbnailMediaAssetID *int64

@@ -406,6 +406,8 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 再選択の入力は、active かつ `missing_media_assets` に無い原本を優先し、次にプロファイル名昇順のカットしない encoded、最後に同じ順のカット版を選ぶ。未確認の自動 CM 検出も使う。チャプターがない録画は再選択せず、keep が空なら再選択を繰り返さない。
 
+S3 上の encoded 版を入力に選んだ場合は、scratch へ取得してから抽出する。
+
 作り直す条件は、記録済み位置が現在の keep 外にあり、同じ入力選択で計画した位置とも異なる場合だけである。`seek_ms` が無い旧サムネイルは、チャプターと使える入力があれば一度選び直す。位置が keep 内なら、望ましい位置との違いだけでは作り直さない。
 
 再選択 reconcile は、active なサムネイルと CM 検出または所有済みチャプターがある録画を recording ID の窓で巡回し、Go の共通判定で再選択の対象を投入する。ごみ箱は除外し、`seek_tiles` や初回生成とは別の再開位置を持つ。窓の再開位置は継続ジョブの引数で引き継ぐ（[ingest-followup.md](../recording/ingest-followup.md) §5.5）。再選択が要らない録画も窓に入るので、対象が上限を超えると、通常運転でも周期ごとに継続ジョブが連鎖する。CM 検出の保存後に 1 件ヒントを出すが、ヒントはベストエフォート。手動編集は次の窓で拾う。
@@ -414,6 +416,11 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 - keep range の位置を原本時間へ写すこと: `UnmapMs(keep, seek)`
 - 入力の時間原点を 0 にしてカット境界を適用すること: `ffargs.CutFilterComplex`
+- S3 上の encoded 版からサムネイルを再選択すること:
+
+  ```text
+  TestS3DerivedObjectPublicationAndRecovery/thumbnail_reselection_reads_encoded_input_from_S3
+  ```
 
 </details>
 

@@ -20,6 +20,7 @@ import (
 
 type fakeAPI struct {
 	headFn        func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
+	getFn         func(context.Context, *s3.GetObjectInput) (*s3.GetObjectOutput, error)
 	completeErr   error
 	completeCalls int
 	abortCalls    int
@@ -35,6 +36,13 @@ func (f *fakeAPI) PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Opt
 func (f *fakeAPI) HeadObject(ctx context.Context, in *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
 	if f.headFn != nil {
 		return f.headFn(ctx, in)
+	}
+	return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
+}
+
+func (f *fakeAPI) GetObject(ctx context.Context, in *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	if f.getFn != nil {
+		return f.getFn(ctx, in)
 	}
 	return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
 }
@@ -200,6 +208,32 @@ func TestMultipartPartSizeRespectsMaximumPartCount(t *testing.T) {
 	got := multipartPartSize(large)
 	if got < minPartSize || (large-1)/got+1 > maxPartCount {
 		t.Fatalf("large part size = %d, yields %d parts; want >= %d and <= %d parts", got, (large-1)/got+1, minPartSize, maxPartCount)
+	}
+}
+
+func TestGetStreamsObjectAndMapsMissingKeys(t *testing.T) {
+	data := []byte("encoded source bytes")
+	client := &fakeAPI{getFn: func(_ context.Context, in *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+		if aws.ToString(in.Key) != "encoded/1.mp4" {
+			t.Fatalf("GetObject key = %q, want encoded/1.mp4", aws.ToString(in.Key))
+		}
+		return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(data))}, nil
+	}}
+	objects := &Store{client: client, bucket: "derived"}
+	body, err := objects.Get(context.Background(), "encoded/1.mp4")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, err := io.ReadAll(body)
+	closeErr := body.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("reading/closing Get body: read %v, close %v", err, closeErr)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("Get body = %q, want %q", got, data)
+	}
+	if _, err := (&Store{client: &fakeAPI{}, bucket: "derived"}).Get(context.Background(), "encoded/missing.mp4"); !errors.Is(err, objstore.ErrNotFound) {
+		t.Fatalf("missing Get error = %v, want ErrNotFound", err)
 	}
 }
 

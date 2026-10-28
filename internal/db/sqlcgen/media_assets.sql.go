@@ -202,6 +202,7 @@ JOIN LATERAL (
     FROM media_asset_copies copy
     WHERE copy.media_asset_id = a.id
       AND ($1::text IS NULL OR copy.store = $1)
+      AND copy.state <> 'pending'
     ORDER BY (copy.state = 'active') DESC, copy.store
     LIMIT 1
 ) c ON true

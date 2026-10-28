@@ -101,6 +101,31 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	return count, err
 }
 
+const finalizeMediaAssetAfterCopyDelete = `-- name: FinalizeMediaAssetAfterCopyDelete :exec
+WITH completed AS (
+    UPDATE media_assets a
+    SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
+    WHERE a.id = $1
+      AND a.state IN ('active', 'deleting')
+      AND NOT EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
+      )
+    RETURNING a.id, a.recording_id, a.profile
+)
+DELETE FROM encoded_asset_removal_requests request
+USING completed
+WHERE request.recording_id = completed.recording_id
+  AND request.profile = completed.profile
+`
+
+// This runs after the copy update as a separate statement so READ COMMITTED gets a
+// fresh snapshot. The caller locks the parent asset first to serialize finalizers.
+func (q *Queries) FinalizeMediaAssetAfterCopyDelete(ctx context.Context, mediaAssetID int64) error {
+	_, err := q.db.Exec(ctx, finalizeMediaAssetAfterCopyDelete, mediaAssetID)
+	return err
+}
+
 const getActiveMediaAssetCopy = `-- name: GetActiveMediaAssetCopy :one
 SELECT id, rel_path
 FROM media_asset_copies
@@ -376,49 +401,41 @@ func (q *Queries) LockMediaAssetCopy(ctx context.Context, arg LockMediaAssetCopy
 	return err
 }
 
-const markMediaAssetCopyDeletedByID = `-- name: MarkMediaAssetCopyDeletedByID :exec
-WITH deleted AS (
-    UPDATE media_asset_copies copy
-    SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
-    WHERE copy.id = $1 AND copy.state = 'deleting'
-    RETURNING media_asset_id
-), completed AS (
-    UPDATE media_assets a
-    SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
-    WHERE a.id IN (SELECT media_asset_id FROM deleted)
-      AND a.state IN ('active', 'deleting')
-      AND NOT EXISTS (
-          SELECT 1 FROM media_asset_copies copy
-          WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
-      )
-    RETURNING a.id, a.recording_id, a.profile
-)
-DELETE FROM encoded_asset_removal_requests request
-USING completed
-WHERE request.recording_id = completed.recording_id
-  AND request.profile = completed.profile
+const lockMediaAssetForCopyFinalizationByID = `-- name: LockMediaAssetForCopyFinalizationByID :one
+SELECT a.id
+FROM media_assets a
+JOIN media_asset_copies copy ON copy.media_asset_id = a.id
+WHERE copy.id = $1
+FOR UPDATE OF a, copy
 `
 
-func (q *Queries) MarkMediaAssetCopyDeletedByID(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, markMediaAssetCopyDeletedByID, id)
-	return err
+// Lock the logical asset and copy before a separate state transition and finalizer.
+// The parent lock serializes finalizers for different copies of the same asset.
+func (q *Queries) LockMediaAssetForCopyFinalizationByID(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockMediaAssetForCopyFinalizationByID, id)
+	var id_2 int64
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const markMediaAssetCopyDeletedByID = `-- name: MarkMediaAssetCopyDeletedByID :execrows
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE id = $1 AND state = 'deleting'
+`
+
+func (q *Queries) MarkMediaAssetCopyDeletedByID(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, markMediaAssetCopyDeletedByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markPendingMediaAssetCopyDeletedByID = `-- name: MarkPendingMediaAssetCopyDeletedByID :execrows
-WITH deleted AS (
-    UPDATE media_asset_copies AS copy
-    SET state = 'deleted', deleted_at = COALESCE(copy.deleted_at, now())
-    WHERE copy.id = $1 AND copy.state = 'pending'
-    RETURNING copy.media_asset_id
-)
-UPDATE media_assets a
-SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
-WHERE a.id IN (SELECT media_asset_id FROM deleted)
-  AND a.state IN ('active', 'deleting')
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
-  )
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE id = $1 AND state = 'pending'
 `
 
 func (q *Queries) MarkPendingMediaAssetCopyDeletedByID(ctx context.Context, id int64) (int64, error) {
@@ -516,15 +533,17 @@ UPDATE media_asset_copies
 SET state = $1,
     deleted_at = CASE WHEN $1::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
 WHERE id = $2
+  AND state = $3
 `
 
 type SetMediaAssetCopyStateByIDParams struct {
-	State string
-	ID    int64
+	State     string
+	ID        int64
+	FromState string
 }
 
 func (q *Queries) SetMediaAssetCopyStateByID(ctx context.Context, arg SetMediaAssetCopyStateByIDParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setMediaAssetCopyStateByID, arg.State, arg.ID)
+	result, err := q.db.Exec(ctx, setMediaAssetCopyStateByID, arg.State, arg.ID, arg.FromState)
 	if err != nil {
 		return 0, err
 	}

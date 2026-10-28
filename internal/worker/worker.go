@@ -296,10 +296,10 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Publisher:      derivedPublisher,
 		Objects:        deps.DerivedObjects,
 		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName,
-		ScratchDir:     deps.ScratchDir,
-		FFmpeg:         deps.Encode.FFmpeg,
-		FFprobe:        deps.Encode.FFprobe,
+		MediaStoreName: deps.MediaStoreName, DerivedStoreName: deps.DerivedObjectStoreName,
+		ScratchDir: deps.ScratchDir,
+		FFmpeg:     deps.Encode.FFmpeg,
+		FFprobe:    deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &SeekTilesWorker{
 		Media:          deps.MediaReconcile,
