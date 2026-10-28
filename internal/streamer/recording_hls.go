@@ -55,6 +55,7 @@ type RecordingHLSConfig struct {
 	FFprobe         string
 	Profiles        []LiveProfile
 	HWAccel         *ffargs.HWAccel
+	InputExtraArgs  []string
 	Captions        bool
 	CacheBytes      int64
 	MaxSegmentBytes int64
@@ -122,10 +123,11 @@ func NewRecordingHLS(media recordingHLSStore, cfg RecordingHLSConfig) (*Recordin
 	}
 	manager, err := NewSegmentManager(SegmentTransformOptions{
 		Config: LiveConfig{
-			FFmpeg:   cfg.FFmpeg,
-			HWAccel:  cfg.HWAccel,
-			Profiles: cfg.Profiles,
-			Captions: cfg.Captions,
+			FFmpeg:         cfg.FFmpeg,
+			HWAccel:        cfg.HWAccel,
+			InputExtraArgs: cfg.InputExtraArgs,
+			Profiles:       cfg.Profiles,
+			Captions:       cfg.Captions,
 		},
 		ScratchRoot:     cfg.SegmentDir,
 		CacheBytes:      cfg.CacheBytes,

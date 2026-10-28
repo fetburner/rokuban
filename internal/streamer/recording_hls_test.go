@@ -116,8 +116,10 @@ func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bo
 	}
 	segmentDir := t.TempDir()
 	var hwAccel *ffargs.HWAccel
+	var inputExtraArgs []string
 	if len(hw) > 0 {
 		hwAccel = hw[0]
+		inputExtraArgs = []string{"-extra_hw_frames", "32"}
 	}
 	h, err := NewRecordingHLS(media, RecordingHLSConfig{
 		StoreName:       "main",
@@ -126,6 +128,7 @@ func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bo
 		FFmpeg:          ffmpeg,
 		FFprobe:         ffprobe,
 		HWAccel:         hwAccel,
+		InputExtraArgs:  inputExtraArgs,
 		Profiles:        []LiveProfile{{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6}},
 		Captions:        captions,
 		CacheBytes:      1 << 20,
@@ -479,7 +482,7 @@ func TestRecordingHLSUsesConfiguredHardwareAcceleration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"-hwaccel\nvaapi\n", "-hwaccel_device\n/dev/dri/renderD128\n", "-hwaccel_output_format\nvaapi\n"} {
+	for _, want := range []string{"-hwaccel\nvaapi\n", "-hwaccel_device\n/dev/dri/renderD128\n", "-hwaccel_output_format\nvaapi\n", "-extra_hw_frames\n32\n"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("ffmpeg args missing %q: %s", want, args)
 		}
