@@ -178,6 +178,33 @@ func TestMeasureRecordingHLSVideoDurationPipesOnlyTheTail(t *testing.T) {
 	}
 }
 
+// ffprobe が成功しても出力に映像パケットが無い窓（パケットが全て pts 無しなど）は、次の大きさの窓で測り直す。
+//
+// 壊し方: measureRecordingHLSVideoDuration の `lastErr = nil` の後の `if offset == 0 { break }` を無条件の break にする。
+func TestMeasureRecordingHLSVideoDurationWidensWhenTheWindowHasNoPacket(t *testing.T) {
+	dir := t.TempDir()
+	ffprobe := filepath.Join(dir, "recording-ffprobe")
+	// 標準入力が 4096 バイトを超えたときだけ、映像パケットを返す。
+	script := "#!/bin/sh\nsize=$(wc -c)\nif [ \"$size\" -gt 4096 ]; then printf 'pts=90000|duration=3600|\\n'; else printf 'pts=N/A|duration=N/A|\\n'; fi\n"
+	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "input.ts")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 16384), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	withRecordingHLSTailWindows(t, 1024, 8192)
+	got, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, 16384, 0)
+	if err != nil || got != 93600 {
+		t.Fatalf("duration = (%d, %v), want (93600, nil) from the wider window", got, err)
+	}
+}
+
 // ffprobe が居座っても、呼び出し元の ctx で止まる。
 func TestMeasureRecordingHLSVideoDurationStopsWithContext(t *testing.T) {
 	ffprobe := filepath.Join(t.TempDir(), "sleeping-ffprobe")
