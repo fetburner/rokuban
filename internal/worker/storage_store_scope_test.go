@@ -134,6 +134,41 @@ func TestDeleteReconcileBreakerIsScopedToMountedStore(t *testing.T) {
 	}
 }
 
+func TestDeleteReconcileHonorsLegacyEmptyScopeBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	storeName, root := newStoreRootForAuditTest(t, "store-a")
+	relPath := "sites/default/legacy-latched.ts"
+	writeOldAuditFile(t, root, relPath)
+	assetID, recordingID := seedStoreScopedOriginalForAudit(t, pool, storeName, relPath)
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() - interval '2 hours' WHERE id = $1`, recordingID); err != nil {
+		t.Fatalf("moving recording %d to trash: %v", recordingID, err)
+	}
+
+	// Before the scope migration, delete_reconcile breakers were stored with an
+	// empty scope. That latch must remain effective until an operator resumes it.
+	breakers := pgstoretest.Breakers(pool)
+	if err := breaker.Trip(ctx, breakers, "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 1}); err != nil {
+		t.Fatalf("tripping legacy delete breaker: %v", err)
+	}
+	worker := newStoreScopedDeleteWorker(pool, storeName, root)
+	worker.TrashRetention = time.Hour
+	worker.MaxDeletesPerPass = 10
+	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("DeleteReconcileWorker.Work(): %v", err)
+	}
+
+	if got := storeCopyState(t, pool, storeName, assetID); got != "active" {
+		t.Errorf("copy state while legacy breaker is tripped = %q, want active", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relPath))); err != nil {
+		t.Errorf("file while legacy breaker is tripped: %v", err)
+	}
+	if tripped, err := breakers.IsTripped(ctx, "", breaker.DeleteReconcile); err != nil || !tripped {
+		t.Errorf("legacy breaker = (%t, %v), want (true, nil)", tripped, err)
+	}
+}
+
 func newStoreRootForAuditTest(t *testing.T, storeName string) (string, string) {
 	t.Helper()
 	root := t.TempDir()

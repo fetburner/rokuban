@@ -38,7 +38,25 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 	}
 
 	result := make([]CircuitBreaker, 0, len(rows))
+	storeScoped := make(map[string]bool)
+	if h.breakerStoreScope != "" {
+		for _, r := range rows {
+			if breaker.ScopeKindFor(r.Name) == breaker.ScopeStore && r.Scope == h.breakerStoreScope {
+				storeScoped[r.Name] = true
+			}
+		}
+	}
 	for _, r := range rows {
+		if h.breakerStoreScope != "" && breaker.ScopeKindFor(r.Name) == breaker.ScopeStore && r.Scope != h.breakerStoreScope {
+			// The API contract has no store field. Show the configured store's
+			// breaker; keep an empty-scope legacy latch visible only until that
+			// store has its own row. This avoids duplicate public identities while
+			// still exposing an upgrade latch. Covered by
+			// TestListCircuitBreakersPrefersCurrentStoreOverLegacyLatch.
+			if r.Scope != "" || storeScoped[r.Name] {
+				continue
+			}
+		}
 		var sample CircuitBreakerSample
 		if err := json.Unmarshal(r.Detail, &sample); err != nil {
 			return nil, fmt.Errorf("unmarshalling detail for circuit breaker %s/%s: %w", r.Scope, r.Name, err)
@@ -161,11 +179,25 @@ func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSit
 		scope = h.breakerStoreScope
 	}
 	err := h.breakerAdmin.Resume(ctx, scope, req.Name)
-	if errors.Is(err, store.ErrNotFound) {
-		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
-	}
-	if err != nil {
+	resumed := err == nil
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("resuming circuit breaker %q: %w", req.Name, err)
+	}
+	// Legacy delete_reconcile rows were stored with an empty scope. Clear that
+	// compatibility latch together with the current store row so one resume
+	// action releases every latch the worker observes. Covered by
+	// TestResumeSitelessCircuitBreaker_ResumesLegacyEmptyScopeLatch and
+	// TestResumeSitelessCircuitBreaker_ResumesStoreAndLegacyLatches.
+	if kind == breaker.ScopeStore && scope != "" {
+		legacyErr := h.breakerAdmin.Resume(ctx, "", req.Name)
+		if legacyErr == nil {
+			resumed = true
+		} else if !errors.Is(legacyErr, store.ErrNotFound) {
+			return nil, fmt.Errorf("resuming legacy circuit breaker %q: %w", req.Name, legacyErr)
+		}
+	}
+	if !resumed {
+		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
 	}
 	return ResumeSitelessCircuitBreaker204Response{}, nil
 }

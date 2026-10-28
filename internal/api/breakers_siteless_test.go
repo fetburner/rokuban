@@ -210,6 +210,123 @@ func TestResumeSitelessCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	}
 }
 
+func TestResumeSitelessCircuitBreaker_ResumesLegacyEmptyScopeLatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	router := newBreakerRouter(pool)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	// Before the scope migration, delete_reconcile breakers used the empty scope.
+	if _, err := pool.Exec(ctx, `
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
+VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil {
+		t.Fatalf("inserting legacy circuit breaker fixture: %v", err)
+	}
+	listResp, err := http.Get(srv.URL + "/api/breakers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []struct {
+		Name    string `json:"name"`
+		Pending int    `json:"pending"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		_ = listResp.Body.Close()
+		t.Fatalf("decoding GET /api/breakers response: %v", err)
+	}
+	_ = listResp.Body.Close()
+	if len(listed) != 1 || listed[0].Name != "delete_reconcile" || listed[0].Pending != 150 {
+		t.Fatalf("GET /api/breakers legacy latch = %+v, want one visible delete_reconcile row", listed)
+	}
+
+	resp, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204 (body=%s)", resp.StatusCode, body)
+	}
+	if got := countCircuitBreakers(t, pool, ctx); got != 0 {
+		t.Errorf("circuit breaker rows after resuming legacy latch = %d, want 0", got)
+	}
+}
+
+func TestResumeSitelessCircuitBreaker_ResumesStoreAndLegacyLatches(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	router := newBreakerRouter(pool)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, scope := range []string{"test-store", ""} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
+VALUES ($1, 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`, scope); err != nil {
+			t.Fatalf("inserting %q-scope circuit breaker fixture: %v", scope, err)
+		}
+	}
+
+	resp, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 204 (body=%s)", resp.StatusCode, body)
+	}
+	if got := countCircuitBreakers(t, pool, ctx); got != 0 {
+		t.Errorf("circuit breaker rows after resuming store and legacy latches = %d, want 0", got)
+	}
+}
+
+func TestListCircuitBreakersPrefersCurrentStoreOverLegacyLatch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail) VALUES
+  ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb),
+  ('test-store', 'delete_reconcile', 42, 100, '{"total":42}'::jsonb)`); err != nil {
+		t.Fatalf("inserting current and legacy circuit breaker fixtures: %v", err)
+	}
+
+	router := newBreakerRouter(pool)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/breakers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET /api/breakers status = %d, want 200 (body=%s)", resp.StatusCode, body)
+	}
+	var listed []struct {
+		Site    string `json:"site"`
+		Name    string `json:"name"`
+		Pending int    `json:"pending"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decoding GET /api/breakers response: %v", err)
+	}
+	var got []int
+	for _, item := range listed {
+		if item.Name == "delete_reconcile" {
+			if item.Site != "" {
+				t.Errorf("delete_reconcile API site = %q, want empty", item.Site)
+			}
+			got = append(got, item.Pending)
+		}
+	}
+	if len(got) != 1 || got[0] != 42 {
+		t.Errorf("listed delete_reconcile pending values = %v, want [42] from the configured store", got)
+	}
+}
+
 // TestResumeCircuitBreaker_400WhenNameIsSiteless は旧ルート（site スコープ）に
 // 置き場 scope の名前（delete_reconcile）を渡すと 400 になることを確認する
 // （受け入れ 2）。単一サイト（レジストリ未指定 = store.DefaultSite の 1 要素）でも、
