@@ -190,9 +190,7 @@ CREATE TABLE cm_logo_areas (
 
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 
-この表は未 commit の temp 世代と置き場を保持し、取り込み中と終端後の部分再生元を指す。部分 temp は資産として扱わず、公開前ファイルと同じ aging で回収する。
-
-行がある間は temp のパスと世代を引ける。転送中と SHA-256 待ちに加え、record が cancel / fail で終わった後も、部分 temp の追っかけ再生に使う間は行が残る。部分 temp は `media_assets` には登録しない。書き込みバイト数は単調に増えず、一時ファイルに書けている量の観測である。書き手は ingest worker だけで、原本の取り込みが「どこまで書けたか」を持つ。
+**行の存在が、ingest がまだ commit していない temp を持っていることを意味する**（不変条件 10）。転送中に加え、SHA-256 待ちで snooze している間も行は残る。書き込みバイト数は単調に増えず、一時ファイルに書けている量の観測である。書き手は ingest worker だけで、原本の取り込みが「どこまで書けたか」を持つ。
 
 ```sql
 CREATE TABLE recording_ingest_progress (
@@ -202,14 +200,11 @@ CREATE TABLE recording_ingest_progress (
     temp_rel_path  text        NOT NULL,
     temp_store     text        NOT NULL DEFAULT '',
     temp_generation bigint     NOT NULL CHECK (temp_generation > 0),
-    temp_finalized boolean     NOT NULL DEFAULT false,
     observed_at    timestamptz NOT NULL DEFAULT now()
 );
 ```
 
 `temp_rel_path` は media root からの相対パスで、`temp_store` は一時ファイルがある置き場を示す。`temp_store` が空の行は移行前の行で、`storage adopt <store-name>` が埋める。`temp_store` が空の行が残る間、worker は起動を拒む。
-
-`temp_finalized` は cancel / fail を ingest worker が追従し終え、temp へ追加書き込みをしない状態を表す。worker は現在の Range 転送が止まった後に、同じ UPDATE で `written_bytes` を正確な末尾へ合わせて true にする。次の転送開始時の upsert は false に戻す。`record_sync.status` だけでは watcher が先に終端を観測する窓に書き込み中か判定できないため、録画 HLS はこの印がある temp にだけ ENDLIST を付ける。
 
 `temp_generation` は `ingest_temp_generation_seq` から採番する。世代が要るのは、作り直した temp は前と違うバイト列でありうるので、前の temp から作ったセグメントを同じ再生 URL で配らないためである。世代が変わるのは「この試行で temp を作った」ときと「進捗行が無い」ときの 2 つだけで、replay や SHA-256 待ちをまたいでも同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
 
@@ -217,22 +212,20 @@ CREATE TABLE recording_ingest_progress (
 
 - 原本のメディアアセットを INSERT するトランザクション（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）
 - 録画行の削除（FK の CASCADE）
-- temp を捨てるとき（サイズ・ハッシュ不一致など）
+- temp を捨てるとき（record の cancel / fail、サイズ・ハッシュ不一致など）
 - 別経路の登録などで原本が既にコミット済みと分かったとき（取り残された行の掃除）
 - temp が無い状態から作り直す前（古い世代を、作り直した temp へ引き継がないため）
 
-record の cancel / fail では進捗行を残し、途中までの temp を追っかけ再生に使う。temp は原本資産ではなく、通常の公開前 orphan と同じ aging で回収する。後続の ingest が別世代の temp を作れば、進捗行は新しいパスと世代を指す。
-
 書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。あちらは mirakc 側の観測で書き手は watcher、こちらは Rokuban 側のファイルに何バイト書けたかで、1 表 2 書き手になる（不変条件 12）。
 
-書き込みバイト数は、単調に増えない。ジョブ内リトライ（Range 再開）とプロセス死後の temp replay では、値が積み上がる。サイズや SHA-256 の不一致で temp を捨てると、次の試行は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。通常の転送中は最後に観測した値であり、累積の転送実績ではない。cancel / fail の終端後だけは、worker が追従を止めた時点の実際の末尾を保存し、`temp_finalized` と組にして配信の終端判定に使う。
+書き込みバイト数は、単調に増えない。ジョブ内リトライ（Range 再開）とプロセス死後の temp replay では、値が積み上がる。サイズや SHA-256 の不一致、record の cancel / fail で temp を捨てると、次の試行は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。これは、いま temp に書けているバイト数の観測である。累積の転送実績ではない。
 
 期待バイト数は、同期表の長さのコピーで、転送開始時に読む。mirakc が長さを返さなければ NULL のままにする。でっち上げた分母を置かない。ジョブが失敗して River のバックオフ待ちに入ると、行は観測時刻が古いまま残る。これは意図した挙動で、`river_job` を API 契約に露出させない代わりに、停滞を読ませる唯一の材料になる（[recording/ingest-followup.md](../../recording/ingest-followup.md) §5.6）。
 
 <details><summary>根拠</summary>
 
 - 書き手の実装: `internal/worker/ingest_progress.go`
-- commit 前の temp 世代を指す行: `recording_ingest_progress`
+- 転送中を表す行: `recording_ingest_progress`
 - 録画行の削除で消える仕組み: `ON DELETE CASCADE`、`recordings`
 - 書き込みバイト数: `written_bytes`
 - 期待バイト数のコピー元: `expected_bytes`、`record_sync.content_length`

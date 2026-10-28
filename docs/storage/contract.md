@@ -68,7 +68,7 @@ link 後の temp は canonical と同じ inode である。temp は `O_APPEND` �
 
 公開点は DB commit であり、link と親ディレクトリの fsync の成功が先に来る。名前だけでは公開済みか判定できないので、canonical file は自動で消さない。
 
-link 前の一時障害では、temp を残して次の試行へ渡す。中身の不一致では temp を消す。record の cancel / fail では原本に commit せず、部分 temp を HLS 追っかけ再生用に残し、公開前 orphan の aging で回収する。
+link 前の失敗では、temp を残して次の試行へ渡す。中身の不一致、または record の cancel / fail が分かった場合だけ temp を消す。
 
 link の後で fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行がそれを見て commit だけをやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。例えば再試行が成功しないまま temp が mtime 猶予と aging を過ぎると、孤児回収が temp を消す。次の試行は別の inode の temp を作るので、canonical は他人のファイルとして扱われて ingest が止まり、aging 後に orphan として報告される。
 

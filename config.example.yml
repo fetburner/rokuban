@@ -309,9 +309,7 @@ live:
   #     height: 720               # 0 or omit = スケールしない
   #     deinterlace: true         # インターレース解除。scaler=software なら yadif
   #     preset: veryfast          # optional
-  #     segment_seconds: 2        # 0 なら既定値 2。録画中 HLS は末尾を「追記の可視遅延
-                                  # 最大 55 秒 + D」だけ遅らせる。NFS 4.1、500 kbit/s
-                                  # の測定で最大 55 秒。式と条件は playback.md を参照。
+  #     segment_seconds: 2        # 0 なら既定値 2
   #     playlist_size: 6          # 0 なら既定値 6
   #   # VAAPI（scaler/crf/qp はプロファイル毎 --- 出力側オプションなので出力ごとに違ってよい）
   #   - name: h264_vaapi

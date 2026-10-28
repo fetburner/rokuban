@@ -133,7 +133,7 @@ memory limit は `sizeLimit` + 512Mi（ffmpeg の実測 peak 173Mi の約 3 倍�
 
 世代付き録画 HLS は専用 Pod の tmpfs（`recording_hls.segment_dir`、Pod の `recording-hls-scratch`）に 2 つを置く。バイト上限付きのセグメントキャッシュ（`recording_hls.cache_bytes`）と、変換ごとの作業 scratch（ffmpeg の出力がキャッシュへ公開されるまでの置き場）である。`live.segment_dir` とは別の volume で、ライブ・追っかけ・原本 VOD の scratch とは合算しない。
 
-キャッシュの下限は `max_concurrent × (先読み 5 + 要求 1) × 最大 5 rendition（映像・音声 3・字幕）× 16 MiB` である。`cache_bytes` はこの値より大きくし、起動時の検証が下回る設定を弾く。同梱設定は 3 × 6 × 5 × 16 MiB = 1440 MiB に対して 1536 MiB である。既定を 3 にしたのは、追従変換 2 本では 3 人目の視聴中に idle 変換を止めて起動し直す往復が起きるためである。16 MiB は下限を計算するための見積もりで、実セグメントの上限ではない。見積もりを超えるセグメントも配信は止めず、キャッシュ全体より大きい場合だけエラーにする。この式はここだけに置き、[playback.md](../api/media/playback.md) と `config.example.yml` はここを参照する。
+キャッシュの下限は `max_concurrent × (先読み 5 + 要求 1) × 最大 5 rendition（映像・音声 3・字幕）× 16 MiB` である。`cache_bytes` はこの値より大きくし、起動時の検証が下回る設定を弾く。同梱設定は 3 × 6 × 5 × 16 MiB = 1440 MiB に対して 1536 MiB である。既定を 3 にしたのは、追従変換 2 本では 3 人目の視聴中に idle 変換を止めて起動し直す往復が起きると見込んだためである。この往復は測っていない（未検証）。16 MiB は下限を計算するための見積もりで、実セグメントの上限ではない。見積もりを超えるセグメントも配信は止めず、キャッシュ全体より大きい場合だけエラーにする。この式はここだけに置き、[playback.md](../api/media/playback.md) と `config.example.yml` はここを参照する。
 
 同梱の `sizeLimit: 2Gi` は、キャッシュの 1.5Gi に 512Mi の余白を足した値である。作業 scratch の実測値は無い（未検証）ので、この余白は見積もりにとどまる。memory limit の `3584Mi` は、`sizeLimit` + 512Mi × 同時変換数（2Gi + 3 × 512Mi）で決めた。512Mi はライブの ffmpeg の実測 peak に由来し、この経路の ffmpeg の peak は未測定（未検証）である。tmpfs が満杯になったときにこの経路の変換とキャッシュがどう振る舞うかも未検証である。
 

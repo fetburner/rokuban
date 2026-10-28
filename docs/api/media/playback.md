@@ -468,33 +468,89 @@ GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/i
 GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/{n}.ts
 ```
 
-`{store}` は `storage.stores` に定義した FS 置き場の名前と一致する必要がある。振り分けの鍵を site ではなく置き場にするのは、規則によって 1 つの site の原本が複数の置き場に分かれうるからである。`{gen}` は現在の入力元にある世代であり、temp は `temp_generation`、原本は `ingest_generation`（NULL は 0）を使う。今の世代と異なる URL は 410 にする。
+`{store}` は `storage.stores` に定義した FS 置き場の名前と一致する必要がある。振り分けの鍵を site ではなく置き場にするのは、規則によって 1 つの site の原本が複数の置き場に分かれうるからである。
 
-#### 入力、playlist と世代
+#### 入力と世代
 
-同じ URL で録画中は temp を読み、取り込み完了後は原本へ切り替える。playlist は末尾に余裕を持った EVENT とし、DB で終端を確かめたときだけ ENDLIST を付ける。
+録画中は ingest の temp を、commit の後は原本を、同じ URL で読む。どちらを読むかは、ファイルの有無ではなく DB の行で決める。
 
-playlist の入力は DB の行で決める。原本行があれば commit 済みの原本を読み、原本行が無く `recording_ingest_progress` 行があればその `temp_rel_path` を読む。temp のファイルが存在するだけでは配信しない。temp の置き場も URL の `{store}` と一致させる。
+原本の行があれば commit 済みの原本を読む。原本の行が無く `recording_ingest_progress` の行があれば、その `temp_rel_path` の temp を読む。temp の置き場も URL の `{store}` と一致させる。
 
-temp の URL 世代は `recording_ingest_progress.temp_generation`、原本の URL 世代は `media_assets.ingest_generation`（NULL は 0）である。commit が同じ世代を原本行へ写すため、temp から原本へ切り替わっても URL は変わらない。世代が変わった URL は 410 にする。キャッシュ済みセグメントは同じ世代の入力バイトから作るため、commit 後も使える。
+`{gen}` は、temp では `recording_ingest_progress.temp_generation`、原本では `media_assets.ingest_generation`（NULL は 0）である。commit が同じ世代を原本の行へ写すので、temp から原本へ切り替わっても URL は変わらない。キャッシュ済みのセグメントも同じバイト列から作るため、commit の後も使える。temp が作り直されて世代が変わったら、古い世代の URL は 410 にする。
 
-録画中の playlist は EVENT である。D は profile の segment duration、開始時刻は `recordings.started_at` とする。末尾番号は `K = floor((現在時刻 − 開始時刻 − 55 秒 − D) / D)` で求める。temp の playlist は 0 から K を載せる。K が負ならセグメントを載せない。
+#### playlist
 
-55 秒は NFS 4.1、500 kbit/s の測定で観測した追記可視遅延の最大値である。D を加えて 1 セグメント分の余裕を置く。この根拠は録画中の `segment_seconds` の設定コメントにも記す。K 以下のセグメントがまだ変換できないときは要求を待つ。期限を超えた要求には 503 と `Retry-After` を返す。
+playlist は EVENT とし、ffmpeg の出力を待たずに、アプリが組み立てる。
 
-書き込み中の temp を読む FFmpeg は `-follow 1 -rw_timeout 90000000` を使う。終端は FFmpeg の終了コードから推定しない。原本が commit されたら最終長を使い `ENDLIST` を付ける。DB が `record_sync.status` を `canceled` / `failed` と示しても、ingest worker が開いていた Range の読み取りを終えるまでは playlist を開いたままにする。worker が進捗行へ確定した temp サイズを記録してから、録れた範囲に `ENDLIST` を付ける。確定サイズが変わったら metadata を probe し直す。status が欠落または未知なら終端とせず、`ENDLIST` を付けない。
+形は常に `#EXT-X-PLAYLIST-TYPE:EVENT` である。各セグメントには `recordings.started_at + n × D` の `#EXT-X-PROGRAM-DATE-TIME` を付ける。`D` は profile の `live.profiles[].segment_seconds` である。
 
-映像、標準・主・副の音声は MPEG-TS の rendition にする。字幕を有効にして原本に字幕ストリームがある場合は、WebVTT の字幕 rendition も master に載せる。映像・音声は `.ts`、字幕は `.vtt` のセグメントを返す。playlist は常に `EVENT` とし、終端を DB で確認したときだけ `ENDLIST` を付ける。変換の組には入力種別と temp の追従状態を含めるため、終端済みの有限 temp は追従変換へ合流せず、commit 後の原本変換も temp を追従中の変換へ合流しない。
+映像の長さは、temp でも原本でも同じ関数で測る。定義は「末尾の映像パケットの最大の pts + duration − 原点」で、2^33 を法として取る。PTS は約 26.5 時間で巻き戻る。原点は先頭の映像パケットの PTS である。format 全体の duration は音声など最長のストリームに引かれるので使わない。ffprobe の stream duration は、FFmpeg の文書に無い推定が入るので使わない。
 
-要求ごとに DB で、ごみ箱・完全削除・置換でないこと、および原本または配信可能な ingest temp があることを確かめる。原本は完了していて有効な行を持つ場合だけ配信する。条件に合わないときの応答は原因ごとに違う。
+末尾の測り方は次のとおりである。
 
-- 行が見つからない（ごみ箱・完全削除・置換・配信可能な入力なし）、temp の置き場が違う、原本ファイルが無い、開き直した入力が別のアセットだった場合は 404 にする。その世代の変換を止め、キャッシュを捨てる
+- ファイル末尾の数 MiB（4 MiB から始め、32 MiB、256 MiB へ広げる）を、ffprobe に標準入力で渡す。`/dev/fd/N` で fd を渡すと、Linux では通常ファイルを先頭から開き直すので、末尾だけを渡したことにならない。Go は TS を解釈しない
+- 窓に映像パケットが 1 つも無ければ窓を広げる。最大の窓にも無ければ、temp は前回の値を使い、原本は失敗にする
+- 窓だけを渡した ffprobe は `duration` を `N/A` で返すことがある。そのときは、最大の 2 つの pts の差（フレーム間隔）を `duration` とする
+
+録画中は、観測した映像の長さに全体が収まるセグメントだけを載せる。セグメント n は `(n+1) × D ≤ 観測した長さ` のときに載り、載せる行はすべて D 秒の EXTINF である。壁時計からは決めない。壁時計で決めると、録画が終わった後に ingest が長引いたとき、原本に無いセグメントを載せ続ける。実録画では 240 行の playlist が commit の後に 182 行へ縮み、載せ済みの番号が 416 になった。EVENT は載せた行を変更・削除できない（RFC 8216 §6.2.1）。
+
+観測は録画・世代ごとに 1 本にまとめる。temp のサイズが前回と同じなら前の値を使い、メモリ上では最大値を保つ。観測が前回より小さくても、載せた行は減らない。載せたセグメントがまだ変換できないときは要求を待つ。期限を超えた要求には 503 と `Retry-After` を返す。
+
+録画が終わって ingest が commit したら、原本の長さで最後の短いセグメントと `#EXT-X-ENDLIST` を足す。temp は追記だけで原本と同じバイト列であり、長さも同じ関数で測るので、録画中に載せた行と EXTINF は commit の後も変わらない。ENDLIST を付けるのは、原本の行が DB にあるときだけである。ffmpeg の終了、入力のエラー、record の状態が未知であることは、終端の根拠にしない。DB に問い合わせられない間も、付けた ENDLIST は外さない。そのときはキャッシュした原本の metadata を、temp の metadata より優先する。
+
+映像 PTS が同じ世代の中で後退する録画は、保証の範囲外である。固定長の格子が PTS の単調性を前提にしており、完了した録画の配信も同じ前提に立つ。
+
+#### 取り消し・失敗した録画
+
+取り消し・失敗した録画は、配信を保証しない。ingest は temp と進捗行を消す（[ingest-retry.md](../../recording/ingest-retry.md)）。行が引けなくなると、playlist もセグメントも 404 になり、走っていた変換は止まる。視聴は止まり、途中までのバイトは終わった後にも見られない。
+
+途中までを見せ続けるには、temp を残すことになる。残すと、進捗行の寿命、孤児の回収、後継の録画のバイトの混入を扱う費用がかかる。視聴中だけ録れた所まで見せる価値は、その費用に見合わない。
+
+#### rendition とセグメント
+
+映像と 3 本の音声を MPEG-TS の rendition にし、字幕があれば WebVTT の rendition を足す。
+
+3 本の音声は標準・主・副である。`live.captions` が有効で原本に字幕ストリームがある場合は、字幕の rendition も master に載せる。映像・音声は `.ts`、字幕は `.vtt` のセグメントを返す。
+
+書き込み中の temp を読む FFmpeg は `-follow 1 -rw_timeout 90000000` を使う（[伸びる temp の終わらせ方](#伸びる-temp-の終わらせ方)）。変換の組には入力の種類を含めるので、commit の後の要求は temp を追従中の変換へ合流しない。
+
+長さが確定した入力（原本）では、全 rendition を映像と同じ番号で終わらせる。実録画では音声が映像より約 0.36 秒短く、FFmpeg が音声だけ 1 つ前の番号で ENDLIST を出し、終端の音声が 503 になった。そこで音声のフィルタに `apad,atrim=end=<映像の終端 − 起動位置>` を足し、PTS で切る。`apad=whole_dur` は、サンプル数で数えるので使わない。途中から起動した変換や途中で欠けた音声で、番号がずれるからである。
+
+完成判定も、長さが確定した入力では rendition ごとの ENDLIST と最後のファイルで行う。途中で止まる副音声や字幕は、埋めても番号が揃う保証が無い。伸びる入力では、ENDLIST を終端とみなさない（`rw_timeout` で終わることがある）。
+
+#### 配信の可否と DB
+
+要求ごとに DB で、ごみ箱・完全削除・置換でないこと、および原本または進捗行のある temp があることを確かめる。原本は完了していて有効な行を持つ場合だけ配信する。条件に合わないときの応答は原因ごとに違う。
+
+- 行が見つからない（ごみ箱・完全削除・置換・入力なし・取り消し・失敗）、temp の置き場が違う、原本ファイルが無い、開き直した入力が別のアセットだった場合は 404 にする。その世代の変換を止め、キャッシュを捨てる
 - URL の世代が今の世代と違う場合は 410 にする。URL が指す世代について、同じく変換を止めてキャッシュを捨てる
 - `{store}` が違う場合は 404 にするだけで、変換にもキャッシュにも触らない
 
 新しく変換を始めるときは、原本または temp の fd を開いてから DB を引き直し、同じ種類・相対パス・世代であることを確かめる。DB に問い合わせられないときは、すでに開いている変換とキャッシュを使い続ける。行が無いと分かったときは止める。DB が使えない間に新しい変換を始める要求は 503 にする。
 
 キャッシュにあるセグメントはそのまま返す。無いセグメントは、`SegmentManager` が必要な範囲を変換するのを待って返す。待たずに 404 を返さないのは、RFC 8216 §6.2.1 に従い、playlist に載せたセグメントを取得できないものとして扱わないためである。前段の CDN が 404 をキャッシュすると、変換が終わった後も 404 が返り続けうる。待つ時間は `recording_hls.wait_timeout` までで、超えた要求は 503 と `Retry-After` を返す。セグメントは `private, max-age=31536000, immutable`、playlist は `no-cache` にする。世代が URL に含まれるので、セグメントは長期にキャッシュできる。
+
+<details><summary>根拠</summary>
+
+- 載せる行が `(n+1) × D ≤ 観測した長さ` で、全て D 秒、縮まない: `TestRecordingHLSTempPlaylistListsOnlyObservedVideo`
+- 録画終了後に ingest が長引いても、行と EXTINF が commit の後も変わらない: `TestRecordingHLSCommitKeepsPublishedRowsWhenIngestOutlastsRecording`
+- ENDLIST は原本からだけ付く: `TestRecordingHLSEndlistOnlyFromTheOriginal`
+- DB に問い合わせられない間も ENDLIST と載せた行を保つ: `TestRecordingHLSDatabaseOutageKeepsEndlistAndPublishedRows`
+- 入力エラーで ENDLIST を付けない: `TestRecordingHLSTempFollowsAndOriginalHasKnownEnd`
+- 変換が終了しても再試行させ、ENDLIST を付けない: `TestRecordingHLSTempTransformErrorsAreRetryableAndDoNotEndPlaylist`
+- 観測を 1 本にまとめ、サイズが同じなら測り直さない: `TestRecordingHLSTempObservationIsSharedAndSkippedForUnchangedSize`
+- 窓に映像パケットが無いとき窓を広げる: `TestMeasureRecordingHLSVideoDurationWidensTheWindow`
+- 広げても無ければ前回の値を使う: `TestRecordingHLSTempWithoutVideoPacketInTheWindowKeepsPreviousValue`
+- 末尾の窓だけを標準入力に渡す: `TestMeasureRecordingHLSVideoDurationPipesOnlyTheTail`
+- 窓だけの測定と全体の測定が一致する（実 ffprobe）: `TestMeasureRecordingHLSVideoDurationWithRealFFprobe`
+- PTS の巻き戻りをまたいでも長さが負や飛び値にならない（playlist）: `TestRecordingHLSTempPlaylistAcrossPTSWrap`
+- 同上（長さの計算）: `TestRecordingHLSVideoDurationFromPackets`
+- 取り消し・失敗で行が消えたら 404 になり変換が止まる: `TestRecordingHLSCanceledIngestReturns404AndStopsTransform`
+- 古い世代の URL は 410: `TestRecordingHLSTempGenerationChangeReturnsGone`
+- 音声が映像より短くても、全音声の最後とその前の番号を取得できる（実 FFmpeg）: `TestSegmentTransformAudioRenditionsEndAtTheVideoNumberWithRealFFmpeg`
+- 完成判定が rendition ごとで、伸びる入力では ENDLIST を終端にしない: `TestSegmentTransformFinalIsDecidedPerRenditionOnlyForKnownLength`
+
+</details>
 
 #### PTS と変換キャッシュ
 
