@@ -63,12 +63,12 @@ func (e storeScopeEnv) moveCopy(t *testing.T, assetID int64, toStore string) {
 	}
 }
 
-func (e storeScopeEnv) setCopyState(t *testing.T, assetID int64, storeName, state string) {
+func (e storeScopeEnv) setCopyDeleting(t *testing.T, assetID int64, storeName string) {
 	t.Helper()
 	if _, err := e.pool.Exec(context.Background(),
-		`UPDATE media_asset_copies SET state = $3 WHERE media_asset_id = $1 AND store = $2`,
-		assetID, storeName, state); err != nil {
-		t.Fatalf("setting copy state of asset %d in %s: %v", assetID, storeName, err)
+		`UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1 AND store = $2`,
+		assetID, storeName); err != nil {
+		t.Fatalf("marking copy of asset %d in %s as deleting: %v", assetID, storeName, err)
 	}
 }
 
@@ -240,7 +240,7 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 			rec := env.recording(t)
 			id := env.asset(t, rec, store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
-			env.setCopyState(t, id, copyStore, "deleting")
+			env.setCopyDeleting(t, id, copyStore)
 			env.trash(t, rec)
 			rows, err := env.media.ListPendingDeleteAssets(ctx, cutoff, 10)
 			if err != nil {
@@ -251,7 +251,7 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 		"unqualified deleting": func(t *testing.T, env storeScopeEnv, copyStore string) ([]int64, int64) {
 			id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
-			env.setCopyState(t, id, copyStore, "deleting")
+			env.setCopyDeleting(t, id, copyStore)
 			rows, err := env.media.ListUnqualifiedDeletingAssets(ctx, cutoff, 10)
 			if err != nil {
 				t.Fatal(err)
@@ -300,7 +300,7 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 			env := newStoreScopeEnv(t)
 			id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
-			env.setCopyState(t, id, copyStore, "deleting")
+			env.setCopyDeleting(t, id, copyStore)
 			reverted, err := env.media.RevertToActive(ctx, id, cutoff)
 			if err != nil {
 				t.Fatalf("RevertToActive: %v", err)
@@ -336,7 +336,7 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 				t.Fatal(err)
 			}
 			env.moveCopy(t, id, copyStore)
-			env.setCopyState(t, id, copyStore, "deleting")
+			env.setCopyDeleting(t, id, copyStore)
 			if err := env.media.MarkDeleted(ctx, id); err != nil {
 				t.Fatalf("MarkDeleted: %v", err)
 			}
