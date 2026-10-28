@@ -201,3 +201,57 @@ func TestSegmentTransformTruncatedInputDoesNotPublishSilentAudioWithRealFFmpeg(t
 		}
 	}
 }
+
+// 長さが確定した入力では、変換の進み（currentNumber）を映像の進みだけで数える。音声は apad で
+// 映像より先まで無音で進むので、全 rendition で数えると、映像が要求に届く前に先読み済みと判断して
+// 変換を止めてしまう。伸びる入力では apad を足さないので、今までどおり全 rendition を数える。
+// 作業ディレクトリでは、映像は番号 3 まで出し終えて 4 を書いている。音声は 5 まで出し終えて 6 を書いている。
+//
+// 壊し方: updateCurrentNumber の `finite := task.input.VideoDurationPTS > 0` を `false` にする。
+// 壊し方: 同じ式を `true` にする（伸びる入力でも音声の進みを数えない）。
+func TestSegmentTransformCurrentNumberFollowsOnlyTheVideoForKnownLength(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		kind     store.RecordingHLSInputKind
+		duration int64
+		want     int64
+	}{
+		{name: "長さが確定した入力は映像の最後の次", kind: store.RecordingHLSInputOriginal, duration: 20 * mpegTSTimestampClock, want: 4},
+		{name: "伸びる入力は全 rendition の最後の次", kind: store.RecordingHLSInputTemp, duration: 0, want: 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := newBareSegmentManager(t, 1<<20)
+			workDir := filepath.Join(t.TempDir(), "work")
+			if err := os.MkdirAll(filepath.Join(workDir, "segments"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			files := map[string]string{
+				"test.0.m3u8":                     "#EXTM3U\n#EXTINF:2.0,\nsegments/test.0_seg00002.ts\n#EXTINF:2.0,\nsegments/test.0_seg00003.ts\n",
+				"segments/test.0_seg00004.ts.tmp": "video",
+				"test.1.m3u8":                     "#EXTM3U\n#EXTINF:2.0,\nsegments/test.1_seg00002.ts\n#EXTINF:2.0,\nsegments/test.1_seg00003.ts\n#EXTINF:2.0,\nsegments/test.1_seg00004.ts\n#EXTINF:2.0,\nsegments/test.1_seg00005.ts\n",
+				"segments/test.1_seg00006.ts.tmp": "audio",
+			}
+			for name, body := range files {
+				if err := os.WriteFile(filepath.Join(workDir, name), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			group := segmentTransformGroup{"recording", "generation", "test", tc.kind}
+			task := &segmentTransformTask{
+				group: group, profile: LiveProfile{Name: "test", SegmentSeconds: 2},
+				input:   SegmentTransformInput{Kind: tc.kind, VideoDurationPTS: tc.duration},
+				workDir: workDir, requestStart: 2, startNumber: 2, currentNumber: 2, maxRequested: 2,
+			}
+			manager.tasks[group] = map[*segmentTransformTask]struct{}{task: {}}
+			if err := manager.scanTransform(task, false); err != nil {
+				t.Fatalf("scanTransform: %v", err)
+			}
+			manager.mu.Lock()
+			got := task.currentNumber
+			manager.mu.Unlock()
+			if got != tc.want {
+				t.Fatalf("currentNumber = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

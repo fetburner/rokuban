@@ -101,11 +101,16 @@ type SegmentTransformInput struct {
 	// OriginPTS は最初の映像 PTS（90 kHz の MPEG-TS tick）。
 	OriginPTS int64
 	// VideoDurationPTS は原点から録画の末尾までの映像の長さ（90 kHz tick）。0 は未確定を表す。
-	// 確定しているとき（原本）だけ、rendition ごとの ENDLIST と最後のファイルを、その rendition の
-	// 末尾として ENDLIST 付きの短い末尾をキャッシュに入れる。音声には apad と atrim で映像の終端までを
-	// 出させるので、全 rendition が映像と同じ番号で終わる。
+	// 確定しているとき（原本）は、次のように扱う。
+	//   - 音声には apad と atrim で映像の終端までを出させるので、全 rendition が映像と同じ番号で終わる。
+	//   - rendition ごとの ENDLIST と最後のファイルで、その rendition の短い末尾を完成とみなす。
+	//     ただし音声と字幕を完成とみなすのは、同じ変換の映像が ENDLIST 付きで最後の番号に届いたときだけ。
+	//   - 音声と字幕は、同じ変換の映像が出し終えた最後の番号（videoLast）までしか公開しない。
+	//     入力が途中で切れると、音声は映像の無い区間まで apad の無音で進むためである。
+	//   - 変換の進み（updateCurrentNumber）は映像だけで数える。音声の先行を先読み済みと取り違えて、
+	//     映像が要求に届く前に変換を止めないためである。
 	// 未確定のとき（伸びる temp）は ENDLIST を根拠に最後扱いしない（入力が途中で EOF 扱いになっても
-	// ffmpeg は終了コード 0 で ENDLIST を書くため）。
+	// ffmpeg は終了コード 0 で ENDLIST を書くため）。進みは全 rendition で数える。
 	VideoDurationPTS int64
 	AudioStreamCount int
 	// HasSubtitles は captions 設定が有効な入力に WebVTT rendition があることを表す。
