@@ -151,6 +151,20 @@ func (q *Queries) GetActiveMediaAssetCopy(ctx context.Context, arg GetActiveMedi
 	return i, err
 }
 
+const getMaxMediaAssetCopyGeneration = `-- name: GetMaxMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(generation), -1)::bigint AS max_generation
+FROM media_asset_copies
+WHERE media_asset_id = $1
+`
+
+// 削除済み世代も含め、回収済み key の世代を再割り当てしない。
+func (q *Queries) GetMaxMediaAssetCopyGeneration(ctx context.Context, mediaAssetID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxMediaAssetCopyGeneration, mediaAssetID)
+	var max_generation int64
+	err := row.Scan(&max_generation)
+	return max_generation, err
+}
+
 const getMediaAssetCopyByPath = `-- name: GetMediaAssetCopyByPath :one
 SELECT id, media_asset_id, state
 FROM media_asset_copies
@@ -196,8 +210,13 @@ func (q *Queries) GetMediaAssetIDForPendingCopy(ctx context.Context, arg GetMedi
 }
 
 const insertMediaAssetCopy = `-- name: InsertMediaAssetCopy :execrows
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES ($1, $2, $3, $4)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT $1, $2, $3,
+       CASE WHEN kind = 'original' THEN COALESCE(ingest_generation, 0)
+            ELSE COALESCE(derived_generation, 0) END,
+       $4
+FROM media_assets
+WHERE id = $1
 ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING
 `
 
@@ -256,8 +275,8 @@ func (q *Queries) InsertMediaAssetForPendingCopy(ctx context.Context, arg Insert
 }
 
 const insertPendingMediaAssetCopy = `-- name: InsertPendingMediaAssetCopy :execrows
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES ($1, $2, $3, 'pending')
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, $3, $4, 'pending')
 ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING
 `
 
@@ -265,10 +284,16 @@ type InsertPendingMediaAssetCopyParams struct {
 	MediaAssetID int64
 	Store        string
 	RelPath      string
+	Generation   int64
 }
 
 func (q *Queries) InsertPendingMediaAssetCopy(ctx context.Context, arg InsertPendingMediaAssetCopyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertPendingMediaAssetCopy, arg.MediaAssetID, arg.Store, arg.RelPath)
+	result, err := q.db.Exec(ctx, insertPendingMediaAssetCopy,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.RelPath,
+		arg.Generation,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -418,6 +443,19 @@ func (q *Queries) LockMediaAssetForCopyFinalizationByID(ctx context.Context, id 
 	return id_2, err
 }
 
+const lockMediaAssetForPendingCopy = `-- name: LockMediaAssetForPendingCopy :one
+SELECT id FROM media_assets
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) LockMediaAssetForPendingCopy(ctx context.Context, mediaAssetID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockMediaAssetForPendingCopy, mediaAssetID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const markMediaAssetCopyDeletedByID = `-- name: MarkMediaAssetCopyDeletedByID :execrows
 UPDATE media_asset_copies
 SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
@@ -562,11 +600,15 @@ func (q *Queries) StoreHasMediaAssetCopies(ctx context.Context, store string) (b
 }
 
 const updateActiveMediaAssetCopyPath = `-- name: UpdateActiveMediaAssetCopyPath :execrows
-UPDATE media_asset_copies
-SET rel_path = $1
-WHERE media_asset_id = $2
-  AND store = $3
-  AND state = 'active'
+UPDATE media_asset_copies copy
+SET rel_path = $1,
+    generation = CASE WHEN asset.kind = 'original' THEN COALESCE(asset.ingest_generation, 0)
+                      ELSE COALESCE(asset.derived_generation, 0) END
+FROM media_assets asset
+WHERE copy.media_asset_id = $2
+  AND copy.media_asset_id = asset.id
+  AND copy.store = $3
+  AND copy.state = 'active'
 `
 
 type UpdateActiveMediaAssetCopyPathParams struct {
@@ -610,22 +652,36 @@ const upsertMediaAssetCopy = `-- name: UpsertMediaAssetCopy :exec
 WITH updated AS (
     UPDATE media_asset_copies copy
     SET rel_path   = $3,
+        generation = asset.generation,
         state      = $4,
         created_at = COALESCE($5::timestamptz, copy.created_at),
         deleted_at = $6
+    FROM (
+        SELECT CASE WHEN kind = 'original' THEN COALESCE(ingest_generation, 0)
+                    ELSE COALESCE(derived_generation, 0) END AS generation
+        FROM media_assets
+        WHERE id = $1
+    ) asset
     WHERE copy.media_asset_id = $1
       AND copy.store = $2
       AND copy.state IN ('active', 'deleting')
       AND $4::text <> 'pending'
     RETURNING copy.id
 )
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
 SELECT
-    $1, $2, $3,
+    $1, $2, $3, asset.generation,
     $4, COALESCE($5::timestamptz, now()), $6
+FROM (
+    SELECT CASE WHEN kind = 'original' THEN COALESCE(ingest_generation, 0)
+                ELSE COALESCE(derived_generation, 0) END AS generation
+    FROM media_assets
+    WHERE id = $1
+) asset
 WHERE NOT EXISTS (SELECT 1 FROM updated)
 ON CONFLICT (media_asset_id, store) WHERE state = 'active' DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
+    generation = EXCLUDED.generation,
     state      = EXCLUDED.state,
     created_at = COALESCE($5::timestamptz, media_asset_copies.created_at),
     deleted_at = EXCLUDED.deleted_at

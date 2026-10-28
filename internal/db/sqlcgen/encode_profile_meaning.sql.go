@@ -12,8 +12,7 @@ import (
 const listEncodedMeaningEvidence = `-- name: ListEncodedMeaningEvidence :many
 SELECT DISTINCT a.profile::text AS profile, c.rel_path::text AS rel_path
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id AND c.state = 'active'
+JOIN active_media_asset_copies(a.id, $1::text) c ON true
 WHERE a.kind = 'encoded'
   AND ($1::text IS NULL OR c.store = $1)
 UNION ALL

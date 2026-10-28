@@ -5,22 +5,36 @@
 WITH updated AS (
     UPDATE media_asset_copies copy
     SET rel_path   = sqlc.arg('rel_path'),
+        generation = asset.generation,
         state      = sqlc.arg('state'),
         created_at = COALESCE(sqlc.narg('created_at')::timestamptz, copy.created_at),
         deleted_at = sqlc.narg('deleted_at')
+    FROM (
+        SELECT CASE WHEN kind = 'original' THEN COALESCE(ingest_generation, 0)
+                    ELSE COALESCE(derived_generation, 0) END AS generation
+        FROM media_assets
+        WHERE id = sqlc.arg('media_asset_id')
+    ) asset
     WHERE copy.media_asset_id = sqlc.arg('media_asset_id')
       AND copy.store = sqlc.arg('store')
       AND copy.state IN ('active', 'deleting')
       AND sqlc.arg('state')::text <> 'pending'
     RETURNING copy.id
 )
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
 SELECT
-    sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'),
+    sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), asset.generation,
     sqlc.arg('state'), COALESCE(sqlc.narg('created_at')::timestamptz, now()), sqlc.narg('deleted_at')
+FROM (
+    SELECT CASE WHEN kind = 'original' THEN COALESCE(ingest_generation, 0)
+                ELSE COALESCE(derived_generation, 0) END AS generation
+    FROM media_assets
+    WHERE id = sqlc.arg('media_asset_id')
+) asset
 WHERE NOT EXISTS (SELECT 1 FROM updated)
 ON CONFLICT (media_asset_id, store) WHERE state = 'active' DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
+    generation = EXCLUDED.generation,
     state      = EXCLUDED.state,
     created_at = COALESCE(sqlc.narg('created_at')::timestamptz, media_asset_copies.created_at),
     deleted_at = EXCLUDED.deleted_at;
@@ -42,9 +56,20 @@ WHERE recording_id = sqlc.arg('recording_id')
   AND profile IS NOT DISTINCT FROM sqlc.narg('profile')::text;
 
 -- name: InsertPendingMediaAssetCopy :execrows
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), 'pending')
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('generation'), 'pending')
 ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
+
+-- name: LockMediaAssetForPendingCopy :one
+SELECT id FROM media_assets
+WHERE id = sqlc.arg('media_asset_id')
+FOR UPDATE;
+
+-- 削除済み世代も含め、回収済み key の世代を再割り当てしない。
+-- name: GetMaxMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(generation), -1)::bigint AS max_generation
+FROM media_asset_copies
+WHERE media_asset_id = sqlc.arg('media_asset_id');
 
 -- name: GetMediaAssetCopyByPath :one
 SELECT id, media_asset_id, state
@@ -81,8 +106,13 @@ SET rel_path = sqlc.arg('rel_path'),
 WHERE id = sqlc.arg('id');
 
 -- name: InsertMediaAssetCopy :execrows
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('state'))
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'),
+       CASE WHEN kind = 'original' THEN COALESCE(ingest_generation, 0)
+            ELSE COALESCE(derived_generation, 0) END,
+       sqlc.arg('state')
+FROM media_assets
+WHERE id = sqlc.arg('media_asset_id')
 ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
 
 -- Lock the logical asset and copy before a separate state transition and finalizer.
@@ -107,11 +137,15 @@ WHERE id = sqlc.arg('id')
   AND created_at < sqlc.arg('created_before')::timestamptz;
 
 -- name: UpdateActiveMediaAssetCopyPath :execrows
-UPDATE media_asset_copies
-SET rel_path = sqlc.arg('rel_path')
-WHERE media_asset_id = sqlc.arg('media_asset_id')
-  AND store = sqlc.arg('store')
-  AND state = 'active';
+UPDATE media_asset_copies copy
+SET rel_path = sqlc.arg('rel_path'),
+    generation = CASE WHEN asset.kind = 'original' THEN COALESCE(asset.ingest_generation, 0)
+                      ELSE COALESCE(asset.derived_generation, 0) END
+FROM media_assets asset
+WHERE copy.media_asset_id = sqlc.arg('media_asset_id')
+  AND copy.media_asset_id = asset.id
+  AND copy.store = sqlc.arg('store')
+  AND copy.state = 'active';
 
 -- name: ListAgedPendingMediaAssetCopies :many
 SELECT copy.id, copy.media_asset_id, copy.store, copy.rel_path, copy.created_at, asset.kind

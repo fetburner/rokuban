@@ -37,6 +37,9 @@ func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.Pendi
 	if (in.Kind == "encoded") != (in.Profile != nil && *in.Profile != "") {
 		return errors.New("encoded pending copy requires a profile; other derived kinds must not have one")
 	}
+	if in.ReserveNewGeneration && in.Kind != "encoded" {
+		return errors.New("only encoded copies may reserve a new generation")
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning pending media copy: %w", err)
@@ -57,8 +60,21 @@ func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.Pendi
 	if err != nil {
 		return fmt.Errorf("reserving logical media asset for pending copy: %w", mapDatabaseError(err))
 	}
+	if in.ReserveNewGeneration {
+		if _, err := q.LockMediaAssetForPendingCopy(ctx, assetID); err != nil {
+			return fmt.Errorf("locking encoded media asset for generation reservation: %w", mapDatabaseError(err))
+		}
+		maxGeneration, err := q.GetMaxMediaAssetCopyGeneration(ctx, assetID)
+		if err != nil {
+			return fmt.Errorf("checking previously used encoded generations: %w", err)
+		}
+		if in.DerivedGeneration <= maxGeneration {
+			return fmt.Errorf("encoded generation %d is not newer than used generation %d: %w",
+				in.DerivedGeneration, maxGeneration, store.ErrGenerationAdvanced)
+		}
+	}
 	inserted, err := q.InsertPendingMediaAssetCopy(ctx, sqlcgen.InsertPendingMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: s.storeName, RelPath: in.RelPath,
+		MediaAssetID: assetID, Store: s.storeName, RelPath: in.RelPath, Generation: in.DerivedGeneration,
 	})
 	if err != nil {
 		return fmt.Errorf("creating pending media asset copy: %w", mapDatabaseError(err))

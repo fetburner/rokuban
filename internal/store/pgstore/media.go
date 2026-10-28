@@ -330,6 +330,16 @@ func (s *Media) GetEncodedPublishState(
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return store.EncodedPublishState{}, fmt.Errorf("loading existing encoded asset for recording %d profile %q: %w", recordingID, profile, err)
 	}
+	maxGeneration, err := q.GetMaxEncodedMediaAssetCopyGeneration(ctx, sqlcgen.GetMaxEncodedMediaAssetCopyGenerationParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+	})
+	if err != nil {
+		return store.EncodedPublishState{}, fmt.Errorf("loading used encoded generations for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	if maxGeneration >= 0 {
+		state.MaxCopyGeneration = &maxGeneration
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return store.EncodedPublishState{}, fmt.Errorf("committing %s: %w", desc, err)

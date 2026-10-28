@@ -203,6 +203,7 @@ JOIN LATERAL (
     WHERE copy.media_asset_id = a.id
       AND ($1::text IS NULL OR copy.store = $1)
       AND copy.state <> 'pending'
+      AND copy.generation = COALESCE(a.derived_generation, 0)
     ORDER BY (copy.state = 'active') DESC, copy.store
     LIMIT 1
 ) c ON true
@@ -327,6 +328,28 @@ func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, arg GetLiveMed
 	var recording_id int64
 	err := row.Scan(&recording_id)
 	return recording_id, err
+}
+
+const getMaxEncodedMediaAssetCopyGeneration = `-- name: GetMaxEncodedMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(copy.generation), -1)::bigint AS max_generation
+FROM media_assets a
+LEFT JOIN media_asset_copies copy ON copy.media_asset_id = a.id
+WHERE a.recording_id = $1
+  AND a.kind = 'encoded'
+  AND a.profile = $2
+`
+
+type GetMaxEncodedMediaAssetCopyGenerationParams struct {
+	RecordingID int64
+	Profile     *string
+}
+
+// object が active にならず回収された場合も使用済み世代を再利用しないため、pending / deleted も含める。
+func (q *Queries) GetMaxEncodedMediaAssetCopyGeneration(ctx context.Context, arg GetMaxEncodedMediaAssetCopyGenerationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxEncodedMediaAssetCopyGeneration, arg.RecordingID, arg.Profile)
+	var max_generation int64
+	err := row.Scan(&max_generation)
+	return max_generation, err
 }
 
 const getMediaAssetKeepRangesJSON = `-- name: GetMediaAssetKeepRangesJSON :one
@@ -580,6 +603,8 @@ SELECT EXISTS (
           WHERE c.media_asset_id = a.id
             AND c.store = $2
             AND c.state = 'active'
+            AND c.generation = CASE WHEN a.kind = 'original' THEN COALESCE(a.ingest_generation, 0)
+                                    ELSE COALESCE(a.derived_generation, 0) END
       )
       AND NOT EXISTS (
           SELECT 1 FROM missing_media_assets m
@@ -608,6 +633,7 @@ JOIN media_asset_copies c
   ON c.media_asset_id = a.id
  AND c.store = $1
  AND c.state = 'active'
+ AND c.generation = COALESCE(a.derived_generation, 0)
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = $2
   AND a.kind = 'thumbnail'
@@ -683,6 +709,7 @@ WHERE asset.id = $4
       WHERE c.media_asset_id = asset.id
         AND c.store = $5
         AND c.state = 'active'
+        AND c.generation = COALESCE(asset.derived_generation, 0)
   )
 `
 

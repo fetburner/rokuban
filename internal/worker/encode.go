@@ -230,6 +230,23 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	if err != nil {
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
+	pendingObjectPrepared := false
+	if w.Objects != nil {
+		if w.Publisher == nil {
+			return errors.New("derived object publication requires a media publisher")
+		}
+		profileName := profile.Name
+		if err := w.Publisher.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+			RecordingID: args.RecordingID, Kind: store.AssetKindEncoded, Profile: &profileName,
+			RelPath: relPath, DerivedGeneration: generation, ReserveNewGeneration: true,
+		}); err != nil {
+			if errors.Is(err, store.ErrGenerationAdvanced) {
+				return jobq.Snooze(encodeReplanDelay)
+			}
+			return fmt.Errorf("reserving encoded object generation: %w", err)
+		}
+		pendingObjectPrepared = true
+	}
 
 	// プロセス死の残骸を回収し、domain attempt ごとに scratch を分ける。
 	// cleanup は同じ (recording_id, profile) の、dir lock を誰も持たない dir だけを消す。
@@ -282,17 +299,18 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 		}
 	}
 	size, published, err := w.publishEncoded(ctx, encodePublishInput{
-		attempt:       attempt,
-		observed:      observed,
-		recordingID:   args.RecordingID,
-		profile:       profile.Name,
-		relPath:       relPath,
-		finalPath:     finalPath,
-		scratchOut:    scratchOut,
-		subtitleOut:   subtitleOut,
-		withSubtitles: withSubtitles,
-		cut:           cut,
-		expectedKeep:  expectedCutKeep,
+		attempt:               attempt,
+		observed:              observed,
+		recordingID:           args.RecordingID,
+		profile:               profile.Name,
+		relPath:               relPath,
+		finalPath:             finalPath,
+		scratchOut:            scratchOut,
+		subtitleOut:           subtitleOut,
+		withSubtitles:         withSubtitles,
+		pendingObjectPrepared: pendingObjectPrepared,
+		cut:                   cut,
+		expectedKeep:          expectedCutKeep,
 	})
 	if err != nil {
 		if _, snoozed := jobq.SnoozeDelay(err); snoozed {
@@ -395,6 +413,9 @@ func (w *EncodeWorker) observeEncodePlan(
 	if observed.skip {
 		log.Info("encode: skipped before encoding", "reason", string(observed.skipReason))
 		return observed, nil, expectedKeep, true, nil
+	}
+	if state.MaxCopyGeneration != nil && *state.MaxCopyGeneration == int64(^uint64(0)>>1) {
+		return encodePlan{}, nil, nil, false, fmt.Errorf("encoded generation exhausted for recording %d profile %q", args.RecordingID, args.Profile)
 	}
 	if profileIsCut {
 		cut = &cutContext{keep: input.KeepRanges}
@@ -704,14 +725,15 @@ var (
 
 // encodePublishInput は publishEncoded の入力。
 type encodePublishInput struct {
-	recordingID   int64
-	profile       string
-	attempt       int32
-	relPath       string
-	finalPath     string
-	scratchOut    string
-	subtitleOut   string
-	withSubtitles bool
+	recordingID           int64
+	profile               string
+	attempt               int32
+	relPath               string
+	finalPath             string
+	scratchOut            string
+	subtitleOut           string
+	withSubtitles         bool
+	pendingObjectPrepared bool
 	// observed は runEncode 冒頭の観測（tx 内の判定 (a) の比較元）。
 	observed encodePlan
 	// cut はカット版のときだけ非 nil。commit で凍結した keep 区間を同じ tx で
@@ -861,8 +883,9 @@ func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublis
 		}
 		companions = append(companions, objectCompanion{Key: subtitleKey, Path: in.subtitleOut, ContentType: objectContentType(subtitleKey)})
 	}
-	size, published, err = publishGeneratedObject(
+	size, published, err = publishGeneratedObjectPrepared(
 		ctx, w.Objects, w.Publisher, pending, in.scratchOut, objectContentType(in.relPath),
+		in.pendingObjectPrepared,
 		func(size int64, publish func() error) (bool, error) {
 			input.SizeBytes = size
 			return w.Publisher.PublishEncoded(ctx, input, func() error {
@@ -984,6 +1007,11 @@ func planEncodePublishFromState(
 		}
 	} else if in.Cut {
 		p.generation = 1
+	}
+	if !p.skip && state.MaxCopyGeneration != nil && *state.MaxCopyGeneration >= p.generation {
+		if *state.MaxCopyGeneration < int64(^uint64(0)>>1) {
+			p.generation = *state.MaxCopyGeneration + 1
+		}
 	}
 	if in.Cut {
 		if plan.Replaces && state.EncodedAsset != nil {

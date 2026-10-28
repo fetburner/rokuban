@@ -204,9 +204,7 @@ VALUES ($1, $2, 'encoded/second-active.mp4', 'active')`, assetID, dbtest.StoreNa
 	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
 		t.Fatalf("clearing replacement fixtures before downgrade: %v", err)
 	}
-	if err := MigrateDown(ctx, dbURL); err != nil {
-		t.Fatalf("restoring prior copy index: %v", err)
-	}
+	migrateDownTo(t, dbURL, 39)
 	var unique bool
 	if err := pool.QueryRow(ctx, `SELECT indisunique FROM pg_index
 WHERE indexrelid = 'media_asset_copies_active_asset_store_idx'::regclass`).Scan(&unique); err != nil {
@@ -217,5 +215,105 @@ WHERE indexrelid = 'media_asset_copies_active_asset_store_idx'::regclass`).Scan(
 	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("restoring latest copy index: %v", err)
+	}
+}
+
+func TestMediaAssetCopyGenerationMigrationBackfillsAndRestoresReaders(t *testing.T) {
+	ctx := context.Background()
+	dbURL := testDatabaseURL(t)
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("migrating to latest before setup: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening test database before setup: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
+		pool.Close()
+		t.Fatalf("clearing prior media fixtures: %v", err)
+	}
+	pool.Close()
+	migrateDownTo(t, dbURL, 40)
+	t.Cleanup(func() {
+		if err := MigrateUp(context.Background(), dbURL); err != nil {
+			t.Errorf("restoring latest schema: %v", err)
+			return
+		}
+		cleanupPool, err := pgxpool.New(context.Background(), dbURL)
+		if err != nil {
+			t.Errorf("opening test database for cleanup: %v", err)
+			return
+		}
+		defer cleanupPool.Close()
+		if _, err := cleanupPool.Exec(context.Background(), `TRUNCATE recordings CASCADE`); err != nil {
+			t.Errorf("clearing migration fixtures: %v", err)
+		}
+	})
+
+	pool, err = pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening version 40 test database: %v", err)
+	}
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	var assetID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'encoded', $2, 'encoded/migration.g4.mp4', 1, 4)
+RETURNING id`, recordingID, profile).Scan(&assetID); err != nil {
+		pool.Close()
+		t.Fatalf("creating version 40 encoded media asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, 'migration-test', 'encoded/migration.g4.mp4', 'active')`, assetID); err != nil {
+		pool.Close()
+		t.Fatalf("creating version 40 active copy: %v", err)
+	}
+	pool.Close()
+
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("applying copy generation migration: %v", err)
+	}
+	pool, err = pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening migrated test database: %v", err)
+	}
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&generation); err != nil {
+		pool.Close()
+		t.Fatalf("reading migrated copy generation: %v", err)
+	}
+	if generation != 4 {
+		pool.Close()
+		t.Fatalf("migrated copy generation = %d, want logical generation 4", generation)
+	}
+	var activeCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, NULL)`, assetID).Scan(&activeCount); err != nil {
+		pool.Close()
+		t.Fatalf("reading current copies after migration: %v", err)
+	}
+	if activeCount != 1 {
+		pool.Close()
+		t.Fatalf("current copies after migration = %d, want 1", activeCount)
+	}
+	pool.Close()
+
+	if err := MigrateDown(ctx, dbURL); err != nil {
+		t.Fatalf("reverting copy generation migration: %v", err)
+	}
+	pool, err = pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening downgraded test database: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, NULL)`, assetID).Scan(&activeCount); err != nil {
+		t.Fatalf("reading active copies after downgrade: %v", err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("active copies after downgrade = %d, want 1", activeCount)
+	}
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("restoring latest schema after downgrade check: %v", err)
 	}
 }

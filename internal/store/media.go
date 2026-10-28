@@ -118,6 +118,9 @@ type EncodedPublishState struct {
 	ChapterOwned       bool
 	CurrentCutKeep     []chapters.Range
 	EncodedAsset       *EncodedAssetObservation
+	// MaxCopyGeneration は pending / deleted を含む encoded コピーの最大世代。
+	// 中断した試行が予約した世代を別の encode で再利用しないために使う。
+	MaxCopyGeneration *int64
 }
 
 // MediaReconcilePage は録画 ID で巡回するメディア reconcile のページ条件を表す。

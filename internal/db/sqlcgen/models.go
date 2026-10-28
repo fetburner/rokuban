@@ -210,6 +210,7 @@ type MediaAssetCopy struct {
 	State        string
 	CreatedAt    time.Time
 	DeletedAt    *time.Time
+	Generation   int64
 }
 
 type MediaAssetCut struct {

@@ -81,9 +81,19 @@ JOIN LATERAL (
     WHERE copy.media_asset_id = a.id
       AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
       AND copy.state <> 'pending'
+      AND copy.generation = COALESCE(a.derived_generation, 0)
     ORDER BY (copy.state = 'active') DESC, copy.store
     LIMIT 1
 ) c ON true
+WHERE a.recording_id = sqlc.arg('recording_id')
+  AND a.kind = 'encoded'
+  AND a.profile = sqlc.arg('profile');
+
+-- object が active にならず回収された場合も使用済み世代を再利用しないため、pending / deleted も含める。
+-- name: GetMaxEncodedMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(copy.generation), -1)::bigint AS max_generation
+FROM media_assets a
+LEFT JOIN media_asset_copies copy ON copy.media_asset_id = a.id
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'encoded'
   AND a.profile = sqlc.arg('profile');
@@ -206,6 +216,7 @@ JOIN media_asset_copies c
   ON c.media_asset_id = a.id
  AND c.store = sqlc.arg('store_name')
  AND c.state = 'active'
+ AND c.generation = COALESCE(a.derived_generation, 0)
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'thumbnail'
@@ -226,6 +237,7 @@ WHERE asset.id = sqlc.arg('id')
       WHERE c.media_asset_id = asset.id
         AND c.store = sqlc.arg('store_name')
         AND c.state = 'active'
+        AND c.generation = COALESCE(asset.derived_generation, 0)
   );
 
 -- 生成に使ったファイルがまだ使えるかを commit tx 内で確認する。
@@ -240,6 +252,8 @@ SELECT EXISTS (
           WHERE c.media_asset_id = a.id
             AND c.store = sqlc.arg('store_name')
             AND c.state = 'active'
+            AND c.generation = CASE WHEN a.kind = 'original' THEN COALESCE(a.ingest_generation, 0)
+                                    ELSE COALESCE(a.derived_generation, 0) END
       )
       AND NOT EXISTS (
           SELECT 1 FROM missing_media_assets m

@@ -31,6 +31,19 @@ func publishGeneratedObject(
 	commit func(int64, func() error) (bool, error),
 	companions ...objectCompanion,
 ) (int64, bool, error) {
+	return publishGeneratedObjectPrepared(ctx, objects, publisher, pending, scratchPath, contentType, false, commit, companions...)
+}
+
+func publishGeneratedObjectPrepared(
+	ctx context.Context,
+	objects objstore.Store,
+	publisher store.DerivedMediaPublisher,
+	pending store.PendingMediaAssetCopy,
+	scratchPath, contentType string,
+	pendingPrepared bool,
+	commit func(int64, func() error) (bool, error),
+	companions ...objectCompanion,
+) (int64, bool, error) {
 	if objects == nil || publisher == nil {
 		return 0, false, fmt.Errorf("object store and derived media publisher are required")
 	}
@@ -39,8 +52,10 @@ func publishGeneratedObject(
 		return 0, false, fmt.Errorf("hashing generated object %q: %w", pending.RelPath, err)
 	}
 	pending.SizeBytes = size
-	if err := publisher.PreparePendingMediaAssetCopy(ctx, pending); err != nil {
-		return 0, false, fmt.Errorf("recording pending object copy: %w", err)
+	if !pendingPrepared {
+		if err := publisher.PreparePendingMediaAssetCopy(ctx, pending); err != nil {
+			return 0, false, fmt.Errorf("recording pending object copy: %w", err)
+		}
 	}
 	if err := uploadObjectFile(ctx, objects, pending.RelPath, scratchPath, size, checksum, contentType); err != nil {
 		return 0, false, err

@@ -97,6 +97,98 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		}
 	})
 
+	t.Run("retry after an uploaded pending copy reserves a new generation", func(t *testing.T) {
+		recordingID := dbtest.Recording(t, pool)
+		mediaDir := t.TempDir()
+		if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+			t.Fatalf("writing local media store marker: %v", err)
+		}
+		sourceRel := fmt.Sprintf("s3-retry-%d/source.m2ts", time.Now().UnixNano())
+		prepareEncodeInput(t, pool, recordingID, mediaDir, sourceRel, []string{"h264"}, []byte("original source"))
+		initialKey, err := EncodedRelPath(sourceRel, "h264", "mp4", 0, false)
+		if err != nil {
+			t.Fatalf("building initial encoded key: %v", err)
+		}
+		retryKey, err := EncodedRelPath(sourceRel, "h264", "mp4", 1, false)
+		if err != nil {
+			t.Fatalf("building retry encoded key: %v", err)
+		}
+		t.Cleanup(func() {
+			for _, key := range []string{initialKey, retryKey} {
+				if err := objects.Delete(context.Background(), key); err != nil {
+					t.Errorf("deleting S3 test key %q: %v", key, err)
+				}
+			}
+		})
+
+		worker := newH264Worker(pool, mediaDir, t.TempDir(), installCountingFFmpeg(t))
+		worker.MediaStoreName = dbtest.StoreName
+		worker.Objects = objects
+		worker.Publisher = media
+		worker.Media = media
+		worker.Attempts = media
+
+		originalHook := beforeEncodeCommit
+		t.Cleanup(func() { beforeEncodeCommit = originalHook })
+		failOnce := true
+		beforeEncodeCommit = func(string) error {
+			if failOnce {
+				failOnce = false
+				return errors.New("simulated stop after PUT and before DB publication")
+			}
+			return nil
+		}
+		args := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+		if err := worker.Work(ctx, args); err == nil {
+			t.Fatal("first encode succeeded, want a failure after the S3 PUT")
+		}
+		first, err := objects.Get(ctx, initialKey)
+		if err != nil {
+			t.Fatalf("loading the uploaded pending object: %v", err)
+		}
+		firstBytes, err := io.ReadAll(first)
+		closeErr := first.Close()
+		if err != nil || closeErr != nil {
+			t.Fatalf("reading the uploaded pending object: read %v, close %v", err, closeErr)
+		}
+
+		if err := worker.Work(ctx, args); err != nil {
+			t.Fatalf("retrying encode with a new generation: %v", err)
+		}
+		second, err := objects.Get(ctx, retryKey)
+		if err != nil {
+			t.Fatalf("loading the retried encoded object: %v", err)
+		}
+		secondBytes, err := io.ReadAll(second)
+		closeErr = second.Close()
+		if err != nil || closeErr != nil {
+			t.Fatalf("reading retried encoded object: read %v, close %v", err, closeErr)
+		}
+		if bytes.Equal(firstBytes, secondBytes) {
+			t.Fatalf("two ffmpeg attempts produced identical fixtures %q; want differing bytes", firstBytes)
+		}
+
+		row, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+			RecordingID: recordingID, Profile: stringPtr("h264"),
+		})
+		if err != nil {
+			t.Fatalf("loading committed retry asset: %v", err)
+		}
+		if row.RelPath != retryKey || row.State != "active" || row.DerivedGeneration != 1 {
+			t.Fatalf("committed retry asset = (%q, %q, generation %d), want (%q, active, generation 1)",
+				row.RelPath, row.State, row.DerivedGeneration, retryKey)
+		}
+		var firstState string
+		var firstGeneration int64
+		if err := pool.QueryRow(ctx, `SELECT state, generation FROM media_asset_copies WHERE store = $1 AND rel_path = $2`,
+			"s3main", initialKey).Scan(&firstState, &firstGeneration); err != nil {
+			t.Fatalf("reading first pending copy: %v", err)
+		}
+		if firstState != "pending" || firstGeneration != 0 {
+			t.Errorf("first copy = (%q, generation %d), want (pending, generation 0)", firstState, firstGeneration)
+		}
+	})
+
 	t.Run("pending commits before PUT and active follows PUT", func(t *testing.T) {
 		recordingID := dbtest.Recording(t, pool)
 		originalID := dbtest.MediaAsset(t, pool, recordingID)

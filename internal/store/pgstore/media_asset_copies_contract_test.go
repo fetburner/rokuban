@@ -378,6 +378,139 @@ func TestMarkPendingMediaAssetCopyDeletedFinalizesLogicalAsset(t *testing.T) {
 	}
 }
 
+func TestPreparePendingEncodedCopyConsumesReservedGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	profile := "h264"
+	media := NewMedia(pool, "s3main", "")
+	recordingID := dbtest.Recording(t, pool)
+	first := store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindEncoded, Profile: &profile,
+		RelPath: "encoded/retry_h264.mp4", DerivedGeneration: 0, ReserveNewGeneration: true,
+	}
+	if err := media.PreparePendingMediaAssetCopy(ctx, first); err != nil {
+		t.Fatalf("reserving first generation: %v", err)
+	}
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copies WHERE store = $1 AND rel_path = $2`,
+		"s3main", first.RelPath).Scan(&generation); err != nil {
+		t.Fatalf("reading reserved generation: %v", err)
+	}
+	if generation != 0 {
+		t.Fatalf("reserved generation = %d, want 0", generation)
+	}
+	if err := media.PreparePendingMediaAssetCopy(ctx, first); !errors.Is(err, store.ErrGenerationAdvanced) {
+		t.Fatalf("reusing reserved generation returned %v, want ErrGenerationAdvanced", err)
+	}
+	second := first
+	second.RelPath = "encoded/retry_h264.u1.mp4"
+	second.DerivedGeneration = 1
+	if err := media.PreparePendingMediaAssetCopy(ctx, second); err != nil {
+		t.Fatalf("reserving next generation: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copies WHERE store = $1 AND rel_path = $2`,
+		"s3main", second.RelPath).Scan(&generation); err != nil {
+		t.Fatalf("reading second reserved generation: %v", err)
+	}
+	if generation != 1 {
+		t.Fatalf("second reserved generation = %d, want 1", generation)
+	}
+}
+
+func TestActiveMediaAssetCopiesRequireCurrentGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID)
+	var activeCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, $2)`, assetID, dbtest.StoreName).Scan(&activeCount); err != nil {
+		t.Fatalf("loading the matching active copy: %v", err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("matching active copies = %d, want 1", activeCount)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET ingest_generation = COALESCE(ingest_generation, 0) + 1 WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("advancing logical generation: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, $2)`, assetID, dbtest.StoreName).Scan(&activeCount); err != nil {
+		t.Fatalf("loading a stale-generation copy: %v", err)
+	}
+	if activeCount != 0 {
+		t.Fatalf("stale-generation active copies = %d, want 0", activeCount)
+	}
+}
+
+func TestLegacyMediaAssetCopyWritesUseLogicalGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	var assetID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'encoded', $2, 'encoded/legacy.g4.mp4', 1, 4)
+RETURNING id`, recordingID, profile).Scan(&assetID); err != nil {
+		t.Fatalf("creating encoded media asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, $2, 'encoded/legacy.g4.mp4', 'active')`, assetID, dbtest.StoreName); err != nil {
+		t.Fatalf("inserting copy without generation as an older binary does: %v", err)
+	}
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&generation); err != nil {
+		t.Fatalf("reading legacy inserted generation: %v", err)
+	}
+	if generation != 4 {
+		t.Fatalf("legacy inserted generation = %d, want logical generation 4", generation)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 5 WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("advancing logical generation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET rel_path = 'encoded/legacy.g5.mp4' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("updating copy path without generation as an older binary does: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&generation); err != nil {
+		t.Fatalf("reading legacy updated generation: %v", err)
+	}
+	if generation != 5 {
+		t.Fatalf("legacy updated generation = %d, want logical generation 5", generation)
+	}
+	var activeCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, $2)`, assetID, dbtest.StoreName).Scan(&activeCount); err != nil {
+		t.Fatalf("loading legacy updated active copy: %v", err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("legacy active copies after path update = %d, want 1", activeCount)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, $2, 'encoded/legacy.g6.mp4', 'pending')`, assetID, dbtest.StoreName); err != nil {
+		t.Fatalf("inserting legacy pending replacement without generation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 6 WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("advancing logical generation for pending copy: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1 AND state = 'active'`, assetID); err != nil {
+		t.Fatalf("retiring previous active copy: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'active' WHERE media_asset_id = $1 AND rel_path = 'encoded/legacy.g6.mp4'`, assetID); err != nil {
+		t.Fatalf("activating legacy pending copy: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copies WHERE media_asset_id = $1 AND rel_path = 'encoded/legacy.g6.mp4'`, assetID).Scan(&generation); err != nil {
+		t.Fatalf("reading activated legacy pending generation: %v", err)
+	}
+	if generation != 6 {
+		t.Fatalf("activated legacy pending generation = %d, want logical generation 6", generation)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, $2)`, assetID, dbtest.StoreName).Scan(&activeCount); err != nil {
+		t.Fatalf("loading activated legacy pending copy: %v", err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("legacy active copies after pending replacement = %d, want 1", activeCount)
+	}
+}
+
 func TestRegisterInPlacePreservesDeletingCopyState(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

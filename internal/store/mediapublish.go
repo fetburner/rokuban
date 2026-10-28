@@ -11,6 +11,9 @@ import (
 // ErrStalePublishPlan は公開中に encoded の計画が古くなったことを表す。
 var ErrStalePublishPlan = errors.New("encoded publish plan is stale")
 
+// ErrGenerationAdvanced は別の pending または公開済みコピーが観測した世代を使用済みにしたことを表す。
+var ErrGenerationAdvanced = errors.New("derived media generation advanced")
+
 // IngestProgress は原本の転送中に観測した進捗を表す。
 type IngestProgress struct {
 	RecordingID    int64
@@ -127,6 +130,8 @@ type PendingMediaAssetCopy struct {
 	RelPath           string
 	SizeBytes         int64
 	DerivedGeneration int64
+	// ReserveNewGeneration は既存のどのコピーも使っていない世代の予約を要求する。
+	ReserveNewGeneration bool
 }
 
 // DerivedMediaPublisher publishes encoded video, thumbnails, and seek tiles.

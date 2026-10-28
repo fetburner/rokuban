@@ -13,10 +13,7 @@ import (
 const listMissingSeekTilesRecordings = `-- name: ListMissingSeekTilesRecordings :many
 SELECT o.recording_id
 FROM media_assets o
-JOIN media_asset_copies original_copy
-  ON original_copy.media_asset_id = o.id
- AND original_copy.store = $1
- AND original_copy.state = 'active'
+JOIN active_media_asset_copies(o.id, $1::text) original_copy ON true
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > $2::bigint
   AND ($3::bigint IS NULL OR o.recording_id = $3::bigint)
@@ -27,10 +24,7 @@ WHERE o.recording_id > $2::bigint
     WHERE s.recording_id = o.recording_id
       AND s.kind = 'seek_tiles'
       AND EXISTS (
-          SELECT 1 FROM media_asset_copies copy
-          WHERE copy.media_asset_id = s.id
-            AND copy.store = $4
-            AND copy.state = 'active'
+          SELECT 1 FROM active_media_asset_copies(s.id, $4::text)
       )
   )
   AND NOT EXISTS (
@@ -81,10 +75,7 @@ func (q *Queries) ListMissingSeekTilesRecordings(ctx context.Context, arg ListMi
 const listMissingThumbnailRecordings = `-- name: ListMissingThumbnailRecordings :many
 SELECT o.recording_id
 FROM media_assets o
-JOIN media_asset_copies original_copy
-  ON original_copy.media_asset_id = o.id
- AND original_copy.store = $1
- AND original_copy.state = 'active'
+JOIN active_media_asset_copies(o.id, $1::text) original_copy ON true
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > $2::bigint
   AND ($3::bigint IS NULL OR o.recording_id = $3::bigint)
@@ -95,10 +86,7 @@ WHERE o.recording_id > $2::bigint
     WHERE t.recording_id = o.recording_id
       AND t.kind = 'thumbnail'
       AND EXISTS (
-          SELECT 1 FROM media_asset_copies copy
-          WHERE copy.media_asset_id = t.id
-            AND copy.store = $4
-            AND copy.state = 'active'
+          SELECT 1 FROM active_media_asset_copies(t.id, $4::text)
       )
   )
   AND NOT EXISTS (
@@ -183,10 +171,7 @@ WITH planning AS (
     LEFT JOIN LATERAL (
         SELECT a.id, copy.rel_path, copy.store
         FROM media_assets a
-        JOIN media_asset_copies copy
-          ON copy.media_asset_id = a.id
-         AND copy.store = $3
-         AND copy.state = 'active'
+        JOIN active_media_asset_copies(a.id, $3::text) copy ON true
         WHERE a.recording_id = r.id
           AND a.kind = 'original'
           AND NOT EXISTS (
@@ -207,10 +192,7 @@ WITH planning AS (
             ) ORDER BY a.profile
         ) AS assets
         FROM media_assets a
-        JOIN media_asset_copies copy
-          ON copy.media_asset_id = a.id
-         AND copy.store = $4
-         AND copy.state = 'active'
+        JOIN active_media_asset_copies(a.id, $4::text) copy ON true
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
             SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
@@ -227,10 +209,7 @@ WITH planning AS (
     LEFT JOIN LATERAL (
         SELECT a.id, copy.rel_path, a.derived_generation, thumbnail_seek.seek_ms
         FROM media_assets a
-        JOIN media_asset_copies copy
-          ON copy.media_asset_id = a.id
-         AND copy.store = $4
-         AND copy.state = 'active'
+        JOIN active_media_asset_copies(a.id, $4::text) copy ON true
         LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
         WHERE a.recording_id = r.id
           AND a.kind = 'thumbnail'

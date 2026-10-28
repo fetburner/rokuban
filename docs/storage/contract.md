@@ -125,6 +125,8 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 FS 置き場では staging file の rename と親 directory の fsync の後に DB を commit する。S3 置き場では、先に `pending` のコピー行を commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、次の transaction でコピーを `active` にする。412 は HEAD のサイズとアプリが保存した SHA-256 metadata が一致するときだけ成功として回収する。途中で失敗した `pending` は削除 reconcile が猶予後に回収する。
 
+コピー行は物理ファイルの `generation` を持つ。原本は論理行の `ingest_generation`、派生物は `derived_generation` と一致する active コピーだけを読み手に返す。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代の key を使う。Matroska など同じ入力でも出力バイト列が変わる形式で、既存の pending object を別内容で上書きする事故を防ぐ。
+
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 
 - scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。長い profile 名でも作成できる。

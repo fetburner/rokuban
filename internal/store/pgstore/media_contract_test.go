@@ -49,6 +49,9 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET ingest_generation = 19 WHERE id = $1`, assetID); err != nil {
 		t.Fatalf("setting committed ingest generation: %v", err)
 	}
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET generation = 19 WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("setting selected-copy generation: %v", err)
+	}
 
 	target, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSOriginalTarget(context.Background(), recordingID)
 	if err != nil {
