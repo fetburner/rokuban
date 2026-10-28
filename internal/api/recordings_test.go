@@ -287,12 +287,7 @@ func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本 unlink 待ち", time.Now().Truncate(time.Second), "finished", 401
 	})
 	seedIngested(t, pool, id, 500, nil)
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleting'
-		 WHERE recording_id = $1 AND kind = 'original'`, id,
-	); err != nil {
-		t.Fatalf("marking original deleting: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleting")
 
 	var got []Recording
 	resp := getJSON(t, srv.URL+"/api/recordings", &got)
@@ -398,10 +393,7 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 		t.Fatalf("PID 0x110 positions before deletion = %+v", beforeStats[1].Positions)
 	}
 
-	if _, err := pool.Exec(ctx,
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
-		t.Fatalf("tombstoning original media asset: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 
 	afterList := fetchListRecording()
 	afterDetail := fetchDetail()
@@ -462,10 +454,7 @@ func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 		t.Fatalf("dropSummary before original deletion = %+v, want %+v", before.DropSummary, want)
 	}
 
-	if _, err := pool.Exec(ctx,
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
-		t.Fatalf("tombstoning original media asset: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 
 	after := fetchTrash()
 	if after.DropSummary == nil || *after.DropSummary != want {
@@ -510,11 +499,11 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 		fixtureParams.RelPath = "a_legacy.mp4"
 		fixtureParams.SizeBytes = 10
 	})
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleted', deleted_at = now()
-		 WHERE recording_id = $1 AND profile = 'legacy'`, id); err != nil {
-		t.Fatalf("delete legacy: %v", err)
+	var legacyID int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM media_assets WHERE recording_id = $1 AND profile = 'legacy'`, id).Scan(&legacyID); err != nil {
+		t.Fatalf("loading legacy encoded asset: %v", err)
 	}
+	dbtest.SetMediaAssetState(t, pool, legacyID, "deleted")
 
 	var got []Recording
 	resp := getJSON(t, srv.URL+"/api/recordings", &got)
@@ -783,10 +772,7 @@ func TestListRecordingDropStats_Positions(t *testing.T) {
 
 	// 原本の tombstone 化では位置行を消さない。API の既存の active-only
 	// 表示規約とは別に、不可逆な観測が DB に残ることを直接固定する。
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
-		t.Fatalf("tombstoning media asset: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 	var count int
 	if err := pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM drop_positions WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {

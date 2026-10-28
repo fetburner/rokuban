@@ -386,9 +386,13 @@ WHERE recording_id = sqlc.arg('recording_id')
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect, cm_detect_generation)
 SELECT r.id, 'always', '{}', true, 1
 FROM recordings r
-JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
+JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
 WHERE r.id = sqlc.arg('recording_id')
   AND r.deleted_at IS NULL
+  AND EXISTS (
+      SELECT 1 FROM media_asset_copies c
+      WHERE c.media_asset_id = o.id AND c.state = 'active'
+  )
   AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
 ON CONFLICT (recording_id) DO UPDATE
 SET cm_detect = true,
@@ -398,7 +402,11 @@ SET cm_detect = true,
 WHERE EXISTS (
     SELECT 1 FROM media_assets o
     WHERE o.recording_id = recording_encode_policy.recording_id
-      AND o.kind = 'original' AND o.state = 'active'
+      AND o.kind = 'original'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies c
+          WHERE c.media_asset_id = o.id AND c.state = 'active'
+      )
       AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
 )
   AND EXISTS (

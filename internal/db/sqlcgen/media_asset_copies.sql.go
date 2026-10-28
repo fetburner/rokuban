@@ -24,16 +24,9 @@ INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_
 SELECT a.id, $1, a.rel_path, a.state, a.created_at, a.deleted_at
 FROM media_assets a
 WHERE NOT EXISTS (
-          SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
-      )
-   OR EXISTS (
-          SELECT 1 FROM media_asset_copies c
-          WHERE c.media_asset_id = a.id AND c.store = $1
-      )
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
-    rel_path = EXCLUDED.rel_path,
-    state = EXCLUDED.state,
-    deleted_at = EXCLUDED.deleted_at
+    SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+)
+ON CONFLICT (media_asset_id, store) DO NOTHING
 `
 
 func (q *Queries) AdoptUnassignedMediaAssetCopies(ctx context.Context, store string) error {
@@ -87,46 +80,69 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	return count, err
 }
 
-const reconcileDerivedGenerationFromLegacyPaths = `-- name: ReconcileDerivedGenerationFromLegacyPaths :exec
-UPDATE media_assets
-SET derived_generation = GREATEST(
-    COALESCE(derived_generation, 0),
-    COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
-)
-WHERE kind <> 'original'
+const lockMediaAssetCopy = `-- name: LockMediaAssetCopy :exec
+SELECT 1 FROM media_asset_copies
+WHERE media_asset_id = $1
+  AND store = $2
+FOR UPDATE
 `
 
-// Old writers may advance a derived path after migration but before they stop.
-// Keep the monotonic allocator ahead of the path that adoption copies forward.
-func (q *Queries) ReconcileDerivedGenerationFromLegacyPaths(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, reconcileDerivedGenerationFromLegacyPaths)
+type LockMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+}
+
+// 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
+// ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。
+// ロックしない判定は READ COMMITTED の再評価でも古い版を見て、deleted を deleting に戻しうる。
+// 行が無ければ何もロックしない（後続の UPDATE が 0 行になる）。
+func (q *Queries) LockMediaAssetCopy(ctx context.Context, arg LockMediaAssetCopyParams) error {
+	_, err := q.db.Exec(ctx, lockMediaAssetCopy, arg.MediaAssetID, arg.Store)
+	return err
+}
+
+const reconcileDerivedGenerationFromCopyPaths = `-- name: ReconcileDerivedGenerationFromCopyPaths :exec
+UPDATE media_assets AS asset
+SET derived_generation = GREATEST(
+    COALESCE(asset.derived_generation, 0),
+    COALESCE((
+        SELECT max(media_asset_generation_from_rel_path(copy.rel_path))
+        FROM media_asset_copies copy
+        WHERE copy.media_asset_id = asset.id
+    ), 0)
+)
+WHERE asset.kind <> 'original'
+`
+
+// A path's generation belongs to its physical copy. Include deleted copies because their
+// generation remains part of the allocator's history.
+func (q *Queries) ReconcileDerivedGenerationFromCopyPaths(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, reconcileDerivedGenerationFromCopyPaths)
 	return err
 }
 
 const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-SELECT a.id, $1, a.rel_path, $2, now(),
-       CASE WHEN $2::text = 'deleted' THEN COALESCE(a.deleted_at, now()) END
-FROM media_assets a
-WHERE a.id = $3
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
-    rel_path = EXCLUDED.rel_path,
-    state = EXCLUDED.state,
-    deleted_at = EXCLUDED.deleted_at
+UPDATE media_asset_copies
+SET state = $1,
+    deleted_at = CASE
+        WHEN $1::text = 'deleted' THEN COALESCE(deleted_at, now())
+        ELSE NULL
+    END
+WHERE media_asset_id = $2
+  AND store = $3
 `
 
 type SetMediaAssetCopyStateParams struct {
-	Store        string
 	State        string
 	MediaAssetID int64
+	Store        string
 }
 
-// A pre-migration writer may have committed the legacy row without a copy row,
-// or changed its path while an old pod was still running. The configured store is
-// the legacy media_dir during this migration stage, so refresh that copy from the
-// logical row as part of the lifecycle transition.
+// Keep the rolling-migration mirror's lifecycle state in sync without re-reading
+// the logical media_assets columns. The copy row must exist before a transition
+// can start, as enforced by the worker's adoption check and the transition query.
 func (q *Queries) SetMediaAssetCopyState(ctx context.Context, arg SetMediaAssetCopyStateParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setMediaAssetCopyState, arg.Store, arg.State, arg.MediaAssetID)
+	result, err := q.db.Exec(ctx, setMediaAssetCopyState, arg.State, arg.MediaAssetID, arg.Store)
 	if err != nil {
 		return 0, err
 	}
@@ -146,14 +162,15 @@ func (q *Queries) StoreHasMediaAssetCopies(ctx context.Context, store string) (b
 
 const upsertMediaAssetCopy = `-- name: UpsertMediaAssetCopy :exec
 
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, deleted_at)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
 VALUES (
     $1, $2, $3,
-    $4, $5
+    $4, COALESCE($5::timestamptz, now()), $6
 )
 ON CONFLICT (media_asset_id, store) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     state      = EXCLUDED.state,
+    created_at = COALESCE($5::timestamptz, media_asset_copies.created_at),
     deleted_at = EXCLUDED.deleted_at
 `
 
@@ -162,6 +179,7 @@ type UpsertMediaAssetCopyParams struct {
 	Store        string
 	RelPath      string
 	State        string
+	CreatedAt    *time.Time
 	DeletedAt    *time.Time
 }
 
@@ -173,6 +191,7 @@ func (q *Queries) UpsertMediaAssetCopy(ctx context.Context, arg UpsertMediaAsset
 		arg.Store,
 		arg.RelPath,
 		arg.State,
+		arg.CreatedAt,
 		arg.DeletedAt,
 	)
 	return err

@@ -120,10 +120,10 @@ URL には site ではなく置き場の名前を入れる。規則しだいで 
 <details><summary>根拠</summary>
 
 - 配らない録画: `recordings.deleted_at IS NOT NULL`
-- 配らないアセット: `media_assets.state <> 'active'`
+- 配らないアセット: `storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）の `media_asset_copies.state <> 'active'`
 - 未 ingest の判定: 指定 kind の `media_assets` 行なし
 - ingest と共有するパス検証: `internal/mediapath.Resolve`
-- 相対パスの列: `rel_path`
+- 相対パスの列: `media_asset_copies.rel_path`
 - 配信時に照合するサイズ: `media_assets.size_bytes`
 
 </details>
@@ -190,7 +190,7 @@ storage:
   accel_location: /_media/     # 空なら Go が直接配る
 ```
 
-有効時に返すヘッダーは `X-Accel-Redirect: /_media/<相対パス>` である。nginx 側は `internal` な location で `media_dir` を alias する。
+有効時に返すヘッダーは `X-Accel-Redirect: /_media/stores/<store>/<相対パス>` である。nginx 側は `internal` な location で store 名を除き、`media_dir` を alias する。旧 binary が返す `/_media/<相対パス>` も同じ設定で処理する。
 
 パス検証を通した後にヘッダーを返す。検証前に返すと、細工された相対パスで nginx に任意ファイルを配らせられる。
 

@@ -19,7 +19,7 @@ func TestPlaybackStateContract(t *testing.T) {
 	contracttest.RunPlayback(t, func(t *testing.T) contracttest.PlaybackFixture {
 		pool := testutil.SetupDB(t)
 		return contracttest.PlaybackFixture{
-			Store: NewPlayback(pool), Recordings: NewRecordings(pool),
+			Store: NewPlayback(pool), Recordings: NewRecordings(pool, dbtest.StoreName),
 			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
 				return newContractRecording(t, pool, options, &playbackContractEventID)
 			},

@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -150,6 +151,31 @@ func newOriginalVODTestServer(t *testing.T, pool *pgxpool.Pool, cfg LiveConfig) 
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 	return ls, srv
+}
+
+// streamer は storage.stores の FS 置き場のコピーだけを配る。コピーが別の置き場にしか無い録画は
+// ファイルが同じ MediaDir にあっても 404 にする（起動時に FS 置き場が 1 つでなければ拒否するので、空は扱わない）。
+func TestOriginalVODIgnoresCopiesInOtherStores(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
+
+	_, own := newOriginalVODTestServer(t, pool, cfg)
+	resp, body := get(t, originalVODPlaylistURL(own.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "#EXTM3U") {
+		t.Fatalf("original VOD playlist from the configured store = %d %q, want a playlist", resp.StatusCode, body)
+	}
+
+	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool, "other-store", ""), chaseTestLiveClient{}, testSite, cfg)
+	t.Cleanup(ls.shutdown)
+	router := chi.NewRouter()
+	ls.Mount(router)
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+	resp, _ = get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("original VOD playlist for a store without a copy = %d, want 404", resp.StatusCode)
+	}
 }
 
 func originalVODPlaylistURL(serverURL string, recordingID int64, profile string) string {
@@ -578,10 +604,11 @@ func TestOriginalVODUnavailableTargetsReturn404WithoutSession(t *testing.T) {
 	fullURL := originalVODOffsetPlaylistURL(srv.URL, recordingID, 60, "hd")
 
 	checks := []struct {
-		name   string
-		update string
+		name       string
+		update     string
+		assetState string
 	}{
-		{name: "missing original", update: "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1"},
+		{name: "missing original", assetState: "deleted"},
 		{name: "trash", update: "UPDATE recordings SET deleted_at = now() WHERE id = $1"},
 		{name: "purged", update: "UPDATE recordings SET purged_at = now() WHERE id = $1"},
 		{name: "failed recording", update: "UPDATE recordings SET status = 'failed' WHERE id = $1"},
@@ -592,10 +619,10 @@ func TestOriginalVODUnavailableTargetsReturn404WithoutSession(t *testing.T) {
 			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET status = 'finished', deleted_at = NULL, purged_at = NULL, superseded_at = NULL WHERE id = $1`, recordingID); err != nil {
 				t.Fatalf("resetting recording: %v", err)
 			}
-			if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = 'active', deleted_at = NULL WHERE recording_id = $1`, recordingID); err != nil {
-				t.Fatalf("resetting original asset: %v", err)
-			}
-			if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
+			dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", "active")
+			if tc.assetState != "" {
+				dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", tc.assetState)
+			} else if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
 				t.Fatalf("making target unavailable: %v", err)
 			}
 
@@ -692,8 +719,8 @@ func TestOriginalVODTrashInvalidatesRetainedSessionAndScratch(t *testing.T) {
 // before the DB recheck must still end in 404 (delete_reconcile marks deleting
 // before it unlinks; trash hides the recording).
 func TestOriginalVODVerifiesDBTargetAfterOpen(t *testing.T) {
-	for _, tc := range []struct{ name, update string }{
-		{name: "asset deleting", update: "UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1"},
+	for _, tc := range []struct{ name, update, assetState string }{
+		{name: "asset deleting", assetState: "deleting"},
 		{name: "trash", update: "UPDATE recordings SET deleted_at = now() WHERE id = $1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -703,7 +730,9 @@ func TestOriginalVODVerifiesDBTargetAfterOpen(t *testing.T) {
 			var opens atomic.Int32
 			ls.afterOriginalVODOpen = func() {
 				opens.Add(1)
-				if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
+				if tc.assetState != "" {
+					dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", tc.assetState)
+				} else if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
 					t.Errorf("changing target after open: %v", err)
 				}
 			}
@@ -749,9 +778,7 @@ func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 	if _, err := os.Stat(originalPath); !os.IsNotExist(err) {
 		t.Fatalf("original canonical path still exists after the open hook, stat err = %v", err)
 	}
-	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
-		t.Fatalf("deleting original asset: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", "deleted")
 
 	base := fmt.Sprintf("%s/api/sites/default/recordings/%d/original-vod/offset/90", srv.URL, recordingID)
 	resp, body = get(t, base+"/segments/hd.0_seg00001.ts", nil)

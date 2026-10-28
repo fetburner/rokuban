@@ -15,11 +15,13 @@ const tsScanBatchSize = 500
 
 // GetActiveOriginalForTSScan は計測が必要な active 原本を返す。
 func (s *Media) GetActiveOriginalForTSScan(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
-	row, err := sqlcgen.New(s.pool).GetActiveOriginalForTSScan(ctx, recordingID)
+	row, err := sqlcgen.New(s.pool).GetActiveOriginalForTSScan(ctx, sqlcgen.GetActiveOriginalForTSScanParams{
+		RecordingID: recordingID, StoreName: s.storeName,
+	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original for TS scan on recording %d", recordingID))
 	}
-	return store.MediaAsset{ID: row.ID, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+	return store.MediaAsset{ID: row.ID, Store: s.storeName, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
 }
 
 // ListMissingTSScanRecordings は計測記録の無い、またはサイズが古い原本をページ単位で返す。
@@ -27,6 +29,7 @@ func (s *Media) ListMissingTSScanRecordings(ctx context.Context, afterRecordingI
 	rows, err := sqlcgen.New(s.pool).ListMissingTSScanRecordings(ctx, sqlcgen.ListMissingTSScanRecordingsParams{
 		AfterRecordingID: afterRecordingID,
 		RowLimit:         limit,
+		StoreName:        s.storeName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing missing TS scan recordings: %w", err)
@@ -43,7 +46,9 @@ func (s *Media) ReplaceScan(ctx context.Context, assetID, scannedSizeBytes int64
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 
-	currentSize, err := q.LockActiveOriginalForTSScan(ctx, assetID)
+	currentSize, err := q.LockActiveOriginalForTSScan(ctx, sqlcgen.LockActiveOriginalForTSScanParams{
+		MediaAssetID: assetID, StoreName: s.storeName,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

@@ -3766,7 +3766,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	}
 
 	q := sqlcgen.New(pool)
-	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingID)
+	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}
@@ -3819,7 +3819,7 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	}
 
 	q := sqlcgen.New(pool)
-	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingID)
+	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}
@@ -3992,11 +3992,11 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 	}
 
 	q := sqlcgen.New(pool)
-	assetA, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingIDA)
+	assetA, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDA})
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset(site-a): %v", err)
 	}
-	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingIDB)
+	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDB})
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset(site-b): %v", err)
 	}
@@ -4078,11 +4078,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		// MediaDelete.MarkDeleting（delete_execute.go）は deleted_at を
 		// 立てない --- 'deleting' は unlink 前後の中間状態であり、不可逆な
 		// 削除確定（deleted_at）はまだ起きていない。ここでもその形を模す。
-		if _, err := pool.Exec(ctx,
-			"UPDATE media_assets SET state = $2 WHERE id = $1", existingAssetID, existingState,
-		); err != nil {
-			t.Fatalf("setting existing media_asset state to %s: %v", existingState, err)
-		}
+		dbtest.SetMediaAssetState(t, pool, existingAssetID, existingState)
 	}
 
 	existingContent := []byte("existing-untouched-01") // 21 バイト
@@ -4193,16 +4189,7 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 		fixtureParams.SizeBytes = 9
 	})
 
-	if _, err := pool.Exec(ctx,
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", deletedAssetID,
-	); err != nil {
-		t.Fatalf("marking media_asset deleted: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		"UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1", deletedAssetID,
-	); err != nil {
-		t.Fatalf("marking media_asset_copy deleted: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, deletedAssetID, "deleted")
 
 	// 新規: 同じ rel_path になる録画。
 	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -4238,7 +4225,7 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
 
-	asset, err := q.GetActiveOriginalMediaAsset(ctx, newRecordingID)
+	asset, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: newRecordingID})
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}

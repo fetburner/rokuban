@@ -73,10 +73,7 @@ func seedEncodedVersions(t *testing.T, pool *pgxpool.Pool, id int64, profiles ..
 
 func markOriginalDeleted(t *testing.T, pool *pgxpool.Pool, originalID int64) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, originalID); err != nil {
-		t.Fatalf("marking original deleted: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, originalID, "deleted")
 }
 
 func removalRequests(t *testing.T, pool *pgxpool.Pool, id int64) []string {

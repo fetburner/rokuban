@@ -7,21 +7,29 @@
 -- name: ListMissingThumbnailRecordings :many
 SELECT o.recording_id
 FROM media_assets o
+JOIN media_asset_copies original_copy
+  ON original_copy.media_asset_id = o.id
+ AND original_copy.store = sqlc.arg('store_name')
+ AND original_copy.state = 'active'
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
   AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
   AND o.kind = 'original'
-  AND o.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM media_assets t
     WHERE t.recording_id = o.recording_id
       AND t.kind = 'thumbnail'
-      AND t.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = t.id
+            AND copy.store = sqlc.arg('store_name')
+            AND copy.state = 'active'
+      )
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = o.id
+    WHERE m.media_asset_id = o.id AND m.store = sqlc.arg('store_name')
   )
 ORDER BY o.recording_id
 LIMIT sqlc.arg('row_limit');
@@ -61,15 +69,21 @@ WITH planning AS (
         thumbnail.id AS thumbnail_media_asset_id,
         thumbnail.rel_path AS thumbnail_rel_path,
         COALESCE(thumbnail.derived_generation, 0)::bigint AS thumbnail_generation,
-        thumbnail_seek.seek_ms
+        thumbnail.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (
-        SELECT a.id, a.rel_path
+        SELECT a.id, copy.rel_path
         FROM media_assets a
+        JOIN media_asset_copies copy
+          ON copy.media_asset_id = a.id
+         AND copy.store = sqlc.arg('store_name')
+         AND copy.state = 'active'
         WHERE a.recording_id = r.id
           AND a.kind = 'original'
-          AND a.state = 'active'
-          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+          AND NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m
+              WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+          )
         LIMIT 1
     ) original ON true
     LEFT JOIN LATERAL (
@@ -77,12 +91,16 @@ WITH planning AS (
             jsonb_build_object(
                 'mediaAssetId', a.id,
                 'profile', a.profile,
-                'relPath', a.rel_path,
+                'relPath', copy.rel_path,
                 'cut', c.media_asset_id IS NOT NULL,
                 'keepRanges', COALESCE(frozen.ranges, '[]'::jsonb)
             ) ORDER BY a.profile
         ) AS assets
         FROM media_assets a
+        JOIN media_asset_copies copy
+          ON copy.media_asset_id = a.id
+         AND copy.store = sqlc.arg('store_name')
+         AND copy.state = 'active'
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
             SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
@@ -91,15 +109,23 @@ WITH planning AS (
         ) frozen ON true
         WHERE a.recording_id = r.id
           AND a.kind = 'encoded'
-          AND a.state = 'active'
-          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+          AND NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m
+              WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+          )
     ) encoded ON true
-    LEFT JOIN media_assets thumbnail
-      ON thumbnail.recording_id = r.id
-     AND thumbnail.kind = 'thumbnail'
-     AND thumbnail.state = 'active'
-    LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek
-      ON thumbnail_seek.media_asset_id = thumbnail.id
+    LEFT JOIN LATERAL (
+        SELECT a.id, copy.rel_path, a.derived_generation, thumbnail_seek.seek_ms
+        FROM media_assets a
+        JOIN media_asset_copies copy
+          ON copy.media_asset_id = a.id
+         AND copy.store = sqlc.arg('store_name')
+         AND copy.state = 'active'
+        LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
+        WHERE a.recording_id = r.id
+          AND a.kind = 'thumbnail'
+        LIMIT 1
+    ) thumbnail ON true
     WHERE r.purged_at IS NULL
       AND (sqlc.narg('recording_id')::bigint IS NULL OR r.id = sqlc.narg('recording_id')::bigint)
 )
@@ -119,21 +145,29 @@ LIMIT sqlc.arg('row_limit');
 -- name: ListMissingSeekTilesRecordings :many
 SELECT o.recording_id
 FROM media_assets o
+JOIN media_asset_copies original_copy
+  ON original_copy.media_asset_id = o.id
+ AND original_copy.store = sqlc.arg('store_name')
+ AND original_copy.state = 'active'
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
   AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
   AND o.kind = 'original'
-  AND o.state = 'active'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1 FROM media_assets s
     WHERE s.recording_id = o.recording_id
       AND s.kind = 'seek_tiles'
-      AND s.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = s.id
+            AND copy.store = sqlc.arg('store_name')
+            AND copy.state = 'active'
+      )
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = o.id
+    WHERE m.media_asset_id = o.id AND m.store = sqlc.arg('store_name')
   )
 ORDER BY o.recording_id
 LIMIT sqlc.arg('row_limit');

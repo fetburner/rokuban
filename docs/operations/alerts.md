@@ -95,7 +95,7 @@ DB 接続と `reservations` の中身を確認する。このブレーカーの�
 
 `ruler_deletes` と異なり、`detail` に対象の抜粋は載らない。呼び出し側が渡すのは総数だけで、サンプルの型にもファイルを表す欄が無い。ファイルを確認できるとは未検証なので、そうは書かない。
 
-規模は `GET /api/breakers` の `pending` と `threshold` で確認する。対象の内訳が要るときは DB を直接クエリする。ごみ箱・`until_encoded` 待ち・外した版の 3 ソースは `media_assets` で引く。外した版は view `removed_encoded_assets` で引ける。公開前孤児の候補は `orphan_files` の `rel_path` と `first_seen` で引く。孤児は定義上 `media_assets` に無いファイルなので、`media_assets` では引けない。`first_seen` はエイジング判定の根拠なので、内訳の確認にも使える。
+規模は `GET /api/breakers` の `pending` と `threshold` で確認する。対象の内訳が要るときは DB を直接クエリする。ごみ箱・`until_encoded` 待ち・外した版の 3 ソースは `media_assets` と [`storage.stores` の FS 置き場](../configuration/keys.md#置き場の規則)の `media_asset_copies` を結合して引く。外した版の録画とアセットは view `removed_encoded_assets` で引ける。公開前孤児の候補は `orphan_files` の `rel_path` と `first_seen` で引く。孤児は定義上、コピー表に無いファイルなので、`media_asset_copies` との照合では引けない。`first_seen` はエイジング判定の根拠なので、内訳の確認にも使える。
 
 正当なら `POST /api/breakers/delete_reconcile/resume` で再開する。このブレーカーは site を持たないので、site をパスに含めない。
 
@@ -112,7 +112,7 @@ aging を超えて未登録の canonical file が残っているときは、候�
 
 `rokuban_orphan_files_unresolved > 0` がこの状態を表す。このゲージは削除 reconcile の通常パスで更新されるため、最終完走時刻も併せて見る。
 
-`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で候補を確認する。対象ファイルと `media_assets` を照合し、DB 復旧後の登録漏れや公開失敗の残骸かを調べる。ファイルが無くなるか `media_assets` に登録されると、次の reconcile で候補が消える。
+`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で候補を確認する。対象ファイルと `media_asset_copies` を照合し、DB 復旧後の登録漏れや公開失敗の残骸かを調べる。ファイルが無くなるか、`storage.stores` の FS 置き場のコピーとして登録されると、次の reconcile で候補が消える。
 
 ### 開始時刻超過で recording.started 未観測
 

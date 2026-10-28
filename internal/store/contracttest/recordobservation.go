@@ -653,8 +653,8 @@ func runRecordBacklog(t *testing.T, newStore NewRecordObservationStore) {
 	if err != nil {
 		t.Fatalf("GetUningestedRecordBacklog: %v", err)
 	}
-	if got.Records != 3 || got.Bytes != lengthWithoutAsset+lengthWithDeletedAsset {
-		t.Fatalf("backlog Records = %d, Bytes = %d; want 3 and %d", got.Records, got.Bytes, lengthWithoutAsset+lengthWithDeletedAsset)
+	if got.Records != 2 || got.Bytes != lengthWithoutAsset {
+		t.Fatalf("backlog Records = %d, Bytes = %d; want 2 and %d", got.Records, got.Bytes, lengthWithoutAsset)
 	}
 }
 

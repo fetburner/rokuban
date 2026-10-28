@@ -620,10 +620,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 
 	// 原本は until_encoded で既に物理削除済み（行は deleted で残る）。
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/gone.m2ts", []byte("data"))
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", originalID); err != nil {
-		t.Fatalf("marking original deleted: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, originalID, "deleted")
 	if err := os.Remove(filepath.Join(mediaDir, "webhook", "gone.m2ts")); err != nil {
 		t.Fatalf("removing original file: %v", err)
 	}
@@ -778,10 +775,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 	if err := os.Remove(assetPath); err != nil {
 		t.Fatalf("simulating a completed unlink: %v", err)
 	}
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
-		t.Fatalf("marking asset deleting: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// ここでユーザーがごみ箱から復元する。
 	if _, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID); err != nil {
@@ -915,10 +909,7 @@ func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/budget.m2ts", []byte("data"))
 	markRecordingTrashed(t, pool, recordingID)
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
-		t.Fatalf("marking assets deleted: %v", err)
-	}
+	dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "", "deleted")
 
 	rec, client := newWebhookRecorder(t)
 	w := &DeleteReconcileWorker{
@@ -990,10 +981,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 			if kind == store.AssetKindSeekTiles {
 				target = tilesID
 			}
-			if _, err := pool.Exec(ctx,
-				"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", target); err != nil {
-				t.Fatalf("marking %s deleted: %v", kind, err)
-			}
+			dbtest.SetMediaAssetState(t, pool, target, "deleted")
 			assertUntilEncodedQualifies(t, pool, assetID, false)
 
 			w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
@@ -1169,7 +1157,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 
 	var eligible int
 	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM until_encoded_deletable_originals
+		SELECT count(*) FROM until_encoded_deletable_originals('test-store')
 		WHERE asset_id = ANY($1::bigint[])`, []int64{missingScanID, staleScanID, currentScanID}).Scan(&eligible); err != nil {
 		t.Fatalf("querying current-scan eligibility: %v", err)
 	}
@@ -1195,7 +1183,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 // recording_encode_policy_check（issue #159 で recordings 側の CHECK から
 // 移設）を一時的に外す。encode_profiles が
 // 空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
-// 削除クエリ側ガード（until_encoded_deletable_originals view の
+// 削除クエリ側ガード（until_encoded_deletable_originals 関数の
 // cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
 // 足したものなので、CHECK が無い前提でもそれ単体で原本を守れることを確認する
 // 必要がある。テスト用パッケージ DB は TRUNCATE のみでスキーマは使い回すため、
@@ -1359,7 +1347,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 // 旧条件 3（キューの pending 状態を直接見るガード）は issue #516 で削除した ---
 // この安全性は until_encoded_deletable_originals（条件 2）が代わりに担保する。
 // recordingA は desired なプロファイル h264 が未コミット（判定はジョブの有無を
-// 見ない）。条件 2 は SQL 側（view）で判定するので A は untilEncodedRows に一度も現れない --- した
+// 見ない）。条件 2 は SQL 側（関数）で判定するので A は untilEncodedRows に一度も現れない --- した
 // がって条件 2 側の完備候補を recordingB 1 件にすると、until_encoded ループが
 // 複数件のうち先頭 1 件だけを処理して残りを無視する変異を注入しても
 // untilEncodedRows の要素数が 1 のままで検出できない。recordingC も条件 2 を
@@ -1490,7 +1478,7 @@ func assertUntilEncodedQualifies(t *testing.T, pool *pgxpool.Pool, assetID int64
 	t.Helper()
 	var n int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM until_encoded_deletable_originals WHERE asset_id = $1`, assetID).Scan(&n); err != nil {
+		`SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE asset_id = $1`, assetID).Scan(&n); err != nil {
 		t.Fatalf("querying until_encoded_deletable_originals: %v", err)
 	}
 	if (n == 1) != want {
@@ -1523,10 +1511,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 
 	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
 	// この時点では派生物が揃っており、遷移は正しい判断だった。
-	if _, err := pool.Exec(ctx,
-		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
-		t.Fatalf("marking original deleting: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// その後サムネイルが失われる（記録・ファイルとも）。もう
 	// until_encoded_deletable_originals の述語を満たさない。
@@ -1571,10 +1556,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 
 	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
 	// この時点では派生物が揃っており、遷移は正しい判断だった。
-	if _, err := pool.Exec(ctx,
-		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
-		t.Fatalf("marking original deleting: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// その後、計測記録が原本の現在サイズと合わなくなる（原本が差し替わった）。
 	// until_encoded_deletable_originals の述語を満たさない。
@@ -1600,7 +1582,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 }
 
 // delete_reconcile.sql の 5 クエリが、削除可否の 2 腕（ごみ箱 / until_encoded）
-// を名前付き述語（until_encoded_deletable_originals view /
+// を名前付き述語（until_encoded_deletable_originals 関数 /
 // trash_deletable_recordings 関数）への参照に統一していることの静的チェック
 // （issue #160）。生の predicate テキスト
 // （キー列や cardinality ガード）がクエリファイルに再度インライン化されると、
@@ -1621,7 +1603,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 		"r.deleted_at IS NOT NULL",
 	} {
 		if strings.Contains(text, needle) {
-			t.Errorf("delete_reconcile.sql contains %q; the predicate should live only in the named view/function (until_encoded_deletable_originals / trash_deletable_recordings), not be re-inlined into a consumer query", needle)
+			t.Errorf("delete_reconcile.sql contains %q; the predicate should live only in the named functions/views (until_encoded_deletable_originals / trash_deletable_recordings), not be re-inlined into a consumer query", needle)
 		}
 	}
 
@@ -2895,9 +2877,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 		p.RelPath = relPath
 		p.SizeBytes = 4
 	})
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = 'deleting' WHERE id = $1`, assetID); err != nil {
-		t.Fatalf("marking stuck asset deleting: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// ブレーカーを発動させておく（新規候補はゼロなので影響しないはず）。
 	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
@@ -2952,6 +2932,47 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 	}
 	if count != 0 {
 		t.Errorf("missing_media_assets count = %d, want 0 (file exists on disk)", count)
+	}
+}
+
+func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := dbtest.Recording(t, pool)
+	legacyRelPath := "legacy/original.m2ts"
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, legacyRelPath, []byte("data"))
+	copyRelPath := "copies/test-store/original.m2ts"
+	legacyPath := filepath.Join(mediaDir, filepath.FromSlash(legacyRelPath))
+	copyPath := filepath.Join(mediaDir, filepath.FromSlash(copyRelPath))
+	if err := os.MkdirAll(filepath.Dir(copyPath), 0o755); err != nil {
+		t.Fatalf("creating copy path directory: %v", err)
+	}
+	if err := os.Rename(legacyPath, copyPath); err != nil {
+		t.Fatalf("moving physical file to the copy path: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET rel_path = 'stale/logical-path.m2ts' WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("making logical path stale: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET rel_path = $2 WHERE media_asset_id = $1 AND store = 'test-store'`, assetID, copyRelPath); err != nil {
+		t.Fatalf("setting physical copy path: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{
+		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
+		RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	}
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	var orphanCount, missingCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM orphan_files WHERE store = 'test-store' AND rel_path = $1`, copyRelPath).Scan(&orphanCount); err != nil {
+		t.Fatalf("checking copy path was not recorded as an orphan: %v", err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets WHERE store = 'test-store' AND media_asset_id = $1`, assetID).Scan(&missingCount); err != nil {
+		t.Fatalf("checking active copy was not recorded missing: %v", err)
+	}
+	if orphanCount != 0 || missingCount != 0 {
+		t.Fatalf("orphan/missing observations = %d/%d, want 0/0 for a present active store copy", orphanCount, missingCount)
 	}
 }
 
@@ -3422,10 +3443,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	// 対象が独立に(このワーカーの外で)active でなくなった状態を模す ---
 	// reconcileMissingAssets の掃除ループが必ずこれより先に走るとは限らない
 	// ことの検証なので、掃除を経ずに直接 state を進める。
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
-		t.Fatalf("marking asset deleted out of band: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
@@ -3478,10 +3496,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 	// このワーカーの外で active でなくなった（＝ListActiveMediaAssets に
 	// 現れないので今パスの candidates に入らない）。行が消えていないので
 	// FK の ON DELETE CASCADE では掃除されず、掃除ループだけが回収できる。
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
-		t.Fatalf("marking asset deleted out of band: %v", err)
-	}
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 

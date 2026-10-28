@@ -1383,9 +1383,7 @@ func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
 					p.RelPath, p.SizeBytes = fmt.Sprintf("recordings/chase-eligibility-%d.ts", recordingID), 8
 				})
 				if tt.originalState == "deleted" {
-					if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
-						t.Fatalf("marking original deleted: %v", err)
-					}
+					dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "original", "deleted")
 				}
 			}
 

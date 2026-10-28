@@ -2,56 +2,62 @@
 -- can evolve without moving the logical asset's satellite rows.
 
 -- name: UpsertMediaAssetCopy :exec
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, deleted_at)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
 VALUES (
     sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'),
-    sqlc.arg('state'), sqlc.narg('deleted_at')
+    sqlc.arg('state'), COALESCE(sqlc.narg('created_at')::timestamptz, now()), sqlc.narg('deleted_at')
 )
 ON CONFLICT (media_asset_id, store) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     state      = EXCLUDED.state,
+    created_at = COALESCE(sqlc.narg('created_at')::timestamptz, media_asset_copies.created_at),
     deleted_at = EXCLUDED.deleted_at;
 
--- A pre-migration writer may have committed the legacy row without a copy row,
--- or changed its path while an old pod was still running. The configured store is
--- the legacy media_dir during this migration stage, so refresh that copy from the
--- logical row as part of the lifecycle transition.
+-- Keep the rolling-migration mirror's lifecycle state in sync without re-reading
+-- the logical media_assets columns. The copy row must exist before a transition
+-- can start, as enforced by the worker's adoption check and the transition query.
 -- name: SetMediaAssetCopyState :execrows
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-SELECT a.id, sqlc.arg('store'), a.rel_path, sqlc.arg('state'), now(),
-       CASE WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(a.deleted_at, now()) END
-FROM media_assets a
-WHERE a.id = sqlc.arg('media_asset_id')
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
-    rel_path = EXCLUDED.rel_path,
-    state = EXCLUDED.state,
-    deleted_at = EXCLUDED.deleted_at;
+UPDATE media_asset_copies
+SET state = sqlc.arg('state'),
+    deleted_at = CASE
+        WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now())
+        ELSE NULL
+    END
+WHERE media_asset_id = sqlc.arg('media_asset_id')
+  AND store = sqlc.arg('store');
+
+-- 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
+-- ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。
+-- ロックしない判定は READ COMMITTED の再評価でも古い版を見て、deleted を deleting に戻しうる。
+-- 行が無ければ何もロックしない（後続の UPDATE が 0 行になる）。
+-- name: LockMediaAssetCopy :exec
+SELECT 1 FROM media_asset_copies
+WHERE media_asset_id = sqlc.arg('media_asset_id')
+  AND store = sqlc.arg('store')
+FOR UPDATE;
 
 -- name: AdoptUnassignedMediaAssetCopies :exec
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
 SELECT a.id, sqlc.arg('store'), a.rel_path, a.state, a.created_at, a.deleted_at
 FROM media_assets a
 WHERE NOT EXISTS (
-          SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
-      )
-   OR EXISTS (
-          SELECT 1 FROM media_asset_copies c
-          WHERE c.media_asset_id = a.id AND c.store = sqlc.arg('store')
-      )
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
-    rel_path = EXCLUDED.rel_path,
-    state = EXCLUDED.state,
-    deleted_at = EXCLUDED.deleted_at;
-
--- Old writers may advance a derived path after migration but before they stop.
--- Keep the monotonic allocator ahead of the path that adoption copies forward.
--- name: ReconcileDerivedGenerationFromLegacyPaths :exec
-UPDATE media_assets
-SET derived_generation = GREATEST(
-    COALESCE(derived_generation, 0),
-    COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
+    SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
 )
-WHERE kind <> 'original';
+ON CONFLICT (media_asset_id, store) DO NOTHING;
+
+-- A path's generation belongs to its physical copy. Include deleted copies because their
+-- generation remains part of the allocator's history.
+-- name: ReconcileDerivedGenerationFromCopyPaths :exec
+UPDATE media_assets AS asset
+SET derived_generation = GREATEST(
+    COALESCE(asset.derived_generation, 0),
+    COALESCE((
+        SELECT max(media_asset_generation_from_rel_path(copy.rel_path))
+        FROM media_asset_copies copy
+        WHERE copy.media_asset_id = asset.id
+    ), 0)
+)
+WHERE asset.kind <> 'original';
 
 -- name: StoreHasMediaAssetCopies :one
 SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = sqlc.arg('store'));

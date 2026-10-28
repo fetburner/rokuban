@@ -22,12 +22,12 @@ func TestCMDetectionContract(t *testing.T) {
 func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
-	analysis := NewAnalysis(pool)
+	analysis := NewAnalysis(pool, dbtest.StoreName)
 	return contracttest.CMDetectionFixture{
 		Store:          analysis,
 		ChapterStore:   analysis,
 		CMStationStore: analysis,
-		TrashStore:     NewRecordings(pool),
+		TrashStore:     NewRecordings(pool, dbtest.StoreName),
 		NewRecording: func(t *testing.T) int64 {
 			return seedCMDetectionContractRecording(t, pool)
 		},

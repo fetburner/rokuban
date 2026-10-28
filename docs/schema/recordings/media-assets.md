@@ -39,7 +39,7 @@ CREATE INDEX ON media_assets (kind, state);
 CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
-`media_assets` は論理資産と、この段の読み手が読む `rel_path` / `state` / `deleted_at` を持つ。物理コピーの場所と状態は別表に持ち、コピーを増やしてもサイズや SHA-256 を重複させない。この段でコピー表から読むのは、catalog の `store` だけである。
+`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。ローリングアップデート中の旧 binary が読むため、`rel_path` / `state` / `deleted_at` も残し、新しい書き手は両表を更新する。同じ理由で、view `removed_encoded_assets` と、関数と同名の旧 view `until_encoded_deletable_originals` が旧列を射影する。後者の旧 view は、置き場を引数に取る同名の関数を呼ぶ。現在の読み手は物理パスとライフサイクルを `media_asset_copies` から読む。コピーの数が増えても、サイズと SHA-256 は論理資産の 1 か所にしか置かない。
 
 ```sql
 CREATE TABLE media_asset_copies (
@@ -54,8 +54,11 @@ CREATE TABLE media_asset_copies (
 );
 
 CREATE INDEX ON media_asset_copies (media_asset_id);
+CREATE INDEX ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
 CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
 ```
+
+配信・一覧・CM 検出・スキャン・削除の読み手は、`storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）にある active コピーを条件にする。api ロールの読み取りは、FS 置き場を決められない構成では全置き場の active コピーを対象にする。エンコードの不足を列挙する 3 つの view は、置き場を限定せず全置き場の active コピーを見る。対象は `encodable_recordings` と `unencoded_desired_profiles` と `unsatisfied_encode_rebuilds` である。棚卸しと rescue は全コピーを `store` ごとに扱い、削除判定は必要な派生物の active コピーが `storage.stores` の FS 置き場に揃ったことを確認する。
 
 一意の制約は 2 つある。`(store, rel_path) WHERE state <> 'deleted'` は、同じ置き場の生きているパスを 1 行に絞る。`UNIQUE (media_asset_id, store)` は、論理資産が 1 つの置き場に持てるコピーを 1 つに絞り、世代更新でパスが変わるときに行を足さず UPDATE させる。後者を置かずパスの索引だけで済ませると、パスが変わるたびに同じ論理資産と置き場の行が増え、現在のコピーを決められない。
 

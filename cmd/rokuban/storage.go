@@ -71,7 +71,7 @@ func newStorageAdoptCmd() *cobra.Command {
 				return err
 			}
 			defer pool.Close()
-			media := pgstore.NewMedia(pool, name)
+			media := pgstore.NewMedia(pool, name, "") // 照合だけで削除の判定はしない
 			if !markerExists {
 				has, err := media.HasStoreCopies(cmd.Context())
 				if err != nil {

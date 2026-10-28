@@ -1,6 +1,6 @@
 // storage_audit.go はストレージ配置を監査し、孤児と実体無しの観測を記録する。
-// 読む表は media_assets、orphan_files、missing_media_assets。書く表は orphan_files と
-// missing_media_assets。
+// 読む表は media_asset_copies、media_assets の論理属性、orphan_files、missing_media_assets。
+// 書く表は orphan_files と missing_media_assets。
 //
 // 走査の入口は walkMediaFiles だけである。孤児と実体無しの監査は、1 パスに 1 回の走査結果
 // （seenOnDisk）を共有する。監査ごとに走査すると、片方だけが見た窓で誤判定する。
@@ -66,7 +66,7 @@ func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context,
 	return nil
 }
 
-// reconcileOrphanCandidates は MediaDir を走査し、media_assets のどの行からも
+// reconcileOrphanCandidates は MediaDir を走査し、この置き場の media_asset_copies に
 // 参照されていないファイルを孤児候補として orphan_files に記録する。
 // mtime が新しいファイル（OrphanMTimeGrace 以内）は候補にしない。
 // 既に孤児でなくなった（登録された、またはファイルが消えた）行は掃除する。
@@ -147,7 +147,7 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 }
 
 // reconcileMissingAssets は orphan 検出と同じ 1 回の走査結果（seenOnDisk）を
-// 使い、state='active' な media_assets のうちディスク上で観測されなかった
+// 使い、copy.state='active' な media_asset_copies のうちディスク上で観測されなかった
 // 行を missing_media_assets に記録する（issue #343、孤児回収の逆方向）。
 // ファイルを消さず、media_assets も一切書き換えない（記録のみ）。
 //
@@ -169,7 +169,7 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 // 埋める（次パスでファイルが観測されれば候補は掃除され、確認済みとして
 // 報告される前に消える）。
 //
-// storage.stores から単一の FS 置き場を決められない構成では、seenOnDisk が空なのに active 行が
+// storage.stores から単一の FS 置き場を決められない構成では、seenOnDisk が空なのに active コピーが
 // 存在するケースを全損シグネチャとして見送る。置き場名が設定されている構成は
 // Work と各記録の直前で marker を照合するため、この走査件数の代替判定は使わない。
 // 既存の missing_media_assets 行には触れず、前回までの確認済み状態を空走査の結果で
@@ -186,7 +186,7 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 //
 // このファイルの他のソースは全部 deleteReconcileRowLimit で括っているが、
 // ここだけは全件を読む。**この判定は差集合なので、入力を切ると答えが変わる**
-// --- 窓の外に落ちた active 行はこのパスの candidates に入らず、下の掃除
+// --- 窓の外に落ちた active コピーはこのパスの candidates に入らず、下の掃除
 // ループが「もう候補でない」と見なして既存の missing_media_assets 行を消して
 // しまう。first_seen が毎パス失われるので、active が窓を超えている系では
 // エイジングが永久に完了せず何も報告されない（他のソースは「拾えた分だけ
@@ -210,14 +210,14 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		return false, nil
 	}
 	if w.MediaStoreName == "" && len(seenOnDisk) == 0 {
-		slog.Warn("delete_reconcile: filesystem walk observed zero files while active media_assets rows exist; suspecting a storage mount failure, skipping missing-asset check for this pass",
+		slog.Warn("delete_reconcile: filesystem walk observed zero files while active media_asset_copies exist; suspecting a storage mount failure, skipping missing-asset check for this pass",
 			"active_assets", len(active))
 		metrics.MissingAssetScanSuspectedStorageFailure.Inc()
 		return true, nil
 	}
 
 	// seenOnDisk に無い行を「実体無し」として DB へ書く前に、ループの前で 1 回照合する。
-	// 目印が合わない置き場の走査結果は、active 行の欠落ではなく別の置き場の観測かもしれない。
+	// 目印が合わない置き場の走査結果は、active コピーの欠落ではなく別の置き場の観測かもしれない。
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording missing media asset"); err != nil {
 		return false, err
 	}

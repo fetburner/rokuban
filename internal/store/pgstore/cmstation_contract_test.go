@@ -34,7 +34,7 @@ func TestCMStationContract(t *testing.T) {
 			return id
 		}
 		return contracttest.CMStationFixture{
-			Store:        NewAnalysis(pool),
+			Store:        NewAnalysis(pool, dbtest.StoreName),
 			NewRecording: newRecording,
 			BeginStationWrite: func(t *testing.T, station store.CMStationRef) func() {
 				t.Helper()

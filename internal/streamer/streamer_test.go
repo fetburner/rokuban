@@ -310,10 +310,7 @@ func TestRecordingFile_DeletedIsNotServed(t *testing.T) {
 		{
 			name: "アセットが削除済み",
 			mark: func(t *testing.T, pool *pgxpool.Pool, id int64) {
-				if _, err := pool.Exec(context.Background(),
-					"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", id); err != nil {
-					t.Fatalf("marking asset deleted: %v", err)
-				}
+				dbtest.SetRecordingMediaAssetState(t, pool, id, "", "deleted")
 			},
 		},
 	}
@@ -446,8 +443,8 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 	if strings.ContainsAny(got, " （）") {
 		t.Errorf("X-Accel-Redirect = %q, want URL-escaped path", got)
 	}
-	if !strings.HasPrefix(got, "/_media/20260725/") {
-		t.Errorf("X-Accel-Redirect = %q, want /_media/ prefix", got)
+	if !strings.HasPrefix(got, "/_media/stores/"+dbtest.StoreName+"/20260725/") {
+		t.Errorf("X-Accel-Redirect = %q, want store-scoped /_media/stores/ prefix", got)
 	}
 }
 
@@ -680,11 +677,7 @@ func TestRecordingFile_EncodedNotFound(t *testing.T) {
 	})
 
 	t.Run("アセットが削除済み", func(t *testing.T) {
-		if _, err := pool.Exec(context.Background(),
-			`UPDATE media_assets SET state = 'deleted', deleted_at = now()
-			 WHERE recording_id = $1 AND kind = 'encoded'`, recordingID); err != nil {
-			t.Fatalf("mark deleted: %v", err)
-		}
+		dbtest.SetRecordingMediaAssetState(t, pool, recordingID, "encoded", "deleted")
 		resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", resp.StatusCode)

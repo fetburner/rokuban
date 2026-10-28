@@ -142,9 +142,8 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		p.RelPath = "reused/old-show.ts"
 		p.SizeBytes = 5
 	})
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = $2, state = 'deleted', deleted_at = now() WHERE id = $1`, deletedAssetID, relPath); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.SetMediaAssetState(t, pool, deletedAssetID, "deleted")
+	dbtest.SetMediaAssetRelPath(t, pool, deletedAssetID, relPath)
 
 	got, err := Register(ctx, pgstoretest.Media(pool), mediaDir, Input{
 		Recording: Recording{

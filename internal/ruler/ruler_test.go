@@ -1082,7 +1082,7 @@ func TestRunPass_FulfilledReservationIsRemovedWithoutGrace(t *testing.T) {
 		t.Fatal("reservation should exist before ingest completes")
 	}
 
-	insertFulfilledRecording(t, pool, ctx, programID, "active")
+	insertFulfilledRecording(t, pool, programID, "active")
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass after ingest: %v", err)
 	}
@@ -1120,7 +1120,7 @@ func TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved(t *testing.T
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
-	insertFulfilledRecording(t, pool, ctx, programID, "deleted")
+	insertFulfilledRecording(t, pool, programID, "deleted")
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass after ingest (tombstoned original): %v", err)
 	}
@@ -1201,7 +1201,7 @@ func TestRunPass_FulfilledWithInvestmentStillRemoved(t *testing.T) {
 	if !reservationExists(t, pool, ctx, programID) {
 		t.Fatal("reservation should exist after the first pass (record intent)")
 	}
-	insertFulfilledRecording(t, pool, ctx, programID, "active")
+	insertFulfilledRecording(t, pool, programID, "active")
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass after ingest (with investment): %v", err)
 	}
@@ -1235,7 +1235,7 @@ func TestRunPass_FulfilledDeletesDoNotCountTowardBreaker(t *testing.T) {
 		if !reservationExists(t, pool, ctx, int64(41010+i)) {
 			t.Fatalf("reservation %d should exist before ingest commits", 41010+i)
 		}
-		insertFulfilledRecording(t, pool, ctx, int64(41010+i), "active")
+		insertFulfilledRecording(t, pool, int64(41010+i), "active")
 	}
 
 	// 3 件が fulfilled になるが、これは導出削除ではないので閾値 2 を超えても発動しない。
@@ -1255,7 +1255,7 @@ func TestRunPass_FulfilledDeletesDoNotCountTowardBreaker(t *testing.T) {
 // insertFulfilledRecording は対象番組に対応する finished 録画と原本 media_asset を作り、
 // ingest 完了後の recordings / media_assets を模す。assetState は原本の state
 // （active / deleted）で、tombstone 済み原本のケースを test から指定できる。
-func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, assetState string) {
+func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, programID int64, assetState string) {
 	t.Helper()
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Source = "rule"
@@ -1272,9 +1272,7 @@ func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Cont
 		p.SizeBytes = 1024
 	})
 	if assetState != "active" {
-		if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $2 WHERE id = $1`, assetID, assetState); err != nil {
-			t.Fatalf("setting fulfilled media asset state: %v", err)
-		}
+		dbtest.SetMediaAssetState(t, pool, assetID, assetState)
 	}
 }
 
