@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -83,7 +84,7 @@ func newRecordingHLSTestHarness(t *testing.T, captions, hasSubtitles bool, waitT
 	return newRecordingHLSTestHarnessWithProbe(t, captions, hasSubtitles, waitTimeout, ffmpeg, defaultRecordingHLSTestProbe)
 }
 
-func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bool, waitTimeout time.Duration, ffmpeg string, probe recordingHLSTestProbe) recordingHLSTestHarness {
+func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bool, waitTimeout time.Duration, ffmpeg string, probe recordingHLSTestProbe, hw ...*ffargs.HWAccel) recordingHLSTestHarness {
 	t.Helper()
 	mediaDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mediaDir, "recordings"), 0o750); err != nil {
@@ -114,12 +115,17 @@ func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bo
 		ffmpeg = "/bin/false"
 	}
 	segmentDir := t.TempDir()
+	var hwAccel *ffargs.HWAccel
+	if len(hw) > 0 {
+		hwAccel = hw[0]
+	}
 	h, err := NewRecordingHLS(media, RecordingHLSConfig{
 		StoreName:       "main",
 		MediaDir:        mediaDir,
 		SegmentDir:      segmentDir,
 		FFmpeg:          ffmpeg,
 		FFprobe:         ffprobe,
+		HWAccel:         hwAccel,
 		Profiles:        []LiveProfile{{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6}},
 		Captions:        captions,
 		CacheBytes:      1 << 20,
@@ -455,6 +461,28 @@ func TestRecordingHLSTempTransformErrorsAreRetryableAndDoNotEndPlaylist(t *testi
 				t.Fatalf("growing input segment response = %d retry-after=%q %s, want 503 + Retry-After", response.Code, response.Header().Get("Retry-After"), response.Body.String())
 			}
 		})
+	}
+}
+
+func TestRecordingHLSUsesConfiguredHardwareAcceleration(t *testing.T) {
+	argsPath := filepath.Join(t.TempDir(), "args")
+	ffmpeg := filepath.Join(t.TempDir(), "ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit 7\n", argsPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, ffmpeg, defaultRecordingHLSTestProbe, &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"})
+	response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response = %d, want 500", response.Code)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"-hwaccel\nvaapi\n", "-hwaccel_device\n/dev/dri/renderD128\n", "-hwaccel_output_format\nvaapi\n"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("ffmpeg args missing %q: %s", want, args)
+		}
 	}
 }
 
