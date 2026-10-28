@@ -27,7 +27,10 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/notifier"
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
+	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
@@ -357,7 +360,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	defer pool.Close()
 
 	// 起動時の検査だけに使い、削除の判定はしないので derived は渡さない。
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, "")
+	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
 	if slices.Contains(roles, "worker") {
 		if err := mediaStore.RequireAdoptedStoreRows(ctx); err != nil {
 			return fmt.Errorf("validating media store assignment: %w", err)
@@ -408,7 +411,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var workerAdapter *riveradapter.Adapter
 	if slices.Contains(roles, "worker") {
-		workerAdapter, err = buildWorkerAdapter(cfg, bound, workerCfg, pool, webhookClient, ingestStorageProbed)
+		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, bound, workerCfg, pool, webhookClient, ingestStorageProbed)
 		if err != nil {
 			return err
 		}
@@ -533,7 +536,7 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
 	// api ロールは削除の判定をしないので derived は渡さない。
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, "")
+	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
@@ -615,9 +618,18 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 
 	var mounters api.Mounters
 	if slices.Contains(roles, "streamer") {
+		objectStores := make(map[string]objstore.Store)
+		if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok && derived.Kind == "s3" {
+			objects, err := s3store.New(egCtx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+			if err != nil {
+				return nil, fmt.Errorf("connecting derived S3 store %q: %w", cfg.Storage.Derived, err)
+			}
+			objectStores[cfg.Storage.Derived] = objects
+		}
 		mounters = append(mounters, streamer.New(mediaStore, streamer.Config{
 			MediaDir:      cfg.Storage.MediaDir,
 			AccelLocation: cfg.Storage.AccelLocation,
+			ObjectStores:  objectStores,
 			// コマの切り出し（/frame）は encode と同じ ffmpeg を使う。ライブを
 			// 切った構成でも要るので、live.ffmpeg ではなくここから渡す。
 			FFmpeg:  cfg.Encode.FFmpeg,
@@ -712,9 +724,27 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
-func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
+func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
 	// until_encoded の原本の削除判定は storage.derived を使う（MediaStoreName は使わない）。
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
+	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
+	derivedPublisher := mediaStore
+	var derivedObjects objstore.Store
+	var derivedMedia *pgstore.Media
+	var derivedMediaDelete store.MediaDelete
+	var derivedStorage store.StorageObservation
+	var derivedCopyMaintenance store.MediaCopyMaintenance
+	if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok && derived.Kind == "s3" {
+		objects, err := s3store.New(ctx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+		if err != nil {
+			return nil, fmt.Errorf("connecting derived S3 store %q: %w", cfg.Storage.Derived, err)
+		}
+		derivedObjects = objects
+		derivedPublisher = pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
+		derivedMedia = derivedPublisher
+		derivedMediaDelete = derivedMedia
+		derivedStorage = derivedMedia
+		derivedCopyMaintenance = derivedMedia
+	}
 	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)
@@ -771,6 +801,12 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
 		MediaReconcile:           mediaStore,
 		MediaPublish:             mediaStore,
+		DerivedMediaPublish:      derivedPublisher,
+		DerivedObjects:           derivedObjects,
+		DerivedObjectStoreName:   cfg.Storage.Derived,
+		DerivedMediaDelete:       derivedMediaDelete,
+		DerivedStorage:           derivedStorage,
+		DerivedCopyMaintenance:   derivedCopyMaintenance,
 		IngestPrecheck:           mediaStore,
 		EncodeProgress:           mediaStore,
 		MediaDelete:              mediaStore,

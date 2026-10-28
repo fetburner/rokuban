@@ -70,6 +70,12 @@ func (e storeScopeEnv) setCopyState(t *testing.T, assetID int64, storeName, stat
 		assetID, storeName, state); err != nil {
 		t.Fatalf("setting copy state of asset %d in %s: %v", assetID, storeName, err)
 	}
+	if storeName == dbtest.StoreName && state == "deleting" {
+		if _, err := e.pool.Exec(context.Background(),
+			`UPDATE media_assets SET state = 'deleting' WHERE id = $1`, assetID); err != nil {
+			t.Fatalf("setting logical state of asset %d to deleting: %v", assetID, err)
+		}
+	}
 }
 
 func (e storeScopeEnv) copyState(t *testing.T, assetID int64, storeName string) string {

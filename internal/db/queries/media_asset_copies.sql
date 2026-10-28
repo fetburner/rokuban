@@ -2,16 +2,157 @@
 -- can evolve without moving the logical asset's satellite rows.
 
 -- name: UpsertMediaAssetCopy :exec
+WITH updated AS (
+    UPDATE media_asset_copies copy
+    SET rel_path   = sqlc.arg('rel_path'),
+        state      = sqlc.arg('state'),
+        created_at = COALESCE(sqlc.narg('created_at')::timestamptz, copy.created_at),
+        deleted_at = sqlc.narg('deleted_at')
+    WHERE copy.media_asset_id = sqlc.arg('media_asset_id')
+      AND copy.store = sqlc.arg('store')
+      AND copy.state IN ('active', 'deleting')
+      AND sqlc.arg('state')::text <> 'pending'
+    RETURNING copy.id
+)
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-VALUES (
+SELECT
     sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'),
     sqlc.arg('state'), COALESCE(sqlc.narg('created_at')::timestamptz, now()), sqlc.narg('deleted_at')
-)
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
+WHERE NOT EXISTS (SELECT 1 FROM updated)
+ON CONFLICT (media_asset_id, store) WHERE state = 'active' DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     state      = EXCLUDED.state,
     created_at = COALESCE(sqlc.narg('created_at')::timestamptz, media_asset_copies.created_at),
     deleted_at = EXCLUDED.deleted_at;
+
+-- A pending copy may coexist with the current active copy while a remote upload runs.
+-- name: InsertMediaAssetForPendingCopy :one
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES (
+    sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
+    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), sqlc.arg('derived_generation')
+)
+ON CONFLICT (recording_id, kind, profile) DO NOTHING
+RETURNING id;
+
+-- name: GetMediaAssetIDForPendingCopy :one
+SELECT id FROM media_assets
+WHERE recording_id = sqlc.arg('recording_id')
+  AND kind = sqlc.arg('kind')
+  AND profile IS NOT DISTINCT FROM sqlc.narg('profile')::text;
+
+-- name: InsertPendingMediaAssetCopy :execrows
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), 'pending')
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
+
+-- name: GetMediaAssetCopyByPath :one
+SELECT id, media_asset_id, state
+FROM media_asset_copies
+WHERE store = sqlc.arg('store') AND rel_path = sqlc.arg('rel_path') AND state <> 'deleted';
+
+-- name: GetActiveMediaAssetCopy :one
+SELECT id, rel_path
+FROM media_asset_copies
+WHERE media_asset_id = sqlc.arg('media_asset_id')
+  AND store = sqlc.arg('store')
+  AND state = 'active';
+
+-- name: SetMediaAssetCopiesState :execrows
+UPDATE media_asset_copies
+SET state = sqlc.arg('state'),
+    deleted_at = CASE WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+WHERE media_asset_id = sqlc.arg('media_asset_id')
+  AND store = sqlc.arg('store')
+  AND state = sqlc.arg('from_state');
+
+-- name: SetMediaAssetCopyStateByID :execrows
+UPDATE media_asset_copies
+SET state = sqlc.arg('state'),
+    deleted_at = CASE WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+WHERE id = sqlc.arg('id');
+
+-- name: UpdateMediaAssetCopyPathStateByID :execrows
+UPDATE media_asset_copies
+SET rel_path = sqlc.arg('rel_path'),
+    state = sqlc.arg('state'),
+    deleted_at = CASE WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+WHERE id = sqlc.arg('id');
+
+-- name: InsertMediaAssetCopy :execrows
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('state'))
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
+
+-- name: MarkPendingMediaAssetCopyDeletedByID :execrows
+WITH deleted AS (
+    UPDATE media_asset_copies AS copy
+    SET state = 'deleted', deleted_at = COALESCE(copy.deleted_at, now())
+    WHERE copy.id = sqlc.arg('id') AND copy.state = 'pending'
+    RETURNING copy.media_asset_id
+)
+UPDATE media_assets a
+SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
+WHERE a.id IN (SELECT media_asset_id FROM deleted)
+  AND a.state IN ('active', 'deleting')
+  AND NOT EXISTS (
+      SELECT 1 FROM media_asset_copies copy
+      WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
+  );
+
+-- name: ClaimAgedPendingMediaAssetCopyByID :execrows
+UPDATE media_asset_copies
+SET state = 'deleting'
+WHERE id = sqlc.arg('id')
+  AND state = 'pending'
+  AND created_at < sqlc.arg('created_before')::timestamptz;
+
+-- name: UpdateActiveMediaAssetCopyPath :execrows
+UPDATE media_asset_copies
+SET rel_path = sqlc.arg('rel_path')
+WHERE media_asset_id = sqlc.arg('media_asset_id')
+  AND store = sqlc.arg('store')
+  AND state = 'active';
+
+-- name: ListAgedPendingMediaAssetCopies :many
+SELECT copy.id, copy.media_asset_id, copy.store, copy.rel_path, copy.created_at, asset.kind
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.store = sqlc.arg('store')
+  AND copy.state = 'pending'
+  AND copy.created_at < sqlc.arg('created_before')::timestamptz
+ORDER BY copy.created_at, copy.id
+LIMIT sqlc.arg('row_limit');
+
+-- name: ListDeletingMediaAssetCopies :many
+SELECT copy.id, copy.media_asset_id, copy.store, copy.rel_path, a.recording_id, a.kind, a.size_bytes
+FROM media_asset_copies copy
+JOIN media_assets a ON a.id = copy.media_asset_id
+WHERE copy.store = sqlc.arg('store') AND copy.state = 'deleting'
+ORDER BY copy.id
+LIMIT sqlc.arg('row_limit');
+
+-- name: MarkMediaAssetCopyDeletedByID :exec
+WITH deleted AS (
+    UPDATE media_asset_copies copy
+    SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+    WHERE copy.id = sqlc.arg('id') AND copy.state = 'deleting'
+    RETURNING media_asset_id
+), completed AS (
+    UPDATE media_assets a
+    SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
+    WHERE a.id IN (SELECT media_asset_id FROM deleted)
+      AND a.state IN ('active', 'deleting')
+      AND NOT EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
+      )
+    RETURNING a.id, a.recording_id, a.profile
+)
+DELETE FROM encoded_asset_removal_requests request
+USING completed
+WHERE request.recording_id = completed.recording_id
+  AND request.profile = completed.profile;
 
 -- Keep the rolling-migration mirror's lifecycle state in sync without re-reading
 -- the logical media_assets columns. The copy row must exist before a transition
@@ -24,7 +165,12 @@ SET state = sqlc.arg('state'),
         ELSE NULL
     END
 WHERE media_asset_id = sqlc.arg('media_asset_id')
-  AND store = sqlc.arg('store');
+  AND store = sqlc.arg('store')
+  AND state IN ('active', 'deleting')
+  AND rel_path = (
+      SELECT asset.rel_path FROM media_assets asset
+      WHERE asset.id = media_asset_copies.media_asset_id
+  );
 
 -- 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
 -- ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。
@@ -43,7 +189,7 @@ FROM media_assets a
 WHERE NOT EXISTS (
     SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
 )
-ON CONFLICT (media_asset_id, store) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- A path's generation belongs to its physical copy. Include deleted copies because their
 -- generation remains part of the allocator's history.

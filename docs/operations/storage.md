@@ -195,9 +195,17 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
 
+接続には標準 AWS credential chain を使う。worker と streamer の実行環境へ、環境変数・workload identity・共有 credential file のいずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。S3 に派生物を置く worker は Put / Head / List / Delete が必要で、streamer は Head と署名付き URL の作成に使う資格情報が必要である。資格情報が使えず S3 の削除を確認できない間は、`until_encoded` の原本を削除しない。
+
+署名付き URL の既定期限は 24 時間で、SigV4 の上限は 7 日である。`web/e2e/s3-302.mjs` の Chrome 156.0.8078.48 と Safari 27.0.1 の測定では、Range 要求は署名付き URL に送られ、期限切れ後に元の URL へ戻らなかった。再生中に期限切れを避けるため、bucket policy と URL の期限を視聴時間に合わせる。
+
+ブラウザーから字幕を読むには、UI の origin からの GET / HEAD を許可し、Range request header を許可する。`Content-Range` と `Accept-Ranges` を expose する。プレイヤーの `<video>` には `crossorigin="anonymous"` を付ける。バケットの CORS を変更した場合は、実ブラウザーの S3 配信判定も通す。
+
 適合テストが測るのは 4 つで、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range である。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。
 
 置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残るためである。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後にする。
+
+削除 reconcile は、DB にある古い `pending` のキーだけを削除する。DB が知らない S3 key は、DB 復元で唯一のコピーを消さないよう報告して保持する。
 
 multipart の SHA-256 は、AWS では常に部品から作る composite checksum である。オブジェクト全体の SHA-256 にはならないので、HEAD で得た値を全体の SHA-256 と直接比較してはならない。アプリは、データを流しながら全体の SHA-256 を自分で計算し、照合にはその値を使う。
 

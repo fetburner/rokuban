@@ -9,7 +9,7 @@ SELECT o.recording_id
 FROM media_assets o
 JOIN media_asset_copies original_copy
   ON original_copy.media_asset_id = o.id
- AND original_copy.store = sqlc.arg('store_name')
+ AND original_copy.store = sqlc.arg('original_store')
  AND original_copy.state = 'active'
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
@@ -23,13 +23,13 @@ WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
       AND EXISTS (
           SELECT 1 FROM media_asset_copies copy
           WHERE copy.media_asset_id = t.id
-            AND copy.store = sqlc.arg('store_name')
+            AND copy.store = sqlc.arg('derived_store')
             AND copy.state = 'active'
       )
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = o.id AND m.store = sqlc.arg('store_name')
+    WHERE m.media_asset_id = o.id AND m.store = sqlc.arg('original_store')
   )
 ORDER BY o.recording_id
 LIMIT sqlc.arg('row_limit');
@@ -76,13 +76,13 @@ WITH planning AS (
         FROM media_assets a
         JOIN media_asset_copies copy
           ON copy.media_asset_id = a.id
-         AND copy.store = sqlc.arg('store_name')
+         AND copy.store = sqlc.arg('original_store')
          AND copy.state = 'active'
         WHERE a.recording_id = r.id
           AND a.kind = 'original'
           AND NOT EXISTS (
               SELECT 1 FROM missing_media_assets m
-              WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+              WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('original_store')
           )
         LIMIT 1
     ) original ON true
@@ -99,7 +99,7 @@ WITH planning AS (
         FROM media_assets a
         JOIN media_asset_copies copy
           ON copy.media_asset_id = a.id
-         AND copy.store = sqlc.arg('store_name')
+         AND copy.store = sqlc.arg('derived_store')
          AND copy.state = 'active'
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
@@ -111,7 +111,7 @@ WITH planning AS (
           AND a.kind = 'encoded'
           AND NOT EXISTS (
               SELECT 1 FROM missing_media_assets m
-              WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+              WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('derived_store')
           )
     ) encoded ON true
     LEFT JOIN LATERAL (
@@ -119,7 +119,7 @@ WITH planning AS (
         FROM media_assets a
         JOIN media_asset_copies copy
           ON copy.media_asset_id = a.id
-         AND copy.store = sqlc.arg('store_name')
+         AND copy.store = sqlc.arg('derived_store')
          AND copy.state = 'active'
         LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
         WHERE a.recording_id = r.id
@@ -147,7 +147,7 @@ SELECT o.recording_id
 FROM media_assets o
 JOIN media_asset_copies original_copy
   ON original_copy.media_asset_id = o.id
- AND original_copy.store = sqlc.arg('store_name')
+ AND original_copy.store = sqlc.arg('original_store')
  AND original_copy.state = 'active'
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
@@ -161,13 +161,13 @@ WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
       AND EXISTS (
           SELECT 1 FROM media_asset_copies copy
           WHERE copy.media_asset_id = s.id
-            AND copy.store = sqlc.arg('store_name')
+            AND copy.store = sqlc.arg('derived_store')
             AND copy.state = 'active'
       )
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = o.id AND m.store = sqlc.arg('store_name')
+    WHERE m.media_asset_id = o.id AND m.store = sqlc.arg('original_store')
   )
 ORDER BY o.recording_id
 LIMIT sqlc.arg('row_limit');

@@ -724,6 +724,10 @@ type erroringEncodedPublisher struct {
 	calls int
 }
 
+func (p *erroringEncodedPublisher) PreparePendingMediaAssetCopy(context.Context, store.PendingMediaAssetCopy) error {
+	return nil
+}
+
 func (p *erroringEncodedPublisher) PublishEncoded(context.Context, store.EncodedPublishInput, func() error) (bool, error) {
 	p.calls++
 	return false, errors.New("publisher reached")

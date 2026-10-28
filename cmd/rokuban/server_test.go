@@ -1662,6 +1662,18 @@ VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 	}
 
 	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("loading worker config: %v", err)
+	}
+	var eligible int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals($1)`, cfg.Storage.Derived).Scan(&eligible); err != nil {
+		t.Fatalf("checking seeded until_encoded eligibility for derived store %q: %v", cfg.Storage.Derived, err)
+	}
+	if cfg.Storage.MediaStoreName != "test-store" || eligible != 1 {
+		t.Fatalf("worker storage media_store/derived candidates = %q/%q/%d, want test-store/test-store/1",
+			cfg.Storage.MediaStoreName, cfg.Storage.Derived, eligible)
+	}
 	if _, err := runServerCmdBounded(t, 30*time.Second, path,
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=2s"); err != nil {
 		t.Fatalf("worker once run: %v", err)

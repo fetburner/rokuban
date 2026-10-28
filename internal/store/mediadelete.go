@@ -17,8 +17,34 @@ type MediaDeleteAsset struct {
 // MediaDeleteRevertCandidate は削除条件から外れた deleting アセットを表す。
 type MediaDeleteRevertCandidate struct {
 	ID          int64
+	CopyID      int64
 	RecordingID int64
 	RelPath     string
+}
+
+// MediaAssetCopy describes a physical copy awaiting cleanup.
+type MediaAssetCopy struct {
+	ID           int64
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	RecordingID  int64
+	Kind         string
+	SizeBytes    int64
+}
+
+// MediaCopyMaintenance recovers S3 copies from durable DB state.
+type MediaCopyMaintenance interface {
+	// ListAgedPendingMediaAssetCopies returns only pending copy rows older than before.
+	ListAgedPendingMediaAssetCopies(ctx context.Context, before time.Time, limit int32) ([]MediaAssetCopy, error)
+	// ListDeletingMediaAssetCopies returns keys whose copy rows already authorize deletion.
+	ListDeletingMediaAssetCopies(ctx context.Context, limit int32) ([]MediaAssetCopy, error)
+	// ClaimAgedPendingMediaAssetCopy atomically fences off a stale pending copy before object deletion.
+	ClaimAgedPendingMediaAssetCopy(ctx context.Context, copyID int64, before time.Time) (bool, error)
+	// MarkPendingMediaAssetCopyDeleted marks one pending-copy row reclaimed after its object is removed.
+	MarkPendingMediaAssetCopyDeleted(ctx context.Context, copyID int64) error
+	// MarkDeletingMediaAssetCopyDeleted marks one deleting-copy row removed and finalizes its logical asset if no copies remain.
+	MarkDeletingMediaAssetCopyDeleted(ctx context.Context, copyID int64) error
 }
 
 // MediaDelete は削除 reconcile がメディアアセットの削除状態を読み書きする契約である。

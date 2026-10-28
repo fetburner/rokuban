@@ -472,6 +472,14 @@ var (
 		Name: "rokuban_orphan_files_unresolved",
 		Help: "Aged canonical orphan files that require review. Files without a media_assets row are not automatically deleted unless their reserved name proves they never reached publication.",
 	})
+	ObjectStoreErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_object_store_errors_total",
+		Help: "Object store operation failures by operation.",
+	}, []string{"operation"})
+	ObjectStoreOrphansUnresolved = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_object_store_orphans_unresolved",
+		Help: "Aged object store keys without a media asset copy row; these keys are reported and retained.",
+	})
 
 	// MissingAssetScanSuspectedStorageFailure は上記の検出パス自体が
 	// 「ファイルシステム走査が 1 件も観測しなかったのに active な
@@ -820,6 +828,8 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		DeleteReconcileLastPass,
 		MediaAssetsMissing,
 		OrphanFilesUnresolved,
+		ObjectStoreErrors,
+		ObjectStoreOrphansUnresolved,
 		MissingAssetScanSuspectedStorageFailure,
 
 		EncodeReconcileLastPass,

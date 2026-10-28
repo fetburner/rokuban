@@ -268,7 +268,9 @@ JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
  AND copy.store = $1
  AND copy.state = 'deleting'
-WHERE (
+WHERE a.state = 'deleting'
+  AND copy.rel_path = a.rel_path
+  AND (
     EXISTS (
       SELECT 1 FROM trash_deletable_recordings($2::timestamptz) t
       WHERE t.recording_id = a.recording_id
@@ -479,13 +481,15 @@ func (q *Queries) ListTrashMediaAssetsToDelete(ctx context.Context, arg ListTras
 }
 
 const listUnqualifiedDeletingAssets = `-- name: ListUnqualifiedDeletingAssets :many
-SELECT a.id, a.recording_id, copy.rel_path
+SELECT a.id, copy.id AS copy_id, a.recording_id, copy.rel_path
 FROM media_assets a
 JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
  AND copy.store = $1
  AND copy.state = 'deleting'
-WHERE NOT EXISTS (
+WHERE a.state = 'deleting'
+  AND copy.rel_path = a.rel_path
+  AND NOT EXISTS (
     SELECT 1 FROM trash_deletable_recordings($2::timestamptz) t
     WHERE t.recording_id = a.recording_id
   )
@@ -509,6 +513,7 @@ type ListUnqualifiedDeletingAssetsParams struct {
 
 type ListUnqualifiedDeletingAssetsRow struct {
 	ID          int64
+	CopyID      int64
 	RecordingID int64
 	RelPath     string
 }
@@ -542,7 +547,12 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 	var items []ListUnqualifiedDeletingAssetsRow
 	for rows.Next() {
 		var i ListUnqualifiedDeletingAssetsRow
-		if err := rows.Scan(&i.ID, &i.RecordingID, &i.RelPath); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.CopyID,
+			&i.RecordingID,
+			&i.RelPath,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

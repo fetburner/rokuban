@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -96,7 +97,8 @@ type EncodeWorker struct {
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media          store.MediaReconcile
 	Attempts       store.EncodeAttempts
-	Publisher      store.MediaPublish
+	Publisher      store.DerivedMediaPublisher
+	Objects        objstore.Store
 	Progress       store.EncodeProgressReporter
 	MediaDir       string
 	MediaStoreName string
@@ -740,6 +742,9 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded output"); err != nil {
 		return 0, false, err
 	}
+	if w.Objects != nil {
+		return w.publishEncodedObject(ctx, in)
+	}
 	// 親ディレクトリが無いと temp も lock file も作れない。ingest はストレージ層が
 	// commit 前に作るが、encode はここが最初の書き込みなので stage の前に作る。
 	if err := os.MkdirAll(filepath.Dir(in.finalPath), 0o755); err != nil {
@@ -823,6 +828,61 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	return staged.size, published, nil
+}
+
+func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
+	info, err := os.Stat(in.scratchOut)
+	if err != nil {
+		return 0, false, fmt.Errorf("stating encoded scratch output: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return 0, false, fmt.Errorf("encoded scratch output is not a non-empty regular file")
+	}
+	cut := in.cut != nil
+	keep := []chapters.Range(nil)
+	if cut {
+		keep = in.cut.keep
+	}
+	input := store.EncodedPublishInput{
+		RecordingID: in.recordingID, Profile: in.profile, Attempt: in.attempt,
+		RelPath: in.relPath, SizeBytes: info.Size(), DerivedGeneration: in.observed.generation,
+		ObservedRelPath: in.observed.observedRelPath, Cut: cut, KeepRanges: keep,
+		HasRebuildRequest: in.expectedKeep != nil, RequestedKeep: in.expectedKeep,
+	}
+	pending := store.PendingMediaAssetCopy{
+		RecordingID: in.recordingID, Kind: "encoded", Profile: &in.profile,
+		RelPath: in.relPath, SizeBytes: info.Size(), DerivedGeneration: in.observed.generation,
+	}
+	var companions []objectCompanion
+	if in.withSubtitles {
+		subtitleKey, err := mediapath.SubtitleSibling(in.relPath)
+		if err != nil {
+			return 0, false, fmt.Errorf("building subtitle object key: %w", err)
+		}
+		companions = append(companions, objectCompanion{Key: subtitleKey, Path: in.subtitleOut, ContentType: objectContentType(subtitleKey)})
+	}
+	size, published, err = publishGeneratedObject(
+		ctx, w.Objects, w.Publisher, pending, in.scratchOut, objectContentType(in.relPath),
+		func(size int64, publish func() error) (bool, error) {
+			input.SizeBytes = size
+			return w.Publisher.PublishEncoded(ctx, input, func() error {
+				if err := beforeEncodeFilePublication(in.scratchOut); err != nil {
+					return fmt.Errorf("preparing encoded object publication: %w", err)
+				}
+				if err := beforeEncodeCommit(in.scratchOut); err != nil {
+					return fmt.Errorf("committing encoded object: %w", err)
+				}
+				return publish()
+			})
+		}, companions...,
+	)
+	if errors.Is(err, store.ErrStalePublishPlan) {
+		return 0, false, jobq.Snooze(encodeReplanDelay)
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return size, published, nil
 }
 
 // notify は ev に録画のスナップショット（site / title）を足して webhook を送る。
@@ -940,6 +1000,10 @@ func planEncodePublishFromState(
 // して記録・報告する。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
 // 再試行が新しい世代をさらに作る。
 func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
+	if w.Objects != nil {
+		// S3 copies are removed by delete_reconcile from their durable deleting rows.
+		return
+	}
 	// 旧本体と旧サイドカーの unlink はまとめて 1 回照合する。
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced encoded output"); err != nil {
 		log.Warn("encode: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)

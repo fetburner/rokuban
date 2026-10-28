@@ -43,7 +43,9 @@ JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
  AND copy.store = sqlc.arg('store_name')
  AND copy.state = 'deleting'
-WHERE (
+WHERE a.state = 'deleting'
+  AND copy.rel_path = a.rel_path
+  AND (
     EXISTS (
       SELECT 1 FROM trash_deletable_recordings(sqlc.arg('grace_cutoff')::timestamptz) t
       WHERE t.recording_id = a.recording_id
@@ -75,13 +77,15 @@ LIMIT sqlc.arg('row_limit');
 -- 無い行」を作ってしまう。この SELECT + Go 側の stat + 分岐は、その窓を
 -- revert 経路自身に持ち込まないための構成。
 -- name: ListUnqualifiedDeletingAssets :many
-SELECT a.id, a.recording_id, copy.rel_path
+SELECT a.id, copy.id AS copy_id, a.recording_id, copy.rel_path
 FROM media_assets a
 JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
  AND copy.store = sqlc.arg('store_name')
  AND copy.state = 'deleting'
-WHERE NOT EXISTS (
+WHERE a.state = 'deleting'
+  AND copy.rel_path = a.rel_path
+  AND NOT EXISTS (
     SELECT 1 FROM trash_deletable_recordings(sqlc.arg('grace_cutoff')::timestamptz) t
     WHERE t.recording_id = a.recording_id
   )

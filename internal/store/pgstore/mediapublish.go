@@ -11,14 +11,74 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
 var (
 	_ store.MediaPublish           = (*Media)(nil)
+	_ store.DerivedMediaPublisher  = (*Media)(nil)
+	_ store.MediaCopyMaintenance   = (*Media)(nil)
 	_ store.EncodeProgressReporter = (*Media)(nil)
 )
+
+// PreparePendingMediaAssetCopy commits the asset identity and pending copy before a remote PUT.
+func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.PendingMediaAssetCopy) error {
+	if in.Kind != "encoded" && in.Kind != "thumbnail" && in.Kind != "seek_tiles" {
+		return fmt.Errorf("pending copy kind %q is not a derived media asset", in.Kind)
+	}
+	if in.RecordingID <= 0 || in.SizeBytes < 0 || in.DerivedGeneration < 0 {
+		return errors.New("pending copy requires a positive recording ID and non-negative size and generation")
+	}
+	if _, err := mediapath.Resolve("/rokuban-pending-copy", in.RelPath); err != nil {
+		return fmt.Errorf("validating pending media asset path: %w", err)
+	}
+	if (in.Kind == "encoded") != (in.Profile != nil && *in.Profile != "") {
+		return errors.New("encoded pending copy requires a profile; other derived kinds must not have one")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning pending media copy: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	generation := in.DerivedGeneration
+	assetParams := sqlcgen.InsertMediaAssetForPendingCopyParams{
+		RecordingID: in.RecordingID, Kind: in.Kind, Profile: in.Profile,
+		RelPath: in.RelPath, SizeBytes: in.SizeBytes, DerivedGeneration: &generation,
+	}
+	assetID, err := q.InsertMediaAssetForPendingCopy(ctx, assetParams)
+	if errors.Is(err, pgx.ErrNoRows) {
+		assetID, err = q.GetMediaAssetIDForPendingCopy(ctx, sqlcgen.GetMediaAssetIDForPendingCopyParams{
+			RecordingID: in.RecordingID, Kind: in.Kind, Profile: in.Profile,
+		})
+	}
+	if err != nil {
+		return fmt.Errorf("reserving logical media asset for pending copy: %w", mapDatabaseError(err))
+	}
+	inserted, err := q.InsertPendingMediaAssetCopy(ctx, sqlcgen.InsertPendingMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: s.storeName, RelPath: in.RelPath,
+	})
+	if err != nil {
+		return fmt.Errorf("creating pending media asset copy: %w", mapDatabaseError(err))
+	}
+	if inserted == 0 {
+		copyRow, err := q.GetMediaAssetCopyByPath(ctx, sqlcgen.GetMediaAssetCopyByPathParams{
+			Store: s.storeName, RelPath: in.RelPath,
+		})
+		if err != nil {
+			return fmt.Errorf("checking existing pending media asset copy: %w", mapDatabaseError(err))
+		}
+		if copyRow.MediaAssetID != assetID || (copyRow.State != "pending" && copyRow.State != "active") {
+			return fmt.Errorf("media asset copy key %q is already assigned to another asset or lifecycle state: %w", in.RelPath, store.ErrConflict)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing pending media asset copy: %w", mapDatabaseError(err))
+	}
+	return nil
+}
 
 // CommitOriginal は原本・進捗の削除・凍結方針を一つの tx で確定する。
 // 同じ rel_path の原本が既にあれば ErrConflict を返し、publish は呼ばない。
@@ -377,7 +437,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, fmt.Errorf("checking active thumbnail: %w", err)
 		}
 		original, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
@@ -411,7 +471,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, nil
 		}
 		active, err := q.IsActiveThumbnailInput(ctx, sqlcgen.IsActiveThumbnailInputParams{
-			MediaAssetID: in.InputAssetID, StoreName: s.storeName,
+			MediaAssetID: in.InputAssetID, StoreName: s.originalStoreName(),
 		})
 		if err != nil {
 			return false, fmt.Errorf("checking thumbnail input asset: %w", err)
@@ -482,7 +542,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 		return false, fmt.Errorf("checking active seek tiles: %w", err)
 	}
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 	}); errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	} else if err != nil {
@@ -618,12 +678,68 @@ func upsertMediaAssetCopyState(
 	assetID int64,
 	storeName, relPath, state string,
 ) error {
-	return q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID,
-		Store:        storeName,
-		RelPath:      relPath,
-		State:        state,
+	copyRow, err := q.GetMediaAssetCopyByPath(ctx, sqlcgen.GetMediaAssetCopyByPathParams{
+		Store: storeName, RelPath: relPath,
 	})
+	if err == nil {
+		if copyRow.MediaAssetID != assetID {
+			return fmt.Errorf("media asset copy key %q belongs to asset %d: %w", relPath, copyRow.MediaAssetID, store.ErrConflict)
+		}
+		if copyRow.State == "deleting" && state != "deleting" {
+			return fmt.Errorf("media asset copy key %q is being reclaimed: %w", relPath, store.ErrConflict)
+		}
+		if state == "active" && copyRow.State == "pending" {
+			if _, err := q.SetMediaAssetCopiesState(ctx, sqlcgen.SetMediaAssetCopiesStateParams{
+				State: "deleting", MediaAssetID: assetID, Store: storeName, FromState: "active",
+			}); err != nil {
+				return fmt.Errorf("retiring previous active media asset copy: %w", err)
+			}
+		}
+		if copyRow.State == state {
+			return nil
+		}
+		updated, err := q.SetMediaAssetCopyStateByID(ctx, sqlcgen.SetMediaAssetCopyStateByIDParams{ID: copyRow.ID, State: state})
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return fmt.Errorf("updated %d rows for media asset copy %d, want one", updated, copyRow.ID)
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("looking up media asset copy by key: %w", err)
+	}
+	if state == "active" {
+		_, err := q.GetActiveMediaAssetCopy(ctx, sqlcgen.GetActiveMediaAssetCopyParams{
+			MediaAssetID: assetID, Store: storeName,
+		})
+		if err == nil {
+			updated, err := q.UpdateActiveMediaAssetCopyPath(ctx, sqlcgen.UpdateActiveMediaAssetCopyPathParams{
+				MediaAssetID: assetID, Store: storeName, RelPath: relPath,
+			})
+			if err != nil {
+				return err
+			}
+			if updated != 1 {
+				return fmt.Errorf("updated %d active copies for media asset %d, want one", updated, assetID)
+			}
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("looking up active media asset copy: %w", err)
+		}
+	}
+	inserted, err := q.InsertMediaAssetCopy(ctx, sqlcgen.InsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: storeName, RelPath: relPath, State: state,
+	})
+	if err != nil {
+		return err
+	}
+	if inserted != 1 {
+		return fmt.Errorf("media asset copy key %q is already occupied: %w", relPath, store.ErrConflict)
+	}
+	return nil
 }
 
 // ReportEncodeProgress は encode-progress 通知を PostgreSQL NOTIFY で送る。

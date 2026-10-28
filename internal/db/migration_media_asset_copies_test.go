@@ -164,3 +164,58 @@ func assertMigratedAssetGeneration(t *testing.T, pool *pgxpool.Pool, assetID int
 		t.Errorf("%s derived_generation = %d, want %d", relPath, *got, want)
 	}
 }
+
+func TestMediaAssetCopiesPermitPendingReplacementForSameStore(t *testing.T) {
+	ctx := context.Background()
+	dbURL := testDatabaseURL(t)
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("migrating to latest before setup: %v", err)
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("opening test database: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
+		t.Fatalf("clearing media fixtures: %v", err)
+	}
+	defer func() {
+		if _, err := pool.Exec(context.Background(), `TRUNCATE recordings CASCADE`); err != nil {
+			t.Errorf("clearing media fixtures: %v", err)
+		}
+	}()
+
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.Kind = "encoded"
+		params.Profile = &profile
+		params.RelPath = "encoded/old.mp4"
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, $2, 'encoded/new.mp4', 'pending')`, assetID, dbtest.StoreName); err != nil {
+		t.Fatalf("inserting pending replacement beside active copy: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, $2, 'encoded/second-active.mp4', 'active')`, assetID, dbtest.StoreName); err == nil {
+		t.Fatal("second active copy for the same asset and store was accepted")
+	}
+
+	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
+		t.Fatalf("clearing replacement fixtures before downgrade: %v", err)
+	}
+	if err := MigrateDown(ctx, dbURL); err != nil {
+		t.Fatalf("restoring prior copy index: %v", err)
+	}
+	var unique bool
+	if err := pool.QueryRow(ctx, `SELECT indisunique FROM pg_index
+WHERE indexrelid = 'media_asset_copies_active_asset_store_idx'::regclass`).Scan(&unique); err != nil {
+		t.Fatalf("reading restored copy index: %v", err)
+	}
+	if unique {
+		t.Fatal("downgrade left the replacement index unique; version 39 requires the original non-unique index")
+	}
+	if err := MigrateUp(ctx, dbURL); err != nil {
+		t.Fatalf("restoring latest copy index: %v", err)
+	}
+}

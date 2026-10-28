@@ -117,6 +117,29 @@ type SeekTilesPublishInput struct {
 	DerivedGeneration int64
 }
 
+// PendingMediaAssetCopy describes a derived object whose durable key is reserved
+// before an object-store PUT begins.
+type PendingMediaAssetCopy struct {
+	RecordingID       int64
+	Kind              string
+	Profile           *string
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration int64
+}
+
+// DerivedMediaPublisher publishes encoded video, thumbnails, and seek tiles.
+type DerivedMediaPublisher interface {
+	// PreparePendingMediaAssetCopy commits the logical asset and pending physical-copy row before upload.
+	PreparePendingMediaAssetCopy(ctx context.Context, input PendingMediaAssetCopy) error
+	// PublishEncoded rechecks encode intent and promotes the staged copy when publish succeeds.
+	PublishEncoded(ctx context.Context, input EncodedPublishInput, publish func() error) (published bool, err error)
+	// PublishThumbnail rechecks thumbnail eligibility and promotes the staged copy.
+	PublishThumbnail(ctx context.Context, input ThumbnailPublishInput, publish func() error) (published bool, err error)
+	// PublishSeekTiles rechecks seek-tile eligibility and promotes the staged copy.
+	PublishSeekTiles(ctx context.Context, input SeekTilesPublishInput, publish func() error) (published bool, err error)
+}
+
 // InPlaceRecording は既存ファイル群を登録する録画メタデータを表す。
 // Site と放送 identity（NetworkID・ServiceID・EventID）が冪等性キーである。
 type InPlaceRecording struct {

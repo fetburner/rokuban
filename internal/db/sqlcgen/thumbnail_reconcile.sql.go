@@ -29,7 +29,7 @@ WHERE o.recording_id > $2::bigint
       AND EXISTS (
           SELECT 1 FROM media_asset_copies copy
           WHERE copy.media_asset_id = s.id
-            AND copy.store = $1
+            AND copy.store = $4
             AND copy.state = 'active'
       )
   )
@@ -38,13 +38,14 @@ WHERE o.recording_id > $2::bigint
     WHERE m.media_asset_id = o.id AND m.store = $1
   )
 ORDER BY o.recording_id
-LIMIT $4
+LIMIT $5
 `
 
 type ListMissingSeekTilesRecordingsParams struct {
-	StoreName        string
+	OriginalStore    string
 	AfterRecordingID int64
 	RecordingID      *int64
+	DerivedStore     string
 	RowLimit         int32
 }
 
@@ -53,9 +54,10 @@ type ListMissingSeekTilesRecordingsParams struct {
 // 除外）だが、再開位置は呼び出し側が種類ごとに別に持つ。
 func (q *Queries) ListMissingSeekTilesRecordings(ctx context.Context, arg ListMissingSeekTilesRecordingsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listMissingSeekTilesRecordings,
-		arg.StoreName,
+		arg.OriginalStore,
 		arg.AfterRecordingID,
 		arg.RecordingID,
+		arg.DerivedStore,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -95,7 +97,7 @@ WHERE o.recording_id > $2::bigint
       AND EXISTS (
           SELECT 1 FROM media_asset_copies copy
           WHERE copy.media_asset_id = t.id
-            AND copy.store = $1
+            AND copy.store = $4
             AND copy.state = 'active'
       )
   )
@@ -104,13 +106,14 @@ WHERE o.recording_id > $2::bigint
     WHERE m.media_asset_id = o.id AND m.store = $1
   )
 ORDER BY o.recording_id
-LIMIT $4
+LIMIT $5
 `
 
 type ListMissingThumbnailRecordingsParams struct {
-	StoreName        string
+	OriginalStore    string
 	AfterRecordingID int64
 	RecordingID      *int64
+	DerivedStore     string
 	RowLimit         int32
 }
 
@@ -122,9 +125,10 @@ type ListMissingThumbnailRecordingsParams struct {
 // なった場合は delete_reconcile が消し、次のパスで再び候補になる。
 func (q *Queries) ListMissingThumbnailRecordings(ctx context.Context, arg ListMissingThumbnailRecordingsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listMissingThumbnailRecordings,
-		arg.StoreName,
+		arg.OriginalStore,
 		arg.AfterRecordingID,
 		arg.RecordingID,
+		arg.DerivedStore,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -203,7 +207,7 @@ WITH planning AS (
         FROM media_assets a
         JOIN media_asset_copies copy
           ON copy.media_asset_id = a.id
-         AND copy.store = $3
+         AND copy.store = $4
          AND copy.state = 'active'
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
@@ -215,7 +219,7 @@ WITH planning AS (
           AND a.kind = 'encoded'
           AND NOT EXISTS (
               SELECT 1 FROM missing_media_assets m
-              WHERE m.media_asset_id = a.id AND m.store = $3
+              WHERE m.media_asset_id = a.id AND m.store = $4
           )
     ) encoded ON true
     LEFT JOIN LATERAL (
@@ -223,7 +227,7 @@ WITH planning AS (
         FROM media_assets a
         JOIN media_asset_copies copy
           ON copy.media_asset_id = a.id
-         AND copy.store = $3
+         AND copy.store = $4
          AND copy.state = 'active'
         LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
         WHERE a.recording_id = r.id
@@ -231,7 +235,7 @@ WITH planning AS (
         LIMIT 1
     ) thumbnail ON true
     WHERE r.purged_at IS NULL
-      AND ($4::bigint IS NULL OR r.id = $4::bigint)
+      AND ($5::bigint IS NULL OR r.id = $5::bigint)
 )
 SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, thumbnail_generation, seek_ms
 FROM planning
@@ -246,7 +250,8 @@ LIMIT $2
 type ListThumbnailReselectCandidatesParams struct {
 	AfterRecordingID int64
 	RowLimit         int32
-	StoreName        string
+	OriginalStore    string
+	DerivedStore     string
 	RecordingID      *int64
 }
 
@@ -278,7 +283,8 @@ func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListT
 	rows, err := q.db.Query(ctx, listThumbnailReselectCandidates,
 		arg.AfterRecordingID,
 		arg.RowLimit,
-		arg.StoreName,
+		arg.OriginalStore,
+		arg.DerivedStore,
 		arg.RecordingID,
 	)
 	if err != nil {

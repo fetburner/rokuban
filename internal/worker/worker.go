@@ -9,6 +9,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -129,17 +130,23 @@ type Deps struct {
 	// RecordingPurge は録画の物理削除の永続化契約。
 	RecordingPurge store.RecordingPurge
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
-	LabelRuleReevaluation store.LabelRuleReevaluation
-	MediaReconcile        store.MediaReconcile
-	MediaPublish          store.MediaPublish
-	IngestPrecheck        store.IngestPrecheck
-	EncodeProgress        store.EncodeProgressReporter
-	MediaDelete           store.MediaDelete
-	TSScan                store.TSScan
-	EncodeAttempts        store.EncodeAttempts
-	StorageObservation    store.StorageObservation
-	MediaDir              string
-	MediaStoreName        string
+	LabelRuleReevaluation  store.LabelRuleReevaluation
+	MediaReconcile         store.MediaReconcile
+	MediaPublish           store.MediaPublish
+	DerivedMediaPublish    store.DerivedMediaPublisher
+	DerivedObjects         objstore.Store
+	DerivedObjectStoreName string
+	DerivedMediaDelete     store.MediaDelete
+	DerivedStorage         store.StorageObservation
+	DerivedCopyMaintenance store.MediaCopyMaintenance
+	IngestPrecheck         store.IngestPrecheck
+	EncodeProgress         store.EncodeProgressReporter
+	MediaDelete            store.MediaDelete
+	TSScan                 store.TSScan
+	EncodeAttempts         store.EncodeAttempts
+	StorageObservation     store.StorageObservation
+	MediaDir               string
+	MediaStoreName         string
 	// IngestStorageProbed は起動時に ProbeIngestStorage が成功したかを示す。
 	// false なら IngestWorker が最初の ingest で、目印を照合した後に probe する。
 	IngestStorageProbed bool
@@ -204,6 +211,7 @@ type Deps struct {
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
+	derivedPublisher := resolveDerivedMediaPublisher(deps)
 	riveradapter.Register(workers, &IngestWorker{
 		storageProbed:    deps.IngestStorageProbed,
 		Enqueuer:         deps.Enqueuer,
@@ -222,7 +230,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &EncodeWorker{
 		Media:          deps.MediaReconcile,
 		Attempts:       deps.EncodeAttempts,
-		Publisher:      deps.MediaPublish,
+		Publisher:      derivedPublisher,
+		Objects:        deps.DerivedObjects,
 		Progress:       deps.EncodeProgress,
 		MediaDir:       deps.MediaDir,
 		MediaStoreName: deps.MediaStoreName,
@@ -284,7 +293,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
 		Media:          deps.MediaReconcile,
-		Publisher:      deps.MediaPublish,
+		Publisher:      derivedPublisher,
+		Objects:        deps.DerivedObjects,
 		MediaDir:       deps.MediaDir,
 		MediaStoreName: deps.MediaStoreName,
 		ScratchDir:     deps.ScratchDir,
@@ -293,7 +303,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &SeekTilesWorker{
 		Media:          deps.MediaReconcile,
-		Publisher:      deps.MediaPublish,
+		Publisher:      derivedPublisher,
+		Objects:        deps.DerivedObjects,
 		MediaDir:       deps.MediaDir,
 		MediaStoreName: deps.MediaStoreName,
 		ScratchDir:     deps.ScratchDir,
@@ -325,18 +336,23 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
 	riveradapter.Register(workers, &DeleteReconcileWorker{
-		MediaDelete:       deps.MediaDelete,
-		RecordingPurge:    deps.RecordingPurge,
-		Breakers:          deps.Breakers,
-		Storage:           deps.StorageObservation,
-		MediaDir:          deps.MediaDir,
-		MediaStoreName:    deps.MediaStoreName,
-		TrashRetention:    deps.Cleanup.TrashRetention,
-		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
-		OrphanAge:         deps.Cleanup.OrphanAge,
-		MaxDeletesPerPass: deps.Cleanup.MaxDeletesPerPass,
-		MissingAssetAge:   deps.Cleanup.MissingAssetAge,
-		Webhook:           deps.Webhook,
+		MediaDelete:            deps.MediaDelete,
+		RecordingPurge:         deps.RecordingPurge,
+		Breakers:               deps.Breakers,
+		Storage:                deps.StorageObservation,
+		DerivedMediaDelete:     deps.DerivedMediaDelete,
+		DerivedStorage:         deps.DerivedStorage,
+		DerivedCopyMaintenance: deps.DerivedCopyMaintenance,
+		DerivedObjects:         deps.DerivedObjects,
+		DerivedObjectStoreName: deps.DerivedObjectStoreName,
+		MediaDir:               deps.MediaDir,
+		MediaStoreName:         deps.MediaStoreName,
+		TrashRetention:         deps.Cleanup.TrashRetention,
+		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
+		OrphanAge:              deps.Cleanup.OrphanAge,
+		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
+		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
+		Webhook:                deps.Webhook,
 	})
 	riveradapter.Register(workers, &StorageSyncWorker{
 		Storage:    deps.StorageObservation,
@@ -346,4 +362,12 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &tsscan.ScanWorker{Media: deps.TSScan, MediaDir: deps.MediaDir})
 	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan})
 	return workers
+}
+
+func resolveDerivedMediaPublisher(deps *Deps) store.DerivedMediaPublisher {
+	if deps.DerivedMediaPublish != nil {
+		return deps.DerivedMediaPublish
+	}
+	publisher, _ := deps.MediaPublish.(store.DerivedMediaPublisher)
+	return publisher
 }

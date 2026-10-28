@@ -9,6 +9,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -112,12 +113,17 @@ const (
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
-	Storage        store.StorageObservation
-	MediaDelete    store.MediaDelete
-	RecordingPurge store.RecordingPurge
-	Breakers       store.Breakers
-	MediaDir       string
-	MediaStoreName string
+	Storage                store.StorageObservation
+	MediaDelete            store.MediaDelete
+	DerivedMediaDelete     store.MediaDelete
+	DerivedStorage         store.StorageObservation
+	DerivedCopyMaintenance store.MediaCopyMaintenance
+	DerivedObjects         objstore.Store
+	DerivedObjectStoreName string
+	RecordingPurge         store.RecordingPurge
+	Breakers               store.Breakers
+	MediaDir               string
+	MediaStoreName         string
 
 	TrashRetention    time.Duration
 	OrphanMTimeGrace  time.Duration
@@ -158,6 +164,9 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if missingAssetAge <= 0 {
 		missingAssetAge = config.DefaultMissingAssetAge
 	}
+	if err := w.reconcileObjectStore(ctx, orphanMTimeGrace, orphanAge); err != nil {
+		return err
+	}
 	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, site)
 	if err != nil {
 		return err
@@ -165,7 +174,16 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
 	// pending 経路の再評価（後述）もこの値を使う。
 	trashCutoff := time.Now().Add(-trashRetention)
+	if err := w.restoreUnqualifiedObjectCopies(ctx, trashCutoff); err != nil {
+		return err
+	}
 	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff); err != nil {
+		return err
+	}
+	if err := w.reclaimPendingObjectCopies(ctx, time.Now().Add(-orphanAge)); err != nil {
+		return err
+	}
+	if err := w.deleteDeletingObjectCopies(ctx); err != nil {
 		return err
 	}
 	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
@@ -199,18 +217,38 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if err != nil {
 		return err
 	}
+	var derivedTrash, derivedRemoved []store.MediaDeleteAsset
+	if w.DerivedMediaDelete != nil {
+		derivedTrash, err = w.DerivedMediaDelete.ListTrashAssetsToDelete(ctx, trashCutoff, deleteReconcileRowLimit)
+		if err != nil {
+			return fmt.Errorf("listing derived trash assets past retention: %w", err)
+		}
+		derivedRemoved, err = w.DerivedMediaDelete.ListRemovedEncodedAssetsToDelete(ctx, deleteReconcileRowLimit)
+		if err != nil {
+			return fmt.Errorf("listing removed derived encoded assets: %w", err)
+		}
+	}
 	candidates.agedOrphans, err = w.agedUnpublishedOrphans(ctx, orphanAge, orphanMTimeGrace)
 	if err != nil {
 		return fmt.Errorf("verifying aged unpublished files: %w", err)
 	}
 	afterDeleteCandidatesCollected()
-	stop, err := w.applyDeleteCircuitBreaker(ctx, w.Breakers, site, tripped, candidates.total(), maxPerPass)
+	stop, err := w.applyDeleteCircuitBreaker(ctx, w.Breakers, site, tripped,
+		candidates.total()+len(derivedTrash)+len(derivedRemoved), maxPerPass)
 	if err != nil {
 		return err
 	}
 	if stop {
 		metrics.DeleteReconcileLastPass.SetToCurrentTime()
 		return nil
+	}
+	for _, asset := range append(derivedTrash, derivedRemoved...) {
+		if err := w.DerivedMediaDelete.MarkDeleting(ctx, asset.ID); err != nil {
+			return fmt.Errorf("marking derived asset %d deleting: %w", asset.ID, err)
+		}
+	}
+	if err := w.deleteDeletingObjectCopies(ctx); err != nil {
+		return err
 	}
 	w.deleteCandidates(ctx, candidates, orphanMTimeGrace)
 

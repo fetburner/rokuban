@@ -26,7 +26,7 @@ FROM media_assets a
 WHERE NOT EXISTS (
     SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
 )
-ON CONFLICT (media_asset_id, store) DO NOTHING
+ON CONFLICT DO NOTHING
 `
 
 func (q *Queries) AdoptUnassignedMediaAssetCopies(ctx context.Context, store string) error {
@@ -61,6 +61,27 @@ func (q *Queries) AdoptUnassignedStorageSync(ctx context.Context, store string) 
 	return err
 }
 
+const claimAgedPendingMediaAssetCopyByID = `-- name: ClaimAgedPendingMediaAssetCopyByID :execrows
+UPDATE media_asset_copies
+SET state = 'deleting'
+WHERE id = $1
+  AND state = 'pending'
+  AND created_at < $2::timestamptz
+`
+
+type ClaimAgedPendingMediaAssetCopyByIDParams struct {
+	ID            int64
+	CreatedBefore time.Time
+}
+
+func (q *Queries) ClaimAgedPendingMediaAssetCopyByID(ctx context.Context, arg ClaimAgedPendingMediaAssetCopyByIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimAgedPendingMediaAssetCopyByID, arg.ID, arg.CreatedBefore)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countUnassignedStorageRows = `-- name: CountUnassignedStorageRows :one
 SELECT
     (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
@@ -78,6 +99,260 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	var count int32
 	err := row.Scan(&count)
 	return count, err
+}
+
+const getActiveMediaAssetCopy = `-- name: GetActiveMediaAssetCopy :one
+SELECT id, rel_path
+FROM media_asset_copies
+WHERE media_asset_id = $1
+  AND store = $2
+  AND state = 'active'
+`
+
+type GetActiveMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+}
+
+type GetActiveMediaAssetCopyRow struct {
+	ID      int64
+	RelPath string
+}
+
+func (q *Queries) GetActiveMediaAssetCopy(ctx context.Context, arg GetActiveMediaAssetCopyParams) (GetActiveMediaAssetCopyRow, error) {
+	row := q.db.QueryRow(ctx, getActiveMediaAssetCopy, arg.MediaAssetID, arg.Store)
+	var i GetActiveMediaAssetCopyRow
+	err := row.Scan(&i.ID, &i.RelPath)
+	return i, err
+}
+
+const getMediaAssetCopyByPath = `-- name: GetMediaAssetCopyByPath :one
+SELECT id, media_asset_id, state
+FROM media_asset_copies
+WHERE store = $1 AND rel_path = $2 AND state <> 'deleted'
+`
+
+type GetMediaAssetCopyByPathParams struct {
+	Store   string
+	RelPath string
+}
+
+type GetMediaAssetCopyByPathRow struct {
+	ID           int64
+	MediaAssetID int64
+	State        string
+}
+
+func (q *Queries) GetMediaAssetCopyByPath(ctx context.Context, arg GetMediaAssetCopyByPathParams) (GetMediaAssetCopyByPathRow, error) {
+	row := q.db.QueryRow(ctx, getMediaAssetCopyByPath, arg.Store, arg.RelPath)
+	var i GetMediaAssetCopyByPathRow
+	err := row.Scan(&i.ID, &i.MediaAssetID, &i.State)
+	return i, err
+}
+
+const getMediaAssetIDForPendingCopy = `-- name: GetMediaAssetIDForPendingCopy :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = $2
+  AND profile IS NOT DISTINCT FROM $3::text
+`
+
+type GetMediaAssetIDForPendingCopyParams struct {
+	RecordingID int64
+	Kind        string
+	Profile     *string
+}
+
+func (q *Queries) GetMediaAssetIDForPendingCopy(ctx context.Context, arg GetMediaAssetIDForPendingCopyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getMediaAssetIDForPendingCopy, arg.RecordingID, arg.Kind, arg.Profile)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertMediaAssetCopy = `-- name: InsertMediaAssetCopy :execrows
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING
+`
+
+type InsertMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	State        string
+}
+
+func (q *Queries) InsertMediaAssetCopy(ctx context.Context, arg InsertMediaAssetCopyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertMediaAssetCopy,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.RelPath,
+		arg.State,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertMediaAssetForPendingCopy = `-- name: InsertMediaAssetForPendingCopy :one
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES (
+    $1, $2, $3,
+    $4, $5, $6
+)
+ON CONFLICT (recording_id, kind, profile) DO NOTHING
+RETURNING id
+`
+
+type InsertMediaAssetForPendingCopyParams struct {
+	RecordingID       int64
+	Kind              string
+	Profile           *string
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration *int64
+}
+
+// A pending copy may coexist with the current active copy while a remote upload runs.
+func (q *Queries) InsertMediaAssetForPendingCopy(ctx context.Context, arg InsertMediaAssetForPendingCopyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertMediaAssetForPendingCopy,
+		arg.RecordingID,
+		arg.Kind,
+		arg.Profile,
+		arg.RelPath,
+		arg.SizeBytes,
+		arg.DerivedGeneration,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertPendingMediaAssetCopy = `-- name: InsertPendingMediaAssetCopy :execrows
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
+VALUES ($1, $2, $3, 'pending')
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING
+`
+
+type InsertPendingMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+}
+
+func (q *Queries) InsertPendingMediaAssetCopy(ctx context.Context, arg InsertPendingMediaAssetCopyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertPendingMediaAssetCopy, arg.MediaAssetID, arg.Store, arg.RelPath)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listAgedPendingMediaAssetCopies = `-- name: ListAgedPendingMediaAssetCopies :many
+SELECT copy.id, copy.media_asset_id, copy.store, copy.rel_path, copy.created_at, asset.kind
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.store = $1
+  AND copy.state = 'pending'
+  AND copy.created_at < $2::timestamptz
+ORDER BY copy.created_at, copy.id
+LIMIT $3
+`
+
+type ListAgedPendingMediaAssetCopiesParams struct {
+	Store         string
+	CreatedBefore time.Time
+	RowLimit      int32
+}
+
+type ListAgedPendingMediaAssetCopiesRow struct {
+	ID           int64
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	CreatedAt    time.Time
+	Kind         string
+}
+
+func (q *Queries) ListAgedPendingMediaAssetCopies(ctx context.Context, arg ListAgedPendingMediaAssetCopiesParams) ([]ListAgedPendingMediaAssetCopiesRow, error) {
+	rows, err := q.db.Query(ctx, listAgedPendingMediaAssetCopies, arg.Store, arg.CreatedBefore, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAgedPendingMediaAssetCopiesRow
+	for rows.Next() {
+		var i ListAgedPendingMediaAssetCopiesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.MediaAssetID,
+			&i.Store,
+			&i.RelPath,
+			&i.CreatedAt,
+			&i.Kind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeletingMediaAssetCopies = `-- name: ListDeletingMediaAssetCopies :many
+SELECT copy.id, copy.media_asset_id, copy.store, copy.rel_path, a.recording_id, a.kind, a.size_bytes
+FROM media_asset_copies copy
+JOIN media_assets a ON a.id = copy.media_asset_id
+WHERE copy.store = $1 AND copy.state = 'deleting'
+ORDER BY copy.id
+LIMIT $2
+`
+
+type ListDeletingMediaAssetCopiesParams struct {
+	Store    string
+	RowLimit int32
+}
+
+type ListDeletingMediaAssetCopiesRow struct {
+	ID           int64
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	RecordingID  int64
+	Kind         string
+	SizeBytes    int64
+}
+
+func (q *Queries) ListDeletingMediaAssetCopies(ctx context.Context, arg ListDeletingMediaAssetCopiesParams) ([]ListDeletingMediaAssetCopiesRow, error) {
+	rows, err := q.db.Query(ctx, listDeletingMediaAssetCopies, arg.Store, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDeletingMediaAssetCopiesRow
+	for rows.Next() {
+		var i ListDeletingMediaAssetCopiesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.MediaAssetID,
+			&i.Store,
+			&i.RelPath,
+			&i.RecordingID,
+			&i.Kind,
+			&i.SizeBytes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockMediaAssetCopy = `-- name: LockMediaAssetCopy :exec
@@ -101,6 +376,59 @@ func (q *Queries) LockMediaAssetCopy(ctx context.Context, arg LockMediaAssetCopy
 	return err
 }
 
+const markMediaAssetCopyDeletedByID = `-- name: MarkMediaAssetCopyDeletedByID :exec
+WITH deleted AS (
+    UPDATE media_asset_copies copy
+    SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+    WHERE copy.id = $1 AND copy.state = 'deleting'
+    RETURNING media_asset_id
+), completed AS (
+    UPDATE media_assets a
+    SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
+    WHERE a.id IN (SELECT media_asset_id FROM deleted)
+      AND a.state IN ('active', 'deleting')
+      AND NOT EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
+      )
+    RETURNING a.id, a.recording_id, a.profile
+)
+DELETE FROM encoded_asset_removal_requests request
+USING completed
+WHERE request.recording_id = completed.recording_id
+  AND request.profile = completed.profile
+`
+
+func (q *Queries) MarkMediaAssetCopyDeletedByID(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, markMediaAssetCopyDeletedByID, id)
+	return err
+}
+
+const markPendingMediaAssetCopyDeletedByID = `-- name: MarkPendingMediaAssetCopyDeletedByID :execrows
+WITH deleted AS (
+    UPDATE media_asset_copies AS copy
+    SET state = 'deleted', deleted_at = COALESCE(copy.deleted_at, now())
+    WHERE copy.id = $1 AND copy.state = 'pending'
+    RETURNING copy.media_asset_id
+)
+UPDATE media_assets a
+SET state = 'deleted', deleted_at = COALESCE(a.deleted_at, now()), updated_at = now()
+WHERE a.id IN (SELECT media_asset_id FROM deleted)
+  AND a.state IN ('active', 'deleting')
+  AND NOT EXISTS (
+      SELECT 1 FROM media_asset_copies copy
+      WHERE copy.media_asset_id = a.id AND copy.state IN ('pending', 'active', 'deleting')
+  )
+`
+
+func (q *Queries) MarkPendingMediaAssetCopyDeletedByID(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, markPendingMediaAssetCopyDeletedByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const reconcileDerivedGenerationFromCopyPaths = `-- name: ReconcileDerivedGenerationFromCopyPaths :exec
 UPDATE media_assets AS asset
 SET derived_generation = GREATEST(
@@ -121,6 +449,35 @@ func (q *Queries) ReconcileDerivedGenerationFromCopyPaths(ctx context.Context) e
 	return err
 }
 
+const setMediaAssetCopiesState = `-- name: SetMediaAssetCopiesState :execrows
+UPDATE media_asset_copies
+SET state = $1,
+    deleted_at = CASE WHEN $1::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+WHERE media_asset_id = $2
+  AND store = $3
+  AND state = $4
+`
+
+type SetMediaAssetCopiesStateParams struct {
+	State        string
+	MediaAssetID int64
+	Store        string
+	FromState    string
+}
+
+func (q *Queries) SetMediaAssetCopiesState(ctx context.Context, arg SetMediaAssetCopiesStateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setMediaAssetCopiesState,
+		arg.State,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.FromState,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
 UPDATE media_asset_copies
 SET state = $1,
@@ -130,6 +487,11 @@ SET state = $1,
     END
 WHERE media_asset_id = $2
   AND store = $3
+  AND state IN ('active', 'deleting')
+  AND rel_path = (
+      SELECT asset.rel_path FROM media_assets asset
+      WHERE asset.id = media_asset_copies.media_asset_id
+  )
 `
 
 type SetMediaAssetCopyStateParams struct {
@@ -149,6 +511,26 @@ func (q *Queries) SetMediaAssetCopyState(ctx context.Context, arg SetMediaAssetC
 	return result.RowsAffected(), nil
 }
 
+const setMediaAssetCopyStateByID = `-- name: SetMediaAssetCopyStateByID :execrows
+UPDATE media_asset_copies
+SET state = $1,
+    deleted_at = CASE WHEN $1::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+WHERE id = $2
+`
+
+type SetMediaAssetCopyStateByIDParams struct {
+	State string
+	ID    int64
+}
+
+func (q *Queries) SetMediaAssetCopyStateByID(ctx context.Context, arg SetMediaAssetCopyStateByIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setMediaAssetCopyStateByID, arg.State, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const storeHasMediaAssetCopies = `-- name: StoreHasMediaAssetCopies :one
 SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = $1)
 `
@@ -160,14 +542,70 @@ func (q *Queries) StoreHasMediaAssetCopies(ctx context.Context, store string) (b
 	return exists, err
 }
 
+const updateActiveMediaAssetCopyPath = `-- name: UpdateActiveMediaAssetCopyPath :execrows
+UPDATE media_asset_copies
+SET rel_path = $1
+WHERE media_asset_id = $2
+  AND store = $3
+  AND state = 'active'
+`
+
+type UpdateActiveMediaAssetCopyPathParams struct {
+	RelPath      string
+	MediaAssetID int64
+	Store        string
+}
+
+func (q *Queries) UpdateActiveMediaAssetCopyPath(ctx context.Context, arg UpdateActiveMediaAssetCopyPathParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateActiveMediaAssetCopyPath, arg.RelPath, arg.MediaAssetID, arg.Store)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateMediaAssetCopyPathStateByID = `-- name: UpdateMediaAssetCopyPathStateByID :execrows
+UPDATE media_asset_copies
+SET rel_path = $1,
+    state = $2,
+    deleted_at = CASE WHEN $2::text = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
+WHERE id = $3
+`
+
+type UpdateMediaAssetCopyPathStateByIDParams struct {
+	RelPath string
+	State   string
+	ID      int64
+}
+
+func (q *Queries) UpdateMediaAssetCopyPathStateByID(ctx context.Context, arg UpdateMediaAssetCopyPathStateByIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateMediaAssetCopyPathStateByID, arg.RelPath, arg.State, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const upsertMediaAssetCopy = `-- name: UpsertMediaAssetCopy :exec
 
+WITH updated AS (
+    UPDATE media_asset_copies copy
+    SET rel_path   = $3,
+        state      = $4,
+        created_at = COALESCE($5::timestamptz, copy.created_at),
+        deleted_at = $6
+    WHERE copy.media_asset_id = $1
+      AND copy.store = $2
+      AND copy.state IN ('active', 'deleting')
+      AND $4::text <> 'pending'
+    RETURNING copy.id
+)
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-VALUES (
+SELECT
     $1, $2, $3,
     $4, COALESCE($5::timestamptz, now()), $6
-)
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
+WHERE NOT EXISTS (SELECT 1 FROM updated)
+ON CONFLICT (media_asset_id, store) WHERE state = 'active' DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     state      = EXCLUDED.state,
     created_at = COALESCE($5::timestamptz, media_asset_copies.created_at),

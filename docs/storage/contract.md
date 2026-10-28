@@ -123,6 +123,8 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 エンコード出力は既にある行のパスへ公開する。そのため canonical を直接開かず、同じディレクトリの staging file へ書く。パスは、ファイルを置く前に DB で予約する。古い試行は、試行回数の照合と行の再確認で公開できない。
 
+FS 置き場では staging file の rename と親 directory の fsync の後に DB を commit する。S3 置き場では、先に `pending` のコピー行を commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、次の transaction でコピーを `active` にする。412 は HEAD のサイズとアプリが保存した SHA-256 metadata が一致するときだけ成功として回収する。途中で失敗した `pending` は削除 reconcile が猶予後に回収する。
+
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 
 - scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。長い profile 名でも作成できる。
@@ -190,6 +192,8 @@ flowchart TD
 ### thumbnail / seek tiles の公開
 
 サムネイルとシークタイルは、完成したファイルを staging にコピーして fsync し、lock と transaction の中で rename して commit する。同じ録画のジョブが重なっても、先行が公開済みか原本が消えていれば、後続は公開を飛ばして成功扱いにする。
+
+S3 置き場では、派生物のキーを `pending` として先に commit し、完成した JPEG をアップロードする。チェックサムの照合が済んだ後、同じ publish transaction で `active` にする。FS と S3 のいずれも、DB の active copy が配信を許す公開点である。
 
 thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして `MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の実行が重なっても scratch file を共有しない。
 
