@@ -108,6 +108,11 @@ func TestSegmentTransformFinalIsDecidedPerRenditionOnlyForKnownLength(t *testing
 			if err := os.WriteFile(filepath.Join(workDir, "test.1.m3u8"), []byte(playlist), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			// 映像は番号 4 で ENDLIST になる（確定した最後の番号に届いている）。
+			videoPlaylist := "#EXTM3U\n#EXTINF:2.0,\nsegments/test.0_seg00002.ts\n#EXTINF:2.0,\nsegments/test.0_seg00003.ts\n#EXTINF:0.08,\nsegments/test.0_seg00004.ts\n#EXT-X-ENDLIST\n"
+			if err := os.WriteFile(filepath.Join(workDir, "test.0.m3u8"), []byte(videoPlaylist), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			for _, name := range []string{"test.1_seg00002.ts", "test.1_seg00003.ts"} {
 				if err := os.WriteFile(filepath.Join(workDir, "segments", name), []byte(name), 0o600); err != nil {
 					t.Fatal(err)
@@ -165,5 +170,34 @@ func TestBuildSegmentTransformArgsTrimsAudioAtTheVideoEndOnlyForKnownLength(t *t
 	}
 	if args := build(0, 3); strings.Contains(strings.Join(args, " "), "apad") {
 		t.Errorf("args of an input with unknown length contain apad: %v", args)
+	}
+}
+
+// 入力が途中で切れた原本（確定した長さは 20 秒、実ファイルは 10 秒）では、音声が apad で無音のまま
+// 映像の終端まで続く。映像が届いていない番号（6・9）の音声は、キャッシュに入れず 200 にしない。
+//
+// 壊し方: scanTransform の `number > videoLast` の continue を消し、isFinal の videoReached を外す。
+func TestSegmentTransformTruncatedInputDoesNotPublishSilentAudioWithRealFFmpeg(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	ffprobe := lookPathFFprobe(t)
+	path := filepath.Join(t.TempDir(), "short.ts")
+	writeOffsetTestTS(t, ffmpeg, path, 5400, "10", "10")
+	input := testSegmentInput(path, firstPacketPTS(t, ffprobe, path))
+	input.Kind = store.RecordingHLSInputOriginal
+	input.VideoDurationPTS = 20 * mpegTSTimestampClock
+	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20)
+	defer closeSegmentManager(t, manager)
+	for _, rendition := range []string{"video", "audio-standard", "audio-main", "audio-sub"} {
+		for _, number := range []int64{6, 9} {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			file, err := manager.Get(ctx, SegmentKey{"recording", "generation-1", "test", rendition, number}, input)
+			cancel()
+			if file != nil {
+				_ = file.Close()
+			}
+			if err == nil {
+				t.Errorf("%s segment %d of an input cut at 10 of 20 seconds was served", rendition, number)
+			}
+		}
 	}
 }

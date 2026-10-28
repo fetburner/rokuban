@@ -91,7 +91,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("original VOD target is scoped to the recording's site", func(t *testing.T) { runMediaOriginalVODTarget(t, newFixture) })
-	t.Run("recording HLS original target shares the original VOD visibility predicate", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
+	t.Run("recording HLS original target shares the original VOD visibility predicate except the finished status", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
 	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
 	t.Run("chase target requires a record and a recording outside the trash", func(t *testing.T) { runMediaChaseTarget(t, newFixture) })
 	t.Run("namespace guard accepts site paths and rejects malformed ones", func(t *testing.T) { runMediaNamespaceMalformed(t, newFixture) })

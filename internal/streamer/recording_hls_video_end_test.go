@@ -15,7 +15,13 @@ import (
 // writeOffsetTestTS は、全ストリームが offsetSeconds 秒から始まる TS を書く。映像と音声の長さは別々に決められる。
 func writeOffsetTestTS(t *testing.T, ffmpeg, path string, offsetSeconds int, videoDuration, audioDuration string) {
 	t.Helper()
-	video := fmt.Sprintf("testsrc2=size=160x90:rate=25:duration=%s", videoDuration)
+	writeOffsetTestTSWithVideo(t, ffmpeg, path, offsetSeconds, videoDuration, audioDuration, "25", "0")
+}
+
+// writeOffsetTestTSWithVideo は writeOffsetTestTS のフレームレートと B フレーム数を選べる版。
+func writeOffsetTestTSWithVideo(t *testing.T, ffmpeg, path string, offsetSeconds int, videoDuration, audioDuration, rate, bFrames string) {
+	t.Helper()
+	video := fmt.Sprintf("testsrc2=size=160x90:rate=%s:duration=%s", rate, videoDuration)
 	audio := fmt.Sprintf("sine=frequency=440:sample_rate=48000:duration=%s", audioDuration)
 	offset := fmt.Sprint(offsetSeconds)
 	cmd := exec.Command(ffmpeg, "-v", "error", "-y",
@@ -23,7 +29,7 @@ func writeOffsetTestTS(t *testing.T, ffmpeg, path string, offsetSeconds int, vid
 		"-itsoffset", offset, "-f", "lavfi", "-i", audio,
 		"-itsoffset", offset, "-f", "lavfi", "-i", audio,
 		"-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0",
-		"-c:v", "mpeg2video", "-q:v", "3", "-g", "50", "-bf", "0", "-sc_threshold", "0",
+		"-c:v", "mpeg2video", "-q:v", "3", "-g", "50", "-bf", bFrames, "-sc_threshold", "0",
 		"-c:a", "mp2", "-b:a", "128k",
 		"-mpegts_copyts", "1", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts",
 		path)
@@ -224,5 +230,44 @@ func TestMeasureRecordingHLSVideoDurationStopsWithContext(t *testing.T) {
 	defer cancel()
 	if _, err := measureRecordingHLSVideoDuration(ctx, ffprobe, file, 5, 0); err == nil {
 		t.Fatal("measure returned no error while ffprobe was still running")
+	}
+}
+
+// duration が N/A になる小さな窓で、B フレームがあっても、ファイルの切り出しを長くして長さが減らない。
+// 最大の 2 つの pts の差を補完に使うと、I/P フレームの直後で切れたときに 3 フレームぶん過大になり、
+// 続く切り出しで長さが 3003 / 6006 tick 縮む。
+//
+// 壊し方: recordingHLSVideoDurationFromPackets の interval を、最大の 2 つの pts の差にする。
+func TestMeasureRecordingHLSVideoDurationDoesNotShrinkWithBFrames(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	ffprobe := lookPathFFprobe(t)
+	path := filepath.Join(t.TempDir(), "bframes.ts")
+	writeOffsetTestTSWithVideo(t, ffmpeg, path, 5400, "10", "10", "30000/1001", "2")
+	origin := firstPacketPTS(t, ffprobe, path)
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withRecordingHLSTailWindows(t, 64<<10)
+	var previous int64
+	steps := 0
+	for size := int64(96 << 10); size <= info.Size(); size += 1500 {
+		got, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, size, origin)
+		if err != nil {
+			t.Fatalf("size %d: %v", size, err)
+		}
+		if got < previous {
+			t.Fatalf("size %d: duration %d ticks is shorter than %d ticks measured from a shorter prefix", size, got, previous)
+		}
+		previous = got
+		steps++
+	}
+	if steps < 20 {
+		t.Fatalf("only %d prefixes were measured, want the fixture to be larger", steps)
 	}
 }

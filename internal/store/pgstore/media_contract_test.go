@@ -65,12 +65,18 @@ func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 
 	}
 
+	// commit は mirakc の record の状態で決まり、recordings.status は watcher が後から書く。
+	// 原本の行と有効なコピーがあれば、status が recording でも原本を返す。
 	unfinishedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Status = "recording"
 	})
-	dbtest.MediaAsset(t, pool, unfinishedID)
-	if _, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSTarget(unfinished) error = %v, want ErrNotFound", err)
+	unfinishedAssetID := dbtest.MediaAsset(t, pool, unfinishedID)
+	unfinished, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), unfinishedID)
+	if err != nil {
+		t.Fatalf("GetRecordingHLSTarget(original committed before the watcher wrote finished): %v", err)
+	}
+	if unfinished.Kind != store.RecordingHLSInputOriginal || unfinished.ID != unfinishedAssetID {
+		t.Fatalf("target = %+v, want the original asset %d", unfinished, unfinishedAssetID)
 	}
 }
 

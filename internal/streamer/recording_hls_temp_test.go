@@ -271,7 +271,7 @@ func TestRecordingHLSVideoDurationFromPackets(t *testing.T) {
 		none   bool
 	}{
 		{name: "最大の pts + duration から原点を引く", output: "pts=100000|duration=3000|\npts=106000|duration=3000|\npts=103000|duration=3000|\n", origin: 90000, want: 19000},
-		{name: "duration が N/A なら最大 2 つの pts の差を使う", output: "pts=100000|duration=N/A|\npts=106000|duration=N/A|\npts=103000|duration=N/A|\n", origin: 90000, want: 19000},
+		{name: "duration が N/A なら隣り合う pts の差の最小値を使う", output: "pts=100000|duration=N/A|\npts=106000|duration=N/A|\npts=103000|duration=N/A|\n", origin: 90000, want: 19000},
 		{name: "パケットが 1 つで duration も無ければ 0", output: "pts=100000|duration=N/A|\n", origin: 90000, want: 10000},
 		{name: "pts の無いパケットは読み飛ばす", output: "pts=N/A|duration=3000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000},
 		{name: "巻き戻りの後ろだけの窓", output: "pts=450000|duration=3600|\n", origin: nearWrap, want: 3*second + 450000 + 3600},

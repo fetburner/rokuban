@@ -478,6 +478,11 @@ func TestSegmentTransformCachesWebVTTSegments(t *testing.T) {
 	if err := os.MkdirAll(workDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
+	// 映像は確定した最後の番号 1 に届いている。字幕はそれより先には公開されない。
+	videoPlaylist := "#EXTM3U\n#EXTINF:2.0,\nsegments/test.0_seg00000.ts\n#EXTINF:2.0,\nsegments/test.0_seg00001.ts\n#EXT-X-ENDLIST\n"
+	if err := os.WriteFile(filepath.Join(workDir, "test.0.m3u8"), []byte(videoPlaylist), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	playlist := filepath.Join(workDir, "subtitles_0.m3u8")
 	contents := "#EXTM3U\n#EXTINF:2.0,\nsegments/seg0.vtt\n#EXTINF:2.0,\nsegments/seg1.vtt\n#EXT-X-ENDLIST\n"
 	if err := os.WriteFile(playlist, []byte(contents), 0o600); err != nil {

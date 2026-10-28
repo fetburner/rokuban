@@ -769,6 +769,11 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 	maxCacheNumber := task.maxRequested + int64(m.prefetchSegments)
 	m.mu.Unlock()
 	finalNumber := finalSegmentNumber(task.input.VideoDurationPTS, task.profile.SegmentSeconds)
+	videoLast := int64(-1)
+	if video := entries["video"]; len(video) > 0 {
+		videoLast = video[len(video)-1]
+	}
+	videoReached := finalNumber >= 0 && endList["video"] && videoLast == finalNumber
 	for _, rendition := range renditions {
 		variant := segmentVariantForRendition[rendition]
 		for _, number := range entries[rendition] {
@@ -795,12 +800,18 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 				}
 				continue
 			}
+			// 長さが確定した入力では、映像が先に進んだ番号までしか、音声と字幕を公開しない。
+			// 入力が途中で切れても、音声は apad で映像の終端まで無音で埋まる。映像が届いていない区間の
+			// 無音を、immutable のキャッシュに入れないためである。
+			if finalNumber >= 0 && rendition != "video" && number > videoLast {
+				continue
+			}
 			// 長さが確定した入力だけ、rendition ごとの ENDLIST と最後のファイルで完成とみなす。
 			// 映像の番号と比べると、映像より 1 つ手前で終わる音声や字幕の末尾が公開されない。
-			// 映像は長さの根拠なので、確定した最後の番号に届く前に終わった映像（入力が途中で切れた）は
-			// 完成とみなさない。
+			// 映像は長さの根拠なので、同じ変換の映像が確定した最後の番号に届いて ENDLIST を書いた後だけ、
+			// どの rendition も完成とみなす。
 			isLast := number == entries[rendition][len(entries[rendition])-1]
-			isFinal := normalExit && finalNumber >= 0 && endList[rendition] && isLast && (rendition != "video" || number == finalNumber)
+			isFinal := normalExit && videoReached && endList[rendition] && isLast
 			if !nextStarted && !isFinal {
 				continue
 			}
@@ -824,7 +835,13 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 
 func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries map[string][]int64) {
 	highest := task.startNumber
-	for _, variant := range segmentVariantForRendition {
+	// 長さが確定した入力では、音声が apad で映像の終端より先まで無音で進む。入力が途中で切れたとき、
+	// その先行で「先読み済み」と判断して変換を止めてしまわないよう、映像の進みだけを数える。
+	finite := task.input.VideoDurationPTS > 0
+	for rendition, variant := range segmentVariantForRendition {
+		if finite && rendition != "video" {
+			continue
+		}
 		prefix := task.profile.Name + "."
 		if m.cfg.Captions {
 			prefix = ""
@@ -843,7 +860,10 @@ func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries
 			}
 		}
 	}
-	for _, numbers := range entries {
+	for rendition, numbers := range entries {
+		if finite && rendition != "video" {
+			continue
+		}
 		for _, number := range numbers {
 			if number+1 > highest {
 				highest = number + 1

@@ -355,7 +355,7 @@ LEFT JOIN media_assets a ON a.recording_id = r.id AND `+activePlaybackOriginalSQ
 LEFT JOIN LATERAL (SELECT copy.rel_path FROM preferred_active_media_asset_copy(a.id, $2::text) copy) c ON true
 LEFT JOIN recording_ingest_progress p ON p.recording_id = r.id
 WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
-  AND ((a.id IS NOT NULL AND `+recordingPlaybackFinishedSQL+`) OR (p.recording_id IS NOT NULL AND NOT EXISTS (
+  AND (a.id IS NOT NULL OR (p.recording_id IS NOT NULL AND NOT EXISTS (
       SELECT 1 FROM media_assets any_original
       WHERE any_original.recording_id = r.id AND any_original.kind = 'original'
   )))`, recordingID, s.storeName).Scan(

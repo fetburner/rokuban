@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -81,7 +82,7 @@ func measureRecordingHLSVideoDuration(ctx context.Context, ffprobe string, file 
 // pts の無いパケット（窓の先頭で欠けた PES など）は読み飛ばす。
 //
 // 窓だけを渡した ffprobe は duration を N/A で返すことがある（実測: 64 KiB の窓）。その場合は、
-// 最大の 2 つの pts の差（フレーム間隔）を duration とする。
+// 重複を除いた pts の、隣り合う差の最小の正の値（フレーム間隔）を duration とする。
 func recordingHLSVideoDurationFromPackets(output string, originPTS int64) (int64, bool) {
 	type packet struct {
 		relative, duration int64
@@ -117,18 +118,18 @@ func recordingHLSVideoDurationFromPackets(output string, originPTS int64) (int64
 	if len(packets) == 0 {
 		return 0, false
 	}
-	var top, second int64 = math.MinInt64, math.MinInt64
-	for _, p := range packets {
-		switch {
-		case p.relative > top:
-			top, second = p.relative, top
-		case p.relative < top && p.relative > second:
-			second = p.relative
-		}
+	// 並べ替え（B フレーム）があると、最大の 2 つの差は 2〜3 フレームぶんになりうる。
+	// フレーム間隔は、重複を除いて並べた pts の、隣り合う差のうち最小の正の値とする。
+	relatives := make([]int64, len(packets))
+	for i, p := range packets {
+		relatives[i] = p.relative
 	}
+	slices.Sort(relatives)
 	var interval int64
-	if second != math.MinInt64 {
-		interval = top - second
+	for i := 1; i < len(relatives); i++ {
+		if gap := relatives[i] - relatives[i-1]; gap > 0 && (interval == 0 || gap < interval) {
+			interval = gap
+		}
 	}
 	var end int64 = math.MinInt64
 	for _, p := range packets {
