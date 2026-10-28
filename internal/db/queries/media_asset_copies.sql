@@ -226,19 +226,35 @@ WHERE NOT EXISTS (
 )
 ON CONFLICT DO NOTHING;
 
--- A path's generation belongs to its physical copy. Include deleted copies because their
--- generation remains part of the allocator's history.
--- name: ReconcileDerivedGenerationFromCopyPaths :exec
-UPDATE media_assets AS asset
-SET derived_generation = GREATEST(
-    COALESCE(asset.derived_generation, 0),
-    COALESCE((
-        SELECT max(media_asset_generation_from_rel_path(copy.rel_path))
-        FROM media_asset_copies copy
-        WHERE copy.media_asset_id = asset.id
-    ), 0)
+-- Legacy writers update media_assets.rel_path without advancing derived_generation.
+-- During adoption, recover that published generation only from the active copy in the
+-- adopted store whose path still matches the logical asset. Pending/deleted copy history
+-- reserves allocator values but must not replace the current published generation.
+-- name: ReconcileDerivedGenerationFromLegacyAssetPaths :exec
+WITH current_publications AS (
+    UPDATE media_assets AS asset
+    SET derived_generation = GREATEST(
+        COALESCE(asset.derived_generation, 0),
+        COALESCE(media_asset_generation_from_rel_path(asset.rel_path), 0)
+    )
+    WHERE asset.kind <> 'original'
+      AND asset.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = asset.id
+            AND copy.store = sqlc.arg('store')
+            AND copy.state = 'active'
+            AND copy.rel_path = asset.rel_path
+      )
+    RETURNING asset.id, asset.rel_path, COALESCE(asset.derived_generation, 0)::bigint AS generation
 )
-WHERE asset.kind <> 'original';
+UPDATE media_asset_copies copy
+SET generation = publication.generation
+FROM current_publications publication
+WHERE copy.media_asset_id = publication.id
+  AND copy.store = sqlc.arg('store')
+  AND copy.state = 'active'
+  AND copy.rel_path = publication.rel_path;
 
 -- name: StoreHasMediaAssetCopies :one
 SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = sqlc.arg('store'));

@@ -63,8 +63,8 @@ func mediaStoreNameArg(storeName string) *string {
 	return &storeName
 }
 
-// AdoptUnassignedStoreRows は未割り当ての論理資産にコピー行を作り、既存コピーを保ったまま、
-// コピーのパスから派生世代を補正する（TestAdoptUnassignedStoreRows）。
+// AdoptUnassignedStoreRows はコピー行の無い論理資産をこの置き場に割り当て、
+// 現在公開中の論理パスから派生世代を復元する（TestAdoptUnassignedStoreRows）。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
@@ -78,8 +78,8 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if err := q.AdoptUnassignedMediaAssetCopies(ctx, s.storeName); err != nil {
 		return fmt.Errorf("adopting legacy media asset copies: %w", err)
 	}
-	if err := q.ReconcileDerivedGenerationFromCopyPaths(ctx); err != nil {
-		return fmt.Errorf("reconciling derived media generations from copy paths: %w", err)
+	if err := q.ReconcileDerivedGenerationFromLegacyAssetPaths(ctx, s.storeName); err != nil {
+		return fmt.Errorf("reconciling derived media generations from legacy asset paths: %w", err)
 	}
 	if err := q.AdoptUnassignedIngestTemps(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned ingest temps: %w", err)

@@ -105,19 +105,12 @@ RETURNING id`, legacyWriterRecording).Scan(&legacyWriterAssetID); err != nil {
 	var derivedAssetID int64
 	if err := pool.QueryRow(ctx, `
 INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state, derived_generation)
-VALUES ($1, 'encoded', 'cut', 'sites/default/advanced_cut.g4.mp4', 40, 'active', 4)
+VALUES ($1, 'encoded', 'cut', 'sites/default/advanced_cut.g5.mp4', 40, 'active', 4)
 RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 		t.Fatalf("seeding migrated derived asset: %v", err)
 	}
-	// The physical copy is at generation 5 while the compatibility column still says 4.
-	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: derivedAssetID,
-		Store:        "tokyo",
-		RelPath:      "sites/default/advanced_cut.g5.mp4",
-		State:        "active",
-	}); err != nil {
-		t.Fatalf("seeding advanced derived copy path: %v", err)
-	}
+	// A legacy writer advanced the published path but not the compatibility generation.
+	// Adoption creates this copy from the published path and must recover both generations.
 
 	legacy := NewMedia(pool, "tokyo", "")
 	if err := legacy.UpsertIngestProgress(ctx, store.IngestProgress{
@@ -205,7 +198,72 @@ RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 		t.Fatalf("reading adopted derived generation: %v", err)
 	}
 	if generation != 5 {
-		t.Fatalf("adopted derived_generation = %d, want 5 from the adopted copy path", generation)
+		t.Fatalf("adopted derived_generation = %d, want 5 from the current published path", generation)
+	}
+	var adoptedCopyGeneration int64
+	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'tokyo' AND state = 'active'`, derivedAssetID).Scan(&adoptedCopyGeneration); err != nil {
+		t.Fatalf("reading adopted derived copy generation: %v", err)
+	}
+	if adoptedCopyGeneration != 5 {
+		t.Fatalf("adopted copy generation = %d, want 5 to match the published logical generation", adoptedCopyGeneration)
+	}
+	var activeDerivedCopies int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, 'tokyo')`, derivedAssetID).Scan(&activeDerivedCopies); err != nil {
+		t.Fatalf("reading current-generation adopted copy: %v", err)
+	}
+	if activeDerivedCopies != 1 {
+		t.Fatalf("current-generation adopted copies = %d, want 1", activeDerivedCopies)
+	}
+}
+
+func TestAdoptDoesNotPromoteUnpublishedCopyGenerations(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	profile := "cut"
+	zero := int64(0)
+	assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+		RecordingID: recordingID, Profile: &profile, RelPath: "encoded/current_cut.g0.mp4", SizeBytes: 40,
+		DerivedGeneration: &zero,
+	})
+	if err != nil {
+		t.Fatalf("seeding current encoded media asset: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: "tokyo", RelPath: "encoded/current_cut.g0.mp4", State: "active",
+	}); err != nil {
+		t.Fatalf("seeding active filesystem copy: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state) VALUES ($1, 's3', 'encoded/current_cut.g1.mp4', 1, 'pending')`, assetID); err != nil {
+		t.Fatalf("seeding failed-upload pending copy: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, deleted_at) VALUES ($1, 's3', 'encoded/current_cut.g2.mp4', 2, 'deleted', now())`, assetID); err != nil {
+		t.Fatalf("seeding deleted copy history: %v", err)
+	}
+
+	if err := NewMedia(pool, "tokyo", "").AdoptUnassignedStoreRows(ctx); err != nil {
+		t.Fatalf("adopting filesystem store rows: %v", err)
+	}
+	var logicalGeneration int64
+	if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, assetID).Scan(&logicalGeneration); err != nil {
+		t.Fatalf("reading published logical generation: %v", err)
+	}
+	if logicalGeneration != 0 {
+		t.Fatalf("adopted logical generation = %d, want 0; unpublished S3 copy history must not become current", logicalGeneration)
+	}
+	var activeCopies int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, 'tokyo')`, assetID).Scan(&activeCopies); err != nil {
+		t.Fatalf("reading current filesystem copy: %v", err)
+	}
+	if activeCopies != 1 {
+		t.Fatalf("current filesystem copies after adopt = %d, want 1", activeCopies)
+	}
+	maxGeneration, err := sqlcgen.New(pool).GetMaxMediaAssetCopyGeneration(ctx, assetID)
+	if err != nil {
+		t.Fatalf("reading retained copy generation history: %v", err)
+	}
+	if maxGeneration != 2 {
+		t.Fatalf("max allocated copy generation after adopt = %d, want 2 from pending/deleted history", maxGeneration)
 	}
 }
 

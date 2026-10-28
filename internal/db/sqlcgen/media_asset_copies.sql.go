@@ -484,23 +484,39 @@ func (q *Queries) MarkPendingMediaAssetCopyDeletedByID(ctx context.Context, id i
 	return result.RowsAffected(), nil
 }
 
-const reconcileDerivedGenerationFromCopyPaths = `-- name: ReconcileDerivedGenerationFromCopyPaths :exec
-UPDATE media_assets AS asset
-SET derived_generation = GREATEST(
-    COALESCE(asset.derived_generation, 0),
-    COALESCE((
-        SELECT max(media_asset_generation_from_rel_path(copy.rel_path))
-        FROM media_asset_copies copy
-        WHERE copy.media_asset_id = asset.id
-    ), 0)
+const reconcileDerivedGenerationFromLegacyAssetPaths = `-- name: ReconcileDerivedGenerationFromLegacyAssetPaths :exec
+WITH current_publications AS (
+    UPDATE media_assets AS asset
+    SET derived_generation = GREATEST(
+        COALESCE(asset.derived_generation, 0),
+        COALESCE(media_asset_generation_from_rel_path(asset.rel_path), 0)
+    )
+    WHERE asset.kind <> 'original'
+      AND asset.state = 'active'
+      AND EXISTS (
+          SELECT 1 FROM media_asset_copies copy
+          WHERE copy.media_asset_id = asset.id
+            AND copy.store = $1
+            AND copy.state = 'active'
+            AND copy.rel_path = asset.rel_path
+      )
+    RETURNING asset.id, asset.rel_path, COALESCE(asset.derived_generation, 0)::bigint AS generation
 )
-WHERE asset.kind <> 'original'
+UPDATE media_asset_copies copy
+SET generation = publication.generation
+FROM current_publications publication
+WHERE copy.media_asset_id = publication.id
+  AND copy.store = $1
+  AND copy.state = 'active'
+  AND copy.rel_path = publication.rel_path
 `
 
-// A path's generation belongs to its physical copy. Include deleted copies because their
-// generation remains part of the allocator's history.
-func (q *Queries) ReconcileDerivedGenerationFromCopyPaths(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, reconcileDerivedGenerationFromCopyPaths)
+// Legacy writers update media_assets.rel_path without advancing derived_generation.
+// During adoption, recover that published generation only from the active copy in the
+// adopted store whose path still matches the logical asset. Pending/deleted copy history
+// reserves allocator values but must not replace the current published generation.
+func (q *Queries) ReconcileDerivedGenerationFromLegacyAssetPaths(ctx context.Context, store string) error {
+	_, err := q.db.Exec(ctx, reconcileDerivedGenerationFromLegacyAssetPaths, store)
 	return err
 }
 

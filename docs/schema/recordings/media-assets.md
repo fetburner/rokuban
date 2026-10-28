@@ -64,11 +64,11 @@ CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'dele
 
 コピーの無い論理資産が、未割り当てを表す。マイグレーションはコピー行を作らず、`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
-`storage adopt <store-name>` は、コピーの無い論理資産にコピーを作り、その置き場に既にあるコピーのパス・状態・派生世代を `media_assets` から同期する。別の置き場にだけコピーがある資産には触れない。観測表と進捗行の空の `store` も埋める。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+`storage adopt <store-name>` は、コピー行の無い資産に論理行のパス・状態を写したコピー行を作る。他の置き場にコピーがあれば触れない。対象置き場の active コピーと論理パスが一致する派生資産だけ、旧 writer のパスから論理・コピー世代を復元する。pending・deleted 世代は採番履歴に残し、現在世代へ反映しない。空の `store` を持つ観測・進捗行も埋める。実行順は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
 
 旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)`、`missing_media_assets(media_asset_id)`、`storage_sync(root)` である。新しい複合キーと並存するため、同じ `rel_path` を 2 つの置き場の孤児として記録できない。同じ論理資産は 2 つの置き場の実体無しにならず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
 
-`derived_generation` は派生物のパスに最後に採った世代で、original は NULL、派生物は 0 以上である。削除済みの行を再生成するときも進め、減らさない。移行時に既存パスの `.g{n}` / `.u{n}` から初期化し、印の無いパスは 0 にする。旧 worker は列を進めずパスだけを進めるので、adopt が旧 worker の停止後に、旧パスの印から列を引き上げる。以降の採番は列から行う。
+`derived_generation` は派生物の現在世代で、original は NULL である。移行時はパスの `.g{n}` / `.u{n}` を読み、印の無いパスを 0 とする。旧 worker はパスだけを更新するため、adopt は対象置き場の active コピーと一致する論理パスから世代を復元する。pending・deleted 世代は採番に使い、現在世代には反映しない。
 
 `media_asset_copies.generation` は各物理コピーが表す原本・派生物の世代である。物理コピーの有効性は `state = 'active'` かつ論理資産の世代との一致で決まり、古い世代の active row は参照できない。コピー行を複数残すので、旧 `(media_asset_id, store)` 一意制約への downgrade は履歴が複数ある場合に失敗する。
 
