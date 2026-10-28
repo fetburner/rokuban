@@ -166,7 +166,7 @@ func TestOriginalVODIgnoresCopiesInOtherStores(t *testing.T) {
 		t.Fatalf("original VOD playlist from the configured store = %d %q, want a playlist", resp.StatusCode, body)
 	}
 
-	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool, "other-store"), chaseTestLiveClient{}, testSite, cfg)
+	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool, "other-store", ""), chaseTestLiveClient{}, testSite, cfg)
 	t.Cleanup(ls.shutdown)
 	router := chi.NewRouter()
 	ls.Mount(router)

@@ -22,7 +22,7 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
 	return contracttest.TSScanFixture{
-		Store:   NewMedia(pool, dbtest.StoreName),
+		Store:   NewMedia(pool, dbtest.StoreName, ""),
 		Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
 		NewOriginal: func(t *testing.T, sizeBytes int64, trashed bool) (int64, int64) {
 			t.Helper()

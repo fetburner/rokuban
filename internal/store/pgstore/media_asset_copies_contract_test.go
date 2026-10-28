@@ -64,7 +64,7 @@ func TestMediaAssetCopyReaderMigrationKeepsLegacyRelations(t *testing.T) {
 func TestAdoptUnassignedStoreRows(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, "tokyo")
+	media := NewMedia(pool, "tokyo", "")
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID)
 	// マイグレーション直後の論理資産はコピー行を持たない（未割り当て）。
@@ -119,7 +119,7 @@ RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 		t.Fatalf("seeding advanced derived copy path: %v", err)
 	}
 
-	legacy := NewMedia(pool, "tokyo")
+	legacy := NewMedia(pool, "tokyo", "")
 	if err := legacy.UpsertIngestProgress(ctx, store.IngestProgress{
 		RecordingID: recordingID, WrittenBytes: 10, TempRelPath: "sites/default/.rokuban-ingest-test", TempGeneration: 1,
 	}); err != nil {
@@ -212,14 +212,14 @@ RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 func TestListStorageSyncWithoutConfiguredStoreIncludesNamedObservations(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	workerMedia := NewMedia(pool, "tokyo")
+	workerMedia := NewMedia(pool, "tokyo", "")
 	if err := workerMedia.UpsertStorageSync(ctx, store.StorageObservationInput{
 		Root: "media", Path: "/media", TotalBytes: 100, UsedBytes: 25, AvailableBytes: 75,
 	}); err != nil {
 		t.Fatalf("recording worker storage observation: %v", err)
 	}
 
-	apiMedia := NewMedia(pool, "tokyo")
+	apiMedia := NewMedia(pool, "tokyo", "")
 	rows, err := apiMedia.ListStorageSync(ctx)
 	if err != nil {
 		t.Fatalf("listing storage observations without configured store: %v", err)
@@ -237,7 +237,7 @@ func TestMediaAssetCopyTracksDeleteLifecycle(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("assigning fixture copy store: %v", err)
 	}
-	media := NewMedia(pool, "tokyo")
+	media := NewMedia(pool, "tokyo", "")
 
 	if err := media.MarkDeleting(ctx, assetID); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
@@ -264,7 +264,7 @@ func TestMediaAssetDeleteDoesNotReadLegacyColumnsWhenCopyIsMissing(t *testing.T)
 	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("removing fixture copy: %v", err)
 	}
-	media := NewMedia(pool, "tokyo")
+	media := NewMedia(pool, "tokyo", "")
 	if err := media.RequireAdoptedStoreRows(ctx); err == nil {
 		t.Fatal("RequireAdoptedStoreRows succeeded while the physical copy was missing")
 	}
@@ -301,7 +301,7 @@ func TestRegisterInPlacePreservesDeletingCopyState(t *testing.T) {
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID)
-	media := NewMedia(pool, dbtest.StoreName)
+	media := NewMedia(pool, dbtest.StoreName, "")
 	if err := media.MarkDeleting(ctx, assetID); err != nil {
 		t.Fatalf("MarkDeleting: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestMediaServingRequiresAnActiveStoreCopy(t *testing.T) {
 		t.Fatalf("making legacy columns disagree with the active copy: %v", err)
 	}
 
-	media := NewMedia(pool, "tokyo")
+	media := NewMedia(pool, "tokyo", "")
 	got, err := media.GetOriginalMediaAssetForServing(ctx, recordingID)
 	if err != nil {
 		t.Fatalf("serving active copy: %v", err)
@@ -547,7 +547,7 @@ func TestTrashDeleteCandidatesUseActiveCopyPath(t *testing.T) {
 		t.Fatalf("making legacy columns disagree with the deleted copy: %v", err)
 	}
 
-	media := NewMedia(pool, "tokyo")
+	media := NewMedia(pool, "tokyo", "")
 	rows, err := media.ListTrashAssetsToDelete(ctx, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("listing trash deletion candidates with a deleted copy: %v", err)
@@ -619,7 +619,7 @@ INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_gene
 VALUES ($1, 'thumbnail', 'thumbnails/x.g4.jpg', 1, 4)`, recordingID); err != nil {
 		t.Fatalf("seeding thumbnail: %v", err)
 	}
-	media := NewMedia(pool, "tokyo")
+	media := NewMedia(pool, "tokyo", "")
 	if got, found, err := media.GetDerivedMediaAssetGeneration(ctx, recordingID, "encoded"); err != nil || found {
 		t.Fatalf("encoded generation = %d, found %v, err %v; want not found", got, found, err)
 	}

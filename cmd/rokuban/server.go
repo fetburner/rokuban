@@ -356,7 +356,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// River の defer が先に実行される。
 	defer pool.Close()
 
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
+	// 起動時の検査だけに使い、削除の判定はしないので derived は渡さない。
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, "")
 	if slices.Contains(roles, "worker") {
 		if err := mediaStore.RequireAdoptedStoreRows(ctx); err != nil {
 			return fmt.Errorf("validating media store assignment: %w", err)
@@ -531,7 +532,8 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
+	// api ロールは削除の判定をしないので derived は渡さない。
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, "")
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
@@ -711,7 +713,8 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName).WithDerivedStore(cfg.Storage.Derived)
+	// until_encoded の原本の削除判定は storage.derived を使う（MediaStoreName は使わない）。
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
 	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)

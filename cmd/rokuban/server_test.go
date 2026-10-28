@@ -1627,3 +1627,50 @@ func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
 		}
 	})
 }
+
+// worker の起動経路（buildWorkerAdapter）が storage.derived を until_encoded の削除判定へ渡す。
+// 派生物のコピーが storage.derived の置き場に揃った原本は、実際に起動した worker の削除
+// reconcile で削除済みになる。配線が抜けて desired の置き場が空になると、原本は消えないまま
+// エラーも出ない。
+func TestServerCmd_WorkerPassesDerivedStoreToUntilEncodedDelete(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Site = "home" })
+	seed := func(kind string, profile *string, relPath string) int64 {
+		return dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+			p.Kind, p.Profile, p.RelPath = kind, profile, relPath
+		})
+	}
+	profile := "h264"
+	originalID := seed("original", nil, "sites/home/derived-wiring.m2ts")
+	seed("encoded", &profile, "sites/home/derived-wiring.mp4")
+	seed("thumbnail", nil, "thumbnails/derived-wiring.jpg")
+	seed("seek_tiles", nil, "thumbnails/derived-wiring-tiles.jpg")
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
+SELECT id, size_bytes FROM media_assets WHERE id = $1`, originalID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	var enqueueOut bytes.Buffer
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &enqueueOut); err != nil {
+		t.Fatalf("enqueueing delete-reconcile: %v", err)
+	}
+
+	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
+	if _, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=2s"); err != nil {
+		t.Fatalf("worker once run: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1`, originalID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "deleted" {
+		t.Fatalf("original copy state = %q, want deleted (storage.derived must reach the until_encoded delete judgment)", state)
+	}
+}

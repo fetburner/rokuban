@@ -30,15 +30,10 @@ type Media struct {
 
 // NewMedia は PostgreSQL を使う Media を作る。storeName はこのプロセスが書く置き場の名前。
 // 読み取り先の置き場を固定しないロールは "" を明示する。
-func NewMedia(pool *pgxpool.Pool, storeName string) *Media {
-	return &Media{pool: pool, storeName: storeName}
-}
-
-// WithDerivedStore は派生物の desired 置き場を持つ Media の写しを返す（storage.derived）。
-func (s *Media) WithDerivedStore(derivedStore string) *Media {
-	c := *s
-	c.derivedStore = derivedStore
-	return &c
+// derivedStore は storage.derived で、until_encoded の原本を消してよいかの判定にだけ使う。
+// 削除の判定をしない呼び出し元は "" を渡す。"" は規則が無い扱いで、原本は消えない。
+func NewMedia(pool *pgxpool.Pool, storeName, derivedStore string) *Media {
+	return &Media{pool: pool, storeName: storeName, derivedStore: derivedStore}
 }
 
 func mediaStoreNameArg(storeName string) *string {

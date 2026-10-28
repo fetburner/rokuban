@@ -50,7 +50,7 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 		t.Fatalf("setting committed ingest generation: %v", err)
 	}
 
-	target, err := NewMedia(pool, dbtest.StoreName).GetRecordingHLSOriginalTarget(context.Background(), recordingID)
+	target, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSOriginalTarget(context.Background(), recordingID)
 	if err != nil {
 		t.Fatalf("GetRecordingHLSOriginalTarget(%d): %v", recordingID, err)
 	}
@@ -60,7 +60,7 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName); err != nil {
 		t.Fatalf("deleting selected-store copy: %v", err)
 	}
-	if _, err := NewMedia(pool, dbtest.StoreName).GetRecordingHLSOriginalTarget(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSOriginalTarget(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetRecordingHLSOriginalTarget(without selected-store active copy) error = %v, want ErrNotFound", err)
 	}
 
@@ -68,7 +68,7 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 		p.Status = "recording"
 	})
 	dbtest.MediaAsset(t, pool, unfinishedID)
-	if _, err := NewMedia(pool, dbtest.StoreName).GetRecordingHLSOriginalTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSOriginalTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetRecordingHLSOriginalTarget(unfinished) error = %v, want ErrNotFound", err)
 	}
 }
@@ -93,7 +93,7 @@ func TestOriginalVODTargetUsesOnlyConfiguredStoreCopy(t *testing.T) {
 		}
 	}
 
-	target, err := NewMedia(pool, "z-store").GetOriginalVODTarget(ctx, recordingID, "default")
+	target, err := NewMedia(pool, "z-store", "").GetOriginalVODTarget(ctx, recordingID, "default")
 	if err != nil {
 		t.Fatalf("GetOriginalVODTarget(z-store): %v", err)
 	}
@@ -101,7 +101,7 @@ func TestOriginalVODTargetUsesOnlyConfiguredStoreCopy(t *testing.T) {
 		t.Fatalf("target = %+v, want the copy in z-store, not the lexically first a-store", target)
 	}
 	for _, name := range []string{"", "missing-store"} {
-		if _, err := NewMedia(pool, name).GetOriginalVODTarget(ctx, recordingID, "default"); !errors.Is(err, store.ErrNotFound) {
+		if _, err := NewMedia(pool, name, "").GetOriginalVODTarget(ctx, recordingID, "default"); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("GetOriginalVODTarget(store %q) error = %v, want ErrNotFound", name, err)
 		}
 	}
@@ -109,7 +109,7 @@ func TestOriginalVODTargetUsesOnlyConfiguredStoreCopy(t *testing.T) {
 
 func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "tokyo")
+	media := NewMedia(pool, "tokyo", "")
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	tempRelPath := fmt.Sprintf("sites/%s/test/.rokuban-ingest-generation-test", store.DefaultSite)
@@ -184,15 +184,15 @@ WHERE a.recording_id = $1 AND a.kind = 'original'`, recordingID,
 func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	pool := testutil.SetupDB(t)
 	fixture := contracttest.MediaFixture{
-		Serving:   NewMedia(pool, "tokyo"),
-		Reconcile: NewMedia(pool, "tokyo"),
-		Precheck:  NewMedia(pool, "tokyo"),
-		Storage:   NewMedia(pool, "tokyo"),
-		Reader:    NewMedia(pool, "tokyo"),
+		Serving:   NewMedia(pool, "tokyo", ""),
+		Reconcile: NewMedia(pool, "tokyo", ""),
+		Precheck:  NewMedia(pool, "tokyo", ""),
+		Storage:   NewMedia(pool, "tokyo", ""),
+		Reader:    NewMedia(pool, "tokyo", ""),
 		Query:     NewRecordings(pool, "tokyo"),
 		Catalog:   NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
-		Publisher: NewMedia(pool, "tokyo"),
-		Progress:  NewMedia(pool, "tokyo"),
+		Publisher: NewMedia(pool, "tokyo", ""),
+		Progress:  NewMedia(pool, "tokyo", ""),
 		Chapters:  NewAnalysis(pool, dbtest.StoreName),
 		Site:      store.DefaultSite,
 		NewRecording: func(t *testing.T) int64 {

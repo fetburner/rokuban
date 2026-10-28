@@ -40,7 +40,7 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 			return id
 		}
 		return contracttest.MediaDeleteFixture{
-			Store: NewMedia(pool, dbtest.StoreName).WithDerivedStore(dbtest.StoreName), Serving: NewMedia(pool, dbtest.StoreName), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
+			Store: NewMedia(pool, dbtest.StoreName, dbtest.StoreName), Serving: NewMedia(pool, dbtest.StoreName, ""), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
 			NewUntilEncodedOriginal: func(t *testing.T) (int64, int64) {
 				t.Helper()
 				recordingID := newRecording(t)

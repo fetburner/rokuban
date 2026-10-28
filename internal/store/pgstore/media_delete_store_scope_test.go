@@ -30,7 +30,7 @@ type storeScopeEnv struct {
 func newStoreScopeEnv(t *testing.T) storeScopeEnv {
 	t.Helper()
 	pool := testutil.SetupDB(t)
-	return storeScopeEnv{pool: pool, media: NewMedia(pool, dbtest.StoreName).WithDerivedStore(dbtest.StoreName)}
+	return storeScopeEnv{pool: pool, media: NewMedia(pool, dbtest.StoreName, dbtest.StoreName)}
 }
 
 func (e storeScopeEnv) recording(t *testing.T) int64 {
@@ -497,7 +497,7 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 	if n != 1 || first != "b-store" {
 		t.Fatalf("preferred_active_media_asset_copy returned %d rows (first store %q), want exactly the b-store copy", n, first)
 	}
-	api := NewMedia(env.pool, "")
+	api := NewMedia(env.pool, "", "")
 	readers := map[string]func(*Media) (store.MediaAsset, error){
 		"original":      func(m *Media) (store.MediaAsset, error) { return m.GetOriginalMediaAssetForServing(ctx, rec) },
 		"active origin": func(m *Media) (store.MediaAsset, error) { return m.GetActiveOriginalMediaAsset(ctx, rec) },
@@ -513,7 +513,7 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 		if got.Store != "b-store" {
 			t.Errorf("%s without a configured store picked %q, want b-store (first active copy by store name; a-store is deleting)", name, got.Store)
 		}
-		got, err = read(NewMedia(env.pool, "z-store"))
+		got, err = read(NewMedia(env.pool, "z-store", ""))
 		if err != nil || got.Store != "z-store" {
 			t.Errorf("%s with z-store = (%+v, %v), want the z-store copy", name, got, err)
 		}
@@ -560,7 +560,7 @@ func TestUntilEncodedUsesDerivedStoreNotWorkerStore(t *testing.T) {
 			for _, id := range derived {
 				env.moveCopy(t, id, tc.derivedCopy)
 			}
-			media := NewMedia(env.pool, dbtest.StoreName).WithDerivedStore(tc.derivedStore)
+			media := NewMedia(env.pool, dbtest.StoreName, tc.derivedStore)
 			rows, err := media.ListUntilEncodedOriginalsToDelete(ctx, 10)
 			if err != nil {
 				t.Fatal(err)
