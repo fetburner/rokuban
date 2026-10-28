@@ -214,7 +214,6 @@ jobs:
       AWS_SECRET_ACCESS_KEY: rokuban-test-secret
       AWS_REGION: us-east-1
       E2E_S3_APP_REQUIRED: "1"
-      E2E_STREAMER_FIXTURE_BINARY: ${{ runner.temp }}/rokuban-s3streamer-conformance
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -263,6 +262,7 @@ jobs:
         working-directory: web
         env:
           E2E_MINIO_URL: http://127.0.0.1:9000
+          E2E_STREAMER_FIXTURE_BINARY: ${{ runner.temp }}/rokuban-s3streamer-conformance
       - name: Stop MinIO
         if: always()
         run: |
