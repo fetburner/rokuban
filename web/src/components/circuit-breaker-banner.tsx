@@ -83,10 +83,9 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
   const total = breaker.detail.total
   const programs = breaker.detail.programs ?? []
   const isExcerpt = total > programs.length
-  // 行の site が空文字列 = site を持たないブレーカー（internal/breaker.IsSiteless
-  // が true。今のところ delete_reconcile のみ）。サーバー自身が権威なので、
-  // クライアント側で名前を分類し直さず、行が運んできた site の有無だけを見る
-  // （issue #450）。
+  // API の site が空文字列 = site scope 以外のブレーカー（今のところ
+  // store scope の delete_reconcile）。サーバー自身が返す値を権威として、
+  // クライアント側で名前を分類し直さず、行が運んできた site の有無だけを見る。
   const isSiteless = breaker.site === ''
   const isPending = isSiteless ? resumeSiteless.isPending : resume.isPending
 

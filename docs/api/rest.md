@@ -101,13 +101,13 @@ site の権威は設定の site レジストリである。site の一覧（`GET
 
 サーキットブレーカーの再開も、site をパスに含めるかの判定基準に従う。資源ごとの分類で決まり、種類名による分類は採らない。
 
-site を持つ名前は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。site 非依存 worker が書く名前は `POST /api/breakers/{name}/resume` に分ける。
+site scope の名前は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。site 以外の scope を持つ worker が書く名前は `POST /api/breakers/{name}/resume` に分ける。
 
 <details><summary>根拠</summary>
 
-- site を持つ名前: `ruler_deletes` / `reconcile_total_loss`
-- site 非依存の名前: `delete_reconcile`
-- site 分類の判定: `internal/breaker.IsSiteless`
+- site scope の名前: `ruler_deletes` / `reconcile_total_loss`
+- 置き場 scope の名前: `delete_reconcile`
+- scope 分類の判定: `internal/breaker.ScopeKindFor`
 
 </details>
 

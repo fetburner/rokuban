@@ -799,7 +799,7 @@ type RevertMediaAssetToActiveParams struct {
 // ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
 // まだ存在すると Go 側で確認できたときだけ呼ぶこと。
 //
-// WHERE に同じ判定条件（名前付き述語、issue #160）を再度埋め込み、事前の
+// WHERE に同じ判定条件（名前付き述語）を再度埋め込み、事前の
 // SELECT の結果（真偽値）を受け渡さずこの UPDATE 自体の瞬間に再評価する
 // （不変条件 9「適用の瞬間」）。SELECT から数行の Go コードを挟むだけの短い
 // 窓だが、その間に別の書き手（RestoreRecording・encode_profiles 変更 API 等）
@@ -813,7 +813,9 @@ type RevertMediaAssetToActiveParams struct {
 // deleting のまま次パスに持ち越された行は前パスのプロセスが既に終了して
 // いるので、いま unlink が進行中の行と衝突しようがない。復元 API から
 // deleting → active へ即座に戻す案を採らなかったのはこの前提が無い
-// （進行中の unlink と非同期に競合しうる）ため。
+// （進行中の unlink と非同期に競合しうる）ため。複数置き場の reconcile が同じ
+// 論理資産を並行して触る場合は、#1624 で論理資産行をロックして直列化する。
+// このタスクでは単一置き場の設定を維持する。
 func (q *Queries) RevertMediaAssetToActive(ctx context.Context, arg RevertMediaAssetToActiveParams) (int64, error) {
 	result, err := q.db.Exec(ctx, revertMediaAssetToActive,
 		arg.ID,

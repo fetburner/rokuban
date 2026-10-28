@@ -71,7 +71,7 @@ func RescueLatest(
 		if os.IsNotExist(err) {
 			// 「catalog が 1 つも無い」と「あったが全部不完全だった」を
 			// 混同させない: 飛ばした世代は結果に載せて呼び出し側に報告させる。
-			result, scanErr := rescueStorage(ctx, mediaPublish, mediaDir, registrySites)
+			result, scanErr := rescueStorage(ctx, mediaPublish, mediaDir, storeName, registrySites)
 			if scanErr != nil {
 				return nil, scanErr
 			}

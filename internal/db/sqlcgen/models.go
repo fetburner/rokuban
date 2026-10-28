@@ -12,7 +12,7 @@ import (
 )
 
 type CircuitBreaker struct {
-	Site      string
+	Scope     string
 	Name      string
 	TrippedAt time.Time
 	Pending   int32

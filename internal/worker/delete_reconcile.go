@@ -69,47 +69,9 @@ const (
 // mirakc の basedir には一切触れない（不変条件。ここで扱うのは Rokuban 自身の
 // MediaDir 配下のファイルのみ）。
 //
-// site 照合ガード（issue #139）は不要と判断: DeleteReconcileArgs は site を
-// 持たない（DeleteReconcileArgs のコメント参照。物理ストレージは site に
-// 従属しない単一の MediaDir）。mirakc にも触れないので、他サイトの worker が
-// 拾っても「他インスタンスの id を投げる」形の壊れ方が起きない。
-//
-// # サーキットブレーカーのキーは site を持たない（Site フィールドを持たない理由）
-//
-// このワーカーは `Site` フィールドを持たない（issue #185 M4-13 のレビューで削除）。
-// cleanup キューは site 非依存の仕事を運ぶが、
-// **どの worker がジョブを掴むかは site 束縛の有無に関わらない** ---
-// `mirakcs: [tokyo, takamatsu]` の既定構成（0 束縛の中央プロセスを使わない
-// 構成）でも、tokyo に束縛された worker と takamatsu に束縛された worker の
-// どちらもこのキューを購読でき、`Deps.Site` をそのまま使うと**どちらが先に
-// 掴むかでサーキットブレーカーの site 列が tokyo になるか takamatsu になるか
-// 変わってしまう**。1 つの site 非依存の懸念（delete_reconcile の一括削除数）が
-// 複数の site 列の下に分散して現れるのは、不変条件 12「表は行の寿命で割る」の
-// 精神にも反する（この行の寿命は「delete_reconcile というジョブ種別」であって
-// 「たまたま処理した worker の束縛サイト」ではない）。
-//
-// したがって `Deps.Site` を一切参照せず、site 列には空文字列
-// （breaker.IsSiteless のコメント参照。named const にしていない理由も同所）を
-// 書く。かつては store.DefaultSite（"default"）を書いていたが、`mirakcs:`
-// レジストリに `default` という名前の site が実在しない構成（東京・高松の
-// 2 site 化以降はこれが既定）では、site スコープの
-// `POST /api/sites/{site}/breakers/{name}/resume` から `default` を指定しても
-// レジストリに無いので 400、登録済みの site を指定してもその site には行が
-// 無いので 404 になり、`GET /api/breakers` に見えているのに一切解除できなかった
-// （issue #450）。store.DefaultSite は「site 未指定なら設定済みの唯一の site に
-// 解決する」という意味の値であり、「この資源は構造的に site を持たない」とは
-// 別の概念なので、混同しないよう使うのをやめた。site を持たないブレーカーは
-// site 無しの `POST /api/breakers/{name}/resume`
-// （internal/api/breakers.go の ResumeSitelessCircuitBreaker）で再開する。
-//
-// 既存の `(site='default', name='delete_reconcile')` 行は寄せていない ---
-// この時点で運用中の DB がまだ無い（マイグレーションはベースラインへの
-// squash 済みで、#52 の EPGStation 並走もまだ始まっていない）ため、移行対象の
-// 実データが存在しない。**この行が万一残っていれば手で DELETE すること**:
-// worker は site 列が空文字列の行しか見ないので発動中と気付かず、人間の確認
-// を強制するラッチを飛ばして bulk unlink を再開してしまう。しかもその行は
-// どちらの resume エンドポイントからも解除できない
-// （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
+// DeleteReconcileArgs は mirakc site を持たない。物理処理と削除ブレーカーは
+// worker が担当する単一の FS 置き場に従属するため、MediaStoreName を DB の
+// scope として使う。現在の設定は 1 つの FS 置き場に制限されている。
 type DeleteReconcileWorker struct {
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
 	Storage        store.StorageObservation
@@ -134,10 +96,8 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting delete reconcile"); err != nil {
 		return err
 	}
-	// site は常に空文字列（DeleteReconcileWorker の doc コメント参照 ---
-	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
-	// 扱う。breaker.IsSiteless(breaker.DeleteReconcile) が true）。
-	site := ""
+	// この worker が担当する置き場をブレーカーの scope に使う。
+	scope := w.MediaStoreName
 	trashRetention := w.TrashRetention
 	if trashRetention <= 0 {
 		trashRetention = defaultTrashRetention
@@ -158,7 +118,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if missingAssetAge <= 0 {
 		missingAssetAge = config.DefaultMissingAssetAge
 	}
-	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, site)
+	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, scope)
 	if err != nil {
 		return err
 	}
@@ -204,7 +164,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 		return fmt.Errorf("verifying aged unpublished files: %w", err)
 	}
 	afterDeleteCandidatesCollected()
-	stop, err := w.applyDeleteCircuitBreaker(ctx, w.Breakers, site, tripped, candidates.total(), maxPerPass)
+	stop, err := w.applyDeleteCircuitBreaker(ctx, w.Breakers, scope, tripped, candidates.total(), maxPerPass)
 	if err != nil {
 		return err
 	}

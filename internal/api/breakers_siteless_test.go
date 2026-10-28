@@ -15,9 +15,8 @@ import (
 
 // TestResumeCircuitBreaker_DefaultSiteRegistryHole は issue #450 の再現テスト
 // （sub issue 本文「含むもの」1）。`config.mirakcs` に `default` という名前の
-// site が無いレジストリ（[tokyo, takamatsu]）では、site を持たない
-// delete_reconcile の発動を site スコープの resume からはどちらの経路でも
-// 解除できない ---
+// site が無いレジストリ（[tokyo, takamatsu]）でも、置き場 scope の
+// delete_reconcile は site スコープの resume からは解除できない ---
 //   - `default` はレジストリに無いので 400（unknown site）
 //   - 登録済みの `tokyo` を渡しても、delete_reconcile は site を持たない名前
 //     なので 400（分類が「知っている site だが行が無い」404 より先に立つ）
@@ -39,10 +38,10 @@ func TestResumeCircuitBreaker_DefaultSiteRegistryHole(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	// worker が書く形（site 列は空文字列）で発動中の delete_reconcile を用意する。
+	// worker が書く形（置き場名を scope にする）で発動中の delete_reconcile を用意する。
 	if _, err := pool.Exec(ctx, `
-INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
-VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil {
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
+VALUES ('test-store', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil {
 		t.Fatalf("inserting circuit breaker fixture: %v", err)
 	}
 
@@ -64,7 +63,7 @@ VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil 
 		if b.Name == "delete_reconcile" {
 			found = true
 			if b.Site != "" {
-				t.Errorf("delete_reconcile row site = %q, want empty (site を持たない)", b.Site)
+				t.Errorf("delete_reconcile API site = %q, want empty (the store scope is internal)", b.Site)
 			}
 		}
 	}
@@ -73,7 +72,7 @@ VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil 
 	}
 
 	// (1) レジストリに "default" という site は無いので 400。ResumeCircuitBreaker
-	// は breaker.IsSiteless を knownSite より先に検査するので、site が
+	// は置き場 scope の分類を knownSite より先に検査するので、site が
 	// レジストリに無くても（運用者が最も打ちがちな旧コマンドがこの形）
 	// 「unknown site」ではなく新ルートへの案内が返る（レビュー指摘: この順序を
 	// 主張するアサーション）。
@@ -88,12 +87,12 @@ VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil 
 	}
 	if !strings.Contains(string(body1), "/api/breakers/delete_reconcile/resume") {
 		t.Errorf("body = %s, want guidance toward POST /api/breakers/delete_reconcile/resume "+
-			"(IsSiteless must be checked before knownSite, or an unregistered-site typo of the old "+
+			"(scope classification must precede knownSite, or an unregistered-site typo of the old "+
 			"command gives only \"unknown site\" with no pointer to the new route)", body1)
 	}
 
-	// (2) 登録済みの site (tokyo) を渡しても、delete_reconcile は site を
-	// 持たない名前なので 400 になる（「知っている site だが行が無い」404 では
+	// (2) 登録済みの site (tokyo) を渡しても、delete_reconcile は置き場
+	// scope の名前なので 400 になる（「知っている site だが行が無い」404 では
 	// なく、そもそもこのエンドポイントの対象ではないという 400）。
 	resp2, err := http.Post(srv.URL+"/api/sites/tokyo/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
@@ -114,7 +113,7 @@ VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil 
 		t.Fatalf("circuit_breakers rows for delete_reconcile = %d, want 1 (site スコープの resume が誤って消してはいけない)", remaining)
 	}
 
-	// (3) site を持たない新ルートなら site の指定なしに解除できる。
+	// (3) site 無指定ルートは config の置き場 scope で解除する。
 	resp3, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +135,7 @@ VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil 
 // 名前（ruler_deletes）を渡すと 400 になることを確認する（受け入れ 2）。
 //
 // 変異確認: internal/api の ResumeSitelessCircuitBreaker から
-// breaker.IsSiteless の検査を外すと、このリクエストはそのまま site 列が
+// ScopeKindFor の検査を外すと、このリクエストはそのまま scope が空文字列の
 // 空文字列で name が `ruler_deletes` の行を DELETE しようとし、対象行が
 // 無いので 404 になる（400 を期待するこのテストが落ちる）。
 func TestResumeSitelessCircuitBreaker_400WhenNameHasSite(t *testing.T) {
@@ -161,8 +160,8 @@ func TestResumeSitelessCircuitBreaker_400WhenNameHasSite(t *testing.T) {
 // （タイポを黙って無視しない。既存の TestResumeCircuitBreaker_400WhenUnknownName
 // と対になる）。
 //
-// 変異確認: unknown-name の検査を丸ごと削っても、未知の名前は breaker.IsSiteless
-// でもないので次の分類チェックが 400 を返し、ステータスだけを見るアサーションは
+// 変異確認: unknown-name の検査を丸ごと削っても、未知の名前は ScopeUnknown
+// なので分類チェックが 400 を返し、ステータスだけを見るアサーションは
 // 通り続ける（レビュー指摘）。このテストがその検査の唯一の貢献であるメッセージ
 // を見るので、検査を削るとメッセージが分類チェックの文言に変わり落ちる。
 func TestResumeSitelessCircuitBreaker_400WhenUnknownName(t *testing.T) {
@@ -186,7 +185,7 @@ func TestResumeSitelessCircuitBreaker_400WhenUnknownName(t *testing.T) {
 }
 
 // TestResumeSitelessCircuitBreaker_404WhenNotTripped は発動していない
-// site 非依存ブレーカーへの resume が 404 になることを確認する（罠: 0 行なら
+// 置き場範囲ブレーカーへの resume が 404 になることを確認する（罠: 0 行なら
 // 404 にする実装を残す。breakers_test.go の
 // TestResumeCircuitBreaker_404WhenNotTripped と対になる）。
 //
@@ -212,12 +211,12 @@ func TestResumeSitelessCircuitBreaker_404WhenNotTripped(t *testing.T) {
 }
 
 // TestResumeCircuitBreaker_400WhenNameIsSiteless は旧ルート（site スコープ）に
-// site を持たない名前（delete_reconcile）を渡すと 400 になることを確認する
+// 置き場 scope の名前（delete_reconcile）を渡すと 400 になることを確認する
 // （受け入れ 2）。単一サイト（レジストリ未指定 = store.DefaultSite の 1 要素）でも、
 // site の存在チェックとは独立に分類だけで弾かれることを見る。
 //
-// 変異確認: ResumeCircuitBreaker から breaker.IsSiteless の検査を外すと、
-// このリクエストは `DELETE ... WHERE site = 'default' AND name =
+// 変異確認: ResumeCircuitBreaker から範囲分類の検査を外すと、
+// このリクエストは `DELETE ... WHERE scope = 'default' AND name =
 // 'delete_reconcile'` を実行し、対象行が無いので 404 になる（400 を期待する
 // このテストが落ちる）。
 func TestResumeCircuitBreaker_400WhenNameIsSiteless(t *testing.T) {

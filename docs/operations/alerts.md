@@ -97,7 +97,7 @@ DB 接続と `reservations` の中身を確認する。このブレーカーの�
 
 規模は `GET /api/breakers` の `pending` と `threshold` で確認する。対象の内訳が要るときは DB を直接クエリする。ごみ箱・`until_encoded` 待ち・外した版の 3 ソースは `media_assets` と [`storage.stores` の FS 置き場](../configuration/keys.md#置き場の規則)の `media_asset_copies` を結合して引く。外した版の録画とアセットは view `removed_encoded_assets` で引ける。公開前孤児の候補は `orphan_files` の `rel_path` と `first_seen` で引く。孤児は定義上、コピー表に無いファイルなので、`media_asset_copies` との照合では引けない。`first_seen` はエイジング判定の根拠なので、内訳の確認にも使える。
 
-正当なら `POST /api/breakers/delete_reconcile/resume` で再開する。このブレーカーは site を持たないので、site をパスに含めない。
+正当なら `POST /api/breakers/delete_reconcile/resume` で再開する。このブレーカーは置き場 scope であり、API は site をパスに含めず、設定済みの置き場へ解決する。
 
 <details><summary>根拠</summary>
 

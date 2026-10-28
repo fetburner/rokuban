@@ -182,9 +182,8 @@ describe('CircuitBreakerBanner', () => {
   })
 
   it('site を持たないブレーカー（site が空文字列）の再開は site 無しのエンドポイントを叩く（issue #450）', async () => {
-    // internal/breaker.IsSiteless が true のブレーカー（delete_reconcile）は
-    // circuit_breakers 行の site 列が空文字列になる。クライアントは名前を
-    // 再分類せず、行が運んできた site の有無だけで叩き先を選ぶ
+    // store scope の delete_reconcile は API の site が空文字列になる。
+    // クライアントは名前を再分類せず、行が運んできた site の有無だけで叩き先を選ぶ
     // （circuit-breaker-banner.tsx の isSiteless 参照）。
     const sitelessBreaker: CircuitBreaker = {
       ...trippedBreaker,
