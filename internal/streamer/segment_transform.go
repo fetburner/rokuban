@@ -796,8 +796,11 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 				continue
 			}
 			// 長さが確定した入力だけ、rendition ごとの ENDLIST と最後のファイルで完成とみなす。
-			// 映像の番号と比べると、映像より 1 つ手前で終わる rendition の末尾が公開されない。
-			isFinal := normalExit && finalNumber >= 0 && endList[rendition] && number == entries[rendition][len(entries[rendition])-1]
+			// 映像の番号と比べると、映像より 1 つ手前で終わる音声や字幕の末尾が公開されない。
+			// 映像は長さの根拠なので、確定した最後の番号に届く前に終わった映像（入力が途中で切れた）は
+			// 完成とみなさない。
+			isLast := number == entries[rendition][len(entries[rendition])-1]
+			isFinal := normalExit && finalNumber >= 0 && endList[rendition] && isLast && (rendition != "video" || number == finalNumber)
 			if !nextStarted && !isFinal {
 				continue
 			}

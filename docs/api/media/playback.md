@@ -516,7 +516,9 @@ playlist は EVENT とし、ffmpeg の出力を待たずに、アプリが組み
 
 長さが確定した入力（原本）では、全 rendition を映像と同じ番号で終わらせる。実録画では音声が映像より約 0.36 秒短く、FFmpeg が音声だけ 1 つ前の番号で ENDLIST を出し、終端の音声が 503 になった。そこで音声のフィルタに `apad,atrim=end=<映像の終端 − 起動位置>` を足し、PTS で切る。`apad=whole_dur` は、サンプル数で数えるので使わない。途中から起動した変換や途中で欠けた音声で、番号がずれるからである。
 
-完成判定も、長さが確定した入力では rendition ごとの ENDLIST と最後のファイルで行う。途中で止まる副音声や字幕は、埋めても番号が揃う保証が無い。伸びる入力では、ENDLIST を終端とみなさない（`rw_timeout` で終わることがある）。
+完成判定も、長さが確定した入力では rendition ごとの ENDLIST と最後のファイルで行う。途中で止まる副音声や字幕は、埋めても番号が揃う保証が無い。ただし映像は長さの根拠なので、確定した最後の番号に届いたときだけ完成とみなす。届く前に終わった映像は、入力が途中で切れている。
+
+伸びる入力では、ENDLIST を終端とみなさない（`rw_timeout` で終わることがある）。
 
 #### 配信の可否と DB
 
@@ -549,6 +551,7 @@ playlist は EVENT とし、ffmpeg の出力を待たずに、アプリが組み
 - 古い世代の URL は 410: `TestRecordingHLSTempGenerationChangeReturnsGone`
 - 音声が映像より短くても、全音声の最後とその前の番号を取得できる（実 FFmpeg）: `TestSegmentTransformAudioRenditionsEndAtTheVideoNumberWithRealFFmpeg`
 - 完成判定が rendition ごとで、伸びる入力では ENDLIST を終端にしない: `TestSegmentTransformFinalIsDecidedPerRenditionOnlyForKnownLength`
+- 届く前に終わった映像は完成とみなさない: `TestSegmentTransformEndlistMakesOnlyTheRecordingsLastSegmentFinal`
 
 </details>
 
