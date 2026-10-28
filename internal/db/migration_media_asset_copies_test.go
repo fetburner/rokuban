@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,10 +202,27 @@ VALUES ($1, $2, 'encoded/second-active.mp4', 'active')`, assetID, dbtest.StoreNa
 		t.Fatal("second active copy for the same asset and store was accepted")
 	}
 
-	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
-		t.Fatalf("clearing replacement fixtures before downgrade: %v", err)
+	if err := MigrateDown(ctx, dbURL); err != nil {
+		t.Fatalf("rolling generation migration back before copy-table downgrade: %v", err)
 	}
-	migrateDownTo(t, dbURL, 39)
+	err = MigrateDown(ctx, dbURL)
+	if err == nil || !strings.Contains(err.Error(), "multiple physical copy rows") {
+		t.Fatalf("downgrading with replacement history = %v, want explicit multiple-copy rejection", err)
+	}
+	var currentVersion int64
+	if err := pool.QueryRow(ctx, `
+SELECT MAX(version_id) FROM goose_db_version WHERE is_applied`).Scan(&currentVersion); err != nil {
+		t.Fatalf("reading version after rejected downgrade: %v", err)
+	}
+	if currentVersion != 40 {
+		t.Fatalf("version after rejected downgrade = %d, want 40", currentVersion)
+	}
+	if _, err := pool.Exec(ctx, `TRUNCATE recordings CASCADE`); err != nil {
+		t.Fatalf("clearing replacement fixtures before supported downgrade: %v", err)
+	}
+	if err := MigrateDown(ctx, dbURL); err != nil {
+		t.Fatalf("downgrading after replacement history was removed: %v", err)
+	}
 	var unique bool
 	if err := pool.QueryRow(ctx, `SELECT indisunique FROM pg_index
 WHERE indexrelid = 'media_asset_copies_active_asset_store_idx'::regclass`).Scan(&unique); err != nil {

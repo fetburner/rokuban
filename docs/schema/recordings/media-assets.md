@@ -47,20 +47,20 @@ CREATE TABLE media_asset_copies (
     media_asset_id bigint NOT NULL REFERENCES media_assets (id) ON DELETE CASCADE,
     store          text   NOT NULL CHECK (store ~ '^[a-z0-9-]+$'),
     rel_path       text   NOT NULL,
+    generation     bigint NOT NULL CHECK (generation >= 0),
     state          text   NOT NULL CHECK (state IN ('pending', 'active', 'deleting', 'deleted')),
     created_at     timestamptz NOT NULL DEFAULT now(),
-    deleted_at     timestamptz,
-    UNIQUE (media_asset_id, store)
+    deleted_at     timestamptz
 );
 
 CREATE INDEX ON media_asset_copies (media_asset_id);
-CREATE INDEX ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
+CREATE UNIQUE INDEX ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
 CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
 ```
 
-配信・一覧・CM 検出・スキャン・削除の読み手は、`storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）にある active コピーを条件にする。api ロールの読み取りは、FS 置き場を決められない構成では全置き場の active コピーを対象にする。エンコードの不足を列挙する 3 つの view は、置き場を限定せず全置き場の active コピーを見る。対象は `encodable_recordings` と `unencoded_desired_profiles` と `unsatisfied_encode_rebuilds` である。棚卸しと rescue は全コピーを `store` ごとに扱い、削除判定は必要な派生物の active コピーが `storage.stores` の FS 置き場に揃ったことを確認する。
+配信・一覧・CM 検出・スキャン・削除の読み手は、`storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）にある active コピーを条件にする。api ロールの読み取りは、FS 置き場を決められない構成では全置き場の active コピーを対象にする。エンコード不足・CM 検出・ユーザー削除を列挙する view は、全置き場で `media_assets` の現在世代に一致する active コピーを見る。棚卸しと rescue は全コピーを `store` ごとに扱い、削除判定は必要な派生物の現在世代のコピーが FS 置き場に揃ったことを確認する。
 
-一意の制約は 2 つある。`(store, rel_path) WHERE state <> 'deleted'` は、同じ置き場の生きているパスを 1 行に絞る。`UNIQUE (media_asset_id, store)` は、論理資産が 1 つの置き場に持てるコピーを 1 つに絞り、世代更新でパスが変わるときに行を足さず UPDATE させる。後者を置かずパスの索引だけで済ませると、パスが変わるたびに同じ論理資産と置き場の行が増え、現在のコピーを決められない。
+一意制約 `(store, rel_path) WHERE state <> 'deleted'` は、同じ置き場の生きているパスを 1 行に絞る。active copy は `(media_asset_id, store) WHERE state = 'active'` で 1 行に絞る。pending・deleting・deleted の行は置き換え履歴として残せる。旧 binary が使う全行一意制約への upsert は部分一意索引では推論できないため、この変更を適用する前に旧 writer を停止する。
 
 コピーの無い論理資産が、未割り当てを表す。マイグレーションはコピー行を作らず、`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
@@ -69,6 +69,8 @@ CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'dele
 旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)`、`missing_media_assets(media_asset_id)`、`storage_sync(root)` である。新しい複合キーと並存するため、同じ `rel_path` を 2 つの置き場の孤児として記録できない。同じ論理資産は 2 つの置き場の実体無しにならず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
 
 `derived_generation` は派生物のパスに最後に採った世代で、original は NULL、派生物は 0 以上である。削除済みの行を再生成するときも進め、減らさない。移行時に既存パスの `.g{n}` / `.u{n}` から初期化し、印の無いパスは 0 にする。旧 worker は列を進めずパスだけを進めるので、adopt が旧 worker の停止後に、旧パスの印から列を引き上げる。以降の採番は列から行う。
+
+`media_asset_copies.generation` は各物理コピーが表す原本・派生物の世代である。物理コピーの有効性は `state = 'active'` かつ論理資産の世代との一致で決まり、古い世代の active row は参照できない。コピー行を複数残すので、旧 `(media_asset_id, store)` 一意制約への downgrade は履歴が複数ある場合に失敗する。
 
 uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
 

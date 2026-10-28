@@ -15,6 +15,39 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
+// CheckMediaCopyMigrationSafety は、物理コピー表を導入済みの DB が旧 writer と
+// 互換性のない migration を通るとき、停止の明示確認を要求する。
+func CheckMediaCopyMigrationSafety(ctx context.Context, dbURL string, mediaCopyWritersStopped bool) error {
+	conn, err := pgx.Connect(ctx, dbURL)
+	if err != nil {
+		return fmt.Errorf("connecting to inspect media copy migration state: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	var versionTableExists bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.goose_db_version') IS NOT NULL`).Scan(&versionTableExists); err != nil {
+		return fmt.Errorf("checking migration version table: %w", err)
+	}
+	if !versionTableExists {
+		return nil
+	}
+
+	var currentVersion int64
+	if err := conn.QueryRow(ctx, `
+SELECT COALESCE(MAX(version_id) FILTER (WHERE is_applied), 0)
+FROM public.goose_db_version`).Scan(&currentVersion); err != nil {
+		return fmt.Errorf("reading current migration version: %w", err)
+	}
+	if mediaCopyMigrationRequiresStoppedWriters(currentVersion) && !mediaCopyWritersStopped {
+		return fmt.Errorf("database version %d requires stopping all old media copy writers before migration; stop the old workers, then rerun migrate up with --media-copy-writers-stopped", currentVersion)
+	}
+	return nil
+}
+
+func mediaCopyMigrationRequiresStoppedWriters(version int64) bool {
+	return version >= 37 && version < 40
+}
+
 // MigrateUp はアプリの goose マイグレーションを適用し、全 migration の適用後に
 // DB の文字分類を検査する。新規 DB で migrate が最初に触る経路なので、
 // 誤ったロケールのままアプリを起動させない。

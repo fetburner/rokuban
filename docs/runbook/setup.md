@@ -144,14 +144,18 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 `recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
 
+### 既存データがある DB の移行
+
 コピー表を持たない版から録画を持つ構成を移すときの順序は次のとおりである。
 
-1. `rokuban migrate up` で DB を移行する
-2. 旧 worker を止める
+1. 旧 worker をすべて止め、実行中の media writer がいないことを確かめる
+2. `rokuban migrate up --media-copy-writers-stopped` で DB を移行する
 3. `rokuban storage adopt <store-name>` を実行する。media root と設定ファイルは worker と同じ構成にし、DB にも接続できるようにする
 4. 新しい worker を起動する
 
 新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。
+
+コピー表のある DB が旧 writer と非互換な一意制約へ移るときは、`migrate up` が停止確認フラグを要求する。これは DB の migration 版で判定し、新規 DB では要求しない。旧 worker が停止していないまま flag を付けると互換性の保護にならない。
 
 更新の前に、設定へ `storage.stores` / `originals` / `derived` を書く。旧キー `storage.media_store_name` は廃止した。設定は厳密に読むので、残したまま新しい版を起動すると、全ロールで設定の読み込みが失敗する。`media_store_name: X` を持つ構成は、それを消して `X` を置き場の名前にする。持たない構成は、worker が使う FS 置き場の名前を決めて書く。どちらも下の形になる。`transfer.overlap` は省略すると 48 時間になるので、`cleanup.missing_asset_age` を延ばしているときだけ書く。
 
@@ -173,8 +177,21 @@ storage:
 
 compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。移行の操作は次のとおりである。
 
-- compose: `docker compose stop rokuban` で旧 worker を止め、`docker compose up -d` で新しい版を起動する。`migrate` の後に `adopt-media` が走り、その後に `rokuban` が起動する。
-- k8s: 旧 worker の Job が残っていれば止めてから、`kubectl delete job rokuban-migrate --ignore-not-found` で消し、`kubectl apply` し直す。`rokuban-migrate` の中で `migrate up` の後に `storage adopt main` が走る。
+- compose: `docker compose stop rokuban` で旧 worker を止める。その後、以下を実行する。
+
+  ```sh
+  docker compose run --rm migrate migrate up --media-copy-writers-stopped --config /config.yml
+  docker compose up -d
+  ```
+
+  `adopt-media` は migration 完了後に走る。新しい `rokuban` はその後に起動する。
+- k8s:
+  1. 旧 worker を止め、全 worker の終了を確かめる。
+  2. migration Job の initContainer の args に `--media-copy-writers-stopped` を加える。
+  3. `kubectl delete job rokuban-migrate --ignore-not-found` で Job を消し、`kubectl apply` し直す。
+  4. Job の中で `migrate up` の後に `storage adopt main` が走る。
+
+新しいコピー表で同じ論理資産・置き場に複数の物理コピー行が残った後は、旧来の `(media_asset_id, store)` 一意制約へ戻せない。downgrade は履歴を消さずに失敗するため、旧スキーマへ戻す前にそのコピー履歴を解消する必要がある。
 
 旧 worker が `adopt` の後も動いていると、次のことが起きる。新しい論理資産にはコピー行が作られず、次の起動時の検査が数える。既存の資産のコピーは旧 worker が進めたパスと状態に追いつかず、古いまま残る。encode の派生物の世代は、旧 worker がパスだけを進めて `derived_generation` を進めないので、新しい worker が同じ世代のパスを採りうる。旧 worker を止めてから `adopt` をもう一度実行すると、コピーのパス・状態と世代が追いつく。
 

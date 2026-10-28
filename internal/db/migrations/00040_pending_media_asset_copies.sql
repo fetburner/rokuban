@@ -11,6 +11,23 @@ CREATE UNIQUE INDEX media_asset_copies_active_asset_store_idx
 
 -- +goose Down
 
+-- Replacement history legitimately keeps multiple physical rows for one logical
+-- asset and store. Do not discard those rows to recreate the old constraint.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM media_asset_copies
+        GROUP BY media_asset_id, store
+        HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'cannot downgrade media asset copies while multiple physical copy rows exist for an asset and store';
+    END IF;
+END;
+$$;
+-- +goose StatementEnd
+
 DROP INDEX media_asset_copies_active_asset_store_idx;
 ALTER TABLE media_asset_copies
     ADD CONSTRAINT media_asset_copies_asset_store_key UNIQUE (media_asset_id, store);

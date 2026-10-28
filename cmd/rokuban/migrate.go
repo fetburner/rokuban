@@ -20,7 +20,8 @@ func newMigrateCmd() *cobra.Command {
 }
 
 func newMigrateUpCmd() *cobra.Command {
-	return &cobra.Command{
+	var mediaCopyWritersStopped bool
+	cmd := &cobra.Command{
 		Use:   "up",
 		Short: "Run all pending migrations",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -29,12 +30,18 @@ func newMigrateUpCmd() *cobra.Command {
 				return err
 			}
 			dsn := cfg.DB.DSN()
+			if err := db.CheckMediaCopyMigrationSafety(cmd.Context(), dsn, mediaCopyWritersStopped); err != nil {
+				return err
+			}
 			if err := db.MigrateUp(cmd.Context(), dsn); err != nil {
 				return err
 			}
 			return rivermigrate.Up(cmd.Context(), dsn)
 		},
 	}
+	cmd.Flags().BoolVar(&mediaCopyWritersStopped, "media-copy-writers-stopped", false,
+		"confirm that old media copy writers are stopped before a non-rolling media copy migration")
+	return cmd
 }
 
 func newMigrateDownCmd() *cobra.Command {
