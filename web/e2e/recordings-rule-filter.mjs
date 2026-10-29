@@ -439,6 +439,26 @@ for (const width of [360, 390]) {
       `⑧ ${width}px で確認待ちチップを含む管理情報が 1 行に収まらない（${managementSummaryBox?.height ?? '—'}px）`,
     )
   }
+  // 45px は粗いポインタのチップ高も許す閾値で、細かいポインタでは 1 行が 27px、
+  // 45px は既に折り返している。ポインタに依らず、チップ群と容量要約の上端が揃い、
+  // 容量要約がチップより高くない（要約の中で折り返していない）ことで 1 行を判定する。
+  const oneLine = await page.getByTestId('recordings-management-summary').evaluate((element) => {
+    const rects = Array.from(element.querySelectorAll('button, details'), (child) =>
+      child.getBoundingClientRect(),
+    )
+    const details = element.querySelector('details')?.getBoundingClientRect()
+    const tops = rects.map((rect) => rect.top)
+    const chipHeight = Math.max(
+      ...Array.from(element.querySelectorAll('button'), (c) => c.getBoundingClientRect().height),
+    )
+    return { tops, detailsHeight: details?.height ?? 0, chipHeight }
+  })
+  if (
+    Math.max(...oneLine.tops) - Math.min(...oneLine.tops) > 1 ||
+    oneLine.detailsHeight > oneLine.chipHeight + 1
+  ) {
+    ng.push(`⑧ ${width}px で管理情報行が折り返している（${JSON.stringify(oneLine)}）`)
+  }
   const chipText = await Promise.all([
     page.getByRole('button', { name: '待機 0件', exact: true }).innerText(),
     page.getByRole('button', { name: '実行 0件', exact: true }).innerText(),
