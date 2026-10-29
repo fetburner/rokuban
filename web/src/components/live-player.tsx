@@ -1192,7 +1192,8 @@ export function LivePlayer(props: LivePlayerProps) {
           recoveryResumeEvent = null
         }
       }
-      const isNativeResumePending = () => isResumePending() || recoveryInProgress
+      const isNativeResumePending = () =>
+        isResumePending() || resumePlaybackPendingRef.current || recoveryInProgress
       const observeRecovery = (nowMs: number, stalled = false) => {
         if (!isRecordingHLS) return false
         const result = observeRecordingHlsRecovery(
@@ -1211,6 +1212,9 @@ export function LivePlayer(props: LivePlayerProps) {
       const reloadRecordingHlsAt = (target: number) => {
         recoveryTarget = target
         recoveryInProgress = true
+        // load() pauses the element. Keep the intent across a profile / generation
+        // change while metadata and the recovery seek are still pending.
+        resumePlaybackPendingRef.current = true
         recordingHlsRecoveryPositionRef.current = target
         clearRecoveryWaiters()
         recoveryMetadataListener = () => {
@@ -1228,6 +1232,7 @@ export function LivePlayer(props: LivePlayerProps) {
             recoveryInProgress = false
             void media.play().catch(() => {
               recoveryInProgress = false
+              resumePlaybackPendingRef.current = false
               if (isRecordingPlayback) setMediaPlaying(false)
             })
           }
@@ -1347,6 +1352,7 @@ export function LivePlayer(props: LivePlayerProps) {
       const onPlaying = () => {
         startedOnceRef.current = true
         playedHere = true
+        if (isRecordingHLS) resumePlaybackPendingRef.current = false
         if (isRecordingHLS) recoverIfDue(Date.now())
         lastProgressTime = media.currentTime
         clearStallTimer()
@@ -1358,7 +1364,13 @@ export function LivePlayer(props: LivePlayerProps) {
       media.addEventListener('playing', onPlaying)
       media.addEventListener('canplay', onProgress)
       media.addEventListener('timeupdate', onTimeUpdate)
-      media.addEventListener('pause', onProgress)
+      const onPause = () => {
+        // load() pauses as part of recovery; only a later pause after recovery has
+        // finished is an explicit stop that should cancel the pending resume.
+        if (isRecordingHLS && !recoveryInProgress) resumePlaybackPendingRef.current = false
+        onProgress()
+      }
+      media.addEventListener('pause', onPause)
       teardown.push(() => {
         clearStallTimer()
         cancelRecovery(undefined, true)
@@ -1369,7 +1381,7 @@ export function LivePlayer(props: LivePlayerProps) {
         media.removeEventListener('playing', onPlaying)
         media.removeEventListener('canplay', onProgress)
         media.removeEventListener('timeupdate', onTimeUpdate)
-        media.removeEventListener('pause', onProgress)
+        media.removeEventListener('pause', onPause)
       })
       if (!isRecordingHLS) return undefined
       // 世代付き録画 HLS は 1 秒の刻みでも止まりを見る。WebKit は再生中の 410 を `error` にせず、
@@ -1894,6 +1906,7 @@ export function LivePlayer(props: LivePlayerProps) {
     originalPreviousSecondsRef.current = target
     if (isRecordingHLS) {
       if (!video) return
+      const shouldResumeAfterSeek = resumePlaybackPendingRef.current
       if (cancelRecordingHlsRecoveryRef.current !== null) {
         cancelRecordingHlsRecoveryRef.current(target)
       } else {
@@ -1906,7 +1919,22 @@ export function LivePlayer(props: LivePlayerProps) {
         }
       }
       recordingHlsRecoveryPositionRef.current = null
-      video.currentTime = target
+      if (shouldResumeAfterSeek) {
+        const resumeAfterSeek = () => {
+          video.removeEventListener('seeked', resumeAfterSeek)
+          if (!resumePlaybackPendingRef.current) return
+          resumePlaybackPendingRef.current = false
+          void video.play().catch(() => {
+            resumePlaybackPendingRef.current = false
+            setMediaPlaying(false)
+          })
+        }
+        video.addEventListener('seeked', resumeAfterSeek, { once: true })
+        video.currentTime = target
+        if (!video.seeking) resumeAfterSeek()
+      } else {
+        video.currentTime = target
+      }
       chaseResumePending.current = null
       clearStartPosition()
       reportPosition(target)
