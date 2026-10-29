@@ -13,7 +13,7 @@ BEGIN
         )
     ) THEN
         RAISE EXCEPTION
-            'media_assets without a copy remain; they cannot be recovered once media_assets.rel_path is dropped';
+            'media_assets without a copy remain; apply this migration after every logical asset has a copy (docs/runbook/setup.md)';
     END IF;
 END
 $$;
