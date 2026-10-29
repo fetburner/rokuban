@@ -1158,6 +1158,10 @@ async function runRecordingApiHlsCheck() {
   recordingHlsRequests.length = 0
   playlistRequests.length = 0
   const page = await context.newPage()
+  // px → 秒の対応を求めた後も録画中の最大秒数が 1 秒ごとに伸びるため、複数の
+  // 中間位置を調べる間だけ API fixture の開始から 13 秒後にブラウザ時計を固定する。
+  // Playwright の setFixedTime は Date を固定し、再生や待機の timer は進める。
+  await page.clock.setFixedTime(new Date(Date.parse(apiHlsStartedAtNow) + 13_000))
   await installApiStubs(page, timelineHandler)
   await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
