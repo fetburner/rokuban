@@ -179,8 +179,9 @@ compose と k8s の標準の構成には、この名前（`main`）と adopt の
 
 - compose: 手順 1 は `docker compose stop rokuban` である。手順 2 と 3 は `docker compose up -d migrate adopt-media` で、手順 4 は `docker compose up -d rokuban` である。
 - k8s の手順 1: `kubectl delete scaledjob -l app.kubernetes.io/component=worker` で旧 worker の ScaledJob を消す。起こされた Job は所有する ScaledJob と一緒に消える想定である（未検証）。
-- k8s の手順 2 と 3: 標準の `rokuban-migrate` Job がやる。`migrate up` を initContainer、`storage adopt main` を本体のコンテナにして続けて走らせるので、`storage adopt main` は手で打たない。`kubectl delete job rokuban-migrate --ignore-not-found` で前回の Job を消す。`kustomize build base | kubectl apply -f -` で再作成する。`kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s` で完了を待つ。
-- k8s の手順 4: `kustomize build site | kubectl apply -f -` で site の worker を起こす。
+- k8s の手順 2 と 3: 標準の `rokuban-migrate` Job がやる。`migrate up` を initContainer、`storage adopt main` を本体のコンテナにして続けて走らせるので、`storage adopt main` は手で打たない。
+- k8s の手順 2 の操作: `kubectl delete job rokuban-migrate --ignore-not-found` で前回の Job を消す。`kustomize build base | kubectl apply -f - -l app.kubernetes.io/component=migrate` で、migrate の Job だけを再作成する。base には worker の ScaledJob も入っており、絞らずに apply すると完了前に worker が起きる。`kubectl apply` の `-l` は存在を確認したが、この絞り込みの挙動は未検証である。`kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s` で完了を待つ。
+- k8s の手順 4: `kustomize build base | kubectl apply -f -` と `kustomize build site | kubectl apply -f -` で、worker と api を起こす。[deploy/k8s/README.md](../../deploy/k8s/README.md) の使い方と同じ順序である。
 
 移行後に旧 worker を動かすと、旧版の `ON CONFLICT (media_asset_id, store)` は削除済みの一意制約を推論できず、コピーを伴う公開・取り込みの commit が失敗する。`storage adopt` は既存コピーのパスや状態を同期しないため、旧 worker を止めてから再実行してもその不整合は直らない。移行前に止められなかったときは、旧 worker を止めた上で、commit に失敗したジョブと、孤児として報告されるファイルを確認する。公開の途中で commit が失敗したファイルは、DB の行が無いまま canonical 名で残る（`rokuban_orphan_files_unresolved`。[operations/monitoring.md](../operations/monitoring.md)）。
 
