@@ -961,13 +961,16 @@ func (e ListRecordingsParamsStatus) Valid() bool {
 
 // Defines values for ListRecordingsParamsEncodeState.
 const (
-	ListRecordingsParamsEncodeStateQueued  ListRecordingsParamsEncodeState = "queued"
-	ListRecordingsParamsEncodeStateRunning ListRecordingsParamsEncodeState = "running"
+	ListRecordingsParamsEncodeStateAwaitingReview ListRecordingsParamsEncodeState = "awaiting_review"
+	ListRecordingsParamsEncodeStateQueued         ListRecordingsParamsEncodeState = "queued"
+	ListRecordingsParamsEncodeStateRunning        ListRecordingsParamsEncodeState = "running"
 )
 
 // Valid indicates whether the value is a known member of the ListRecordingsParamsEncodeState enum.
 func (e ListRecordingsParamsEncodeState) Valid() bool {
 	switch e {
+	case ListRecordingsParamsEncodeStateAwaitingReview:
+		return true
 	case ListRecordingsParamsEncodeStateQueued:
 		return true
 	case ListRecordingsParamsEncodeStateRunning:
@@ -1456,8 +1459,11 @@ type EncodeProfileSummary struct {
 // EncodeProfileSummaryContainer 出力コンテナ（表示用。未注入なら省略）。
 type EncodeProfileSummaryContainer string
 
-// EncodeQueueSummary エンコード待機列の件数（録画 × プロファイル単位）。
+// EncodeQueueSummary 待機中・実行中は録画 × プロファイル単位、確認待ちは録画単位の件数。
 type EncodeQueueSummary struct {
+	// AwaitingReview 試行・active な encoded・未充足の作り直し要求が無い、章の確認待ち cut 録画数。
+	AwaitingReview int64 `json:"awaitingReview"`
+
 	// Queued 待機中（desired で未観測かつ実行中の試行が無い）の件数。
 	Queued int64 `json:"queued"`
 
@@ -2557,10 +2563,11 @@ type ListRecordingsParams struct {
 	// 出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。
 	Status *ListRecordingsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
 
-	// EncodeState エンコード待機列の状態。`queued` は現在の desired で未観測のプロファイルが
-	// あり実行中の試行が無い録画、`running` は実行中の試行がある録画。
-	// `GET /api/encode-queue` の件数と同じ行から導出する。1 本に
-	// 両方の行があれば両方の絞り込みに現れる。
+	// EncodeState `queued` / `running` はエンコード待機列の状態。`queued` は現在の desired で
+	// 未観測のプロファイルがあり実行中の試行が無い録画、`running` は実行中の試行が
+	// ある録画で、`GET /api/encode-queue` と同じ行から導出する。1 本に両方の行が
+	// あれば両方の絞り込みに現れる。`awaiting_review` は、確認待ちの cut プロファイルが
+	// ある録画で、待機列とは別の述語から録画単位で導出する。
 	EncodeState *ListRecordingsParamsEncodeState `form:"encodeState,omitempty" json:"encodeState,omitempty"`
 	Source      *ListRecordingsParamsSource      `form:"source,omitempty" json:"source,omitempty"`
 

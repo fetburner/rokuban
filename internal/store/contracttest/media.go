@@ -85,6 +85,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("media jobs read active inputs through their contract", func(t *testing.T) { runMediaJobInputs(t, newFixture) })
 	t.Run("encode planning reads asset and request state through its contract", func(t *testing.T) { runMediaEncodePlanning(t, newFixture) })
 	t.Run("encode queue filters desired profiles and attempts", func(t *testing.T) { runEncodeQueue(t, newFixture) })
+	t.Run("chapter review candidates share one recording-level predicate", func(t *testing.T) { runAwaitingReviewRecordingIDs(t, newFixture) })
 	t.Run("drop stats are scoped to the target recording", func(t *testing.T) { runRecordingDropStats(t, newFixture) })
 	t.Run("drop positions are scoped to the target recording", func(t *testing.T) { runRecordingDropPositions(t, newFixture) })
 	t.Run("encode progress reaches the listener", func(t *testing.T) { runEncodeProgressReport(t, newFixture) })

@@ -455,12 +455,20 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 	}
 
 	if req.Params.EncodeState != nil {
-		rows, err := h.loadEncodeQueueRows(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("loading encode queue: %w", err)
+		if *req.Params.EncodeState == ListRecordingsParamsEncodeStateAwaitingReview {
+			recordingIDs, err := h.loadAwaitingReviewRecordingIDs(ctx)
+			if err != nil {
+				return nil, err
+			}
+			f.EncodeRecordingIDs = &recordingIDs
+		} else {
+			rows, err := h.loadEncodeQueueRows(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("loading encode queue: %w", err)
+			}
+			recordingIDs := encodeQueueRecordingIDs(rows, *req.Params.EncodeState == ListRecordingsParamsEncodeStateRunning)
+			f.EncodeRecordingIDs = &recordingIDs
 		}
-		recordingIDs := encodeQueueRecordingIDs(rows, *req.Params.EncodeState == ListRecordingsParamsEncodeStateRunning)
-		f.EncodeRecordingIDs = &recordingIDs
 	}
 
 	if h.recordingQuery == nil {

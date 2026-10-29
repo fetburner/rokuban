@@ -163,15 +163,16 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	srv := newEncodeQueueServer(t, pool)
 
 	var got struct {
-		Queued  int64 `json:"queued"`
-		Running int64 `json:"running"`
+		Queued         int64 `json:"queued"`
+		Running        int64 `json:"running"`
+		AwaitingReview int64 `json:"awaitingReview"`
 	}
 	resp := getJSON(t, srv.URL+"/api/encode-queue", &got)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
 	}
-	if got.Queued != 7 || got.Running != 1 {
-		t.Errorf("encode queue summary = queued %d, running %d; want queued 7, running 1", got.Queued, got.Running)
+	if got.Queued != 7 || got.Running != 1 || got.AwaitingReview != 1 {
+		t.Errorf("encode queue summary = queued %d, running %d, awaitingReview %d; want queued 7, running 1, awaitingReview 1", got.Queued, got.Running, got.AwaitingReview)
 	}
 	if got.Queued != int64(len(queuedTitles)) || got.Running != int64(len(runningTitles)) {
 		t.Fatalf("fixture titles (%d queued, %d running) disagree with expected counts", len(queuedTitles), len(runningTitles))
@@ -206,12 +207,125 @@ func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	var got struct {
-		Queued  int64 `json:"queued"`
-		Running int64 `json:"running"`
+		Queued         int64 `json:"queued"`
+		Running        int64 `json:"running"`
+		AwaitingReview int64 `json:"awaitingReview"`
 	}
 	getJSON(t, srv.URL+"/api/encode-queue", &got)
-	if got.Queued != 1 || got.Running != 0 {
-		t.Errorf("encode queue = queued %d, running %d; want queued 1, running 0", got.Queued, got.Running)
+	if got.Queued != 1 || got.Running != 0 || got.AwaitingReview != 0 {
+		t.Errorf("encode queue = queued %d, running %d, awaitingReview %d; want queued 1, running 0, awaitingReview 0", got.Queued, got.Running, got.AwaitingReview)
+	}
+}
+
+func TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+	n := int64(1500)
+	mk := func(title string, profiles ...string) int64 {
+		t.Helper()
+		n++
+		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+			p.Title, p.ProgramStartAt, p.Status, p.EventID = title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n)
+		})
+		seedIngested(t, pool, id, 1000, nil)
+		setEncodeProfiles(t, pool, id, profiles)
+		return id
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	mk("確認待ち cut", "cut")
+	mk("確認待ち 2 cut", "cut", "cut2")
+	trash := mk("ごみ箱", "cut")
+	exec(`UPDATE recordings SET deleted_at = now() WHERE id = $1`, trash)
+	noOriginal := mk("原本 inactive", "cut")
+	dbtest.SetRecordingMediaAssetState(t, pool, noOriginal, store.AssetKindOriginal, "deleted")
+	encoded := mk("active encoded", "cut")
+	cut := "cut"
+	dbtest.MediaAsset(t, pool, encoded, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile, p.SizeBytes = "encoded", &cut, 1000
+	})
+	removed := mk("設定から消えた cut", "removed")
+	confirmed := mk("確認済み", "cut")
+	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, confirmed)
+	running := mk("試行中", "cut")
+	seedEncodeAttempt(t, pool, running, "cut", "running", nil)
+	failed := mk("試行失敗", "cut")
+	seedEncodeAttempt(t, pool, failed, "cut", "failed", nil)
+	rebuilding := mk("未充足 rebuild", "cut")
+	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, rebuilding)
+	reverted := mk("cut 編集取り消し後の既存版", "cut")
+	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, reverted)
+	dbtest.MediaAsset(t, pool, reverted, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile, p.SizeBytes = "encoded", &cut, 1000
+	})
+	exec(`DELETE FROM recording_chapter_ownership WHERE recording_id = $1`, reverted)
+
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Ready:              pool.Ping,
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		MediaReader:        pgstoretest.Media(pool),
+		EncodeProfileNames: []string{"h264", "cut", "cut2"},
+		CutProfileNames:    []string{"cut", "cut2"},
+	}))
+	t.Cleanup(srv.Close)
+
+	var summary struct {
+		AwaitingReview int64 `json:"awaitingReview"`
+	}
+	resp := getJSON(t, srv.URL+"/api/encode-queue", &summary)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
+	}
+	if summary.AwaitingReview != 2 {
+		t.Errorf("awaitingReview = %d, want 2 recordings (two cut profiles on one recording count once)", summary.AwaitingReview)
+	}
+
+	var recordings []Recording
+	resp = getJSON(t, srv.URL+"/api/recordings?encodeState=awaiting_review", &recordings)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/recordings?encodeState=awaiting_review status = %d, want 200", resp.StatusCode)
+	}
+	if len(recordings) != int(summary.AwaitingReview) {
+		t.Errorf("awaiting_review rows = %d, count = %d; want equal", len(recordings), summary.AwaitingReview)
+	}
+	gotTitles := make([]string, len(recordings))
+	for i, recording := range recordings {
+		gotTitles[i] = recording.Title
+		states := map[string]EncodeJobStatusState{}
+		if recording.EncodeStatus != nil {
+			for _, status := range *recording.EncodeStatus {
+				states[status.Profile] = status.State
+			}
+		}
+		if recording.Title == "確認待ち cut" && states["cut"] != EncodeJobStatusStateAwaitingReview {
+			t.Errorf("%q status = %v, want cut awaiting_review", recording.Title, states)
+		}
+		if recording.Title == "確認待ち 2 cut" && (states["cut"] != EncodeJobStatusStateAwaitingReview || states["cut2"] != EncodeJobStatusStateAwaitingReview) {
+			t.Errorf("%q status = %v, want both cut profiles awaiting_review", recording.Title, states)
+		}
+	}
+	slices.Sort(gotTitles)
+	if want := []string{"確認待ち 2 cut", "確認待ち cut"}; !slices.Equal(gotTitles, want) {
+		t.Errorf("awaiting_review titles = %v, want %v (excluded trash=%d no-original=%d encoded=%d removed=%d confirmed=%d running=%d failed=%d rebuilding=%d reverted=%d)",
+			gotTitles, want, trash, noOriginal, encoded, removed, confirmed, running, failed, rebuilding, reverted)
+	}
+
+	counts, err := pgstoretest.Media(pool).ListCutAwaitingReview(ctx, []string{"cut", "cut2"})
+	if err != nil {
+		t.Fatalf("ListCutAwaitingReview: %v", err)
+	}
+	gotCounts := map[string]int64{}
+	for _, count := range counts {
+		gotCounts[count.Profile] = count.Recordings
+	}
+	if gotCounts["cut"] != 2 || gotCounts["cut2"] != 1 {
+		t.Errorf("cut awaiting review metric counts = %v, want cut=2 cut2=1; excluded reverted=%d", gotCounts, reverted)
 	}
 }
 

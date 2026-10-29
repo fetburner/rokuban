@@ -575,6 +575,20 @@ export function RecordingsPage() {
                 >
                   実行中 {encodeQueue.running}件
                 </Chip>
+                <Chip
+                  active={search.encodeState === ListRecordingsEncodeState.awaiting_review}
+                  onClick={() =>
+                    updateSearch((s) => ({
+                      ...s,
+                      encodeState:
+                        s.encodeState === ListRecordingsEncodeState.awaiting_review
+                          ? undefined
+                          : ListRecordingsEncodeState.awaiting_review,
+                    }))
+                  }
+                >
+                  確認待ち {encodeQueue.awaitingReview}件
+                </Chip>
               </div>
             )}
             <StorageBalance compact />

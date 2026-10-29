@@ -141,7 +141,7 @@ async function apiHandler({ path: requestPath, json, route }, data) {
   if (requestPath === '/api/capacity/overages') return json(data.overages)
   if (requestPath === '/api/recording-shelves') return json(data.shelves)
   if (requestPath === '/api/storage') return json([])
-  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   return json([])
 }
 

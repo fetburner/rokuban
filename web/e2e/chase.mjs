@@ -271,7 +271,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
     { name: 'hd', height: 720 },
     { name: 'sd', height: 480 },
   ])
-  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) {
     return route.fulfill({ status: 404 })
   }

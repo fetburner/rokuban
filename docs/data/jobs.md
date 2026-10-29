@@ -152,7 +152,7 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 
 満たされていない作り直し（凍結区間が `requested_keep` と等しい active な版がまだ無い要求）は、active な版があっても待機列に入る。active な版の存在は、ユーザーが押した keep で作られたことを意味しないためである。満たされた要求は入らない。ただし、ごみ箱の録画、原本が active でない録画、設定に無いプロファイルの要求は数えない。ごみ箱の録画は作ってはならず、残りの 2 つは投入しても worker が作れないからである。試行回数が上限に達した要求も数えない。worker が開始時に cancel するので、数えると何も起きないのに「待機中」と出続ける。作り直しを押し直すと失敗行が消えて試行の予算が戻るので、その時点から再び数える。
 
-録画一覧 API の絞り込み（`GET /api/recordings` の encodeState）も、待機列と同じ行から録画 ID を取る。
+録画一覧 API の `queued` / `running` 絞り込みは待機列と同じ行から録画 ID を取る。`awaiting_review` は関数 `awaiting_review_profiles` から取り、複数の cut profile がある録画も 1 行にする。メトリクスのプロファイル別件数も同じ関数から集計する。
 
 worker が encode 中に死ぬと、次の試行が始まるまで試行行は実行中のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は実行中に数える。
 
@@ -170,6 +170,7 @@ desired から外れた後も River に残るジョブは、待機列に数え�
 - 使わない River の API: `JobList`
 - 待機列の分割・上限・observed の除外・cut の所有条件: `TestGetEncodeQueueSummaryFromDomainState`
 - 待機列と `encodeState` 絞り込みの一致: `TestListRecordingsEncodeStateMatchesQueueCounts`
+- 確認待ちの共通述語: `awaiting_review_profiles`、`ListAwaitingReviewRecordingIDs`
 
 </details>
 

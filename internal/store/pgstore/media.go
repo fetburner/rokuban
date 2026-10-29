@@ -471,6 +471,15 @@ func (s *Media) ListCutAwaitingReview(ctx context.Context, profiles []string) ([
 	return cutAwaitingReviewProfileCounts(rows), nil
 }
 
+// ListAwaitingReviewRecordingIDs は確認待ちの録画 ID を重複なしで返す。
+func (s *Media) ListAwaitingReviewRecordingIDs(ctx context.Context, cutProfiles []string) ([]int64, error) {
+	rows, err := sqlcgen.New(s.pool).ListAwaitingReviewRecordingIDs(ctx, nonNilStrings(cutProfiles))
+	if err != nil {
+		return nil, fmt.Errorf("listing recordings awaiting chapter review: %w", err)
+	}
+	return rows, nil
+}
+
 func unsatisfiableEncodeProfileCounts(rows []sqlcgen.ListUnsatisfiableEncodeProfilesRow) []store.EncodeProfileCount {
 	out := make([]store.EncodeProfileCount, 0, len(rows))
 	for _, row := range rows {

@@ -56,7 +56,7 @@ await installApiStubs(page, async ({ path, url, json, route }) => {
   if (path === '/api/reservations' || path === '/api/breakers' || path === '/api/storage') {
     return json([])
   }
-  if (path === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (path === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (path === '/api/capacity/overages') return json([])
   return json([])
 })

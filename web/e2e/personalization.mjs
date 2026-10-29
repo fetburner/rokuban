@@ -89,7 +89,7 @@ async function apiHandler({ path, url, json, route }) {
   if (path === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (path === '/api/breakers') return json([])
   if (path === '/api/encode-profiles' || path === '/api/rules') return json([])
-  if (path === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (path === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (path === '/api/capacity/overages') return json([])
   if (path === '/api/events') return sseKeepAlive(route)
   if (/^\/api\/sites\/[^/]+\/services$/.test(path)) {
