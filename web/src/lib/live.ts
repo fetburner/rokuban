@@ -131,6 +131,67 @@ export function readSubtitleVisibility(
  */
 export const liveStallTimeoutMs = 12_000
 
+/** 世代付き録画 HLS を読み直すまでの停滞時間（ミリ秒）。 */
+export const recordingHlsRecoveryTimeoutMs = 5_000
+
+/** 世代付き録画 HLS を同じ再生の中で読み直す上限回数。 */
+export const recordingHlsRecoveryLimit = 2
+
+/** RecordingHlsRecoveryState は、世代付き録画 HLS の停滞復旧の観測状態である。 */
+export type RecordingHlsRecoveryState = {
+  currentTime: number
+  stalledAtMs: number | null
+  recoveries: number
+}
+
+/** createRecordingHlsRecoveryState は、世代付き録画 HLS の復旧観測を初期化する。 */
+export function createRecordingHlsRecoveryState(currentTime: number): RecordingHlsRecoveryState {
+  return { currentTime, stalledAtMs: null, recoveries: 0 }
+}
+
+/**
+ * observeRecordingHlsRecovery は 1 回の観測を反映し、再読み込みが必要かを返す。
+ *
+ * `stalled` は `stalled` / `waiting` イベントでだけ true にする。再生位置が 50 ms
+ * 以上進むと停滞時計と復旧回数を戻す。一時停止中は停滞時計だけを捨てるので、
+ * 一時停止を挟んでも同じ再生中の上限回数は保たれる。
+ */
+export function observeRecordingHlsRecovery(
+  state: RecordingHlsRecoveryState,
+  sample: { paused: boolean; stalled: boolean; currentTime: number },
+  nowMs: number,
+): { state: RecordingHlsRecoveryState; recover: boolean } {
+  if (!Number.isFinite(sample.currentTime)) return { state, recover: false }
+  if (sample.paused) {
+    return { state: { ...state, currentTime: sample.currentTime, stalledAtMs: null }, recover: false }
+  }
+
+  const progressed = sample.currentTime - state.currentTime >= 0.05
+  if (progressed) {
+    return {
+      state: {
+        currentTime: sample.currentTime,
+        stalledAtMs: sample.stalled ? nowMs : null,
+        recoveries: 0,
+      },
+      recover: false,
+    }
+  }
+
+  const next = sample.currentTime < state.currentTime
+    ? { ...state, currentTime: sample.currentTime }
+    : state
+  const stalledAtMs = next.stalledAtMs ?? (sample.stalled ? nowMs : null)
+  if (stalledAtMs === null) return { state: next, recover: false }
+  if (nowMs - stalledAtMs < recordingHlsRecoveryTimeoutMs || next.recoveries >= recordingHlsRecoveryLimit) {
+    return { state: stalledAtMs === next.stalledAtMs ? next : { ...next, stalledAtMs }, recover: false }
+  }
+  return {
+    state: { ...next, stalledAtMs: nowMs, recoveries: next.recoveries + 1 },
+    recover: true,
+  }
+}
+
 /**
  * ProgressWatch は「映像が進んでいるか」の観測状態（issue #871）。
  *

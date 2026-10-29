@@ -20,6 +20,7 @@
     "e2e:chase": "node e2e/chase.mjs && node e2e/chase-audio.mjs",
     "e2e:chase-audio": "node e2e/chase-audio.mjs",
     "e2e:recording-original-vod": "node e2e/recording-original-vod.mjs",
+    "e2e:recording-hls-stall-recovery": "node e2e/recording-hls-stall-recovery.mjs",
     "e2e:recording-segmented-fixture": "node e2e/recording-segmented-fixture.mjs",
     "e2e:recording-segmented-vod": "node e2e/recording-segmented-vod.mjs",
     "e2e:recording-playback-timeline": "node e2e/recording-playback-timeline.mjs",

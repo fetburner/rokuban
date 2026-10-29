@@ -108,6 +108,19 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-v
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 ```
 
+### 世代付き録画 HLS の遠距離シーク後の停滞復旧（`recording-hls-stall-recovery.mjs`）
+
+遠距離シーク後にセグメントの応答が遅れても、実 Safari で同じ再生面のまま復帰できることを測る。
+
+実 Safari で製品画面を開き、Go テストが製品の変換引数で作る `ts/restarted` fixture を再生する。52 秒へシークした後、対象セグメントと続く 2 本への最初の要求から 4 秒間応答を保留し、同じセグメントへの再要求も最初の要求から 4 秒経つまで保留する。これで、セグメントが届く前にネイティブ HLS が停滞する状況を作る。
+
+`seeked` 後 10 秒以内に `currentTime` がシーク先から 250 ms 以上進み、再生中であること、同じ `<video>` 要素であること、エラー表示が無いことを確認する。対象セグメントの応答が 4 秒以上保留されたことも要求ログで確認する。復旧中に続き位置 API へシーク先より 500 ms 以上前の値を書かないことも判定する。実装前の失敗と修正後の 5 回連続の結果を測定して記録する。
+
+```sh
+corepack pnpm build
+E2E_REPEAT_COUNT=5 corepack pnpm e2e:recording-hls-stall-recovery
+```
+
 ### 録画 HLS の再起動境界（`recording-segmented-vod.mjs`）
 
 録画再生は、録画時刻上の固定長セグメントを合成 playlist で配り、位置が離れたら ffmpeg を 1 つ前の格子点から起動し直す方式である。この方式の合否は jsdom では測れない。止まらずに再生できるか、継ぎ目で音が切れないかを実ブラウザで判定する。アプリの実装より先に判定手段を置いている。
