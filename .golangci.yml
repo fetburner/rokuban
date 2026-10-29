@@ -31,14 +31,13 @@ linters:
     depguard:
       rules:
         aws-sdk-s3-implementation-only:
-          # Production code uses the AWS SDK only through the S3 object-store adapter.
-          # Conformance probes are build-tagged tests and are allowed to call the SDK directly.
+          # The AWS SDK is imported only by the S3 object-store adapter and by the
+          # object-store conformance tests; no other package, test files included.
           list-mode: lax
           files:
             - "${config-path}/**"
             - "!${config-path}/internal/objstore/s3store/**"
             - "!${config-path}/internal/objstore/conformance/**"
-            - "!$test"
           deny:
             - pkg: github.com/aws/aws-sdk-go-v2
               desc: AWS SDK imports are limited to the S3 object-store adapter
