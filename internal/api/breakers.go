@@ -97,8 +97,8 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // site にも束縛されないので、レジストリに無い site が来た場合だけ 400 にする
 // （issue #184 M4-12。レジストリの全 site をこのプロセスから操作できる）。
 //
-// 置き場の範囲の名前を knownSite より先に検査する。置き場の範囲の名前
-// （delete_reconcile）はこのエンドポイントの資源ではなく取り違え
+// 置き場の範囲の名前（delete_reconcile）を knownSite より先に検査する。
+// この名前はこのエンドポイントの資源ではなく取り違え
 // （ResumeSitelessCircuitBreaker が受ける。issue #450）で、運用者が最も
 // 打ちがちな旧コマンド `POST /api/sites/default/breakers/delete_reconcile/resume`
 // は `default` がレジストリに無いことが多く、knownSite を先に見ると

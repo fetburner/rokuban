@@ -113,8 +113,8 @@ LIMIT sqlc.arg('row_limit');
 -- いるので、いま unlink が進行中の行と衝突しようがない。復元 API から
 -- deleting → active へ即座に戻す案を採らなかったのはこの前提が無い
 -- （進行中の unlink と非同期に競合しうる）ため。複数置き場の reconcile が同じ
--- 論理資産を並行して触る場合は、#1624 で論理資産の行のロックで直列化するまで、
--- FS 置き場を 1 つに制限している。
+-- 論理資産を並行して触ると、この前提が崩れる。#1624 で論理資産の行のロックで
+-- 直列化するまで、FS 置き場を 1 つに制限している。
 -- name: RevertMediaAssetToActive :execrows
 UPDATE media_assets a
 SET state = 'active', updated_at = now()

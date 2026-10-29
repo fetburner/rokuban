@@ -176,7 +176,7 @@ stateDiagram-v2
 
 再開は、site の範囲のブレーカーなら site を含むパスへの POST で行う。置き場の範囲のブレーカーだけは別のパスにする。
 
-再開は `POST /api/sites/{site}/breakers/{name}/resume` である。資源の PK が `(site, name)` であることに合わせた。`DELETE /api/sites/{site}/breakers/{name}` は採らない。運用者から見た操作は「確認したので再開する」であり、「行を削除する」は実装詳細だからである。
+再開は `POST /api/sites/{site}/breakers/{name}/resume` である。資源の PK が `(scope, name)` で、site の範囲のブレーカーでは `scope` が site 名であることに合わせた。`DELETE /api/sites/{site}/breakers/{name}` は採らない。運用者から見た操作は「確認したので再開する」であり、「行を削除する」は実装詳細だからである。
 
 置き場の範囲のブレーカー（`delete_reconcile`）は `POST /api/breakers/{name}/resume` で再開する。API は `site` を空文字列で返す。再開する行の範囲は、api の設定の FS 置き場の名前で決まる。FS 置き場が無い設定の api は置き場を決められず、400 を返す。理由は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照。
 

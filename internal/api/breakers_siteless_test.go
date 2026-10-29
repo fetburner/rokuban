@@ -16,7 +16,7 @@ import (
 
 // TestResumeCircuitBreaker_DefaultSiteRegistryHole は issue #450 の再現テスト
 // （sub issue 本文「含むもの」1）。`config.mirakcs` に `default` という名前の
-// site が無いレジストリ（[tokyo, takamatsu]）でも、置き場の範囲 の
+// site が無いレジストリ（[tokyo, takamatsu]）でも、置き場の範囲の
 // delete_reconcile は site の範囲の resume からは解除できない ---
 //   - `default` はレジストリに無いので 400（unknown site）
 //   - 登録済みの `tokyo` を渡しても、delete_reconcile は site を持たない名前
@@ -73,7 +73,7 @@ VALUES ('test-store', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); e
 	}
 
 	// (1) レジストリに "default" という site は無いので 400。ResumeCircuitBreaker
-	// は置き場の範囲 の分類を knownSite より先に検査するので、site が
+	// は置き場の範囲の分類を knownSite より先に検査するので、site が
 	// レジストリに無くても（運用者が最も打ちがちな旧コマンドがこの形）
 	// 「unknown site」ではなく新ルートへの案内が返る（レビュー指摘: この順序を
 	// 主張するアサーション）。
@@ -114,7 +114,7 @@ VALUES ('test-store', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); e
 		t.Fatalf("circuit_breakers rows for delete_reconcile = %d, want 1 (site の範囲の resume が誤って消してはいけない)", remaining)
 	}
 
-	// (3) site 無指定ルートは config の置き場の範囲 で解除する。
+	// (3) site 無指定ルートは config の置き場の範囲で解除する。
 	resp3, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ VALUES ('test-store', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); e
 }
 
 // TestResumeCircuitBreaker_400WhenNameIsSiteless は旧ルート（site の範囲）に
-// 置き場の範囲 の名前（delete_reconcile）を渡すと 400 になることを確認する
+// 置き場の範囲の名前（delete_reconcile）を渡すと 400 になることを確認する
 // （受け入れ 2）。単一サイト（レジストリ未指定 = store.DefaultSite の 1 要素）でも、
 // site の存在チェックとは独立に分類だけで弾かれることを見る。
 //

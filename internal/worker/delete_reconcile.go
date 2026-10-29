@@ -72,7 +72,7 @@ const (
 // DeleteReconcileArgs は mirakc site を持たない。物理処理と削除ブレーカーは
 // worker が担当する FS 置き場に従属するため、MediaStoreName をブレーカーの
 // 範囲（`scope` 列）に使う。cleanup キューは置き場で修飾していないので、置き場の
-// 違う worker が拾うと範囲が拾った側の置き場になる。未解決: 置き場ごとのキュー。
+// 違う worker が拾うと範囲が拾った側の置き場になる。設定が FS 置き場を 1 つに限っている間は起きない。未解決: 置き場ごとのキュー。
 type DeleteReconcileWorker struct {
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
 	Storage        store.StorageObservation
