@@ -194,24 +194,15 @@ func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDer
 }
 
 const getEncodedMediaAssetForProfile = `-- name: GetEncodedMediaAssetForProfile :one
-SELECT a.id, c.rel_path, c.state, c.store,
+SELECT a.id, a.rel_path, a.state,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
-JOIN LATERAL (
-    SELECT copy.rel_path, copy.state, copy.store
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND ($1::text IS NULL OR copy.store = $1)
-    ORDER BY (copy.state = 'active') DESC, copy.store
-    LIMIT 1
-) c ON true
-WHERE a.recording_id = $2
+WHERE a.recording_id = $1
   AND a.kind = 'encoded'
-  AND a.profile = $3
+  AND a.profile = $2
 `
 
 type GetEncodedMediaAssetForProfileParams struct {
-	StoreName   *string
 	RecordingID int64
 	Profile     *string
 }
@@ -220,20 +211,18 @@ type GetEncodedMediaAssetForProfileRow struct {
 	ID                int64
 	RelPath           string
 	State             string
-	Store             string
 	DerivedGeneration int64
 }
 
-// publish が tombstone も含めて既存の行を見るため、active に限らない。置き場を限定しない読み手に
-// 備え、active を先に、同順位は store 順に 1 件だけ選ぶ。
+// 世代カウンターと論理行の状態は置き場によらない。コピー表へ JOIN すると、
+// 書き手の store にコピーがないときにカウンターを読み落とす。
 func (q *Queries) GetEncodedMediaAssetForProfile(ctx context.Context, arg GetEncodedMediaAssetForProfileParams) (GetEncodedMediaAssetForProfileRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.StoreName, arg.RecordingID, arg.Profile)
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.RecordingID, arg.Profile)
 	var i GetEncodedMediaAssetForProfileRow
 	err := row.Scan(
 		&i.ID,
 		&i.RelPath,
 		&i.State,
-		&i.Store,
 		&i.DerivedGeneration,
 	)
 	return i, err
@@ -575,14 +564,11 @@ SELECT EXISTS (
     WHERE a.id = $1
       AND a.kind IN ('original', 'encoded')
       AND EXISTS (
-          SELECT 1 FROM media_asset_copies c
-          WHERE c.media_asset_id = a.id
-            AND c.store = $2
-            AND c.state = 'active'
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_id = a.id AND m.store = $2
+          SELECT 1
+          FROM active_media_asset_copies(a.id, $2::text) c
+          WHERE NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
+          )
       )
 )
 `
@@ -603,14 +589,11 @@ func (q *Queries) IsActiveThumbnailInput(ctx context.Context, arg IsActiveThumbn
 const lockActiveThumbnailMediaAsset = `-- name: LockActiveThumbnailMediaAsset :one
 SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id
- AND c.store = $1
- AND c.state = 'active'
+JOIN LATERAL preferred_active_media_asset_copy(a.id, $1::text) c ON true
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = $2
   AND a.kind = 'thumbnail'
-FOR UPDATE OF a, c
+FOR UPDATE OF a
 `
 
 type LockActiveThumbnailMediaAssetParams struct {
@@ -625,7 +608,7 @@ type LockActiveThumbnailMediaAssetRow struct {
 	DerivedGeneration int64
 }
 
-// thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
+// thumbnail 差し替えの commit tx 内で論理行を直列化する。
 // seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
 func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, arg LockActiveThumbnailMediaAssetParams) (LockActiveThumbnailMediaAssetRow, error) {
 	row := q.db.QueryRow(ctx, lockActiveThumbnailMediaAsset, arg.StoreName, arg.RecordingID)
@@ -643,7 +626,7 @@ const updateEncodedMediaAssetPath = `-- name: UpdateEncodedMediaAssetPath :exec
 UPDATE media_assets
 SET rel_path   = $1,
     size_bytes = $2,
-    derived_generation = $3,
+    derived_generation = GREATEST(COALESCE(derived_generation, 0), $3),
     updated_at = now()
 WHERE id = $4
 `
@@ -668,39 +651,31 @@ func (q *Queries) UpdateEncodedMediaAssetPath(ctx context.Context, arg UpdateEnc
 	return err
 }
 
-const updateThumbnailMediaAssetPath = `-- name: UpdateThumbnailMediaAssetPath :exec
+const updateThumbnailMediaAsset = `-- name: UpdateThumbnailMediaAsset :exec
 UPDATE media_assets AS asset
 SET rel_path   = $1,
     size_bytes = $2,
-    derived_generation = $3,
+    derived_generation = GREATEST(COALESCE(asset.derived_generation, 0), $3),
     sha256     = NULL,
     updated_at = now()
 WHERE asset.id = $4
   AND asset.kind = 'thumbnail'
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = asset.id
-        AND c.store = $5
-        AND c.state = 'active'
-  )
 `
 
-type UpdateThumbnailMediaAssetPathParams struct {
+type UpdateThumbnailMediaAssetParams struct {
 	RelPath           string
 	SizeBytes         int64
 	DerivedGeneration *int64
 	ID                int64
-	StoreName         string
 }
 
-// thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
-func (q *Queries) UpdateThumbnailMediaAssetPath(ctx context.Context, arg UpdateThumbnailMediaAssetPathParams) error {
-	_, err := q.db.Exec(ctx, updateThumbnailMediaAssetPath,
+// thumbnail 差し替え時に論理サイズ・世代を進める。新しい物理コピーは別行で挿入する。
+func (q *Queries) UpdateThumbnailMediaAsset(ctx context.Context, arg UpdateThumbnailMediaAssetParams) error {
+	_, err := q.db.Exec(ctx, updateThumbnailMediaAsset,
 		arg.RelPath,
 		arg.SizeBytes,
 		arg.DerivedGeneration,
 		arg.ID,
-		arg.StoreName,
 	)
 	return err
 }
@@ -711,7 +686,7 @@ VALUES ($1, 'encoded', $2, $3, $4, $5)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
@@ -766,7 +741,7 @@ VALUES ($1, 'seek_tiles', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
@@ -799,7 +774,7 @@ VALUES ($1, 'thumbnail', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,

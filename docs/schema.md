@@ -75,7 +75,7 @@ erDiagram
     recordings ||--o| recording_watched : "recording_id (世帯共有の視聴済み印。衛星表)"
     media_assets ||--o{ drop_stats : "media_asset_id"
     media_assets ||--o{ drop_positions : "media_asset_id"
-    media_assets ||--o| missing_media_assets : "media_asset_id (実体無しの観測。衛星表)"
+    media_asset_copies ||--o| missing_media_assets : "media_asset_copy_id (実体無しの観測。衛星表)"
 ```
 
 ### 表の分類

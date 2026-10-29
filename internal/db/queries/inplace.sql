@@ -2,7 +2,7 @@
 -- Bytes are already under storage.media_dir; these queries only publish DB rows.
 
 -- name: GetInPlaceAssetByRelPath :one
-SELECT a.id, a.recording_id, a.kind, a.profile, c.state
+SELECT a.id, a.recording_id, a.kind, a.profile, c.state, c.generation
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.rel_path = sqlc.arg('rel_path')
@@ -59,22 +59,23 @@ INSERT INTO media_assets (
 ) VALUES (
     sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
     sqlc.arg('rel_path'), sqlc.arg('size_bytes'), 'active',
-    CASE WHEN sqlc.arg('kind')::text = 'original' THEN NULL ELSE 0 END
+    CASE WHEN sqlc.arg('kind')::text = 'original' THEN NULL
+         ELSE COALESCE(media_asset_generation_from_rel_path(sqlc.arg('rel_path')), 0)
+    END
 )
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
+    derived_generation = CASE
+        WHEN EXCLUDED.kind = 'original' THEN NULL
+        ELSE GREATEST(COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0))
+    END,
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
--- A tuple is immutable once published. A different path here means a synthetic identity
--- collision or conflicting import; fail (RETURNING no row) instead of orphaning the old file.
-WHERE EXISTS (
-    SELECT 1 FROM media_asset_copies c
-    WHERE c.media_asset_id = media_assets.id
-      AND c.store = sqlc.arg('store_name')
-      AND c.rel_path = EXCLUDED.rel_path
-)
-RETURNING id;
+RETURNING id,
+    CASE WHEN kind = 'original' THEN 0
+         ELSE COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
+    END::bigint AS generation;

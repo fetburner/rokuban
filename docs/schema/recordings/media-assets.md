@@ -47,28 +47,34 @@ CREATE TABLE media_asset_copies (
     media_asset_id bigint NOT NULL REFERENCES media_assets (id) ON DELETE CASCADE,
     store          text   NOT NULL CHECK (store ~ '^[a-z0-9-]+$'),
     rel_path       text   NOT NULL,
+    generation     bigint NOT NULL, -- この物理ファイルの世代。INSERT 後は不変
     state          text   NOT NULL CHECK (state IN ('pending', 'active', 'deleting', 'deleted')),
     created_at     timestamptz NOT NULL DEFAULT now(),
-    deleted_at     timestamptz,
-    UNIQUE (media_asset_id, store)
+    deleted_at     timestamptz
 );
 
 CREATE INDEX ON media_asset_copies (media_asset_id);
-CREATE INDEX ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
 CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
+
+CREATE TABLE missing_media_assets (
+    media_asset_copy_id bigint PRIMARY KEY REFERENCES media_asset_copies (id) ON DELETE CASCADE,
+    first_seen           timestamptz NOT NULL DEFAULT now()
+);
 ```
 
-配信・一覧・CM 検出・スキャン・削除の読み手は、`storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）にある active コピーを条件にする。api ロールの読み取りは、FS 置き場を決められない構成では全置き場の active コピーを対象にする。エンコードの不足を列挙する 3 つの view は、置き場を限定せず全置き場の active コピーを見る。対象は `encodable_recordings` と `unencoded_desired_profiles` と `unsatisfied_encode_rebuilds` である。棚卸しと rescue は全コピーを `store` ごとに扱い、削除判定は必要な派生物の active コピーが `storage.stores` の FS 置き場に揃ったことを確認する。
+`media_asset_copies` の 1 行は物理ファイル 1 つを表す。同じ論理資産・同じ置き場に世代違いの行が並ぶため、一意性は生きている `(store, rel_path)` だけで決める。`generation` はファイルの内容世代で、INSERT 時に書いた後は更新しない。original は 0、派生物は `media_assets.derived_generation` と同じ世代のコピーを現行とする。
 
-一意の制約は 2 つある。`(store, rel_path) WHERE state <> 'deleted'` は、同じ置き場の生きているパスを 1 行に絞る。`UNIQUE (media_asset_id, store)` は、論理資産が 1 つの置き場に持てるコピーを 1 つに絞り、世代更新でパスが変わるときに行を足さず UPDATE させる。後者を置かずパスの索引だけで済ませると、パスが変わるたびに同じ論理資産と置き場の行が増え、現在のコピーを決められない。
+配信・一覧・派生物の有無を調べる読み手は `active_media_asset_copies` または `preferred_active_media_asset_copy` を使う。両者は active かつ現行世代のコピーだけを返す。CM 検出と TS 解析は original だけを読むので、世代の述語は要らない。削除・棚卸し・rescue・パス名前空間の検査は古い世代も含む全物理行を読む。
+
+`missing_media_assets` の行は、走査が観測できなかった物理コピーの ID を主キーに持つ。コピーのパス・置き場・論理資産はコピー表から引く。同じ論理資産の複数置き場や世代を個別に観測でき、コピーが削除されると観測も cascade で消える。
 
 コピーの無い論理資産が、未割り当てを表す。マイグレーションはコピー行を作らず、`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
-`storage adopt <store-name>` は、コピーの無い論理資産にコピーを作り、その置き場に既にあるコピーのパス・状態・派生世代を `media_assets` から同期する。別の置き場にだけコピーがある資産には触れない。観測表と進捗行の空の `store` も埋め、範囲が空の `delete_reconcile` のブレーカーの行も置き場の範囲へ移す。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+`storage adopt <store-name>` は、コピーが一つも無い論理資産に `media_assets` の互換列からコピー行を作り、パスからそのコピーの世代を記録する。既存コピーのパス・状態・世代は書き換えず、全コピーの最大世代を `GREATEST` で論理カウンターへ反映する。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーも、指定した置き場へ移す。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
 
-旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)`、`missing_media_assets(media_asset_id)`、`storage_sync(root)` である。新しい複合キーと並存するため、同じ `rel_path` を 2 つの置き場の孤児として記録できない。同じ論理資産は 2 つの置き場の実体無しにならず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
+`media_assets.derived_generation` は派生物の次回採番に使う論理カウンターで、コピーの世代は実ファイルの内容を記録する。コピー追加時は論理カウンターを `GREATEST` で合流させる。配置先に現行世代が無い場合もカウンターは論理行から読み、書き手の置き場のコピーを根拠にしない。
 
-`derived_generation` は派生物のパスに最後に採った世代で、original は NULL、派生物は 0 以上である。削除済みの行を再生成するときも進め、減らさない。移行時に既存パスの `.g{n}` / `.u{n}` から初期化し、印の無いパスは 0 にする。旧 worker は列を進めずパスだけを進めるので、adopt が旧 worker の停止後に、旧パスの印から列を引き上げる。以降の採番は列から行う。
+`derived_generation` は削除済みの行を再生成するときも進め、減らさない。移行時に `media_assets` と各コピーの既存パスから初期値を読む。`storage adopt` もすべてのコピー行の世代を見て、論理カウンターを `GREATEST` で引き上げる。以降の採番は論理カウンターから行う。
 
 uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
 
@@ -76,7 +82,7 @@ uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` �
 
 ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。`sha256` は未計測なら NULL とし、コピー単位には複製しない。
 
-物理削除に至る 4 ソースは、すべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。4 ソースは、ごみ箱の猶予超過、原本の保持を派生物の完備までとした録画の派生物完備、ユーザーが外したエンコード結果、孤児回収である。
+物理削除に至るアセットの 4 ソースと公開前孤児の回収は、1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。アセットのソースは、ごみ箱の猶予超過、原本の保持を派生物の完備までとした録画の原本、ユーザーが外したエンコード結果、overlap を過ぎた旧世代コピーである。
 
 実体ファイルの不在は、メディアアセットを指す衛星表が持つ。行の存在が、直前の走査で active なのに実体ファイルを観測できなかったという主張で、「観測できた」を表す行は作らない（不変条件 10）。書き手は削除 reconcile で、記録を書く worker ではないので、本体の列にしない（不変条件 13）。パスと種別は複製せず、読み出しで JOIN する（不変条件 9）。この表を根拠にメディアアセットを自動で消す経路は無い。判定基準と 2 つの安全弁（エイジング / 全損シグネチャ）は、[storage/missing-assets.md](../../storage/missing-assets.md)が権威である。
 
@@ -85,7 +91,8 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 削除済みの tombstone の列: `state`、`deleted_at`
 - ドロップ統計: `drop_stats`
 - 原本の保持を派生物の完備までとした設定: `until_encoded`
-- 実体ファイルの不在を持つ衛星表: `missing_media_assets`（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）
+- 実体ファイルの不在を持つ衛星表: `missing_media_assets`（物理コピー ID を PK かつ FK に取り、`ON DELETE CASCADE`）
+- 実体無し観測の鍵: `missing_media_assets.media_asset_copy_id`
 - 複製しない列: `rel_path` / `kind`
 - 走査時の状態: `state = 'active'`
 - 移行時と adopt 時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations` / `TestAdoptUnassignedStoreRows`

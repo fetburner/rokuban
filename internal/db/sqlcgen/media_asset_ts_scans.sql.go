@@ -46,7 +46,7 @@ WHERE a.recording_id = $2::bigint
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = a.id AND m.store = $1
+    WHERE m.media_asset_copy_id = c.id
   )
 `
 
@@ -70,7 +70,7 @@ func (q *Queries) GetActiveOriginalForTSScan(ctx context.Context, arg GetActiveO
 }
 
 const listMissingTSScanRecordings = `-- name: ListMissingTSScanRecordings :many
-SELECT a.recording_id
+SELECT DISTINCT a.recording_id
 FROM media_assets a
 JOIN media_asset_copies c
   ON c.media_asset_id = a.id
@@ -87,7 +87,7 @@ WHERE a.recording_id > $2::bigint
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = a.id AND m.store = $1
+    WHERE m.media_asset_copy_id = c.id
   )
 ORDER BY a.recording_id
 LIMIT $3
@@ -139,7 +139,7 @@ WHERE a.id = $2::bigint
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = a.id AND m.store = $1
+    WHERE m.media_asset_copy_id = c.id
   )
 FOR UPDATE OF a, c
 `

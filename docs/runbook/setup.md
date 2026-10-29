@@ -144,14 +144,14 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 `recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
 
-コピー表を持たない版から録画を持つ構成を移すときの順序は次のとおりである。
+コピー世代を持たない版から録画を持つ構成を更新するときは、旧 worker を先に停止する。移行後に旧 worker が同じ派生物を更新すると、世代カウンターを進めず、次の世代のファイルを上書きするおそれがある。
 
-1. `rokuban migrate up` で DB を移行する
-2. 旧 worker を止める
+1. 旧 worker をすべて停止する
+2. `rokuban migrate up` で DB を移行する
 3. `rokuban storage adopt <store-name>` を実行する。media root と設定ファイルは worker と同じ構成にし、DB にも接続できるようにする
 4. 新しい worker を起動する
 
-新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。
+新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。旧 worker の停止前にマイグレーションすると、新スキーマと互換でない書き込みが続くおそれがある。
 
 更新の前に、設定へ `storage.stores` / `originals` / `derived` を書く。旧キー `storage.media_store_name` は廃止した。設定は厳密に読むので、残したまま新しい版を起動すると、全ロールで設定の読み込みが失敗する。`media_store_name: X` を持つ構成は、それを消して `X` を置き場の名前にする。持たない構成は、worker が使う FS 置き場の名前を決めて書く。どちらも下の形になる。`transfer.overlap` は省略すると 48 時間になるので、`cleanup.missing_asset_age` を延ばしているときだけ書く。
 
@@ -173,10 +173,10 @@ storage:
 
 compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。移行の操作は次のとおりである。
 
-- compose: `docker compose stop rokuban` で旧 worker を止め、`docker compose up -d` で新しい版を起動する。`migrate` の後に `adopt-media` が走り、その後に `rokuban` が起動する。
-- k8s: 旧 worker の Job が残っていれば止めてから、`kubectl delete job rokuban-migrate --ignore-not-found` で消し、`kubectl apply` し直す。`rokuban-migrate` の中で `migrate up` の後に `storage adopt main` が走る。
+- compose: `docker compose stop rokuban` で旧 worker を止める。`docker compose up -d migrate adopt-media` で移行と adopt を終えてから `docker compose up -d rokuban` で新 worker を起動する。
+- k8s: 旧 worker の Job / ScaledJob を停止する。移行 Job を再作成して完了を待ち、その後 `storage adopt main` を実行してから新 worker を再開する。標準の `rokuban-migrate` Job は migrate と adopt を続けて実行するため、新 worker の Job を動かす前に完了を確認する。
 
-旧 worker が `adopt` の後も動いていると、次のことが起きる。新しい論理資産にはコピー行が作られず、次の起動時の検査が数える。既存の資産のコピーは旧 worker が進めたパスと状態に追いつかず、古いまま残る。encode の派生物の世代は、旧 worker がパスだけを進めて `derived_generation` を進めないので、新しい worker が同じ世代のパスを採りうる。旧 worker を止めてから `adopt` をもう一度実行すると、コピーのパス・状態と世代が追いつく。
+移行後に旧 worker を動かすと、旧版の `ON CONFLICT (media_asset_id, store)` は削除済みの一意制約を推論できず、コピーを伴う公開・取り込みの commit が失敗する。`storage adopt` は既存コピーのパスや状態を同期しないため、旧 worker を止めてから再実行してもその不整合は直らない。移行前に停止できなかった場合は worker を停止し、DB と media root を調べて手動で復旧する。
 
 置き場の名前は変えられない。名前を変えるときは、新しい置き場として導入し直す。
 

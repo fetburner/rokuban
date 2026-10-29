@@ -431,11 +431,12 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 			return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
 		}
 		derivedGeneration := catalogDerivedGeneration(a)
+		copyGeneration := catalogCopyGeneration(a)
 		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
 			ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
 			RelPath: a.RelPath, SizeBytes: a.SizeBytes, State: a.State, DeletedAt: a.DeletedAt,
 			CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
-			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes,
+			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes, CopyGeneration: copyGeneration,
 		}); err != nil {
 			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
 		}
@@ -443,11 +444,15 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		if assetStore == "" {
 			assetStore = storeName
 		}
-		if err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		inserted, err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
-			State: a.State, CreatedAt: &a.CreatedAt, DeletedAt: a.DeletedAt,
-		}); err != nil {
+			Generation: copyGeneration, State: a.State, CreatedAt: &a.CreatedAt, DeletedAt: a.DeletedAt,
+		})
+		if err != nil {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
+		}
+		if inserted != 1 {
+			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q affected %d rows", a.ID, assetStore, inserted)
 		}
 	}
 	res.MediaAssets = len(assets)
@@ -479,9 +484,19 @@ func catalogDerivedGeneration(asset catalogdoc.MediaAsset) *int64 {
 	return &generation
 }
 
+func catalogCopyGeneration(asset catalogdoc.MediaAsset) int64 {
+	if asset.Kind == "original" {
+		return 0
+	}
+	if asset.Generation != nil {
+		return *asset.Generation
+	}
+	return legacyDerivedGeneration(asset.RelPath)
+}
+
 func legacyDerivedGeneration(relPath string) int64 {
 	name := strings.TrimSuffix(path.Base(relPath), path.Ext(relPath))
-	marker := strings.LastIndex(name, ".g")
+	marker := max(strings.LastIndex(name, ".g"), strings.LastIndex(name, ".u"))
 	if marker < 0 || marker+2 == len(name) {
 		return 0
 	}

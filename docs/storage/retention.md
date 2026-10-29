@@ -281,6 +281,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 | 手動削除（ごみ箱） | `deleted_at` + 30 日（設定可） | 人為ミスへの備え |
 | 原本の保持ポリシー（`until_encoded`） | なし（派生物完備が条件） | ポリシー削除 |
 | ユーザーが外したエンコード版 | なし（他の版が残ることが条件） | 容量を空ける操作 |
+| 旧世代の派生コピー | `storage.transfer.overlap` | 置き換え中の旧ファイルを猶予後に回収 |
 | 公開前と分かる孤児 | mtime 猶予 + エイジング | temp / staging の回収 |
 | canonical 名の孤児 | エイジング後に報告 | 公開済みファイルの保持と調査 |
 
@@ -308,13 +309,14 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 削除してよいかを決める条件は、スキーマ側に名前付きの述語として 1 箇所に置き、消費するクエリはそれを参照する。手で複製した条件の一部にだけガードが入るドリフトを防ぐためである。
 
-「このアセットは消してよいか」を決める腕は、ごみ箱腕（猶予超過 or 今すぐ purge）・until_encoded 腕（派生物完備）・外した版の腕の 3 つである。これを消費するのは `internal/db/queries/delete_reconcile.sql` の入口（腕ごとに 1 つ）・前パスの拾い直し・否定形 2 つである。以前は 2 腕を 5 クエリに手で複製しており、`cardinality(encode_profiles) > 0` のガードが複製の 1 つ（入口）にしか入らずドリフトした。削除可否の腕はスキーマ側に名前を与え、消費するクエリはそこへの参照にする。共有する TS 計測済み条件も別の述語にまとめる。
+削除可否の腕には、ごみ箱・until_encoded・外した版・旧世代コピーがある。判定をクエリごとに写すと、入口では削除対象でも再試行時には復元すべき、といった条件のずれが起きる。削除側の候補選択・再試行・否定形は、同じ名前付き述語を参照する。
 
 - until_encoded 腕: set-returning SQL 関数 `until_encoded_deletable_originals(desired_store text)` にする。派生物の desired の置き場は config の規則で決まり、SQL からは引けない。ごみ箱腕の `trash_deletable_recordings(grace_cutoff)` と同じく、判断のたびに引数で渡す。
   - 本体は、view と同じ `unencoded_desired_profiles` を参照し、置き場の条件だけを足す。不足の判定はエンコード側と共有し、写さない。
   - コピー表には `media_asset_copies (media_asset_id, store) WHERE state = 'active'` の部分索引を張る。索引が無いと候補ごとにコピー表を全走査し、20% の合成データで 26,292.7 ms、あれば 38.2 ms だった。
   - 未解決: `deleting` が多いと、否定形（`ListUnqualifiedDeletingAssets`）は述語の全集合を Materialize して Join Filter で突き合わせる計画に落ちうる。合成データの 1,000 件では、置き場の条件の無い view も 50% で 234.9 ms だった。この計画に落ちるかは、述語の書き方ではなく `deleting` の件数が決める。
   - 条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は原本が保持され続ける。poster は長さが取れなくても 1 枚で続行するが、タイルは続行しないので、恒久的な失敗は poster より起きやすい。代表的な形（最後のタイルが映像の終端を指す）は、抜き出し位置を終端の手前へ寄せ、それでも取れなければ直前のタイルで埋めて対処してある。未解決: 映像の無い入力（音声だけの録画やデータ放送）はタイルを作れず、原本が保持され続ける。データ放送に対応するときに扱う
+- 旧世代コピー: `old_generation_media_asset_copies` を候補選択・再試行・復元判定で共有する。overlap は現行世代の最初のコピー行の `created_at` から数える。旧コピーの作成時刻では新ファイル公開直後に削除するためである。現行世代の行が無ければ候補にしない
 - TS の計測済み判定: view `current_ts_scanned_originals` にする。計測記録のサイズと原本の現在サイズが一致する条件も共通述語にする。候補選択・API 表示・削除可否が別々に条件を持つと、サイズ変更後に再計測と削除可否が食い違う。述語に `state` は含めず、ごみ箱の drop summary を保ち、active 限定が必要な呼び出し側でだけ絞る
 - ごみ箱腕: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 外した版の腕: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
@@ -329,7 +331,7 @@ TS の計測済み判定は、主キー `media_asset_id` で引くスカラー�
 
 `cardinality(encode_profiles) > 0` は削除述語に残す。削除述語は、`cm_detect = false` なら CM 検出を待たないが、`encode_profiles` が空なら原本を消さない。`until_encoded` と空の `encode_profiles` の組は `recording_encode_policy` の CHECK 制約が禁じており、述語のガードはこれを二重に防ぐ。
 
-否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる。
+否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。旧世代の unlink が失敗して次の pass に持ち越された場合も、overlap と現行世代の存在を再評価してから削除する。
 
 #### カット版と CM 検出の扱い
 

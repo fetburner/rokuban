@@ -68,9 +68,6 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if err := q.AdoptUnassignedOrphans(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned orphan observations: %w", err)
 	}
-	if err := q.AdoptUnassignedMissingMediaAssets(ctx, s.storeName); err != nil {
-		return fmt.Errorf("assigning unowned missing asset observations: %w", err)
-	}
 	if err := q.AdoptUnassignedStorageSync(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned storage observations: %w", err)
 	}
@@ -302,7 +299,6 @@ func (s *Media) GetEncodedPublishState(
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
-		StoreName:   mediaStoreNameArg(s.storeName),
 	})
 	if err == nil {
 		asset := store.EncodedAssetObservation{
@@ -812,27 +808,26 @@ func (s *Media) ListActiveMediaAssets(ctx context.Context) ([]store.ActiveMediaA
 	}
 	out := make([]store.ActiveMediaAsset, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, store.ActiveMediaAsset{ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath, Kind: row.Kind})
+		out = append(out, store.ActiveMediaAsset{
+			ID: row.CopyID, MediaAssetID: row.MediaAssetID, RecordingID: row.RecordingID,
+			RelPath: row.RelPath, Kind: row.Kind,
+		})
 	}
 	return out, nil
 }
 
 // UpsertMissingMediaAsset は実体無し候補を記録し、既存候補の first_seen を保持する。
-func (s *Media) UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	if err := sqlcgen.New(s.pool).UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{
-		MediaAssetID: mediaAssetID, Store: s.storeName,
-	}); err != nil {
-		return fmt.Errorf("recording missing media asset %d: %w", mediaAssetID, err)
+func (s *Media) UpsertMissingMediaAsset(ctx context.Context, copyID int64) error {
+	if err := sqlcgen.New(s.pool).UpsertMissingMediaAsset(ctx, copyID); err != nil {
+		return fmt.Errorf("recording missing media asset copy %d: %w", copyID, err)
 	}
 	return nil
 }
 
 // DeleteMissingMediaAsset は実体が再び観測された候補を消す。
-func (s *Media) DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	if err := sqlcgen.New(s.pool).DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{
-		MediaAssetID: mediaAssetID, Store: s.storeName,
-	}); err != nil {
-		return fmt.Errorf("deleting missing media asset %d: %w", mediaAssetID, err)
+func (s *Media) DeleteMissingMediaAsset(ctx context.Context, copyID int64) error {
+	if err := sqlcgen.New(s.pool).DeleteMissingMediaAsset(ctx, copyID); err != nil {
+		return fmt.Errorf("deleting missing media asset copy %d: %w", copyID, err)
 	}
 	return nil
 }
@@ -857,11 +852,12 @@ func (s *Media) ListAgedMissingMediaAssets(ctx context.Context, age time.Duratio
 	out := make([]store.AgedMissingMediaAsset, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, store.AgedMissingMediaAsset{
-			ID:          row.ID,
-			RecordingID: row.RecordingID,
-			RelPath:     row.RelPath,
-			Kind:        row.Kind,
-			FirstSeen:   row.FirstSeen,
+			ID:           row.CopyID,
+			MediaAssetID: row.MediaAssetID,
+			RecordingID:  row.RecordingID,
+			RelPath:      row.RelPath,
+			Kind:         row.Kind,
+			FirstSeen:    row.FirstSeen,
 		})
 	}
 	return out, nil

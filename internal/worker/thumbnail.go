@@ -66,7 +66,6 @@ type thumbnailWorkPlan struct {
 	relPath    string
 	generation int64
 	expected   *thumbnailObserved
-	replaced   string
 }
 
 // Work は thumbnail ジョブを実行する。
@@ -138,10 +137,6 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		result = "success"
 		return nil
 	}
-	if plan.replaced != "" {
-		w.removeReplacedThumbnail(plan.replaced, log)
-	}
-
 	log.Info("thumbnail: committed", "rel_path", plan.relPath, "size_bytes", size,
 		"input_seek_ms", plan.inputSeek.Milliseconds(), "seek_ms", plan.seekMs)
 	result = "success"
@@ -262,7 +257,7 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		inputID: plan.Source.MediaAssetID, inputPath: inputPath,
 		inputSeek: time.Duration(plan.InputSeekMs) * time.Millisecond,
 		seekMs:    plan.RecordedSeek, relPath: relPath, generation: generation,
-		expected: expected, replaced: expected.RelPath,
+		expected: expected,
 	}, true, nil
 }
 
@@ -313,22 +308,6 @@ type thumbnailObserved struct {
 	RelPath           string
 	SeekMs            *int64
 	DerivedGeneration int64
-}
-
-func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logger) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced thumbnail"); err != nil {
-		log.Warn("thumbnail: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
-		return
-	}
-	path, err := mediapath.Resolve(w.MediaDir, relPath)
-	if err != nil {
-		log.Warn("thumbnail: could not resolve replaced path", "rel_path", relPath, "err", err)
-		return
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("thumbnail: removing replaced file failed; orphan reporting will expose it",
-			"rel_path", relPath, "err", err)
-	}
 }
 
 func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (time.Duration, error) {

@@ -62,7 +62,8 @@ SELECT a.id, a.recording_id, a.kind, a.profile,
        copy.created_at, a.updated_at,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation,
        a.sha256,
-       copy.store
+       copy.store,
+       copy.generation
 FROM media_assets a
 JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
@@ -359,13 +360,37 @@ ON CONFLICT (id) DO UPDATE SET
     recording_id = EXCLUDED.recording_id,
     kind         = EXCLUDED.kind,
     profile      = EXCLUDED.profile,
-    rel_path     = EXCLUDED.rel_path,
+    rel_path     = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR sqlc.arg('copy_generation')::bigint = GREATEST(
+              COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
+          )
+        THEN EXCLUDED.rel_path
+        ELSE media_assets.rel_path
+    END,
     size_bytes   = EXCLUDED.size_bytes,
-    state        = EXCLUDED.state,
-    deleted_at   = EXCLUDED.deleted_at,
+    state        = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR sqlc.arg('copy_generation')::bigint = GREATEST(
+              COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
+          )
+        THEN EXCLUDED.state
+        ELSE media_assets.state
+    END,
+    deleted_at   = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR sqlc.arg('copy_generation')::bigint = GREATEST(
+              COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
+          )
+        THEN EXCLUDED.deleted_at
+        ELSE media_assets.deleted_at
+    END,
     created_at   = EXCLUDED.created_at,
     updated_at   = EXCLUDED.updated_at,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = CASE
+        WHEN EXCLUDED.kind = 'original' THEN NULL
+        ELSE GREATEST(COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0))
+    END,
     sha256       = EXCLUDED.sha256;
 
 -- name: CatalogUpsertDropStat :exec

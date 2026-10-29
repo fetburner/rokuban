@@ -53,7 +53,7 @@ func (s *Media) CommitOriginal(
 		}
 		return fmt.Errorf("inserting original media asset: %w", mapDatabaseError(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, 0); err != nil {
 		return fmt.Errorf("recording original media asset copy: %w", err)
 	}
 	if err := q.DeleteRecordingIngestProgress(ctx, in.RecordingID); err != nil {
@@ -220,7 +220,6 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: in.RecordingID,
 		Profile:     &in.Profile,
-		StoreName:   mediaStoreNameArg(s.storeName),
 	})
 	if err == nil {
 		observation := store.EncodedAssetObservation{
@@ -257,7 +256,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	if err != nil {
 		return false, fmt.Errorf("upserting encoded media asset: %w", mapDatabaseError(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, in.DerivedGeneration); err != nil {
 		return false, fmt.Errorf("recording encoded media asset copy: %w", err)
 	}
 	if in.Cut {
@@ -421,14 +420,14 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		}
 		assetID = current.ID
 		derivedGeneration := in.DerivedGeneration
-		if err := q.UpdateThumbnailMediaAssetPath(ctx, sqlcgen.UpdateThumbnailMediaAssetPathParams{
+		if err := q.UpdateThumbnailMediaAsset(ctx, sqlcgen.UpdateThumbnailMediaAssetParams{
 			RelPath: in.RelPath, SizeBytes: in.SizeBytes, DerivedGeneration: &derivedGeneration,
-			ID: assetID, StoreName: s.storeName,
+			ID: assetID,
 		}); err != nil {
-			return false, fmt.Errorf("updating thumbnail media path: %w", mapDatabaseError(err))
+			return false, fmt.Errorf("updating thumbnail media asset: %w", mapDatabaseError(err))
 		}
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, in.DerivedGeneration); err != nil {
 		return false, fmt.Errorf("recording thumbnail media asset copy: %w", err)
 	}
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
@@ -496,7 +495,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 	if err != nil {
 		return false, fmt.Errorf("upserting seek tiles media asset: %w", mapDatabaseError(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, in.DerivedGeneration); err != nil {
 		return false, fmt.Errorf("recording seek tiles media asset copy: %w", err)
 	}
 	if err := publish(); err != nil {
@@ -565,14 +564,14 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	for i, asset := range in.Assets {
 		if assets[i] != nil {
 			result.AssetIDs[i] = assets[i].ID
-			if err := upsertMediaAssetCopyState(ctx, q, assets[i].ID, s.storeName, asset.RelPath, assets[i].State); err != nil {
+			if err := upsertMediaAssetCopyState(ctx, q, assets[i].ID, s.storeName, asset.RelPath, assets[i].Generation, assets[i].State); err != nil {
 				return store.InPlaceResult{}, fmt.Errorf("recording existing in-place media asset copy %q: %w", asset.RelPath, err)
 			}
 			continue
 		}
-		assetID, err := q.UpsertInPlaceMediaAsset(ctx, sqlcgen.UpsertInPlaceMediaAssetParams{
+		publishedAsset, err := q.UpsertInPlaceMediaAsset(ctx, sqlcgen.UpsertInPlaceMediaAssetParams{
 			RecordingID: recordingID, Kind: asset.Kind, Profile: asset.Profile, RelPath: asset.RelPath,
-			SizeBytes: asset.SizeBytes, StoreName: s.storeName,
+			SizeBytes: asset.SizeBytes,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -580,8 +579,8 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 			}
 			return store.InPlaceResult{}, fmt.Errorf("upserting in-place asset %q: %w", asset.RelPath, mapDatabaseError(err))
 		}
-		result.AssetIDs[i] = assetID
-		if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, asset.RelPath); err != nil {
+		result.AssetIDs[i] = publishedAsset.ID
+		if err := upsertMediaAssetCopy(ctx, q, publishedAsset.ID, s.storeName, asset.RelPath, publishedAsset.Generation); err != nil {
 			return store.InPlaceResult{}, fmt.Errorf("recording in-place media asset copy %q: %w", asset.RelPath, err)
 		}
 	}
@@ -608,22 +607,33 @@ func upsertMediaAssetCopy(
 	q *sqlcgen.Queries,
 	assetID int64,
 	storeName, relPath string,
+	generation int64,
 ) error {
-	return upsertMediaAssetCopyState(ctx, q, assetID, storeName, relPath, "active")
+	return upsertMediaAssetCopyState(ctx, q, assetID, storeName, relPath, generation, "active")
 }
 
 func upsertMediaAssetCopyState(
 	ctx context.Context,
 	q *sqlcgen.Queries,
 	assetID int64,
-	storeName, relPath, state string,
+	storeName, relPath string,
+	generation int64,
+	state string,
 ) error {
-	return q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+	updated, err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
 		Store:        storeName,
 		RelPath:      relPath,
+		Generation:   generation,
 		State:        state,
 	})
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return fmt.Errorf("upserting media asset copy for asset %d store %q path %q generation %d affected %d rows", assetID, storeName, relPath, generation, updated)
+	}
+	return nil
 }
 
 // ReportEncodeProgress は encode-progress 通知を PostgreSQL NOTIFY で送る。

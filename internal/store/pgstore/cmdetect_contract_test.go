@@ -225,7 +225,8 @@ func markCMDetectionOriginalMissing(t *testing.T, pool *pgxpool.Pool, recordingI
 		recordingID, store.AssetKindOriginal).Scan(&assetID); err != nil {
 		t.Fatalf("finding original media asset: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: assetID, Store: ""}); err != nil {
+	copyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
+	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, copyID); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 }

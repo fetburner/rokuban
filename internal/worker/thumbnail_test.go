@@ -356,8 +356,8 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	if state.SeekMs == nil || *state.SeekMs != 89993 {
 		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
 	}
-	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))); !os.IsNotExist(err) {
-		t.Errorf("old thumbnail path still exists (stat err = %v)", err)
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))); err != nil {
+		t.Errorf("old thumbnail path should remain through the transfer overlap (stat err = %v)", err)
 	}
 	newPath := filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d.g1.jpg", recordingID))
 	if data, err := os.ReadFile(newPath); err != nil || !bytesEqual(data, tinyJPEG) {

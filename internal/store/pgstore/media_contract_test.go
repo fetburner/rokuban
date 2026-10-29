@@ -41,7 +41,7 @@ func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 		assetID, selectedCopyPath, dbtest.StoreName); err != nil {
 		t.Fatalf("setting selected-store copy path: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID, Store: "secondary", RelPath: "sites/default/secondary-copy-recording-hls-generation.m2ts", State: "active",
 	}); err != nil {
 		t.Fatalf("creating secondary-store copy: %v", err)
@@ -93,7 +93,7 @@ func TestOriginalVODTargetUsesOnlyConfiguredStoreCopy(t *testing.T) {
 		{store: "z-store", path: "sites/default/vod-z-copy.m2ts"},
 		{store: "a-store", path: "sites/default/vod-a-copy.m2ts"},
 	} {
-		if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 			MediaAssetID: assetID, Store: copy.store, RelPath: copy.path, State: "active",
 		}); err != nil {
 			t.Fatalf("creating %s copy: %v", copy.store, err)
@@ -243,6 +243,9 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		},
 		NewAsset: func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64 {
 			return newMediaContractAsset(t, pool, recordingID, kind, profile, relPath, state)
+		},
+		CopyID: func(t *testing.T, assetID int64) int64 {
+			return dbtest.MediaAssetCopyID(t, pool, assetID, "tokyo")
 		},
 	}
 	configureMediaPublishFixture(t, pool, &fixture)
@@ -530,12 +533,12 @@ func configureMediaStorageFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 			t.Fatalf("aging orphan %q: %v", relPath, err)
 		}
 	}
-	fixture.SetMissingFirstSeenAgo = func(t *testing.T, assetID int64, ago time.Duration) {
+	fixture.SetMissingFirstSeenAgo = func(t *testing.T, copyID int64, ago time.Duration) {
 		t.Helper()
 		if _, err := pool.Exec(context.Background(),
-			"UPDATE missing_media_assets SET first_seen = now() - ($2::bigint * interval '1 microsecond') WHERE media_asset_id = $1",
-			assetID, ago.Microseconds()); err != nil {
-			t.Fatalf("aging missing asset %d: %v", assetID, err)
+			"UPDATE missing_media_assets SET first_seen = now() - ($2::bigint * interval '1 microsecond') WHERE media_asset_copy_id = $1",
+			copyID, ago.Microseconds()); err != nil {
+			t.Fatalf("aging missing asset copy %d: %v", copyID, err)
 		}
 	}
 	fixture.SetAssetState = func(t *testing.T, assetID int64, state string) {

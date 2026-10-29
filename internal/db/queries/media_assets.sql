@@ -69,20 +69,12 @@ WHERE recording_id = $1
   AND profile = $2
   AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
--- publish が tombstone も含めて既存の行を見るため、active に限らない。置き場を限定しない読み手に
--- 備え、active を先に、同順位は store 順に 1 件だけ選ぶ。
+-- 世代カウンターと論理行の状態は置き場によらない。コピー表へ JOIN すると、
+-- 書き手の store にコピーがないときにカウンターを読み落とす。
 -- name: GetEncodedMediaAssetForProfile :one
-SELECT a.id, c.rel_path, c.state, c.store,
+SELECT a.id, a.rel_path, a.state,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
-JOIN LATERAL (
-    SELECT copy.rel_path, copy.state, copy.store
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
-    ORDER BY (copy.state = 'active') DESC, copy.store
-    LIMIT 1
-) c ON true
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'encoded'
   AND a.profile = sqlc.arg('profile');
@@ -103,7 +95,7 @@ WHERE recording_id = sqlc.arg('recording_id')
 UPDATE media_assets
 SET rel_path   = sqlc.arg('rel_path'),
     size_bytes = sqlc.arg('size_bytes'),
-    derived_generation = sqlc.arg('derived_generation'),
+    derived_generation = GREATEST(COALESCE(derived_generation, 0), sqlc.arg('derived_generation')),
     updated_at = now()
 WHERE id = sqlc.arg('id');
 
@@ -141,7 +133,7 @@ VALUES ($1, 'encoded', $2, $3, $4, $5)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
@@ -169,7 +161,7 @@ VALUES ($1, 'thumbnail', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
@@ -182,7 +174,7 @@ VALUES ($1, 'seek_tiles', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
@@ -196,36 +188,27 @@ WHERE recording_id = $1
   AND kind = 'thumbnail'
   AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
--- thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
+-- thumbnail 差し替えの commit tx 内で論理行を直列化する。
 -- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
 -- name: LockActiveThumbnailMediaAsset :one
 SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id
- AND c.store = sqlc.arg('store_name')
- AND c.state = 'active'
+JOIN LATERAL preferred_active_media_asset_copy(a.id, sqlc.arg('store_name')::text) c ON true
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'thumbnail'
-FOR UPDATE OF a, c;
+FOR UPDATE OF a;
 
--- thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
--- name: UpdateThumbnailMediaAssetPath :exec
+-- thumbnail 差し替え時に論理サイズ・世代を進める。新しい物理コピーは別行で挿入する。
+-- name: UpdateThumbnailMediaAsset :exec
 UPDATE media_assets AS asset
 SET rel_path   = sqlc.arg('rel_path'),
     size_bytes = sqlc.arg('size_bytes'),
-    derived_generation = sqlc.arg('derived_generation'),
+    derived_generation = GREATEST(COALESCE(asset.derived_generation, 0), sqlc.arg('derived_generation')),
     sha256     = NULL,
     updated_at = now()
 WHERE asset.id = sqlc.arg('id')
-  AND asset.kind = 'thumbnail'
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = asset.id
-        AND c.store = sqlc.arg('store_name')
-        AND c.state = 'active'
-  );
+  AND asset.kind = 'thumbnail';
 
 -- 生成に使ったファイルがまだ使えるかを commit tx 内で確認する。
 -- name: IsActiveThumbnailInput :one
@@ -235,14 +218,11 @@ SELECT EXISTS (
     WHERE a.id = sqlc.arg('media_asset_id')
       AND a.kind IN ('original', 'encoded')
       AND EXISTS (
-          SELECT 1 FROM media_asset_copies c
-          WHERE c.media_asset_id = a.id
-            AND c.store = sqlc.arg('store_name')
-            AND c.state = 'active'
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+          SELECT 1
+          FROM active_media_asset_copies(a.id, sqlc.arg('store_name')::text) c
+          WHERE NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
+          )
       )
 );
 

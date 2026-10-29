@@ -331,7 +331,8 @@ SELECT a.id, a.recording_id, a.kind, a.profile,
        copy.created_at, a.updated_at,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation,
        a.sha256,
-       copy.store
+       copy.store,
+       copy.generation
 FROM media_assets a
 JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
@@ -353,6 +354,7 @@ type CatalogListMediaAssetsRow struct {
 	DerivedGeneration int64
 	Sha256            []byte
 	Store             string
+	Generation        int64
 }
 
 // 物理パスとコピー状態は指定した置き場の media_asset_copies から読む。
@@ -379,6 +381,7 @@ func (q *Queries) CatalogListMediaAssets(ctx context.Context, storeName string) 
 			&i.DerivedGeneration,
 			&i.Sha256,
 			&i.Store,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}
@@ -1021,13 +1024,37 @@ ON CONFLICT (id) DO UPDATE SET
     recording_id = EXCLUDED.recording_id,
     kind         = EXCLUDED.kind,
     profile      = EXCLUDED.profile,
-    rel_path     = EXCLUDED.rel_path,
+    rel_path     = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR $13::bigint = GREATEST(
+              COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
+          )
+        THEN EXCLUDED.rel_path
+        ELSE media_assets.rel_path
+    END,
     size_bytes   = EXCLUDED.size_bytes,
-    state        = EXCLUDED.state,
-    deleted_at   = EXCLUDED.deleted_at,
+    state        = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR $13::bigint = GREATEST(
+              COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
+          )
+        THEN EXCLUDED.state
+        ELSE media_assets.state
+    END,
+    deleted_at   = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR $13::bigint = GREATEST(
+              COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
+          )
+        THEN EXCLUDED.deleted_at
+        ELSE media_assets.deleted_at
+    END,
     created_at   = EXCLUDED.created_at,
     updated_at   = EXCLUDED.updated_at,
-    derived_generation = EXCLUDED.derived_generation,
+    derived_generation = CASE
+        WHEN EXCLUDED.kind = 'original' THEN NULL
+        ELSE GREATEST(COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0))
+    END,
     sha256       = EXCLUDED.sha256
 `
 
@@ -1044,6 +1071,7 @@ type CatalogUpsertMediaAssetParams struct {
 	UpdatedAt         time.Time
 	DerivedGeneration *int64
 	Sha256            []byte
+	CopyGeneration    int64
 }
 
 func (q *Queries) CatalogUpsertMediaAsset(ctx context.Context, arg CatalogUpsertMediaAssetParams) error {
@@ -1060,6 +1088,7 @@ func (q *Queries) CatalogUpsertMediaAsset(ctx context.Context, arg CatalogUpsert
 		arg.UpdatedAt,
 		arg.DerivedGeneration,
 		arg.Sha256,
+		arg.CopyGeneration,
 	)
 	return err
 }

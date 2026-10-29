@@ -12,7 +12,7 @@ import (
 
 const getInPlaceAssetByRelPath = `-- name: GetInPlaceAssetByRelPath :one
 
-SELECT a.id, a.recording_id, a.kind, a.profile, c.state
+SELECT a.id, a.recording_id, a.kind, a.profile, c.state, c.generation
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.rel_path = $1
@@ -32,6 +32,7 @@ type GetInPlaceAssetByRelPathRow struct {
 	Kind        string
 	Profile     *string
 	State       string
+	Generation  int64
 }
 
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
@@ -53,6 +54,7 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAs
 		&i.Kind,
 		&i.Profile,
 		&i.State,
+		&i.Generation,
 	)
 	return i, err
 }
@@ -63,23 +65,26 @@ INSERT INTO media_assets (
 ) VALUES (
     $1, $2, $3,
     $4, $5, 'active',
-    CASE WHEN $2::text = 'original' THEN NULL ELSE 0 END
+    CASE WHEN $2::text = 'original' THEN NULL
+         ELSE COALESCE(media_asset_generation_from_rel_path($4), 0)
+    END
 )
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
+    derived_generation = CASE
+        WHEN EXCLUDED.kind = 'original' THEN NULL
+        ELSE GREATEST(COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0))
+    END,
     sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
-WHERE EXISTS (
-    SELECT 1 FROM media_asset_copies c
-    WHERE c.media_asset_id = media_assets.id
-      AND c.store = $6
-      AND c.rel_path = EXCLUDED.rel_path
-)
-RETURNING id
+RETURNING id,
+    CASE WHEN kind = 'original' THEN 0
+         ELSE COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
+    END::bigint AS generation
 `
 
 type UpsertInPlaceMediaAssetParams struct {
@@ -88,23 +93,24 @@ type UpsertInPlaceMediaAssetParams struct {
 	Profile     *string
 	RelPath     string
 	SizeBytes   int64
-	StoreName   string
 }
 
-// A tuple is immutable once published. A different path here means a synthetic identity
-// collision or conflicting import; fail (RETURNING no row) instead of orphaning the old file.
-func (q *Queries) UpsertInPlaceMediaAsset(ctx context.Context, arg UpsertInPlaceMediaAssetParams) (int64, error) {
+type UpsertInPlaceMediaAssetRow struct {
+	ID         int64
+	Generation int64
+}
+
+func (q *Queries) UpsertInPlaceMediaAsset(ctx context.Context, arg UpsertInPlaceMediaAssetParams) (UpsertInPlaceMediaAssetRow, error) {
 	row := q.db.QueryRow(ctx, upsertInPlaceMediaAsset,
 		arg.RecordingID,
 		arg.Kind,
 		arg.Profile,
 		arg.RelPath,
 		arg.SizeBytes,
-		arg.StoreName,
 	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
+	var i UpsertInPlaceMediaAssetRow
+	err := row.Scan(&i.ID, &i.Generation)
+	return i, err
 }
 
 const upsertInPlaceRecording = `-- name: UpsertInPlaceRecording :one
