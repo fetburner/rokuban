@@ -817,7 +817,7 @@ describe('LivePlayer の状態遷移', () => {
           probes += 1
           await waitFor(() => expect(probeCount(path)).toBe(probes))
           await waitFor(() => expect(path.video.getAttribute('src')).toBe(URL_V1))
-          await act(async () => { fireEvent.loadedMetadata(path.video) })
+          await act(async () => { fireEvent.loadedMetadata(path.video); fireEvent.canPlay(path.video) })
           if (nextStall === undefined) break
           await act(async () => {
             path.media.currentTime = nextStall
@@ -852,6 +852,25 @@ describe('LivePlayer の状態遷移', () => {
         })
         await advance(5000)
         expect(sdProbes()).toBe(2)
+      })
+
+      it('読み直し後に metadata 前の stalled と 52 秒の waiting が交互に来ても 2 回で止まる', async () => {
+        const path = await renderRecoveryPath()
+        const { video, media } = path
+        await stallAt52(path)
+        for (let i = 0; i < 6; i += 1) {
+          await advance(5000)
+          await act(async () => { await Promise.resolve() })
+          await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
+          if (i % 2 === 0) {
+            // metadata が来ないまま stalled（currentTime は load() 後の 0）
+            await act(async () => { video.dispatchEvent(new Event('stalled')) })
+          } else {
+            await act(async () => { fireEvent.loadedMetadata(video); fireEvent.canPlay(video) })
+            await act(async () => { media.paused = false; video.dispatchEvent(new Event('waiting')) })
+          }
+        }
+        expect(probeCount(path)).toBeLessThanOrEqual(3)
       })
 
       it('5 秒の待ちの途中で別の録画へ替わると、前の録画の張り直しは起きない', async () => {

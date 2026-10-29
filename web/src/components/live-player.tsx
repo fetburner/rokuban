@@ -818,8 +818,9 @@ export function LivePlayer(props: LivePlayerProps) {
   }, [isOriginalPlayback, mode, originalDurationSeconds, recordingId, sessionStartSeconds])
 
   // 利用者が操作で一時停止したか。**`media.paused` の代わりに、世代付き録画 HLS の 5 秒の
-  // 読み直しだけが読む。** 実 Safari は止まっている最中に自分で `pause` を出す
-  // （`recording-hls-stall-recovery.mjs`）ので、`paused` は利用者の意図を表さない。
+  // 読み直しだけが読む。** 実 Safari は止まっている最中に自分で `pause` を出した
+  // （`currentTime` を直接代入したシークで 3 回中 3 回、Safari 27.0.1。実ポインタのシークの
+  // `recording-hls-stall-recovery.mjs` では未観測）ので、`paused` は利用者の意図を表さない。
   // 操作バー・キー・映像のクリック・mediaSession の pause が立て、再生操作が消す。
   const userPausedRef = useRef(false)
   const markUserPause = useCallback(() => {
@@ -1191,16 +1192,18 @@ export function LivePlayer(props: LivePlayerProps) {
       const startRecoveryTimer = () => {
         if (!isRecordingHLS || recoveryTimer !== null) return
         const startedAt = Date.now()
-        const startedPosition = media.currentTime
+        // 張り直しの間は `load()` で 0 になった `currentTime` ではなく、戻そうとしている位置で見る。
+        const position = () => chaseResumePending.current ?? media.currentTime
+        const startedPosition = position()
         recoveryTimer = setTimeout(() => {
           recoveryTimer = null
-          if (cancelled || Math.abs(media.currentTime - startedPosition) >= 0.05) return
+          if (cancelled || Math.abs(position() - startedPosition) >= 0.05) return
           const known = recordingHlsRecoveryRef.current?.recordingId === recordingId
             ? recordingHlsRecoveryRef.current
             : null
           const { recover, next } = nextRecordingHlsRecovery(known, {
             elapsedMs: Date.now() - startedAt,
-            atSeconds: media.currentTime,
+            atSeconds: position(),
             userPaused: userPausedRef.current,
           })
           if (next !== null) recordingHlsRecoveryRef.current = { ...next, recordingId }

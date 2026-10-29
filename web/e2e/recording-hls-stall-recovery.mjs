@@ -369,8 +369,26 @@ async function startCase(safari, caseNumber) {
   }, { selector: '[data-testid="recording-playback-start"]', timeoutMs: 30_000 })
   if (!pageReady) return { error: '録画詳細画面の再生ボタンが現れない' }
   await safari.evaluate(wrapMediaSession)
-  await safari.click('[data-testid="recording-playback-start"]')
-  if (!await safari.evaluate(installMonitor, { timeoutMs: 10_000 })) return { error: 'video 要素がない' }
+  // 押した操作が効かなかったときだけ 1 回押し直し、押し直したことは結果に残す。
+  let installed = false
+  for (let attempt = 1; attempt <= 2 && !installed; attempt += 1) {
+    await safari.click('[data-testid="recording-playback-start"]').catch(() => {})
+    installed = await safari.evaluate(installMonitor, { timeoutMs: attempt === 1 ? 4_000 : 10_000 })
+    if (!installed) {
+      const dom = await safari.evaluate(() => {
+        const button = document.querySelector('[data-testid="recording-playback-start"]')
+        return {
+          url: location.href,
+          readyState: document.readyState,
+          startButton: button ? { disabled: button.disabled, text: button.textContent } : null,
+          hasPlayerFrame: document.querySelector('[data-testid="recording-player-frame"]') !== null,
+          body: document.body.innerText.slice(0, 300),
+        }
+      })
+      log(`  開始操作 ${attempt} 回目の後に video 要素がない: ${JSON.stringify(dom)}`)
+      if (attempt === 2) return { error: `video 要素がない (${JSON.stringify(dom)})` }
+    }
+  }
   const started = await safari.evaluate(waitForPlaying, { timeoutMs: 20_000 })
   if (!started.started) return { error: `初回再生に失敗 (${JSON.stringify(started)})` }
   return {}
@@ -380,6 +398,8 @@ async function startCase(safari, caseNumber) {
 async function seekByPointer(safari) {
   let rect = await safari.evaluate(scrubRect)
   if (!rect) return null
+  // 前の回と同じ座標への移動は mousemove を出さず、操作バーが出ないまま押してしまう。一度ずらしてから戻す。
+  await safari.pointerMove(rect.frameX - 40, rect.frameY - 40)
   await safari.pointerMove(rect.frameX, rect.frameY)
   await delay(300)
   rect = await safari.evaluate(scrubRect)
@@ -402,8 +422,24 @@ try {
       ng.push(`${label}: ${started.error}`)
       continue
     }
-    if (!await seekByPointer(safari)) {
+    const seekRect = await seekByPointer(safari)
+    // 押してもシークが始まらない回がある（実ポインタの click が操作バーに届かない）。製品の NG と
+    // 区別して、判定スクリプト側の NG として出す。押し直すと再生が先へ進んだ位置で測ってしまう。
+    const seekStarted = () => safari.evaluate(async () => {
+      const state = window.__e2e
+      const deadline = performance.now() + 1_500
+      while (performance.now() < deadline) {
+        if (state.seekAt !== null && state.events.some((event) => event[1] === 'seeking' && event[0] >= state.seekAt - state.origin - 5)) return true
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      return false
+    })
+    if (!seekRect) {
       ng.push(`${label}: シークバーが見つからない`)
+      continue
+    }
+    if (!await seekStarted()) {
+      ng.push(`${label}: 判定スクリプト側: シークバーを押しても seeking が出ない（座標 ${JSON.stringify(seekRect)}）`)
       continue
     }
 
@@ -420,7 +456,12 @@ try {
         return false
       })
       if (!stalled) {
-        ng.push(`${label}: シーク後に waiting が出ない`)
+        const diag = await safari.evaluate(() => {
+          const state = window.__e2e
+          const video = window.__e2eVideo
+          return { seekAt: state.seekAt, paused: video.paused, currentTime: video.currentTime, readyState: video.readyState, calls: state.calls, events: state.events.slice(-12), rect: document.querySelector('[data-testid="seek-scrub"]')?.getBoundingClientRect().toJSON() ?? null }
+        }).catch((error) => String(error))
+        ng.push(`${label}: シーク後に waiting が出ない (押した座標 ${JSON.stringify(seekRect)}, ${JSON.stringify(diag)})`)
         continue
       }
       if (mode === 'user-pause') {
