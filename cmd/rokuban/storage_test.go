@@ -223,27 +223,7 @@ storage:
 		}
 	})
 
-	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.MediaAsset(t, pool, recordingID)
-	if _, err := pool.Exec(t.Context(), `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatal(err)
-	}
-	t.Run("copyless assets are rejected before writing a marker", func(t *testing.T) {
-		dir := t.TempDir()
-		err := adopt(t, dir)
-		if err == nil || !strings.Contains(err.Error(), "no physical copy") {
-			t.Fatalf("adopt with a copyless asset = %v, want no-physical-copy refusal", err)
-		}
-		if markerExists(dir) {
-			t.Fatal("marker was written while a copyless asset remained")
-		}
-	})
-
-	if _, err := pool.Exec(t.Context(), `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES ($1, 'test-store', 'sites/default/storage-adopt-test.m2ts', 'active')`, assetID); err != nil {
-		t.Fatalf("restoring the asset copy after the refusal test: %v", err)
-	}
+	dbtest.MediaAsset(t, pool, dbtest.Recording(t, pool)) // test-store のコピーを 1 件作る
 
 	// コピーがある別の（空の）root では拒否される。
 	t.Run("copies exist but the root has no marker", func(t *testing.T) {

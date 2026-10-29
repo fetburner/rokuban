@@ -52,7 +52,7 @@ func (s *Media) CommitOriginal(
 		}
 		return fmt.Errorf("inserting original media asset: %w", mapDatabaseError(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, 0); err != nil {
 		return fmt.Errorf("recording original media asset copy: %w", err)
 	}
 	if err := q.DeleteRecordingIngestProgress(ctx, in.RecordingID); err != nil {
@@ -219,7 +219,6 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: in.RecordingID,
 		Profile:     &in.Profile,
-		StoreName:   mediaStoreNameArg(s.storeName),
 	})
 	if err == nil {
 		observation := store.EncodedAssetObservation{
@@ -246,16 +245,21 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	}
 
 	derivedGeneration := in.DerivedGeneration
-	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+	assetID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
 		RecordingID:       in.RecordingID,
+		Kind:              "encoded",
 		Profile:           &in.Profile,
 		SizeBytes:         in.SizeBytes,
 		DerivedGeneration: &derivedGeneration,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 論理行の世代がこの公開より新しい。計画を立て直す。
+		return false, store.ErrStalePublishPlan
+	}
 	if err != nil {
 		return false, fmt.Errorf("upserting encoded media asset: %w", mapDatabaseError(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, in.DerivedGeneration); err != nil {
 		return false, fmt.Errorf("recording encoded media asset copy: %w", err)
 	}
 	if in.Cut {
@@ -387,12 +391,12 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, nil
 		}
 		derivedGeneration := in.DerivedGeneration
-		assetID, err = q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
-			RecordingID: in.RecordingID, SizeBytes: in.SizeBytes,
+		assetID, err = q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
+			RecordingID: in.RecordingID, Kind: "thumbnail", SizeBytes: in.SizeBytes,
 			DerivedGeneration: &derivedGeneration,
 		})
 		if err != nil {
-			return false, fmt.Errorf("upserting thumbnail media asset: %w", mapDatabaseError(err))
+			return false, fmt.Errorf("upserting thumbnail media asset: %w", mapStaleDerivedGeneration(err))
 		}
 	} else {
 		current, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{
@@ -419,14 +423,14 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		}
 		assetID = current.ID
 		derivedGeneration := in.DerivedGeneration
-		if err := q.UpdateThumbnailMediaAssetPath(ctx, sqlcgen.UpdateThumbnailMediaAssetPathParams{
-			SizeBytes: in.SizeBytes, DerivedGeneration: &derivedGeneration,
-			ID: assetID, StoreName: s.storeName,
+		if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
+			RecordingID: in.RecordingID, Kind: "thumbnail", SizeBytes: in.SizeBytes,
+			DerivedGeneration: &derivedGeneration,
 		}); err != nil {
-			return false, fmt.Errorf("updating thumbnail media path: %w", mapDatabaseError(err))
+			return false, fmt.Errorf("updating thumbnail media asset: %w", mapStaleDerivedGeneration(err))
 		}
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, in.DerivedGeneration); err != nil {
 		return false, fmt.Errorf("recording thumbnail media asset copy: %w", err)
 	}
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
@@ -487,14 +491,14 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 		return false, fmt.Errorf("loading active original for seek tiles: %w", err)
 	}
 	derivedGeneration := in.DerivedGeneration
-	assetID, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
-		RecordingID: in.RecordingID, SizeBytes: in.SizeBytes,
+	assetID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
+		RecordingID: in.RecordingID, Kind: "seek_tiles", SizeBytes: in.SizeBytes,
 		DerivedGeneration: &derivedGeneration,
 	})
 	if err != nil {
-		return false, fmt.Errorf("upserting seek tiles media asset: %w", mapDatabaseError(err))
+		return false, fmt.Errorf("upserting seek tiles media asset: %w", mapStaleDerivedGeneration(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, in.DerivedGeneration); err != nil {
 		return false, fmt.Errorf("recording seek tiles media asset copy: %w", err)
 	}
 	if err := publish(); err != nil {
@@ -508,8 +512,13 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 
 // RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。
 // rel_path が最も強い identity なので、行の state を問わず既存の recording_id を再利用する。
-// deleted の行は所有権だけを渡す。パスが再利用されて kind や profile が違いうるので、
-// 同じ組を active に戻すか新しく作るかは UpsertInPlaceMediaAsset が決める。
+// 拒否する場合は ErrConflict を返す。
+//   - 同じパスの行が active でない（deleting / pending のファイルは unlink される）。
+//   - 録画がごみ箱にある。
+//   - 論理資産が既にあり、この置き場に生きたコピーがあるか、パスの世代が現行の世代と違う
+//     （規則は UpsertInPlaceMediaAsset の 1 文にあり、0 行を ErrConflict に写す）。
+//
+// 同じパスの active な再登録は何も変えずに通す。
 func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (store.InPlaceResult, error) {
 	if len(in.Assets) == 0 {
 		return store.InPlaceResult{}, errors.New("in-place registration requires at least one asset")
@@ -539,6 +548,13 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 		if row.State == "deleted" {
 			continue
 		}
+		// 同じパスの active な再登録は UpsertInPlaceMediaAsset を通らないので、ごみ箱の録画はここで拒否する。
+		if row.RecordingTrashed {
+			return store.InPlaceResult{}, fmt.Errorf("in-place asset %q belongs to trashed recording %d: %w", asset.RelPath, row.RecordingID, store.ErrConflict)
+		}
+		if row.State != "active" {
+			return store.InPlaceResult{}, fmt.Errorf("in-place asset %q is %s and will be unlinked: %w", asset.RelPath, row.State, store.ErrConflict)
+		}
 		if row.Kind != asset.Kind || !sameStringPointer(row.Profile, asset.Profile) {
 			return store.InPlaceResult{}, fmt.Errorf("published asset %q is %s/%v, requested %s/%v: %w", asset.RelPath, row.Kind, row.Profile, asset.Kind, asset.Profile, store.ErrConflict)
 		}
@@ -563,12 +579,9 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	for i, asset := range in.Assets {
 		if assets[i] != nil {
 			result.AssetIDs[i] = assets[i].ID
-			if err := upsertMediaAssetCopyState(ctx, q, assets[i].ID, s.storeName, asset.RelPath, assets[i].State); err != nil {
-				return store.InPlaceResult{}, fmt.Errorf("recording existing in-place media asset copy %q: %w", asset.RelPath, err)
-			}
 			continue
 		}
-		assetID, err := q.UpsertInPlaceMediaAsset(ctx, sqlcgen.UpsertInPlaceMediaAssetParams{
+		publishedAsset, err := q.UpsertInPlaceMediaAsset(ctx, sqlcgen.UpsertInPlaceMediaAssetParams{
 			RecordingID: recordingID, Kind: asset.Kind, Profile: asset.Profile, RelPath: asset.RelPath,
 			SizeBytes: asset.SizeBytes, StoreName: s.storeName,
 		})
@@ -578,8 +591,8 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 			}
 			return store.InPlaceResult{}, fmt.Errorf("upserting in-place asset %q: %w", asset.RelPath, mapDatabaseError(err))
 		}
-		result.AssetIDs[i] = assetID
-		if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, asset.RelPath); err != nil {
+		result.AssetIDs[i] = publishedAsset.ID
+		if err := upsertMediaAssetCopy(ctx, q, publishedAsset.ID, s.storeName, asset.RelPath, publishedAsset.Generation); err != nil {
 			return store.InPlaceResult{}, fmt.Errorf("recording in-place media asset copy %q: %w", asset.RelPath, err)
 		}
 	}
@@ -601,27 +614,51 @@ func (s *Media) UpsertIngestProgress(ctx context.Context, progress store.IngestP
 	return nil
 }
 
+// mapStaleDerivedGeneration は UpsertDerivedMediaAsset の 0 行（論理行の世代がこの公開より新しい）を
+// ErrConflict に写す。thumbnail / seek_tiles の worker には ErrStalePublishPlan の再計画が無く、
+// ジョブの失敗として再試行され、次の試行が新しい世代を採番し直す。
+func mapStaleDerivedGeneration(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("media asset already holds a newer derived generation: %w", errors.Join(store.ErrConflict, err))
+	}
+	return mapDatabaseError(err)
+}
+
 func upsertMediaAssetCopy(
 	ctx context.Context,
 	q *sqlcgen.Queries,
 	assetID int64,
 	storeName, relPath string,
+	generation int64,
 ) error {
-	return upsertMediaAssetCopyState(ctx, q, assetID, storeName, relPath, "active")
+	return upsertMediaAssetCopyState(ctx, q, assetID, storeName, relPath, generation, "active")
 }
 
 func upsertMediaAssetCopyState(
 	ctx context.Context,
 	q *sqlcgen.Queries,
 	assetID int64,
-	storeName, relPath, state string,
+	storeName, relPath string,
+	generation int64,
+	state string,
 ) error {
-	return mapDatabaseError(q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+	updated, err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
 		Store:        storeName,
 		RelPath:      relPath,
+		Generation:   generation,
 		State:        state,
-	}))
+	})
+	if err != nil {
+		// 同じ置き場・同じ世代の生きたコピーを 2 つ作る登録は一意索引が拒否する。
+		return mapDatabaseError(err)
+	}
+	if updated != 1 {
+		// 0 行は、生きたコピーが別の論理資産か別の世代として同じ置き場・パスを使っていること。
+		// 論理資産の行にはパスの一意索引が無いので、占有はここで初めて分かる。
+		return fmt.Errorf("upserting media asset copy for asset %d store %q path %q generation %d affected %d rows: %w", assetID, storeName, relPath, generation, updated, store.ErrConflict)
+	}
+	return nil
 }
 
 // ReportEncodeProgress は encode-progress 通知を PostgreSQL NOTIFY で送る。

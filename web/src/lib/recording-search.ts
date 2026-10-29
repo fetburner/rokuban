@@ -83,6 +83,13 @@ export const statusLabels: Record<ListRecordingsStatus, string> = {
   failed: '失敗',
 }
 
+/** encodeStateLabels はエンコード状態フィルタの日本語表記。 */
+const encodeStateLabels: Record<ListRecordingsEncodeStateValue, string> = {
+  [ListRecordingsEncodeState.queued]: '待機中',
+  [ListRecordingsEncodeState.running]: '実行中',
+  [ListRecordingsEncodeState.awaiting_review]: '確認待ち',
+}
+
 /** recordingSourceValues は種別フィルタの選択肢の並び順。 */
 export const recordingSourceValues: ListRecordingsSource[] = [
   ListRecordingsSource.rule,
@@ -383,7 +390,7 @@ export function describeRecordingsFilters(
   if (search.encodeState !== undefined) {
     chips.push({
       key: 'encodeState',
-      label: `エンコード: ${search.encodeState === ListRecordingsEncodeState.queued ? '待機中' : '実行中'}`,
+      label: `エンコード: ${encodeStateLabels[search.encodeState]}`,
       clear: (s) => ({ ...s, encodeState: undefined }),
     })
   }

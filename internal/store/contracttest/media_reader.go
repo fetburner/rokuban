@@ -3,8 +3,10 @@ package contracttest
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -87,6 +89,50 @@ func runEncodeQueue(t *testing.T, newFixture NewMediaFixture) {
 
 	assertQueue(2, false)
 	assertQueue(3, true)
+}
+
+func runAwaitingReviewRecordingIDs(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	requireMediaReaderFixture(t, f)
+	if f.SetChapterSpans == nil || f.SetRecordingTrashed == nil || f.SetEncodedAssetRebuildRequest == nil {
+		t.Fatal("media reader fixture is missing chapter-review setup functions")
+	}
+	ctx := context.Background()
+	newRecording := func(profiles []string, withOriginal bool) int64 {
+		t.Helper()
+		id := f.NewRecording(t)
+		if withOriginal {
+			f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d-original.m2ts", f.Site, id), "active")
+		}
+		f.SetEncodeProfiles(t, id, profiles)
+		return id
+	}
+
+	awaiting := newRecording([]string{"cut"}, true)
+	multipleCuts := newRecording([]string{"cut", "cut2"}, true)
+	noOriginal := newRecording([]string{"cut"}, false)
+	trashed := newRecording([]string{"cut"}, true)
+	f.SetRecordingTrashed(t, trashed)
+	confirmed := newRecording([]string{"cut"}, true)
+	f.SetChapterSpans(t, confirmed, nil)
+	encoded := newRecording([]string{"cut"}, true)
+	cut := "cut"
+	f.NewAsset(t, encoded, "encoded", &cut, fmt.Sprintf("sites/%s/%d-cut.mp4", f.Site, encoded), "active")
+	attempted := newRecording([]string{"cut"}, true)
+	f.BeginEncodeAttempt(t, attempted, "cut")
+	rebuilding := newRecording([]string{"cut"}, true)
+	f.SetEncodedAssetRebuildRequest(t, rebuilding, "cut", []chapters.Range{{StartMs: 0, EndMs: 1000}})
+	removedCut := newRecording([]string{"removed"}, true)
+
+	got, err := f.Reader.ListAwaitingReviewRecordingIDs(ctx, []string{"cut", "cut2"})
+	if err != nil {
+		t.Fatalf("ListAwaitingReviewRecordingIDs: %v", err)
+	}
+	want := []int64{awaiting, multipleCuts}
+	if !slices.Equal(got, want) {
+		t.Fatalf("awaiting review recording IDs = %v, want %v (excluded no-original=%d trash=%d confirmed=%d encoded=%d attempted=%d rebuilding=%d removed-cut=%d)",
+			got, want, noOriginal, trashed, confirmed, encoded, attempted, rebuilding, removedCut)
+	}
 }
 
 func seedRecordingDropReads(t *testing.T, newFixture NewMediaFixture) (MediaFixture, int64, string, int64) {

@@ -378,13 +378,13 @@ SELECT site, program_id FROM program_overrides;
 
 ```sql
 CREATE TABLE circuit_breakers (
-    site       text NOT NULL,
+    scope      text NOT NULL,              -- site 名か置き場の名前。空は adopt 前の delete_reconcile 行だけ
     name       text NOT NULL,              -- internal/breaker の定数（ruler_deletes 等）
     tripped_at timestamptz NOT NULL DEFAULT now(),
     pending    integer NOT NULL,            -- 発動時に止めた件数
     threshold  integer NOT NULL,            -- 発動時の閾値（設定変更で変わるので焼く）
     detail     jsonb NOT NULL DEFAULT '{}', -- 何が消されようとしていたかの抜粋
-    PRIMARY KEY (site, name)
+    PRIMARY KEY (scope, name)
 );
 ```
 

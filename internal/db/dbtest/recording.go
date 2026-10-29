@@ -83,6 +83,44 @@ func MediaAsset(t testing.TB, db sqlcgen.DBTX, recordingID int64, opts ...func(*
 	return id
 }
 
+// MediaAssetCopyID は置き場にある物理コピーの ID を返す。
+func MediaAssetCopyID(t testing.TB, db sqlcgen.DBTX, mediaAssetID int64, store string) int64 {
+	t.Helper()
+	var copyID int64
+	if err := db.QueryRow(t.Context(), `
+SELECT copy.id
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.media_asset_id = $1 AND copy.store = $2
+ORDER BY (copy.generation = COALESCE(asset.derived_generation, 0)) DESC,
+         (copy.state = 'active') DESC,
+         copy.id DESC
+LIMIT 1`, mediaAssetID, store).Scan(&copyID); err != nil {
+		t.Fatalf("get media asset copy ID for asset %d in store %q: %v", mediaAssetID, store, err)
+	}
+	return copyID
+}
+
+// ReplaceDerivedMediaAssetCopy はテスト用に派生資産の新世代コピーを公開し、旧コピー行を残す。
+func ReplaceDerivedMediaAssetCopy(t testing.TB, db sqlcgen.DBTX, mediaAssetID int64, store, relPath string, generation int64) int64 {
+	t.Helper()
+	var copyID int64
+	err := db.QueryRow(t.Context(), `
+WITH logical AS (
+    UPDATE media_assets
+    SET derived_generation = $4, updated_at = now()
+    WHERE id = $1 AND kind <> 'original'
+    RETURNING id
+)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT id, $2, $3, $4, 'active' FROM logical
+RETURNING id`, mediaAssetID, store, relPath, generation).Scan(&copyID)
+	if err != nil {
+		t.Fatalf("replacing derived media asset %d with generation %d at %q: %v", mediaAssetID, generation, relPath, err)
+	}
+	return copyID
+}
+
 // MediaAssetWithError は MediaAsset と同じ media_asset を作り、エラーを返す。
 func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64, opts ...func(*MediaAssetParams)) (int64, error) {
 	params := MediaAssetParams{
@@ -103,8 +141,8 @@ func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64
 	if err != nil {
 		return 0, fmt.Errorf("create test media asset: %w", err)
 	}
-	if err := sqlcgen.New(db).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: id, Store: StoreName, RelPath: params.RelPath, State: "active",
+	if _, err := sqlcgen.New(db).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: id, Store: StoreName, RelPath: params.RelPath, Generation: 0, State: "active",
 	}); err != nil {
 		return 0, fmt.Errorf("create test media asset copy: %w", err)
 	}

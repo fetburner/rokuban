@@ -30,10 +30,7 @@ func newStorageAdoptCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Long: `media_dir の root に .rokuban-store を作成し、置き場名を書き込む。
 store が空の観測行と取り込み進捗行をこの置き場へ割り当て、既存コピーの
-パスから派生世代を補正する。すべての論理資産にコピーが必要である。
-
-コピーの無い論理資産がある場合、この版では物理コピーを復元できない。
-互換列を削除する前に、互換列を使える版で storage adopt を実行する。
+パスから派生世代を補正する。コピー行は作らない。
 
 目印が無い root に新しく目印を作る前に、DB にこの置き場のコピー行が
 あるかを確かめる。あれば、マウント漏れか別のボリュームの可能性があるので
@@ -75,9 +72,6 @@ store が空の観測行と取り込み進捗行をこの置き場へ割り当�
 			}
 			defer pool.Close()
 			media := pgstore.NewMedia(pool, name, "") // 照合だけで削除の判定はしない
-			if err := media.RequireMediaAssetCopiesAssigned(cmd.Context()); err != nil {
-				return err
-			}
 			if !markerExists {
 				has, err := media.HasStoreCopies(cmd.Context())
 				if err != nil {

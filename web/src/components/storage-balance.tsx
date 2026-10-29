@@ -1,4 +1,4 @@
-import { TriangleAlert } from 'lucide-react'
+import { ChevronDown, TriangleAlert } from 'lucide-react'
 
 import {
   useListRecordings,
@@ -156,12 +156,12 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
         // （flex-1）に振る舞うが、開いたときはその幅のまま 3 カラムの詳細
         // グリッドを押し込むと崩れる。open: variant で開いたときだけ自分の
         // 行を占有させる。
-        compact ? 'flex-1 open:basis-full' : 'border-t border-border',
+        compact ? 'group flex-1 open:basis-full' : 'border-t border-border',
       )}
     >
       <summary
         className={cn(
-          'flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1',
+          'flex cursor-pointer list-none flex-wrap items-center gap-x-1 gap-y-1 sm:gap-x-3',
           compact ? 'py-1' : 'px-4 py-2',
           'pointer-coarse:min-h-11',
         )}
@@ -193,7 +193,15 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
         )}
         <span className={cn(!compact && 'ml-auto', 'underline-offset-2 hover:underline')}>
           {compact && <span className="sr-only">ストレージ詳細</span>}
-          {compact ? <span aria-hidden="true">詳細</span> : 'ストレージ詳細'}
+          {compact ? (
+            <>
+              <span className="hidden sm:inline" aria-hidden="true">詳細</span>
+              <ChevronDown
+                className="size-3 shrink-0 transition-transform group-open:rotate-180 sm:hidden"
+                aria-hidden="true"
+              />
+            </>
+          ) : 'ストレージ詳細'}
         </span>
       </summary>
       {/* compact のときだけ足す追加行。観測時刻は展開すると StorageRootCapacity が

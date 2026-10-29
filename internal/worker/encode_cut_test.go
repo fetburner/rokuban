@@ -519,8 +519,8 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(row.RelPath))); err != nil {
 		t.Errorf("the new generation file is missing: %v", err)
 	}
-	if _, err := os.Stat(oldAbs); !os.IsNotExist(err) {
-		t.Errorf("the replaced file %s still exists (err=%v)", oldAbs, err)
+	if _, err := os.Stat(oldAbs); err != nil {
+		t.Errorf("the old generation file %s should remain until transfer overlap expires (err=%v)", oldAbs, err)
 	}
 	// 凍結した区間も差し替わる。
 	current, err := frozenKeepRanges(ctx, pool, recordingID, "cut")
@@ -555,7 +555,7 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 	if len(generations) > 0 {
 		generation = &generations[0]
 	}
-	assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID:       recordingID,
 		Profile:           &profileName,
 		SizeBytes:         1,
@@ -564,12 +564,20 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 	if err != nil {
 		t.Fatalf("seeding encoded media_asset: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath, State: "active",
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath,
+		Generation: generationValue(generation), State: "active",
 	}); err != nil {
 		t.Fatalf("seeding encoded media_asset copy: %v", err)
 	}
 	return assetID
+}
+
+func generationValue(generation *int64) int64 {
+	if generation == nil {
+		return 0
+	}
+	return *generation
 }
 
 func testLegacyDerivedGeneration(relPath string) *int64 {

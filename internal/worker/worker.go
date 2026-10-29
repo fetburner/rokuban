@@ -140,6 +140,7 @@ type Deps struct {
 	StorageObservation    store.StorageObservation
 	MediaDir              string
 	MediaStoreName        string
+	TransferOverlap       time.Duration
 	// IngestStorageProbed は起動時に ProbeIngestStorage が成功したかを示す。
 	// false なら IngestWorker が最初の ingest で、目印を照合した後に probe する。
 	IngestStorageProbed bool
@@ -331,6 +332,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Storage:           deps.StorageObservation,
 		MediaDir:          deps.MediaDir,
 		MediaStoreName:    deps.MediaStoreName,
+		TransferOverlap:   deps.TransferOverlap,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
 		OrphanAge:         deps.Cleanup.OrphanAge,

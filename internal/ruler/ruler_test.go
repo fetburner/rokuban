@@ -1339,7 +1339,7 @@ func reservationExists(t *testing.T, pool *pgxpool.Pool, ctx context.Context, pr
 func getRulerDeletesBreaker(t *testing.T, pool *pgxpool.Pool, ctx context.Context) (sqlcgen.CircuitBreaker, bool) {
 	t.Helper()
 	q := sqlcgen.New(pool)
-	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{Site: testSite, Name: breaker.RulerDeletes})
+	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{Scope: testSite, Name: breaker.RulerDeletes})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return sqlcgen.CircuitBreaker{}, false
@@ -1971,7 +1971,7 @@ func TestRunPass_ResumeCircuitBreakerConverges(t *testing.T) {
 	}
 
 	// 手動再開。
-	if _, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{Site: testSite, Name: breaker.RulerDeletes}); err != nil {
+	if _, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{Scope: testSite, Name: breaker.RulerDeletes}); err != nil {
 		t.Fatalf("ResumeCircuitBreaker: %v", err)
 	}
 	if _, ok := getRulerDeletesBreaker(t, pool, ctx); ok {

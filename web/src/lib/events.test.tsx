@@ -311,7 +311,7 @@ describe('useServerEvents', () => {
     })
     const key = ['/api/encode-queue']
     const cmLogosKey = ['/api/cm-logos']
-    queryClient.setQueryData(key, { queued: 2, running: 1 })
+    queryClient.setQueryData(key, { queued: 2, running: 1, awaitingReview: 0 })
     queryClient.setQueryData(cmLogosKey, [])
     queryClient.setQueryData(programListKey, [])
     renderSubscriber(queryClient)

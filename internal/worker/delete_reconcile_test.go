@@ -267,6 +267,121 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	}
 }
 
+func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
+		"generation/h264.mp4", []byte("old generation"))
+	oldPath := filepath.Join(mediaDir, "generation", "h264.mp4")
+	newRelPath := "generation/h264.g1.mp4"
+	newPath := filepath.Join(mediaDir, filepath.FromSlash(newRelPath))
+	if err := os.WriteFile(newPath, []byte("current generation"), 0o644); err != nil {
+		t.Fatalf("writing current-generation file: %v", err)
+	}
+	currentCopyCreatedAt := time.Now().Add(-30 * time.Minute)
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: newRelPath,
+		Generation: 1, State: "active", CreatedAt: &currentCopyCreatedAt,
+	}); err != nil {
+		t.Fatalf("inserting current-generation copy: %v", err)
+	}
+	var currentCopyID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, assetID, dbtest.StoreName, newRelPath).Scan(&currentCopyID); err != nil {
+		t.Fatalf("reading current copy ID: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("advancing logical asset generation: %v", err)
+	}
+	var oldCopyID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND rel_path = 'generation/h264.mp4'`, assetID).Scan(&oldCopyID); err != nil {
+		t.Fatalf("reading old copy ID: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = $2 WHERE id = $1`, oldCopyID, time.Now().Add(-3*time.Hour)); err != nil {
+		t.Fatalf("aging old copy row: %v", err)
+	}
+	media := pgstoretest.Media(pool)
+	cutoff := time.Now().Add(-time.Hour)
+	oldCopies, err := media.ListOldGenerationMediaAssetCopiesToDelete(ctx, cutoff, 100)
+	if err != nil {
+		t.Fatalf("listing old-generation copies before overlap: %v", err)
+	}
+	if len(oldCopies) != 0 {
+		t.Fatalf("old-generation copies before current generation overlap = %+v, want none", oldCopies)
+	}
+	if !fileExists(oldPath) {
+		t.Fatal("old-generation file disappeared before overlap elapsed")
+	}
+
+	// The old row is older than the cutoff, but the replacement is not. It becomes
+	// eligible only when the replacement copy itself has outlived the overlap.
+	currentCopyCreatedAt = time.Now().Add(-2 * time.Hour)
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = $2 WHERE id = $1`, currentCopyID, currentCopyCreatedAt); err != nil {
+		t.Fatalf("aging current-generation copy: %v", err)
+	}
+	oldCopies, err = media.ListOldGenerationMediaAssetCopiesToDelete(ctx, cutoff, 100)
+	if err != nil || len(oldCopies) != 1 || oldCopies[0].ID != oldCopyID {
+		t.Fatalf("old-generation copies after overlap = %+v, err %v; want only old copy %d", oldCopies, err, oldCopyID)
+	}
+	w := &DeleteReconcileWorker{
+		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
+		MediaStoreName: dbtest.StoreName,
+	}
+	previousHook := beforeMediaAssetUnlink
+	beforeMediaAssetUnlink = func(relPath string) {
+		if relPath == "generation/h264.mp4" {
+			panic("simulated process crash before unlink")
+		}
+	}
+	func() {
+		defer func() {
+			if recovered := recover(); recovered == nil {
+				t.Fatal("delete reconcile did not reach the simulated crash point")
+			}
+		}()
+		if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+			t.Fatalf("Work before simulated crash: %v", err)
+		}
+	}()
+	beforeMediaAssetUnlink = previousHook
+	copyState := func(copyID int64) string {
+		t.Helper()
+		var state string
+		if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
+			t.Fatalf("reading copy %d state: %v", copyID, err)
+		}
+		return state
+	}
+	if got := copyState(oldCopyID); got != "deleting" {
+		t.Fatalf("old copy state after crash = %q, want deleting", got)
+	}
+	if !fileExists(oldPath) {
+		t.Fatal("old-generation file disappeared before unlink after simulated crash")
+	}
+
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("retrying delete reconcile: %v", err)
+	}
+	if got := copyState(oldCopyID); got != "deleted" {
+		t.Errorf("old copy state after retry = %q, want deleted", got)
+	}
+	if fileExists(oldPath) {
+		t.Error("old-generation file remains after overlap and retry")
+	}
+	if got := copyState(currentCopyID); got != "active" || !fileExists(newPath) {
+		t.Errorf("current generation state/file = %q/%v, want active/present", got, fileExists(newPath))
+	}
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("logical asset state after stale copy removal = %q, want active", got)
+	}
+}
+
 // サイドカー（.vtt）の削除が失敗しても encoded 本体は削除される。
 //
 // 壊し方: deleteMediaAsset のサイドカー削除 3 分岐を return 付きに戻すと、
@@ -1454,8 +1569,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 
 	// ブレーカーを発動させ、通常経路（ブレーカー対象）を完全に止める。
 	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
-	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
-	// （breaker.IsSiteless のコメント参照）。
+	// この legacy テスト worker は置き場名を省略しているので scope は空文字列。
 	if err := breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
@@ -1781,7 +1895,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 	}
 	var missingCount int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&missingCount); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&missingCount); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if missingCount != 0 {
@@ -1959,7 +2073,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 	}
 	var missingCount int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", missingAssetID).Scan(&missingCount); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", missingAssetID).Scan(&missingCount); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if missingCount != 1 {
@@ -2836,11 +2950,10 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 		}
 	}
 
-	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
-	// （breaker.IsSiteless のコメント参照）。
+	// この legacy test worker は置き場名を省略しているので scope は空文字列。
 	q := sqlcgen.New(pool)
 	cb, err := q.GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{
-		Site: "", Name: breaker.DeleteReconcile,
+		Scope: "", Name: breaker.DeleteReconcile,
 	})
 	if err != nil {
 		t.Fatalf("expected circuit breaker to be tripped, got error: %v", err)
@@ -2880,8 +2993,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// ブレーカーを発動させておく（新規候補はゼロなので影響しないはず）。
-	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
-	// （breaker.IsSiteless のコメント参照）。
+	// この legacy test worker は置き場名を省略しているので scope は空文字列。
 	if err := breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
@@ -2927,7 +3039,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&count); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if count != 0 {
@@ -2968,7 +3080,7 @@ func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM orphan_files WHERE store = 'test-store' AND rel_path = $1`, copyRelPath).Scan(&orphanCount); err != nil {
 		t.Fatalf("checking copy path was not recorded as an orphan: %v", err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets WHERE store = 'test-store' AND media_asset_id = $1`, assetID).Scan(&missingCount); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.store = 'test-store' AND c.media_asset_id = $1`, assetID).Scan(&missingCount); err != nil {
 		t.Fatalf("checking active copy was not recorded missing: %v", err)
 	}
 	if orphanCount != 0 || missingCount != 0 {
@@ -3005,6 +3117,10 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 		Breakers:        pgstoretest.Breakers(pool),
 		MediaDir:        mediaDir,
 		MissingAssetAge: 24 * time.Hour,
+		MediaStoreName:  dbtest.StoreName,
+	}
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -3015,7 +3131,7 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&count); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if count != 1 {
@@ -3044,7 +3160,7 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 
 	// エイジング窓を過ぎた記録として直接投入する。
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
+		"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) SELECT id, $2 FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3102,7 +3218,7 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 	// 既定 24h では未エイジングだが、設定する 1h ではエイジング済みになる
 	// 経過時間。
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
+		"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) SELECT id, $2 FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'",
 		assetID, time.Now().Add(-2*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3155,7 +3271,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 
 	// エイジング窓を過ぎた記録として投入し、1 パス目で報告対象にする。
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
+		"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) SELECT id, $2 FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding missing-asset candidate: %v", err)
 	}
@@ -3191,7 +3307,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&count); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if count != 0 {
@@ -3228,7 +3344,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&count); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if count != 0 {
@@ -3272,7 +3388,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', now())",
+		"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) SELECT id, now() FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'",
 		assetID); err != nil {
 		t.Fatalf("seeding missing-asset candidate: %v", err)
 	}
@@ -3286,7 +3402,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&count); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if count != 1 {
@@ -3321,7 +3437,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
+		"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) SELECT id, $2 FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3364,6 +3480,9 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
 
 	presentRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, presentRecordingID, "present/original.m2ts", []byte("data"))
@@ -3375,10 +3494,10 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 			fixtureParams.RelPath = fmt.Sprintf("gone/budget-%d.m2ts", i)
 			fixtureParams.SizeBytes = 4
 		})
-
+		copyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
 		if _, err := pool.Exec(context.Background(),
-			"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
-			assetID, time.Now().Add(-48*time.Hour)); err != nil {
+			"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) VALUES ($1, $2)",
+			copyID, time.Now().Add(-48*time.Hour)); err != nil {
 			t.Fatalf("seeding aged missing-asset record (%d): %v", i, err)
 		}
 	}
@@ -3395,13 +3514,14 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 		Breakers:        pgstoretest.Breakers(pool),
 		MediaDir:        mediaDir,
 		MissingAssetAge: 24 * time.Hour,
+		MediaStoreName:  dbtest.StoreName,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
 	logged := logBuf.String()
-	if got := strings.Count(logged, "active media asset has no file on disk"); got != missingAssetLogBudget {
+	if got := strings.Count(logged, "active media asset copy has no file on disk"); got != missingAssetLogBudget {
 		t.Errorf("individual missing-asset log lines = %d, want %d (missingAssetLogBudget)", got, missingAssetLogBudget)
 	}
 	wantSummary := fmt.Sprintf("and_more=%d", overBudget-missingAssetLogBudget)
@@ -3436,7 +3556,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
+		"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) SELECT id, $2 FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3489,7 +3609,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
+		"INSERT INTO missing_media_assets (media_asset_copy_id, first_seen) SELECT id, $2 FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3513,7 +3633,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&count); err != nil {
 		t.Fatalf("querying missing_media_assets: %v", err)
 	}
 	if count != 0 {
@@ -3546,5 +3666,174 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 	}
 	if !spec.Coalesce {
 		t.Error("Spec().Coalesce should be true")
+	}
+}
+
+// 同じ置き場で派生物を作り直すと、旧世代のファイルは overlap の後に削除 reconcile が消す。
+// 状態は SQL で組まず、実際の書き手（PublishThumbnail の初回公開と置き換え）で作る。
+// replaceThumbnailForOldGeneration は PublishThumbnail で世代 0 を公開し、世代 1 へ置き換える。
+// 旧世代のコピー行とファイルを実際の書き手で作る。
+func replaceThumbnailForOldGeneration(t *testing.T, pool *pgxpool.Pool, mediaDir, originalRelPath string) (thumbID int64, oldPath, newPath string) {
+	t.Helper()
+	ctx := context.Background()
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, originalRelPath, nil, []byte("original"))
+	media := pgstoretest.Media(pool)
+	original, err := media.GetActiveOriginalMediaAsset(ctx, id)
+	if err != nil {
+		t.Fatalf("loading active original: %v", err)
+	}
+	writeFile := func(relPath, content string) func() error {
+		return func() error {
+			full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(full, []byte(content), 0o644)
+		}
+	}
+
+	oldRel, newRel := thumbnailRelPath(id, 0), thumbnailRelPath(id, 1)
+	if published, err := media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: id, RelPath: oldRel, SizeBytes: 3, InputAssetID: original.ID, DerivedGeneration: 0,
+	}, writeFile(oldRel, "old")); err != nil || !published {
+		t.Fatalf("first PublishThumbnail = %v, %v; want published", published, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`, id).Scan(&thumbID); err != nil {
+		t.Fatal(err)
+	}
+	seekMs := int64(0)
+	if published, err := media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: id, RelPath: newRel, SizeBytes: 3, SeekMs: 0, InputAssetID: original.ID, DerivedGeneration: 1,
+		Expected: &store.ThumbnailObservation{ID: thumbID, RelPath: oldRel, SeekMs: &seekMs, DerivedGeneration: 0},
+	}, writeFile(newRel, "new")); err != nil || !published {
+		t.Fatalf("replacing PublishThumbnail = %v, %v; want published", published, err)
+	}
+	return thumbID, filepath.Join(mediaDir, filepath.FromSlash(oldRel)), filepath.Join(mediaDir, filepath.FromSlash(newRel))
+}
+
+func ageCurrentThumbnailCopy(t *testing.T, pool *pgxpool.Pool, thumbID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND generation = 1`, thumbID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	thumbID, oldPath, newPath := replaceThumbnailForOldGeneration(t, pool, mediaDir, "sites/default/rebuild.m2ts")
+	media := pgstoretest.Media(pool)
+	w := &DeleteReconcileWorker{
+		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
+		MediaStoreName: dbtest.StoreName,
+	}
+
+	// 作り直した直後は overlap の内側なので、旧世代のファイルを消さない。
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work inside the overlap window: %v", err)
+	}
+	if !fileExists(oldPath) {
+		t.Fatal("old-generation file was removed inside the overlap window")
+	}
+
+	// 新世代のコピーが overlap より古くなると、旧世代だけが消える。
+	ageCurrentThumbnailCopy(t, pool, thumbID)
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work after the overlap window: %v", err)
+	}
+	if fileExists(oldPath) {
+		t.Error("old-generation file remains after the overlap window")
+	}
+	if !fileExists(newPath) {
+		t.Error("current-generation file was removed")
+	}
+	var oldState, newState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND generation = 0`, thumbID).Scan(&oldState); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND generation = 1`, thumbID).Scan(&newState); err != nil {
+		t.Fatal(err)
+	}
+	if oldState != "deleted" || newState != "active" || assetState(t, pool, thumbID) != "active" {
+		t.Fatalf("old/new copy and logical state = %q/%q/%q, want deleted/active/active", oldState, newState, assetState(t, pool, thumbID))
+	}
+}
+
+// 作り直した新世代のファイルが消えていれば、overlap を過ぎても旧世代を消さない。
+// 旧世代が唯一残った中身になりうるからである。
+func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	thumbID, oldPath, newPath := replaceThumbnailForOldGeneration(t, pool, mediaDir, "sites/default/missing-current.m2ts")
+	ageCurrentThumbnailCopy(t, pool, thumbID)
+	if err := os.Remove(newPath); err != nil {
+		t.Fatalf("removing current-generation file: %v", err)
+	}
+	media := pgstoretest.Media(pool)
+	w := &DeleteReconcileWorker{
+		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
+		MediaStoreName: dbtest.StoreName,
+	}
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work with a missing current-generation file: %v", err)
+	}
+	if !fileExists(oldPath) {
+		t.Fatal("old-generation file was removed while the current-generation copy is missing")
+	}
+	var oldState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND generation = 0`, thumbID).Scan(&oldState); err != nil {
+		t.Fatal(err)
+	}
+	if oldState != "active" {
+		t.Fatalf("old-generation copy state = %q, want active", oldState)
+	}
+}
+
+// 旧世代の削除も一括削除のブレーカーで数える。候補 2 件 > 上限 1 なので発動し、どれも消さない。
+func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	var oldPaths []string
+	for _, rel := range []string{"sites/default/breaker-a.m2ts", "sites/default/breaker-b.m2ts"} {
+		thumbID, oldPath, _ := replaceThumbnailForOldGeneration(t, pool, mediaDir, rel)
+		ageCurrentThumbnailCopy(t, pool, thumbID)
+		oldPaths = append(oldPaths, oldPath)
+	}
+	media := pgstoretest.Media(pool)
+	w := &DeleteReconcileWorker{
+		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
+		MediaStoreName: dbtest.StoreName, MaxDeletesPerPass: 1,
+	}
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	for _, p := range oldPaths {
+		if !fileExists(p) {
+			t.Errorf("old-generation file %s was removed although the breaker should have withheld deletes", p)
+		}
+	}
+	cb, err := sqlcgen.New(pool).GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
+		Scope: dbtest.StoreName, Name: breaker.DeleteReconcile,
+	})
+	if err != nil {
+		t.Fatalf("expected circuit breaker to be tripped, got error: %v", err)
+	}
+	if cb.Pending != 2 {
+		t.Errorf("breaker pending = %d, want 2", cb.Pending)
 	}
 }

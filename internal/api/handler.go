@@ -30,6 +30,7 @@ type Server struct {
 	ruleStore          store.Rules
 	labelRules         store.LabelRules
 	breakerAdmin       store.BreakerAdmin
+	breakerStoreScope  string
 	epgReader          store.EPGReader
 	programSearch      store.ProgramSearch
 	encodePolicy       store.EncodePolicy

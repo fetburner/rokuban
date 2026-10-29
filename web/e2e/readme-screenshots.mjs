@@ -408,7 +408,7 @@ async function handler({ path: p, url, json, route }) {
   if (p === '/api/sites') return json([SITE])
   if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (p === '/api/encode-profiles') return json([{ name: 'h264-720p', container: 'mp4' }])
-  if (p === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (p === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (p === '/api/storage') {
     return json([{ root: 'media', path: '/media', totalBytes: 4e12, usedBytes: 1.3e12, availableBytes: 2.7e12, observedAt: iso(nowMs) }])
   }

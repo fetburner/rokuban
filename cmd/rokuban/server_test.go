@@ -449,17 +449,17 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	}
 	profile := "cutp"
 	generation := int64(1)
-	assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID:       recordingID,
 		Profile:           &profile,
 		SizeBytes:         1,
 		DerivedGeneration: &generation,
 	})
 	if err != nil {
-		t.Fatalf("UpsertEncodedMediaAsset: %v", err)
+		t.Fatalf("UpsertDerivedMediaAsset: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: "test-store", RelPath: relPath, State: "active",
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: "test-store", RelPath: relPath, Generation: generation, State: "active",
 	}); err != nil {
 		t.Fatalf("UpsertMediaAssetCopy: %v", err)
 	}

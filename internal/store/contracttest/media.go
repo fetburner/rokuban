@@ -42,6 +42,7 @@ type MediaFixture struct {
 	SetIngestProgress             func(t *testing.T, recordingID int64, written int64, expected *int64)
 	NewInPlaceInput               func(t *testing.T, relPath string) store.InPlaceInput
 	NewAsset                      func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64
+	CopyID                        func(t *testing.T, assetID int64) int64
 	SetAssetState                 func(t *testing.T, assetID int64, state string)
 	SetMediaAssetKeepRanges       func(t *testing.T, assetID int64, keep []chapters.Range)
 	SetEncodedAssetRebuildRequest func(t *testing.T, recordingID int64, profile string, keep []chapters.Range)
@@ -68,7 +69,7 @@ type MediaFixture struct {
 	// SetOrphanFirstSeenAgo は孤児候補の first_seen を DB の now() から ago 前へずらす。
 	SetOrphanFirstSeenAgo func(t *testing.T, relPath string, ago time.Duration)
 	// SetMissingFirstSeenAgo は実体無し候補の first_seen を DB の now() から ago 前へずらす。
-	SetMissingFirstSeenAgo func(t *testing.T, assetID int64, ago time.Duration)
+	SetMissingFirstSeenAgo func(t *testing.T, copyID int64, ago time.Duration)
 }
 
 // NewMediaFixture は実在の契約実装とフィクスチャを作る。
@@ -85,13 +86,14 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("media jobs read active inputs through their contract", func(t *testing.T) { runMediaJobInputs(t, newFixture) })
 	t.Run("encode planning reads asset and request state through its contract", func(t *testing.T) { runMediaEncodePlanning(t, newFixture) })
 	t.Run("encode queue filters desired profiles and attempts", func(t *testing.T) { runEncodeQueue(t, newFixture) })
+	t.Run("chapter review candidates share one recording-level predicate", func(t *testing.T) { runAwaitingReviewRecordingIDs(t, newFixture) })
 	t.Run("drop stats are scoped to the target recording", func(t *testing.T) { runRecordingDropStats(t, newFixture) })
 	t.Run("drop positions are scoped to the target recording", func(t *testing.T) { runRecordingDropPositions(t, newFixture) })
 	t.Run("encode progress reaches the listener", func(t *testing.T) { runEncodeProgressReport(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("original VOD target is scoped to the recording's site", func(t *testing.T) { runMediaOriginalVODTarget(t, newFixture) })
-	t.Run("recording HLS target shares the original VOD visibility predicate", func(t *testing.T) { runMediaRecordingHLSOriginalTarget(t, newFixture) })
+	t.Run("recording HLS original target shares the original VOD visibility predicate except the finished status", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
 	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
 	t.Run("chase target requires a record and a recording outside the trash", func(t *testing.T) { runMediaChaseTarget(t, newFixture) })
 	t.Run("namespace guard accepts site paths and rejects malformed ones", func(t *testing.T) { runMediaNamespaceMalformed(t, newFixture) })
@@ -638,7 +640,7 @@ func runMediaOriginalVODTarget(t *testing.T, newFixture NewMediaFixture) {
 	}
 }
 
-func runMediaRecordingHLSOriginalTarget(t *testing.T, newFixture NewMediaFixture) {
+func runMediaRecordingHLSTarget(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
 	startedAt := time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC)
@@ -646,21 +648,21 @@ func runMediaRecordingHLSOriginalTarget(t *testing.T, newFixture NewMediaFixture
 	f.SetRecordingEncodeTimes(t, id, &startedAt, nil)
 	assetID := f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "active")
 
-	target, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, id)
+	target, err := f.Serving.GetRecordingHLSTarget(ctx, id)
 	if err != nil {
-		t.Fatalf("GetRecordingHLSOriginalTarget(%d): %v", id, err)
+		t.Fatalf("GetRecordingHLSTarget(%d): %v", id, err)
 	}
-	if target.ID != assetID || target.IngestGeneration != 0 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
+	if target.Kind != store.RecordingHLSInputOriginal || target.ID != assetID || target.IngestGeneration != 0 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
 		t.Fatalf("target = %+v, want asset %d, generation 0 and start %s", target, assetID, startedAt)
 	}
 
-	if _, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, -1); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSOriginalTarget(missing) error = %v, want ErrNotFound", err)
+	if _, err := f.Serving.GetRecordingHLSTarget(ctx, -1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSTarget(missing) error = %v, want ErrNotFound", err)
 	}
 
 	missingOriginalID := f.NewRecording(t)
-	if _, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, missingOriginalID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSOriginalTarget(without original) error = %v, want ErrNotFound", err)
+	if _, err := f.Serving.GetRecordingHLSTarget(ctx, missingOriginalID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSTarget(without input) error = %v, want ErrNotFound", err)
 	}
 
 	removedAt := time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC)
@@ -682,8 +684,8 @@ func runMediaRecordingHLSOriginalTarget(t *testing.T, newFixture NewMediaFixture
 			if tc.deletedAt != nil || tc.purgedAt != nil || tc.supersededAt != nil {
 				f.SetRecordingRemovalTimes(t, removedID, tc.deletedAt, tc.purgedAt, tc.supersededAt)
 			}
-			if _, err := f.Serving.GetRecordingHLSOriginalTarget(ctx, removedID); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("GetRecordingHLSOriginalTarget(%s) error = %v, want ErrNotFound", tc.name, err)
+			if _, err := f.Serving.GetRecordingHLSTarget(ctx, removedID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetRecordingHLSTarget(%s) error = %v, want ErrNotFound", tc.name, err)
 			}
 		})
 	}
@@ -865,16 +867,17 @@ func runMediaMissingAgeing(t *testing.T, newFixture NewMediaFixture) {
 	ctx := context.Background()
 	id := f.NewRecording(t)
 	assetID := f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/home/%d/original.m2ts", id), "active")
-	if err := f.Storage.UpsertMissingMediaAsset(ctx, assetID); err != nil {
-		t.Fatalf("UpsertMissingMediaAsset(%d): %v", assetID, err)
+	copyID := f.CopyID(t, assetID)
+	if err := f.Storage.UpsertMissingMediaAsset(ctx, copyID); err != nil {
+		t.Fatalf("UpsertMissingMediaAsset(copy %d): %v", copyID, err)
 	}
-	f.SetMissingFirstSeenAgo(t, assetID, 2*time.Hour)
+	f.SetMissingFirstSeenAgo(t, copyID, 2*time.Hour)
 	got, err := f.Storage.ListAgedMissingMediaAssets(ctx, time.Hour)
 	if err != nil {
 		t.Fatalf("ListAgedMissingMediaAssets(1h): %v", err)
 	}
-	if len(got) != 1 || got[0].ID != assetID || got[0].RecordingID != id || got[0].Kind != "original" {
-		t.Fatalf("ListAgedMissingMediaAssets(1h) = %+v, want only asset %d", got, assetID)
+	if len(got) != 1 || got[0].ID != copyID || got[0].MediaAssetID != assetID || got[0].RecordingID != id || got[0].Kind != "original" {
+		t.Fatalf("ListAgedMissingMediaAssets(1h) = %+v, want copy %d of asset %d", got, copyID, assetID)
 	}
 	if got, err := f.Storage.ListAgedMissingMediaAssets(ctx, 3*time.Hour); err != nil || len(got) != 0 {
 		t.Fatalf("ListAgedMissingMediaAssets(3h) = (%+v, %v), want none", got, err)

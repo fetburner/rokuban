@@ -32,19 +32,23 @@ type OrphanFile struct {
 
 // ActiveMediaAsset は実体無しの監査対象になる active コピーと論理資産の属性を表す。
 type ActiveMediaAsset struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	Kind        string
+	// ID は物理コピー行の ID。
+	ID           int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	Kind         string
 }
 
 // AgedMissingMediaAsset は一定期間見つからない active コピーを表す。
 type AgedMissingMediaAsset struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	Kind        string
-	FirstSeen   time.Time
+	// ID は物理コピー行の ID。
+	ID           int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	Kind         string
+	FirstSeen    time.Time
 }
 
 // StorageObservation はストレージ容量と孤児・実体無し監査の永続化契約である。
@@ -69,9 +73,9 @@ type StorageObservation interface {
 	// ListActiveMediaAssets は実体無しの差集合に使う、この置き場の全 active コピーを返す。
 	ListActiveMediaAssets(ctx context.Context) ([]ActiveMediaAsset, error)
 	// UpsertMissingMediaAsset は実体無し候補を記録し、既存候補の first_seen を保持する。
-	UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64) error
+	UpsertMissingMediaAsset(ctx context.Context, copyID int64) error
 	// DeleteMissingMediaAsset は実体が再び観測された候補を消す。
-	DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64) error
+	DeleteMissingMediaAsset(ctx context.Context, copyID int64) error
 	// ListAllMissingMediaAssetIDs は記録中の実体無し候補 ID を返す。
 	ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error)
 	// ListAgedMissingMediaAssets は指定期間より前から見つからない active コピーを返す。

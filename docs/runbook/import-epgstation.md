@@ -192,6 +192,8 @@ rokuban import epgstation --config config.yml --library-json library.json
 
 増えないのは、放送の識別子とメディアの相対パスの両方に一意制約があるからである。
 
+既存の資産と両立しない Recorded は `ErrConflict` で拒否される。ごみ箱の録画に属するときや、生きたコピーが既にあるときである。その Recorded だけを飛ばし、Warn ログと出力の `conflicts:` の件数で報告して、残りの取り込みを続ける。条件は rescue と同じである（[storage/rescue.md](../storage/rescue.md) の「既存の資産と両立しないファイル」）。
+
 <details><summary>根拠</summary>
 
 - 放送の識別子の一意制約: `recordings`

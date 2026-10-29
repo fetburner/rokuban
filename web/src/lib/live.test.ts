@@ -16,6 +16,7 @@ import {
   createStallTracker,
   nextLowerProfile,
   nextProgressWatch,
+  nextRecordingHlsRecovery,
   observeStall,
   originalVODLeaveURL,
   originalVODPlaylistURL,
@@ -800,5 +801,33 @@ describe('validLiveAudio / liveAudioTrackIndex（issue #870）', () => {
     expect(liveAudioTrackIndex(undefined)).toBe(0)
     expect(liveAudioTrackIndex('main')).toBe(1)
     expect(liveAudioTrackIndex('sub')).toBe(2)
+  })
+})
+
+describe('nextRecordingHlsRecovery', () => {
+  const at = (atSeconds: number, elapsedMs = 5000, userPaused = false) => ({ elapsedMs, atSeconds, userPaused })
+
+  it('4999 ms では立て直さず、5000 ms で立て直す', () => {
+    expect(nextRecordingHlsRecovery(null, at(52, 4999)).recover).toBe(false)
+    expect(nextRecordingHlsRecovery(null, at(52, 5000))).toEqual({ recover: true, next: { count: 1, atSeconds: 52 } })
+  })
+
+  it('同じ位置（±0.5 秒）では 2 回まで立て直し、3 回目は立て直さない', () => {
+    const first = nextRecordingHlsRecovery(null, at(52))
+    const second = nextRecordingHlsRecovery(first.next, at(52.5))
+    expect(second).toEqual({ recover: true, next: { count: 2, atSeconds: 52 } })
+    expect(nextRecordingHlsRecovery(second.next, at(52)).recover).toBe(false)
+    expect(nextRecordingHlsRecovery(second.next, at(51.5)).recover).toBe(false)
+  })
+
+  it('0.6 秒以上違う位置では 1 に戻って立て直す（上限に達した後でも）', () => {
+    const exhausted = { count: 2, atSeconds: 52 }
+    expect(nextRecordingHlsRecovery(exhausted, at(52.6))).toEqual({ recover: true, next: { count: 1, atSeconds: 52.6 } })
+    expect(nextRecordingHlsRecovery({ count: 1, atSeconds: 52 }, at(0))).toEqual({ recover: true, next: { count: 1, atSeconds: 0 } })
+  })
+
+  it('利用者の一時停止の意図があれば立て直さず、回数も変えない', () => {
+    const prev = { count: 1, atSeconds: 52 }
+    expect(nextRecordingHlsRecovery(prev, at(52, 5000, true))).toEqual({ recover: false, next: prev })
   })
 })

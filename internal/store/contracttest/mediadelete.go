@@ -20,6 +20,7 @@ type MediaDeleteFixture struct {
 	BeginUntilEncodedInvalidation func(t *testing.T, recordingID int64) (commit func())
 	NewDeletedAsset               func(t *testing.T) (recordingID, assetID int64)
 	NewRemovedEncoded             func(t *testing.T) (recordingID, assetID int64)
+	CopyID                        func(t *testing.T, assetID int64) int64
 	// RemovalRequestExists は削除要求の行があるかを返す。ListRemovedEncodedAssetsToDelete は
 	// deleted の asset を返さないので、MarkDeleted が要求の行を消したかを確かめられない。
 	RemovalRequestExists func(t *testing.T, recordingID int64, profile string) bool
@@ -46,17 +47,18 @@ func RunMediaDelete(t *testing.T, newStore NewMediaDeleteStore) {
 func runMarkDeletedClearsRemovalRequest(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	recordingID, assetID := f.NewRemovedEncoded(t)
+	copyID := f.CopyID(t, assetID)
 	removed, err := f.Store.ListRemovedEncodedAssetsToDelete(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("ListRemovedEncodedAssetsToDelete(before delete): %v", err)
 	}
-	if !containsMediaDeleteAsset(removed, assetID) {
-		t.Fatalf("ListRemovedEncodedAssetsToDelete IDs = %v, want asset %d", mediaDeleteAssetIDs(removed), assetID)
+	if !containsMediaDeleteAsset(removed, copyID) {
+		t.Fatalf("ListRemovedEncodedAssetsToDelete copy IDs = %v, want copy %d", mediaDeleteAssetIDs(removed), copyID)
 	}
-	if err := f.Store.MarkDeleting(context.Background(), assetID); err != nil {
-		t.Fatalf("MarkDeleting(%d): %v", assetID, err)
+	if marked, err := f.Store.MarkDeleting(context.Background(), copyID, "active"); err != nil || !marked {
+		t.Fatalf("MarkDeleting(%d): marked=%v err=%v", copyID, marked, err)
 	}
-	if err := f.Store.MarkDeleted(context.Background(), assetID); err != nil {
+	if err := f.Store.MarkDeleted(context.Background(), copyID); err != nil {
 		t.Fatalf("MarkDeleted: %v", err)
 	}
 	assertMediaAssetDeleted(t, f, recordingID, assetID, store.AssetKindEncoded, "h264")
@@ -69,12 +71,13 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	ctx := context.Background()
 	recordingID, assetID := f.NewUntilEncodedOriginal(t)
+	copyID := f.CopyID(t, assetID)
 	candidates, err := f.Store.ListUntilEncodedOriginalsToDelete(ctx, 10)
 	if err != nil {
 		t.Fatalf("listing eligible until_encoded originals: %v", err)
 	}
-	if !containsMediaDeleteAsset(candidates, assetID) {
-		t.Fatalf("until_encoded candidates = %+v, want asset %d", candidates, assetID)
+	if !containsMediaDeleteAsset(candidates, copyID) {
+		t.Fatalf("until_encoded candidates = %+v, want copy %d", candidates, copyID)
 	}
 
 	commit := f.BeginUntilEncodedInvalidation(t, recordingID)
@@ -86,7 +89,7 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 		err    error
 	}, 1)
 	go func() {
-		marked, err := f.Store.MarkUntilEncodedDeleting(ctx, recordingID, assetID)
+		marked, err := f.Store.MarkUntilEncodedDeleting(ctx, recordingID, assetID, copyID)
 		result <- struct {
 			marked bool
 			err    error
@@ -115,7 +118,8 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 func runDeletedAssetIsNotReverted(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	recordingID, assetID := f.NewDeletedAsset(t)
-	updated, err := f.Store.RevertToActive(context.Background(), assetID, time.Now())
+	copyID := f.CopyID(t, assetID)
+	updated, err := f.Store.RevertToActive(context.Background(), copyID, time.Now(), time.Time{})
 	if err != nil {
 		t.Fatalf("RevertToActive(deleted) error = %v", err)
 	}
@@ -150,6 +154,7 @@ func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, as
 	if deletedAsset.DeletedAt == nil {
 		t.Fatalf("asset %d DeletedAt = nil, want set", assetID)
 	}
+	copyID := f.CopyID(t, assetID)
 
 	var servingErr error
 	if kind == store.AssetKindEncoded {
@@ -161,16 +166,17 @@ func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, as
 		t.Fatalf("serving lookup for deleted %s asset %d = %v, want ErrNotFound", kind, assetID, servingErr)
 	}
 	cutoff := time.Now().Add(time.Hour)
-	pending, err := f.Store.ListPendingDeleteAssets(context.Background(), cutoff, 100)
+	keepCurrentCopies := time.Now().Add(time.Hour)
+	pending, err := f.Store.ListPendingDeleteAssets(context.Background(), cutoff, keepCurrentCopies, 100)
 	if err != nil {
 		t.Fatalf("ListPendingDeleteAssets when checking deleted asset %d: %v", assetID, err)
 	}
-	unqualified, err := f.Store.ListUnqualifiedDeletingAssets(context.Background(), cutoff, 100)
+	unqualified, err := f.Store.ListUnqualifiedDeletingAssets(context.Background(), cutoff, keepCurrentCopies, 100)
 	if err != nil {
 		t.Fatalf("ListUnqualifiedDeletingAssets when checking deleted asset %d: %v", assetID, err)
 	}
-	if containsMediaDeleteAsset(pending, assetID) || containsMediaDeleteCandidate(unqualified, assetID) {
-		t.Fatalf("deleted asset %d remains in a deleting queue: ListPendingDeleteAssets IDs = %v, ListUnqualifiedDeletingAssets IDs = %v, want neither to contain it", assetID, mediaDeleteAssetIDs(pending), mediaDeleteCandidateIDs(unqualified))
+	if containsMediaDeleteAsset(pending, copyID) || containsMediaDeleteCandidate(unqualified, copyID) {
+		t.Fatalf("deleted asset %d copy %d remains in a deleting queue: ListPendingDeleteAssets IDs = %v, ListUnqualifiedDeletingAssets IDs = %v, want neither to contain it", assetID, copyID, mediaDeleteAssetIDs(pending), mediaDeleteCandidateIDs(unqualified))
 	}
 }
 

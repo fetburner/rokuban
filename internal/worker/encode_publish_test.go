@@ -374,8 +374,8 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	if attemptError == nil {
 		t.Fatal("candidate attempt error is NULL, want the rel_path reservation failure")
 	}
-	if !strings.Contains(*attemptError, "recording encoded media asset copy: conflict") ||
-		!strings.Contains(*attemptError, "media_asset_copies_store_rel_path_idx") {
+	if !strings.Contains(*attemptError, "recording encoded media asset copy: upserting media asset copy") ||
+		!strings.Contains(*attemptError, "affected 0 rows: conflict") {
 		t.Errorf("candidate attempt error = %s, want the rel_path reservation failure", *attemptError)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
@@ -428,8 +428,8 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.skip || observed.generation != 2 || observed.replaced != g1 {
-		t.Fatalf("plan = %+v, want generation 2 replacing %s and no skip", observed, g1)
+	if observed.skip || observed.generation != 2 {
+		t.Fatalf("plan = %+v, want generation 2 and no skip", observed)
 	}
 
 	scratchOut := filepath.Join(scratchDir, "out.mp4")
@@ -457,7 +457,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if err := os.WriteFile(abs(g3), []byte("g3 output"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.SetMediaAssetRelPath(t, pool, assetID, g3)
+	dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, g3, 3)
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 500}}); err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 		t.Fatalf("publishEncoded err = %v, want a successful skip", r.err)
 	}
 	var rel string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&rel); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 ORDER BY generation DESC, id DESC LIMIT 1`, assetID).Scan(&rel); err != nil {
 		t.Fatal(err)
 	}
 	if rel != g3 {
@@ -1008,7 +1008,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 	}
 	var finalState string
 	var size int64
-	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.id = $1`, assetID).Scan(&finalState, &size); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.id = $1 ORDER BY c.id DESC LIMIT 1`, assetID).Scan(&finalState, &size); err != nil {
 		t.Fatal(err)
 	}
 	if finalState != "active" || size != int64(len(next)) {
@@ -1195,7 +1195,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	}
 	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
 	// 観測の後に、別の公開が要求どおりの版へ置き換えた状況を作る。
-	dbtest.SetMediaAssetRelPath(t, pool, assetID, "rebuild/txskip_cut.g2.mp4")
+	dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, "rebuild/txskip_cut.g2.mp4", 2)
 	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
 		t.Fatal(err)
 	}

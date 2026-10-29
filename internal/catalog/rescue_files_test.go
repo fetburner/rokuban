@@ -56,6 +56,126 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 	}
 }
 
+func TestRescueCatalogMissingOldGenerationKeepsCurrentCopy(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t)
+	oldPath := "old.g1.mp4"
+	currentPath := "current.g2.mp4"
+	if err := os.WriteFile(filepath.Join(mediaDir, oldPath), []byte("old media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, currentPath), []byte("current media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := "h264"
+	currentGeneration, oldGeneration := int64(2), int64(1)
+	doc := &Document{
+		Version: Version, ExportedAt: fixedTime(),
+		Recordings: []Recording{{
+			ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1,
+			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test",
+			ProgramStartAt: fixedTime(), Status: "finished", QualityEvents: json.RawMessage("[]"),
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+		}},
+		MediaAssets: []MediaAsset{
+			{
+				ID: 10, RecordingID: 1, Kind: "encoded", Profile: &profile,
+				RelPath: oldPath, SizeBytes: 80, State: "active",
+				CreatedAt: fixedTime().Add(-time.Hour), UpdatedAt: fixedTime(),
+				DerivedGeneration: &currentGeneration, Generation: &oldGeneration, Store: "test-store",
+			},
+			{
+				ID: 10, RecordingID: 1, Kind: "encoded", Profile: &profile,
+				RelPath: currentPath, SizeBytes: 100, State: "active",
+				CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+				DerivedGeneration: &currentGeneration, Generation: &currentGeneration, Store: "test-store",
+			},
+		},
+	}
+	if _, err := Write(mediaDir, doc, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(mediaDir, oldPath)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", nil)
+	if err != nil {
+		t.Fatalf("RescueLatest: %v", err)
+	}
+	if result.MissingMediaFiles != 1 {
+		t.Fatalf("MissingMediaFiles = %d, want 1 missing physical copy", result.MissingMediaFiles)
+	}
+	var oldState, currentState string
+	var hasActiveCopy bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT old_copy.state, current_copy.state, EXISTS (SELECT 1 FROM active_media_asset_copies(asset.id, NULL))
+FROM media_assets asset
+	JOIN media_asset_copies old_copy ON old_copy.media_asset_id = asset.id AND old_copy.rel_path = $2
+	JOIN media_asset_copies current_copy ON current_copy.media_asset_id = asset.id AND current_copy.rel_path = $3
+	WHERE asset.id = $1`, 10, oldPath, currentPath).Scan(&oldState, &currentState, &hasActiveCopy); err != nil {
+		t.Fatalf("reading restored generation copies: %v", err)
+	}
+	if oldState != "deleted" || currentState != "active" || !hasActiveCopy {
+		t.Fatalf("old/current copy states and current active copy = %q/%q/%v, want deleted/active/true", oldState, currentState, hasActiveCopy)
+	}
+}
+
+func TestRescueCatalogMarksPreviouslyRestoredCopyDeletedWhenFileDisappears(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t)
+	const relPath = "current.g2.mp4"
+	if err := os.WriteFile(filepath.Join(mediaDir, relPath), []byte("current media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := "h264"
+	generation := int64(2)
+	doc := &Document{
+		Version: Version, ExportedAt: fixedTime(),
+		Recordings: []Recording{{
+			ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1,
+			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test",
+			ProgramStartAt: fixedTime(), Status: "finished", QualityEvents: json.RawMessage("[]"),
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+		}},
+		MediaAssets: []MediaAsset{{
+			ID: 11, RecordingID: 1, Kind: "encoded", Profile: &profile,
+			RelPath: relPath, SizeBytes: 100, State: "active",
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+			DerivedGeneration: &generation, Generation: &generation, Store: "test-store",
+		}},
+	}
+	if _, err := Write(mediaDir, doc, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	catalogStore := pgstoretest.Catalog(pool, []string{"default"}...)
+	mediaStore := pgstoretest.Media(pool)
+	if _, err := RescueLatest(context.Background(), catalogStore, mediaStore, mediaDir, "test-store", nil); err != nil {
+		t.Fatalf("initial RescueLatest: %v", err)
+	}
+	if err := os.Remove(filepath.Join(mediaDir, relPath)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RescueLatest(context.Background(), catalogStore, mediaStore, mediaDir, "test-store", nil)
+	if err != nil {
+		t.Fatalf("RescueLatest after file removal: %v", err)
+	}
+	if result.MissingMediaFiles != 1 {
+		t.Fatalf("MissingMediaFiles = %d, want 1", result.MissingMediaFiles)
+	}
+	var activeCopies, deletedCopies int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FILTER (WHERE copy.state = 'active'),
+       count(*) FILTER (WHERE copy.state = 'deleted')
+FROM media_asset_copies copy
+WHERE copy.media_asset_id = 11`).Scan(&activeCopies, &deletedCopies); err != nil {
+		t.Fatalf("reading copy state after second rescue: %v", err)
+	}
+	if activeCopies != 0 || deletedCopies != 1 {
+		t.Fatalf("active/deleted copies = %d/%d, want 0/1", activeCopies, deletedCopies)
+	}
+}
+
 func TestRescueScanCandidateRemoved(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := newTestMediaDir(t)

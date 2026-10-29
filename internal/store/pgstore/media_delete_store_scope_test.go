@@ -63,12 +63,12 @@ func (e storeScopeEnv) moveCopy(t *testing.T, assetID int64, toStore string) {
 	}
 }
 
-func (e storeScopeEnv) setCopyDeleting(t *testing.T, assetID int64, storeName string) {
+func (e storeScopeEnv) setCopyState(t *testing.T, assetID int64, storeName, state string) {
 	t.Helper()
 	if _, err := e.pool.Exec(context.Background(),
-		`UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1 AND store = $2`,
-		assetID, storeName); err != nil {
-		t.Fatalf("marking copy of asset %d in %s as deleting: %v", assetID, storeName, err)
+		`UPDATE media_asset_copies SET state = $3 WHERE media_asset_id = $1 AND store = $2`,
+		assetID, storeName, state); err != nil {
+		t.Fatalf("setting copy state of asset %d in %s: %v", assetID, storeName, err)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestUntilEncodedDeletableRequiresDerivedCopiesInDesiredStore(t *testing.T) 
 				t.Fatalf("%s copy only in %s: originals for %s = %v, want none", kind, otherStoreName, dbtest.StoreName, got)
 			}
 
-			if err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
+			if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
 				MediaAssetID: derived[kind], Store: dbtest.StoreName, RelPath: "sites/default/store-scope-back-" + kind, State: "active",
 			}); err != nil {
 				t.Fatalf("adding %s copy to %s: %v", kind, dbtest.StoreName, err)
@@ -174,6 +174,102 @@ func TestUntilEncodedDeletableRequiresDerivedCopiesInDesiredStore(t *testing.T) 
 		})
 	}
 }
+
+func TestDerivedReadersRequireCurrentGenerationAcrossStores(t *testing.T) {
+	ctx := context.Background()
+	env := newStoreScopeEnv(t)
+	recordingID, originalID, assets := env.untilEncodedFixture(t)
+	encodedID := assets[store.AssetKindEncoded]
+	env.moveCopy(t, encodedID, otherStoreName)
+	if _, err := env.pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, encodedID); err != nil {
+		t.Fatalf("advancing encoded generation: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
+VALUES ($1, '{[0,60000)}'::int8multirange)`, encodedID); err != nil {
+		t.Fatalf("seeding committed cut ranges: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+VALUES ($1, 'h264', '{[0,60000)}'::int8multirange)`, recordingID); err != nil {
+		t.Fatalf("seeding rebuild request: %v", err)
+	}
+
+	activeCopyCount := func(storeName *string) int {
+		t.Helper()
+		var count int
+		if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM active_media_asset_copies($1, $2)`, encodedID, storeName).Scan(&count); err != nil {
+			t.Fatalf("counting current encoded copies for store %v: %v", storeName, err)
+		}
+		return count
+	}
+	viewContains := func(view, predicate string, args ...any) bool {
+		t.Helper()
+		var exists bool
+		query := fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s WHERE %s)`, view, predicate)
+		if err := env.pool.QueryRow(ctx, query, args...).Scan(&exists); err != nil {
+			t.Fatalf("querying %s: %v", view, err)
+		}
+		return exists
+	}
+	if got := activeCopyCount(nil); got != 0 {
+		t.Fatalf("active copies before publishing current generation = %d, want 0 (the old copy is in %s)", got, otherStoreName)
+	}
+	if got := activeCopyCount(stringPointer(dbtest.StoreName)); got != 0 {
+		t.Fatalf("desired-store current copies before publish = %d, want 0", got)
+	}
+	if !viewContains("unencoded_desired_profiles", "recording_id = $1 AND profile = 'h264'", recordingID) {
+		t.Fatal("old-generation copy satisfied unencoded_desired_profiles")
+	}
+	if !viewContains("unsatisfied_encode_rebuilds", "recording_id = $1 AND profile = 'h264'", recordingID) {
+		t.Fatal("old-generation copy satisfied the rebuild request")
+	}
+	if got := env.functionAssetIDs(t); len(got) != 0 {
+		t.Fatalf("until_encoded originals with only an old-generation copy = %v, want none", got)
+	}
+	evidence, err := sqlcgen.New(env.pool).ListEncodedMeaningEvidence(ctx, nil)
+	if err != nil {
+		t.Fatalf("listing encoded meaning evidence: %v", err)
+	}
+	for _, row := range evidence {
+		if row.Profile == "h264" && row.RelPath == "sites/default/store-scope/"+fmt.Sprint(recordingID)+"/encoded" {
+			t.Fatal("old-generation path was returned as active encoded evidence")
+		}
+	}
+
+	newRelPath := "encoded/h264.g1.mp4"
+	if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: encodedID, Store: otherStoreName, RelPath: newRelPath, Generation: 1, State: "active",
+	}); err != nil {
+		t.Fatalf("adding current-generation copy in another store: %v", err)
+	}
+	if got := activeCopyCount(nil); got != 1 {
+		t.Fatalf("global current copies after remote publish = %d, want 1", got)
+	}
+	if got := activeCopyCount(stringPointer(dbtest.StoreName)); got != 0 {
+		t.Fatalf("desired-store current copies after remote publish = %d, want 0", got)
+	}
+	if viewContains("unencoded_desired_profiles", "recording_id = $1 AND profile = 'h264'", recordingID) {
+		t.Fatal("current-generation copy in another store did not satisfy the global encoded inventory")
+	}
+	if viewContains("unsatisfied_encode_rebuilds", "recording_id = $1 AND profile = 'h264'", recordingID) {
+		t.Fatal("current-generation copy in another store did not satisfy the rebuild request")
+	}
+	if got := env.functionAssetIDs(t); len(got) != 0 {
+		t.Fatalf("until_encoded originals without the desired-store current copy = %v, want none", got)
+	}
+
+	if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: encodedID, Store: dbtest.StoreName, RelPath: "encoded/h264.g1.mp4", Generation: 1, State: "active",
+	}); err != nil {
+		t.Fatalf("adding current-generation copy in desired store: %v", err)
+	}
+	if got := env.functionAssetIDs(t); !slices.Equal(got, []int64{originalID}) {
+		t.Fatalf("until_encoded originals after desired-store current publish = %v, want [%d]", got, originalID)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
 
 // forEachCopyStore は同じ検査を、コピーが別の置き場にある場合と自分の置き場にある場合で走らせる。
 func forEachCopyStore(t *testing.T, check func(t *testing.T, copyStore string, own bool)) {
@@ -240,9 +336,9 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 			rec := env.recording(t)
 			id := env.asset(t, rec, store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
-			env.setCopyDeleting(t, id, copyStore)
+			env.setCopyState(t, id, copyStore, "deleting")
 			env.trash(t, rec)
-			rows, err := env.media.ListPendingDeleteAssets(ctx, cutoff, 10)
+			rows, err := env.media.ListPendingDeleteAssets(ctx, cutoff, time.Time{}, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -251,14 +347,14 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 		"unqualified deleting": func(t *testing.T, env storeScopeEnv, copyStore string) ([]int64, int64) {
 			id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
-			env.setCopyDeleting(t, id, copyStore)
-			rows, err := env.media.ListUnqualifiedDeletingAssets(ctx, cutoff, 10)
+			env.setCopyState(t, id, copyStore, "deleting")
+			rows, err := env.media.ListUnqualifiedDeletingAssets(ctx, cutoff, time.Time{}, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var ids []int64
 			for _, r := range rows {
-				ids = append(ids, r.ID)
+				ids = append(ids, r.MediaAssetID)
 			}
 			return ids, id
 		},
@@ -283,7 +379,8 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 			env := newStoreScopeEnv(t)
 			rec, original, _ := env.untilEncodedFixture(t)
 			env.moveCopy(t, original, copyStore)
-			marked, err := env.media.MarkUntilEncodedDeleting(ctx, rec, original)
+			copyID := dbtest.MediaAssetCopyID(t, env.pool, original, copyStore)
+			marked, err := env.media.MarkUntilEncodedDeleting(ctx, rec, original, copyID)
 			if err != nil {
 				t.Fatalf("MarkUntilEncodedDeleting: %v", err)
 			}
@@ -300,8 +397,9 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 			env := newStoreScopeEnv(t)
 			id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
-			env.setCopyDeleting(t, id, copyStore)
-			reverted, err := env.media.RevertToActive(ctx, id, cutoff)
+			env.setCopyState(t, id, copyStore, "deleting")
+			copyID := dbtest.MediaAssetCopyID(t, env.pool, id, copyStore)
+			reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{})
 			if err != nil {
 				t.Fatalf("RevertToActive: %v", err)
 			}
@@ -313,13 +411,34 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 			}
 		})
 	})
+	t.Run("RevertDeletedCopy", func(t *testing.T) {
+		env := newStoreScopeEnv(t)
+		id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
+		copyID := dbtest.MediaAssetCopyID(t, env.pool, id, dbtest.StoreName)
+		env.setCopyState(t, id, dbtest.StoreName, "deleted")
+		reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{})
+		if err != nil {
+			t.Fatalf("RevertToActive for deleted copy: %v", err)
+		}
+		if reverted {
+			t.Fatal("RevertToActive changed a deleted physical copy to active")
+		}
+		if got := env.copyState(t, id, dbtest.StoreName); got != "deleted" {
+			t.Fatalf("deleted copy state after revert = %q, want deleted", got)
+		}
+	})
 	t.Run("MarkDeleting", func(t *testing.T) {
 		forEachCopyStore(t, func(t *testing.T, copyStore string, own bool) {
 			env := newStoreScopeEnv(t)
 			id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
-			if err := env.media.MarkDeleting(ctx, id); err != nil {
+			copyID := dbtest.MediaAssetCopyID(t, env.pool, id, copyStore)
+			marked, err := env.media.MarkDeleting(ctx, copyID, "active")
+			if err != nil {
 				t.Fatalf("MarkDeleting: %v", err)
+			}
+			if marked != own {
+				t.Fatalf("MarkDeleting = %v, want %v", marked, own)
 			}
 			if got, want := env.copyState(t, id, copyStore), wantCopyState(own, "deleting", "active"); got != want {
 				t.Fatalf("copy state = %q, want %q", got, want)
@@ -336,8 +455,9 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 				t.Fatal(err)
 			}
 			env.moveCopy(t, id, copyStore)
-			env.setCopyDeleting(t, id, copyStore)
-			if err := env.media.MarkDeleted(ctx, id); err != nil {
+			env.setCopyState(t, id, copyStore, "deleting")
+			copyID := dbtest.MediaAssetCopyID(t, env.pool, id, copyStore)
+			if err := env.media.MarkDeleted(ctx, copyID); err != nil {
 				t.Fatalf("MarkDeleted: %v", err)
 			}
 			if got, want := env.copyState(t, id, copyStore), wantCopyState(own, "deleted", "deleting"); got != want {
@@ -354,10 +474,34 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 	})
 }
 
+func TestRevertMediaAssetCopyToActiveRequiresDeletingState(t *testing.T) {
+	env := newStoreScopeEnv(t)
+	ctx := context.Background()
+	assetID := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
+	copyID := dbtest.MediaAssetCopyID(t, env.pool, assetID, dbtest.StoreName)
+	env.setCopyState(t, assetID, dbtest.StoreName, "deleted")
+
+	updated, err := sqlcgen.New(env.pool).RevertMediaAssetCopyToActive(ctx, sqlcgen.RevertMediaAssetCopyToActiveParams{
+		CopyID: copyID, StoreName: dbtest.StoreName,
+		GraceCutoff:   time.Now().Add(-30 * 24 * time.Hour),
+		DesiredStore:  stringPointer(dbtest.StoreName),
+		OverlapCutoff: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("reverting a deleted physical copy: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("revert updated %d rows for a deleted copy, want 0", updated)
+	}
+	if got := env.copyState(t, assetID, dbtest.StoreName); got != "deleted" {
+		t.Fatalf("deleted copy state after direct revert query = %q, want deleted", got)
+	}
+}
+
 func mediaDeleteIDs(rows []store.MediaDeleteAsset) []int64 {
 	ids := make([]int64, 0, len(rows))
 	for _, r := range rows {
-		ids = append(ids, r.ID)
+		ids = append(ids, r.MediaAssetID)
 	}
 	return ids
 }
@@ -388,7 +532,11 @@ func TestMarkDeletingWaitsForConcurrentCopyTransitionAndDoesNotResurrect(t *test
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- env.media.MarkDeleting(ctx, id) }()
+	copyID := dbtest.MediaAssetCopyID(t, env.pool, id, dbtest.StoreName)
+	go func() {
+		_, err := env.media.MarkDeleting(ctx, copyID, "active")
+		done <- err
+	}()
 
 	waitForContractLockWaiter(t, env.pool, "MarkDeleting")
 	select {
@@ -428,7 +576,7 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 	for kind, id := range kinds {
 		// dbtest が作る test-store の active コピーに、先頭になる置き場の deleting と active を足す。
 		for _, c := range []struct{ store, state string }{{"a-store", "deleting"}, {"b-store", "active"}, {"z-store", "active"}} {
-			if err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+			if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 				MediaAssetID: id, Store: c.store, RelPath: fmt.Sprintf("sites/default/pick/%s-%s", kind, c.store), State: c.state,
 			}); err != nil {
 				t.Fatal(err)
@@ -512,7 +660,8 @@ func TestUntilEncodedUsesDerivedStoreNotWorkerStore(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertListed(t, mediaDeleteIDs(rows), original, tc.want)
-			marked, err := media.MarkUntilEncodedDeleting(ctx, rec, original)
+			copyID := dbtest.MediaAssetCopyID(t, env.pool, original, dbtest.StoreName)
+			marked, err := media.MarkUntilEncodedDeleting(ctx, rec, original, copyID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -520,5 +669,58 @@ func TestUntilEncodedUsesDerivedStoreNotWorkerStore(t *testing.T) {
 				t.Fatalf("MarkUntilEncodedDeleting = %v, want %v", marked, tc.want)
 			}
 		})
+	}
+}
+
+// removed_encoded_assets の「他に現行のコピーがある版が残る」は、active_media_asset_copies の現行判定を使う。
+// 旧世代のコピーしか active でない版を残る版に数えると、現行ファイルが無いのに最後の版を消してしまう。
+func TestRemovedEncodedAssetsCountsOnlyCurrentGenerationCopies(t *testing.T) {
+	ctx := context.Background()
+	env := newStoreScopeEnv(t)
+	recordingID := env.recording(t)
+	removed, kept := "h264", "h265"
+	encoded := func(profile *string) int64 {
+		return dbtest.MediaAsset(t, env.pool, recordingID, func(p *dbtest.MediaAssetParams) {
+			p.Kind = store.AssetKindEncoded
+			p.Profile = profile
+			p.RelPath = fmt.Sprintf("encoded/%d.%s.mp4", recordingID, *profile)
+		})
+	}
+	removedID, keptID := encoded(&removed), encoded(&kept)
+	if _, err := env.pool.Exec(ctx, `
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', ARRAY['h265'], false)`, recordingID); err != nil {
+		t.Fatalf("seeding encode policy: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `INSERT INTO encoded_asset_removal_requests (recording_id, profile) VALUES ($1, 'h264')`, recordingID); err != nil {
+		t.Fatalf("seeding removal request: %v", err)
+	}
+	removable := func() bool {
+		t.Helper()
+		var exists bool
+		if err := env.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1)`, removedID).Scan(&exists); err != nil {
+			t.Fatalf("querying removed_encoded_assets: %v", err)
+		}
+		return exists
+	}
+	if !removable() {
+		t.Fatal("removed version is not removable while the kept version has a current active copy")
+	}
+
+	// 残る版の論理世代だけを進める。active なコピーは旧世代（0）のままになる。
+	if _, err := env.pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, keptID); err != nil {
+		t.Fatalf("advancing the kept version's generation: %v", err)
+	}
+	if removable() {
+		t.Fatal("removed version is removable although the kept version has only an old-generation active copy")
+	}
+
+	if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: keptID, Store: dbtest.StoreName, RelPath: "encoded/h265.g1.mp4", Generation: 1, State: "active",
+	}); err != nil {
+		t.Fatalf("adding the current-generation copy: %v", err)
+	}
+	if !removable() {
+		t.Fatal("removed version is not removable once the kept version has a current-generation copy")
 	}
 }

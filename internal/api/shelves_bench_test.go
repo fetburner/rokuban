@@ -617,8 +617,8 @@ SELECT
 FROM generate_series(1, 73000) AS s(i)
 WHERE i <= 65000 OR i BETWEEN 71026 AND 73000;
 
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-SELECT a.id, 'bench', format('bench/%s', a.recording_id), 'active'
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT a.id, 'bench', format('bench/%s', a.recording_id), COALESCE(a.derived_generation, 0), 'active'
 FROM media_assets a;
 
 INSERT INTO label_rules (key, value, keyword, priority)

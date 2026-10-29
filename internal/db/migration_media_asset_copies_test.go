@@ -102,8 +102,8 @@ RETURNING id`, recordingID, fixture.kind, fixture.profile, fixture.path, fixture
 	for _, asset := range assets {
 		assertMigratedAssetGeneration(t, pool, asset.id, asset.relPath, asset.wantGeneration, asset.generationNull)
 
-		// 00037 leaves logical assets unassigned; the compatibility release's
-		// storage adopt creates their physical copy rows before 00040 removes these columns.
+		// 00037 leaves logical assets unassigned; the preceding release's storage adopt
+		// creates their physical copy rows before 00043 drops media_assets.rel_path.
 		var copies int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1`, asset.id).Scan(&copies); err != nil {
 			t.Fatalf("counting pre-adoption copies for %s: %v", asset.kind, err)
@@ -113,16 +113,12 @@ RETURNING id`, recordingID, fixture.kind, fixture.profile, fixture.path, fixture
 		}
 	}
 
-	// Old workers keep using the former single-column conflict targets during a
-	// rolling update. Each statement must remain valid after the composite keys
-	// are installed.
+	// The unchanged observation tables retain their legacy conflict targets.
+	// missing_media_assets no longer does: issue #1652 keys it by physical copy.
 	legacyOrphanPath := fmt.Sprintf("legacy-writer-%d.m2ts", assets[0].id)
 	for range 2 {
 		if _, err := pool.Exec(ctx, `INSERT INTO orphan_files (rel_path) VALUES ($1) ON CONFLICT (rel_path) DO NOTHING`, legacyOrphanPath); err != nil {
 			t.Fatalf("legacy orphan upsert with old conflict target: %v", err)
-		}
-		if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_id) VALUES ($1) ON CONFLICT (media_asset_id) DO NOTHING`, assets[0].id); err != nil {
-			t.Fatalf("legacy missing-asset upsert with old conflict target: %v", err)
 		}
 		if _, err := pool.Exec(ctx, `INSERT INTO storage_sync (root, path, total_bytes, used_bytes, available_bytes, observed_at)
 VALUES ('media', '/legacy', 100, 25, 75, now())
@@ -130,25 +126,22 @@ ON CONFLICT (root) DO UPDATE SET path = EXCLUDED.path`); err != nil {
 			t.Fatalf("legacy storage sync upsert with old conflict target: %v", err)
 		}
 	}
-	var legacyOrphanCount, legacyMissingCount, legacyStorageCount int
+	var legacyOrphanCount, legacyStorageCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM orphan_files WHERE rel_path = $1`, legacyOrphanPath).Scan(&legacyOrphanCount); err != nil {
 		t.Fatalf("counting old-key orphan row: %v", err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1`, assets[0].id).Scan(&legacyMissingCount); err != nil {
-		t.Fatalf("counting old-key missing row: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM storage_sync WHERE root = 'media'`).Scan(&legacyStorageCount); err != nil {
 		t.Fatalf("counting old-key storage row: %v", err)
 	}
-	if legacyOrphanCount != 1 || legacyMissingCount != 1 || legacyStorageCount != 1 {
-		t.Fatalf("legacy conflict target rows = orphan %d / missing %d / storage %d, want 1 / 1 / 1", legacyOrphanCount, legacyMissingCount, legacyStorageCount)
+	if legacyOrphanCount != 1 || legacyStorageCount != 1 {
+		t.Fatalf("legacy conflict target rows = orphan %d / storage %d, want 1 / 1", legacyOrphanCount, legacyStorageCount)
 	}
 
 	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
 		t.Fatalf("adopting legacy media asset copies before dropping their source columns: %v", err)
 	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("applying media asset copy compatibility cleanup: %v", err)
+		t.Fatalf("applying the migration that drops media_assets.rel_path / state / deleted_at: %v", err)
 	}
 	assertMediaAssetCopyColumnsRetired(t, pool)
 
@@ -179,7 +172,7 @@ SELECT EXISTS (
 			t.Fatalf("checking media_assets.%s: %v", column, err)
 		}
 		if exists {
-			t.Errorf("media_assets.%s should not exist after compatibility cleanup", column)
+			t.Errorf("media_assets.%s should not exist after dropping them", column)
 		}
 	}
 	for _, index := range []string{"media_assets_kind_state_idx", "media_assets_rel_path_idx"} {
@@ -188,12 +181,12 @@ SELECT EXISTS (
 			t.Fatalf("checking %s: %v", index, err)
 		}
 		if exists {
-			t.Errorf("%s should not exist after compatibility cleanup", index)
+			t.Errorf("%s should not exist after dropping them", index)
 		}
 	}
 }
 
-func TestMediaAssetCopyCleanupRefusesUnadoptedAssets(t *testing.T) {
+func TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets(t *testing.T) {
 	ctx := context.Background()
 	dbURL := testDatabaseURL(t)
 	if err := MigrateUp(ctx, dbURL); err != nil {
@@ -208,7 +201,7 @@ func TestMediaAssetCopyCleanupRefusesUnadoptedAssets(t *testing.T) {
 		t.Fatalf("clearing prior media fixtures: %v", err)
 	}
 	pool.Close()
-	migrateDownTo(t, dbURL, 39)
+	migrateDownTo(t, dbURL, 42)
 	t.Cleanup(func() {
 		cleanupPool, err := pgxpool.New(context.Background(), dbURL)
 		if err != nil {
@@ -253,7 +246,7 @@ SELECT EXISTS (
 		t.Fatal("blocked migration removed rel_path before adoption completed")
 	}
 
-	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
+	if err := adoptLegacyMediaAssetsWithGenerationsForTest(ctx, pool); err != nil {
 		t.Fatalf("adopting fixture before retrying migration: %v", err)
 	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
@@ -262,72 +255,116 @@ SELECT EXISTS (
 	assertMediaAssetCopyColumnsRetired(t, pool)
 }
 
-func TestMediaAssetCopyCleanupDownRestoresLegacyCopyState(t *testing.T) {
-	ctx, dbURL, pool := prepareMediaAssetCopyCleanupAtVersion39(t)
+// 1 つの論理資産に置き場違い・世代違いのコピーが並ぶ状態は正常で、旧列には現行世代のコピー 1 つを写す。
+func TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy(t *testing.T) {
+	ctx, dbURL, pool := prepareMediaAssetCopyColumnDropAtVersion42(t)
 	defer pool.Close()
 
 	deletedAt := time.Date(2026, 10, 2, 3, 4, 5, 0, time.UTC)
-	fixtures := []struct {
-		state     string
-		deletedAt *time.Time
-	}{
-		{state: "active"},
-		{state: "deleting"},
-		{state: "deleted", deletedAt: &deletedAt},
+	type copyRow struct {
+		store, path string
+		generation  int64
+		state       string
+		deletedAt   *time.Time
 	}
-	assets := make([]int64, 0, len(fixtures))
+	fixtures := []struct {
+		name            string
+		kind            string
+		profile         *string
+		derivedGen      *int64
+		copies          []copyRow
+		wantPath        string
+		wantState       string
+		wantDeletedAtOK bool
+	}{
+		{
+			name: "active original", kind: "original",
+			copies:   []copyRow{{"a", "sites/default/orig.m2ts", 0, "active", nil}},
+			wantPath: "sites/default/orig.m2ts", wantState: "active",
+		},
+		{
+			name: "deleting original", kind: "original",
+			copies:   []copyRow{{"a", "sites/default/deleting.m2ts", 0, "deleting", nil}},
+			wantPath: "sites/default/deleting.m2ts", wantState: "deleting",
+		},
+		{
+			name: "deleted original", kind: "original",
+			copies:   []copyRow{{"a", "sites/default/gone.m2ts", 0, "deleted", &deletedAt}},
+			wantPath: "sites/default/gone.m2ts", wantState: "deleted", wantDeletedAtOK: true,
+		},
+		{
+			// 旧世代のコピーと tombstone は旧列に写らない。現行世代の active が代表になる。
+			name: "current generation wins over older generations", kind: "encoded",
+			profile: ptr("h264"), derivedGen: ptr(int64(2)),
+			copies: []copyRow{
+				{"a", "sites/default/p.g1.mp4", 1, "active", nil},
+				{"a", "sites/default/p.g0.mp4", 0, "deleted", &deletedAt},
+				{"a", "sites/default/p.g2.mp4", 2, "active", nil},
+			},
+			wantPath: "sites/default/p.g2.mp4", wantState: "active",
+		},
+		{
+			// 置き場違いの現行コピーは active を先に選び、state は現行世代全体で決める。
+			name: "active copy in another store is the representative", kind: "thumbnail",
+			derivedGen: ptr(int64(0)),
+			copies: []copyRow{
+				{"a", "thumbnails/1.jpg", 0, "deleting", nil},
+				{"b", "thumbnails/1.b.jpg", 0, "active", nil},
+			},
+			wantPath: "thumbnails/1.b.jpg", wantState: "active",
+		},
+	}
+	assets := make([]int64, len(fixtures))
 	for i, fixture := range fixtures {
 		recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
 			params.EventID = int32(52000 + i)
 		})
-		var assetID int64
 		if err := pool.QueryRow(ctx, `
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state, deleted_at)
-VALUES ($1, 'original', $2, 10, $3, $4)
-RETURNING id`, recordingID, fmt.Sprintf("sites/default/down-%d.m2ts", i), fixture.state, fixture.deletedAt).Scan(&assetID); err != nil {
-			t.Fatalf("inserting legacy %s asset: %v", fixture.state, err)
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, $2, $3, $5, 10, $4)
+RETURNING id`, recordingID, fixture.kind, fixture.profile, fixture.derivedGen, fmt.Sprintf("legacy-mirror-%d", i)).Scan(&assets[i]); err != nil {
+			t.Fatalf("%s: inserting asset: %v", fixture.name, err)
 		}
-		assets = append(assets, assetID)
-	}
-	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
-		t.Fatalf("adopting legacy media asset copies: %v", err)
+		for _, c := range fixture.copies {
+			if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, deleted_at)
+VALUES ($1, $2, $3, $4, $5, $6)`, assets[i], c.store, c.path, c.generation, c.state, c.deletedAt); err != nil {
+				t.Fatalf("%s: inserting copy %s: %v", fixture.name, c.path, err)
+			}
+		}
 	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("applying media asset copy cleanup: %v", err)
+		t.Fatalf("applying the column drop: %v", err)
 	}
 	assertMediaAssetCopyColumnsRetired(t, pool)
 
-	migrateDownTo(t, dbURL, 39)
-	for i, assetID := range assets {
+	migrateDownTo(t, dbURL, 42)
+	for i, fixture := range fixtures {
 		var gotPath, gotState string
 		var gotDeletedAt *time.Time
-		if err := pool.QueryRow(ctx, `
-SELECT rel_path, state, deleted_at
-FROM media_assets
-WHERE id = $1`, assetID).Scan(&gotPath, &gotState, &gotDeletedAt); err != nil {
-			t.Fatalf("reading restored legacy %s asset: %v", fixtures[i].state, err)
+		if err := pool.QueryRow(ctx, `SELECT rel_path, state, deleted_at FROM media_assets WHERE id = $1`, assets[i]).Scan(&gotPath, &gotState, &gotDeletedAt); err != nil {
+			t.Fatalf("%s: reading restored asset: %v", fixture.name, err)
 		}
-		wantPath := fmt.Sprintf("sites/default/down-%d.m2ts", i)
-		if gotPath != wantPath || gotState != fixtures[i].state {
-			t.Errorf("restored asset = (%q, %q), want (%q, %q)", gotPath, gotState, wantPath, fixtures[i].state)
+		if gotPath != fixture.wantPath || gotState != fixture.wantState {
+			t.Errorf("%s: restored (%q, %q), want (%q, %q)", fixture.name, gotPath, gotState, fixture.wantPath, fixture.wantState)
 		}
-		if fixtures[i].deletedAt == nil {
-			if gotDeletedAt != nil {
-				t.Errorf("restored %s asset deleted_at = %s, want NULL", fixtures[i].state, gotDeletedAt)
+		if fixture.wantDeletedAtOK {
+			if gotDeletedAt == nil || !gotDeletedAt.Equal(deletedAt) {
+				t.Errorf("%s: restored deleted_at = %v, want %s", fixture.name, gotDeletedAt, deletedAt)
 			}
-		} else if gotDeletedAt == nil || !gotDeletedAt.Equal(*fixtures[i].deletedAt) {
-			t.Errorf("restored deleted asset deleted_at = %v, want %s", gotDeletedAt, fixtures[i].deletedAt)
+		} else if gotDeletedAt != nil {
+			t.Errorf("%s: restored deleted_at = %s, want NULL", fixture.name, gotDeletedAt)
 		}
 	}
-	assertMediaAssetCopyCleanupLegacyRelations(t, pool)
+	assertDroppedMediaAssetCopyColumnsRestored(t, pool)
 
 	if err := MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("reapplying media asset copy cleanup after rollback: %v", err)
+		t.Fatalf("reapplying the column drop after rollback: %v", err)
 	}
 	assertMediaAssetCopyColumnsRetired(t, pool)
 }
 
-func TestMediaAssetCopyCleanupDownRefusesLossyCopyState(t *testing.T) {
+func TestDropMediaAssetCopyColumnsDownRefusesUnrepresentableState(t *testing.T) {
 	tests := []struct {
 		name       string
 		assetCount int
@@ -337,20 +374,20 @@ func TestMediaAssetCopyCleanupDownRefusesLossyCopyState(t *testing.T) {
 		{
 			name:       "no copy",
 			assetCount: 1,
-			wantError:  "zero or multiple copies",
+			wantError:  "no copy of its current generation",
 			mutate: func(ctx context.Context, pool *pgxpool.Pool, assetIDs []int64) error {
 				_, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, assetIDs[0])
 				return err
 			},
 		},
 		{
-			name:       "multiple copies",
+			name:       "only an older generation remains",
 			assetCount: 1,
-			wantError:  "zero or multiple copies",
+			wantError:  "no copy of its current generation",
 			mutate: func(ctx context.Context, pool *pgxpool.Pool, assetIDs []int64) error {
+				// 派生物ではないので、世代カウンターを進めて現行世代のコピーを無くす。
 				_, err := pool.Exec(ctx, `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES ($1, 'secondary', 'sites/default/second.m2ts', 'active')`, assetIDs[0])
+UPDATE media_assets SET kind = 'encoded', profile = 'h264', derived_generation = 3 WHERE id = $1`, assetIDs[0])
 				return err
 			},
 		},
@@ -366,7 +403,7 @@ VALUES ($1, 'secondary', 'sites/default/second.m2ts', 'active')`, assetIDs[0])
 		{
 			name:       "same live path in different stores",
 			assetCount: 2,
-			wantError:  "while active copies share a path",
+			wantError:  "while live assets share a path",
 			mutate: func(ctx context.Context, pool *pgxpool.Pool, assetIDs []int64) error {
 				_, err := pool.Exec(ctx, `
 UPDATE media_asset_copies AS target
@@ -380,7 +417,7 @@ WHERE target.media_asset_id = $1 AND source.media_asset_id = $2`, assetIDs[1], a
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, dbURL, pool := prepareMediaAssetCopyCleanupAtVersion39(t)
+			ctx, dbURL, pool := prepareMediaAssetCopyColumnDropAtVersion42(t)
 			defer pool.Close()
 
 			assetIDs := make([]int64, 0, tt.assetCount)
@@ -393,32 +430,32 @@ WHERE target.media_asset_id = $1 AND source.media_asset_id = $2`, assetIDs[1], a
 INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
 VALUES ($1, 'original', $2, 10)
 RETURNING id`, recordingID, fmt.Sprintf("sites/default/lossy-%d.m2ts", i)).Scan(&assetID); err != nil {
-					t.Fatalf("inserting legacy original asset: %v", err)
+					t.Fatalf("inserting original asset: %v", err)
 				}
 				assetIDs = append(assetIDs, assetID)
 			}
-			if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
-				t.Fatalf("adopting legacy media asset copies: %v", err)
+			if err := adoptLegacyMediaAssetsWithGenerationsForTest(ctx, pool); err != nil {
+				t.Fatalf("creating copies: %v", err)
 			}
 			if err := MigrateUp(ctx, dbURL); err != nil {
-				t.Fatalf("applying media asset copy cleanup: %v", err)
+				t.Fatalf("applying the column drop: %v", err)
 			}
 			if err := tt.mutate(ctx, pool, assetIDs); err != nil {
-				t.Fatalf("creating lossy copy state: %v", err)
+				t.Fatalf("creating the unrepresentable state: %v", err)
 			}
 
 			err := runGooseMigration(ctx, dbURL, func(ctx context.Context, provider *goose.Provider) error {
-				_, err := provider.DownTo(ctx, 39)
+				_, err := provider.DownTo(ctx, 42)
 				return err
 			})
 			if err == nil {
-				t.Fatal("migration down succeeded for a copy state the legacy schema cannot represent")
+				t.Fatal("migration down succeeded for a state the dropped columns cannot represent")
 			}
 			if !strings.Contains(err.Error(), tt.wantError) {
 				t.Fatalf("migration down error = %q, want it to contain %q", err, tt.wantError)
 			}
 			assertMediaAssetCopyColumnsRetired(t, pool)
-			assertMediaAssetCopyCleanupCurrentRelations(t, pool)
+			assertMediaAssetCopyColumnsStillDropped(t, pool)
 
 			var version int64
 			if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, provider *goose.Provider) error {
@@ -428,14 +465,14 @@ RETURNING id`, recordingID, fmt.Sprintf("sites/default/lossy-%d.m2ts", i)).Scan(
 			}); err != nil {
 				t.Fatalf("reading applied migration version after refused rollback: %v", err)
 			}
-			if version != 40 {
-				t.Fatalf("applied migration version after refused rollback = %d, want 40", version)
+			if version != 43 {
+				t.Fatalf("applied migration version after refused rollback = %d, want 43", version)
 			}
 		})
 	}
 }
 
-func prepareMediaAssetCopyCleanupAtVersion39(t *testing.T) (context.Context, string, *pgxpool.Pool) {
+func prepareMediaAssetCopyColumnDropAtVersion42(t *testing.T) (context.Context, string, *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	dbURL := testDatabaseURL(t)
@@ -466,15 +503,15 @@ func prepareMediaAssetCopyCleanupAtVersion39(t *testing.T) (context.Context, str
 		}
 	})
 
-	migrateDownTo(t, dbURL, 39)
+	migrateDownTo(t, dbURL, 42)
 	pool, err = pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Fatalf("opening test database at migration 39: %v", err)
+		t.Fatalf("opening test database at migration 42: %v", err)
 	}
 	return ctx, dbURL, pool
 }
 
-func assertMediaAssetCopyCleanupLegacyRelations(t *testing.T, pool *pgxpool.Pool) {
+func assertDroppedMediaAssetCopyColumnsRestored(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	for _, view := range []string{"until_encoded_deletable_originals", "removed_encoded_assets"} {
@@ -505,7 +542,7 @@ SELECT EXISTS (
 	}
 }
 
-func assertMediaAssetCopyCleanupCurrentRelations(t *testing.T, pool *pgxpool.Pool) {
+func assertMediaAssetCopyColumnsStillDropped(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	var exists bool
 	if err := pool.QueryRow(context.Background(), `

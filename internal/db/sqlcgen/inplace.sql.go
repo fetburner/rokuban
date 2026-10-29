@@ -12,9 +12,11 @@ import (
 
 const getInPlaceAssetByRelPath = `-- name: GetInPlaceAssetByRelPath :one
 
-SELECT a.id, a.recording_id, a.kind, a.profile, c.state
+SELECT a.id, a.recording_id, a.kind, a.profile, c.state, c.generation,
+       (r.deleted_at IS NOT NULL OR r.purged_at IS NOT NULL)::boolean AS recording_trashed
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
+JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path = $1
   AND c.store = $2
 ORDER BY (c.state <> 'deleted')::boolean DESC, a.id DESC
@@ -27,11 +29,13 @@ type GetInPlaceAssetByRelPathParams struct {
 }
 
 type GetInPlaceAssetByRelPathRow struct {
-	ID          int64
-	RecordingID int64
-	Kind        string
-	Profile     *string
-	State       string
+	ID               int64
+	RecordingID      int64
+	Kind             string
+	Profile          *string
+	State            string
+	Generation       int64
+	RecordingTrashed bool
 }
 
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
@@ -53,6 +57,8 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAs
 		&i.Kind,
 		&i.Profile,
 		&i.State,
+		&i.Generation,
+		&i.RecordingTrashed,
 	)
 	return i, err
 }
@@ -60,49 +66,72 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAs
 const upsertInPlaceMediaAsset = `-- name: UpsertInPlaceMediaAsset :one
 INSERT INTO media_assets (
     recording_id, kind, profile, size_bytes, derived_generation
-) VALUES (
-    $1, $2, $3,
-    $4,
-    CASE WHEN $2::text = 'original' THEN NULL ELSE 0 END
 )
+SELECT
+    r.id, $1::text, $2::text,
+    $3::bigint,
+    CASE WHEN $1::text = 'original' THEN NULL
+         ELSE COALESCE(media_asset_generation_from_rel_path($4::text), 0)
+    END
+FROM recordings r
+WHERE r.id = $5
+  AND r.deleted_at IS NULL
+  AND r.purged_at IS NULL
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
     sha256     = NULL,
     updated_at = now()
-WHERE EXISTS (
-    SELECT 1 FROM media_asset_copies c
-    WHERE c.media_asset_id = media_assets.id
-      AND c.store = $5
-      AND c.rel_path = $6
-)
-RETURNING id
+WHERE NOT EXISTS (
+        SELECT 1 FROM media_asset_copies live
+        WHERE live.media_asset_id = media_assets.id
+          AND live.store = $6
+          AND live.state <> 'deleted'
+    )
+  AND COALESCE(EXCLUDED.derived_generation, 0) = COALESCE(media_assets.derived_generation, 0)
+RETURNING id,
+    CASE WHEN kind = 'original' THEN 0
+         ELSE COALESCE(media_asset_generation_from_rel_path($4::text), 0)
+    END::bigint AS generation
 `
 
 type UpsertInPlaceMediaAssetParams struct {
-	RecordingID int64
 	Kind        string
 	Profile     *string
 	SizeBytes   int64
-	StoreName   string
 	RelPath     string
+	RecordingID int64
+	StoreName   string
 }
 
-// A tuple is immutable once published. A different path here means a synthetic identity
-// collision or conflicting import; fail (RETURNING no row) instead of orphaning the old file.
-func (q *Queries) UpsertInPlaceMediaAsset(ctx context.Context, arg UpsertInPlaceMediaAssetParams) (int64, error) {
+type UpsertInPlaceMediaAssetRow struct {
+	ID         int64
+	Generation int64
+}
+
+// in-place 登録の論理行。規則はこの 1 文だけに置く（Go は 0 行を ErrConflict に写すだけ）。
+// 録画がごみ箱か消去済みなら、資産の有無にかかわらず 0 行になる（INSERT ... SELECT の WHERE）。
+// 論理資産が無ければ新規に作る。あれば、次の 3 つを満たすときだけ size_bytes を差し替える。
+//  1. この置き場に、その資産の生きたコピー（active / deleting / pending）が無い。
+//     あれば同じ置き場に 2 つ目の現行ファイルを足すことになる。deleting は unlink される予定のファイルである。
+//  2. パスから読む世代が現行の世代（derived_generation。original は NULL = 0）と等しい。
+//     古い世代で論理行を巻き戻すと、現行のコピーが旧世代として削除される。
+//  3. 録画がごみ箱にない（上記）。
+//
+// derived_generation は変えない。並行する 2 本の登録は
+// media_asset_copies_asset_store_generation_idx が直列化する。
+func (q *Queries) UpsertInPlaceMediaAsset(ctx context.Context, arg UpsertInPlaceMediaAssetParams) (UpsertInPlaceMediaAssetRow, error) {
 	row := q.db.QueryRow(ctx, upsertInPlaceMediaAsset,
-		arg.RecordingID,
 		arg.Kind,
 		arg.Profile,
 		arg.SizeBytes,
-		arg.StoreName,
 		arg.RelPath,
+		arg.RecordingID,
+		arg.StoreName,
 	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
+	var i UpsertInPlaceMediaAssetRow
+	err := row.Scan(&i.ID, &i.Generation)
+	return i, err
 }
 
 const upsertInPlaceRecording = `-- name: UpsertInPlaceRecording :one

@@ -15,18 +15,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
 type recordingHLSTestStore struct {
 	mu       sync.Mutex
-	target   store.RecordingHLSOriginalTarget
+	target   store.RecordingHLSInputTarget
 	err      error
 	lookups  int
-	lookupFn func(recordingID int64, call int) (store.RecordingHLSOriginalTarget, error)
+	lookupFn func(recordingID int64, call int) (store.RecordingHLSInputTarget, error)
 }
 
-func (s *recordingHLSTestStore) GetRecordingHLSOriginalTarget(_ context.Context, recordingID int64) (store.RecordingHLSOriginalTarget, error) {
+func (s *recordingHLSTestStore) GetRecordingHLSTarget(_ context.Context, recordingID int64) (store.RecordingHLSInputTarget, error) {
 	s.mu.Lock()
 	s.lookups++
 	call := s.lookups
@@ -36,10 +37,10 @@ func (s *recordingHLSTestStore) GetRecordingHLSOriginalTarget(_ context.Context,
 		return lookupFn(recordingID, call)
 	}
 	if lookupErr != nil {
-		return store.RecordingHLSOriginalTarget{}, lookupErr
+		return store.RecordingHLSInputTarget{}, lookupErr
 	}
 	if recordingID != 42 {
-		return store.RecordingHLSOriginalTarget{}, store.ErrNotFound
+		return store.RecordingHLSInputTarget{}, store.ErrNotFound
 	}
 	return target, nil
 }
@@ -50,7 +51,13 @@ func (s *recordingHLSTestStore) setError(err error) {
 	s.err = err
 }
 
-func (s *recordingHLSTestStore) setLookup(fn func(int64, int) (store.RecordingHLSOriginalTarget, error)) {
+func (s *recordingHLSTestStore) setTarget(target store.RecordingHLSInputTarget) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.target = target
+}
+
+func (s *recordingHLSTestStore) setLookup(fn func(int64, int) (store.RecordingHLSInputTarget, error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lookupFn = fn
@@ -61,23 +68,34 @@ type recordingHLSTestHarness struct {
 	router chi.Router
 	store  *recordingHLSTestStore
 	root   string
+	// probeDir は偽 ffprobe の置き場。tail（末尾の応答）と calls（末尾の測定の回数）を持つ。
+	probeDir string
 }
 
-// recordingHLSTestProbe は偽 ffprobe の返す値。firstPacketPTS は 90 kHz、他は秒。
+// recordingHLSTestProbe は偽 ffprobe の返す値。firstPacketPTS は先頭の映像パケットの PTS（90 kHz）、
+// tail は末尾の窓（標準入力）に対する compact 形式のパケット行である。
 type recordingHLSTestProbe struct {
 	firstPacketPTS int64
-	videoStart     string
-	videoDuration  string
+	tail           string
+	// tailDelay は末尾の測定を遅くして、同時の要求が重なるようにする（sleep の引数、秒）。
+	tailDelay string
 }
 
-var defaultRecordingHLSTestProbe = recordingHLSTestProbe{firstPacketPTS: 900000, videoStart: "10.0", videoDuration: "4.0"}
+// recordingHLSTailPackets は、秒 endSeconds に終わる映像パケット 1 つの compact 行を返す。
+func recordingHLSTailPackets(endSeconds float64) string {
+	const frame = 3600
+	return fmt.Sprintf("pts=%d|duration=%d|\n", int64(endSeconds*float64(mpegTSTimestampClock))-frame, frame)
+}
+
+// 先頭の映像パケットは 10 秒、末尾は 14 秒に終わる（映像の長さは 4 秒）。
+var defaultRecordingHLSTestProbe = recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(14)}
 
 func newRecordingHLSTestHarness(t *testing.T, captions, hasSubtitles bool, waitTimeout time.Duration, ffmpeg string) recordingHLSTestHarness {
 	t.Helper()
 	return newRecordingHLSTestHarnessWithProbe(t, captions, hasSubtitles, waitTimeout, ffmpeg, defaultRecordingHLSTestProbe)
 }
 
-func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bool, waitTimeout time.Duration, ffmpeg string, probe recordingHLSTestProbe) recordingHLSTestHarness {
+func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bool, waitTimeout time.Duration, ffmpeg string, probe recordingHLSTestProbe, hw ...*ffargs.HWAccel) recordingHLSTestHarness {
 	t.Helper()
 	mediaDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mediaDir, "recordings"), 0o750); err != nil {
@@ -86,10 +104,19 @@ func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bo
 	if err := os.WriteFile(filepath.Join(mediaDir, "recordings", "source.ts"), []byte("not parsed by the fake probe"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(mediaDir, "ingest"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "ingest", "temp.ts"), []byte("growing temp input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	startedAt := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
 	media := &recordingHLSTestStore{
-		target: store.RecordingHLSOriginalTarget{
-			MediaAsset:       store.MediaAsset{ID: 9001, RelPath: "recordings/source.ts", SizeBytes: 28},
+		target: store.RecordingHLSInputTarget{
+			Kind:             store.RecordingHLSInputOriginal,
+			ID:               9001,
+			RelPath:          "recordings/source.ts",
+			SizeBytes:        28,
 			IngestGeneration: 7,
 			StartedAt:        &startedAt,
 		},
@@ -99,12 +126,20 @@ func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bo
 		ffmpeg = "/bin/false"
 	}
 	segmentDir := t.TempDir()
+	var hwAccel *ffargs.HWAccel
+	var inputExtraArgs []string
+	if len(hw) > 0 {
+		hwAccel = hw[0]
+		inputExtraArgs = []string{"-extra_hw_frames", "32"}
+	}
 	h, err := NewRecordingHLS(media, RecordingHLSConfig{
 		StoreName:       "main",
 		MediaDir:        mediaDir,
 		SegmentDir:      segmentDir,
 		FFmpeg:          ffmpeg,
 		FFprobe:         ffprobe,
+		HWAccel:         hwAccel,
+		InputExtraArgs:  inputExtraArgs,
 		Profiles:        []LiveProfile{{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6}},
 		Captions:        captions,
 		CacheBytes:      1 << 20,
@@ -122,22 +157,103 @@ func newRecordingHLSTestHarnessWithProbe(t *testing.T, captions, hasSubtitles bo
 	})
 	router := chi.NewRouter()
 	h.Mount(router)
-	return recordingHLSTestHarness{h: h, router: router, store: media, root: mediaDir}
+	return recordingHLSTestHarness{h: h, router: router, store: media, root: mediaDir, probeDir: filepath.Dir(ffprobe)}
 }
 
 func installRecordingHLSTestFFprobe(t *testing.T, hasSubtitles bool, probe recordingHLSTestProbe) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-ffprobe-recording-hls")
-	streams := fmt.Sprintf(`{"streams":[{"codec_type":"video","start_time":"%[1]s","duration":"%[2]s"},{"codec_type":"audio","start_time":"%[1]s","duration":"%[2]s"}]}`, probe.videoStart, probe.videoDuration)
+	streams := `{"streams":[{"codec_type":"video"},{"codec_type":"audio"}]}`
 	if hasSubtitles {
-		streams = fmt.Sprintf(`{"streams":[{"codec_type":"video","start_time":"%[1]s","duration":"%[2]s"},{"codec_type":"audio","start_time":"%[1]s","duration":"%[2]s"},{"codec_type":"subtitle"}]}`, probe.videoStart, probe.videoDuration)
+		streams = `{"streams":[{"codec_type":"video"},{"codec_type":"audio"},{"codec_type":"subtitle"}]}`
 	}
-	script := fmt.Sprintf("#!/bin/sh\ncase \" $* \" in\n  *\" -show_packets \"*) printf '%d\\n' ;;\n  *) printf '%%s\\n' '%s' ;;\nesac\n", probe.firstPacketPTS, streams)
+	delay := ""
+	if probe.tailDelay != "" {
+		delay = "sleep " + probe.tailDelay + "; "
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+case " $* " in
+  *" pipe:0 "*) echo x >> %[1]q; %[2]scat %[3]q ;;
+  *" -show_packets "*) printf '%%d\n' %[4]d ;;
+  *) printf '%%s\n' '%[5]s' ;;
+esac
+`, filepath.Join(dir, "calls"), delay, filepath.Join(dir, "tail"), probe.firstPacketPTS, streams)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "tail"), []byte(probe.tail), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return path
+}
+
+// setTail は偽 ffprobe の末尾の応答を差し替える。
+func (h recordingHLSTestHarness) setTail(t *testing.T, packets string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(h.probeDir, "tail"), []byte(packets), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// tailCalls は末尾の測定（ffprobe の起動）の回数を返す。
+func (h recordingHLSTestHarness) tailCalls(t *testing.T) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(h.probeDir, "calls"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(data), "x\n")
+}
+
+// useTemp は、録画中の temp を入力にする。temp の中身は偽 ffprobe が解釈するので何でもよい。
+func (h recordingHLSTestHarness) useTemp() {
+	target := h.store.target
+	target.Kind = store.RecordingHLSInputTemp
+	target.ID = 0
+	target.RelPath = "ingest/temp.ts"
+	target.StoreName = "main"
+	h.store.setTarget(target)
+}
+
+// useOriginal は、commit 後の原本を同じ世代の入力にする。
+func (h recordingHLSTestHarness) useOriginal() {
+	target := h.store.target
+	target.Kind = store.RecordingHLSInputOriginal
+	target.ID = 9001
+	target.RelPath = "recordings/source.ts"
+	target.StoreName = ""
+	h.store.setTarget(target)
+}
+
+// growTemp は temp にバイトを足す（サイズの変化が再観測の合図になる）。
+func (h recordingHLSTestHarness) growTemp(t *testing.T) {
+	t.Helper()
+	file, err := os.OpenFile(filepath.Join(h.root, "ingest", "temp.ts"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("+"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// playlistRows は playlist の (URI, EXTINF) の組を並べ、ENDLIST の有無を返す。
+func playlistRows(body string) (rows []string, endlist bool) {
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "#EXTINF:") && i+1 < len(lines) {
+			rows = append(rows, line+" "+lines[i+1])
+		}
+	}
+	return rows, strings.Contains(body, "#EXT-X-ENDLIST")
 }
 
 func recordingHLSRequestPath(storeName string, recordingID int64, generation int64, suffix string) string {
@@ -165,7 +281,7 @@ func (h recordingHLSTestHarness) seedSegment(t *testing.T, key SegmentKey, conte
 	lease.release()
 }
 
-func TestRecordingHLSMasterAndVODPlaylist(t *testing.T) {
+func TestRecordingHLSMasterAndEVENTPlaylist(t *testing.T) {
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 
 	master := h.get(t, recordingHLSRequestPath("main", 42, 7, "master.m3u8"))
@@ -189,8 +305,8 @@ func TestRecordingHLSMasterAndVODPlaylist(t *testing.T) {
 		t.Fatalf("video playlist status = %d, want 200: %s", playlist.Code, playlist.Body.String())
 	}
 	body := playlist.Body.String()
-	if !strings.Contains(body, "#EXT-X-PLAYLIST-TYPE:VOD") || !strings.Contains(body, "#EXT-X-ENDLIST") {
-		t.Fatalf("playlist is not a complete VOD: %s", body)
+	if !strings.Contains(body, "#EXT-X-PLAYLIST-TYPE:EVENT") || !strings.Contains(body, "#EXT-X-ENDLIST") {
+		t.Fatalf("playlist is not a complete EVENT: %s", body)
 	}
 	if !strings.Contains(body, "#EXT-X-PROGRAM-DATE-TIME:2026-10-01T00:00:00Z") {
 		t.Errorf("playlist has no recording-start program date time: %s", body)
@@ -200,11 +316,107 @@ func TestRecordingHLSMasterAndVODPlaylist(t *testing.T) {
 	}
 }
 
+// 壊し方: セグメント cache key に入力種別を含め、commit 後の同世代 cache を分ける。
+func TestRecordingHLSSegmentCacheSurvivesTempCommitAtSameURL(t *testing.T) {
+	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
+	target := h.store.target
+	target.Kind = store.RecordingHLSInputTemp
+	target.ID = 0
+	target.RelPath = "ingest/temp.ts"
+	target.StoreName = "main"
+	h.store.setTarget(target)
+
+	key := SegmentKey{RecordingID: "42", Generation: "7", Profile: "hd", Rendition: "video", Number: 0}
+	h.seedSegment(t, key, "same-generation-ts")
+	path := recordingHLSRequestPath("main", 42, 7, "video/0.ts")
+	for _, kind := range []store.RecordingHLSInputKind{store.RecordingHLSInputTemp, store.RecordingHLSInputOriginal} {
+		if kind == store.RecordingHLSInputOriginal {
+			target = h.store.target
+			target.Kind = store.RecordingHLSInputOriginal
+			target.ID = 9001
+			target.RelPath = "recordings/source.ts"
+			target.StoreName = ""
+			h.store.setTarget(target)
+		}
+		response := h.get(t, path)
+		if response.Code != http.StatusOK || response.Body.String() != "same-generation-ts" {
+			t.Fatalf("%q segment at unchanged URL = %d %q, want cached bytes", kind, response.Code, response.Body.String())
+		}
+	}
+}
+
+// 壊し方: 異なる temp generation を stale として検出しない。
+func TestRecordingHLSTempGenerationChangeReturnsGone(t *testing.T) {
+	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
+	target := h.store.target
+	target.Kind = store.RecordingHLSInputTemp
+	target.ID = 0
+	target.RelPath = "ingest/temp.ts"
+	target.StoreName = "main"
+	target.IngestGeneration = 8
+	h.store.setTarget(target)
+
+	response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/index.m3u8"))
+	if response.Code != http.StatusGone {
+		t.Fatalf("old temp generation status = %d, want 410", response.Code)
+	}
+}
+
+func TestRecordingHLSTempTransformErrorsAreRetryableAndDoNotEndPlaylist(t *testing.T) {
+	for _, exitCode := range []int{0, 7} {
+		t.Run(fmt.Sprintf("ffmpeg exit %d", exitCode), func(t *testing.T) {
+			ffmpeg := filepath.Join(t.TempDir(), "fake-ffmpeg")
+			script := fmt.Sprintf("#!/bin/sh\nexit %d\n", exitCode)
+			if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			h := newRecordingHLSTestHarness(t, false, false, time.Second, ffmpeg)
+			target := h.store.target
+			target.Kind = store.RecordingHLSInputTemp
+			target.ID = 0
+			target.RelPath = "ingest/temp.ts"
+			target.StoreName = "main"
+			h.store.setTarget(target)
+
+			playlist := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/index.m3u8"))
+			if playlist.Code != http.StatusOK || strings.Contains(playlist.Body.String(), "#EXT-X-ENDLIST") {
+				t.Fatalf("in-progress playlist = %d %s, want no ENDLIST", playlist.Code, playlist.Body.String())
+			}
+			response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))
+			if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "1" {
+				t.Fatalf("growing input segment response = %d retry-after=%q %s, want 503 + Retry-After", response.Code, response.Header().Get("Retry-After"), response.Body.String())
+			}
+		})
+	}
+}
+
+func TestRecordingHLSUsesConfiguredHardwareAcceleration(t *testing.T) {
+	argsPath := filepath.Join(t.TempDir(), "args")
+	ffmpeg := filepath.Join(t.TempDir(), "ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit 7\n", argsPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, ffmpeg, defaultRecordingHLSTestProbe, &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"})
+	response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("response = %d, want 500", response.Code)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"-hwaccel\nvaapi\n", "-hwaccel_device\n/dev/dri/renderD128\n", "-hwaccel_output_format\nvaapi\n", "-extra_hw_frames\n32\n"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("ffmpeg args missing %q: %s", want, args)
+		}
+	}
+}
+
 // セグメント n の PROGRAM-DATE-TIME は録画開始 + n·D（D はセグメント秒）。
 //
 // 壊し方: buildRecordingHLSRenditionPlaylist の programDateTime の加算を消す。
 func TestRecordingHLSProgramDateTimeFollowsTheGrid(t *testing.T) {
-	probe := recordingHLSTestProbe{firstPacketPTS: 900000, videoStart: "10.0", videoDuration: "7.0"}
+	probe := recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(17)}
 	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", probe)
 
 	playlist := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/index.m3u8"))
@@ -231,11 +443,11 @@ func TestRecordingHLSProgramDateTimeFollowsTheGrid(t *testing.T) {
 // セグメント数の原点は映像の最初のパケットの PTS で、映像ストリームの start_time ではない。
 // 先頭に古い PES があると start_time は最初の映像より前を指す。
 //
-// 壊し方: probeRecordingHLSTiming の durationSeconds の引き算を originPTS ではなく videoStart にする。
+// 壊し方: recordingHLSVideoDurationFromPackets の引き算を originPTS ではなく 0 にする。
 func TestRecordingHLSSegmentCountFollowsFirstVideoPacket(t *testing.T) {
-	// start_time 10.0 + duration 7.0 = 終端 17.0。最初の映像パケットは 12.0 なので長さは 5.0 秒、
-	// 2 秒セグメントなら 3 本。start_time を原点にすると 7.0 秒で 4 本になる。
-	probe := recordingHLSTestProbe{firstPacketPTS: 12 * 90000, videoStart: "10.0", videoDuration: "7.0"}
+	// 末尾の映像は 17.0 秒に終わる。最初の映像パケットは 12.0 なので長さは 5.0 秒、
+	// 2 秒セグメントなら 3 本。ストリームの start_time（10.0）を原点にすると 7.0 秒で 4 本になる。
+	probe := recordingHLSTestProbe{firstPacketPTS: 12 * 90000, tail: recordingHLSTailPackets(17)}
 	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", probe)
 
 	playlist := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/index.m3u8"))
@@ -386,11 +598,11 @@ func TestRecordingHLSDatabaseOutageKeepsRunningTransform(t *testing.T) {
 
 func TestRecordingHLSOpenThenVerifyRejectsRemovedOriginal(t *testing.T) {
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
-	h.store.setLookup(func(_ int64, call int) (store.RecordingHLSOriginalTarget, error) {
+	h.store.setLookup(func(_ int64, call int) (store.RecordingHLSInputTarget, error) {
 		if call == 1 {
 			return h.store.target, nil
 		}
-		return store.RecordingHLSOriginalTarget{}, store.ErrNotFound
+		return store.RecordingHLSInputTarget{}, store.ErrNotFound
 	})
 
 	response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/index.m3u8"))
@@ -405,30 +617,30 @@ func TestRecordingHLSOpenThenVerifyRejectsRemovedOriginal(t *testing.T) {
 func TestRecordingHLSOpenThenVerifyRejectsReplacedOriginal(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		replace func(*store.RecordingHLSOriginalTarget)
+		replace func(*store.RecordingHLSInputTarget)
 	}{
 		{
 			name: "asset ID",
-			replace: func(target *store.RecordingHLSOriginalTarget) {
+			replace: func(target *store.RecordingHLSInputTarget) {
 				target.ID++
 			},
 		},
 		{
 			name: "relative path",
-			replace: func(target *store.RecordingHLSOriginalTarget) {
+			replace: func(target *store.RecordingHLSInputTarget) {
 				target.RelPath = "recordings/replaced.ts"
 			},
 		},
 		{
 			name: "ingest generation",
-			replace: func(target *store.RecordingHLSOriginalTarget) {
+			replace: func(target *store.RecordingHLSInputTarget) {
 				target.IngestGeneration++
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
-			h.store.setLookup(func(_ int64, call int) (store.RecordingHLSOriginalTarget, error) {
+			h.store.setLookup(func(_ int64, call int) (store.RecordingHLSInputTarget, error) {
 				if call == 1 {
 					return h.store.target, nil
 				}
@@ -438,8 +650,12 @@ func TestRecordingHLSOpenThenVerifyRejectsReplacedOriginal(t *testing.T) {
 			})
 
 			response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/index.m3u8"))
-			if response.Code != http.StatusNotFound {
-				t.Fatalf("replaced original status = %d, want 404", response.Code)
+			wantStatus := http.StatusNotFound
+			if tc.name == "ingest generation" {
+				wantStatus = http.StatusGone
+			}
+			if response.Code != wantStatus {
+				t.Fatalf("replaced original status = %d, want %d", response.Code, wantStatus)
 			}
 			if h.store.lookups != 2 {
 				t.Errorf("target lookup count = %d, want initial lookup and open-then-verify", h.store.lookups)

@@ -1142,6 +1142,9 @@ func TestRecordingHLSWorkloadKeepsStatePodLocal(t *testing.T) {
 		t.Errorf("%s replicas = %s, want 1 while transform state is process-local", deploymentID, got)
 	}
 	container := soleContainer(t, *deployment)
+	if got := fmt.Sprint(mapAt(container, "resources", "limits")["memory"]); got != "3584Mi" {
+		t.Errorf("%s memory limit = %q, want %q for 2Gi scratch plus 3 transform allowances", deploymentID, got, "3584Mi")
+	}
 	image := strAt(container, "image")
 	if name, _, _ := strings.Cut(image, ":"); name != fullImage {
 		t.Errorf("%s image = %q, want %q for ffmpeg/ffprobe", deploymentID, image, fullImage)

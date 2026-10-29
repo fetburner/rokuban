@@ -2,6 +2,7 @@ package inplace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,17 +49,13 @@ func TestRegister_IdempotentExistingFile(t *testing.T) {
 		t.Fatalf("ids changed on repeat: first=%+v second=%+v", first, second)
 	}
 
-	// ごみ箱の録画を rescue が暗黙に復元・複製してはならない。rel_path から同じ
-	// recording を再利用し、deleted_at はそのまま保つ。
+	// ごみ箱の録画を rescue が暗黙に復元・複製してはならない。rel_path から解決した録画が
+	// ごみ箱にあれば、資産が既にあっても ErrConflict で拒否し、deleted_at はそのまま保つ。
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, first.RecordingID); err != nil {
 		t.Fatal(err)
 	}
-	third, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, input)
-	if err != nil {
-		t.Fatalf("Register after soft delete: %v", err)
-	}
-	if third.RecordingID != first.RecordingID || third.AssetIDs[0] != first.AssetIDs[0] {
-		t.Fatalf("soft-deleted asset was duplicated: first=%+v third=%+v", first, third)
+	if _, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, input); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("Register after soft delete error = %v, want store.ErrConflict", err)
 	}
 	var stillDeleted bool
 	if err := pool.QueryRow(context.Background(), `SELECT deleted_at IS NOT NULL FROM recordings WHERE id = $1`, first.RecordingID).

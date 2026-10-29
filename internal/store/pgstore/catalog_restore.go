@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path"
@@ -136,7 +137,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 		return nil, err
 	}
 
-	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetIDs, storeName); err != nil {
+	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetCopyKeys, storeName); err != nil {
 		return nil, err
 	}
 
@@ -411,19 +412,26 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 }
 
 // applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
-func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetIDs map[int64]struct{}, storeName string) error {
+func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetCopyKeys map[store.MediaAssetCopyKey]struct{}, storeName string) error {
 	var missingAt time.Time
 	for _, a := range assets {
-		if _, missing := missingAssetIDs[a.ID]; missing && a.State != "deleted" {
+		assetStore := a.Store
+		if assetStore == "" {
+			assetStore = storeName
+		}
+		copyState, copyDeletedAt := a.State, a.DeletedAt
+		_, observedMissing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]
+		fileVerifiedMissing := observedMissing && a.State != "deleted"
+		if fileVerifiedMissing {
 			if missingAt.IsZero() {
 				if err := tx.QueryRow(ctx, "SELECT now()").Scan(&missingAt); err != nil {
 					return fmt.Errorf("reading database time for missing catalog assets: %w", err)
 				}
 			}
-			// Keep the historical row and its dependent statistics, but never publish
-			// a snapshot's active state for a file removed since export.
-			a.State = "deleted"
-			a.DeletedAt = &missingAt
+			// Keep the historical copy and dependent statistics, but never publish
+			// an active state for a file removed since export.
+			copyState = "deleted"
+			copyDeletedAt = &missingAt
 			res.MissingMediaFiles++
 		}
 		sha256Bytes, err := decodeMediaAssetSHA256(a.SHA256)
@@ -431,26 +439,77 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 			return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
 		}
 		derivedGeneration := catalogDerivedGeneration(a)
+		copyGeneration := catalogCopyGeneration(a)
 		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
 			ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
 			SizeBytes: a.SizeBytes,
 			CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
-			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes,
+			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes, CopyGeneration: copyGeneration,
 		}); err != nil {
 			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
 		}
-		assetStore := a.Store
-		if assetStore == "" {
-			assetStore = storeName
-		}
-		if err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		if err := upsertCatalogMediaAssetCopy(ctx, q, sqlcgen.UpsertMediaAssetCopyParams{
 			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
-			State: a.State, CreatedAt: &a.CreatedAt, DeletedAt: a.DeletedAt,
-		}); err != nil {
+			Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
+		}, fileVerifiedMissing); err != nil {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
 		}
 	}
 	res.MediaAssets = len(assets)
+	return nil
+}
+
+func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params sqlcgen.UpsertMediaAssetCopyParams, fileVerifiedMissing bool) error {
+	if params.State != "deleted" {
+		rows, err := q.UpsertMediaAssetCopy(ctx, params)
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return fmt.Errorf("upsert affected %d rows, want one", rows)
+		}
+		return nil
+	}
+
+	copy, err := q.LockMediaAssetCopyByPhysicalPath(ctx, sqlcgen.LockMediaAssetCopyByPhysicalPathParams{
+		Store: params.Store, RelPath: params.RelPath,
+	})
+	if err == nil {
+		matchesSnapshot := copy.MediaAssetID == params.MediaAssetID && copy.Generation == params.Generation
+		if fileVerifiedMissing && matchesSnapshot {
+			rows, err := q.SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
+				ID: copy.ID, StoreName: params.Store, State: "deleted", ExpectedState: copy.State, DeletedAt: params.DeletedAt,
+			})
+			if err != nil {
+				return err
+			}
+			if rows != 1 {
+				return fmt.Errorf("deleting copy %d affected %d rows, want one", copy.ID, rows)
+			}
+			return nil
+		}
+		// A catalog tombstone is historical state, not proof that the current path
+		// owner is missing. Preserve any live owner and restore the tombstone separately.
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	exists, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
+		MediaAssetID: params.MediaAssetID, Store: params.Store, RelPath: params.RelPath, Generation: params.Generation,
+	})
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	rows, err := q.UpsertMediaAssetCopy(ctx, params)
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("insert affected %d rows, want one", rows)
+	}
 	return nil
 }
 
@@ -479,9 +538,19 @@ func catalogDerivedGeneration(asset catalogdoc.MediaAsset) *int64 {
 	return &generation
 }
 
+func catalogCopyGeneration(asset catalogdoc.MediaAsset) int64 {
+	if asset.Kind == "original" {
+		return 0
+	}
+	if asset.Generation != nil {
+		return *asset.Generation
+	}
+	return legacyDerivedGeneration(asset.RelPath)
+}
+
 func legacyDerivedGeneration(relPath string) int64 {
 	name := strings.TrimSuffix(path.Base(relPath), path.Ext(relPath))
-	marker := strings.LastIndex(name, ".g")
+	marker := max(strings.LastIndex(name, ".g"), strings.LastIndex(name, ".u"))
 	if marker < 0 || marker+2 == len(name) {
 		return 0
 	}

@@ -19,6 +19,9 @@
 --   * 作り直し: view `unsatisfied_encode_rebuilds`（要求行のうち、押した時点の keep と
 --     一致する凍結区間の active な encoded がまだ無いもの。ごみ箱・原本が active でない
 --     録画を含まない）。cut の確認済み条件は掛けない
+--   * 確認待ち: 関数 `awaiting_review_profiles(cut_profiles)`（desired の cut profile
+--     のうち、原本が active で、章の所有・active な encoded・試行行・未充足の
+--     作り直し要求が無い (recording_id, profile)）
 --
 -- 投入一覧（ListMissingEncodeProfiles）と待機列（ListEncodeQueue）は同じ条件で
 -- 不足と満たされていない作り直しを選ぶ。片方にだけ条件を書き足すと、待機列に出るのに
@@ -188,9 +191,10 @@ WHERE q.recording_id = sqlc.arg('recording_id')
   AND q.profile = sqlc.arg('profile')
 FOR SHARE;
 
--- ListCutAwaitingReview は「cut プロファイルを凍結しているのに、まだチャプターを
--- 確認していない」録画数をプロファイル名別に返す（メトリクス
--- rokuban_cut_awaiting_review）。
+-- ListCutAwaitingReview は共有述語 awaiting_review_profiles から、確認待ちの
+-- (recording_id, profile) をプロファイル名別に数える（メトリクス
+-- rokuban_cut_awaiting_review）。active な encoded・試行行・未充足の作り直しがある
+-- 組は確認待ちではなく、既に別の状態として扱われる。
 --
 -- **これは失敗ではない。** ユーザーが確認すれば次のパスが拾う正常な待ち状態で、
 -- 数が減らないこと自体は異常ではない。出している理由は、cut プロファイルを
@@ -198,21 +202,20 @@ FOR SHARE;
 -- 見えるようにするためである（ListUnsatisfiableEncodeProfiles が拾うのは設定から
 -- 消えたプロファイルで、こちらは別の集合）。
 --
--- エンコードしてよい録画（encodable_recordings。ListMissingEncodeProfiles と同じ
--- view）だけ数える。原本が無ければ確認しても投入できないので、削除済み・未取り込みの
--- 録画を「待ち」に混ぜない。
+-- 録画一覧のフィルタと同じ述語を使い、集計の独自コピーを作らない。
 --
 -- name: ListCutAwaitingReview :many
-SELECT want.profile::text AS profile, count(*)::bigint AS recordings
-FROM recording_encode_policy p
-JOIN encodable_recordings er ON er.recording_id = p.recording_id
-CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
-WHERE want.profile = ANY(sqlc.arg('cut_profiles')::text[])
-  AND NOT EXISTS (
-      SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = p.recording_id
-  )
-GROUP BY want.profile
-ORDER BY want.profile;
+SELECT awaiting.profile::text AS profile, count(*)::bigint AS recordings
+FROM awaiting_review_profiles(sqlc.arg('cut_profiles')::text[]) AS awaiting(recording_id, profile)
+GROUP BY awaiting.profile::text
+ORDER BY awaiting.profile::text;
+
+-- ListAwaitingReviewRecordingIDs は確認待ちの録画 ID を 1 録画 1 行で返す。
+-- 複数の cut profile があっても一覧行と awaitingReview 件数は録画単位である。
+-- name: ListAwaitingReviewRecordingIDs :many
+SELECT DISTINCT awaiting.recording_id::bigint AS recording_id
+FROM awaiting_review_profiles(sqlc.arg('cut_profiles')::text[]) AS awaiting(recording_id, profile)
+ORDER BY awaiting.recording_id::bigint;
 
 -- ListUnsatisfiableEncodeProfiles は ListMissingEncodeProfiles が**落とした**側 --- 凍結済みの
 -- desired が known_profiles に無いために永久に満たせない (プロファイル名, 録画数)

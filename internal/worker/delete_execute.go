@@ -45,8 +45,8 @@ import (
 //
 // パスの先頭でブレーカーの発動状態を DB の真実に合わせ直す（ObserveState の
 // コメント参照。プロセス再起動でゲージが失われるため）。
-func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, breakers store.Breakers, site string) (bool, error) {
-	tripped, err := breaker.ObserveState(ctx, breakers, site, breaker.DeleteReconcile)
+func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, breakers store.Breakers, scope string) (bool, error) {
+	tripped, err := breaker.ObserveState(ctx, breakers, scope, breaker.DeleteReconcile)
 	if err != nil {
 		return false, fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
 	}
@@ -63,21 +63,21 @@ func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, brea
 // active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
 // 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
 // 罠で、revert 経路自身がこの窓を作らないようにする）。
-func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff time.Time) error {
-	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, trashCutoff, deleteReconcileRowLimit)
+func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff, overlapCutoff time.Time) error {
+	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, trashCutoff, overlapCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting assets: %w", err)
 	}
 	for _, a := range rows {
-		w.resolveUnqualifiedDeletingAsset(ctx, a, trashCutoff)
+		w.resolveUnqualifiedDeletingAsset(ctx, a, trashCutoff, overlapCutoff)
 	}
 	return nil
 }
 
 // applyDeleteCircuitBreaker は新規削除の上限を超えたとき、または発動中に削除を止める。
-func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, breakers store.Breakers, site string, tripped bool, total, maxPerPass int) (bool, error) {
+func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, breakers store.Breakers, scope string, tripped bool, total, maxPerPass int) (bool, error) {
 	if total > maxPerPass {
-		if err := breaker.Trip(ctx, breakers, site, breaker.DeleteReconcile, maxPerPass, breaker.Sample{Total: total}); err != nil {
+		if err := breaker.Trip(ctx, breakers, scope, breaker.DeleteReconcile, maxPerPass, breaker.Sample{Total: total}); err != nil {
 			return false, fmt.Errorf("tripping circuit breaker: %w", err)
 		}
 		return true, nil
@@ -92,7 +92,7 @@ func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, b
 	return false, nil
 }
 
-// deleteCandidates はごみ箱・until_encoded・外した版と公開前の孤児候補を物理削除する。
+// deleteCandidates はごみ箱・until_encoded・外した版・旧世代と公開前の孤児候補を物理削除する。
 func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCandidateSet, orphanMTimeGrace time.Duration) {
 	for _, a := range c.trash {
 		w.deleteMediaAsset(ctx, a, "trash")
@@ -102,6 +102,9 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCa
 	}
 	for _, a := range c.removedEncoded {
 		w.deleteMediaAsset(ctx, a, "removed_encoded")
+	}
+	for _, a := range c.oldGeneration {
+		w.deleteMediaAsset(ctx, a, "old_generation")
 	}
 	for _, relPath := range c.agedOrphans {
 		// ctx 死亡後は残りを打ち切る（DeleteOrphanFile 1 件ごとに
@@ -115,7 +118,7 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCa
 	}
 }
 
-// deleteMediaAsset は 1 アセットを冪等な 3 段階（active → deleting → unlink →
+// deleteMediaAsset は 1 コピーを冪等な 3 段階（active → deleting → unlink →
 // deleted）で物理削除する。各段階のエラーはログに残すだけで呼び出し元には
 // 伝播しない — 1 件の失敗でパス全体を止めると、後続の正常な削除まで巻き込む
 // ため（record_sweep の processRecord と同じ設計判断）。deleting のまま
@@ -125,7 +128,7 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCa
 // が録画単位・パス末尾で行う（issue #135）ため、ここでは deleted まで到達
 // したかどうかを戻さない。
 func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.MediaDeleteAsset, source string) {
-	log := slog.With("media_asset_id", t.ID, "rel_path", t.RelPath, "source", source)
+	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath, "source", source)
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting media asset"); err != nil {
 		log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", err)
 		return
@@ -155,7 +158,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 	// API と同じ recordings 行ロックを取り、要求が commit されていないことを
 	// 名前付き述語で再確認してから deleting にする。
 	if source == "until_encoded" {
-		marked, err := w.MediaDelete.MarkUntilEncodedDeleting(ctx, t.RecordingID, t.ID)
+		marked, err := w.MediaDelete.MarkUntilEncodedDeleting(ctx, t.RecordingID, t.MediaAssetID, t.ID)
 		if err != nil {
 			log.Error("delete_reconcile: rechecking until_encoded eligibility", "err", err)
 			return
@@ -163,11 +166,14 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		if !marked {
 			return
 		}
-	} else {
-		// 既に deleting なら 0 行更新（それでよい。pending 経路はこの UPDATE を
-		// スキップしても問題ない冪等な no-op）。active からの遷移だけを記録する。
-		if err := w.MediaDelete.MarkDeleting(ctx, t.ID); err != nil {
+	} else if source != "pending" {
+		// active からの遷移だけを記録する。pending は既に deleting である。
+		marked, err := w.MediaDelete.MarkDeleting(ctx, t.ID, "active")
+		if err != nil {
 			log.Error("delete_reconcile: marking asset deleting", "err", err)
+			return
+		}
+		if !marked {
 			return
 		}
 	}
@@ -257,8 +263,8 @@ var afterDeletingAssetStat = func(string) {}
 // 確定する。ここで無条件に active へ戻すと、案 B（復元時に deleting を
 // 同期的に active へ戻す）を却下した理由そのもの ——「active なのにファイルが
 // 無い行」を作ってしまう。
-func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, graceCutoff time.Time) {
-	log := slog.With("media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
+func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, graceCutoff, overlapCutoff time.Time) {
+	log := slog.With("media_asset_id", a.MediaAssetID, "media_asset_copy_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
 
 	path, err := mediapath.Resolve(w.MediaDir, a.RelPath)
 	if err != nil {
@@ -291,7 +297,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 		log.Warn("delete_reconcile: withholding deleting-state resolution because media store marker did not match", "err", err)
 		return
 	}
-	updated, err := w.MediaDelete.RevertToActive(ctx, a.ID, graceCutoff)
+	updated, err := w.MediaDelete.RevertToActive(ctx, a.ID, graceCutoff, overlapCutoff)
 	if err != nil {
 		log.Error("delete_reconcile: reverting asset to active", "err", err)
 		return

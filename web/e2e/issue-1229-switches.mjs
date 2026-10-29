@@ -71,7 +71,7 @@ async function apiHandler({ path: requestPath, url, json, route }) {
   if (/^\/api\/sites\/default\/programs\/\d+\/overlaps$/.test(requestPath)) {
     return json({ count: 0, reservations: [] })
   }
-  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (requestPath === '/api/storage') return json([])
   return json([])
 }

@@ -211,7 +211,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 	}
 	if w.MediaStoreName == "" && len(seenOnDisk) == 0 {
 		slog.Warn("delete_reconcile: filesystem walk observed zero files while active media_asset_copies exist; suspecting a storage mount failure, skipping missing-asset check for this pass",
-			"active_assets", len(active))
+			"active_copies", len(active))
 		metrics.MissingAssetScanSuspectedStorageFailure.Inc()
 		return true, nil
 	}
@@ -228,7 +228,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		}
 		candidates[a.ID] = struct{}{}
 		if err := w.Storage.UpsertMissingMediaAsset(ctx, a.ID); err != nil {
-			return false, fmt.Errorf("recording missing-asset candidate %d: %w", a.ID, err)
+			return false, fmt.Errorf("recording missing-asset candidate copy %d: %w", a.ID, err)
 		}
 	}
 
@@ -243,7 +243,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		// もう実体無し候補でない（ファイルが見つかった、またはこの資産自体が
 		// もう active でなくなった等）。掃除する。
 		if err := w.Storage.DeleteMissingMediaAsset(ctx, id); err != nil {
-			return false, fmt.Errorf("clearing stale missing-asset record %d: %w", id, err)
+			return false, fmt.Errorf("clearing stale missing-asset record copy %d: %w", id, err)
 		}
 	}
 	return false, nil
@@ -271,8 +271,9 @@ func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, age
 	for i, a := range aged {
 		counts[a.Kind]++
 		if i < missingAssetLogBudget {
-			slog.Warn("delete_reconcile: active media asset has no file on disk",
-				"media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath,
+			slog.Warn("delete_reconcile: active media asset copy has no file on disk",
+				"media_asset_id", a.MediaAssetID, "media_asset_copy_id", a.ID,
+				"recording_id", a.RecordingID, "rel_path", a.RelPath,
 				"kind", a.Kind, "first_seen", a.FirstSeen)
 		}
 	}

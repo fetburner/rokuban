@@ -57,7 +57,7 @@ import (
 //     （store.PlanEncodedPublish）で判定する。次のどれかなら公開を飛ばす（temp を消して戻り、
 //     旧ファイルの unlink も encode.finished も出さない）:
 //     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
-//     encoded 行の rel_path を書くのは UpsertEncodedMediaAsset だけで、行は DELETE
+//     encoded 行の rel_path を書くのは UpsertDerivedMediaAsset だけで、行は DELETE
 //     されず tombstone で残るので、rel_path は世代順に前へしか進まない。古い計画の
 //     実行が行を巻き戻すのをこれが止める。(a) は「誰かが済ませた」ではなく
 //     「自分の計画が古い」を意味する。(a) だけが立ち行が active なら（区間が違う
@@ -219,7 +219,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 
 	// 置き換えでは新しい世代のパスに置いてから旧パスを消す（世代と旧パスは
 	// planEncodePublish が冒頭の観測から導く）。
-	prevRelPath, generation := observed.replaced, observed.generation
+	generation := observed.generation
 	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container, int(generation), cut != nil)
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
@@ -307,14 +307,6 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 		log.Info("encode: skipped publishing, another attempt already advanced the row or the profile is no longer desired")
 		result = "success"
 		return nil
-	}
-
-	// 旧パスの unlink は commit の後。**失敗しても孤児報告に任せる**（旧行はもう
-	// 存在しないので、cleanup が「メディア上にあるが DB に載っていないファイル」
-	// として記録する）。commit の前に消すと、commit が失敗したときに生きている行が
-	// 指すファイルを失う。
-	if prevRelPath != "" && prevRelPath != relPath {
-		w.removeReplacedEncoded(prevRelPath, log)
 	}
 
 	log.Info("encode: committed", "rel_path", relPath, "bytes", size)
@@ -892,9 +884,6 @@ type encodePlan struct {
 	observedRelPath string
 	// generation はこの試行が使う派生世代。初回の cut は 1、他の初回出力は 0。
 	generation int64
-	// replaced は commit の後に unlink する旧パス。cut で旧行が active のときだけ
-	// 非空（tombstone / deleting のファイルは自分のものではない）。
-	replaced string
 	// skip は公開を飛ばして成功扱いにする判定。
 	skip bool
 	// skipReason は飛ばす理由。skip でないときは空。
@@ -925,44 +914,7 @@ func planEncodePublishFromState(
 	} else if in.Cut {
 		p.generation = 1
 	}
-	if in.Cut {
-		if plan.Replaces && state.EncodedAsset != nil {
-			p.replaced = state.EncodedAsset.RelPath
-		}
-	}
 	return p
-}
-
-// removeReplacedEncoded は置き換えで不要になった旧ファイルを消す。
-//
-// **失敗はログのみ。** 旧パスはもう media_assets のどの行からも指されていないので、
-// 既存の孤児検出（cleanup）が「メディア上にあるが DB に載っていないファイル」と
-// して記録・報告する。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
-// 再試行が新しい世代をさらに作る。
-func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
-	// 旧本体と旧サイドカーの unlink はまとめて 1 回照合する。
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced encoded output"); err != nil {
-		log.Warn("encode: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
-		return
-	}
-	path, err := mediapath.Resolve(w.MediaDir, relPath)
-	if err != nil {
-		log.Warn("encode: could not resolve replaced path", "rel_path", relPath, "err", err)
-		return
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("encode: removing replaced encoded file failed; orphan reporting will expose it",
-			"rel_path", relPath, "err", err)
-	}
-	// サイドカーも同じ世代で置き換わる。
-	if sidecarRel, err := mediapath.SubtitleSibling(relPath); err == nil {
-		if sidecar, err := mediapath.Resolve(w.MediaDir, sidecarRel); err == nil {
-			if removeErr := os.Remove(sidecar); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				log.Warn("encode: removing replaced subtitle failed; orphan reporting will expose it",
-					"rel_path", sidecarRel, "err", removeErr)
-			}
-		}
-	}
 }
 
 func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (store.MediaAsset, error) {

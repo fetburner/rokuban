@@ -4,7 +4,8 @@ package pgstore
 // r は recordings の別名。原本の状態とは独立に temp の公開にも適用する。
 const recordingPlaybackVisibleSQL = `r.deleted_at IS NULL AND r.purged_at IS NULL AND r.superseded_at IS NULL`
 
-// recordingPlaybackFinishedSQL は原本 VOD と世代付き録画 HLS が共有する完了状態の述語。
+// recordingPlaybackFinishedSQL は原本 VOD が使う完了状態の述語。世代付き録画 HLS は録画中も
+// temp を配信するので使わず、原本の行と進捗行の有無で入力を決める。
 // 録画 API の一覧は録画中も返すため recordingPlaybackVisibleSQL には含めない。
 const recordingPlaybackFinishedSQL = `r.status = 'finished'`
 

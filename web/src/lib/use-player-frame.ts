@@ -17,6 +17,9 @@ type PlayerFrameOptions = {
   savePositionKey?: unknown
   getSubtitleTracks?: (video: HTMLVideoElement) => readonly TextTrack[]
   subtitleState?: unknown
+  /** 利用者の操作（操作バー・キー・映像のクリック）が `pause()` / `play()` を呼ぶ直前に呼ぶ。 */
+  onUserPause?: () => void
+  onUserPlay?: () => void
 }
 
 /**
@@ -47,6 +50,8 @@ export function usePlayerFrame(
     savePositionKey,
     getSubtitleTracks,
     subtitleState,
+    onUserPause,
+    onUserPlay,
   } = options
   const hasSavePosition = onSavePosition !== undefined
   const controlsTimerRef = useRef<number | undefined>(undefined)
@@ -63,6 +68,8 @@ export function usePlayerFrame(
   const seekToFractionRef = useRef(onSeekToFraction)
   const savePositionRef = useRef(onSavePosition)
   const getSubtitleTracksRef = useRef(getSubtitleTracks)
+  const userPauseRef = useRef(onUserPause)
+  const userPlayRef = useRef(onUserPlay)
   const originalSubtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
 
   useEffect(() => {
@@ -70,7 +77,9 @@ export function usePlayerFrame(
     seekToFractionRef.current = onSeekToFraction
     savePositionRef.current = onSavePosition
     getSubtitleTracksRef.current = getSubtitleTracks
-  }, [getSubtitleTracks, onSavePosition, onSeekBy, onSeekToFraction])
+    userPauseRef.current = onUserPause
+    userPlayRef.current = onUserPlay
+  }, [getSubtitleTracks, onSavePosition, onSeekBy, onSeekToFraction, onUserPause, onUserPlay])
 
   const hideLater = () => {
     controlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3000)
@@ -127,8 +136,13 @@ export function usePlayerFrame(
   const togglePlay = () => {
     const video = videoRef.current
     if (!video) return
-    if (video.paused) void video.play().catch(() => {})
-    else video.pause()
+    if (video.paused) {
+      userPlayRef.current?.()
+      void video.play().catch(() => {})
+    } else {
+      userPauseRef.current?.()
+      video.pause()
+    }
   }
 
   useEffect(() => {
@@ -246,8 +260,13 @@ export function usePlayerFrame(
       let handled = true
       switch (key) {
         case ' ':
-          if (video.paused) void video.play().catch(() => {})
-          else video.pause()
+          if (video.paused) {
+            userPlayRef.current?.()
+            void video.play().catch(() => {})
+          } else {
+            userPauseRef.current?.()
+            video.pause()
+          }
           break
         case 'arrowleft':
           seekByRef.current?.(-10)
@@ -329,8 +348,13 @@ export function usePlayerFrame(
           handleControlsActivity()
           return
         }
-        if (event.currentTarget.paused) void event.currentTarget.play().catch(() => {})
-        else event.currentTarget.pause()
+        if (event.currentTarget.paused) {
+          userPlayRef.current?.()
+          void event.currentTarget.play().catch(() => {})
+        } else {
+          userPauseRef.current?.()
+          event.currentTarget.pause()
+        }
       },
     },
     /** `RecordingPlaybackControls` に渡す枠の状態と操作。 */

@@ -401,7 +401,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (requestPath === '/api/live-profiles') {
     return json([{ name: 'hd', height: 720 }, { name: 'sd', height: 480 }])
   }
-  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === `/api/recordings/${RECORDING_ID}` && method === 'GET') {
     recordingDetailRequests += 1
@@ -1105,7 +1105,7 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
   if (requestPath === '/api/breakers' || requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return json([])
   if (requestPath === '/api/events') return sseKeepAlive(route)
   if (requestPath === '/api/live-profiles') return json([{ name: 'hd', height: 720 }, { name: 'sd', height: 480 }])
-  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (requestPath === '/api/recordings' && method === 'GET') return json([offsetRecording])
   if (requestPath === `/api/recordings/${OFFSET_ID}` && method === 'GET') return json(offsetRecording)
   if (requestPath === `/api/recordings/${OFFSET_ID}/chapters`) {

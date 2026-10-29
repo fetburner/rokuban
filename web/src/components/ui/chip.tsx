@@ -14,11 +14,13 @@ export function Chip({
   active,
   onClick,
   disabled,
+  className,
   children,
 }: {
   active: boolean
   onClick: () => void
   disabled?: boolean
+  className?: string
   children: React.ReactNode
 }) {
   return (
@@ -42,6 +44,7 @@ export function Chip({
           // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。
           // docs/frontend/design.md「コントラストは毎回測る」）。
           : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground',
+        className,
       )}
     >
       {children}

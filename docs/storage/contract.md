@@ -217,20 +217,19 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 ### カット版・サムネイルの置き換え（「置くのは一回」の 2 つの例外）
 
-カット版とサムネイルを作り直すときは、同じパスへ上書きせず、世代番号を入れた新しいパスへ置く。行は消さずに 1 つの transaction で更新し、旧パスの unlink は commit の後にする。
+カット版とサムネイルを作り直すときは、同じパスへ上書きせず、新しい世代のコピー行を追加して公開する。旧世代の物理行は残し、配信・派生物の有無を調べる読み手からは世代カウンターで隠す。旧世代の unlink は削除 reconcile が overlap の後に行う。
 
 カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きているコピーの `(store, rel_path)` 部分一意索引とも衝突するからである。
 
 - 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時に読み、旧 worker 停止後の adopt でも再照合する
-- 新しいファイルを置く。1 つの tx で論理サイズとコピーの `rel_path` を更新し、[`storage.stores` の FS 置き場](../configuration/keys.md#置き場の規則)のコピーと `media_asset_cuts` を差し替える。commit 後に旧パスを unlink する
-- **unlink を commit の前にしない**。commit が失敗すると、生きている行が指すファイルを失う（ルール 3 の「DB commit が公開点」と同じ向き）。旧ファイルの unlink に失敗した場合は canonical orphan として報告し、手動調査まで残す
-- 行は消さずに UPDATE する。消して作り直すと `(store, rel_path)` の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを取れる
+- 新しいファイルを置き、1 つの tx で論理サイズ・`derived_generation`・`media_asset_cuts` と新しい物理コピー行を commit する。コピー行の世代は後から書き換えない。旧世代は同じ置き場に残り、削除 reconcile が overlap 後に回収する
+- 置き換え時に旧コピー行を書き換えない。書き換えると、旧ファイルの所在と世代を削除 reconcile が追えなくなる。公開した worker は旧ファイルを消さないので、commit が失敗しても旧ファイルと旧行は残る
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
 - 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は `derived_generation` から進める
-- 新しい JPEG を置く。1 つの tx で論理サイズとコピーの `rel_path` を更新する。同じ tx で `storage.stores` の FS 置き場のコピーと `media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
-- 行は消さずに UPDATE する。行 id と配信対象を保ったまま世代を進める。unlink は commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
+- 新しい JPEG を置く。1 つの tx で論理サイズ・`derived_generation`・新しい物理コピー行と `media_asset_thumbnail_seeks` を commit する。旧コピー行は保持し、旧ファイルは overlap 後に削除 reconcile が回収する
+- 公開した worker は、旧コピーをその場で unlink しない。commit 直後に落ちても、定期の削除 reconcile が旧世代を見つけ、通常の削除と同じ path lock と状態遷移で削除を再開する
 
 <details><summary>根拠</summary>
 
@@ -371,7 +370,7 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 
 - 時間軸: カット境界は入力の最早 `start_time` を 0 とする秒で適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ数値の位置を渡す。chapter ranges と `seek_ms` は `recording_chapter_spans` / `media_asset_cuts.keep_ranges` と同じ ms を使う。放送 TS は音声が映像より先に始まることがあり、章の原点（最初の映像フレーム）と入力の最早 `start_time` の差は未測定。そのため、この値が同じ画面を指すことと、原本 / encoded 版間で同じ `seek_ms` が揃うことは実録画で確認する
 - 画素縦横比: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
-- ストレージ契約: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後にメディアへストリームコピー + fsync する。初回は `media_assets` と `media_asset_thumbnail_seeks` を同じ tx で INSERT し、差し替えでは両方を同じ tx で UPDATE する（差し替え規約は §3）
+- ストレージ契約: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後にメディアへストリームコピー + fsync する。初回は `media_assets` と `media_asset_thumbnail_seeks` を同じ tx で INSERT し、差し替えでは世代付きコピー行と両者を同じ tx で更新する（差し替え規約は §3）
 - 相対パス: 初回は `thumbnails/{recording_id}.jpg`。差し替えは `thumbnails/{recording_id}.g{n}.jpg`（n は `derived_generation` から進めた世代）。原本の contentPath に依存しないので、原本削除後もパスが安定する
 - 位置の事実: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
 - 配信: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）

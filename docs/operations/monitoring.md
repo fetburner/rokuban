@@ -105,7 +105,7 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 差分ゲージは、収束すればゼロに戻る。アラートはこちらで取る。`rokuban_reconcile_schedule_lost_total` は 0 以外がアラート対象である。意味は reconcile の節にある。
 
-`rokuban_reconcile_circuit_breaker_trips_total` が数えるのは、全損シグネチャでの発動である。件数の閾値ではない。意味が変わってもメトリクス名を据え置いたのは、既存のダッシュボードとアラートを壊さないためである。`rokuban_circuit_breaker_tripped` はラッチなので、アラートはこちらで取る。`breaker="delete_reconcile"` は site が空文字列になる。
+`rokuban_reconcile_circuit_breaker_trips_total` が数えるのは、全損シグネチャでの発動である。件数の閾値ではない。意味が変わってもメトリクス名を据え置いたのは、既存のダッシュボードとアラートを壊さないためである。`rokuban_circuit_breaker_tripped` はラッチなので、アラートはこちらで取る。互換性のためラベル名は `site` のままだが、`breaker="delete_reconcile"` では値に置き場名が入る。
 
 `rokuban_presync_pending_earliest_start_timestamp_seconds` は、件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する。pending が 0 の reason には系列が出ない。スナップショットの時刻は、予約状況（観測した schedule）の全量 upsert と stale 削除と marker 更新を同一トランザクションでコミットした最後の時刻である。未確立は 0 で、`presync_pending` と対で観測不能を判定する。
 

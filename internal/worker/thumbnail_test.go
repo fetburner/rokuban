@@ -356,8 +356,8 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	if state.SeekMs == nil || *state.SeekMs != 89993 {
 		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
 	}
-	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))); !os.IsNotExist(err) {
-		t.Errorf("old thumbnail path still exists (stat err = %v)", err)
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))); err != nil {
+		t.Errorf("old thumbnail path should remain through the transfer overlap (stat err = %v)", err)
 	}
 	newPath := filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d.g1.jpg", recordingID))
 	if data, err := os.ReadFile(newPath); err != nil || !bytesEqual(data, tinyJPEG) {
@@ -599,7 +599,7 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 }
 
 func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
-	// ON CONFLICT DO UPDATE の UpsertThumbnailMediaAsset は、既に active な行がある
+	// ON CONFLICT DO UPDATE の UpsertDerivedMediaAsset(thumbnail) は、既に active な行がある
 	// recording に対しても同じ行を更新する（行数は増えない）。
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -632,12 +632,12 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 
 	// 同じ値で再度 upsert しても既存行の conflict にならず成功する。
 	generation := int64(0)
-	if _, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
+	if _, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID:       recordingID,
 		SizeBytes:         int64(len(tinyJPEG)),
 		DerivedGeneration: &generation,
 	}); err != nil {
-		t.Fatalf("UpsertThumbnailMediaAsset over existing active row: %v", err)
+		t.Fatalf("UpsertDerivedMediaAsset(thumbnail) over existing active row: %v", err)
 	}
 
 	var n int

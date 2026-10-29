@@ -48,8 +48,8 @@ WITH assets AS (
   SELECT id, 'original', 1 FROM recordings
   RETURNING id
 )
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-SELECT id, 'main', 'sites/default/e2e/' || id, 'active' FROM assets;`
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT id, 'main', 'sites/default/e2e/' || id, 0, 'active' FROM assets;`
   execFileSync('psql', [DATABASE_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], { stdio: 'pipe' })
 }
 

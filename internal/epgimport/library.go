@@ -2,8 +2,10 @@ package epgimport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/catalog"
@@ -70,7 +72,10 @@ type LibraryThumbnail struct {
 type LibraryImportResult struct {
 	Registered int
 	Skipped    int
-	Warnings   []string
+	// SkippedConflicts は、既存の資産と両立せず store.ErrConflict で登録を拒否された Recorded の件数
+	// （Skipped には含めない）。
+	SkippedConflicts int
+	Warnings         []string
 }
 
 // ImportLibrary は EPGStation の Recorded/VideoFile/Thumbnail を rokuban の
@@ -192,6 +197,13 @@ func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, 
 			Assets: assets,
 		}
 		if _, err := inplace.Register(ctx, publisher, mediaDir, in); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				// 生きたコピーがある・世代が違う・ごみ箱の録画のどれか。この Recorded だけを飛ばして続ける。
+				slog.Warn("epgimport: skipping recorded that conflicts with an existing media asset",
+					"name", item.Name, "err", err)
+				res.SkippedConflicts++
+				continue
+			}
 			return res, fmt.Errorf("registering recorded %q: %w", item.Name, err)
 		}
 		res.Registered++

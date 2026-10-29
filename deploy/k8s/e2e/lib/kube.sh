@@ -496,8 +496,8 @@ produce_real_encode_job() {
             VALUES (${rec_id}, 'original', ${size})
             RETURNING id
           )
-          INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-          SELECT id, 'main', '${E2E_ENCODE_REL_PATH}', 'active' FROM asset" >/dev/null || return 1
+          INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+          SELECT id, 'main', '${E2E_ENCODE_REL_PATH}', 0, 'active' FROM asset" >/dev/null || return 1
 
   # **`max_attempts` は 1。** 失敗したら `discarded` になって滞留が消える ---
   # 再試行で新しい Job が起き続けると、判定 3 が「どの Job を見ているのか」を

@@ -330,8 +330,8 @@ func TestSchemaV1_MediaAssetCopyUniqueStoreRelPath(t *testing.T) {
 		t.Fatalf("creating second logical asset: %v", err)
 	}
 	_, err = pool.Exec(ctx, `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES ($1, $2, 'same/path.m2ts', 'active')`, secondAssetID, dbtest.StoreName)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, 'same/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName)
 	assertPgError(t, err, "23505")
 
 	// deleted にすればパス再利用可
@@ -341,8 +341,8 @@ VALUES ($1, $2, 'same/path.m2ts', 'active')`, secondAssetID, dbtest.StoreName)
 		t.Fatalf("update to deleted: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-VALUES ($1, $2, 'same/path.m2ts', 'active')`, secondAssetID, dbtest.StoreName); err != nil {
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, 'same/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName); err != nil {
 		t.Fatalf("reusing path after deleting its former copy: %v", err)
 	}
 }
