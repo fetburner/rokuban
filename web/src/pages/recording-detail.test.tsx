@@ -3547,6 +3547,61 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     return { user, ...fake, ...rendered }
   }
 
+  it('録画開始直後に hlsPlayback が現れたら、ポスターから v1 を再生する', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
+    const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
+    const fake = createFakeServer({
+      recording: sampleRecording({ ...RUNNING, ingest: { state: 'pending' }, hlsPlayback: [], encodedAssets: [] }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    await screen.findByTestId('recording-playback-preview-timeline')
+
+    fake.setRecording(sampleRecording({
+      ...RUNNING,
+      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
+      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
+      encodedAssets: [],
+    }))
+    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
+    await waitFor(() => expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
+      data: { hlsPlayback: [{ masterUrl: url }] },
+    }))
+    await waitFor(() => expect(screen.queryByTestId('recording-playback-preview-timeline')).not.toBeInTheDocument())
+
+    await userEvent.setup().click(screen.getByTestId('recording-playback-start'))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(url))
+    expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
+  })
+
+  it('#chase が source none で開いても、後から現れた v1 を自動再生する', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
+    const fake = createFakeServer({
+      recording: sampleRecording({ ...RUNNING, ingest: { state: 'pending' }, hlsPlayback: [], encodedAssets: [] }),
+      liveCapability: false,
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { queryClient } = renderAt('/recordings/3#chase')
+    await waitFor(() => expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toBeDefined())
+    expect(document.querySelector('video')).toBeNull()
+
+    fake.setRecording(sampleRecording({
+      ...RUNNING,
+      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
+      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
+      encodedAssets: [],
+    }))
+    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(url))
+    const video = document.querySelector('video')!
+    fireEvent.canPlay(video)
+    await waitFor(() => expect(play).toHaveBeenCalled())
+    expect(play.mock.contexts[0]).toBe(video)
+    expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
+  })
+
   /** finishRecording は録画が終わった状態を取り直させる（追っかけのセッションはそのまま）。 */
   async function finishRecording(
     server: Awaited<ReturnType<typeof startChase>>,
@@ -3748,8 +3803,8 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
   })
 
   /**
-   * 世代を替える間（temp を捨てて取り込みをやり直す間）は、API の hlsPlayback が v1 → 空 → v2 と動き、
-   * SSE は来ない。空の間もプレイヤーを外さず、v2 で最後の再生位置から続けることを固定する。
+   * 世代を替える間（temp を捨てて取り込みをやり直す間）は、API の hlsPlayback が v1 → 空 → v2 と動く。
+   * 空の間も再生元を選び直さず、最後の URL を保って v2 で最後の再生位置から続けることを固定する。
    */
   describe('世代の切り替え中（hlsPlayback が一時的に空）', () => {
     const urlFor = (generation: number) => `/api/media/stores/media/recordings/3/hls/v${generation}/hd/master.m3u8`
@@ -3804,6 +3859,19 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       fetchMock.mock.calls
         .map(([input]) => new URL(String(input), 'http://localhost').pathname)
         .filter((path) => path.includes('/chase/') || path.includes('/original-vod/'))
+
+    it('再生中の recording-hls は空の hlsPlayback でも再選択しない', async () => {
+      const server = await playV1()
+      server.setRecording(empty)
+      await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
+      await waitFor(() => expect(server.queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
+        data: { hlsPlayback: [] },
+      }))
+
+      expect(document.querySelector('video')).toBe(server.video)
+      expect(server.video.getAttribute('src')).toBe(urlFor(1))
+      expect(otherSourceRequests(server.fetchMock)).toEqual([])
+    })
 
     it('空になってもプレイヤーを外さず、v2 の URL で同じ要素のまま最後の位置から続ける', async () => {
       const server = await playV1()

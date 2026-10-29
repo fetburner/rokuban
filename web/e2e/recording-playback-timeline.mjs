@@ -1153,16 +1153,50 @@ async function runRecordingApiHlsCheck() {
   // 1 px が 1 フレームより長くなり、途中シークで窓に入る整数 px が無くなる。EVENT playlist の
   // seekable（約 10 秒）より 2 秒以上長ければ足りる。
   const apiHlsStartedAtNow = new Date(Date.now() - 13_000).toISOString()
-  const apiHlsLiveRecording = { ...apiHlsRecording, startAt: apiHlsStartedAtNow, startedAt: apiHlsStartedAtNow }
-  activeRecording = apiHlsLiveRecording
+  const apiHlsLiveRecording = {
+    ...apiHlsRecording,
+    startAt: apiHlsStartedAtNow,
+    startedAt: apiHlsStartedAtNow,
+    ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
+  }
+  activeRecording = {
+    ...apiHlsLiveRecording,
+    ingest: { state: 'pending' },
+    hlsPlayback: [],
+  }
   recordingHlsRequests.length = 0
   playlistRequests.length = 0
   const page = await context.newPage()
   await installApiStubs(page, timelineHandler)
   await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+  await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+  await page.waitForFunction(() => window.__recordingEventSources.length > 0, undefined, { timeout: 10000 })
+  activeRecording = apiHlsLiveRecording
+  const pendingRefreshed = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return response.request().method() === 'GET' && responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 })
+  await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  const pendingRefreshSucceeded = await pendingRefreshed.then((response) => response.ok()).catch(() => false)
+  if (!pendingRefreshSucceeded) {
+    ng.push('pending から録画 API HLS への recordings SSE 後に詳細 API を取り直せない')
+    await page.close()
+    return
+  }
+  log('\n=== 録画 API HLS: pending から recordings SSE で v1 を選び直す ===')
   await page.getByTestId('recording-playback-start').click()
   await page.locator('video').waitFor({ timeout: 15000 })
+
+  const v1Started = await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video && !video.paused && window.__progressedSeconds >= 0.5
+  }, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
+  if (!v1Started) {
+    ng.push('pending から v1 へ替わった後、実ブラウザで currentTime が進まない')
+    await page.close()
+    return
+  }
 
   const mediaReady = await page.waitForFunction(() => {
     const video = document.querySelector('video')
@@ -1311,8 +1345,7 @@ async function runRecordingApiHlsCheck() {
 }
 
 async function runRecordingApiHlsRecoveryCheck() {
-  // サーバーの世代は v1 → 空 → v2 と動く。temp を捨てると進捗行が消えて hlsPlayback が空・ingest が
-  // pending になり、次の試行の進捗行ができると v2 になる。この遷移に SSE は来ないので、合図は送らない。
+  // サーバーの世代は v1 → 空 → v2 と動く。ここでは 410 復旧だけを独立して測るため、SSE は送らない。
   const fresh = () => new Date().toISOString()
   const v1 = { ...apiHlsRecoveryV1, ingest: { ...apiHlsRecoveryV1.ingest, observedAt: fresh() } }
   activeRecording = v1

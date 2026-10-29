@@ -943,6 +943,7 @@ describe('LivePlayer の状態遷移', () => {
 
       it('止まっている間に別の位置へシークすると、新しい位置で 5 秒数えて張り直す', async () => {
         const path = await renderRecoveryPath()
+        vi.setTimerTickMode('manual')
         const { video, media } = path
         await stallAt52(path)
         // Safari は止まっている最中に自分で pause を出す（製品の pause() 無し）。
@@ -961,7 +962,7 @@ describe('LivePlayer の状態遷移', () => {
         await advance(4999)
         expect(probeCount(path)).toBe(1)
         await advance(1)
-        await waitFor(() => expect(probeCount(path)).toBe(2))
+        expect(probeCount(path)).toBe(2)
       })
 
       it('録画を替えると、前の録画での一時停止の意図を持ち越さない', async () => {

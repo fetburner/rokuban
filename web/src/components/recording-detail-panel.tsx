@@ -275,6 +275,17 @@ export function RecordingDetail({
         generation: playbackState.generation + 1,
       })
     }
+  } else if (!playbackState.started || playbackState.source === 'none') {
+    // プレイヤーを載せる前の選択だけ、録画 API の更新に追従する。`#chase` は started=true でも
+    // source=none から始まることがあり、hlsPlayback が届いたら初期化して自動再生を保つ
+    // （`recording-detail.test.tsx` の「#chase が source none で開いても」）。
+    const source = selectRecordingPlaybackSource(playbackSelection)
+    if (source !== playbackState.source) {
+      setPlaybackState({
+        ...initialPlaybackState(),
+        generation: playbackState.generation + 1,
+      })
+    }
   }
   const [lastRecordingHls, setLastRecordingHls] = useState({ recordingId: recording.id, entries: recording.hlsPlayback })
   if (
@@ -500,7 +511,8 @@ export function RecordingDetail({
     () => validLiveProfile(liveProfiles, liveProfile),
     [liveProfiles, liveProfile],
   )
-  // 世代を替える間（temp を捨てて取り込みをやり直す間）は hlsPlayback が空になり、SSE も来ない。
+  // 世代を替える間（temp を捨てて取り込みをやり直す間）は hlsPlayback が空になり、進捗行の削除が
+  // recordings SSE を送る（`TestRecordingIngestProgressNotify`）。
   // 空の間は最後の URL を持ち続ける。持たずに LivePlayer を外すと、次の世代で作り直したときに
   // 位置がセッション開始へ戻る（recording-detail.test.tsx の「世代の切り替え中」）。
   const recordingHlsPlayback = recording.hlsPlayback.length > 0 ||
