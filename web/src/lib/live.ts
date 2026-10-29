@@ -131,6 +131,45 @@ export function readSubtitleVisibility(
  */
 export const liveStallTimeoutMs = 12_000
 
+/** 世代付き録画 HLS を読み直すまでの停滞時間（ミリ秒）。 */
+export const recordingHlsRecoveryTimeoutMs = 5_000
+
+/** 同じ位置で世代付き録画 HLS を読み直す上限回数。 */
+export const recordingHlsRecoveryLimit = 2
+
+/** 「同じ位置」とみなす幅（秒）。 */
+export const recordingHlsRecoveryToleranceSeconds = 0.5
+
+/** RecordingHlsRecovery は、直前の読み直しの回数とその位置である。 */
+export type RecordingHlsRecovery = { count: number; atSeconds: number }
+
+/**
+ * nextRecordingHlsRecovery は、`waiting` / `stalled` から `elapsedMs` 経った時点で
+ * 世代付き録画 HLS を読み直すかを決める（ネイティブ HLS 専用）。
+ *
+ * 回数は位置で数える。`atSeconds` が前回と `recordingHlsRecoveryToleranceSeconds` 以内なら
+ * 回数を足し、`recordingHlsRecoveryLimit` に達していたら読み直さない。違う位置なら
+ * 1 から数え直す（読み直しの後に 0 秒から元の位置へ戻すシークを「進んだ」と数えると
+ * 立て直しが止まらなくなるため、`timeupdate` で 0 に戻す処理は持たない）。
+ * `userPaused` は利用者の操作による一時停止だけを表す。`media.paused` は渡さない
+ * （実 Safari は止まっている最中に自分で `pause` を出した。Safari 27.0.1。`currentTime` を
+ * 直接代入したシークで 3 回中 3 回、実ポインタでシークする `recording-hls-stall-recovery.mjs`
+ * でも観測）。
+ */
+export function nextRecordingHlsRecovery(
+  prev: RecordingHlsRecovery | null,
+  sample: { elapsedMs: number; atSeconds: number; userPaused: boolean },
+): { recover: boolean; next: RecordingHlsRecovery | null } {
+  if (sample.userPaused || sample.elapsedMs < recordingHlsRecoveryTimeoutMs || !Number.isFinite(sample.atSeconds)) {
+    return { recover: false, next: prev }
+  }
+  if (prev !== null && Math.abs(sample.atSeconds - prev.atSeconds) <= recordingHlsRecoveryToleranceSeconds) {
+    if (prev.count >= recordingHlsRecoveryLimit) return { recover: false, next: prev }
+    return { recover: true, next: { count: prev.count + 1, atSeconds: prev.atSeconds } }
+  }
+  return { recover: true, next: { count: 1, atSeconds: sample.atSeconds } }
+}
+
 /**
  * ProgressWatch は「映像が進んでいるか」の観測状態（issue #871）。
  *

@@ -33,6 +33,7 @@ import type {
   LiveDiagnostics,
   LiveLoadError,
   StallHandling,
+  RecordingHlsRecovery,
   StallTracker,
 } from '@/lib/live'
 import {
@@ -44,7 +45,9 @@ import {
   liveStallTimeoutMs,
   originalVODPlaylistURL,
   observeStall,
+  nextRecordingHlsRecovery,
   probeLivePlaylist,
+  recordingHlsRecoveryTimeoutMs,
   readSubtitleVisibility,
   sendPlaybackLeaveHint,
   supportsNativeHls,
@@ -814,6 +817,20 @@ export function LivePlayer(props: LivePlayerProps) {
     void persistPlaybackPosition(recordingId, write, keepalive)
   }, [isOriginalPlayback, mode, originalDurationSeconds, recordingId, sessionStartSeconds])
 
+  // 利用者が操作で一時停止したか。**`media.paused` の代わりに、世代付き録画 HLS の 5 秒の
+  // 読み直しだけが読む。** 実 Safari は止まっている最中に自分で `pause` を出した
+  // （Safari 27.0.1。`currentTime` を直接代入したシークで 3 回中 3 回、実ポインタでシークする
+  // `recording-hls-stall-recovery.mjs` でも観測）ので、`paused` は利用者の意図を表さない。
+  // 操作バー・キー・映像のクリック・mediaSession の pause が立て、再生操作が消す。
+  const userPausedRef = useRef(false)
+  const markUserPause = useCallback(() => {
+    userPausedRef.current = true
+  }, [])
+  const markUserPlay = useCallback(() => {
+    userPausedRef.current = false
+  }, [])
+  // 世代付き録画 HLS を読み直した回数と位置。effect を跨いで持つので、画質切替を挟んでも続く。
+  const recordingHlsRecoveryRef = useRef<(RecordingHlsRecovery & { recordingId: number | undefined }) | null>(null)
   // Shared frame behavior lives here. The playback source supplies its own seek semantics and
   // HLS subtitle-track classification; live has no seek callbacks and chase has no ratio seek.
   const frame = usePlayerFrame(videoRef, frameRef, undefined, {
@@ -837,6 +854,8 @@ export function LivePlayer(props: LivePlayerProps) {
     savePositionKey: `${mode}:${recordingId}:${sessionStartSeconds}:${offsetSessionKey}`,
     getSubtitleTracks: hlsSubtitleTracks,
     subtitleState: originalSubtitlesEnabled,
+    onUserPause: markUserPause,
+    onUserPlay: markUserPlay,
   })
   const { setMediaPlaying } = frame
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -875,6 +894,31 @@ export function LivePlayer(props: LivePlayerProps) {
   useEffect(() => {
     clearLegacyPlaybackPositions()
   }, [])
+
+  // 別の録画へ替わったら、前の録画の一時停止の意図と読み直しの回数を持ち越さない。
+  useEffect(() => {
+    userPausedRef.current = false
+    recordingHlsRecoveryRef.current = null
+  }, [recordingId])
+
+  // OS のメディアキー・イヤホンの操作も、操作バーと同じく利用者の一時停止として数える。
+  // 世代付き録画 HLS の間だけ登録し、離れたら外す。
+  useEffect(() => {
+    if (!isRecordingHLS || !('mediaSession' in navigator)) return undefined
+    const session = navigator.mediaSession
+    session.setActionHandler('pause', () => {
+      markUserPause()
+      videoRef.current?.pause()
+    })
+    session.setActionHandler('play', () => {
+      markUserPlay()
+      void videoRef.current?.play().catch(() => {})
+    })
+    return () => {
+      session.setActionHandler('pause', null)
+      session.setActionHandler('play', null)
+    }
+  }, [isRecordingHLS, markUserPause, markUserPlay, videoRef])
 
   useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
 
@@ -1114,6 +1158,14 @@ export function LivePlayer(props: LivePlayerProps) {
      * だから `error` は即時、`stalled` / `waiting` は
      * `liveStallTimeoutMs` の猶予つきにする。
      *
+     * **世代付き録画 HLS のネイティブ経路だけは、上の 12 秒より前に 5 秒で読み直す。**
+     * `waiting` / `stalled` から 5 秒たっても再生位置が進まなければ、`manualRetryGeneration` を
+     * 進め、画質切替と同じ張り直し（同じ `<video>` で `src` を外して `load()`、位置と再生の
+     * 引き継ぎ）を同じ画質のまま起こす。回数は位置で数える（`nextRecordingHlsRecovery`。
+     * 閾値・上限・位置の比較は `live.test.ts`、画面の動作は `live-player.test.tsx` の
+     * 「世代付き録画 HLS の停滞復旧」、実 Safari は `recording-hls-stall-recovery.mjs`）。
+     * 利用者の一時停止（`userPausedRef`）では読み直さない。`media.paused` は見ない。
+     *
      * **猶予が満了したときは、まず画質の自動降格を試す**（`canDowngrade`。
      * issue #871）。下げられるときは「このプロファイルが間に合っていない」ので
      * 別のプロファイルで張り直し、下げられないときだけ今のエラー文言に落ちる。
@@ -1129,7 +1181,52 @@ export function LivePlayer(props: LivePlayerProps) {
       isResumePending: () => boolean,
     ) {
       let stallTimer: ReturnType<typeof setTimeout> | null = null
+      let recoveryTimer: ReturnType<typeof setTimeout> | null = null
+      let recoveryFrom = 0
       let lastProgressTime = media.currentTime
+      const clearRecoveryTimer = () => {
+        if (recoveryTimer !== null) {
+          clearTimeout(recoveryTimer)
+          recoveryTimer = null
+        }
+      }
+      const startRecoveryTimer = () => {
+        if (!isRecordingHLS) return
+        // 張り直しの間は `load()` で 0 になった `currentTime` ではなく、戻そうとしている位置で見る。
+        const position = () => chaseResumePending.current ?? media.currentTime
+        if (recoveryTimer !== null) {
+          // 止まっている間に別の位置へシークしたら、新しい位置で数え直す。
+          if (Math.abs(position() - recoveryFrom) < 0.05) return
+          clearRecoveryTimer()
+        } else if (media.paused && !isResumePending()) {
+          // 再生中か再開待ちで止まったときだけ数える。製品を通らない一時停止（PiP・ネイティブの
+          // 操作・OS の中断）の後も WebKit は `stalled` を出すので、ここで数えると勝手に再生を
+          // 始める。Safari 自身の `pause` は `waiting` の後に来る（`recording-hls-stall-recovery.mjs`
+          // の「製品を通らない一時停止」と、`currentTime` を直接代入したシークの測定）。
+          return
+        }
+        const startedAt = Date.now()
+        const startedPosition = position()
+        recoveryFrom = startedPosition
+        recoveryTimer = setTimeout(() => {
+          recoveryTimer = null
+          if (cancelled || Math.abs(position() - startedPosition) >= 0.05) return
+          const known = recordingHlsRecoveryRef.current?.recordingId === recordingId
+            ? recordingHlsRecoveryRef.current
+            : null
+          const { recover, next } = nextRecordingHlsRecovery(known, {
+            elapsedMs: Date.now() - startedAt,
+            atSeconds: position(),
+            userPaused: userPausedRef.current,
+          })
+          if (next !== null) recordingHlsRecoveryRef.current = { ...next, recordingId }
+          if (!recover) return
+          // 止まっている間に Safari が自分で pause していても、利用者が止めていないなら
+          // 張り直しの先で再生を続ける（cleanup が `resumePlaybackPendingRef` を読む）。
+          resumePlaybackPendingRef.current = true
+          setManualRetryGeneration((generation) => generation + 1)
+        }, recordingHlsRecoveryTimeoutMs)
+      }
       const clearStallTimer = () => {
         if (stallTimer !== null) {
           clearTimeout(stallTimer)
@@ -1168,6 +1265,8 @@ export function LivePlayer(props: LivePlayerProps) {
         // `isResumePending()` の間は抑止しない（上の `resumePending` の説明）。
         // これが無いと、降格先も死んでいる場合に `stalled` を無視し続けて
         // **黒いまま永久に何も出ない**
+        // 5 秒の読み直しは `media.paused` で止めない（上の `startRecoveryTimer`）。
+        if (!cancelled) startRecoveryTimer()
         if (cancelled || (startedOnceRef.current && media.paused && !isResumePending()))
           return
         // `waiting` が出た位置を基準にする。直前の timeupdate から waiting までに
@@ -1210,6 +1309,8 @@ export function LivePlayer(props: LivePlayerProps) {
         if (!progressed) return
         lastProgressTime = currentTime
         clearStallTimer()
+        // シークの開始でも位置は動くが、止まりは解けていない。新しい位置の `waiting` で数え直す。
+        if (!media.seeking) clearRecoveryTimer()
       }
       let playedHere = false
       const onPlaying = () => {
@@ -1219,7 +1320,14 @@ export function LivePlayer(props: LivePlayerProps) {
         clearStallTimer()
       }
 
+      // 張り直しの後に元の位置へ戻すシークも、遠くへのシークと同じく止まる（実 Safari で 15 回中 1 回、
+      // 再開待ちで paused のまま 15 秒 `seeking` が終わらず、`waiting` / `stalled` も出なかった）。
+      // 再開待ちの間のシークは、終わらなければ同じ 5 秒の読み直しで数える。
+      const onSeeking = () => {
+        if (!cancelled && isResumePending()) startRecoveryTimer()
+      }
       media.addEventListener('error', onError)
+      media.addEventListener('seeking', onSeeking)
       media.addEventListener('stalled', onStall)
       media.addEventListener('waiting', onStall)
       media.addEventListener('playing', onPlaying)
@@ -1228,7 +1336,9 @@ export function LivePlayer(props: LivePlayerProps) {
       media.addEventListener('pause', onProgress)
       teardown.push(() => {
         clearStallTimer()
+        clearRecoveryTimer()
         media.removeEventListener('error', onError)
+        media.removeEventListener('seeking', onSeeking)
         media.removeEventListener('stalled', onStall)
         media.removeEventListener('waiting', onStall)
         media.removeEventListener('playing', onPlaying)
@@ -1791,12 +1901,14 @@ export function LivePlayer(props: LivePlayerProps) {
     // Boundary selection is an explicit stop, including while a restarted
     // original-HLS session is waiting for its canplay auto-resume.
     resumePlaybackPendingRef.current = false
+    markUserPause()
     if (!media.paused) media.pause()
     seekToOriginalBoundary(Math.round(seconds * 1000))
   }
   const finishPlayAround = (media: HTMLVideoElement) => {
     const boundaryMs = playAroundStopBoundaryMsRef.current
     clearPlayAround()
+    markUserPause()
     media.pause()
     if (boundaryMs !== null) seekToOriginalBoundary(boundaryMs)
   }
@@ -1829,6 +1941,7 @@ export function LivePlayer(props: LivePlayerProps) {
     playAroundStopRef.current = stop
     playAroundStopBoundaryMsRef.current = mode === 'to' ? boundaryMs : null
     seekRecording(start)
+    markUserPlay()
     void media.play().catch(() => {})
   }
   const jumpOriginalChapter = (direction: 'next' | 'prev') => {

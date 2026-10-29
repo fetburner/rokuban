@@ -324,6 +324,12 @@ export async function createSafariAdapter() {
     })
     const sessionId = session.sessionId
     let caseWindow
+    const pointerActions = async (id, actions) => {
+      await request('POST', `/session/${id}/actions`, {
+        actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' }, actions }],
+      })
+      await request('DELETE', `/session/${id}/actions`).catch(() => {})
+    }
     await request('POST', `/session/${sessionId}/timeouts`, { script: 30_000, pageLoad: 30_000, implicit: 0 })
     return {
       version: `Safari ${session.capabilities?.browserVersion ?? '(version unavailable)'}`,
@@ -342,6 +348,18 @@ export async function createSafariAdapter() {
         const elementId = element['element-6066-11e4-a52e-4f735466cecf'] ?? element.ELEMENT
         if (!elementId) throw new Error(`Safari WebDriver が要素を返さない: ${JSON.stringify(element)}`)
         await request('POST', `/session/${sessionId}/element/${elementId}/click`, {})
+      },
+      /** pointerMove は実ポインタを viewport 座標へ動かす（操作バーを出すのに使う）。 */
+      pointerMove: async (x, y) => {
+        await pointerActions(sessionId, [{ type: 'pointerMove', x: Math.round(x), y: Math.round(y), duration: 0, origin: 'viewport' }])
+      },
+      /** pointerClick は viewport 座標を実ポインタで押す。シークバーを利用者と同じ操作で押すのに使う。 */
+      pointerClick: async (x, y) => {
+        await pointerActions(sessionId, [
+          { type: 'pointerMove', x: Math.round(x), y: Math.round(y), duration: 0, origin: 'viewport' },
+          { type: 'pointerDown', button: 0 },
+          { type: 'pointerUp', button: 0 },
+        ])
       },
       evaluate: async (fn, arg) => {
         const value = await request('POST', `/session/${sessionId}/execute/async`, {
