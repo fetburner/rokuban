@@ -6,12 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/catalogdoc"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestCatalogRestoreKeepsLogicalPathOnCurrentGeneration(t *testing.T) {
@@ -138,8 +139,8 @@ func TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive(t *testing.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	oldCreatedAt := now.Add(-time.Hour)
 	oldDeletedAt := now.Add(-time.Minute)
-	oldCopyID := insertCatalogRestoreCopy(t, pool, assetID, dbtest.StoreName, path, "deleted", oldCreatedAt, &oldDeletedAt)
-	currentCopyID := insertCatalogRestoreCopy(t, pool, assetID, dbtest.StoreName, path, "active", now, nil)
+	oldCopyID := insertCatalogRestoreCopy(t, pool, assetID, path, "deleted", oldCreatedAt, &oldDeletedAt)
+	currentCopyID := insertCatalogRestoreCopy(t, pool, assetID, path, "active", now, nil)
 
 	assets := []catalogdoc.MediaAsset{
 		{
@@ -211,7 +212,7 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	if _, err := pool.Exec(ctx, "UPDATE media_assets SET state = 'deleted', deleted_at = $2 WHERE id = $1", oldAssetID, oldDeletedAt); err != nil {
 		t.Fatalf("marking historical logical original deleted: %v", err)
 	}
-	insertCatalogRestoreCopy(t, pool, oldAssetID, dbtest.StoreName, path, "deleted", oldCreatedAt, &oldDeletedAt)
+	insertCatalogRestoreCopy(t, pool, oldAssetID, path, "deleted", oldCreatedAt, &oldDeletedAt)
 
 	currentRecordingID := dbtest.Recording(t, pool)
 	currentAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
@@ -223,7 +224,7 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	if err != nil {
 		t.Fatalf("creating current logical original: %v", err)
 	}
-	currentCopyID := insertCatalogRestoreCopy(t, pool, currentAssetID, dbtest.StoreName, path, "active", now, nil)
+	currentCopyID := insertCatalogRestoreCopy(t, pool, currentAssetID, path, "active", now, nil)
 
 	assets := []catalogdoc.MediaAsset{
 		{
@@ -260,11 +261,11 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	}
 }
 
-func insertCatalogRestoreCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName, relPath, state string, createdAt time.Time, deletedAt *time.Time) int64 {
+func insertCatalogRestoreCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, relPath, state string, createdAt time.Time, deletedAt *time.Time) int64 {
 	t.Helper()
 	rows, err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
-		Store:        storeName,
+		Store:        dbtest.StoreName,
 		RelPath:      relPath,
 		Generation:   0,
 		State:        state,
@@ -278,7 +279,7 @@ func insertCatalogRestoreCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, s
 		t.Fatalf("inserting %s copy for asset %d affected %d rows, want one", state, assetID, rows)
 	}
 	var copyID int64
-	if err := pool.QueryRow(context.Background(), "SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3 AND state = $4", assetID, storeName, relPath, state).Scan(&copyID); err != nil {
+	if err := pool.QueryRow(context.Background(), "SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3 AND state = $4", assetID, dbtest.StoreName, relPath, state).Scan(&copyID); err != nil {
 		t.Fatalf("reading %s copy for asset %d: %v", state, assetID, err)
 	}
 	return copyID
