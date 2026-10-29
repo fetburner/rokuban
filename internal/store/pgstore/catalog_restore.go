@@ -421,7 +421,9 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 			assetStore = storeName
 		}
 		copyState, copyDeletedAt := a.State, a.DeletedAt
-		if _, missing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]; missing && a.State != "deleted" {
+		_, observedMissing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]
+		fileVerifiedMissing := observedMissing && a.State != "deleted"
+		if fileVerifiedMissing {
 			if missingAt.IsZero() {
 				if err := tx.QueryRow(ctx, "SELECT now()").Scan(&missingAt); err != nil {
 					return fmt.Errorf("reading database time for missing catalog assets: %w", err)
@@ -450,7 +452,7 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		if err := upsertCatalogMediaAssetCopy(ctx, q, sqlcgen.UpsertMediaAssetCopyParams{
 			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
 			Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
-		}); err != nil {
+		}, fileVerifiedMissing); err != nil {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
 		}
 		assetIDs[a.ID] = struct{}{}
@@ -464,7 +466,7 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 	return nil
 }
 
-func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params sqlcgen.UpsertMediaAssetCopyParams) error {
+func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params sqlcgen.UpsertMediaAssetCopyParams, fileVerifiedMissing bool) error {
 	if params.State != "deleted" {
 		rows, err := q.UpsertMediaAssetCopy(ctx, params)
 		if err != nil {
@@ -480,22 +482,22 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 		Store: params.Store, RelPath: params.RelPath,
 	})
 	if err == nil {
-		if copy.MediaAssetID != params.MediaAssetID || copy.Generation != params.Generation {
-			return fmt.Errorf("path %q in store %q belongs to asset %d generation %d, want asset %d generation %d: %w",
-				params.RelPath, params.Store, copy.MediaAssetID, copy.Generation, params.MediaAssetID, params.Generation, store.ErrConflict)
+		matchesSnapshot := copy.MediaAssetID == params.MediaAssetID && copy.Generation == params.Generation
+		if fileVerifiedMissing && matchesSnapshot {
+			rows, err := q.SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
+				ID: copy.ID, StoreName: params.Store, State: "deleted", ExpectedState: copy.State, DeletedAt: params.DeletedAt,
+			})
+			if err != nil {
+				return err
+			}
+			if rows != 1 {
+				return fmt.Errorf("deleting copy %d affected %d rows, want one", copy.ID, rows)
+			}
+			return nil
 		}
-		rows, err := q.SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
-			ID: copy.ID, StoreName: params.Store, State: "deleted", ExpectedState: copy.State, DeletedAt: params.DeletedAt,
-		})
-		if err != nil {
-			return err
-		}
-		if rows != 1 {
-			return fmt.Errorf("deleting copy %d affected %d rows, want one", copy.ID, rows)
-		}
-		return nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+		// A catalog tombstone is historical state, not proof that the current path
+		// owner is missing. Preserve any live owner and restore the tombstone separately.
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 
