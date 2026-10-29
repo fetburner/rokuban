@@ -21,9 +21,23 @@ type OriginalVODTarget struct {
 	Site string
 }
 
-// RecordingHLSOriginalTarget は世代付き録画 HLS の入力原本を表す。
-type RecordingHLSOriginalTarget struct {
-	MediaAsset
+// RecordingHLSInputKind は世代付き録画 HLS の入力種別を表す。
+type RecordingHLSInputKind uint8
+
+const (
+	// RecordingHLSInputOriginal は ingest が commit した原本を表す。
+	RecordingHLSInputOriginal RecordingHLSInputKind = iota
+	// RecordingHLSInputTemp は ingest が書き込み中の temp を表す。
+	RecordingHLSInputTemp
+)
+
+// RecordingHLSInputTarget は世代付き録画 HLS が読む入力と DB 上の状態を表す。
+type RecordingHLSInputTarget struct {
+	Kind             RecordingHLSInputKind
+	ID               int64
+	RelPath          string
+	StoreName        string
+	SizeBytes        int64
 	IngestGeneration int64
 	StartedAt        *time.Time
 }
@@ -61,8 +75,8 @@ type MediaServing interface {
 	// site-scoped streamer と照合する。既存セッションの再取得では使わず、セッション開始前と
 	// rel_path lock 取得後に呼ぶ。
 	GetOriginalVODTarget(ctx context.Context, recordingID int64, site string) (OriginalVODTarget, error)
-	// GetRecordingHLSOriginalTarget は完了録画の配信可能な原本と世代を返す。
-	GetRecordingHLSOriginalTarget(ctx context.Context, recordingID int64) (RecordingHLSOriginalTarget, error)
+	// GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。
+	GetRecordingHLSTarget(ctx context.Context, recordingID int64) (RecordingHLSInputTarget, error)
 	// GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。
 	GetRecordingRemovalState(ctx context.Context, recordingID int64) (RecordingRemovalState, error)
 	// GetChaseTarget は追っかけ再生に必要な mirakc record と録画状態を返す。

@@ -27,7 +27,7 @@ func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
 }
 
-func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
+func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	startedAt := time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC)
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -50,26 +50,33 @@ func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
 		t.Fatalf("setting committed ingest generation: %v", err)
 	}
 
-	target, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSOriginalTarget(context.Background(), recordingID)
+	target, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), recordingID)
 	if err != nil {
-		t.Fatalf("GetRecordingHLSOriginalTarget(%d): %v", recordingID, err)
+		t.Fatalf("GetRecordingHLSTarget(%d): %v", recordingID, err)
 	}
-	if target.ID != assetID || target.RelPath != selectedCopyPath || target.IngestGeneration != 19 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
+	if target.Kind != store.RecordingHLSInputOriginal || target.ID != assetID || target.RelPath != selectedCopyPath || target.IngestGeneration != 19 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
 		t.Fatalf("target = %+v, want asset %d at %q, generation 19 and start %s", target, assetID, selectedCopyPath, startedAt)
 	}
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName); err != nil {
 		t.Fatalf("deleting selected-store copy: %v", err)
 	}
-	if _, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSOriginalTarget(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSOriginalTarget(without selected-store active copy) error = %v, want ErrNotFound", err)
+	if _, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSTarget(without selected-store active copy) error = %v, want ErrNotFound", err)
+
 	}
 
+	// commit は mirakc の record の状態で決まり、recordings.status は watcher が後から書く。
+	// 原本の行と有効なコピーがあれば、status が recording でも原本を返す。
 	unfinishedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Status = "recording"
 	})
-	dbtest.MediaAsset(t, pool, unfinishedID)
-	if _, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSOriginalTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetRecordingHLSOriginalTarget(unfinished) error = %v, want ErrNotFound", err)
+	unfinishedAssetID := dbtest.MediaAsset(t, pool, unfinishedID)
+	unfinished, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), unfinishedID)
+	if err != nil {
+		t.Fatalf("GetRecordingHLSTarget(original committed before the watcher wrote finished): %v", err)
+	}
+	if unfinished.Kind != store.RecordingHLSInputOriginal || unfinished.ID != unfinishedAssetID {
+		t.Fatalf("target = %+v, want the original asset %d", unfinished, unfinishedAssetID)
 	}
 }
 
@@ -126,6 +133,13 @@ func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("writing ingest progress: %v", err)
 	}
+	target, err := media.GetRecordingHLSTarget(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("GetRecordingHLSTarget(%d) while ingesting: %v", recordingID, err)
+	}
+	if target.Kind != store.RecordingHLSInputTemp || target.RelPath != tempRelPath || target.StoreName != "tokyo" || target.IngestGeneration != generation {
+		t.Fatalf("ingest HLS target = %+v, want temp path %q in tokyo at generation %d", target, tempRelPath, generation)
+	}
 	state, err := media.GetIngestTempState(ctx, recordingID)
 	if err != nil || state == nil {
 		t.Fatalf("GetIngestTempState() = (%+v, %v), want a row", state, err)
@@ -147,6 +161,13 @@ func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{}}, nil
 	}, func() error { return nil }); err != nil {
 		t.Fatalf("committing original: %v", err)
+	}
+	target, err = media.GetRecordingHLSTarget(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("GetRecordingHLSTarget(%d) after commit: %v", recordingID, err)
+	}
+	if target.Kind != store.RecordingHLSInputOriginal || target.IngestGeneration != generation {
+		t.Fatalf("committed HLS target = %+v, want original at unchanged generation %d", target, generation)
 	}
 	var committedGeneration int64
 	if err := pool.QueryRow(ctx,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -336,23 +337,58 @@ func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, sit
 	return target, nil
 }
 
-// GetRecordingHLSOriginalTarget は完了録画の配信可能な原本と世代を返す。
-func (s *Media) GetRecordingHLSOriginalTarget(ctx context.Context, recordingID int64) (store.RecordingHLSOriginalTarget, error) {
-	var target store.RecordingHLSOriginalTarget
-	err := s.pool.QueryRow(ctx, `SELECT a.id, c.rel_path, a.size_bytes,
- COALESCE(a.ingest_generation, 0)::bigint, r.started_at
- FROM media_assets a JOIN recordings r ON r.id = a.recording_id
- JOIN LATERAL (
-     SELECT copy.rel_path
-     FROM preferred_active_media_asset_copy(a.id, $1::text) copy
- ) c ON true
- WHERE a.recording_id = $2
- AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL("$1")+` AND `+recordingPlaybackVisibleSQL, s.storeName, recordingID).
-		Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.IngestGeneration, &target.StartedAt)
+// GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。
+func (s *Media) GetRecordingHLSTarget(ctx context.Context, recordingID int64) (store.RecordingHLSInputTarget, error) {
+	var startedAt *time.Time
+	var originalID, originalSize, originalGeneration pgtype.Int8
+	var originalRelPath pgtype.Text
+	var tempRelPath, tempStore pgtype.Text
+	var tempSize, tempGeneration pgtype.Int8
+	var hasOriginal bool
+	err := s.pool.QueryRow(ctx, `SELECT r.started_at,
+       a.id, c.rel_path, a.size_bytes, COALESCE(a.ingest_generation, 0)::bigint,
+       p.temp_rel_path, p.temp_store, p.written_bytes, p.temp_generation,
+       EXISTS (SELECT 1 FROM media_assets any_original
+               WHERE any_original.recording_id = r.id AND any_original.kind = 'original')
+FROM recordings r
+LEFT JOIN media_assets a ON a.recording_id = r.id AND `+activePlaybackOriginalSQL("$2")+`
+LEFT JOIN LATERAL (SELECT copy.rel_path FROM preferred_active_media_asset_copy(a.id, $2::text) copy) c ON true
+LEFT JOIN recording_ingest_progress p ON p.recording_id = r.id
+WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
+  AND (a.id IS NOT NULL OR (p.recording_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM media_assets any_original
+      WHERE any_original.recording_id = r.id AND any_original.kind = 'original'
+  )))`, recordingID, s.storeName).Scan(
+		&startedAt,
+		&originalID, &originalRelPath, &originalSize, &originalGeneration,
+		&tempRelPath, &tempStore, &tempSize, &tempGeneration,
+		&hasOriginal,
+	)
+
 	if err != nil {
-		return store.RecordingHLSOriginalTarget{}, mediaQueryError(err, fmt.Sprintf("loading recording HLS original target for recording %d", recordingID))
+		return store.RecordingHLSInputTarget{}, mediaQueryError(err, fmt.Sprintf("loading recording HLS target for recording %d", recordingID))
 	}
-	return target, nil
+	if originalID.Valid {
+		return store.RecordingHLSInputTarget{
+			Kind:             store.RecordingHLSInputOriginal,
+			ID:               originalID.Int64,
+			RelPath:          originalRelPath.String,
+			SizeBytes:        originalSize.Int64,
+			IngestGeneration: originalGeneration.Int64,
+			StartedAt:        startedAt,
+		}, nil
+	}
+	if hasOriginal || !tempRelPath.Valid || !tempStore.Valid || !tempGeneration.Valid {
+		return store.RecordingHLSInputTarget{}, fmt.Errorf("recording %d has no readable HLS input: %w", recordingID, store.ErrNotFound)
+	}
+	return store.RecordingHLSInputTarget{
+		Kind:             store.RecordingHLSInputTemp,
+		RelPath:          tempRelPath.String,
+		StoreName:        tempStore.String,
+		SizeBytes:        tempSize.Int64,
+		IngestGeneration: tempGeneration.Int64,
+		StartedAt:        startedAt,
+	}, nil
 }
 
 // GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。

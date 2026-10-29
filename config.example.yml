@@ -93,10 +93,10 @@ recording_hls:
                                                 # enabled なら必須。起動時に中身を掃除する。
                                                 # emptyDir (Memory) など専用 tmpfs に置き、
                                                 # 複数プロセスで共有しない。
-  # cache_bytes: 1073741824                    # バイト単位。既定 1 GiB。下限の式と tmpfs の
+  # cache_bytes: 1610612736                    # バイト単位。既定 1.5 GiB。下限の式と tmpfs の
                                                 # 大きさは docs/operations/k8s-streamer.md
                                                 # 「世代付き録画 HLS の scratch」。
-  # max_concurrent: 2                          # 生きている ffmpeg の上限。既定 2。
+  # max_concurrent: 3                          # 生きている ffmpeg の上限。既定 3。
   # wait_timeout: 30s                          # セグメント待ちの期限。超過は 503 と Retry-After。
                                                 # 既定 30 秒。
 
