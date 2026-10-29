@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -598,311 +598,6 @@ describe('LivePlayer の状態遷移', () => {
         expect(screen.getByText('録画映像が届いていません（映像データが途絶えました）')).toBeInTheDocument()
       })
 
-      it('5 秒を越えた timeupdate でも復旧回数を消費するだけでなく同じ video を読み直す', async () => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 7 }
-        const { video } = await renderNativeRecordingPath('recording-hls', media)
-        const load = vi.spyOn(video, 'load').mockImplementation(() => {})
-
-        await act(async () => {
-          video.dispatchEvent(new Event('playing'))
-          vi.advanceTimersByTime(500)
-          video.dispatchEvent(new Event('waiting'))
-          // 計器の 1 秒 tick との位相をずらし、5 秒の境界を越えたイベント側が
-          // 次の tick より先に復旧判定を行う条件にする。
-          vi.advanceTimersByTime(5000)
-          video.dispatchEvent(new Event('timeupdate'))
-        })
-
-        expect(load).toHaveBeenCalledTimes(1)
-        expect(load.mock.contexts[0]).toBe(video)
-      })
-
-      it('復旧中の通常シークは新しい位置へ移って再生を続ける', async () => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 0, seeking: false, seekable: true }
-        const { video } = await renderNativeRecordingPath('recording-hls', media)
-        const load = vi.spyOn(video, 'load').mockImplementation(() => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-        const play = vi.spyOn(video, 'play').mockImplementation(() => {
-          media.paused = false
-          return Promise.resolve()
-        })
-        Object.defineProperty(video, 'seekable', {
-          get: () => media.seekable ? { length: 1, start: () => 0, end: () => 60 } : { length: 0 },
-          configurable: true,
-        })
-        Object.defineProperty(video, 'seeking', { get: () => media.seeking, configurable: true })
-
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          video.dispatchEvent(new Event('canplay'))
-          video.dispatchEvent(new Event('playing'))
-          media.currentTime = 52
-          video.dispatchEvent(new Event('timeupdate'))
-          vi.advanceTimersByTime(500)
-          video.dispatchEvent(new Event('waiting'))
-          vi.advanceTimersByTime(5500)
-        })
-        expect(load).toHaveBeenCalledTimes(1)
-
-        // 通常シークは停止操作ではない。load() が一度止めた再生を、シーク完了後に戻す。
-        media.seeking = true
-        fireEvent.keyDown(video, { key: 'ArrowLeft' })
-        expect(media.currentTime).toBe(42)
-        expect(play).not.toHaveBeenCalled()
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          media.seeking = false
-          video.dispatchEvent(new Event('seeked'))
-          vi.advanceTimersByTime(5000)
-        })
-
-        expect(media.currentTime).toBe(42)
-        expect(play).toHaveBeenCalledTimes(1)
-        expect(load).toHaveBeenCalledTimes(1)
-      })
-
-      it('復旧中に世代 URL が変わっても再生意図を引き継ぐ', async () => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 0 }
-        const { resolve } = deferredFetch()
-        const props = {
-          mode: 'recording-hls' as const,
-          site: 'default',
-          recordingId: 42,
-          recordingDurationMs: 60_000,
-          recordingHlsStartSeconds: 0,
-        }
-        const urlV1 = '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8'
-        const urlV2 = '/api/media/stores/media/recordings/42/hls/v2/hd/master.m3u8'
-        const { rerender } = render(<LivePlayer {...props} recordingHlsUrl={urlV1} />)
-        const video = document.querySelector('video')!
-        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-        )
-        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
-        Object.defineProperty(video, 'currentTime', {
-          get: () => media.currentTime,
-          set: (value: number) => { media.currentTime = value },
-          configurable: true,
-        })
-        resolve(new Response('', { status: 200 }))
-        await waitFor(() => expect(video.getAttribute('src')).toBe(urlV1))
-        const load = vi.spyOn(video, 'load').mockImplementation(() => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-        const play = vi.spyOn(video, 'play').mockImplementation(() => {
-          media.paused = false
-          return Promise.resolve()
-        })
-
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          video.dispatchEvent(new Event('canplay'))
-          video.dispatchEvent(new Event('playing'))
-          media.currentTime = 7
-          video.dispatchEvent(new Event('timeupdate'))
-          vi.advanceTimersByTime(500)
-          video.dispatchEvent(new Event('waiting'))
-          vi.advanceTimersByTime(5500)
-        })
-        expect(load).toHaveBeenCalledTimes(1)
-        expect(media.paused).toBe(true)
-
-        rerender(<LivePlayer {...props} recordingHlsUrl={urlV2} />)
-        await waitFor(() => expect(video.getAttribute('src')).toBe(urlV2))
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-        })
-        expect(media.currentTime).toBe(7)
-        await act(async () => {
-          video.dispatchEvent(new Event('canplay'))
-        })
-
-        expect(play).toHaveBeenCalledTimes(1)
-        expect(media.paused).toBe(false)
-        expect(hlsMockState.instances).toHaveLength(0)
-      })
-
-      it.each([
-        { resumePath: '復旧後', seekFirst: false },
-        { resumePath: '通常シーク後', seekFirst: true },
-      ])('$resumePath の古い play() 拒否で新 source の再開意図を消さない', async ({ seekFirst }) => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 0, seeking: false }
-        const { resolve } = deferredFetch()
-        const props = {
-          mode: 'recording-hls' as const,
-          site: 'default',
-          recordingId: 42,
-          recordingDurationMs: 60_000,
-          recordingHlsStartSeconds: 0,
-        }
-        const urlV1 = '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8'
-        const urlV2 = '/api/media/stores/media/recordings/42/hls/v2/hd/master.m3u8'
-        const { rerender } = render(<LivePlayer {...props} recordingHlsUrl={urlV1} />)
-        const video = document.querySelector('video')!
-        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-        )
-        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
-        Object.defineProperty(video, 'currentTime', {
-          get: () => media.currentTime,
-          set: (value: number) => { media.currentTime = value },
-          configurable: true,
-        })
-        Object.defineProperty(video, 'seeking', { get: () => media.seeking, configurable: true })
-        Object.defineProperty(video, 'seekable', {
-          value: { length: 1, start: () => 0, end: () => 60 },
-          configurable: true,
-        })
-        resolve(new Response('', { status: 200 }))
-        await waitFor(() => expect(video.getAttribute('src')).toBe(urlV1))
-        const load = vi.spyOn(video, 'load').mockImplementation(() => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-        let rejectDelayedPlay!: (reason: unknown) => void
-        const delayedPlay = new Promise<void>((_resolve, reject) => { rejectDelayedPlay = reject })
-        const play = vi.spyOn(video, 'play')
-          .mockImplementationOnce(() => delayedPlay)
-          .mockImplementation(() => {
-            media.paused = false
-            return Promise.resolve()
-          })
-
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          video.dispatchEvent(new Event('canplay'))
-          video.dispatchEvent(new Event('playing'))
-          media.currentTime = 52
-          video.dispatchEvent(new Event('timeupdate'))
-          vi.advanceTimersByTime(500)
-          video.dispatchEvent(new Event('waiting'))
-          vi.advanceTimersByTime(5500)
-        })
-        expect(load).toHaveBeenCalledTimes(1)
-
-        if (seekFirst) {
-          media.seeking = true
-          fireEvent.keyDown(video, { key: 'ArrowLeft' })
-          expect(media.currentTime).toBe(42)
-        }
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          if (seekFirst) {
-            media.seeking = false
-            video.dispatchEvent(new Event('seeked'))
-          } else {
-            video.dispatchEvent(new Event('canplay'))
-          }
-        })
-        expect(play).toHaveBeenCalledTimes(1)
-
-        rerender(<LivePlayer {...props} recordingHlsUrl={urlV2} />)
-        await waitFor(() => expect(video.getAttribute('src')).toBe(urlV2))
-        await act(async () => {
-          rejectDelayedPlay(new DOMException('The play() request was interrupted by a new load request.', 'AbortError'))
-          await Promise.resolve()
-        })
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          video.dispatchEvent(new Event('canplay'))
-        })
-
-        expect(play).toHaveBeenCalledTimes(2)
-        expect(media.paused).toBe(false)
-        expect(hlsMockState.instances).toHaveLength(0)
-      })
-
-      it('復旧中にチャプター境界を選ぶと停止を保ち、復旧位置から自動再生しない', async () => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 0, seeking: false, seekable: true }
-        const { resolve } = deferredFetch()
-        render(
-          <LivePlayer
-            mode="recording-hls"
-            site="default"
-            recordingId={42}
-            recordingDurationMs={60_000}
-            recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8"
-            recordingHlsStartSeconds={0}
-            chapterEditing
-            chapterSource="auto"
-            chapterVersion="auto:detected:1"
-            chapters={[{ startMs: 0, endMs: 60_000, cut: false }]}
-            onSaveChapters={async () => {}}
-            onResetChapters={async () => {}}
-          />,
-        )
-        const video = document.querySelector('video')!
-        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-        )
-        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
-        Object.defineProperty(video, 'currentTime', {
-          get: () => media.currentTime,
-          set: (value: number) => { media.currentTime = value },
-          configurable: true,
-        })
-        Object.defineProperty(video, 'seeking', { get: () => media.seeking, configurable: true })
-        Object.defineProperty(video, 'seekable', {
-          get: () => media.seekable ? { length: 1, start: () => 0, end: () => 60 } : { length: 0 },
-          configurable: true,
-        })
-        resolve(new Response('', { status: 200 }))
-        await waitFor(() => expect(video.getAttribute('src')).not.toBeNull())
-        const load = vi.spyOn(video, 'load').mockImplementation(() => {
-          media.paused = true
-          media.seekable = false
-          video.dispatchEvent(new Event('pause'))
-        })
-        const play = vi.spyOn(video, 'play').mockResolvedValue()
-        vi.spyOn(video, 'pause').mockImplementation(() => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          video.dispatchEvent(new Event('canplay'))
-          video.dispatchEvent(new Event('playing'))
-          media.currentTime = 7
-          video.dispatchEvent(new Event('timeupdate'))
-          vi.advanceTimersByTime(500)
-          video.dispatchEvent(new Event('waiting'))
-          vi.advanceTimersByTime(5500)
-        })
-        expect(load).toHaveBeenCalledTimes(1)
-
-        media.seeking = true
-        fireEvent.click(screen.getAllByTestId('chapter-filmstrip-boundary')[0]!)
-        await act(async () => {
-          video.dispatchEvent(new Event('loadedmetadata'))
-          video.dispatchEvent(new Event('canplay'))
-        })
-        expect(play).not.toHaveBeenCalled()
-        media.seeking = false
-        await act(async () => {
-          video.dispatchEvent(new Event('seeked'))
-        })
-        expect(media.currentTime).toBe(7)
-        media.seekable = true
-        await act(async () => {
-          fireEvent.progress(video)
-          vi.advanceTimersByTime(5000)
-        })
-
-        expect(media.currentTime).toBeLessThan(0.02)
-        expect(media.paused).toBe(true)
-        expect(play).not.toHaveBeenCalled()
-        expect(load).toHaveBeenCalledTimes(1)
-      })
-
       it('currentTime が進んでいる間・一時停止中・再生が始まる前は止まりと見なさない', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true })
         const media = { paused: false, currentTime: 7 }
@@ -938,6 +633,247 @@ describe('LivePlayer の状態遷移', () => {
         })
         expect(onRecordingPlaybackError).not.toHaveBeenCalled()
         expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      })
+    })
+
+    /**
+     * 世代付き録画 HLS のネイティブ経路は、`waiting` から 5 秒進まなければ、画質切替と同じ張り直しを
+     * 同じ画質のまま起こす。実 Safari の判定は `recording-hls-stall-recovery.mjs`。
+     * ここで写すのは、実 Safari が `pause` を自分で出すことと、`load()` が位置を 0 に戻すこと。
+     */
+    describe('世代付き録画 HLS の停滞復旧', () => {
+      const URL_V1 = '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8'
+
+      async function renderRecoveryPath(mode: 'recording-hls' | 'chase' | 'live' = 'recording-hls') {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+          Promise.resolve(init?.method && init.method !== 'GET' ? new Response(null, { status: 204 }) : new Response('', { status: 200 })),
+        )
+        vi.stubGlobal('fetch', fetchMock)
+        const { rerender } = render(
+          mode === 'recording-hls'
+            ? <LivePlayer mode="recording-hls" recordingId={42} recordingHlsUrl={URL_V1} profile="hd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />
+            : mode === 'chase'
+              ? <LivePlayer mode="chase" recordingId={42} />
+              : <LivePlayer />,
+        )
+        const video = document.querySelector('video')!
+        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+        )
+        const media = { paused: true, currentTime: 0 }
+        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
+        Object.defineProperty(video, 'currentTime', {
+          get: () => media.currentTime,
+          set: (value: number) => { media.currentTime = value },
+          configurable: true,
+        })
+        // 実ブラウザの load() は位置を 0 に戻す（pause は発火しない。main の注記）。
+        const load = vi.spyOn(video, 'load').mockImplementation(() => {
+          media.currentTime = 0
+          media.paused = true
+        })
+        const play = vi.spyOn(video, 'play').mockImplementation(() => {
+          media.paused = false
+          return Promise.resolve()
+        })
+        const pause = vi.spyOn(video, 'pause').mockImplementation(() => {
+          media.paused = true
+          video.dispatchEvent(new Event('pause'))
+        })
+        await waitFor(() => expect(video.getAttribute('src')).not.toBeNull())
+        return { video, media, load, play, pause, fetchMock, rerender }
+      }
+
+      /** 再生を始めて 52 秒へシークし、そこで止まった状態にする。 */
+      async function stallAt52(path: Awaited<ReturnType<typeof renderRecoveryPath>>) {
+        const { video, media } = path
+        await act(async () => {
+          fireEvent.loadedMetadata(video)
+          fireEvent.canPlay(video)
+          media.paused = false
+          fireEvent.play(video)
+          video.dispatchEvent(new Event('playing'))
+          media.currentTime = 52
+          video.dispatchEvent(new Event('waiting'))
+        })
+      }
+      const advance = (ms: number) => act(async () => { vi.advanceTimersByTime(ms) })
+      const probeCount = (path: Awaited<ReturnType<typeof renderRecoveryPath>>) =>
+        path.fetchMock.mock.calls.filter(([url]) => String(url) === URL_V1).length
+      const positionWrites = (path: Awaited<ReturnType<typeof renderRecoveryPath>>) =>
+        path.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/playback-position')).length
+
+      it('5 秒進まなければ同じ video で同じ URL を張り直し、位置へ戻して再生し、続きからの位置は書かない', async () => {
+        const path = await renderRecoveryPath()
+        const { video, media } = path
+        await stallAt52(path)
+        const writesBefore = positionWrites(path)
+        expect(probeCount(path)).toBe(1)
+
+        await advance(4999)
+        expect(probeCount(path)).toBe(1)
+        await advance(1)
+        await waitFor(() => expect(probeCount(path)).toBe(2))
+        await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
+        expect(document.querySelector('video')).toBe(video)
+        expect(path.load).toHaveBeenCalled()
+        expect(media.currentTime).toBe(0)
+
+        await act(async () => { fireEvent.loadedMetadata(video) })
+        expect(media.currentTime).toBe(52)
+        expect(path.play).not.toHaveBeenCalled()
+        await act(async () => { fireEvent.canPlay(video) })
+        expect(path.play).toHaveBeenCalledTimes(1)
+        expect(positionWrites(path)).toBe(writesBefore)
+      })
+
+      it('Safari 自身の pause（製品の pause() 無し）の後でも張り直し、続きから再生する', async () => {
+        const path = await renderRecoveryPath()
+        const { video, media } = path
+        await stallAt52(path)
+        await act(async () => {
+          media.paused = true
+          video.dispatchEvent(new Event('pause'))
+        })
+        await advance(5000)
+        await waitFor(() => expect(probeCount(path)).toBe(2))
+        await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
+        await act(async () => { fireEvent.loadedMetadata(video) })
+        await act(async () => { fireEvent.canPlay(video) })
+        expect(path.pause).not.toHaveBeenCalled()
+        expect(path.play).toHaveBeenCalledTimes(1)
+      })
+
+      it('操作バーで一時停止した後は、5 秒たっても張り直さない（再生すると戻る）', async () => {
+        const path = await renderRecoveryPath()
+        await stallAt52(path)
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一時停止' })) })
+        expect(path.pause).toHaveBeenCalledTimes(1)
+        await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
+        await advance(6000)
+        expect(probeCount(path)).toBe(1)
+
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '再生' })) })
+        await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
+        await advance(5000)
+        await waitFor(() => expect(probeCount(path)).toBe(2))
+      })
+
+      it('mediaSession の pause の後は 5 秒たっても張り直さず、play で戻る', async () => {
+        const handlers: Record<string, (() => void) | null> = {}
+        Object.defineProperty(navigator, 'mediaSession', {
+          configurable: true,
+          value: { setActionHandler: (name: string, handler: (() => void) | null) => { handlers[name] = handler } },
+        })
+        try {
+          const path = await renderRecoveryPath()
+          expect(handlers.pause).toBeTypeOf('function')
+          await stallAt52(path)
+          await act(async () => { handlers.pause!() })
+          expect(path.pause).toHaveBeenCalledTimes(1)
+          await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
+          await advance(6000)
+          expect(probeCount(path)).toBe(1)
+
+          await act(async () => { handlers.play!() })
+          await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
+          await advance(5000)
+          await waitFor(() => expect(probeCount(path)).toBe(2))
+          cleanup()
+          expect(handlers.pause).toBeNull()
+          expect(handlers.play).toBeNull()
+        } finally {
+          delete (navigator as unknown as Record<string, unknown>).mediaSession
+        }
+      })
+
+      it('同じ位置の 3 回目は張り直さず、既存の 12 秒の失敗に落ちる', async () => {
+        const path = await renderRecoveryPath()
+        await stallAt52(path)
+        for (const expected of [2, 3]) {
+          await advance(5000)
+          await waitFor(() => expect(probeCount(path)).toBe(expected))
+          await waitFor(() => expect(path.video.getAttribute('src')).toBe(URL_V1))
+          await act(async () => { fireEvent.loadedMetadata(path.video) })
+          await act(async () => {
+            path.media.currentTime = 52
+            path.video.dispatchEvent(new Event('waiting'))
+          })
+        }
+        await advance(5000)
+        expect(probeCount(path)).toBe(3)
+        await advance(liveStallTimeoutMs)
+        expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
+      })
+
+      it('違う位置で止まれば 1 から数え直して張り直す', async () => {
+        const path = await renderRecoveryPath()
+        await stallAt52(path)
+        // 52 秒で 2 回（上限）→ 80 秒で止まれば 1 に戻って張り直し、80 秒の 2 回目も張り直す。
+        let probes = 1
+        for (const nextStall of [52, 80, 80, undefined]) {
+          await advance(5000)
+          probes += 1
+          await waitFor(() => expect(probeCount(path)).toBe(probes))
+          await waitFor(() => expect(path.video.getAttribute('src')).toBe(URL_V1))
+          await act(async () => { fireEvent.loadedMetadata(path.video) })
+          if (nextStall === undefined) break
+          await act(async () => {
+            path.media.currentTime = nextStall
+            path.video.dispatchEvent(new Event('waiting'))
+          })
+        }
+        expect(probes).toBe(5)
+      })
+
+      it('画質切替を挟んでも回数が持ち越される', async () => {
+        const path = await renderRecoveryPath()
+        await stallAt52(path)
+        await advance(5000)
+        await waitFor(() => expect(probeCount(path)).toBe(2))
+        await act(async () => { fireEvent.loadedMetadata(path.video) })
+        path.rerender(
+          <LivePlayer mode="recording-hls" recordingId={42} recordingHlsUrl={URL_V1.replace('/hd/', '/sd/')} profile="sd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />,
+        )
+        await waitFor(() => expect(path.video.getAttribute('src')).toContain('/sd/'))
+        await act(async () => { fireEvent.loadedMetadata(path.video) })
+        await act(async () => {
+          path.media.currentTime = 52
+          path.video.dispatchEvent(new Event('waiting'))
+        })
+        await advance(5000)
+        const sdProbes = () => path.fetchMock.mock.calls.filter(([url]) => String(url).includes('/sd/')).length
+        await waitFor(() => expect(sdProbes()).toBe(2))
+        await act(async () => { fireEvent.loadedMetadata(path.video) })
+        await act(async () => {
+          path.media.currentTime = 52
+          path.video.dispatchEvent(new Event('waiting'))
+        })
+        await advance(5000)
+        expect(sdProbes()).toBe(2)
+      })
+
+      it('5 秒の待ちの途中で別の録画へ替わると、前の録画の張り直しは起きない', async () => {
+        const path = await renderRecoveryPath()
+        await stallAt52(path)
+        await advance(3000)
+        path.rerender(<LivePlayer mode="recording-hls" recordingId={43} recordingHlsUrl="/api/media/stores/media/recordings/43/hls/v1/hd/master.m3u8" profile="hd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />)
+        await waitFor(() => expect(path.video.getAttribute('src')).toContain('/recordings/43/'))
+        const loads = path.load.mock.calls.length
+        // 古いタイマーが位置の比較で偶然止まらないよう、止まった位置へ戻しておく。
+        path.media.currentTime = 52
+        await advance(6000)
+        expect(path.load.mock.calls.length).toBe(loads)
+        expect(probeCount(path)).toBe(1)
+      })
+
+      it.each(['live', 'chase'] as const)('%s のネイティブ経路は waiting から 6 秒たっても張り直さない', async (mode) => {
+        const path = await renderRecoveryPath(mode)
+        await stallAt52(path)
+        await advance(6000)
+        expect(path.load).not.toHaveBeenCalled()
+        expect(path.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('.m3u8') || String(url).includes('playlist')).length).toBe(1)
       })
     })
 
@@ -1721,69 +1657,6 @@ describe('LivePlayer の状態遷移', () => {
       )
       expect(hlsMockState.constructorArgs[1]![0]).toEqual({ startPosition: 20 })
       expect(fetchMock).toHaveBeenCalledTimes(2)
-    })
-
-    it('hls.js 録画 HLS は再開意図を消費し、停止後のシークで自動再生しない', async () => {
-      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
-      const media = { paused: true, currentTime: 0 }
-      const props = {
-        mode: 'recording-hls' as const,
-        site: 'default',
-        recordingId: 42,
-        recordingDurationMs: 60_000,
-        recordingHlsStartSeconds: 0,
-        availableProfiles: [{ name: 'hd' }, { name: 'sd' }],
-      }
-      const { rerender } = render(
-        <LivePlayer
-          {...props}
-          profile="hd"
-          recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v7/hd/master.m3u8"
-        />,
-      )
-      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      const video = document.querySelector('video')!
-      Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
-      Object.defineProperty(video, 'currentTime', {
-        get: () => media.currentTime,
-        set: (value: number) => { media.currentTime = value },
-        configurable: true,
-      })
-      Object.defineProperty(video, 'seekable', {
-        value: { length: 1, start: () => 0, end: () => 60 },
-        configurable: true,
-      })
-      const load = vi.spyOn(video, 'load').mockImplementation(() => { media.paused = true })
-      fireEvent.loadedMetadata(video)
-      fireEvent.canPlay(video)
-      media.paused = false
-      media.currentTime = 52
-      fireEvent.playing(video)
-
-      rerender(
-        <LivePlayer
-          {...props}
-          profile="sd"
-          recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v7/sd/master.m3u8"
-        />,
-      )
-      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
-      const play = vi.spyOn(video, 'play').mockImplementation(() => {
-        media.paused = false
-        return Promise.resolve()
-      })
-      fireEvent.loadedMetadata(video)
-      fireEvent.canPlay(video)
-      expect(play).toHaveBeenCalledTimes(1)
-
-      media.currentTime = 52
-      media.paused = true
-      fireEvent.pause(video)
-      fireEvent.keyDown(video, { key: 'ArrowLeft' })
-
-      expect(media.currentTime).toBe(42)
-      expect(play).toHaveBeenCalledTimes(1)
-      expect(load).toHaveBeenCalledTimes(1)
     })
 
     it('原本 VOD は保存位置を秒に切り下げた offset のセッションで開き、端数だけを startPosition に渡す', async () => {

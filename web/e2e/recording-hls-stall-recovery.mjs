@@ -1,5 +1,5 @@
 // 世代付き録画 HLS を遠くへシークした直後、ネイティブ HLS の停滞を実 Safari で測る。
-// 実装前の再現と修正後の 5 回確認は web/e2e/checks/playback.md に記録する。
+// シークは利用者と同じ実ポインタでシークバーを押す。測定結果は web/e2e/checks/playback.md に記録する。
 import { createServer } from 'node:http'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
@@ -253,116 +253,216 @@ await new Promise((resolve, reject) => {
 const address = server.address()
 const URL_BASE = `http://127.0.0.1:${address.port}`
 
+const PAUSE_WAIT_MS = 8_000
+
+/** monitor はページの中で媒体イベントと製品の play / pause / load 呼び出しを記録する。 */
+function installMonitor({ timeoutMs }) {
+  return (async () => {
+    const deadline = performance.now() + timeoutMs
+    let video = null
+    while (performance.now() < deadline && !(video = document.querySelector('video'))) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    if (!video) return false
+    const state = { origin: performance.now(), events: [], calls: { play: 0, pause: 0, load: 0 }, seekAt: null }
+    window.__e2e = state
+    const record = (name) => state.events.push([Math.round(performance.now() - state.origin), name, Number(video.currentTime.toFixed(2)), video.paused, video.readyState])
+    for (const name of ['loadstart', 'emptied', 'loadedmetadata', 'canplay', 'waiting', 'stalled', 'playing', 'play', 'pause', 'seeking', 'seeked', 'error']) {
+      video.addEventListener(name, () => record(name))
+    }
+    // 製品の呼び出し回数。Safari 自身の pause はここに入らない。
+    for (const name of ['play', 'pause', 'load']) {
+      const original = HTMLMediaElement.prototype[name]
+      HTMLMediaElement.prototype[name] = function (...args) {
+        if (this === video) state.calls[name] += 1
+        return original.apply(this, args)
+      }
+    }
+    document.addEventListener('pointerdown', () => { state.seekAt ??= performance.now() }, { capture: true })
+    window.__e2eVideo = video
+    return true
+  })()
+}
+
+/** mediaSessionSetup はページが読み込まれた後、製品の登録より前に setActionHandler を包む。 */
+function wrapMediaSession() {
+  window.__handlers = {}
+  if (typeof MediaSession === 'undefined') return false
+  const original = MediaSession.prototype.setActionHandler
+  MediaSession.prototype.setActionHandler = function (action, handler) {
+    window.__handlers[action] = handler
+    return original.call(this, action, handler)
+  }
+  return true
+}
+
+function waitForPlaying({ timeoutMs }) {
+  return (async () => {
+    const state = window.__e2e
+    const video = window.__e2eVideo
+    const deadline = performance.now() + timeoutMs
+    while (performance.now() < deadline) {
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA && !video.paused && video.currentTime > 1) {
+        return { started: true, currentTime: video.currentTime }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    return { started: false, paused: video.paused, readyState: video.readyState, currentTime: video.currentTime, events: state.events }
+  })()
+}
+
+/** 操作バーを出し、シークバーの位置と長さを返す。 */
+function scrubRect() {
+  const scrub = document.querySelector('[data-testid="seek-scrub"]')
+  const frame = document.querySelector('[data-testid="recording-player-frame"]')
+  if (!scrub || !frame) return null
+  const box = scrub.getBoundingClientRect()
+  const frameBox = frame.getBoundingClientRect()
+  return {
+    x: box.left, y: box.top + box.height / 2, width: box.width,
+    frameX: frameBox.left + frameBox.width / 2, frameY: frameBox.top + frameBox.height / 2,
+    duration: Number(scrub.getAttribute('aria-valuemax')),
+  }
+}
+
+/** observe は seekAt（シークバーを押した時刻）から 10 秒、再生が戻るかを見る。 */
+function observeRecovery({ target, timeoutMs }) {
+  return (async () => {
+    const state = window.__e2e
+    const video = window.__e2eVideo
+    const seekAt = state.seekAt ?? performance.now()
+    const deadline = seekAt + timeoutMs
+    const positionAtSeek = (state.events.find((event) => event[1] === 'seeking' && event[0] >= seekAt - state.origin - 5)?.[2]) ?? null
+    const errorVisible = () => /録画映像が届いていません|録画映像を再生できませんでした|録画 HLS の再生でエラーが発生しました/.test(document.body.innerText)
+    let progressed = false
+    while (performance.now() < deadline) {
+      if (document.querySelector('video') !== video || errorVisible()) break
+      if (!video.paused && video.currentTime >= target + 0.25) { progressed = true; break }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    const sinceSeek = state.events.filter((event) => event[0] >= seekAt - state.origin)
+    return {
+      progressed,
+      sameVideo: document.querySelector('video') === video,
+      errorVisible: errorVisible(),
+      elapsedMs: Math.round(performance.now() - seekAt),
+      positionAtSeek,
+      endTime: Number(video.currentTime.toFixed(2)),
+      paused: video.paused,
+      reloaded: sinceSeek.some((event) => event[1] === 'loadstart'),
+      calls: state.calls,
+      events: sinceSeek.map((event) => [event[0] - Math.round(seekAt - state.origin), ...event.slice(1)]),
+    }
+  })()
+}
+
+async function startCase(safari, caseNumber) {
+  await safari.navigate(`${URL_BASE}/recordings/${RECORDING_ID}?e2eCase=${caseNumber}`)
+  const pageReady = await safari.evaluate(async ({ selector, timeoutMs }) => {
+    const deadline = performance.now() + timeoutMs
+    while (performance.now() < deadline) {
+      const button = document.querySelector(selector)
+      if (button && !button.disabled) return true
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    return false
+  }, { selector: '[data-testid="recording-playback-start"]', timeoutMs: 30_000 })
+  if (!pageReady) return { error: '録画詳細画面の再生ボタンが現れない' }
+  await safari.evaluate(wrapMediaSession)
+  await safari.click('[data-testid="recording-playback-start"]')
+  if (!await safari.evaluate(installMonitor, { timeoutMs: 10_000 })) return { error: 'video 要素がない' }
+  const started = await safari.evaluate(waitForPlaying, { timeoutMs: 20_000 })
+  if (!started.started) return { error: `初回再生に失敗 (${JSON.stringify(started)})` }
+  return {}
+}
+
+/** seekByPointer は利用者と同じく、操作バーを出してシークバーの FAR_SEEK_SECONDS の位置を押す。 */
+async function seekByPointer(safari) {
+  let rect = await safari.evaluate(scrubRect)
+  if (!rect) return null
+  await safari.pointerMove(rect.frameX, rect.frameY)
+  await delay(300)
+  rect = await safari.evaluate(scrubRect)
+  await safari.pointerClick(rect.x + rect.width * (FAR_SEEK_SECONDS / rect.duration), rect.y)
+  return rect
+}
+
 let safari
 try {
   await verifyBundleMatchesOrExit(URL_BASE, ng)
   safari = await createSafariAdapter()
-  log(`\n=== ${safari.version}: 世代付き録画 HLS の遠距離シーク (${REPEAT_COUNT} 回) ===`)
-  for (let caseNumber = 1; caseNumber <= REPEAT_COUNT; caseNumber += 1) {
+  log(`\n=== ${safari.version}: 世代付き録画 HLS の遠距離シーク (${REPEAT_COUNT} 回 + 一時停止 2 回) ===`)
+  const modes = [...Array(REPEAT_COUNT).fill('seek'), 'user-pause', 'media-session-pause']
+  for (const [index, mode] of modes.entries()) {
+    const caseNumber = index + 1
+    const label = `回 ${caseNumber} (${mode})`
     const state = caseState(caseNumber)
-    const pageURL = `${URL_BASE}/recordings/${RECORDING_ID}?e2eCase=${caseNumber}`
-    await safari.navigate(pageURL)
-    const pageReady = await safari.evaluate(async ({ selector, timeoutMs }) => {
-      const deadline = performance.now() + timeoutMs
-      while (performance.now() < deadline) {
-        const button = document.querySelector(selector)
-        if (button && !button.disabled) return true
-        await new Promise((resolve) => setTimeout(resolve, 50))
-      }
-      return false
-    }, { selector: '[data-testid="recording-playback-start"]', timeoutMs: 30_000 })
-    if (!pageReady) {
-      ng.push(`回 ${caseNumber}: 録画詳細画面の再生ボタンが現れない`)
+    const started = await startCase(safari, caseNumber)
+    if (started.error) {
+      ng.push(`${label}: ${started.error}`)
       continue
     }
-    await safari.click('[data-testid="recording-playback-start"]')
-    const started = await safari.evaluate(async ({ timeoutMs }) => {
-      const video = document.querySelector('video')
-      if (!video) return { started: false, reason: 'video 要素がない' }
-      video.muted = true
-      const deadline = performance.now() + timeoutMs
-      while (performance.now() < deadline) {
-        if (video.readyState >= HTMLMediaElement.HAVE_METADATA && !video.paused && video.currentTime > 1) {
-          return { started: true, currentTime: video.currentTime, source: video.currentSrc }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50))
-      }
-      return { started: false, reason: '再生開始を確認できない', paused: video.paused, readyState: video.readyState, currentTime: video.currentTime }
-    }, { timeoutMs: 20_000 })
-    if (!started.started) {
-      ng.push(`回 ${caseNumber}: 初回再生に失敗 (${JSON.stringify(started)})`)
+    if (!await seekByPointer(safari)) {
+      ng.push(`${label}: シークバーが見つからない`)
       continue
     }
 
-    const result = await safari.evaluate(async ({ target, timeoutMs }) => {
-      const video = document.querySelector('video')
-      if (!video) return { seeked: false, reason: 'video 要素がない' }
-      const originalVideo = video
-      let seeked = false
-      try {
-        await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error('seeked が届かない')), 8_000)
-          video.addEventListener('seeked', () => {
-            clearTimeout(timer)
-            seeked = true
-            resolve(undefined)
-          }, { once: true })
-          video.currentTime = target
+    let pauseOperation = null
+    if (mode !== 'seek') {
+      // 止まった（waiting が出た）ところで、利用者の操作で一時停止する。
+      const stalled = await safari.evaluate(async () => {
+        const state = window.__e2e
+        const deadline = performance.now() + 3_000
+        while (performance.now() < deadline) {
+          if (state.events.some((event) => event[1] === 'waiting' && event[0] >= state.seekAt - state.origin)) return true
+          await new Promise((resolve) => setTimeout(resolve, 20))
+        }
+        return false
+      })
+      if (!stalled) {
+        ng.push(`${label}: シーク後に waiting が出ない`)
+        continue
+      }
+      if (mode === 'user-pause') {
+        await safari.click('button[aria-label="一時停止"]')
+        pauseOperation = '操作バーの一時停止ボタン'
+      } else {
+        const called = await safari.evaluate(() => {
+          const handler = window.__handlers?.pause
+          if (typeof handler !== 'function') return false
+          handler({ action: 'pause' })
+          return true
         })
-      } catch (error) {
-        return { seeked, reason: String(error), currentTime: video.currentTime, paused: video.paused }
-      }
-      const seekedAt = performance.now()
-      const positionAtSeek = video.currentTime
-      const deadline = seekedAt + timeoutMs
-      let endTime = video.currentTime
-      while (performance.now() < deadline) {
-        const currentVideo = document.querySelector('video')
-        const errorText = document.body.innerText
-        const errorVisible = errorText.includes('録画映像が届いていません') ||
-          errorText.includes('録画映像を再生できませんでした') || errorText.includes('録画 HLS の再生でエラーが発生しました')
-        endTime = video.currentTime
-        if (currentVideo !== originalVideo || errorVisible) {
-          return {
-            seeked,
-            progressed: false,
-            sameVideo: currentVideo === originalVideo,
-            errorVisible,
-            elapsedMs: performance.now() - seekedAt,
-            positionAtSeek,
-            endTime,
-            paused: video.paused,
-          }
+        if (!called) {
+          log(`${label}: ページから mediaSession の pause ハンドラを呼べない（登録なし）`)
+          ng.push(`${label}: mediaSession の pause ハンドラが登録されていない`)
+          continue
         }
-        if (!video.paused && endTime >= target + 0.25) {
-          return {
-            seeked,
-            progressed: true,
-            sameVideo: true,
-            errorVisible: false,
-            elapsedMs: performance.now() - seekedAt,
-            positionAtSeek,
-            endTime,
-            paused: video.paused,
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50))
+        pauseOperation = 'mediaSession の pause ハンドラ'
       }
-      const currentVideo = document.querySelector('video')
-      const errorText = document.body.innerText
-      return {
-        seeked,
-        progressed: false,
-        sameVideo: currentVideo === originalVideo,
-        errorVisible: errorText.includes('録画映像が届いていません') ||
-          errorText.includes('録画映像を再生できませんでした') || errorText.includes('録画 HLS の再生でエラーが発生しました'),
-        elapsedMs: performance.now() - seekedAt,
-        positionAtSeek,
-        endTime,
-        paused: video.paused,
-      }
-    }, { target: FAR_SEEK_SECONDS, timeoutMs: PROGRESS_TIMEOUT_MS })
+    }
 
+    let result
+    let casePassed
+    if (mode === 'seek') {
+      result = await safari.evaluate(observeRecovery, { target: FAR_SEEK_SECONDS, timeoutMs: PROGRESS_TIMEOUT_MS })
+    } else {
+      // 5 秒の読み直し（と Safari 自身の再開）が起きないことを PAUSE_WAIT_MS 見る。
+      await delay(PAUSE_WAIT_MS)
+      result = await safari.evaluate(() => {
+        const state = window.__e2e
+        const video = window.__e2eVideo
+        const since = state.events.filter((event) => event[0] >= state.seekAt - state.origin)
+        return {
+          sameVideo: document.querySelector('video') === video,
+          paused: video.paused,
+          endTime: Number(video.currentTime.toFixed(2)),
+          reloaded: since.some((event) => event[1] === 'loadstart'),
+          calls: state.calls,
+          events: since.map((event) => [event[0] - Math.round(state.seekAt - state.origin), ...event.slice(1)]),
+        }
+      })
+    }
     await delay(100)
     const measuredDelays = state.targetRequests
       .filter((request) => request.relative === videoTarget && request.servedAt !== undefined)
@@ -370,18 +470,24 @@ try {
     const badPositionWrites = state.firstTargetAt === null
       ? []
       : state.playbackPositionWrites.filter((write) => write.at >= state.firstTargetAt && write.positionMs < FAR_SEEK_SECONDS * 1000 - 500)
-    const expectedSeek = Math.abs((result.positionAtSeek ?? 0) - FAR_SEEK_SECONDS) <= 1
     const delayed = measuredDelays.some((elapsed) => elapsed >= SEGMENT_READY_AFTER_MS - 100)
-    const casePassed = result.seeked && result.progressed && result.sameVideo && !result.errorVisible &&
-      expectedSeek && state.firstTargetAt !== null && delayed && badPositionWrites.length === 0
-    log(`回 ${caseNumber}: ${casePassed ? 'OK' : 'NG'} ${JSON.stringify({
+    if (mode === 'seek') {
+      const expectedSeek = Math.abs((result.positionAtSeek ?? 0) - FAR_SEEK_SECONDS) <= 1
+      casePassed = result.progressed && result.sameVideo && !result.errorVisible &&
+        expectedSeek && state.firstTargetAt !== null && delayed && badPositionWrites.length === 0
+    } else {
+      casePassed = result.sameVideo && result.paused && !result.reloaded && result.endTime < FAR_SEEK_SECONDS + 0.25 &&
+        result.calls.pause >= 1 && state.firstTargetAt !== null && badPositionWrites.length === 0
+    }
+    const reloadNote = mode === 'seek' ? (result.reloaded ? '製品が読み直した' : '読み直しなし（Safari の自力回復）') : pauseOperation
+    log(`${label}: ${casePassed ? 'OK' : 'NG'} [${reloadNote}] ${JSON.stringify({
       result,
       targetSegment: videoTarget,
       targetRequestCount: state.targetRequests.filter((request) => request.relative === videoTarget).length,
       responseDelaysMs: measuredDelays,
       playbackPositionWrites: state.playbackPositionWrites.map((write) => write.positionMs),
     })}`)
-    if (!casePassed) ng.push(`回 ${caseNumber}: 10 秒以内に再開する条件を満たさない`)
+    if (!casePassed) ng.push(`${label}: 判定を満たさない`)
   }
 } catch (error) {
   ng.push(error instanceof Error ? error.message : String(error))
@@ -394,5 +500,5 @@ if (ng.length > 0) {
   for (const message of ng) log(`NG: ${message}`)
   process.exitCode = 1
 } else {
-  log(`\nOK: ${REPEAT_COUNT}/${REPEAT_COUNT} 回でシーク後 10 秒以内の再生再開を確認`)
+  log(`\nOK: シーク ${REPEAT_COUNT}/${REPEAT_COUNT} 回でシークバー操作から 10 秒以内の再生再開を確認し、一時停止の 2 回は読み直しも再生もなかった`)
 }

@@ -8,7 +8,6 @@ import {
   claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
-  createRecordingHlsRecoveryState,
   formatLiveDiagnostics,
   bundlesProfiles,
   liveAudioTrackIndex,
@@ -17,8 +16,8 @@ import {
   createStallTracker,
   nextLowerProfile,
   nextProgressWatch,
+  nextRecordingHlsRecovery,
   observeStall,
-  observeRecordingHlsRecovery,
   originalVODLeaveURL,
   originalVODPlaylistURL,
   originalVODSessionOriginSeconds,
@@ -732,72 +731,6 @@ describe('live auto downgrade', () => {
   })
 })
 
-describe('observeRecordingHlsRecovery', () => {
-  it('停滞から 5 秒経つまでは待ち、境界で 1 回復旧する', () => {
-    let state = createRecordingHlsRecoveryState(42)
-    state = observeRecordingHlsRecovery(state, { paused: false, stalled: true, currentTime: 42 }, 0).state
-    expect(observeRecordingHlsRecovery(state, { paused: false, stalled: false, currentTime: 42 }, 4_999).recover).toBe(false)
-    const atThreshold = observeRecordingHlsRecovery(
-      state,
-      { paused: false, stalled: false, currentTime: 42 },
-      5_000,
-    )
-    expect(atThreshold.recover).toBe(true)
-    expect(atThreshold.state.recoveries).toBe(1)
-  })
-
-  it('同じ位置では 2 回までで止め、再生位置が進んだら回数を戻す', () => {
-    let state = createRecordingHlsRecoveryState(42)
-    state = observeRecordingHlsRecovery(state, { paused: false, stalled: true, currentTime: 42 }, 0).state
-    const first = observeRecordingHlsRecovery(state, { paused: false, stalled: false, currentTime: 42 }, 5_000)
-    expect(first.recover).toBe(true)
-    const second = observeRecordingHlsRecovery(first.state, { paused: false, stalled: false, currentTime: 42 }, 10_000)
-    expect(second.recover).toBe(true)
-    const capped = observeRecordingHlsRecovery(second.state, { paused: false, stalled: false, currentTime: 42 }, 15_000)
-    expect(capped.recover).toBe(false)
-    expect(capped.state.recoveries).toBe(2)
-
-    const movedBack = observeRecordingHlsRecovery(
-      capped.state,
-      { paused: false, stalled: false, currentTime: 40 },
-      15_001,
-    )
-    expect(movedBack.state.recoveries).toBe(2)
-    const progressed = observeRecordingHlsRecovery(
-      movedBack.state,
-      { paused: false, stalled: false, currentTime: 40.1 },
-      15_002,
-    )
-    expect(progressed.recover).toBe(false)
-    expect(progressed.state.recoveries).toBe(0)
-    expect(progressed.state.stalledAtMs).toBeNull()
-  })
-
-  it('一時停止中は時計を捨て、再生後の stall から数え直す', () => {
-    let state = createRecordingHlsRecoveryState(42)
-    state = observeRecordingHlsRecovery(state, { paused: false, stalled: true, currentTime: 42 }, 0).state
-    const paused = observeRecordingHlsRecovery(state, { paused: true, stalled: false, currentTime: 42 }, 9_000)
-    expect(paused.recover).toBe(false)
-    expect(paused.state.stalledAtMs).toBeNull()
-    const resumed = observeRecordingHlsRecovery(
-      paused.state,
-      { paused: false, stalled: true, currentTime: 42 },
-      10_000,
-    )
-    expect(resumed.recover).toBe(false)
-    expect(observeRecordingHlsRecovery(
-      resumed.state,
-      { paused: false, stalled: false, currentTime: 42 },
-      14_999,
-    ).recover).toBe(false)
-    expect(observeRecordingHlsRecovery(
-      resumed.state,
-      { paused: false, stalled: false, currentTime: 42 },
-      15_000,
-    ).recover).toBe(true)
-  })
-})
-
 describe('validLiveProfile', () => {
   const profiles = [{ name: 'hd' }, { name: 'sd' }]
 
@@ -868,5 +801,33 @@ describe('validLiveAudio / liveAudioTrackIndex（issue #870）', () => {
     expect(liveAudioTrackIndex(undefined)).toBe(0)
     expect(liveAudioTrackIndex('main')).toBe(1)
     expect(liveAudioTrackIndex('sub')).toBe(2)
+  })
+})
+
+describe('nextRecordingHlsRecovery', () => {
+  const at = (atSeconds: number, elapsedMs = 5000, userPaused = false) => ({ elapsedMs, atSeconds, userPaused })
+
+  it('4999 ms では立て直さず、5000 ms で立て直す', () => {
+    expect(nextRecordingHlsRecovery(null, at(52, 4999)).recover).toBe(false)
+    expect(nextRecordingHlsRecovery(null, at(52, 5000))).toEqual({ recover: true, next: { count: 1, atSeconds: 52 } })
+  })
+
+  it('同じ位置（±0.5 秒）では 2 回まで立て直し、3 回目は立て直さない', () => {
+    const first = nextRecordingHlsRecovery(null, at(52))
+    const second = nextRecordingHlsRecovery(first.next, at(52.5))
+    expect(second).toEqual({ recover: true, next: { count: 2, atSeconds: 52 } })
+    expect(nextRecordingHlsRecovery(second.next, at(52)).recover).toBe(false)
+    expect(nextRecordingHlsRecovery(second.next, at(51.5)).recover).toBe(false)
+  })
+
+  it('0.6 秒以上違う位置では 1 に戻って立て直す（上限に達した後でも）', () => {
+    const exhausted = { count: 2, atSeconds: 52 }
+    expect(nextRecordingHlsRecovery(exhausted, at(52.6))).toEqual({ recover: true, next: { count: 1, atSeconds: 52.6 } })
+    expect(nextRecordingHlsRecovery({ count: 1, atSeconds: 52 }, at(0))).toEqual({ recover: true, next: { count: 1, atSeconds: 0 } })
+  })
+
+  it('利用者の一時停止の意図があれば立て直さず、回数も変えない', () => {
+    const prev = { count: 1, atSeconds: 52 }
+    expect(nextRecordingHlsRecovery(prev, at(52, 5000, true))).toEqual({ recover: false, next: prev })
   })
 })

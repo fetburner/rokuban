@@ -134,62 +134,38 @@ export const liveStallTimeoutMs = 12_000
 /** 世代付き録画 HLS を読み直すまでの停滞時間（ミリ秒）。 */
 export const recordingHlsRecoveryTimeoutMs = 5_000
 
-/** 世代付き録画 HLS を同じ再生の中で読み直す上限回数。 */
+/** 同じ位置で世代付き録画 HLS を読み直す上限回数。 */
 export const recordingHlsRecoveryLimit = 2
 
-/** RecordingHlsRecoveryState は、世代付き録画 HLS の停滞復旧の観測状態である。 */
-export type RecordingHlsRecoveryState = {
-  currentTime: number
-  stalledAtMs: number | null
-  recoveries: number
-}
+/** 「同じ位置」とみなす幅（秒）。 */
+export const recordingHlsRecoveryToleranceSeconds = 0.5
 
-/** createRecordingHlsRecoveryState は、世代付き録画 HLS の復旧観測を初期化する。 */
-export function createRecordingHlsRecoveryState(currentTime: number): RecordingHlsRecoveryState {
-  return { currentTime, stalledAtMs: null, recoveries: 0 }
-}
+/** RecordingHlsRecovery は、直前の読み直しの回数とその位置である。 */
+export type RecordingHlsRecovery = { count: number; atSeconds: number }
 
 /**
- * observeRecordingHlsRecovery は 1 回の観測を反映し、再読み込みが必要かを返す。
+ * nextRecordingHlsRecovery は、`waiting` / `stalled` から `elapsedMs` 経った時点で
+ * 世代付き録画 HLS を読み直すかを決める（ネイティブ HLS 専用）。
  *
- * `stalled` は `stalled` / `waiting` イベントでだけ true にする。再生位置が 50 ms
- * 以上進むと停滞時計と復旧回数を戻す。一時停止中は停滞時計だけを捨てるので、
- * 一時停止を挟んでも同じ再生中の上限回数は保たれる。
+ * 回数は位置で数える。`atSeconds` が前回と `recordingHlsRecoveryToleranceSeconds` 以内なら
+ * 回数を足し、`recordingHlsRecoveryLimit` に達していたら読み直さない。違う位置なら
+ * 1 から数え直す（読み直しの後に 0 秒から元の位置へ戻すシークを「進んだ」と数えると
+ * 立て直しが止まらなくなるため、`timeupdate` で 0 に戻す処理は持たない）。
+ * `userPaused` は利用者の操作による一時停止だけを表す。`media.paused` は渡さない
+ * （実 Safari は止まっている最中に自分で `pause` を出す。`recording-hls-stall-recovery.mjs`）。
  */
-export function observeRecordingHlsRecovery(
-  state: RecordingHlsRecoveryState,
-  sample: { paused: boolean; stalled: boolean; currentTime: number },
-  nowMs: number,
-): { state: RecordingHlsRecoveryState; recover: boolean } {
-  if (!Number.isFinite(sample.currentTime)) return { state, recover: false }
-  if (sample.paused) {
-    return { state: { ...state, currentTime: sample.currentTime, stalledAtMs: null }, recover: false }
+export function nextRecordingHlsRecovery(
+  prev: RecordingHlsRecovery | null,
+  sample: { elapsedMs: number; atSeconds: number; userPaused: boolean },
+): { recover: boolean; next: RecordingHlsRecovery | null } {
+  if (sample.userPaused || sample.elapsedMs < recordingHlsRecoveryTimeoutMs || !Number.isFinite(sample.atSeconds)) {
+    return { recover: false, next: prev }
   }
-
-  const progressed = sample.currentTime - state.currentTime >= 0.05
-  if (progressed) {
-    return {
-      state: {
-        currentTime: sample.currentTime,
-        stalledAtMs: sample.stalled ? nowMs : null,
-        recoveries: 0,
-      },
-      recover: false,
-    }
+  if (prev !== null && Math.abs(sample.atSeconds - prev.atSeconds) <= recordingHlsRecoveryToleranceSeconds) {
+    if (prev.count >= recordingHlsRecoveryLimit) return { recover: false, next: prev }
+    return { recover: true, next: { count: prev.count + 1, atSeconds: prev.atSeconds } }
   }
-
-  const next = sample.currentTime < state.currentTime
-    ? { ...state, currentTime: sample.currentTime }
-    : state
-  const stalledAtMs = next.stalledAtMs ?? (sample.stalled ? nowMs : null)
-  if (stalledAtMs === null) return { state: next, recover: false }
-  if (nowMs - stalledAtMs < recordingHlsRecoveryTimeoutMs || next.recoveries >= recordingHlsRecoveryLimit) {
-    return { state: stalledAtMs === next.stalledAtMs ? next : { ...next, stalledAtMs }, recover: false }
-  }
-  return {
-    state: { ...next, stalledAtMs: nowMs, recoveries: next.recoveries + 1 },
-    recover: true,
-  }
+  return { recover: true, next: { count: 1, atSeconds: sample.atSeconds } }
 }
 
 /**

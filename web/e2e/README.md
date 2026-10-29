@@ -63,6 +63,10 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 
 ## 節 → ファイル
 
+### 番組表・ライブ
+
+番組表・参照バッジ・シリーズ一覧・ライブ視聴の判定と、フィクスチャ契約の検証をまとめる。
+
 | 節 | ファイル |
 |---|---|
 | フィクスチャ契約の CI 検証 | [README.md](README.md) |
@@ -74,7 +78,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 
 ### 録画再生
 
-録画とメディア配信の実ブラウザ判定は、再生の確認項目から辿る。
+録画再生とメディア配信の判定は [checks/playback.md](checks/playback.md) にある。
 
 | 節 | ファイル |
 |---|---|
