@@ -56,10 +56,10 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-latest
-            elf_machine: 3e00
+            elf_machine: "3e00"
           - arch: arm64
             runner: ubuntu-24.04-arm
-            elf_machine: b700
+            elf_machine: "b700"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
