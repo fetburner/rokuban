@@ -16,28 +16,30 @@ var version = "dev"
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
-	recordingPlayback  recordingPlaybackConfig
-	ready              func(context.Context) error
-	chapterStore       store.ChapterEdits
-	cmStationStore     store.CMStation
-	cmDetectionStore   store.CMDetection
-	playbackStore      store.PlaybackState
-	recordingTrash     store.RecordingTrash
-	recordingQuery     store.RecordingQuery
-	tunerReader        store.TunerReader
-	capacityStore      store.Capacity
-	reservationStore   store.Reservations
-	ruleStore          store.Rules
-	labelRules         store.LabelRules
-	breakerAdmin       store.BreakerAdmin
-	breakerStoreScope  string
-	epgReader          store.EPGReader
-	programSearch      store.ProgramSearch
-	encodePolicy       store.EncodePolicy
-	dedupe             store.RulerDedupe
-	mediaReader        store.MediaReader
-	storageObservation store.StorageObservation
-	enqueuer           jobq.Enqueuer
+	recordingPlayback recordingPlaybackConfig
+	ready             func(context.Context) error
+	chapterStore      store.ChapterEdits
+	cmStationStore    store.CMStation
+	cmDetectionStore  store.CMDetection
+	playbackStore     store.PlaybackState
+	recordingTrash    store.RecordingTrash
+	recordingQuery    store.RecordingQuery
+	tunerReader       store.TunerReader
+	capacityStore     store.Capacity
+	reservationStore  store.Reservations
+	ruleStore         store.Rules
+	labelRules        store.LabelRules
+	breakerAdmin      store.BreakerAdmin
+	breakerStoreScope string
+	// breakerDerivedScope は派生物の置き場が FS 置き場と別のときの、その置き場の名前。空なら無い。
+	breakerDerivedScope string
+	epgReader           store.EPGReader
+	programSearch       store.ProgramSearch
+	encodePolicy        store.EncodePolicy
+	dedupe              store.RulerDedupe
+	mediaReader         store.MediaReader
+	storageObservation  store.StorageObservation
+	enqueuer            jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）

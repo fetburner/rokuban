@@ -102,6 +102,90 @@ WHERE copy.id = sqlc.arg('copy_id')
   AND copy.store = sqlc.arg('store_name')
 FOR UPDATE OF asset, copy;
 
+-- S3 の置き場は、PUT の前に pending のコピー行を commit する。コピー行は論理行を必要とするので、
+-- 初回の公開だけは論理行をここで作る。state と deleted_at は書かず、呼び出し側が
+-- ReconcileMediaAssetStateFromCopies で決め直す（現行のコピーが無い行は deleted になる）。
+-- name: InsertMediaAssetForPendingCopy :one
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES (
+    sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
+    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), sqlc.arg('derived_generation')
+)
+ON CONFLICT (recording_id, kind, profile) DO NOTHING
+RETURNING id;
+
+-- name: GetMediaAssetIDForPendingCopy :one
+SELECT id FROM media_assets
+WHERE recording_id = sqlc.arg('recording_id')
+  AND kind = sqlc.arg('kind')
+  AND profile IS NOT DISTINCT FROM sqlc.narg('profile')::text;
+
+-- name: LockMediaAssetForPendingCopy :one
+SELECT id FROM media_assets
+WHERE id = sqlc.arg('media_asset_id')
+FOR UPDATE;
+
+-- 回収済みの世代も数える。回収した key の世代を別の出力へ割り当て直さないためである。
+-- name: GetMaxMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(generation), -1)::bigint AS max_generation
+FROM media_asset_copies
+WHERE media_asset_id = sqlc.arg('media_asset_id');
+
+-- 同じ key の行が既にあれば何もしない。呼び出し側が GetMediaAssetCopyByPath で、同じ論理資産・
+-- 同じ世代の pending かを確かめる。
+-- name: InsertPendingMediaAssetCopy :execrows
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('generation'), 'pending')
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
+
+-- name: GetMediaAssetCopyByPath :one
+SELECT id, media_asset_id, generation, state
+FROM media_asset_copies
+WHERE store = sqlc.arg('store') AND rel_path = sqlc.arg('rel_path') AND state <> 'deleted';
+
+-- pending を active にする。generation は書き換えない。created_at は公開の時刻に更新する。
+-- 旧世代を消す overlap の起点は、現行世代の最初のコピー行の created_at なので、
+-- 予約した時刻のままだと encode の所要時間の分だけ猶予が短くなる。
+-- name: ActivatePendingMediaAssetCopy :execrows
+UPDATE media_asset_copies
+SET state = 'active', created_at = now(), deleted_at = NULL
+WHERE media_asset_id = sqlc.arg('media_asset_id')
+  AND store = sqlc.arg('store')
+  AND rel_path = sqlc.arg('rel_path')
+  AND generation = sqlc.arg('generation')
+  AND state = 'pending';
+
+-- 公開されないまま猶予を過ぎた pending。予約の時刻で数える。
+-- name: ListAgedPendingMediaAssetCopies :many
+SELECT copy.id AS copy_id, asset.id AS media_asset_id, asset.recording_id,
+       copy.rel_path, asset.size_bytes, asset.kind, copy.generation
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.store = sqlc.arg('store_name')
+  AND copy.state = 'pending'
+  AND copy.created_at < sqlc.arg('created_before')::timestamptz
+ORDER BY copy.id
+LIMIT sqlc.arg('row_limit');
+
+-- 回収する pending 行を、公開の activate と直列化するためにロックする。
+-- 公開が先に active にしていれば 0 行になり、回収は何も消さない。
+-- name: LockAgedPendingMediaAssetCopy :one
+SELECT copy.media_asset_id
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.id = sqlc.arg('copy_id')
+  AND copy.store = sqlc.arg('store_name')
+  AND copy.state = 'pending'
+  AND copy.created_at < sqlc.arg('created_before')::timestamptz
+FOR UPDATE OF asset, copy;
+
+-- name: MarkPendingMediaAssetCopyDeleted :execrows
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE id = sqlc.arg('copy_id')
+  AND store = sqlc.arg('store_name')
+  AND state = 'pending';
+
 -- name: AdoptUnassignedMediaAssetCopies :exec
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
 SELECT a.id, sqlc.arg('store'), a.rel_path,

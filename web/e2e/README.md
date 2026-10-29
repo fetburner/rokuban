@@ -176,6 +176,8 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 `s3-302` は上の 3 類型のどれでもなく、`browser-e2e` と別のジョブ `browser-s3-302` で回す。固定した版の MinIO のビルドと実 Chrome が要り、選定基準の「Chromium だけで軽く終わる」を満たさないためである。実 Safari は CI に載せない。
 
+このジョブは `s3conformance` tag 付きの streamer fixture を起動し、実装の HEAD 302、字幕、Range、シークも実 Chrome で確かめる。手元で同じ経路を回すときは PostgreSQL と MinIO を用意し、fixture binary と `ROKUBAN_TEST_DATABASE_URL` を渡す。Safari を使う場合は `E2E_BROWSER=safari` を付ける。
+
 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない赤い定期ジョブは PR ごとに回す一部より信号として弱いためである。対象を増やすときは `.github/workflows/ci.yml` のコメントとこの節の類型を同じ PR で直す。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 
 ## 判定を足すときの規律

@@ -94,6 +94,10 @@ uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` �
 
 行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）と in-place 登録（rescue / EPGStation 取り込み）で、衝突時は冪等に書く。削除済みへ遷移した後も行は消さない（tombstone）。ドロップ統計と元サイズは、原本削除後も UI で見られる。
 
+S3 の置き場への公開は、PUT の前に `pending` のコピー行を新しい世代で commit する。`pending` は現行にも旧世代にも入らず、読み手には見えない。論理行が無い初回の公開だけは、予約する世代で論理行を先に作る。現行のコピーが無いので、この行の `state` は `deleted` になる。PUT の後、公開の transaction が `pending` を `active` にし、`created_at` を公開の時刻に書き換えて、SHA-256 を論理行へ書く。overlap は現行世代の最初のコピー行の `created_at` から数えるので、予約の時刻のままだと encode の所要時間の分だけ猶予が縮む。置き換えでは旧世代の行に触れず、削除 reconcile が overlap の後に消す。
+
+公開されないまま猶予（`cleanup.orphan_age`）を過ぎた `pending` は、削除 reconcile が行をロックして S3 のキーを消し、`deleted` にする。`deleting` を経由させない。経由させると、削除の述語に当たらない行として `active` に戻される。encode は、回収済みを含む既存のどのコピーより大きい世代だけを予約する。
+
 in-place 登録は、論理資産が既にあるとき、次の 3 つを満たす場合だけ通す。この置き場に生きたコピー（`active` / `deleting` / `pending`）が無い。パスの世代が `COALESCE(derived_generation, 0)` と等しい。録画がごみ箱にない。満たさなければ `ErrConflict` で拒否し、論理資産が無ければ新規に登録する。
 
 同じパスの `active` な再登録は何も変えずに通し、同じパスの `deleting` / `pending` は unlink される予定のファイルなので拒否する。パスの世代が古いファイルを受け付けると、登録したファイル自体が旧世代として overlap の後に消える。新しいファイルを受け付けると、そのコピーは現行にも旧世代にもならず、配信も削除もされない。論理行の世代は in-place 登録では動かさない。生きたコピーがある置き場へ足すと、配信が選ぶ行が決まらない。規則は 1 文の SQL に置き、並行する 2 本の登録は前述の一意索引が止める。

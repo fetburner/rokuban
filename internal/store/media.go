@@ -132,6 +132,9 @@ type EncodedPublishState struct {
 	ChapterOwned       bool
 	CurrentCutKeep     []chapters.Range
 	EncodedAsset       *EncodedAssetObservation
+	// MaxCopyGeneration は pending / deleted を含む encoded コピーの最大世代。
+	// 中断した試行が予約した世代を別の encode で再利用しないために使う。
+	MaxCopyGeneration *int64
 }
 
 // MediaReconcilePage は録画 ID で巡回するメディア reconcile のページ条件を表す。
@@ -145,6 +148,7 @@ type MediaReconcilePage struct {
 // Cut の行は、その encoded を作った時点で凍結した keep 区間を持つ。
 type ThumbnailEncodedAsset struct {
 	MediaAssetID int64
+	Store        string
 	Profile      string
 	RelPath      string
 	Cut          bool
@@ -164,6 +168,7 @@ type ThumbnailReselectCandidate struct {
 	CMRanges              []chapters.Range
 	UserSpans             []chapters.Span
 	OriginalMediaAssetID  int64
+	OriginalStore         string
 	OriginalRelPath       string
 	EncodedAssets         []ThumbnailEncodedAsset
 	ThumbnailMediaAssetID *int64

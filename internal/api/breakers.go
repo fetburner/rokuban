@@ -161,6 +161,10 @@ func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSit
 	}
 
 	err := h.breakerAdmin.Resume(ctx, h.breakerStoreScope, req.Name)
+	if errors.Is(err, store.ErrNotFound) && h.breakerDerivedScope != "" {
+		// 派生物の置き場が S3 のときは、その置き場の範囲にも別の行がある。FS 置き場の行が無ければ次を引く。
+		err = h.breakerAdmin.Resume(ctx, h.breakerDerivedScope, req.Name)
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
 	}

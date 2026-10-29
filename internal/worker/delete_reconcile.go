@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -82,6 +84,15 @@ type DeleteReconcileWorker struct {
 	MediaDir       string
 	MediaStoreName string
 
+	// 派生物の置き場が S3 のときだけ設定する（object_delete.go）。DerivedObjectStoreName は
+	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
+	// DerivedMediaDelete と DerivedStorage は、その置き場に束ねた store を渡す。
+	DerivedObjects         objstore.Store
+	DerivedObjectStoreName string
+	DerivedMediaDelete     store.MediaDelete
+	DerivedPendingReclaim  store.PendingCopyReclaim
+	DerivedStorage         store.StorageObservation
+
 	TrashRetention    time.Duration
 	TransferOverlap   time.Duration
 	OrphanMTimeGrace  time.Duration
@@ -94,36 +105,66 @@ type DeleteReconcileWorker struct {
 }
 
 // Work は 1 パス分の削除 reconcile を実行する。
+// S3 の置き場を先に処理する。FS の置き場の末尾で押す完全削除の確定が、同じパスで消した S3 のコピーを
+// 反映できるようにするためである。S3 の失敗は FS の置き場の削除を止めず、パスの末尾で返す。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
+	cfg := w.settings()
+	objectErr := w.workObjectStore(ctx, cfg)
+	return errors.Join(w.workFilesystem(ctx, cfg), objectErr)
+}
+
+// deleteSettings は、既定値を解決した 1 パス分の設定値である。FS と S3 の置き場が同じ値を使う。
+type deleteSettings struct {
+	trashRetention   time.Duration
+	orphanMTimeGrace time.Duration
+	orphanAge        time.Duration
+	maxPerPass       int
+	missingAssetAge  time.Duration
+	transferOverlap  time.Duration
+}
+
+// settings は未設定（0 以下）の値を既定値に解決する。
+func (w *DeleteReconcileWorker) settings() deleteSettings {
+	s := deleteSettings{
+		trashRetention: w.TrashRetention, orphanMTimeGrace: w.OrphanMTimeGrace, orphanAge: w.OrphanAge,
+		maxPerPass: w.MaxDeletesPerPass, missingAssetAge: w.MissingAssetAge, transferOverlap: w.TransferOverlap,
+	}
+	if s.trashRetention <= 0 {
+		s.trashRetention = defaultTrashRetention
+	}
+	if s.orphanMTimeGrace <= 0 {
+		s.orphanMTimeGrace = defaultOrphanMTimeGrace
+	}
+	if s.orphanAge <= 0 {
+		s.orphanAge = defaultOrphanAge
+	}
+	if s.maxPerPass <= 0 {
+		s.maxPerPass = defaultDeleteReconcileMaxPerPass
+	}
+	if s.missingAssetAge <= 0 {
+		s.missingAssetAge = config.DefaultMissingAssetAge
+	}
+	if s.transferOverlap <= 0 {
+		s.transferOverlap = config.DefaultTransferOverlap
+	}
+	return s
+}
+
+// workObjectStore は S3 の置き場の削除 reconcile を、FS の置き場と同じ設定値で実行する。
+func (w *DeleteReconcileWorker) workObjectStore(ctx context.Context, cfg deleteSettings) error {
+	return w.objectStorePass(ctx, time.Now().Add(-cfg.trashRetention), time.Now().Add(-cfg.transferOverlap),
+		cfg.orphanMTimeGrace, cfg.orphanAge, cfg.maxPerPass)
+}
+
+// workFilesystem は FS の置き場の削除 reconcile を 1 パス実行する。
+func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSettings) error {
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting delete reconcile"); err != nil {
 		return err
 	}
 	// この worker が担当する置き場をブレーカーの scope に使う。
 	scope := w.MediaStoreName
-	trashRetention := w.TrashRetention
-	if trashRetention <= 0 {
-		trashRetention = defaultTrashRetention
-	}
-	orphanMTimeGrace := w.OrphanMTimeGrace
-	if orphanMTimeGrace <= 0 {
-		orphanMTimeGrace = defaultOrphanMTimeGrace
-	}
-	orphanAge := w.OrphanAge
-	if orphanAge <= 0 {
-		orphanAge = defaultOrphanAge
-	}
-	maxPerPass := w.MaxDeletesPerPass
-	if maxPerPass <= 0 {
-		maxPerPass = defaultDeleteReconcileMaxPerPass
-	}
-	missingAssetAge := w.MissingAssetAge
-	if missingAssetAge <= 0 {
-		missingAssetAge = config.DefaultMissingAssetAge
-	}
-	transferOverlap := w.TransferOverlap
-	if transferOverlap <= 0 {
-		transferOverlap = config.DefaultTransferOverlap
-	}
+	trashRetention, orphanMTimeGrace, orphanAge := cfg.trashRetention, cfg.orphanMTimeGrace, cfg.orphanAge
+	maxPerPass, missingAssetAge, transferOverlap := cfg.maxPerPass, cfg.missingAssetAge, cfg.transferOverlap
 	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, scope)
 	if err != nil {
 		return err

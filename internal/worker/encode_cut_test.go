@@ -30,6 +30,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
+func int64ptr(value int64) *int64 { return &value }
+
 // cutFFmpegProfile は実 ffmpeg の統合テストが使う最小の cut プロファイル。
 // Scaler/Height を 0 にしてあるので、filtergraph は trim → concat → null だけに
 // なり、測っているものが「切り取り」だけであることが保証される。
@@ -240,6 +242,22 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 				EncodedAsset: &store.EncodedAssetObservation{State: "deleted", DerivedGeneration: 4},
 			},
 			want: 5, wantRelPath: "20240101/a_h264.u5.mp4",
+		},
+		{
+			name:  "generation reserved by an interrupted first attempt",
+			input: store.EncodedPublishInput{Profile: "h264"},
+			state: store.EncodedPublishState{Desired: true, MaxCopyGeneration: int64ptr(0)},
+			want:  1, wantRelPath: "20240101/a_h264.u1.mp4",
+		},
+		{
+			name:  "pending generation after the committed copy",
+			input: store.EncodedPublishInput{Profile: "cut", Cut: true, KeepRanges: keep, HasRebuildRequest: true, RequestedKeep: keep},
+			state: store.EncodedPublishState{
+				Desired: true, HasRebuildRequest: true, RebuildRequestKeep: keep,
+				EncodedAsset:      &store.EncodedAssetObservation{State: "active", DerivedGeneration: 4, KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 30_000}}},
+				MaxCopyGeneration: int64ptr(7),
+			},
+			want: 8, wantRelPath: "20240101/a_cut.g8.mp4",
 		},
 		{
 			name:  "deleted cut tombstone",
