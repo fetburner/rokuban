@@ -12,7 +12,12 @@
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 corepack pnpm e2e:recordings-rule-filter
-import { GetEncodeQueueResponse, ListRecordingsResponseItem, ListRulesResponseItem } from '../src/api/zod.ts'
+import {
+  GetEncodeQueueResponse,
+  GetStorageResponseItem,
+  ListRecordingsResponseItem,
+  ListRulesResponseItem,
+} from '../src/api/zod.ts'
 import {
   finish,
   installApiStubs,
@@ -81,6 +86,14 @@ const regularRecording = {
 }
 const encodeQueue = { queued: 0, running: 0, awaitingReview: 1 }
 const encodeStateRequests = []
+const storageRoot = {
+  root: 'media',
+  path: '/media',
+  totalBytes: 1_000_000_000_000,
+  usedBytes: 300_000_000_000,
+  availableBytes: 700_000_000_000,
+  observedAt: new Date().toISOString(),
+}
 
 // ruleList を差し替えることで「ルールが 0 件」の判定へ同じ stub を使い回す。
 let ruleList = rules
@@ -91,6 +104,7 @@ async function apiHandler({ path, url, json, route }) {
   if (path === '/api/breakers') return json([])
   if (path === '/api/encode-profiles') return json([])
   if (path === '/api/encode-queue') return json(encodeQueue)
+  if (path === '/api/storage') return json([storageRoot])
   if (path === '/api/rules') return json(ruleList)
   if (path === '/api/events') return sseKeepAlive(route)
   if (/^\/api\/sites\/[^/]+\/services$/.test(path)) return json([])
@@ -197,6 +211,7 @@ await validateFixturesOrExit(
     ['recording', ListRecordingsResponseItem, recording],
     ['regular recording', ListRecordingsResponseItem, regularRecording],
     ['encode queue', GetEncodeQueueResponse, encodeQueue],
+    ['media storage root', GetStorageResponseItem, storageRoot],
     ...rules.map((rule, i) => [`rules[${i}]`, ListRulesResponseItem, rule]),
   ],
   ng,
@@ -397,6 +412,19 @@ await page.getByText('ルール由来の録画').waitFor({ timeout: 15000 })
 await page.getByText('通常の録画').waitFor({ timeout: 15000 })
 const awaitingReviewChip = page.getByRole('button', { name: '確認待ち 1件', exact: true })
 await awaitingReviewChip.waitFor({ timeout: 15000 })
+await page.waitForFunction(() => {
+  const summary = document.querySelector(
+    '[data-testid="recordings-management-summary"] details > summary',
+  )
+  return summary?.textContent?.includes('空き') === true
+}, undefined, { timeout: 15000 })
+const storageSummary = page
+  .getByTestId('recordings-management-summary')
+  .locator('details > summary')
+const visibleStorageSummary = await storageSummary.innerText()
+if (!visibleStorageSummary.includes('空き')) {
+  ng.push(`⑧ 通常の容量要約が見えない（${JSON.stringify(visibleStorageSummary)}）`)
+}
 for (const width of [360, 390]) {
   await page.setViewportSize({ width, height: 844 })
   await page.evaluate(
@@ -409,6 +437,23 @@ for (const width of [360, 390]) {
   if (managementSummaryBox === null || managementSummaryBox.height > 45) {
     ng.push(
       `⑧ ${width}px で確認待ちチップを含む管理情報が 1 行に収まらない（${managementSummaryBox?.height ?? '—'}px）`,
+    )
+  }
+  const chipText = await Promise.all([
+    page.getByRole('button', { name: '待機中 0件', exact: true }).innerText(),
+    page.getByRole('button', { name: '実行中 0件', exact: true }).innerText(),
+    awaitingReviewChip.innerText(),
+  ])
+  if (chipText[0] !== '待機 0件' || chipText[1] !== '実行 0件' || chipText[2] !== '確認待ち 1件') {
+    ng.push(`⑧ ${width}px のチップ表示名が崩れている（${JSON.stringify(chipText)}）`)
+  }
+  const storageLayout = await storageSummary.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }))
+  if (storageLayout.scrollWidth > storageLayout.clientWidth + 1) {
+    ng.push(
+      `⑧ ${width}px で容量要約が横にはみ出す（${storageLayout.scrollWidth}px > ${storageLayout.clientWidth}px）`,
     )
   }
 }

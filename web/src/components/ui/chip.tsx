@@ -14,17 +14,22 @@ export function Chip({
   active,
   onClick,
   disabled,
+  className,
+  'aria-label': ariaLabel,
   children,
 }: {
   active: boolean
   onClick: () => void
   disabled?: boolean
+  className?: string
+  'aria-label'?: string
   children: React.ReactNode
 }) {
   return (
     <button
       type="button"
       aria-pressed={active}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
       className={cn(
@@ -42,6 +47,7 @@ export function Chip({
           // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。
           // docs/frontend/design.md「コントラストは毎回測る」）。
           : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground',
+        className,
       )}
     >
       {children}

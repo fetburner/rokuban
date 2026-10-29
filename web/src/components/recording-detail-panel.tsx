@@ -5,6 +5,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } fro
 import { cn } from '@/lib/utils'
 
 import {
+  getGetEncodeQueueQueryKey,
   getGetRecordingChaptersQueryKey,
   getRecording,
   listRecordings,
@@ -550,6 +551,7 @@ export function RecordingDetail({
   }
   const invalidateChapters = () => {
     void queryClient.invalidateQueries({ queryKey: getGetRecordingChaptersQueryKey(recording.id) })
+    void queryClient.invalidateQueries({ queryKey: getGetEncodeQueueQueryKey() })
     void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
   }
   const saveChapters = (spans: ChapterSpan[], version: string) =>

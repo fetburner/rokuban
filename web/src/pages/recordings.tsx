@@ -532,23 +532,23 @@ export function RecordingsPage() {
           // `empty:hidden` に任せる。
           <div
             data-testid="recordings-management-summary"
-            className="flex flex-wrap items-start gap-x-2 gap-y-1 border-t border-border px-4 py-1 text-xs text-muted-foreground empty:hidden"
+            className="flex flex-wrap items-start gap-x-2 gap-y-1 border-t border-border px-4 py-0 text-xs text-muted-foreground empty:hidden sm:py-1"
           >
             {encodeQueue !== undefined && (
               <div
                 role="group"
                 aria-label="エンコード待機列"
-                className="flex shrink-0 flex-wrap items-center gap-2"
+                className="flex shrink-0 flex-wrap items-center gap-1 sm:gap-2"
               >
-                {/* ラベルを隠すと「待機中/実行中」チップが録画状態フィルタと
-                    誤読されうるが、360/390px 幅では常時表示にすると「エンコード」
-                    ラベル + 2 チップが 1 行に収まらず折り返し、管理情報行が
-                    45px 予算を超える（実測: 360px で 69px、390px で 53px。
-                    e2e/design.mjs「視聴対象への到達距離」参照）。誤読リスクより
-                    1 行に収める側を優先し、lg 未満では隠す。 */}
+                {/* 3 チップと容量要約を同じ行に保つため、sm 未満は短い表示名と
+                    狭い余白を使う。aria-label は完全な状態名を保つ。
+                    e2e/recordings-rule-filter.mjs が storage root のある 360/390px
+                    で行高を実測する。 */}
                 <span className="hidden lg:inline">エンコード</span>
                 <Chip
+                  aria-label={`待機中 ${encodeQueue.queued}件`}
                   active={search.encodeState === ListRecordingsEncodeState.queued}
+                  className="px-2 py-1 sm:px-3 sm:py-1.5"
                   onClick={() =>
                     updateSearch((s) => ({
                       ...s,
@@ -559,10 +559,13 @@ export function RecordingsPage() {
                     }))
                   }
                 >
-                  待機中 {encodeQueue.queued}件
+                  <span className="sm:hidden">待機 {encodeQueue.queued}件</span>
+                  <span className="hidden sm:inline">待機中 {encodeQueue.queued}件</span>
                 </Chip>
                 <Chip
+                  aria-label={`実行中 ${encodeQueue.running}件`}
                   active={search.encodeState === ListRecordingsEncodeState.running}
+                  className="px-2 py-1 sm:px-3 sm:py-1.5"
                   onClick={() =>
                     updateSearch((s) => ({
                       ...s,
@@ -573,9 +576,11 @@ export function RecordingsPage() {
                     }))
                   }
                 >
-                  実行中 {encodeQueue.running}件
+                  <span className="sm:hidden">実行 {encodeQueue.running}件</span>
+                  <span className="hidden sm:inline">実行中 {encodeQueue.running}件</span>
                 </Chip>
                 <Chip
+                  className="px-2 py-1 sm:px-3 sm:py-1.5"
                   active={search.encodeState === ListRecordingsEncodeState.awaiting_review}
                   onClick={() =>
                     updateSearch((s) => ({
