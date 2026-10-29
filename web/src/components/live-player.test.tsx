@@ -728,6 +728,97 @@ describe('LivePlayer の状態遷移', () => {
         expect(hlsMockState.instances).toHaveLength(0)
       })
 
+      it.each([
+        { resumePath: '復旧後', seekFirst: false },
+        { resumePath: '通常シーク後', seekFirst: true },
+      ])('$resumePath の古い play() 拒否で新 source の再開意図を消さない', async ({ seekFirst }) => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const media = { paused: false, currentTime: 0, seeking: false }
+        const { resolve } = deferredFetch()
+        const props = {
+          mode: 'recording-hls' as const,
+          site: 'default',
+          recordingId: 42,
+          recordingDurationMs: 60_000,
+          recordingHlsStartSeconds: 0,
+        }
+        const urlV1 = '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8'
+        const urlV2 = '/api/media/stores/media/recordings/42/hls/v2/hd/master.m3u8'
+        const { rerender } = render(<LivePlayer {...props} recordingHlsUrl={urlV1} />)
+        const video = document.querySelector('video')!
+        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+        )
+        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
+        Object.defineProperty(video, 'currentTime', {
+          get: () => media.currentTime,
+          set: (value: number) => { media.currentTime = value },
+          configurable: true,
+        })
+        Object.defineProperty(video, 'seeking', { get: () => media.seeking, configurable: true })
+        Object.defineProperty(video, 'seekable', {
+          value: { length: 1, start: () => 0, end: () => 60 },
+          configurable: true,
+        })
+        resolve(new Response('', { status: 200 }))
+        await waitFor(() => expect(video.getAttribute('src')).toBe(urlV1))
+        const load = vi.spyOn(video, 'load').mockImplementation(() => {
+          media.paused = true
+          video.dispatchEvent(new Event('pause'))
+        })
+        let rejectDelayedPlay!: (reason: unknown) => void
+        const delayedPlay = new Promise<void>((_resolve, reject) => { rejectDelayedPlay = reject })
+        const play = vi.spyOn(video, 'play')
+          .mockImplementationOnce(() => delayedPlay)
+          .mockImplementation(() => {
+            media.paused = false
+            return Promise.resolve()
+          })
+
+        await act(async () => {
+          video.dispatchEvent(new Event('loadedmetadata'))
+          video.dispatchEvent(new Event('canplay'))
+          video.dispatchEvent(new Event('playing'))
+          media.currentTime = 52
+          video.dispatchEvent(new Event('timeupdate'))
+          vi.advanceTimersByTime(500)
+          video.dispatchEvent(new Event('waiting'))
+          vi.advanceTimersByTime(5500)
+        })
+        expect(load).toHaveBeenCalledTimes(1)
+
+        if (seekFirst) {
+          media.seeking = true
+          fireEvent.keyDown(video, { key: 'ArrowLeft' })
+          expect(media.currentTime).toBe(42)
+        }
+        await act(async () => {
+          video.dispatchEvent(new Event('loadedmetadata'))
+          if (seekFirst) {
+            media.seeking = false
+            video.dispatchEvent(new Event('seeked'))
+          } else {
+            video.dispatchEvent(new Event('canplay'))
+          }
+        })
+        expect(play).toHaveBeenCalledTimes(1)
+
+        rerender(<LivePlayer {...props} recordingHlsUrl={urlV2} />)
+        await waitFor(() => expect(video.getAttribute('src')).toBe(urlV2))
+        await act(async () => {
+          rejectDelayedPlay(new DOMException('The play() request was interrupted by a new load request.', 'AbortError'))
+          await Promise.resolve()
+        })
+        await act(async () => {
+          video.dispatchEvent(new Event('loadedmetadata'))
+          video.dispatchEvent(new Event('canplay'))
+        })
+
+        expect(play).toHaveBeenCalledTimes(2)
+        expect(media.paused).toBe(false)
+        expect(hlsMockState.instances).toHaveLength(0)
+      })
+
       it('復旧中にチャプター境界を選ぶと停止を保ち、復旧位置から自動再生しない', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true })
         const media = { paused: false, currentTime: 0, seeking: false, seekable: true }

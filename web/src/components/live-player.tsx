@@ -812,6 +812,8 @@ export function LivePlayer(props: LivePlayerProps) {
   const recordingHlsRecoveryPositionRef = useRef<number | null>(null)
   // profile 切替で watcher を張り直しても、同じ録画の復旧回数を再生中は持ち越す。
   const recordingHlsRecoveryStateRef = useRef<{ recordingId: number; state: RecordingHlsRecoveryState } | null>(null)
+  // 古い source の play() 拒否が、新しい source の再開状態を消さないよう世代を持つ。
+  const recordingHlsResumeAttemptRef = useRef(0)
   // 明示シークやチャプター境界の停止が、復旧中の自動再開を取り消せるようにする。
   const cancelRecordingHlsRecoveryRef = useRef<((seekPosition?: number, clearPosition?: boolean) => void) | null>(null)
   /**
@@ -1230,8 +1232,10 @@ export function LivePlayer(props: LivePlayerProps) {
             recoveryResumeEvent = null
             if (cancelled) return
             recoveryInProgress = false
+            const resumeAttempt = ++recordingHlsResumeAttemptRef.current
             void media.play().catch(() => {
               recoveryInProgress = false
+              if (cancelled || recordingHlsResumeAttemptRef.current !== resumeAttempt) return
               resumePlaybackPendingRef.current = false
               if (isRecordingPlayback) setMediaPlaying(false)
             })
@@ -1352,7 +1356,10 @@ export function LivePlayer(props: LivePlayerProps) {
       const onPlaying = () => {
         startedOnceRef.current = true
         playedHere = true
-        if (isRecordingHLS) resumePlaybackPendingRef.current = false
+        if (isRecordingHLS) {
+          recordingHlsResumeAttemptRef.current += 1
+          resumePlaybackPendingRef.current = false
+        }
         if (isRecordingHLS) recoverIfDue(Date.now())
         lastProgressTime = media.currentTime
         clearStallTimer()
@@ -1367,7 +1374,10 @@ export function LivePlayer(props: LivePlayerProps) {
       const onPause = () => {
         // load() pauses as part of recovery; only a later pause after recovery has
         // finished is an explicit stop that should cancel the pending resume.
-        if (isRecordingHLS && !recoveryInProgress) resumePlaybackPendingRef.current = false
+        if (isRecordingHLS && !recoveryInProgress) {
+          recordingHlsResumeAttemptRef.current += 1
+          resumePlaybackPendingRef.current = false
+        }
         onProgress()
       }
       media.addEventListener('pause', onPause)
@@ -1569,9 +1579,11 @@ export function LivePlayer(props: LivePlayerProps) {
         const resume = () => {
           resumePending = false
           if (cancelled || !resumePlaybackPendingRef.current) return
-          resumePlaybackPendingRef.current = false
+          const resumeAttempt = ++recordingHlsResumeAttemptRef.current
           // 開始位置の再表明は、上の effect の最初の `playing` が行う。
           void video.play().catch(() => {
+            if (cancelled || recordingHlsResumeAttemptRef.current !== resumeAttempt) return
+            resumePlaybackPendingRef.current = false
             if (isRecordingPlayback) setMediaPlaying(false)
           })
         }
@@ -1784,6 +1796,7 @@ export function LivePlayer(props: LivePlayerProps) {
     return () => {
       cancelled = true
       controller.abort()
+      if (isRecordingHLS) recordingHlsResumeAttemptRef.current += 1
       // 画質切替・再読み込みを跨いで持ち越す表示状態を、壊す前の要素から読む
       // （issue #869）。unmount のときも走るが、ref ごと捨てられるので無害。
       if (video) {
@@ -1906,6 +1919,7 @@ export function LivePlayer(props: LivePlayerProps) {
     originalPreviousSecondsRef.current = target
     if (isRecordingHLS) {
       if (!video) return
+      const seekGeneration = ++recordingHlsResumeAttemptRef.current
       const shouldResumeAfterSeek = resumePlaybackPendingRef.current
       if (cancelRecordingHlsRecoveryRef.current !== null) {
         cancelRecordingHlsRecoveryRef.current(target)
@@ -1922,9 +1936,13 @@ export function LivePlayer(props: LivePlayerProps) {
       if (shouldResumeAfterSeek) {
         const resumeAfterSeek = () => {
           video.removeEventListener('seeked', resumeAfterSeek)
-          if (!resumePlaybackPendingRef.current) return
-          resumePlaybackPendingRef.current = false
+          if (
+            recordingHlsResumeAttemptRef.current !== seekGeneration ||
+            !resumePlaybackPendingRef.current
+          ) return
+          const resumeAttempt = ++recordingHlsResumeAttemptRef.current
           void video.play().catch(() => {
+            if (recordingHlsResumeAttemptRef.current !== resumeAttempt) return
             resumePlaybackPendingRef.current = false
             setMediaPlaying(false)
           })
@@ -1979,6 +1997,7 @@ export function LivePlayer(props: LivePlayerProps) {
     clearPlayAround()
     // Boundary selection is an explicit stop, including while a restarted
     // original-HLS session is waiting for its canplay auto-resume.
+    recordingHlsResumeAttemptRef.current += 1
     resumePlaybackPendingRef.current = false
     cancelRecordingHlsRecoveryRef.current?.()
     if (!media.paused) media.pause()
