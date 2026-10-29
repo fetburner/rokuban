@@ -632,13 +632,13 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 
 	// 同じ値で再度 upsert しても既存行の conflict にならず成功する。
 	generation := int64(0)
-	if _, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
+	if _, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID:       recordingID,
 		RelPath:           rel,
 		SizeBytes:         int64(len(tinyJPEG)),
 		DerivedGeneration: &generation,
 	}); err != nil {
-		t.Fatalf("UpsertThumbnailMediaAsset over existing active row: %v", err)
+		t.Fatalf("UpsertDerivedMediaAsset(thumbnail) over existing active row: %v", err)
 	}
 
 	var n int

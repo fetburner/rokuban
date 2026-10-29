@@ -32,6 +32,11 @@ type RescueResult struct {
 	// rescue で唯一この件数だけが復元漏れを示す（slog の Warn は運用者の目に
 	// 触れるとは限らない）ので、呼び出し側のサマリ表示に必ず出す。
 	SkippedFilesWithoutSitePrefix int
+
+	// SkippedConflictingFiles はストレージ走査で、既存の資産と両立せず
+	// store.ErrConflict で登録を拒否されたファイルの件数。登録されないので、
+	// 台帳が知らないまま残る。呼び出し側のサマリ表示に必ず出す。
+	SkippedConflictingFiles int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等

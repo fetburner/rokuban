@@ -299,9 +299,7 @@ VALUES (
     $5, COALESCE($6::timestamptz, now()), $7
 )
 ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO UPDATE SET
-    state      = EXCLUDED.state,
-    created_at = COALESCE($6::timestamptz, media_asset_copies.created_at),
-    deleted_at = EXCLUDED.deleted_at
+    created_at = COALESCE($6::timestamptz, media_asset_copies.created_at)
 WHERE media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
   AND media_asset_copies.generation = EXCLUDED.generation
 `
@@ -318,6 +316,8 @@ type UpsertMediaAssetCopyParams struct {
 
 // Physical copies remain separate from media_assets so their location and lifecycle
 // can evolve without moving the logical asset's satellite rows.
+// 競合したときは state / deleted_at を書かない。生きた行の state を決めるのは削除エンジンの
+// 遷移だけで、再登録や再公開が deleting を active に戻すと unlink 予定のファイルを公開してしまう。
 func (q *Queries) UpsertMediaAssetCopy(ctx context.Context, arg UpsertMediaAssetCopyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, upsertMediaAssetCopy,
 		arg.MediaAssetID,

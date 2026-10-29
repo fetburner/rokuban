@@ -575,3 +575,40 @@ func TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
 		}
 	}
 }
+
+// 既存の資産と両立しないファイル（ごみ箱の録画に属する）は ErrConflict で拒否される。
+// そのファイルだけを飛ばして件数に出し、後続のファイルは登録して走査を続ける。
+func TestRescueLatest_ConflictSkipsOnlyThatFileAndContinues(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t)
+	dir := filepath.Join(mediaDir, "sites", "default", "archive")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("bytes "+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func() *RescueResult {
+		t.Helper()
+		res, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
+		if err != nil {
+			t.Fatalf("RescueLatest: %v", err)
+		}
+		return res
+	}
+	write("a.m2ts")
+	run()
+	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now()`); err != nil {
+		t.Fatal(err)
+	}
+	// 走査は辞書順なので、拒否される a.m2ts の後に b.m2ts が来る。
+	write("b.m2ts")
+
+	res := run()
+	if res.SkippedConflictingFiles != 1 || res.MediaAssets != 1 {
+		t.Fatalf("result = conflicts %d, media assets %d; want 1 and 1", res.SkippedConflictingFiles, res.MediaAssets)
+	}
+}

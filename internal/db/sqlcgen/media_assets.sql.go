@@ -622,92 +622,39 @@ func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, arg LockAct
 	return i, err
 }
 
-const updateEncodedMediaAssetPath = `-- name: UpdateEncodedMediaAssetPath :exec
-UPDATE media_assets
-SET rel_path   = $1,
-    size_bytes = $2,
-    derived_generation = GREATEST(COALESCE(derived_generation, 0), $3),
-    updated_at = now()
-WHERE id = $4
-`
-
-type UpdateEncodedMediaAssetPathParams struct {
-	RelPath           string
-	SizeBytes         int64
-	DerivedGeneration *int64
-	ID                int64
-}
-
-// 置き換えの同一 tx 内でパスとサイズを差し替える。**行は消さない** --- 消して
-// 作り直すと rel_path の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを
-// 取れてしまう。世代番号で必ず新しいパスになるので、UPDATE で足りる。
-func (q *Queries) UpdateEncodedMediaAssetPath(ctx context.Context, arg UpdateEncodedMediaAssetPathParams) error {
-	_, err := q.db.Exec(ctx, updateEncodedMediaAssetPath,
-		arg.RelPath,
-		arg.SizeBytes,
-		arg.DerivedGeneration,
-		arg.ID,
-	)
-	return err
-}
-
-const updateThumbnailMediaAsset = `-- name: UpdateThumbnailMediaAsset :exec
-UPDATE media_assets AS asset
-SET rel_path   = $1,
-    size_bytes = $2,
-    derived_generation = GREATEST(COALESCE(asset.derived_generation, 0), $3),
-    sha256     = NULL,
-    updated_at = now()
-WHERE asset.id = $4
-  AND asset.kind = 'thumbnail'
-`
-
-type UpdateThumbnailMediaAssetParams struct {
-	RelPath           string
-	SizeBytes         int64
-	DerivedGeneration *int64
-	ID                int64
-}
-
-// thumbnail 差し替え時に論理サイズ・世代を進める。新しい物理コピーは別行で挿入する。
-func (q *Queries) UpdateThumbnailMediaAsset(ctx context.Context, arg UpdateThumbnailMediaAssetParams) error {
-	_, err := q.db.Exec(ctx, updateThumbnailMediaAsset,
-		arg.RelPath,
-		arg.SizeBytes,
-		arg.DerivedGeneration,
-		arg.ID,
-	)
-	return err
-}
-
-const upsertEncodedMediaAsset = `-- name: UpsertEncodedMediaAsset :one
+const upsertDerivedMediaAsset = `-- name: UpsertDerivedMediaAsset :one
 INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
-VALUES ($1, 'encoded', $2, $3, $4, $5)
+VALUES (
+    $1, $2, $3,
+    $4, $5, $6
+)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
+    derived_generation = EXCLUDED.derived_generation,
     sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
     updated_at = now()
+WHERE EXCLUDED.derived_generation >= COALESCE(media_assets.derived_generation, 0)
 RETURNING id
 `
 
-type UpsertEncodedMediaAssetParams struct {
+type UpsertDerivedMediaAssetParams struct {
 	RecordingID       int64
+	Kind              string
 	Profile           *string
 	RelPath           string
 	SizeBytes         int64
 	DerivedGeneration *int64
 }
 
-// encode コミット。UNIQUE (recording_id, kind, profile) で冪等。
-// tombstone（state='deleted'）がある場合は active に戻してパスとサイズを更新する。
-// 既に active な行がある場合の上書きは worker 側の事前チェックで避ける。
-func (q *Queries) UpsertEncodedMediaAsset(ctx context.Context, arg UpsertEncodedMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, upsertEncodedMediaAsset,
+// 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
+// derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
+// 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
+// state / deleted_at は書かない。コピー行を書いた後の ReconcileMediaAssetStateFromCopies が決める。
+func (q *Queries) UpsertDerivedMediaAsset(ctx context.Context, arg UpsertDerivedMediaAssetParams) (int64, error) {
+	row := q.db.QueryRow(ctx, upsertDerivedMediaAsset,
 		arg.RecordingID,
+		arg.Kind,
 		arg.Profile,
 		arg.RelPath,
 		arg.SizeBytes,
@@ -733,85 +680,4 @@ type UpsertMediaAssetThumbnailSeekParams struct {
 func (q *Queries) UpsertMediaAssetThumbnailSeek(ctx context.Context, arg UpsertMediaAssetThumbnailSeekParams) error {
 	_, err := q.db.Exec(ctx, upsertMediaAssetThumbnailSeek, arg.MediaAssetID, arg.SeekMs)
 	return err
-}
-
-const upsertSeekTilesMediaAsset = `-- name: UpsertSeekTilesMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
-VALUES ($1, 'seek_tiles', $2, $3, $4)
-ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
-    size_bytes = EXCLUDED.size_bytes,
-    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
-    sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
-    updated_at = now()
-RETURNING id
-`
-
-type UpsertSeekTilesMediaAssetParams struct {
-	RecordingID       int64
-	RelPath           string
-	SizeBytes         int64
-	DerivedGeneration *int64
-}
-
-func (q *Queries) UpsertSeekTilesMediaAsset(ctx context.Context, arg UpsertSeekTilesMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, upsertSeekTilesMediaAsset,
-		arg.RecordingID,
-		arg.RelPath,
-		arg.SizeBytes,
-		arg.DerivedGeneration,
-	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
-const upsertThumbnailMediaAsset = `-- name: UpsertThumbnailMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
-VALUES ($1, 'thumbnail', $2, $3, $4)
-ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
-    size_bytes = EXCLUDED.size_bytes,
-    derived_generation = GREATEST(COALESCE(media_assets.derived_generation, 0), EXCLUDED.derived_generation),
-    sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
-    updated_at = now()
-RETURNING id
-`
-
-type UpsertThumbnailMediaAssetParams struct {
-	RecordingID       int64
-	RelPath           string
-	SizeBytes         int64
-	DerivedGeneration *int64
-}
-
-// thumbnail コミット。UNIQUE (recording_id, kind, profile) で冪等。
-// tombstone（state='deleted'、過去の完全削除の残骸）がある場合は active に戻して
-// パスとサイズを更新する（UpsertEncodedMediaAsset と同じ形。issue #108）。
-// ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）のままだと、
-// tombstone との競合も新規コミット後の競合も同じ ErrNoRows で返ってきて区別できず、
-// 呼び出し側が両方を「既にコミット済みで成功」に丸めてしまう。tombstone は
-// ファイルがメディア上に書かれ続ける一方で GetActiveThumbnailMediaAssetID が
-// 空を返し続け、レベルトリガーが同じジョブを積み直す孤児を生む。
-// rel_path は thumbnails/{recording_id}.jpg で recording_id から決定的に導出され、
-// ON CONFLICT のキー (recording_id, kind, profile) と 1 対 1 対応する
-// （他の recording_id の行が同じ rel_path を持つことはない）。そのため
-// tombstone を active に戻しても CREATE UNIQUE INDEX ON media_assets (rel_path)
-// WHERE state <> 'deleted' に別の生きた行が衝突すること（23505）はない。
-// 既に active な行がある場合の上書きは worker 側の事前チェック
-// （GetActiveThumbnailMediaAssetID）で避ける。
-func (q *Queries) UpsertThumbnailMediaAsset(ctx context.Context, arg UpsertThumbnailMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, upsertThumbnailMediaAsset,
-		arg.RecordingID,
-		arg.RelPath,
-		arg.SizeBytes,
-		arg.DerivedGeneration,
-	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
 }

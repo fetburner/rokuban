@@ -170,6 +170,7 @@ func printLibraryImportResult(out io.Writer, r epgimport.LibraryImportResult) {
 	_, _ = fmt.Fprintln(out, "-- library --")
 	_, _ = fmt.Fprintf(out, "  registered: %d\n", r.Registered)
 	_, _ = fmt.Fprintf(out, "  skipped:    %d\n", r.Skipped)
+	_, _ = fmt.Fprintf(out, "  conflicts:  %d (rejected by an existing media asset; see the log)\n", r.SkippedConflicts)
 	for _, w := range r.Warnings {
 		_, _ = fmt.Fprintf(out, "  warning: %s\n", w)
 	}

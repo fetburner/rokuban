@@ -3668,3 +3668,87 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 		t.Error("Spec().Coalesce should be true")
 	}
 }
+
+// 同じ置き場で派生物を作り直すと、旧世代のファイルは overlap の後に削除 reconcile が消す。
+// 状態は SQL で組まず、実際の書き手（PublishThumbnail の初回公開と置き換え）で作る。
+func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/rebuild.m2ts", nil, []byte("original"))
+	media := pgstoretest.Media(pool)
+	original, err := media.GetActiveOriginalMediaAsset(ctx, id)
+	if err != nil {
+		t.Fatalf("loading active original: %v", err)
+	}
+	writeFile := func(relPath, content string) func() error {
+		return func() error {
+			full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(full, []byte(content), 0o644)
+		}
+	}
+
+	oldRel, newRel := thumbnailRelPath(id, 0), thumbnailRelPath(id, 1)
+	if published, err := media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: id, RelPath: oldRel, SizeBytes: 3, InputAssetID: original.ID, DerivedGeneration: 0,
+	}, writeFile(oldRel, "old")); err != nil || !published {
+		t.Fatalf("first PublishThumbnail = %v, %v; want published", published, err)
+	}
+	var thumbID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`, id).Scan(&thumbID); err != nil {
+		t.Fatal(err)
+	}
+	seekMs := int64(0)
+	if published, err := media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: id, RelPath: newRel, SizeBytes: 3, SeekMs: 0, InputAssetID: original.ID, DerivedGeneration: 1,
+		Expected: &store.ThumbnailObservation{ID: thumbID, RelPath: oldRel, SeekMs: &seekMs, DerivedGeneration: 0},
+	}, writeFile(newRel, "new")); err != nil || !published {
+		t.Fatalf("replacing PublishThumbnail = %v, %v; want published", published, err)
+	}
+
+	w := &DeleteReconcileWorker{
+		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
+		MediaStoreName: dbtest.StoreName,
+	}
+	oldPath := filepath.Join(mediaDir, filepath.FromSlash(oldRel))
+	newPath := filepath.Join(mediaDir, filepath.FromSlash(newRel))
+
+	// 作り直した直後は overlap の内側なので、旧世代のファイルを消さない。
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work inside the overlap window: %v", err)
+	}
+	if !fileExists(oldPath) {
+		t.Fatal("old-generation file was removed inside the overlap window")
+	}
+
+	// 新世代のコピーが overlap より古くなると、旧世代だけが消える。
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND generation = 1`, thumbID); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work after the overlap window: %v", err)
+	}
+	if fileExists(oldPath) {
+		t.Error("old-generation file remains after the overlap window")
+	}
+	if !fileExists(newPath) {
+		t.Error("current-generation file was removed")
+	}
+	var oldState, newState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND generation = 0`, thumbID).Scan(&oldState); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND generation = 1`, thumbID).Scan(&newState); err != nil {
+		t.Fatal(err)
+	}
+	if oldState != "deleted" || newState != "active" || assetState(t, pool, thumbID) != "active" {
+		t.Fatalf("old/new copy and logical state = %q/%q/%q, want deleted/active/active", oldState, newState, assetState(t, pool, thumbID))
+	}
+}

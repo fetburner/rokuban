@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/catalogdoc"
@@ -305,7 +307,7 @@ func TestMediaAssetCopiesAcceptLeadingHyphenStoreName(t *testing.T) {
 	}
 }
 
-func TestRegisterInPlacePreservesDeletingCopyState(t *testing.T) {
+func TestRegisterInPlaceRejectsDeletingCopyPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
@@ -320,78 +322,211 @@ func TestRegisterInPlacePreservesDeletingCopyState(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName).Scan(&relPath); err != nil {
 		t.Fatalf("reading deleting asset path: %v", err)
 	}
-	result, err := media.RegisterInPlace(ctx, store.InPlaceInput{
+	// deleting のファイルは unlink される。同じパスの登録を通すと、消えるファイルを公開してしまう。
+	_, err := media.RegisterInPlace(ctx, store.InPlaceInput{
 		Assets: []store.InPlaceAsset{{Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: 1}},
 	})
-	if err != nil {
-		t.Fatalf("RegisterInPlace: %v", err)
-	}
-	if result.RecordingID != recordingID || len(result.AssetIDs) != 1 || result.AssetIDs[0] != assetID {
-		t.Fatalf("RegisterInPlace result = %+v, want existing recording %d and asset %d", result, recordingID, assetID)
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("RegisterInPlace over a deleting copy error = %v, want store.ErrConflict", err)
 	}
 	assertLogicalAndCopyState(t, pool, assetID, dbtest.StoreName, "deleting", "deleting")
 }
 
-func TestRegisterInPlaceDoesNotRegressLogicalMetadataToOlderGeneration(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	media := NewMedia(pool, dbtest.StoreName, "")
+func inPlaceEncodedInput(relPath string, size int64) store.InPlaceInput {
 	profile := "h264"
-	startedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	input := store.InPlaceInput{
+	return store.InPlaceInput{
 		Recording: store.InPlaceRecording{
 			Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 900,
 			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "in-place generation",
-			ProgramStartAt: startedAt, ProgramDurationMs: 60_000, Status: "finished",
+			ProgramStartAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), ProgramDurationMs: 60_000, Status: "finished",
 		},
 		Assets: []store.InPlaceAsset{{
-			Kind: store.AssetKindEncoded, Profile: &profile,
-			RelPath: "encoded/show.g8.mp4", SizeBytes: 100,
+			Kind: store.AssetKindEncoded, Profile: &profile, RelPath: relPath, SizeBytes: size,
 		}},
 	}
-	first, err := media.RegisterInPlace(ctx, input)
+}
+
+func TestRegisterInPlaceNewAssetTakesGenerationFromPath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	media := NewMedia(pool, dbtest.StoreName, "")
+	res, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 100))
 	if err != nil {
 		t.Fatalf("registering generation 8: %v", err)
 	}
-	input.Assets[0].RelPath = "encoded/show.g7.mp4"
-	input.Assets[0].SizeBytes = 80
-	second, err := media.RegisterInPlace(ctx, input)
-	if err != nil {
-		t.Fatalf("registering older generation 7: %v", err)
+	var derived, copyGeneration int64
+	if err := pool.QueryRow(ctx, `
+SELECT a.derived_generation, c.generation
+FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+WHERE a.id = $1`, res.AssetIDs[0]).Scan(&derived, &copyGeneration); err != nil {
+		t.Fatalf("reading generations: %v", err)
 	}
-	if second.RecordingID != first.RecordingID || second.AssetIDs[0] != first.AssetIDs[0] {
-		t.Fatalf("second registration = %+v, want same recording and asset as %+v", second, first)
+	if derived != 8 || copyGeneration != 8 {
+		t.Fatalf("logical/copy generation = %d/%d, want 8/8", derived, copyGeneration)
+	}
+	assertLogicalAndCopyState(t, pool, res.AssetIDs[0], dbtest.StoreName, "active", "active")
+}
+
+func TestRegisterInPlaceSamePathActiveReregistrationChangesNothing(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	media := NewMedia(pool, dbtest.StoreName, "")
+	first, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 100))
+	if err != nil {
+		t.Fatalf("first registration: %v", err)
+	}
+	second, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 999))
+	if err != nil {
+		t.Fatalf("same-path active re-registration: %v", err)
+	}
+	if second.AssetIDs[0] != first.AssetIDs[0] {
+		t.Fatalf("asset ids = %d, %d; want the same", first.AssetIDs[0], second.AssetIDs[0])
+	}
+	var size int64
+	if err := pool.QueryRow(ctx, `SELECT size_bytes FROM media_assets WHERE id = $1`, first.AssetIDs[0]).Scan(&size); err != nil {
+		t.Fatalf("reading size: %v", err)
+	}
+	if size != 100 {
+		t.Fatalf("size_bytes = %d after a same-path re-registration, want unchanged 100", size)
+	}
+}
+
+// 既存の論理資産に通すのは、この置き場に生きたコピーが無く・パスの世代が現行の世代と等しく・
+// 録画がごみ箱にないときだけ。3 条件を 1 つずつ破って、それぞれ ErrConflict になることを固定する。
+func TestRegisterInPlaceRejectsExistingAssetUnlessAllConditionsHold(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T) (*Media, *pgxpool.Pool, store.InPlaceResult) {
+		t.Helper()
+		pool := testutil.SetupDB(t)
+		media := NewMedia(pool, dbtest.StoreName, "")
+		first, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 100))
+		if err != nil {
+			t.Fatalf("registering generation 8: %v", err)
+		}
+		return media, pool, first
+	}
+	deleteCopies := func(t *testing.T, pool *pgxpool.Pool, assetID int64) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("live copy in this store", func(t *testing.T) {
+		media, _, first := setup(t)
+		// 世代は現行（8）と等しいが、この置き場に生きたコピーがある。
+		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/other.g8.mp4", 80))
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("error = %v, want store.ErrConflict (asset %d)", err, first.AssetIDs[0])
+		}
+	})
+	t.Run("older generation", func(t *testing.T) {
+		media, pool, first := setup(t)
+		deleteCopies(t, pool, first.AssetIDs[0])
+		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g7.mp4", 80))
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("older generation error = %v, want store.ErrConflict", err)
+		}
+		var relPath string
+		var derived int64
+		if err := pool.QueryRow(ctx, `SELECT rel_path, derived_generation FROM media_assets WHERE id = $1`, first.AssetIDs[0]).Scan(&relPath, &derived); err != nil {
+			t.Fatal(err)
+		}
+		if relPath != "encoded/show.g8.mp4" || derived != 8 {
+			t.Fatalf("logical path/generation = %q/%d after a rejected older generation, want encoded/show.g8.mp4/8", relPath, derived)
+		}
+	})
+	t.Run("newer generation", func(t *testing.T) {
+		media, pool, first := setup(t)
+		deleteCopies(t, pool, first.AssetIDs[0])
+		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g9.mp4", 80))
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("newer generation error = %v, want store.ErrConflict", err)
+		}
+	})
+	t.Run("trashed recording", func(t *testing.T) {
+		media, pool, first := setup(t)
+		deleteCopies(t, pool, first.AssetIDs[0])
+		if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, first.RecordingID); err != nil {
+			t.Fatal(err)
+		}
+		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 80))
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("trashed recording error = %v, want store.ErrConflict", err)
+		}
+	})
+	t.Run("all conditions hold", func(t *testing.T) {
+		media, pool, first := setup(t)
+		deleteCopies(t, pool, first.AssetIDs[0])
+		second, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 80))
+		if err != nil {
+			t.Fatalf("re-registering a deleted copy at the current generation: %v", err)
+		}
+		if second.AssetIDs[0] != first.AssetIDs[0] {
+			t.Fatalf("asset id = %d, want %d", second.AssetIDs[0], first.AssetIDs[0])
+		}
+		// 削除済みの行は残り、生きたコピーが新しく 1 行できる。論理行はコピーから active に戻る。
+		var logical string
+		var live int
+		if err := pool.QueryRow(ctx, `
+SELECT a.state, (SELECT count(*) FROM media_asset_copies c WHERE c.media_asset_id = a.id AND c.state = 'active')
+FROM media_assets a WHERE a.id = $1`, first.AssetIDs[0]).Scan(&logical, &live); err != nil {
+			t.Fatal(err)
+		}
+		if logical != "active" || live != 1 {
+			t.Fatalf("logical state/live copies = %q/%d, want active/1", logical, live)
+		}
+	})
+}
+
+// 同じ置き場・同じ世代の生きたコピーは 1 行だけ。規則の SQL を通らない書き手（並行する 2 本の登録の
+// 2 本目）も、一意索引が拒否して ErrConflict に写る。
+func TestMediaAssetCopiesRejectSecondLiveCopyOfSameStoreAndGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID)
+	err := upsertMediaAssetCopy(ctx, sqlcgen.New(pool), assetID, dbtest.StoreName, "other/second.m2ts", 0)
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second live copy at the same store and generation error = %v, want store.ErrConflict", err)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.ConstraintName != "media_asset_copies_asset_store_generation_idx" {
+		t.Fatalf("error = %v, want a violation of media_asset_copies_asset_store_generation_idx", err)
+	}
+	// 削除済みの行は数えない。
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := upsertMediaAssetCopy(ctx, sqlcgen.New(pool), assetID, dbtest.StoreName, "other/second.m2ts", 0); err != nil {
+		t.Fatalf("live copy after the previous one was deleted: %v", err)
+	}
+}
+
+// 競合したコピーの upsert は state を書かない。deleting を active に戻すと、unlink 予定のファイルを公開してしまう。
+func TestUpsertMediaAssetCopyConflictKeepsState(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID)
+	media := NewMedia(pool, dbtest.StoreName, "")
+	copyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
+	if marked, err := media.MarkDeleting(ctx, copyID, "active"); err != nil || !marked {
+		t.Fatalf("MarkDeleting: %v", err)
 	}
 	var relPath string
-	var sizeBytes, derivedGeneration int64
-	if err := pool.QueryRow(ctx, `SELECT rel_path, size_bytes, derived_generation FROM media_assets WHERE id = $1`, first.AssetIDs[0]).Scan(&relPath, &sizeBytes, &derivedGeneration); err != nil {
-		t.Fatalf("reading logical encoded asset: %v", err)
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE id = $1`, copyID).Scan(&relPath); err != nil {
+		t.Fatal(err)
 	}
-	if relPath != "encoded/show.g8.mp4" || sizeBytes != 100 || derivedGeneration != 8 {
-		t.Fatalf("logical path/size/generation = %q/%d/%d, want encoded/show.g8.mp4/100/8", relPath, sizeBytes, derivedGeneration)
+	if err := upsertMediaAssetCopy(ctx, sqlcgen.New(pool), assetID, dbtest.StoreName, relPath, 0); err != nil {
+		t.Fatalf("re-upserting the deleting copy: %v", err)
 	}
-	current, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: first.RecordingID, Profile: &profile,
-	})
-	if err != nil {
-		t.Fatalf("reading encoded asset for profile: %v", err)
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
+		t.Fatal(err)
 	}
-	if current.RelPath != "encoded/show.g8.mp4" || current.State != "active" || current.DerivedGeneration != 8 {
-		t.Fatalf("encoded profile read = %q/%q/generation %d, want current path/active/generation 8",
-			current.RelPath, current.State, current.DerivedGeneration)
-	}
-	var oldCopyGeneration, currentCopyGeneration int64
-	if err := pool.QueryRow(ctx, `
-SELECT old_copy.generation, current_copy.generation
-FROM media_asset_copies old_copy
-JOIN media_asset_copies current_copy ON current_copy.media_asset_id = old_copy.media_asset_id
-WHERE old_copy.media_asset_id = $1
-  AND old_copy.rel_path = 'encoded/show.g7.mp4'
-  AND current_copy.rel_path = 'encoded/show.g8.mp4'`, first.AssetIDs[0]).Scan(&oldCopyGeneration, &currentCopyGeneration); err != nil {
-		t.Fatalf("reading registered physical generations: %v", err)
-	}
-	if oldCopyGeneration != 7 || currentCopyGeneration != 8 {
-		t.Fatalf("old/current copy generations = %d/%d, want 7/8", oldCopyGeneration, currentCopyGeneration)
+	if state != "deleting" {
+		t.Fatalf("copy state = %q after a conflicting upsert, want deleting", state)
 	}
 }
 
@@ -406,7 +541,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	setCopy := func(assetID int64, relPath string) {
 		t.Helper()
 		if _, err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-			MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath, State: "active",
+			MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath, Generation: generation, State: "active",
 		}); err != nil {
 			t.Fatalf("seeding active copy for media asset %d: %v", assetID, err)
 		}
@@ -429,7 +564,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 		}
 	}
 
-	encodedID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+	encodedID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID: recordingID, Profile: &profile, RelPath: "encoded/h264.mp4", SizeBytes: 10, DerivedGeneration: &generation,
 	})
 	if err != nil {
@@ -438,7 +573,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	setCopy(encodedID, "encoded/h264.mp4")
 	setDigest(encodedID)
 	generation = 1
-	if _, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID: recordingID, Profile: &profile, RelPath: "encoded/h264.g1.mp4", SizeBytes: 11, DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("replacing encoded asset: %v", err)
@@ -447,7 +582,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	assertDigestCleared(encodedID)
 
 	generation = 0
-	thumbnailID, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
+	thumbnailID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID: recordingID, RelPath: "thumbnails/1.jpg", SizeBytes: 10, DerivedGeneration: &generation,
 	})
 	if err != nil {
@@ -456,7 +591,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	setCopy(thumbnailID, "thumbnails/1.jpg")
 	setDigest(thumbnailID)
 	generation = 1
-	if _, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
+	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID: recordingID, RelPath: "thumbnails/1.g1.jpg", SizeBytes: 11, DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("recreating thumbnail asset: %v", err)
@@ -465,9 +600,8 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	assertDigestCleared(thumbnailID)
 	setDigest(thumbnailID)
 	generation = 2
-	if err := q.UpdateThumbnailMediaAsset(ctx, sqlcgen.UpdateThumbnailMediaAssetParams{
-		RelPath: "thumbnails/1.g2.jpg", SizeBytes: 12, DerivedGeneration: &generation,
-		ID: thumbnailID,
+	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
+		RecordingID: recordingID, Kind: "thumbnail", RelPath: "thumbnails/1.g2.jpg", SizeBytes: 12, DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("replacing thumbnail path: %v", err)
 	}
@@ -475,7 +609,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	assertDigestCleared(thumbnailID)
 
 	generation = 0
-	seekTilesID, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
+	seekTilesID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "seek_tiles",
 		RecordingID: recordingID, RelPath: "thumbnails/1_tiles.jpg", SizeBytes: 10, DerivedGeneration: &generation,
 	})
 	if err != nil {
@@ -484,7 +618,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	setCopy(seekTilesID, "thumbnails/1_tiles.jpg")
 	setDigest(seekTilesID)
 	generation = 1
-	replacedSeekTilesID, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
+	replacedSeekTilesID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "seek_tiles",
 		RecordingID: recordingID, RelPath: "thumbnails/1_tiles.g1.jpg", SizeBytes: 11, DerivedGeneration: &generation,
 	})
 	if err != nil {
@@ -731,22 +865,16 @@ VALUES ($1, 'seek_tiles', 'thumbnails/1_tiles.g9.jpg', 9, 'deleted', 9)`, record
 	if encoded.DerivedGeneration != 9 {
 		t.Fatalf("encoded logical generation = %d, want 9", encoded.DerivedGeneration)
 	}
-	requestedGeneration := int64(4)
-	if _, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
-		RecordingID: recordingID, Profile: &profile, RelPath: "encoded/h264.g4.mp4", SizeBytes: 4,
-		DerivedGeneration: &requestedGeneration,
-	}); err != nil {
-		t.Fatalf("upserting encoded without a writer-store copy: %v", err)
-	}
-	if _, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
-		RecordingID: recordingID, RelPath: "thumbnails/1.g4.jpg", SizeBytes: 4, DerivedGeneration: &requestedGeneration,
-	}); err != nil {
-		t.Fatalf("upserting thumbnail at an older requested generation: %v", err)
-	}
-	if _, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
-		RecordingID: recordingID, RelPath: "thumbnails/1_tiles.g4.jpg", SizeBytes: 4, DerivedGeneration: &requestedGeneration,
-	}); err != nil {
-		t.Fatalf("upserting seek tiles at an older requested generation: %v", err)
+	lowerGeneration := int64(4)
+	for _, p := range []sqlcgen.UpsertDerivedMediaAssetParams{
+		{Kind: "encoded", Profile: &profile, RelPath: "encoded/h264.g4.mp4"},
+		{Kind: "thumbnail", RelPath: "thumbnails/1.g4.jpg"},
+		{Kind: "seek_tiles", RelPath: "thumbnails/1_tiles.g4.jpg"},
+	} {
+		p.RecordingID, p.SizeBytes, p.DerivedGeneration = recordingID, 4, &lowerGeneration
+		if _, err := q.UpsertDerivedMediaAsset(ctx, p); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("%s upsert at generation 4 below the logical 9: error = %v, want pgx.ErrNoRows (0 rows)", p.Kind, err)
+		}
 	}
 	rows, err := pool.Query(ctx, `SELECT kind, COALESCE(derived_generation, 0) FROM media_assets WHERE recording_id = $1 ORDER BY kind`, recordingID)
 	if err != nil {
@@ -765,5 +893,39 @@ VALUES ($1, 'seek_tiles', 'thumbnails/1_tiles.g9.jpg', 9, 'deleted', 9)`, record
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("reading derived generations: %v", err)
+	}
+}
+
+// 同じ世代の再試行は通り、低い世代は 0 行になり、高い世代は引き上げる。
+func TestUpsertDerivedMediaAssetGenerationGuard(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	recordingID := dbtest.Recording(t, pool)
+	upsert := func(gen int64, relPath string) (int64, error) {
+		return q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
+			Kind: "thumbnail", RecordingID: recordingID, RelPath: relPath, SizeBytes: 1, DerivedGeneration: &gen,
+		})
+	}
+	id, err := upsert(5, "thumbnails/t.g5.jpg")
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if again, err := upsert(5, "thumbnails/t.g5.jpg"); err != nil || again != id {
+		t.Fatalf("same-generation retry = %d, %v; want %d, nil", again, err, id)
+	}
+	if _, err := upsert(4, "thumbnails/t.g4.jpg"); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("lower-generation upsert error = %v, want pgx.ErrNoRows", err)
+	}
+	if _, err := upsert(6, "thumbnails/t.g6.jpg"); err != nil {
+		t.Fatalf("higher-generation upsert: %v", err)
+	}
+	var derived int64
+	var relPath string
+	if err := pool.QueryRow(ctx, `SELECT derived_generation, rel_path FROM media_assets WHERE id = $1`, id).Scan(&derived, &relPath); err != nil {
+		t.Fatal(err)
+	}
+	if derived != 6 || relPath != "thumbnails/t.g6.jpg" {
+		t.Fatalf("generation/path = %d/%q, want 6/thumbnails/t.g6.jpg", derived, relPath)
 	}
 }

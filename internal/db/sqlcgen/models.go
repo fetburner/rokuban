@@ -105,7 +105,7 @@ type DropStat struct {
 	PidType      *string
 }
 
-// encodable_recordings は、ごみ箱になく current active 原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
+// encodable_recordings は、ごみ箱になく active な原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
 type EncodableRecording struct {
 	RecordingID int64
 }

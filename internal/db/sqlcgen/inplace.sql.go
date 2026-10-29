@@ -12,9 +12,11 @@ import (
 
 const getInPlaceAssetByRelPath = `-- name: GetInPlaceAssetByRelPath :one
 
-SELECT a.id, a.recording_id, a.kind, a.profile, c.state, c.generation
+SELECT a.id, a.recording_id, a.kind, a.profile, c.state, c.generation,
+       (r.deleted_at IS NOT NULL OR r.purged_at IS NOT NULL)::boolean AS recording_trashed
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
+JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path = $1
   AND c.store = $2
 ORDER BY (c.state <> 'deleted')::boolean DESC, a.id DESC
@@ -27,12 +29,13 @@ type GetInPlaceAssetByRelPathParams struct {
 }
 
 type GetInPlaceAssetByRelPathRow struct {
-	ID          int64
-	RecordingID int64
-	Kind        string
-	Profile     *string
-	State       string
-	Generation  int64
+	ID               int64
+	RecordingID      int64
+	Kind             string
+	Profile          *string
+	State            string
+	Generation       int64
+	RecordingTrashed bool
 }
 
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
@@ -55,6 +58,7 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAs
 		&i.Profile,
 		&i.State,
 		&i.Generation,
+		&i.RecordingTrashed,
 	)
 	return i, err
 }
@@ -62,67 +66,43 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAs
 const upsertInPlaceMediaAsset = `-- name: UpsertInPlaceMediaAsset :one
 INSERT INTO media_assets (
     recording_id, kind, profile, rel_path, size_bytes, state, derived_generation
-) VALUES (
-    $1, $2, $3,
-    $4, $5, 'active',
-    CASE WHEN $2::text = 'original' THEN NULL
-         ELSE COALESCE(media_asset_generation_from_rel_path($4), 0)
-    END
 )
+SELECT
+    r.id, $1::text, $2::text,
+    $3::text, $4::bigint, 'active',
+    CASE WHEN $1::text = 'original' THEN NULL
+         ELSE COALESCE(media_asset_generation_from_rel_path($3::text), 0)
+    END
+FROM recordings r
+WHERE r.id = $5
+  AND r.deleted_at IS NULL
+  AND r.purged_at IS NULL
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
-    rel_path   = CASE
-        WHEN EXCLUDED.kind = 'original'
-          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
-        THEN EXCLUDED.rel_path
-        ELSE media_assets.rel_path
-    END,
-    size_bytes = CASE
-        WHEN EXCLUDED.kind = 'original'
-          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
-        THEN EXCLUDED.size_bytes
-        ELSE media_assets.size_bytes
-    END,
-    derived_generation = CASE
-        WHEN EXCLUDED.kind = 'original' THEN NULL
-        ELSE GREATEST(COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0))
-    END,
-    sha256     = CASE
-        WHEN EXCLUDED.kind = 'original'
-          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
-        THEN NULL
-        ELSE media_assets.sha256
-    END,
-    state      = CASE
-        WHEN EXCLUDED.kind = 'original'
-          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
-        THEN 'active'
-        ELSE media_assets.state
-    END,
-    deleted_at = CASE
-        WHEN EXCLUDED.kind = 'original'
-          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
-        THEN NULL
-        ELSE media_assets.deleted_at
-    END,
-    updated_at = CASE
-        WHEN EXCLUDED.kind = 'original'
-          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
-        THEN now()
-        ELSE media_assets.updated_at
-    END
+    rel_path   = EXCLUDED.rel_path,
+    size_bytes = EXCLUDED.size_bytes,
+    sha256     = NULL,
+    updated_at = now()
+WHERE NOT EXISTS (
+        SELECT 1 FROM media_asset_copies live
+        WHERE live.media_asset_id = media_assets.id
+          AND live.store = $6
+          AND live.state <> 'deleted'
+    )
+  AND COALESCE(EXCLUDED.derived_generation, 0) = COALESCE(media_assets.derived_generation, 0)
 RETURNING id,
     CASE WHEN kind = 'original' THEN 0
-         ELSE COALESCE(media_asset_generation_from_rel_path($4), 0)
+         ELSE COALESCE(media_asset_generation_from_rel_path($3::text), 0)
     END::bigint AS generation
 `
 
 type UpsertInPlaceMediaAssetParams struct {
-	RecordingID int64
 	Kind        string
 	Profile     *string
 	RelPath     string
 	SizeBytes   int64
+	RecordingID int64
+	StoreName   string
 }
 
 type UpsertInPlaceMediaAssetRow struct {
@@ -130,13 +110,26 @@ type UpsertInPlaceMediaAssetRow struct {
 	Generation int64
 }
 
+// in-place 登録の論理行。規則はこの 1 文だけに置く（Go は 0 行を ErrConflict に写すだけ）。
+// 録画がごみ箱か消去済みなら、資産の有無にかかわらず 0 行になる（INSERT ... SELECT の WHERE）。
+// 論理資産が無ければ新規に作る。あれば、次の 3 つを満たすときだけ rel_path / size_bytes を差し替える。
+//  1. この置き場に、その資産の生きたコピー（active / deleting / pending）が無い。
+//     あれば同じ置き場に 2 つ目の現行ファイルを足すことになる。deleting は unlink される予定のファイルである。
+//  2. パスから読む世代が現行の世代（derived_generation。original は NULL = 0）と等しい。
+//     古い世代で論理行を巻き戻すと、現行のコピーが旧世代として削除される。
+//  3. 録画がごみ箱にない（上記）。
+//
+// derived_generation は変えず、state / deleted_at は書かない（コピー行を書いた後に
+// ReconcileMediaAssetStateFromCopies が決める）。並行する 2 本の登録は
+// media_asset_copies_asset_store_generation_idx が直列化する。
 func (q *Queries) UpsertInPlaceMediaAsset(ctx context.Context, arg UpsertInPlaceMediaAssetParams) (UpsertInPlaceMediaAssetRow, error) {
 	row := q.db.QueryRow(ctx, upsertInPlaceMediaAsset,
-		arg.RecordingID,
 		arg.Kind,
 		arg.Profile,
 		arg.RelPath,
 		arg.SizeBytes,
+		arg.RecordingID,
+		arg.StoreName,
 	)
 	var i UpsertInPlaceMediaAssetRow
 	err := row.Scan(&i.ID, &i.Generation)

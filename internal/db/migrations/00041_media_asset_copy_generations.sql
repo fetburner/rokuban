@@ -20,6 +20,12 @@ WHERE asset.id = copy.media_asset_id;
 ALTER TABLE media_asset_copies
     ALTER COLUMN generation SET NOT NULL;
 
+-- A store holds at most one live copy per asset generation, so readers never
+-- choose between two files for the same content.
+CREATE UNIQUE INDEX media_asset_copies_asset_store_generation_idx
+    ON media_asset_copies (media_asset_id, store, generation)
+    WHERE state <> 'deleted';
+
 COMMENT ON COLUMN media_asset_copies.generation IS
     'Content generation stored in this physical copy; immutable after insert';
 
@@ -88,21 +94,6 @@ WHERE asset.kind <> 'original'
 
 COMMENT ON VIEW old_generation_media_asset_copies IS
     'old_generation_media_asset_copies は、論理資産の derived_generation より古い派生コピーを返す。generation_started_at は現行世代の最初のコピー行の created_at で、呼び出し側が overlap の猶予を判定する。';
-
-CREATE OR REPLACE VIEW encodable_recordings AS
-SELECT r.id AS recording_id
-FROM recordings r
-WHERE r.deleted_at IS NULL
-  AND EXISTS (
-      SELECT 1
-      FROM media_assets o
-      WHERE o.recording_id = r.id
-        AND o.kind = 'original'
-        AND EXISTS (SELECT 1 FROM active_media_asset_copies(o.id, NULL))
-  );
-
-COMMENT ON VIEW encodable_recordings IS
-    'encodable_recordings は、ごみ箱になく current active 原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。';
 
 CREATE OR REPLACE VIEW unencoded_desired_profiles AS
 SELECT p.recording_id,
@@ -274,6 +265,8 @@ END
 $$;
 -- +goose StatementEnd
 
+DROP INDEX media_asset_copies_asset_store_generation_idx;
+
 DROP VIEW cm_detection_desired;
 DROP VIEW cm_logo_candidate_desired;
 DROP VIEW removed_encoded_assets;
@@ -328,16 +321,6 @@ WHERE NOT EXISTS (
     WHERE e.recording_id = p.recording_id AND e.kind = 'encoded'
       AND c.state = 'active' AND e.profile = want.profile
 );
-
-CREATE OR REPLACE VIEW encodable_recordings AS
-SELECT r.id AS recording_id
-FROM recordings r
-WHERE r.deleted_at IS NULL
-  AND EXISTS (
-      SELECT 1 FROM media_assets o
-      JOIN media_asset_copies c ON c.media_asset_id = o.id
-      WHERE o.recording_id = r.id AND o.kind = 'original' AND c.state = 'active'
-  );
 
 DROP VIEW old_generation_media_asset_copies;
 CREATE OR REPLACE FUNCTION active_media_asset_copies(p_asset_id bigint, p_store text)

@@ -339,7 +339,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	generation := int64(0)
-	assetID, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
+	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID: id, RelPath: relPath, SizeBytes: int64(len(prior)),
 		DerivedGeneration: &generation,
 	})
