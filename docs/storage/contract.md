@@ -223,13 +223,13 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 - 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時に読み、旧 worker 停止後の adopt でも再照合する
 - 新しいファイルを置き、1 つの tx で論理サイズ・`derived_generation`・`media_asset_cuts` と新しい物理コピー行を commit する。コピー行の世代は後から書き換えない。旧世代は同じ置き場に残り、削除 reconcile が overlap 後に回収する
-- 置き換え時に旧コピー行を書き換えない。書き換えると、旧ファイルの所在と世代を reconcile が追えなくなる。unlink 前に DB で新世代を公開するため、commit が失敗しても旧ファイルと旧行は残る
+- 置き換え時に旧コピー行を書き換えない。書き換えると、旧ファイルの所在と世代を削除 reconcile が追えなくなる。公開した worker は旧ファイルを消さないので、commit が失敗しても旧ファイルと旧行は残る
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
 - 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は `derived_generation` から進める
 - 新しい JPEG を置く。1 つの tx で論理サイズ・`derived_generation`・新しい物理コピー行と `media_asset_thumbnail_seeks` を commit する。旧コピー行は保持し、旧ファイルは overlap 後に削除 reconcile が回収する
-- 旧コピーを inline で unlink しない。worker が commit 直後に落ちても、定期 reconcile が旧世代を見つけ、同じ path lock と状態遷移で削除を再開する
+- 公開した worker は、旧コピーをその場で unlink しない。commit 直後に落ちても、定期の削除 reconcile が旧世代を見つけ、通常の削除と同じ path lock と状態遷移で削除を再開する
 
 <details><summary>根拠</summary>
 

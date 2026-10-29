@@ -599,7 +599,7 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 }
 
 func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
-	// ON CONFLICT DO UPDATE の UpsertThumbnailMediaAsset は、既に active な行がある
+	// ON CONFLICT DO UPDATE の UpsertDerivedMediaAsset(thumbnail) は、既に active な行がある
 	// recording に対しても同じ行を更新する（行数は増えない）。
 	pool := setupTestPool(t)
 	if pool == nil {

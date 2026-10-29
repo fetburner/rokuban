@@ -57,7 +57,7 @@ import (
 //     （store.PlanEncodedPublish）で判定する。次のどれかなら公開を飛ばす（temp を消して戻り、
 //     旧ファイルの unlink も encode.finished も出さない）:
 //     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
-//     encoded 行の rel_path を書くのは UpsertEncodedMediaAsset だけで、行は DELETE
+//     encoded 行の rel_path を書くのは UpsertDerivedMediaAsset だけで、行は DELETE
 //     されず tombstone で残るので、rel_path は世代順に前へしか進まない。古い計画の
 //     実行が行を巻き戻すのをこれが止める。(a) は「誰かが済ませた」ではなく
 //     「自分の計画が古い」を意味する。(a) だけが立ち行が active なら（区間が違う
