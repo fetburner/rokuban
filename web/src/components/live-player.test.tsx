@@ -620,12 +620,12 @@ describe('LivePlayer の状態遷移', () => {
 
       it('明示シークで復旧待ちを取り消し、旧位置への再シークと自動再生をしない', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 0, seeking: false }
+        const media = { paused: false, currentTime: 0, seeking: false, seekable: true }
         const { video } = await renderNativeRecordingPath('recording-hls', media)
         const load = vi.spyOn(video, 'load').mockImplementation(() => {})
         const play = vi.spyOn(video, 'play').mockResolvedValue()
         Object.defineProperty(video, 'seekable', {
-          value: { length: 1, start: () => 0, end: () => 60 },
+          get: () => media.seekable ? { length: 1, start: () => 0, end: () => 60 } : { length: 0 },
           configurable: true,
         })
 
@@ -656,7 +656,7 @@ describe('LivePlayer の状態遷移', () => {
 
       it('復旧中にチャプター境界を選ぶと停止を保ち、復旧位置から自動再生しない', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 0, seeking: false }
+        const media = { paused: false, currentTime: 0, seeking: false, seekable: true }
         const { resolve } = deferredFetch()
         render(
           <LivePlayer
@@ -686,12 +686,12 @@ describe('LivePlayer の状態遷移', () => {
         })
         Object.defineProperty(video, 'seeking', { get: () => media.seeking, configurable: true })
         Object.defineProperty(video, 'seekable', {
-          value: { length: 1, start: () => 0, end: () => 60 },
+          get: () => media.seekable ? { length: 1, start: () => 0, end: () => 60 } : { length: 0 },
           configurable: true,
         })
         resolve(new Response('', { status: 200 }))
         await waitFor(() => expect(video.getAttribute('src')).not.toBeNull())
-        const load = vi.spyOn(video, 'load').mockImplementation(() => {})
+        const load = vi.spyOn(video, 'load').mockImplementation(() => { media.seekable = false })
         const play = vi.spyOn(video, 'play').mockResolvedValue()
         vi.spyOn(video, 'pause').mockImplementation(() => {
           media.paused = true
@@ -720,6 +720,11 @@ describe('LivePlayer の状態遷移', () => {
         media.seeking = false
         await act(async () => {
           video.dispatchEvent(new Event('seeked'))
+        })
+        expect(media.currentTime).toBe(7)
+        media.seekable = true
+        await act(async () => {
+          fireEvent.progress(video)
           vi.advanceTimersByTime(5000)
         })
 

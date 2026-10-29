@@ -1925,12 +1925,19 @@ export function LivePlayer(props: LivePlayerProps) {
   const seekToOriginalBoundary = (boundaryMs: number) => {
     const media = videoRef.current
     if (!media) return
-    if (media.seeking) {
+    if (media.seeking || (isRecordingHLS && mediaSeekableEndSeconds(media) === undefined)) {
       pendingBoundarySeekMsRef.current = boundaryMs
       return
     }
     pendingBoundarySeekMsRef.current = null
     seekRecording(chapterBoundaryMsToSeekSeconds(boundaryMs))
+  }
+  const retryPendingBoundarySeek = () => {
+    const media = videoRef.current
+    const boundaryMs = pendingBoundarySeekMsRef.current
+    if (!media || boundaryMs === null || media.seeking) return
+    if (isRecordingHLS && mediaSeekableEndSeconds(media) === undefined) return
+    seekToOriginalBoundary(boundaryMs)
   }
   const clearPlayAround = () => {
     window.clearTimeout(playAroundTimerRef.current)
@@ -2006,16 +2013,19 @@ export function LivePlayer(props: LivePlayerProps) {
         frame.onVolumeChange(event.currentTarget)
         // 追っかけは保存位置へ戻す前の位置を報告しない（再試行の上限が効かなくなる）。
         if (isOriginalPlayback) updateRecordingPosition(event.currentTarget)
-        if (mode === 'live' || !restorePending.current) return
-        restorePending.current = false
-        event.currentTarget.currentTime = sessionStartPositionSeconds ?? 0
-        updateRecordingPosition(event.currentTarget)
+        if (mode !== 'live' && restorePending.current) {
+          restorePending.current = false
+          event.currentTarget.currentTime = sessionStartPositionSeconds ?? 0
+          updateRecordingPosition(event.currentTarget)
+        }
+        retryPendingBoundarySeek()
       }}
+      onCanPlay={retryPendingBoundarySeek}
+      onProgress={retryPendingBoundarySeek}
       onSeeked={(event) => {
         saveCurrentPosition(event.currentTarget)
         updateRecordingPosition(event.currentTarget)
-        const pendingBoundaryMs = pendingBoundarySeekMsRef.current
-        if (pendingBoundaryMs !== null) seekToOriginalBoundary(pendingBoundaryMs)
+        retryPendingBoundarySeek()
       }}
       onSeeking={(event) => {
         if (!isOriginalPlayback) return
