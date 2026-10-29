@@ -183,7 +183,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
       window.__e2e = {
         // 再生経路の選び方は web/src/lib/live.ts の supportsNativeHls と
         // web/src/components/live-player.tsx の 3 段の梯子の写し。
-        async load(masterURL) {
+        async load(masterURL, preferHlsJs = false, preferManagedMediaSource = true) {
           state.frames = []
           state.quanta = []
           state.audio = []
@@ -203,10 +203,10 @@ const HARNESS_HTML = String.raw`<!doctype html>
           const segmentMIME = video.canPlayType('video/mp2t')
           const nativeHLS = playlistMIME !== '' && segmentMIME !== ''
           const hlsSupported = !!window.Hls && window.Hls.isSupported()
-          if (!nativeHLS && hlsSupported) {
+          if ((!nativeHLS || preferHlsJs) && hlsSupported) {
             state.path = 'hls.js'
             // アプリの録画再生は startAt が無いとき { startPosition: 0 } だけを渡す（live-player.tsx）。
-            const hls = new window.Hls({ startPosition: 0 })
+            const hls = new window.Hls({ startPosition: 0, preferManagedMediaSource })
             state.hls = hls
             hls.on(window.Hls.Events.ERROR, (_event, data) => {
               state.hlsErrors.push({ details: data.details, fatal: !!data.fatal, at: video.currentTime })
@@ -219,6 +219,13 @@ const HARNESS_HTML = String.raw`<!doctype html>
               hls.loadSource(masterURL)
               hls.attachMedia(video)
             })
+            // ネイティブ経路と同じく loadedmetadata まで待つ。待たずに seek すると Safari では 0 に戻る。
+            if (video.readyState < 1) {
+              await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error('hls.js の loadedmetadata が 15 秒以内に来ない')), 15_000)
+                video.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve() }, { once: true })
+              })
+            }
           } else if (nativeHLS || playlistMIME !== '') {
             state.path = 'native-hls'
             await new Promise((resolve, reject) => {
@@ -558,7 +565,8 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
   const failures = []
   const add = (tag, message) => failures.push(`[${tag}] ${message}`)
   await adapter.navigate(adapter.serverURL + HARNESS_PATH)
-  const loaded = await adapter.evaluate(async (url) => window.__e2e.load(url), masterURL)
+  // E2E_PREFER_HLSJS=1 は、ネイティブ HLS があるブラウザ（Safari）でも hls.js を選ぶ。
+  const loaded = await adapter.evaluate(async (args) => window.__e2e.load(args[0], args[1], args[2]), [masterURL, process.env.E2E_PREFER_HLSJS === '1', process.env.E2E_HLSJS_MMS !== '0'])
   await waitForState(adapter, (s) => s.tracks.length === 3, 10_000, '音声 rendition 3 本')
   const native = loaded.path === 'native-hls'
   const summary = { browserPath: loaded.path, nativeMIME: loaded.nativeMIME, segmentMIME: loaded.segmentMIME }

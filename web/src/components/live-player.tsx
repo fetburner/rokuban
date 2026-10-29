@@ -1561,7 +1561,9 @@ export function LivePlayer(props: LivePlayerProps) {
       //   2. hls.js が動く（MSE / ManagedMediaSource がある）→ hls.js
       //   3. どちらも駄目だが `<video>` が m3u8 に支持を表明する → ネイティブへ
       //      最後の望みを託す（`lib/live.ts` の `claimsHlsPlaylistSupport`）
-      if (supportsNativeHls(canPlayType)) {
+      // 実験: MSE / ManagedMediaSource があれば Safari でも hls.js を使う。
+      const hasMediaSource = 'MediaSource' in window || 'ManagedMediaSource' in window
+      if (supportsNativeHls(canPlayType) && !hasMediaSource) {
         // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
         followNativePlaybackRate(video)
         let nativeTick: (() => void) | undefined
