@@ -469,18 +469,38 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}()
 	// 前の試行が link した後に commit で失敗した場合、temp は canonical と同じ inode である。
 	// temp は O_APPEND で開いているので、ここから 1 バイトでも書くと公開済みの canonical が変わる。
-	// replay も転送もせず、commit だけをやり直す。
+	// mirakc からは再転送せず、SHA checkpoint の続きだけ読んで commit をやり直す。
 	if fsink.SameFile(tempPath, fullPath) {
 		info, err := tempLock.Stat()
 		if err != nil {
 			return fmt.Errorf("stat ingest temp already linked to canonical path: %w", err)
 		}
-		contentSHA256, err := hashMediaFileSHA256(ctx, tempPath)
+		sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
+		defer cancelSlice()
+		hasher := sha256.New()
+		offset, complete, err := fsink.ReplayTempFileWithCheckpoint(sliceCtx, tempPath, f, hasher,
+			func() error {
+				return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving linked ingest checkpoint")
+			},
+		)
 		if err != nil {
+			if isIngestSliceDeadline(err, sliceCtx, ctx) {
+				return errIngestSliceElapsed
+			}
 			return fmt.Errorf("hashing ingest temp already linked to canonical path: %w", err)
 		}
+		if !complete || offset != info.Size() {
+			return fmt.Errorf("replaying linked ingest hash: complete=%v offset=%d size=%d", complete, offset, info.Size())
+		}
+		if err := fsink.WriteCheckpoint(tempPath, offset, hasher,
+			func() error {
+				return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing linked ingest checkpoint")
+			},
+		); err != nil {
+			return fmt.Errorf("writing linked ingest checkpoint: %w", err)
+		}
 		log.Info("ingest: temp is already linked to canonical path, retrying commit only", "bytes", info.Size())
-		return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, info.Size(), contentSHA256, log, result)
+		return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, info.Size(), hasher.Sum(nil), log, result)
 	}
 	progress := &ingestProgressReporter{
 		publisher:      w.Publisher,
@@ -638,6 +658,13 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
+	}
+	if err := fsink.WriteCheckpoint(tempPath, offset, hasher,
+		func() error {
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint before publication")
+		},
+	); err != nil {
+		return fmt.Errorf("writing ingest checkpoint before publication: %w", err)
 	}
 
 	log.Info("ingest: transfer complete", "bytes", offset,

@@ -211,21 +211,6 @@ func stageMediaFile(ctx context.Context, src, finalPath, prefix string) (stagedM
 	return stagedMediaFile{tempPath: tempPath, finalPath: finalPath, size: size, sha256: digest}, nil
 }
 
-// hashMediaFileSHA256 は原本ファイルを commit の再試行時に読み直して SHA-256 を計算する。
-func hashMediaFileSHA256(ctx context.Context, path string) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening file %q: %w", path, err)
-	}
-	defer func() { _ = file.Close() }()
-
-	hasher := sha256.New()
-	if _, err := copyWithContext(ctx, hasher, file); err != nil {
-		return nil, fmt.Errorf("reading file %q: %w", path, err)
-	}
-	return hasher.Sum(nil), nil
-}
-
 // publish は staged 出力を canonical へ rename で公開し、親ディレクトリを fsync する。
 func (s stagedMediaFile) publish() error {
 	if err := os.Rename(s.tempPath, s.finalPath); err != nil {
