@@ -4,7 +4,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getGetRecordingChaptersQueryKey, getRecordingChapters } from '@/api/generated'
+import {
+  getGetEncodeQueueQueryKey,
+  getGetRecordingChaptersQueryKey,
+  getRecordingChapters,
+} from '@/api/generated'
 import type {
   EncodeProfileSummary,
   LiveProfileSummary,
@@ -3200,7 +3204,9 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
       spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
     }
     const { fetchMock } = createFakeServer({ recording: recordingWithEncodedAsset(), chapters })
-    renderAt('/recordings/3')
+    const { queryClient } = renderAt('/recordings/3')
+    const encodeQueueKey = getGetEncodeQueueQueryKey()
+    queryClient.setQueryData(encodeQueueKey, { queued: 0, running: 0, awaitingReview: 1 })
     await enterEditing(user)
 
     const confirmButton = await screen.findByRole('button', { name: 'このまま確認' })
@@ -3213,6 +3219,9 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({
       version: 'detected-v1',
       spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    })
+    await waitFor(() => {
+      expect(queryClient.getQueryState(encodeQueueKey)?.isInvalidated).toBe(true)
     })
 
     const confirmedEditor = await enterEditing(user)

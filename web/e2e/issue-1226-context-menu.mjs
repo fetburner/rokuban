@@ -88,7 +88,7 @@ async function apiHandler({ path, json, route }) {
   if (path === '/api/sites') return json([SITE])
   if (path === '/api/capabilities') return json({ live: false, cmDetect: false })
   if (path === '/api/breakers') return json([])
-  if (path === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (path === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (path === '/api/encode-profiles') return json([])
   if (path === '/api/storage') return json([])
   if (path === '/api/recording-shelves') return json([])

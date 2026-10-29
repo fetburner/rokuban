@@ -379,7 +379,7 @@ await installApiStubs(page, async ({ path: requestPath, json: replyJSON, route }
   if (requestPath === '/api/events') return sseKeepAlive(route)
   if (requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return replyJSON([])
   if (requestPath === '/api/live-profiles') return replyJSON([{ name: PROFILE, height: 720 }])
-  if (requestPath === '/api/encode-queue') return replyJSON({ queued: 0, running: 0 })
+  if (requestPath === '/api/encode-queue') return replyJSON({ queued: 0, running: 0, awaitingReview: 0 })
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) return route.fulfill({ status: 404 })
   if (requestPath === `/api/recordings/${RECORDING_ID}` && method === 'GET') {
     recordingResumeReads.push(recording.resumePositionMs)

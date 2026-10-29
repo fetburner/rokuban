@@ -194,7 +194,7 @@ await installApiStubs(page, async ({ path: apiPath, url, json, route }) => {
   }
   if (apiPath === '/api/reservations' || apiPath === '/api/breakers' || apiPath === '/api/capacity/overages') return json([])
   if (apiPath === '/api/storage') return json([])
-  if (apiPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (apiPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (apiPath === `/api/media/recordings/${RECORDING_ID}/thumbnail`) {
     return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: FALLBACK_IMAGE })
   }

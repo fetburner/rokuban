@@ -212,7 +212,7 @@ function createFakeRecordingsServer(options: {
   sites?: string[]
   services?: Service[]
   encodeProfiles?: EncodeProfileSummary[]
-  encodeQueue?: { queued: number; running: number }
+  encodeQueue?: { queued: number; running: number; awaitingReview: number }
   rules?: Rule[]
   // encodePostResponse は POST /api/recordings/{id}/encode-profiles の応答を
   // 差し替える（既定は 204 成功）。409 のときサーバーの英語文字列を UI が
@@ -229,7 +229,7 @@ function createFakeRecordingsServer(options: {
   const sites = options.sites ?? ['default']
   const services = options.services ?? [sampleService()]
   const encodeProfiles = options.encodeProfiles ?? []
-  const encodeQueue = options.encodeQueue ?? { queued: 0, running: 0 }
+  const encodeQueue = options.encodeQueue ?? { queued: 0, running: 0, awaitingReview: 0 }
   const rules = options.rules ?? []
   const encodePostResponse = options.encodePostResponse
   const deleteResponse = options.deleteResponse
@@ -783,7 +783,7 @@ describe('RecordingsPage エンコード待機列', () => {
     const user = userEvent.setup()
     const server = createFakeRecordingsServer({
       library: [sampleRecording()],
-      encodeQueue: { queued: 3, running: 1 },
+      encodeQueue: { queued: 3, running: 1, awaitingReview: 2 },
     })
     const { router } = renderPage()
 
@@ -801,6 +801,33 @@ describe('RecordingsPage エンコード待機列', () => {
         ),
       ).toBe(true)
     })
+
+    const awaitingReview = screen.getByRole('button', { name: '確認待ち 2件' })
+    await user.click(awaitingReview)
+
+    await waitFor(() =>
+      expect(router.state.location.search).toMatchObject({ encodeState: 'awaiting_review' }),
+    )
+    await waitFor(() => {
+      expect(
+        recordingsRequests(server.fetchMock).some(
+          (url) => url.searchParams.get('encodeState') === 'awaiting_review',
+        ),
+      ).toBe(true)
+    })
+
+    await user.click(awaitingReview)
+    await waitFor(() => {
+      expect(router.state.location.search.encodeState).toBeUndefined()
+    })
+  })
+
+  it('確認待ちは 0 件でも表示する', async () => {
+    createFakeRecordingsServer({ encodeQueue: { queued: 0, running: 0, awaitingReview: 0 } })
+
+    renderPage()
+
+    expect(await screen.findByRole('button', { name: '確認待ち 0件' })).toBeInTheDocument()
   })
 })
 

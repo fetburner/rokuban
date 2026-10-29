@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Rule } from '@/api/generated'
+import { ListRecordingsEncodeState, type Rule } from '@/api/generated'
 import { ListRecordingsQueryParams } from '@/api/zod'
 import {
   buildListRecordingShelvesParams,
@@ -332,6 +332,14 @@ describe('describeRecordingsFilters', () => {
 
     const genreChip = chips.find((c) => c.key === 'genre-0')
     expect(genreChip?.clear(search)).toEqual({ genre: [1], service: [3273601024] })
+  })
+
+  it('確認待ちの encodeState は適用中条件にも確認待ちと表示する', () => {
+    const search: RecordingsPageSearch = { encodeState: ListRecordingsEncodeState.awaiting_review }
+    const [chip] = describeRecordingsFilters(search, services, undefined)
+
+    expect(chip.label).toBe('エンコード: 確認待ち')
+    expect(chip.clear(search)).toEqual({ encodeState: undefined })
   })
 
   it('最後の 1 件を外すと配列キー自体が消える（空配列を残さない）', () => {

@@ -178,7 +178,7 @@ async function installRoutes(page, playlistErrorMode) {
     if (requestPath === `/api/sites/${SITE}/programs`) return json([program])
     if (requestPath === '/api/reservations' || requestPath === '/api/breakers' ||
       requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return json([])
-    if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+    if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
     if (requestPath === '/api/recordings') return json([chaseRecording, originalRecording])
     if (requestPath === `/api/recordings/${CHASE_ID}`) return json(chaseRecording)
     if (requestPath === `/api/recordings/${ORIGINAL_ID}`) return json(originalRecording)

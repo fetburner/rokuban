@@ -282,6 +282,8 @@ type RecordingDropPosition struct {
 type MediaReader interface {
 	// ListEncodeQueue は現在の設定で未生成の encoded と実行状態を返す。
 	ListEncodeQueue(ctx context.Context, params EncodeQueueParams) ([]EncodeQueueEntry, error)
+	// ListAwaitingReviewRecordingIDs は確認待ちの録画 ID を重複なしで返す。
+	ListAwaitingReviewRecordingIDs(ctx context.Context, cutProfiles []string) ([]int64, error)
 	// ListRecordingDropStats は録画の PID 別ドロップ統計を返す。
 	ListRecordingDropStats(ctx context.Context, recordingID int64) ([]RecordingDropStat, error)
 	// ListRecordingDropPositions は録画のドロップ観測位置を PID 別に返す。
