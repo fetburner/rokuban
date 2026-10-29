@@ -21,7 +21,10 @@ func newBreakerRouter(pool *pgxpool.Pool) http.Handler {
 }
 
 func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler {
-	return api.NewRouter(api.RouterConfig{Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: sites})
+	return api.NewRouter(api.RouterConfig{
+		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: sites,
+		MediaStoreName: "test-store",
+	})
 }
 
 // insertCircuitBreakerFixture は circuit_breakers 行を直接 INSERT する（ruler /
@@ -31,7 +34,7 @@ func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler 
 func insertCircuitBreakerFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string, pending, threshold int, detail string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
 VALUES ('default', $1, $2, $3, $4::jsonb)`, name, pending, threshold, detail); err != nil {
 		t.Fatalf("inserting circuit breaker fixture %q: %v", name, err)
 	}
@@ -51,29 +54,29 @@ func countCircuitBreakers(t *testing.T, pool *pgxpool.Pool, ctx context.Context)
 func existsCircuitBreaker(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string) bool {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE site = 'default' AND name = $1`, name).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE scope = 'default' AND name = $1`, name).Scan(&n); err != nil {
 		t.Fatalf("checking circuit breaker %q: %v", name, err)
 	}
 	return n > 0
 }
 
 // insertCircuitBreakerFixtureForSite は insertCircuitBreakerFixture の site
-// 引数付き版（site を持たない名前は site 列が空文字列になる。issue #450）。
-func insertCircuitBreakerFixtureForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site, name string, pending, threshold int, detail string) {
+// 引数付き版（site 無指定の API が scope を受け取るケースにも使う）。
+func insertCircuitBreakerFixtureForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, scope, name string, pending, threshold int, detail string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
-VALUES ($1, $2, $3, $4, $5::jsonb)`, site, name, pending, threshold, detail); err != nil {
-		t.Fatalf("inserting circuit breaker fixture %q (site=%q): %v", name, site, err)
+	INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
+VALUES ($1, $2, $3, $4, $5::jsonb)`, scope, name, pending, threshold, detail); err != nil {
+		t.Fatalf("inserting circuit breaker fixture %q (scope=%q): %v", name, scope, err)
 	}
 }
 
 // existsCircuitBreakerForSite は existsCircuitBreaker の site 引数付き版。
-func existsCircuitBreakerForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site, name string) bool {
+func existsCircuitBreakerForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, scope, name string) bool {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE site = $1 AND name = $2`, site, name).Scan(&n); err != nil {
-		t.Fatalf("checking circuit breaker %q (site=%q): %v", name, site, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE scope = $1 AND name = $2`, scope, name).Scan(&n); err != nil {
+		t.Fatalf("checking circuit breaker %q (scope=%q): %v", name, scope, err)
 	}
 	return n > 0
 }
@@ -281,7 +284,7 @@ func TestResumeCircuitBreaker_OnlyDeletesTargetedBreaker(t *testing.T) {
 
 // 7. site をパスに含めない場合の資源不一致（issue #102）の回帰確認。
 //
-// circuit_breakers の PK は (site, name) だが、GET /api/breakers はサイト
+// circuit_breakers の PK は (scope, name) だが、GET /api/breakers はサイト
 // 横断で一覧を返す。resume が h.site 固定だと、一覧に見えている他サイトの
 // 発動を確認済みの運用者が resume を叩いても届かず、見えているものを
 // 再開できなかった。site をパスに通した今は、他サイトを指定すると
@@ -298,7 +301,7 @@ func TestResumeCircuitBreaker_400WhenSiteMismatch(t *testing.T) {
 
 	// 他サイト（このプロセスの site ではない）の発動を用意する。
 	if _, err := pool.Exec(ctx, `
-INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
 VALUES ('other-site', 'ruler_deletes', 10, 50, '{"total":10}'::jsonb)`); err != nil {
 		t.Fatalf("inserting circuit breaker fixture for other site: %v", err)
 	}
@@ -319,7 +322,7 @@ VALUES ('other-site', 'ruler_deletes', 10, 50, '{"total":10}'::jsonb)`); err != 
 	// 他サイトの行は消えていない（誤って自サイトの条件で別サイトの行を
 	// 触っていないことの確認）。
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE site = 'other-site' AND name = 'ruler_deletes'`).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE scope = 'other-site' AND name = 'ruler_deletes'`).Scan(&n); err != nil {
 		t.Fatalf("checking other-site circuit breaker: %v", err)
 	}
 	if n != 1 {
@@ -352,18 +355,14 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			srv := httptest.NewServer(router)
 			defer srv.Close()
 
-			// site を持たない名前（breaker.IsSiteless）は site 列が空文字列
-			// （internal/breaker.IsSiteless のコメント参照）、それ以外は
-			// store.DefaultSite（単一サイト構成の既定）。resume も対応する
-			// エンドポイントを分ける（issue #450 --- 旧ルートは site を持たない
-			// 名前を、新ルートは site を持つ名前を 400 で拒否する）。
-			site := "default"
+			// site 範囲は既定 site、置き場範囲はルーターに設定した置き場名。
+			scope := "default"
 			resumeURL := srv.URL + "/api/sites/default/breakers/" + name + "/resume"
-			if breaker.IsSiteless(name) {
-				site = ""
+			if breaker.ScopeKindFor(name) == breaker.ScopeStore {
+				scope = "test-store"
 				resumeURL = srv.URL + "/api/breakers/" + name + "/resume"
 			}
-			insertCircuitBreakerFixtureForSite(t, pool, ctx, site, name, 7, 10, `{"total":7}`)
+			insertCircuitBreakerFixtureForSite(t, pool, ctx, scope, name, 7, 10, `{"total":7}`)
 
 			// 発動中として一覧に出る。
 			resp, err := http.Get(srv.URL + "/api/breakers")
@@ -403,7 +402,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 				body, _ := io.ReadAll(resumeResp.Body)
 				t.Fatalf("resume status = %d, want 204 (body: %s)", resumeResp.StatusCode, body)
 			}
-			if existsCircuitBreakerForSite(t, pool, ctx, site, name) {
+			if existsCircuitBreakerForSite(t, pool, ctx, scope, name) {
 				t.Errorf("circuit breaker %q still exists after resume", name)
 			}
 		})

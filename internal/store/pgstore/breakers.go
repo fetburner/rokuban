@@ -25,8 +25,8 @@ func NewBreakers(pool *pgxpool.Pool) *Breakers {
 }
 
 // Trip は発動を記録し、既に発動中なら pending と detail を更新する。発動時刻を返す。
-func (s *Breakers) Trip(ctx context.Context, site, name string, threshold int, sample store.BreakerSample) (time.Time, error) {
-	trippedAt, err := tripCircuitBreaker(ctx, sqlcgen.New(s.pool), site, name, threshold, sample)
+func (s *Breakers) Trip(ctx context.Context, scope, name string, threshold int, sample store.BreakerSample) (time.Time, error) {
+	trippedAt, err := tripCircuitBreaker(ctx, sqlcgen.New(s.pool), scope, name, threshold, sample)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -37,13 +37,13 @@ type circuitBreakerTripQuerier interface {
 	TripCircuitBreaker(context.Context, sqlcgen.TripCircuitBreakerParams) (sqlcgen.CircuitBreaker, error)
 }
 
-func tripCircuitBreaker(ctx context.Context, q circuitBreakerTripQuerier, site, name string, threshold int, sample store.BreakerSample) (time.Time, error) {
+func tripCircuitBreaker(ctx context.Context, q circuitBreakerTripQuerier, scope, name string, threshold int, sample store.BreakerSample) (time.Time, error) {
 	detail, err := json.Marshal(store.TruncateBreakerSample(sample))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("marshalling circuit breaker sample: %w", err)
 	}
 	row, err := q.TripCircuitBreaker(ctx, sqlcgen.TripCircuitBreakerParams{
-		Site: site, Name: name, Pending: int32(sample.Total), Threshold: int32(threshold), Detail: detail,
+		Scope: scope, Name: name, Pending: int32(sample.Total), Threshold: int32(threshold), Detail: detail,
 	})
 	if err != nil {
 		return time.Time{}, fmt.Errorf("tripping circuit breaker %q: %w", name, err)
@@ -52,8 +52,8 @@ func tripCircuitBreaker(ctx context.Context, q circuitBreakerTripQuerier, site, 
 }
 
 // IsTripped は指定したブレーカーが発動中かを返す。
-func (s *Breakers) IsTripped(ctx context.Context, site, name string) (bool, error) {
-	_, err := sqlcgen.New(s.pool).GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{Site: site, Name: name})
+func (s *Breakers) IsTripped(ctx context.Context, scope, name string) (bool, error) {
+	_, err := sqlcgen.New(s.pool).GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{Scope: scope, Name: name})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -72,7 +72,7 @@ func (s *Breakers) List(ctx context.Context) ([]store.CircuitBreaker, error) {
 	result := make([]store.CircuitBreaker, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, store.CircuitBreaker{
-			Site: row.Site, Name: row.Name, TrippedAt: row.TrippedAt,
+			Scope: row.Scope, Name: row.Name, TrippedAt: row.TrippedAt,
 			Pending: int(row.Pending), Threshold: int(row.Threshold), Detail: row.Detail,
 		})
 	}
@@ -80,13 +80,13 @@ func (s *Breakers) List(ctx context.Context) ([]store.CircuitBreaker, error) {
 }
 
 // Resume は発動行を削除し、行が無ければ store.ErrNotFound を返す。
-func (s *Breakers) Resume(ctx context.Context, site, name string) error {
-	rows, err := sqlcgen.New(s.pool).ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{Site: site, Name: name})
+func (s *Breakers) Resume(ctx context.Context, scope, name string) error {
+	rows, err := sqlcgen.New(s.pool).ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{Scope: scope, Name: name})
 	if err != nil {
 		return fmt.Errorf("resuming circuit breaker %q: %w", name, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("circuit breaker %q at site %q: %w", name, site, store.ErrNotFound)
+		return fmt.Errorf("circuit breaker %q at scope %q: %w", name, scope, store.ErrNotFound)
 	}
 	return nil
 }

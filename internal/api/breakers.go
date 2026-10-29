@@ -41,7 +41,7 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 	for _, r := range rows {
 		var sample CircuitBreakerSample
 		if err := json.Unmarshal(r.Detail, &sample); err != nil {
-			return nil, fmt.Errorf("unmarshalling detail for circuit breaker %s/%s: %w", r.Site, r.Name, err)
+			return nil, fmt.Errorf("unmarshalling detail for circuit breaker %s/%s: %w", r.Scope, r.Name, err)
 		}
 		// name の権威は internal/breaker.All だが、openapi.yaml の
 		// CircuitBreakerName enum はそれを手で複製したものなので、breaker.All
@@ -62,8 +62,14 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 		// 通す。クライアント側は元々このずれを見越したフォールバックを持つ
 		// （web/src/lib/breaker.ts の describeBreakerName / describeBreakerReason
 		// —— 未知の値は識別子そのもの表示 / 理由は空文字）。
+		// API の site は site の範囲だけに使う。置き場の範囲を漏らすと、
+		// クライアントが置き場名を site の再開 URL に入れてしまう。
+		site := ""
+		if breaker.ScopeKindFor(r.Name) == breaker.ScopeSite {
+			site = r.Scope
+		}
 		result = append(result, CircuitBreaker{
-			Site:      r.Site,
+			Site:      site,
 			Name:      CircuitBreakerName(r.Name),
 			TrippedAt: r.TrippedAt,
 			Pending:   r.Pending,
@@ -85,14 +91,14 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // 対象行が無ければ store.ErrNotFound を 404 に変換する。
 // 「再開したつもりが実は別のブレーカーだった／既に再開済みだった」を黙って成功にしない。
 //
-// site はパスに含める。circuit_breakers の PK は (site, name) であり、
+// site はパスに含める。circuit_breakers の PK は (scope, name) であり、
 // site 固定だと GET /api/breakers（サイト横断で一覧できる）で見えている
 // 他サイトの発動を再開できなかった（issue #102）。api は不変条件 1 によりどの
 // site にも束縛されないので、レジストリに無い site が来た場合だけ 400 にする
 // （issue #184 M4-12。レジストリの全 site をこのプロセスから操作できる）。
 //
-// breaker.IsSiteless の検査を knownSite より先に置く。site を持たない名前
-// （delete_reconcile）はこのエンドポイントの資源ではなく取り違え
+// 置き場の範囲の名前（delete_reconcile）を knownSite より先に検査する。
+// この名前はこのエンドポイントの資源ではなく取り違え
 // （ResumeSitelessCircuitBreaker が受ける。issue #450）で、運用者が最も
 // 打ちがちな旧コマンド `POST /api/sites/default/breakers/delete_reconcile/resume`
 // は `default` がレジストリに無いことが多く、knownSite を先に見ると
@@ -100,13 +106,13 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // 正誤に関わらず新ルートを案内できる。理由と経緯は
 // internal/worker/delete_reconcile.go の DeleteReconcileWorker doc コメント参照。
 //
-// 分類を緩めて DELETE をそのまま実行すると `site = req.Site AND name =
+// 範囲の分類を緩めて DELETE をそのまま実行すると `scope = req.Site AND name =
 // 'delete_reconcile'` は常に 0 行になり、正しい 400 の代わりに紛らわしい
 // 404（「発動していない」）を返してしまう。
 func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error) {
-	if breaker.IsSiteless(req.Name) {
+	if breaker.ScopeKindFor(req.Name) == breaker.ScopeStore {
 		return ResumeCircuitBreaker400JSONResponse{
-			Error: fmt.Sprintf("circuit breaker %q has no site; use POST /api/breakers/%s/resume instead", req.Name, req.Name),
+			Error: fmt.Sprintf("circuit breaker %q is not site-scoped; use POST /api/breakers/%s/resume instead", req.Name, req.Name),
 		}, nil
 	}
 	if !h.knownSite(req.Site) {
@@ -126,30 +132,35 @@ func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBrea
 	return ResumeCircuitBreaker204Response{}, nil
 }
 
-// ResumeSitelessCircuitBreaker は site を持たないサーキットブレーカーの手動再開
-// (POST /api/breakers/{name}/resume)。breaker.IsSiteless が true の名前
-// （今のところ delete_reconcile だけ）専用のエンドポイント。理由と経緯は
-// internal/worker/delete_reconcile.go の DeleteReconcileWorker doc コメント参照
-// （issue #450）。
+// ResumeSitelessCircuitBreaker は site のパス指定を使わないサーキットブレーカーの手動再開
+// (POST /api/breakers/{name}/resume)。置き場の範囲の名前（delete_reconcile）を受ける。
+// 範囲が置き場なのは、削除 reconcile のブレーカーが worker の担当する FS 置き場に
+// 従属するため（DeleteReconcileWorker の doc コメント参照）。
 //
-// site を持つ名前（ruler_deletes / reconcile_total_loss）が来たら 400 にする ---
+// site の範囲の名前（ruler_deletes / reconcile_total_loss）と未知の名前は 400 にする。
 // ResumeCircuitBreaker と対称に、分類を緩めて DELETE をそのまま実行すると
-// site 列が空文字列で name が `ruler_deletes` の行を探すことになり（常に 0 行）、
+// 範囲が空文字列で name が `ruler_deletes` の行を探すことになり（常に 0 行）、
 // 正しい 400 の代わりに紛らわしい 404 を返してしまう。
 //
-// site をレジストリと照合する必要はない（不変条件 1: api はどの site にも
-// 束縛されず、この資源は構造的に site を持たない）。
+// site をレジストリと照合する必要はない（不変条件 1）。再開する行の範囲は、
+// api の設定の FS 置き場の名前（breakerStoreScope）で決まる。api は FS 置き場が
+// 無い設定でも起動できるので、その場合は置き場を決められず 400 にする。
 func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSitelessCircuitBreakerRequestObject) (ResumeSitelessCircuitBreakerResponseObject, error) {
 	if !knownCircuitBreakerNames[req.Name] {
 		return ResumeSitelessCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
 	}
-	if !breaker.IsSiteless(req.Name) {
+	if breaker.ScopeKindFor(req.Name) != breaker.ScopeStore {
 		return ResumeSitelessCircuitBreaker400JSONResponse{
-			Error: fmt.Sprintf("circuit breaker %q has a site; use POST /api/sites/{site}/breakers/%s/resume instead", req.Name, req.Name),
+			Error: fmt.Sprintf("circuit breaker %q is site-scoped; use POST /api/sites/{site}/breakers/%s/resume instead", req.Name, req.Name),
+		}, nil
+	}
+	if h.breakerStoreScope == "" {
+		return ResumeSitelessCircuitBreaker400JSONResponse{
+			Error: fmt.Sprintf("circuit breaker %q is store-scoped, but the api config has no FS store to resolve it", req.Name),
 		}, nil
 	}
 
-	err := h.breakerAdmin.Resume(ctx, "", req.Name)
+	err := h.breakerAdmin.Resume(ctx, h.breakerStoreScope, req.Name)
 	if errors.Is(err, store.ErrNotFound) {
 		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
 	}
