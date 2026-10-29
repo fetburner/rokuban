@@ -127,7 +127,7 @@ FS 置き場では、staging file を rename して親ディレクトリを `fsy
 
 置き換えは新しい世代の行を足すだけで、旧世代のコピーには触れない。旧世代のキーは、署名付き URL で再生中の視聴者がいても 404 にならないよう、削除 reconcile が `storage.transfer.overlap` の後に消す。コピー行の世代は INSERT の後に変えず、現行のコピーを選ぶ述語は `active_media_asset_copies` と `preferred_active_media_asset_copy` だけに置く（[schema](../schema/recordings/media-assets.md)）。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代のキーを使う。Matroska のように同じ入力でも出力のバイト列が変わる形式で、既に upload 済みのキーを別の内容で上書きしないためである。
 
-S3 置き場の失敗は、S3 を使うジョブだけを失敗させる。worker は起動時に S3 へ接続しないので、S3 に繋がらなくても、資格情報が失効していても起動する。S3 のコードを通らないジョブ（ingest など）は、S3 の状態に左右されない。失敗は `rokuban_object_store_errors_total{operation}` に数え、資格情報の失効や取得失敗は `rokuban_object_store_credential_errors_total` にも数える。
+S3 置き場の失敗は、S3 を使うジョブだけを失敗させる。worker は起動時に S3 へ接続しない（運用は [ストレージ運用](../operations/storage.md) の「S3 の置き場の運用要件」）。
 
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 

@@ -166,7 +166,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		}
 		_, err := s.client.PutObject(ctx, newInput(true))
 		if err != nil && isConditionalUnsupported(err) {
-			// key は一意なので、条件なしで書き直しても既存の object を上書きしない。
+			// 呼び出し側は key を使い回さないので、既存の object が無い前提で条件を外す。
 			_, err = s.client.PutObject(ctx, newInput(false))
 		}
 		if err != nil {
@@ -249,7 +249,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 	completeInput.IfNoneMatch = aws.String("*")
 	_, err = s.client.CompleteMultipartUpload(ctx, completeInput)
 	if err != nil && isConditionalUnsupported(err) {
-		// key は一意なので、条件なしで完了し直しても既存の object を上書きしない。
+		// 呼び出し側は key を使い回さないので、既存の object が無い前提で条件を外す。
 		unconditional := *completeInput
 		unconditional.IfNoneMatch = nil
 		_, err = s.client.CompleteMultipartUpload(ctx, &unconditional)

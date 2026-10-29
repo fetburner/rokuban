@@ -183,7 +183,7 @@ func TestObjectPublishKeepsPreviousGenerationUntilOverlapElapses(t *testing.T) {
 
 	worker := env.deleter(100)
 	worker.TransferOverlap = 48 * time.Hour
-	if err := worker.workObjectStore(ctx); err != nil {
+	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
 		t.Fatalf("delete reconcile inside the overlap: %v", err)
 	}
 	if !env.objectExists(t, oldKey) || env.copyState(t, oldKey) != "active" {
@@ -195,7 +195,7 @@ func TestObjectPublishKeepsPreviousGenerationUntilOverlapElapses(t *testing.T) {
 		objectStoreName, newKey); err != nil {
 		t.Fatalf("aging the new generation: %v", err)
 	}
-	if err := worker.workObjectStore(ctx); err != nil {
+	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
 		t.Fatalf("delete reconcile after the overlap: %v", err)
 	}
 	if env.objectExists(t, oldKey) || env.copyState(t, oldKey) != "deleted" {
@@ -306,7 +306,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		ageAll(env)
 		worker := env.deleter(2)
 		worker.TransferOverlap = 48 * time.Hour
-		if err := worker.workObjectStore(ctx); err != nil {
+		if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
 			t.Fatalf("delete reconcile over the limit: %v", err)
 		}
 		if got := scopes(env); len(got) != 1 || got[0] != objectStoreName {
@@ -328,7 +328,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		}
 		worker := env.deleter(100)
 		worker.TransferOverlap = 48 * time.Hour
-		if err := worker.workObjectStore(ctx); err != nil {
+		if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
 			t.Fatalf("delete reconcile: %v", err)
 		}
 		if env.objectExists(t, oldKey) {
@@ -345,7 +345,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		}
 		worker := env.deleter(100)
 		worker.TransferOverlap = 48 * time.Hour
-		if err := worker.workObjectStore(ctx); err != nil {
+		if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
 			t.Fatalf("delete reconcile: %v", err)
 		}
 		if !env.objectExists(t, oldKey) {
@@ -378,7 +378,7 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 	}
 
 	worker := env.deleter(1)
-	if err := worker.workObjectStore(ctx); err != nil {
+	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
 	for _, key := range keys {
@@ -391,7 +391,7 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 		t.Fatalf("resuming the breaker: %v", err)
 	}
 	worker = env.deleter(100)
-	if err := worker.workObjectStore(ctx); err != nil {
+	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
 		t.Fatalf("delete reconcile after resume: %v", err)
 	}
 	for _, key := range keys {

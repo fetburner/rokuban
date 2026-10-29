@@ -203,7 +203,8 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE store = $1 AND rel_path = $2`, objectStoreName, key); err != nil {
 			t.Fatalf("aging pending copy: %v", err)
 		}
-		if err := env.deleter(100).workObjectStore(ctx); err != nil {
+		reclaimer := env.deleter(100)
+		if err := reclaimer.workObjectStore(ctx, reclaimer.settings()); err != nil {
 			t.Fatalf("reclaiming stale pending copy: %v", err)
 		}
 		if _, err := objects.Head(ctx, key); !errors.Is(err, objstore.ErrNotFound) {

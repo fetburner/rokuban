@@ -86,8 +86,9 @@ storage:
   # derived: s3main
   # S3 の資格情報は AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY などの環境変数か
   # workload identity で与える。署名付き URL は 24 時間有効で、署名する資格情報が
-  # それより短いと先に無効になるので、長期のアクセスキーを使う。region の既定値は
-  # us-east-1（R2 は auto）。
+  # それより短いと先に無効になる。署名するのは streamer だけなので、24 時間以上
+  # 有効な資格情報（長期のアクセスキーなど）が要るのは streamer である。worker の
+  # 書き込みは workload identity でもよい。region の既定値は us-east-1（R2 は auto）。
   media_dir: /mnt/media          # 原本 ingest 先。file fsync / Close / 同一 FS の
                                   # atomic rename / 親 directory fsync を信頼できる
                                   # ローカル FS / JuiceFS / NFS に限定する。geesefs / s3fs /
