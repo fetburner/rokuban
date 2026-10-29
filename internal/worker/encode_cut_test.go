@@ -228,7 +228,7 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 			input: store.EncodedPublishInput{Profile: "cut", Cut: true, KeepRanges: keep, HasRebuildRequest: true, RequestedKeep: keep},
 			state: store.EncodedPublishState{
 				Desired: true, HasRebuildRequest: true, RebuildRequestKeep: keep,
-				EncodedAsset: &store.EncodedAssetObservation{State: "active", DerivedGeneration: 7, KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 30_000}}},
+				EncodedAsset: &store.EncodedAssetObservation{Active: true, DerivedGeneration: 7, KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 30_000}}},
 			},
 			want: 8, wantRelPath: "20240101/a_cut.g8.mp4",
 		},
@@ -237,7 +237,7 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 			input: store.EncodedPublishInput{Profile: "h264"},
 			state: store.EncodedPublishState{
 				Desired:      true,
-				EncodedAsset: &store.EncodedAssetObservation{State: "deleted", DerivedGeneration: 4},
+				EncodedAsset: &store.EncodedAssetObservation{DerivedGeneration: 4},
 			},
 			want: 5, wantRelPath: "20240101/a_h264.u5.mp4",
 		},
@@ -246,7 +246,7 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 			input: store.EncodedPublishInput{Profile: "cut", Cut: true, KeepRanges: keep, HasRebuildRequest: true, RequestedKeep: keep},
 			state: store.EncodedPublishState{
 				Desired: true, HasRebuildRequest: true, RebuildRequestKeep: keep,
-				EncodedAsset: &store.EncodedAssetObservation{State: "deleted", DerivedGeneration: 12},
+				EncodedAsset: &store.EncodedAssetObservation{DerivedGeneration: 12},
 			},
 			want: 13, wantRelPath: "20240101/a_cut.g13.mp4",
 		},
@@ -512,11 +512,15 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading encoded row: %v", err)
 	}
-	if row.RelPath != "cut/replace_cut.g2.mp4" {
-		t.Errorf("rel_path = %q, want cut/replace_cut.g2.mp4 (the next generation)", row.RelPath)
+	var relPath string
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM active_media_asset_copies($1, NULL)`, row.ID).Scan(&relPath); err != nil {
+		t.Fatalf("loading the current copy: %v", err)
 	}
-	assertMediaAssetCopy(t, pool, row.ID, row.RelPath)
-	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(row.RelPath))); err != nil {
+	if relPath != "cut/replace_cut.g2.mp4" || row.DerivedGeneration != 2 {
+		t.Errorf("current copy = %q generation %d, want cut/replace_cut.g2.mp4 generation 2", relPath, row.DerivedGeneration)
+	}
+	assertMediaAssetCopy(t, pool, row.ID, relPath)
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(relPath))); err != nil {
 		t.Errorf("the new generation file is missing: %v", err)
 	}
 	if _, err := os.Stat(oldAbs); err != nil {
@@ -541,8 +545,8 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading encoded row: %v", err)
 	}
-	if again.RelPath != row.RelPath {
-		t.Errorf("a no-op re-run advanced the generation: %q -> %q", row.RelPath, again.RelPath)
+	if again.DerivedGeneration != row.DerivedGeneration {
+		t.Errorf("a no-op re-run advanced the generation: %d -> %d", row.DerivedGeneration, again.DerivedGeneration)
 	}
 }
 
@@ -650,14 +654,14 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 
 	publishedCalls := 0
 	published, err := pgstoretest.Media(pool).PublishEncoded(ctx, store.EncodedPublishInput{
-		RecordingID:     recordingID,
-		Profile:         "cut",
-		Attempt:         1,
-		RelPath:         "rebuild/stale_cut.g2.mp4",
-		SizeBytes:       1,
-		ObservedRelPath: observed.observedRelPath,
-		Cut:             true,
-		KeepRanges:      currentKeep,
+		RecordingID:        recordingID,
+		Profile:            "cut",
+		Attempt:            1,
+		RelPath:            "rebuild/stale_cut.g2.mp4",
+		SizeBytes:          1,
+		ObservedGeneration: observed.observedGeneration,
+		Cut:                true,
+		KeepRanges:         currentKeep,
 	}, func() error { publishedCalls++; return nil })
 	if err != nil {
 		t.Fatalf("publishing ordinary cut encode: %v", err)

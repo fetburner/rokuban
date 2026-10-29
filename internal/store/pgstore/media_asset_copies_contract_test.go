@@ -873,3 +873,50 @@ func TestUpsertDerivedMediaAssetGenerationGuard(t *testing.T) {
 		t.Fatalf("generation = %d, want 6", derived)
 	}
 }
+
+// 公開の計画が見る active は現行世代のコピーだけで決める。旧世代のコピーだけが active の版を active と読むと、
+// 現行ファイルが無いのに公開を「満たし済み」として飛ばす。
+func TestEncodedPublishStateActiveRequiresCurrentGenerationCopy(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = store.AssetKindEncoded
+		p.Profile = &profile
+		p.RelPath = "encoded/h264.mp4"
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', ARRAY['h264'], false)`, recordingID); err != nil {
+		t.Fatalf("seeding encode policy: %v", err)
+	}
+	media := NewMedia(pool, dbtest.StoreName, "")
+	observe := func() *store.EncodedAssetObservation {
+		t.Helper()
+		state, err := media.GetEncodedPublishState(ctx, recordingID, profile, false, false)
+		if err != nil || state.EncodedAsset == nil {
+			t.Fatalf("GetEncodedPublishState = %+v, %v", state, err)
+		}
+		return state.EncodedAsset
+	}
+	if got := observe(); !got.Active || got.DerivedGeneration != 0 {
+		t.Fatalf("observation = %+v, want active at generation 0", got)
+	}
+
+	// 論理世代だけを進める。active なコピーは旧世代のままである。
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if got := observe(); got.Active || got.DerivedGeneration != 1 {
+		t.Fatalf("observation = %+v, want inactive at generation 1 (only an old-generation copy is active)", got)
+	}
+
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: "encoded/h264.g1.mp4", Generation: 1, State: "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := observe(); !got.Active || got.DerivedGeneration != 1 {
+		t.Fatalf("observation = %+v, want active at generation 1", got)
+	}
+}

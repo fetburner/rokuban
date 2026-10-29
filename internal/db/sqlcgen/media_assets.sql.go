@@ -192,26 +192,9 @@ func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDer
 
 const getEncodedMediaAssetForProfile = `-- name: GetEncodedMediaAssetForProfile :one
 SELECT a.id,
-       COALESCE(c.rel_path, '')::text AS rel_path,
-       CASE
-           WHEN EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, NULL)) THEN 'active'
-           WHEN EXISTS (
-               SELECT 1 FROM media_asset_copies d
-               WHERE d.media_asset_id = a.id
-                 AND d.generation = COALESCE(a.derived_generation, 0)
-                 AND d.state = 'deleting'
-           ) THEN 'deleting'
-           ELSE 'deleted'
-       END::text AS state,
+       EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, NULL)) AS active,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
-LEFT JOIN LATERAL (
-    SELECT copy.rel_path
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-    ORDER BY copy.generation DESC, (copy.state = 'active') DESC, copy.store, copy.id
-    LIMIT 1
-) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'encoded'
   AND a.profile = $2
@@ -224,25 +207,18 @@ type GetEncodedMediaAssetForProfileParams struct {
 
 type GetEncodedMediaAssetForProfileRow struct {
 	ID                int64
-	RelPath           string
-	State             string
+	Active            bool
 	DerivedGeneration int64
 }
 
-// publish が観測する論理行。世代カウンターと状態は置き場によらない（コピー表へ JOIN すると、
+// publish が観測する論理行。世代カウンターは置き場によらない（コピー表へ JOIN すると、
 // 書き手の store にコピーが無いときにカウンターを読み落とす）。
-// state は現行世代のコピーから決める。active が 1 つでもあれば active、無くて deleting があれば
-// deleting、それ以外は deleted。rel_path は最新世代のコピーの物理パスで、同じ世代なら active を
-// 先に選ぶ。公開の計画が「観測した後に行が進んだか」を比べる目印で、コピーが 1 つも無ければ空である。
+// active は現行世代のコピーがどこかの置き場にあるかで、active_media_asset_copies の現行判定を使う。
+// 公開の計画は derived_generation を「観測した後に行が進んだか」の目印にする。
 func (q *Queries) GetEncodedMediaAssetForProfile(ctx context.Context, arg GetEncodedMediaAssetForProfileParams) (GetEncodedMediaAssetForProfileRow, error) {
 	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.RecordingID, arg.Profile)
 	var i GetEncodedMediaAssetForProfileRow
-	err := row.Scan(
-		&i.ID,
-		&i.RelPath,
-		&i.State,
-		&i.DerivedGeneration,
-	)
+	err := row.Scan(&i.ID, &i.Active, &i.DerivedGeneration)
 	return i, err
 }
 

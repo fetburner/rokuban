@@ -299,7 +299,7 @@ func (s *Media) GetEncodedPublishState(
 	})
 	if err == nil {
 		asset := store.EncodedAssetObservation{
-			ID: row.ID, RelPath: row.RelPath, State: row.State, DerivedGeneration: row.DerivedGeneration,
+			ID: row.ID, Active: row.Active, DerivedGeneration: row.DerivedGeneration,
 		}
 		if cut {
 			asset.KeepRanges, err = assetKeepRanges(ctx, q, row.ID)

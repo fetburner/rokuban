@@ -117,9 +117,9 @@ type EncodedMeaningEvidence struct {
 // EncodedAssetObservation はエンコード計画が観測した encoded アセットを表す。
 // KeepRanges は cut プロファイルの要求で凍結された区間で、凍結されていなければ空である。
 type EncodedAssetObservation struct {
-	ID                int64
-	RelPath           string
-	State             string
+	ID int64
+	// Active は現行世代のコピーがどこかの置き場で active であることを表す。
+	Active            bool
 	DerivedGeneration int64
 	KeepRanges        []chapters.Range
 }

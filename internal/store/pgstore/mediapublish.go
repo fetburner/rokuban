@@ -222,7 +222,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	})
 	if err == nil {
 		observation := store.EncodedAssetObservation{
-			ID: row.ID, RelPath: row.RelPath, State: row.State, DerivedGeneration: row.DerivedGeneration,
+			ID: row.ID, Active: row.Active, DerivedGeneration: row.DerivedGeneration,
 		}
 		if in.Cut {
 			keep, err := assetKeepRanges(ctx, q, row.ID)
@@ -236,7 +236,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		return false, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
 
-	plan := store.PlanEncodedPublish(in, state, &in.ObservedRelPath)
+	plan := store.PlanEncodedPublish(in, state, &in.ObservedGeneration)
 	if plan.Stale {
 		return false, store.ErrStalePublishPlan
 	}

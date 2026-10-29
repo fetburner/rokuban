@@ -157,7 +157,7 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。
 
-この版は、コピー表を持たない版から直接は更新できない。`media_assets.rel_path` を消す migration は、コピーの無い論理資産が残っていると停止する。コピー表と `storage adopt` がコピーを作る版を先に入れ、上の手順 1 から 4 を済ませてから、この版へ更新する。
+コピー世代を持たない版からは、2 回に分けて更新する。`media_assets.rel_path` / `state` / `deleted_at` を消す migration を含む版は、コピーの無い論理資産が残っていると停止するからである。1 回目は、コピー表とコピー世代を持ち、`storage adopt` がコピーを作る版を入れて、上の手順 1 から 4 を済ませる。2 回目で、その列を消す migration を含む版へ更新する。
 
 更新の前に、設定へ `storage.stores` / `originals` / `derived` を書く。旧キー `storage.media_store_name` は廃止した。設定は厳密に読むので、残したまま新しい版を起動すると、全ロールで設定の読み込みが失敗する。`media_store_name: X` を持つ構成は、それを消して `X` を置き場の名前にする。持たない構成は、worker が使う FS 置き場の名前を決めて書く。どちらも下の形になる。`transfer.overlap` は置き場が 1 つでも、旧世代の削除の猶予として効く。省略すると 48 時間になるので、`cleanup.missing_asset_age` を延ばしているときだけ書く。
 

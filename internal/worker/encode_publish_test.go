@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -591,7 +592,7 @@ func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
 		RecordingID: sc.recordingID,
 		Profile:     stringPtr("cut"),
 	})
-	if err != nil || asset.ID != sc.assetID || asset.RelPath != sc.finalRel {
+	if err != nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != sc.finalRel {
 		t.Fatalf("encoded asset after publish = %+v, err %v; want id %d at %s", asset, err, sc.assetID, sc.finalRel)
 	}
 	frozen, err := frozenKeepRanges(ctx, pool, sc.recordingID, "cut")
@@ -647,7 +648,7 @@ func TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain(t *testing.T) {
 		RecordingID: sc.recordingID,
 		Profile:     stringPtr("cut"),
 	})
-	if err != nil || asset.ID != sc.assetID || asset.RelPath != "rebuild/pressed-again_cut.g1.mp4" {
+	if err != nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != "rebuild/pressed-again_cut.g1.mp4" {
 		t.Fatalf("encoded asset after skip = %+v, err %v; want the previous generation", asset, err)
 	}
 	if got := unsatisfiedRebuildCount(t, pool, sc.recordingID); got != 1 {
@@ -836,7 +837,7 @@ func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
 	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
 	if _, published, err := w.publishEncoded(context.Background(), encodePublishInput{
-		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
+		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut, observed: encodePlan{observedGeneration: -1},
 	}); err != nil || !published {
 		t.Fatalf("publishEncoded = published %v, err %v", published, err)
 	}
@@ -972,7 +973,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		_, _, err := worker.publishEncoded(ctx, encodePublishInput{
 			recordingID: recordingID, profile: "h264", attempt: attempt,
 			relPath: relPath, finalPath: finalPath, scratchOut: scratchOut,
-			observed: encodePlan{observedRelPath: relPath},
+			observed: encodePlan{observedGeneration: 0},
 		})
 		encodeDone <- err
 	}()
@@ -1104,7 +1105,7 @@ func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
 			_, published, err := worker.publishEncoded(ctx, encodePublishInput{
 				recordingID: recordingID, profile: "h264", attempt: attempt,
 				relPath: relPath, finalPath: finalPath, scratchOut: scratch,
-				observed: encodePlan{},
+				observed: encodePlan{observedGeneration: -1},
 			})
 			done <- publishResult{published: published, err: err}
 		}()
@@ -1224,4 +1225,15 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	if got := unsatisfiedRebuildCount(t, pool, recordingID); got != 0 {
 		t.Fatalf("unsatisfied rebuilds after satisfied skip = %d, want 0", got)
 	}
+}
+
+// currentCopyRelPath は論理資産の現行世代の active コピーのパスを返す。無ければ空文字列を返す。
+func currentCopyRelPath(t *testing.T, pool *pgxpool.Pool, assetID int64) string {
+	t.Helper()
+	var relPath string
+	err := pool.QueryRow(context.Background(), `SELECT rel_path FROM active_media_asset_copies($1, NULL) LIMIT 1`, assetID).Scan(&relPath)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("reading the current copy of asset %d: %v", assetID, err)
+	}
+	return relPath
 }
