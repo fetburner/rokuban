@@ -71,19 +71,49 @@ INSERT INTO media_assets (
 )
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
-    size_bytes = EXCLUDED.size_bytes,
+    rel_path   = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN EXCLUDED.rel_path
+        ELSE media_assets.rel_path
+    END,
+    size_bytes = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN EXCLUDED.size_bytes
+        ELSE media_assets.size_bytes
+    END,
     derived_generation = CASE
         WHEN EXCLUDED.kind = 'original' THEN NULL
         ELSE GREATEST(COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0))
     END,
-    sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
-    updated_at = now()
+    sha256     = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN NULL
+        ELSE media_assets.sha256
+    END,
+    state      = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN 'active'
+        ELSE media_assets.state
+    END,
+    deleted_at = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN NULL
+        ELSE media_assets.deleted_at
+    END,
+    updated_at = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN now()
+        ELSE media_assets.updated_at
+    END
 RETURNING id,
     CASE WHEN kind = 'original' THEN 0
-         ELSE COALESCE(media_asset_generation_from_rel_path(rel_path), 0)
+         ELSE COALESCE(media_asset_generation_from_rel_path($4), 0)
     END::bigint AS generation
 `
 

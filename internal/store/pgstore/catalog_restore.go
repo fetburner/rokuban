@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path"
@@ -446,15 +447,11 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		}); err != nil {
 			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
 		}
-		inserted, err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		if err := upsertCatalogMediaAssetCopy(ctx, q, sqlcgen.UpsertMediaAssetCopyParams{
 			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
 			Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
-		})
-		if err != nil {
+		}); err != nil {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
-		}
-		if inserted != 1 {
-			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q affected %d rows", a.ID, assetStore, inserted)
 		}
 		assetIDs[a.ID] = struct{}{}
 	}
@@ -464,6 +461,60 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		}
 	}
 	res.MediaAssets = len(assets)
+	return nil
+}
+
+func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params sqlcgen.UpsertMediaAssetCopyParams) error {
+	if params.State != "deleted" {
+		rows, err := q.UpsertMediaAssetCopy(ctx, params)
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return fmt.Errorf("upsert affected %d rows, want one", rows)
+		}
+		return nil
+	}
+
+	copy, err := q.LockMediaAssetCopyByPhysicalPath(ctx, sqlcgen.LockMediaAssetCopyByPhysicalPathParams{
+		Store: params.Store, RelPath: params.RelPath,
+	})
+	if err == nil {
+		if copy.MediaAssetID != params.MediaAssetID || copy.Generation != params.Generation {
+			return fmt.Errorf("path %q in store %q belongs to asset %d generation %d, want asset %d generation %d: %w",
+				params.RelPath, params.Store, copy.MediaAssetID, copy.Generation, params.MediaAssetID, params.Generation, store.ErrConflict)
+		}
+		rows, err := q.SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
+			ID: copy.ID, StoreName: params.Store, State: "deleted", ExpectedState: copy.State, DeletedAt: params.DeletedAt,
+		})
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return fmt.Errorf("deleting copy %d affected %d rows, want one", copy.ID, rows)
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	exists, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
+		MediaAssetID: params.MediaAssetID, Store: params.Store, RelPath: params.RelPath, Generation: params.Generation,
+	})
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	rows, err := q.UpsertMediaAssetCopy(ctx, params)
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("insert affected %d rows, want one", rows)
+	}
 	return nil
 }
 

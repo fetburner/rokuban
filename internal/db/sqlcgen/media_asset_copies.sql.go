@@ -56,6 +56,37 @@ func (q *Queries) AdoptUnassignedStorageSync(ctx context.Context, store string) 
 	return err
 }
 
+const catalogHasDeletedMediaAssetCopy = `-- name: CatalogHasDeletedMediaAssetCopy :one
+SELECT EXISTS (
+    SELECT 1 FROM media_asset_copies copy
+    WHERE copy.media_asset_id = $1
+      AND copy.store = $2
+      AND copy.rel_path = $3
+      AND copy.generation = $4
+      AND copy.state = 'deleted'
+)
+`
+
+type CatalogHasDeletedMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	Generation   int64
+}
+
+// Repeated rescue of an already missing copy must not add duplicate tombstones.
+func (q *Queries) CatalogHasDeletedMediaAssetCopy(ctx context.Context, arg CatalogHasDeletedMediaAssetCopyParams) (bool, error) {
+	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopy,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.RelPath,
+		arg.Generation,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const countUnassignedStorageRows = `-- name: CountUnassignedStorageRows :one
 SELECT
     (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
@@ -102,6 +133,44 @@ func (q *Queries) LockMediaAssetCopy(ctx context.Context, arg LockMediaAssetCopy
 	row := q.db.QueryRow(ctx, lockMediaAssetCopy, arg.CopyID, arg.StoreName)
 	var i LockMediaAssetCopyRow
 	err := row.Scan(&i.MediaAssetID, &i.State)
+	return i, err
+}
+
+const lockMediaAssetCopyByPhysicalPath = `-- name: LockMediaAssetCopyByPhysicalPath :one
+SELECT copy.id, copy.media_asset_id, copy.generation, copy.state
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE copy.store = $1
+  AND copy.rel_path = $2
+  AND copy.state <> 'deleted'
+FOR UPDATE OF asset, copy
+`
+
+type LockMediaAssetCopyByPhysicalPathParams struct {
+	Store   string
+	RelPath string
+}
+
+type LockMediaAssetCopyByPhysicalPathRow struct {
+	ID           int64
+	MediaAssetID int64
+	Generation   int64
+	State        string
+}
+
+// Catalog restore identifies copies by their physical path because catalog rows
+// intentionally do not expose database copy IDs. Lock the current path owner
+// before applying a missing-file tombstone so an existing active row is not left
+// beside a newly inserted deleted row.
+func (q *Queries) LockMediaAssetCopyByPhysicalPath(ctx context.Context, arg LockMediaAssetCopyByPhysicalPathParams) (LockMediaAssetCopyByPhysicalPathRow, error) {
+	row := q.db.QueryRow(ctx, lockMediaAssetCopyByPhysicalPath, arg.Store, arg.RelPath)
+	var i LockMediaAssetCopyByPhysicalPathRow
+	err := row.Scan(
+		&i.ID,
+		&i.MediaAssetID,
+		&i.Generation,
+		&i.State,
+	)
 	return i, err
 }
 
@@ -179,16 +248,17 @@ const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
 UPDATE media_asset_copies
 SET state = $1,
     deleted_at = CASE
-        WHEN $1::text = 'deleted' THEN COALESCE(deleted_at, now())
+        WHEN $1::text = 'deleted' THEN COALESCE($2::timestamptz, deleted_at, now())
         ELSE NULL
     END
-WHERE id = $2
-  AND store = $3
-  AND state = $4
+WHERE id = $3
+  AND store = $4
+  AND state = $5
 `
 
 type SetMediaAssetCopyStateParams struct {
 	State         string
+	DeletedAt     *time.Time
 	ID            int64
 	StoreName     string
 	ExpectedState string
@@ -200,6 +270,7 @@ type SetMediaAssetCopyStateParams struct {
 func (q *Queries) SetMediaAssetCopyState(ctx context.Context, arg SetMediaAssetCopyStateParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setMediaAssetCopyState,
 		arg.State,
+		arg.DeletedAt,
 		arg.ID,
 		arg.StoreName,
 		arg.ExpectedState,

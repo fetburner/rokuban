@@ -120,6 +120,65 @@ FROM media_assets asset
 	}
 }
 
+func TestRescueCatalogMarksPreviouslyRestoredCopyDeletedWhenFileDisappears(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t)
+	const relPath = "current.g2.mp4"
+	if err := os.WriteFile(filepath.Join(mediaDir, relPath), []byte("current media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profile := "h264"
+	generation := int64(2)
+	doc := &Document{
+		Version: Version, ExportedAt: fixedTime(),
+		Recordings: []Recording{{
+			ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1,
+			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test",
+			ProgramStartAt: fixedTime(), Status: "finished", QualityEvents: json.RawMessage("[]"),
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+		}},
+		MediaAssets: []MediaAsset{{
+			ID: 11, RecordingID: 1, Kind: "encoded", Profile: &profile,
+			RelPath: relPath, SizeBytes: 100, State: "active",
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+			DerivedGeneration: &generation, Generation: &generation, Store: "test-store",
+		}},
+	}
+	if _, err := Write(mediaDir, doc, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	catalogStore := pgstoretest.Catalog(pool, []string{"default"}...)
+	mediaStore := pgstoretest.Media(pool)
+	if _, err := RescueLatest(context.Background(), catalogStore, mediaStore, mediaDir, "test-store", nil); err != nil {
+		t.Fatalf("initial RescueLatest: %v", err)
+	}
+	if err := os.Remove(filepath.Join(mediaDir, relPath)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RescueLatest(context.Background(), catalogStore, mediaStore, mediaDir, "test-store", nil)
+	if err != nil {
+		t.Fatalf("RescueLatest after file removal: %v", err)
+	}
+	if result.MissingMediaFiles != 1 {
+		t.Fatalf("MissingMediaFiles = %d, want 1", result.MissingMediaFiles)
+	}
+	var activeCopies, deletedCopies int
+	var logicalState string
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FILTER (WHERE copy.state = 'active'),
+       count(*) FILTER (WHERE copy.state = 'deleted'),
+       asset.state
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE asset.id = 11
+GROUP BY asset.state`).Scan(&activeCopies, &deletedCopies, &logicalState); err != nil {
+		t.Fatalf("reading copy state after second rescue: %v", err)
+	}
+	if activeCopies != 0 || deletedCopies != 1 || logicalState != "deleted" {
+		t.Fatalf("active/deleted/logical = %d/%d/%q, want 0/1/deleted", activeCopies, deletedCopies, logicalState)
+	}
+}
+
 func TestRescueScanCandidateRemoved(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := newTestMediaDir(t)

@@ -332,6 +332,59 @@ func TestRegisterInPlacePreservesDeletingCopyState(t *testing.T) {
 	assertLogicalAndCopyState(t, pool, assetID, dbtest.StoreName, "deleting", "deleting")
 }
 
+func TestRegisterInPlaceDoesNotRegressLogicalMetadataToOlderGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	media := NewMedia(pool, dbtest.StoreName, "")
+	profile := "h264"
+	startedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	input := store.InPlaceInput{
+		Recording: store.InPlaceRecording{
+			Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 900,
+			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "in-place generation",
+			ProgramStartAt: startedAt, ProgramDurationMs: 60_000, Status: "finished",
+		},
+		Assets: []store.InPlaceAsset{{
+			Kind: store.AssetKindEncoded, Profile: &profile,
+			RelPath: "encoded/show.g8.mp4", SizeBytes: 100,
+		}},
+	}
+	first, err := media.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("registering generation 8: %v", err)
+	}
+	input.Assets[0].RelPath = "encoded/show.g7.mp4"
+	input.Assets[0].SizeBytes = 80
+	second, err := media.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("registering older generation 7: %v", err)
+	}
+	if second.RecordingID != first.RecordingID || second.AssetIDs[0] != first.AssetIDs[0] {
+		t.Fatalf("second registration = %+v, want same recording and asset as %+v", second, first)
+	}
+	var relPath string
+	var sizeBytes, derivedGeneration int64
+	if err := pool.QueryRow(ctx, `SELECT rel_path, size_bytes, derived_generation FROM media_assets WHERE id = $1`, first.AssetIDs[0]).Scan(&relPath, &sizeBytes, &derivedGeneration); err != nil {
+		t.Fatalf("reading logical encoded asset: %v", err)
+	}
+	if relPath != "encoded/show.g8.mp4" || sizeBytes != 100 || derivedGeneration != 8 {
+		t.Fatalf("logical path/size/generation = %q/%d/%d, want encoded/show.g8.mp4/100/8", relPath, sizeBytes, derivedGeneration)
+	}
+	var oldCopyGeneration, currentCopyGeneration int64
+	if err := pool.QueryRow(ctx, `
+SELECT old_copy.generation, current_copy.generation
+FROM media_asset_copies old_copy
+JOIN media_asset_copies current_copy ON current_copy.media_asset_id = old_copy.media_asset_id
+WHERE old_copy.media_asset_id = $1
+  AND old_copy.rel_path = 'encoded/show.g7.mp4'
+  AND current_copy.rel_path = 'encoded/show.g8.mp4'`, first.AssetIDs[0]).Scan(&oldCopyGeneration, &currentCopyGeneration); err != nil {
+		t.Fatalf("reading registered physical generations: %v", err)
+	}
+	if oldCopyGeneration != 7 || currentCopyGeneration != 8 {
+		t.Fatalf("old/current copy generations = %d/%d, want 7/8", oldCopyGeneration, currentCopyGeneration)
+	}
+}
+
 func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

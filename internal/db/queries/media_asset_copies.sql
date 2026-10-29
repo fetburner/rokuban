@@ -21,12 +21,36 @@ WHERE media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
 UPDATE media_asset_copies
 SET state = sqlc.arg('state'),
     deleted_at = CASE
-        WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now())
+        WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(sqlc.narg('deleted_at')::timestamptz, deleted_at, now())
         ELSE NULL
     END
 WHERE id = sqlc.arg('id')
   AND store = sqlc.arg('store_name')
   AND state = sqlc.arg('expected_state');
+
+-- Catalog restore identifies copies by their physical path because catalog rows
+-- intentionally do not expose database copy IDs. Lock the current path owner
+-- before applying a missing-file tombstone so an existing active row is not left
+-- beside a newly inserted deleted row.
+-- name: LockMediaAssetCopyByPhysicalPath :one
+SELECT copy.id, copy.media_asset_id, copy.generation, copy.state
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE copy.store = sqlc.arg('store')
+  AND copy.rel_path = sqlc.arg('rel_path')
+  AND copy.state <> 'deleted'
+FOR UPDATE OF asset, copy;
+
+-- Repeated rescue of an already missing copy must not add duplicate tombstones.
+-- name: CatalogHasDeletedMediaAssetCopy :one
+SELECT EXISTS (
+    SELECT 1 FROM media_asset_copies copy
+    WHERE copy.media_asset_id = sqlc.arg('media_asset_id')
+      AND copy.store = sqlc.arg('store')
+      AND copy.rel_path = sqlc.arg('rel_path')
+      AND copy.generation = sqlc.arg('generation')
+      AND copy.state = 'deleted'
+);
 
 -- media_assets.state remains the logical publication state mirrored for readers
 -- outside the copy-aware paths. Only current-generation copies contribute.
