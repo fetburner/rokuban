@@ -370,6 +370,16 @@ func TestRegisterInPlaceDoesNotRegressLogicalMetadataToOlderGeneration(t *testin
 	if relPath != "encoded/show.g8.mp4" || sizeBytes != 100 || derivedGeneration != 8 {
 		t.Fatalf("logical path/size/generation = %q/%d/%d, want encoded/show.g8.mp4/100/8", relPath, sizeBytes, derivedGeneration)
 	}
+	current, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+		RecordingID: first.RecordingID, Profile: &profile,
+	})
+	if err != nil {
+		t.Fatalf("reading encoded asset for profile: %v", err)
+	}
+	if current.RelPath != "encoded/show.g8.mp4" || current.State != "active" || current.DerivedGeneration != 8 {
+		t.Fatalf("encoded profile read = %q/%q/generation %d, want current path/active/generation 8",
+			current.RelPath, current.State, current.DerivedGeneration)
+	}
 	var oldCopyGeneration, currentCopyGeneration int64
 	if err := pool.QueryRow(ctx, `
 SELECT old_copy.generation, current_copy.generation
