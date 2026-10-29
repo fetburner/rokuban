@@ -175,7 +175,7 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   if (apiPath === '/api/capabilities') return json({ live: false })
   if (apiPath === '/api/breakers') return json([])
   if (apiPath === '/api/encode-profiles' || apiPath === '/api/rules') return json([])
-  if (apiPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (apiPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (apiPath === '/api/capacity/overages') return json([])
   if (apiPath === '/api/events') return sseKeepAlive(route)
   if (apiPath === '/api/recordings' && method === 'GET') {

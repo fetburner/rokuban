@@ -228,7 +228,9 @@ function stubApi(fixtures: Fixtures) {
       if (p === '/api/breakers') return jsonResponse(fixtures.breakers ?? [])
       if (p === '/api/capacity/overages') return jsonResponse(fixtures.overages ?? [])
       if (p === '/api/storage') return jsonResponse(fixtures.storage ?? [])
-      if (p === '/api/encode-queue') return jsonResponse(fixtures.encodeQueue ?? { queued: 0, running: 0 })
+      if (p === '/api/encode-queue') {
+        return jsonResponse(fixtures.encodeQueue ?? { queued: 0, running: 0, awaitingReview: 0 })
+      }
       throw new Error(`unexpected fetch: ${p}`)
     }
 

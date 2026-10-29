@@ -12,7 +12,7 @@ import (
 )
 
 type CircuitBreaker struct {
-	Site      string
+	Scope     string
 	Name      string
 	TrippedAt time.Time
 	Pending   int32
@@ -105,7 +105,7 @@ type DropStat struct {
 	PidType      *string
 }
 
-// encodable_recordings は、ごみ箱になく現在世代の原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
+// encodable_recordings は、ごみ箱になく active な原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
 type EncodableRecording struct {
 	RecordingID int64
 }
@@ -210,7 +210,8 @@ type MediaAssetCopy struct {
 	State        string
 	CreatedAt    time.Time
 	DeletedAt    *time.Time
-	Generation   int64
+	// Content generation stored in this physical copy; immutable after insert
+	Generation int64
 }
 
 type MediaAssetCut struct {
@@ -228,11 +229,10 @@ type MediaAssetTsScan struct {
 	ScannedSizeBytes int64
 }
 
+// Physical media copies that a filesystem scan failed to observe
 type MissingMediaAsset struct {
-	MediaAssetID int64
-	FirstSeen    time.Time
-	// Store where the asset copy was missing; empty until storage adopt
-	Store string
+	FirstSeen        time.Time
+	MediaAssetCopyID int64
 }
 
 type NeverScheduledEvent struct {
@@ -241,6 +241,19 @@ type NeverScheduledEvent struct {
 	ServiceID  int32
 	EventID    int32
 	ObservedAt time.Time
+}
+
+// old_generation_media_asset_copies は、論理資産の derived_generation より古い派生コピーのうち、実体無しでない現行の active コピーがどこかの置き場にあるものを返す。generation_started_at は現行世代の最初のコピー行の created_at で、呼び出し側が overlap の猶予を判定する。
+type OldGenerationMediaAssetCopy struct {
+	ID                  int64
+	MediaAssetID        int64
+	Store               string
+	RelPath             string
+	State               string
+	CreatedAt           time.Time
+	DeletedAt           *time.Time
+	Generation          int64
+	GenerationStartedAt interface{}
 }
 
 type OrphanFile struct {
@@ -542,7 +555,7 @@ type TunerSync struct {
 	ObservedAt  time.Time
 }
 
-// unencoded_desired_profiles は、凍結済みの desired のうち現在世代の encoded コピーが無い (recording_id, profile) を表す。現在の設定では絞らない。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。
+// unencoded_desired_profiles は、凍結済みの desired のうち current active encoded コピーが無い (recording_id, profile) を表す。現在の設定では絞らない。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。
 type UnencodedDesiredProfile struct {
 	RecordingID int64
 	Profile     string

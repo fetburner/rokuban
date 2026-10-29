@@ -451,7 +451,7 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	}
 	profile := "cutp"
 	generation := int64(1)
-	assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID:       recordingID,
 		Profile:           &profile,
 		RelPath:           relPath,
@@ -459,10 +459,10 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 		DerivedGeneration: &generation,
 	})
 	if err != nil {
-		t.Fatalf("UpsertEncodedMediaAsset: %v", err)
+		t.Fatalf("UpsertDerivedMediaAsset: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: "test-store", RelPath: relPath, State: "active",
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: "test-store", RelPath: relPath, Generation: generation, State: "active",
 	}); err != nil {
 		t.Fatalf("UpsertMediaAssetCopy: %v", err)
 	}
@@ -813,6 +813,59 @@ storage:
 	}
 	if len(got.EncodedAssets) != 1 || got.EncodedAssets[0].Profile != profile {
 		t.Fatalf("recording encoded assets = %+v, want S3 profile %q after original removal", got.EncodedAssets, profile)
+	}
+}
+
+// S3 に繋がらず資格情報も無くても、worker は起動する。S3 を使うジョブは、ジョブが実行されたときに失敗する。
+// 起動時に S3 へ接続すると、ここでプロセスが落ちる。
+func TestServerCmd_WorkerStartsWithUnreachableS3AndNoCredentials(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	_ = pool
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+	path := writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:0"
+  allowed_hosts: []
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakcs:
+  - site: home
+    url: http://127.0.0.1:1
+storage:
+  media_dir: %q
+  stores:
+    test-store:
+      kind: fs
+    s3-derived:
+      kind: s3
+      endpoint: http://127.0.0.1:1
+      bucket: rokuban-derived
+  originals:
+    - store: test-store
+  derived: s3-derived
+worker:
+  periodic_jobs: false
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
+	if _, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=encode", "--once", "--once-idle-timeout=2s"); err != nil {
+		t.Fatalf("worker with an unreachable S3 store and no credentials: %v", err)
 	}
 }
 
@@ -1752,18 +1805,6 @@ VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 	}
 
 	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("loading worker config: %v", err)
-	}
-	var eligible int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals($1)`, cfg.Storage.Derived).Scan(&eligible); err != nil {
-		t.Fatalf("checking seeded until_encoded eligibility for derived store %q: %v", cfg.Storage.Derived, err)
-	}
-	if cfg.Storage.MediaStoreName != "test-store" || eligible != 1 {
-		t.Fatalf("worker storage media_store/derived candidates = %q/%q/%d, want test-store/test-store/1",
-			cfg.Storage.MediaStoreName, cfg.Storage.Derived, eligible)
-	}
 	if _, err := runServerCmdBounded(t, 30*time.Second, path,
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=2s"); err != nil {
 		t.Fatalf("worker once run: %v", err)

@@ -1637,7 +1637,7 @@ export interface CircuitBreakerSample {
  */
 export interface CircuitBreaker {
   /**
-     * この行が属する site。`internal/breaker.IsSiteless` が true の名前
+     * この行が属する site。site を持たない名前
      * （`delete_reconcile`）は資源自体が site を持たないため空文字列
      * になる（issue #450）。その場合の再開は
      * `POST /api/breakers/{name}/resume`、それ以外は
@@ -1676,7 +1676,7 @@ export interface CircuitBreaker {
 }
 
 /**
- * エンコード待機列の件数（録画 × プロファイル単位）。
+ * 待機中・実行中は録画 × プロファイル単位、確認待ちは録画単位の件数。
  */
 export interface EncodeQueueSummary {
   /**
@@ -1689,6 +1689,11 @@ export interface EncodeQueueSummary {
      * @minimum 0
      */
   running: number;
+  /**
+     * 試行・active な encoded・未充足の作り直し要求が無い、章の確認待ち cut 録画数。
+     * @minimum 0
+     */
+  awaitingReview: number;
 }
 
 /**
@@ -1808,10 +1813,11 @@ service?: number[];
  */
 status?: ListRecordingsStatus;
 /**
- * エンコード待機列の状態。`queued` は現在の desired で未観測のプロファイルが
- * あり実行中の試行が無い録画、`running` は実行中の試行がある録画。
- * `GET /api/encode-queue` の件数と同じ行から導出する。1 本に
- * 両方の行があれば両方の絞り込みに現れる。
+ * `queued` / `running` はエンコード待機列の状態。`queued` は現在の desired で
+ * 未観測のプロファイルがあり実行中の試行が無い録画、`running` は実行中の試行が
+ * ある録画で、`GET /api/encode-queue` と同じ行から導出する。1 本に両方の行が
+ * あれば両方の絞り込みに現れる。`awaiting_review` は、確認待ちの cut プロファイルが
+ * ある録画で、待機列とは別の述語から録画単位で導出する。
  */
 encodeState?: ListRecordingsEncodeState;
 source?: ListRecordingsSource;
@@ -1905,6 +1911,7 @@ export type ListRecordingsEncodeState = typeof ListRecordingsEncodeState[keyof t
 export const ListRecordingsEncodeState = {
   queued: 'queued',
   running: 'running',
+  awaiting_review: 'awaiting_review',
 } as const;
 
 export type ListRecordingsSource = typeof ListRecordingsSource[keyof typeof ListRecordingsSource];
@@ -5714,7 +5721,7 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
  *   **すべての軸は「軸内は OR、軸間は AND」**
  * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
- * - `encodeState` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。
+ * - `encodeState=queued|running` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。`awaiting_review` は確認待ちの述語にある録画で絞る。
  * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
  *
  * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
@@ -9115,7 +9122,8 @@ export const getGetEncodeQueueUrl = () => {
  * 現在の desired（凍結したエンコードポリシー）で、active な encoded がまだ無い
  * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
  * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
- * encoded があっても待機列に含める。
+ * encoded があっても待機列に含める。`awaitingReview` は確認待ちの cut を持つ録画数で、
+ * 1 録画に複数の cut プロファイルがあっても 1 件と数える。
  * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
  * 達して worker が作らない行は、不足行も作り直し要求も数えない。作り直しを
  * 押し直すと試行の予算が戻り、再び数える。ごみ箱の録画と設定に無い
@@ -9372,7 +9380,7 @@ export const getListCircuitBreakersUrl = () => {
  *
  * site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
  * レスポンスの各要素に site フィールドがある（issue #102）。ただし
- * `internal/breaker.IsSiteless` が true の名前（`delete_reconcile`）の
+ * site を持たない名前（`delete_reconcile`）の
  * 行は、その資源自体が site を持たないため `site` が空文字列になる
  * （issue #450）。個別の再開は、site を持つ名前なら
  * `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
@@ -9618,7 +9626,7 @@ export const getResumeSitelessCircuitBreakerUrl = (name: string,) => {
 
 /**
  * site を持たないブレーカー専用の再開エンドポイント
- * （`internal/breaker.IsSiteless`。今のところ `delete_reconcile` のみ）。
+ * （今のところ `delete_reconcile` のみ）。
  * 理由と経緯は `internal/worker/delete_reconcile.go` の
  * `DeleteReconcileWorker` doc コメント参照（issue #450）。
  *

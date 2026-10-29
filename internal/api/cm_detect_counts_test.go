@@ -38,8 +38,8 @@ func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 		}
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO missing_media_assets (media_asset_id, store)
-		SELECT id, 'test-store' FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, ids[1]); err != nil {
+		INSERT INTO missing_media_assets (media_asset_copy_id)
+		SELECT copy.id FROM media_asset_copies copy JOIN media_assets asset ON asset.id = copy.media_asset_id WHERE asset.recording_id = $1 AND asset.kind = 'original' AND copy.store = 'test-store'`, ids[1]); err != nil {
 		t.Fatal(err)
 	}
 

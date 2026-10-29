@@ -63,6 +63,10 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 
 ## 節 → ファイル
 
+### 番組表・ライブ
+
+番組表・参照バッジ・シリーズ一覧・ライブ視聴の判定と、フィクスチャ契約の検証をまとめる。
+
 | 節 | ファイル |
 |---|---|
 | フィクスチャ契約の CI 検証 | [README.md](README.md) |
@@ -71,14 +75,29 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | 参照バッジのリンク（`badge-links.mjs`） | [checks/programs.md](checks/programs.md) |
 | シリーズ一覧の分割（`shelves-split.mjs`） | [checks/programs.md](checks/programs.md) |
 | ライブ視聴（`live.mjs`） | [checks/live.md](checks/live.md) |
+
+### 録画再生
+
+録画再生とメディア配信の判定は [checks/playback.md](checks/playback.md) にある。
+
+| 節 | ファイル |
+|---|---|
 | 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`） | [checks/playback.md](checks/playback.md) |
 | LivePlayer の 503 文言・離脱ヒント・追っかけの表示時刻（`live-player-modes.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
-| ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
 | 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
+| 世代付き録画 HLS の停滞復旧（`recording-hls-stall-recovery.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画 HLS の再起動境界（`recording-segmented-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | 原本 HLS から encoded への切替（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | S3 の署名付き URL への 302（`s3-302.mjs`） | [checks/playback.md](checks/playback.md) |
+
+### その他の判定
+
+画面操作やレイアウトなど、再生以外の確認項目をまとめる。
+
+| 節 | ファイル |
+|---|---|
+| ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
 | デザイン（`design.mjs`） | [checks/design.md](checks/design.md) |
 | README のスクリーンショット（`readme-screenshots.mjs`） | [checks/design.md](checks/design.md) |
 | フォントスケール（`font-scale.mjs`） | [checks/design.md](checks/design.md) |

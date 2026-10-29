@@ -10,17 +10,35 @@ import (
 	"time"
 )
 
-const deleteMissingMediaAsset = `-- name: DeleteMissingMediaAsset :exec
-DELETE FROM missing_media_assets WHERE media_asset_id = $1 AND store = $2
+const clearDeletedEncodedAssetRemovalRequest = `-- name: ClearDeletedEncodedAssetRemovalRequest :exec
+DELETE FROM encoded_asset_removal_requests q
+USING media_assets a
+WHERE a.id = (
+      SELECT copy.media_asset_id FROM media_asset_copies copy
+      WHERE copy.id = $1
+  )
+  AND a.kind = 'encoded'
+  AND q.recording_id = a.recording_id
+  AND q.profile = a.profile
+  AND NOT EXISTS (
+      SELECT 1 FROM media_asset_copies copy
+      WHERE copy.media_asset_id = a.id AND copy.state <> 'deleted'
+  )
 `
 
-type DeleteMissingMediaAssetParams struct {
-	MediaAssetID int64
-	Store        string
+// The request describes the logical asset and remains until every physical copy
+// has completed deletion. Clearing it after one store would strand other stores.
+func (q *Queries) ClearDeletedEncodedAssetRemovalRequest(ctx context.Context, copyID int64) error {
+	_, err := q.db.Exec(ctx, clearDeletedEncodedAssetRemovalRequest, copyID)
+	return err
 }
 
-func (q *Queries) DeleteMissingMediaAsset(ctx context.Context, arg DeleteMissingMediaAssetParams) error {
-	_, err := q.db.Exec(ctx, deleteMissingMediaAsset, arg.MediaAssetID, arg.Store)
+const deleteMissingMediaAsset = `-- name: DeleteMissingMediaAsset :exec
+DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1
+`
+
+func (q *Queries) DeleteMissingMediaAsset(ctx context.Context, mediaAssetCopyID int64) error {
+	_, err := q.db.Exec(ctx, deleteMissingMediaAsset, mediaAssetCopyID)
 	return err
 }
 
@@ -39,18 +57,19 @@ func (q *Queries) DeleteOrphanFile(ctx context.Context, arg DeleteOrphanFilePara
 }
 
 const listActiveMediaAssets = `-- name: ListActiveMediaAssets :many
-SELECT a.id, a.recording_id, copy.rel_path, a.kind
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id, physical_copy.rel_path, a.kind
 FROM media_assets a
-JOIN media_asset_copies copy ON copy.media_asset_id = a.id
-WHERE copy.store = $1
-  AND copy.state = 'active'
+JOIN media_asset_copies physical_copy ON physical_copy.media_asset_id = a.id
+WHERE physical_copy.store = $1
+  AND physical_copy.state = 'active'
 `
 
 type ListActiveMediaAssetsRow struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	Kind        string
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	Kind         string
 }
 
 // 「active な media_asset_copy の実体が無い」検出用（issue #343、
@@ -74,7 +93,8 @@ func (q *Queries) ListActiveMediaAssets(ctx context.Context, storeName string) (
 	for rows.Next() {
 		var i ListActiveMediaAssetsRow
 		if err := rows.Scan(
-			&i.ID,
+			&i.CopyID,
+			&i.MediaAssetID,
 			&i.RecordingID,
 			&i.RelPath,
 			&i.Kind,
@@ -90,16 +110,15 @@ func (q *Queries) ListActiveMediaAssets(ctx context.Context, storeName string) (
 }
 
 const listAgedMissingMediaAssets = `-- name: ListAgedMissingMediaAssets :many
-SELECT a.id, a.recording_id, copy.rel_path, a.kind, m.first_seen
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id,
+       physical_copy.rel_path, a.kind, m.first_seen
 FROM missing_media_assets m
-JOIN media_assets a ON a.id = m.media_asset_id
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = a.id
- AND copy.store = $1
- AND copy.state = 'active'
-WHERE m.store = $1
+JOIN media_asset_copies physical_copy ON physical_copy.id = m.media_asset_copy_id
+JOIN media_assets a ON a.id = physical_copy.media_asset_id
+WHERE physical_copy.store = $1
+  AND physical_copy.state = 'active'
   AND m.first_seen <= now() - ($2::bigint * interval '1 microsecond')
-ORDER BY m.media_asset_id
+ORDER BY m.media_asset_copy_id
 `
 
 type ListAgedMissingMediaAssetsParams struct {
@@ -108,11 +127,12 @@ type ListAgedMissingMediaAssetsParams struct {
 }
 
 type ListAgedMissingMediaAssetsRow struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	Kind        string
-	FirstSeen   time.Time
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	Kind         string
+	FirstSeen    time.Time
 }
 
 // エイジング済み（first_seen が指定期間以上前）で、なお active な行。経過時間は
@@ -132,7 +152,8 @@ func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, arg ListAgedMi
 	for rows.Next() {
 		var i ListAgedMissingMediaAssetsRow
 		if err := rows.Scan(
-			&i.ID,
+			&i.CopyID,
+			&i.MediaAssetID,
 			&i.RecordingID,
 			&i.RelPath,
 			&i.Kind,
@@ -208,7 +229,10 @@ func (q *Queries) ListAllMediaAssetRelPaths(ctx context.Context, storeName strin
 }
 
 const listAllMissingMediaAssetIDs = `-- name: ListAllMissingMediaAssetIDs :many
-SELECT media_asset_id FROM missing_media_assets WHERE store = $1
+SELECT missing.media_asset_copy_id
+FROM missing_media_assets missing
+JOIN media_asset_copies physical_copy ON physical_copy.id = missing.media_asset_copy_id
+WHERE physical_copy.store = $1
 `
 
 func (q *Queries) ListAllMissingMediaAssetIDs(ctx context.Context, store string) ([]int64, error) {
@@ -219,11 +243,11 @@ func (q *Queries) ListAllMissingMediaAssetIDs(ctx context.Context, store string)
 	defer rows.Close()
 	var items []int64
 	for rows.Next() {
-		var media_asset_id int64
-		if err := rows.Scan(&media_asset_id); err != nil {
+		var media_asset_copy_id int64
+		if err := rows.Scan(&media_asset_copy_id); err != nil {
 			return nil, err
 		}
-		items = append(items, media_asset_id)
+		items = append(items, media_asset_copy_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -262,15 +286,14 @@ func (q *Queries) ListAllOrphanFiles(ctx context.Context, store string) ([]ListA
 
 const listMediaAssetsPendingDelete = `-- name: ListMediaAssetsPendingDelete :many
 
-SELECT a.id, a.recording_id, copy.rel_path, a.size_bytes, a.kind
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id,
+       physical_copy.rel_path, a.size_bytes, a.kind, physical_copy.generation
 FROM media_assets a
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = a.id
- AND copy.store = $1
- AND copy.state = 'deleting'
-WHERE a.state = 'deleting'
-  AND copy.rel_path = a.rel_path
-  AND (
+JOIN media_asset_copies physical_copy
+  ON physical_copy.media_asset_id = a.id
+ AND physical_copy.store = $1
+ AND physical_copy.state = 'deleting'
+WHERE (
     EXISTS (
       SELECT 1 FROM trash_deletable_recordings($2::timestamptz) t
       WHERE t.recording_id = a.recording_id
@@ -282,24 +305,33 @@ WHERE a.state = 'deleting'
     OR EXISTS (
       SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
     )
+    OR EXISTS (
+      SELECT 1
+      FROM old_generation_media_asset_copies AS old_copy
+      WHERE old_copy.id = physical_copy.id
+        AND old_copy.generation_started_at <= $4::timestamptz
+    )
   )
 ORDER BY a.id
-LIMIT $4
+LIMIT $5
 `
 
 type ListMediaAssetsPendingDeleteParams struct {
-	StoreName    string
-	GraceCutoff  time.Time
-	DesiredStore *string
-	RowLimit     int32
+	StoreName     string
+	GraceCutoff   time.Time
+	DesiredStore  *string
+	OverlapCutoff time.Time
+	RowLimit      int32
 }
 
 type ListMediaAssetsPendingDeleteRow struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	SizeBytes   int64
-	Kind        string
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	SizeBytes    int64
+	Kind         string
+	Generation   int64
 }
 
 // 削除 reconcile（M3-8、docs/storage.md §7）。物理 unlink に至る 3 ソース
@@ -320,7 +352,7 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 変更（#1620）で view ごと消える。
 // 前パスで deleting にマークしたまま unlink できずに終わった行を拾い直す。
 //
-// WHERE の 3 つの EXISTS は名前付き述語（上記）への参照であって複製ではない
+// WHERE の削除資格の EXISTS は名前付き述語（上記）への参照であって複製ではない
 // （issue #160）。deleting は「再計算できる決定」であって不可逆な事実では
 // ないため、pending 経路は「既に決めた削除の再実行だから無条件に信じて
 // よい」とはできない —— ごみ箱からの復元は recordings.deleted_at だけを
@@ -328,7 +360,7 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 側は取り残されたまま unlink される（不変条件 9「適用の瞬間」。ruler が
 // toDelete を tx の外で計算していたのと同型の距離）。ここで判定条件を
 // 再評価し、該当しなくなった行は ListUnqualifiedDeletingAssets /
-// RevertMediaAssetToActive が active に戻す。
+// RevertMediaAssetCopyToActive が active に戻す。
 //
 // ブレーカーとの関係: この再評価は「新しく削除対象を増やす」判断ではない
 // （前パスで一度 active → deleting に遷移させた行の集合を超えて広げることは
@@ -344,6 +376,7 @@ func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMedi
 		arg.StoreName,
 		arg.GraceCutoff,
 		arg.DesiredStore,
+		arg.OverlapCutoff,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -354,11 +387,71 @@ func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMedi
 	for rows.Next() {
 		var i ListMediaAssetsPendingDeleteRow
 		if err := rows.Scan(
-			&i.ID,
+			&i.CopyID,
+			&i.MediaAssetID,
 			&i.RecordingID,
 			&i.RelPath,
 			&i.SizeBytes,
 			&i.Kind,
+			&i.Generation,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOldGenerationMediaAssetCopiesToDelete = `-- name: ListOldGenerationMediaAssetCopiesToDelete :many
+SELECT old_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id,
+       old_copy.rel_path, a.size_bytes, a.kind, old_copy.generation
+FROM old_generation_media_asset_copies AS old_copy
+JOIN media_assets a ON a.id = old_copy.media_asset_id
+WHERE old_copy.store = $1
+  AND old_copy.state = 'active'
+  AND old_copy.generation_started_at <= $2::timestamptz
+ORDER BY old_copy.id
+LIMIT $3
+`
+
+type ListOldGenerationMediaAssetCopiesToDeleteParams struct {
+	StoreName     string
+	OverlapCutoff time.Time
+	RowLimit      int32
+}
+
+type ListOldGenerationMediaAssetCopiesToDeleteRow struct {
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	SizeBytes    int64
+	Kind         string
+	Generation   int64
+}
+
+// Old generations are all physical rows whose immutable generation is below the
+// logical asset's current generation. Eligibility age is supplied by the caller.
+func (q *Queries) ListOldGenerationMediaAssetCopiesToDelete(ctx context.Context, arg ListOldGenerationMediaAssetCopiesToDeleteParams) ([]ListOldGenerationMediaAssetCopiesToDeleteRow, error) {
+	rows, err := q.db.Query(ctx, listOldGenerationMediaAssetCopiesToDelete, arg.StoreName, arg.OverlapCutoff, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOldGenerationMediaAssetCopiesToDeleteRow
+	for rows.Next() {
+		var i ListOldGenerationMediaAssetCopiesToDeleteRow
+		if err := rows.Scan(
+			&i.CopyID,
+			&i.MediaAssetID,
+			&i.RecordingID,
+			&i.RelPath,
+			&i.SizeBytes,
+			&i.Kind,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}
@@ -371,13 +464,14 @@ func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMedi
 }
 
 const listRemovedEncodedAssetsToDelete = `-- name: ListRemovedEncodedAssetsToDelete :many
-SELECT x.asset_id AS id, x.recording_id, copy.rel_path, a.size_bytes, 'encoded'::text AS kind
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, x.recording_id,
+       physical_copy.rel_path, a.size_bytes, 'encoded'::text AS kind, physical_copy.generation
 FROM removed_encoded_assets x
 JOIN media_assets a ON a.id = x.asset_id
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = a.id
- AND copy.store = $1
- AND copy.state = 'active'
+JOIN media_asset_copies physical_copy
+  ON physical_copy.media_asset_id = a.id
+ AND physical_copy.store = $1
+ AND physical_copy.state = 'active'
 ORDER BY a.id
 LIMIT $2
 `
@@ -388,11 +482,13 @@ type ListRemovedEncodedAssetsToDeleteParams struct {
 }
 
 type ListRemovedEncodedAssetsToDeleteRow struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	SizeBytes   int64
-	Kind        string
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	SizeBytes    int64
+	Kind         string
+	Generation   int64
 }
 
 // ユーザーが外したエンコード版（名前付き述語 removed_encoded_assets への参照）。
@@ -408,11 +504,13 @@ func (q *Queries) ListRemovedEncodedAssetsToDelete(ctx context.Context, arg List
 	for rows.Next() {
 		var i ListRemovedEncodedAssetsToDeleteRow
 		if err := rows.Scan(
-			&i.ID,
+			&i.CopyID,
+			&i.MediaAssetID,
 			&i.RecordingID,
 			&i.RelPath,
 			&i.SizeBytes,
 			&i.Kind,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}
@@ -425,14 +523,15 @@ func (q *Queries) ListRemovedEncodedAssetsToDelete(ctx context.Context, arg List
 }
 
 const listTrashMediaAssetsToDelete = `-- name: ListTrashMediaAssetsToDelete :many
-SELECT a.id, a.recording_id, copy.rel_path, a.size_bytes, a.kind
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id,
+       physical_copy.rel_path, a.size_bytes, a.kind, physical_copy.generation
 FROM media_assets a
 JOIN trash_deletable_recordings($1::timestamptz) t
     ON t.recording_id = a.recording_id
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = a.id
- AND copy.store = $2
- AND copy.state = 'active'
+JOIN media_asset_copies physical_copy
+  ON physical_copy.media_asset_id = a.id
+ AND physical_copy.store = $2
+ AND physical_copy.state = 'active'
 ORDER BY a.id
 LIMIT $3
 `
@@ -444,11 +543,13 @@ type ListTrashMediaAssetsToDeleteParams struct {
 }
 
 type ListTrashMediaAssetsToDeleteRow struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	SizeBytes   int64
-	Kind        string
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	SizeBytes    int64
+	Kind         string
+	Generation   int64
 }
 
 // ごみ箱の猶予超過、または「今すぐ完全削除」の要求（recording_purge_requests
@@ -464,11 +565,13 @@ func (q *Queries) ListTrashMediaAssetsToDelete(ctx context.Context, arg ListTras
 	for rows.Next() {
 		var i ListTrashMediaAssetsToDeleteRow
 		if err := rows.Scan(
-			&i.ID,
+			&i.CopyID,
+			&i.MediaAssetID,
 			&i.RecordingID,
 			&i.RelPath,
 			&i.SizeBytes,
 			&i.Kind,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}
@@ -481,15 +584,13 @@ func (q *Queries) ListTrashMediaAssetsToDelete(ctx context.Context, arg ListTras
 }
 
 const listUnqualifiedDeletingAssets = `-- name: ListUnqualifiedDeletingAssets :many
-SELECT a.id, copy.id AS copy_id, a.recording_id, copy.rel_path
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id, physical_copy.rel_path
 FROM media_assets a
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = a.id
- AND copy.store = $1
- AND copy.state = 'deleting'
-WHERE a.state = 'deleting'
-  AND copy.rel_path = a.rel_path
-  AND NOT EXISTS (
+JOIN media_asset_copies physical_copy
+  ON physical_copy.media_asset_id = a.id
+ AND physical_copy.store = $1
+ AND physical_copy.state = 'deleting'
+WHERE NOT EXISTS (
     SELECT 1 FROM trash_deletable_recordings($2::timestamptz) t
     WHERE t.recording_id = a.recording_id
   )
@@ -500,31 +601,38 @@ WHERE a.state = 'deleting'
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
   )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM old_generation_media_asset_copies AS old_copy
+    WHERE old_copy.id = physical_copy.id
+      AND old_copy.generation_started_at <= $4::timestamptz
+  )
 ORDER BY a.id
-LIMIT $4
+LIMIT $5
 `
 
 type ListUnqualifiedDeletingAssetsParams struct {
-	StoreName    string
-	GraceCutoff  time.Time
-	DesiredStore *string
-	RowLimit     int32
+	StoreName     string
+	GraceCutoff   time.Time
+	DesiredStore  *string
+	OverlapCutoff time.Time
+	RowLimit      int32
 }
 
 type ListUnqualifiedDeletingAssetsRow struct {
-	ID          int64
-	CopyID      int64
-	RecordingID int64
-	RelPath     string
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
 }
 
-// deleting のまま止まっていて、上の 3 条件のどれにも該当しなくなった行の
+// deleting のまま止まっていて、上の削除条件のどれにも該当しなくなった行の
 // 候補を挙げる（issue #105）。判定条件は ListMediaAssetsPendingDelete の
 // WHERE をそのまま否定したもの（名前付き述語への NOT EXISTS なので、否定形を
 // 手で保守する必要がない。issue #160）。ここではまだ書き込まない ——
 // 呼び出し側が各行についてファイルの現存を確認してから、次のいずれかを選ぶ:
 //
-//	a. ファイルがまだ存在する → RevertMediaAssetToActive で active に戻す
+//	a. ファイルがまだ存在する → RevertMediaAssetCopyToActive で active に戻す
 //	b. ファイルが既に無い（unlink 成功後 MarkMediaAssetDeleted が
 //	   コミットされる前にプロセスが落ち、その間に復元された）→
 //	   MarkMediaAssetDeleted で deleted を確定する
@@ -538,6 +646,7 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 		arg.StoreName,
 		arg.GraceCutoff,
 		arg.DesiredStore,
+		arg.OverlapCutoff,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -548,8 +657,8 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 	for rows.Next() {
 		var i ListUnqualifiedDeletingAssetsRow
 		if err := rows.Scan(
-			&i.ID,
 			&i.CopyID,
+			&i.MediaAssetID,
 			&i.RecordingID,
 			&i.RelPath,
 		); err != nil {
@@ -564,13 +673,14 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 }
 
 const listUntilEncodedOriginalsToDelete = `-- name: ListUntilEncodedOriginalsToDelete :many
-SELECT v.asset_id::bigint AS id, v.recording_id::bigint, copy.rel_path, a.size_bytes, 'original'::text AS kind
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, v.recording_id::bigint,
+       physical_copy.rel_path, a.size_bytes, 'original'::text AS kind, physical_copy.generation
 FROM until_encoded_deletable_originals($1::text) AS v(asset_id, recording_id)
 JOIN media_assets a ON a.id = v.asset_id
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = a.id
- AND copy.store = $2
- AND copy.state = 'active'
+JOIN media_asset_copies physical_copy
+  ON physical_copy.media_asset_id = a.id
+ AND physical_copy.store = $2
+ AND physical_copy.state = 'active'
 ORDER BY a.id
 LIMIT $3
 `
@@ -582,11 +692,13 @@ type ListUntilEncodedOriginalsToDeleteParams struct {
 }
 
 type ListUntilEncodedOriginalsToDeleteRow struct {
-	ID           int64
+	CopyID       int64
+	MediaAssetID int64
 	VRecordingID int64
 	RelPath      string
 	SizeBytes    int64
 	Kind         string
+	Generation   int64
 }
 
 // keep_original='until_encoded' の原本削除候補。削除可否の条件は
@@ -602,11 +714,13 @@ func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, arg Lis
 	for rows.Next() {
 		var i ListUntilEncodedOriginalsToDeleteRow
 		if err := rows.Scan(
-			&i.ID,
+			&i.CopyID,
+			&i.MediaAssetID,
 			&i.VRecordingID,
 			&i.RelPath,
 			&i.SizeBytes,
 			&i.Kind,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}
@@ -618,61 +732,23 @@ func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, arg Lis
 	return items, nil
 }
 
-const markMediaAssetDeleted = `-- name: MarkMediaAssetDeleted :execrows
-WITH cleared_removal_request AS (
-    DELETE FROM encoded_asset_removal_requests q
-    USING media_assets a
-    WHERE a.id = $1
-      AND EXISTS (
-          SELECT 1 FROM media_asset_copies copy
-          WHERE copy.media_asset_id = a.id
-            AND copy.store = $2
-            AND copy.state = 'deleting'
-      )
-      AND q.recording_id = a.recording_id
-      AND q.profile = a.profile
-)
-UPDATE media_assets m SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE m.id = $1
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = m.id
-        AND copy.store = $2
-        AND copy.state = 'deleting'
-  )
+const markMediaAssetCopyDeleted = `-- name: MarkMediaAssetCopyDeleted :execrows
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE id = $1
+  AND store = $2
+  AND state = 'deleting'
 `
 
-type MarkMediaAssetDeletedParams struct {
-	ID        int64
+type MarkMediaAssetCopyDeletedParams struct {
+	CopyID    int64
 	StoreName string
 }
 
 // 外した版の要求行（encoded_asset_removal_requests）を deleted の確定と同じ
 // 文で消す。要求行は「この版を外した」という主張なので、版が消えたら残す意味が無い。
-func (q *Queries) MarkMediaAssetDeleted(ctx context.Context, arg MarkMediaAssetDeletedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markMediaAssetDeleted, arg.ID, arg.StoreName)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const markMediaAssetDeleting = `-- name: MarkMediaAssetDeleting :execrows
-UPDATE media_assets AS a SET state = 'deleting', updated_at = now()
-FROM media_asset_copies copy
-WHERE a.id = $1
-  AND copy.media_asset_id = $1
-  AND copy.store = $2
-  AND copy.state = 'active'
-`
-
-type MarkMediaAssetDeletingParams struct {
-	AssetID   int64
-	StoreName string
-}
-
-func (q *Queries) MarkMediaAssetDeleting(ctx context.Context, arg MarkMediaAssetDeletingParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markMediaAssetDeleting, arg.AssetID, arg.StoreName)
+func (q *Queries) MarkMediaAssetCopyDeleted(ctx context.Context, arg MarkMediaAssetCopyDeletedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markMediaAssetCopyDeleted, arg.CopyID, arg.StoreName)
 	if err != nil {
 		return 0, err
 	}
@@ -746,20 +822,23 @@ func (q *Queries) MarkPurgedRecordings(ctx context.Context, graceCutoff time.Tim
 	return items, nil
 }
 
-const markUntilEncodedOriginalDeleting = `-- name: MarkUntilEncodedOriginalDeleting :execrows
-UPDATE media_assets a SET state = 'deleting', updated_at = now()
-FROM media_asset_copies copy
-WHERE a.id = $1
-  AND copy.media_asset_id = $1
-  AND copy.store = $2
+const markUntilEncodedOriginalCopyDeleting = `-- name: MarkUntilEncodedOriginalCopyDeleting :execrows
+UPDATE media_asset_copies copy
+SET state = 'deleting', deleted_at = NULL
+FROM media_assets a
+WHERE copy.id = $1
+  AND copy.media_asset_id = a.id
+  AND a.id = $2
+  AND copy.store = $3
   AND copy.state = 'active'
   AND EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals($3::text) AS v(asset_id, recording_id)
-      WHERE v.asset_id = $1
+      SELECT 1 FROM until_encoded_deletable_originals($4::text) AS v(asset_id, recording_id)
+      WHERE v.asset_id = $2
   )
 `
 
-type MarkUntilEncodedOriginalDeletingParams struct {
+type MarkUntilEncodedOriginalCopyDeletingParams struct {
+	CopyID       int64
 	AssetID      int64
 	StoreName    string
 	DesiredStore *string
@@ -768,27 +847,30 @@ type MarkUntilEncodedOriginalDeletingParams struct {
 // until_encoded の候補は列挙後に利用者の再作成要求が追加されうるため、録画行を
 // ロックした tx 内で資格を再評価してから deleting にする。API の要求書き込みも
 // 同じ recordings 行を先にロックするため、要求の commit と原本削除は直列化される。
-func (q *Queries) MarkUntilEncodedOriginalDeleting(ctx context.Context, arg MarkUntilEncodedOriginalDeletingParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markUntilEncodedOriginalDeleting, arg.AssetID, arg.StoreName, arg.DesiredStore)
+func (q *Queries) MarkUntilEncodedOriginalCopyDeleting(ctx context.Context, arg MarkUntilEncodedOriginalCopyDeletingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markUntilEncodedOriginalCopyDeleting,
+		arg.CopyID,
+		arg.AssetID,
+		arg.StoreName,
+		arg.DesiredStore,
+	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
-const revertMediaAssetToActive = `-- name: RevertMediaAssetToActive :execrows
-UPDATE media_assets a
-SET state = 'active', updated_at = now()
-WHERE a.id = $1
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies copy
-      WHERE copy.media_asset_id = a.id
-        AND copy.store = $2
-        AND copy.state = 'deleting'
-  )
+const revertMediaAssetCopyToActive = `-- name: RevertMediaAssetCopyToActive :execrows
+UPDATE media_asset_copies copy
+SET state = 'active', deleted_at = NULL
+FROM media_assets a
+WHERE copy.id = $1
+  AND copy.store = $2
+  AND a.id = copy.media_asset_id
+  AND copy.state = 'deleting'
   AND NOT EXISTS (
-    SELECT 1 FROM trash_deletable_recordings($3::timestamptz) t
-    WHERE t.recording_id = a.recording_id
+      SELECT 1 FROM trash_deletable_recordings($3::timestamptz) t
+      WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
     SELECT 1 FROM until_encoded_deletable_originals($4::text) AS v(asset_id, recording_id)
@@ -797,19 +879,26 @@ WHERE a.id = $1
   AND NOT EXISTS (
     SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
   )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM old_generation_media_asset_copies AS old_copy
+      WHERE old_copy.id = copy.id
+        AND old_copy.generation_started_at <= $5::timestamptz
+  )
 `
 
-type RevertMediaAssetToActiveParams struct {
-	ID           int64
-	StoreName    string
-	GraceCutoff  time.Time
-	DesiredStore *string
+type RevertMediaAssetCopyToActiveParams struct {
+	CopyID        int64
+	StoreName     string
+	GraceCutoff   time.Time
+	DesiredStore  *string
+	OverlapCutoff time.Time
 }
 
 // ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
 // まだ存在すると Go 側で確認できたときだけ呼ぶこと。
 //
-// WHERE に同じ判定条件（名前付き述語、issue #160）を再度埋め込み、事前の
+// WHERE に同じ判定条件（名前付き述語）を再度埋め込み、事前の
 // SELECT の結果（真偽値）を受け渡さずこの UPDATE 自体の瞬間に再評価する
 // （不変条件 9「適用の瞬間」）。SELECT から数行の Go コードを挟むだけの短い
 // 窓だが、その間に別の書き手（RestoreRecording・encode_profiles 変更 API 等）
@@ -824,12 +913,13 @@ type RevertMediaAssetToActiveParams struct {
 // いるので、いま unlink が進行中の行と衝突しようがない。復元 API から
 // deleting → active へ即座に戻す案を採らなかったのはこの前提が無い
 // （進行中の unlink と非同期に競合しうる）ため。
-func (q *Queries) RevertMediaAssetToActive(ctx context.Context, arg RevertMediaAssetToActiveParams) (int64, error) {
-	result, err := q.db.Exec(ctx, revertMediaAssetToActive,
-		arg.ID,
+func (q *Queries) RevertMediaAssetCopyToActive(ctx context.Context, arg RevertMediaAssetCopyToActiveParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revertMediaAssetCopyToActive,
+		arg.CopyID,
 		arg.StoreName,
 		arg.GraceCutoff,
 		arg.DesiredStore,
+		arg.OverlapCutoff,
 	)
 	if err != nil {
 		return 0, err
@@ -838,19 +928,14 @@ func (q *Queries) RevertMediaAssetToActive(ctx context.Context, arg RevertMediaA
 }
 
 const upsertMissingMediaAsset = `-- name: UpsertMissingMediaAsset :exec
-INSERT INTO missing_media_assets (media_asset_id, store) VALUES ($1, $2)
-ON CONFLICT (media_asset_id, store) DO NOTHING
+INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)
+ON CONFLICT (media_asset_copy_id) DO NOTHING
 `
-
-type UpsertMissingMediaAssetParams struct {
-	MediaAssetID int64
-	Store        string
-}
 
 // 実体無し候補を記録する。既存行があれば first_seen を保持する
 // （DO NOTHING。エイジングの起点は「最初に実体無しだと気づいた時刻」）。
-func (q *Queries) UpsertMissingMediaAsset(ctx context.Context, arg UpsertMissingMediaAssetParams) error {
-	_, err := q.db.Exec(ctx, upsertMissingMediaAsset, arg.MediaAssetID, arg.Store)
+func (q *Queries) UpsertMissingMediaAsset(ctx context.Context, mediaAssetCopyID int64) error {
+	_, err := q.db.Exec(ctx, upsertMissingMediaAsset, mediaAssetCopyID)
 	return err
 }
 

@@ -18,6 +18,9 @@ var (
 	ErrAlreadyExists = errors.New("object key already exists")
 	// ErrChecksumMismatch means the uploaded bytes did not match the expected SHA-256.
 	ErrChecksumMismatch = errors.New("object checksum mismatch")
+	// ErrCredentials means the request failed because the credentials could not be retrieved,
+	// have expired, or were not recognized. It is joined to the underlying error.
+	ErrCredentials = errors.New("object store credentials are unusable")
 	// ErrReadOnly means the object store was initialized without write capabilities.
 	ErrReadOnly = errors.New("object store is read-only")
 )

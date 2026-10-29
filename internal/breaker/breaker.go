@@ -48,26 +48,28 @@ const (
 	DeleteReconcile = "delete_reconcile"
 )
 
-// siteless は行の site 列を持たない（IsSiteless が true を返す）ブレーカー
-// 識別子の集合。今のところ DeleteReconcile だけ ---
-// DeleteReconcileWorker の doc コメント参照: cleanup キューはどの束縛 site の
-// worker が拾うか不定なので、行の site を実サイト名にすると 1 つの site
-// 非依存の懸念（一括削除数）が複数の site 列に分散してしまう
-// （不変条件 12「表は行の寿命で割る」に反する）。
-//
-// internal/api の 2 つの resume ハンドラ（ResumeCircuitBreaker /
-// ResumeSitelessCircuitBreaker）と internal/worker/delete_reconcile.go の
-// 書き込みはこの分類を共有する（判定を 2 箇所に書かない。issue #450）。
-var siteless = map[string]bool{DeleteReconcile: true}
+// ScopeKind はブレーカーが適用される範囲の種類。
+type ScopeKind uint8
 
-// IsSiteless は name が site を持たないブレーカーかを返す。true のとき、
-// 行の site 列は実サイト名ではなく空文字列を持つ。
-//
-// 空文字列を exported な文字列定数にしないのは、all_test.go の AST スキャナが
-// ブレーカー名ではない `""` を All に無い文字列定数として誤検出するため。
-// 呼び出し側はリテラルの `""` を書く。
-func IsSiteless(name string) bool {
-	return siteless[name]
+const (
+	// ScopeUnknown は未登録のブレーカー名を表す。
+	ScopeUnknown ScopeKind = iota
+	// ScopeSite は mirakc site ごとの範囲を表す。
+	ScopeSite
+	// ScopeStore は物理置き場ごとの範囲を表す。
+	ScopeStore
+)
+
+var scopeKinds = map[string]ScopeKind{
+	RulerDeletes:       ScopeSite,
+	ReconcileTotalLoss: ScopeSite,
+	DeleteReconcile:    ScopeStore,
+}
+
+// ScopeKindFor は name に対応するブレーカーの範囲の種類を返す。
+// 未知の名前には ScopeUnknown を返す。
+func ScopeKindFor(name string) ScopeKind {
+	return scopeKinds[name]
 }
 
 // All はここで定義している全ブレーカー識別子の一覧。internal/api はここから
@@ -101,8 +103,8 @@ func TruncateSample(sample Sample) Sample {
 //
 // ゲージはプロセスの再起動で失われるので、各パスの先頭で呼んで DB の真実に
 // 合わせ直す（レベルトリガー: メトリクスも導出値として毎回作り直す）。
-func ObserveState(ctx context.Context, b store.Breakers, site, name string) (bool, error) {
-	tripped, err := b.IsTripped(ctx, site, name)
+func ObserveState(ctx context.Context, b store.Breakers, scope, name string) (bool, error) {
+	tripped, err := b.IsTripped(ctx, scope, name)
 	if err != nil {
 		return false, err
 	}
@@ -110,7 +112,7 @@ func ObserveState(ctx context.Context, b store.Breakers, site, name string) (boo
 	if tripped {
 		v = 1
 	}
-	metrics.CircuitBreakerTripped.WithLabelValues(site, name).Set(v)
+	metrics.CircuitBreakerTripped.WithLabelValues(scope, name).Set(v)
 	return tripped, nil
 }
 
@@ -119,26 +121,26 @@ func ObserveState(ctx context.Context, b store.Breakers, site, name string) (boo
 // 呼び出し側は Trip の後、その削除を実行してはならない。戻り値のエラーは
 // 「発動の記録に失敗した」であり、その場合も削除は実行しない（記録できないまま
 // 削除を続けるのが最悪の組み合わせ）。
-func Trip(ctx context.Context, b store.Breakers, site, name string, threshold int, sample Sample) error {
-	trippedAt, err := b.Trip(ctx, site, name, threshold, TruncateSample(sample))
+func Trip(ctx context.Context, b store.Breakers, scope, name string, threshold int, sample Sample) error {
+	trippedAt, err := b.Trip(ctx, scope, name, threshold, TruncateSample(sample))
 	if err != nil {
 		return err
 	}
-	announceTrip(site, name, threshold, sample, trippedAt)
+	announceTrip(scope, name, threshold, sample, trippedAt)
 	return nil
 }
 
 // AnnounceTrip は記録済みの発動をゲージとログへ反映する。
 // 呼び出し側は永続化が成功した後に呼ぶ。
-func AnnounceTrip(site, name string, threshold int, sample Sample, trippedAt time.Time) {
-	announceTrip(site, name, threshold, sample, trippedAt)
+func AnnounceTrip(scope, name string, threshold int, sample Sample, trippedAt time.Time) {
+	announceTrip(scope, name, threshold, sample, trippedAt)
 }
 
 // announceTrip は発動をゲージとログに出す。Trip と、commit 後に呼ぶ AnnounceTrip が共有する。
-func announceTrip(site, name string, threshold int, sample Sample, trippedAt time.Time) {
-	metrics.CircuitBreakerTripped.WithLabelValues(site, name).Set(1)
+func announceTrip(scope, name string, threshold int, sample Sample, trippedAt time.Time) {
+	metrics.CircuitBreakerTripped.WithLabelValues(scope, name).Set(1)
 	slog.Error("circuit breaker tripped — deletes withheld until manually resumed",
-		"site", site,
+		"scope", scope,
 		"breaker", name,
 		"pending_deletes", sample.Total,
 		"threshold", threshold,

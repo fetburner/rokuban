@@ -601,6 +601,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		LiveProfiles:        liveProfileSummaries(cfg.Live.Profiles),
 		RecordingHLSEnabled: cfg.RecordingHLS.Enabled,
 		MediaStoreName:      cfg.Storage.MediaStoreName,
+		DerivedStoreName:    cfg.Storage.Derived,
 	}
 
 	if slices.Contains(roles, "api") {
@@ -668,6 +669,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 				FFmpeg:          cfg.Live.FFmpeg,
 				FFprobe:         cfg.Live.FFprobe,
 				Profiles:        convertLiveConfig(cfg.Live).Profiles,
+				HWAccel:         cfg.Live.HWAccel,
+				InputExtraArgs:  cfg.Live.InputExtraArgs,
 				Captions:        cfg.Live.Captions,
 				CacheBytes:      cfg.RecordingHLS.CacheBytes,
 				MaxSegmentBytes: config.RecordingHLSMaxSegmentBytes,
@@ -729,23 +732,24 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
 	// until_encoded の原本の削除判定は storage.derived を使う（MediaStoreName は使わない）。
 	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
-	derivedPublisher := mediaStore
+	var derivedPublisher store.DerivedMediaPublisher
 	var derivedObjects objstore.Store
-	var derivedMedia *pgstore.Media
 	var derivedMediaDelete store.MediaDelete
 	var derivedStorage store.StorageObservation
-	var derivedCopyMaintenance store.MediaCopyMaintenance
+	var derivedPendingReclaim store.PendingCopyReclaim
+	// s3store.New は S3 に接続しない。S3 に繋がらない・資格情報が失効していても worker は起動し、
+	// S3 を使うジョブ（派生物の公開と削除）だけが失敗する。
 	if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok && derived.Kind == "s3" {
 		objects, err := s3store.New(ctx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
 		if err != nil {
 			return nil, fmt.Errorf("connecting derived S3 store %q: %w", cfg.Storage.Derived, err)
 		}
 		derivedObjects = objects
-		derivedPublisher = pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
-		derivedMedia = derivedPublisher
+		derivedMedia := pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
+		derivedPublisher = derivedMedia
 		derivedMediaDelete = derivedMedia
 		derivedStorage = derivedMedia
-		derivedCopyMaintenance = derivedMedia
+		derivedPendingReclaim = derivedMedia
 	}
 	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
@@ -808,7 +812,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		DerivedObjectStoreName:   cfg.Storage.Derived,
 		DerivedMediaDelete:       derivedMediaDelete,
 		DerivedStorage:           derivedStorage,
-		DerivedCopyMaintenance:   derivedCopyMaintenance,
+		DerivedPendingReclaim:    derivedPendingReclaim,
 		IngestPrecheck:           mediaStore,
 		EncodeProgress:           mediaStore,
 		MediaDelete:              mediaStore,
@@ -817,6 +821,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		StorageObservation:       mediaStore,
 		MediaDir:                 cfg.Storage.MediaDir,
 		MediaStoreName:           cfg.Storage.MediaStoreName,
+		TransferOverlap:          cfg.Storage.Transfer.Overlap,
 		IngestStorageProbed:      ingestStorageProbed,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,

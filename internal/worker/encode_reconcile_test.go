@@ -122,6 +122,70 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 	}
 }
 
+func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	metrics.CutAwaitingReview.Reset()
+	t.Cleanup(metrics.CutAwaitingReview.Reset)
+
+	newRecording := func(title string, profiles []string, original bool) int64 {
+		t.Helper()
+		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Title = title })
+		seedEncodePolicy(t, pool, id, profiles)
+		if original {
+			dbtest.MediaAsset(t, pool, id)
+		}
+		return id
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+
+	newRecording("one cut", []string{"cut"}, true)
+	newRecording("two cuts", []string{"cut", "cut2"}, true)
+	newRecording("removed cut profile", []string{"removed"}, true)
+	newRecording("missing original", []string{"cut"}, false)
+	trashed := newRecording("trash", []string{"cut"}, true)
+	exec(`UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed)
+	confirmed := newRecording("confirmed", []string{"cut"}, true)
+	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, confirmed)
+	encoded := newRecording("encoded", []string{"cut"}, true)
+	cut := "cut"
+	dbtest.MediaAsset(t, pool, encoded, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile = "encoded", &cut
+	})
+	attempted := newRecording("attempted", []string{"cut"}, true)
+	exec(`INSERT INTO recording_encode_attempts (recording_id, profile, state) VALUES ($1, 'cut', 'failed')`, attempted)
+	rebuilding := newRecording("rebuilding", []string{"cut"}, true)
+	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, rebuilding)
+	reverted := newRecording("reverted", []string{"cut"}, true)
+	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, reverted)
+	dbtest.MediaAsset(t, pool, reverted, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile = "encoded", &cut
+	})
+	exec(`DELETE FROM recording_chapter_ownership WHERE recording_id = $1`, reverted)
+
+	profiles := encodeConfigWith("cut", "cut2")
+	for i := range profiles.Profiles {
+		profiles.Profiles[i].Cut = true
+	}
+	worker := &EncodeReconcileWorker{Media: pgstoretest.Media(pool), Profiles: profiles}
+	worker.reportAwaitingReview(ctx)
+	if got := promtestutil.ToFloat64(metrics.CutAwaitingReview.WithLabelValues("cut")); got != 2 {
+		t.Errorf("cut awaiting-review gauge = %v, want 2", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.CutAwaitingReview.WithLabelValues("cut2")); got != 1 {
+		t.Errorf("cut2 awaiting-review gauge = %v, want 1", got)
+	}
+}
+
 // TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow は、reconcile が
 // 満たされていない作り直しだけに押した時点の keep のジョブを投入し、どの要求行も
 // 消さないことを固定する。チャプターの編集・所有の欠落・満たされた状態のどれでも

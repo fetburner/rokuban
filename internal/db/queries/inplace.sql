@@ -2,9 +2,11 @@
 -- Bytes are already under storage.media_dir; these queries only publish DB rows.
 
 -- name: GetInPlaceAssetByRelPath :one
-SELECT a.id, a.recording_id, a.kind, a.profile, c.state
+SELECT a.id, a.recording_id, a.kind, a.profile, c.state, c.generation,
+       (r.deleted_at IS NOT NULL OR r.purged_at IS NOT NULL)::boolean AS recording_trashed
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
+JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path = sqlc.arg('rel_path')
   AND c.store = sqlc.arg('store_name')
 -- media_asset_copies_store_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
@@ -53,28 +55,45 @@ DO UPDATE SET
     updated_at          = now()
 RETURNING id;
 
+-- in-place 登録の論理行。規則はこの 1 文だけに置く（Go は 0 行を ErrConflict に写すだけ）。
+-- 録画がごみ箱か消去済みなら、資産の有無にかかわらず 0 行になる（INSERT ... SELECT の WHERE）。
+-- 論理資産が無ければ新規に作る。あれば、次の 3 つを満たすときだけ rel_path / size_bytes を差し替える。
+-- 1. この置き場に、その資産の生きたコピー（active / deleting / pending）が無い。
+--    あれば同じ置き場に 2 つ目の現行ファイルを足すことになる。deleting は unlink される予定のファイルである。
+-- 2. パスから読む世代が現行の世代（derived_generation。original は NULL = 0）と等しい。
+--    古い世代で論理行を巻き戻すと、現行のコピーが旧世代として削除される。
+-- 3. 録画がごみ箱にない（上記）。
+-- derived_generation は変えず、state / deleted_at は書かない（コピー行を書いた後に
+-- ReconcileMediaAssetStateFromCopies が決める）。並行する 2 本の登録は
+-- media_asset_copies_asset_store_generation_idx が直列化する。
 -- name: UpsertInPlaceMediaAsset :one
 INSERT INTO media_assets (
     recording_id, kind, profile, rel_path, size_bytes, state, derived_generation
-) VALUES (
-    sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
-    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), 'active',
-    CASE WHEN sqlc.arg('kind')::text = 'original' THEN NULL ELSE 0 END
 )
+SELECT
+    r.id, sqlc.arg('kind')::text, sqlc.narg('profile')::text,
+    sqlc.arg('rel_path')::text, sqlc.arg('size_bytes')::bigint, 'active',
+    CASE WHEN sqlc.arg('kind')::text = 'original' THEN NULL
+         ELSE COALESCE(media_asset_generation_from_rel_path(sqlc.arg('rel_path')::text), 0)
+    END
+FROM recordings r
+WHERE r.id = sqlc.arg('recording_id')
+  AND r.deleted_at IS NULL
+  AND r.purged_at IS NULL
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
-    derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
     sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
     updated_at = now()
--- A tuple is immutable once published. A different path here means a synthetic identity
--- collision or conflicting import; fail (RETURNING no row) instead of orphaning the old file.
-WHERE EXISTS (
-    SELECT 1 FROM media_asset_copies c
-    WHERE c.media_asset_id = media_assets.id
-      AND c.store = sqlc.arg('store_name')
-      AND c.rel_path = EXCLUDED.rel_path
-)
-RETURNING id;
+WHERE NOT EXISTS (
+        SELECT 1 FROM media_asset_copies live
+        WHERE live.media_asset_id = media_assets.id
+          AND live.store = sqlc.arg('store_name')
+          AND live.state <> 'deleted'
+    )
+  AND COALESCE(EXCLUDED.derived_generation, 0) = COALESCE(media_assets.derived_generation, 0)
+RETURNING id,
+    CASE WHEN kind = 'original' THEN 0
+         ELSE COALESCE(media_asset_generation_from_rel_path(sqlc.arg('rel_path')::text), 0)
+    END::bigint AS generation;

@@ -957,7 +957,7 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
   if (requestPath === '/api/breakers' || requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return json([])
   if (requestPath === '/api/events') return sseKeepAlive(route)
   if (requestPath === '/api/live-profiles') return json([{ name: LIVE_PROFILE, height: 720 }])
-  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (requestPath === '/api/recordings' && method === 'GET') return json([activeRecording])
   if (requestPath === `/api/recordings/${RECORDING_ID}` && method === 'GET') {
     if (recordingHlsGap?.armed) {
@@ -1174,6 +1174,12 @@ async function runRecordingApiHlsCheck() {
     return
   }
 
+  // max は Date.now() - startedAt なので、複数の中間位置を調べる間も 1 秒ごとに
+  // 伸びる。メディア準備後の同じ時点で browser / Node の基準時刻を固定し、座標の
+  // 算出とシーク後の検査で px → 秒の対応を保つ。timer は進むので再生待ちには影響しない。
+  const timelineAsOf = Date.now()
+  await page.clock.setFixedTime(new Date(timelineAsOf))
+
   const slider = page.getByRole('slider', { name: 'シークバー' })
   const timelineSeconds = Number(await slider.getAttribute('aria-valuemax'))
   const mediaState = await page.locator('video').evaluate((video) => ({
@@ -1182,7 +1188,7 @@ async function runRecordingApiHlsCheck() {
     readyState: video.readyState,
     videoWidth: video.videoWidth,
   }))
-  const recordedProgressSeconds = (Date.now() - Date.parse(apiHlsStartedAtNow)) / 1000
+  const recordedProgressSeconds = (timelineAsOf - Date.parse(apiHlsStartedAtNow)) / 1000
   log(`\n=== 録画 API HLS: 録画中の時間軸 ===`)
   log(`  右端=${timelineSeconds.toFixed(2)}s / 壁時計の録画済み=${recordedProgressSeconds.toFixed(2)}s / HLS seekable=${mediaState.seekableEnd.toFixed(2)}s`)
   if (Math.abs(timelineSeconds - recordedProgressSeconds) > 2.5) {

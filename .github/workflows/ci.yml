@@ -155,6 +155,9 @@ jobs:
         run: pnpm e2e:recordings-selection
         working-directory: web
       - if: ${{ !cancelled() }}
+        run: pnpm e2e:recordings-rule-filter
+        working-directory: web
+      - if: ${{ !cancelled() }}
         run: pnpm e2e:recording-detail-layout
         working-directory: web
       - if: ${{ !cancelled() }}

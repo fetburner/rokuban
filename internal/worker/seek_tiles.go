@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -57,14 +58,15 @@ const (
 // 失敗したら scratch を捨ててやり直す。部分成果はコミットしない ---
 // 行の存在 = タイルが全部そろっている（不変条件 10）。
 type SeekTilesWorker struct {
-	Media          store.MediaReconcile
-	Publisher      store.DerivedMediaPublisher
-	Objects        objstore.Store
-	MediaDir       string
-	MediaStoreName string
-	ScratchDir     string
-	FFmpeg         string
-	FFprobe        string
+	Media           store.MediaReconcile
+	Publisher       store.MediaPublish
+	Objects         objstore.Store
+	ObjectPublisher store.DerivedMediaPublisher
+	MediaDir        string
+	MediaStoreName  string
+	ScratchDir      string
+	FFmpeg          string
+	FFprobe         string
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	// ThumbnailWorker と同じ契約（stdout を返すのは ffprobe 用）。
@@ -193,12 +195,12 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 			RecordingID: recordingID, Kind: "seek_tiles", RelPath: relPath,
 			DerivedGeneration: generation,
 		}
-		size, published, err = publishGeneratedObject(ctx, w.Objects, w.Publisher, pending, sheetPath, objectContentType(relPath),
-			func(size int64, publish func() error) (bool, error) {
-				return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
+		size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, sheetPath, objectContentType(relPath), false,
+			func(size int64, sum [sha256.Size]byte) (bool, error) {
+				return w.ObjectPublisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
 					RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
-					DerivedGeneration: generation,
-				}, publish)
+					DerivedGeneration: generation, SHA256: sum[:], PendingCopy: true,
+				}, func() error { return nil })
 			})
 	} else {
 		size, published, err = publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, relPath, sheetPath,
@@ -249,7 +251,7 @@ func (w *SeekTilesWorker) nextUnusedSeekTilesRelPath(ctx context.Context, record
 				return relPath, generation, nil
 			}
 			if err != nil {
-				metrics.ObjectStoreErrors.WithLabelValues("head").Inc()
+				metrics.RecordObjectStoreError("head", err)
 				return "", 0, err
 			}
 		} else {

@@ -10,20 +10,45 @@ import (
 	"encoding/json"
 )
 
+const adoptUnassignedDeleteReconcileBreaker = `-- name: AdoptUnassignedDeleteReconcileBreaker :exec
+INSERT INTO circuit_breakers (scope, name, tripped_at, pending, threshold, detail)
+SELECT $1::text, name, tripped_at, pending, threshold, detail
+FROM circuit_breakers
+WHERE scope = '' AND name = 'delete_reconcile'
+ON CONFLICT (scope, name) DO NOTHING
+`
+
+// storage adopt が、範囲を持たない旧 delete_reconcile 行を置き場の範囲へ割り当てる。
+// 列の改名前に空の範囲で書かれた名前は delete_reconcile だけなので、リテラルで絞る。
+// 同じ (scope, name) が既にあれば、置き場側の行を正として何もしない。
+func (q *Queries) AdoptUnassignedDeleteReconcileBreaker(ctx context.Context, store string) error {
+	_, err := q.db.Exec(ctx, adoptUnassignedDeleteReconcileBreaker, store)
+	return err
+}
+
+const deleteUnassignedDeleteReconcileBreaker = `-- name: DeleteUnassignedDeleteReconcileBreaker :exec
+DELETE FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile'
+`
+
+func (q *Queries) DeleteUnassignedDeleteReconcileBreaker(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteUnassignedDeleteReconcileBreaker)
+	return err
+}
+
 const getCircuitBreaker = `-- name: GetCircuitBreaker :one
-SELECT site, name, tripped_at, pending, threshold, detail FROM circuit_breakers WHERE site = $1 AND name = $2
+SELECT scope, name, tripped_at, pending, threshold, detail FROM circuit_breakers WHERE scope = $1 AND name = $2
 `
 
 type GetCircuitBreakerParams struct {
-	Site string
-	Name string
+	Scope string
+	Name  string
 }
 
 func (q *Queries) GetCircuitBreaker(ctx context.Context, arg GetCircuitBreakerParams) (CircuitBreaker, error) {
-	row := q.db.QueryRow(ctx, getCircuitBreaker, arg.Site, arg.Name)
+	row := q.db.QueryRow(ctx, getCircuitBreaker, arg.Scope, arg.Name)
 	var i CircuitBreaker
 	err := row.Scan(
-		&i.Site,
+		&i.Scope,
 		&i.Name,
 		&i.TrippedAt,
 		&i.Pending,
@@ -34,7 +59,7 @@ func (q *Queries) GetCircuitBreaker(ctx context.Context, arg GetCircuitBreakerPa
 }
 
 const listCircuitBreakers = `-- name: ListCircuitBreakers :many
-SELECT site, name, tripped_at, pending, threshold, detail FROM circuit_breakers ORDER BY site, name
+SELECT scope, name, tripped_at, pending, threshold, detail FROM circuit_breakers ORDER BY scope, name
 `
 
 func (q *Queries) ListCircuitBreakers(ctx context.Context) ([]CircuitBreaker, error) {
@@ -47,7 +72,7 @@ func (q *Queries) ListCircuitBreakers(ctx context.Context) ([]CircuitBreaker, er
 	for rows.Next() {
 		var i CircuitBreaker
 		if err := rows.Scan(
-			&i.Site,
+			&i.Scope,
 			&i.Name,
 			&i.TrippedAt,
 			&i.Pending,
@@ -65,18 +90,18 @@ func (q *Queries) ListCircuitBreakers(ctx context.Context) ([]CircuitBreaker, er
 }
 
 const resumeCircuitBreaker = `-- name: ResumeCircuitBreaker :execrows
-DELETE FROM circuit_breakers WHERE site = $1 AND name = $2
+DELETE FROM circuit_breakers WHERE scope = $1 AND name = $2
 `
 
 type ResumeCircuitBreakerParams struct {
-	Site string
-	Name string
+	Scope string
+	Name  string
 }
 
 // 再開（手動確認後）。execrows なので「発動していなかった」を呼び出し側が
 // 区別できる（API が 404 を返せる）。
 func (q *Queries) ResumeCircuitBreaker(ctx context.Context, arg ResumeCircuitBreakerParams) (int64, error) {
-	result, err := q.db.Exec(ctx, resumeCircuitBreaker, arg.Site, arg.Name)
+	result, err := q.db.Exec(ctx, resumeCircuitBreaker, arg.Scope, arg.Name)
 	if err != nil {
 		return 0, err
 	}
@@ -85,17 +110,17 @@ func (q *Queries) ResumeCircuitBreaker(ctx context.Context, arg ResumeCircuitBre
 
 const tripCircuitBreaker = `-- name: TripCircuitBreaker :one
 
-INSERT INTO circuit_breakers (site, name, pending, threshold, detail)
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
 VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (site, name) DO UPDATE SET
+ON CONFLICT (scope, name) DO UPDATE SET
     pending   = EXCLUDED.pending,
     threshold = EXCLUDED.threshold,
     detail    = EXCLUDED.detail
-RETURNING site, name, tripped_at, pending, threshold, detail
+RETURNING scope, name, tripped_at, pending, threshold, detail
 `
 
 type TripCircuitBreakerParams struct {
-	Site      string
+	Scope     string
 	Name      string
 	Pending   int32
 	Threshold int32
@@ -109,7 +134,7 @@ type TripCircuitBreakerParams struct {
 // 進めてはならない）。
 func (q *Queries) TripCircuitBreaker(ctx context.Context, arg TripCircuitBreakerParams) (CircuitBreaker, error) {
 	row := q.db.QueryRow(ctx, tripCircuitBreaker,
-		arg.Site,
+		arg.Scope,
 		arg.Name,
 		arg.Pending,
 		arg.Threshold,
@@ -117,7 +142,7 @@ func (q *Queries) TripCircuitBreaker(ctx context.Context, arg TripCircuitBreaker
 	)
 	var i CircuitBreaker
 	err := row.Scan(
-		&i.Site,
+		&i.Scope,
 		&i.Name,
 		&i.TrippedAt,
 		&i.Pending,

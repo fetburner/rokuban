@@ -263,6 +263,7 @@ type MediaAsset struct {
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
 	DerivedGeneration *int64     `json:"derivedGeneration,omitempty"`
+	Generation        *int64     `json:"generation,omitempty"`
 	SHA256            *string    `json:"sha256,omitempty"`
 	Store             string     `json:"store,omitempty"`
 }

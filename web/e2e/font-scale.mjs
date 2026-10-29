@@ -160,7 +160,7 @@ const apiHandler = async ({ path, url, json, route }) => {
   if (/\/overlaps$/.test(path)) return json({ count: 0, reservations: [] })
   if (/\/programs\/\d+$/.test(path)) return json({ extended: {}, audios: [] })
   if (path === '/api/storage') return json([])
-  if (path === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (path === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   return json([])
 }
 

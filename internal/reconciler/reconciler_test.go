@@ -644,7 +644,7 @@ func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing
 		t.Errorf("deferred delete count missing from logs: %s", logs.String())
 	}
 	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Site: "default", Name: breaker.ReconcileTotalLoss,
+		Scope: "default", Name: breaker.ReconcileTotalLoss,
 	}); err == nil {
 		t.Error("protected schedules alone should not trip the total-loss breaker")
 	}
@@ -686,7 +686,7 @@ func TestReconciler_TotalLossBreakerCountsOnlyAllowedDeleteStates(t *testing.T) 
 		t.Errorf("schedules after breaker = %d, want %d", len(schedules), len(states))
 	}
 	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Site: "default", Name: breaker.ReconcileTotalLoss,
+		Scope: "default", Name: breaker.ReconcileTotalLoss,
 	})
 	if err != nil {
 		t.Fatalf("expected the breaker for one allowed candidate, GetCircuitBreaker: %v", err)
@@ -848,7 +848,7 @@ func TestReconciler_IgnoresNonRokubanSchedules(t *testing.T) {
 	// 0 件であっても全損シグネチャには当たらない（tag が無いので toDelete
 	// にすら入らない）。
 	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Site: "default", Name: breaker.ReconcileTotalLoss,
+		Scope: "default", Name: breaker.ReconcileTotalLoss,
 	}); err == nil {
 		t.Error("an external (non-tagged) schedule alone should not trip the total-loss breaker")
 	}
@@ -1498,7 +1498,7 @@ func TestReconciler_ContentPathRecreateDoesNotTripBreaker(t *testing.T) {
 
 	var breakerRows int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM circuit_breakers WHERE site = 'default' AND name = $1`,
+		`SELECT count(*) FROM circuit_breakers WHERE scope = 'default' AND name = $1`,
 		string(breaker.ReconcileTotalLoss),
 	).Scan(&breakerRows); err != nil {
 		t.Fatalf("querying circuit_breakers: %v", err)
@@ -2347,7 +2347,7 @@ func TestReconciler_TotalLossSignatureTripsAndWithholdsDeletes(t *testing.T) {
 	}
 
 	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Site: "default", Name: breaker.ReconcileTotalLoss,
+		Scope: "default", Name: breaker.ReconcileTotalLoss,
 	})
 	if err != nil {
 		t.Fatalf("expected the total-loss breaker to be tripped, GetCircuitBreaker: %v", err)
@@ -2423,7 +2423,7 @@ func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *test
 	}
 
 	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Site: "default", Name: breaker.ReconcileTotalLoss,
+		Scope: "default", Name: breaker.ReconcileTotalLoss,
 	}); err == nil {
 		t.Error("the total-loss breaker should not trip when a desired reservation remains")
 	}
@@ -2501,7 +2501,7 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 	newRes := createReservation(t, ctx, q, 100000500020100, "復旧後の予約", startAt)
 
 	rows, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
-		Site: "default", Name: breaker.ReconcileTotalLoss,
+		Scope: "default", Name: breaker.ReconcileTotalLoss,
 	})
 	if err != nil || rows != 1 {
 		t.Fatalf("ResumeCircuitBreaker: rows=%d err=%v", rows, err)

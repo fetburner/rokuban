@@ -30,12 +30,19 @@ func (s *Analysis) GetWorkItem(ctx context.Context, recordingID int64) (store.CM
 	return store.CMDetectionWorkItem{
 		ID:              row.ID,
 		Station:         store.CMStationRef{NetworkID: row.NetworkID, ServiceID: row.ServiceID},
-		RelPath:         row.RelPath,
+		RelPath:         optionalMediaRelPath(row.RelPath),
 		Enabled:         row.CmDetect,
 		IsTrashed:       row.IsTrashed,
 		OriginalMissing: row.OriginalMissing,
 		Detected:        row.Detected,
 	}, nil
+}
+
+func optionalMediaRelPath(relPath string) *string {
+	if relPath == "" {
+		return nil
+	}
+	return &relPath
 }
 
 // IsDetectionDesired は録画の現在の CM 検出が desired かを返す。

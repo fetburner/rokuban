@@ -322,7 +322,7 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 			http.NotFound(w, r)
 			return
 		}
-		metrics.ObjectStoreErrors.WithLabelValues("head").Inc()
+		metrics.RecordObjectStoreError("head", err)
 		slog.Error("streamer: checking S3 object", "recording_id", recordingID, "store", asset.store,
 			"rel_path", asset.relPath, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -345,7 +345,7 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 	}
 	target, err := signer.Presign(r.Context(), asset.relPath, r.Method, expires, asset.contentType, "")
 	if err != nil {
-		metrics.ObjectStoreErrors.WithLabelValues("presign").Inc()
+		metrics.RecordObjectStoreError("presign", err)
 		slog.Error("streamer: creating signed S3 URL", "recording_id", recordingID, "store", asset.store,
 			"rel_path", asset.relPath, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

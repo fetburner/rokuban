@@ -121,12 +121,12 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 1. `curl -s http://localhost:40773/api/breakers | jq` で、発動中のブレーカーと `pending` / `threshold` を見る
 2. `ruler_deletes` は `detail` に消されようとしていた番組が載る。EPG の欠損で番組が消えていないかを確かめる
 3. `delete_reconcile` は `detail` に対象が載らない。内訳は DB で見る。孤児回収の候補は、公開前を示す予約名の temp / staging だけである。canonical orphan は削除候補にもブレーカーにも含まれない。`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で確認する
-4. 正当なら再開する。site を持つブレーカーと持たないブレーカーで URL が違う。
+4. 正当なら再開する。site の範囲のブレーカーと置き場の範囲のブレーカーで URL が違う。
 
    ```sh
    # ruler_deletes / reconcile_total_loss（site は GET /api/breakers の値）
    curl -X POST http://localhost:40773/api/sites/<site>/breakers/ruler_deletes/resume
-   # delete_reconcile（site を持たない）
+   # delete_reconcile（置き場の範囲。置き場は api の設定の FS 置き場で決まる）
    curl -X POST http://localhost:40773/api/breakers/delete_reconcile/resume
    ```
 

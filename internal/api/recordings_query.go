@@ -87,7 +87,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (store.RecordingFilter, 
 		f.Status = string(*p.Status)
 	}
 	if p.EncodeState != nil && !p.EncodeState.Valid() {
-		return store.RecordingFilter{}, fmt.Sprintf("invalid encodeState %q (want queued or running)", *p.EncodeState)
+		return store.RecordingFilter{}, fmt.Sprintf("invalid encodeState %q (want queued, running or awaiting_review)", *p.EncodeState)
 	}
 	if p.Source != nil {
 		if !p.Source.Valid() {

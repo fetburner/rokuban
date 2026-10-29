@@ -91,6 +91,11 @@ type EncodedPublishInput struct {
 	KeepRanges        []chapters.Range
 	HasRebuildRequest bool
 	RequestedKeep     []chapters.Range
+	// SHA256 は公開するファイル全体の SHA-256。作り手が commit の tx で論理行へ書く。FS の公開は nil。
+	SHA256 []byte
+	// PendingCopy は、このコピーを PreparePendingMediaAssetCopy で先に commit 済みであることを表す。
+	// true なら commit の tx で pending を active にし、行を新しく書かない。
+	PendingCopy bool
 }
 
 // ThumbnailObservation は再選択前に読んだサムネイルを表す。
@@ -111,6 +116,9 @@ type ThumbnailPublishInput struct {
 	InputStore        string
 	DerivedGeneration int64
 	Expected          *ThumbnailObservation
+	// SHA256 と PendingCopy は EncodedPublishInput と同じ意味である。
+	SHA256      []byte
+	PendingCopy bool
 }
 
 // SeekTilesPublishInput はシークタイルを公開する判断材料を表す。
@@ -119,10 +127,13 @@ type SeekTilesPublishInput struct {
 	RelPath           string
 	SizeBytes         int64
 	DerivedGeneration int64
+	// SHA256 と PendingCopy は EncodedPublishInput と同じ意味である。
+	SHA256      []byte
+	PendingCopy bool
 }
 
-// PendingMediaAssetCopy describes a derived object whose durable key is reserved
-// before an object-store PUT begins.
+// PendingMediaAssetCopy は、S3 の PUT の前に commit する pending のコピー行を表す。
+// 公開の tx が同じ行を active にするまで、読み手には現行のコピーとして見えない。
 type PendingMediaAssetCopy struct {
 	RecordingID       int64
 	Kind              string
@@ -131,18 +142,20 @@ type PendingMediaAssetCopy struct {
 	SizeBytes         int64
 	DerivedGeneration int64
 	// ReserveNewGeneration は既存のどのコピーも使っていない世代の予約を要求する。
+	// 出力の内容が毎回変わる encode は、公開前に止まった試行の key を再利用してはならない。
 	ReserveNewGeneration bool
 }
 
-// DerivedMediaPublisher publishes encoded video, thumbnails, and seek tiles.
+// DerivedMediaPublisher は encoded・サムネイル・シークタイルを S3 の置き場へ公開する契約である。
 type DerivedMediaPublisher interface {
-	// PreparePendingMediaAssetCopy commits the logical asset and pending physical-copy row before upload.
+	// PreparePendingMediaAssetCopy は PUT の前に pending のコピー行を commit する。
+	// 世代がすでに使われていれば ErrGenerationAdvanced を返す。
 	PreparePendingMediaAssetCopy(ctx context.Context, input PendingMediaAssetCopy) error
-	// PublishEncoded rechecks encode intent and promotes the staged copy when publish succeeds.
+	// PublishEncoded は encode の計画を再確認し、PendingCopy なら pending を active にする。
 	PublishEncoded(ctx context.Context, input EncodedPublishInput, publish func() error) (published bool, err error)
-	// PublishThumbnail rechecks thumbnail eligibility and promotes the staged copy.
+	// PublishThumbnail はサムネイルの資格を再確認し、PendingCopy なら pending を active にする。
 	PublishThumbnail(ctx context.Context, input ThumbnailPublishInput, publish func() error) (published bool, err error)
-	// PublishSeekTiles rechecks seek-tile eligibility and promotes the staged copy.
+	// PublishSeekTiles はシークタイルの資格を再確認し、PendingCopy なら pending を active にする。
 	PublishSeekTiles(ctx context.Context, input SeekTilesPublishInput, publish func() error) (published bool, err error)
 }
 

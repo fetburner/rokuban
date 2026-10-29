@@ -20,28 +20,21 @@ type objectCompanion struct {
 	ContentType string
 }
 
-// publishGeneratedObject reserves a pending DB copy before uploading bytes, then
-// calls the existing transactional publisher to activate it after the PUT.
+// publishGeneratedObject は S3 の置き場への公開を、予約・PUT・公開の順に進める。
+//
+//  1. pending のコピー行を commit する（pendingPrepared なら呼び出し側が済ませている）。
+//  2. 宣言サイズどおりに読み切った全体の SHA-256 を照合しながら PUT する。
+//  3. commit が公開の tx で pending を active にし、SHA-256 を論理行へ書く。
+//
+// commit は PUT の後に呼ぶ。公開に至らなかった pending と key は、削除 reconcile が猶予後に回収する。
 func publishGeneratedObject(
 	ctx context.Context,
 	objects objstore.Store,
 	publisher store.DerivedMediaPublisher,
 	pending store.PendingMediaAssetCopy,
 	scratchPath, contentType string,
-	commit func(int64, func() error) (bool, error),
-	companions ...objectCompanion,
-) (int64, bool, error) {
-	return publishGeneratedObjectPrepared(ctx, objects, publisher, pending, scratchPath, contentType, false, commit, companions...)
-}
-
-func publishGeneratedObjectPrepared(
-	ctx context.Context,
-	objects objstore.Store,
-	publisher store.DerivedMediaPublisher,
-	pending store.PendingMediaAssetCopy,
-	scratchPath, contentType string,
 	pendingPrepared bool,
-	commit func(int64, func() error) (bool, error),
+	commit func(size int64, sha256 [sha256.Size]byte) (bool, error),
 	companions ...objectCompanion,
 ) (int64, bool, error) {
 	if objects == nil || publisher == nil {
@@ -69,7 +62,7 @@ func publishGeneratedObjectPrepared(
 			return size, false, err
 		}
 	}
-	published, err := commit(size, func() error { return nil })
+	published, err := commit(size, checksum)
 	return size, published, err
 }
 
@@ -110,7 +103,7 @@ func uploadObjectFile(ctx context.Context, objects objstore.Store, key, path str
 	putErr := objects.Put(ctx, key, f, size, checksum, contentType)
 	closeErr := f.Close()
 	if putErr != nil {
-		metrics.ObjectStoreErrors.WithLabelValues("put").Inc()
+		metrics.RecordObjectStoreError("put", putErr)
 		return fmt.Errorf("putting generated object %q: %w", key, putErr)
 	}
 	if closeErr != nil {

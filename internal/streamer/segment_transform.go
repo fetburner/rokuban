@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
@@ -53,8 +55,9 @@ const (
 )
 
 var (
-	errSegmentManagerClosed    = errors.New("segment manager is closed")
-	errSegmentTransformStopped = errors.New("segment transform stopped before requested segment was ready")
+	errSegmentManagerClosed     = errors.New("segment manager is closed")
+	errSegmentTransformStopped  = errors.New("segment transform stopped before requested segment was ready")
+	errSegmentGrowingInputRetry = errors.New("growing segment input ended before the requested segment was ready")
 	// errSegmentRetry は、待っていた変換が止められたので Get が最初からやり直すための内部の印。
 	errSegmentRetry = errors.New("segment request must be retried")
 	// errSegmentBeyondEnd は、録画の最後のセグメントより後ろを要求したときのエラー。
@@ -73,6 +76,7 @@ type segmentTransformGroup struct {
 	recordingID string
 	generation  string
 	profile     string
+	inputKind   store.RecordingHLSInputKind
 }
 
 type segmentTransformResult struct {
@@ -90,16 +94,23 @@ type segmentTransformWaiter struct {
 // InputArgs は -i の前に入るので、伸びるファイルの入力は変換の管理を変えずに
 // file プロトコルの引数を足せる。
 type SegmentTransformInput struct {
+	Kind      store.RecordingHLSInputKind
 	OpenFile  func(context.Context) (*os.File, error)
 	Path      string
 	InputArgs []string
 	// OriginPTS は最初の映像 PTS（90 kHz の MPEG-TS tick）。
 	OriginPTS int64
 	// VideoDurationPTS は原点から録画の末尾までの映像の長さ（90 kHz tick）。0 は未確定を表す。
-	// 確定しているときだけ、最後のセグメント番号 = ceil(長さ / D) - 1 と一致する番号を
-	// 「録画の最後」とみなして ENDLIST 付きの短い末尾をキャッシュに入れる。
-	// 未確定のときは ENDLIST を根拠に最後扱いしない（入力が途中で EOF 扱いになっても
-	// ffmpeg は終了コード 0 で ENDLIST を書くため）。
+	// 確定しているとき（原本）は、次のように扱う。
+	//   - 音声には apad と atrim で映像の終端までを出させるので、全 rendition が映像と同じ番号で終わる。
+	//   - rendition ごとの ENDLIST と最後のファイルで、その rendition の短い末尾を完成とみなす。
+	//     ただし音声と字幕を完成とみなすのは、同じ変換の映像が ENDLIST 付きで最後の番号に届いたときだけ。
+	//   - 音声と字幕は、同じ変換の映像が出し終えた最後の番号（videoLast）までしか公開しない。
+	//     入力が途中で切れると、音声は映像の無い区間まで apad の無音で進むためである。
+	//   - 変換の進み（updateCurrentNumber）は映像だけで数える。音声の先行を先読み済みと取り違えて、
+	//     映像が要求に届く前に変換を止めないためである。
+	// 未確定のとき（伸びる temp）は ENDLIST を根拠に最後扱いしない（入力が途中で EOF 扱いになっても
+	// ffmpeg は終了コード 0 で ENDLIST を書くため）。進みは全 rendition で数える。
 	VideoDurationPTS int64
 	AudioStreamCount int
 	// HasSubtitles は captions 設定が有効な入力に WebVTT rendition があることを表す。
@@ -152,7 +163,7 @@ type SegmentTransformOptions struct {
 	PollInterval     time.Duration
 }
 
-// SegmentManager は、完成した原本の録画を固定長の HLS セグメントへ変換し、
+// SegmentManager は、録画入力を固定長の HLS セグメントへ変換し、
 // そのファイルをバイト数上限の LRU に保つ。
 //
 // 同時に生きている ffmpeg は、SIGSTOP で止めているものも含めて MaxConcurrent 本までである。
@@ -326,7 +337,10 @@ func (m *SegmentManager) getOnce(
 		m.mu.Unlock()
 		return nil, false, errSegmentManagerClosed
 	}
-	group := segmentTransformGroup{recordingID: key.RecordingID, generation: key.Generation, profile: key.Profile}
+	group := segmentTransformGroup{
+		recordingID: key.RecordingID, generation: key.Generation, profile: key.Profile,
+		inputKind: input.Kind,
+	}
 	if lease, ok, err := m.cache.acquire(key); err != nil {
 		m.mu.Unlock()
 		return nil, false, err
@@ -760,6 +774,11 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 	maxCacheNumber := task.maxRequested + int64(m.prefetchSegments)
 	m.mu.Unlock()
 	finalNumber := finalSegmentNumber(task.input.VideoDurationPTS, task.profile.SegmentSeconds)
+	videoLast := int64(-1)
+	if video := entries["video"]; len(video) > 0 {
+		videoLast = video[len(video)-1]
+	}
+	videoReached := finalNumber >= 0 && endList["video"] && videoLast == finalNumber
 	for _, rendition := range renditions {
 		variant := segmentVariantForRendition[rendition]
 		for _, number := range entries[rendition] {
@@ -786,7 +805,18 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 				}
 				continue
 			}
-			isFinal := normalExit && endList[rendition] && number == finalNumber
+			// 長さが確定した入力では、映像が先に進んだ番号までしか、音声と字幕を公開しない。
+			// 入力が途中で切れても、音声は apad で映像の終端まで無音で埋まる。映像が届いていない区間の
+			// 無音を、immutable のキャッシュに入れないためである。
+			if finalNumber >= 0 && rendition != "video" && number > videoLast {
+				continue
+			}
+			// 長さが確定した入力だけ、rendition ごとの ENDLIST と最後のファイルで完成とみなす。
+			// 映像の番号と比べると、映像より 1 つ手前で終わる音声や字幕の末尾が公開されない。
+			// 映像は長さの根拠なので、同じ変換の映像が確定した最後の番号に届いて ENDLIST を書いた後だけ、
+			// どの rendition も完成とみなす。
+			isLast := number == entries[rendition][len(entries[rendition])-1]
+			isFinal := normalExit && videoReached && endList[rendition] && isLast
 			if !nextStarted && !isFinal {
 				continue
 			}
@@ -810,7 +840,13 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 
 func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries map[string][]int64) {
 	highest := task.startNumber
-	for _, variant := range segmentVariantForRendition {
+	// 長さが確定した入力では、音声が apad で映像の終端より先まで無音で進む。入力が途中で切れたとき、
+	// その先行で「先読み済み」と判断して変換を止めてしまわないよう、映像の進みだけを数える。
+	finite := task.input.VideoDurationPTS > 0
+	for rendition, variant := range segmentVariantForRendition {
+		if finite && rendition != "video" {
+			continue
+		}
 		prefix := task.profile.Name + "."
 		if m.cfg.Captions {
 			prefix = ""
@@ -829,7 +865,10 @@ func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries
 			}
 		}
 	}
-	for _, numbers := range entries {
+	for rendition, numbers := range entries {
+		if finite && rendition != "video" {
+			continue
+		}
 		for _, number := range numbers {
 			if number+1 > highest {
 				highest = number + 1
@@ -1029,6 +1068,9 @@ func (m *SegmentManager) finishTask(task *segmentTransformTask, processErr error
 		waiterErr = errSegmentNotCached
 	} else if task.stopping && !errors.Is(processErr, errSegmentManagerClosed) {
 		waiterErr = errSegmentTransformStopped
+	} else if task.input.Kind == store.RecordingHLSInputTemp {
+		slog.Warn("streamer: growing recording HLS transform ended before the requested segment was ready", "recording_id", task.group.recordingID, "generation", task.group.generation, "profile", task.group.profile, "err", processErr, "stderr", task.stderr.String())
+		waiterErr = fmt.Errorf("%w: %w", errSegmentGrowingInputRetry, processErr)
 	} else {
 		waiterErr = fmt.Errorf("segment ffmpeg exited: %w: %s", processErr, task.stderr.String())
 	}
@@ -1133,11 +1175,18 @@ func buildSegmentTransformArgs(
 	if err != nil {
 		return nil, err
 	}
+	audioFilter := "atrim=start=" + trimSeconds + ",asetpts=PTS-" + trimSeconds + "/TB"
+	if input.VideoDurationPTS > 0 {
+		// 長さが確定した入力では、音声が映像より短くても映像と同じ番号まで出す。apad=whole_dur は
+		// サンプル数で数えるので、途中から起動した変換や途中で欠けた音声でずれる。PTS で切る。
+		endSeconds := strconv.FormatFloat(float64(input.VideoDurationPTS-deltaPTS)/float64(mpegTSTimestampClock), 'f', 9, 64)
+		audioFilter += ",apad,atrim=end=" + endSeconds
+	}
 	for audioIndex := 0; audioIndex < 3; audioIndex++ {
 		args, err = appendSegmentOutputFilter(
 			args,
 			"-filter:a:"+strconv.Itoa(audioIndex),
-			"atrim=start="+trimSeconds+",asetpts=PTS-"+trimSeconds+"/TB",
+			audioFilter,
 		)
 		if err != nil {
 			return nil, err

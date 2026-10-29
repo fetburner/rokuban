@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,9 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -120,6 +124,114 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 	if string(body) != "original bytes" {
 		t.Errorf("rescued file content changed: %q", body)
 	}
+}
+
+func TestRescueLatest_NoCatalogScansOnlySelectedStoreRoot(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	storeA, storeB := "store-a", "store-b"
+	rootA, rootB := t.TempDir(), t.TempDir()
+	for _, marker := range []struct{ root, store string }{{rootA, storeA}, {rootB, storeB}} {
+		if err := mediapath.WriteStoreMarker(marker.root, marker.store); err != nil {
+			t.Fatalf("writing %s marker: %v", marker.store, err)
+		}
+	}
+	for _, file := range []struct{ root, relPath string }{
+		{rootA, "sites/default/from-a.ts"},
+		{rootB, "sites/default/from-b.ts"},
+	} {
+		path := filepath.Join(file.root, filepath.FromSlash(file.relPath))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("creating rescue root: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(file.relPath), 0o644); err != nil {
+			t.Fatalf("writing rescue candidate %s: %v", file.relPath, err)
+		}
+	}
+
+	result, err := RescueLatest(ctx, nil, pgstore.NewMedia(pool, storeA, ""), rootA, storeA, []string{"default"})
+	if err != nil {
+		t.Fatalf("RescueLatest for %s: %v", storeA, err)
+	}
+	if result.MediaAssets != 1 || result.Recordings != 1 {
+		t.Fatalf("rescue result for %s = %+v, want one asset from its root", storeA, result)
+	}
+	if got := countRescuedStoreCopy(t, pool, storeA, "sites/default/from-a.ts"); got != 1 {
+		t.Errorf("store-a copy count for its file = %d, want 1", got)
+	}
+	if got := countRescuedStoreCopy(t, pool, storeB, "sites/default/from-a.ts"); got != 0 {
+		t.Errorf("store-b copy count for store-a's file = %d, want 0", got)
+	}
+	if got := countRescuedStoreCopy(t, pool, storeA, "sites/default/from-b.ts"); got != 0 {
+		t.Errorf("store-a copy count for the other root's file = %d, want 0", got)
+	}
+
+	_, err = RescueLatest(ctx, nil, pgstore.NewMedia(pool, storeA, ""), rootB, storeA, []string{"default"})
+	if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
+		t.Fatalf("RescueLatest with store-a and store-b root error = %v, want ErrStoreMarkerMismatch", err)
+	}
+	if got := countRescuedStoreCopy(t, pool, storeA, "sites/default/from-b.ts"); got != 0 {
+		t.Errorf("store-a copy count after refusing the other root = %d, want 0", got)
+	}
+}
+
+func TestRescueLatest_RechecksStoreMarkerBeforeRegisteringCandidate(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	storeA, storeB := "store-a", "store-b"
+	root := t.TempDir()
+	if err := mediapath.WriteStoreMarker(root, storeA); err != nil {
+		t.Fatalf("writing %s marker: %v", storeA, err)
+	}
+	relPath := "sites/default/marker-changed.ts"
+	candidatePath := filepath.Join(root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(candidatePath), 0o755); err != nil {
+		t.Fatalf("creating rescue root: %v", err)
+	}
+	if err := os.WriteFile(candidatePath, []byte("candidate"), 0o644); err != nil {
+		t.Fatalf("writing rescue candidate: %v", err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolving rescue root: %v", err)
+	}
+	candidatePath = filepath.Join(realRoot, filepath.FromSlash(relPath))
+
+	originalStat := statRescueCandidate
+	markerChanged := false
+	statRescueCandidate = func(path string) (os.FileInfo, error) {
+		if path == candidatePath {
+			markerPath := filepath.Join(realRoot, mediapath.StoreMarkerFileName)
+			if err := os.WriteFile(markerPath, []byte(storeB), 0o644); err != nil {
+				return nil, err
+			}
+			markerChanged = true
+		}
+		return originalStat(path)
+	}
+	t.Cleanup(func() { statRescueCandidate = originalStat })
+
+	_, err = RescueLatest(ctx, nil, pgstore.NewMedia(pool, storeA, ""), root, storeA, []string{"default"})
+	if !markerChanged {
+		t.Fatal("rescue candidate stat hook did not change the marker")
+	}
+	if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
+		t.Fatalf("RescueLatest after marker changed during scan error = %v, want ErrStoreMarkerMismatch", err)
+	}
+	if got := countRescuedStoreCopy(t, pool, storeA, relPath); got != 0 {
+		t.Errorf("store-a copy count after marker changed before registration = %d, want 0", got)
+	}
+}
+
+func countRescuedStoreCopy(t *testing.T, pool *pgxpool.Pool, storeName, relPath string) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM media_asset_copies
+WHERE store = $1 AND rel_path = $2`, storeName, relPath).Scan(&count); err != nil {
+		t.Fatalf("counting rescued copy %s/%s: %v", storeName, relPath, err)
+	}
+	return count
 }
 
 func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
@@ -314,7 +426,7 @@ func TestRescueStorage_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 	// RescueLatest は目印の照合が先に止めるので、symlink 解決の失敗は rescueStorage を
 	// 直接呼んで検査する（目印が先に止める挙動は
 	// TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker）。
-	_, err := rescueStorage(context.Background(), nil, missingMediaDir, []string{"default"})
+	_, err := rescueStorage(context.Background(), nil, missingMediaDir, "test-store", []string{"default"})
 	if err == nil {
 		t.Fatal("rescueStorage with missing media_dir should return an error")
 	}
@@ -461,5 +573,42 @@ func TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
 		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("media_assets after refused rescue (store %q) = %d (err %v), want 0", name, count, err)
 		}
+	}
+}
+
+// 既存の資産と両立しないファイル（ごみ箱の録画に属する）は ErrConflict で拒否される。
+// そのファイルだけを飛ばして件数に出し、後続のファイルは登録して走査を続ける。
+func TestRescueLatest_ConflictSkipsOnlyThatFileAndContinues(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t)
+	dir := filepath.Join(mediaDir, "sites", "default", "archive")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("bytes "+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func() *RescueResult {
+		t.Helper()
+		res, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
+		if err != nil {
+			t.Fatalf("RescueLatest: %v", err)
+		}
+		return res
+	}
+	write("a.m2ts")
+	run()
+	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now()`); err != nil {
+		t.Fatal(err)
+	}
+	// 走査は辞書順なので、拒否される a.m2ts の後に b.m2ts が来る。
+	write("b.m2ts")
+
+	res := run()
+	if res.SkippedConflictingFiles != 1 || res.MediaAssets != 1 {
+		t.Fatalf("result = conflicts %d, media assets %d; want 1 and 1", res.SkippedConflictingFiles, res.MediaAssets)
 	}
 }

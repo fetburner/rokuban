@@ -122,7 +122,7 @@ function writeMediaPlaylist(outputDirectory, variant, names, initNames) {
     '#EXT-X-INDEPENDENT-SEGMENTS',
     `#EXT-X-TARGETDURATION:${SEGMENT_SECONDS}`,
     '#EXT-X-MEDIA-SEQUENCE:0',
-    '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXT-X-PLAYLIST-TYPE:EVENT',
   ]
   names.forEach((name, index) => {
     if (initNames && (index === 0 || initNames[index] !== initNames[index - 1])) lines.push(`#EXT-X-MAP:URI="${initNames[index]}"`)

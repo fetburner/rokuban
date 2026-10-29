@@ -425,8 +425,8 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.skip || observed.generation != 2 || observed.replaced != g1 {
-		t.Fatalf("plan = %+v, want generation 2 replacing %s and no skip", observed, g1)
+	if observed.skip || observed.generation != 2 {
+		t.Fatalf("plan = %+v, want generation 2 and no skip", observed)
 	}
 
 	scratchOut := filepath.Join(scratchDir, "out.mp4")
@@ -454,7 +454,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if err := os.WriteFile(abs(g3), []byte("g3 output"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.SetMediaAssetRelPath(t, pool, assetID, g3)
+	dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, g3, 3)
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 500}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1192,7 +1192,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	}
 	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
 	// 観測の後に、別の公開が要求どおりの版へ置き換えた状況を作る。
-	dbtest.SetMediaAssetRelPath(t, pool, assetID, "rebuild/txskip_cut.g2.mp4")
+	dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, "rebuild/txskip_cut.g2.mp4", 2)
 	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
 		t.Fatal(err)
 	}

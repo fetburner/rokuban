@@ -88,8 +88,8 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating conformance encoded asset: %w", err)
 	}
-	if err := queries.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: storeName, RelPath: videoKey, State: "active",
+	if _, err := queries.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: storeName, RelPath: videoKey, Generation: 0, State: "active",
 	}); err != nil {
 		return fmt.Errorf("creating conformance S3 copy: %w", err)
 	}

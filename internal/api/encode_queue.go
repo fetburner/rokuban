@@ -35,10 +35,24 @@ func (h *Server) loadEncodeQueueRows(ctx context.Context) ([]encodeQueueRow, err
 	return out, nil
 }
 
+// loadAwaitingReviewRecordingIDs は確認待ちを録画単位で重複なしに引く。
+// 集計と録画一覧の絞り込みは同じ名前付き SQL 述語を使う。
+func (h *Server) loadAwaitingReviewRecordingIDs(ctx context.Context) ([]int64, error) {
+	ids, err := h.mediaReader.ListAwaitingReviewRecordingIDs(ctx, slices.Collect(maps.Keys(h.cutProfiles)))
+	if err != nil {
+		return nil, fmt.Errorf("listing recordings awaiting chapter review: %w", err)
+	}
+	return ids, nil
+}
+
 // GetEncodeQueue は現在 desired で未観測のエンコードを、実行中の試行がある数と
 // ない数に分けて返す。
 func (h *Server) GetEncodeQueue(ctx context.Context, _ GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error) {
 	rows, err := h.loadEncodeQueueRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	awaitingReview, err := h.loadAwaitingReviewRecordingIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +64,9 @@ func (h *Server) GetEncodeQueue(ctx context.Context, _ GetEncodeQueueRequestObje
 			queued++
 		}
 	}
-	return GetEncodeQueue200JSONResponse{Queued: queued, Running: running}, nil
+	return GetEncodeQueue200JSONResponse{
+		Queued: queued, Running: running, AwaitingReview: int64(len(awaitingReview)),
+	}, nil
 }
 
 // encodeQueueRecordingIDs は待機列のうち running が一致する行の録画 ID を重複なしで返す。

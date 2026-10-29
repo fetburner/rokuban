@@ -8,11 +8,16 @@ import (
 
 // RestoreOptions は catalog の復元前に呼び出し側が確認したファイル状態を伝える。
 type RestoreOptions struct {
-	// MissingAssetIDs は復元時点でファイルが無かった active asset の ID。
-	// 該当 asset は履歴を保って deleted として復元する。
-	// 欠損の履歴行は従属する統計ごと残し、export 後に消えたファイルの active 状態を
-	// 公開しない。
-	MissingAssetIDs map[int64]struct{}
+	// MissingAssetCopyKeys は復元時点でファイルが無かった active コピーのキー。
+	// 該当コピーは deleted として復元し、論理資産の状態は復元後の全コピーから再計算する。
+	MissingAssetCopyKeys map[MediaAssetCopyKey]struct{}
+}
+
+// MediaAssetCopyKey は catalog 内の物理コピーを同定する。
+type MediaAssetCopyKey struct {
+	MediaAssetID int64
+	Store        string
+	RelPath      string
 }
 
 // RestoreResult は catalog の復元件数と、復元できなかった行の件数を表す。
@@ -43,7 +48,7 @@ type RestoreResult struct {
 	SkippedProgramOverrides int
 
 	// MissingMediaFiles は復元時点でファイルが無く、deleted として復元した
-	// active asset の件数（RestoreOptions.MissingAssetIDs の該当数）。
+	// active コピーの件数（RestoreOptions.MissingAssetCopyKeys の該当数）。
 	MissingMediaFiles int
 }
 

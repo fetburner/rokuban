@@ -32,6 +32,11 @@ type RescueResult struct {
 	// rescue で唯一この件数だけが復元漏れを示す（slog の Warn は運用者の目に
 	// 触れるとは限らない）ので、呼び出し側のサマリ表示に必ず出す。
 	SkippedFilesWithoutSitePrefix int
+
+	// SkippedConflictingFiles はストレージ走査で、既存の資産と両立せず
+	// store.ErrConflict で登録を拒否されたファイルの件数。登録されないので、
+	// 台帳が知らないまま残る。呼び出し側のサマリ表示に必ず出す。
+	SkippedConflictingFiles int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等
@@ -71,7 +76,7 @@ func RescueLatest(
 		if os.IsNotExist(err) {
 			// 「catalog が 1 つも無い」と「あったが全部不完全だった」を
 			// 混同させない: 飛ばした世代は結果に載せて呼び出し側に報告させる。
-			result, scanErr := rescueStorage(ctx, mediaPublish, mediaDir, registrySites)
+			result, scanErr := rescueStorage(ctx, mediaPublish, mediaDir, storeName, registrySites)
 			if scanErr != nil {
 				return nil, scanErr
 			}
@@ -129,7 +134,7 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 	}
 	defer func() { _ = release() }()
 
-	missing := make(map[int64]struct{})
+	missing := make(map[store.MediaAssetCopyKey]struct{})
 	for _, asset := range doc.MediaAssets {
 		if asset.State == "deleted" || asset.Store != storeName {
 			continue
@@ -140,7 +145,11 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 		}
 		info, err := os.Lstat(fullPath)
 		if errors.Is(err, os.ErrNotExist) {
-			missing[asset.ID] = struct{}{}
+			missing[store.MediaAssetCopyKey{
+				MediaAssetID: asset.ID,
+				Store:        asset.Store,
+				RelPath:      asset.RelPath,
+			}] = struct{}{}
 			continue
 		}
 		if err != nil {
@@ -151,7 +160,7 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 		}
 	}
 
-	result, err := catalogStore.Restore(ctx, doc, store.RestoreOptions{MissingAssetIDs: missing})
+	result, err := catalogStore.Restore(ctx, doc, store.RestoreOptions{MissingAssetCopyKeys: missing})
 	if err != nil {
 		return nil, err
 	}

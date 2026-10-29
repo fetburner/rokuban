@@ -130,23 +130,28 @@ type Deps struct {
 	// RecordingPurge は録画の物理削除の永続化契約。
 	RecordingPurge store.RecordingPurge
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
-	LabelRuleReevaluation  store.LabelRuleReevaluation
-	MediaReconcile         store.MediaReconcile
-	MediaPublish           store.MediaPublish
+	LabelRuleReevaluation store.LabelRuleReevaluation
+	MediaReconcile        store.MediaReconcile
+	MediaPublish          store.MediaPublish
+	// DerivedMediaPublish と DerivedObjects は、派生物の置き場が S3 のときだけ設定する。
+	// DerivedMediaPublish は S3 の置き場に束ねた store で、encode・サムネイル・シークタイルが使う。
 	DerivedMediaPublish    store.DerivedMediaPublisher
 	DerivedObjects         objstore.Store
 	DerivedObjectStoreName string
-	DerivedMediaDelete     store.MediaDelete
-	DerivedStorage         store.StorageObservation
-	DerivedCopyMaintenance store.MediaCopyMaintenance
-	IngestPrecheck         store.IngestPrecheck
-	EncodeProgress         store.EncodeProgressReporter
-	MediaDelete            store.MediaDelete
-	TSScan                 store.TSScan
-	EncodeAttempts         store.EncodeAttempts
-	StorageObservation     store.StorageObservation
-	MediaDir               string
-	MediaStoreName         string
+	// DerivedMediaDelete・DerivedPendingReclaim・DerivedStorage は、同じ S3 の置き場に束ねた
+	// 削除 reconcile 用の store。
+	DerivedMediaDelete    store.MediaDelete
+	DerivedPendingReclaim store.PendingCopyReclaim
+	DerivedStorage        store.StorageObservation
+	IngestPrecheck        store.IngestPrecheck
+	EncodeProgress        store.EncodeProgressReporter
+	MediaDelete           store.MediaDelete
+	TSScan                store.TSScan
+	EncodeAttempts        store.EncodeAttempts
+	StorageObservation    store.StorageObservation
+	MediaDir              string
+	MediaStoreName        string
+	TransferOverlap       time.Duration
 	// IngestStorageProbed は起動時に ProbeIngestStorage が成功したかを示す。
 	// false なら IngestWorker が最初の ingest で、目印を照合した後に probe する。
 	IngestStorageProbed bool
@@ -211,7 +216,6 @@ type Deps struct {
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
-	derivedPublisher := resolveDerivedMediaPublisher(deps)
 	riveradapter.Register(workers, &IngestWorker{
 		storageProbed:    deps.IngestStorageProbed,
 		Enqueuer:         deps.Enqueuer,
@@ -228,18 +232,19 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LiveEnabled:      deps.LiveEnabled,
 	})
 	riveradapter.Register(workers, &EncodeWorker{
-		Media:          deps.MediaReconcile,
-		Attempts:       deps.EncodeAttempts,
-		Publisher:      derivedPublisher,
-		Objects:        deps.DerivedObjects,
-		Progress:       deps.EncodeProgress,
-		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName,
-		ScratchDir:     deps.ScratchDir,
-		FFmpeg:         deps.Encode.FFmpeg,
-		FFprobe:        deps.Encode.FFprobe,
-		Profiles:       deps.Encode,
-		Webhook:        deps.Webhook,
+		Media:           deps.MediaReconcile,
+		Attempts:        deps.EncodeAttempts,
+		Publisher:       deps.MediaPublish,
+		ObjectPublisher: deps.DerivedMediaPublish,
+		Objects:         deps.DerivedObjects,
+		Progress:        deps.EncodeProgress,
+		MediaDir:        deps.MediaDir,
+		MediaStoreName:  deps.MediaStoreName,
+		ScratchDir:      deps.ScratchDir,
+		FFmpeg:          deps.Encode.FFmpeg,
+		FFprobe:         deps.Encode.FFprobe,
+		Profiles:        deps.Encode,
+		Webhook:         deps.Webhook,
 	})
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
@@ -292,24 +297,27 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		MediaStoreName: deps.MediaStoreName,
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
-		Media:          deps.MediaReconcile,
-		Publisher:      derivedPublisher,
-		Objects:        deps.DerivedObjects,
-		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName, DerivedStoreName: deps.DerivedObjectStoreName,
-		ScratchDir: deps.ScratchDir,
-		FFmpeg:     deps.Encode.FFmpeg,
-		FFprobe:    deps.Encode.FFprobe,
+		Media:            deps.MediaReconcile,
+		Publisher:        deps.MediaPublish,
+		ObjectPublisher:  deps.DerivedMediaPublish,
+		Objects:          deps.DerivedObjects,
+		MediaDir:         deps.MediaDir,
+		MediaStoreName:   deps.MediaStoreName,
+		DerivedStoreName: deps.DerivedObjectStoreName,
+		ScratchDir:       deps.ScratchDir,
+		FFmpeg:           deps.Encode.FFmpeg,
+		FFprobe:          deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &SeekTilesWorker{
-		Media:          deps.MediaReconcile,
-		Publisher:      derivedPublisher,
-		Objects:        deps.DerivedObjects,
-		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName,
-		ScratchDir:     deps.ScratchDir,
-		FFmpeg:         deps.Encode.FFmpeg,
-		FFprobe:        deps.Encode.FFprobe,
+		Media:           deps.MediaReconcile,
+		Publisher:       deps.MediaPublish,
+		ObjectPublisher: deps.DerivedMediaPublish,
+		Objects:         deps.DerivedObjects,
+		MediaDir:        deps.MediaDir,
+		MediaStoreName:  deps.MediaStoreName,
+		ScratchDir:      deps.ScratchDir,
+		FFmpeg:          deps.Encode.FFmpeg,
+		FFprobe:         deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
@@ -335,25 +343,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		DetectionStore: deps.CMDetectionStore,
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
-	riveradapter.Register(workers, &DeleteReconcileWorker{
-		MediaDelete:            deps.MediaDelete,
-		RecordingPurge:         deps.RecordingPurge,
-		Breakers:               deps.Breakers,
-		Storage:                deps.StorageObservation,
-		DerivedMediaDelete:     deps.DerivedMediaDelete,
-		DerivedStorage:         deps.DerivedStorage,
-		DerivedCopyMaintenance: deps.DerivedCopyMaintenance,
-		DerivedObjects:         deps.DerivedObjects,
-		DerivedObjectStoreName: deps.DerivedObjectStoreName,
-		MediaDir:               deps.MediaDir,
-		MediaStoreName:         deps.MediaStoreName,
-		TrashRetention:         deps.Cleanup.TrashRetention,
-		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
-		OrphanAge:              deps.Cleanup.OrphanAge,
-		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
-		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
-		Webhook:                deps.Webhook,
-	})
+	riveradapter.Register(workers, newDeleteReconcileWorker(deps))
 	riveradapter.Register(workers, &StorageSyncWorker{
 		Storage:    deps.StorageObservation,
 		MediaDir:   deps.MediaDir,
@@ -364,10 +354,26 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	return workers
 }
 
-func resolveDerivedMediaPublisher(deps *Deps) store.DerivedMediaPublisher {
-	if deps.DerivedMediaPublish != nil {
-		return deps.DerivedMediaPublish
+// newDeleteReconcileWorker は削除 reconcile worker を Deps から組み立てる。
+func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
+	return &DeleteReconcileWorker{
+		MediaDelete:            deps.MediaDelete,
+		RecordingPurge:         deps.RecordingPurge,
+		Breakers:               deps.Breakers,
+		Storage:                deps.StorageObservation,
+		MediaDir:               deps.MediaDir,
+		MediaStoreName:         deps.MediaStoreName,
+		DerivedObjects:         deps.DerivedObjects,
+		DerivedObjectStoreName: deps.DerivedObjectStoreName,
+		DerivedMediaDelete:     deps.DerivedMediaDelete,
+		DerivedPendingReclaim:  deps.DerivedPendingReclaim,
+		DerivedStorage:         deps.DerivedStorage,
+		TransferOverlap:        deps.TransferOverlap,
+		TrashRetention:         deps.Cleanup.TrashRetention,
+		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
+		OrphanAge:              deps.Cleanup.OrphanAge,
+		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
+		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
+		Webhook:                deps.Webhook,
 	}
-	publisher, _ := deps.MediaPublish.(store.DerivedMediaPublisher)
-	return publisher
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -63,8 +64,8 @@ func mediaStoreNameArg(storeName string) *string {
 	return &storeName
 }
 
-// AdoptUnassignedStoreRows はコピー行の無い論理資産をこの置き場に割り当て、
-// 現在公開中の論理パスから派生世代を復元する（TestAdoptUnassignedStoreRows）。
+// AdoptUnassignedStoreRows は未割り当ての論理資産にコピー行を作り、既存コピーを保ったまま、
+// コピーのパスから派生世代を補正する（TestAdoptUnassignedStoreRows）。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
@@ -78,8 +79,8 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if err := q.AdoptUnassignedMediaAssetCopies(ctx, s.storeName); err != nil {
 		return fmt.Errorf("adopting legacy media asset copies: %w", err)
 	}
-	if err := q.ReconcileDerivedGenerationFromLegacyAssetPaths(ctx, s.storeName); err != nil {
-		return fmt.Errorf("reconciling derived media generations from legacy asset paths: %w", err)
+	if err := q.ReconcileDerivedGenerationFromCopyPaths(ctx); err != nil {
+		return fmt.Errorf("reconciling derived media generations from copy paths: %w", err)
 	}
 	if err := q.AdoptUnassignedIngestTemps(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned ingest temps: %w", err)
@@ -87,11 +88,14 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if err := q.AdoptUnassignedOrphans(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned orphan observations: %w", err)
 	}
-	if err := q.AdoptUnassignedMissingMediaAssets(ctx, s.storeName); err != nil {
-		return fmt.Errorf("assigning unowned missing asset observations: %w", err)
-	}
 	if err := q.AdoptUnassignedStorageSync(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned storage observations: %w", err)
+	}
+	if err := q.AdoptUnassignedDeleteReconcileBreaker(ctx, s.storeName); err != nil {
+		return fmt.Errorf("assigning unowned delete_reconcile breaker: %w", err)
+	}
+	if err := q.DeleteUnassignedDeleteReconcileBreaker(ctx); err != nil {
+		return fmt.Errorf("removing unowned delete_reconcile breaker: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing media store adoption: %w", mapDatabaseError(err))
@@ -109,14 +113,15 @@ func (s *Media) HasStoreCopies(ctx context.Context) (bool, error) {
 	return has, nil
 }
 
-// RequireAdoptedStoreRows は割り当て前の行やコピー欠落が残っていないことを確認する。
+// RequireAdoptedStoreRows は割り当て前の行（範囲が空の delete_reconcile ブレーカーを含む）や
+// コピー欠落が残っていないことを確認する。
 func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
 	count, err := sqlcgen.New(s.pool).CountUnassignedStorageRows(ctx)
 	if err != nil {
 		return fmt.Errorf("checking for unassigned media store rows: %w", err)
 	}
 	if count != 0 {
-		return fmt.Errorf("%d media store row(s) have no store or media asset copy; run `rokuban storage adopt <store-name>` before starting workers", count)
+		return fmt.Errorf("%d media store row(s) have no store or media asset copy (including delete_reconcile circuit breaker rows with an empty scope); run `rokuban storage adopt <store-name>` before starting workers", count)
 	}
 	return nil
 }
@@ -314,7 +319,6 @@ func (s *Media) GetEncodedPublishState(
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
-		StoreName:   mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if err == nil {
 		asset := store.EncodedAssetObservation{
@@ -366,23 +370,58 @@ func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, sit
 	return target, nil
 }
 
-// GetRecordingHLSOriginalTarget は完了録画の配信可能な原本と世代を返す。
-func (s *Media) GetRecordingHLSOriginalTarget(ctx context.Context, recordingID int64) (store.RecordingHLSOriginalTarget, error) {
-	var target store.RecordingHLSOriginalTarget
-	err := s.pool.QueryRow(ctx, `SELECT a.id, c.rel_path, a.size_bytes,
- COALESCE(a.ingest_generation, 0)::bigint, r.started_at
- FROM media_assets a JOIN recordings r ON r.id = a.recording_id
- JOIN LATERAL (
-     SELECT copy.rel_path
-     FROM preferred_active_media_asset_copy(a.id, $1::text) copy
- ) c ON true
- WHERE a.recording_id = $2
- AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL("$1")+` AND `+recordingPlaybackVisibleSQL, s.storeName, recordingID).
-		Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.IngestGeneration, &target.StartedAt)
+// GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。
+func (s *Media) GetRecordingHLSTarget(ctx context.Context, recordingID int64) (store.RecordingHLSInputTarget, error) {
+	var startedAt *time.Time
+	var originalID, originalSize, originalGeneration pgtype.Int8
+	var originalRelPath pgtype.Text
+	var tempRelPath, tempStore pgtype.Text
+	var tempSize, tempGeneration pgtype.Int8
+	var hasOriginal bool
+	err := s.pool.QueryRow(ctx, `SELECT r.started_at,
+       a.id, c.rel_path, a.size_bytes, COALESCE(a.ingest_generation, 0)::bigint,
+       p.temp_rel_path, p.temp_store, p.written_bytes, p.temp_generation,
+       EXISTS (SELECT 1 FROM media_assets any_original
+               WHERE any_original.recording_id = r.id AND any_original.kind = 'original')
+FROM recordings r
+LEFT JOIN media_assets a ON a.recording_id = r.id AND `+activePlaybackOriginalSQL("$2")+`
+LEFT JOIN LATERAL (SELECT copy.rel_path FROM preferred_active_media_asset_copy(a.id, $2::text) copy) c ON true
+LEFT JOIN recording_ingest_progress p ON p.recording_id = r.id
+WHERE r.id = $1 AND `+recordingPlaybackVisibleSQL+`
+  AND (a.id IS NOT NULL OR (p.recording_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM media_assets any_original
+      WHERE any_original.recording_id = r.id AND any_original.kind = 'original'
+  )))`, recordingID, s.storeName).Scan(
+		&startedAt,
+		&originalID, &originalRelPath, &originalSize, &originalGeneration,
+		&tempRelPath, &tempStore, &tempSize, &tempGeneration,
+		&hasOriginal,
+	)
+
 	if err != nil {
-		return store.RecordingHLSOriginalTarget{}, mediaQueryError(err, fmt.Sprintf("loading recording HLS original target for recording %d", recordingID))
+		return store.RecordingHLSInputTarget{}, mediaQueryError(err, fmt.Sprintf("loading recording HLS target for recording %d", recordingID))
 	}
-	return target, nil
+	if originalID.Valid {
+		return store.RecordingHLSInputTarget{
+			Kind:             store.RecordingHLSInputOriginal,
+			ID:               originalID.Int64,
+			RelPath:          originalRelPath.String,
+			SizeBytes:        originalSize.Int64,
+			IngestGeneration: originalGeneration.Int64,
+			StartedAt:        startedAt,
+		}, nil
+	}
+	if hasOriginal || !tempRelPath.Valid || !tempStore.Valid || !tempGeneration.Valid {
+		return store.RecordingHLSInputTarget{}, fmt.Errorf("recording %d has no readable HLS input: %w", recordingID, store.ErrNotFound)
+	}
+	return store.RecordingHLSInputTarget{
+		Kind:             store.RecordingHLSInputTemp,
+		RelPath:          tempRelPath.String,
+		StoreName:        tempStore.String,
+		SizeBytes:        tempSize.Int64,
+		IngestGeneration: tempGeneration.Int64,
+		StartedAt:        startedAt,
+	}, nil
 }
 
 // GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。
@@ -463,6 +502,15 @@ func (s *Media) ListCutAwaitingReview(ctx context.Context, profiles []string) ([
 		return nil, fmt.Errorf("listing cut profiles awaiting review: %w", err)
 	}
 	return cutAwaitingReviewProfileCounts(rows), nil
+}
+
+// ListAwaitingReviewRecordingIDs は確認待ちの録画 ID を重複なしで返す。
+func (s *Media) ListAwaitingReviewRecordingIDs(ctx context.Context, cutProfiles []string) ([]int64, error) {
+	rows, err := sqlcgen.New(s.pool).ListAwaitingReviewRecordingIDs(ctx, nonNilStrings(cutProfiles))
+	if err != nil {
+		return nil, fmt.Errorf("listing recordings awaiting chapter review: %w", err)
+	}
+	return rows, nil
 }
 
 func unsatisfiableEncodeProfileCounts(rows []sqlcgen.ListUnsatisfiableEncodeProfilesRow) []store.EncodeProfileCount {
@@ -798,27 +846,26 @@ func (s *Media) ListActiveMediaAssets(ctx context.Context) ([]store.ActiveMediaA
 	}
 	out := make([]store.ActiveMediaAsset, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, store.ActiveMediaAsset{ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath, Kind: row.Kind})
+		out = append(out, store.ActiveMediaAsset{
+			ID: row.CopyID, MediaAssetID: row.MediaAssetID, RecordingID: row.RecordingID,
+			RelPath: row.RelPath, Kind: row.Kind,
+		})
 	}
 	return out, nil
 }
 
 // UpsertMissingMediaAsset は実体無し候補を記録し、既存候補の first_seen を保持する。
-func (s *Media) UpsertMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	if err := sqlcgen.New(s.pool).UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{
-		MediaAssetID: mediaAssetID, Store: s.storeName,
-	}); err != nil {
-		return fmt.Errorf("recording missing media asset %d: %w", mediaAssetID, err)
+func (s *Media) UpsertMissingMediaAsset(ctx context.Context, copyID int64) error {
+	if err := sqlcgen.New(s.pool).UpsertMissingMediaAsset(ctx, copyID); err != nil {
+		return fmt.Errorf("recording missing media asset copy %d: %w", copyID, err)
 	}
 	return nil
 }
 
 // DeleteMissingMediaAsset は実体が再び観測された候補を消す。
-func (s *Media) DeleteMissingMediaAsset(ctx context.Context, mediaAssetID int64) error {
-	if err := sqlcgen.New(s.pool).DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{
-		MediaAssetID: mediaAssetID, Store: s.storeName,
-	}); err != nil {
-		return fmt.Errorf("deleting missing media asset %d: %w", mediaAssetID, err)
+func (s *Media) DeleteMissingMediaAsset(ctx context.Context, copyID int64) error {
+	if err := sqlcgen.New(s.pool).DeleteMissingMediaAsset(ctx, copyID); err != nil {
+		return fmt.Errorf("deleting missing media asset copy %d: %w", copyID, err)
 	}
 	return nil
 }
@@ -843,11 +890,12 @@ func (s *Media) ListAgedMissingMediaAssets(ctx context.Context, age time.Duratio
 	out := make([]store.AgedMissingMediaAsset, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, store.AgedMissingMediaAsset{
-			ID:          row.ID,
-			RecordingID: row.RecordingID,
-			RelPath:     row.RelPath,
-			Kind:        row.Kind,
-			FirstSeen:   row.FirstSeen,
+			ID:           row.CopyID,
+			MediaAssetID: row.MediaAssetID,
+			RecordingID:  row.RecordingID,
+			RelPath:      row.RelPath,
+			Kind:         row.Kind,
+			FirstSeen:    row.FirstSeen,
 		})
 	}
 	return out, nil

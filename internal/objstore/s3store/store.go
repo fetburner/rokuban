@@ -60,15 +60,15 @@ type presigner interface {
 
 // Store implements objstore.Store using S3 API operations.
 type Store struct {
-	client            api
-	presigner         presigner
-	bucket            string
-	conditionalWrites bool
-	readOnly          bool
+	client    api
+	presigner presigner
+	bucket    string
+	readOnly  bool
 }
 
-// New loads credentials from the AWS default provider chain, probes write capabilities,
-// and connects to one bucket.
+// New builds a store for one bucket from the AWS default provider chain without contacting S3.
+// Credentials are resolved on the first request, so a process starts even when S3 is unreachable
+// or its credentials have expired; only the jobs that use the store fail.
 // Credentials are supplied by the process environment, workload identity, or the standard
 // AWS shared credential providers; they are not stored in config files.
 func New(ctx context.Context, cfg Config) (*Store, error) {
@@ -76,11 +76,10 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newWithClient(ctx, client, signer, cfg.Bucket)
+	return newWithClient(client, signer, cfg.Bucket)
 }
 
-// NewReader loads credentials from the AWS default provider chain and connects to one bucket
-// without probing write capabilities. Its returned store rejects Put and Delete calls.
+// NewReader builds a store like New whose returned store rejects Put and Delete calls.
 // It is intended for streamer processes that only need to inspect objects and create signed URLs.
 func NewReader(ctx context.Context, cfg Config) (*Store, error) {
 	client, signer, err := newClient(ctx, cfg)
@@ -110,18 +109,14 @@ func newClient(ctx context.Context, cfg Config) (api, presigner, error) {
 	return client, s3.NewPresignClient(client), nil
 }
 
-func newWithClient(ctx context.Context, client api, signer presigner, bucket string) (*Store, error) {
+func newWithClient(client api, signer presigner, bucket string) (*Store, error) {
 	if client == nil || signer == nil {
 		return nil, errors.New("S3 client and presigner are required")
 	}
 	if strings.TrimSpace(bucket) == "" {
 		return nil, errors.New("S3 bucket is empty")
 	}
-	conditional, err := probeConditionalWrites(ctx, client, bucket)
-	if err != nil {
-		return nil, fmt.Errorf("checking S3 conditional-write support: %w", err)
-	}
-	return &Store{client: client, presigner: signer, bucket: bucket, conditionalWrites: conditional}, nil
+	return &Store{client: client, presigner: signer, bucket: bucket}, nil
 }
 
 func newReaderWithClient(client api, signer presigner, bucket string) (*Store, error) {
@@ -159,21 +154,29 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if emptySHA != wantSHA {
 			return objstore.ErrChecksumMismatch
 		}
-		input := &s3.PutObjectInput{
-			Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(nil), ContentLength: aws.Int64(0),
-			ContentType: aws.String(contentType), Metadata: map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])},
+		newInput := func(conditional bool) *s3.PutObjectInput {
+			input := &s3.PutObjectInput{
+				Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(nil), ContentLength: aws.Int64(0),
+				ContentType: aws.String(contentType), Metadata: map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])},
+			}
+			if conditional {
+				input.IfNoneMatch = aws.String("*")
+			}
+			return input
 		}
-		if s.conditionalWrites {
-			input.IfNoneMatch = aws.String("*")
+		_, err := s.client.PutObject(ctx, newInput(true))
+		if err != nil && isConditionalUnsupported(err) {
+			// key は一意なので、条件なしで書き直しても既存の object を上書きしない。
+			_, err = s.client.PutObject(ctx, newInput(false))
 		}
-		if _, err := s.client.PutObject(ctx, input); err != nil {
+		if err != nil {
 			if isPreconditionFailed(err) {
 				return s.recoverExisting(ctx, key, size, wantSHA)
 			}
 			if recoverErr := s.recoverExisting(ctx, key, size, wantSHA); recoverErr == nil {
 				return nil
 			}
-			return fmt.Errorf("putting empty S3 object %q: %w", key, err)
+			return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", key, err))
 		}
 		return nil
 	}
@@ -186,7 +189,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		Metadata:    map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])},
 	})
 	if err != nil {
-		return fmt.Errorf("starting S3 multipart upload for %q: %w", key, err)
+		return withCredentialClass(fmt.Errorf("starting S3 multipart upload for %q: %w", key, err))
 	}
 	if created.UploadId == nil || *created.UploadId == "" {
 		return fmt.Errorf("starting S3 multipart upload for %q: server returned an empty upload ID", key)
@@ -224,7 +227,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 			PartNumber: aws.Int32(partNumber), Body: bytes.NewReader(body), ContentLength: aws.Int64(length),
 		})
 		if err != nil {
-			return abort(fmt.Errorf("uploading S3 multipart part %d for %q: %w", partNumber, key, err))
+			return abort(withCredentialClass(fmt.Errorf("uploading S3 multipart part %d for %q: %w", partNumber, key, err)))
 		}
 		parts = append(parts, types.CompletedPart{ETag: out.ETag, PartNumber: aws.Int32(partNumber)})
 		remaining -= length
@@ -243,10 +246,14 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
 		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
 	}
-	if s.conditionalWrites {
-		completeInput.IfNoneMatch = aws.String("*")
-	}
+	completeInput.IfNoneMatch = aws.String("*")
 	_, err = s.client.CompleteMultipartUpload(ctx, completeInput)
+	if err != nil && isConditionalUnsupported(err) {
+		// key は一意なので、条件なしで完了し直しても既存の object を上書きしない。
+		unconditional := *completeInput
+		unconditional.IfNoneMatch = nil
+		_, err = s.client.CompleteMultipartUpload(ctx, &unconditional)
+	}
 	if err == nil {
 		return nil
 	}
@@ -262,7 +269,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 	if recoveryErr := s.recoverExisting(ctx, key, size, wantSHA); recoveryErr == nil {
 		return nil
 	}
-	return abort(fmt.Errorf("completing S3 multipart upload for %q: %w", key, err))
+	return abort(withCredentialClass(fmt.Errorf("completing S3 multipart upload for %q: %w", key, err)))
 }
 
 // Head returns metadata for a completed key. An absent object differs from a service error.
@@ -275,7 +282,7 @@ func (s *Store) Head(ctx context.Context, key string) (objstore.Object, error) {
 		if isMissingObject(err) {
 			return objstore.Object{}, objstore.ErrNotFound
 		}
-		return objstore.Object{}, fmt.Errorf("heading S3 object %q: %w", key, err)
+		return objstore.Object{}, withCredentialClass(fmt.Errorf("heading S3 object %q: %w", key, err))
 	}
 	object := objstore.Object{Key: key}
 	if output.ContentLength != nil {
@@ -303,7 +310,7 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 		if isMissingObject(err) {
 			return nil, objstore.ErrNotFound
 		}
-		return nil, fmt.Errorf("getting S3 object %q: %w", key, err)
+		return nil, withCredentialClass(fmt.Errorf("getting S3 object %q: %w", key, err))
 	}
 	if output.Body == nil {
 		return nil, fmt.Errorf("getting S3 object %q: server returned an empty body", key)
@@ -320,7 +327,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("invalid S3 object key %q: %w", key, err)
 	}
 	if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}); err != nil {
-		return fmt.Errorf("deleting S3 object %q: %w", key, err)
+		return withCredentialClass(fmt.Errorf("deleting S3 object %q: %w", key, err))
 	}
 	return nil
 }
@@ -334,7 +341,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]objstore.Object, err
 			Bucket: aws.String(s.bucket), Prefix: aws.String(prefix), ContinuationToken: token,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("listing S3 objects with prefix %q: %w", prefix, err)
+			return nil, withCredentialClass(fmt.Errorf("listing S3 objects with prefix %q: %w", prefix, err))
 		}
 		for _, item := range page.Contents {
 			if item.Key == nil {
@@ -405,99 +412,6 @@ func (s *Store) recoverExisting(ctx context.Context, key string, size int64, wan
 	return nil
 }
 
-func probeConditionalWrites(ctx context.Context, client api, bucket string) (supported bool, err error) {
-	key := "thumbnails/.rokuban-probe-conditional-" + fmt.Sprintf("%x", time.Now().UnixNano())
-	mpuKey := key + "-multipart"
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	defer func() {
-		for _, staleKey := range []string{key, mpuKey} {
-			if _, cleanupErr := client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(staleKey)}); cleanupErr != nil {
-				err = errors.Join(err, fmt.Errorf("cleaning conditional-write probe object %q: %w", staleKey, cleanupErr))
-			}
-		}
-	}()
-	body := []byte("probe")
-	hash := sha256.Sum256(body)
-	input := func() *s3.PutObjectInput {
-		return &s3.PutObjectInput{
-			Bucket: aws.String(bucket), Key: aws.String(key), Body: bytes.NewReader(body),
-			ContentLength: aws.Int64(int64(len(body))), IfNoneMatch: aws.String("*"),
-			Metadata: map[string]string{checksumMetadata: hex.EncodeToString(hash[:])},
-		}
-	}
-	_, firstErr := client.PutObject(ctx, input())
-	if firstErr != nil {
-		if isConditionalUnsupported(firstErr) {
-			return false, nil
-		}
-		return false, firstErr
-	}
-	secondErr := func() error { _, err := client.PutObject(ctx, input()); return err }()
-	if !isPreconditionFailed(secondErr) {
-		if secondErr == nil || isConditionalUnsupported(secondErr) {
-			return false, nil
-		}
-		return false, secondErr
-	}
-
-	// Multipart completion has its own conditional-write support. Use the flag only
-	// when both PutObject and CompleteMultipartUpload enforce the condition.
-	mpuBody := bytes.Repeat([]byte{'x'}, int(minPartSize))
-	firstCompleteErr := completeConditionalMultipart(ctx, client, bucket, mpuKey, mpuBody)
-	if firstCompleteErr != nil {
-		if isConditionalUnsupported(firstCompleteErr) {
-			return false, nil
-		}
-		return false, firstCompleteErr
-	}
-	secondCompleteErr := completeConditionalMultipart(ctx, client, bucket, mpuKey, mpuBody)
-	if isPreconditionFailed(secondCompleteErr) {
-		return true, nil
-	}
-	if secondCompleteErr == nil || isConditionalUnsupported(secondCompleteErr) {
-		return false, nil
-	}
-	return false, secondCompleteErr
-}
-
-func completeConditionalMultipart(ctx context.Context, client api, bucket, key string, body []byte) error {
-	created, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
-		Bucket: aws.String(bucket), Key: aws.String(key),
-	})
-	if err != nil {
-		return err
-	}
-	if created.UploadId == nil || *created.UploadId == "" {
-		return errors.New("conditional-write probe returned an empty multipart upload ID")
-	}
-	uploadID := *created.UploadId
-	completed := false
-	defer func() {
-		if !completed {
-			_, _ = client.AbortMultipartUpload(context.WithoutCancel(ctx), &s3.AbortMultipartUploadInput{
-				Bucket: aws.String(bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
-			})
-		}
-	}()
-	part, err := client.UploadPart(ctx, &s3.UploadPartInput{
-		Bucket: aws.String(bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
-		PartNumber: aws.Int32(1), Body: bytes.NewReader(body), ContentLength: aws.Int64(int64(len(body))),
-	})
-	if err != nil {
-		return err
-	}
-	_, err = client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
-		Bucket: aws.String(bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
-		MultipartUpload: &types.CompletedMultipartUpload{Parts: []types.CompletedPart{{ETag: part.ETag, PartNumber: aws.Int32(1)}}},
-		IfNoneMatch:     aws.String("*"),
-	})
-	if err == nil {
-		completed = true
-	}
-	return err
-}
-
 func multipartPartSize(size int64) int64 {
 	minimumForCount := size / maxPartCount
 	if size%maxPartCount != 0 {
@@ -523,6 +437,29 @@ func isNoSuchUpload(err error) bool { return apiErrorCode(err) == "NoSuchUpload"
 
 func isPreconditionFailed(err error) bool {
 	return apiErrorCode(err) == "PreconditionFailed" || httpStatusCode(err) == http.StatusPreconditionFailed
+}
+
+// withCredentialClass は、資格情報が取れない・失効している・拒否された失敗に objstore.ErrCredentials を足す。
+// 呼び出し側は errors.Is で、権限や接続の失敗と区別して数える。
+func withCredentialClass(err error) error {
+	if isCredentialFailure(err) {
+		return errors.Join(objstore.ErrCredentials, err)
+	}
+	return err
+}
+
+func isCredentialFailure(err error) bool {
+	var signing *v4.SigningError
+	if errors.As(err, &signing) {
+		return true
+	}
+	switch apiErrorCode(err) {
+	case "ExpiredToken", "ExpiredTokenException", "InvalidToken", "InvalidAccessKeyId", "InvalidClientTokenId",
+		"UnrecognizedClientException", "RequestExpired", "TokenRefreshRequired":
+		return true
+	default:
+		return false
+	}
 }
 
 func isConditionalUnsupported(err error) bool {

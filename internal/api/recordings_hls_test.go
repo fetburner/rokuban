@@ -62,11 +62,6 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 						if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET ingest_generation=$2 WHERE id=$1`, asset, tc.generation); err != nil {
 							t.Fatal(err)
 						}
-						if tc.generation != nil {
-							if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET generation=$2 WHERE media_asset_id=$1`, asset, *tc.generation); err != nil {
-								t.Fatal(err)
-							}
-						}
 					}
 					if tc.progress {
 						seedIngestProgress(t, pool, id, 123, nil, time.Now())

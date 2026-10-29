@@ -38,9 +38,11 @@ var statRescueCandidate = os.Lstat
 // 1 回出す。レジストリに無い site を持つ前置は復元を続け、site ごとに 1 回だけ
 // Warn する。
 //
+// storeName は走査対象 root の置き場名であり、登録直前にも root の目印と照合する。
+//
 // 相対パスのロックは inplace.Register が取り、ファイルの再確認から
 // RegisterInPlace の commit まで保持する。
-func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDir string, registrySites []string) (*RescueResult, error) {
+func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDir, storeName string, registrySites []string) (*RescueResult, error) {
 	realMediaDir, err := filepath.EvalSymlinks(mediaDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving media_dir symlinks for rescue: %w", err)
@@ -107,6 +109,9 @@ func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDi
 			result.SkippedFilesWithoutSitePrefix++
 			return nil
 		}
+		if err := mediapath.RequireStoreMarker(realMediaDir, storeName); err != nil {
+			return fmt.Errorf("checking media store marker before registering rescue candidate %q: %w", relPath, err)
+		}
 
 		networkID, serviceID, eventID := syntheticBroadcastIdentity(relPath)
 		at := info.ModTime().UTC()
@@ -139,6 +144,14 @@ func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDi
 		if errors.Is(err, os.ErrNotExist) {
 			// The walk observation is a hint; Register checks again under the path lock.
 			result.MissingMediaFiles++
+			return nil
+		}
+		if errors.Is(err, store.ErrConflict) {
+			// 既に台帳にある資産と両立しない（生きたコピーがある・世代が違う・ごみ箱の録画）。
+			// このファイルだけを飛ばし、残りの走査を続ける。
+			slog.Warn("rescue: skipping file that conflicts with an existing media asset",
+				"rel_path", relPath, "err", err)
+			result.SkippedConflictingFiles++
 			return nil
 		}
 		if err != nil {

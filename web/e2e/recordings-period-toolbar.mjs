@@ -43,7 +43,7 @@ const recording = {
 async function apiHandler({ path, json, route }) {
   if (path === '/api/sites') return json(['default'])
   if (path === '/api/capabilities') return json({ live: true })
-  if (path === '/api/encode-queue') return json({ queued: 0, running: 0 })
+  if (path === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (path === '/api/events') return sseKeepAlive(route)
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(path)) return route.fulfill({ status: 404 })
   if (path === '/api/recordings') return json([recording])

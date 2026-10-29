@@ -12,9 +12,8 @@
 -- name: ListEncodedMeaningEvidence :many
 SELECT DISTINCT a.profile::text AS profile, c.rel_path::text AS rel_path
 FROM media_assets a
-JOIN active_media_asset_copies(a.id, sqlc.narg('store_name')::text) c ON true
+JOIN LATERAL active_media_asset_copies(a.id, sqlc.narg('store_name')::text) c ON true
 WHERE a.kind = 'encoded'
-  AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
 UNION ALL
 SELECT q.profile::text, ''::text
 FROM encoded_asset_rebuild_requests q;

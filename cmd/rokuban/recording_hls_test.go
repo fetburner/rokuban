@@ -35,7 +35,7 @@ live:
 `, enabled))
 			id := dbtest.Recording(t, pool)
 			assetID := dbtest.MediaAsset(t, pool, id)
-			if err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
+			if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
 				MediaAssetID: assetID,
 				Store:        "main-2",
 				RelPath:      fmt.Sprintf("test-original/%d.ts", assetID),
@@ -135,7 +135,7 @@ live:
 `, tc.enabled, t.TempDir(), writeFakeFFTools(t)), tc.args...)
 			id := dbtest.Recording(t, pool)
 			assetID := dbtest.MediaAsset(t, pool, id)
-			if err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
+			if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
 				MediaAssetID: assetID,
 				Store:        "main",
 				RelPath:      "sites/default/server-recording-hls-test.m2ts",

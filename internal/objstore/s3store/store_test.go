@@ -19,23 +19,37 @@ import (
 )
 
 type fakeAPI struct {
-	headFn        func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
-	getFn         func(context.Context, *s3.GetObjectInput) (*s3.GetObjectOutput, error)
-	completeErr   error
-	completeCalls int
-	abortCalls    int
-	putPartCalls  int
-	putCalls      int
-	mutationCalls int
+	headFn      func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
+	getFn       func(context.Context, *s3.GetObjectInput) (*s3.GetObjectOutput, error)
+	completeErr error
+	// completeErrs は CompleteMultipartUpload の応答を呼び出し順に返す。空なら completeErr を返す。
+	completeErrs []error
+	// putErrs は PutObject の応答を呼び出し順に返す。空なら成功する。
+	putErrs        []error
+	putInputs      []*s3.PutObjectInput
+	completeInputs []*s3.CompleteMultipartUploadInput
+	headCalls      int
+	completeCalls  int
+	abortCalls     int
+	putPartCalls   int
+	putCalls       int
+	mutationCalls  int
 }
 
-func (f *fakeAPI) PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+func (f *fakeAPI) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	f.putCalls++
 	f.mutationCalls++
+	f.putInputs = append(f.putInputs, in)
+	if len(f.putErrs) > 0 {
+		err := f.putErrs[0]
+		f.putErrs = f.putErrs[1:]
+		return &s3.PutObjectOutput{}, err
+	}
 	return &s3.PutObjectOutput{}, nil
 }
 
 func (f *fakeAPI) HeadObject(ctx context.Context, in *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	f.headCalls++
 	if f.headFn != nil {
 		return f.headFn(ctx, in)
 	}
@@ -72,9 +86,15 @@ func (f *fakeAPI) UploadPart(_ context.Context, in *s3.UploadPartInput, _ ...fun
 	return &s3.UploadPartOutput{ETag: aws.String("part-etag")}, nil
 }
 
-func (f *fakeAPI) CompleteMultipartUpload(context.Context, *s3.CompleteMultipartUploadInput, ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error) {
+func (f *fakeAPI) CompleteMultipartUpload(_ context.Context, in *s3.CompleteMultipartUploadInput, _ ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error) {
 	f.completeCalls++
 	f.mutationCalls++
+	f.completeInputs = append(f.completeInputs, in)
+	if len(f.completeErrs) > 0 {
+		err := f.completeErrs[0]
+		f.completeErrs = f.completeErrs[1:]
+		return &s3.CompleteMultipartUploadOutput{}, err
+	}
 	return &s3.CompleteMultipartUploadOutput{}, f.completeErr
 }
 
@@ -202,7 +222,7 @@ func TestPutRecoversPreconditionFailedOnlyAfterHeadChecksumMatch(t *testing.T) {
 			checksumMetadata: hex.EncodeToString(digest[:]),
 		}}, nil
 	}
-	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived", conditionalWrites: true}
+	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
 	if err := store.Put(context.Background(), "encoded/2.mp4", bytes.NewReader(data), int64(len(data)), digest, "video/mp4"); err != nil {
 		t.Fatalf("Put after matching 412 recovery: %v", err)
 	}
@@ -224,7 +244,7 @@ func TestPutDoesNotAccept412WhenHeadChecksumDiffers(t *testing.T) {
 			checksumMetadata: hex.EncodeToString(other[:]),
 		}}, nil
 	}
-	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived", conditionalWrites: true}
+	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
 	err := store.Put(context.Background(), "encoded/3.mp4", bytes.NewReader(data), int64(len(data)), want, "video/mp4")
 	if !errors.Is(err, objstore.ErrChecksumMismatch) {
 		t.Fatalf("Put error = %v, want ErrChecksumMismatch", err)
@@ -278,5 +298,104 @@ func TestPresignGetUsesBoundedURLLifetime(t *testing.T) {
 	}
 	if _, err := store.Presign(context.Background(), "encoded/file.mp4", "GET", maxURLExpiry+time.Second, "video/mp4", "file.mp4"); err == nil {
 		t.Fatal("Presign accepted a URL lifetime longer than SigV4's maximum")
+	}
+}
+
+func TestNewMakesNoRequestsAndSucceedsWithoutReachableS3(t *testing.T) {
+	client := &fakeAPI{}
+	if _, err := newWithClient(client, fakePresigner{}, "derived"); err != nil {
+		t.Fatalf("newWithClient: %v", err)
+	}
+	if client.headCalls != 0 || client.mutationCalls != 0 {
+		t.Fatalf("constructor made %d HEAD and %d mutation calls, want none", client.headCalls, client.mutationCalls)
+	}
+
+	// 実際の SDK のクライアントでも、到達できない endpoint と資格情報なしで接続しない。
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	started := time.Now()
+	if _, err := New(context.Background(), Config{Endpoint: "http://127.0.0.1:1", Region: "us-east-1", Bucket: "derived"}); err != nil {
+		t.Fatalf("New with an unreachable endpoint and no credentials: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("New took %s, want no network wait", elapsed)
+	}
+}
+
+func TestPutAlwaysSendsIfNoneMatchOnEmptyAndMultipartObjects(t *testing.T) {
+	client := &fakeAPI{}
+	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+	empty := sha256.Sum256(nil)
+	if err := store.Put(context.Background(), "thumbnails/empty.jpg", bytes.NewReader(nil), 0, empty, "image/jpeg"); err != nil {
+		t.Fatalf("Put empty object: %v", err)
+	}
+	data := []byte("multipart source")
+	if err := store.Put(context.Background(), "encoded/cond.mp4", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data), "video/mp4"); err != nil {
+		t.Fatalf("Put multipart object: %v", err)
+	}
+	if len(client.putInputs) != 1 || aws.ToString(client.putInputs[0].IfNoneMatch) != "*" {
+		t.Fatalf("PutObject inputs = %+v, want one call with If-None-Match: *", client.putInputs)
+	}
+	if len(client.completeInputs) != 1 || aws.ToString(client.completeInputs[0].IfNoneMatch) != "*" {
+		t.Fatalf("CompleteMultipartUpload inputs = %+v, want one call with If-None-Match: *", client.completeInputs)
+	}
+}
+
+func TestPutRetriesWithoutConditionOnlyWhenServerDoesNotSupportIt(t *testing.T) {
+	notImplemented := &smithy.GenericAPIError{Code: "NotImplemented", Message: "501", Fault: smithy.FaultServer}
+	client := &fakeAPI{putErrs: []error{notImplemented}, completeErrs: []error{notImplemented}}
+	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+	empty := sha256.Sum256(nil)
+	if err := store.Put(context.Background(), "thumbnails/empty2.jpg", bytes.NewReader(nil), 0, empty, "image/jpeg"); err != nil {
+		t.Fatalf("Put empty object against a server without conditional writes: %v", err)
+	}
+	if len(client.putInputs) != 2 || client.putInputs[0].IfNoneMatch == nil || client.putInputs[1].IfNoneMatch != nil {
+		t.Fatalf("PutObject inputs = %+v, want a conditional call then one without the condition", client.putInputs)
+	}
+	data := []byte("multipart source")
+	if err := store.Put(context.Background(), "encoded/nocond.mp4", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data), "video/mp4"); err != nil {
+		t.Fatalf("Put multipart object against a server without conditional writes: %v", err)
+	}
+	if len(client.completeInputs) != 2 || client.completeInputs[0].IfNoneMatch == nil || client.completeInputs[1].IfNoneMatch != nil {
+		t.Fatalf("CompleteMultipartUpload inputs = %+v, want a conditional call then one without the condition", client.completeInputs)
+	}
+	if client.abortCalls != 0 {
+		t.Fatalf("AbortMultipartUpload calls = %d, want 0 after the unconditional retry succeeded", client.abortCalls)
+	}
+
+	// 412 は非対応ではない。条件なしでやり直さず、HEAD の照合へ進む。
+	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
+	client = &fakeAPI{completeErrs: []error{precondition}}
+	store = &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+	other := sha256.Sum256([]byte("other"))
+	client.headFn = func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+		if client.completeCalls == 0 {
+			return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
+		}
+		return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), Metadata: map[string]string{
+			checksumMetadata: hex.EncodeToString(other[:]),
+		}}, nil
+	}
+	err := store.Put(context.Background(), "encoded/412.mp4", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data), "video/mp4")
+	if !errors.Is(err, objstore.ErrChecksumMismatch) || client.completeCalls != 1 {
+		t.Fatalf("Put after 412 = %v with %d Complete calls, want ErrChecksumMismatch after exactly one", err, client.completeCalls)
+	}
+}
+
+func TestExpiredCredentialsAreClassifiedAndPermissionErrorsAreNot(t *testing.T) {
+	expired := &smithy.GenericAPIError{Code: "ExpiredToken", Message: "expired", Fault: smithy.FaultClient}
+	store := &Store{client: &fakeAPI{headFn: func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+		return nil, expired
+	}}, presigner: fakePresigner{}, bucket: "derived"}
+	if _, err := store.Head(context.Background(), "encoded/1.mp4"); !errors.Is(err, objstore.ErrCredentials) {
+		t.Fatalf("Head with expired credentials = %v, want ErrCredentials", err)
+	}
+	denied := &smithy.GenericAPIError{Code: "AccessDenied", Message: "denied", Fault: smithy.FaultClient}
+	store = &Store{client: &fakeAPI{headFn: func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+		return nil, denied
+	}}, presigner: fakePresigner{}, bucket: "derived"}
+	if _, err := store.Head(context.Background(), "encoded/1.mp4"); err == nil || errors.Is(err, objstore.ErrCredentials) {
+		t.Fatalf("Head with a permission error = %v, want a non-credential error", err)
 	}
 }

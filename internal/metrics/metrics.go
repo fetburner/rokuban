@@ -15,8 +15,12 @@
 package metrics
 
 import (
+	"errors"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+
+	"github.com/fetburner/rokuban/internal/objstore"
 )
 
 // ingest（M1-5-2）のメトリクス。
@@ -476,6 +480,10 @@ var (
 		Name: "rokuban_object_store_errors_total",
 		Help: "Object store operation failures by operation.",
 	}, []string{"operation"})
+	ObjectStoreCredentialErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_object_store_credential_errors_total",
+		Help: "Object store operation failures caused by credentials that could not be retrieved, have expired, or were not recognized. These failures are also counted in rokuban_object_store_errors_total.",
+	})
 	ObjectStoreOrphansUnresolved = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_object_store_orphans_unresolved",
 		Help: "Aged object store keys without a media asset copy row; these keys are reported and retained.",
@@ -829,6 +837,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		MediaAssetsMissing,
 		OrphanFilesUnresolved,
 		ObjectStoreErrors,
+		ObjectStoreCredentialErrors,
 		ObjectStoreOrphansUnresolved,
 		MissingAssetScanSuspectedStorageFailure,
 
@@ -866,4 +875,13 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		reg.MustRegister(collector)
 	}
 	return reg
+}
+
+// RecordObjectStoreError は object store の操作の失敗を数える。
+// 資格情報の失効・取得失敗は rokuban_object_store_credential_errors_total にも数え、権限や接続の失敗と区別する。
+func RecordObjectStoreError(operation string, err error) {
+	ObjectStoreErrors.WithLabelValues(operation).Inc()
+	if errors.Is(err, objstore.ErrCredentials) {
+		ObjectStoreCredentialErrors.Inc()
+	}
 }
