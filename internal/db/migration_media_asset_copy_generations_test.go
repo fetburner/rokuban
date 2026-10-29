@@ -25,7 +25,7 @@ func TestMediaAssetCopyGenerationMigrationBackfillsAndAllowsOverlap(t *testing.T
 		t.Fatalf("clearing prior fixtures: %v", err)
 	}
 	pool.Close()
-	migrateDownTo(t, dbURL, 40)
+	migrateDownTo(t, dbURL, 41)
 	t.Cleanup(func() {
 		if err := MigrateUp(context.Background(), dbURL); err != nil {
 			t.Errorf("restoring latest schema: %v", err)
