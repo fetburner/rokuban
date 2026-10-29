@@ -412,7 +412,7 @@ try {
   await verifyBundleMatchesOrExit(URL_BASE, ng)
   safari = await createSafariAdapter()
   log(`\n=== ${safari.version}: 世代付き録画 HLS の遠距離シーク (${REPEAT_COUNT} 回 + 一時停止 2 回) ===`)
-  const modes = [...Array(REPEAT_COUNT).fill('seek'), 'user-pause', 'media-session-pause']
+  const modes = [...Array(REPEAT_COUNT).fill('seek'), 'user-pause', 'media-session-pause', 'native-pause']
   for (const [index, mode] of modes.entries()) {
     const caseNumber = index + 1
     const label = `回 ${caseNumber} (${mode})`
@@ -420,6 +420,35 @@ try {
     const started = await startCase(safari, caseNumber)
     if (started.error) {
       ng.push(`${label}: ${started.error}`)
+      continue
+    }
+    if (mode === 'native-pause') {
+      // 製品を通らない一時停止（PiP・ネイティブの操作・OS の中断）を、ページから要素の pause() で起こす。
+      // WebKit はこの後も stalled を出すので、そこから 5 秒で読み直して再生を始めないことを見る。
+      await safari.evaluate(() => {
+        const state = window.__e2e
+        state.seekAt = performance.now()
+        state.calls = { play: 0, pause: 0, load: 0 }
+        HTMLMediaElement.prototype.pause.call(window.__e2eVideo)
+      })
+      await delay(PAUSE_WAIT_MS)
+      const result = await safari.evaluate(() => {
+        const state = window.__e2e
+        const video = window.__e2eVideo
+        const since = state.events.filter((event) => event[0] >= state.seekAt - state.origin)
+        return {
+          sameVideo: document.querySelector('video') === video,
+          paused: video.paused,
+          stalled: since.some((event) => event[1] === 'stalled'),
+          reloaded: since.some((event) => event[1] === 'loadstart'),
+          calls: state.calls,
+          events: since.map((event) => [event[0] - Math.round(state.seekAt - state.origin), ...event.slice(1)]),
+        }
+      })
+      // stalled が出なかった回は、この判定が何も試していないので NG にする。
+      const casePassed = result.sameVideo && result.paused && result.stalled && !result.reloaded && result.calls.play === 0
+      log(`${label}: ${casePassed ? 'OK' : 'NG'} [製品を通らない一時停止] ${JSON.stringify({ result })}`)
+      if (!casePassed) ng.push(`${label}: 判定を満たさない`)
       continue
     }
     const seekRect = await seekByPointer(safari)

@@ -819,8 +819,8 @@ export function LivePlayer(props: LivePlayerProps) {
 
   // 利用者が操作で一時停止したか。**`media.paused` の代わりに、世代付き録画 HLS の 5 秒の
   // 読み直しだけが読む。** 実 Safari は止まっている最中に自分で `pause` を出した
-  // （`currentTime` を直接代入したシークで 3 回中 3 回、Safari 27.0.1。実ポインタのシークの
-  // `recording-hls-stall-recovery.mjs` では未観測）ので、`paused` は利用者の意図を表さない。
+  // （Safari 27.0.1。`currentTime` を直接代入したシークで 3 回中 3 回、実ポインタでシークする
+  // `recording-hls-stall-recovery.mjs` でも観測）ので、`paused` は利用者の意図を表さない。
   // 操作バー・キー・映像のクリック・mediaSession の pause が立て、再生操作が消す。
   const userPausedRef = useRef(false)
   const markUserPause = useCallback(() => {
@@ -1182,6 +1182,7 @@ export function LivePlayer(props: LivePlayerProps) {
     ) {
       let stallTimer: ReturnType<typeof setTimeout> | null = null
       let recoveryTimer: ReturnType<typeof setTimeout> | null = null
+      let recoveryFrom = 0
       let lastProgressTime = media.currentTime
       const clearRecoveryTimer = () => {
         if (recoveryTimer !== null) {
@@ -1190,11 +1191,23 @@ export function LivePlayer(props: LivePlayerProps) {
         }
       }
       const startRecoveryTimer = () => {
-        if (!isRecordingHLS || recoveryTimer !== null) return
-        const startedAt = Date.now()
+        if (!isRecordingHLS) return
         // 張り直しの間は `load()` で 0 になった `currentTime` ではなく、戻そうとしている位置で見る。
         const position = () => chaseResumePending.current ?? media.currentTime
+        if (recoveryTimer !== null) {
+          // 止まっている間に別の位置へシークしたら、新しい位置で数え直す。
+          if (Math.abs(position() - recoveryFrom) < 0.05) return
+          clearRecoveryTimer()
+        } else if (media.paused && !isResumePending()) {
+          // 再生中か再開待ちで止まったときだけ数える。製品を通らない一時停止（PiP・ネイティブの
+          // 操作・OS の中断）の後も WebKit は `stalled` を出すので、ここで数えると勝手に再生を
+          // 始める。Safari 自身の `pause` は `waiting` の後に来る（`recording-hls-stall-recovery.mjs`
+          // の「製品を通らない一時停止」と、`currentTime` を直接代入したシークの測定）。
+          return
+        }
+        const startedAt = Date.now()
         const startedPosition = position()
+        recoveryFrom = startedPosition
         recoveryTimer = setTimeout(() => {
           recoveryTimer = null
           if (cancelled || Math.abs(position() - startedPosition) >= 0.05) return
@@ -1296,7 +1309,8 @@ export function LivePlayer(props: LivePlayerProps) {
         if (!progressed) return
         lastProgressTime = currentTime
         clearStallTimer()
-        clearRecoveryTimer()
+        // シークの開始でも位置は動くが、止まりは解けていない。新しい位置の `waiting` で数え直す。
+        if (!media.seeking) clearRecoveryTimer()
       }
       let playedHere = false
       const onPlaying = () => {
@@ -1306,7 +1320,14 @@ export function LivePlayer(props: LivePlayerProps) {
         clearStallTimer()
       }
 
+      // 張り直しの後に元の位置へ戻すシークも、遠くへのシークと同じく止まる（実 Safari で 15 回中 1 回、
+      // 再開待ちで paused のまま 15 秒 `seeking` が終わらず、`waiting` / `stalled` も出なかった）。
+      // 再開待ちの間のシークは、終わらなければ同じ 5 秒の読み直しで数える。
+      const onSeeking = () => {
+        if (!cancelled && isResumePending()) startRecoveryTimer()
+      }
       media.addEventListener('error', onError)
+      media.addEventListener('seeking', onSeeking)
       media.addEventListener('stalled', onStall)
       media.addEventListener('waiting', onStall)
       media.addEventListener('playing', onPlaying)
@@ -1317,6 +1338,7 @@ export function LivePlayer(props: LivePlayerProps) {
         clearStallTimer()
         clearRecoveryTimer()
         media.removeEventListener('error', onError)
+        media.removeEventListener('seeking', onSeeking)
         media.removeEventListener('stalled', onStall)
         media.removeEventListener('waiting', onStall)
         media.removeEventListener('playing', onPlaying)

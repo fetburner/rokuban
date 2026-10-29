@@ -887,6 +887,102 @@ describe('LivePlayer の状態遷移', () => {
         expect(probeCount(path)).toBe(1)
       })
 
+      it('張り直しの後に元の位置へ戻すシークが 5 秒終わらなければ、もう一度張り直す', async () => {
+        const path = await renderRecoveryPath()
+        const { video } = path
+        await stallAt52(path)
+        await advance(5000)
+        await waitFor(() => expect(probeCount(path)).toBe(2))
+        await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
+        // 戻すシークが始まったまま終わらない（paused のまま。waiting / stalled は出ない）。
+        await act(async () => {
+          fireEvent.loadedMetadata(video)
+          video.dispatchEvent(new Event('seeking'))
+          fireEvent.canPlay(video)
+        })
+        await advance(4999)
+        expect(probeCount(path)).toBe(2)
+        await advance(1)
+        await waitFor(() => expect(probeCount(path)).toBe(3))
+      })
+
+      it('製品を通らない一時停止（PiP など）の後の stalled では張り直さない', async () => {
+        const path = await renderRecoveryPath()
+        const { video, media } = path
+        await act(async () => {
+          fireEvent.loadedMetadata(video)
+          fireEvent.canPlay(video)
+          media.paused = false
+          fireEvent.play(video)
+          video.dispatchEvent(new Event('playing'))
+          media.currentTime = 30
+          video.dispatchEvent(new Event('timeupdate'))
+        })
+        await act(async () => {
+          media.paused = true
+          video.dispatchEvent(new Event('pause'))
+        })
+        await advance(2000)
+        await act(async () => { video.dispatchEvent(new Event('stalled')) })
+        await advance(6000)
+        expect(probeCount(path)).toBe(1)
+        expect(path.play).not.toHaveBeenCalled()
+      })
+
+      it('再生を始める前の stalled では張り直さない（自動再生しない開き方）', async () => {
+        const path = await renderRecoveryPath()
+        const { video } = path
+        await act(async () => {
+          fireEvent.loadedMetadata(video)
+          video.dispatchEvent(new Event('stalled'))
+        })
+        await advance(6000)
+        expect(probeCount(path)).toBe(1)
+        expect(path.play).not.toHaveBeenCalled()
+      })
+
+      it('止まっている間に別の位置へシークすると、新しい位置で 5 秒数えて張り直す', async () => {
+        const path = await renderRecoveryPath()
+        const { video, media } = path
+        await stallAt52(path)
+        // Safari は止まっている最中に自分で pause を出す（製品の pause() 無し）。
+        await act(async () => {
+          media.paused = true
+          video.dispatchEvent(new Event('pause'))
+        })
+        await advance(2000)
+        await act(async () => {
+          Object.defineProperty(video, 'seeking', { get: () => true, configurable: true })
+          media.currentTime = 300
+          video.dispatchEvent(new Event('seeking'))
+          video.dispatchEvent(new Event('timeupdate'))
+          video.dispatchEvent(new Event('waiting'))
+        })
+        await advance(4999)
+        expect(probeCount(path)).toBe(1)
+        await advance(1)
+        await waitFor(() => expect(probeCount(path)).toBe(2))
+      })
+
+      it('録画を替えると、前の録画での一時停止の意図を持ち越さない', async () => {
+        const path = await renderRecoveryPath()
+        await stallAt52(path)
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一時停止' })) })
+        const url43 = '/api/media/stores/media/recordings/43/hls/v1/hd/master.m3u8'
+        path.rerender(<LivePlayer mode="recording-hls" recordingId={43} recordingHlsUrl={url43} profile="hd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />)
+        await waitFor(() => expect(path.video.getAttribute('src')).toBe(url43))
+        await act(async () => {
+          fireEvent.loadedMetadata(path.video)
+          fireEvent.canPlay(path.video)
+          path.media.paused = false
+          path.video.dispatchEvent(new Event('playing'))
+          path.media.currentTime = 52
+          path.video.dispatchEvent(new Event('waiting'))
+        })
+        await advance(5000)
+        await waitFor(() => expect(path.fetchMock.mock.calls.filter(([url]) => String(url) === url43).length).toBe(2))
+      })
+
       it.each(['live', 'chase'] as const)('%s のネイティブ経路は waiting から 6 秒たっても張り直さない', async (mode) => {
         const path = await renderRecoveryPath(mode)
         await stallAt52(path)

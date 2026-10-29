@@ -152,9 +152,9 @@ export type RecordingHlsRecovery = { count: number; atSeconds: number }
  * 1 から数え直す（読み直しの後に 0 秒から元の位置へ戻すシークを「進んだ」と数えると
  * 立て直しが止まらなくなるため、`timeupdate` で 0 に戻す処理は持たない）。
  * `userPaused` は利用者の操作による一時停止だけを表す。`media.paused` は渡さない
- * （実 Safari は止まっている最中に自分で `pause` を出した。`currentTime` を直接代入した
- * シークで 3 回中 3 回、Safari 27.0.1。実ポインタでシークする
- * `recording-hls-stall-recovery.mjs` では未観測）。
+ * （実 Safari は止まっている最中に自分で `pause` を出した。Safari 27.0.1。`currentTime` を
+ * 直接代入したシークで 3 回中 3 回、実ポインタでシークする `recording-hls-stall-recovery.mjs`
+ * でも観測）。
  */
 export function nextRecordingHlsRecovery(
   prev: RecordingHlsRecovery | null,
