@@ -598,6 +598,137 @@ describe('LivePlayer の状態遷移', () => {
         expect(screen.getByText('録画映像が届いていません（映像データが途絶えました）')).toBeInTheDocument()
       })
 
+      it('5 秒を越えた timeupdate でも復旧回数を消費するだけでなく同じ video を読み直す', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const media = { paused: false, currentTime: 7 }
+        const { video } = await renderNativeRecordingPath('recording-hls', media)
+        const load = vi.spyOn(video, 'load').mockImplementation(() => {})
+
+        await act(async () => {
+          video.dispatchEvent(new Event('playing'))
+          vi.advanceTimersByTime(500)
+          video.dispatchEvent(new Event('waiting'))
+          // 計器の 1 秒 tick との位相をずらし、5 秒の境界を越えたイベント側が
+          // 次の tick より先に復旧判定を行う条件にする。
+          vi.advanceTimersByTime(5000)
+          video.dispatchEvent(new Event('timeupdate'))
+        })
+
+        expect(load).toHaveBeenCalledTimes(1)
+        expect(load.mock.contexts[0]).toBe(video)
+      })
+
+      it('明示シークで復旧待ちを取り消し、旧位置への再シークと自動再生をしない', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const media = { paused: false, currentTime: 0, seeking: false }
+        const { video } = await renderNativeRecordingPath('recording-hls', media)
+        const load = vi.spyOn(video, 'load').mockImplementation(() => {})
+        const play = vi.spyOn(video, 'play').mockResolvedValue()
+        Object.defineProperty(video, 'seekable', {
+          value: { length: 1, start: () => 0, end: () => 60 },
+          configurable: true,
+        })
+
+        await act(async () => {
+          video.dispatchEvent(new Event('loadedmetadata'))
+          video.dispatchEvent(new Event('canplay'))
+          video.dispatchEvent(new Event('playing'))
+          media.currentTime = 52
+          video.dispatchEvent(new Event('timeupdate'))
+          vi.advanceTimersByTime(500)
+          video.dispatchEvent(new Event('waiting'))
+          vi.advanceTimersByTime(5500)
+        })
+        expect(load).toHaveBeenCalledTimes(1)
+
+        fireEvent.keyDown(video, { key: 'ArrowLeft' })
+        expect(media.currentTime).toBe(42)
+        await act(async () => {
+          video.dispatchEvent(new Event('loadedmetadata'))
+          video.dispatchEvent(new Event('seeked'))
+          vi.advanceTimersByTime(5000)
+        })
+
+        expect(media.currentTime).toBe(42)
+        expect(play).not.toHaveBeenCalled()
+        expect(load).toHaveBeenCalledTimes(1)
+      })
+
+      it('復旧中にチャプター境界を選ぶと停止を保ち、復旧位置から自動再生しない', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const media = { paused: false, currentTime: 0, seeking: false }
+        const { resolve } = deferredFetch()
+        render(
+          <LivePlayer
+            mode="recording-hls"
+            site="default"
+            recordingId={42}
+            recordingDurationMs={60_000}
+            recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8"
+            recordingHlsStartSeconds={0}
+            chapterEditing
+            chapterSource="auto"
+            chapterVersion="auto:detected:1"
+            chapters={[{ startMs: 0, endMs: 60_000, cut: false }]}
+            onSaveChapters={async () => {}}
+            onResetChapters={async () => {}}
+          />,
+        )
+        const video = document.querySelector('video')!
+        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+        )
+        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
+        Object.defineProperty(video, 'currentTime', {
+          get: () => media.currentTime,
+          set: (value: number) => { media.currentTime = value },
+          configurable: true,
+        })
+        Object.defineProperty(video, 'seeking', { get: () => media.seeking, configurable: true })
+        Object.defineProperty(video, 'seekable', {
+          value: { length: 1, start: () => 0, end: () => 60 },
+          configurable: true,
+        })
+        resolve(new Response('', { status: 200 }))
+        await waitFor(() => expect(video.getAttribute('src')).not.toBeNull())
+        const load = vi.spyOn(video, 'load').mockImplementation(() => {})
+        const play = vi.spyOn(video, 'play').mockResolvedValue()
+        vi.spyOn(video, 'pause').mockImplementation(() => {
+          media.paused = true
+          video.dispatchEvent(new Event('pause'))
+        })
+
+        await act(async () => {
+          video.dispatchEvent(new Event('loadedmetadata'))
+          video.dispatchEvent(new Event('canplay'))
+          video.dispatchEvent(new Event('playing'))
+          media.currentTime = 7
+          video.dispatchEvent(new Event('timeupdate'))
+          vi.advanceTimersByTime(500)
+          video.dispatchEvent(new Event('waiting'))
+          vi.advanceTimersByTime(5500)
+        })
+        expect(load).toHaveBeenCalledTimes(1)
+
+        media.seeking = true
+        fireEvent.click(screen.getAllByTestId('chapter-filmstrip-boundary')[0]!)
+        await act(async () => {
+          video.dispatchEvent(new Event('loadedmetadata'))
+          video.dispatchEvent(new Event('canplay'))
+        })
+        expect(play).not.toHaveBeenCalled()
+        media.seeking = false
+        await act(async () => {
+          video.dispatchEvent(new Event('seeked'))
+          vi.advanceTimersByTime(5000)
+        })
+
+        expect(media.currentTime).toBeLessThan(0.02)
+        expect(media.paused).toBe(true)
+        expect(play).not.toHaveBeenCalled()
+        expect(load).toHaveBeenCalledTimes(1)
+      })
+
       it('currentTime が進んでいる間・一時停止中・再生が始まる前は止まりと見なさない', async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true })
         const media = { paused: false, currentTime: 7 }
