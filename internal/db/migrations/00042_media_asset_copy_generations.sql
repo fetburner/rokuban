@@ -90,10 +90,20 @@ SELECT old_copy.*,
 FROM media_asset_copies old_copy
 JOIN media_assets asset ON asset.id = old_copy.media_asset_id
 WHERE asset.kind <> 'original'
-  AND old_copy.generation < COALESCE(asset.derived_generation, 0);
+  AND old_copy.generation < COALESCE(asset.derived_generation, 0)
+  -- The current generation must still be observable somewhere. If the replacement
+  -- file vanished, the old copy may be the only remaining content.
+  AND EXISTS (
+      SELECT 1
+      FROM active_media_asset_copies(old_copy.media_asset_id, NULL) current_copy
+      WHERE NOT EXISTS (
+          SELECT 1 FROM missing_media_assets missing
+          WHERE missing.media_asset_copy_id = current_copy.id
+      )
+  );
 
 COMMENT ON VIEW old_generation_media_asset_copies IS
-    'old_generation_media_asset_copies は、論理資産の derived_generation より古い派生コピーを返す。generation_started_at は現行世代の最初のコピー行の created_at で、呼び出し側が overlap の猶予を判定する。';
+    'old_generation_media_asset_copies は、論理資産の derived_generation より古い派生コピーのうち、実体無しでない現行の active コピーがどこかの置き場にあるものを返す。generation_started_at は現行世代の最初のコピー行の created_at で、呼び出し側が overlap の猶予を判定する。';
 
 CREATE OR REPLACE VIEW unencoded_desired_profiles AS
 SELECT p.recording_id,

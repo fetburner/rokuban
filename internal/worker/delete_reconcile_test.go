@@ -3671,14 +3671,12 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 
 // 同じ置き場で派生物を作り直すと、旧世代のファイルは overlap の後に削除 reconcile が消す。
 // 状態は SQL で組まず、実際の書き手（PublishThumbnail の初回公開と置き換え）で作る。
-func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *testing.T) {
-	pool := setupTestPool(t)
+// replaceThumbnailForOldGeneration は PublishThumbnail で世代 0 を公開し、世代 1 へ置き換える。
+// 旧世代のコピー行とファイルを実際の書き手で作る。
+func replaceThumbnailForOldGeneration(t *testing.T, pool *pgxpool.Pool, mediaDir, originalRelPath string) (thumbID int64, oldPath, newPath string) {
+	t.Helper()
 	ctx := context.Background()
-	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
-	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/rebuild.m2ts", nil, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, originalRelPath, nil, []byte("original"))
 	media := pgstoretest.Media(pool)
 	original, err := media.GetActiveOriginalMediaAsset(ctx, id)
 	if err != nil {
@@ -3700,7 +3698,6 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	}, writeFile(oldRel, "old")); err != nil || !published {
 		t.Fatalf("first PublishThumbnail = %v, %v; want published", published, err)
 	}
-	var thumbID int64
 	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`, id).Scan(&thumbID); err != nil {
 		t.Fatal(err)
 	}
@@ -3711,14 +3708,30 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	}, writeFile(newRel, "new")); err != nil || !published {
 		t.Fatalf("replacing PublishThumbnail = %v, %v; want published", published, err)
 	}
+	return thumbID, filepath.Join(mediaDir, filepath.FromSlash(oldRel)), filepath.Join(mediaDir, filepath.FromSlash(newRel))
+}
 
+func ageCurrentThumbnailCopy(t *testing.T, pool *pgxpool.Pool, thumbID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND generation = 1`, thumbID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	thumbID, oldPath, newPath := replaceThumbnailForOldGeneration(t, pool, mediaDir, "sites/default/rebuild.m2ts")
+	media := pgstoretest.Media(pool)
 	w := &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
 		MediaStoreName: dbtest.StoreName,
 	}
-	oldPath := filepath.Join(mediaDir, filepath.FromSlash(oldRel))
-	newPath := filepath.Join(mediaDir, filepath.FromSlash(newRel))
 
 	// 作り直した直後は overlap の内側なので、旧世代のファイルを消さない。
 	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
@@ -3729,9 +3742,7 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	}
 
 	// 新世代のコピーが overlap より古くなると、旧世代だけが消える。
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND generation = 1`, thumbID); err != nil {
-		t.Fatal(err)
-	}
+	ageCurrentThumbnailCopy(t, pool, thumbID)
 	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work after the overlap window: %v", err)
 	}
@@ -3750,5 +3761,79 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	}
 	if oldState != "deleted" || newState != "active" || assetState(t, pool, thumbID) != "active" {
 		t.Fatalf("old/new copy and logical state = %q/%q/%q, want deleted/active/active", oldState, newState, assetState(t, pool, thumbID))
+	}
+}
+
+// 作り直した新世代のファイルが消えていれば、overlap を過ぎても旧世代を消さない。
+// 旧世代が唯一残った中身になりうるからである。
+func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	thumbID, oldPath, newPath := replaceThumbnailForOldGeneration(t, pool, mediaDir, "sites/default/missing-current.m2ts")
+	ageCurrentThumbnailCopy(t, pool, thumbID)
+	if err := os.Remove(newPath); err != nil {
+		t.Fatalf("removing current-generation file: %v", err)
+	}
+	media := pgstoretest.Media(pool)
+	w := &DeleteReconcileWorker{
+		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
+		MediaStoreName: dbtest.StoreName,
+	}
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work with a missing current-generation file: %v", err)
+	}
+	if !fileExists(oldPath) {
+		t.Fatal("old-generation file was removed while the current-generation copy is missing")
+	}
+	var oldState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND generation = 0`, thumbID).Scan(&oldState); err != nil {
+		t.Fatal(err)
+	}
+	if oldState != "active" {
+		t.Fatalf("old-generation copy state = %q, want active", oldState)
+	}
+}
+
+// 旧世代の削除も一括削除のブレーカーで数える。候補 2 件 > 上限 1 なので発動し、どれも消さない。
+func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	var oldPaths []string
+	for _, rel := range []string{"sites/default/breaker-a.m2ts", "sites/default/breaker-b.m2ts"} {
+		thumbID, oldPath, _ := replaceThumbnailForOldGeneration(t, pool, mediaDir, rel)
+		ageCurrentThumbnailCopy(t, pool, thumbID)
+		oldPaths = append(oldPaths, oldPath)
+	}
+	media := pgstoretest.Media(pool)
+	w := &DeleteReconcileWorker{
+		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, TransferOverlap: time.Hour,
+		MediaStoreName: dbtest.StoreName, MaxDeletesPerPass: 1,
+	}
+	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	for _, p := range oldPaths {
+		if !fileExists(p) {
+			t.Errorf("old-generation file %s was removed although the breaker should have withheld deletes", p)
+		}
+	}
+	cb, err := sqlcgen.New(pool).GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
+		Scope: dbtest.StoreName, Name: breaker.DeleteReconcile,
+	})
+	if err != nil {
+		t.Fatalf("expected circuit breaker to be tripped, got error: %v", err)
+	}
+	if cb.Pending != 2 {
+		t.Errorf("breaker pending = %d, want 2", cb.Pending)
 	}
 }

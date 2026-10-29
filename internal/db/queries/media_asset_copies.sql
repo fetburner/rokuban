@@ -53,16 +53,14 @@ SELECT EXISTS (
 
 -- media_assets.state remains the logical publication state mirrored for readers
 -- outside the copy-aware paths. Only current-generation copies contribute.
+-- active かどうかは active_media_asset_copies の現行判定をそのまま使う。読み手と同じ関数を
+-- 引かないと、関数側だけを直したときに encode の committed 判定と不足の列挙が食い違う。
 -- name: ReconcileMediaAssetStateFromCopies :exec
-WITH desired_state AS (
+WITH observed_state AS (
     SELECT asset.id,
+           asset.deleted_at,
            CASE
-               WHEN EXISTS (
-                   SELECT 1 FROM media_asset_copies copy
-                   WHERE copy.media_asset_id = asset.id
-                     AND copy.generation = COALESCE(asset.derived_generation, 0)
-                     AND copy.state = 'active'
-               ) THEN 'active'
+               WHEN EXISTS (SELECT 1 FROM active_media_asset_copies(asset.id, NULL)) THEN 'active'
                WHEN EXISTS (
                    SELECT 1 FROM media_asset_copies copy
                    WHERE copy.media_asset_id = asset.id
@@ -70,18 +68,15 @@ WITH desired_state AS (
                      AND copy.state = 'deleting'
                ) THEN 'deleting'
                ELSE 'deleted'
-           END AS state,
-           CASE
-               WHEN EXISTS (
-                   SELECT 1 FROM media_asset_copies copy
-                   WHERE copy.media_asset_id = asset.id
-                     AND copy.generation = COALESCE(asset.derived_generation, 0)
-                     AND copy.state IN ('active', 'deleting')
-               ) THEN NULL::timestamptz
-               ELSE COALESCE(asset.deleted_at, now())
-           END AS deleted_at
+           END AS state
     FROM media_assets asset
     WHERE asset.id = sqlc.arg('asset_id')
+),
+desired_state AS (
+    SELECT id,
+           state,
+           CASE WHEN state = 'deleted' THEN COALESCE(deleted_at, now()) END AS deleted_at
+    FROM observed_state
 )
 UPDATE media_assets asset
 SET state = desired_state.state,
