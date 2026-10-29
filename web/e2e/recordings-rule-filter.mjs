@@ -397,15 +397,22 @@ await page.getByText('ルール由来の録画').waitFor({ timeout: 15000 })
 await page.getByText('通常の録画').waitFor({ timeout: 15000 })
 const awaitingReviewChip = page.getByRole('button', { name: '確認待ち 1件', exact: true })
 await awaitingReviewChip.waitFor({ timeout: 15000 })
-const managementSummaryBox = await page
-  .getByTestId('recordings-management-summary')
-  .boundingBox()
-log(`  管理情報行: ${managementSummaryBox?.height ?? '—'}px（上限 45px）`)
-if (managementSummaryBox === null || managementSummaryBox.height > 45) {
-  ng.push(
-    `⑧ 確認待ちチップを含む管理情報が 1 行に収まらない（${managementSummaryBox?.height ?? '—'}px）`,
+for (const width of [360, 390]) {
+  await page.setViewportSize({ width, height: 844 })
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   )
+  const managementSummaryBox = await page
+    .getByTestId('recordings-management-summary')
+    .boundingBox()
+  log(`  ${width}px 管理情報行: ${managementSummaryBox?.height ?? '—'}px（上限 45px）`)
+  if (managementSummaryBox === null || managementSummaryBox.height > 45) {
+    ng.push(
+      `⑧ ${width}px で確認待ちチップを含む管理情報が 1 行に収まらない（${managementSummaryBox?.height ?? '—'}px）`,
+    )
+  }
 }
+await page.setViewportSize({ width: 390, height: 844 })
 const awaitingReviewRequest = page.waitForRequest((request) => {
   const requestUrl = new URL(request.url())
   return requestUrl.pathname === '/api/recordings' &&
