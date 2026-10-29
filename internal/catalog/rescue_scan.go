@@ -146,6 +146,14 @@ func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDi
 			result.MissingMediaFiles++
 			return nil
 		}
+		if errors.Is(err, store.ErrConflict) {
+			// 既に台帳にある資産と両立しない（生きたコピーがある・世代が違う・ごみ箱の録画）。
+			// このファイルだけを飛ばし、残りの走査を続ける。
+			slog.Warn("rescue: skipping file that conflicts with an existing media asset",
+				"rel_path", relPath, "err", err)
+			result.SkippedConflictingFiles++
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("registering rescue candidate %q: %w", relPath, err)
 		}

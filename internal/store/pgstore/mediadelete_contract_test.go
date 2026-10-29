@@ -41,6 +41,14 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 		}
 		return contracttest.MediaDeleteFixture{
 			Store: NewMedia(pool, dbtest.StoreName, dbtest.StoreName), Serving: NewMedia(pool, dbtest.StoreName, ""), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
+			CopyID: func(t *testing.T, assetID int64) int64 {
+				t.Helper()
+				var copyID int64
+				if err := pool.QueryRow(context.Background(), `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName).Scan(&copyID); err != nil {
+					t.Fatalf("getting copy ID for media asset %d: %v", assetID, err)
+				}
+				return copyID
+			},
 			NewUntilEncodedOriginal: func(t *testing.T) (int64, int64) {
 				t.Helper()
 				recordingID := newRecording(t)

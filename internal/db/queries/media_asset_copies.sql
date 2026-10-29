@@ -1,17 +1,18 @@
 -- Physical copies remain separate from media_assets so their location and lifecycle
 -- can evolve without moving the logical asset's satellite rows.
 
--- name: UpsertMediaAssetCopy :exec
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+-- 競合したときは state / deleted_at を書かない。生きた行の state を決めるのは削除エンジンの
+-- 遷移だけで、再登録や再公開が deleting を active に戻すと unlink 予定のファイルを公開してしまう。
+-- name: UpsertMediaAssetCopy :execrows
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
 VALUES (
-    sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'),
+    sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('generation'),
     sqlc.arg('state'), COALESCE(sqlc.narg('created_at')::timestamptz, now()), sqlc.narg('deleted_at')
 )
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
-    state      = EXCLUDED.state,
-    created_at = COALESCE(sqlc.narg('created_at')::timestamptz, media_asset_copies.created_at),
-    deleted_at = EXCLUDED.deleted_at;
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO UPDATE SET
+    created_at = COALESCE(sqlc.narg('created_at')::timestamptz, media_asset_copies.created_at)
+WHERE media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
+  AND media_asset_copies.generation = EXCLUDED.generation;
 
 -- Keep the rolling-migration mirror's lifecycle state in sync without re-reading
 -- the logical media_assets columns. The copy row must exist before a transition
@@ -20,30 +21,99 @@ ON CONFLICT (media_asset_id, store) DO UPDATE SET
 UPDATE media_asset_copies
 SET state = sqlc.arg('state'),
     deleted_at = CASE
-        WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now())
+        WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(sqlc.narg('deleted_at')::timestamptz, deleted_at, now())
         ELSE NULL
     END
-WHERE media_asset_id = sqlc.arg('media_asset_id')
-  AND store = sqlc.arg('store');
+WHERE id = sqlc.arg('id')
+  AND store = sqlc.arg('store_name')
+  AND state = sqlc.arg('expected_state');
+
+-- Catalog restore identifies copies by physical path because catalog rows do
+-- not expose database copy IDs. Lock the current path owner before transitioning a
+-- copy verified missing; historical tombstones can coexist with a reused live path.
+-- name: LockMediaAssetCopyByPhysicalPath :one
+SELECT copy.id, copy.media_asset_id, copy.generation, copy.state
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE copy.store = sqlc.arg('store')
+  AND copy.rel_path = sqlc.arg('rel_path')
+  AND copy.state <> 'deleted'
+FOR UPDATE OF asset, copy;
+
+-- Repeated rescue of an already missing copy must not add duplicate tombstones.
+-- name: CatalogHasDeletedMediaAssetCopy :one
+SELECT EXISTS (
+    SELECT 1 FROM media_asset_copies copy
+    WHERE copy.media_asset_id = sqlc.arg('media_asset_id')
+      AND copy.store = sqlc.arg('store')
+      AND copy.rel_path = sqlc.arg('rel_path')
+      AND copy.generation = sqlc.arg('generation')
+      AND copy.state = 'deleted'
+);
+
+-- media_assets.state remains the logical publication state mirrored for readers
+-- outside the copy-aware paths. Only current-generation copies contribute.
+-- active かどうかは active_media_asset_copies の現行判定をそのまま使う。読み手と同じ関数を
+-- 引かないと、関数側だけを直したときに encode の committed 判定と不足の列挙が食い違う。
+-- name: ReconcileMediaAssetStateFromCopies :exec
+WITH observed_state AS (
+    SELECT asset.id,
+           asset.deleted_at,
+           CASE
+               WHEN EXISTS (SELECT 1 FROM active_media_asset_copies(asset.id, NULL)) THEN 'active'
+               WHEN EXISTS (
+                   SELECT 1 FROM media_asset_copies copy
+                   WHERE copy.media_asset_id = asset.id
+                     AND copy.generation = COALESCE(asset.derived_generation, 0)
+                     AND copy.state = 'deleting'
+               ) THEN 'deleting'
+               ELSE 'deleted'
+           END AS state
+    FROM media_assets asset
+    WHERE asset.id = sqlc.arg('asset_id')
+),
+desired_state AS (
+    SELECT id,
+           state,
+           CASE WHEN state = 'deleted' THEN COALESCE(deleted_at, now()) END AS deleted_at
+    FROM observed_state
+)
+UPDATE media_assets asset
+SET state = desired_state.state,
+    deleted_at = desired_state.deleted_at,
+    updated_at = CASE
+        WHEN asset.state IS DISTINCT FROM desired_state.state
+          OR asset.deleted_at IS DISTINCT FROM desired_state.deleted_at
+        THEN now()
+        ELSE asset.updated_at
+    END
+FROM desired_state
+WHERE asset.id = desired_state.id;
 
 -- 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
 -- ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。
 -- ロックしない判定は READ COMMITTED の再評価でも古い版を見て、deleted を deleting に戻しうる。
 -- 行が無ければ何もロックしない（後続の UPDATE が 0 行になる）。
--- name: LockMediaAssetCopy :exec
-SELECT 1 FROM media_asset_copies
-WHERE media_asset_id = sqlc.arg('media_asset_id')
-  AND store = sqlc.arg('store')
-FOR UPDATE;
+-- name: LockMediaAssetCopy :one
+SELECT copy.media_asset_id, copy.state
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE copy.id = sqlc.arg('copy_id')
+  AND copy.store = sqlc.arg('store_name')
+FOR UPDATE OF asset, copy;
 
 -- name: AdoptUnassignedMediaAssetCopies :exec
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-SELECT a.id, sqlc.arg('store'), a.rel_path, a.state, a.created_at, a.deleted_at
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
+SELECT a.id, sqlc.arg('store'), a.rel_path,
+       CASE WHEN a.kind = 'original' THEN 0
+            ELSE COALESCE(media_asset_generation_from_rel_path(a.rel_path), 0)
+       END,
+       a.state, a.created_at, a.deleted_at
 FROM media_assets a
 WHERE NOT EXISTS (
     SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
 )
-ON CONFLICT (media_asset_id, store) DO NOTHING;
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
 
 -- A path's generation belongs to its physical copy. Include deleted copies because their
 -- generation remains part of the allocator's history.
@@ -52,12 +122,13 @@ UPDATE media_assets AS asset
 SET derived_generation = GREATEST(
     COALESCE(asset.derived_generation, 0),
     COALESCE((
-        SELECT max(media_asset_generation_from_rel_path(copy.rel_path))
+        SELECT max(copy.generation)
         FROM media_asset_copies copy
         WHERE copy.media_asset_id = asset.id
     ), 0)
 )
 WHERE asset.kind <> 'original';
+
 
 -- name: StoreHasMediaAssetCopies :one
 SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = sqlc.arg('store'));
@@ -67,9 +138,6 @@ UPDATE recording_ingest_progress SET temp_store = sqlc.arg('store') WHERE temp_s
 
 -- name: AdoptUnassignedOrphans :exec
 UPDATE orphan_files SET store = sqlc.arg('store') WHERE store = '';
-
--- name: AdoptUnassignedMissingMediaAssets :exec
-UPDATE missing_media_assets SET store = sqlc.arg('store') WHERE store = '';
 
 -- name: AdoptUnassignedStorageSync :exec
 UPDATE storage_sync SET store = sqlc.arg('store') WHERE store = '';
@@ -82,6 +150,5 @@ SELECT
     ))
   + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
   + (SELECT count(*) FROM orphan_files WHERE store = '')
-  + (SELECT count(*) FROM missing_media_assets WHERE store = '')
   + (SELECT count(*) FROM storage_sync WHERE store = '')
   + (SELECT count(*) FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile') AS count;

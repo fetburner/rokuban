@@ -20,26 +20,21 @@ func (q *Queries) AdoptUnassignedIngestTemps(ctx context.Context, store string) 
 }
 
 const adoptUnassignedMediaAssetCopies = `-- name: AdoptUnassignedMediaAssetCopies :exec
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-SELECT a.id, $1, a.rel_path, a.state, a.created_at, a.deleted_at
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
+SELECT a.id, $1, a.rel_path,
+       CASE WHEN a.kind = 'original' THEN 0
+            ELSE COALESCE(media_asset_generation_from_rel_path(a.rel_path), 0)
+       END,
+       a.state, a.created_at, a.deleted_at
 FROM media_assets a
 WHERE NOT EXISTS (
     SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
 )
-ON CONFLICT (media_asset_id, store) DO NOTHING
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING
 `
 
 func (q *Queries) AdoptUnassignedMediaAssetCopies(ctx context.Context, store string) error {
 	_, err := q.db.Exec(ctx, adoptUnassignedMediaAssetCopies, store)
-	return err
-}
-
-const adoptUnassignedMissingMediaAssets = `-- name: AdoptUnassignedMissingMediaAssets :exec
-UPDATE missing_media_assets SET store = $1 WHERE store = ''
-`
-
-func (q *Queries) AdoptUnassignedMissingMediaAssets(ctx context.Context, store string) error {
-	_, err := q.db.Exec(ctx, adoptUnassignedMissingMediaAssets, store)
 	return err
 }
 
@@ -61,6 +56,37 @@ func (q *Queries) AdoptUnassignedStorageSync(ctx context.Context, store string) 
 	return err
 }
 
+const catalogHasDeletedMediaAssetCopy = `-- name: CatalogHasDeletedMediaAssetCopy :one
+SELECT EXISTS (
+    SELECT 1 FROM media_asset_copies copy
+    WHERE copy.media_asset_id = $1
+      AND copy.store = $2
+      AND copy.rel_path = $3
+      AND copy.generation = $4
+      AND copy.state = 'deleted'
+)
+`
+
+type CatalogHasDeletedMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	Generation   int64
+}
+
+// Repeated rescue of an already missing copy must not add duplicate tombstones.
+func (q *Queries) CatalogHasDeletedMediaAssetCopy(ctx context.Context, arg CatalogHasDeletedMediaAssetCopyParams) (bool, error) {
+	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopy,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.RelPath,
+		arg.Generation,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const countUnassignedStorageRows = `-- name: CountUnassignedStorageRows :one
 SELECT
     (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
@@ -68,7 +94,6 @@ SELECT
     ))
   + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
   + (SELECT count(*) FROM orphan_files WHERE store = '')
-  + (SELECT count(*) FROM missing_media_assets WHERE store = '')
   + (SELECT count(*) FROM storage_sync WHERE store = '')
   + (SELECT count(*) FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile') AS count
 `
@@ -81,25 +106,71 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	return count, err
 }
 
-const lockMediaAssetCopy = `-- name: LockMediaAssetCopy :exec
-SELECT 1 FROM media_asset_copies
-WHERE media_asset_id = $1
-  AND store = $2
-FOR UPDATE
+const lockMediaAssetCopy = `-- name: LockMediaAssetCopy :one
+SELECT copy.media_asset_id, copy.state
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE copy.id = $1
+  AND copy.store = $2
+FOR UPDATE OF asset, copy
 `
 
 type LockMediaAssetCopyParams struct {
+	CopyID    int64
+	StoreName string
+}
+
+type LockMediaAssetCopyRow struct {
 	MediaAssetID int64
-	Store        string
+	State        string
 }
 
 // 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
 // ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。
 // ロックしない判定は READ COMMITTED の再評価でも古い版を見て、deleted を deleting に戻しうる。
 // 行が無ければ何もロックしない（後続の UPDATE が 0 行になる）。
-func (q *Queries) LockMediaAssetCopy(ctx context.Context, arg LockMediaAssetCopyParams) error {
-	_, err := q.db.Exec(ctx, lockMediaAssetCopy, arg.MediaAssetID, arg.Store)
-	return err
+func (q *Queries) LockMediaAssetCopy(ctx context.Context, arg LockMediaAssetCopyParams) (LockMediaAssetCopyRow, error) {
+	row := q.db.QueryRow(ctx, lockMediaAssetCopy, arg.CopyID, arg.StoreName)
+	var i LockMediaAssetCopyRow
+	err := row.Scan(&i.MediaAssetID, &i.State)
+	return i, err
+}
+
+const lockMediaAssetCopyByPhysicalPath = `-- name: LockMediaAssetCopyByPhysicalPath :one
+SELECT copy.id, copy.media_asset_id, copy.generation, copy.state
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE copy.store = $1
+  AND copy.rel_path = $2
+  AND copy.state <> 'deleted'
+FOR UPDATE OF asset, copy
+`
+
+type LockMediaAssetCopyByPhysicalPathParams struct {
+	Store   string
+	RelPath string
+}
+
+type LockMediaAssetCopyByPhysicalPathRow struct {
+	ID           int64
+	MediaAssetID int64
+	Generation   int64
+	State        string
+}
+
+// Catalog restore identifies copies by physical path because catalog rows do
+// not expose database copy IDs. Lock the current path owner before transitioning a
+// copy verified missing; historical tombstones can coexist with a reused live path.
+func (q *Queries) LockMediaAssetCopyByPhysicalPath(ctx context.Context, arg LockMediaAssetCopyByPhysicalPathParams) (LockMediaAssetCopyByPhysicalPathRow, error) {
+	row := q.db.QueryRow(ctx, lockMediaAssetCopyByPhysicalPath, arg.Store, arg.RelPath)
+	var i LockMediaAssetCopyByPhysicalPathRow
+	err := row.Scan(
+		&i.ID,
+		&i.MediaAssetID,
+		&i.Generation,
+		&i.State,
+	)
+	return i, err
 }
 
 const reconcileDerivedGenerationFromCopyPaths = `-- name: ReconcileDerivedGenerationFromCopyPaths :exec
@@ -107,7 +178,7 @@ UPDATE media_assets AS asset
 SET derived_generation = GREATEST(
     COALESCE(asset.derived_generation, 0),
     COALESCE((
-        SELECT max(media_asset_generation_from_rel_path(copy.rel_path))
+        SELECT max(copy.generation)
         FROM media_asset_copies copy
         WHERE copy.media_asset_id = asset.id
     ), 0)
@@ -122,28 +193,82 @@ func (q *Queries) ReconcileDerivedGenerationFromCopyPaths(ctx context.Context) e
 	return err
 }
 
+const reconcileMediaAssetStateFromCopies = `-- name: ReconcileMediaAssetStateFromCopies :exec
+WITH observed_state AS (
+    SELECT asset.id,
+           asset.deleted_at,
+           CASE
+               WHEN EXISTS (SELECT 1 FROM active_media_asset_copies(asset.id, NULL)) THEN 'active'
+               WHEN EXISTS (
+                   SELECT 1 FROM media_asset_copies copy
+                   WHERE copy.media_asset_id = asset.id
+                     AND copy.generation = COALESCE(asset.derived_generation, 0)
+                     AND copy.state = 'deleting'
+               ) THEN 'deleting'
+               ELSE 'deleted'
+           END AS state
+    FROM media_assets asset
+    WHERE asset.id = $1
+),
+desired_state AS (
+    SELECT id,
+           state,
+           CASE WHEN state = 'deleted' THEN COALESCE(deleted_at, now()) END AS deleted_at
+    FROM observed_state
+)
+UPDATE media_assets asset
+SET state = desired_state.state,
+    deleted_at = desired_state.deleted_at,
+    updated_at = CASE
+        WHEN asset.state IS DISTINCT FROM desired_state.state
+          OR asset.deleted_at IS DISTINCT FROM desired_state.deleted_at
+        THEN now()
+        ELSE asset.updated_at
+    END
+FROM desired_state
+WHERE asset.id = desired_state.id
+`
+
+// media_assets.state remains the logical publication state mirrored for readers
+// outside the copy-aware paths. Only current-generation copies contribute.
+// active かどうかは active_media_asset_copies の現行判定をそのまま使う。読み手と同じ関数を
+// 引かないと、関数側だけを直したときに encode の committed 判定と不足の列挙が食い違う。
+func (q *Queries) ReconcileMediaAssetStateFromCopies(ctx context.Context, assetID int64) error {
+	_, err := q.db.Exec(ctx, reconcileMediaAssetStateFromCopies, assetID)
+	return err
+}
+
 const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
 UPDATE media_asset_copies
 SET state = $1,
     deleted_at = CASE
-        WHEN $1::text = 'deleted' THEN COALESCE(deleted_at, now())
+        WHEN $1::text = 'deleted' THEN COALESCE($2::timestamptz, deleted_at, now())
         ELSE NULL
     END
-WHERE media_asset_id = $2
-  AND store = $3
+WHERE id = $3
+  AND store = $4
+  AND state = $5
 `
 
 type SetMediaAssetCopyStateParams struct {
-	State        string
-	MediaAssetID int64
-	Store        string
+	State         string
+	DeletedAt     *time.Time
+	ID            int64
+	StoreName     string
+	ExpectedState string
 }
 
 // Keep the rolling-migration mirror's lifecycle state in sync without re-reading
 // the logical media_assets columns. The copy row must exist before a transition
 // can start, as enforced by the worker's adoption check and the transition query.
 func (q *Queries) SetMediaAssetCopyState(ctx context.Context, arg SetMediaAssetCopyStateParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setMediaAssetCopyState, arg.State, arg.MediaAssetID, arg.Store)
+	result, err := q.db.Exec(ctx, setMediaAssetCopyState,
+		arg.State,
+		arg.DeletedAt,
+		arg.ID,
+		arg.StoreName,
+		arg.ExpectedState,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -161,24 +286,24 @@ func (q *Queries) StoreHasMediaAssetCopies(ctx context.Context, store string) (b
 	return exists, err
 }
 
-const upsertMediaAssetCopy = `-- name: UpsertMediaAssetCopy :exec
+const upsertMediaAssetCopy = `-- name: UpsertMediaAssetCopy :execrows
 
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
 VALUES (
-    $1, $2, $3,
-    $4, COALESCE($5::timestamptz, now()), $6
+    $1, $2, $3, $4,
+    $5, COALESCE($6::timestamptz, now()), $7
 )
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
-    state      = EXCLUDED.state,
-    created_at = COALESCE($5::timestamptz, media_asset_copies.created_at),
-    deleted_at = EXCLUDED.deleted_at
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO UPDATE SET
+    created_at = COALESCE($6::timestamptz, media_asset_copies.created_at)
+WHERE media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
+  AND media_asset_copies.generation = EXCLUDED.generation
 `
 
 type UpsertMediaAssetCopyParams struct {
 	MediaAssetID int64
 	Store        string
 	RelPath      string
+	Generation   int64
 	State        string
 	CreatedAt    *time.Time
 	DeletedAt    *time.Time
@@ -186,14 +311,20 @@ type UpsertMediaAssetCopyParams struct {
 
 // Physical copies remain separate from media_assets so their location and lifecycle
 // can evolve without moving the logical asset's satellite rows.
-func (q *Queries) UpsertMediaAssetCopy(ctx context.Context, arg UpsertMediaAssetCopyParams) error {
-	_, err := q.db.Exec(ctx, upsertMediaAssetCopy,
+// 競合したときは state / deleted_at を書かない。生きた行の state を決めるのは削除エンジンの
+// 遷移だけで、再登録や再公開が deleting を active に戻すと unlink 予定のファイルを公開してしまう。
+func (q *Queries) UpsertMediaAssetCopy(ctx context.Context, arg UpsertMediaAssetCopyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertMediaAssetCopy,
 		arg.MediaAssetID,
 		arg.Store,
 		arg.RelPath,
+		arg.Generation,
 		arg.State,
 		arg.CreatedAt,
 		arg.DeletedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

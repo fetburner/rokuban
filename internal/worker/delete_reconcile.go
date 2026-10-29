@@ -83,6 +83,7 @@ type DeleteReconcileWorker struct {
 	MediaStoreName string
 
 	TrashRetention    time.Duration
+	TransferOverlap   time.Duration
 	OrphanMTimeGrace  time.Duration
 	OrphanAge         time.Duration
 	MaxDeletesPerPass int
@@ -119,6 +120,10 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if missingAssetAge <= 0 {
 		missingAssetAge = config.DefaultMissingAssetAge
 	}
+	transferOverlap := w.TransferOverlap
+	if transferOverlap <= 0 {
+		transferOverlap = config.DefaultTransferOverlap
+	}
 	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, scope)
 	if err != nil {
 		return err
@@ -126,7 +131,8 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
 	// pending 経路の再評価（後述）もこの値を使う。
 	trashCutoff := time.Now().Add(-trashRetention)
-	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff); err != nil {
+	overlapCutoff := time.Now().Add(-transferOverlap)
+	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff, overlapCutoff); err != nil {
 		return err
 	}
 	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
@@ -136,7 +142,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	// restoreUnqualifiedDeletingAssets で該当しなくなった行は既に active か
 	// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
 	// ものだけ。
-	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, deleteReconcileRowLimit)
+	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return err
 	}
@@ -156,7 +162,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if err := w.reconcileDeleteObservations(ctx, orphanMTimeGrace, orphanAge, missingAssetAge); err != nil {
 		return err
 	}
-	candidates, err := collectDeleteCandidates(ctx, w.MediaDelete, trashCutoff)
+	candidates, err := collectDeleteCandidates(ctx, w.MediaDelete, trashCutoff, overlapCutoff)
 	if err != nil {
 		return err
 	}

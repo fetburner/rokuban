@@ -25,11 +25,20 @@ type deleteCandidateSet struct {
 	trash          []store.MediaDeleteAsset
 	untilEncoded   []store.MediaDeleteAsset
 	removedEncoded []store.MediaDeleteAsset
+	oldGeneration  []store.MediaDeleteAsset
 	agedOrphans    []string
 }
 
 func (c deleteCandidateSet) total() int {
-	return len(c.trash) + len(c.untilEncoded) + len(c.removedEncoded) + len(c.agedOrphans)
+	seen := make(map[int64]struct{})
+	for _, rows := range [][]store.MediaDeleteAsset{c.trash, c.untilEncoded, c.removedEncoded, c.oldGeneration} {
+		for _, row := range rows {
+			if row.ID > 0 {
+				seen[row.ID] = struct{}{}
+			}
+		}
+	}
+	return len(seen) + len(c.agedOrphans)
 }
 
 // collectDeleteCandidates は新規削除対象を 3 つの DB 述語から取得する。
@@ -43,7 +52,7 @@ func (c deleteCandidateSet) total() int {
 // ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
 // 冪等チェックが原本を開かずに skip する（順序そのものは未検証。
 // docs/storage/retention.md 同箇所参照）。
-func collectDeleteCandidates(ctx context.Context, media store.MediaDelete, trashCutoff time.Time) (deleteCandidateSet, error) {
+func collectDeleteCandidates(ctx context.Context, media store.MediaDelete, trashCutoff, overlapCutoff time.Time) (deleteCandidateSet, error) {
 	var c deleteCandidateSet
 	var err error
 	c.trash, err = media.ListTrashAssetsToDelete(ctx, trashCutoff, deleteReconcileRowLimit)
@@ -57,6 +66,10 @@ func collectDeleteCandidates(ctx context.Context, media store.MediaDelete, trash
 	c.removedEncoded, err = media.ListRemovedEncodedAssetsToDelete(ctx, deleteReconcileRowLimit)
 	if err != nil {
 		return c, fmt.Errorf("listing removed encoded assets: %w", err)
+	}
+	c.oldGeneration, err = media.ListOldGenerationMediaAssetCopiesToDelete(ctx, overlapCutoff, deleteReconcileRowLimit)
+	if err != nil {
+		return c, fmt.Errorf("listing old-generation media asset copies: %w", err)
 	}
 	return c, nil
 }

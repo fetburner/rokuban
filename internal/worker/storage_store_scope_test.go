@@ -190,7 +190,7 @@ func countStoreOrphan(t *testing.T, pool *pgxpool.Pool, storeName, relPath strin
 func countStoreMissingAsset(t *testing.T, pool *pgxpool.Pool, storeName string, assetID int64) int {
 	t.Helper()
 	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets WHERE store = $1 AND media_asset_id = $2`, storeName, assetID).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.store = $1 AND c.media_asset_id = $2`, storeName, assetID).Scan(&count); err != nil {
 		t.Fatalf("counting %s missing asset %d: %v", storeName, assetID, err)
 	}
 	return count

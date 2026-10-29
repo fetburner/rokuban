@@ -781,6 +781,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		StorageObservation:       mediaStore,
 		MediaDir:                 cfg.Storage.MediaDir,
 		MediaStoreName:           cfg.Storage.MediaStoreName,
+		TransferOverlap:          cfg.Storage.Transfer.Overlap,
 		IngestStorageProbed:      ingestStorageProbed,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,

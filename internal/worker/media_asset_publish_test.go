@@ -33,9 +33,12 @@ func assertMediaAssetCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, wantR
 	t.Helper()
 	var gotStore, gotRelPath, gotState string
 	if err := pool.QueryRow(context.Background(), `
-SELECT store, rel_path, state
-FROM media_asset_copies
-	WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName,
+SELECT copy.store, copy.rel_path, copy.state
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.media_asset_id = $1 AND copy.store = $2
+  AND copy.generation = COALESCE(asset.derived_generation, 0)
+  AND copy.state = 'active'`, assetID, dbtest.StoreName,
 	).Scan(&gotStore, &gotRelPath, &gotState); err != nil {
 		t.Fatalf("reading media asset copy %d in store %q: %v", assetID, dbtest.StoreName, err)
 	}
@@ -336,14 +339,14 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	generation := int64(0)
-	assetID, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
+	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID: id, RelPath: relPath, SizeBytes: int64(len(prior)),
 		DerivedGeneration: &generation,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
 		Store:        dbtest.StoreName,
 		RelPath:      relPath,

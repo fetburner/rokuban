@@ -448,7 +448,8 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 	if err := os.Remove(filepath.Join(mediaDir, "missing", "original.m2ts")); err != nil {
 		t.Fatalf("removing original fixture: %v", err)
 	}
-	if err := q.UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
+	copyID := dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)
+	if err := q.UpsertMissingMediaAsset(ctx, copyID); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
@@ -461,7 +462,7 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 		t.Fatalf("thumbnail reconcile candidates for known-missing original = %v, want 0", got)
 	}
 
-	if err := q.DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
+	if err := q.DeleteMissingMediaAsset(ctx, copyID); err != nil {
 		t.Fatalf("clearing restored original marker: %v", err)
 	}
 	runThumbnailReconcilePass(t, w)
@@ -481,7 +482,8 @@ func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t
 	q := sqlcgen.New(pool)
 	recordingID := dbtest.Recording(t, pool)
 	originalID := seedOriginalAsset(t, pool, t.TempDir(), recordingID, "targeted-recovery/original.m2ts", []byte("fake-ts"))
-	if err := q.UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
+	copyID := dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)
+	if err := q.UpsertMissingMediaAsset(ctx, copyID); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
@@ -494,7 +496,7 @@ func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t
 		t.Fatalf("seek_tiles jobs for targeted known-missing original = %d, want 0", got)
 	}
 
-	if err := q.DeleteMissingMediaAsset(ctx, sqlcgen.DeleteMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
+	if err := q.DeleteMissingMediaAsset(ctx, copyID); err != nil {
 		t.Fatalf("clearing restored original marker: %v", err)
 	}
 	runThumbnailReconcilePassArgs(t, w, ThumbnailReconcileArgs{RecordingID: recordingID})
@@ -892,7 +894,8 @@ func TestThumbnailReconcile_SeekTilesSkipsKnownMissingOriginal(t *testing.T) {
 	if err := os.Remove(filepath.Join(mediaDir, "seek-missing", "original.m2ts")); err != nil {
 		t.Fatalf("removing original fixture: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, sqlcgen.UpsertMissingMediaAssetParams{MediaAssetID: originalID, Store: dbtest.StoreName}); err != nil {
+	copyID := dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)
+	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, copyID); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
@@ -1039,7 +1042,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_id, store) VALUES ($1, 'test-store')`, originalID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_copy_id) SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, originalID); err != nil {
 		t.Fatal(err)
 	}
 

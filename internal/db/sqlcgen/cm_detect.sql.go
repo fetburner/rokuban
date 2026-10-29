@@ -190,8 +190,7 @@ WHERE d.recording_id = r.id
   AND r.purged_at IS NULL
   AND NOT EXISTS (
       SELECT 1 FROM missing_media_assets m
-      WHERE m.media_asset_id = o.id
-        AND ($1::text IS NULL OR m.store = $1)
+      WHERE m.media_asset_copy_id = copy.id
   )
 `
 
@@ -360,17 +359,13 @@ const getCMDetectionWorkItem = `-- name: GetCMDetectionWorkItem :one
 SELECT r.id, r.network_id, r.service_id, copy.rel_path,
        COALESCE(p.cm_detect, false)::boolean AS cm_detect,
        (r.deleted_at IS NOT NULL)::boolean AS is_trashed,
-       EXISTS (SELECT 1 FROM missing_media_assets m
-               WHERE m.media_asset_id = o.id
-                 AND ($1::text IS NULL OR m.store = $1)) AS original_missing,
+       COALESCE((copy.id IS NULL OR EXISTS (SELECT 1 FROM missing_media_assets m
+                                            WHERE m.media_asset_copy_id = copy.id)), true)::boolean AS original_missing,
        EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS detected
 FROM recordings r
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-LEFT JOIN media_asset_copies copy
-  ON copy.media_asset_id = o.id
- AND copy.store = (SELECT c.store
-                   FROM preferred_active_media_asset_copy(o.id, $1::text) c)
+LEFT JOIN LATERAL preferred_active_media_asset_copy(o.id, $1::text) copy ON true
 WHERE r.id = $2
 `
 
@@ -383,14 +378,14 @@ type GetCMDetectionWorkItemRow struct {
 	ID              int64
 	NetworkID       int32
 	ServiceID       int32
-	RelPath         *string
+	RelPath         string
 	CmDetect        bool
 	IsTrashed       bool
 	OriginalMissing bool
 	Detected        bool
 }
 
-// 選ぶコピーは preferred_active_media_asset_copy の 1 件。(media_asset_id, store) は一意なので 1 行に決まる。
+// preferred_active_media_asset_copy が返す現行の原本コピーを 1 件選ぶ。
 func (q *Queries) GetCMDetectionWorkItem(ctx context.Context, arg GetCMDetectionWorkItemParams) (GetCMDetectionWorkItemRow, error) {
 	row := q.db.QueryRow(ctx, getCMDetectionWorkItem, arg.StoreName, arg.RecordingID)
 	var i GetCMDetectionWorkItemRow
@@ -453,8 +448,7 @@ WHERE a.network_id = $2
   AND r.purged_at IS NULL
   AND NOT EXISTS (
       SELECT 1 FROM missing_media_assets m
-      WHERE m.media_asset_id = o.id
-        AND ($1::text IS NULL OR m.store = $1)
+      WHERE m.media_asset_copy_id = copy.id
   )
 ORDER BY r.id DESC
 LIMIT 1
@@ -591,8 +585,7 @@ SELECT EXISTS (
     WHERE r.id = $2
       AND r.deleted_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM missing_media_assets m
-                      WHERE m.media_asset_id = o.id
-                        AND ($1::text IS NULL OR m.store = $1))
+                      WHERE m.media_asset_copy_id = copy.id)
 )
 `
 
@@ -624,8 +617,7 @@ SELECT EXISTS (
       AND r.purged_at IS NULL
       AND NOT EXISTS (
           SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_id = o.id
-            AND ($1::text IS NULL OR m.store = $1)
+          WHERE m.media_asset_copy_id = copy.id
       )
 )
 `
@@ -801,8 +793,7 @@ SELECT r.network_id, r.service_id,
                  AND o2.kind = 'original'
                  AND NOT EXISTS (
                      SELECT 1 FROM missing_media_assets m2
-                     WHERE m2.media_asset_id = o2.id
-                       AND ($1::text IS NULL OR m2.store = $1)
+                     WHERE m2.media_asset_copy_id = copy2.id
                  )
            )
        )::bigint AS redetectable_count,
@@ -829,15 +820,14 @@ SELECT r.network_id, r.service_id,
           JOIN recordings r2 ON r2.id = o2.recording_id
          JOIN media_asset_copies copy2
            ON copy2.media_asset_id = o2.id
-          AND copy2.state = 'active'
+         AND copy2.state = 'active'
           AND ($1::text IS NULL OR copy2.store = $1)
          WHERE r2.network_id = r.network_id
            AND r2.service_id = r.service_id
            AND o2.kind = 'original'
            AND r2.deleted_at IS NULL
            AND NOT EXISTS (SELECT 1 FROM missing_media_assets m
-                           WHERE m.media_asset_id = o2.id
-                             AND ($1::text IS NULL OR m.store = $1))
+         WHERE m.media_asset_copy_id = copy2.id)
          ORDER BY r2.id DESC
          LIMIT 1), 0)::bigint AS frame_recording_id
 FROM recordings r

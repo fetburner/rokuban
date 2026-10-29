@@ -392,8 +392,10 @@ WHERE r.id = sqlc.arg('recording_id')
   AND EXISTS (
       SELECT 1 FROM media_asset_copies c
       WHERE c.media_asset_id = o.id AND c.state = 'active'
+        AND NOT EXISTS (
+            SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
+        )
   )
-  AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
 ON CONFLICT (recording_id) DO UPDATE
 SET cm_detect = true,
     cm_detect_generation = recording_encode_policy.cm_detect_generation
@@ -406,8 +408,10 @@ WHERE EXISTS (
       AND EXISTS (
           SELECT 1 FROM media_asset_copies c
           WHERE c.media_asset_id = o.id AND c.state = 'active'
+            AND NOT EXISTS (
+                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
+            )
       )
-      AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
 )
   AND EXISTS (
     SELECT 1 FROM recordings r

@@ -57,7 +57,7 @@ storage:
   originals:                         # 上から評価して最初に一致した規則を使う。最後は無条件
     - store: main
   derived: main
-  # transfer:                        # 置き場が 1 つの間は転送が起きないので省略してよい
+  # transfer:                        # 置き場が 1 つでも、旧世代の削除の猶予に効く。既定のままなら省略してよい
   #   overlap: 48h                   # 既定 48h。cleanup.missing_asset_age を延ばしたら、
   #                                  # 実体無しの猶予 + 削除 reconcile 2 回分より長い値を明示する
   #

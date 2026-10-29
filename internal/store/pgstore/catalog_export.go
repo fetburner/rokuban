@@ -515,6 +515,7 @@ func mediaAssetFromRow(a sqlcgen.CatalogListMediaAssetsRow) catalogdoc.MediaAsse
 		CreatedAt:         a.CreatedAt,
 		UpdatedAt:         a.UpdatedAt,
 		DerivedGeneration: derivedGeneration,
+		Generation:        int64Pointer(a.Generation),
 		SHA256:            sha256String(a.Sha256),
 		Store:             a.Store,
 	}

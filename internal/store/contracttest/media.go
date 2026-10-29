@@ -42,6 +42,7 @@ type MediaFixture struct {
 	SetIngestProgress             func(t *testing.T, recordingID int64, written int64, expected *int64)
 	NewInPlaceInput               func(t *testing.T, relPath string) store.InPlaceInput
 	NewAsset                      func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64
+	CopyID                        func(t *testing.T, assetID int64) int64
 	SetAssetState                 func(t *testing.T, assetID int64, state string)
 	SetMediaAssetKeepRanges       func(t *testing.T, assetID int64, keep []chapters.Range)
 	SetEncodedAssetRebuildRequest func(t *testing.T, recordingID int64, profile string, keep []chapters.Range)
@@ -68,7 +69,7 @@ type MediaFixture struct {
 	// SetOrphanFirstSeenAgo は孤児候補の first_seen を DB の now() から ago 前へずらす。
 	SetOrphanFirstSeenAgo func(t *testing.T, relPath string, ago time.Duration)
 	// SetMissingFirstSeenAgo は実体無し候補の first_seen を DB の now() から ago 前へずらす。
-	SetMissingFirstSeenAgo func(t *testing.T, assetID int64, ago time.Duration)
+	SetMissingFirstSeenAgo func(t *testing.T, copyID int64, ago time.Duration)
 }
 
 // NewMediaFixture は実在の契約実装とフィクスチャを作る。
@@ -866,16 +867,17 @@ func runMediaMissingAgeing(t *testing.T, newFixture NewMediaFixture) {
 	ctx := context.Background()
 	id := f.NewRecording(t)
 	assetID := f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/home/%d/original.m2ts", id), "active")
-	if err := f.Storage.UpsertMissingMediaAsset(ctx, assetID); err != nil {
-		t.Fatalf("UpsertMissingMediaAsset(%d): %v", assetID, err)
+	copyID := f.CopyID(t, assetID)
+	if err := f.Storage.UpsertMissingMediaAsset(ctx, copyID); err != nil {
+		t.Fatalf("UpsertMissingMediaAsset(copy %d): %v", copyID, err)
 	}
-	f.SetMissingFirstSeenAgo(t, assetID, 2*time.Hour)
+	f.SetMissingFirstSeenAgo(t, copyID, 2*time.Hour)
 	got, err := f.Storage.ListAgedMissingMediaAssets(ctx, time.Hour)
 	if err != nil {
 		t.Fatalf("ListAgedMissingMediaAssets(1h): %v", err)
 	}
-	if len(got) != 1 || got[0].ID != assetID || got[0].RecordingID != id || got[0].Kind != "original" {
-		t.Fatalf("ListAgedMissingMediaAssets(1h) = %+v, want only asset %d", got, assetID)
+	if len(got) != 1 || got[0].ID != copyID || got[0].MediaAssetID != assetID || got[0].RecordingID != id || got[0].Kind != "original" {
+		t.Fatalf("ListAgedMissingMediaAssets(1h) = %+v, want copy %d of asset %d", got, copyID, assetID)
 	}
 	if got, err := f.Storage.ListAgedMissingMediaAssets(ctx, 3*time.Hour); err != nil || len(got) != 0 {
 		t.Fatalf("ListAgedMissingMediaAssets(3h) = (%+v, %v), want none", got, err)

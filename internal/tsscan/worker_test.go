@@ -323,7 +323,7 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 		}
 	}
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO missing_media_assets (media_asset_id, store) VALUES ($1, 'test-store')`, missingAssetID,
+		`INSERT INTO missing_media_assets (media_asset_copy_id) SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, missingAssetID,
 	); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}

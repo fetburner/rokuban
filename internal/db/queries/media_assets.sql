@@ -69,20 +69,12 @@ WHERE recording_id = $1
   AND profile = $2
   AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
--- publish が tombstone も含めて既存の行を見るため、active に限らない。置き場を限定しない読み手に
--- 備え、active を先に、同順位は store 順に 1 件だけ選ぶ。
+-- 世代カウンターと論理行の状態は置き場によらない。コピー表へ JOIN すると、
+-- 書き手の store にコピーがないときにカウンターを読み落とす。
 -- name: GetEncodedMediaAssetForProfile :one
-SELECT a.id, c.rel_path, c.state, c.store,
+SELECT a.id, a.rel_path, a.state,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
-JOIN LATERAL (
-    SELECT copy.rel_path, copy.state, copy.store
-    FROM media_asset_copies copy
-    WHERE copy.media_asset_id = a.id
-      AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
-    ORDER BY (copy.state = 'active') DESC, copy.store
-    LIMIT 1
-) c ON true
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'encoded'
   AND a.profile = sqlc.arg('profile');
@@ -95,17 +87,6 @@ FROM media_assets
 WHERE recording_id = sqlc.arg('recording_id')
   AND kind = sqlc.arg('kind')
   AND profile IS NULL;
-
--- 置き換えの同一 tx 内でパスとサイズを差し替える。**行は消さない** --- 消して
--- 作り直すと rel_path の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを
--- 取れてしまう。世代番号で必ず新しいパスになるので、UPDATE で足りる。
--- name: UpdateEncodedMediaAssetPath :exec
-UPDATE media_assets
-SET rel_path   = sqlc.arg('rel_path'),
-    size_bytes = sqlc.arg('size_bytes'),
-    derived_generation = sqlc.arg('derived_generation'),
-    updated_at = now()
-WHERE id = sqlc.arg('id');
 
 -- 凍結した区間の差し替え（DELETE → InsertMediaAssetCuts の順に同一 tx で呼ぶ）。
 -- name: DeleteMediaAssetCuts :exec
@@ -132,61 +113,23 @@ FROM media_asset_cuts c
 CROSS JOIN LATERAL unnest(c.keep_ranges) AS k
 WHERE c.media_asset_id = sqlc.arg('media_asset_id');
 
--- encode コミット。UNIQUE (recording_id, kind, profile) で冪等。
--- tombstone（state='deleted'）がある場合は active に戻してパスとサイズを更新する。
--- 既に active な行がある場合の上書きは worker 側の事前チェックで避ける。
--- name: UpsertEncodedMediaAsset :one
+-- 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
+-- derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
+-- 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
+-- state / deleted_at は書かない。コピー行を書いた後の ReconcileMediaAssetStateFromCopies が決める。
+-- name: UpsertDerivedMediaAsset :one
 INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
-VALUES ($1, 'encoded', $2, $3, $4, $5)
+VALUES (
+    sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
+    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), sqlc.arg('derived_generation')
+)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
     sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
     updated_at = now()
-RETURNING id;
-
--- thumbnail コミット。UNIQUE (recording_id, kind, profile) で冪等。
--- tombstone（state='deleted'、過去の完全削除の残骸）がある場合は active に戻して
--- パスとサイズを更新する（UpsertEncodedMediaAsset と同じ形。issue #108）。
--- ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）のままだと、
--- tombstone との競合も新規コミット後の競合も同じ ErrNoRows で返ってきて区別できず、
--- 呼び出し側が両方を「既にコミット済みで成功」に丸めてしまう。tombstone は
--- ファイルがメディア上に書かれ続ける一方で GetActiveThumbnailMediaAssetID が
--- 空を返し続け、レベルトリガーが同じジョブを積み直す孤児を生む。
--- rel_path は thumbnails/{recording_id}.jpg で recording_id から決定的に導出され、
--- ON CONFLICT のキー (recording_id, kind, profile) と 1 対 1 対応する
--- （他の recording_id の行が同じ rel_path を持つことはない）。そのため
--- tombstone を active に戻しても CREATE UNIQUE INDEX ON media_assets (rel_path)
--- WHERE state <> 'deleted' に別の生きた行が衝突すること（23505）はない。
--- 既に active な行がある場合の上書きは worker 側の事前チェック
--- （GetActiveThumbnailMediaAssetID）で避ける。
--- name: UpsertThumbnailMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
-VALUES ($1, 'thumbnail', $2, $3, $4)
-ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
-    size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
-    sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
-    updated_at = now()
-RETURNING id;
-
--- name: UpsertSeekTilesMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
-VALUES ($1, 'seek_tiles', $2, $3, $4)
-ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
-    size_bytes = EXCLUDED.size_bytes,
-    derived_generation = EXCLUDED.derived_generation,
-    sha256     = NULL,
-    state      = 'active',
-    deleted_at = NULL,
-    updated_at = now()
+WHERE EXCLUDED.derived_generation >= COALESCE(media_assets.derived_generation, 0)
 RETURNING id;
 
 -- thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
@@ -196,36 +139,16 @@ WHERE recording_id = $1
   AND kind = 'thumbnail'
   AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
--- thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
+-- thumbnail 差し替えの commit tx 内で論理行を直列化する。
 -- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
 -- name: LockActiveThumbnailMediaAsset :one
 SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id
- AND c.store = sqlc.arg('store_name')
- AND c.state = 'active'
+JOIN LATERAL preferred_active_media_asset_copy(a.id, sqlc.arg('store_name')::text) c ON true
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'thumbnail'
-FOR UPDATE OF a, c;
-
--- thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
--- name: UpdateThumbnailMediaAssetPath :exec
-UPDATE media_assets AS asset
-SET rel_path   = sqlc.arg('rel_path'),
-    size_bytes = sqlc.arg('size_bytes'),
-    derived_generation = sqlc.arg('derived_generation'),
-    sha256     = NULL,
-    updated_at = now()
-WHERE asset.id = sqlc.arg('id')
-  AND asset.kind = 'thumbnail'
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = asset.id
-        AND c.store = sqlc.arg('store_name')
-        AND c.state = 'active'
-  );
+FOR UPDATE OF a;
 
 -- 生成に使ったファイルがまだ使えるかを commit tx 内で確認する。
 -- name: IsActiveThumbnailInput :one
@@ -235,14 +158,11 @@ SELECT EXISTS (
     WHERE a.id = sqlc.arg('media_asset_id')
       AND a.kind IN ('original', 'encoded')
       AND EXISTS (
-          SELECT 1 FROM media_asset_copies c
-          WHERE c.media_asset_id = a.id
-            AND c.store = sqlc.arg('store_name')
-            AND c.state = 'active'
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+          SELECT 1
+          FROM active_media_asset_copies(a.id, sqlc.arg('store_name')::text) c
+          WHERE NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
+          )
       )
 );
 

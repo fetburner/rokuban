@@ -112,7 +112,7 @@ func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 	}
 	var got []int64
 	for _, r := range rows {
-		got = append(got, r.ID)
+		got = append(got, r.MediaAssetID)
 	}
 	want := []int64{removed.h264ID, otherVersion.h264ID}
 	slices.Sort(got)

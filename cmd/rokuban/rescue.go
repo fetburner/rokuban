@@ -113,5 +113,10 @@ func runRescue(ctx context.Context, catalogStore store.Catalog, mediaPublish sto
 			"  warning: skipped %d file(s) without a sites/{site}/ prefix (site could not be inferred; not registered)\n",
 			result.SkippedFilesWithoutSitePrefix)
 	}
+	if result.SkippedConflictingFiles > 0 {
+		_, _ = fmt.Fprintf(out,
+			"  warning: skipped %d file(s) that conflict with an existing media asset (not registered; see the log)\n",
+			result.SkippedConflictingFiles)
+	}
 	return nil
 }

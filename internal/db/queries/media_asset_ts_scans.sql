@@ -24,7 +24,7 @@ WHERE a.recording_id = sqlc.arg('recording_id')::bigint
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+    WHERE m.media_asset_copy_id = c.id
   );
 
 -- 読み出し後に原本がまだ有効で同じサイズか、stats の置き換え前に検査する。
@@ -47,14 +47,14 @@ WHERE a.id = sqlc.arg('media_asset_id')::bigint
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+    WHERE m.media_asset_copy_id = c.id
   )
 FOR UPDATE OF a, c;
 
 -- active な original のうち、計測記録がないか保存サイズが古いものを、
 -- reconciler が recording_id の keyset pagination で拾う。
 -- name: ListMissingTSScanRecordings :many
-SELECT a.recording_id
+SELECT DISTINCT a.recording_id
 FROM media_assets a
 JOIN media_asset_copies c
   ON c.media_asset_id = a.id
@@ -71,7 +71,7 @@ WHERE a.recording_id > sqlc.arg('after_recording_id')::bigint
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_id = a.id AND m.store = sqlc.arg('store_name')
+    WHERE m.media_asset_copy_id = c.id
   )
 ORDER BY a.recording_id
 LIMIT sqlc.arg('row_limit');
