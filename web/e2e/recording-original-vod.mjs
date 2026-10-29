@@ -941,12 +941,10 @@ const edge = await page.locator('video').evaluate(async (element) => {
 })
 log(`  先端到達後 8 秒: ${JSON.stringify(edge)}`)
 if (edge.ended) ng.push(`④ ENDLIST の無い先端で ended が発火した (${JSON.stringify(edge)})`)
-if (engine === 'webkit' && edge.duration === Infinity) {
-  if (edge.seekableEnd === null || edge.seekableEnd > 12) {
-    ng.push(`④ native HLS の seekable 範囲が切れていない (${edge.seekableEnd})`)
-  }
-} else if (edge.duration > 12) {
+if (Number.isFinite(edge.duration) && edge.duration > 12) {
   ng.push(`④ playlist が切れていない (duration=${edge.duration})`)
+} else if (edge.duration === Infinity && (edge.seekableEnd === null || edge.seekableEnd > 12)) {
+  ng.push(`④ EVENT playlist の seekable 範囲が切れていない (${edge.seekableEnd})`)
 }
 if (watchedWrites.length !== watchedCountBeforeGrowingEdge) ng.push('④ ENDLIST の無い先端を視聴済みにした')
 
@@ -1369,8 +1367,7 @@ delete offsetRecording.watchedAt
   await installApiStubs(offsetPage, offsetHandler)
   await offsetPage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
   // ⑤-a 先頭（offset 0・続きから位置なし）をポスターの ▶ で再生すると、手で play() を呼ばなくても
-  // 再生が始まり、0 から始まる。WebKit のネイティブ HLS は開始位置を明示しないと ENDLIST の無い
-  // EVENT playlist のライブ端近くから始める。
+  // 再生が始まり、0 から始まる。hls.js の startPosition に 0 を渡して確認する。
   await offsetPage.getByTestId('recording-playback-start').click()
   await offsetPage.waitForFunction(() => {
     const element = document.querySelector('video')
@@ -1819,15 +1816,13 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
       ng.push(`⑦(${source}/${label}) 再生ボタンを押しても再生が進まない`)
     }
     if (source === 'original-hls' && !playbackFailure) {
-      // ネイティブ HLS は EVENT の最新端で最初の playing を出すことがある。製品は
-      // その playing で 0 秒を再表明するため、補正後に先頭 segment と再生開始が現れたかを見る。
+      // hls.js が先頭 segment から再生を始めることを確認する。
       const clickSegments = segmentRequests.slice(requestCursor.segments).filter((name) => name.startsWith('0_seg'))
       const videoLog = await page.evaluate((cursor) => window.__e2eVideoLog.slice(cursor), videoLogCursor)
-      const lastStartCorrection = videoLog.findLastIndex((entry) => entry.type === 'assign' && Math.abs(entry.value) < 0.001)
-      const playingAfterStartCorrection = videoLog.slice(lastStartCorrection + 1).find((entry) => entry.type === 'playing')
-      if (!clickSegments.includes('0_seg00000.ts') || playingAfterStartCorrection === undefined || playingAfterStartCorrection.currentTime >= 1) {
-        log(`  ⑦(${source}/${label}) 開始位置の診断: ${JSON.stringify({ clickSegments, videoLog, detailResume: detailResumeLog.slice(detailResumeCursor), writes: playbackPositionWrites.slice(writeCursor) })}`)
-        ng.push(`⑦(${source}/${label}) 補正後に原本 HLS が先頭から始まらない（segments=${clickSegments.join(',')}, playing=${playingAfterStartCorrection?.currentTime}）`)
+      const firstPlaying = videoLog.find((entry) => entry.type === 'playing')
+      if (!clickSegments.includes('0_seg00000.ts') || firstPlaying === undefined || firstPlaying.currentTime >= 1) {
+        log(`  ⑦(${source}/${label}) 開始位置の診断: ${JSON.stringify({ clickSegments, firstPlaying, videoLog, detailResume: detailResumeLog.slice(detailResumeCursor), writes: playbackPositionWrites.slice(writeCursor) })}`)
+        ng.push(`⑦(${source}/${label}) 原本 HLS が先頭から始まらない（segments=${clickSegments.join(',')}, playing=${firstPlaying?.currentTime}）`)
       }
     }
     await page.mouse.move(200, 5)
@@ -2012,7 +2007,7 @@ await retryPage.close()
 
 // This runs after the established seek/offset checks so its explicit keyboard seeks and
 // pause events cannot change their saved-position fixtures or ⑤-f baseline.
-log('\n=== ⑫-a 変換中 EVENT HLS は duration が Infinity でも数字キーで録画尺へシークする ===')
+log('\n=== ⑫-a 変換中 EVENT HLS は有限の duration でも数字キーで録画尺へシークする ===')
 growingEdge = true
 growingEventStartedAt = Date.now()
 applyPositionWrites = false
@@ -2033,8 +2028,8 @@ await eventVideo.evaluate((element) => {
 })
 const eventDuration = await eventVideo.evaluate((element) => element.duration)
 log(`  ${engine} EVENT video.duration=${eventDuration}`)
-if (engine === 'webkit' && eventDuration !== Infinity) {
-  ng.push(`⑫-a native EVENT HLS の duration が Infinity でないため対象経路を測れない (${eventDuration})`)
+if (eventDuration !== Infinity && (!Number.isFinite(eventDuration) || eventDuration <= 0)) {
+  ng.push(`⑫-a ENDLIST 前の EVENT HLS の video.duration が未確定 (${eventDuration})`)
 }
 const eventOffsetCursor = playlistRequests.length
 // 既知の製品側の取りこぼしを避けている。再生開始直後の WebKit は seekable 終端が Infinity を返し、
@@ -2185,8 +2180,6 @@ const raisedCue = await video.evaluate(async (element) => {
 log(`  HLS TextTrack: ${JSON.stringify(raisedCue)}`)
 if (raisedCue.kind === null) {
   ng.push('⑫ 原本 HLS の subtitle TextTrack がない')
-} else if (raisedCue.cueCount === 0 && engine === 'webkit') {
-  log('  WebKit の native HLS は cue を JS に公開せず、cue.line の書き換えは効かない（下の画素測定はブラウザ既定配置の観測）')
 } else if (raisedCue.cueCount === 0) {
   ng.push(`⑫ 原本 HLS の cue を取得できない (${JSON.stringify(raisedCue)})`)
 } else if (typeof raisedCue.cueLine !== 'number' || raisedCue.cueLine >= 0) {
@@ -2201,8 +2194,7 @@ if (await page.evaluate(() => document.fullscreenElement !== null)) {
 }
 await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 3000 })
   .catch(() => ng.push('⑫ 字幕位置の測定前に全画面を抜けられない'))
-// WebKit の native HLS は cue を JS に公開しないため、cue.line の書き換えは WebKit では何もしない。
-// ここで測るのはブラウザ既定の字幕位置の観測で、実装の検証ではないので WebKit は NG にしない。
+// hls.js の字幕 cue が JavaScript に見えることと、操作バーとの位置関係を測る。
 for (const viewport of [{ width: 1280, height: 900 }, { width: 400, height: 860 }]) {
   const label = `${viewport.width}x${viewport.height}`
   await page.setViewportSize(viewport)
@@ -2233,14 +2225,13 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 400, height: 860 
     ? null
     : captionPixels.bounds.y + captionPixels.bounds.height
   log(
-    `  ${engine === 'webkit' ? '観測(WebKit の既定配置。実装の検証ではない)' : '測定'} ${label}: subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${subtitleControlsBox.y}, fullscreen=${await page.evaluate(() => document.fullscreenElement !== null)}`,
+    `  測定 ${label}: subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${subtitleControlsBox.y}, fullscreen=${await page.evaluate(() => document.fullscreenElement !== null)}`,
   )
   if (captionPixels.changedPixels < 20 || captionBottom === null) {
     ng.push(`⑫ 原本 HLS ${label}: 字幕を有効にしても画面上の描画変化を測れない`)
   } else if (captionBottom >= subtitleControlsBox.y - 4) {
     const overlap = `字幕が操作バーに重なる ${label} (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: subtitleControlsBox.y })})`
-    if (engine === 'webkit') log(`  観測: WebKit ${overlap}`)
-    else ng.push(`⑫ 原本 HLS: ${overlap}`)
+    ng.push(`⑫ 原本 HLS: ${overlap}`)
   }
 }
 

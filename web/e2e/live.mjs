@@ -349,23 +349,6 @@ const mseAttached = () => {
 }
 
 /**
- * nativeSrcAssigned はブラウザ側で評価する述語（`<video>` に URL が直接
- * 渡されたか = ネイティブ HLS 経路に入ったか）。
- */
-const nativeSrcAssigned = () => {
-  const v = document.querySelector('video')
-  if (!v) return false
-  return v.currentSrc.includes('.m3u8') || v.src.includes('.m3u8')
-}
-
-/** playerDecided は再生経路が決まった（どちらかの分岐に入った）ことを表す。 */
-const playerDecided = () => {
-  const v = document.querySelector('video')
-  if (!v) return false
-  return v.currentSrc !== '' || v.src !== ''
-}
-
-/**
  * liveDiagnosticsBecameNumeric はブラウザ側で評価する述語（issue #476）。
  *
  * 遅延・バッファの計器（`[data-testid="live-diagnostics"]`）は、hls.js の
@@ -404,7 +387,7 @@ async function mockLiveRoutes(page, mode) {
   // ライブ画面はサーバーの live.enabled に連動する（issue #209）。この判定は
   // 「ライブが有効なデプロイ」を前提にしているが、判定を回すサーバーの config は
   // 既定（live.enabled: false）のことが多い --- 差し替えないと画面が
-  // 「この環境ではライブ視聴が無効です」になり、①〜⑦ が全滅する
+  // 「この環境ではライブ視聴が無効です」になり、①〜⑥ が全滅する
   await page.route('**/api/capabilities', async (route) => {
     await route.fulfill({
       status: 200,
@@ -470,16 +453,6 @@ async function mockLiveRoutes(page, mode) {
   })
 
   await page.route('**/live/segments/*', async (route) => {
-    // mode.segments でメディア層だけを壊せる（⑦。プレイリストは 200 のまま
-    // なので probe は通り、失敗はメディア層にしか現れない）
-    if (mode.segments === '404') {
-      await route.fulfill({ status: 404, contentType: 'text/plain', body: 'not found' })
-      return
-    }
-    if (mode.segments === 'hang') {
-      // 応答しない。WebKit は 3 秒データが来ないと `stalled` を出す（HTML 仕様）
-      return
-    }
     const u = new URL(route.request().url())
     const name = u.pathname.split('/').pop()
     const file = path.join(SEGMENTS_DIR, name)
@@ -492,9 +465,7 @@ async function mockLiveRoutes(page, mode) {
     // 確かめるため。応答を止める `hang` では数えない）
     mode.servedSegments = (mode.servedSegments ?? 0) + 1
     // この `video/mp2t` は streamer の実装値の写し（`internal/streamer/live.go` の `Segment`）。
-    // フロントの再生経路判定（`lib/live.ts` の `supportsNativeHls`）がこの値に
-    // 依存しているが、**ここでモックしている以上、この e2e は Go 側が別の
-    // Content-Type に変わったことを検出できない**（Go 側にも同じ注意書きがある）
+    // ここでモックしている以上、この e2e は Go 側の Content-Type 変更を検出できない。
     await route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
   })
 }
@@ -539,7 +510,7 @@ async function selectedLiveProfile(page) {
  * clickPlay は選択画面（issue #234 M7-1）の「再生」ボタンを押す。
  *
  * `pages/live.tsx` はチャンネルを選んだだけでは `LivePlayer` をマウントしない
- * （probe もセッションも起こさない。⓪ が直接見る）。①〜⑦は「再生」を押した
+ * （probe もセッションも起こさない。⓪ が直接見る）。①〜⑥は「再生」を押した
  * 後の挙動を見るものなので、`page.goto` の直後にこれを呼んで初めて
  * `LivePlayer` が現れる。
  */
@@ -558,7 +529,7 @@ async function clickPlay(page) {
  * 落ちる。
  *
  * この判定が本来見たいのは「チャンネルを選ぶだけではプレイリスト/セグメント要求が飛ばない」
- * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑦と違って
+ * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑥と違って
  * ffmpeg フィクスチャに依存せず、bundled Chromium だけで常に測れる。
  *
  * `web/e2e/README.md`「判定を足すときの規律」に沿って、要求件数の assert
@@ -1416,10 +1387,6 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
       await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 })
       await expectPlaying('軸のシークで追っかけへ替えた後')
 
-      // WebKit の native HLS は segment の 500 / 切断で error を出さず取り直し続けた（120 秒待っても「再読み込み」が出ない）。
-      // error を起こす手段が無いので、この判定は未測定とする。
-      if (engine === 'webkit') skipped.push('#1143 /live の追っかけの再読み込み（WebKit の native HLS で失敗を起こせない）')
-      else {
         // #1143 /live の追っかけで再生を進めた後、offset playlist が失敗すると、再読み込みは最後の位置を保つ。
         // 位置は映像で測る（⑪-b / ⑭-b と同じ）。追っかけの録画秒は、要求した offset（セッションの起点）+ video.currentTime。
         const lastRequestedOffset = (cursor) => chaseOffsetFixture.requests.slice(cursor).findLast(() => true)?.offset
@@ -1469,7 +1436,6 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
             ng.push(`#1143 /live の追っかけの再読み込みの着地が最後の位置の 0.5 秒以内でない (${landing} / ${selectedPosition})`)
           }
         }
-      }
       await context.close()
     }
 
@@ -1518,18 +1484,17 @@ if (hasFixture) ensureCaptionFixture()
 if (!hasFixture) {
   log(
     'ffmpeg が見つからないため、フィクスチャを生成できない。' +
-      '①②③④⑤⑧（フィクスチャを使う判定）③⑥⑦⑨⑩⑪ をすべて測れないとして報告する',
+      '①②③④⑤⑧⑨⑩⑪ をすべて測れないとして報告する',
   )
-  // **未測定を「すべて期待どおり」に混ぜない。** フィクスチャが無いと ⑦⑨⑩⑪ も
+  // **未測定を「すべて期待どおり」に混ぜない。** フィクスチャが無いと ⑨⑩⑪ も
   // 一度も走らないので、数え漏らすと何も測っていない緑になる
-  skipped.push('ffmpeg が無いため ①②③④⑤⑧（と ⑥⑦⑨⑩⑪）すべて未測定')
+  skipped.push('ffmpeg が無いため ①②③④⑤⑧（と ⑥⑨⑩⑪）すべて未測定')
 }
 
 if (hasFixture) {
   const browser = await launchBrowser()
   // ①②④⑤⑧ の途中で何が例外を投げても NG として報告し、後続の ③（別ブラウザ）を
-  // 続行する（クラッシュさせない）。実際に「壊してみる」検証で、native HLS
-  // 判定を誤らせると `waitForFunction` が例外で落ちることを確認した経緯があるため
+  // 続行する（クラッシュさせない）。実ブラウザの判定失敗を記録して後続を続ける。
   try {
     await runChromiumChecks(browser)
   } catch (err) {
@@ -1587,7 +1552,7 @@ async function runChromiumChecks(browser) {
   if (!loadedHlsChunk) {
     ng.push(
       '① assets/hls-*.js への要求が無い（hls.js 経路が実際に使われていない。' +
-        'supportsNativeHls を強制的に true にする等で壊れると再現する）',
+        'hls.js 経路が実際に使われていない）',
     )
   }
 
@@ -1934,67 +1899,7 @@ async function runChromiumChecks(browser) {
     ng.push(`⑩ 字幕の検証中に例外が発生した: ${err.message}`)
   }
 
-  // --- ⑩-WebKit ネイティブ経路（Safari 相当）の字幕 ---
-  //
-  // **向きが逆である。** WebKit は字幕を**既定で表示しない**（レンディションに
-  // `DEFAULT=YES` を書いても、Safari の字幕は利用者が有効にするまで出ない。
-  // 実測）。したがってここで見るのは「利用者が入にしてから切り替えても入の
-  // まま」の側で、hls.js 経路（⑩）の「切ったまま」と対になる。
-  //
-  // **`loadedmetadata` で揃えるだけでは足りない**（実測: 入にしてから切り替えると
-  // `disabled` に戻った）。WebKit は `loadedmetadata` の時点でまだトラックを
-  // 作っていないためで、`LivePlayer` は `TextTrackList` の `addtrack` でも
-  // 適用する。ここはその経路が実ブラウザで効くかを見る唯一の判定である。
-  log('\n=== ⑩-WebKit 画質切替と字幕（ネイティブ経路） ===')
-  let webkitCaptionBrowser = null
-  try {
-    webkitCaptionBrowser = await launchBrowser('webkit')
-  } catch {
-    webkitCaptionBrowser = null
-  }
-  if (!webkitCaptionBrowser) {
-    log('  WebKit が無いため測れない')
-    skipped.push('⑩-WebKit の字幕は WebKit が無いため未測定')
-  } else {
-    try {
-      const page = await webkitCaptionBrowser.newPage({ viewport: { width: 960, height: 640 } })
-      await mockLiveRoutes(page, { playlist: 'captions' })
-      await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
-      await clickPlay(page)
-      await page.waitForFunction(nativeSrcAssigned, undefined, { timeout: 15000 })
-      await page.waitForFunction(
-        () => (document.querySelector('video')?.textTracks?.length ?? 0) > 0,
-        undefined,
-        { timeout: 20000 },
-      )
-      /** subtitleModes は `<video>` の字幕トラックの mode 一覧。 */
-      const modes = () =>
-        page.evaluate(() =>
-          Array.from(document.querySelector('video')?.textTracks ?? []).map((t) => t.mode),
-        )
-      // 利用者がネイティブコントロールの CC で「入」にする
-      await page.evaluate(() => {
-        for (const t of Array.from(document.querySelector('video').textTracks)) t.mode = 'showing'
-      })
-      log(`  入にした直後: ${JSON.stringify(await modes())}`)
 
-      await selectLiveProfile(page, 'sd')
-      await page.waitForTimeout(3000)
-      const after = await modes()
-      log(`  切替後の mode: ${JSON.stringify(after)}`)
-      if (!after.includes('showing')) {
-        ng.push(
-          '⑩-WebKit 画質の切替で、利用者が入にした字幕が消えた' +
-            `（mode: ${JSON.stringify(after)}。ネイティブ経路は TextTrackList の` +
-            ' addtrack で適用していない）',
-        )
-      }
-    } catch (err) {
-      ng.push(`⑩-WebKit 字幕の検証中に例外が発生した: ${err.message}`)
-    } finally {
-      await webkitCaptionBrowser.close()
-    }
-  }
 }
 
 if (hasFixture) {
@@ -2011,8 +1916,6 @@ if (hasFixture) {
     skipped.push('③ 実再生は Chrome チャンネルが無いため未測定')
   } else {
     // ここから先で何が失敗しても NG として報告する（クラッシュさせない）。
-    // 実際に「壊してみる」検証で、native HLS 判定を誤らせると `blob:` に
-    // ならず `waitForFunction` が例外で落ちることを確認した経緯があるため
     try {
       const chromePage = await chromeBrowser.newPage({ viewport: { width: 960, height: 640 } })
       await mockLiveRoutes(chromePage, { playlist: 'ok' })
@@ -2067,16 +1970,8 @@ if (hasFixture) {
 }
 
 if (hasFixture) {
-  // --- ⑥ WebKit（Safari 相当）はネイティブ HLS 経路に入る ---
-  //
-  // **この判定が無かったために、Safari が hls.js 経路へ落ちる変更が e2e 緑のまま
-  // 通った**（レビュー #190 の 2 回目の指摘）。①〜⑤ は Chromium 系しか回して
-  // いないので、「Safari ではネイティブを使い hls.js を読み込まない」という決定
-  // （issue #92 の着手時コメント 1）は一度も機械判定されていなかった。
-  //
-  // WebKit は `<video>` が MPEG-2 TS を demux できる唯一のエンジンなので、
-  // フィクスチャ（H.264/AAC in TS）をそのまま再生できる --- 実再生まで見る。
-  log('\n=== ⑥ WebKit（Safari 相当）のネイティブ HLS 経路 ===')
+  // --- ⑥ Playwright WebKit でも hls.js を通して再生する ---
+  log('\n=== ⑥ WebKit（Safari 相当）の hls.js 経路 ===')
   const webkitBrowser = await launchBrowser('webkit')
   try {
     const page = await webkitBrowser.newPage({ viewport: { width: 960, height: 640 } })
@@ -2085,143 +1980,35 @@ if (hasFixture) {
     await mockLiveRoutes(page, { playlist: 'ok' })
     await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
     await clickPlay(page)
+    await page.waitForFunction(mseAttached, undefined, { timeout: 15000 })
 
-    // 経路が決まる（どちらかの分岐が `<video>` に何かを渡す）まで待つ。
-    // ここで待たずに数えると「まだ hls.js を要求していないだけ」を
-    // 「要求しなかった」と誤って合格にする（非同期の空虚な成功）
-    let decided = true
-    try {
-      await page.waitForFunction(playerDecided, undefined, { timeout: 15000 })
-    } catch {
-      decided = false
-    }
-
-    const src = await page.evaluate(() => {
-      const v = document.querySelector('video')
-      return { src: v?.src ?? '', currentSrc: v?.currentSrc ?? '' }
-    })
-    log(`  video.src = ${src.src.slice(0, 60)}`)
-    log(`  video.currentSrc = ${src.currentSrc.slice(0, 60)}`)
-
-    if (!decided) {
-      ng.push('⑥ WebKit で再生経路が決まらない（video に src も currentSrc も入らない）')
-    }
-
-    // 判定 1: hls.js の動的 import チャンクを読み込まない（決定 1 の実体）
     const loadedHlsChunk = requestLog.some((u) => /\/assets\/hls-.*\.js(\?.*)?$/.test(u))
-    log(`  assets/hls-*.js への要求: ${loadedHlsChunk ? 'あり' : 'なし'}`)
-    if (loadedHlsChunk) {
-      ng.push(
-        '⑥ WebKit が hls.js のチャンク（約 520 KB）を読み込んだ。' +
-          'ネイティブ HLS 分岐に入っていない（issue #92 の決定 1 が成立していない）',
-      )
+    if (!loadedHlsChunk) ng.push('⑥ WebKit で hls.js の動的 import chunk が読み込まれない')
+    const src = await page.evaluate(() => {
+      const video = document.querySelector('video')
+      return { src: video?.src ?? '', currentSrc: video?.currentSrc ?? '' }
+    })
+    log(`  video.currentSrc = ${src.currentSrc.slice(0, 60)}`)
+    if (src.src.includes('.m3u8') || src.currentSrc.includes('.m3u8')) {
+      ng.push('⑥ WebKit の video に m3u8 URL が直接割り当てられた')
     }
 
-    // 判定 2: `<video>` に m3u8 の URL がそのまま渡っている
-    const wentNative = await page.evaluate(nativeSrcAssigned)
-    log(`  video に m3u8 の URL が渡っている: ${wentNative ? 'YES' : 'NO'}`)
-    if (!wentNative) {
-      ng.push('⑥ WebKit で video.src / currentSrc が m3u8 にならない（ネイティブ経路に入っていない）')
-    }
-
-    // 判定 3: ネイティブのまま実際に再生が進む（WebKit は TS を demux できる）
-    try {
-      await page.evaluate(() => document.querySelector('video').play())
-      const before = await page.evaluate(() => document.querySelector('video').currentTime)
-      await page.waitForTimeout(3000)
-      const after = await page.evaluate(() => ({
-        t: document.querySelector('video').currentTime,
-        w: document.querySelector('video').videoWidth,
-        r: document.querySelector('video').readyState,
-      }))
-      log(`  currentTime: ${before.toFixed(2)} → ${after.t.toFixed(2)}`)
-      log(`  videoWidth: ${after.w}, readyState: ${after.r}`)
-      if (!(after.t > before)) ng.push('⑥ WebKit で 3 秒待っても currentTime が進まない')
-      if (!(after.w > 0)) ng.push('⑥ WebKit で videoWidth が 0（映像がデコードされていない）')
-
-      // **ネイティブ経路のチャンネル切替はここでは判定しない。** 一度足して
-      // みたが、どう壊しても落ちなかったので外した（落ちない判定は何も判定して
-      // いない。CLAUDE.md「テスト規律」）。理由は測って分かった --- 切替時は
-      // 同じ `<video>` に新しい `src` が入るので、それ自体が旧チャンネルの
-      // メディア資源を破棄する。cleanup の `removeAttribute('src')` を
-      // 無効化しても旧チャンネルへの要求は 0 件のままだった（cleanup が効くのは
-      // 画面を離れるときで、それはドキュメントごと消えるので測れない）
-    } catch (err) {
-      ng.push(`⑥ WebKit の実再生の検証中に例外が発生した: ${err.message}`)
-    }
+    await page.evaluate(() => document.querySelector('video').play())
+    const before = await page.evaluate(() => document.querySelector('video').currentTime)
+    await page.waitForTimeout(3000)
+    const after = await page.evaluate(() => ({
+      t: document.querySelector('video').currentTime,
+      w: document.querySelector('video').videoWidth,
+      r: document.querySelector('video').readyState,
+    }))
+    log(`  currentTime: ${before.toFixed(2)} → ${after.t.toFixed(2)}`)
+    log(`  videoWidth: ${after.w}, readyState: ${after.r}`)
+    if (!(after.t > before)) ng.push('⑥ WebKit で 3 秒待っても currentTime が進まない')
+    if (!(after.w > 0)) ng.push('⑥ WebKit で videoWidth が 0（映像がデコードされていない）')
   } catch (err) {
-    ng.push(`⑥ の検証中に例外が発生した: ${err.message}`)
+    ng.push(`⑥ WebKit の hls.js 再生検証中に例外が発生した: ${err.message}`)
   } finally {
     await webkitBrowser.close()
-  }
-}
-
-if (hasFixture) {
-  // --- ⑦ ネイティブ経路で「probe は 200 だがメディアが死んでいる」ときの失敗表面 ---
-  //
-  // probe（`fetch` によるプレイリストの事前取得）は HTTP 層しか見ないので、
-  // プレイリストが 200 でセグメントが壊れている状況は素通りする。ここを
-  // `<video>` のイベントで拾えていないと、**永久に止まった黒いプレイヤー**に
-  // なる（文言も読み込み表示も再読み込みボタンも出ない）。レビュー #190 の
-  // 3 回目の指摘で実測された症状そのものを判定にする。
-  //
-  // 2 通り試すのは、実測で**壊れ方によって出るイベントが違った**ため:
-  //   404  → `error` が出る（`video.error` は code 3）
-  //   応答なし → `error` は出ず `stalled` だけが出る（3.6 秒後）
-  // 片方だけ見ると、もう片方を落とす実装変更を通してしまう
-  //
-  // **応答なしの窓は 30 秒では足りない（実測 31.5 秒）。** 自動降格（issue #871）が
-  // 猶予の満了で 1 回挟まるためで、そこから更に 1 窓ぶん待って初めてエラー表示に
-  // 落ちる（降格先が無ければそこでエラーになる）。降格の導入前は 30 秒で
-  // 足りていた。**窓そのものが「黒いままにならない」の上限である** --- 判定は
-  // 「窓の中でエラー表示と再読み込みが出るか」しか見ないので、窓を広げすぎると
-  // 遅延の退行（例: 閾値を 25 秒にすると約 57 秒）を黙って通す。実測 31.5 秒に
-  // 対して余裕を残した 40 秒にする（この e2e のフィクスチャはプロファイル 2 件
-  // なので降格は高々 1 回。3 件以上ある実運用では、段が尽きるまで降格を試すので
-  // この待ち時間はプロファイル数に比例して伸びる）
-  log('\n=== ⑦ ネイティブ経路のメディア失敗（WebKit） ===')
-  for (const [label, segments, timeout] of [
-    ['セグメントが 404', '404', 20000],
-    ['セグメントが応答しない', 'hang', 40000],
-  ]) {
-    const browser = await launchBrowser('webkit')
-    try {
-      const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
-      await mockLiveRoutes(page, { playlist: 'ok', segments })
-      await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'domcontentloaded' })
-      await clickPlay(page)
-
-      let shown = false
-      const shownStartedAt = Date.now()
-      try {
-        await page.getByText('ライブ視聴でエラーが発生しました。').waitFor({ timeout })
-        await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 5000 })
-        shown = true
-      } catch {
-        shown = false
-      }
-      const shownAfterMs = Date.now() - shownStartedAt
-      const detail = await page.evaluate(() => {
-        const v = document.querySelector('video')
-        return {
-          text: document.body.innerText.replace(/\s+/g, ' ').slice(0, 160),
-          readyState: v?.readyState ?? -1,
-          err: v?.error ? v.error.code : null,
-        }
-      })
-      log(`  ${label}: エラー表示 + 再読み込み = ${shown ? 'YES' : 'NO'}（${shownAfterMs} ms）`)
-      log(`    readyState=${detail.readyState} video.error=${detail.err}`)
-      if (!shown) {
-        ng.push(
-          `⑦ ${label}のとき、エラー表示も再読み込みボタンも出ない` +
-            `（永久に止まった黒いプレイヤーになる）。画面のテキスト: ${detail.text}`,
-        )
-      }
-    } catch (err) {
-      ng.push(`⑦ ${label}の検証中に例外が発生した: ${err.message}`)
-    } finally {
-      await browser.close()
-    }
   }
 }
 

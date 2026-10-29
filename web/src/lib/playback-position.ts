@@ -203,18 +203,12 @@ export function applyPlaybackRate(
   }
 }
 
-/**
- * ネイティブ HLS は ENDLIST 前の playlist を live として再生する。
- * 録画再生では WebKit がこの状態で 1 倍以外だと停止するため、有限尺になるまで 1 倍にする。
- */
+/** effectivePlaybackRate は録画再生なら保存速度、通常のライブなら 1 倍を返す。 */
 export function effectivePlaybackRate(
   requestedRate: number,
   isRecordingPlayback: boolean,
-  isNativeHls: boolean,
-  durationSeconds: number,
 ): number {
   if (!isRecordingPlayback) return 1
-  if (isNativeHls && durationSeconds === Infinity) return 1
   return requestedRate
 }
 

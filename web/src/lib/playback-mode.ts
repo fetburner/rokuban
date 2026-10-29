@@ -59,10 +59,6 @@ export type PlaybackErrorMessages = {
   capacity: { title: string; guidance: string }
   otherTitle: string
   fatalTitle: string
-  /** ネイティブ HLS の `<video>` error。 */
-  mediaError: string
-  /** ネイティブ HLS で映像データが途絶えたまま猶予が過ぎたとき。 */
-  stalled: string
   /** HLS を再生できないブラウザ。 */
   unsupported: string
 }
@@ -118,8 +114,6 @@ export function playbackStrategy(input: PlaybackStrategyInput): PlaybackStrategy
           },
           otherTitle: 'ライブ視聴でエラーが発生しました。',
           fatalTitle: 'ライブ再生中にエラーが発生しました',
-          mediaError: 'ライブ映像を再生できませんでした（映像データを読み込めません）',
-          stalled: 'ライブ映像が届いていません（映像データが途絶えました）',
           unsupported: 'このブラウザはライブ視聴（HLS）に対応していません',
         },
         leaveURL: () => liveLeaveURL(site, networkId, serviceId),
@@ -138,8 +132,6 @@ export function playbackStrategy(input: PlaybackStrategyInput): PlaybackStrategy
           },
           otherTitle: '追っかけ再生でエラーが発生しました。',
           fatalTitle: '追っかけ再生中にエラーが発生しました',
-          mediaError: '追っかけ映像を再生できませんでした（映像データを読み込めません）',
-          stalled: '追っかけ映像が届いていません（映像データが途絶えました）',
           unsupported: 'このブラウザは追っかけ再生（HLS）に対応していません',
         },
         recording: {
@@ -165,8 +157,6 @@ export function playbackStrategy(input: PlaybackStrategyInput): PlaybackStrategy
           },
           otherTitle: '原本 TS の再生でエラーが発生しました。',
           fatalTitle: '原本 TS の再生中にエラーが発生しました',
-          mediaError: '録画映像を再生できませんでした（映像データを読み込めません）',
-          stalled: '録画映像が届いていません（映像データが途絶えました）',
           unsupported: 'このブラウザは原本 TS の再生（HLS）に対応していません',
         },
         recording: {
@@ -189,8 +179,6 @@ export function playbackStrategy(input: PlaybackStrategyInput): PlaybackStrategy
           },
           otherTitle: '録画 HLS の再生でエラーが発生しました。',
           fatalTitle: '録画 HLS の再生中にエラーが発生しました',
-          mediaError: '録画映像を再生できませんでした（映像データを読み込めません）',
-          stalled: '録画映像が届いていません（映像データが途絶えました）',
           unsupported: 'このブラウザは録画 HLS に対応していません',
         },
         recording: {

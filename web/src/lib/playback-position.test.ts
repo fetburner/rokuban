@@ -176,11 +176,9 @@ describe('再生速度は端末ごとに 1 つ', () => {
     }
   })
 
-  it('ENDLIST 前のネイティブ HLS 録画再生だけ 1 倍にする', () => {
-    expect(effectivePlaybackRate(1.5, true, true, Infinity)).toBe(1)
-    expect(effectivePlaybackRate(1.5, true, true, 120)).toBe(1.5)
-    expect(effectivePlaybackRate(1.5, true, false, Infinity)).toBe(1.5)
-    expect(effectivePlaybackRate(1.5, false, true, Infinity)).toBe(1)
+  it('録画再生では保存速度を使い、通常ライブでは 1 倍にする', () => {
+    expect(effectivePlaybackRate(1.5, true)).toBe(1.5)
+    expect(effectivePlaybackRate(1.5, false)).toBe(1)
   })
 })
 

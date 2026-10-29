@@ -44,7 +44,6 @@ E2E_URL=http://localhost:40775 pnpm e2e
 cd web
 corepack pnpm e2e:recording-segmented-vod                      # Chrome。ffmpeg が要る
 E2E_BROWSER=webkit corepack pnpm e2e:recording-segmented-vod   # 診断用
-E2E_BROWSER=safari corepack pnpm e2e:recording-segmented-vod   # 実 Safari。safaridriver を許可しておく
 ```
 
 チャンネル選択と「その他」のモバイルシート、録画・シリーズ絞り込み内のチャンネル選択は次で判定する。デスクトップのチャンネル選択も合わせて確認する。
@@ -86,7 +85,6 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | LivePlayer の 503 文言・離脱ヒント・追っかけの表示時刻（`live-player-modes.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
-| 世代付き録画 HLS の停滞復旧（`recording-hls-stall-recovery.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画 HLS の再起動境界（`recording-segmented-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | 原本 HLS から encoded への切替（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | S3 の署名付き URL への 302（`s3-302.mjs`） | [checks/playback.md](checks/playback.md) |
@@ -164,7 +162,7 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 それ以外の判定（`lib.mjs` と `validate-fixtures.mjs` は共有部品）は**ローカルでの受け入れ確認**の位置づけである。[docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。回さない理由は 3 類型ある。
 
-- webkit が要る: webkit でしか測れない判定を持つ。対象は `live`（ネイティブ HLS の字幕など）と `live-audio`（ネイティブ HLS の `audioTracks`）。`E2E_BROWSER=webkit` を任意で受けるだけのスクリプトは、Chromium で回るのでここに入れない
+- WebKit 診断がある: HLS は WebKit でも hls.js を使う。`live` と `live-audio` は WebKit の MSE とトラック処理を追加確認する。`E2E_BROWSER=webkit` を任意で受けるだけのスクリプトは、Chromium で回るのでここに入れない
 - 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。`live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
 - API スタブで載せられるが所要時間を測っていない: 全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない
   - 画面別判定（番組表・予約・検索など）
@@ -174,7 +172,7 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
     - そのほか: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`
   - `design.mjs`: 63 枚のショットを撮るぶん重い
 
-`s3-302` は上の 3 類型のどれでもなく、`browser-e2e` と別のジョブ `browser-s3-302` で回す。固定した版の MinIO のビルドと実 Chrome が要り、選定基準の「Chromium だけで軽く終わる」を満たさないためである。実 Safari は CI に載せない。
+`s3-302` は上の 3 類型のどれでもなく、`browser-e2e` と別のジョブ `browser-s3-302` で回す。固定した版の MinIO のビルドと実 Chrome が要り、選定基準の「Chromium だけで軽く終わる」を満たさないためである。
 
 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない赤い定期ジョブは PR ごとに回す一部より信号として弱いためである。対象を増やすときは `.github/workflows/ci.yml` のコメントとこの節の類型を同じ PR で直す。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 

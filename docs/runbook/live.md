@@ -19,11 +19,10 @@
 docker compose restart rokuban
 ```
 
-手順は次の 6 つである。実機での確認が未実施の 2 点（手順 2 と 6）は、下の小見出しに分けた。
+手順は次の 5 つである。実配信での一時停止確認（手順 5）は未実施である。
 
 1. ブラウザで `/live` を開き、チャンネルを選ぶ。この時点ではまだ何も始まらない（選択と視聴開始は分離してある）。「再生」ボタンを押すと数秒で再生が始まる。
-2. iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）。詳細は「iPhone の Safari での再生」に書いた。
-3. 別ターミナルでメトリクスを見る。
+2. 別ターミナルでメトリクスを見る。
 
    ```sh
    curl -s http://localhost:40773/metrics | grep rokuban_live
@@ -35,9 +34,9 @@ docker compose restart rokuban
    ```
 
    ライブ再生中は `rokuban_live_active_sessions{kind="live"}` が `1`（見ているチャンネル数）になる。
-4. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。離脱ヒントが届けば十数秒で `rokuban_live_active_sessions{kind="live"}` が `0` に戻り、`rokuban_live_idle_gc_reclaimed_total` が `1` 増える。詳細は「離脱ヒントと回収時間」に書いた。
-5. チューナー本数が少ない環境で、複数チャンネルへ連続で「再生」を押す。上限に達したときの応答は「同時視聴数の上限」に書いた。
-6. 実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）。詳細は「一時停止の確認」に書いた。
+3. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。離脱ヒントが届けば十数秒で `rokuban_live_active_sessions{kind="live"}` が `0` に戻り、`rokuban_live_idle_gc_reclaimed_total` が `1` 増える。詳細は「離脱ヒントと回収時間」に書いた。
+4. チューナー本数が少ない環境で、複数チャンネルへ連続で「再生」を押す。上限に達したときの応答は「同時視聴数の上限」に書いた。
+5. 実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）。詳細は「一時停止の確認」に書いた。
 
 #### 離脱ヒントと回収時間
 
@@ -68,42 +67,18 @@ flowchart TD
 
 以前あった 400ms のデバウンス（ザッピングでセッションが積まれないようにする緩和）は、選択自体がコスト 0 になったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは、離脱ヒントが届けば十数秒、届かなければ 30 秒強残る（手順 4）。
 
-#### iPhone の Safari での再生
-
-iPhone の Safari でライブ視聴が再生できることは、**誰も確認していない（未実施）。** ネイティブ HLS 経路に入れないと、iOS 17.1 未満では「このブラウザはライブ視聴（HLS）に対応していません」になる。
-
-iPhone は MSE の MediaSource を持たない（ManagedMediaSource だけを持つ。iPad と違う）。再生経路の判定は、macOS の WebKit / Chromium / Chrome / Firefox では実測して固定してある。iOS 実機は誰も確認していない。
-
-video/mp2t の canPlayType の戻り値が macOS の WebKit と同じ `'maybe'` である保証は無い。違っていた場合は hls.js 経路へ落ちる。iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では最後の手段で video 要素に直接渡る形になる。
-
-確認できる人が実機で開いて、次の 2 点を見る。
-
-1. 再生できること
-2. 開発者ツールで `assets/hls-*.js` を読み込んでいないこと（読み込んでいたらネイティブ分岐に入れていない）
-
-<details>
-<summary>根拠</summary>
-
-- iPhone に MediaSource が無い: `window.MediaSource`、`ManagedMediaSource`
-- 再生経路の判定を macOS の 4 ブラウザで固定した: `supportsNativeHls`、`web/e2e/live.mjs` の⑥
-- 最後の手段が video 要素に直接渡す: `canPlayType('video/mp2t')`、`claimsHlsPlaylistSupport`、`<video>`
-
-</details>
-
 #### 一時停止の確認
 
 実配信で一時停止してもエラー画面にならないことは、確認できていない（未実施）。一度でも再生が始まった後の一時停止中は、失敗と見なさないようにしてある。
 
-ネイティブ経路は、停滞（stalled）や待機（waiting）が猶予（12 秒）を超えたら失敗と見なす。ところが WebKit は、一時停止の直後にも stalled を出す。そのため、再生が始まった後の一時停止中は失敗と見なさない。
-
-この抑止をブラウザ側で機械判定する手段は無い。`web/e2e/live.mjs` は一時停止を一度も作らない。実装側の分岐は jsdom のユニットテストが測る。ブラウザが実際に pause 時に stalled を出し、再開時に waiting を再送することは、レビュー時の WebKit 手動測定が根拠である。**実配信では未確認である。** e2e のフィクスチャは `-hls_list_size 0` 生成の `#EXT-X-ENDLIST` を持つ VOD 形で、実配信のローリングウィンドウとは挙動が違いうる。
+停滞は再生位置の進み方で観測する。再生前と一時停止中は位置が進まないのが正常なので、猶予を数えない。実配信での確認は未実施である。e2e の固定フィクスチャは `#EXT-X-ENDLIST` を持つ VOD 形で、実配信のローリングウィンドウとは挙動が異なる可能性がある。
 
 実機で再生し、一時停止して 30 秒放置し、エラー画面が出ないことを見る。再開して再生が続くことも見る。
 
 <details>
 <summary>根拠</summary>
 
-- 一時停止中を失敗と見なさない分岐: `stalled`、`waiting`、`live-player.tsx` の `watchNativeMedia`
+- 一時停止中を停滞と見なさない分岐: `paused`、`observeStall`、`live-player.test.tsx`
 - 分岐を jsdom が測る: `live-player.test.tsx`
 
 </details>
@@ -176,7 +151,7 @@ e2e のスクリプトは `web/e2e/live.mjs` である。
 
 e2e は、サーバーの応答の一部を Playwright の route で差し替え、実サーバーの設定に依存しないようにしてある。サーバーは「サービス一覧を返す」以外の実仕事をしない。
 
-`GET /api/capabilities` も同じく差し替えている。立てていないサーバーだと画面が「無効です」になって①〜⑦が全滅するためである。`GET /api/live-profiles` も差し替えている。実サーバーは config の `live.profiles` を返すが、⑨ は「2 件以上あるデプロイ」を前提にするので固定する。
+`GET /api/capabilities` も同じく差し替えている。立てていないサーバーだと画面が「無効です」になって①〜⑥が全滅するためである。`GET /api/live-profiles` も差し替えている。実サーバーは config の `live.profiles` を返すが、⑨ は「2 件以上あるデプロイ」を前提にするので固定する。
 
 #### サービス ID の渡し方
 
@@ -236,22 +211,19 @@ pnpm exec playwright install chromium webkit
 
 初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコードした 40 秒ぶん）を生成する。`os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1` で強制再生成）。ffmpeg が無い環境・Chrome が無い環境では、その判定だけを「未測定」として報告し（NG にはしない）、残りは続行する。
 
-#### 再生の入口と経路の判定（⓪〜⑦）
+#### 再生の入口と経路の判定（⓪〜⑥）
 
-⓪〜⑦ は、再生を始める入口と、hls.js 経路・ネイティブ経路それぞれの再生を判定する。詳細はスクリプト冒頭のコメントにある。
+⓪〜⑥ は、再生開始の入口と hls.js による再生を判定する。詳細はスクリプト冒頭のコメントにある。
 
 0. 選択と視聴開始の分離。`/live?service=<Service.id>` を開いた直後はプレイリスト / セグメント要求が 0 件である（route の差し替えで観測）。「再生」ボタンを押して初めて要求が飛ぶ。
 
-   併せて、要求した `Service.id` が実際に選ばれたことも見る。チャンネル一覧の現在位置の印がちょうど 1 件で、その遷移先に要求した id が載っていることを確かめる。1 件でなく 2 件付くのは `serviceId` 単独で同定していたときの失敗の仕方で、ユニットテストで固定した。ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、①〜⑦ と異なり、前提が無い環境でも未測定として飛ばさない。①〜⑦ は「再生」ボタンを押した後の挙動を見るものなので、ページ遷移の後にこのボタンを押す手順を挟んでいる。
+   併せて、要求した `Service.id` が実際に選ばれたことも見る。チャンネル一覧の現在位置の印がちょうど 1 件で、その遷移先に要求した id が載っていることを確かめる。1 件でなく 2 件付くのは `serviceId` 単独で同定していたときの失敗の仕方で、ユニットテストで固定した。ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、①〜⑥ と異なり、前提が無い環境でも未測定として飛ばさない。①〜⑥ は「再生」ボタンを押した後の挙動を見るものなので、ページ遷移の後にこのボタンを押す手順を挟んでいる。
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される。
 2. MSE がアタッチされる。`video.currentSrc` が `blob:` になる。`src` は hls.js が `sourceopen` 後に object URL を revoke するので短命であり、これだけを見ると取り逃がす。
 3. 実 Chrome のみ（`channel: 'chrome'`。bundled Chromium は H.264/AAC 非対応）で、`video.play()` 後に `currentTime` が進み、`videoWidth > 0` になる。あわせて遅延・バッファの計器（「放送から約 n 秒 / 先読み n 秒」）が実際に数値になり、`NaN` を描画していないことも見る（`docs/frontend/live.md` §遅延・バッファの計器）。
 4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる（プレーヤーの effect cleanup が実際に機能していることの検証）。
 5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する。
-6. WebKit（Safari 相当）でネイティブ HLS 経路に入る。`assets/hls-*.js` を読み込まない。`<video>` に m3u8 の URL がそのまま渡る。そのまま再生が進む。再生の判定は `currentTime` の前進と `videoWidth > 0` である。WebKit は `<video>` が MPEG-2 TS を demux できる唯一のエンジンなので、フィクスチャをネイティブに再生できる。
-7. ネイティブ経路のメディア失敗が画面に出る（WebKit）。プレイリストは 200 だがセグメントが 404 / 無応答のとき、エラー表示と `再読み込み` ボタンが出る。
-
-   probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと永久に止まった黒いプレイヤーになる。失敗の仕方で出るイベントが違う（404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る。無応答側の窓は 40 秒ある。自動降格（⑪）が猶予の満了で 1 回挟まるためで、実測 31.5 秒かかる（降格の導入前は 30 秒で足りていた）。窓そのものが「黒いままにならない」の上限なので、40 秒より広げない。降格は段が尽きるまで繰り返すので、プロファイルが 3 件以上のデプロイではこの時間はさらに伸びる。
+6. Playwright WebKit でも hls.js の動的 import、MSE のアタッチ、実再生を確認する。ここでは Safari 実機の対応確認は行わない。
 
 <details>
 <summary>根拠</summary>
@@ -259,7 +231,6 @@ pnpm exec playwright install chromium webkit
 - 選択と視聴開始の分離: `page.route`、`page.goto`
 - 2 件付く失敗の仕方の固定: `aria-current="page"`、`href`、`serviceId`、`pages/live.test.tsx`
 - cleanup の検証: `LivePlayer`
-- ネイティブ経路のメディア失敗: `<video>`、`error`、`stalled`
 
 </details>
 
@@ -271,9 +242,7 @@ pnpm exec playwright install chromium webkit
 9. 画質（プロファイル）の切替（issue #869 / M4-21）。一覧（`GET /api/live-profiles`）をわざと保留したまま「再生」を押し、後から届かせてもプレイリストを取り直さないことを見る。プレーヤーに導出した既定を渡す実装だと、一覧の到着で `profile` が変わって `<video>` が作り直され、先頭から再生し直しになる。
 
    あわせて、選択中の画質で `?profile=` が実際に要求に載ること、切替で離脱ヒントを送らないこと、切替を跨いで音量とミュートが保たれることを見る。この 4 点は `key={activeProfile}` を足す変異で 4 件とも落ちることを確認してある。音量・ミュートは「復元しなくても通る」ので、この 2 件が守っているのは切替で `<video>` を作り直さないことの側である（`docs/frontend/live.md`）。
-10. 字幕の表示が画質の切替で失われないか（issue #869）。フィクスチャに字幕レンディション（master playlist + WebVTT）を持たせ、2 方向を見る。hls.js 経路（Chromium）は、利用者が切ってから切り替えても `hidden` のままであること。ネイティブ経路（WebKit）は、利用者が入にしてから切り替えても `showing` のままであること。
-
-    後者は `loadedmetadata` で揃えるだけでは落ちる。WebKit はその時点でまだトラックを作っておらず、実測で `disabled` に戻った。プレーヤーが `TextTrackList` の `addtrack` でも適用している理由である。
+10. 字幕の表示が画質の切替で失われないか（issue #869）。フィクスチャに字幕レンディション（master playlist + WebVTT）を持たせ、利用者が切ってから切り替えても `hidden` のままであることを hls.js 経路で見る。WebKit ではトラックがメタデータより後に現れることがあるため、プレーヤーは `TextTrackList` の `addtrack` でも表示状態を適用する。
 11. 停滞したら画質が 1 段下がる（issue #871）。まず実再生させ（`currentTime` が進むことを確かめる）、そのうえで配信を止める。`?profile=` が無いときは、1 段下がった先（`sd`）のプレイリストを取りに行くことを見る。通知（`映像が止まったため、画質を sd（480p）に下げました`）と画質セレクタの表示が下がった先に一致することと、離脱ヒントを送らないことも見る。
 
     さらに配信を復旧させ、そのまま再生が続くこと（`currentTime` が進み `paused=false`）を見る。配信側が実際にセグメントを配ったことも見る。`currentTime` の前進だけでは、「切替で 0 秒から読み直して 1 本だけ再生した」場合と区別できないためである。切替は `load()` で `paused` を戻すので、ここを見ないと「画質だけ下げて黒いまま」を見逃す。
@@ -285,22 +254,8 @@ pnpm exec playwright install chromium webkit
 
 - 離脱ヒントが実ブラウザから飛ぶ: `navigator.sendBeacon`
 - 一覧の到着で `<video>` が作り直される: `profile`、`<video>`、`key={activeProfile}`
-- 字幕の適用: `loadedmetadata`、`TextTrackList`、`addtrack`、`hidden`、`showing`、`disabled`
+- 字幕の適用: `MANIFEST_PARSED`、`TextTrackList`、`addtrack`、`hidden`
 - 切替で再生が戻る: `load()`、`paused`
-
-</details>
-
-#### 実際に発見した回帰
-
-この e2e は、jsdom のユニットテストが通ったまま正しく動かなくなっていたリグレッションを 2 件見つけた。どちらも、ネイティブ HLS に対応しているかの判定の誤りである。
-
-1. ネイティブ HLS の対応判定が、`canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と見なしていた。実 Chrome（bundled Chromium だけでなく `channel: 'chrome'` の本物でも）はこの MIME タイプに `'maybe'` を返す。そのままリリースしていたら、Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず、何も表示しないまま再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行していなかった。`canPlayType` が jsdom では常に `''` を返すためである。
-2. その修正（`'probably'` のみを対応と見なす）が、どの実ブラウザでも false になっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、codecs 付きなら 3 エンジンとも `'probably'` を返す。戻り値を決めているのは codecs の有無であってエンジンではない。①〜⑤ が Chromium 系しか回していなかったので、この回帰は e2e 緑のまま通った。⑥（WebKit）を足して初めて機械判定できるようになった。判定は「プレイリストとセグメントの両方の Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは WebKit だけ）に置き換えてある。
-
-<details>
-<summary>根拠</summary>
-
-- 1 件目の誤った対応判定: `supportsNativeHls`、`lib/live.ts`
 
 </details>
 

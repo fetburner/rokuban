@@ -7,7 +7,7 @@ import path from 'node:path'
 import { Transform, pipeline } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { createPlaywrightAdapter, createSafariAdapter } from './lib.mjs'
+import { createPlaywrightAdapter } from './lib.mjs'
 
 const MINIO_URL = new URL(process.env.E2E_MINIO_URL ?? 'http://127.0.0.1:9000')
 const ACCESS_KEY = process.env.E2E_MINIO_ACCESS_KEY ?? 'rokuban'
@@ -39,8 +39,8 @@ if (MINIO_URL.protocol !== 'http:') {
 if (!Number.isInteger(VIDEO_TTL_SECONDS) || VIDEO_TTL_SECONDS < 1 || VIDEO_TTL_SECONDS > 604800) {
   throw new Error('E2E_S3_VIDEO_TTL_SECONDS must be an integer from 1 to 604800')
 }
-if (BROWSER !== 'chrome' && BROWSER !== 'safari') {
-  throw new Error('E2E_BROWSER must be chrome or safari')
+if (BROWSER !== 'chrome' && BROWSER !== 'webkit') {
+  throw new Error('E2E_BROWSER must be chrome or webkit')
 }
 
 function sha256(data) {
@@ -476,7 +476,7 @@ async function main() {
     fixture = startFixtureServers(videoKey, subtitleKey)
     const origins = await fixture.start()
 
-    browser = BROWSER === 'chrome' ? await createPlaywrightAdapter('chrome') : await createSafariAdapter()
+    browser = await createPlaywrightAdapter(BROWSER)
     console.log('Browser: ' + BROWSER + ' ' + browser.version)
     console.log('Fixture: ' + origins.publicOrigin + ' -> ' + origins.s3Origin)
     console.log('MinIO: ' + MINIO_URL.origin + ', MP4 size: ' + video.length + ' bytes, duration: ' + VIDEO_SECONDS + 's')

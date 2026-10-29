@@ -17,9 +17,8 @@
 //   ① Chromium（hls.js）: 主 → 副 → 標準 → 主 と選び、WebAudio で左右の周波数が
 //      期待値（主 440/440・副 880/880・標準 440/880）に届くこと、再生が止まらない
 //      こと、プレイリストを取り直さないこと（切替はトラックの選択だけ）
-//   ② WebKit（ネイティブ HLS）: 副を選ぶと video.audioTracks の 3 本目が有効になり、
-//      副のレンディションを取りに行くこと。WebKit はネイティブ HLS の音を WebAudio に
-//      流さないので、鳴っている音そのものは測れない
+//   ② WebKit（hls.js）: 副を選んだときに左右の周波数が副音声へ切り替わり、
+//      副のレンディションを取りに行くこと
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -131,40 +130,32 @@ try {
     await browser.close()
   }
 
-  log('\n=== ② WebKit（ネイティブ HLS）: 副を選ぶと 3 本目のトラックが有効になり、副を取りに行く ===')
+  log('\n=== ② WebKit（hls.js）: 副音声を実際に再生する ===')
   {
     let browser
     try {
       browser = await launchBrowser('webkit')
     } catch (err) {
-      skipped.push(`② WebKit を起動できない（pnpm exec playwright install webkit）: ${err}`)
+      skipped.push(`② Playwright WebKit を起動できない（pnpm exec playwright install webkit）: ${err}`)
     }
     if (browser) {
       const page = await openLivePage(browser)
-      // 副のレンディションは var_stream_map の 4 本目（v:0 / 標準 / 主 / 副）
-      const subFetches = countRequests(page, new RegExp(`/live/${PROFILE}\\.3\\.m3u8`))
-      await page.getByRole('button', { name: /再生/ }).click()
-      await waitForVisibleVideo(page)
-      await page.evaluate(() => document.querySelector('video').play().catch(() => {}))
-      const tracks = await waitForNativeTracks(page, 15_000)
-      if (tracks === null) {
-        ng.push('② video.audioTracks が 3 本にならない（ネイティブ経路が代替音声を読んでいない）')
+      const masterFetches = countRequests(page, /\/live\/playlist\.m3u8/)
+      await startPlaybackWithAnalyser(page)
+      const before = masterFetches.count
+      await selectLiveAudio(page, 'sub')
+      const got = await waitForChannels(page, 880, 880, 12_000)
+      if (!got.ok) {
+        ng.push(`② 副音声: 12 秒待っても L/R = ${got.last.L}/${got.last.R} Hz（want 880/880）、currentTime ${got.startTime} → ${got.last.t}`)
       } else {
-        await selectLiveAudio(page, 'sub')
-        let lastEnabled = []
-        const enabled = await waitFor(async () => {
-          lastEnabled = await page.evaluate(() =>
-            Array.from(document.querySelector('video').audioTracks).map((t) => t.enabled),
-          )
-          return JSON.stringify(lastEnabled) === JSON.stringify([false, false, true]) ? lastEnabled : null
-        }, 10_000)
-        const fetched = await waitFor(async () => (subFetches.count > 0 ? subFetches.count : null), 10_000)
-        if (enabled === null) {
-          ng.push(`② 副を選んでも audioTracks の 3 本目だけが有効にならない（10 秒後 ${JSON.stringify(lastEnabled)}）`)
+        await new Promise((resolve) => setTimeout(resolve, DWELL_MS))
+        const held = await page.evaluate(() => window.__measure())
+        if (Math.abs(held.L - 880) > 12 || Math.abs(held.R - 880) > 12 || held.t - got.last.t < DWELL_MS / 2000) {
+          ng.push(`② 副音声へ切替後 ${DWELL_MS} ms で L/R = ${held.L}/${held.R} Hz、currentTime ${got.last.t} → ${held.t}（保てていない）`)
         }
-        else if (fetched === null) ng.push(`② 副を選んでも ${PROFILE}.3.m3u8 を取りに行かない`)
-        else log(`  OK: audioTracks.enabled = [false,false,true]、${PROFILE}.3.m3u8 を ${fetched} 回取得`)
+        log(`  OK: 副音声 → L/R = ${got.last.L}/${got.last.R} Hz（${got.elapsed} ms）、${DWELL_MS} ms 保持`)
       }
+      if (masterFetches.count !== before) ng.push(`② 音声の切替で playlist を取り直した（${masterFetches.count - before} 回）`)
       await browser.close()
     }
   }
@@ -286,23 +277,6 @@ async function waitForChannels(page, wantL, wantR, timeoutMs) {
     await new Promise((r) => setTimeout(r, 250))
   }
   return { ok: false, last, startTime: first.t, stalled: last.t - first.t < timeoutMs / 2000 }
-}
-
-async function waitForNativeTracks(page, timeoutMs) {
-  return waitFor(async () => {
-    const n = await page.evaluate(() => document.querySelector('video').audioTracks?.length ?? 0)
-    return n === 3 ? n : null
-  }, timeoutMs)
-}
-
-async function waitFor(probe, timeoutMs) {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const v = await probe()
-    if (v !== null) return v
-    await new Promise((r) => setTimeout(r, 200))
-  }
-  return null
 }
 
 async function waitForFile(file, timeoutMs) {
