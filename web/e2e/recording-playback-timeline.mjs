@@ -1158,10 +1158,6 @@ async function runRecordingApiHlsCheck() {
   recordingHlsRequests.length = 0
   playlistRequests.length = 0
   const page = await context.newPage()
-  // px → 秒の対応を求めた後も録画中の最大秒数が 1 秒ごとに伸びるため、複数の
-  // 中間位置を調べる間だけ API fixture の開始から 13 秒後にブラウザ時計を固定する。
-  // Playwright の setFixedTime は Date を固定し、再生や待機の timer は進める。
-  await page.clock.setFixedTime(new Date(Date.parse(apiHlsStartedAtNow) + 13_000))
   await installApiStubs(page, timelineHandler)
   await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
@@ -1178,6 +1174,12 @@ async function runRecordingApiHlsCheck() {
     return
   }
 
+  // max は Date.now() - startedAt なので、複数の中間位置を調べる間も 1 秒ごとに
+  // 伸びる。メディア準備後の同じ時点で browser / Node の基準時刻を固定し、座標の
+  // 算出とシーク後の検査で px → 秒の対応を保つ。timer は進むので再生待ちには影響しない。
+  const timelineAsOf = Date.now()
+  await page.clock.setFixedTime(new Date(timelineAsOf))
+
   const slider = page.getByRole('slider', { name: 'シークバー' })
   const timelineSeconds = Number(await slider.getAttribute('aria-valuemax'))
   const mediaState = await page.locator('video').evaluate((video) => ({
@@ -1186,7 +1188,7 @@ async function runRecordingApiHlsCheck() {
     readyState: video.readyState,
     videoWidth: video.videoWidth,
   }))
-  const recordedProgressSeconds = (Date.now() - Date.parse(apiHlsStartedAtNow)) / 1000
+  const recordedProgressSeconds = (timelineAsOf - Date.parse(apiHlsStartedAtNow)) / 1000
   log(`\n=== 録画 API HLS: 録画中の時間軸 ===`)
   log(`  右端=${timelineSeconds.toFixed(2)}s / 壁時計の録画済み=${recordedProgressSeconds.toFixed(2)}s / HLS seekable=${mediaState.seekableEnd.toFixed(2)}s`)
   if (Math.abs(timelineSeconds - recordedProgressSeconds) > 2.5) {
