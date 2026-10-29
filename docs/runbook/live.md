@@ -242,7 +242,7 @@ pnpm exec playwright install chromium webkit
 9. 画質（プロファイル）の切替（issue #869 / M4-21）。一覧（`GET /api/live-profiles`）をわざと保留したまま「再生」を押し、後から届かせてもプレイリストを取り直さないことを見る。プレーヤーに導出した既定を渡す実装だと、一覧の到着で `profile` が変わって `<video>` が作り直され、先頭から再生し直しになる。
 
    あわせて、選択中の画質で `?profile=` が実際に要求に載ること、切替で離脱ヒントを送らないこと、切替を跨いで音量とミュートが保たれることを見る。この 4 点は `key={activeProfile}` を足す変異で 4 件とも落ちることを確認してある。音量・ミュートは「復元しなくても通る」ので、この 2 件が守っているのは切替で `<video>` を作り直さないことの側である（`docs/frontend/live.md`）。
-10. 字幕の表示が画質の切替で失われないか（issue #869）。フィクスチャに字幕レンディション（master playlist + WebVTT）を持たせ、利用者が切ってから切り替えても `hidden` のままであることを hls.js 経路で見る。WebKit ではトラックがメタデータより後に現れることがあるため、プレーヤーは `TextTrackList` の `addtrack` でも表示状態を適用する。
+10. 字幕の表示が画質の切替で失われないか（issue #869）。フィクスチャに字幕レンディション（master playlist + WebVTT）を持たせ、利用者が切ってから切り替えても `hidden` のままであることを Chromium + hls.js 経路で見る。字幕の表示状態は `MANIFEST_PARSED` で設定し直す。
 11. 停滞したら画質が 1 段下がる（issue #871）。まず実再生させ（`currentTime` が進むことを確かめる）、そのうえで配信を止める。`?profile=` が無いときは、1 段下がった先（`sd`）のプレイリストを取りに行くことを見る。通知（`映像が止まったため、画質を sd（480p）に下げました`）と画質セレクタの表示が下がった先に一致することと、離脱ヒントを送らないことも見る。
 
     さらに配信を復旧させ、そのまま再生が続くこと（`currentTime` が進み `paused=false`）を見る。配信側が実際にセグメントを配ったことも見る。`currentTime` の前進だけでは、「切替で 0 秒から読み直して 1 本だけ再生した」場合と区別できないためである。切替は `load()` で `paused` を戻すので、ここを見ないと「画質だけ下げて黒いまま」を見逃す。
@@ -254,7 +254,7 @@ pnpm exec playwright install chromium webkit
 
 - 離脱ヒントが実ブラウザから飛ぶ: `navigator.sendBeacon`
 - 一覧の到着で `<video>` が作り直される: `profile`、`<video>`、`key={activeProfile}`
-- 字幕の適用: `MANIFEST_PARSED`、`TextTrackList`、`addtrack`、`hidden`
+- 字幕の適用と判定: `MANIFEST_PARSED`、`hidden`、`web/e2e/live.mjs` ⑩
 - 切替で再生が戻る: `load()`、`paused`
 
 </details>

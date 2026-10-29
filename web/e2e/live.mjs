@@ -1814,7 +1814,7 @@ async function runChromiumChecks(browser) {
   // 新しいマニフェストを読むと字幕トラックの選択を既定に戻す
   // （`SubtitleTrackController.onManifestLoading` が `trackId` を `-1` に戻す。
   // `node_modules/hls.js` 1.7.1 で確認済み）ので、素朴に作り直すと
-  // **視聴者がネイティブコントロールで「切り」にした字幕が「入」に戻る**。
+  // **利用者が「切り」にした字幕が「入」に戻る**。
   // `LivePlayer` は `MANIFEST_PARSED` で `subtitleDisplay` を設定し直しており、
   // ここはその経路が実ブラウザで効くかを見る唯一の判定である。
   log('\n=== ⑩ 画質切替と字幕の表示状態 ===')
@@ -1860,7 +1860,7 @@ async function runChromiumChecks(browser) {
       ng.push(`⑩ 既定で字幕が表示されていない（mode: ${JSON.stringify(initialModes)}）`)
     }
 
-    // 視聴者がネイティブコントロールの Captions で「切り」にする
+    // 表示状態を直接「切り」にする
     await captionPage.evaluate(() => {
       for (const t of Array.from(document.querySelector('video').textTracks)) t.mode = 'disabled'
     })

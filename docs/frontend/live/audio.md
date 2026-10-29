@@ -41,7 +41,7 @@ streamer はセッション開始時に音声 ES 数を調べる。1 本なら�
 
 #### 音声切替の判定手段
 
-判定は実ブラウザで、ffmpeg が書き続ける実ライブ HLS を相手に行う。Chromium は WebAudio で左右の周波数を測り、主 → 副 → 標準 → 主とそれぞれ聴いてから切り替える。Playwright WebKit では hls.js の音声トラック状態と取得するレンディションを診断する。
+判定は実ブラウザで、ffmpeg が書き続ける実ライブ HLS を相手に行う。Chromium は WebAudio で左右の周波数を測り、主 → 副 → 標準 → 主とそれぞれ聴いてから切り替える。Playwright WebKit では副音声を選んだ後に hls.js が副音声セグメントを要求することを診断する。
 
 <details><summary>根拠</summary>
 
@@ -96,13 +96,13 @@ hls.js は新しいマニフェストを読むと字幕の選択を既定へ戻�
 
 - 利用者が字幕を切ってから画質を切り替えても、字幕が再表示されない。設定し直す処理を外す変異で判定を落とす。
 
-メタデータの時点で揃えるだけでは足りなかった。実測で非表示に戻ったためである。WebKit ではその時点でまだトラックを作っていない。そこで、トラック一覧への追加イベントでも適用している。字幕の持ち越し判定は hls.js 経路で「切ったまま」を確かめる。
+字幕の持ち越しは `MANIFEST_PARSED` で表示状態を設定し直す。ネイティブ HLS 向けだった `loadedmetadata` と `TextTrackList` の `addtrack` による適用は削除した。判定は `live.mjs` ⑩の Chromium + hls.js 経路で行う。
 
 <details><summary>根拠</summary>
 
 - 字幕の持ち越しの判定: `live.mjs` の ⑩
 - 設定し直す行: `MANIFEST_PARSED`
-- 非表示に戻った状態とその対処: `disabled`、`loadedmetadata`、`TextTrackList` の `addtrack`
+- 利用者が字幕を切った状態: `disabled`
 - 既定の指定: `DEFAULT=YES`、表示状態の値 `hidden` / `showing`
 - 切替の検査点: `mode`
 
