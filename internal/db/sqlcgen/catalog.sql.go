@@ -1032,7 +1032,12 @@ ON CONFLICT (id) DO UPDATE SET
         THEN EXCLUDED.rel_path
         ELSE media_assets.rel_path
     END,
-    size_bytes   = EXCLUDED.size_bytes,
+    size_bytes   = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN EXCLUDED.size_bytes
+        ELSE media_assets.size_bytes
+    END,
     state        = CASE
         WHEN EXCLUDED.kind = 'original'
           OR $13::bigint = GREATEST(
@@ -1055,7 +1060,12 @@ ON CONFLICT (id) DO UPDATE SET
         WHEN EXCLUDED.kind = 'original' THEN NULL
         ELSE GREATEST(COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0))
     END,
-    sha256       = EXCLUDED.sha256
+    sha256       = CASE
+        WHEN EXCLUDED.kind = 'original'
+          OR COALESCE(EXCLUDED.derived_generation, 0) >= COALESCE(media_assets.derived_generation, 0)
+        THEN EXCLUDED.sha256
+        ELSE media_assets.sha256
+    END
 `
 
 type CatalogUpsertMediaAssetParams struct {

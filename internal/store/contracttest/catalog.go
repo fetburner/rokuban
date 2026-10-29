@@ -72,7 +72,9 @@ func runCatalogRestoreMissingAssets(t *testing.T, newStore NewCatalogStore) {
 	f := newStore(t)
 	ctx := context.Background()
 	result, err := f.Store.Restore(ctx, roundTripCatalogDocument(), store.RestoreOptions{
-		MissingAssetIDs: map[int64]struct{}{40: {}},
+		MissingAssetCopyKeys: map[store.MediaAssetCopyKey]struct{}{{
+			MediaAssetID: 40, Store: "test-store", RelPath: "sites/default/round-trip.m2ts",
+		}: {}},
 	})
 	if err != nil {
 		t.Fatalf("Restore with a missing asset: %v", err)

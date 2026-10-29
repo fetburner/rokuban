@@ -1,6 +1,7 @@
 package pgstore
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -82,14 +83,16 @@ WHERE id = $1`, assetID).Scan(&relPath, &derivedGeneration); err != nil {
 	if err != nil {
 		t.Fatalf("creating logical seek tiles: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 8 WHERE id = $1`, staleAssetID); err != nil {
+	currentSHA := bytes.Repeat([]byte{0x88}, 32)
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 8, sha256 = $2 WHERE id = $1`, staleAssetID, currentSHA); err != nil {
 		t.Fatalf("setting current seek tiles generation: %v", err)
 	}
+	staleSHAHex := "7777777777777777777777777777777777777777777777777777777777777777"
 	staleSnapshot := []catalogdoc.MediaAsset{{
 		ID: staleAssetID, RecordingID: recordingID, Kind: "seek_tiles",
 		RelPath: "thumbnails/old_tiles.g7.jpg", SizeBytes: 80, State: "active",
 		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
-		DerivedGeneration: &oldGeneration, Generation: &oldGeneration,
+		DerivedGeneration: &oldGeneration, Generation: &oldGeneration, SHA256: &staleSHAHex,
 		Store: dbtest.StoreName,
 	}}
 	tx, err = pool.Begin(ctx)
@@ -103,10 +106,15 @@ WHERE id = $1`, assetID).Scan(&relPath, &derivedGeneration); err != nil {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("committing stale catalog restore: %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT rel_path, derived_generation FROM media_assets WHERE id = $1`, staleAssetID).Scan(&relPath, &derivedGeneration); err != nil {
+	var sizeBytes int64
+	var sha256Bytes []byte
+	if err := pool.QueryRow(ctx, `SELECT rel_path, derived_generation, size_bytes, sha256 FROM media_assets WHERE id = $1`, staleAssetID).Scan(&relPath, &derivedGeneration, &sizeBytes, &sha256Bytes); err != nil {
 		t.Fatalf("reading seek tiles after stale catalog restore: %v", err)
 	}
 	if relPath != "thumbnails/current_tiles.g8.jpg" || derivedGeneration != 8 {
 		t.Fatalf("stale catalog changed logical seek tiles to (%q, generation %d), want current path and generation 8", relPath, derivedGeneration)
+	}
+	if sizeBytes != 100 || !bytes.Equal(sha256Bytes, currentSHA) {
+		t.Fatalf("stale catalog changed current-generation size/hash to %d/%x, want 100/%x", sizeBytes, sha256Bytes, currentSHA)
 	}
 }

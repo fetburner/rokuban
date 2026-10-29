@@ -31,36 +31,46 @@ WHERE id = sqlc.arg('id')
 -- media_assets.state remains the logical publication state mirrored for readers
 -- outside the copy-aware paths. Only current-generation copies contribute.
 -- name: ReconcileMediaAssetStateFromCopies :exec
+WITH desired_state AS (
+    SELECT asset.id,
+           CASE
+               WHEN EXISTS (
+                   SELECT 1 FROM media_asset_copies copy
+                   WHERE copy.media_asset_id = asset.id
+                     AND copy.generation = COALESCE(asset.derived_generation, 0)
+                     AND copy.state = 'active'
+               ) THEN 'active'
+               WHEN EXISTS (
+                   SELECT 1 FROM media_asset_copies copy
+                   WHERE copy.media_asset_id = asset.id
+                     AND copy.generation = COALESCE(asset.derived_generation, 0)
+                     AND copy.state = 'deleting'
+               ) THEN 'deleting'
+               ELSE 'deleted'
+           END AS state,
+           CASE
+               WHEN EXISTS (
+                   SELECT 1 FROM media_asset_copies copy
+                   WHERE copy.media_asset_id = asset.id
+                     AND copy.generation = COALESCE(asset.derived_generation, 0)
+                     AND copy.state IN ('active', 'deleting')
+               ) THEN NULL::timestamptz
+               ELSE COALESCE(asset.deleted_at, now())
+           END AS deleted_at
+    FROM media_assets asset
+    WHERE asset.id = sqlc.arg('asset_id')
+)
 UPDATE media_assets asset
-SET state = CASE
-        WHEN EXISTS (
-            SELECT 1 FROM media_asset_copies copy
-            WHERE copy.media_asset_id = asset.id
-              AND copy.generation = COALESCE(asset.derived_generation, 0)
-              AND copy.state = 'active'
-        ) THEN 'active'
-        WHEN EXISTS (
-            SELECT 1 FROM media_asset_copies copy
-            WHERE copy.media_asset_id = asset.id
-              AND copy.generation = COALESCE(asset.derived_generation, 0)
-              AND copy.state = 'deleting'
-        ) THEN 'deleting'
-        ELSE 'deleted'
-    END,
-    deleted_at = CASE
-        WHEN EXISTS (
-            SELECT 1 FROM media_asset_copies copy
-            WHERE copy.media_asset_id = asset.id
-              AND copy.generation = COALESCE(asset.derived_generation, 0)
-              AND copy.state IN ('active', 'deleting')
-        ) THEN NULL
-        ELSE COALESCE(asset.deleted_at, now())
-    END,
-    updated_at = now()
-WHERE asset.id = (
-    SELECT copy.media_asset_id FROM media_asset_copies copy
-    WHERE copy.id = sqlc.arg('copy_id')
-);
+SET state = desired_state.state,
+    deleted_at = desired_state.deleted_at,
+    updated_at = CASE
+        WHEN asset.state IS DISTINCT FROM desired_state.state
+          OR asset.deleted_at IS DISTINCT FROM desired_state.deleted_at
+        THEN now()
+        ELSE asset.updated_at
+    END
+FROM desired_state
+WHERE asset.id = desired_state.id;
 
 -- 削除遷移の判定は media_asset_copies の state を読む。判定する文より前に対象コピー行を
 -- ロックすると、次の文は新しい snapshot で評価され、別の tx が commit した deleted を見る。

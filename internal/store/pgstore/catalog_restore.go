@@ -136,7 +136,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 		return nil, err
 	}
 
-	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetIDs, storeName); err != nil {
+	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetCopyKeys, storeName); err != nil {
 		return nil, err
 	}
 
@@ -411,19 +411,25 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 }
 
 // applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
-func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetIDs map[int64]struct{}, storeName string) error {
+func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetCopyKeys map[store.MediaAssetCopyKey]struct{}, storeName string) error {
 	var missingAt time.Time
+	assetIDs := make(map[int64]struct{}, len(assets))
 	for _, a := range assets {
-		if _, missing := missingAssetIDs[a.ID]; missing && a.State != "deleted" {
+		assetStore := a.Store
+		if assetStore == "" {
+			assetStore = storeName
+		}
+		copyState, copyDeletedAt := a.State, a.DeletedAt
+		if _, missing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]; missing && a.State != "deleted" {
 			if missingAt.IsZero() {
 				if err := tx.QueryRow(ctx, "SELECT now()").Scan(&missingAt); err != nil {
 					return fmt.Errorf("reading database time for missing catalog assets: %w", err)
 				}
 			}
-			// Keep the historical row and its dependent statistics, but never publish
-			// a snapshot's active state for a file removed since export.
-			a.State = "deleted"
-			a.DeletedAt = &missingAt
+			// Keep the historical copy and dependent statistics, but never publish
+			// an active state for a file removed since export.
+			copyState = "deleted"
+			copyDeletedAt = &missingAt
 			res.MissingMediaFiles++
 		}
 		sha256Bytes, err := decodeMediaAssetSHA256(a.SHA256)
@@ -440,19 +446,21 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		}); err != nil {
 			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
 		}
-		assetStore := a.Store
-		if assetStore == "" {
-			assetStore = storeName
-		}
 		inserted, err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
-			Generation: copyGeneration, State: a.State, CreatedAt: &a.CreatedAt, DeletedAt: a.DeletedAt,
+			Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
 		})
 		if err != nil {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
 		}
 		if inserted != 1 {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q affected %d rows", a.ID, assetStore, inserted)
+		}
+		assetIDs[a.ID] = struct{}{}
+	}
+	for assetID := range assetIDs {
+		if err := q.ReconcileMediaAssetStateFromCopies(ctx, assetID); err != nil {
+			return fmt.Errorf("reconciling logical media asset %d after catalog restore: %w", assetID, err)
 		}
 	}
 	res.MediaAssets = len(assets)

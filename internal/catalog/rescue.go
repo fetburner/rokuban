@@ -129,7 +129,7 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 	}
 	defer func() { _ = release() }()
 
-	missing := make(map[int64]struct{})
+	missing := make(map[store.MediaAssetCopyKey]struct{})
 	for _, asset := range doc.MediaAssets {
 		if asset.State == "deleted" || asset.Store != storeName {
 			continue
@@ -140,7 +140,11 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 		}
 		info, err := os.Lstat(fullPath)
 		if errors.Is(err, os.ErrNotExist) {
-			missing[asset.ID] = struct{}{}
+			missing[store.MediaAssetCopyKey{
+				MediaAssetID: asset.ID,
+				Store:        asset.Store,
+				RelPath:      asset.RelPath,
+			}] = struct{}{}
 			continue
 		}
 		if err != nil {
@@ -151,7 +155,7 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 		}
 	}
 
-	result, err := catalogStore.Restore(ctx, doc, store.RestoreOptions{MissingAssetIDs: missing})
+	result, err := catalogStore.Restore(ctx, doc, store.RestoreOptions{MissingAssetCopyKeys: missing})
 	if err != nil {
 		return nil, err
 	}

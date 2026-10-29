@@ -138,7 +138,7 @@ func (s *Media) MarkDeleting(ctx context.Context, copyID int64, expectedState st
 	if updated != 1 {
 		return false, nil
 	}
-	if err := reconcileMediaAssetStateFromCopy(ctx, q, copyID); err != nil {
+	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
 		return false, fmt.Errorf("reconciling logical media asset state after copy %d entered deleting: %w", copyID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -180,7 +180,7 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, media
 	if marked != 1 {
 		return false, nil
 	}
-	if err := reconcileMediaAssetStateFromCopy(ctx, q, copyID); err != nil {
+	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
 		return false, fmt.Errorf("reconciling logical original state after copy %d entered deleting: %w", copyID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -218,7 +218,7 @@ func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
 			return fmt.Errorf("marking media asset copy %d deleted updated %d rows, want one", copyID, updated)
 		}
 	}
-	if err := reconcileMediaAssetStateFromCopy(ctx, q, copyID); err != nil {
+	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
 		return fmt.Errorf("reconciling logical media asset state after copy %d was deleted: %w", copyID, err)
 	}
 	if err := q.ClearDeletedEncodedAssetRemovalRequest(ctx, copyID); err != nil {
@@ -258,7 +258,7 @@ func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, o
 	if updated == 0 {
 		return false, nil
 	}
-	if err := reconcileMediaAssetStateFromCopy(ctx, q, copyID); err != nil {
+	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
 		return false, fmt.Errorf("reconciling logical media asset state after copy %d was restored: %w", copyID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -284,6 +284,6 @@ func lockMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, copyID int64, s
 	return lockedMediaAssetCopy{MediaAssetID: row.MediaAssetID, State: row.State}, nil
 }
 
-func reconcileMediaAssetStateFromCopy(ctx context.Context, q *sqlcgen.Queries, copyID int64) error {
-	return q.ReconcileMediaAssetStateFromCopies(ctx, copyID)
+func reconcileMediaAssetState(ctx context.Context, q *sqlcgen.Queries, mediaAssetID int64) error {
+	return q.ReconcileMediaAssetStateFromCopies(ctx, mediaAssetID)
 }
