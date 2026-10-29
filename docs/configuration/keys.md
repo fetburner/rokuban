@@ -106,7 +106,9 @@
 
 `storage.transfer` は規則の指紋に含めない。帯域と overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
-`storage.originals` の参照先には FS 置き場を 1 つだけ指定できる。現在の worker は原本を `storage.media_dir` の単一 root に書くためである。`storage.derived` はその FS または S3 置き場を指定できる。複数の FS 原本置き場は未対応である。
+`storage.originals` の参照先には FS 置き場を 1 つだけ指定できる。`storage.derived` は、その FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
+
+未解決: 複数の FS 原本置き場は使えない。今の worker は原本を `storage.media_dir` の 1 つの root にしか書かず、別の置き場を指す規則は書き込みに効かないためである。複数の置き場の形は `config.example.yml` にコメントで示してあり、検証が拒否する。
 
 <details><summary>根拠</summary>
 

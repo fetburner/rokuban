@@ -123,9 +123,11 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 エンコード出力は既にある行のパスへ公開する。そのため canonical を直接開かず、同じディレクトリの staging file へ書く。パスは、ファイルを置く前に DB で予約する。古い試行は、試行回数の照合と行の再確認で公開できない。
 
-FS 置き場では staging file の rename と親 directory の fsync の後に DB を commit する。S3 置き場では、先に `pending` のコピー行を commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、次の transaction でコピーを `active` にする。412 は HEAD のサイズとアプリが保存した SHA-256 metadata が一致するときだけ成功として回収する。途中で失敗した `pending` は削除 reconcile が猶予後に回収する。
+FS 置き場では、staging file を rename して親ディレクトリを `fsync` した後に DB を commit する。S3 置き場では、先に `pending` のコピー行を新しい世代で commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、公開の transaction でコピーを `active` にして、SHA-256 を論理行へ書く。upload の完了が 412 で拒まれたときは、HEAD で得たサイズと、アプリが保存した SHA-256 の metadata を照合する。どちらも一致すれば成功として扱い、一致しなければ失敗にする。公開されないまま猶予を過ぎた `pending` は、削除 reconcile が行をロックしたまま S3 のキーを消す。
 
-コピー行は物理ファイルの `generation` を持つ。原本は論理行の `ingest_generation`、派生物は `derived_generation` と一致する active コピーだけを読み手に返す。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代の key を使う。Matroska など同じ入力でも出力バイト列が変わる形式で、既存の pending object を別内容で上書きする事故を防ぐ。
+置き換えは新しい世代の行を足すだけで、旧世代のコピーには触れない。旧世代のキーは、署名付き URL で再生中の視聴者がいても 404 にならないよう、削除 reconcile が `storage.transfer.overlap` の後に消す。コピー行の世代は INSERT の後に変えず、現行のコピーを選ぶ述語は `active_media_asset_copies` と `preferred_active_media_asset_copy` だけに置く（[schema](../schema/recordings/media-assets.md)）。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代のキーを使う。Matroska のように同じ入力でも出力のバイト列が変わる形式で、既に upload 済みのキーを別の内容で上書きしないためである。
+
+S3 置き場の失敗は、S3 を使うジョブだけを失敗させる。worker は起動時に S3 へ接続しないので、S3 に繋がらなくても、資格情報が失効していても起動する。S3 のコードを通らないジョブ（ingest など）は、S3 の状態に左右されない。失敗は `rokuban_object_store_errors_total{operation}` に数え、資格情報の失効や取得失敗は `rokuban_object_store_credential_errors_total` にも数える。
 
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 
@@ -195,7 +197,7 @@ flowchart TD
 
 サムネイルとシークタイルは、完成したファイルを staging にコピーして fsync し、lock と transaction の中で rename して commit する。同じ録画のジョブが重なっても、先行が公開済みか原本が消えていれば、後続は公開を飛ばして成功扱いにする。
 
-S3 置き場では、派生物のキーを `pending` として先に commit し、完成した JPEG をアップロードする。チェックサムの照合が済んだ後、同じ publish transaction で `active` にする。FS と S3 のいずれも、DB の active copy が配信を許す公開点である。
+S3 置き場では、派生物のキーを `pending` として先に commit し、完成した JPEG をアップロードする。チェックサムの照合が済んだ後、公開の transaction で `active` にする。FS と S3 のどちらでも、DB で `active` のコピーが配信を許す。
 
 thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして `MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の実行が重なっても scratch file を共有しない。
 
