@@ -837,7 +837,7 @@ func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
 	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
 	if _, published, err := w.publishEncoded(context.Background(), encodePublishInput{
-		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut, observed: encodePlan{observedGeneration: -1},
+		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
 	}); err != nil || !published {
 		t.Fatalf("publishEncoded = published %v, err %v", published, err)
 	}
@@ -973,7 +973,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		_, _, err := worker.publishEncoded(ctx, encodePublishInput{
 			recordingID: recordingID, profile: "h264", attempt: attempt,
 			relPath: relPath, finalPath: finalPath, scratchOut: scratchOut,
-			observed: encodePlan{observedGeneration: 0},
+			observed: encodePlan{observedGeneration: new(int64)},
 		})
 		encodeDone <- err
 	}()
@@ -1105,7 +1105,6 @@ func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
 			_, published, err := worker.publishEncoded(ctx, encodePublishInput{
 				recordingID: recordingID, profile: "h264", attempt: attempt,
 				relPath: relPath, finalPath: finalPath, scratchOut: scratch,
-				observed: encodePlan{observedGeneration: -1},
 			})
 			done <- publishResult{published: published, err: err}
 		}()

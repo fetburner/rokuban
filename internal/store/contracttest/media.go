@@ -199,8 +199,7 @@ func runEncodedPublicationRechecks(t *testing.T, newFixture NewMediaFixture) {
 	f.SetEncodeProfiles(t, id, []string{"h264"})
 	attempt := f.BeginEncodeAttempt(t, id, "h264")
 	input := store.EncodedPublishInput{
-		ObservedGeneration: -1,
-		RecordingID:        id, Profile: "h264", Attempt: attempt + 1,
+		RecordingID: id, Profile: "h264", Attempt: attempt + 1,
 		RelPath: fmt.Sprintf("sites/%s/%d/encoded.mp4", f.Site, id), SizeBytes: 1,
 	}
 	publishCalls := 0
@@ -243,8 +242,7 @@ func runEncodedPublicationRollback(t *testing.T, newFixture NewMediaFixture) {
 	wantErr := errors.New("publish failed")
 	publishCalls := 0
 	published, err := f.Publisher.PublishEncoded(ctx, store.EncodedPublishInput{
-		ObservedGeneration: -1,
-		RecordingID:        id, Profile: "h264", Attempt: attempt,
+		RecordingID: id, Profile: "h264", Attempt: attempt,
 		RelPath: fmt.Sprintf("sites/%s/%d/encoded.mp4", f.Site, id), SizeBytes: 1,
 	}, func() error { publishCalls++; return wantErr })
 	if published || !errors.Is(err, wantErr) || publishCalls != 1 {

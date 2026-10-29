@@ -880,8 +880,8 @@ func truncateEncodeAttemptError(msg string) string {
 
 // encodePlan は encoded 行の 1 回の観測から導いた、公開の判断材料。
 type encodePlan struct {
-	// observedGeneration は行の derived_generation（active かは問わない）。行が無ければ -1。
-	observedGeneration int64
+	// observedGeneration は行の derived_generation（active かは問わない）。nil は行が無いことを表す。
+	observedGeneration *int64
 	// generation はこの試行が使う派生世代。初回の cut は 1、他の初回出力は 0。
 	generation int64
 	// skip は公開を飛ばして成功扱いにする判定。
@@ -899,7 +899,7 @@ func planEncodePublishFromState(
 	in store.EncodedPublishInput,
 	state store.EncodedPublishState,
 ) encodePlan {
-	plan := store.PlanEncodedPublish(in, state, nil)
+	plan := store.PlanEncodedPublish(in, state, false)
 	p := encodePlan{
 		observedGeneration: plan.ObservedGeneration,
 		skip:               plan.Skip,

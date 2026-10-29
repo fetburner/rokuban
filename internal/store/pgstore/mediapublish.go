@@ -236,7 +236,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		return false, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
 
-	plan := store.PlanEncodedPublish(in, state, &in.ObservedGeneration)
+	plan := store.PlanEncodedPublish(in, state, true)
 	if plan.Stale {
 		return false, store.ErrStalePublishPlan
 	}

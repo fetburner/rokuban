@@ -57,8 +57,7 @@ func runPublishCommitFailure(t *testing.T, newFixture NewMediaFixture) {
 		attempt := f.BeginEncodeAttempt(t, id, "h264")
 		calls := 0
 		published, err := f.Publisher.PublishEncoded(ctx, store.EncodedPublishInput{
-			ObservedGeneration: -1,
-			RecordingID:        id, Profile: "h264", Attempt: attempt,
+			RecordingID: id, Profile: "h264", Attempt: attempt,
 			RelPath: fmt.Sprintf("sites/%s/%d/commit-failure.mp4", f.Site, id), SizeBytes: 1,
 		}, lose(f, &calls))
 		if err == nil || published || calls != 1 {
@@ -196,8 +195,7 @@ func runEncodedCutSerializesWithChapterEdits(t *testing.T, newFixture NewMediaFi
 	edit := make(chan error, 1)
 	editFinishedInPublish := false
 	published, err := f.Publisher.PublishEncoded(ctx, store.EncodedPublishInput{
-		ObservedGeneration: -1,
-		RecordingID:        id, Profile: "cut", Attempt: attempt, Cut: true, KeepRanges: keep,
+		RecordingID: id, Profile: "cut", Attempt: attempt, Cut: true, KeepRanges: keep,
 		RelPath: fmt.Sprintf("sites/%s/%d/cut.mp4", f.Site, id), SizeBytes: 1,
 	}, func() error {
 		go func() {
@@ -244,8 +242,7 @@ func runEncodedWaitsForOpenRemoval(t *testing.T, newFixture NewMediaFixture) {
 	publishCalls := 0
 	go func() {
 		published, err := f.Publisher.PublishEncoded(ctx, store.EncodedPublishInput{
-			ObservedGeneration: -1,
-			RecordingID:        id, Profile: "mobile", Attempt: attempt,
+			RecordingID: id, Profile: "mobile", Attempt: attempt,
 			RelPath: fmt.Sprintf("sites/%s/%d/mobile.mp4", f.Site, id), SizeBytes: 1,
 		}, func() error { publishCalls++; return nil })
 		done <- result{published, err}
@@ -288,8 +285,7 @@ func runEncodedCutWaitsForChapterEdit(t *testing.T, newFixture NewMediaFixture) 
 	publishCalls := 0
 	go func() {
 		published, err := f.Publisher.PublishEncoded(ctx, store.EncodedPublishInput{
-			ObservedGeneration: -1,
-			RecordingID:        id, Profile: "cut", Attempt: attempt, Cut: true, KeepRanges: keep,
+			RecordingID: id, Profile: "cut", Attempt: attempt, Cut: true, KeepRanges: keep,
 			RelPath: fmt.Sprintf("sites/%s/%d/cut.mp4", f.Site, id), SizeBytes: 1,
 		}, func() error { publishCalls++; return nil })
 		done <- result{published, err}

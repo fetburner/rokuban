@@ -83,8 +83,8 @@ type EncodedPublishInput struct {
 	RelPath           string
 	SizeBytes         int64
 	DerivedGeneration int64
-	// ObservedGeneration は worker が観測した論理行の derived_generation で、行が無ければ -1 である。
-	ObservedGeneration int64
+	// ObservedGeneration は worker が観測した論理行の derived_generation で、nil は観測時に行が無かったことを表す。
+	ObservedGeneration *int64
 	Cut                bool
 	KeepRanges         []chapters.Range
 	HasRebuildRequest  bool
@@ -223,8 +223,8 @@ const (
 
 // EncodedPublishPlan は encoded 公開前に観測した DB 状態から導いた判断である。
 type EncodedPublishPlan struct {
-	// ObservedGeneration は行の derived_generation（active かは問わない）。行が無ければ -1。
-	ObservedGeneration int64
+	// ObservedGeneration は行の derived_generation（active かは問わない）。nil は行が無いことを表す。
+	ObservedGeneration *int64
 	// Replaces は cut の公開が active な旧版を置き換えることを表す。
 	// tombstone や deleting の行は自分のものではないので含めない。
 	Replaces bool
@@ -239,15 +239,16 @@ type EncodedPublishPlan struct {
 }
 
 // PlanEncodedPublish はエンコード公開の状態を判定する純粋関数である。
-// previous は worker が先に観測した derived_generation で、nil なら初回観測として行の進みを判定しない。
+// compareObserved が true のとき、in.ObservedGeneration（worker が先に観測した値。nil は行が無かった）と
+// 今の観測が違えば行が進んだと判定する。false なら初回観測として行の進みを判定しない。
 // 区間の比較は量子化後の値どうしで行う。keep は chapters.Derive を通った時点で量子化済みで、
 // 凍結側は書き込み時に量子化して入れてある。worker のエンコード前の判定と公開 tx が同じ判定を使う。
-func PlanEncodedPublish(in EncodedPublishInput, state EncodedPublishState, previous *int64) EncodedPublishPlan {
+func PlanEncodedPublish(in EncodedPublishInput, state EncodedPublishState, compareObserved bool) EncodedPublishPlan {
 	var p EncodedPublishPlan
 	active := state.EncodedAsset != nil && state.EncodedAsset.Active
-	p.ObservedGeneration = -1
 	if state.EncodedAsset != nil {
-		p.ObservedGeneration = state.EncodedAsset.DerivedGeneration
+		generation := state.EncodedAsset.DerivedGeneration
+		p.ObservedGeneration = &generation
 	}
 	p.Replaces = in.Cut && active
 
@@ -284,7 +285,7 @@ func PlanEncodedPublish(in EncodedPublishInput, state EncodedPublishState, previ
 	if committed && in.Cut {
 		committed = chapters.SameRanges(state.EncodedAsset.KeepRanges, in.KeepRanges)
 	}
-	moved := previous != nil && *previous != p.ObservedGeneration
+	moved := compareObserved && !sameGeneration(in.ObservedGeneration, p.ObservedGeneration)
 	p.Stale = moved && !committed && active
 	if p.Stale {
 		return p
@@ -304,4 +305,12 @@ func PlanEncodedPublish(in EncodedPublishInput, state EncodedPublishState, previ
 		p.SkipReason = EncodedPublishSkipActiveCutProtected
 	}
 	return p
+}
+
+// sameGeneration は 2 つの観測世代を比べる。両方 nil（行が無い）なら等しく、片方だけ nil なら異なる。
+func sameGeneration(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
