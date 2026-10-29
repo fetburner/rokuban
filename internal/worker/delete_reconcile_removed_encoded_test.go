@@ -251,7 +251,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 		}
 	}
 	cb, err := sqlcgen.New(pool).GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{
-		Site: "", Name: breaker.DeleteReconcile,
+		Scope: "", Name: breaker.DeleteReconcile,
 	})
 	if err != nil {
 		t.Fatalf("expected circuit breaker to be tripped, got error: %v", err)

@@ -98,7 +98,7 @@ LIMIT sqlc.arg('row_limit');
 -- ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
 -- まだ存在すると Go 側で確認できたときだけ呼ぶこと。
 --
--- WHERE に同じ判定条件（名前付き述語、issue #160）を再度埋め込み、事前の
+-- WHERE に同じ判定条件（名前付き述語）を再度埋め込み、事前の
 -- SELECT の結果（真偽値）を受け渡さずこの UPDATE 自体の瞬間に再評価する
 -- （不変条件 9「適用の瞬間」）。SELECT から数行の Go コードを挟むだけの短い
 -- 窓だが、その間に別の書き手（RestoreRecording・encode_profiles 変更 API 等）
@@ -112,7 +112,9 @@ LIMIT sqlc.arg('row_limit');
 -- deleting のまま次パスに持ち越された行は前パスのプロセスが既に終了して
 -- いるので、いま unlink が進行中の行と衝突しようがない。復元 API から
 -- deleting → active へ即座に戻す案を採らなかったのはこの前提が無い
--- （進行中の unlink と非同期に競合しうる）ため。
+-- （進行中の unlink と非同期に競合しうる）ため。複数置き場の reconcile が同じ
+-- 論理資産を並行して触ると、この前提が崩れる。#1624 で論理資産の行のロックで
+-- 直列化するまで、FS 置き場を 1 つに制限している。
 -- name: RevertMediaAssetToActive :execrows
 UPDATE media_assets a
 SET state = 'active', updated_at = now()

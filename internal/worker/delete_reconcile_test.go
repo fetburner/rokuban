@@ -1454,8 +1454,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 
 	// ブレーカーを発動させ、通常経路（ブレーカー対象）を完全に止める。
 	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
-	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
-	// （breaker.IsSiteless のコメント参照）。
+	// この legacy テスト worker は置き場名を省略しているので scope は空文字列。
 	if err := breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
@@ -2836,11 +2835,10 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 		}
 	}
 
-	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
-	// （breaker.IsSiteless のコメント参照）。
+	// この legacy test worker は置き場名を省略しているので scope は空文字列。
 	q := sqlcgen.New(pool)
 	cb, err := q.GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{
-		Site: "", Name: breaker.DeleteReconcile,
+		Scope: "", Name: breaker.DeleteReconcile,
 	})
 	if err != nil {
 		t.Fatalf("expected circuit breaker to be tripped, got error: %v", err)
@@ -2880,8 +2878,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// ブレーカーを発動させておく（新規候補はゼロなので影響しないはず）。
-	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
-	// （breaker.IsSiteless のコメント参照）。
+	// この legacy test worker は置き場名を省略しているので scope は空文字列。
 	if err := breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}

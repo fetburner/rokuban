@@ -205,6 +205,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		cfg.EncodePolicyStore, cfg.Dedupe, cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
+	handler.breakerStoreScope = cfg.MediaStoreName
 	handler.recordingPlayback = recordingPlaybackConfig{enabled: cfg.RecordingHLSEnabled, store: cfg.MediaStoreName, profiles: cfg.LiveProfiles}
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: writeRequestError,

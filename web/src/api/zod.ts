@@ -2290,7 +2290,7 @@ export const GetStorageResponse = zod.array(GetStorageResponseItem)
  *
  * site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
  * レスポンスの各要素に site フィールドがある（issue #102）。ただし
- * `internal/breaker.IsSiteless` が true の名前（`delete_reconcile`）の
+ * site を持たない名前（`delete_reconcile`）の
  * 行は、その資源自体が site を持たないため `site` が空文字列になる
  * （issue #450）。個別の再開は、site を持つ名前なら
  * `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
@@ -2298,7 +2298,7 @@ export const GetStorageResponse = zod.array(GetStorageResponseItem)
  * @summary List tripped circuit breakers
  */
 export const ListCircuitBreakersResponseItem = zod.object({
-  "site": zod.string().describe('この行が属する site。`internal/breaker.IsSiteless` が true の名前\n（`delete_reconcile`）は資源自体が site を持たないため空文字列\nになる（issue #450）。その場合の再開は\n`POST /api/breakers/{name}/resume`、それ以外は\n`POST /api/sites/{site}/breakers/{name}/resume`。\n'),
+  "site": zod.string().describe('この行が属する site。site を持たない名前\n（`delete_reconcile`）は資源自体が site を持たないため空文字列\nになる（issue #450）。その場合の再開は\n`POST /api/breakers/{name}/resume`、それ以外は\n`POST /api/sites/{site}/breakers/{name}/resume`。\n'),
   "name": zod.enum(['ruler_deletes', 'reconcile_total_loss', 'delete_reconcile']).describe('internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /\nDeleteReconcile）。値の権威は internal/breaker.All\n（internal/breaker/breaker.go）で、この enum はそれを手で複製した\nものなので、breaker.All に定数を足したときはここも合わせて直す。\n\nずれの検知は 2 段構え: internal/breaker パッケージのエクスポート\n済み文字列定数と All 自体の一致は internal/breaker の AST テスト\n（TestAll_MatchesDeclaredConstants）が見る。All とこの enum の\n一致は internal/api の純ユニットテスト\n（TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers。\nCircuitBreakerName.Valid() 経由）が見る。後者を GET /api/breakers\nの runtime チェックにはしていない —— 消費者\n（web/src/components/circuit-breaker-banner.tsx・web/src/pages/home.tsx）\nが isError を見ておらず、enum 外の 1 行のせいで一覧全体を 500 に\nすると発動中の他のブレーカーまで隠れてしまうため（issue #199 の\nレビューで指摘）。\n'),
   "trippedAt": zod.iso.datetime({"offset":true}).describe('発動した時刻（最初の発動時刻。再発動で更新されるのは pending /\nthreshold / detail のみ）。\n'),
   "pending": zod.int().describe('発動時に止めた削除の件数。'),
@@ -2334,7 +2334,7 @@ export const ListCircuitBreakersResponse = zod.array(ListCircuitBreakersResponse
  */
 export const ResumeCircuitBreakerParams = zod.object({
   "site": zod.string().describe('mirakc インスタンスのサイト名。programId はインスタンス単位のスコープ\nしか持たないため、この site と組にしないと資源が一意に定まらない\n（issue #31）。api プロセス自身は特定の site に束縛されない\n（不変条件 1: mirakc にもファイルシステムにも依存しない）ので、権威は\n「`config.mirakcs` レジストリに存在するか」であり、1 プロセスが\nレジストリの全 site を処理できる（issue #184 M4-12）。レジストリに無い\nsite のエラーコードはエンドポイントの HTTP メソッドで決まる —— GET 系は\n404、POST/PUT/PATCH/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各\nエンドポイントの description・レスポンス定義を参照）。存在する site の\n一覧は `GET /api/sites` で取得できる。\n'),
-  "name": zod.string().describe('site を持つブレーカー識別子（`internal/breaker` の定数のうち\n`internal/breaker.IsSiteless` が false のもの。`ruler_deletes` /\n`reconcile_total_loss`）。未知の値、および site を持たない名前\n（`delete_reconcile`）は 400 --- 後者は\n`POST /api/breakers/{name}/resume` を使う（issue #450）。\n')
+  "name": zod.string().describe('site を持つブレーカー識別子（`ruler_deletes` /\n`reconcile_total_loss`）。未知の値、および site を持たない名前\n（`delete_reconcile`）は 400 --- 後者は\n`POST /api/breakers/{name}/resume` を使う（issue #450）。\n')
 })
 
 export const ResumeCircuitBreakerResponse = zod.void()
@@ -2342,7 +2342,7 @@ export const ResumeCircuitBreakerResponse = zod.void()
 
 /**
  * site を持たないブレーカー専用の再開エンドポイント
- * （`internal/breaker.IsSiteless`。今のところ `delete_reconcile` のみ）。
+ * （今のところ `delete_reconcile` のみ）。
  * 理由と経緯は `internal/worker/delete_reconcile.go` の
  * `DeleteReconcileWorker` doc コメント参照（issue #450）。
  *
@@ -2351,7 +2351,7 @@ export const ResumeCircuitBreakerResponse = zod.void()
  * @summary Resume a tripped circuit breaker that has no site (manual acknowledgement)
  */
 export const ResumeSitelessCircuitBreakerParams = zod.object({
-  "name": zod.string().describe('site を持たないブレーカー識別子（`internal/breaker.IsSiteless` が\ntrue のもの。今のところ `delete_reconcile` のみ）。未知の値、および\nsite を持つ名前（`ruler_deletes` / `reconcile_total_loss`）は 400 ---\n後者は `POST /api/sites/{site}/breakers/{name}/resume` を使う。\n')
+  "name": zod.string().describe('site を持たないブレーカー識別子（今のところ\n`delete_reconcile` のみ）。未知の値、および\nsite を持つ名前（`ruler_deletes` / `reconcile_total_loss`）は 400 ---\n後者は `POST /api/sites/{site}/breakers/{name}/resume` を使う。\n')
 })
 
 export const ResumeSitelessCircuitBreakerResponse = zod.void()

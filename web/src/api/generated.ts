@@ -1637,7 +1637,7 @@ export interface CircuitBreakerSample {
  */
 export interface CircuitBreaker {
   /**
-     * この行が属する site。`internal/breaker.IsSiteless` が true の名前
+     * この行が属する site。site を持たない名前
      * （`delete_reconcile`）は資源自体が site を持たないため空文字列
      * になる（issue #450）。その場合の再開は
      * `POST /api/breakers/{name}/resume`、それ以外は
@@ -9380,7 +9380,7 @@ export const getListCircuitBreakersUrl = () => {
  *
  * site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
  * レスポンスの各要素に site フィールドがある（issue #102）。ただし
- * `internal/breaker.IsSiteless` が true の名前（`delete_reconcile`）の
+ * site を持たない名前（`delete_reconcile`）の
  * 行は、その資源自体が site を持たないため `site` が空文字列になる
  * （issue #450）。個別の再開は、site を持つ名前なら
  * `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
@@ -9626,7 +9626,7 @@ export const getResumeSitelessCircuitBreakerUrl = (name: string,) => {
 
 /**
  * site を持たないブレーカー専用の再開エンドポイント
- * （`internal/breaker.IsSiteless`。今のところ `delete_reconcile` のみ）。
+ * （今のところ `delete_reconcile` のみ）。
  * 理由と経緯は `internal/worker/delete_reconcile.go` の
  * `DeleteReconcileWorker` doc コメント参照（issue #450）。
  *

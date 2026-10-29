@@ -251,7 +251,7 @@ URL の形は `/reservations/$site/$programId` である。
 
 対象の形は `/api/sites/{site}/...` である。例は `POST /api/sites/{site}/breakers/{name}/resume` と `GET /api/sites/{site}/programs/{programId}/reservation` である。
 
-ブレーカー再開はさらに一段複雑である。行が運ぶ site は、site を持たない `delete_reconcile` では空文字列になる。その場合は、行から始まる操作でも、site を含まない `POST /api/breakers/{name}/resume` を呼ぶ。
+ブレーカー再開はさらに一段複雑である。行が運ぶ `site` は、置き場の範囲の `delete_reconcile` では空文字列になる。その場合は、行から始まる操作でも、site を含まない `POST /api/breakers/{name}/resume` を呼ぶ。
 
 <details><summary>根拠</summary>
 
