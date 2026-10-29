@@ -420,6 +420,19 @@ func TestRegisterInPlaceRejectsExistingAssetUnlessAllConditionsHold(t *testing.T
 			t.Fatalf("error = %v, want store.ErrConflict (asset %d)", err, first.AssetIDs[0])
 		}
 	})
+	t.Run("live copy of another generation in this store", func(t *testing.T) {
+		media, pool, first := setup(t)
+		deleteCopies(t, pool, first.AssetIDs[0])
+		// 旧世代のコピーがまだ生きている（overlap 中）。現行世代のパスでも、同じ置き場に 2 つ目の
+		// 生きたコピーを足すことになるので拒否する。一意索引は世代が違えば止めないので、この条件は別に要る。
+		if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state) VALUES ($1, $2, 'encoded/show.g7.mp4', 7, 'active')`, first.AssetIDs[0], dbtest.StoreName); err != nil {
+			t.Fatal(err)
+		}
+		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 80))
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("error = %v, want store.ErrConflict", err)
+		}
+	})
 	t.Run("older generation", func(t *testing.T) {
 		media, pool, first := setup(t)
 		deleteCopies(t, pool, first.AssetIDs[0])
