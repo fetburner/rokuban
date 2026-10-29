@@ -440,8 +440,8 @@ for (const width of [360, 390]) {
     )
   }
   const chipText = await Promise.all([
-    page.getByRole('button', { name: '待機中 0件', exact: true }).innerText(),
-    page.getByRole('button', { name: '実行中 0件', exact: true }).innerText(),
+    page.getByRole('button', { name: '待機 0件', exact: true }).innerText(),
+    page.getByRole('button', { name: '実行 0件', exact: true }).innerText(),
     awaitingReviewChip.innerText(),
   ])
   if (chipText[0] !== '待機 0件' || chipText[1] !== '実行 0件' || chipText[2] !== '確認待ち 1件') {
@@ -455,6 +455,13 @@ for (const width of [360, 390]) {
     ng.push(
       `⑧ ${width}px で容量要約が横にはみ出す（${storageLayout.scrollWidth}px > ${storageLayout.clientWidth}px）`,
     )
+  }
+}
+// アクセシブル名は表示テキストに従う。sm（640px）以上は完全な名前になる。
+await page.setViewportSize({ width: 1280, height: 900 })
+for (const name of ['待機中 0件', '実行中 0件']) {
+  if ((await page.getByRole('button', { name, exact: true }).count()) !== 1) {
+    ng.push(`⑧ 1280px でアクセシブル名「${name}」のチップが見つからない`)
   }
 }
 await page.setViewportSize({ width: 390, height: 844 })

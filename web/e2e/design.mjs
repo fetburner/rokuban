@@ -3636,7 +3636,9 @@ for (const scenario of layoutScenarios) {
       ng.push(`録画一覧/${scenario.label}/${viewport.name}: 古い観測が summary に常置されていない`)
     }
     if (scenario.name === 'encode-queue') {
-      for (const label of ['待機中 2件', '実行中 1件', '確認待ち 1件']) {
+      // アクセシブル名は表示テキストに従う。sm（640px）未満は「待機 / 実行」の短い名前。
+      const narrow = viewport.width < 640
+      for (const label of [narrow ? '待機 2件' : '待機中 2件', narrow ? '実行 1件' : '実行中 1件', '確認待ち 1件']) {
         if ((await page.getByRole('button', { name: label, exact: true }).count()) === 0) {
           ng.push(`録画一覧/エンコード待機列/${viewport.name}: ${label} が無い`)
         }
@@ -3648,7 +3650,7 @@ for (const scenario of layoutScenarios) {
       // 判定が自明に通ってしまう（管理行が丸ごと消えても緑になる指摘）ので、
       // 肯定側（チップが残っていること）と否定側（欠損した容量情報を出さない
       // こと）の両方を測る。
-      if ((await page.getByRole('button', { name: '待機中 0件', exact: true }).count()) === 0) {
+      if ((await page.getByRole('button', { name: viewport.width < 640 ? '待機 0件' : '待機中 0件', exact: true }).count()) === 0) {
         ng.push(`録画一覧/${scenario.label}/${viewport.name}: エンコードチップが残っていない`)
       }
       const headerText = (

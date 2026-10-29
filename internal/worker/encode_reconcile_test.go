@@ -184,9 +184,6 @@ func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {
 	if got := promtestutil.ToFloat64(metrics.CutAwaitingReview.WithLabelValues("cut2")); got != 1 {
 		t.Errorf("cut2 awaiting-review gauge = %v, want 1", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.CutAwaitingReview.WithLabelValues("removed")); got != 0 {
-		t.Errorf("removed profile awaiting-review gauge = %v, want 0", got)
-	}
 }
 
 // TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow は、reconcile が

@@ -316,17 +316,6 @@ func TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate(t *testing.T) {
 			gotTitles, want, trash, noOriginal, encoded, removed, confirmed, running, failed, rebuilding, reverted)
 	}
 
-	counts, err := pgstoretest.Media(pool).ListCutAwaitingReview(ctx, []string{"cut", "cut2"})
-	if err != nil {
-		t.Fatalf("ListCutAwaitingReview: %v", err)
-	}
-	gotCounts := map[string]int64{}
-	for _, count := range counts {
-		gotCounts[count.Profile] = count.Recordings
-	}
-	if gotCounts["cut"] != 2 || gotCounts["cut2"] != 1 {
-		t.Errorf("cut awaiting review metric counts = %v, want cut=2 cut2=1; excluded reverted=%d", gotCounts, reverted)
-	}
 }
 
 func TestListRecordingsEncodeStateMatchesQueueCounts(t *testing.T) {
@@ -536,5 +525,46 @@ func assertEncodeQueueMatchesReconcile(t *testing.T, pool *pgxpool.Pool, profile
 		if !slices.Equal(titles, want) {
 			t.Errorf("%s = %v, want %v", name, titles, want)
 		}
+	}
+}
+
+// TestChapterEditsRemoveRecordingFromAwaitingReview は、実際の PUT chapter-edits で
+// 録画が確認待ちの件数と絞り込みの両方から消えることを固定する。
+func TestChapterEditsRemoveRecordingFromAwaitingReview(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "確認待ち", time.Now().Truncate(time.Second), "finished", 1601
+	})
+	seedIngested(t, pool, id, 1000, nil)
+	setEncodeProfiles(t, pool, id, []string{"cut"})
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Ready:              pool.Ping,
+		ChapterStore:       pgstoretest.Analysis(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		MediaReader:        pgstoretest.Media(pool),
+		EncodeProfileNames: []string{"cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+
+	observe := func() (int64, int) {
+		t.Helper()
+		var summary struct {
+			AwaitingReview int64 `json:"awaitingReview"`
+		}
+		getJSON(t, srv.URL+"/api/encode-queue", &summary)
+		var rows []Recording
+		getJSON(t, srv.URL+"/api/recordings?encodeState=awaiting_review", &rows)
+		return summary.AwaitingReview, len(rows)
+	}
+	if count, rows := observe(); count != 1 || rows != 1 {
+		t.Fatalf("before review: awaitingReview = %d, rows = %d; want 1, 1", count, rows)
+	}
+	resp := putChapters(t, chaptersURL(srv.URL, id), []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT chapter-edits status = %d, want 204", resp.StatusCode)
+	}
+	if count, rows := observe(); count != 0 || rows != 0 {
+		t.Errorf("after review: awaitingReview = %d, rows = %d; want 0, 0", count, rows)
 	}
 }

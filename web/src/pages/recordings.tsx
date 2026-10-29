@@ -541,12 +541,11 @@ export function RecordingsPage() {
                 className="flex shrink-0 flex-wrap items-center gap-1 sm:gap-2"
               >
                 {/* 3 チップと容量要約を同じ行に保つため、sm 未満は短い表示名と
-                    狭い余白を使う。aria-label は完全な状態名を保つ。
+                    狭い余白を使う。アクセシブル名は表示テキストに従う（WCAG 2.5.3）。
                     e2e/recordings-rule-filter.mjs が storage root のある 360/390px
                     で行高を実測する。 */}
                 <span className="hidden lg:inline">エンコード</span>
                 <Chip
-                  aria-label={`待機中 ${encodeQueue.queued}件`}
                   active={search.encodeState === ListRecordingsEncodeState.queued}
                   className="px-2 py-1 sm:px-3 sm:py-1.5"
                   onClick={() =>
@@ -559,11 +558,9 @@ export function RecordingsPage() {
                     }))
                   }
                 >
-                  <span className="sm:hidden">待機 {encodeQueue.queued}件</span>
-                  <span className="hidden sm:inline">待機中 {encodeQueue.queued}件</span>
+                  待機<span className="hidden sm:inline">中</span> {encodeQueue.queued}件
                 </Chip>
                 <Chip
-                  aria-label={`実行中 ${encodeQueue.running}件`}
                   active={search.encodeState === ListRecordingsEncodeState.running}
                   className="px-2 py-1 sm:px-3 sm:py-1.5"
                   onClick={() =>
@@ -576,8 +573,7 @@ export function RecordingsPage() {
                     }))
                   }
                 >
-                  <span className="sm:hidden">実行 {encodeQueue.running}件</span>
-                  <span className="hidden sm:inline">実行中 {encodeQueue.running}件</span>
+                  実行<span className="hidden sm:inline">中</span> {encodeQueue.running}件
                 </Chip>
                 <Chip
                   className="px-2 py-1 sm:px-3 sm:py-1.5"

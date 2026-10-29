@@ -15,21 +15,18 @@ export function Chip({
   onClick,
   disabled,
   className,
-  'aria-label': ariaLabel,
   children,
 }: {
   active: boolean
   onClick: () => void
   disabled?: boolean
   className?: string
-  'aria-label'?: string
   children: React.ReactNode
 }) {
   return (
     <button
       type="button"
       aria-pressed={active}
-      aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
       className={cn(

@@ -6,7 +6,7 @@
 
 `cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は関数 `encodable_profile` が持ち、削除側の関数 `until_encoded_deletable_originals` は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。
 
-確認していない録画では、カット版のプロファイルが view `unencoded_desired_profiles` に残る。`until_encoded_deletable_originals` はこの view に行がある録画を除くので、原本は消えない。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。一覧の絞り込みとメトリクスは関数 `awaiting_review_profiles` を共有し、active な encoded・試行行・未充足の作り直し要求があるものを除く。
+確認していない録画では、カット版のプロファイルが view `unencoded_desired_profiles` に残る。`until_encoded_deletable_originals` はこの view に行がある録画を除くので、原本は消えない。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。一覧の絞り込みとメトリクスは関数 `awaiting_review_profiles` を共有し、active な encoded・試行行・未充足の作り直し要求があるものを除く。カット版を作った後にチャプター編集を取り消した録画は数えない。何もしなくてもカット版が active のまま残り、利用者は何も失わないので、確認待ちに数えるのは誤りだった（「チャプターの所有が無ければ確認待ち」と書き直すと、この録画が戻る）。
 
 **チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が気づかないうちに本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。
 
