@@ -1,5 +1,5 @@
 # Stage 1: フロントエンドビルド
-FROM node:24.20.0 AS frontend
+FROM --platform=$BUILDPLATFORM node:24.20.0 AS frontend
 RUN corepack enable
 WORKDIR /build/web
 COPY web/package.json web/pnpm-lock.yaml ./
@@ -10,7 +10,7 @@ COPY openapi.yaml /build/
 RUN pnpm build
 
 # Stage 2: Go バイナリビルド
-FROM golang:1.27.1 AS backend
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS backend
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
