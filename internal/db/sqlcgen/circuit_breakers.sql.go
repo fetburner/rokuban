@@ -10,6 +10,31 @@ import (
 	"encoding/json"
 )
 
+const adoptUnassignedDeleteReconcileBreaker = `-- name: AdoptUnassignedDeleteReconcileBreaker :exec
+INSERT INTO circuit_breakers (scope, name, tripped_at, pending, threshold, detail)
+SELECT $1::text, name, tripped_at, pending, threshold, detail
+FROM circuit_breakers
+WHERE scope = '' AND name = 'delete_reconcile'
+ON CONFLICT (scope, name) DO NOTHING
+`
+
+// storage adopt が、範囲を持たない旧 delete_reconcile 行を置き場の範囲へ割り当てる。
+// 列の改名前に空の範囲で書かれた名前は delete_reconcile だけなので、リテラルで絞る。
+// 同じ (scope, name) が既にあれば、置き場側の行を正として何もしない。
+func (q *Queries) AdoptUnassignedDeleteReconcileBreaker(ctx context.Context, store string) error {
+	_, err := q.db.Exec(ctx, adoptUnassignedDeleteReconcileBreaker, store)
+	return err
+}
+
+const deleteUnassignedDeleteReconcileBreaker = `-- name: DeleteUnassignedDeleteReconcileBreaker :exec
+DELETE FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile'
+`
+
+func (q *Queries) DeleteUnassignedDeleteReconcileBreaker(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteUnassignedDeleteReconcileBreaker)
+	return err
+}
+
 const getCircuitBreaker = `-- name: GetCircuitBreaker :one
 SELECT scope, name, tripped_at, pending, threshold, detail FROM circuit_breakers WHERE scope = $1 AND name = $2
 `

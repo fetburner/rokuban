@@ -356,14 +356,10 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			defer srv.Close()
 
 			// site 範囲は既定 site、置き場範囲はルーターに設定した置き場名。
-			// site 無指定の API は置き場と全体の両方を扱う。
 			scope := "default"
 			resumeURL := srv.URL + "/api/sites/default/breakers/" + name + "/resume"
 			if breaker.ScopeKindFor(name) == breaker.ScopeStore {
 				scope = "test-store"
-				resumeURL = srv.URL + "/api/breakers/" + name + "/resume"
-			} else if breaker.ScopeKindFor(name) == breaker.ScopeGlobal {
-				scope = ""
 				resumeURL = srv.URL + "/api/breakers/" + name + "/resume"
 			}
 			insertCircuitBreakerFixtureForSite(t, pool, ctx, scope, name, 7, 10, `{"total":7}`)

@@ -67,8 +67,8 @@ func TestDeleteReconcileBreakerIsScopedToMountedStore(t *testing.T) {
 	storeB, rootB := newStoreRootForAuditTest(t, "store-b")
 	pathA, pathB := "sites/default/a.ts", "sites/default/b.ts"
 	writeOldAuditFile(t, rootA, pathA)
-	// The path can exist independently under both roots. Store-b must not delete
-	// this file just because the matching DB asset belongs to store-a.
+	// 同じパスが両方の root に独立して存在しうる。store-b は、対応する DB 上の論理資産が
+	// store-a のものだというだけで、このファイルを削除してはならない。
 	writeOldAuditFile(t, rootB, pathA)
 	writeOldAuditFile(t, rootB, pathB)
 	assetA, recordingA := seedStoreScopedOriginalForAudit(t, pool, storeA, pathA)
@@ -131,41 +131,6 @@ func TestDeleteReconcileBreakerIsScopedToMountedStore(t *testing.T) {
 	}
 	if got := storeCopyState(t, pool, storeA, assetA); got != "deleted" {
 		t.Errorf("store-a copy state after resume = %q, want deleted", got)
-	}
-}
-
-func TestDeleteReconcileHonorsLegacyEmptyScopeBreaker(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	storeName, root := newStoreRootForAuditTest(t, "store-a")
-	relPath := "sites/default/legacy-latched.ts"
-	writeOldAuditFile(t, root, relPath)
-	assetID, recordingID := seedStoreScopedOriginalForAudit(t, pool, storeName, relPath)
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() - interval '2 hours' WHERE id = $1`, recordingID); err != nil {
-		t.Fatalf("moving recording %d to trash: %v", recordingID, err)
-	}
-
-	// Before the scope migration, delete_reconcile breakers were stored with an
-	// empty scope. That latch must remain effective until an operator resumes it.
-	breakers := pgstoretest.Breakers(pool)
-	if err := breaker.Trip(ctx, breakers, "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 1}); err != nil {
-		t.Fatalf("tripping legacy delete breaker: %v", err)
-	}
-	worker := newStoreScopedDeleteWorker(pool, storeName, root)
-	worker.TrashRetention = time.Hour
-	worker.MaxDeletesPerPass = 10
-	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work(): %v", err)
-	}
-
-	if got := storeCopyState(t, pool, storeName, assetID); got != "active" {
-		t.Errorf("copy state while legacy breaker is tripped = %q, want active", got)
-	}
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relPath))); err != nil {
-		t.Errorf("file while legacy breaker is tripped: %v", err)
-	}
-	if tripped, err := breakers.IsTripped(ctx, "", breaker.DeleteReconcile); err != nil || !tripped {
-		t.Errorf("legacy breaker = (%t, %v), want (true, nil)", tripped, err)
 	}
 }
 

@@ -58,8 +58,6 @@ const (
 	ScopeSite
 	// ScopeStore は物理置き場ごとの範囲を表す。
 	ScopeStore
-	// ScopeGlobal は全体で 1 つの範囲を表す。
-	ScopeGlobal
 )
 
 var scopeKinds = map[string]ScopeKind{

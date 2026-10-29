@@ -38,25 +38,7 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 	}
 
 	result := make([]CircuitBreaker, 0, len(rows))
-	storeScoped := make(map[string]bool)
-	if h.breakerStoreScope != "" {
-		for _, r := range rows {
-			if breaker.ScopeKindFor(r.Name) == breaker.ScopeStore && r.Scope == h.breakerStoreScope {
-				storeScoped[r.Name] = true
-			}
-		}
-	}
 	for _, r := range rows {
-		if h.breakerStoreScope != "" && breaker.ScopeKindFor(r.Name) == breaker.ScopeStore && r.Scope != h.breakerStoreScope {
-			// The API contract has no store field. Show the configured store's
-			// breaker; keep an empty-scope legacy latch visible only until that
-			// store has its own row. This avoids duplicate public identities while
-			// still exposing an upgrade latch. Covered by
-			// TestListCircuitBreakersPrefersCurrentStoreOverLegacyLatch.
-			if r.Scope != "" || storeScoped[r.Name] {
-				continue
-			}
-		}
 		var sample CircuitBreakerSample
 		if err := json.Unmarshal(r.Detail, &sample); err != nil {
 			return nil, fmt.Errorf("unmarshalling detail for circuit breaker %s/%s: %w", r.Scope, r.Name, err)
@@ -80,8 +62,8 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 		// 通す。クライアント側は元々このずれを見越したフォールバックを持つ
 		// （web/src/lib/breaker.ts の describeBreakerName / describeBreakerReason
 		// —— 未知の値は識別子そのもの表示 / 理由は空文字）。
-		// API の site は外部契約のまま site 範囲だけに使う。store/global
-		// scope を漏らすとクライアントが site resume URL を選んでしまう。
+		// API の site は site の範囲だけに使う。置き場の範囲を漏らすと、
+		// クライアントが置き場名を site の再開 URL に入れてしまう。
 		site := ""
 		if breaker.ScopeKindFor(r.Name) == breaker.ScopeSite {
 			site = r.Scope
@@ -115,7 +97,7 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // site にも束縛されないので、レジストリに無い site が来た場合だけ 400 にする
 // （issue #184 M4-12。レジストリの全 site をこのプロセスから操作できる）。
 //
-// site 範囲以外の既知名を knownSite より先に検査する。置き場範囲の名前
+// 置き場の範囲の名前を knownSite より先に検査する。置き場の範囲の名前
 // （delete_reconcile）はこのエンドポイントの資源ではなく取り違え
 // （ResumeSitelessCircuitBreaker が受ける。issue #450）で、運用者が最も
 // 打ちがちな旧コマンド `POST /api/sites/default/breakers/delete_reconcile/resume`
@@ -128,7 +110,7 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // 'delete_reconcile'` は常に 0 行になり、正しい 400 の代わりに紛らわしい
 // 404（「発動していない」）を返してしまう。
 func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error) {
-	if knownCircuitBreakerNames[req.Name] && breaker.ScopeKindFor(req.Name) != breaker.ScopeSite {
+	if breaker.ScopeKindFor(req.Name) == breaker.ScopeStore {
 		return ResumeCircuitBreaker400JSONResponse{
 			Error: fmt.Sprintf("circuit breaker %q is not site-scoped; use POST /api/breakers/%s/resume instead", req.Name, req.Name),
 		}, nil
@@ -151,53 +133,39 @@ func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBrea
 }
 
 // ResumeSitelessCircuitBreaker は site のパス指定を使わないサーキットブレーカーの手動再開
-// (POST /api/breakers/{name}/resume)。置き場範囲または全体範囲の名前を受ける。
-// 理由と経緯は
-// internal/worker/delete_reconcile.go の DeleteReconcileWorker doc コメント参照
-// （issue #450）。
+// (POST /api/breakers/{name}/resume)。置き場の範囲の名前（delete_reconcile）を受ける。
+// 範囲が置き場なのは、削除 reconcile のブレーカーが worker の担当する FS 置き場に
+// 従属するため（DeleteReconcileWorker の doc コメント参照）。
 //
-// site 範囲の名前（ruler_deletes / reconcile_total_loss）が来たら 400 にする ---
+// site の範囲の名前（ruler_deletes / reconcile_total_loss）と未知の名前は 400 にする。
 // ResumeCircuitBreaker と対称に、分類を緩めて DELETE をそのまま実行すると
-// scope が空文字列で name が `ruler_deletes` の行を探すことになり（常に 0 行）、
+// 範囲が空文字列で name が `ruler_deletes` の行を探すことになり（常に 0 行）、
 // 正しい 400 の代わりに紛らわしい 404 を返してしまう。
 //
-// site をレジストリと照合する必要はない（不変条件 1）。置き場範囲は API が
-// 共有する storage config の MediaStoreName から決める。
+// site をレジストリと照合する必要はない（不変条件 1）。再開する行の範囲は、
+// api の設定の FS 置き場の名前（breakerStoreScope）で決まる。api は FS 置き場が
+// 無い設定でも起動できるので、その場合は置き場を決められず 400 にする。
 func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSitelessCircuitBreakerRequestObject) (ResumeSitelessCircuitBreakerResponseObject, error) {
 	if !knownCircuitBreakerNames[req.Name] {
 		return ResumeSitelessCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
 	}
-	kind := breaker.ScopeKindFor(req.Name)
-	if kind == breaker.ScopeSite || kind == breaker.ScopeUnknown {
+	if breaker.ScopeKindFor(req.Name) != breaker.ScopeStore {
 		return ResumeSitelessCircuitBreaker400JSONResponse{
 			Error: fmt.Sprintf("circuit breaker %q is site-scoped; use POST /api/sites/{site}/breakers/%s/resume instead", req.Name, req.Name),
 		}, nil
 	}
+	if h.breakerStoreScope == "" {
+		return ResumeSitelessCircuitBreaker400JSONResponse{
+			Error: fmt.Sprintf("circuit breaker %q is store-scoped, but the api config has no FS store to resolve it", req.Name),
+		}, nil
+	}
 
-	scope := ""
-	if kind == breaker.ScopeStore {
-		scope = h.breakerStoreScope
-	}
-	err := h.breakerAdmin.Resume(ctx, scope, req.Name)
-	resumed := err == nil
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return nil, fmt.Errorf("resuming circuit breaker %q: %w", req.Name, err)
-	}
-	// Legacy delete_reconcile rows were stored with an empty scope. Clear that
-	// compatibility latch together with the current store row so one resume
-	// action releases every latch the worker observes. Covered by
-	// TestResumeSitelessCircuitBreaker_ResumesLegacyEmptyScopeLatch and
-	// TestResumeSitelessCircuitBreaker_ResumesStoreAndLegacyLatches.
-	if kind == breaker.ScopeStore && scope != "" {
-		legacyErr := h.breakerAdmin.Resume(ctx, "", req.Name)
-		if legacyErr == nil {
-			resumed = true
-		} else if !errors.Is(legacyErr, store.ErrNotFound) {
-			return nil, fmt.Errorf("resuming legacy circuit breaker %q: %w", req.Name, legacyErr)
-		}
-	}
-	if !resumed {
+	err := h.breakerAdmin.Resume(ctx, h.breakerStoreScope, req.Name)
+	if errors.Is(err, store.ErrNotFound) {
 		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resuming circuit breaker %q: %w", req.Name, err)
 	}
 	return ResumeSitelessCircuitBreaker204Response{}, nil
 }

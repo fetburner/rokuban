@@ -73,6 +73,12 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if err := q.AdoptUnassignedStorageSync(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned storage observations: %w", err)
 	}
+	if err := q.AdoptUnassignedDeleteReconcileBreaker(ctx, s.storeName); err != nil {
+		return fmt.Errorf("assigning unowned delete_reconcile breaker: %w", err)
+	}
+	if err := q.DeleteUnassignedDeleteReconcileBreaker(ctx); err != nil {
+		return fmt.Errorf("removing unowned delete_reconcile breaker: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing media store adoption: %w", mapDatabaseError(err))
 	}
@@ -89,14 +95,15 @@ func (s *Media) HasStoreCopies(ctx context.Context) (bool, error) {
 	return has, nil
 }
 
-// RequireAdoptedStoreRows は割り当て前の行やコピー欠落が残っていないことを確認する。
+// RequireAdoptedStoreRows は割り当て前の行（範囲が空の delete_reconcile ブレーカーを含む）や
+// コピー欠落が残っていないことを確認する。
 func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
 	count, err := sqlcgen.New(s.pool).CountUnassignedStorageRows(ctx)
 	if err != nil {
 		return fmt.Errorf("checking for unassigned media store rows: %w", err)
 	}
 	if count != 0 {
-		return fmt.Errorf("%d media store row(s) have no store or media asset copy; run `rokuban storage adopt <store-name>` before starting workers", count)
+		return fmt.Errorf("%d media store row(s) have no store or media asset copy (including delete_reconcile circuit breaker rows with an empty scope); run `rokuban storage adopt <store-name>` before starting workers", count)
 	}
 	return nil
 }

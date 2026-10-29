@@ -12,13 +12,13 @@ mirakc は site と url だけを持つ要素の配列で登録し、単一で�
 
 #### site の規則
 
-site は省略も重複もできず、文字種と長さを制約する。削除 reconcile のブレーカーは置き場 scope である。
+site は省略も重複もできず、文字種と長さを制約する。
 
 - `mirakcs:` は非空が必須である。空（未指定含む）は起動エラーになる
 - 各要素の `site` は省略できない。`mirakc:`（単一形式）の時代のような "default" への既定値フォールバックは無い。`site` を書かない要素は空文字列のまま下記の構文制約に落ちて起動エラーになる
 - 要素は `site` と `url` の 2 つだけである。`storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータで、site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
 - レジストリ内の site 名の重複も不可である。違反はすべて起動エラーとして全件列挙される（[basics.md](basics.md) §規約 4）
-- 削除 reconcile のサーキットブレーカー（`breaker.DeleteReconcile`）は置き場名を内部 scope に使う。API の `site` は空文字列のままであり、再開は site を含まない `POST /api/breakers/delete_reconcile/resume` を使う。ハンドラーは共有 storage config の置き場名に解決する。
+- 削除 reconcile のサーキットブレーカー（`breaker.DeleteReconcile`）は site ではなく置き場名を範囲（`scope` 列）にする。API の `site` は空文字列で、再開は site を含まない `POST /api/breakers/delete_reconcile/resume` を使う。再開する行の範囲は、api の設定の FS 置き場の名前で決まる。
 
 構文は `^[a-z0-9]([_-]?[a-z0-9])*$` で、53 文字以内である。文字種は River のキュー名の制約と同じにし、緩めない。キュー名を site で修飾するため、緩めると site 名がキュー名として弾かれる。上限の 53 は、River のキュー名上限 64 から、site 修飾される論理キューのうち最長の prefix（`reconciler_`、11 文字）を引いた値である（64 − 11 = 53）。この検査は設定のロード時に行うので、`--sites` で束縛していないレジストリ上の site 名も対象になる。
 
@@ -26,7 +26,7 @@ site は省略も重複もできず、文字種と長さを制約する。削除
 
 <details><summary>根拠</summary>
 
-- 置き場 scope のブレーカー: `breaker.DeleteReconcile`、`internal/worker/delete_reconcile.go`
+- 置き場の範囲のブレーカー: `breaker.DeleteReconcile`、`internal/worker/delete_reconcile.go`
 - 理由と経緯の置き場所: `DeleteReconcileWorker` の doc コメント
 
 </details>

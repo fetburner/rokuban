@@ -814,8 +814,8 @@ type RevertMediaAssetToActiveParams struct {
 // いるので、いま unlink が進行中の行と衝突しようがない。復元 API から
 // deleting → active へ即座に戻す案を採らなかったのはこの前提が無い
 // （進行中の unlink と非同期に競合しうる）ため。複数置き場の reconcile が同じ
-// 論理資産を並行して触る場合は、#1624 で論理資産行をロックして直列化する。
-// このタスクでは単一置き場の設定を維持する。
+// 論理資産を並行して触る場合は、#1624 で論理資産の行のロックで直列化するまで、
+// FS 置き場を 1 つに制限している。
 func (q *Queries) RevertMediaAssetToActive(ctx context.Context, arg RevertMediaAssetToActiveParams) (int64, error) {
 	result, err := q.db.Exec(ctx, revertMediaAssetToActive,
 		arg.ID,

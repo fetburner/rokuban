@@ -1637,9 +1637,9 @@ export interface CircuitBreakerSample {
  */
 export interface CircuitBreaker {
   /**
-     * site scope の行が属する site。site scope 以外の名前
-     * （現在は置き場 scope の `delete_reconcile`）は空文字列になる
-     * （issue #450）。置き場 scope は API に返さず、その場合の再開は
+     * この行が属する site。site を持たない名前
+     * （`delete_reconcile`）は資源自体が site を持たないため空文字列
+     * になる（issue #450）。その場合の再開は
      * `POST /api/breakers/{name}/resume`、それ以外は
      * `POST /api/sites/{site}/breakers/{name}/resume`。
      */
@@ -9372,11 +9372,11 @@ export const getListCircuitBreakersUrl = () => {
  *
  * site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
  * レスポンスの各要素に site フィールドがある（issue #102）。ただし
- * site scope 以外の名前（現在は置き場 scope の `delete_reconcile`）は
- * `site` が空文字列になる（issue #450）。内部の置き場 scope は API に
- * 返さない。個別の再開は、site scope なら
- * `POST /api/sites/{site}/breakers/{name}/resume`、それ以外なら
- * `POST /api/breakers/{name}/resume`。
+ * site を持たない名前（`delete_reconcile`）の
+ * 行は、その資源自体が site を持たないため `site` が空文字列になる
+ * （issue #450）。個別の再開は、site を持つ名前なら
+ * `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
+ * なら `POST /api/breakers/{name}/resume`。
  * @summary List tripped circuit breakers
  */
 export const listCircuitBreakers = async ( options?: Parameters<typeof customInstance>[1]): Promise<listCircuitBreakersResponse> => {
@@ -9516,7 +9516,7 @@ export const getResumeCircuitBreakerUrl = (site: string,
  * グローバルのまま残すが、再開は行 1 件を特定する操作なので PK と
  * 一致させる。
  *
- * site scope 以外の名前（現在は `delete_reconcile`）を渡すと 400 ---
+ * site を持たない名前（`delete_reconcile`）を渡すと 400 ---
  * `POST /api/breakers/{name}/resume` を使う（issue #450）。
  * @summary Resume a tripped circuit breaker that has a site (manual acknowledgement)
  */
@@ -9617,8 +9617,8 @@ export const getResumeSitelessCircuitBreakerUrl = (name: string,) => {
 }
 
 /**
- * site scope 以外のブレーカー専用の再開エンドポイント（今のところ
- * `delete_reconcile` のみ）。置き場 scope は storage config から解決する。
+ * site を持たないブレーカー専用の再開エンドポイント
+ * （今のところ `delete_reconcile` のみ）。
  * 理由と経緯は `internal/worker/delete_reconcile.go` の
  * `DeleteReconcileWorker` doc コメント参照（issue #450）。
  *

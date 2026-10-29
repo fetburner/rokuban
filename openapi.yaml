@@ -2237,11 +2237,11 @@ paths:
 
         site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
         レスポンスの各要素に site フィールドがある（issue #102）。ただし
-        site scope 以外の名前（現在は置き場 scope の `delete_reconcile`）は
-        `site` が空文字列になる（issue #450）。内部の置き場 scope は API に
-        返さない。個別の再開は、site scope なら
-        `POST /api/sites/{site}/breakers/{name}/resume`、それ以外なら
-        `POST /api/breakers/{name}/resume`。
+        site を持たない名前（`delete_reconcile`）の
+        行は、その資源自体が site を持たないため `site` が空文字列になる
+        （issue #450）。個別の再開は、site を持つ名前なら
+        `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
+        なら `POST /api/breakers/{name}/resume`。
       responses:
         "200":
           description: OK
@@ -2259,9 +2259,9 @@ paths:
         in: path
         required: true
         description: |
-          site scope のブレーカー識別子（`ruler_deletes` /
-          `reconcile_total_loss`）。未知の値、および site scope 以外の名前
-          （現在は置き場 scope の `delete_reconcile`）は 400 --- 後者は
+          site を持つブレーカー識別子（`ruler_deletes` /
+          `reconcile_total_loss`）。未知の値、および site を持たない名前
+          （`delete_reconcile`）は 400 --- 後者は
           `POST /api/breakers/{name}/resume` を使う（issue #450）。
         schema:
           type: string
@@ -2282,7 +2282,7 @@ paths:
         グローバルのまま残すが、再開は行 1 件を特定する操作なので PK と
         一致させる。
 
-        site scope 以外の名前（現在は `delete_reconcile`）を渡すと 400 ---
+        site を持たない名前（`delete_reconcile`）を渡すと 400 ---
         `POST /api/breakers/{name}/resume` を使う（issue #450）。
       responses:
         "204":
@@ -2306,9 +2306,9 @@ paths:
         in: path
         required: true
         description: |
-          site scope 以外のブレーカー識別子（今のところ置き場 scope の
-          `delete_reconcile` のみ）。未知の値、および site scope の名前
-          （`ruler_deletes` / `reconcile_total_loss`）は 400 ---
+          site を持たないブレーカー識別子（今のところ
+          `delete_reconcile` のみ）。未知の値、および
+          site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）は 400 ---
           後者は `POST /api/sites/{site}/breakers/{name}/resume` を使う。
         schema:
           type: string
@@ -2316,8 +2316,8 @@ paths:
       operationId: resumeSitelessCircuitBreaker
       summary: Resume a tripped circuit breaker that has no site (manual acknowledgement)
       description: |
-        site scope 以外のブレーカー専用の再開エンドポイント（今のところ
-        `delete_reconcile` のみ）。置き場 scope は storage config から解決する。
+        site を持たないブレーカー専用の再開エンドポイント
+        （今のところ `delete_reconcile` のみ）。
         理由と経緯は `internal/worker/delete_reconcile.go` の
         `DeleteReconcileWorker` doc コメント参照（issue #450）。
 
@@ -4144,9 +4144,9 @@ components:
         site:
           type: string
           description: |
-            site scope の行が属する site。site scope 以外の名前
-            （現在は置き場 scope の `delete_reconcile`）は空文字列になる
-            （issue #450）。置き場 scope は API に返さず、その場合の再開は
+            この行が属する site。site を持たない名前
+            （`delete_reconcile`）は資源自体が site を持たないため空文字列
+            になる（issue #450）。その場合の再開は
             `POST /api/breakers/{name}/resume`、それ以外は
             `POST /api/sites/{site}/breakers/{name}/resume`。
         name:

@@ -20,3 +20,13 @@ func TestScopeKindForClassifiesBreakerScopes(t *testing.T) {
 		})
 	}
 }
+
+// All と scopeKinds は手で別々に書いてあるので、片方だけ直すと名前が ScopeUnknown
+// になり、API が 400 を返し続ける。
+func TestAllBreakersHaveKnownScope(t *testing.T) {
+	for _, name := range All {
+		if ScopeKindFor(name) == ScopeUnknown {
+			t.Errorf("ScopeKindFor(%q) = ScopeUnknown, want a registered scope", name)
+		}
+	}
+}

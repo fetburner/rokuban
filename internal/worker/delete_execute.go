@@ -50,17 +50,6 @@ func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, brea
 	if err != nil {
 		return false, fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
 	}
-	// Before breaker scopes were renamed, delete_reconcile used an empty scope.
-	// The original store cannot be inferred from that row, so keep it as a
-	// conservative global latch until an operator resumes it. The upgrade
-	// regression is covered by TestDeleteReconcileHonorsLegacyEmptyScopeBreaker.
-	if scope != "" {
-		legacyTripped, err := breaker.ObserveState(ctx, breakers, "", breaker.DeleteReconcile)
-		if err != nil {
-			return false, fmt.Errorf("observing legacy %s circuit breaker: %w", breaker.DeleteReconcile, err)
-		}
-		tripped = tripped || legacyTripped
-	}
 	return tripped, nil
 }
 

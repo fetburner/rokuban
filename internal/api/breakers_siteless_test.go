@@ -10,13 +10,14 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // TestResumeCircuitBreaker_DefaultSiteRegistryHole は issue #450 の再現テスト
 // （sub issue 本文「含むもの」1）。`config.mirakcs` に `default` という名前の
-// site が無いレジストリ（[tokyo, takamatsu]）でも、置き場 scope の
-// delete_reconcile は site スコープの resume からは解除できない ---
+// site が無いレジストリ（[tokyo, takamatsu]）でも、置き場の範囲 の
+// delete_reconcile は site の範囲の resume からは解除できない ---
 //   - `default` はレジストリに無いので 400（unknown site）
 //   - 登録済みの `tokyo` を渡しても、delete_reconcile は site を持たない名前
 //     なので 400（分類が「知っている site だが行が無い」404 より先に立つ）
@@ -72,7 +73,7 @@ VALUES ('test-store', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); e
 	}
 
 	// (1) レジストリに "default" という site は無いので 400。ResumeCircuitBreaker
-	// は置き場 scope の分類を knownSite より先に検査するので、site が
+	// は置き場の範囲 の分類を knownSite より先に検査するので、site が
 	// レジストリに無くても（運用者が最も打ちがちな旧コマンドがこの形）
 	// 「unknown site」ではなく新ルートへの案内が返る（レビュー指摘: この順序を
 	// 主張するアサーション）。
@@ -110,10 +111,10 @@ VALUES ('test-store', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); e
 		t.Fatalf("counting circuit_breakers: %v", err)
 	}
 	if remaining != 1 {
-		t.Fatalf("circuit_breakers rows for delete_reconcile = %d, want 1 (site スコープの resume が誤って消してはいけない)", remaining)
+		t.Fatalf("circuit_breakers rows for delete_reconcile = %d, want 1 (site の範囲の resume が誤って消してはいけない)", remaining)
 	}
 
-	// (3) site 無指定ルートは config の置き場 scope で解除する。
+	// (3) site 無指定ルートは config の置き場の範囲 で解除する。
 	resp3, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -210,125 +211,42 @@ func TestResumeSitelessCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	}
 }
 
-func TestResumeSitelessCircuitBreaker_ResumesLegacyEmptyScopeLatch(t *testing.T) {
+// TestResumeSitelessCircuitBreaker_400WhenNoStoreConfigured は api の設定に FS 置き場が
+// 無いとき（api は置き場無しでも起動できる）、再開する行の範囲を決められず 400 に
+// なることを確認する。404 にすると「発動していない」と読めてしまう。
+//
+// 変異確認: breakerStoreScope == "" の検査を外すと範囲が空文字列の行を探して
+// 404 になり、このテストが落ちる。
+func TestResumeSitelessCircuitBreaker_400WhenNoStoreConfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
-
-	// Before the scope migration, delete_reconcile breakers used the empty scope.
 	if _, err := pool.Exec(ctx, `
 INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
-VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil {
-		t.Fatalf("inserting legacy circuit breaker fixture: %v", err)
+VALUES ('test-store', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil {
+		t.Fatalf("inserting circuit breaker fixture: %v", err)
 	}
-	listResp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var listed []struct {
-		Name    string `json:"name"`
-		Pending int    `json:"pending"`
-	}
-	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
-		_ = listResp.Body.Close()
-		t.Fatalf("decoding GET /api/breakers response: %v", err)
-	}
-	_ = listResp.Body.Close()
-	if len(listed) != 1 || listed[0].Name != "delete_reconcile" || listed[0].Pending != 150 {
-		t.Fatalf("GET /api/breakers legacy latch = %+v, want one visible delete_reconcile row", listed)
-	}
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool)}))
+	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 204 (body=%s)", resp.StatusCode, body)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (body=%s)", resp.StatusCode, body)
 	}
-	if got := countCircuitBreakers(t, pool, ctx); got != 0 {
-		t.Errorf("circuit breaker rows after resuming legacy latch = %d, want 0", got)
+	if !strings.Contains(string(body), "no FS store") {
+		t.Errorf("body = %s, want it to say that the api config has no FS store", body)
 	}
-}
-
-func TestResumeSitelessCircuitBreaker_ResumesStoreAndLegacyLatches(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
-
-	for _, scope := range []string{"test-store", ""} {
-		if _, err := pool.Exec(ctx, `
-INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
-VALUES ($1, 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`, scope); err != nil {
-			t.Fatalf("inserting %q-scope circuit breaker fixture: %v", scope, err)
-		}
-	}
-
-	resp, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 204 (body=%s)", resp.StatusCode, body)
-	}
-	if got := countCircuitBreakers(t, pool, ctx); got != 0 {
-		t.Errorf("circuit breaker rows after resuming store and legacy latches = %d, want 0", got)
+	if got := countCircuitBreakers(t, pool, ctx); got != 1 {
+		t.Errorf("circuit breaker rows = %d, want 1 (a rejected resume must not delete)", got)
 	}
 }
 
-func TestListCircuitBreakersPrefersCurrentStoreOverLegacyLatch(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO circuit_breakers (scope, name, pending, threshold, detail) VALUES
-  ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb),
-  ('test-store', 'delete_reconcile', 42, 100, '{"total":42}'::jsonb)`); err != nil {
-		t.Fatalf("inserting current and legacy circuit breaker fixtures: %v", err)
-	}
-
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
-	resp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GET /api/breakers status = %d, want 200 (body=%s)", resp.StatusCode, body)
-	}
-	var listed []struct {
-		Site    string `json:"site"`
-		Name    string `json:"name"`
-		Pending int    `json:"pending"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
-		t.Fatalf("decoding GET /api/breakers response: %v", err)
-	}
-	var got []int
-	for _, item := range listed {
-		if item.Name == "delete_reconcile" {
-			if item.Site != "" {
-				t.Errorf("delete_reconcile API site = %q, want empty", item.Site)
-			}
-			got = append(got, item.Pending)
-		}
-	}
-	if len(got) != 1 || got[0] != 42 {
-		t.Errorf("listed delete_reconcile pending values = %v, want [42] from the configured store", got)
-	}
-}
-
-// TestResumeCircuitBreaker_400WhenNameIsSiteless は旧ルート（site スコープ）に
-// 置き場 scope の名前（delete_reconcile）を渡すと 400 になることを確認する
+// TestResumeCircuitBreaker_400WhenNameIsSiteless は旧ルート（site の範囲）に
+// 置き場の範囲 の名前（delete_reconcile）を渡すと 400 になることを確認する
 // （受け入れ 2）。単一サイト（レジストリ未指定 = store.DefaultSite の 1 要素）でも、
 // site の存在チェックとは独立に分類だけで弾かれることを見る。
 //

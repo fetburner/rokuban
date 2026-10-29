@@ -174,11 +174,11 @@ stateDiagram-v2
 
 ###### 再開の API
 
-再開は、site scope のブレーカーなら site を含むパスへの POST で行う。site 以外の scope を持つブレーカーだけは別のパスにする。
+再開は、site の範囲のブレーカーなら site を含むパスへの POST で行う。置き場の範囲のブレーカーだけは別のパスにする。
 
 再開は `POST /api/sites/{site}/breakers/{name}/resume` である。資源の PK が `(site, name)` であることに合わせた。`DELETE /api/sites/{site}/breakers/{name}` は採らない。運用者から見た操作は「確認したので再開する」であり、「行を削除する」は実装詳細だからである。
 
-置き場 scope のブレーカー（`delete_reconcile`）は `POST /api/breakers/{name}/resume` で再開する。API は `site` を空文字列のまま返し、再開先の置き場は storage config から解決する。理由は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照。
+置き場の範囲のブレーカー（`delete_reconcile`）は `POST /api/breakers/{name}/resume` で再開する。API は `site` を空文字列で返す。再開する行の範囲は、api の設定の FS 置き場の名前で決まる。FS 置き場が無い設定の api は置き場を決められず、400 を返す。理由は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照。
 
 ブレーカー名を足すときは、`internal/breaker.All` と `openapi.yaml` の enum の両方に足す。resume は `All` で検証するので、`All` を落とすと 400 になる。const と `All` の対応は `all_test.go`、`All` から enum への対応は `breakers_test.go` が検出する（enum 側だけの余分はどちらも検出しない）。
 

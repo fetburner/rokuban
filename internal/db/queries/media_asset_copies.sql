@@ -83,4 +83,5 @@ SELECT
   + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
   + (SELECT count(*) FROM orphan_files WHERE store = '')
   + (SELECT count(*) FROM missing_media_assets WHERE store = '')
-  + (SELECT count(*) FROM storage_sync WHERE store = '') AS count;
+  + (SELECT count(*) FROM storage_sync WHERE store = '')
+  + (SELECT count(*) FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile') AS count;

@@ -1263,9 +1263,9 @@ type CircuitBreaker struct {
 	// Pending 発動時に止めた削除の件数。
 	Pending int `json:"pending"`
 
-	// Site site scope の行が属する site。site scope 以外の名前
-	// （現在は置き場 scope の `delete_reconcile`）は空文字列になる
-	// （issue #450）。置き場 scope は API に返さず、その場合の再開は
+	// Site この行が属する site。site を持たない名前
+	// （`delete_reconcile`）は資源自体が site を持たないため空文字列
+	// になる（issue #450）。その場合の再開は
 	// `POST /api/breakers/{name}/resume`、それ以外は
 	// `POST /api/sites/{site}/breakers/{name}/resume`。
 	Site string `json:"site"`
