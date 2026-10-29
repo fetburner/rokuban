@@ -41,23 +41,30 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 }
 
 const createOriginalMediaAsset = `-- name: CreateOriginalMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, ingest_generation)
-SELECT p.recording_id, 'original', $1, $2, p.temp_generation
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, sha256, ingest_generation)
+SELECT p.recording_id, 'original', $1, $2, $3::bytea, p.temp_generation
 FROM recording_ingest_progress p
-WHERE p.recording_id = $3
+WHERE p.recording_id = $4
 RETURNING id
 `
 
 type CreateOriginalMediaAssetParams struct {
 	RelPath     string
 	SizeBytes   int64
+	Sha256      []byte
 	RecordingID int64
 }
 
 // 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
-// 転送中の recording_ingest_progress からコピーする。
+// 転送中の recording_ingest_progress からコピーする。SHA-256 は ingest が算出し、
+// 原本の INSERT と同じ tx で保存する。
 func (q *Queries) CreateOriginalMediaAsset(ctx context.Context, arg CreateOriginalMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, createOriginalMediaAsset, arg.RelPath, arg.SizeBytes, arg.RecordingID)
+	row := q.db.QueryRow(ctx, createOriginalMediaAsset,
+		arg.RelPath,
+		arg.SizeBytes,
+		arg.Sha256,
+		arg.RecordingID,
+	)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -623,16 +630,16 @@ func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, arg LockAct
 }
 
 const upsertDerivedMediaAsset = `-- name: UpsertDerivedMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, sha256, derived_generation)
 VALUES (
     $1, $2, $3,
-    $4, $5, $6
+    $4, $5, $6::bytea, $7
 )
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
-    sha256     = NULL,
+    sha256     = EXCLUDED.sha256,
     updated_at = now()
 WHERE EXCLUDED.derived_generation >= COALESCE(media_assets.derived_generation, 0)
 RETURNING id
@@ -644,12 +651,14 @@ type UpsertDerivedMediaAssetParams struct {
 	Profile           *string
 	RelPath           string
 	SizeBytes         int64
+	Sha256            []byte
 	DerivedGeneration *int64
 }
 
 // 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
 // derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
 // 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
+// sha256 は生成ファイルから計算し、論理行の公開と同じ tx で保存する。
 // state / deleted_at は書かない。コピー行を書いた後の ReconcileMediaAssetStateFromCopies が決める。
 func (q *Queries) UpsertDerivedMediaAsset(ctx context.Context, arg UpsertDerivedMediaAssetParams) (int64, error) {
 	row := q.db.QueryRow(ctx, upsertDerivedMediaAsset,
@@ -658,6 +667,7 @@ func (q *Queries) UpsertDerivedMediaAsset(ctx context.Context, arg UpsertDerived
 		arg.Profile,
 		arg.RelPath,
 		arg.SizeBytes,
+		arg.Sha256,
 		arg.DerivedGeneration,
 	)
 	var id int64

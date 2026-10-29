@@ -475,8 +475,12 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		if err != nil {
 			return fmt.Errorf("stat ingest temp already linked to canonical path: %w", err)
 		}
+		contentSHA256, err := hashMediaFileSHA256(ctx, tempPath)
+		if err != nil {
+			return fmt.Errorf("hashing ingest temp already linked to canonical path: %w", err)
+		}
 		log.Info("ingest: temp is already linked to canonical path, retrying commit only", "bytes", info.Size())
-		return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, info.Size(), log, result)
+		return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, info.Size(), contentSHA256, log, result)
 	}
 	progress := &ingestProgressReporter{
 		publisher:      w.Publisher,
@@ -642,7 +646,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 
 	recordIngestMetrics(offset)
 
-	return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, offset, log, result)
+	return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, offset, hasher.Sum(nil), log, result)
 }
 
 // commitAndFinish は原本を commit し、成功したら temp を片付けてエッジ record の後続処理を投入する。
@@ -651,8 +655,8 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 // link した後の temp は canonical と同じ inode なので、DB commit が失敗した間は消さない。
 // 消してよいのは commit 成功後だけで、その unlink は canonical を残したままリンク数を 1 に戻す。
 // unlink に失敗しても ingest は成功として扱う（行がコミットされており、残った temp は孤児回収の対象）。
-func (w *IngestWorker) commitAndFinish(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, relPath, tempPath, fullPath string, size int64, log *slog.Logger, result *string) error {
-	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, size); err != nil {
+func (w *IngestWorker) commitAndFinish(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, relPath, tempPath, fullPath string, size int64, contentSHA256 []byte, log *slog.Logger, result *string) error {
+	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, size, contentSHA256); err != nil {
 		if errors.Is(err, fsink.ErrForeignDestination) {
 			// temp・mirakc の record・media_assets のいずれにも触れずに止まる。運用者の調査対象
 			// （docs/runbook/troubleshooting.md）なので、他の失敗と区別できる key を付ける。
@@ -1043,7 +1047,7 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // 次の試行は temp と canonical が同じ inode であることを見て、転送せずにこの関数だけをやり直す。
 // link 前の失敗では、中身の不一致や record の cancel / fail と確定した場合だけ呼び出し側が
 // tempPath を消し、それ以外は次の試行へ残す。
-func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
+func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, contentSHA256 []byte) error {
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "locking original for publication"); err != nil {
 		return err
 	}
@@ -1053,7 +1057,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	}
 	defer func() { _ = fileLock.Close() }()
 	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
-		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+		RecordingID: recordingID, RelPath: relPath, SizeBytes: size, SHA256: contentSHA256,
 	}, w.resolveEncodePolicy, func() error {
 		if err := beforeIngestFilePublication(); err != nil {
 			return fmt.Errorf("preparing canonical file publication: %w", err)

@@ -2479,7 +2479,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(ctx, recordingID,
-			relPath, tempPath, fullPath, int64(len(content)))
+			relPath, tempPath, fullPath, int64(len(content)), nil)
 	}()
 	select {
 	case err := <-commitDone:

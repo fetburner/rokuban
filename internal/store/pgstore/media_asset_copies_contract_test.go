@@ -543,14 +543,16 @@ func TestUpsertMediaAssetCopyConflictKeepsState(t *testing.T) {
 	}
 }
 
-func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
+func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	recordingID := dbtest.Recording(t, pool)
 	profile := "h264"
 	generation := int64(0)
-	digest := bytes.Repeat([]byte{0x5a}, 32)
+	oldDigest := bytes.Repeat([]byte{0x5a}, 32)
+	newDigest := bytes.Repeat([]byte{0xa5}, 32)
+	latestDigest := bytes.Repeat([]byte{0x3c}, 32)
 	setCopy := func(assetID int64, relPath string) {
 		t.Helper()
 		if _, err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
@@ -560,20 +562,20 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 		}
 	}
 
-	setDigest := func(assetID int64) {
+	setDigest := func(assetID int64, digest []byte) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `UPDATE media_assets SET sha256 = $2 WHERE id = $1`, assetID, digest); err != nil {
 			t.Fatalf("seeding catalog SHA-256 for media asset %d: %v", assetID, err)
 		}
 	}
-	assertDigestCleared := func(assetID int64) {
+	assertDigest := func(assetID int64, want []byte) {
 		t.Helper()
 		var got []byte
 		if err := pool.QueryRow(ctx, `SELECT sha256 FROM media_assets WHERE id = $1`, assetID).Scan(&got); err != nil {
 			t.Fatalf("reading catalog SHA-256 for media asset %d: %v", assetID, err)
 		}
-		if got != nil {
-			t.Fatalf("media asset %d retained catalog SHA-256 %x after content replacement", assetID, got)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("media asset %d SHA-256 = %x after content replacement, want %x", assetID, got, want)
 		}
 	}
 
@@ -584,15 +586,15 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 		t.Fatalf("creating encoded asset: %v", err)
 	}
 	setCopy(encodedID, "encoded/h264.mp4")
-	setDigest(encodedID)
+	setDigest(encodedID, oldDigest)
 	generation = 1
 	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
-		RecordingID: recordingID, Profile: &profile, RelPath: "encoded/h264.g1.mp4", SizeBytes: 11, DerivedGeneration: &generation,
+		RecordingID: recordingID, Profile: &profile, RelPath: "encoded/h264.g1.mp4", SizeBytes: 11, Sha256: newDigest, DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("replacing encoded asset: %v", err)
 	}
 	setCopy(encodedID, "encoded/h264.g1.mp4")
-	assertDigestCleared(encodedID)
+	assertDigest(encodedID, newDigest)
 
 	generation = 0
 	thumbnailID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
@@ -602,24 +604,24 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 		t.Fatalf("creating thumbnail asset: %v", err)
 	}
 	setCopy(thumbnailID, "thumbnails/1.jpg")
-	setDigest(thumbnailID)
+	setDigest(thumbnailID, oldDigest)
 	generation = 1
 	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
-		RecordingID: recordingID, RelPath: "thumbnails/1.g1.jpg", SizeBytes: 11, DerivedGeneration: &generation,
+		RecordingID: recordingID, RelPath: "thumbnails/1.g1.jpg", SizeBytes: 11, Sha256: newDigest, DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("recreating thumbnail asset: %v", err)
 	}
 	setCopy(thumbnailID, "thumbnails/1.g1.jpg")
-	assertDigestCleared(thumbnailID)
-	setDigest(thumbnailID)
+	assertDigest(thumbnailID, newDigest)
+	setDigest(thumbnailID, newDigest)
 	generation = 2
 	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
-		RecordingID: recordingID, Kind: "thumbnail", RelPath: "thumbnails/1.g2.jpg", SizeBytes: 12, DerivedGeneration: &generation,
+		RecordingID: recordingID, Kind: "thumbnail", RelPath: "thumbnails/1.g2.jpg", SizeBytes: 12, Sha256: latestDigest, DerivedGeneration: &generation,
 	}); err != nil {
 		t.Fatalf("replacing thumbnail path: %v", err)
 	}
 	setCopy(thumbnailID, "thumbnails/1.g2.jpg")
-	assertDigestCleared(thumbnailID)
+	assertDigest(thumbnailID, latestDigest)
 
 	generation = 0
 	seekTilesID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "seek_tiles",
@@ -629,10 +631,10 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 		t.Fatalf("creating seek tiles asset: %v", err)
 	}
 	setCopy(seekTilesID, "thumbnails/1_tiles.jpg")
-	setDigest(seekTilesID)
+	setDigest(seekTilesID, oldDigest)
 	generation = 1
 	replacedSeekTilesID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "seek_tiles",
-		RecordingID: recordingID, RelPath: "thumbnails/1_tiles.g1.jpg", SizeBytes: 11, DerivedGeneration: &generation,
+		RecordingID: recordingID, RelPath: "thumbnails/1_tiles.g1.jpg", SizeBytes: 11, Sha256: newDigest, DerivedGeneration: &generation,
 	})
 	if err != nil {
 		t.Fatalf("recreating seek tiles asset: %v", err)
@@ -641,7 +643,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 		t.Fatalf("seek tiles replacement ID = %d, want existing asset %d", replacedSeekTilesID, seekTilesID)
 	}
 	setCopy(seekTilesID, "thumbnails/1_tiles.g1.jpg")
-	assertDigestCleared(seekTilesID)
+	assertDigest(seekTilesID, newDigest)
 }
 
 func TestCatalogExportSelectsStoreCopyAndKeepsFullInventory(t *testing.T) {

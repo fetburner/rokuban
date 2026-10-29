@@ -122,9 +122,10 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		}
 	}
 	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, plan.relPath, scratchPath,
-		func(size int64, publish func() error) (bool, error) {
+		func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
 			return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 				RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
+				SHA256: contentSHA256,
 				SeekMs: plan.seekMs, InputAssetID: plan.inputID,
 				DerivedGeneration: plan.generation, Expected: expected,
 			}, publish)

@@ -185,9 +185,10 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	}
 
 	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, relPath, sheetPath,
-		func(size int64, publish func() error) (bool, error) {
+		func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
 			return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
 				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+				SHA256:            contentSHA256,
 				DerivedGeneration: generation,
 			}, publish)
 		})

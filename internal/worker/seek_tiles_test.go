@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
@@ -148,6 +149,7 @@ type countingRunCmd struct {
 	formatDuration string
 	seeks          []string
 	duration       string
+	outputContent  []byte
 }
 
 func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -189,7 +191,11 @@ func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return nil, err
 	}
-	return nil, os.WriteFile(out, tinyJPEG, 0o644)
+	content := c.outputContent
+	if content == nil {
+		content = tinyJPEG
+	}
+	return nil, os.WriteFile(out, content, 0o644)
 }
 
 func seedOriginalForSeekTiles(t *testing.T, db sqlcgen.DBTX, mediaDir string, recordingID int64, rel string) {
@@ -324,6 +330,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 		t.Errorf("size_bytes = %d, want %d", row.SizeBytes, len(tinyJPEG))
 	}
 	assertMediaAssetCopy(t, pool, row.ID, row.RelPath)
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindSeekTiles, "", tinyJPEG)
 	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err != nil {
 		t.Errorf("tile sheet not written to media: %v", err)
 	}
@@ -375,9 +382,10 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tiles-recreate.m2ts")
+	cmd := &countingRunCmd{duration: "30", outputContent: []byte("first tile sheet")}
 	w := &SeekTilesWorker{
 		Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir,
-		ScratchDir: t.TempDir(), runCmd: (&countingRunCmd{duration: "30"}).run,
+		ScratchDir: t.TempDir(), runCmd: cmd.run,
 	}
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("initial Work: %v", err)
@@ -420,6 +428,7 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 		t.Fatalf("writing orphan seek_tiles output: %v", err)
 	}
 
+	cmd.outputContent = []byte("replacement tile sheet")
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("recreating seek_tiles: %v", err)
 	}
@@ -437,6 +446,7 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 	if generation != 2 {
 		t.Errorf("recreated generation = %d, want 2", generation)
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindSeekTiles, "", cmd.outputContent)
 	if got, err := os.ReadFile(orphanAbs); err != nil || string(got) != orphanBytes {
 		t.Errorf("occupied generation path changed: got %q, err %v", got, err)
 	}

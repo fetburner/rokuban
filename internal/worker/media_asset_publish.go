@@ -175,10 +175,11 @@ type stagedMediaFile struct {
 	tempPath  string
 	finalPath string
 	size      int64
+	sha256    []byte
 }
 
 // stageMediaFile は src（scratch）を finalPath と同じディレクトリの一時ファイルへ
-// ストリームコピー + fsync する。名前は予約接頭辞 prefix を付け、拡張子は付けない
+// ストリームコピー + fsync し、コピーした内容の SHA-256 を得る。名前は予約接頭辞 prefix を付け、拡張子は付けない
 // （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
 // プロセス死で rel_path lock が残っても、次の lock 取得時の GC が回収する。
 //
@@ -202,12 +203,27 @@ func stageMediaFile(ctx context.Context, src, finalPath, prefix string) (stagedM
 		discardTemp()
 		return stagedMediaFile{}, fmt.Errorf("chmod staged output: %w", err)
 	}
-	size, err := streamCopyFile(ctx, src, tempPath)
+	size, digest, err := streamCopyFile(ctx, src, tempPath)
 	if err != nil {
 		discardTemp()
 		return stagedMediaFile{}, fmt.Errorf("staging output in media dir: %w", err)
 	}
-	return stagedMediaFile{tempPath: tempPath, finalPath: finalPath, size: size}, nil
+	return stagedMediaFile{tempPath: tempPath, finalPath: finalPath, size: size, sha256: digest}, nil
+}
+
+// hashMediaFileSHA256 は原本ファイルを commit の再試行時に読み直して SHA-256 を計算する。
+func hashMediaFileSHA256(ctx context.Context, path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening file %q: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	hasher := sha256.New()
+	if _, err := copyWithContext(ctx, hasher, file); err != nil {
+		return nil, fmt.Errorf("reading file %q: %w", path, err)
+	}
+	return hasher.Sum(nil), nil
 }
 
 // publish は staged 出力を canonical へ rename で公開し、親ディレクトリを fsync する。
@@ -230,13 +246,13 @@ func (s stagedMediaFile) discard() {
 
 // publishGeneratedMediaAsset は完成した thumbnail / seek tiles を ingest・encode と同じ rel_path の手順で公開する。
 // scratchPath を media_dir の同じディレクトリへ stage し、rel_path のファイルロックを取ってから、
-// commit に size とファイル公開関数 publish を渡す。commit は store の公開メソッドを呼ぶ。
+// commit に size・SHA-256・ファイル公開関数 publish を渡す。commit は store の公開メソッドを呼ぶ。
 // store が検査を通せば publish を commit 前に 1 回呼ぶ。公開しないと決めたら呼ばず、published は false になる。
 // ファイルロックは commit が返るまで保持する。公開しなかったとき size は 0 を返す。
 func publishGeneratedMediaAsset(
 	ctx context.Context,
 	mediaDir, mediaStoreName, relPath, scratchPath string,
-	commit func(size int64, publish func() error) (bool, error),
+	commit func(size int64, sha256 []byte, publish func() error) (bool, error),
 ) (size int64, published bool, err error) {
 	if err := requireMediaStoreMarker(mediaDir, mediaStoreName, "publishing generated media asset"); err != nil {
 		return 0, false, err
@@ -261,7 +277,7 @@ func publishGeneratedMediaAsset(
 		return 0, false, fmt.Errorf("locking generated media asset: %w", err)
 	}
 	defer func() { _ = fileLock.Close() }()
-	published, err = commit(staged.size, staged.publish)
+	published, err = commit(staged.size, staged.sha256, staged.publish)
 	if err != nil || !published {
 		return 0, false, err
 	}

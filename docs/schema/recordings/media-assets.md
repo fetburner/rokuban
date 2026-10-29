@@ -13,7 +13,7 @@ CREATE TABLE media_assets (
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
     rel_path     text   NOT NULL,     -- ストレージルートからの相対パス（不変条件: 絶対パス禁止）
     size_bytes   bigint NOT NULL,
-    sha256       bytea,                -- 内容の SHA-256。コピー数によらず 1 回だけ持つ
+    sha256       bytea,                -- 作り手が公開時に記録する内容の SHA-256。コピー数によらず 1 回だけ持つ
     derived_generation bigint,         -- 派生物のパスに最後に採った世代。original は NULL
     CHECK (derived_generation IS NULL OR (kind <> 'original' AND derived_generation >= 0)),
     CHECK (sha256 IS NULL OR octet_length(sha256) = 32),
@@ -98,7 +98,7 @@ in-place 登録は、論理資産が既にあるとき、次の 3 つを満た�
 
 同じパスの `active` な再登録は何も変えずに通し、同じパスの `deleting` / `pending` は unlink される予定のファイルなので拒否する。パスの世代が古いファイルを受け付けると、登録したファイル自体が旧世代として overlap の後に消える。新しいファイルを受け付けると、そのコピーは現行にも旧世代にもならず、配信も削除もされない。論理行の世代は in-place 登録では動かさない。生きたコピーがある置き場へ足すと、配信が選ぶ行が決まらない。規則は 1 文の SQL に置き、並行する 2 本の登録は前述の一意索引が止める。
 
-ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。`sha256` は未計測なら NULL とし、コピー単位には複製しない。
+ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。`sha256` は作り手が公開 commit と同じトランザクションで書く。値が NULL の旧行と in-place・rescue の行だけ、転送が照合時に計算した値で埋める。値のある行は転送が照合し、コピー単位には複製しない。
 
 物理削除に至るアセットの 4 ソースと公開前孤児の回収は、1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。アセットのソースは、ごみ箱の猶予超過、原本の保持を派生物の完備までとした録画の原本、ユーザーが外したエンコード結果、overlap を過ぎた旧世代コピーである。
 

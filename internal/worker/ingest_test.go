@@ -165,6 +165,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindOriginal, "", data)
 
 	if fake.CallCount(http.MethodDelete, "/api/recording/records/rec-001") == 0 {
 		t.Error("edge record was not deleted after successful commit")
@@ -2552,6 +2553,7 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
 		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
 	}
+	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
 }
 
 // 公開済みの canonical は、mirakc が長い stream を返しても 1 バイトも変わらない。

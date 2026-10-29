@@ -240,6 +240,7 @@ func TestEncodeWorker_StagingDoesNotTouchCanonical(t *testing.T) {
 	if !bytes.HasPrefix(got, []byte("original payload t1attempt-1:")) {
 		t.Errorf("published canonical = %q, want the encoded content", got)
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindEncoded, "h264", got)
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
 
@@ -305,6 +306,7 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	if size != int64(len(contentA)) {
 		t.Errorf("size_bytes = %d, want A's %d", size, len(contentA))
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindEncoded, "h264", contentA)
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
 

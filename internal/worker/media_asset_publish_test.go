@@ -100,6 +100,26 @@ func activeAssetSize(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind s
 	return size, true
 }
 
+func assertMediaAssetSHA256(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind, profile string, content []byte) {
+	t.Helper()
+	query := `SELECT sha256 FROM media_assets WHERE recording_id = $1 AND kind = $2 AND state = 'active'`
+	args := []any{recordingID, kind}
+	if profile == "" {
+		query += ` AND profile IS NULL`
+	} else {
+		query += ` AND profile = $3`
+		args = append(args, profile)
+	}
+	var got []byte
+	if err := pool.QueryRow(context.Background(), query, args...).Scan(&got); err != nil {
+		t.Fatalf("reading active %s media asset SHA-256 for recording %d: %v", kind, recordingID, err)
+	}
+	want := sha256.Sum256(content)
+	if !bytes.Equal(got, want[:]) {
+		t.Fatalf("active %s SHA-256 = %x, want %x", kind, got, want)
+	}
+}
+
 // assertWorkerPublishesUnderRelPathLock は worker（run）を rel_path lock を保持したまま
 // 走らせ、lock 中は canonical が既存バイトのまま・active 行が無く、解放後に
 // want とそのサイズが公開されることを検証する。
@@ -179,6 +199,7 @@ func assertWorkerPublishesUnderRelPathLock(
 	if size, ok := activeAssetSize(t, pool, recordingID, kind); !ok || size != int64(len(want)) {
 		t.Fatalf("active %s size = %d (found=%v), want %d", kind, size, ok, len(want))
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, kind, "", want)
 	if left := stagedFiles(t, filepath.Dir(canonicalPath)); len(left) != 0 {
 		t.Errorf("staged files remain: %v", left)
 	}
@@ -308,9 +329,9 @@ func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scra
 	}
 	relPath := thumbnailRelPath(id, 0)
 	return publishGeneratedMediaAsset(context.Background(), mediaDir, "", relPath, scratch,
-		func(size int64, publish func() error) (bool, error) {
+		func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
 			return pgstoretest.Media(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
-				RecordingID: id, RelPath: relPath, SizeBytes: size, InputAssetID: inputID,
+				RecordingID: id, RelPath: relPath, SizeBytes: size, SHA256: contentSHA256, InputAssetID: inputID,
 			}, publish)
 		})
 }
