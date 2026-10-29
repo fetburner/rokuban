@@ -158,10 +158,9 @@ type LockMediaAssetCopyByPhysicalPathRow struct {
 	State        string
 }
 
-// Catalog restore identifies copies by their physical path because catalog rows
-// intentionally do not expose database copy IDs. Lock the current path owner
-// before applying a missing-file tombstone so an existing active row is not left
-// beside a newly inserted deleted row.
+// Catalog restore identifies copies by physical path because catalog rows do
+// not expose database copy IDs. Lock the current path owner before transitioning a
+// copy verified missing; historical tombstones can coexist with a reused live path.
 func (q *Queries) LockMediaAssetCopyByPhysicalPath(ctx context.Context, arg LockMediaAssetCopyByPhysicalPathParams) (LockMediaAssetCopyByPhysicalPathRow, error) {
 	row := q.db.QueryRow(ctx, lockMediaAssetCopyByPhysicalPath, arg.Store, arg.RelPath)
 	var i LockMediaAssetCopyByPhysicalPathRow
