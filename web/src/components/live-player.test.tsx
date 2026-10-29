@@ -1723,6 +1723,69 @@ describe('LivePlayer の状態遷移', () => {
       expect(fetchMock).toHaveBeenCalledTimes(2)
     })
 
+    it('hls.js 録画 HLS は再開意図を消費し、停止後のシークで自動再生しない', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const media = { paused: true, currentTime: 0 }
+      const props = {
+        mode: 'recording-hls' as const,
+        site: 'default',
+        recordingId: 42,
+        recordingDurationMs: 60_000,
+        recordingHlsStartSeconds: 0,
+        availableProfiles: [{ name: 'hd' }, { name: 'sd' }],
+      }
+      const { rerender } = render(
+        <LivePlayer
+          {...props}
+          profile="hd"
+          recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v7/hd/master.m3u8"
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
+      Object.defineProperty(video, 'currentTime', {
+        get: () => media.currentTime,
+        set: (value: number) => { media.currentTime = value },
+        configurable: true,
+      })
+      Object.defineProperty(video, 'seekable', {
+        value: { length: 1, start: () => 0, end: () => 60 },
+        configurable: true,
+      })
+      const load = vi.spyOn(video, 'load').mockImplementation(() => { media.paused = true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      media.paused = false
+      media.currentTime = 52
+      fireEvent.playing(video)
+
+      rerender(
+        <LivePlayer
+          {...props}
+          profile="sd"
+          recordingHlsUrl="/api/media/stores/media/recordings/42/hls/v7/sd/master.m3u8"
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      const play = vi.spyOn(video, 'play').mockImplementation(() => {
+        media.paused = false
+        return Promise.resolve()
+      })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      expect(play).toHaveBeenCalledTimes(1)
+
+      media.currentTime = 52
+      media.paused = true
+      fireEvent.pause(video)
+      fireEvent.keyDown(video, { key: 'ArrowLeft' })
+
+      expect(media.currentTime).toBe(42)
+      expect(play).toHaveBeenCalledTimes(1)
+      expect(load).toHaveBeenCalledTimes(1)
+    })
+
     it('原本 VOD は保存位置を秒に切り下げた offset のセッションで開き、端数だけを startPosition に渡す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       render(

@@ -1579,6 +1579,9 @@ export function LivePlayer(props: LivePlayerProps) {
         const resume = () => {
           resumePending = false
           if (cancelled || !resumePlaybackPendingRef.current) return
+          // Native recording HLS keeps the intent pending until its watcher sees
+          // `playing`; other paths have no such watcher and consume it here.
+          if (!isRecordingHLS || !nativeHlsRef.current) resumePlaybackPendingRef.current = false
           const resumeAttempt = ++recordingHlsResumeAttemptRef.current
           // 開始位置の再表明は、上の effect の最初の `playing` が行う。
           void video.play().catch(() => {
