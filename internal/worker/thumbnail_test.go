@@ -155,7 +155,7 @@ func TestNextUnusedThumbnailRelPathAdvancesPastExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &ThumbnailWorker{MediaDir: mediaDir}
-	path, generation, err := w.nextUnusedThumbnailRelPath(12, 3)
+	path, generation, err := w.nextUnusedThumbnailRelPath(context.Background(), 12, 3)
 	if err != nil {
 		t.Fatalf("nextUnusedThumbnailRelPath: %v", err)
 	}

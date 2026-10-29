@@ -10,6 +10,39 @@ import (
 	"time"
 )
 
+const activatePendingMediaAssetCopy = `-- name: ActivatePendingMediaAssetCopy :execrows
+UPDATE media_asset_copies
+SET state = 'active', created_at = now(), deleted_at = NULL
+WHERE media_asset_id = $1
+  AND store = $2
+  AND rel_path = $3
+  AND generation = $4
+  AND state = 'pending'
+`
+
+type ActivatePendingMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	Generation   int64
+}
+
+// pending を active にする。generation は書き換えない。created_at は公開の時刻に更新する。
+// 旧世代を消す overlap の起点は、現行世代の最初のコピー行の created_at なので、
+// 予約した時刻のままだと encode の所要時間の分だけ猶予が短くなる。
+func (q *Queries) ActivatePendingMediaAssetCopy(ctx context.Context, arg ActivatePendingMediaAssetCopyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, activatePendingMediaAssetCopy,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.RelPath,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const adoptUnassignedIngestTemps = `-- name: AdoptUnassignedIngestTemps :exec
 UPDATE recording_ingest_progress SET temp_store = $1 WHERE temp_store = ''
 `
@@ -87,6 +120,214 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	return count, err
 }
 
+const getMaxMediaAssetCopyGeneration = `-- name: GetMaxMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(generation), -1)::bigint AS max_generation
+FROM media_asset_copies
+WHERE media_asset_id = $1
+`
+
+// 回収済みの世代も数える。回収した key の世代を別の出力へ割り当て直さないためである。
+func (q *Queries) GetMaxMediaAssetCopyGeneration(ctx context.Context, mediaAssetID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxMediaAssetCopyGeneration, mediaAssetID)
+	var max_generation int64
+	err := row.Scan(&max_generation)
+	return max_generation, err
+}
+
+const getMediaAssetCopyByPath = `-- name: GetMediaAssetCopyByPath :one
+SELECT id, media_asset_id, generation, state
+FROM media_asset_copies
+WHERE store = $1 AND rel_path = $2 AND state <> 'deleted'
+`
+
+type GetMediaAssetCopyByPathParams struct {
+	Store   string
+	RelPath string
+}
+
+type GetMediaAssetCopyByPathRow struct {
+	ID           int64
+	MediaAssetID int64
+	Generation   int64
+	State        string
+}
+
+func (q *Queries) GetMediaAssetCopyByPath(ctx context.Context, arg GetMediaAssetCopyByPathParams) (GetMediaAssetCopyByPathRow, error) {
+	row := q.db.QueryRow(ctx, getMediaAssetCopyByPath, arg.Store, arg.RelPath)
+	var i GetMediaAssetCopyByPathRow
+	err := row.Scan(
+		&i.ID,
+		&i.MediaAssetID,
+		&i.Generation,
+		&i.State,
+	)
+	return i, err
+}
+
+const getMediaAssetIDForPendingCopy = `-- name: GetMediaAssetIDForPendingCopy :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = $2
+  AND profile IS NOT DISTINCT FROM $3::text
+`
+
+type GetMediaAssetIDForPendingCopyParams struct {
+	RecordingID int64
+	Kind        string
+	Profile     *string
+}
+
+func (q *Queries) GetMediaAssetIDForPendingCopy(ctx context.Context, arg GetMediaAssetIDForPendingCopyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getMediaAssetIDForPendingCopy, arg.RecordingID, arg.Kind, arg.Profile)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertMediaAssetForPendingCopy = `-- name: InsertMediaAssetForPendingCopy :one
+INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation)
+VALUES (
+    $1, $2, $3,
+    $4, $5
+)
+ON CONFLICT (recording_id, kind, profile) DO NOTHING
+RETURNING id
+`
+
+type InsertMediaAssetForPendingCopyParams struct {
+	RecordingID       int64
+	Kind              string
+	Profile           *string
+	SizeBytes         int64
+	DerivedGeneration *int64
+}
+
+// S3 の置き場は、PUT の前に pending のコピー行を commit する。コピー行は論理行を必要とするので、
+// 初回の公開だけは論理行をここで作る。物理パスはコピー行だけが持つ。
+func (q *Queries) InsertMediaAssetForPendingCopy(ctx context.Context, arg InsertMediaAssetForPendingCopyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertMediaAssetForPendingCopy,
+		arg.RecordingID,
+		arg.Kind,
+		arg.Profile,
+		arg.SizeBytes,
+		arg.DerivedGeneration,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const insertPendingMediaAssetCopy = `-- name: InsertPendingMediaAssetCopy :execrows
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, $3, $4, 'pending')
+ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING
+`
+
+type InsertPendingMediaAssetCopyParams struct {
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	Generation   int64
+}
+
+// 同じ key の行が既にあれば何もしない。呼び出し側が GetMediaAssetCopyByPath で、同じ論理資産・
+// 同じ世代の pending かを確かめる。
+func (q *Queries) InsertPendingMediaAssetCopy(ctx context.Context, arg InsertPendingMediaAssetCopyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertPendingMediaAssetCopy,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.RelPath,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listAgedPendingMediaAssetCopies = `-- name: ListAgedPendingMediaAssetCopies :many
+SELECT copy.id AS copy_id, asset.id AS media_asset_id, asset.recording_id,
+       copy.rel_path, asset.size_bytes, asset.kind, copy.generation
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.store = $1
+  AND copy.state = 'pending'
+  AND copy.created_at < $2::timestamptz
+ORDER BY copy.id
+LIMIT $3
+`
+
+type ListAgedPendingMediaAssetCopiesParams struct {
+	StoreName     string
+	CreatedBefore time.Time
+	RowLimit      int32
+}
+
+type ListAgedPendingMediaAssetCopiesRow struct {
+	CopyID       int64
+	MediaAssetID int64
+	RecordingID  int64
+	RelPath      string
+	SizeBytes    int64
+	Kind         string
+	Generation   int64
+}
+
+// 公開されないまま猶予を過ぎた pending。予約の時刻で数える。
+func (q *Queries) ListAgedPendingMediaAssetCopies(ctx context.Context, arg ListAgedPendingMediaAssetCopiesParams) ([]ListAgedPendingMediaAssetCopiesRow, error) {
+	rows, err := q.db.Query(ctx, listAgedPendingMediaAssetCopies, arg.StoreName, arg.CreatedBefore, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAgedPendingMediaAssetCopiesRow
+	for rows.Next() {
+		var i ListAgedPendingMediaAssetCopiesRow
+		if err := rows.Scan(
+			&i.CopyID,
+			&i.MediaAssetID,
+			&i.RecordingID,
+			&i.RelPath,
+			&i.SizeBytes,
+			&i.Kind,
+			&i.Generation,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAgedPendingMediaAssetCopy = `-- name: LockAgedPendingMediaAssetCopy :one
+SELECT copy.media_asset_id
+FROM media_asset_copies copy
+JOIN media_assets asset ON asset.id = copy.media_asset_id
+WHERE copy.id = $1
+  AND copy.store = $2
+  AND copy.state = 'pending'
+  AND copy.created_at < $3::timestamptz
+FOR UPDATE OF asset, copy
+`
+
+type LockAgedPendingMediaAssetCopyParams struct {
+	CopyID        int64
+	StoreName     string
+	CreatedBefore time.Time
+}
+
+// 回収する pending 行を、公開の activate と直列化するためにロックする。
+// 公開が先に active にしていれば 0 行になり、回収は何も消さない。
+func (q *Queries) LockAgedPendingMediaAssetCopy(ctx context.Context, arg LockAgedPendingMediaAssetCopyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, lockAgedPendingMediaAssetCopy, arg.CopyID, arg.StoreName, arg.CreatedBefore)
+	var media_asset_id int64
+	err := row.Scan(&media_asset_id)
+	return media_asset_id, err
+}
+
 const lockMediaAssetCopy = `-- name: LockMediaAssetCopy :one
 SELECT copy.media_asset_id, copy.state
 FROM media_assets asset
@@ -152,6 +393,40 @@ func (q *Queries) LockMediaAssetCopyByPhysicalPath(ctx context.Context, arg Lock
 		&i.State,
 	)
 	return i, err
+}
+
+const lockMediaAssetForPendingCopy = `-- name: LockMediaAssetForPendingCopy :one
+SELECT id FROM media_assets
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) LockMediaAssetForPendingCopy(ctx context.Context, mediaAssetID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockMediaAssetForPendingCopy, mediaAssetID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const markPendingMediaAssetCopyDeleted = `-- name: MarkPendingMediaAssetCopyDeleted :execrows
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())
+WHERE id = $1
+  AND store = $2
+  AND state = 'pending'
+`
+
+type MarkPendingMediaAssetCopyDeletedParams struct {
+	CopyID    int64
+	StoreName string
+}
+
+func (q *Queries) MarkPendingMediaAssetCopyDeleted(ctx context.Context, arg MarkPendingMediaAssetCopyDeletedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markPendingMediaAssetCopyDeleted, arg.CopyID, arg.StoreName)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const reconcileDerivedGenerationFromCopyPaths = `-- name: ReconcileDerivedGenerationFromCopyPaths :exec

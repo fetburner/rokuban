@@ -197,11 +197,33 @@ jobs:
   browser-s3-302:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: conformance
+          POSTGRES_PASSWORD: conformance
+          POSTGRES_DB: conformance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U conformance"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ROKUBAN_TEST_DATABASE_URL: postgres://conformance:conformance@localhost:5432/conformance_test?sslmode=disable
+      AWS_ACCESS_KEY_ID: rokuban
+      AWS_SECRET_ACCESS_KEY: rokuban-test-secret
+      AWS_REGION: us-east-1
+      E2E_S3_APP_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Build application streamer conformance fixture
+        run: go build -tags s3conformance -o "$RUNNER_TEMP/rokuban-s3streamer-conformance" ./internal/streamer/conformance
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
@@ -243,6 +265,7 @@ jobs:
         working-directory: web
         env:
           E2E_MINIO_URL: http://127.0.0.1:9000
+          E2E_STREAMER_FIXTURE_BINARY: ${{ runner.temp }}/rokuban-s3streamer-conformance
       - name: Stop MinIO
         if: always()
         run: |
@@ -487,6 +510,20 @@ jobs:
   s3-conformance:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: conformance
+          POSTGRES_PASSWORD: conformance
+          POSTGRES_DB: conformance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U conformance"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       MINIO_ROOT_USER: rokuban
       MINIO_ROOT_PASSWORD: rokuban-minio-conformance
@@ -496,6 +533,10 @@ jobs:
       ROKUBAN_S3_CONFORMANCE_ACCESS_KEY_ID: rokuban
       ROKUBAN_S3_CONFORMANCE_SECRET_ACCESS_KEY: rokuban-minio-conformance
       ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET: "true"
+      ROKUBAN_TEST_DATABASE_URL: postgres://conformance:conformance@localhost:5432/conformance_test?sslmode=disable
+      AWS_ACCESS_KEY_ID: rokuban
+      AWS_SECRET_ACCESS_KEY: rokuban-minio-conformance
+      AWS_REGION: us-east-1
       # MinIO は 4 機能すべて対応する。記録がこれと違えば退行として落とす。
       ROKUBAN_S3_CONFORMANCE_EXPECT: conditional-writes=supported,multipart-upload-and-abort=supported,head-checksum-sha256=supported,presigned-get-range=supported
     steps:
@@ -523,6 +564,8 @@ jobs:
           exit 1
       - name: Run S3 API conformance tests
         run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
+      - name: Run S3 worker publication and recovery tests
+        run: go test -tags s3conformance ./internal/worker -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
       - name: Stop MinIO service
         if: always()
         run: |

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ToastProvider, useToast } from '@/components/toaster'
@@ -68,6 +69,23 @@ describe('ToastProvider', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '閉じる' }))
     expect(screen.queryByText('保存しました')).not.toBeInTheDocument()
+  })
+
+  it('StrictMode でも unmount 時に自動消去タイマーを破棄する', () => {
+    vi.useFakeTimers()
+    const { unmount } = render(
+      <StrictMode>
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>
+      </StrictMode>,
+    )
+    fireEvent.click(screen.getByText('info を出す'))
+    expect(vi.getTimerCount()).toBe(1)
+
+    unmount()
+
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('info は 6 秒で自動的に消える（hover なし）', async () => {

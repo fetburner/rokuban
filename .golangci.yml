@@ -30,6 +30,19 @@ linters:
           failOn: all
     depguard:
       rules:
+        aws-sdk-s3-implementation-only:
+          # The AWS SDK is imported only by the S3 object-store adapter and by the
+          # object-store conformance tests; no other package, test files included.
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/objstore/s3store/**"
+            - "!${config-path}/internal/objstore/conformance/**"
+          deny:
+            - pkg: github.com/aws/aws-sdk-go-v2
+              desc: AWS SDK imports are limited to the S3 object-store adapter
+            - pkg: github.com/aws/smithy-go
+              desc: Smithy imports are limited to the S3 object-store adapter
         api-role:
           # API のテストは worker の実ジョブを使う統合テストなので、ここでは
           # 本番コードの import 境界だけを判定する。

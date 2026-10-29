@@ -311,6 +311,29 @@ func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, arg GetLiveMed
 	return recording_id, err
 }
 
+const getMaxEncodedMediaAssetCopyGeneration = `-- name: GetMaxEncodedMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(copy.generation), -1)::bigint AS max_generation
+FROM media_assets a
+LEFT JOIN media_asset_copies copy ON copy.media_asset_id = a.id
+WHERE a.recording_id = $1
+  AND a.kind = 'encoded'
+  AND a.profile = $2
+`
+
+type GetMaxEncodedMediaAssetCopyGenerationParams struct {
+	RecordingID int64
+	Profile     *string
+}
+
+// 公開前に止まった世代と回収済みの世代も使用済みとして数える。encode は ffmpeg の前に
+// 世代を予約し、同じ key を別の出力で再利用しないために、この最大値より大きい世代を使う。
+func (q *Queries) GetMaxEncodedMediaAssetCopyGeneration(ctx context.Context, arg GetMaxEncodedMediaAssetCopyGenerationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxEncodedMediaAssetCopyGeneration, arg.RecordingID, arg.Profile)
+	var max_generation int64
+	err := row.Scan(&max_generation)
+	return max_generation, err
+}
+
 const getMediaAssetKeepRangesJSON = `-- name: GetMediaAssetKeepRangesJSON :one
 SELECT COALESCE(
     jsonb_agg(
@@ -617,15 +640,15 @@ func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, arg LockAct
 }
 
 const upsertDerivedMediaAsset = `-- name: UpsertDerivedMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation)
+INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation, sha256)
 VALUES (
     $1, $2, $3,
-    $4, $5
+    $4, $5, $6
 )
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
-    sha256     = NULL,
+    sha256     = EXCLUDED.sha256,
     updated_at = now()
 WHERE EXCLUDED.derived_generation >= COALESCE(media_assets.derived_generation, 0)
 RETURNING id
@@ -637,11 +660,13 @@ type UpsertDerivedMediaAssetParams struct {
 	Profile           *string
 	SizeBytes         int64
 	DerivedGeneration *int64
+	Sha256            []byte
 }
 
 // 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
 // derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
 // 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
+// sha256 は作り手が commit の tx で書く。FS の公開は計算しないので NULL のままにする。
 func (q *Queries) UpsertDerivedMediaAsset(ctx context.Context, arg UpsertDerivedMediaAssetParams) (int64, error) {
 	row := q.db.QueryRow(ctx, upsertDerivedMediaAsset,
 		arg.RecordingID,
@@ -649,6 +674,7 @@ func (q *Queries) UpsertDerivedMediaAsset(ctx context.Context, arg UpsertDerived
 		arg.Profile,
 		arg.SizeBytes,
 		arg.DerivedGeneration,
+		arg.Sha256,
 	)
 	var id int64
 	err := row.Scan(&id)

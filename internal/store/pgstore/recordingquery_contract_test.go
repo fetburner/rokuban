@@ -153,25 +153,34 @@ func TestRecordingQueryWithoutStoreNameUsesActiveCopies(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title = "API only copy visibility fixture"
 	})
-	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+	originalID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "api-only/original.ts"
 		p.SizeBytes = 1234
 	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
+		t.Fatalf("deactivating original copy after until_encoded: %v", err)
+	}
 	profile := "api-only"
-	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "api-only/encoded.mp4"
 		p.SizeBytes = 5678
 	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
+		t.Fatalf("moving encoded copy to S3 derived store: %v", err)
+	}
 
+	// API processes do not know which configured store contains an active copy.
+	// The original has been removed, so all three browser-facing reads must see
+	// the encoded object from the S3 store.
 	query := NewRecordings(pool, "")
 	row, err := query.Get(ctx, recordingID)
 	if err != nil {
 		t.Fatalf("Get(%d) without a configured store: %v", recordingID, err)
 	}
-	if row.OriginalSizeBytes == nil || *row.OriginalSizeBytes != 1234 {
-		t.Fatalf("original size = %v, want 1234 from an active copy in any store", row.OriginalSizeBytes)
+	if row.OriginalSizeBytes != nil {
+		t.Fatalf("original size = %v, want nil after until_encoded removed the original copy", row.OriginalSizeBytes)
 	}
 	var available []struct {
 		Profile   string `json:"profile"`
@@ -188,8 +197,14 @@ func TestRecordingQueryWithoutStoreNameUsesActiveCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() without a configured store: %v", err)
 	}
-	if len(rows) != 1 || rows[0].ID != recordingID || rows[0].OriginalSizeBytes == nil || *rows[0].OriginalSizeBytes != 1234 {
-		t.Fatalf("List() = %+v, want recording %d with original size 1234", rows, recordingID)
+	if len(rows) != 1 || rows[0].ID != recordingID || rows[0].OriginalSizeBytes != nil {
+		t.Fatalf("List() = %+v, want recording %d with no original size", rows, recordingID)
+	}
+	if err := json.Unmarshal(rows[0].AvailableEncodedAssets, &available); err != nil {
+		t.Fatalf("decoding listed encoded assets %s: %v", rows[0].AvailableEncodedAssets, err)
+	}
+	if len(available) != 1 || available[0].Profile != profile || available[0].SizeBytes != 5678 {
+		t.Fatalf("List() available encoded assets = %+v, want %s at 5678 bytes", available, profile)
 	}
 
 	shelves, err := query.Shelves(ctx, store.RecordingFilter{})

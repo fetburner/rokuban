@@ -115,7 +115,7 @@ func TestStoragePolicyValidation(t *testing.T) {
 		{
 			name:      "fs store rejects s3 attributes",
 			policy:    strings.Replace(validStoragePolicy, "      internal_url: http://store-main.internal:8080\n", "      endpoint: https://s3.example.com\n", 1),
-			wantError: "endpoint and bucket are only valid for kind s3",
+			wantError: "endpoint, region, and bucket are only valid for kind s3",
 		},
 		{
 			name:      "unsupported time condition",
@@ -173,11 +173,6 @@ func TestStoragePolicyValidation(t *testing.T) {
 			wantError: "exactly one fs store",
 		},
 		{
-			name:      "derived on s3 is not supported yet",
-			policy:    strings.Replace(validStoragePolicy, "derived: main", "derived: s3main", 1),
-			wantError: "storage.derived \"s3main\" must be the single fs store",
-		},
-		{
 			name:      "invalid internal url scheme",
 			policy:    strings.Replace(validStoragePolicy, "http://store-main.internal:8080", "ftp://store-main.internal:8080", 1),
 			wantError: "internal_url",
@@ -205,6 +200,24 @@ func TestStoragePolicyValidation(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestStorageDerivedMayUseS3Store(t *testing.T) {
+	policy := strings.Replace(validStoragePolicy, "derived: main", "derived: s3main", 1)
+	policy = strings.Replace(policy, "      endpoint: https://s3.example.com", "      endpoint: https://s3.example.com\n      region: auto", 1)
+	cfg, err := loadStoragePolicy(t, policy)
+	if err != nil {
+		t.Fatalf("loading S3 derived store configuration: %v", err)
+	}
+	if cfg.Storage.Derived != "s3main" || cfg.Storage.Stores[cfg.Storage.Derived].Kind != "s3" {
+		t.Fatalf("derived store = %q (%+v), want s3main with kind s3", cfg.Storage.Derived, cfg.Storage.Stores[cfg.Storage.Derived])
+	}
+	if cfg.Storage.MediaStoreName != "main" {
+		t.Fatalf("original filesystem store = %q, want main", cfg.Storage.MediaStoreName)
+	}
+	if cfg.Storage.Stores[cfg.Storage.Derived].Region != "auto" {
+		t.Fatalf("S3 region = %q, want auto", cfg.Storage.Stores[cfg.Storage.Derived].Region)
 	}
 }
 

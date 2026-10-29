@@ -75,6 +75,20 @@ storage:
   # derived: s3main                  # 派生物は全 site 共通の置き場
   # transfer:
   #   bandwidth: { takamatsu: 50Mbps }   # 転送元の置き場ごとの上限
+  #
+  # 派生物の置き場には S3 API の置き場も指定できる。原本の置き場は、S3 を使うかどうかに
+  # かかわらず、FS 置き場を 1 つだけ定義して参照する。
+  # stores:
+  #   main: { kind: fs }
+  #   s3main: { kind: s3, endpoint: https://s3.example.com, region: us-east-1, bucket: rokuban-derived }
+  # originals:
+  #   - store: main
+  # derived: s3main
+  # S3 の資格情報は AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY などの環境変数か
+  # workload identity で与える。署名付き URL は 24 時間有効で、署名する資格情報が
+  # それより短いと先に無効になる。署名するのは streamer だけなので、24 時間以上
+  # 有効な資格情報（長期のアクセスキーなど）が要るのは streamer である。worker の
+  # 書き込みは workload identity でもよい。region の既定値は us-east-1（R2 は auto）。
   media_dir: /mnt/media          # 原本 ingest 先。file fsync / Close / 同一 FS の
                                   # atomic rename / 親 directory fsync を信頼できる
                                   # ローカル FS / JuiceFS / NFS に限定する。geesefs / s3fs /

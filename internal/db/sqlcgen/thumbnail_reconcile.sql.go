@@ -24,7 +24,7 @@ WHERE o.recording_id > $2::bigint
     WHERE s.recording_id = o.recording_id
       AND s.kind = 'seek_tiles'
       AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(s.id, $1::text)
+          SELECT 1 FROM active_media_asset_copies(s.id, $4::text)
       )
   )
   AND NOT EXISTS (
@@ -32,13 +32,14 @@ WHERE o.recording_id > $2::bigint
     WHERE m.media_asset_copy_id = original_copy.id
   )
 ORDER BY o.recording_id
-LIMIT $4
+LIMIT $5
 `
 
 type ListMissingSeekTilesRecordingsParams struct {
-	StoreName        string
+	OriginalStore    string
 	AfterRecordingID int64
 	RecordingID      *int64
+	DerivedStore     string
 	RowLimit         int32
 }
 
@@ -47,9 +48,10 @@ type ListMissingSeekTilesRecordingsParams struct {
 // 除外）だが、再開位置は呼び出し側が種類ごとに別に持つ。
 func (q *Queries) ListMissingSeekTilesRecordings(ctx context.Context, arg ListMissingSeekTilesRecordingsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listMissingSeekTilesRecordings,
-		arg.StoreName,
+		arg.OriginalStore,
 		arg.AfterRecordingID,
 		arg.RecordingID,
+		arg.DerivedStore,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -84,7 +86,7 @@ WHERE o.recording_id > $2::bigint
     WHERE t.recording_id = o.recording_id
       AND t.kind = 'thumbnail'
       AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(t.id, $1::text)
+          SELECT 1 FROM active_media_asset_copies(t.id, $4::text)
       )
   )
   AND NOT EXISTS (
@@ -92,13 +94,14 @@ WHERE o.recording_id > $2::bigint
     WHERE m.media_asset_copy_id = original_copy.id
   )
 ORDER BY o.recording_id
-LIMIT $4
+LIMIT $5
 `
 
 type ListMissingThumbnailRecordingsParams struct {
-	StoreName        string
+	OriginalStore    string
 	AfterRecordingID int64
 	RecordingID      *int64
+	DerivedStore     string
 	RowLimit         int32
 }
 
@@ -110,9 +113,10 @@ type ListMissingThumbnailRecordingsParams struct {
 // なった場合は delete_reconcile が消し、次のパスで再び候補になる。
 func (q *Queries) ListMissingThumbnailRecordings(ctx context.Context, arg ListMissingThumbnailRecordingsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listMissingThumbnailRecordings,
-		arg.StoreName,
+		arg.OriginalStore,
 		arg.AfterRecordingID,
 		arg.RecordingID,
+		arg.DerivedStore,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -156,6 +160,7 @@ WITH planning AS (
             WHERE s.recording_id = r.id
         ), '[]'::jsonb)::jsonb AS user_spans,
         COALESCE(original.id, 0)::bigint AS original_media_asset_id,
+        COALESCE(original.store, '')::text AS original_store,
         COALESCE(original.rel_path, '')::text AS original_rel_path,
         COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
         thumbnail.id AS thumbnail_media_asset_id,
@@ -164,7 +169,7 @@ WITH planning AS (
         thumbnail.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (
-        SELECT a.id, copy.rel_path
+        SELECT a.id, copy.rel_path, copy.store
         FROM media_assets a
         JOIN LATERAL active_media_asset_copies(a.id, $3::text) copy ON true
         WHERE a.recording_id = r.id
@@ -179,6 +184,7 @@ WITH planning AS (
         SELECT jsonb_agg(
             jsonb_build_object(
                 'mediaAssetId', a.id,
+                'store', copy.store,
                 'profile', a.profile,
                 'relPath', copy.rel_path,
                 'cut', c.media_asset_id IS NOT NULL,
@@ -186,7 +192,7 @@ WITH planning AS (
             ) ORDER BY a.profile
         ) AS assets
         FROM media_assets a
-        JOIN LATERAL active_media_asset_copies(a.id, $3::text) copy ON true
+        JOIN LATERAL active_media_asset_copies(a.id, $4::text) copy ON true
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
             SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
@@ -203,16 +209,16 @@ WITH planning AS (
     LEFT JOIN LATERAL (
         SELECT a.id, copy.rel_path, a.derived_generation, thumbnail_seek.seek_ms
         FROM media_assets a
-        JOIN LATERAL preferred_active_media_asset_copy(a.id, $3::text) copy ON true
+        JOIN LATERAL preferred_active_media_asset_copy(a.id, $4::text) copy ON true
         LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
         WHERE a.recording_id = r.id
           AND a.kind = 'thumbnail'
         LIMIT 1
     ) thumbnail ON true
     WHERE r.purged_at IS NULL
-      AND ($4::bigint IS NULL OR r.id = $4::bigint)
+      AND ($5::bigint IS NULL OR r.id = $5::bigint)
 )
-SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, thumbnail_generation, seek_ms
+SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_store, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, thumbnail_generation, seek_ms
 FROM planning
 WHERE recording_id > $1::bigint
   AND NOT trashed
@@ -225,7 +231,8 @@ LIMIT $2
 type ListThumbnailReselectCandidatesParams struct {
 	AfterRecordingID int64
 	RowLimit         int32
-	StoreName        string
+	OriginalStore    string
+	DerivedStore     string
 	RecordingID      *int64
 }
 
@@ -238,6 +245,7 @@ type ListThumbnailReselectCandidatesRow struct {
 	CmRanges              json.RawMessage
 	UserSpans             json.RawMessage
 	OriginalMediaAssetID  int64
+	OriginalStore         string
 	OriginalRelPath       string
 	EncodedAssets         json.RawMessage
 	ThumbnailMediaAssetID int64
@@ -257,7 +265,8 @@ func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListT
 	rows, err := q.db.Query(ctx, listThumbnailReselectCandidates,
 		arg.AfterRecordingID,
 		arg.RowLimit,
-		arg.StoreName,
+		arg.OriginalStore,
+		arg.DerivedStore,
 		arg.RecordingID,
 	)
 	if err != nil {
@@ -276,6 +285,7 @@ func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListT
 			&i.CmRanges,
 			&i.UserSpans,
 			&i.OriginalMediaAssetID,
+			&i.OriginalStore,
 			&i.OriginalRelPath,
 			&i.EncodedAssets,
 			&i.ThumbnailMediaAssetID,

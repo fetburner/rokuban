@@ -123,6 +123,12 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 エンコード出力は既にある行のパスへ公開する。そのため canonical を直接開かず、同じディレクトリの staging file へ書く。パスは、ファイルを置く前に DB で予約する。古い試行は、試行回数の照合と行の再確認で公開できない。
 
+FS 置き場では、staging file を rename して親ディレクトリを `fsync` した後に DB を commit する。S3 置き場では、先に `pending` のコピー行を新しい世代で commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、公開の transaction でコピーを `active` にして、SHA-256 を論理行へ書く。upload の完了が 412 で拒まれたときは、HEAD で得たサイズと、アプリが保存した SHA-256 の metadata を照合する。どちらも一致すれば成功として扱い、一致しなければ失敗にする。公開されないまま猶予を過ぎた `pending` は、削除 reconcile が行をロックしたまま S3 のキーを消す。
+
+置き換えは新しい世代の行を足すだけで、旧世代のコピーには触れない。旧世代のキーは、署名付き URL で再生中の視聴者がいても 404 にならないよう、削除 reconcile が `storage.transfer.overlap` の後に消す。コピー行の世代は INSERT の後に変えず、現行のコピーを選ぶ述語は `active_media_asset_copies` と `preferred_active_media_asset_copy` だけに置く（[schema](../schema/recordings/media-assets.md)）。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代のキーを使う。Matroska のように同じ入力でも出力のバイト列が変わる形式で、既に upload 済みのキーを別の内容で上書きしないためである。
+
+S3 置き場の失敗は、S3 を使うジョブだけを失敗させる。worker は起動時に S3 へ接続しない（運用は [ストレージ運用](../operations/storage.md) の「S3 の置き場の運用要件」）。
+
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 
 - scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。長い profile 名でも作成できる。
@@ -190,6 +196,8 @@ flowchart TD
 ### thumbnail / seek tiles の公開
 
 サムネイルとシークタイルは、完成したファイルを staging にコピーして fsync し、lock と transaction の中で rename して commit する。同じ録画のジョブが重なっても、先行が公開済みか原本が消えていれば、後続は公開を飛ばして成功扱いにする。
+
+S3 置き場では、派生物のキーを `pending` として先に commit し、完成した JPEG をアップロードする。チェックサムの照合が済んだ後、公開の transaction で `active` にする。FS と S3 のどちらでも、DB で `active` のコピーが配信を許す。
 
 thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして `MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の実行が重なっても scratch file を共有しない。
 
@@ -401,6 +409,8 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 再選択の入力は、active かつ `missing_media_assets` に無い原本を優先し、次にプロファイル名昇順のカットしない encoded、最後に同じ順のカット版を選ぶ。未確認の自動 CM 検出も使う。チャプターがない録画は再選択せず、keep が空なら再選択を繰り返さない。
 
+S3 上の encoded 版を入力に選んだ場合は、scratch へ取得してから抽出する。
+
 作り直す条件は、記録済み位置が現在の keep 外にあり、同じ入力選択で計画した位置とも異なる場合だけである。`seek_ms` が無い旧サムネイルは、チャプターと使える入力があれば一度選び直す。位置が keep 内なら、望ましい位置との違いだけでは作り直さない。
 
 再選択 reconcile は、active なサムネイルと CM 検出または所有済みチャプターがある録画を recording ID の窓で巡回し、Go の共通判定で再選択の対象を投入する。ごみ箱は除外し、`seek_tiles` や初回生成とは別の再開位置を持つ。窓の再開位置は継続ジョブの引数で引き継ぐ（[ingest-followup.md](../recording/ingest-followup.md) §5.5）。再選択が要らない録画も窓に入るので、対象が上限を超えると、通常運転でも周期ごとに継続ジョブが連鎖する。CM 検出の保存後に 1 件ヒントを出すが、ヒントはベストエフォート。手動編集は次の窓で拾う。
@@ -409,6 +419,11 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 - keep range の位置を原本時間へ写すこと: `UnmapMs(keep, seek)`
 - 入力の時間原点を 0 にしてカット境界を適用すること: `ffargs.CutFilterComplex`
+- S3 上の encoded 版からサムネイルを再選択すること:
+
+  ```text
+  TestS3DerivedObjectPublicationAndRecovery/thumbnail_reselection_reads_encoded_input_from_S3
+  ```
 
 </details>
 
