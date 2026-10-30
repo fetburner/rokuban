@@ -61,6 +61,43 @@ $$;
 COMMENT ON FUNCTION storage_transfer_candidate(bigint, jsonb, text[], text) IS
     'Returns true for an active logical asset whose desired FS copy is absent and whose source is present in a configured FS store.';
 
+-- Pending rows are reservations, not published copies. Retire one only after the
+-- current placement has made that reservation obsolete; a failed but still desired
+-- transfer remains pending so its per-copy retry limit and checkpoint can continue.
+CREATE FUNCTION storage_transfer_pending_copy_obsolete(
+    p_copy_id bigint,
+    p_original_rules jsonb,
+    p_fs_stores text[],
+    p_derived_store text
+)
+RETURNS boolean
+LANGUAGE sql STABLE
+AS $$
+    SELECT EXISTS (
+      SELECT 1
+      FROM media_asset_copies copy
+      JOIN media_assets asset ON asset.id = copy.media_asset_id
+      JOIN recordings recording ON recording.id = asset.recording_id
+      CROSS JOIN LATERAL (
+          SELECT desired_media_store(
+              asset.kind, p_original_rules, p_derived_store, recording.site,
+              (recording.program_start_at + recording.program_duration_ms * interval '1 millisecond')::timestamptz
+          ) AS desired_store
+      ) placement
+      WHERE copy.id = p_copy_id
+        AND copy.state = 'pending'
+        AND (
+            recording.deleted_at IS NOT NULL
+            OR copy.generation <> COALESCE(asset.derived_generation, 0)
+            OR placement.desired_store IS DISTINCT FROM copy.store
+            OR NOT (placement.desired_store = ANY(p_fs_stores))
+        )
+    )
+$$;
+
+COMMENT ON FUNCTION storage_transfer_pending_copy_obsolete(bigint, jsonb, text[], text) IS
+    'Returns true only for a pending transfer copy whose recording, generation, or desired FS placement has made the reservation obsolete.';
+
 CREATE FUNCTION storage_transfer_attempt_count(p_media_asset_id bigint, p_desired_store text)
 RETURNS integer
 LANGUAGE sql STABLE
@@ -225,6 +262,7 @@ COMMENT ON FUNCTION until_encoded_deletable_originals(text) IS
 -- +goose Down
 
 DROP FUNCTION media_asset_copy_prunable(bigint, jsonb, text, interval);
+DROP FUNCTION storage_transfer_pending_copy_obsolete(bigint, jsonb, text[], text);
 DROP FUNCTION storage_transfer_attempt_count(bigint, text);
 DROP FUNCTION storage_transfer_candidate(bigint, jsonb, text[], text);
 DROP TABLE media_asset_transfer_attempts;

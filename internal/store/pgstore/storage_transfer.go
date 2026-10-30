@@ -191,6 +191,82 @@ func (s *Media) DiscardPendingMediaAssetCopy(ctx context.Context, copyID int64) 
 	return nil
 }
 
+// ListObsoletePendingMediaAssetTransferCopies は、現在の policy から外れた pending 転送コピーを列挙する。
+func (s *Media) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
+	rows, err := sqlcgen.New(s.pool).ListObsoletePendingMediaAssetTransferCopies(ctx, sqlcgen.ListObsoletePendingMediaAssetTransferCopiesParams{
+		StoreName: s.storeName, OriginalRules: originalRules, FsStores: fsStores, DerivedStore: derivedStore, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing obsolete pending transfer copies: %w", err)
+	}
+	out := make([]store.MediaAssetCopyDeleteCandidate, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MediaAssetCopyDeleteCandidate{
+			CopyID: row.CopyID, MediaAssetID: row.MediaAssetID, Store: row.Store, RelPath: row.RelPath,
+			State: row.State, SizeBytes: row.SizeBytes, Kind: row.Kind, Generation: row.Generation,
+		})
+	}
+	return out, nil
+}
+
+// ReclaimObsoletePendingMediaAssetTransferCopy は path lock の下で不要な pending copy を物理削除して退役させる。
+func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
+	ctx context.Context,
+	candidate store.MediaAssetCopyDeleteCandidate,
+	originalRules []byte,
+	fsStores []string,
+	derivedStore string,
+	deleteFile func() error,
+) (bool, error) {
+	if deleteFile == nil {
+		return false, errors.New("reclaiming obsolete pending transfer copy: deleter is nil")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning obsolete pending transfer copy reclaim: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	_, err = q.LockPendingMediaAssetTransferCopy(ctx, sqlcgen.LockPendingMediaAssetTransferCopyParams{
+		CopyID: candidate.CopyID, StoreName: s.storeName,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("locking pending transfer copy %d: %w", candidate.CopyID, mapDatabaseError(err))
+	}
+	obsolete, err := q.IsPendingMediaAssetTransferCopyObsolete(ctx, sqlcgen.IsPendingMediaAssetTransferCopyObsoleteParams{
+		CopyID: candidate.CopyID, OriginalRules: originalRules, FsStores: fsStores, DerivedStore: derivedStore,
+	})
+	if err != nil {
+		return false, fmt.Errorf("rechecking pending transfer copy %d policy: %w", candidate.CopyID, mapDatabaseError(err))
+	}
+	if !obsolete {
+		return false, nil
+	}
+	if err := deleteFile(); err != nil {
+		return false, fmt.Errorf("deleting pending transfer copy %d files: %w", candidate.CopyID, err)
+	}
+	updated, err := q.MarkObsoletePendingMediaAssetTransferCopyDeleted(ctx, sqlcgen.MarkObsoletePendingMediaAssetTransferCopyDeletedParams{
+		CopyID: candidate.CopyID, StoreName: s.storeName,
+		OriginalRules: originalRules, FsStores: fsStores, DerivedStore: derivedStore,
+	})
+	if err != nil {
+		return false, fmt.Errorf("marking obsolete pending transfer copy %d deleted: %w", candidate.CopyID, mapDatabaseError(err))
+	}
+	if updated != 1 {
+		return false, fmt.Errorf("marking obsolete pending transfer copy %d deleted updated %d rows, want one", candidate.CopyID, updated)
+	}
+	if err := q.DeleteMediaAssetTransferAttemptsForCopy(ctx, candidate.CopyID); err != nil {
+		return false, fmt.Errorf("clearing obsolete transfer attempts for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing obsolete pending transfer copy reclaim: %w", mapDatabaseError(err))
+	}
+	return true, nil
+}
+
 // ListMediaAssetCopiesToDelete は overlap を過ぎ、現行 policy で削除可能なコピーを列挙する。
 func (s *Media) ListMediaAssetCopiesToDelete(ctx context.Context, originalRules []byte, derivedStore string, overlapMicros int64, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetCopiesToDelete(ctx, sqlcgen.ListMediaAssetCopiesToDeleteParams{

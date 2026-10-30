@@ -227,6 +227,16 @@ func (q *Queries) CountMediaAssetTransferExhausted(ctx context.Context, arg Coun
 	return column_1, err
 }
 
+const deleteMediaAssetTransferAttemptsForCopy = `-- name: DeleteMediaAssetTransferAttemptsForCopy :exec
+DELETE FROM media_asset_transfer_attempts
+WHERE copy_id = $1
+`
+
+func (q *Queries) DeleteMediaAssetTransferAttemptsForCopy(ctx context.Context, copyID int64) error {
+	_, err := q.db.Exec(ctx, deleteMediaAssetTransferAttemptsForCopy, copyID)
+	return err
+}
+
 const discardPendingMediaAssetCopy = `-- name: DiscardPendingMediaAssetCopy :exec
 WITH discarded AS (
     UPDATE media_asset_copies c
@@ -290,6 +300,36 @@ func (q *Queries) GetMediaAssetCopyForDeletion(ctx context.Context, arg GetMedia
 		&i.Generation,
 	)
 	return i, err
+}
+
+const isPendingMediaAssetTransferCopyObsolete = `-- name: IsPendingMediaAssetTransferCopyObsolete :one
+SELECT storage_transfer_pending_copy_obsolete(
+    $1,
+    $2::jsonb,
+    $3::text[],
+    $4::text
+)::boolean AS obsolete
+`
+
+type IsPendingMediaAssetTransferCopyObsoleteParams struct {
+	CopyID        int64
+	OriginalRules json.RawMessage
+	FsStores      []string
+	DerivedStore  string
+}
+
+// Re-evaluate after the row locks have been acquired so a concurrent restore,
+// generation advance, or placement change cannot be hidden by the candidate read.
+func (q *Queries) IsPendingMediaAssetTransferCopyObsolete(ctx context.Context, arg IsPendingMediaAssetTransferCopyObsoleteParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isPendingMediaAssetTransferCopyObsolete,
+		arg.CopyID,
+		arg.OriginalRules,
+		arg.FsStores,
+		arg.DerivedStore,
+	)
+	var obsolete bool
+	err := row.Scan(&obsolete)
+	return obsolete, err
 }
 
 const listMediaAssetCopiesToDelete = `-- name: ListMediaAssetCopiesToDelete :many
@@ -429,12 +469,110 @@ func (q *Queries) ListMediaAssetTransferCandidates(ctx context.Context, arg List
 	return items, nil
 }
 
+const listObsoletePendingMediaAssetTransferCopies = `-- name: ListObsoletePendingMediaAssetTransferCopies :many
+SELECT c.id AS copy_id, a.id AS media_asset_id, c.store, c.rel_path,
+       c.state, a.size_bytes, a.kind, c.generation
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+WHERE c.store = $1
+  AND c.state = 'pending'
+  AND storage_transfer_pending_copy_obsolete(
+      c.id,
+      $2::jsonb,
+      $3::text[],
+      $4::text
+  )
+ORDER BY c.id
+LIMIT $5
+`
+
+type ListObsoletePendingMediaAssetTransferCopiesParams struct {
+	StoreName     string
+	OriginalRules json.RawMessage
+	FsStores      []string
+	DerivedStore  string
+	RowLimit      int32
+}
+
+type ListObsoletePendingMediaAssetTransferCopiesRow struct {
+	CopyID       int64
+	MediaAssetID int64
+	Store        string
+	RelPath      string
+	State        string
+	SizeBytes    int64
+	Kind         string
+	Generation   int64
+}
+
+// Only reclaim a pending transfer after the current policy has made the
+// reservation obsolete. Keep failed transfers that are still desired intact.
+func (q *Queries) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, arg ListObsoletePendingMediaAssetTransferCopiesParams) ([]ListObsoletePendingMediaAssetTransferCopiesRow, error) {
+	rows, err := q.db.Query(ctx, listObsoletePendingMediaAssetTransferCopies,
+		arg.StoreName,
+		arg.OriginalRules,
+		arg.FsStores,
+		arg.DerivedStore,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListObsoletePendingMediaAssetTransferCopiesRow
+	for rows.Next() {
+		var i ListObsoletePendingMediaAssetTransferCopiesRow
+		if err := rows.Scan(
+			&i.CopyID,
+			&i.MediaAssetID,
+			&i.Store,
+			&i.RelPath,
+			&i.State,
+			&i.SizeBytes,
+			&i.Kind,
+			&i.Generation,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockMediaAssetForStorageTransfer = `-- name: LockMediaAssetForStorageTransfer :one
 SELECT id FROM media_assets WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockMediaAssetForStorageTransfer(ctx context.Context, mediaAssetID int64) (int64, error) {
 	row := q.db.QueryRow(ctx, lockMediaAssetForStorageTransfer, mediaAssetID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockPendingMediaAssetTransferCopy = `-- name: LockPendingMediaAssetTransferCopy :one
+SELECT c.id
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+JOIN recordings r ON r.id = a.recording_id
+WHERE c.id = $1
+  AND c.store = $2
+  AND c.state = 'pending'
+FOR UPDATE OF r, a, c
+`
+
+type LockPendingMediaAssetTransferCopyParams struct {
+	CopyID    int64
+	StoreName string
+}
+
+// The caller holds the path flock before this row lock, matching transfer's
+// filesystem-lock then transaction order.
+func (q *Queries) LockPendingMediaAssetTransferCopy(ctx context.Context, arg LockPendingMediaAssetTransferCopyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, lockPendingMediaAssetTransferCopy, arg.CopyID, arg.StoreName)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -530,6 +668,42 @@ func (q *Queries) MarkMediaAssetCopyDeleting(ctx context.Context, arg MarkMediaA
 	var rel_path string
 	err := row.Scan(&rel_path)
 	return rel_path, err
+}
+
+const markObsoletePendingMediaAssetTransferCopyDeleted = `-- name: MarkObsoletePendingMediaAssetTransferCopyDeleted :execrows
+UPDATE media_asset_copies c
+SET state = 'deleted', deleted_at = now()
+WHERE c.id = $1
+  AND c.store = $2
+  AND c.state = 'pending'
+  AND storage_transfer_pending_copy_obsolete(
+      c.id,
+      $3::jsonb,
+      $4::text[],
+      $5::text
+  )
+`
+
+type MarkObsoletePendingMediaAssetTransferCopyDeletedParams struct {
+	CopyID        int64
+	StoreName     string
+	OriginalRules json.RawMessage
+	FsStores      []string
+	DerivedStore  string
+}
+
+func (q *Queries) MarkObsoletePendingMediaAssetTransferCopyDeleted(ctx context.Context, arg MarkObsoletePendingMediaAssetTransferCopyDeletedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markObsoletePendingMediaAssetTransferCopyDeleted,
+		arg.CopyID,
+		arg.StoreName,
+		arg.OriginalRules,
+		arg.FsStores,
+		arg.DerivedStore,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const prepareMediaAssetTransfer = `-- name: PrepareMediaAssetTransfer :one

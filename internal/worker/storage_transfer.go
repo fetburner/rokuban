@@ -504,6 +504,12 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 	if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
 		return err
 	}
+	if err := w.syncTransferSubtitle(ctx, transfer, args); err != nil {
+		if errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
+			return err
+		}
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("synchronizing encoded subtitle sidecar: %w", err))
+	}
 	activated, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
 	if err != nil {
 		return err
@@ -521,10 +527,10 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 					return fmt.Errorf("syncing transfer directory after SHA-256 rejection: %w", err)
 				}
 			}
+			if err := w.removeTransferSubtitle(transfer, args); err != nil {
+				return fmt.Errorf("removing rejected transfer subtitle sidecar: %w", err)
+			}
 			return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "completion rejected a stale SHA-256")
-		}
-		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
-			return err
 		}
 		if createdCanonical {
 			if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing uncommitted transfer"); err != nil {
@@ -536,6 +542,12 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 			if err := fsink.SyncParentDir(targetPath); err != nil {
 				return fmt.Errorf("syncing directory after removing uncommitted transfer: %w", err)
 			}
+		}
+		if err := w.removeTransferSubtitle(transfer, args); err != nil {
+			return fmt.Errorf("removing rejected transfer subtitle sidecar: %w", err)
+		}
+		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
+			return err
 		}
 		if tempPath != "" {
 			if err := fsink.RemoveTemp(tempPath); err != nil {
@@ -553,6 +565,173 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 	}
 	metrics.StorageTransferLastSuccess.Set(float64(time.Now().Unix()))
 	log.Info("storage transfer: copy active", "bytes", transfer.SizeBytes)
+	return nil
+}
+
+func (w *StorageTransferWorker) removeTransferSubtitle(transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs) error {
+	if transfer.Kind != store.AssetKindEncoded || !canHaveSubtitleSidecar(transfer.RelPath) {
+		return nil
+	}
+	subtitleRelPath, err := mediapath.SubtitleSibling(transfer.RelPath)
+	if err != nil {
+		return fmt.Errorf("building rejected subtitle sidecar path: %w", err)
+	}
+	subtitlePath, err := mediapath.Resolve(w.Roots[args.Store], subtitleRelPath)
+	if err != nil {
+		return fmt.Errorf("resolving rejected subtitle sidecar path: %w", err)
+	}
+	return removeAbsentTransferSubtitle(w.Roots[args.Store], args.Store, subtitlePath)
+}
+
+// syncTransferSubtitle mirrors the optional sidecar before the destination copy becomes active.
+// The caller holds the encoded asset's source and destination rel_path locks; encode and delete
+// use those same locks for the sidecar.
+func (w *StorageTransferWorker) syncTransferSubtitle(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs) error {
+	if transfer.Kind != store.AssetKindEncoded || !canHaveSubtitleSidecar(transfer.RelPath) {
+		return nil
+	}
+	sourceRoot := w.Roots[transfer.SourceStore]
+	targetRoot := w.Roots[args.Store]
+	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading transferred subtitle sidecar"); err != nil {
+		return err
+	}
+	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing transferred subtitle sidecar"); err != nil {
+		return err
+	}
+	sourceRelPath, err := mediapath.SubtitleSibling(transfer.SourceRelPath)
+	if err != nil {
+		return fmt.Errorf("building source subtitle path: %w", err)
+	}
+	targetRelPath, err := mediapath.SubtitleSibling(transfer.RelPath)
+	if err != nil {
+		return fmt.Errorf("building destination subtitle path: %w", err)
+	}
+	sourceSubtitle, err := mediapath.Resolve(sourceRoot, sourceRelPath)
+	if err != nil {
+		return fmt.Errorf("resolving source subtitle path: %w", err)
+	}
+	targetSubtitle, err := mediapath.Resolve(targetRoot, targetRelPath)
+	if err != nil {
+		return fmt.Errorf("resolving destination subtitle path: %w", err)
+	}
+	sourceInfo, err := os.Lstat(sourceSubtitle)
+	if errors.Is(err, os.ErrNotExist) {
+		return removeAbsentTransferSubtitle(targetRoot, args.Store, targetSubtitle)
+	}
+	if err != nil {
+		return fmt.Errorf("stating source subtitle sidecar: %w", err)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("source subtitle sidecar is not a regular file: %s", sourceSubtitle)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetSubtitle), 0o755); err != nil {
+		return fmt.Errorf("creating subtitle destination directory: %w", err)
+	}
+	if targetInfo, statErr := os.Lstat(targetSubtitle); statErr == nil && !targetInfo.Mode().IsRegular() {
+		return fmt.Errorf("destination subtitle sidecar is not a regular file: %s", targetSubtitle)
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("stating destination subtitle sidecar: %w", statErr)
+	}
+	return w.copyTransferSubtitle(ctx, sourceSubtitle, sourceInfo, transfer.SourceStore, targetSubtitle,
+		targetRoot, args.Store, transfer.MediaAssetID, transfer.CopyID)
+}
+
+func (w *StorageTransferWorker) copyTransferSubtitle(ctx context.Context, sourcePath string, sourceInfo os.FileInfo, sourceStore, targetPath, targetRoot, targetStore string, mediaAssetID, copyID int64) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("opening source subtitle sidecar: %w", err)
+	}
+	openedInfo, err := source.Stat()
+	if err != nil {
+		_ = source.Close()
+		return fmt.Errorf("stating opened subtitle sidecar: %w", err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, openedInfo) {
+		_ = source.Close()
+		return fmt.Errorf("source subtitle sidecar changed while opening")
+	}
+	tempPath := transferSubtitleTempPath(targetPath, mediaAssetID, copyID)
+	tempLock, _, err := fsink.LockTempFile(tempPath)
+	if err != nil {
+		_ = source.Close()
+		return fmt.Errorf("locking staged subtitle sidecar: %w", err)
+	}
+	defer func() { _ = tempLock.Close() }()
+	defer func() { _ = source.Close() }()
+	if err := tempLock.Chmod(0o644); err != nil {
+		return fmt.Errorf("setting staged subtitle permissions: %w", err)
+	}
+	if err := fsink.RemoveCheckpoint(tempPath); err != nil {
+		return fmt.Errorf("removing stale subtitle checkpoint: %w", err)
+	}
+	if err := tempLock.Truncate(0); err != nil {
+		return fmt.Errorf("truncating staged subtitle sidecar: %w", err)
+	}
+	temp, err := fsink.OpenFileFromLock(tempLock)
+	if err != nil {
+		return fmt.Errorf("opening staged subtitle writer: %w", err)
+	}
+	reader, err := w.transferSourceReader(ctx, sourceStore, source)
+	if err != nil {
+		_ = temp.Close()
+		return err
+	}
+	written, copyErr := io.CopyBuffer(temp, reader, make([]byte, 32*1024))
+	if copyErr != nil {
+		_ = temp.Close()
+		return fmt.Errorf("copying subtitle sidecar: %w", copyErr)
+	}
+	if written != sourceInfo.Size() {
+		_ = temp.Close()
+		return fmt.Errorf("subtitle sidecar size changed while copying: read=%d size=%d", written, sourceInfo.Size())
+	}
+	if err := ctx.Err(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("syncing staged subtitle sidecar: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("closing staged subtitle sidecar: %w", err)
+	}
+	if err := requireMediaStoreMarker(targetRoot, targetStore, "publishing transferred subtitle sidecar"); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return fmt.Errorf("publishing transferred subtitle sidecar: %w", err)
+	}
+	if err := fsink.SyncParentDir(targetPath); err != nil {
+		return fmt.Errorf("syncing directory after publishing subtitle sidecar: %w", err)
+	}
+	return nil
+}
+
+func transferSubtitleTempPath(targetPath string, mediaAssetID, copyID int64) string {
+	return filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d-subtitle", mediapath.StorageTransferTempFilePrefix, mediaAssetID, copyID))
+}
+
+func removeAbsentTransferSubtitle(targetRoot, targetStore, targetPath string) error {
+	if err := requireMediaStoreMarker(targetRoot, targetStore, "removing absent transferred subtitle sidecar"); err != nil {
+		return err
+	}
+	info, err := os.Lstat(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stating stale destination subtitle sidecar: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("stale destination subtitle sidecar is not a regular file: %s", targetPath)
+	}
+	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing stale destination subtitle sidecar: %w", err)
+	}
+	if err := fsink.SyncParentDir(targetPath); err != nil {
+		return fmt.Errorf("syncing directory after removing stale subtitle sidecar: %w", err)
+	}
 	return nil
 }
 

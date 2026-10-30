@@ -177,13 +177,24 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	trashCutoff := time.Now().Add(-trashRetention)
 	overlapCutoff := time.Now().Add(-transferOverlap)
 	var placementCandidates []store.MediaAssetCopyDeleteCandidate
+	var obsoletePendingTransferCandidates []store.MediaAssetCopyDeleteCandidate
 	var placementRules []byte
+	var transferFSStores []string
 	placementPending := make(map[int64]struct{})
-	if w.StorageTransfer != nil && len(w.StorageTransferPolicy.FSStoreNames()) > 1 {
+	if w.StorageTransfer != nil {
 		placementRules, err = w.StorageTransferPolicy.OriginalRulesJSON()
 		if err != nil {
 			return fmt.Errorf("encoding storage placement policy: %w", err)
 		}
+		transferFSStores = w.StorageTransferPolicy.FSStoreNames()
+		obsoletePendingTransferCandidates, err = w.StorageTransfer.ListObsoletePendingMediaAssetTransferCopies(
+			ctx, placementRules, transferFSStores, w.StorageTransferPolicy.Derived, deleteReconcileRowLimit,
+		)
+		if err != nil {
+			return fmt.Errorf("listing obsolete pending transfer copies: %w", err)
+		}
+	}
+	if w.StorageTransfer != nil && len(transferFSStores) > 1 {
 		placementCandidates, err = w.StorageTransfer.ListMediaAssetCopiesToDelete(
 			ctx, placementRules, w.StorageTransferPolicy.Derived, transferOverlap.Microseconds(), deleteReconcileRowLimit,
 		)
@@ -235,7 +246,8 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	if err != nil {
 		return err
 	}
-	if w.StorageTransfer != nil && len(w.StorageTransferPolicy.FSStoreNames()) > 1 {
+	candidates.obsoletePendingTransfer = obsoletePendingTransferCandidates
+	if w.StorageTransfer != nil && len(transferFSStores) > 1 {
 		placementCandidates, err = w.StorageTransfer.ListMediaAssetCopiesToDelete(
 			ctx, placementRules, w.StorageTransferPolicy.Derived, transferOverlap.Microseconds(), deleteReconcileRowLimit,
 		)

@@ -115,6 +115,12 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCa
 	for _, a := range c.placement {
 		w.deletePlacementCopy(ctx, a)
 	}
+	for _, candidate := range c.obsoletePendingTransfer {
+		if ctx.Err() != nil {
+			return
+		}
+		w.reclaimObsoletePendingTransferCopy(ctx, candidate)
+	}
 	for _, relPath := range c.agedOrphans {
 		// ctx 死亡後は残りを打ち切る（DeleteOrphanFile 1 件ごとに
 		// deleteOrphanCleanupTimeout を待ち切って進むと、DB が詰まった状態では
@@ -176,6 +182,12 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		log.Error("delete_reconcile: removing stale placement copy", "err", err)
 		return
 	}
+	if candidate.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(candidate.RelPath) {
+		if err := removeEncodedSubtitleSidecar(w.MediaDir, w.MediaStoreName, candidate.RelPath, "unlinking stale placement subtitle sidecar"); err != nil {
+			log.Error("delete_reconcile: removing stale placement subtitle sidecar", "err", err)
+			return
+		}
+	}
 	if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Error("delete_reconcile: syncing directory after placement unlink", "err", err)
 		return
@@ -194,6 +206,127 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		metrics.DeleteReconcileBytes.WithLabelValues("placement").Add(float64(candidate.SizeBytes))
 		log.Info("delete_reconcile: deleted stale placement copy")
 	}
+}
+
+// reclaimObsoletePendingTransferCopy retires an unpublished transfer reservation after its
+// current placement has changed. It takes the same path lock as transfer before locking DB rows.
+func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate) {
+	log := slog.With("media_asset_id", candidate.MediaAssetID, "media_asset_copy_id", candidate.CopyID,
+		"store", candidate.Store, "rel_path", candidate.RelPath, "source", "pending_transfer_reclaim")
+	if ctx.Err() != nil {
+		return
+	}
+	if w.StorageTransfer == nil || candidate.Store != w.MediaStoreName {
+		log.Error("delete_reconcile: cannot reclaim pending transfer copy outside this worker's store")
+		return
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming obsolete pending transfer copy"); err != nil {
+		log.Warn("delete_reconcile: withholding pending transfer reclaim because the store marker did not match", "err", err)
+		return
+	}
+	path, err := mediapath.Resolve(w.MediaDir, candidate.RelPath)
+	if err != nil {
+		log.Error("delete_reconcile: rejecting pending transfer rel_path outside the media directory", "err", err)
+		return
+	}
+	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, candidate.RelPath)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Error("delete_reconcile: acquiring filesystem lock before pending transfer reclaim", "err", err)
+		}
+		return
+	}
+	if fileLock != nil {
+		defer func() { _ = fileLock.Close() }()
+	}
+	rules, err := w.StorageTransferPolicy.OriginalRulesJSON()
+	if err != nil {
+		log.Error("delete_reconcile: encoding current transfer policy for pending reclaim", "err", err)
+		return
+	}
+	beforeMediaAssetUnlink(candidate.RelPath)
+	fsStores := w.StorageTransferPolicy.FSStoreNames()
+	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
+		ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
+		func() error {
+			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending transfer copy"); err != nil {
+				return err
+			}
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("removing pending transfer destination: %w", err)
+			}
+			if candidate.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(candidate.RelPath) {
+				if err := removeEncodedSubtitleSidecar(w.MediaDir, w.MediaStoreName, candidate.RelPath, "unlinking pending transfer subtitle sidecar"); err != nil {
+					return err
+				}
+			}
+			tempPath := filepath.Join(filepath.Dir(path), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, candidate.MediaAssetID, candidate.CopyID))
+			if err := removeTransferTempUnderPathLock(tempPath); err != nil {
+				return fmt.Errorf("removing pending transfer temp and checkpoint: %w", err)
+			}
+			subtitleTempPath := transferSubtitleTempPath(path, candidate.MediaAssetID, candidate.CopyID)
+			if err := removeTransferTempUnderPathLock(subtitleTempPath); err != nil {
+				return fmt.Errorf("removing pending transfer subtitle temp: %w", err)
+			}
+			if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("syncing pending transfer directory: %w", err)
+			}
+			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking obsolete pending transfer copy deleted"); err != nil {
+				return err
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		log.Error("delete_reconcile: reclaiming obsolete pending transfer copy", "err", err)
+		return
+	}
+	if reclaimed {
+		metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim").Inc()
+		log.Info("delete_reconcile: reclaimed obsolete pending transfer copy")
+	}
+}
+
+func removeEncodedSubtitleSidecar(mediaDir, storeName, relPath, operation string) error {
+	sidecarRelPath, err := mediapath.SubtitleSibling(relPath)
+	if err != nil {
+		return fmt.Errorf("building encoded subtitle sidecar path: %w", err)
+	}
+	sidecarPath, err := mediapath.Resolve(mediaDir, sidecarRelPath)
+	if err != nil {
+		return fmt.Errorf("resolving encoded subtitle sidecar path: %w", err)
+	}
+	if err := requireMediaStoreMarker(mediaDir, storeName, operation); err != nil {
+		return err
+	}
+	info, err := os.Lstat(sidecarPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stating encoded subtitle sidecar: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("encoded subtitle sidecar is not a regular file: %s", sidecarPath)
+	}
+	if err := os.Remove(sidecarPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing encoded subtitle sidecar: %w", err)
+	}
+	if err := fsink.SyncParentDir(sidecarPath); err != nil {
+		return fmt.Errorf("syncing directory after encoded subtitle sidecar removal: %w", err)
+	}
+	return nil
+}
+
+func removeTransferTempUnderPathLock(path string) error {
+	tempLock, err := fsink.LockExistingTempFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("locking transfer temp before removal: %w", err)
+	}
+	if tempLock != nil {
+		defer func() { _ = tempLock.Close() }()
+	}
+	return fsink.RemoveTemp(path)
 }
 
 // deleteMediaAsset は 1 コピーを冪等な 3 段階（active → deleting → unlink →

@@ -294,6 +294,63 @@ WITH discarded AS (
 DELETE FROM media_asset_transfer_attempts t USING discarded d
 WHERE t.copy_id = d.id;
 
+-- Only reclaim a pending transfer after the current policy has made the
+-- reservation obsolete. Keep failed transfers that are still desired intact.
+-- name: ListObsoletePendingMediaAssetTransferCopies :many
+SELECT c.id AS copy_id, a.id AS media_asset_id, c.store, c.rel_path,
+       c.state, a.size_bytes, a.kind, c.generation
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+WHERE c.store = sqlc.arg('store_name')
+  AND c.state = 'pending'
+  AND storage_transfer_pending_copy_obsolete(
+      c.id,
+      sqlc.arg('original_rules')::jsonb,
+      sqlc.arg('fs_stores')::text[],
+      sqlc.arg('derived_store')::text
+  )
+ORDER BY c.id
+LIMIT sqlc.arg('row_limit');
+
+-- The caller holds the path flock before this row lock, matching transfer's
+-- filesystem-lock then transaction order.
+-- name: LockPendingMediaAssetTransferCopy :one
+SELECT c.id
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+JOIN recordings r ON r.id = a.recording_id
+WHERE c.id = sqlc.arg('copy_id')
+  AND c.store = sqlc.arg('store_name')
+  AND c.state = 'pending'
+FOR UPDATE OF r, a, c;
+
+-- Re-evaluate after the row locks have been acquired so a concurrent restore,
+-- generation advance, or placement change cannot be hidden by the candidate read.
+-- name: IsPendingMediaAssetTransferCopyObsolete :one
+SELECT storage_transfer_pending_copy_obsolete(
+    sqlc.arg('copy_id'),
+    sqlc.arg('original_rules')::jsonb,
+    sqlc.arg('fs_stores')::text[],
+    sqlc.arg('derived_store')::text
+)::boolean AS obsolete;
+
+-- name: MarkObsoletePendingMediaAssetTransferCopyDeleted :execrows
+UPDATE media_asset_copies c
+SET state = 'deleted', deleted_at = now()
+WHERE c.id = sqlc.arg('copy_id')
+  AND c.store = sqlc.arg('store_name')
+  AND c.state = 'pending'
+  AND storage_transfer_pending_copy_obsolete(
+      c.id,
+      sqlc.arg('original_rules')::jsonb,
+      sqlc.arg('fs_stores')::text[],
+      sqlc.arg('derived_store')::text
+  );
+
+-- name: DeleteMediaAssetTransferAttemptsForCopy :exec
+DELETE FROM media_asset_transfer_attempts
+WHERE copy_id = sqlc.arg('copy_id');
+
 -- Placement cleanup runs inside delete_reconcile. Its list and mark operations
 -- both reference the named predicate so the row lock closes the policy-switch race.
 -- name: ListMediaAssetCopiesToDelete :many

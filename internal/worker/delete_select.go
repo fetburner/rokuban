@@ -22,12 +22,13 @@ import (
 // deleteCandidateSet は 1 パスの新規物理削除対象。canonical 孤児は報告のみで含めない。
 // ブレーカーはソースを問わず削除対象だけを合計する。
 type deleteCandidateSet struct {
-	trash          []store.MediaDeleteAsset
-	untilEncoded   []store.MediaDeleteAsset
-	removedEncoded []store.MediaDeleteAsset
-	oldGeneration  []store.MediaDeleteAsset
-	placement      []store.MediaAssetCopyDeleteCandidate
-	agedOrphans    []string
+	trash                   []store.MediaDeleteAsset
+	untilEncoded            []store.MediaDeleteAsset
+	removedEncoded          []store.MediaDeleteAsset
+	oldGeneration           []store.MediaDeleteAsset
+	placement               []store.MediaAssetCopyDeleteCandidate
+	obsoletePendingTransfer []store.MediaAssetCopyDeleteCandidate
+	agedOrphans             []string
 }
 
 func (c deleteCandidateSet) total() int {
@@ -40,6 +41,11 @@ func (c deleteCandidateSet) total() int {
 		}
 	}
 	for _, row := range c.placement {
+		if row.CopyID > 0 {
+			seen[row.CopyID] = struct{}{}
+		}
+	}
+	for _, row := range c.obsoletePendingTransfer {
 		if row.CopyID > 0 {
 			seen[row.CopyID] = struct{}{}
 		}
