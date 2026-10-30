@@ -130,6 +130,17 @@ func pendingMediaAssetCopyMissingIfAbsent(ctx context.Context, q *sqlcgen.Querie
 	return fmt.Errorf("checking pending copy %q after skipped publish: %w", relPath, mapDatabaseError(err))
 }
 
+func stalePublishPlanAfterPendingCopyCheck(ctx context.Context, q *sqlcgen.Queries, storeName string, pending bool, relPath string) error {
+	err := pendingMediaAssetCopyMissingIfAbsent(ctx, q, storeName, pending, relPath)
+	if errors.Is(err, store.ErrPendingMediaAssetCopyMissing) {
+		return errors.Join(store.ErrStalePublishPlan, err)
+	}
+	if err != nil {
+		return err
+	}
+	return store.ErrStalePublishPlan
+}
+
 // ListAgedPendingMediaAssetCopies は、before より前に予約された pending の派生物コピーを返す。
 func (s *Media) ListAgedPendingMediaAssetCopies(ctx context.Context, before time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListAgedPendingMediaAssetCopies(ctx, sqlcgen.ListAgedPendingMediaAssetCopiesParams{

@@ -245,8 +245,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	}
 	plan := store.PlanEncodedPublish(in, state, true)
 	if plan.Stale {
-		return false, errors.Join(store.ErrStalePublishPlan,
-			pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath))
+		return false, stalePublishPlanAfterPendingCopyCheck(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	}
 	if plan.Skip {
 		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
@@ -263,8 +262,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		// 論理行の世代がこの公開より新しい。計画を立て直す。
-		return false, errors.Join(store.ErrStalePublishPlan,
-			pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath))
+		return false, stalePublishPlanAfterPendingCopyCheck(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	}
 	if err != nil {
 		return false, fmt.Errorf("upserting encoded media asset: %w", mapDatabaseError(err))
