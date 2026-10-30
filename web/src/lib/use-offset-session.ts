@@ -157,7 +157,6 @@ export function useOffsetSession({
   const onSourceRangeExitRef = useRef(onSourceRangeExit)
   const onRecordingPositionChangeRef = useRef(onRecordingPositionChange)
   const resumePlaybackPendingRef = useRef(false)
-  const startReassertPendingRef = useRef(false)
 
   // 開始意図の変更は、同じ LivePlayer を使い続けるライブ画面でも新しいセッションにする。
   // render 中に条件付きで同期し、effect が走る前の要求にも新しい offset を使う。
@@ -191,7 +190,6 @@ export function useOffsetSession({
     resumePlaybackPendingRef.current = Boolean(
       (video !== null && !video.paused) || resumePlaybackPendingRef.current,
     )
-    startReassertPendingRef.current = false
     // 同じ offset の 416 は state の URL だけでは変化しないため、その場で離脱を知らせて再要求する。
     if (activeRef.current && current.offsetSeconds === nextOffset && options.leaveSameOffset !== false) {
       onLeaveRef.current(nextOffset)
@@ -243,7 +241,6 @@ export function useOffsetSession({
     resumePlaybackPendingRef.current = Boolean(
       (video !== null && !video.paused) || resumePlaybackPendingRef.current,
     )
-    startReassertPendingRef.current = false
     updateState({ ...current, startRecordingSeconds: null, generation: current.generation + 1 })
   }, [restartAtRecordingSeconds, updateState, videoRef])
 
@@ -310,7 +307,6 @@ export function useOffsetSession({
     hasExplicitStart: currentState.explicit,
     sessionKey: `${currentState.identity}:${currentState.generation}`,
     resumePlaybackPendingRef,
-    startReassertPendingRef,
     restartAtOffset,
     retry,
     seek,

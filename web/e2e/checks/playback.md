@@ -2,9 +2,11 @@
 
 ### 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`）
 
-録画詳細を `#chase` で開き、実 H.264/AAC セグメントを返す成長中の EVENT playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HLS）で再生する。録画 API・追っかけ HLS・離脱 API は `page.route` で差し替えるため mirakc と実録画は要らない。次を実ブラウザで見る。
+追っかけ再生では、録画の進行に沿った位置と音声切替を実ブラウザで確認する。
 
-`pnpm e2e:chase` は `chase.mjs` の後に `chase-audio.mjs` も実行する。後者は ffmpeg で標準 / 主 / 副の rendition を含む EVENT master を作り、Chromium では WebAudio の左右周波数で切替を測る。各トラックを 15 秒聴いて戻った後も再生が進むこと、同じ master 形式での範囲内 seek・offset 張り直し・保存位置からの開始を確認する。WebKit では native `audioTracks` と再生継続を測る。
+録画詳細を `#chase` で開き、実 H.264/AAC セグメントを返す成長中の EVENT playlist を Chromium または Playwright WebKit の hls.js で再生する。録画 API・追っかけ HLS・離脱 API は `page.route` で差し替えるため mirakc と実録画は要らない。次を実ブラウザで見る。
+
+`pnpm e2e:chase` は `chase.mjs` の後に `chase-audio.mjs` も実行する。後者は ffmpeg で標準 / 主 / 副の rendition を含む EVENT master を作り、Chromium では WebAudio の左右周波数で切替を測る。各トラックを 15 秒聴いて戻った後も再生が進むこと、同じ master 形式での範囲内 seek・offset 張り直し・保存位置からの開始を確認する。WebKit も hls.js 経路で実行する。
 
 - 録画中の詳細ページから追っかけプレイヤーが開き、`<video>` に `controls` が無く、時間軸は操作バーのシークバー 1 本である
 - EVENT playlist がセグメントを増やしても再生位置は録画先頭から始まる
@@ -17,14 +19,14 @@
 - 保存済みの VOD 共通速度が追っかけの `<video>` に適用され、`ratechange` が同じ `localStorage` キーへ保存される
 - 成長後の playlist が `ENDLIST` になり、完了した録画を追える
 - **画質（プロファイル）の切替で再生位置が続く**（issue #874）。先頭再生と offset 付き再生の 2 通りを見る。**`LivePlayer` を `key={profile}` で作り直す変異で offset 付きが 1.5 秒 → 0 秒に巻き戻って落ちる**（先頭再生は保存位置が近いので差が出にくい）。あわせて切替が離脱ヒントを送らないこと・`?profile=` が要求に載ることも見る
-- **画質の切替の途中で「続きから」を別の位置で上書きしない**。途中で書かれた値をすべて記録して見る（最終値は切替後の seek で正しい値に戻るため）。2 秒未満は `removeItem` になるので、それも 0 として記録する。持ち越し中の保存ガードを外すと、WebKit では先頭再生で `0`、offset 4 秒の切替で `4` が書かれて落ちる。Chromium + hls.js では `timeupdate` が来ないので落ちない
+- **画質の切替の途中で「続きから」を別の位置で上書きしない**。途中で書かれた値をすべて記録して見る（最終値は切替後の seek で正しい値に戻るため）。2 秒未満は `removeItem` になるので、それも 0 として記録する。持ち越し中の保存ガードを外す変異で途中の位置が書かれることを確認する
 - **追っかけで見た位置から、完了後の VOD を開くと同じ位置 ± 3 秒から始まる**（⑧、issue #975 受け入れ 2）。追っかけの保存位置（スタブ API が保持）を読み、録画を完了に切り替えて `/recordings/1` を開き直し、原本 VOD の `currentTime` を比べる。**原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
 - **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から次に進んだ時刻までの最大停止時間を記録し、2 秒以下を判定する。再生を引き継がない変異は、範囲外 seek の `reselectPlaybackSource` へ `playing && false` を渡すものである。**停止 10073ms・`advances=0` になって落ちる**（Chromium で確認）。**再生元を替えない変異（`selected !== current.source` を `false &&` にする）で、offset を要求せず ⑩ の 4 判定が落ちる**（Chromium で確認）
 - **追っかけの終端（`ended`）では、別の再生元を作らず終了状態のまま止まる**（⑪・⑫）。追っかけの `ENDLIST` は mirakc の録画が終わった後にだけ付くので、終端は常に録画ファイルの終端である（`docs/api/media.md`）。fixture は伸びる EVENT playlist を 6 segment（12 秒）で止め、そこへ `ENDLIST` を付ける。壁時計の録画時間は 20 秒、原本 HLS fixture は 20 秒以上ある。⑪ は完了の取得の後に、⑫ は前に `ENDLIST` を付ける。**main の実装（壁時計の終端の 1.5 秒手前より前なら移る）で ⑪ が `sameVideo:false`・原本 HLS 要求 2 件になって落ちる**。**前回の実装（5 秒の許容と、完了の取得を待つ保留）では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。
 
   終端の 1 秒後の `ended` は判定に使わない。Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出し、`currentTime` を 0 に戻すことがある。13 回の実行の 26 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない。次のポスター判定は⑬
 
-`E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で経路が別なので、両方で回す。
+`E2E_BROWSER=webkit` では同じ hls.js 経路を Playwright WebKit で診断する。
 
 フィクスチャ生成に `ffmpeg` を使う。無い環境ではこの判定だけを skip として終了し、他の CI 判定を失敗扱いにしない。
 
@@ -56,7 +58,7 @@ E2E_VALIDATE_FIXTURES_ONLY=1 node e2e/live-player-modes.mjs
 
 Go テストで放送 TS に似せた MPEG-2 29.97 fps の fixture を作る。HLS は製品の `BuildOriginalVODFFmpegArgs`（offset 0 / 10 秒）で生成する。MP4 は製品の `BuildFFmpegArgs` と `config.example.yml` の h264 例で生成する。入力は先頭 PTS が 0 でない。音声を映像より約 700 ms 先に置く。不規則な間隔の9フレームに白い目印を入れ、位置で各フレームの ID を表す。期待時刻は、チャプターの軸である非カット MP4 を ffprobe して得た目印フレームの PTS とする。原本 TS の「目印 PTS - 最早 `start_time`」との差は参考値としてログにだけ出す。
 
-Chrome の hls.js と WebKit のネイティブ HLS の両方で、原本 HLS offset 0、シークで張り直した offset 10 秒、非カット MP4 を再生する。各目印の表示を画素で検出し、その時点の `requestVideoFrameCallback` の `mediaTime` を読む。offset 付き HLS は入力 seek と同じ 30000/1001 のフレーム格子上の起点を足して原本時間軸へ戻し、フレーム番号の順序と 1ms 以内の差を記録する。`E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1` を付けると期待値を 1 フレームずらす変異確認になる。
+Chrome と Playwright WebKit の hls.js 経路で、原本 HLS offset 0、シークで張り直した offset 10 秒、非カット MP4 を再生する。各目印の表示を画素で検出し、その時点の `requestVideoFrameCallback` の `mediaTime` を読む。offset 付き HLS は入力 seek と同じ 30000/1001 のフレーム格子上の起点を足して原本時間軸へ戻し、フレーム番号の順序と 1ms 以内の差を記録する。`E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1` を付けると期待値を 1 フレームずらす変異確認になる。
 
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
@@ -64,7 +66,7 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-tim
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 pnpm e2e:recording-playback-timeline
 ```
 
-この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。現在の合成 fixture では、非カット MP4 基準の差は Chromium + hls.js と WebKit native HLS の両方で、HLS offset 0 / 10 と MP4 の全目印が 0.00ms だった。
+この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。現在の合成 fixture では Chromium + hls.js の全目印が 1ms 以内で一致した。WebKit + hls.js の再測定は未実施である。
 
 比較の許容差は半フレームではなく 1ms である。原本 HLS は B フレームを無効にし、`-ss` と再生軸を同じフレーム格子へ揃える。offset 10 秒の起点は 9.976633 秒なので、整数の 10 秒を足すと 23.37ms ずれる。表の再生時刻比較と編集モードの境界操作は別の判定であり、スクリプト全体の終了状態には両方が含まれる。この合成 fixture はソフトウェア libx264 に限る。実録画（GR/BS）とハードウェアエンコーダーは未測定である。測定条件と差の内訳は [`docs/frontend/recordings.md`](../../../docs/frontend/recordings.md) に記録している。
 
@@ -88,6 +90,7 @@ FFmpeg で MPEG-2 TS と H.264/AAC HLS の fixture を作り、録画 API と st
 - ⑨: 保存位置 12 秒が 8 秒の EVENT playlist の先端より先にあっても、最初に offset 12 を開いて約 12 秒の位置に到達する。
 - ⑩: 保存位置 61 秒が映像の終端（58.5 秒）より先でも、416 の後退丸めで端の近くから読み込む。
 - ⑪: 保存位置より前への巻き戻しは、その秒の offset で張り直す。
+- ⑫-a: 変換中 EVENT playlist の `<video>.duration` が有限でも、数字キー `9` は固定した録画尺から 14.4 秒を選び、`offset/14/playlist.m3u8` を要求する。Chrome 156 では最初の 4 segment を読んだ時点の duration が 8 秒だった。判定は `recording-original-vod.mjs` の「⑫-a」である。
 
 直す前の実装（offset 0 に保存位置を渡す）では、⑨ ⑩ ⑪（Chromium・WebKit）と ⑧（WebKit）が落ちる。
 
@@ -107,41 +110,6 @@ E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
 E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 ```
-
-### 世代付き録画 HLS の遠くへのシーク後の停滞復旧（`recording-hls-stall-recovery.mjs`）
-
-遠くへシークした先のセグメントが遅れて届いても、実 Safari で動画要素を作り直さずに再生が戻るかを測る。
-
-実 Safari で製品の録画詳細画面を開き、Go テストが製品の変換引数で作る `ts/restarted` fixture を再生する。シークは利用者と同じく、実ポインタ（W3C Actions）で操作バーのシークバーの 52 秒の位置を押す。シーク先のセグメントと続く 2 本は、最初の要求から 4 秒経つまで応答を保留する。取り直しの要求も同じ時刻まで待たせる。Safari は届かない要求を約 3 秒で打ち切るので、セグメントが届く前にネイティブ HLS が止まる。
-
-次を判定する。
-
-- シークバーを押した時刻（`pointerdown`）から 10 秒以内に、`currentTime` がシーク先から 250 ms 以上進み、再生中になる
-- `<video>` 要素が最初と同じで、エラー表示が出ない
-- シーク先のセグメントの応答を 4 秒以上保留した（要求ログで見る。遅延が効かないまま合格するのを防ぐ）
-- シーク先より 500 ms 以上前の位置を続きからの位置（`PUT /playback-position`）へ書かない
-
-結果には、製品が読み直したか（同じ `<video>` で `loadstart` が起きたか）、製品の `play()` / `pause()` / `load()` の呼び出し回数、メディアイベントの時系列を出す。読み直さずに通った回（Safari の自力回復）は OK のまま `読み直しなし` と記録して区別する。
-
-一時停止の回を 3 つ足す。うち 2 つは、シーク後に `waiting` が出たところで、利用者の操作で一時停止する。1 回目は操作バーの一時停止ボタン、2 回目は製品が `navigator.mediaSession` に登録した pause ハンドラをページから呼ぶ。8 秒待って、読み直さず、一時停止のまま、シーク先から進まないことを見る。ハンドラは `MediaSession.prototype.setActionHandler` を製品の登録より前に包んで取る。ここで押す pause は OS のメディアキーそのものではない。
-
-3 つ目は、シークせずに再生中の要素の `pause()` をページから直接呼び、製品を通らない一時停止（PiP・ネイティブの操作・OS の中断）を起こす。WebKit はこの後も `stalled` を出すので、8 秒の間に `stalled` が出て、読み直さず、製品の `play()` も呼ばれないことを見る。`stalled` が出なかった回は、何も試していないので NG にする。
-
-シークバーを押してもシークが始まらなかった回は、製品の NG と区別して「判定スクリプト側」の NG として出す。ポインタは前の回と同じ座標へ動かしても `mousemove` が出ず、操作バーが出ないまま押してしまうので、一度ずらしてから戻す。
-
-```sh
-corepack pnpm build
-E2E_REPEAT_COUNT=5 corepack pnpm e2e:recording-hls-stall-recovery
-```
-
-実測（Safari 27.0.1）。
-
-- 直す前（main）では、シークが始まった 3 回すべてが落ちた。`waiting` の後、位置はシーク先のまま 10 秒動かず、読み直しも起きない。残りの 2 回は判定スクリプト側で落ちた（初回再生の開始と、シークバーの押下）
-- 直した実装では、シークが始まった 9 回すべてが通り、すべて製品が読み直した（`load()` 1 回、`pause()` 0 回）。`waiting` の約 5 秒後に `emptied` → `loadstart`、約 0.2 秒後に `playing` になる。続きからの位置の書き込みはシーク先（51956 ms）だけである。ほかに判定スクリプト側の NG が 1 回（シークバーの押下）と、WebDriver 自体のエラー（要素が見つからない・スクリプトの実行が時間切れ）で中断した実行が 2 回あった
-- 読み直した後に元の位置へ戻すシークが、15 回中 1 回終わらなかった。再開待ちの paused のまま 15 秒 `seeking` が続き、`waiting` / `stalled` は出なかった。再開待ちの間の `seeking` からも 5 秒を数えるようにした後は、この形の NG は出ていない
-- 一時停止の 3 種類（操作バー・mediaSession・製品を通らない一時停止）は、`loadstart` が起きず、一時停止のままだった。製品を通らない一時停止では、`pause` の約 2.1 秒後と約 6.3 秒後に `stalled` が出る
-- 起動を外す変異（5 秒タイマーを張らない）では、10 秒以内に再開できず落ちた（1 回）。一時停止の判定を外す変異では、操作バーと mediaSession の 2 回とも落ちた。8 秒の間に読み直し、一時停止が解けて再生が進む。「再生中か再開待ちのときだけ数える」条件を外す変異では、製品を通らない一時停止の回が落ちた（約 7.1 秒で読み直して再生が始まる）
-- 止まっている最中に Safari が自分で `pause` を出す回は、この判定でも観測した（製品の `pause()` 0 回で、シーク後約 4.2 秒）
 
 ### 録画 HLS の再起動境界（`recording-segmented-vod.mjs`）
 
@@ -184,7 +152,7 @@ hls.js は、各トラックの先頭の DTS の最小を起点にする（`node
 判定は 6 つある。
 
 - 再生が止まらない。再生中に `currentTime` が 500 ms 以上進まない回数を数える。シーク後に時刻が進むまでは数えない
-- 境界の ±0.5 秒で、焼いたフレーム番号が `mediaTime` と、`mediaTime` が `currentTime` と、それぞれ ±1 フレームで一致する。不一致は 1 枚でも落とす。ネイティブ HLS だけ、`mediaTime` と `currentTime` の許容を 2 フレームにする
+- 境界の ±0.5 秒で、焼いたフレーム番号が `mediaTime` と、`mediaTime` が `currentTime` と、それぞれ ±1 フレームで一致する。不一致は 1 枚でも落とす
 - 内容が壁時計に対して飛ばず、戻らず、止まらない。連続する frame callback の間で、フレーム番号の進みが表示時刻の差 × 29.97 + 3 を超えない。callback の間隔が 250 ms を超えない。境界の ±0.5 秒に 20 枚以上が描かれる。`currentTime` ごと内容が飛ぶブラウザでは、marker・`mediaTime`・`currentTime` が一致したままになるので、この判定でしか見えない
 - 境界の ±0.8 秒で、AudioWorklet が 128 サンプル（48 kHz なら約 2.7 ms）ごとの左右 RMS を全サンプルについて求め、無音が 2 回続かない。標準音声の周波数が 440 Hz / 880 Hz のままである
 - 主・副・標準の切替で、WebAudio の左右周波数が変わる
@@ -199,9 +167,9 @@ hls.js が non-fatal で報告する次の 4 つは、内容の欠けか停止�
 - `audio-gap` は `[audio-gap]`
 - `stall` は `[stall]`
 
-`no-offset` は、Chrome の hls.js では境界を通して再生するだけでは検出できなかった。境界の ±0.5 秒は判定を通り、遠距離シークの後で着地が 48.6 秒になって `[seek-frame]` になり、`bufferAppendNoProgress` が出て再生が進まなかった（`[progress]`）。原因は調べていない。ほかの条件での挙動は未検証である。WebKit のネイティブ HLS では、境界の `[timecode]` と遠距離シークの `[seek-frame]` で検出した。
+`no-offset` は、Chrome の hls.js では境界を通して再生するだけでは検出できなかった。境界の ±0.5 秒は判定を通り、遠距離シークの後で着地が 48.6 秒になって `[seek-frame]` になり、`bufferAppendNoProgress` が出て再生が進まなかった（`[progress]`）。原因は調べていない。ほかの条件での挙動は未検証である。
 
-再生経路は、アプリと同じ問いで選ぶ。`web/src/lib/live.ts` の `supportsNativeHls` が真ならネイティブ HLS とする。この関数は、プレイリストの MIME と `video/mp2t` の `canPlayType` がどちらも空でないかを問う。偽で `Hls.isSupported()` が真なら hls.js とする。どちらを使ったかは実行ごとに出力する。hls.js の設定もアプリと同じである。
+再生経路は、アプリと同じ `Hls.isSupported()` の判定を使う。対応時は hls.js で再生し、非対応ならテストを失敗させる。実行ごとに経路を出力する。hls.js の設定もアプリと同じである。
 
 ```sh
 cd web
@@ -247,31 +215,16 @@ corepack pnpm e2e:recording-segmented-vod
 
 #### ブラウザごとの違い
 
-Chrome は Google Chrome を hls.js で判定する。ここでは上の判定をすべて回す。
-
-WebKit は診断用である。Playwright の WebKit はネイティブ HLS を選ぶ。ネイティブ HLS では次を省くか、扱いを変える。
-
-- 音声の周波数と無音は省く。ネイティブ HLS の音声が WebAudio に届かない。主・副の切替は `audioTracks` の選択と再生継続だけを見る。`audio-gap` と `stall` の負例は回さない
-- シーク前の要求は省く。先読みを hls.js の設定ではなくブラウザが決める。実行の出力の「省略:」に残す
-
-`off-grid` は、ネイティブ HLS では境界で約 1 秒フレームが描かれなくなり、その間の内容（12〜13 秒）は表示されない。止まったうえで内容が飛ぶ。`[frame-freeze]` と境界のフレーム数で検出する。
-
-実 Safari は `safaridriver` を通して判定する。ネイティブ HLS として上の扱いになり、音声の継ぎ目は判定しない。音声の継ぎ目は Chrome で判定する。継ぎ目のずれはセグメントのデータの側にあり、Safari も同じセグメントを再生するためである。Safari にしか出ない音声の不具合は、この判定では見つからない。Safari の「開発」メニューの「リモートオートメーションを許可」を有効にするか、`safaridriver --enable` を一度実行する。
-
-Safari のケースは別々の自動テスト用ウインドウで回し、次へ進む前に前の検証ウインドウを閉じる。Safari 27.0.1 で `E2E_CASES=ts/direct,ts/restarted` を同じウインドウで回すと、2 ケース目の開始操作が呼ばれなかった。別ウインドウでは両方が再生できた。AudioWorklet はクリックの前に読み込み、クリック内では `resume()` と `play()` を `await` より先に要求する。開始ボタンのイベント回数を数え、イベントが届かないときだけ 1 度再クリックする。再生の拒否や停滞は再試行しない。
-
-macOS 27.0.1 / Safari 27.0.1 でも、ネイティブ HLS の音声信号を WebAudio で取得できなかった。TS と fMP4 の `direct`・`restarted` は、映像と音声トラックの選択の判定が通った。負例の `off-grid`・`no-offset` は期待どおりに検出した。
-
-セッション作成のタイムアウトでは、Safari を終了し、閉じたまま判定する。上記の環境では手動起動後にセッション作成で止まったが、ドライバー自身が Safari を起動すると実行できた。
+Chrome と Playwright WebKit は、どちらも `Hls.isSupported()` が真なら hls.js で再生する。WebKit は hls.js 経路の診断用で、Safari / iPhone は確認対象にしない。ブラウザごとの測定差は、この E2E を hls.js 経路で実行してから記録する。
 
 
 ### S3 の署名付き URL への 302（`s3-302.mjs`）
 
-rokuban が S3 の署名付き URL へ 302 で飛ばした動画を、実 Chrome と実 Safari で測る。測るのは Range 要求の宛先・署名の期限切れ・字幕・シークと再開位置である。
+rokuban が S3 の署名付き URL へ 302 で飛ばした動画を、実 Chrome と Playwright WebKit で測る。測るのは Range 要求の宛先・署名の期限切れ・字幕・シークと再開位置である。
 
 fixture が再現するのは配信の条件である。ローカルの MinIO に 90 秒の H.264 MP4 と WebVTT を置き、fixture のリダイレクターが署名付き URL へ 302 を返す。S3 宛ての要求は別 port のプロキシが MinIO へ転送し、要求先・Range・status を記録する。
 
-プロキシは動画の応答を、動画のビットレートの 3 倍の速度に絞る。絞らないと Safari が 12 MB の fixture をまるごと先読みし、シークがキャッシュから返って Range 要求が出ない。シークの直前に `video.buffered` がシーク先を含んでいれば、測定の前提が崩れた旨の失敗にする。
+プロキシは動画の応答を、動画のビットレートの 3 倍の速度に絞る。絞らないとブラウザが fixture をまるごと先読みし、シークがキャッシュから返って Range 要求が出ない可能性がある。シークの直前に `video.buffered` がシーク先を含んでいれば、測定の前提が崩れた旨の失敗にする。
 
 判定用ページは再開位置をブラウザ内に保存し、302 の後に読み込んだ動画で再生位置を復元する。製品のプレイヤーも `recording-player.tsx` の `onLoadedMetadata` で `currentTime` に代入して位置を戻すので、ブラウザから見た経路は同じである。プレイヤーの戻し方を変えたら、このページも見直す。これはブラウザの動作の測定で、製品 API の保存契約は対象外である。
 
@@ -290,22 +243,16 @@ MINIO_ROOT_USER=rokuban MINIO_ROOT_PASSWORD=rokuban-test-secret MINIO_API_CORS_A
 
 ```sh
 corepack pnpm e2e:s3-302                                # 実 Chrome
-E2E_BROWSER=safari corepack pnpm e2e:s3-302             # 実 Safari。設定は「録画 HLS の再起動境界」の「ブラウザごとの違い」
+E2E_BROWSER=webkit corepack pnpm e2e:s3-302            # Playwright WebKit 診断
 E2E_S3_DISABLE_CORS=1 corepack pnpm e2e:s3-302          # 字幕の CORS を壊す負例
 E2E_S3_VIDEO_TTL_SECONDS=2 corepack pnpm e2e:s3-302     # 動画の署名の期限を 2 秒にする負例
 ```
 
-負例の 2 つは、どちらも非 0 で終わる。落ちる判定は、前者が字幕の cue の読み込み、後者が通常の署名 URL でのシークである。Chrome の後者はシークが error で終わり、完了と 206 の判定が落ちる。Safari の後者はシークが 403 のまま完了するので、206 の判定だけが落ちる。
+負例の 2 つは、どちらも非 0 で終わる。落ちる判定は、前者が字幕の cue の読み込み、後者が通常の署名 URL でのシークである。
 
 期限切れの判定は結果の記録で、良し悪しは決めない。結果は 3 つに分けて出力する。元の URL へ戻れば `refreshed-at-origin`、403 を受けて video が error を出せば `media-error`、403 を受けても error が無ければ `403-without-error` である。期限後の Range 要求・S3 の最終の応答・error かシークの完了のどれかが観測できないときは、失敗にする。3 つのどれにも当たらないときも失敗にする。
 
-Chrome 156.0.8078.48 と Safari 27.0.1 では、すべての判定が通る。どちらも、シークの Range 要求は署名付き URL へ届き、206 が返る。期限切れの結果は、Chrome が `media-error`（code 2）、Safari が `403-without-error` である。どちらも元の URL へは戻らない。
-
-Safari は 403 の本文（448 バイトの XML）を受けるたびに、次の Range の始点を 448 バイト進めて要求し直した。観測の時間を期限後 35 秒まで延ばした一時版では、約 7,900 本を出し、`buffered` は 90 秒まで伸び、再生は error 無しで終わりまで進んだ。このスクリプトの観測は 15 秒で打ち切るので、この値は再現しない。
-
-Safari 27.0.1 では、通常のシナリオの再生開始の待ちがときどき失敗する。`play` と `playing` の約 1 秒後に、ページが止めていないのに `pause` が来る。このとき `readyState` は 4 で、`waiting` も無い。通常の実行 5 回中 1 回で、この順序を記録した。前の版でも同じ待ちが 16 回中 1 回失敗したが、そのときの状態は記録していない。原因は分かっていない。再生の停滞は再試行しない決まりなので、この失敗は回し直して見分ける。失敗時の `Page state` の `mediaEvents` に、この順序が出る。
-
-CI の `browser-s3-302` は実 Chrome で回す。実 Safari では、macOS で上のコマンドを実行する。
+CI の `browser-s3-302` は実 Chrome で回す。Playwright WebKit はローカル診断用である。
 
 ### シークバーのプレビュー（`seek-tiles.mjs`）
 

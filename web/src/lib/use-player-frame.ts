@@ -17,9 +17,6 @@ type PlayerFrameOptions = {
   savePositionKey?: unknown
   getSubtitleTracks?: (video: HTMLVideoElement) => readonly TextTrack[]
   subtitleState?: unknown
-  /** 利用者の操作（操作バー・キー・映像のクリック）が `pause()` / `play()` を呼ぶ直前に呼ぶ。 */
-  onUserPause?: () => void
-  onUserPlay?: () => void
 }
 
 /**
@@ -50,8 +47,6 @@ export function usePlayerFrame(
     savePositionKey,
     getSubtitleTracks,
     subtitleState,
-    onUserPause,
-    onUserPlay,
   } = options
   const hasSavePosition = onSavePosition !== undefined
   const controlsTimerRef = useRef<number | undefined>(undefined)
@@ -68,8 +63,6 @@ export function usePlayerFrame(
   const seekToFractionRef = useRef(onSeekToFraction)
   const savePositionRef = useRef(onSavePosition)
   const getSubtitleTracksRef = useRef(getSubtitleTracks)
-  const userPauseRef = useRef(onUserPause)
-  const userPlayRef = useRef(onUserPlay)
   const originalSubtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
 
   useEffect(() => {
@@ -77,9 +70,7 @@ export function usePlayerFrame(
     seekToFractionRef.current = onSeekToFraction
     savePositionRef.current = onSavePosition
     getSubtitleTracksRef.current = getSubtitleTracks
-    userPauseRef.current = onUserPause
-    userPlayRef.current = onUserPlay
-  }, [getSubtitleTracks, onSavePosition, onSeekBy, onSeekToFraction, onUserPause, onUserPlay])
+  }, [getSubtitleTracks, onSavePosition, onSeekBy, onSeekToFraction])
 
   const hideLater = () => {
     controlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3000)
@@ -137,10 +128,8 @@ export function usePlayerFrame(
     const video = videoRef.current
     if (!video) return
     if (video.paused) {
-      userPlayRef.current?.()
       void video.play().catch(() => {})
     } else {
-      userPauseRef.current?.()
       video.pause()
     }
   }
@@ -261,10 +250,8 @@ export function usePlayerFrame(
       switch (key) {
         case ' ':
           if (video.paused) {
-            userPlayRef.current?.()
             void video.play().catch(() => {})
           } else {
-            userPauseRef.current?.()
             video.pause()
           }
           break
@@ -349,10 +336,8 @@ export function usePlayerFrame(
           return
         }
         if (event.currentTarget.paused) {
-          userPlayRef.current?.()
           void event.currentTarget.play().catch(() => {})
         } else {
-          userPauseRef.current?.()
           event.currentTarget.pause()
         }
       },

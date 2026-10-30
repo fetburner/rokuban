@@ -33,24 +33,18 @@ import type {
   LiveDiagnostics,
   LiveLoadError,
   StallHandling,
-  RecordingHlsRecovery,
   StallTracker,
 } from '@/lib/live'
 import {
-  claimsHlsPlaylistSupport,
   chasePlaylistURL,
   createStallTracker,
   liveAudioTrackIndex,
   livePlaylistURL,
-  liveStallTimeoutMs,
   originalVODPlaylistURL,
   observeStall,
-  nextRecordingHlsRecovery,
   probeLivePlaylist,
-  recordingHlsRecoveryTimeoutMs,
   readSubtitleVisibility,
   sendPlaybackLeaveHint,
-  supportsNativeHls,
 } from '@/lib/live'
 import {
   applyPlaybackRate,
@@ -174,7 +168,6 @@ type HlsLike = {
  */
 function readHlsDiagnostics(hls: HlsLike): LiveDiagnostics {
   return {
-    source: 'hls',
     latencySec: hls.latency > 0 ? hls.latency : null,
     bufferSec:
       hls.mainForwardBufferInfo && Number.isFinite(hls.mainForwardBufferInfo.len)
@@ -183,67 +176,11 @@ function readHlsDiagnostics(hls: HlsLike): LiveDiagnostics {
   }
 }
 
-/**
- * readNativeDiagnostics はネイティブ HLS 経路（Safari）の計器値を読む。
- *
- * ネイティブ経路には hls.js の `latency` に相当するものが無いので
- * `latencySec` は常に `null`（**測れないものを出さない**。issue #476）。
- * 「先読み」は `video.buffered` の末尾 - `currentTime` で近似する。
- */
-function readNativeDiagnostics(media: HTMLVideoElement): LiveDiagnostics {
-  const buffered = media.buffered
-  return {
-    source: 'native',
-    latencySec: null,
-    bufferSec:
-      buffered.length > 0 ? Math.max(0, buffered.end(buffered.length - 1) - media.currentTime) : null,
-  }
-}
-
-/**
- * applySubtitleVisibility は既にある字幕トラックの表示状態を揃える
- * （ネイティブ HLS 経路。issue #869 の画質切替）。
- *
- * hls.js 経路は `hls.subtitleDisplay` を使う（下の effect）。ネイティブ経路には
- * それに相当するつまみが無いので、`<video>` のトラックを直接触る。
- * `video.textTracks` が空（まだトラックが無い・配っていない）なら何もしない。
- */
-function applySubtitleVisibility(media: HTMLVideoElement, visible: boolean): void {
-  for (const track of Array.from(media.textTracks)) {
-    track.mode = visible ? 'showing' : 'disabled'
-  }
-}
-
-/**
- * NativeAudioTrackList は `video.audioTracks`（WebKit）の最小限の形。TS の lib.dom は
- * `AudioTrackList` を持たず、jsdom の `<video>` には属性自体が無い。
- */
-type NativeAudioTrackList = ArrayLike<{ enabled: boolean }> & {
-  addEventListener?: (type: string, listener: () => void) => void
-  removeEventListener?: (type: string, listener: () => void) => void
-}
-
-function nativeAudioTracks(media: HTMLVideoElement): NativeAudioTrackList | undefined {
-  return (media as unknown as { audioTracks?: NativeAudioTrackList }).audioTracks
-}
-
-/**
- * applyHlsAudioTrack / applyNativeAudioTrack は音声トラックを index に揃える
- * （issue #870）。トラックがまだ無い・足りない（音声レンディションを持たない
- * master）なら何もしない。**今と同じなら触らない** --- 切替をやり直させない。
- */
+/** applyHlsAudioTrack は音声トラックを index に揃える（issue #870）。 */
 function applyHlsAudioTrack(hls: HlsLike, index: number): void {
   if (index < hls.audioTracks.length && hls.audioTrack !== index) hls.audioTrack = index
 }
 
-function applyNativeAudioTrack(media: HTMLVideoElement, index: number): void {
-  const tracks = nativeAudioTracks(media)
-  if (!tracks || index >= tracks.length) return
-  for (let i = 0; i < tracks.length; i++) {
-    const enabled = i === index
-    if (tracks[i].enabled !== enabled) tracks[i].enabled = enabled
-  }
-}
 
 type LivePlayerCommonProps = {
   site: string
@@ -511,10 +448,9 @@ function observeMediaStall(
  * LivePlayer はライブ視聴の HLS プレイリストを再生する（M4-4）。
  *
  * 再生に先立ち `probeLivePlaylist` で 1 回プレイリストを取得し、成功したときだけ
- * `<video>` / hls.js に URL を渡す（`<video>` の `error` イベントは HTTP
- * ステータス・本文を運ばないため、事前確認でしか区別できない）。ネイティブ HLS
- * 対応（Safari）はそちらを使い、hls.js は動的 import で読み込む（バンドルサイズ、
- * issue #92 の着手時コメント参照）。
+ * hls.js に URL を渡す（hls.js のエラーイベントは HTTP ステータス・本文を運ばない
+ * ため、事前確認でしか区別できない）。ライブラリは動的 import にして、再生画面以外の
+ * 初期バンドルに含めない。
  *
  * チャンネル切り替えは呼び出し側が `serviceId` を変えて渡す（`key` での再マウントを
  * 前提にしない --- effect の cleanup で確実に破棄する）。破棄すると即座にセグメント
@@ -599,7 +535,6 @@ export function LivePlayer(props: LivePlayerProps) {
     getAppliedRecordingSeconds,
     getStartPositionSeconds,
     resumePlaybackPendingRef,
-    startReassertPendingRef,
     retry: retryOffsetSession,
   } = useOffsetSession({
     active: isOffsetRecordingPlayback,
@@ -633,9 +568,6 @@ export function LivePlayer(props: LivePlayerProps) {
   const activePlaybackRate = chapterEditing ? chapterEditPlaybackRate : playbackRate
   const saveActivePlaybackRate = chapterEditing ? saveChapterEditPlaybackRate : savePlaybackRate
   const setActivePlaybackRate = chapterEditing ? setChapterEditPlaybackRate : setPlaybackRate
-  const [nativeHlsEventPlaylist, setNativeHlsEventPlaylist] = useState(false)
-  const nativeHlsRef = useRef(false)
-  const nativeHlsEventRef = useRef(false)
   const playbackRateRef = useRef(playbackRate)
   const saveActivePlaybackRateRef = useRef(saveActivePlaybackRate)
   const setActivePlaybackRateRef = useRef(setActivePlaybackRate)
@@ -747,16 +679,9 @@ export function LivePlayer(props: LivePlayerProps) {
   // Chromium と WebKit の両方で音量・ミュートは既定に戻らない。
   //
   // **字幕は違う。** hls.js は新しいマニフェストを読むと字幕トラックの選択を
-  // 既定に戻す（下の effect のコメント参照）。WebKit のネイティブ経路も、src を
-  // 差し替えるとトラックを作り直して既定（非表示）に戻す。effect の cleanup
-  // （= 切替の直前）で読み、次の setup で戻す。
-  // **両経路とも実ブラウザで実測済みである**（`web/e2e/live.mjs` の ⑩ は
-  // hls.js 経路の「切ったまま」、⑩-WebKit はネイティブ経路の「入にしたまま」を見る）。
+  // 既定に戻す（下の effect のコメント参照）。effect の cleanup（= 切替の直前）で
+  // 読み、次の setup で戻す。
   const preservedState = useRef<{ subtitles: boolean | null; playing: boolean; recordingId?: number } | null>(null)
-  // 一度でもこの LivePlayer で再生が始まったか。画質切替後の新しい watcher が
-  // `paused` に戻った video を「利用者が一時停止した」と誤読しないため、effect を
-  // 跨いで持つ（自動降格は cleanup → setup を起こす）。
-  const startedOnceRef = useRef(false)
   // 追っかけの再生位置を画質の切替で持ち越す（issue #874）。
   //
   // **画質の切替は位置の基準を変えない。** 追っかけのセッション鍵は
@@ -774,11 +699,8 @@ export function LivePlayer(props: LivePlayerProps) {
   const lastChasePositionRef = useRef<number | null>(null)
   const lastChaseInputsRef = useRef<string | null>(null)
   // 持ち越した位置へまだ戻し終えていない間の、その位置。**この間は位置を保存
-  // しない** --- WebKit（ネイティブ経路）では切替の途中に位置 0 の `timeupdate`
-  // が届き、保存すると「続きから」が 0（offset 付きなら offset）で上書きされる
-  // （`web/e2e/chase.mjs` ⑦ を WebKit で回し、ガードを外すと offset 4 秒の
-  // 切替で `4` が書かれた。Chromium + hls.js では `emptied` だけで
-  // `timeupdate` は来なかった）。
+  // しない** --- ソースの張り直し中に位置 0 の `timeupdate` が届くと、保存位置を
+  // 0（offset 付きなら offset）で上書きするため、再生可能になるまでは書き込みを止める。
   const chaseResumePending = useRef<number | null>(null)
   // 今の読み込みが `loadedmetadata` に届いたか。**届く前の要素の位置（0）は
   // 持ち越さない** --- probe 中（ffmpeg の起動待ちで最長 15 秒）に切り替えると、
@@ -790,8 +712,8 @@ export function LivePlayer(props: LivePlayerProps) {
    * 原本 VOD の playlist が ENDLIST まで書かれたか。変換中の EVENT playlist の
    * `video.duration` は変換の先端でしかないので、これが true になるまで
    * 「終端付近」の判定に duration を渡さない（渡すと先端付近で位置が消える）。
-   * 信号は hls.js の LEVEL_LOADED の `details.live === false`（ENDLIST あり）と、
-   * ネイティブ HLS を含む `ended` イベント。ネイティブ経路は ENDLIST を直接見られない。
+   * 信号は hls.js の LEVEL_LOADED の `details.live === false`（ENDLIST あり）と
+   * `ended` イベントである。
    */
   const originalVODFinalized = useRef(false)
   const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
@@ -817,20 +739,6 @@ export function LivePlayer(props: LivePlayerProps) {
     void persistPlaybackPosition(recordingId, write, keepalive)
   }, [isOriginalPlayback, mode, originalDurationSeconds, recordingId, sessionStartSeconds])
 
-  // 利用者が操作で一時停止したか。**`media.paused` の代わりに、世代付き録画 HLS の 5 秒の
-  // 読み直しだけが読む。** 実 Safari は止まっている最中に自分で `pause` を出した
-  // （Safari 27.0.1。`currentTime` を直接代入したシークで 3 回中 3 回、実ポインタでシークする
-  // `recording-hls-stall-recovery.mjs` でも観測）ので、`paused` は利用者の意図を表さない。
-  // 操作バー・キー・映像のクリック・mediaSession の pause が立て、再生操作が消す。
-  const userPausedRef = useRef(false)
-  const markUserPause = useCallback(() => {
-    userPausedRef.current = true
-  }, [])
-  const markUserPlay = useCallback(() => {
-    userPausedRef.current = false
-  }, [])
-  // 世代付き録画 HLS を読み直した回数と位置。effect を跨いで持つので、画質切替を挟んでも続く。
-  const recordingHlsRecoveryRef = useRef<(RecordingHlsRecovery & { recordingId: number | undefined }) | null>(null)
   // Shared frame behavior lives here. The playback source supplies its own seek semantics and
   // HLS subtitle-track classification; live has no seek callbacks and chase has no ratio seek.
   const frame = usePlayerFrame(videoRef, frameRef, undefined, {
@@ -854,8 +762,6 @@ export function LivePlayer(props: LivePlayerProps) {
     savePositionKey: `${mode}:${recordingId}:${sessionStartSeconds}:${offsetSessionKey}`,
     getSubtitleTracks: hlsSubtitleTracks,
     subtitleState: originalSubtitlesEnabled,
-    onUserPause: markUserPause,
-    onUserPlay: markUserPlay,
   })
   const { setMediaPlaying } = frame
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -895,31 +801,6 @@ export function LivePlayer(props: LivePlayerProps) {
     clearLegacyPlaybackPositions()
   }, [])
 
-  // 別の録画へ替わったら、前の録画の一時停止の意図と読み直しの回数を持ち越さない。
-  useEffect(() => {
-    userPausedRef.current = false
-    recordingHlsRecoveryRef.current = null
-  }, [recordingId])
-
-  // OS のメディアキー・イヤホンの操作も、操作バーと同じく利用者の一時停止として数える。
-  // 世代付き録画 HLS の間だけ登録し、離れたら外す。
-  useEffect(() => {
-    if (!isRecordingHLS || !('mediaSession' in navigator)) return undefined
-    const session = navigator.mediaSession
-    session.setActionHandler('pause', () => {
-      markUserPause()
-      videoRef.current?.pause()
-    })
-    session.setActionHandler('play', () => {
-      markUserPlay()
-      void videoRef.current?.play().catch(() => {})
-    })
-    return () => {
-      session.setActionHandler('pause', null)
-      session.setActionHandler('play', null)
-    }
-  }, [isRecordingHLS, markUserPause, markUserPlay, videoRef])
-
   useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
 
   useEffect(() => {
@@ -944,7 +825,6 @@ export function LivePlayer(props: LivePlayerProps) {
     audioRef.current = playbackAudio
     const index = liveAudioTrackIndex(playbackAudio)
     if (hlsRef.current) applyHlsAudioTrack(hlsRef.current, index)
-    else if (videoRef.current) applyNativeAudioTrack(videoRef.current, index)
   }, [playbackAudio])
 
   useEffect(() => {
@@ -953,28 +833,20 @@ export function LivePlayer(props: LivePlayerProps) {
     setActivePlaybackRateRef.current = setActivePlaybackRate
   }, [activePlaybackRate, chapterEditing, saveActivePlaybackRate, setActivePlaybackRate])
 
-  // VOD と追っかけ再生は端末共通の速度設定を使う。ENDLIST 前のネイティブ HLS は
-  // WebKit で倍速再生が停止するため、有限尺になるまで 1 倍へ一時的に固定する。
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const locked = isRecordingPlayback && nativeHlsRef.current && video.duration === Infinity
-    nativeHlsEventRef.current = locked
-    const rate = effectivePlaybackRate(activePlaybackRate, isRecordingPlayback, nativeHlsRef.current, video.duration)
+    const rate = effectivePlaybackRate(activePlaybackRate, isRecordingPlayback)
     const appliedRate = applyPlaybackRate(video, rate, saveActivePlaybackRate)
-    if (isRecordingPlayback && !locked && appliedRate !== activePlaybackRate) {
+    if (isRecordingPlayback && appliedRate !== activePlaybackRate) {
       playbackRateRef.current = appliedRate
       setActivePlaybackRate(appliedRate)
     }
-  }, [activePlaybackRate, chapterEditing, isRecordingPlayback, nativeHlsEventPlaylist, saveActivePlaybackRate, setActivePlaybackRate])
+  }, [activePlaybackRate, chapterEditing, isRecordingPlayback, saveActivePlaybackRate, setActivePlaybackRate, videoRef])
 
   useEffect(() => {
     let cancelled = false
     positionReportBlockedRef.current = false
-    nativeHlsRef.current = false
-    nativeHlsEventRef.current = false
-    // oxlint-disable-next-line react/set-state-in-effect -- 前の配信の EVENT 判定を新しい source へ持ち越さない
-    setNativeHlsEventPlaylist(false)
     // 切り替え・破棄が起きたら probe の fetch 自体を中断する。
     // `playlistStartupTimeout`（streamer 側、15 秒）ぶん in-flight のまま
     // 残さないため（レビュー #190 の指摘）。
@@ -997,10 +869,8 @@ export function LivePlayer(props: LivePlayerProps) {
         : null
     lastChaseInputsRef.current = recordingInputs
     originalVODFinalized.current = false
-    // 原本 VOD は開始位置を**どの経路でも**明示する（続きから・画質切替の持ち越し・張り直しの
-    // 端数のどれも無ければ 0）。offset のセッションは変換中の EVENT playlist で、WebKit の
-    // ネイティブ HLS は明示しないとライブ端の近くから始める（`recording-original-vod.mjs` ⑤-a。
-    // 再表明を外すと WebKit で 1.5 秒後に 17.4 秒だった）。
+    // 原本 VOD は開始位置を明示する（続きから・画質切替の持ち越し・張り直しの端数の
+    // どれも無ければ 0）。offset のセッションも同じ hls.js の設定で開始位置を揃える。
     // 追っかけも開始位置を明示したセッション（offset 付き・明示 0 秒）は同じ経路で 0 を明示する。
     const startAt = isRecordingHLS
       ? (resumePosition ?? recordingHlsStartSeconds ?? 0)
@@ -1032,6 +902,7 @@ export function LivePlayer(props: LivePlayerProps) {
     if (isRecordingPlayback && !resumePlaying) setMediaPlaying(false)
     // video / hls の外部再生状態と UI の loading/error 表示を同期する effect。
     // render 中に導出すると、再生開始・失敗イベントの境界を表現できない。
+    // oxlint-disable-next-line react/set-state-in-effect -- 別ソースの読込状態を setup ごとに初期化する
     setLoading(true)
     setError(null)
     onDiagnosticsRef.current?.(null)
@@ -1080,19 +951,8 @@ export function LivePlayer(props: LivePlayerProps) {
       teardown.push(() => video.removeEventListener('loadedmetadata', markLoaded))
     }
 
-    // 画質の切替で持ち越した位置へ戻す（issue #874）。**両経路とも `src` の
-    // 差し替えで位置が 0 に戻る**ので、`loadedmetadata` の時点で戻す。
-    // **`canplay` でもう一度戻す** --- WebKit のネイティブ経路は EVENT
-    // playlist を付けるとき、`loadedmetadata` で受け付けた位置を捨てて最新端を
-    // 選ぶことがある（追っかけの明示 0 秒もこの経路で戻す）。**画質切替の
-    // 経路でこの飛びが起きるかは未検証である** --- `chase.mjs` ⑦ の fixture は
-    // 切替の時点で ENDLIST 済みなので、WebKit で再表明を外しても落ちなかった。
-    // 既存の再表明と同じ防御として置いている。`loadedmetadata` と `canplay` の
-    // 間に利用者が動かした位置も、この再表明で戻る。
-    // iOS Safari は再生を始めるまで `canplay` を出さないことがあり、その間は
-    // 保存が止まる（止まっている間は位置も動かない。未検証）。hls.js 経路は
-    // `startPosition` で既に同じ位置にいるので、ずれていなければ触らない
-    // （同じ値の代入でも seek が走る）。戻し終えたら保存を再開する。
+    // 読み込み直しで持ち越した位置は、loadedmetadata の後に確認する。canplay で
+    // 位置を確定して保存を再開する前に、hls.js の startPosition とずれた場合だけ戻す。
     if (video && startAt !== null) {
       const apply = () => {
         if (!cancelled && Math.abs(video.currentTime - startAt) > 0.5) {
@@ -1111,252 +971,12 @@ export function LivePlayer(props: LivePlayerProps) {
           if (isRecordingHLS) reportPosition(startAt)
         }
       }
-      if (isOriginalPlayback || isChase) {
-        // 再生の開始経路（自動再開・▶・映像クリック・ネイティブ操作・メディアキー）を問わず、
-        // 最初の `playing` で開始位置を明示し直す。WebKit は canplay で受け付けた位置を、その後に
-        // 再生を始めるとライブ端へ動かす（`recording-original-vod.mjs` ⑤-d: 張り直した offset/31 を
-        // canplay で再開すると、2.5 秒後に 18.3 秒＝原本 49.2 秒。seeked を待ってから play() しても
-        // 同じだった）。利用者のシーク（seekRecording / commitRecordingSeek）が先なら触らない。
-        // 追っかけにも同じ再表明を掛けるが、追っかけで飛びが起きるかは未検証である（`chase.mjs` の
-        // offset playlist は ENDLIST 済みで、WebKit で再表明を外しても落ちなかった）。
-        startReassertPendingRef.current = true
-        const onPlaying = () => {
-          if (startReassertPendingRef.current) apply()
-          startReassertPendingRef.current = false
-        }
-        video.addEventListener('playing', onPlaying, { once: true })
-        teardown.push(() => video.removeEventListener('playing', onPlaying))
-      }
       video.addEventListener('loadedmetadata', apply, { once: true })
       video.addEventListener('canplay', settle, { once: true })
       teardown.push(() => {
         video.removeEventListener('loadedmetadata', apply)
         video.removeEventListener('canplay', settle)
       })
-    }
-
-    /**
-     * watchNativeMedia はネイティブ HLS 経路の失敗を表面化する。
-     *
-     * **probe が通ってもメディア層は死にうる**（プレイリストは 200 で返るが
-     * セグメントが 404 / 応答しない / 中身が壊れている）。probe は HTTP 層しか
-     * 見ないので、ここを聴かないと**永久に止まった黒いプレイヤー**になる ---
-     * 文言も読み込み表示も再読み込みボタンも出ない（レビュー #190 の 3 回目の
-     * 指摘。WebKit で実測された症状）。
-     *
-     * 聴く 2 種は WebKit での実測に基づく（`E2E_URL` のスタブに対して
-     * プレイリスト 200 + セグメント 404 / 応答しない / 壊れた中身の 3 通り）:
-     *
-     * | 壊し方 | 出るもの | `video.error` |
-     * |---|---|---|
-     * | セグメント 404 | `error`（+ 再生中なら `waiting`） | code 3 `Media failed to decode` |
-     * | セグメントが応答しない | `progress` → `stalled`（3.6 秒後） | null |
-     * | プレイリストの中身が壊れている | `progress` → `stalled`（3.6 秒後） | null |
-     *
-     * **`error` だけでは足りない**（下 2 つは error を出さない）し、`stalled` /
-     * `waiting` を即座に失敗と見なすのも誤り（正常なライブでも一時的に出る）。
-     * だから `error` は即時、`stalled` / `waiting` は
-     * `liveStallTimeoutMs` の猶予つきにする。
-     *
-     * **世代付き録画 HLS のネイティブ経路だけは、上の 12 秒より前に 5 秒で読み直す。**
-     * `waiting` / `stalled` から 5 秒たっても再生位置が進まなければ、`manualRetryGeneration` を
-     * 進め、画質切替と同じ張り直し（同じ `<video>` で `src` を外して `load()`、位置と再生の
-     * 引き継ぎ）を同じ画質のまま起こす。回数は位置で数える（`nextRecordingHlsRecovery`。
-     * 閾値・上限・位置の比較は `live.test.ts`、画面の動作は `live-player.test.tsx` の
-     * 「世代付き録画 HLS の停滞復旧」、実 Safari は `recording-hls-stall-recovery.mjs`）。
-     * 利用者の一時停止（`userPausedRef`）では読み直さない。`media.paused` は見ない。
-     *
-     * **猶予が満了したときは、まず画質の自動降格を試す**（`canDowngrade`。
-     * issue #871）。下げられるときは「このプロファイルが間に合っていない」ので
-     * 別のプロファイルで張り直し、下げられないときだけ今のエラー文言に落ちる。
-     *
-     * hls.js 経路には張らない --- あちらは `Hls.Events.ERROR` が同じ役目を持ち、
-     * MSE のバッファ制御で `waiting` が正常に何度も出るので、ここで拾うと
-     * 誤検知になる。
-     */
-    function watchNativeMedia(
-      media: HTMLVideoElement,
-      stopDiagnostics: () => void,
-      canDowngrade: boolean,
-      isResumePending: () => boolean,
-    ) {
-      let stallTimer: ReturnType<typeof setTimeout> | null = null
-      let recoveryTimer: ReturnType<typeof setTimeout> | null = null
-      let recoveryFrom = 0
-      let lastProgressTime = media.currentTime
-      const clearRecoveryTimer = () => {
-        if (recoveryTimer !== null) {
-          clearTimeout(recoveryTimer)
-          recoveryTimer = null
-        }
-      }
-      const startRecoveryTimer = () => {
-        if (!isRecordingHLS) return
-        // 張り直しの間は `load()` で 0 になった `currentTime` ではなく、戻そうとしている位置で見る。
-        const position = () => chaseResumePending.current ?? media.currentTime
-        if (recoveryTimer !== null) {
-          // 止まっている間に別の位置へシークしたら、新しい位置で数え直す。
-          if (Math.abs(position() - recoveryFrom) < 0.05) return
-          clearRecoveryTimer()
-        } else if (media.paused && !isResumePending()) {
-          // 再生中か再開待ちで止まったときだけ数える。製品を通らない一時停止（PiP・ネイティブの
-          // 操作・OS の中断）の後も WebKit は `stalled` を出すので、ここで数えると勝手に再生を
-          // 始める。Safari 自身の `pause` は `waiting` の後に来る（`recording-hls-stall-recovery.mjs`
-          // の「製品を通らない一時停止」と、`currentTime` を直接代入したシークの測定）。
-          return
-        }
-        const startedAt = Date.now()
-        const startedPosition = position()
-        recoveryFrom = startedPosition
-        recoveryTimer = setTimeout(() => {
-          recoveryTimer = null
-          if (cancelled || Math.abs(position() - startedPosition) >= 0.05) return
-          const known = recordingHlsRecoveryRef.current?.recordingId === recordingId
-            ? recordingHlsRecoveryRef.current
-            : null
-          const { recover, next } = nextRecordingHlsRecovery(known, {
-            elapsedMs: Date.now() - startedAt,
-            atSeconds: position(),
-            userPaused: userPausedRef.current,
-          })
-          if (next !== null) recordingHlsRecoveryRef.current = { ...next, recordingId }
-          if (!recover) return
-          // 止まっている間に Safari が自分で pause していても、利用者が止めていないなら
-          // 張り直しの先で再生を続ける（cleanup が `resumePlaybackPendingRef` を読む）。
-          resumePlaybackPendingRef.current = true
-          setManualRetryGeneration((generation) => generation + 1)
-        }, recordingHlsRecoveryTimeoutMs)
-      }
-      const clearStallTimer = () => {
-        if (stallTimer !== null) {
-          clearTimeout(stallTimer)
-          stallTimer = null
-        }
-      }
-      const failed = (message: string) => {
-        if (cancelled) return
-        const showFailure = (handled: boolean) => {
-          if (handled || cancelled) return
-          clearStallTimer()
-          // エラー表示に落ちたら計器のポーリングも止める（issue #476 レビュー
-          // 指摘）。止めなくてもリークはしない（アンマウント・チャンネル切替の
-          // cleanup で最終的に止まる）が、エラー中も毎秒 onDiagnostics を
-          // 呼び続ける理由が無い
-          stopDiagnostics()
-          setError({ kind: 'other', status: 0, message })
-          setLoading(false)
-        }
-        const handedOff = handOffError(media)
-        if (typeof handedOff === 'boolean') showFailure(handedOff)
-        else void handedOff.then(showFailure, () => showFailure(false))
-      }
-      const onError = () => failed(strategy.errorMessages.mediaError)
-      const onStall = () => {
-        // **一時停止中の stall は失敗ではない。** WebKit は pause した瞬間に
-        // `stalled` を出す（フェッチを止めるため）が、配信は正常なまま。しかも
-        // 解除イベント（playing / canplay / timeupdate）は一時停止中には来ないので、
-        // ここを見ないと猶予が必ず満了して**正常な配信にエラー画面が出る** ---
-        // さらに `<video>` が invisible になり、ユーザーが一時停止した映像そのものが
-        // 隠れる（レビュー #190 の 4 回目の指摘。WebKit で実測:
-        // playing@0.0 → pause@2.3 → stalled@2.3 → 12 秒後にエラー表示）。
-        //
-        // hls.js 経路にこの watcher を張らない理由（MSE は正常時にも `waiting` を
-        // 頻繁に出す）と同じ危険が、ネイティブ経路の `stalled` で現実化したもの。
-        // `isResumePending()` の間は抑止しない（上の `resumePending` の説明）。
-        // これが無いと、降格先も死んでいる場合に `stalled` を無視し続けて
-        // **黒いまま永久に何も出ない**
-        // 5 秒の読み直しは `media.paused` で止めない（上の `startRecoveryTimer`）。
-        if (!cancelled) startRecoveryTimer()
-        if (cancelled || (startedOnceRef.current && media.paused && !isResumePending()))
-          return
-        // `waiting` が出た位置を基準にする。直前の timeupdate から waiting までに
-        // 進んだ分を、buffer 終端で出る同じ位置の timeupdate が回復と誤認しないようにする。
-        if (Number.isFinite(media.currentTime)) lastProgressTime = media.currentTime
-        if (stallTimer !== null) return
-        stallTimer = setTimeout(() => {
-          stallTimer = null
-          // **まず画質を下げることを試す（issue #871）。** 下げられたなら
-          // 「止まったまま」ではない（呼び出し側が別のプロファイルで張り直す。
-          // この effect の cleanup がこのタイマーごと捨てる）。下げられなければ
-          // 従来どおりエラーにする --- **段が尽きたときの挙動を現行と同一に
-          // 保つ**のがこの順序の理由である
-          // **`'wait'`（一覧が未着）はここでは「下げられない」と同じ扱いにする。**
-          // このタイマーは `stalled` / `waiting` でしか張り直せず、実 WebKit では
-          // 無応答の配信でそのイベントが再発火しない（実測: loadstart → progress →
-          // stalled のあと 20 秒待っても来ない）。`'wait'` で `return` すると
-          // **その再生では降格もエラー表示も起きず黒いまま何も出ない**ので、
-          // 現行どおりのエラー文言に落とす（一覧が届いていれば後述の降格を試す）。
-          // hls.js 経路は 1 秒ごとの刻みがあるので `'wait'` で待ち続けられる
-          if (canDowngrade && onStalledRef.current?.() === true) return
-          failed(strategy.errorMessages.stalled)
-        }, liveStallTimeoutMs)
-      }
-      // `pause` も回復扱いにする（猶予の途中で一時停止された場合）。再開後に配信が
-      // 本当に死んでいれば `waiting` が再び出て、そこで張り直される --- 実 WebKit で
-      // 測った（再生中に stall → pause@6.05s → play@12.05s → waiting@12.05s）。
-      // 「張り直す」側は `再開後に配信が復帰していなければ再びエラーになる` が守る
-      const onProgress = () => {
-        lastProgressTime = media.currentTime
-        clearStallTimer()
-      }
-      // WebKit はバッファの終端で、currentTime の動かない timeupdate を出す
-      // （chase.mjs ⑮ の実測: waiting@7.790 → timeupdate@7.790）。これを回復とみなすと、
-      // 唯一の失敗タイマーが消えて、エラー表示も降格も二度と起きない。
-      const onTimeUpdate = () => {
-        const currentTime = media.currentTime
-        if (!Number.isFinite(currentTime)) return
-        const progressed = Math.abs(currentTime - lastProgressTime) >= 0.05
-        if (!progressed) return
-        lastProgressTime = currentTime
-        clearStallTimer()
-        // シークの開始でも位置は動くが、止まりは解けていない。新しい位置の `waiting` で数え直す。
-        if (!media.seeking) clearRecoveryTimer()
-      }
-      let playedHere = false
-      const onPlaying = () => {
-        startedOnceRef.current = true
-        playedHere = true
-        lastProgressTime = media.currentTime
-        clearStallTimer()
-      }
-
-      // 張り直しの後に元の位置へ戻すシークも、遠くへのシークと同じく止まる（実 Safari で 15 回中 1 回、
-      // 再開待ちで paused のまま 15 秒 `seeking` が終わらず、`waiting` / `stalled` も出なかった）。
-      // 再開待ちの間のシークは、終わらなければ同じ 5 秒の読み直しで数える。
-      const onSeeking = () => {
-        if (!cancelled && isResumePending()) startRecoveryTimer()
-      }
-      media.addEventListener('error', onError)
-      media.addEventListener('seeking', onSeeking)
-      media.addEventListener('stalled', onStall)
-      media.addEventListener('waiting', onStall)
-      media.addEventListener('playing', onPlaying)
-      media.addEventListener('canplay', onProgress)
-      media.addEventListener('timeupdate', onTimeUpdate)
-      media.addEventListener('pause', onProgress)
-      teardown.push(() => {
-        clearStallTimer()
-        clearRecoveryTimer()
-        media.removeEventListener('error', onError)
-        media.removeEventListener('seeking', onSeeking)
-        media.removeEventListener('stalled', onStall)
-        media.removeEventListener('waiting', onStall)
-        media.removeEventListener('playing', onPlaying)
-        media.removeEventListener('canplay', onProgress)
-        media.removeEventListener('timeupdate', onTimeUpdate)
-        media.removeEventListener('pause', onProgress)
-      })
-      if (!isRecordingHLS) return undefined
-      // 世代付き録画 HLS は 1 秒の刻みでも止まりを見る。WebKit は再生中の 410 を `error` にせず、
-      // バッファの終わりで `waiting` の直後に進まない `playing` を出して上のタイマーを消し、その後は
-      // 何も出さない（Playwright WebKit の実測: stalled@3.21 → waiting@9.82 → playing@9.76 →
-      // suspend。`recording-playback-timeline.mjs` の世代の切り替え）。一時停止中と、この読み込みで
-      // 再生が始まる前は数えない。
-      const tracker = createStallTracker()
-      return () => {
-        if (!playedHere || !observeMediaStall(tracker, media, Date.now(), false)) return
-        failed(strategy.errorMessages.stalled)
-      }
     }
 
     /**
@@ -1391,8 +1011,7 @@ export function LivePlayer(props: LivePlayerProps) {
      * `onTick` は同じ 1 秒の刻みで呼ばれる（issue #871 の停滞の観測）。
      * **停滞の観測のために別のタイマーを作らない** --- 同じ「いまどうなっているか」
      * を 2 つの周期で見ても精度は上がらず、止め忘れの経路だけが増える。
-     * ネイティブ経路は `stalled` / `waiting` の側で見る。世代付き録画 HLS だけは
-     * `watchNativeMedia` が返す刻みもここで呼ぶ。
+     * 世代付き録画 HLS の世代切替は hls.js の 410 応答で再取得する。
      */
     function watchLiveDiagnostics(read: () => LiveDiagnostics, onTick?: () => void): () => void {
       const tick = () => {
@@ -1408,50 +1027,6 @@ export function LivePlayer(props: LivePlayerProps) {
       }
       teardown.push(stop)
       return stop
-    }
-
-    /**
-     * followNativeAudio はネイティブ経路で、トラックが出来たら音声の選択を揃える
-     * （issue #870）。字幕と同じく WebKit はトラックを後から作るので、`addtrack`
-     * で増えるたびに適用する。
-     */
-    function followNativeAudio(media: HTMLVideoElement) {
-      const apply = () => {
-        if (!cancelled) applyNativeAudioTrack(media, liveAudioTrackIndex(audioRef.current))
-      }
-      const tracks = nativeAudioTracks(media)
-      tracks?.addEventListener?.('addtrack', apply)
-      media.addEventListener('loadedmetadata', apply, { once: true })
-      teardown.push(() => {
-        tracks?.removeEventListener?.('addtrack', apply)
-        media.removeEventListener('loadedmetadata', apply)
-      })
-    }
-
-    /** ネイティブ HLS の duration が Infinity の間は保存速度を適用しない。 */
-    function followNativePlaybackRate(media: HTMLVideoElement) {
-      nativeHlsRef.current = true
-      const updateRate = () => {
-        if (cancelled) return
-        const locked = isRecordingPlayback && media.duration === Infinity
-        nativeHlsEventRef.current = locked
-        setNativeHlsEventPlaylist(locked)
-        const requestedRate = isRecordingPlayback ? playbackRateRef.current : 1
-        const rate = effectivePlaybackRate(requestedRate, isRecordingPlayback, true, media.duration)
-        const appliedRate = applyPlaybackRate(media, rate, saveActivePlaybackRateRef.current)
-        if (isRecordingPlayback && !locked && appliedRate !== requestedRate) {
-          playbackRateRef.current = appliedRate
-          setActivePlaybackRateRef.current(appliedRate)
-        }
-      }
-      media.addEventListener('durationchange', updateRate)
-      media.addEventListener('loadedmetadata', updateRate)
-      teardown.push(() => {
-        media.removeEventListener('durationchange', updateRate)
-        media.removeEventListener('loadedmetadata', updateRate)
-        nativeHlsRef.current = false
-        nativeHlsEventRef.current = false
-      })
     }
 
     async function start() {
@@ -1500,13 +1075,9 @@ export function LivePlayer(props: LivePlayerProps) {
 
       if (!video) return
 
-      // **自動再開を待っている間は「利用者が一時停止した」抑止を外す。**
-      // これが無いと、降格先の配信も死んでいて `canplay` が来ない場合に
-      // `paused` の抑止が効いたままになり、**停滞の検出ごと止まって黒いまま
-      // 永久に何も出ない**（`startedOnceRef` を effect を跨いで持つようにした
-      // ことと、この再開を足したことが組み合わせて作る穴）。
-      // ここでの `paused` は「利用者が自分で止めた」ではなく「こちらが
-      // `load()` で止めた」なので、停滞として見てよい。
+      // **自動再開を待っている間は `paused` を利用者の停止として扱わない。**
+      // `load()` が pause を立てるため、待たずに検出を止めると、降格先も止まった
+      // 場合に停滞の検出ごと止まって黒いままになる。
       let resumePending = resumePlaying
 
       // **切替前に再生中だったなら、新しいソースが再生可能になってから再開する。**
@@ -1529,7 +1100,7 @@ export function LivePlayer(props: LivePlayerProps) {
           resumePending = false
           if (cancelled || !resumePlaybackPendingRef.current) return
           resumePlaybackPendingRef.current = false
-          // 開始位置の再表明は、上の effect の最初の `playing` が行う。
+          // 上の effect が canplay で開始位置を確定してから再開する。
           void video.play().catch(() => {
             if (isRecordingPlayback) setMediaPlaying(false)
           })
@@ -1550,191 +1121,129 @@ export function LivePlayer(props: LivePlayerProps) {
       // 配線されており、追っかけのセレクタへ同じ下げ方を広げるのは別の判断である
       // （呼び出し側が `onStalled` を渡さないことでも止まる）。
       const canDowngrade = !probe.bundlesProfiles && !isRecordingPlayback
-      const canPlayType = video.canPlayType.bind(video)
-
-      // 再生経路は 3 段の梯子で選ぶ。**各段は「実際に確かめた能力」で選ばれる**
-      // （レビュー #190 の 2 回目の指摘。それまでは m3u8 の MIME への戻り値だけを
-      // 見ていたが、あれはどの実ブラウザでも Safari と Chrome を区別しない）:
+      const { default: Hls } = await import('hls.js')
+      if (cancelled) return
+      if (!Hls.isSupported()) {
+        setError({
+          kind: 'other',
+          status: 0,
+          message: strategy.errorMessages.unsupported,
+        })
+        setLoading(false)
+        return
+      }
+      // master playlist の EXT-X-MEDIA subtitles rendition を**既定で表示**する
+      // （issue #430）。subtitleDisplay は HlsConfig ではなく Hls インスタンスの
+      // プロパティである。
       //
-      //   1. `<video>` がプレイリストもセグメント（`video/mp2t`）も再生できる
-      //      → ネイティブ。hls.js は import すらしない（約 520 KB を読ませない）
-      //   2. hls.js が動く（MSE / ManagedMediaSource がある）→ hls.js
-      //   3. どちらも駄目だが `<video>` が m3u8 に支持を表明する → ネイティブへ
-      //      最後の望みを託す（`lib/live.ts` の `claimsHlsPlaylistSupport`）
-      if (supportsNativeHls(canPlayType)) {
-        // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
-        followNativePlaybackRate(video)
-        let nativeTick: (() => void) | undefined
-        const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video), () => nativeTick?.())
-        nativeTick = watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
-        followNativeAudio(video)
-        video.src = url
-        // 字幕の表示状態を持ち越す（issue #869）。ネイティブ経路はトラックを
-        // 自前で作り直すので、出来上がった頃（`loadedmetadata`）に揃え直す。
-        // **Safari がトラックをいつ作るかの順序は未検証** --- ここで揃わなければ
-        // 既定（表示）に戻るだけで、配信そのものには影響しない。
-        if (preserved?.subtitles != null) {
-          const visible = preserved.subtitles
-          // **`loadedmetadata` だけでは足りない（実測）。** WebKit は
-          // `loadedmetadata` の時点でまだ字幕トラックを作っていないので、
-          // ここで一度揃えても何も無い（実測: 入にしてから切り替えると
-          // `disabled` に戻った）。`TextTrackList` の `addtrack` で
-          // **トラックが増えるたびに**適用する。
-          const apply = () => {
-            if (!cancelled) applySubtitleVisibility(video, visible)
-          }
-          // jsdom の `video.textTracks` は空配列で `addEventListener` を持たない
-          const trackList = video.textTracks as unknown as {
-            addEventListener?: (type: string, listener: () => void) => void
-            removeEventListener?: (type: string, listener: () => void) => void
-          }
-          trackList.addEventListener?.('addtrack', apply)
-          teardown.push(() => trackList.removeEventListener?.('addtrack', apply))
-          apply()
-          video.addEventListener('loadedmetadata', apply, { once: true })
-        }
-      } else {
-        const { default: Hls } = await import('hls.js')
-        if (cancelled) return
-        if (!Hls.isSupported()) {
-          // MSE も ManagedMediaSource も無い（iOS 17.1 未満の iPhone Safari が
-          // これに当たる）。hls.js では原理的に再生できないので、`<video>` 自身が
-          // m3u8 に支持を表明しているならそちらへ渡す。ここを「非対応」と断じると、
-          // ネイティブなら完璧に再生できる端末を締め出す。**渡して駄目だった場合は
-          // `watchNativeMedia` が拾ってエラー表示 + 再読み込みを出す**
-          // （`live-player.test.tsx` の「ネイティブ経路のメディア失敗」3 件 /
-          // `web/e2e/live.mjs` ⑦）--- ここは 1 段目と同じ表面を持つ
-          if (claimsHlsPlaylistSupport(canPlayType)) {
-            followNativePlaybackRate(video)
-            let nativeTick: (() => void) | undefined
-            const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video), () => nativeTick?.())
-            nativeTick = watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
-            followNativeAudio(video)
-            video.src = url
-            setLoading(false)
-            return
-          }
+      // **これは「トグルを出す」設定ではない。** 字幕の入切は Chrome
+      // ネイティブコントロールの `⋮` → 「Captions」で、textTrack が 1 本でも
+      // あれば rokuban が何もしなくても現れる（実測: 実 Chromium で `⋮` を
+      // 開いて "Captions / Off" の項目を確認）。この行が決めるのは既定の
+      // 状態だけで、true なら `TextTrack.mode === "showing"` で始まる（実測:
+      // 実 mirakc のライブで確認）。
+      //
+      // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆で、それが正しい。**
+      // あちらは `default` 属性を持たないので `mode === "disabled"` で始まり、
+      // ユーザーが `⋮` から入れるまで `.vtt` を fetch すらしない（実測）。
+      // VOD で `default` を付けると、**字幕サイドカーを持たないプロファイルでも
+      // 再生ごとに必ず 1 本 404 が出る** --- クライアントはサイドカーの有無を
+      // 知る手段を持たないので（`docs/api/media.md` の案 (b) の帰結）、
+      // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
+      // 実際に map できたときだけ rendition が master に載るので、この問題が無い
+      // --- 既定 ON にできるのはライブ側だけ、という非対称である。
+      // hls.js otherwise chooses the live edge for an EVENT playlist. Chase
+      // playback must begin at the first segment of the selected session;
+      // the streamer has already applied any recording-relative offset.
+      const hls = new Hls(
+        isRecordingPlayback ? { startPosition: startAt ?? 0 } : undefined,
+      ) as unknown as HlsLike
+      hls.subtitleDisplay = true
+      // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
+      // 読むと字幕トラックの選択を既定に戻す** --- `SubtitleTrackController` の
+      // `onManifestLoading` が `tracks = []` / `trackId = -1` /
+      // `selectDefaultTrack = true` にする（`node_modules/hls.js` 1.7.1 で確認済み）。
+      // そのため素朴に作り直すと、ネイティブコントロールの `⋮` → Captions で
+      // 「切り」にした字幕が「入」に戻る。
+      //
+      // **`MANIFEST_PARSED` の時点では既定トラックはまだ選ばれていない**
+      // （同コントローラの `onManifestParsed` は `tracks` を代入するだけで、
+      // 既定トラックの選択はその後の level 更新経路の `setSubtitleTrack` →
+      // `toggleTrackModes`。だから `subtitleDisplay` セッターの
+      // `if (this.trackId > -1) this.toggleTrackModes()` はここでは発火しない）。
+      // それでもここで `_subtitleDisplay` を書くのは、**後の選択のときに
+      // `toggleTrackModes` がその値を読む**ためである。
+      // **この経路が効くことは実ブラウザで実測済みである。** 利用者が字幕を切ってから
+      // 画質を切り替えると `mode` は `hidden` のまま（= 再表示されない）。
+      // この 1 行を外すと `showing` に戻ることを `web/e2e/live.mjs` の ⑩ が
+      // 実 Chromium で捕まえる。
+      if (preserved?.subtitles != null) {
+        const visible = preserved.subtitles
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (!cancelled) hls.subtitleDisplay = visible
+        })
+      }
+      // 音声の選択を揃える（issue #870）。この effect は画質の切替・再読み込みの
+      // たびに hls.js を作り直し、新しいインスタンスは master の既定（標準）から
+      // 始まるので、トラック一覧が届いたら選択を適用する。前に聴いたトラックへ
+      // 戻る切替は、ライブの playlist に EXT-X-PROGRAM-DATE-TIME が無いと止まる
+      // （streamer の hlsFlags。`web/e2e/live-audio.mjs` の ①）。
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+        if (!cancelled) applyHlsAudioTrack(hls, liveAudioTrackIndex(audioRef.current))
+      })
+      hlsRef.current = hls
+      // 停滞の観測（issue #871）は**計器と同じ 1 秒の刻みに相乗りする**。
+      // hls.js 経路では `stalled` / `waiting` を失敗判定に使えない
+      // （MSE は正常時にも `waiting` を何度も出す）ので、`currentTime` が
+      // 進んだかを計器と同じ 1 秒の刻みで見る。
+      // **MSE でも観測できる唯一の信号がこれである** --- hls.js の
+      // 非 fatal `bufferStalledError` は使わない（正常時にも出るうえ、
+      // 頻度を測っていない）。
+      let tracker = createStallTracker()
+      const stopDiagnostics = watchLiveDiagnostics(
+        () => readHlsDiagnostics(hls),
+        () => {
+          if (!canDowngrade || !observeMediaStall(tracker, video, Date.now(), resumePending)) return
+          // 下げられたら、この effect ごと張り直されて計測も 0 に戻る。
+          // 下げられない（段が尽きた / 明示選択）ときは**何もしない** ---
+          // 現行の hls.js 経路は停滞を失敗として扱っていないので、ここで
+          // エラーを新設すると**プロファイルが 1 件しかないデプロイの挙動まで
+          // 変わる**（`docs/frontend/live.md` §フロントエンド実装）。
+          // 一覧がまだ届いていないときだけ `wait` で観測を初期化し、一覧到着後の
+          // 次の刻みで再判定できるようにする。
+          if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
+        },
+      )
+      if (isOriginalPlayback) {
+        hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+          if (data.details?.live === false) originalVODFinalized.current = true
+        })
+      }
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        const expiredRecordingHls = isRecordingHLS && data.response?.code === 410
+        if ((!data.fatal && !expiredRecordingHls) || cancelled) return
+        const finishFatalError = (handled: boolean) => {
+          if (cancelled) return
+          positionReportBlockedRef.current = true
+          hls.destroy()
+          hlsRef.current = null
+          stopDiagnostics()
+          if (handled) return
+          // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
+          // 裏でセグメント要求が続く（= idle GC も効かない。レビュー #190 の
+          // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
           setError({
             kind: 'other',
             status: 0,
-            message: strategy.errorMessages.unsupported,
-          })
-          setLoading(false)
-          return
-        }
-        // master playlist の EXT-X-MEDIA subtitles rendition を**既定で表示**する
-        // （issue #430）。subtitleDisplay は HlsConfig ではなく Hls インスタンスの
-        // プロパティである。
-        //
-        // **これは「トグルを出す」設定ではない。** 字幕の入切は Chrome
-        // ネイティブコントロールの `⋮` → 「Captions」で、textTrack が 1 本でも
-        // あれば rokuban が何もしなくても現れる（実測: 実 Chromium で `⋮` を
-        // 開いて "Captions / Off" の項目を確認）。この行が決めるのは既定の
-        // 状態だけで、true なら `TextTrack.mode === "showing"` で始まる（実測:
-        // 実 mirakc のライブで確認）。
-        //
-        // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆で、それが正しい。**
-        // あちらは `default` 属性を持たないので `mode === "disabled"` で始まり、
-        // ユーザーが `⋮` から入れるまで `.vtt` を fetch すらしない（実測）。
-        // VOD で `default` を付けると、**字幕サイドカーを持たないプロファイルでも
-        // 再生ごとに必ず 1 本 404 が出る** --- クライアントはサイドカーの有無を
-        // 知る手段を持たないので（`docs/api/media.md` の案 (b) の帰結）、
-        // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
-        // 実際に map できたときだけ rendition が master に載るので、この問題が無い
-        // --- 既定 ON にできるのはライブ側だけ、という非対称である。
-        // hls.js otherwise chooses the live edge for an EVENT playlist. Chase
-        // playback must begin at the first segment of the selected session;
-        // the streamer has already applied any recording-relative offset.
-        const hls = new Hls(
-          isRecordingPlayback ? { startPosition: startAt ?? 0 } : undefined,
-        ) as unknown as HlsLike
-        hls.subtitleDisplay = true
-        // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
-        // 読むと字幕トラックの選択を既定に戻す** --- `SubtitleTrackController` の
-        // `onManifestLoading` が `tracks = []` / `trackId = -1` /
-        // `selectDefaultTrack = true` にする（`node_modules/hls.js` 1.7.1 で確認済み）。
-        // そのため素朴に作り直すと、ネイティブコントロールの `⋮` → Captions で
-        // 「切り」にした字幕が「入」に戻る。
-        //
-        // **`MANIFEST_PARSED` の時点では既定トラックはまだ選ばれていない**
-        // （同コントローラの `onManifestParsed` は `tracks` を代入するだけで、
-        // 既定トラックの選択はその後の level 更新経路の `setSubtitleTrack` →
-        // `toggleTrackModes`。だから `subtitleDisplay` セッターの
-        // `if (this.trackId > -1) this.toggleTrackModes()` はここでは発火しない）。
-        // それでもここで `_subtitleDisplay` を書くのは、**後の選択のときに
-        // `toggleTrackModes` がその値を読む**ためである。
-        // **この経路が効くことは実ブラウザで実測済みである。** 利用者が字幕を切ってから
-        // 画質を切り替えると `mode` は `hidden` のまま（= 再表示されない）。
-        // この 1 行を外すと `showing` に戻ることを `web/e2e/live.mjs` の ⑩ が
-        // 実 Chromium で捕まえる。
-        if (preserved?.subtitles != null) {
-          const visible = preserved.subtitles
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            if (!cancelled) hls.subtitleDisplay = visible
+            message: strategy.errorMessages.fatalTitle,
           })
         }
-        // 音声の選択を揃える（issue #870）。この effect は画質の切替・再読み込みの
-        // たびに hls.js を作り直し、新しいインスタンスは master の既定（標準）から
-        // 始まるので、トラック一覧が届いたら選択を適用する。前に聴いたトラックへ
-        // 戻る切替は、ライブの playlist に EXT-X-PROGRAM-DATE-TIME が無いと止まる
-        // （streamer の hlsFlags。`web/e2e/live-audio.mjs` の ①）。
-        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-          if (!cancelled) applyHlsAudioTrack(hls, liveAudioTrackIndex(audioRef.current))
-        })
-        hlsRef.current = hls
-        // 停滞の観測（issue #871）は**計器と同じ 1 秒の刻みに相乗りする**。
-        // hls.js 経路には `stalled` / `waiting` を聴く watcher を張れない
-        // （MSE は正常時にも `waiting` を何度も出す。`watchNativeMedia` の
-        // コメント参照）ので、代わりに `currentTime` が進んだかを見る。
-        // **MSE でも観測できる唯一の信号がこれである** --- hls.js の
-        // 非 fatal `bufferStalledError` は使わない（正常時にも出るうえ、
-        // 頻度を測っていない）。
-        let tracker = createStallTracker()
-        const stopDiagnostics = watchLiveDiagnostics(
-          () => readHlsDiagnostics(hls),
-          () => {
-            if (!canDowngrade || !observeMediaStall(tracker, video, Date.now(), resumePending)) return
-            // 下げられたら、この effect ごと張り直されて計測も 0 に戻る。
-            // 下げられない（段が尽きた / 明示選択）ときは**何もしない** ---
-            // 現行の hls.js 経路は停滞を失敗として扱っていないので、ここで
-            // エラーを新設すると**プロファイルが 1 件しかないデプロイの挙動まで
-            // 変わる**（`docs/frontend/live.md` §フロントエンド実装）。
-            // 一覧がまだ届いていないときだけ `wait` で観測を初期化し、一覧到着後の
-            // 次の刻みで再判定できるようにする。
-            if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
-          },
-        )
-        if (isOriginalPlayback) {
-          hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
-            if (data.details?.live === false) originalVODFinalized.current = true
-          })
-        }
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          const expiredRecordingHls = isRecordingHLS && data.response?.code === 410
-          if ((!data.fatal && !expiredRecordingHls) || cancelled) return
-          const finishFatalError = (handled: boolean) => {
-            if (cancelled) return
-            positionReportBlockedRef.current = true
-            hls.destroy()
-            hlsRef.current = null
-            stopDiagnostics()
-            if (handled) return
-            // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
-            // 裏でセグメント要求が続く（= idle GC も効かない。レビュー #190 の
-            // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
-            setError({
-              kind: 'other',
-              status: 0,
-              message: strategy.errorMessages.fatalTitle,
-            })
-          }
-          const handedOff = handOffError(video)
-          if (typeof handedOff === 'boolean') finishFatalError(handedOff)
-          else void handedOff.then(finishFatalError, () => finishFatalError(false))
-        })
-        hls.loadSource(url)
-        hls.attachMedia(video)
-      }
+        const handedOff = handOffError(video)
+        if (typeof handedOff === 'boolean') finishFatalError(handedOff)
+        else void handedOff.then(finishFatalError, () => finishFatalError(false))
+      })
+      hls.loadSource(url)
+      hls.attachMedia(video)
       setLoading(false)
     }
 
@@ -1771,8 +1280,6 @@ export function LivePlayer(props: LivePlayerProps) {
       // `error` が出ず判定に差が出なかった（`web/e2e/live.mjs` で実測）。
       // 順序は無害な保険として残す。効くと分かっている主張ではない
       for (const fn of teardown) fn()
-      nativeHlsRef.current = false
-      nativeHlsEventRef.current = false
       hlsRef.current?.destroy()
       hlsRef.current = null
       if (video) {
@@ -1805,13 +1312,10 @@ export function LivePlayer(props: LivePlayerProps) {
     getStartPositionSeconds,
     reportPosition,
     resumePlaybackPendingRef,
-    startReassertPendingRef,
     restartAtOffset,
     setMediaPlaying,
     strategy.classifyLoadError,
     strategy.errorMessages.fatalTitle,
-    strategy.errorMessages.mediaError,
-    strategy.errorMessages.stalled,
     strategy.errorMessages.unsupported,
   ])
 
@@ -1846,10 +1350,9 @@ export function LivePlayer(props: LivePlayerProps) {
    * 今のセッションの seekable の中ならセッション内をシークし、外なら、その秒を offset にして
    * セッションを張り直す（古いセッションへの leave ヒントは offset が変わったときの effect の
    * cleanup が送る）。範囲はバッファ済みではなく seekable で判定する（`seekOffsetSession`。追っかけも同じ）。
-   * 原本の事情として、WebKit のネイティブ HLS は ENDLIST の無い
-   * playlist の seekable を先端の 3 target duration 手前で止め（④ の状態で time 7.8 / seekable 2）、
-   * その先への代入は seekable の終端に丸める（同じ状態で currentTime = 5 が 2 になった。
-   * バッファは 7.73 まであった。Playwright WebKit で 1 回測定）。だから seekable の外は張り直す。
+   * 原本 HLS の EVENT playlist は、セッション内の seekable の外へ出るときに
+   * offset を指定して張り直す。バッファ済み範囲だけで判定すると、読める範囲外への
+   * seek を見逃すため seekable を使う。
    */
   const seekRecording = (seconds: number) => {
     const video = videoRef.current
@@ -1858,7 +1361,6 @@ export function LivePlayer(props: LivePlayerProps) {
     const target = strategy.recording?.seekTarget(seconds, playlistEndSeconds)
     if (target === undefined) return
     pendingBoundarySeekMsRef.current = null
-    startReassertPendingRef.current = false
     originalPreviousSecondsRef.current = target
     if (isRecordingHLS) {
       if (!video) return
@@ -1901,14 +1403,12 @@ export function LivePlayer(props: LivePlayerProps) {
     // Boundary selection is an explicit stop, including while a restarted
     // original-HLS session is waiting for its canplay auto-resume.
     resumePlaybackPendingRef.current = false
-    markUserPause()
     if (!media.paused) media.pause()
     seekToOriginalBoundary(Math.round(seconds * 1000))
   }
   const finishPlayAround = (media: HTMLVideoElement) => {
     const boundaryMs = playAroundStopBoundaryMsRef.current
     clearPlayAround()
-    markUserPause()
     media.pause()
     if (boundaryMs !== null) seekToOriginalBoundary(boundaryMs)
   }
@@ -1941,7 +1441,6 @@ export function LivePlayer(props: LivePlayerProps) {
     playAroundStopRef.current = stop
     playAroundStopBoundaryMsRef.current = mode === 'to' ? boundaryMs : null
     seekRecording(start)
-    markUserPlay()
     void media.play().catch(() => {})
   }
   const jumpOriginalChapter = (direction: 'next' | 'prev') => {
@@ -2009,7 +1508,7 @@ export function LivePlayer(props: LivePlayerProps) {
           }
         }
         // EVENT duration is only the current conversion edge. Auto-watch is valid
-        // only after ENDLIST (or ended on native HLS) finalized the VOD.
+        // only after ENDLIST or `ended` finalizes the VOD.
         const finalLength = originalDurationSeconds || (media.duration + sessionStartSeconds)
         if (
           originalVODFinalized.current &&
@@ -2036,7 +1535,6 @@ export function LivePlayer(props: LivePlayerProps) {
       }}
       onRateChange={(event) => {
         if (!isRecordingPlayback) return
-        if (nativeHlsEventRef.current) return
         const rate = event.currentTarget.playbackRate
         playbackRateRef.current = rate
         setActivePlaybackRateRef.current(rate)
@@ -2207,8 +1705,7 @@ export function LivePlayer(props: LivePlayerProps) {
       }}
       onPreviousChapter={() => jumpOriginalChapter('prev')}
       onNextChapter={() => jumpOriginalChapter('next')}
-      playbackRate={nativeHlsEventPlaylist ? 1 : activePlaybackRate}
-      playbackRateLocked={nativeHlsEventPlaylist}
+      playbackRate={activePlaybackRate}
       subtitlesEnabled={originalSubtitlesEnabled}
       skipEnabled={chapterSkipEnabled}
       showWatched={isOriginalVOD || (isRecordingHLS && recordingHlsShowWatched === true)}
@@ -2218,7 +1715,7 @@ export function LivePlayer(props: LivePlayerProps) {
       onDeleteWatched={onDeleteWatched}
       onRateChange={(rate) => {
         const media = videoRef.current
-        if (!media || nativeHlsEventRef.current) return
+        if (!media) return
         const applied = applyPlaybackRate(media, rate, saveActivePlaybackRate)
         playbackRateRef.current = applied
         setActivePlaybackRate(applied)
@@ -2227,8 +1724,6 @@ export function LivePlayer(props: LivePlayerProps) {
       onToggleSubtitles={() => {
         const enabled = !originalSubtitlesEnabled
         if (hlsRef.current) hlsRef.current.subtitleDisplay = enabled
-        const media = videoRef.current
-        if (media) applySubtitleVisibility(media, enabled)
         setOriginalSubtitlesEnabled(enabled)
       }}
       onToggleSkip={(enabled) => {

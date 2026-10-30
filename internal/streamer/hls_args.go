@@ -72,15 +72,14 @@ func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []stri
 // become playable. Every segment is kept until shared idle GC, and the output
 // has the same profile, audio rendition, and optional subtitle graph as live.
 // offsetSeconds is mapped down to the 30000/1001 fps input frame grid before
-// accurate input-side -ss, and the video encoder gets -bf 0. Measured only on
-// the synthetic MPEG-2 fixture of web/e2e/recording-playback-timeline.mjs with
-// libx264 (Chrome shows hls.js frames 66.73 ms late without -bf 0; WebKit's
-// native HLS showed no difference). Unverified: the captions path's effect in a
-// browser, hardware encoders, and recordings whose audio lead has a phase other
-// than the fixture's (audio start 10.4067 s, video start 11.1007 s; an integer
-// -ss showed frames 33.37 ms early there). fd 3 is the original opened by the Go
-// process and passed via Cmd.ExtraFiles, so unlinking its canonical path cannot
-// break the session.
+// accurate input-side -ss, and the video encoder gets -bf 0. Measured on the
+// synthetic MPEG-2 fixture of web/e2e/recording-playback-timeline.mjs with
+// libx264 (Chrome + hls.js shows frames 66.73 ms late without -bf 0). The
+// Playwright WebKit + hls.js path, captions, hardware encoders, and recordings
+// whose audio lead has a phase other than the fixture's (audio start 10.4067 s,
+// video start 11.1007 s; an integer -ss showed frames 33.37 ms early there) are
+// unverified. fd 3 is the original opened by the Go process and passed via
+// Cmd.ExtraFiles, so unlinking its canonical path cannot break the session.
 func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
 	return buildHLSFFmpegArgsForPlaylistType(
 		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds, 1,

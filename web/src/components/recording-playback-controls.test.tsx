@@ -61,7 +61,6 @@ function controlProps(overrides: Partial<ControlsProps> = {}): ControlsProps {
 }
 
 function renderControls(
-  playbackRateLocked: boolean,
   chapterEditing = false,
   onRateChange = vi.fn(),
   playbackRate = 1,
@@ -74,7 +73,6 @@ function renderControls(
     chapters,
     chapterEditing,
     playbackRate,
-    playbackRateLocked,
     onRateChange,
   })
   render(<RecordingPlaybackControls {...props} />)
@@ -83,44 +81,18 @@ function renderControls(
   return screen.getByRole('menu', { name: '再生設定' })
 }
 
-describe('速度メニュー行（変換中の固定）', () => {
-  it('固定中は aria-disabled でフォーカスに乗り、↓ で通り過ぎ、入れない', () => {
-    const menu = renderControls(true)
-    const rate = screen.getByRole('menuitem', { name: '再生速度' })
-    expect(rate).toHaveAttribute('aria-disabled', 'true')
-    expect(rate).not.toBeDisabled()
-
-    // 字幕 -> 再生速度 -> 画質。速度の行にも止まり、さらに ↓ で先へ進める。
-    screen.getByRole('menuitemcheckbox', { name: '字幕' }).focus()
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' })
-    expect(document.activeElement).toBe(rate)
-    fireEvent.keyDown(rate, { key: 'ArrowDown' })
-    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: '画質' }))
-
-    rate.focus()
-    fireEvent.click(rate)
-    fireEvent.keyDown(rate, { key: 'Enter' })
-    fireEvent.keyDown(rate, { key: 'ArrowRight' })
-    expect(screen.getByRole('menu', { name: '再生設定' })).toBe(menu)
-    expect(screen.queryByRole('menuitemradio', { name: '2x' })).toBeNull()
-  })
-
-  it('固定していなければ速度メニューへ入れる', () => {
-    renderControls(false)
+describe('速度メニュー行', () => {
+  it('速度メニューへ入れる', () => {
+    renderControls()
     const rate = screen.getByRole('menuitem', { name: '再生速度' })
     expect(rate).not.toHaveAttribute('aria-disabled')
     fireEvent.click(rate)
     expect(screen.getByRole('menuitemradio', { name: '2x' })).toBeInTheDocument()
   })
 
-  it('編集帯の速度巡回は変換中に無効になる', () => {
-    renderControls(true, true)
-    expect(screen.getByTestId('chapter-edit-playback-rate')).toBeDisabled()
-  })
-
   it('編集帯の速度巡回は通常の速度一覧を進む', () => {
     const onRateChange = vi.fn()
-    renderControls(false, true, onRateChange)
+    renderControls(true, onRateChange)
     const rate = screen.getByTestId('chapter-edit-playback-rate')
     expect(rate).toBeEnabled()
     fireEvent.click(rate)
@@ -129,13 +101,13 @@ describe('速度メニュー行（変換中の固定）', () => {
 
   it('編集帯の速度巡回は一覧外の速度から次に大きい速度へ進む', () => {
     const onRateChange = vi.fn()
-    renderControls(false, true, onRateChange, 1.1)
+    renderControls(true, onRateChange, 1.1)
     fireEvent.click(screen.getByTestId('chapter-edit-playback-rate'))
     expect(onRateChange).toHaveBeenCalledWith(1.25)
   })
 
   it('チャプター一覧と再生バーの区間表示は共通の再生時刻書式を使う', () => {
-    renderControls(false, false, vi.fn(), 1, [
+    renderControls(false, vi.fn(), 1, [
       { startMs: 330_000, endMs: 360_000, label: 'ニュース', cut: false },
     ])
 
@@ -147,7 +119,7 @@ describe('速度メニュー行（変換中の固定）', () => {
 
 describe('再生元固有の行は渡された事実から出す', () => {
   it('速度を変えられないときは速度行を出さない', () => {
-    renderControls(false, false, vi.fn(), 1, [], { canChangePlaybackRate: false })
+    renderControls(false, vi.fn(), 1, [], { canChangePlaybackRate: false })
 
     expect(screen.queryByRole('menuitem', { name: '再生速度' })).toBeNull()
   })
@@ -158,7 +130,7 @@ describe('再生元固有の行は渡された事実から出す', () => {
       { value: 'main', label: '主音声' },
       { value: 'sub', label: '副音声' },
     ]
-    renderControls(false, false, vi.fn(), 1, [], { audioOptions })
+    renderControls(false, vi.fn(), 1, [], { audioOptions })
 
     fireEvent.click(screen.getByRole('menuitem', { name: '音声' }))
     expect(screen.getByRole('menuitemradio', { name: '標準' })).toHaveAttribute('aria-checked', 'true')

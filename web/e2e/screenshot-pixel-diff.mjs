@@ -1,6 +1,6 @@
 /**
  * changedPixelBounds は二枚の同じページのスクリーンショットから、描画が変わった画素の矩形を返す。
- * 字幕の cue が native HLS でも実際に描画され、操作バーより上に見えるかを
+ * 字幕 cue が HLS 再生でも描画され、操作バーより上に見えるかを
  * `subtitles.mjs` と `recording-original-vod.mjs` から検証する。
  */
 export async function changedPixelBounds(page, before, after, threshold = 40) {

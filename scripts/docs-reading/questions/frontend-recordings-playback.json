@@ -107,10 +107,10 @@
     },
     {
       "heading": "経路ごとの再生方式",
-      "question": "完了録画の再生方式は、encoded がある場合と原本だけの場合でどう分かれるか。",
+      "question": "録画再生で、MP4 と HLS はそれぞれどう再生するか。",
       "points": [
         "active な encoded があれば MP4 の progressive 再生と Range で再生する",
-        "原本だけなら streamer が一時 HLS に変換してブラウザで再生する"
+        "追っかけ・原本 HLS・世代付き録画 HLS は hls.js で再生する"
       ]
     },
     {
@@ -135,14 +135,6 @@
       "points": [
         "変換中の EVENT playlist なのでシークできる範囲は変換の先端まで伸びる",
         "分母は録画の終了時刻があれば、録画ファイル先頭から終了時刻までの実尺とする"
-      ]
-    },
-    {
-      "heading": "原本 HLS の開始位置の再表明",
-      "question": "原本 HLS の開始位置はどう設定し、なぜ再設定するか。",
-      "points": [
-        "offset 0 や続きから位置が無い場合も明示し、再生可能になった時点でもう一度設定する",
-        "WebKit の native HLS は明示しないとライブ端近くから始めるため"
       ]
     },
     {
@@ -212,8 +204,8 @@
       "heading": "字幕と操作バーの重なり",
       "question": "操作バーと字幕が重なるときはどうするか。",
       "points": [
-        "字幕の行を操作バーの上へ引き上げる",
-        "native HLS が字幕 cue を公開しない WebKit では引き上げは何もしない"
+        "JavaScript が読める WebVTT cue の行を操作バーの上へ移す",
+        "Playwright WebKit も hls.js 経路で cue と表示位置を確認する"
       ]
     },
     {

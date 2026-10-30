@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { createPlaywrightAdapter, createSafariAdapter, log } from './lib.mjs'
+import { createPlaywrightAdapter, log } from './lib.mjs'
 import {
   ensurePlaybackFixtures,
   FIXTURE_ROOT,
@@ -46,7 +46,6 @@ const HARNESS_HTML = String.raw`<!doctype html>
         stalls: [],
         hlsErrors: [],
         capture: false,
-        startClicks: 0,
         hls: null,
         audioContext: null,
         audioAnalysers: null,
@@ -171,18 +170,11 @@ const HARNESS_HTML = String.raw`<!doctype html>
             enabled: index === state.hls.audioTrack,
           }))
         }
-        const tracks = video.audioTracks
-        if (!tracks) return []
-        return Array.from(tracks).map((track, index) => ({
-          index,
-          label: track.label || track.language || String(index),
-          enabled: track.enabled,
-        }))
+        return []
       }
 
       window.__e2e = {
-        // 再生経路の選び方は web/src/lib/live.ts の supportsNativeHls と
-        // web/src/components/live-player.tsx の 3 段の梯子の写し。
+        // 再生経路はアプリと同じく hls.js に一本化する。
         async load(masterURL) {
           state.frames = []
           state.quanta = []
@@ -199,38 +191,28 @@ const HARNESS_HTML = String.raw`<!doctype html>
           video.removeAttribute('src')
           video.load()
 
-          const playlistMIME = video.canPlayType('application/vnd.apple.mpegurl')
-          const segmentMIME = video.canPlayType('video/mp2t')
-          const nativeHLS = playlistMIME !== '' && segmentMIME !== ''
-          const hlsSupported = !!window.Hls && window.Hls.isSupported()
-          if (!nativeHLS && hlsSupported) {
-            state.path = 'hls.js'
-            // アプリの録画再生は startAt が無いとき { startPosition: 0 } だけを渡す（live-player.tsx）。
-            const hls = new window.Hls({ startPosition: 0 })
-            state.hls = hls
+          if (!window.Hls || !window.Hls.isSupported()) throw new Error('hls.js がこのブラウザで利用できない')
+          state.path = 'hls.js'
+          // アプリの録画再生は startAt が無いとき { startPosition: 0 } だけを渡す（live-player.tsx）。
+          const hls = new window.Hls({ startPosition: 0 })
+          state.hls = hls
+          hls.on(window.Hls.Events.ERROR, (_event, data) => {
+            state.hlsErrors.push({ details: data.details, fatal: !!data.fatal, at: video.currentTime })
+          })
+          const metadataReady = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('hls.js の loadedmetadata が 15 秒以内に来ない')), 15_000)
+            video.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve() }, { once: true })
+            video.addEventListener('error', () => { clearTimeout(timer); reject(new Error('hls.js のメディア読み込みに失敗')) }, { once: true })
+          })
+          const manifestReady = new Promise((resolve, reject) => {
+            hls.on(window.Hls.Events.MANIFEST_PARSED, resolve)
             hls.on(window.Hls.Events.ERROR, (_event, data) => {
-              state.hlsErrors.push({ details: data.details, fatal: !!data.fatal, at: video.currentTime })
+              if (data.fatal) reject(new Error(data.details || data.type || 'fatal hls.js error'))
             })
-            await new Promise((resolve, reject) => {
-              hls.on(window.Hls.Events.MANIFEST_PARSED, resolve)
-              hls.on(window.Hls.Events.ERROR, (_event, data) => {
-                if (data.fatal) reject(new Error(data.details || data.type || 'fatal hls.js error'))
-              })
-              hls.loadSource(masterURL)
-              hls.attachMedia(video)
-            })
-          } else if (nativeHLS || playlistMIME !== '') {
-            state.path = 'native-hls'
-            await new Promise((resolve, reject) => {
-              const timer = setTimeout(() => reject(new Error('native HLS の loadedmetadata が 15 秒以内に来ない')), 15_000)
-              video.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve() }, { once: true })
-              video.addEventListener('error', () => { clearTimeout(timer); reject(new Error('native HLS の読み込みに失敗')) }, { once: true })
-              video.src = masterURL
-              video.load()
-            })
-          } else {
-            throw new Error('このブラウザに HLS / MediaSource の再生経路がない')
-          }
+          })
+          hls.loadSource(masterURL)
+          hls.attachMedia(video)
+          await Promise.all([manifestReady, metadataReady])
           state.startStage = 'audio-setup'
           if (!state.audioContext) {
             const AudioContext = window.AudioContext || window.webkitAudioContext
@@ -264,12 +246,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
               state.workletError = String(error)
             }
           }
-          return {
-            path: state.path,
-            nativeMIME: playlistMIME || '(empty)',
-            segmentMIME: segmentMIME || '(empty)',
-            duration: video.duration,
-          }
+          return { path: state.path, duration: video.duration }
         },
 
         // 一時停止して seek し、seeked の位置を返す。フレームは再生を始めてから読む。
@@ -308,13 +285,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
             state.hls.audioTrack = index
             return audioTracks()
           }
-          if (!video.audioTracks || video.audioTracks.length !== 3) {
-            throw new Error('native HLS の audioTracks が 3 本でない')
-          }
-          for (let trackIndex = 0; trackIndex < video.audioTracks.length; trackIndex += 1) {
-            video.audioTracks[trackIndex].enabled = trackIndex === index
-          }
-          return audioTracks()
+          throw new Error('hls.js の audioTracks が 3 本でない')
         },
 
         state() {
@@ -337,7 +308,6 @@ const HARNESS_HTML = String.raw`<!doctype html>
             frameError: state.frameError,
             startError: state.startError,
             startStage: state.startStage,
-            startClicks: state.startClicks,
             audioContextState: state.audioContext?.state,
             workletError: state.workletError,
           }
@@ -367,7 +337,6 @@ const HARNESS_HTML = String.raw`<!doctype html>
       }
 
       document.querySelector('#start').addEventListener('click', () => {
-        state.startClicks += 1
         window.__e2e.start().catch((error) => { state.startError = String(error) })
       })
     })()
@@ -502,8 +471,7 @@ const FREEZE_MS = 250
 
 /**
  * contentJumps は連続する frame callback の間で、フレーム番号の進みが表示時刻の差から外れた箇所を返す。
- * ネイティブ HLS は PTS に従って currentTime ごと飛ぶので、marker・mediaTime・currentTime が一致したまま
- * 内容が飛ぶ。それは壁時計との比較でしか見えない。
+ * mediaTime と currentTime が一致したまま内容が飛ぶ回帰を、壁時計との比較で検出する。
  */
 function contentJumps(frames) {
   const jumps = []
@@ -523,8 +491,7 @@ function channelMatches(sample, expected) {
     sample.leftRMS >= 0.02 && sample.rightRMS >= 0.02
 }
 
-// currentTime が mediaTime とずれてよい frame 数。ネイティブ HLS（WebKit）は callback の時点で currentTime が
-// 表示中のフレームより 2 frame 先を指す単発があったので 2、hls.js は 1 とする。
+// currentTime と mediaTime の差は 1 frame まで許す。
 function markerMismatches(frames, currentTolerance = 1) {
   return frames
     .map((sample) => ({
@@ -560,8 +527,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
   await adapter.navigate(adapter.serverURL + HARNESS_PATH)
   const loaded = await adapter.evaluate(async (url) => window.__e2e.load(url), masterURL)
   await waitForState(adapter, (s) => s.tracks.length === 3, 10_000, '音声 rendition 3 本')
-  const native = loaded.path === 'native-hls'
-  const summary = { browserPath: loaded.path, nativeMIME: loaded.nativeMIME, segmentMIME: loaded.segmentMIME }
+  const summary = { browserPath: loaded.path }
 
   // seek して再生を始め、シーク先から描かれる最初の数フレームを判定する。
   // 再生を始めるまでの間に、シーク前のフレームが 1〜2 回だけ callback に出るブラウザがある
@@ -592,20 +558,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
   }
 
   try {
-    await seekAndCheck(BOUNDARY - 1.5 * SEGMENT, async () => {
-      const before = await adapter.evaluate(() => window.__e2e.state().startClicks)
-      await adapter.click('#start')
-      if (adapter.engine === 'safari') {
-        // ボタンの処理が呼ばれていない場合だけ、もう一度実クリックする。
-        // play() の拒否や再生の停滞は再試行せず、通常の判定で失敗にする。
-        await delay(100)
-        const after = await adapter.evaluate(() => window.__e2e.state().startClicks)
-        if (after === before) {
-          log('  Safari: 開始ボタンの click が届かなかったため再クリック')
-          await adapter.click('#start')
-        }
-      }
-    })
+    await seekAndCheck(BOUNDARY - 1.5 * SEGMENT, () => adapter.click('#start'))
     let state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= BOUNDARY - 1.5 * SEGMENT + 0.5, 15_000, '再生開始')
     if (hold) {
       // 保留した映像 segment は再生が境界に着くまで返さない。止まるまで待ってから返す。
@@ -631,12 +584,12 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
       add('frame-freeze', `フレームが ${freezes[0].elapsedMs.toFixed(0)} ms 描かれなかった (frame ${freezes[0].from.frame}, currentTime=${freezes[0].from.currentTime.toFixed(3)}s; ${freezes.length} 箇所)`)
     }
     const timecodeErrors = markerMismatches(await adapter.evaluate(
-      (range) => window.__e2e.framesBetween(range[0], range[1]), [BOUNDARY - 0.5, BOUNDARY + 0.5]), native ? 2 : 1)
+      (range) => window.__e2e.framesBetween(range[0], range[1]), [BOUNDARY - 0.5, BOUNDARY + 0.5]))
     const boundaryFrames = await adapter.evaluate((range) => window.__e2e.framesBetween(range[0], range[1]), [BOUNDARY - 0.5, BOUNDARY + 0.5])
     summary.boundaryFrames = boundaryFrames.length
     if (boundaryFrames.length === 0) add('progress', `境界 ${BOUNDARY}s の映像フレームを取得できない`)
     else if (boundaryFrames.length < MIN_BOUNDARY_FRAMES) add('content-jump', `境界 ±0.5s のフレームが ${boundaryFrames.length} 枚しかない (${MIN_BOUNDARY_FRAMES} 枚以上が要る。currentTime ごと内容が飛ぶと減る)`)
-    // 不一致は 1 枚でも落とす。mediaTime と currentTime の許容だけ、ネイティブ HLS では 2 フレームにしてある。
+    // 不一致は 1 枚でも落とす。
     if (timecodeErrors.length > 0) {
       const sample = timecodeErrors[0]
       add('timecode', `currentTime=${sample.currentTime.toFixed(3)}s, mediaTime=${sample.mediaTime.toFixed(3)}s, marker=${sample.frameTime.toFixed(3)}s (media/current=${sample.mediaCurrentDeltaFrames} frames, marker/media=${sample.markerMediaDeltaFrames} frames; ${timecodeErrors.length}/${boundaryFrames.length} frames)`)
@@ -645,7 +598,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     const quiet = await adapter.evaluate((range) => window.__e2e.quietRun(range[0], range[1]), [BOUNDARY - 0.8, BOUNDARY + 0.8])
     const webAudioAvailable = quiet.loud > 0
     summary.audio = webAudioAvailable ? `AudioWorklet 128-sample RMS (${quiet.quanta} quanta)` : 'WebAudio に音声が届かない'
-    if (!webAudioAvailable && loaded.path !== 'native-hls') add('audio-unavailable', 'WebAudio に再生音声が届かず、境界の音声継続を測れない')
+    if (!webAudioAvailable) add('audio-unavailable', 'WebAudio に再生音声が届かず、境界の音声継続を測れない')
     if (webAudioAvailable) {
       if (quiet.longest >= 2) add('audio-gap', `境界 ±0.8s で 128 サンプルごとの RMS が ${quiet.longest} 回連続で無音 (約 ${(quiet.longest * 128 / quiet.sampleRate * 1000).toFixed(1)} ms 以上)`)
       const wrong = state.audio
@@ -655,18 +608,8 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     }
 
     for (const [trackIndex, expected, label] of [[1, [440, 440], '主'], [2, [880, 880], '副'], [0, [440, 880], '標準']]) {
-      const beforeSwitch = state.currentTime
       await adapter.evaluate(async (index) => window.__e2e.selectTrack(index), trackIndex)
-      if (!webAudioAvailable && loaded.path === 'native-hls') {
-        state = await waitForState(
-          adapter,
-          (s) => s.tracks[trackIndex]?.enabled && s.tracks.filter((track) => track.enabled).length === 1 && s.currentTime >= beforeSwitch + 0.3,
-          5_000,
-          `${label} のネイティブ audioTracks の選択と再生継続`,
-        )
-      } else {
-        state = await waitForState(adapter, (s) => channelMatches(s.audio.at(-1), expected), 8_000, `${label}音声への切替 (WebAudio の左右周波数)`)
-      }
+      state = await waitForState(adapter, (s) => channelMatches(s.audio.at(-1), expected), 8_000, `${label}音声への切替 (WebAudio の左右周波数)`)
     }
 
     const mark = server.mark()
@@ -674,9 +617,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     const target = server.segmentsAt(FAR_SEEK)
     const early = server.requestsBetween(0, mark).filter((requested) => target.includes(requested))
     summary.farSeekSegments = target.length
-    // ネイティブ HLS の先読みは hls.js の設定で決まらず、60 秒すべてを先に要求するので、この判定は省く。
-    if (native) summary.skipped = 'シーク前の要求 (native-hls は先読みをブラウザが決める)'
-    else if (!checkPrefetch) summary.skipped = 'シーク前の要求 (境界の手前から読み始めると、60 秒の録画では先読みの外になる位置が無い)'
+    if (!checkPrefetch) summary.skipped = 'シーク前の要求 (境界の手前から読み始めると、60 秒の録画では先読みの外になる位置が無い)'
     else if (target.length === 0) add('seek-buffered', `シーク先 ${FAR_SEEK}s を含む segment を playlist から特定できない`)
     else if (early.length > 0) add('seek-buffered', `シーク先 ${FAR_SEEK}s の segment をシーク前に要求していた (バッファ内でのシーク): ${early.join(', ')}`)
     state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= FAR_SEEK + 1, 15_000, '遠距離シーク後の再生継続')
@@ -697,7 +638,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
 
 async function main() {
   const engine = process.env.E2E_BROWSER ?? 'chrome'
-  if (!['chrome', 'webkit', 'safari'].includes(engine)) throw new Error(`E2E_BROWSER が不正: ${engine}`)
+  if (!['chrome', 'webkit'].includes(engine)) throw new Error(`E2E_BROWSER が不正: ${engine}`)
   // 正例は内蔵フィクスチャか E2E_MASTER_URL。負例は内蔵フィクスチャでしか作れない。
   const cases = []
   let upstream
@@ -709,15 +650,12 @@ async function main() {
     const generated = ensurePlaybackFixtures()
     for (const { format, kind, boundary } of generated.fixtures) {
       const negative = { 'off-grid': ['timecode', 'content-jump', 'frame-freeze'], 'no-offset': ['seek-frame', 'content-jump', 'frame-freeze'], 'audio-gap': ['audio-gap'] }[kind]
-      if (negative && engine !== 'chrome' && kind === 'audio-gap') continue
       cases.push({ name: `${format}/${kind}`, masterPath: `/${format}/${kind}/master.m3u8`, expect: negative, boundary, checkPrefetch: kind !== 'restarted-k16', optIn: kind === 'restarted-k16' })
     }
-    if (engine === 'chrome') {
-      // 境界の映像 segment の応答を、再生が境界の手前に来るまで保留する。
-      for (const format of new Set(generated.fixtures.map((fixture) => fixture.format))) {
-        const extension = format === 'ts' ? 'ts' : 'm4s'
-        cases.push({ name: `${format}/stall`, masterPath: `/${format}/restarted/master.m3u8`, expect: ['stall'], holdPath: `/${format}/restarted/segments/restart-video-000.${extension}`, boundary: SPLIT_SECONDS })
-      }
+    // 境界の映像 segment の応答を、再生が境界の手前に来るまで保留する。
+    for (const format of new Set(generated.fixtures.map((fixture) => fixture.format))) {
+      const extension = format === 'ts' ? 'ts' : 'm4s'
+      cases.push({ name: `${format}/stall`, masterPath: `/${format}/restarted/master.m3u8`, expect: ['stall'], holdPath: `/${format}/restarted/segments/restart-video-000.${extension}`, boundary: SPLIT_SECONDS })
     }
   }
 
@@ -729,8 +667,7 @@ async function main() {
   let adapter
   const problems = []
   try {
-    adapter = engine === 'safari' ? await createSafariAdapter() : await createPlaywrightAdapter(engine)
-    adapter.engine = engine
+    adapter = await createPlaywrightAdapter(engine)
     adapter.serverURL = served.url
     log(`browser: ${engine} ${adapter.version}`)
     for (const entry of selected) {
@@ -747,7 +684,7 @@ async function main() {
       const met = entry.expect
         ? summary.failures.some((failure) => entry.expect.some((tag) => failure.startsWith(`[${tag}]`)))
         : summary.failures.length === 0
-      log(`${met ? 'OK' : 'NG'}: ${entry.name}${entry.note ? ` (${entry.note})` : ''}${entry.expect ? ` (期待する失敗: ${entry.expect.join(' か ')})` : ''} via ${summary.browserPath} (canPlayType: playlist=${summary.nativeMIME}, video/mp2t=${summary.segmentMIME}); boundary frames=${summary.boundaryFrames}; audio=${summary.audio}; far-seek segments=${summary.farSeekSegments}${summary.skipped ? `; 省略: ${summary.skipped}` : ''}`)
+      log(`${met ? 'OK' : 'NG'}: ${entry.name}${entry.note ? ` (${entry.note})` : ''}${entry.expect ? ` (期待する失敗: ${entry.expect.join(' か ')})` : ''} via ${summary.browserPath}; boundary frames=${summary.boundaryFrames}; audio=${summary.audio}; far-seek segments=${summary.farSeekSegments}${summary.skipped ? `; 省略: ${summary.skipped}` : ''}`)
       if (summary.dump) log(`  境界のフレーム:\n    ${summary.dump.join('\n    ')}`)
       if (summary.hlsErrors?.length) log(`  hls.js のエラー: ${JSON.stringify(summary.hlsErrors)}`)
       for (const failure of summary.failures) log(`  ${entry.expect ? '失敗' : 'NG'}: ${failure}`)

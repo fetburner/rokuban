@@ -9,6 +9,33 @@ import { ToastProvider } from '@/components/toaster'
 import { liveStallTimeoutMs } from '@/lib/live'
 import { routeTree } from '@/routes'
 
+const pageHlsMockState = vi.hoisted(() => ({ instances: [] as unknown[] }))
+
+vi.mock('hls.js', () => {
+  class FakeHls {
+    static Events = {
+      ERROR: 'hlsError',
+      MANIFEST_PARSED: 'hlsManifestParsed',
+      AUDIO_TRACKS_UPDATED: 'hlsAudioTracksUpdated',
+      LEVEL_LOADED: 'hlsLevelLoaded',
+    }
+    static isSupported = () => true
+    on = vi.fn()
+    loadSource = vi.fn()
+    attachMedia = vi.fn()
+    destroy = vi.fn()
+    subtitleDisplay = true
+    audioTrack = 0
+    audioTracks: unknown[] = []
+    latency = 0
+    mainForwardBufferInfo: { len: number } | null = null
+    constructor() {
+      pageHlsMockState.instances.push(this)
+    }
+  }
+  return { default: FakeHls }
+})
+
 function service(overrides: Partial<Service>): Service {
   const networkId = overrides.networkId ?? 1
   const serviceId = overrides.serviceId ?? 1
@@ -215,8 +242,8 @@ function stubFetch(options: {
    * （`TypeError` で reject）で、この画面のテストがプレイヤー本体の状態遷移に
    * 踏み込まないようにしてある（状態遷移は `components/live-player.test.tsx`）。
    *
-   * `'ok'` にすると probe が通って `<video>` に URL が渡るので、`stalled` を
-   * 撃ち込んで**停滞時の自動降格**（issue #871）を画面の配線として確かめられる。
+   * `'ok'` にすると probe が通って hls.js が初期化され、進捗監視による
+   * **停滞時の自動降格**（issue #871）を画面の配線として確かめられる。
    */
   playlist?: 'unreachable' | 'ok'
 }) {
@@ -783,18 +810,12 @@ describe('LivePage', () => {
    * コールバックから値を受け取り、ライブ視聴中は操作バーの「ライブ」印の横に表示する
    * （`LivePlayer` 自身は計測値を描画しない）。この画面のテストは通常プレイリストを
    * unreachable に落として hls.js の動的 import を誘発しない（`stubFetch` の
-   * コメント参照）ため、ここだけプレイリストを 200 にしたうえで `canPlayType`
-   * をネイティブ HLS 対応に差し替え、`components/live-player.test.tsx` の
-   * `renderNativePath` と同じ手でネイティブ経路（hls.js 動的 import 不要）に
-   * 入れる。
+   * コメント参照）ため、ここだけプレイリストを 200 にし、フェイク hls.js の
+   * 診断値が操作バーへ渡ることを見る。
    */
   it('計器（issue #476/#1022）: EPG がなくても再生中はライブ印の横に出る', async () => {
     const user = userEvent.setup()
-    // プレイリスト応答を保留にし、「再生」を押した後・<video> が probe の
-    // 結果を読む前に canPlayType を差し替える窓を作る（`live-player.test.tsx`
-    // の `deferredFetch` と同じ手 --- 即座に解決する Promise だと、この
-    // テストが差し替えるより先に既定の canPlayType（jsdom は常に ''）で
-    // 経路が決まってしまう）。
+    // プレイリスト応答を保留し、hls.js の診断を描画する前にページを準備する。
     let resolvePlaylist!: (response: Response) => void
     const playlistResponse = new Promise<Response>((r) => {
       resolvePlaylist = r
@@ -822,19 +843,12 @@ describe('LivePage', () => {
     renderLive()
 
     await user.click(await screen.findByRole('button', { name: /チャンネル Aを再生/ }))
-    const videoEl = document.querySelector('video')!
-    vi.spyOn(videoEl, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
     resolvePlaylist(new Response('', { status: 200 }))
 
     const gauge = await screen.findByTestId('live-diagnostics')
-    // ネイティブ経路は「先読み」だけ（latency は取得できない）。jsdom の
-    // `video.buffered` は常に空なので「先読み—」のまま --- ここで見たいのは
-    // 数値そのものではなく、経路の区別（「放送から」を出さない）と
-    // EPG がなくても「ライブ」印と同じ操作列に描画されることを見る
+    // フェイク hls.js の同期点・バッファが未取得の値で表示されることを見る。
     expect(gauge).toHaveTextContent('先読み—')
-    expect(gauge.textContent).not.toContain('放送から')
+    expect(gauge).toHaveTextContent('放送から—')
     expect(gauge.textContent).not.toMatch(/\bNaN\b/)
     const controlsRow = screen.getByTestId('player-controls-row')
     expect(gauge.closest('[data-testid="player-controls-row"]')).toBe(controlsRow)
@@ -1697,9 +1711,8 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
  * 「利用者が明示的に選んだ画質は上書きしないこと」の両方向である ---
  * 後者はページの `handleStalled` にしか無い分岐なので、ここでしか固定できない。
  *
- * 停滞は**ネイティブ HLS 経路の既存の猶予**で作る（WebKit 相当に
- * `canPlayType` を差し替え、`stalled` を撃ち込んで `liveStallTimeoutMs` 進める）。
- * 実ブラウザでの判定は `web/e2e/live.mjs` ⑪（Chromium + hls.js 経路）。
+ * 停滞はフェイク hls.js 経路で再生位置を止め、`liveStallTimeoutMs` 進めて作る。
+ * 実ブラウザでの判定は `web/e2e/live.mjs` ⑪。
  */
 describe('LivePage / 停滞したときの画質の自動降格（issue #871）', () => {
   const PROFILES: LiveProfileSummary[] = [
@@ -1707,35 +1720,27 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     { name: 'sd', height: 480 },
   ]
 
-  /** ネイティブ HLS 経路（WebKit 相当）に入れる。実測値は `lib/live.ts` の表。 */
-  function forceNativePath() {
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
+  /** 再生位置を止めて、hls.js の進捗監視の猶予を満了させる。 */
+  async function advanceStallWindow() {
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    Object.defineProperty(video, 'paused', { value: false, configurable: true })
+    await act(async () => {
+      vi.advanceTimersByTime(liveStallTimeoutMs + 1000)
+    })
   }
 
-  /**
-   * 再生を始め、停滞を 1 回作って猶予を満了させる。
-   *
-   * **`stalled` を撃つ前に probe の完了を待つ。** 待たないと、watcher が張られる前
-   * にイベントが飛んで何も起きない（判定が空虚に通る）。
-   */
   async function stallOnce() {
+    const initialInstanceCount = pageHlsMockState.instances.length
     fireEvent.click(await screen.findByRole('button', { name: /再生/ }))
     await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
-    const video = document.querySelector('video')!
-    await act(async () => {
-      video.dispatchEvent(new Event('stalled'))
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(liveStallTimeoutMs)
-    })
+    await waitFor(() => expect(pageHlsMockState.instances.length).toBeGreaterThan(initialInstanceCount))
+    await advanceStallWindow()
   }
 
   it('自動のとき（?profile= なし）は 1 段下げ、映像上に通知して設定にも印を付ける', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    forceNativePath()
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       liveProfiles: PROFILES,
@@ -1758,9 +1763,8 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     expect(leaveHintURLs()).toEqual([])
   })
 
-  it('下げ先が無いときは現行どおりネイティブのエラー表示に落ちる', async () => {
+  it('下げ先が無いときはエラー表示にせず再生を続ける', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    forceNativePath()
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       liveProfiles: [{ name: 'hd', height: 720 }],
@@ -1770,22 +1774,19 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
 
     await stallOnce()
 
-    await screen.findByText(/映像データが途絶えました/)
     expect(playlistFetchCallCount()).toBe(1)
     expect(screen.queryByTestId('live-quality-downgraded')).not.toBeInTheDocument()
+    expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
   })
 
   /**
    * **両方向**: 利用者が明示的に選んだ画質は上書きしない。
    *
-   * `?profile=hd` があるので `handleStalled` は `false` を返し、`LivePlayer` は
-   * 従来どおりエラー表示に落ちる（ネイティブ経路の既存の挙動）。**「下げない」の
-   * 確認を空虚にしないため、猶予が実際に満了したこと（エラーが出ること）まで見る。**
+   * `?profile=hd` があるので `handleStalled` は `false` を返し、画質を下げない。
    */
-  it('明示選択のとき（?profile=hd）は下げず、従来どおりエラー表示に落ちる', async () => {
+  it('明示選択のとき（?profile=hd）は下げず、エラー表示にしない', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    forceNativePath()
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       liveProfiles: PROFILES,
@@ -1795,11 +1796,11 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
 
     await stallOnce()
 
-    await screen.findByText(/映像データが途絶えました/)
     // 下げていない（プレイリスト要求は最初の 1 件のまま）
     expect(playlistFetchCallCount()).toBe(1)
     expect(playlistFetchURLs()[0]).toContain('profile=hd')
     expect(screen.queryByTestId('live-quality-downgraded')).not.toBeInTheDocument()
+    expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
     await expectLiveProfileSelected(user, 'hd')
   })
 
@@ -1813,7 +1814,6 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
   it('自動で下げた後に手で選び直すと、自動は止まる', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    forceNativePath()
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       liveProfiles: PROFILES,
@@ -1825,34 +1825,30 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     await expectLiveProfileSelected(user, 'sd', true)
 
     // 手で hd に戻す（URL が明示選択を持つ）
+    const initialInstanceCount = pageHlsMockState.instances.length
     await selectLiveProfile(user, 'hd')
     await waitFor(() => expect(playlistFetchURLs().at(-1)).toContain('profile=hd'))
+    await waitFor(() => expect(pageHlsMockState.instances.length).toBeGreaterThan(initialInstanceCount))
     // 自動の通知は消える（もう自動ではない）
     expect(screen.queryByTestId('live-quality-downgraded')).not.toBeInTheDocument()
 
     const callsAfterManual = playlistFetchCallCount()
-    await act(async () => {
-      document.querySelector('video')!.dispatchEvent(new Event('stalled'))
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(liveStallTimeoutMs)
-    })
+    await advanceStallWindow()
 
-    // 明示選択なので下げない（要求は増えず、従来どおりエラー表示に落ちる）
-    await screen.findByText(/映像データが途絶えました/)
+    // 明示選択なので下げず、停滞だけではエラー表示にしない。
     expect(playlistFetchCallCount()).toBe(callsAfterManual)
+    expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
   })
 
   /**
    * **一覧の再取得が失敗しても、手元の一覧で下げる。** TanStack Query v5 は再取得に
    * 失敗しても前回の `data` を保ったまま `isError` を立てる。`isError` を見て
-   * 「判断保留（`'wait'`）」にすると、ネイティブ経路では降格せずにエラー表示へ落ちる。
+   * 「判断保留（`'wait'`）」にすると降格できなくなる。
    * 回線が不安定なままタブに戻ったとき（= 停滞が起きる状況）に起きる形である。
    */
   it('一覧の再取得が失敗しても、手元の一覧で 1 段下げる', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    forceNativePath()
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       liveProfiles: PROFILES,
@@ -1894,7 +1890,6 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
   it('A で下げた通知は、B を経由して A に戻った再生では出さない（画質は保つ）', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    forceNativePath()
     stubFetch({
       services: [
         service({ serviceId: 1, name: 'チャンネル A' }),

@@ -3,10 +3,8 @@
 // 配っている bundle が dist/ の現物と一致するかの確認、`/api/**` の配線、結果の
 // 集計と終了コード）だけ。各スクリプト固有の判定（何が OK/NG かの基準）は置かない
 // --- そちらは README.md「判定を足すときの規律」のとおり各 *.mjs 本体にとどめる。
-import { spawn } from 'node:child_process'
 import { readdirSync } from 'node:fs'
 import path from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
 import { chromium, firefox, webkit } from 'playwright'
 
 const ENGINES = { chromium, firefox, webkit }
@@ -15,9 +13,8 @@ const VALIDATE_FIXTURES_ONLY = process.env.E2E_VALIDATE_FIXTURES_ONLY === '1'
 /**
  * launchBrowser は指定したエンジンでブラウザを起動する。既定は chromium。
  *
- * chromium 固定にしていない --- `live.mjs` は WebKit（Safari 相当のネイティブ
- * HLS 経路を確認するため）と `{ channel: 'chrome' }`（実 H.264/AAC 再生の
- * ため）も起動する。
+ * chromium 固定にしていない --- `live.mjs` は Playwright WebKit と
+ * `{ channel: 'chrome' }`（実 H.264/AAC 再生のため）も起動する。
  */
 export function launchBrowser(engine = 'chromium', options) {
   return ENGINES[engine].launch(options)
@@ -258,8 +255,7 @@ export function streamerSeekSeconds(offset) {
 }
 
 /**
- * createPlaywrightAdapter は実 Chrome（`engine === 'chrome'`）か Playwright の WebKit を起動し、
- * Safari adapter と同じ形（navigate / click / evaluate / close）で返す。
+ * createPlaywrightAdapter は実 Chrome（`engine === 'chrome'`）か Playwright の WebKit を起動する。
  */
 export async function createPlaywrightAdapter(engine) {
   const browser = engine === 'chrome'
@@ -272,110 +268,5 @@ export async function createPlaywrightAdapter(engine) {
     click: (selector) => page.locator(selector).click(),
     evaluate: (fn, arg) => page.evaluate(fn, arg),
     close: () => browser.close(),
-  }
-}
-
-/**
- * createSafariAdapter は safaridriver 経由で実 Safari を操作する。navigate のたびに新しいウインドウを
- * 開いて前のウインドウを閉じる。ポートは `E2E_SAFARI_PORT`（既定 44444）。
- */
-export async function createSafariAdapter() {
-  const port = Number(process.env.E2E_SAFARI_PORT ?? 44444)
-  const base = `http://127.0.0.1:${port}`
-  const child = spawn('safaridriver', ['--port', String(port)], { stdio: 'ignore' })
-  let spawnError
-  child.once('error', (error) => { spawnError = error })
-  const request = async (method, url, body) => {
-    const response = await fetch(base + url, {
-      method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    const result = await response.json().catch(() => ({}))
-    if (!response.ok || result.value?.error) {
-      throw new Error(`Safari WebDriver ${method} ${url}: ${JSON.stringify(result)}`)
-    }
-    return result.value
-  }
-
-  let ready = false
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 20_000) {
-    if (spawnError) throw new Error(`safaridriver を起動できない: ${spawnError.message}`)
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(`safaridriver が ${child.exitCode ?? child.signalCode} で終了した`)
-    }
-    try {
-      await request('GET', '/status')
-      ready = true
-      break
-    } catch {
-      await delay(200)
-    }
-  }
-  if (!ready) {
-    child.kill('SIGTERM')
-    throw new Error('safaridriver が起動しない。checks/playback.md の Safari の設定を確認する')
-  }
-
-  try {
-    const session = await request('POST', '/session', {
-      capabilities: { alwaysMatch: { browserName: 'safari', acceptInsecureCerts: true } },
-    })
-    const sessionId = session.sessionId
-    let caseWindow
-    const pointerActions = async (id, actions) => {
-      await request('POST', `/session/${id}/actions`, {
-        actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' }, actions }],
-      })
-      await request('DELETE', `/session/${id}/actions`).catch(() => {})
-    }
-    await request('POST', `/session/${sessionId}/timeouts`, { script: 30_000, pageLoad: 30_000, implicit: 0 })
-    return {
-      version: `Safari ${session.capabilities?.browserVersion ?? '(version unavailable)'}`,
-      navigate: async (url) => {
-        const window = await request('POST', `/session/${sessionId}/window/new`, { type: 'window' })
-        if (caseWindow) {
-          await request('POST', `/session/${sessionId}/window`, { handle: caseWindow })
-          await request('DELETE', `/session/${sessionId}/window`)
-        }
-        await request('POST', `/session/${sessionId}/window`, { handle: window.handle })
-        caseWindow = window.handle
-        await request('POST', `/session/${sessionId}/url`, { url })
-      },
-      click: async (selector) => {
-        const element = await request('POST', `/session/${sessionId}/element`, { using: 'css selector', value: selector })
-        const elementId = element['element-6066-11e4-a52e-4f735466cecf'] ?? element.ELEMENT
-        if (!elementId) throw new Error(`Safari WebDriver が要素を返さない: ${JSON.stringify(element)}`)
-        await request('POST', `/session/${sessionId}/element/${elementId}/click`, {})
-      },
-      /** pointerMove は実ポインタを viewport 座標へ動かす（操作バーを出すのに使う）。 */
-      pointerMove: async (x, y) => {
-        await pointerActions(sessionId, [{ type: 'pointerMove', x: Math.round(x), y: Math.round(y), duration: 0, origin: 'viewport' }])
-      },
-      /** pointerClick は viewport 座標を実ポインタで押す。シークバーを利用者と同じ操作で押すのに使う。 */
-      pointerClick: async (x, y) => {
-        await pointerActions(sessionId, [
-          { type: 'pointerMove', x: Math.round(x), y: Math.round(y), duration: 0, origin: 'viewport' },
-          { type: 'pointerDown', button: 0 },
-          { type: 'pointerUp', button: 0 },
-        ])
-      },
-      evaluate: async (fn, arg) => {
-        const value = await request('POST', `/session/${sessionId}/execute/async`, {
-          script: `const done = arguments[arguments.length - 1]; Promise.resolve((${fn.toString()})(arguments[0])).then((value) => done({ ok: true, value }), (error) => done({ ok: false, error: String(error && error.stack || error) }));`,
-          args: [arg],
-        })
-        if (!value?.ok) throw new Error(value?.error ?? 'Safari WebDriver script failed')
-        return value.value
-      },
-      close: async () => {
-        await request('DELETE', `/session/${sessionId}`).catch(() => {})
-        child.kill('SIGTERM')
-      },
-    }
-  } catch (error) {
-    child.kill('SIGTERM')
-    throw error
   }
 }

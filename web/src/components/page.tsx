@@ -114,7 +114,7 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
  * 出すことになる。**ライブのエラー文（`pages/live.tsx` の 2 種
  * ---能力 API の未確定 / チャンネル一覧の取得失敗--- と、
  * `components/live-player.tsx` の `LiveErrorMessage`（`LiveLoadError` を
- * 表示する、hls.js/ネイティブ経路の再生エラー）の計 3 種）も寄せない**
+ * 表示する HLS 再生エラー）の計 3 種）も寄せない**
  * --- 経路ごとに原因説明が異なり、単純な再試行では原因の違いが伝わらない。
  */
 export function ErrorState({

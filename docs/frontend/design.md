@@ -658,7 +658,7 @@ Rokuban は利用者という概念を持たない（[api/deployment.md](../api/
 - アプリやサーバーの状態を動かす（ライブ視聴の開始など）
 - 標準 controls にその操作が無いことを対象ブラウザで実測した
 
-再生・一時停止、シーク、音量、再生速度、PiP は、標準 controls が提供するブラウザではそちらを使う。同じ値を自前 UI と標準 UI の両方から変更できると、別々の表示や状態になって利用者を迷わせる。設定の保存が Rokuban 側にあることは、自前の操作 UI を置く理由にしない。たとえば再生速度は、標準 controls の `ratechange` を端末の `localStorage` に保存し、新しい VOD / 追っかけの `<video>` に `defaultPlaybackRate` として適用する。通常のライブ視聴は別扱いにし、未検証のネイティブ HLS 再生速度を適用しない。
+再生・一時停止、シーク、音量、再生速度、PiP は、標準 controls が提供するブラウザではそちらを使う。同じ値を自前 UI と標準 UI の両方から変更できると、別々の表示や状態になって利用者を迷わせる。設定の保存が Rokuban 側にあることは、自前の操作 UI を置く理由にしない。たとえば再生速度は、標準 controls の `ratechange` を端末の `localStorage` に保存し、新しい VOD / 追っかけの `<video>` に `defaultPlaybackRate` として適用する。通常のライブ視聴には速度を適用しない（理由は [live/overview](live/overview.md)）。
 
 2026-09-23 の Chromium 151 実測では、標準 controls の `⋮` メニューに Playback speed と Picture in Picture があった。そのため、録画プレーヤーから再生速度セレクトと PiP ボタンを外した。ブラウザごとに標準バーの機能は異なる。Rokuban 独自の操作を追加する前に、対象ブラウザで標準 controls に機能が無いことを実測する。画面に置かないキー操作は、標準 controls に無い追加ショートカットだけを残し、入力欄や `<video>` にフォーカスがある間は処理しない（[recordings.md](recordings.md)、[live.md](live.md)）。
 

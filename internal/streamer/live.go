@@ -728,16 +728,6 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 
 	path := sessionFilePath(s.dir, name)
 
-	// **この Content-Type にフロントの再生経路判定が依存している。変えるなら
-	// `web/src/lib/live.ts` の `supportsNativeHls` も同時に変える。** あちらは
-	// 「`<video>` がプレイリストとセグメントの両方の MIME を再生できるか」で
-	// ネイティブ HLS と hls.js を振り分けており、MPEG-2 TS を demux できるのが
-	// WebKit だけであることが唯一の判別子になっている（m3u8 の MIME に対する
-	// `canPlayType` の戻り値は WebKit も Chrome も同じなので区別できない）。
-	// 例えばセグメントを fMP4（`video/mp4`）に変えると、Chrome の
-	// `canPlayType('video/mp4')` は `'maybe'` なのでネイティブ対応と誤判定され、
-	// **Chrome が沈黙して再生できなくなる**（M4-4 のレビューで 2 度踏んだ形）。
-	// `web/e2e/live.mjs` はこのハンドラをモックするため、この非互換を検出できない
 	switch filepath.Ext(name) {
 	case ".vtt":
 		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")

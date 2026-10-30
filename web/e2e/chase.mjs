@@ -10,7 +10,7 @@
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:chase
-//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase   # ネイティブ HLS 経路
+//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase   # Playwright WebKit の診断
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
@@ -174,9 +174,7 @@ if (entries.length < 3) {
 // The fixture has 2-second segments. The offset route deliberately serves a
 // different playlist so the component test can inspect actual media selection.
 
-// `E2E_BROWSER=webkit` で Safari 相当のネイティブ HLS 経路を通す。⑦ の位置の
-// 持ち越しは hls.js（`startPosition`）とネイティブ（`loadedmetadata` / `canplay`
-// での代入）で経路が別なので、両方で回す。
+// `E2E_BROWSER=webkit` は Playwright WebKit で hls.js の再生経路を診断する。
 const engine = process.env.E2E_BROWSER ?? 'chromium'
 log(`engine: ${engine}`)
 const browser = await launchBrowser(engine)
@@ -1315,8 +1313,8 @@ if (lastChasePlaylistOffset === playingReopenOffsetBefore) {
 } else if (playingState.paused !== false || !(playingState.currentTime > 0.5)) {
   ng.push(`⑤ 再生中に張り直したら再生が止まった（${JSON.stringify(playingState)}）`)
 } else if (playingState.currentTime > 4) {
-  // WebKit は張り直したセッションで再生を始めると先端へ動かしうる（原本 HLS と同じ再表明で防ぐ）。
-  ng.push(`⑤ 張り直したセッションで選んだ位置から再生しない（${JSON.stringify(playingState)}）`)
+  // hls.js の startPosition は新しい offset playlist の先頭を指す。
+  ng.push(`⑤ hls.js が新しい offset playlist の先頭から再生しない（${JSON.stringify(playingState)}）`)
 }
 await page.locator('video').evaluate((video) => video.pause())
 
@@ -1416,7 +1414,6 @@ growingSince = Date.now()
 growthCapSegments = Infinity
 finalizeChasePlaylist = false
 playlistEnded = false
-// ⑥ は ENDLIST の無い EVENT playlist のネイティブ挙動を見る。
 // 保存位置から始めるケースは ⑭ で検査するため、ここは offset 0 に戻す。
 // reload の pagehide が以前の位置を PUT し直さないよう、一度だけ seed を保持する。
 holdResumePositionSeed = true
@@ -1425,67 +1422,37 @@ await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1.5'))
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
 holdResumePositionSeed = false
-if (engine === 'webkit') {
-  await page.waitForFunction(
-    () => {
-      const video = document.querySelector('video')
-      return video !== null && video.duration === Infinity && video.playbackRate === 1 && !video.paused
-    },
-    { timeout: 10000 },
-  ).catch(() => ng.push('⑥ ENDLIST 前のネイティブ HLS 追っかけが 1 倍で再生されない'))
-  const beforeNativeEventPlayback = await page.locator('video').evaluate((video) => video.currentTime)
-  await page.waitForTimeout(2500)
-  const afterNativeEventPlayback = await page.locator('video').evaluate((video) => ({
-    currentTime: video.currentTime,
-    paused: video.paused,
-    playbackRate: video.playbackRate,
-  }))
-  if (
-    afterNativeEventPlayback.paused ||
-    afterNativeEventPlayback.playbackRate !== 1 ||
-    afterNativeEventPlayback.currentTime < beforeNativeEventPlayback + 1
-  ) {
-    ng.push(`⑥ 固定後のネイティブ HLS 追っかけが進まない（${JSON.stringify({ beforeNativeEventPlayback, afterNativeEventPlayback })}）`)
-  }
-  if (await page.evaluate(() => localStorage.getItem('rokuban:playback-rate')) !== '1.5') {
-    ng.push('⑥ ネイティブ HLS の一時固定で保存済み速度を上書きした')
-  }
-  await revealControls('⑥ 再生速度の確認')
-  await page.getByRole('button', { name: '再生設定' }).click()
-  const rateMenuItem = page.getByRole('menu', { name: '再生設定' }).getByRole('menuitem', { name: '再生速度' })
-  if ((await rateMenuItem.getAttribute('aria-disabled')) !== 'true') ng.push('⑥ ネイティブ HLS の再生速度を固定中に速度メニューが有効')
-
-  const beforePlaylistEnd = { finalized: finalizedChasePlaylistRequests }
-  await endChasePlaylist({ label: '⑥', before: beforePlaylistEnd })
-  await page.waitForFunction(
-    () => {
-      const video = document.querySelector('video')
-      return video !== null && Number.isFinite(video.duration) &&
-        video.playbackRate === 1.5 && video.defaultPlaybackRate === 1.5
-    },
-    undefined,
-    { timeout: 15000 },
-  ).catch(() => ng.push('⑥ EVENT playlist の ENDLIST 後に保存済み速度へ戻らない'))
-  if ((await rateMenuItem.getAttribute('aria-disabled')) === 'true') ng.push('⑥ 有限尺になった後も再生速度メニューが無効')
-  if (await page.evaluate(() => localStorage.getItem('rokuban:playback-rate')) !== '1.5') {
-    ng.push('⑥ 有限尺への移行後に保存済み速度が変わった')
-  }
-} else {
-  await page.waitForFunction(
-    () => {
-      const video = document.querySelector('video')
-      return video?.playbackRate === 1.5 && video.defaultPlaybackRate === 1.5
-    },
-    { timeout: 5000 },
-  ).catch(() => ng.push('⑥ 保存済みの VOD 共通速度が追っかけ video に適用されない'))
-
-  await page.locator('video').evaluate((video) => {
-    video.playbackRate = 1.25
-  })
-  await page.waitForFunction(
-    () => localStorage.getItem('rokuban:playback-rate') === '1.25',
-    { timeout: 5000 },
-  ).catch(() => ng.push('⑥ 追っかけの ratechange が VOD 共通設定に保存されない'))
+await page.waitForFunction(
+  () => {
+    const video = document.querySelector('video')
+    return video?.playbackRate === 1.5 && video.defaultPlaybackRate === 1.5
+  },
+  undefined,
+  { timeout: 10000 },
+).catch(() => ng.push('⑥ 保存済みの VOD 共通速度が追っかけ video に適用されない'))
+await revealControls('⑥ 再生速度の確認')
+await page.getByRole('button', { name: '再生設定' }).click()
+const rateMenuItem = page.getByRole('menu', { name: '再生設定' }).getByRole('menuitem', { name: '再生速度' })
+if ((await rateMenuItem.getAttribute('aria-disabled')) === 'true') ng.push('⑥ 追っかけ再生中に再生速度メニューが無効')
+await page.locator('video').evaluate((video) => { video.playbackRate = 1.25 })
+await page.waitForFunction(
+  () => localStorage.getItem('rokuban:playback-rate') === '1.25',
+  undefined,
+  { timeout: 5000 },
+).catch(() => ng.push('⑥ 追っかけの ratechange が VOD 共通設定に保存されない'))
+const beforePlaylistEnd = { finalized: finalizedChasePlaylistRequests }
+await endChasePlaylist({ label: '⑥', before: beforePlaylistEnd })
+await page.waitForFunction(
+  () => {
+    const video = document.querySelector('video')
+    return video !== null && Number.isFinite(video.duration) && video.playbackRate === 1.25
+  },
+  undefined,
+  { timeout: 15000 },
+).catch(() => ng.push('⑥ EVENT playlist の ENDLIST 後に再生速度が保たれない'))
+if ((await rateMenuItem.getAttribute('aria-disabled')) === 'true') ng.push('⑥ 有限尺になった後も再生速度メニューが無効')
+if (await page.evaluate(() => localStorage.getItem('rokuban:playback-rate')) !== '1.25') {
+  ng.push('⑥ 有限尺への移行後に保存済み速度が変わった')
 }
 
 // --- ⑦ 画質（プロファイル）の切替（issue #874） ---
