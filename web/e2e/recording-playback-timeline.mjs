@@ -567,10 +567,10 @@ async function runRecordingApiHlsCheck() {
   const picks = []
   for (const marker of markerTimes) {
     if (picks.length === 2) break
-    if (!(marker.hlsSeconds < mediaState.seekableEnd - 1)) continue
+    if (!(marker.expectedSeconds < mediaState.seekableEnd - 1)) continue
     for (let x = Math.ceil(box.x); x < box.x + box.width; x += 1) {
       const seconds = (x - box.x) / box.width * axisMax
-      if (seconds >= marker.hlsSeconds + margin && seconds < marker.hlsSeconds + frameSeconds - margin) {
+      if (seconds >= marker.expectedSeconds + margin && seconds < marker.expectedSeconds + frameSeconds - margin) {
         picks.push({ marker, x, seconds })
         break
       }
@@ -585,7 +585,7 @@ async function runRecordingApiHlsCheck() {
       const video = document.querySelector('video')
       return video && !video.seeking && video.currentTime >= from && video.currentTime < to &&
         window.__displayedMarkerSlot() === slot
-    }, { slot: marker.markerSlot, from: marker.hlsSeconds, to: marker.hlsSeconds + frameSeconds }, { timeout: 5000 })
+    }, { slot: marker.markerSlot, from: marker.expectedSeconds, to: marker.expectedSeconds + frameSeconds }, { timeout: 5000 })
       .then(() => true).catch(() => false)
     const observed = await page.evaluate(() => ({
       currentTime: document.querySelector('video').currentTime,
@@ -606,7 +606,7 @@ async function runRecordingApiHlsCheck() {
         return { t, now: video.currentTime, slot: window.__displayedMarkerSlot() }
       })
       log(`  診断 frame ${marker.frame}: 同じ位置へ再 seek 後 ${JSON.stringify(again)}`)
-      ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${marker.frame} ではない (${JSON.stringify(observed)}, want=${marker.hlsSeconds})`)
+      ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${marker.frame} ではない (${JSON.stringify(observed)}, want=${marker.expectedSeconds})`)
     }
   }
 
