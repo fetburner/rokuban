@@ -11,7 +11,6 @@ import {
 } from '@/api/generated'
 import type {
   EncodeProfileSummary,
-  LiveProfileSummary,
   Recording,
   RecordingChapters,
   DropStat,
@@ -19,7 +18,6 @@ import type {
 } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
-import { recordingDetailQueryKey, seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
@@ -77,12 +75,6 @@ vi.mock('hls.js', () => {
 
   return { default: FakeHls }
 })
-
-function emitRecordingHlsError(media: HTMLVideoElement): void {
-  const instance = [...recordingHlsMockState.instances].reverse().find((hls) => hls.media === media)
-  if (!instance) throw new Error('video に接続した hls.js instance がありません')
-  instance.emit('hlsError', { fatal: true })
-}
 
 afterEach(() => {
   try {
@@ -148,14 +140,9 @@ function createFakeServer(options: {
   recording: Recording | null
   sites?: string[]
   encodeProfiles?: EncodeProfileSummary[]
-  liveProfiles?: LiveProfileSummary[]
-  /** liveProfilesResponse は画質一覧の解決を遅延させるテスト用（issue #874）。 */
-  liveProfilesResponse?: () => Promise<Response>
   rules?: Rule[]
   /** cmDetectCapability は `GET /api/capabilities` の cmDetect（cm_detect.enabled）。既定は無効。 */
   cmDetectCapability?: boolean
-  /** liveCapability は録画 HLS の capability 非依存を確認するテストで使う。既定は有効。 */
-  liveCapability?: boolean
   /** rulesResponse はルール一覧の解決を遅延させるテスト用。 */
   rulesResponse?: () => Promise<Response>
   // deleteResponse / restoreResponse / purgeResponse / encodePostResponse は
@@ -183,13 +170,9 @@ function createFakeServer(options: {
   seriesRecordings?: Recording[]
 }) {
   let recording = options.recording
-  let chaseGone = false
-  let originalVODFailures = 0
   let recordingHLSFailures = 0
   const sites = options.sites ?? ['default']
   const encodeProfiles = options.encodeProfiles ?? []
-  const liveProfiles = options.liveProfiles ?? []
-  const liveProfilesResponse = options.liveProfilesResponse
   const rules = options.rules ?? []
   const rulesResponse = options.rulesResponse
   const deleteResponse = options.deleteResponse
@@ -211,13 +194,10 @@ function createFakeServer(options: {
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
-    if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: options.liveCapability ?? true, cmDetect: options.cmDetectCapability ?? false }))
+    if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ cmDetect: options.cmDetectCapability ?? false }))
     // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
-    if (url.pathname === '/api/live-profiles') {
-      return liveProfilesResponse ? liveProfilesResponse() : Promise.resolve(jsonResponse(liveProfiles))
-    }
     if (url.pathname === '/api/rules' && method === 'GET') {
       return rulesResponse ? rulesResponse() : Promise.resolve(jsonResponse(rules))
     }
@@ -374,42 +354,12 @@ function createFakeServer(options: {
       }
       return Promise.resolve(jsonResponse(null, 204))
     }
-    if (
-      /^\/api\/sites\/[^/]+\/recordings\/\d+\/chase(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(
-        url.pathname,
-      )
-    ) {
-      // 録画が終わった後・idle GC の後は新しい追っかけのセッションを作れない（404）。
-      if (chaseGone) return Promise.resolve(new Response('gone\n', { status: 404 }))
-      return Promise.resolve(new Response('#EXTM3U\n', { status: 200 }))
-    }
-    if (
-      /^\/api\/sites\/[^/]+\/recordings\/\d+\/chase(?:\/offset\/\d+)?\/leave$/.test(url.pathname) &&
-      method === 'POST'
-    ) {
-      return Promise.resolve(new Response(null, { status: 204 }))
-    }
-    if (/^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(url.pathname)) {
-      if (originalVODFailures > 0) {
-        originalVODFailures -= 1
-        return Promise.resolve(new Response('gone\n', { status: 404 }))
-      }
-      return Promise.resolve(
-        new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nhd.0.m3u8\n', { status: 200 }),
-      )
-    }
     if (/^\/api\/media\/stores\/[^/]+\/recordings\/\d+\/hls\/v\d+\/[^/]+\/master\.m3u8$/.test(url.pathname)) {
       if (recordingHLSFailures > 0) {
         recordingHLSFailures -= 1
         return Promise.resolve(new Response('expired generation\n', { status: 410 }))
       }
       return Promise.resolve(new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nhd.m3u8\n', { status: 200 }))
-    }
-    if (
-      /^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod(?:\/offset\/\d+)?\/leave$/.test(url.pathname) &&
-      method === 'POST'
-    ) {
-      return Promise.resolve(new Response(null, { status: 204 }))
     }
 
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
@@ -425,14 +375,6 @@ function createFakeServer(options: {
     /** setChapters はサーバー側の層を差し替える（再取得は呼び出し側が invalidate する）。 */
     setChapters: (next: RecordingChapters) => {
       currentChapters = next
-    },
-    /** setChaseGone は追っかけのセッションを作れない状態（404）にする。 */
-    setChaseGone: (gone: boolean) => {
-      chaseGone = gone
-    },
-    /** failOriginalVOD は原本 HLS の playlist を次の count 回だけ 404 にする。 */
-    failOriginalVOD: (count: number) => {
-      originalVODFailures = count
     },
     /** failRecordingHLS は録画 API HLS の master を次の count 回だけ 410 にする。 */
     failRecordingHLS: (count: number) => {
@@ -750,8 +692,11 @@ describe('RecordingDetailPage', () => {
       { encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 },
       barToggle,
     ],
-    ['原本のみ（HLS プレイヤー内）', { sizeBytes: 1_000_000 }, barToggle],
-    ['原本のみ（HLS 再生不可ならプレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
+    ['録画 HLS のみ（プレイヤー内）', {
+      sizeBytes: 1_000_000,
+      hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8' }],
+    }, barToggle],
+    ['HLS URL が無い原本 TS（プレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
     ['資産なし（プレイヤー外）', {}, outsideButton],
   ] as [string, Partial<Recording>, (watched: boolean) => { name: string; pressed?: boolean }][])(
     '視聴済みボタン: %s',
@@ -759,12 +704,11 @@ describe('RecordingDetailPage', () => {
       it('押すと PUT、もう一度押すと DELETE が飛ぶ', async () => {
         const { fetchMock } = createFakeServer({
           recording: sampleRecording({ ...overrides }),
-          liveProfiles: _name === '原本のみ（HLS プレイヤー内）' ? [{ name: 'hd', height: 720 }] : [],
         })
         const user = userEvent.setup()
         renderAt('/recordings/3')
 
-        if (_name === '原本のみ（HLS プレイヤー内）') {
+        if (_name === '録画 HLS のみ（プレイヤー内）') {
           await user.click(await screen.findByTestId('recording-playback-start'))
           await screen.findByRole('button', { name: '再生設定' })
           expect(screen.queryByRole('button', { name: '視聴済みにする' })).not.toBeInTheDocument()
@@ -1035,7 +979,7 @@ describe('RecordingDetailPage', () => {
     expect(router.state.location.pathname).toBe('/recordings/4')
   })
 
-  it('原本のみの次の回も自動再生し、再生元を替えても全画面コンテナを保つ', async () => {
+  it('録画 HLS の次の回も自動再生し、再生元を替えても全画面コンテナを保つ', async () => {
     const user = userEvent.setup()
     const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
@@ -1052,12 +996,12 @@ describe('RecordingDetailPage', () => {
       series: '作品X',
       sizeBytes: 1_000_000,
       encodedAssets: [],
+      hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/4/hls/v1/hd/master.m3u8' }],
       startAt: '2026-01-08T12:00:00Z',
     })
     createFakeServer({
       recording: origin,
       seriesRecordings: [origin, next],
-      liveProfiles: [{ name: 'hd', height: 720 }],
     })
 
     const { router } = renderAt('/recordings/3')
@@ -1092,7 +1036,7 @@ describe('RecordingDetailPage', () => {
       expect(document.fullscreenElement).toBe(fullscreenContainer)
       expect(fullscreenContainer.querySelector('[data-testid="recording-player-frame"]')).not.toBeNull()
 
-      await waitFor(() => expect(nextVideo.getAttribute('data-hls-source')).toContain('/original-vod/playlist.m3u8'))
+      await waitFor(() => expect(nextVideo.getAttribute('data-hls-source')).toBe('/api/media/stores/media/recordings/4/hls/v1/hd/master.m3u8'))
       fireEvent.canPlay(nextVideo)
       await waitFor(() => expect(playSpy).toHaveBeenCalled())
       expect(screen.getByRole('button', { name: '全画面を終了' })).toBeInTheDocument()
@@ -1247,94 +1191,6 @@ describe('RecordingDetailPage', () => {
     renderAt('/recordings/999999')
 
     expect(await screen.findByText('録画が見つかりません')).toBeInTheDocument()
-  })
-
-  it('追っかけポスターの録画範囲も番組開始から数える', async () => {
-    const now = Date.now()
-    const startAt = new Date(now - 30 * 60_000).toISOString()
-    const startedAt = new Date(Date.parse(startAt) - 15_000).toISOString()
-    createFakeServer({
-      recording: sampleRecording({
-        startAt,
-        durationMs: 2 * 60 * 60_000,
-        status: 'recording',
-        startedAt,
-      }),
-    })
-
-    renderAt('/recordings/3')
-
-    const timeline = await screen.findByTestId('recording-playback-preview-timeline')
-    expect(timeline.getAttribute('aria-label')).toContain('録画時間: 0:00 から 120:00 まで（予定）')
-    expect(timeline.getAttribute('aria-label')).not.toContain('-0:15')
-    expect(screen.getByTestId('recording-playback-preview-recorded')).toHaveStyle({ left: '0%', width: '25%' })
-  })
-
-  it('追っかけは番組開始からの経過を共通バー1本に表示する', async () => {
-    const now = Date.now()
-    const startAt = new Date(now - 60 * 60_000).toISOString()
-    const startedAt = new Date(Date.parse(startAt) - 15_000).toISOString()
-    createFakeServer({
-      recording: sampleRecording({
-        startAt,
-        durationMs: 2 * 60 * 60_000,
-        status: 'recording',
-        startedAt,
-      }),
-    })
-
-    renderAt('/recordings/3#chase')
-
-    const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    expect(slider).toHaveAttribute('aria-valuemin', '0')
-    expect(slider).toHaveAttribute('aria-valuemax', '7200')
-    expect(slider).toHaveAttribute('aria-valuenow', '0')
-    expect(slider.getAttribute('aria-valuetext')).toMatch(/^0:00 \/ 録画済み 60:0[0-1]$/)
-    expect(screen.queryByRole('button', { name: '最新' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('slider', { name: '追っかけ再生の位置' })).not.toBeInTheDocument()
-    const group = screen.getByTestId('recording-playback-group')
-    const track = group.querySelector('[data-testid="chase-timeline-track"]')
-    expect(track).not.toBeNull()
-    expect(track?.closest('[data-testid="player-controls"]')).not.toBeNull()
-    expect(group.querySelector('[data-testid="chase-live-edge"]')).not.toBeNull()
-    expect(group.querySelector('[data-testid="chase-timeline-end"]')?.textContent).toContain('予定')
-    expect(screen.queryByRole('heading', { name: '追っかけ再生' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '閉じる' })).not.toBeInTheDocument()
-    expect(screen.queryByTestId('recording-playback-start')).not.toBeInTheDocument()
-    expect(screen.getByTestId('playback-time').textContent).toMatch(/\/ 録画済み /)
-  })
-
-  it('追っかけ表示中は録画端を 1 秒ごとに進める', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    try {
-      const now = Date.now()
-      const startAt = new Date(now - 60 * 60_000).toISOString()
-      const startedAt = new Date(Date.parse(startAt) - 15_000).toISOString()
-      createFakeServer({
-        recording: sampleRecording({
-          startAt,
-          durationMs: 2 * 60 * 60_000,
-          status: 'recording',
-          startedAt,
-        }),
-      })
-
-      renderAt('/recordings/3#chase')
-
-      const slider = await screen.findByRole('slider', { name: 'シークバー' })
-      const secondsAtMount = Number(/録画済み 60:(\d+)/.exec(slider.getAttribute('aria-valuetext') ?? '')?.[1])
-      expect(Number.isFinite(secondsAtMount)).toBe(true)
-
-      await act(async () => vi.advanceTimersByTimeAsync(1000))
-
-      const secondsAfterTick = Number(
-        /録画済み 60:(\d+)/.exec(slider.getAttribute('aria-valuetext') ?? '')?.[1],
-      )
-      expect(secondsAfterTick).toBeGreaterThan(secondsAtMount)
-    } finally {
-      cleanup()
-      vi.useRealTimers()
-    }
   })
 
   // ごみ箱の録画も 200 で返る（getRecording の openapi.yaml description の決定）
@@ -2239,577 +2095,6 @@ describe('RecordingDetailPage ルール導線 (issue #230)', () => {
   })
 })
 
-/**
- * 追っかけ再生の画質（プロファイル）切替（issue #874）。
- *
- * **置き場所は `/recordings/$id` の search（`?liveProfile=`）である。**
- * 追っかけは `/recordings/{id}#chase` にあり、`#chase` 側（ハッシュ）に持たせると
- * `pages/recording-detail.tsx` の `key={`${recording.id}:${location.hash}`}` が
- * 変わり、`RecordingDetail` ごと作り直されて再生位置が先頭に戻る。`profile` という
- * 名前を使わないのは、この画面に `encode.profiles`（VOD）と `live.profiles`
- * （追っかけ）の 2 軸が同居していて、素の `profile` ではどちらか読めないためである。
- *
- * ここで見るのは配線だけである --- 実再生と「切替で位置が巻き戻らないこと」は
- * `components/live-player.test.tsx` と `web/e2e/chase.mjs` の担い。
- */
-describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
-  const LIVE_PROFILES: LiveProfileSummary[] = [
-    { name: 'hd', height: 720 },
-    { name: 'sd', height: 480 },
-  ]
-
-  /** chasePlaylistURLs は追っかけのプレイリスト要求 URL（呼ばれた順）。 */
-  type FetchMock = { mock: { calls: [string | URL | Request, RequestInit?][] } }
-
-  function chasePlaylistURLs(fetchMock: FetchMock): string[] {
-    return fetchMock.mock.calls
-      .map(([url]) => String(url))
-      .filter((url) => url.includes('/chase') && url.includes('playlist.m3u8'))
-  }
-
-  /**
-   * chaseLeaveURLs は離脱ヒント（`POST .../chase/leave`）の宛先。jsdom には
-   * `navigator.sendBeacon` が無いので、`keepalive` つきの POST にフォールバックする。
-   */
-  function chaseLeaveURLs(fetchMock: FetchMock): string[] {
-    return fetchMock.mock.calls
-      .filter(([, init]) => init?.method === 'POST')
-      .map(([url]) => String(url))
-      .filter((url) => url.endsWith('/leave'))
-  }
-
-  /** chaseRecording は追っかけを出せる録画（録画中 + 追っかけの VOD プロファイル）。 */
-  function chaseRecording(overrides: Partial<Recording> = {}): Recording {
-    const now = Date.now()
-    return sampleRecording({
-      startAt: new Date(now - 60 * 60_000).toISOString(),
-      startedAt: new Date(now - 2 * 60_000).toISOString(),
-      durationMs: 2 * 60 * 60_000,
-      status: 'recording',
-      // VOD 側のプロファイル。再生位置のキーはこちらで作る（画質とは別の軸）
-      encodeProfiles: ['vod-h264'],
-      ...overrides,
-    })
-  }
-
-  it('続きからは保存位置の offset を使い、通常表示では再生操作まで追っかけを始めない', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording(),
-      playbackState: { positionMs: 12 * 60_000 },
-      liveProfiles: LIVE_PROFILES,
-    })
-
-    renderAt('/recordings/3')
-
-    await screen.findByTestId('recording-playback-start')
-    expect(screen.queryByRole('heading', { name: '追っかけ再生' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '閉じる' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '追っかけ再生' })).not.toBeInTheDocument()
-    expect(document.querySelectorAll('video')).toHaveLength(0)
-    expect(chasePlaylistURLs(fetchMock)).toEqual([])
-
-    await user.click(screen.getByTestId('recording-playback-start'))
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    expect(chasePlaylistURLs(fetchMock)[0]).toContain('/chase/offset/720/playlist.m3u8')
-    expect(document.querySelectorAll('video')).toHaveLength(1)
-    const video = document.querySelector('video')!
-    fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(0)
-  })
-
-  it('追っかけのポスターに再開位置と録画範囲を示し、先頭から見る操作も再生開始まで変換しない', async () => {
-    const user = userEvent.setup()
-    const now = Date.now()
-    const startedAt = new Date(now - 25 * 60_000).toISOString()
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording({ startAt: startedAt, startedAt, durationMs: 60 * 60_000 }),
-      playbackState: { positionMs: 12 * 60_000 },
-      liveProfiles: LIVE_PROFILES,
-    })
-
-    renderAt('/recordings/3')
-
-    expect(await screen.findByRole('button', { name: '続きから再生（12:00）' })).toBeInTheDocument()
-    expect(screen.getByText('録画済み 25分 · 押すと追っかけ再生を始めます')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '先頭から見る' })).toBeInTheDocument()
-    expect(screen.getByTestId('recording-playback-preview-timeline')).toHaveAttribute(
-      'aria-label',
-      '録画時間: 0:00 から 60:00 まで（予定）、録画済み 25:00',
-    )
-    expect(chasePlaylistURLs(fetchMock)).toEqual([])
-    expect(document.querySelectorAll('video')).toHaveLength(0)
-
-    await user.click(screen.getByRole('button', { name: '先頭から見る' }))
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    expect(document.querySelectorAll('video')).toHaveLength(1)
-    const video = document.querySelector('video')!
-    fireEvent.loadedMetadata(video)
-    await waitFor(() => expect(video.currentTime).toBe(0))
-  })
-
-  /**
-   * 切替の配線（受け入れ 6）。`?profile=` の値が `chasePlaylistURL` に届くこと、
-   * 切替で離脱ヒントが飛ばないこと、再開位置が recording 単位で API に保存されることを見る。
-   */
-  it('画質を切り替えると ?profile= が要求に載り、離脱ヒントも位置のキーも変えない', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording(),
-      liveProfiles: LIVE_PROFILES,
-    })
-
-    renderAt('/recordings/3#chase')
-
-    await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    const settings = screen.getByRole('menu', { name: '再生設定' })
-    const qualityEntry = within(settings).getByRole('menuitem', { name: '画質' })
-    // 既定はサーバー側と同じ先頭。表示名は height を添える
-    expect(qualityEntry).toHaveAccessibleDescription('hd（720p）')
-    await user.click(qualityEntry)
-    const quality = screen.getByRole('menu', { name: '画質' })
-    expect(within(quality).getByRole('menuitemradio', { name: 'hd（720p）' })).toHaveAttribute('aria-checked', 'true')
-    expect(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' })).toHaveAttribute('aria-checked', 'false')
-
-    // 既定は URL に書き戻さない（`?profile=` を付けずサーバー側の先頭に任せる）
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
-
-    await user.click(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' }))
-
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(2))
-    expect(chasePlaylistURLs(fetchMock)[1]).toContain('profile=sd')
-    // **切替はセッションを手放す合図ではない** --- 追っかけのセッション鍵は
-    // `(recordingID, offset)` でプロファイルを含まない（同じセッションの
-    // 別プレイリストを取るだけ）。
-    expect(chaseLeaveURLs(fetchMock)).toEqual([])
-
-    // 再開位置は画質ではなく recording 単位で保存する。
-    const video = document.querySelector('video')!
-    fireEvent.canPlay(video)
-    video.currentTime = 12
-    fireEvent.pause(video)
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position'),
-      ).toHaveLength(1)
-    })
-    const positionWrite = fetchMock.mock.calls.find(
-      ([url]) => String(url) === '/api/recordings/3/playback-position',
-    )
-    expect(positionWrite?.[1]).toEqual(
-      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ positionMs: 12_000 }) }),
-    )
-  })
-
-  /** 選ぶ余地が無いのに出すと「機能しないコントロール」に戻る（issue #209 の規律）。 */
-  it('一覧が 1 件ならセレクタを出さず、既定のプロファイルで再生する', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording(),
-      liveProfiles: [{ name: 'hd', height: 720 }],
-    })
-
-    renderAt('/recordings/3#chase')
-
-    await screen.findByRole('button', { name: '再生設定' })
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    await user.click(screen.getByRole('button', { name: '再生設定' }))
-    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
-    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
-  })
-
-  /**
-   * **一覧は選択肢を出すためだけのもので、再生の前提条件ではない。** 取得失敗
-   * （0 件）でも追っかけは既定のプロファイルで動き続ける。
-   */
-  it('一覧が 0 件でもセレクタを出さず、既定のプロファイルで再生する', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({ recording: chaseRecording(), liveProfiles: [] })
-
-    renderAt('/recordings/3#chase')
-
-    await screen.findByRole('button', { name: '再生設定' })
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    await user.click(screen.getByRole('button', { name: '再生設定' }))
-    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
-  })
-
-  /** 直リンク（受け入れ: 復元の両方向）。有効な `?liveProfile=` は選択状態として復元される。 */
-  it('直リンクの ?liveProfile= が選択状態として復元される', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording(),
-      liveProfiles: LIVE_PROFILES,
-    })
-
-    renderAt('/recordings/3?liveProfile=sd#chase')
-
-    await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
-    expect(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'sd（480p）' }))
-      .toHaveAttribute('aria-checked', 'true')
-    // **要求に実際に載ることまで見る。** セレクタの表示だけだと、URL の値を
-    // そのまま握って選択肢に無い値でも「先頭が選ばれて見える」状態と区別できない
-    // （React の controlled `<select>` は一致しない値で先頭に落ちるだけ）。
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    expect(chasePlaylistURLs(fetchMock)[0]).toContain('profile=sd')
-  })
-
-  it('追っかけの音声を ?audio= に保持し、標準へ戻すとクエリを外す', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording(),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { router } = renderAt('/recordings/3?audio=sub#chase')
-
-    await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '音声' }))
-    expect(within(screen.getByRole('menu', { name: '音声' })).getByRole('menuitemradio', { name: '副音声' }))
-      .toHaveAttribute('aria-checked', 'true')
-    await user.click(within(screen.getByRole('menu', { name: '音声' })).getByRole('menuitemradio', { name: '主音声' }))
-
-    await waitFor(() => expect(router.state.location.search.audio).toBe('main'))
-    expect(router.state.location.hash).toBe('chase')
-    const playlists = chasePlaylistURLs(fetchMock)
-    expect(playlists).toHaveLength(1)
-    expect(playlists[0]).not.toContain('audio=')
-
-    await user.click(screen.getByRole('button', { name: '再生設定' }))
-    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '音声' }))
-    await user.click(within(screen.getByRole('menu', { name: '音声' })).getByRole('menuitemradio', { name: '標準' }))
-    await waitFor(() => expect(router.state.location.search.audio).toBeUndefined())
-    expect(router.state.location.hash).toBe('chase')
-    expect(chasePlaylistURLs(fetchMock)).toHaveLength(1)
-  })
-
-  /**
-   * **未知の名前は落ちて既定（先頭）になる。** streamer は一覧に無い名前を
-   * 400（`unknown chase profile`）で返すので、落とさないと綴り違いの共有リンク・
-   * 古いブックマークがエラー画面になる（`lib/live.ts` の `validLiveProfile`）。
-   */
-  it('未知の ?liveProfile= は既定に落ちる（400 を踏まない）', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording(),
-      liveProfiles: LIVE_PROFILES,
-    })
-
-    renderAt('/recordings/3?liveProfile=does-not-exist#chase')
-
-    await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
-    expect(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'hd（720p）' }))
-      .toHaveAttribute('aria-checked', 'true')
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
-    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('does-not-exist')
-  })
-
-  /**
-   * **URL が画質を名指ししているときは、一覧の到着を待ってから再生させる。**
-   * 名指しされた値の実在は一覧が無いと確かめられないので、待たずに再生を始めると
-   * `undefined → 'sd'` の変化で `LivePlayer` の effect が再実行され、追っかけが
-   * 先頭からやり直しになる（`pages/live.tsx` の `waitingForProfileList` と同じ窓）。
-   */
-  it('URL が画質を名指ししているときは一覧の到着を待ち、届いても取り直さない', async () => {
-    let releaseLiveProfiles!: (response: Response) => void
-    const pending = new Promise<Response>((resolve) => {
-      releaseLiveProfiles = resolve
-    })
-    const { fetchMock } = createFakeServer({
-      recording: chaseRecording(),
-      liveProfilesResponse: () => pending,
-    })
-
-    renderAt('/recordings/3?liveProfile=sd#chase')
-
-    // 一覧が未解決の間はプレイリストを要求しない
-    await screen.findByText('再生設定を読み込み中…')
-    expect(chasePlaylistURLs(fetchMock)).toEqual([])
-
-    await act(async () => {
-      releaseLiveProfiles(jsonResponse(LIVE_PROFILES))
-    })
-
-    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
-    expect(chasePlaylistURLs(fetchMock)[0]).toContain('profile=sd')
-    expect(chaseLeaveURLs(fetchMock)).toEqual([])
-  })
-})
-
-describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
-  // アサーションが落ちても保存位置を次のテストへ持ち越さない
-  afterEach(() => {
-    localStorage.clear()
-  })
-
-  const LIVE_PROFILES: LiveProfileSummary[] = [
-    { name: 'hd', height: 720 },
-    { name: 'sd', height: 480 },
-  ]
-
-  function originalVODURLs(fetchMock: { mock: { calls: [string | URL | Request, RequestInit?][] } }) {
-    return fetchMock.mock.calls
-      .map(([url]) => String(url))
-      .filter((url) => url.includes('/original-vod/playlist.m3u8'))
-  }
-
-  async function selectOriginalVODProfile(user: ReturnType<typeof userEvent.setup>, profile: string) {
-    if (!screen.queryByRole('menu', { name: '再生設定' })) {
-      await user.click(screen.getByRole('button', { name: '再生設定' }))
-    }
-    const settings = screen.getByRole('menu', { name: '再生設定' })
-    await user.click(within(settings).getByRole('menuitem', { name: '画質' }))
-    const quality = screen.getByRole('menu', { name: '画質' })
-    await user.click(within(quality).getByRole('menuitemradio', { name: new RegExp(profile) }))
-  }
-
-  it('エンコードの無い完成録画は HLS で原本を再生し、プロファイルを同じ recording URL に渡す', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: sampleRecording({
-        startedAt: '2026-01-01T12:02:00Z',
-        endedAt: '2026-01-01T12:30:00Z',
-        durationMs: 60_000,
-        sizeBytes: 1_000_000,
-        encodeProfiles: ['vod-h264'],
-        encodedAssets: [],
-      }),
-      liveProfiles: LIVE_PROFILES,
-      chapters: {
-        version: 'chapters-v1',
-        detectionPending: false,
-        source: 'auto',
-        spans: [{ startMs: 10_000, endMs: 15_000, label: 'CM', cut: true }],
-      },
-    })
-
-    renderAt('/recordings/3')
-
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    await screen.findByRole('button', { name: '再生設定' })
-    expect(await screen.findByTestId('chapter-marker')).toBeInTheDocument()
-    await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    expect(screen.getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })).toHaveAttribute('aria-checked', 'true')
-    const settings = await screen.findByRole('menu', { name: '再生設定' })
-    await user.click(within(settings).getByRole('menuitem', { name: '画質' }))
-    expect(
-      within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: /hd/ }),
-    ).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1680')
-    await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(1))
-    expect(originalVODURLs(fetchMock)[0]).toBe(
-      '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
-    )
-    expect(screen.getByRole('link', { name: /ダウンロード \/ VLC/ })).toHaveAttribute(
-      'href',
-      '/api/media/recordings/3/file',
-    )
-    expect(screen.queryByText('ブラウザ再生用のエンコードがまだありません。')).not.toBeInTheDocument()
-
-    await user.click(
-      within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: /sd/ }),
-    )
-    await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(2))
-    expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
-  })
-
-  it('原本 HLS の尺は予定より前にチューナーを開いた時間を含めない', async () => {
-    createFakeServer({
-      recording: sampleRecording({
-        startedAt: '2026-01-01T11:59:45Z',
-        endedAt: '2026-01-01T12:30:02Z',
-        durationMs: 1_800_000,
-        sizeBytes: 1_000_000,
-        encodedAssets: [],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-
-    renderAt('/recordings/3')
-    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
-    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1802')
-  })
-
-  it('endedAt が無い原本だけの録画は予定尺をシークバーの長さに代用する', async () => {
-    createFakeServer({
-      recording: sampleRecording({
-        startedAt: '2026-01-01T12:02:00Z',
-        endedAt: undefined,
-        durationMs: 1_800_000,
-        sizeBytes: 1_000_000,
-        encodedAssets: [],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    renderAt('/recordings/3')
-    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
-    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1800')
-  })
-
-  it('encode profile が無い録画でも再開位置は画質によらず recording 単位で保存する', async () => {
-    const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
-      recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    renderAt('/recordings/3')
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    await screen.findByRole('button', { name: '再生設定' })
-    await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    await screen.findByRole('menuitem', { name: '画質' })
-    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
-
-    const video = document.querySelector('video')!
-    // 開始位置を canplay で明示し終えるまでは位置を保存しない（WebKit の端への飛びを書かない）。
-    fireEvent.canPlay(video)
-    Object.defineProperty(video, 'currentTime', { value: 30, writable: true, configurable: true })
-    fireEvent.pause(video)
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position'),
-      ).toHaveLength(1)
-    })
-
-    await selectOriginalVODProfile(user, 'sd')
-    await waitFor(() => expect(screen.queryByRole('menu', { name: '再生設定' })).toBeNull())
-    const after = document.querySelector('video')!
-    fireEvent.canPlay(after)
-    Object.defineProperty(after, 'currentTime', { value: 40, writable: true, configurable: true })
-    fireEvent.pause(after)
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position'),
-      ).toHaveLength(2)
-    })
-    const writes = fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position')
-    expect(writes.map(([url, init]) => [String(url), init?.body])).toEqual([
-      ['/api/recordings/3/playback-position', JSON.stringify({ positionMs: 30_000 })],
-      ['/api/recordings/3/playback-position', JSON.stringify({ positionMs: 40_000 })],
-    ])
-  })
-
-  it('録画 API HLS は live capability を問わず使い、410 後は最新世代の URL へ保存位置を引き継ぐ', async () => {
-    const user = userEvent.setup()
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
-    const urlFor = (generation: number, profile = 'hd') =>
-      `/api/media/stores/media/recordings/3/hls/v${generation}/${profile}/master.m3u8`
-    const first = sampleRecording({
-      sizeBytes: 1_000_000,
-      encodedAssets: [],
-      hlsPlayback: [{ profile: 'hd', masterUrl: urlFor(1) }, { profile: 'sd', masterUrl: urlFor(1, 'sd') }],
-    })
-    const latest = {
-      ...first,
-      hlsPlayback: [{ profile: 'hd', masterUrl: urlFor(2) }, { profile: 'sd', masterUrl: urlFor(2, 'sd') }],
-    }
-    const server = createFakeServer({
-      recording: first,
-      liveCapability: false,
-      playbackState: { positionMs: 12_500 },
-    })
-
-    renderAt('/recordings/3')
-    expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
-    // 一度は version 1 を読む状態でプレイヤーを選び、master の 410 を境に REST だけ version 2 へ進める。
-    server.setRecording(latest)
-    server.failRecordingHLS(1)
-    await user.click(await screen.findByTestId('recording-playback-start'))
-
-    await waitFor(() => {
-      const requested = server.fetchMock.mock.calls
-        .map(([input]) => String(input))
-        .filter((url) => url.includes('/hls/'))
-      expect(requested).toContain(urlFor(1))
-      expect(requested).toContain(urlFor(2))
-    })
-    const requestedUrls = server.fetchMock.mock.calls.map(([input]) => String(input))
-    expect(requestedUrls).not.toContain('/api/sites/default/recordings/3/original-vod/playlist.m3u8')
-    expect(requestedUrls).not.toContain('/api/sites/default/recordings/3/chase/playlist.m3u8')
-    expect(requestedUrls.filter((url) => url === '/api/recordings/3')).toHaveLength(2)
-    // The resumed API HLS source receives the server's recording-relative position.
-    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
-    const video = document.querySelector('video')!
-    let currentTime = 0
-    Object.defineProperty(video, 'currentTime', {
-      get: () => currentTime,
-      set: (value: number) => { currentTime = value },
-      configurable: true,
-    })
-    fireEvent.loadedMetadata(video)
-    fireEvent.canPlay(video)
-    expect(currentTime).toBe(12.5)
-    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1800')
-  })
-
-  /**
-   * 受け入れ「追っかけ / 原本 VOD の切替で録画 ID と再生位置の対応が壊れない」。
-   * encode profile が無い録画でも、録画中に追っかけで保存した位置を録画終了後の
-   * 原本 VOD が読む。キーの文字列ではなく、保存と復元が噛み合うことを見る。
-   */
-  it('encode profile の構成に依らず、追っかけで保存した位置を原本 VOD が復元する', async () => {
-    const now = Date.now()
-    const playbackState: { positionMs?: number } = {}
-    const recording = sampleRecording({
-      startAt: new Date(now - 60 * 60_000).toISOString(),
-      startedAt: new Date(now - 2 * 60_000).toISOString(),
-      durationMs: 2 * 60 * 60_000,
-      sizeBytes: 1_000_000,
-      encodedAssets: [],
-      encodeProfiles: ['cut', 'h264'],
-    })
-    createFakeServer({
-      recording: { ...recording, status: 'recording' },
-      liveProfiles: LIVE_PROFILES,
-      playbackState,
-    })
-    renderAt('/recordings/3#chase')
-    await screen.findByRole('button', { name: '再生設定' })
-    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
-    const chaseVideo = document.querySelector('video')!
-    Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
-    fireEvent.pause(chaseVideo)
-    await waitFor(() => expect(playbackState.positionMs).toBe(42_000))
-    cleanup()
-
-    const vodServer = createFakeServer({
-      recording: { ...recording, status: 'finished' },
-      liveProfiles: LIVE_PROFILES,
-      playbackState,
-    })
-    renderAt('/recordings/3')
-    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
-    await screen.findByRole('slider', { name: 'シークバー' })
-    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
-    const vodVideo = document.querySelector('video')!
-    await waitFor(() => expect(vodServer.fetchMock.mock.calls.map(([input]) => String(input)).find((url) => url.includes('/original-vod/'))).toContain('/original-vod/offset/42/'))
-    Object.defineProperty(vodVideo, 'currentTime', { value: 0, writable: true, configurable: true })
-    fireEvent.loadedMetadata(vodVideo)
-    // offset 42 の起点（41.97527 秒）からの端数だけが残る。絶対位置 42 を渡す退行はここで 42 になる。
-    expect(vodVideo.currentTime).toBeLessThan(1)
-  })
-
-  it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {
-    createFakeServer({
-      recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
-      liveProfiles: [],
-    })
-
-    renderAt('/recordings/3')
-
-    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
-    expect(await screen.findByText(/HLS 再生プロファイルを利用できません/)).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
-    expect(document.querySelector('video')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /VLC 等で開く/ })).toHaveAttribute(
-      'href',
-      '/api/media/recordings/3/file',
-    )
-  })
-})
-
 // #1018 の見直し: シリーズの導線・棚・終端カードの移動・メニュー・版タブの細部。
 describe('RecordingDetailPage シリーズの導線と終端カードの移動 (#1018)', () => {
   const seriesEpisode = (id: number, startAt: string, overrides: Partial<Recording> = {}) =>
@@ -3176,50 +2461,6 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     })
   })
 
-  it('次の回へ移ると、追っかけ再生で選んでいた位置を先頭に戻す（キー操作でも前の位置を使わない）', async () => {
-    const user = userEvent.setup()
-    const now = Date.now()
-    const live = (id: number, minutesAgo: number) =>
-      seriesEpisode(id, new Date(now - minutesAgo * 60_000).toISOString(), {
-        status: 'recording',
-        startedAt: new Date(now - minutesAgo * 60_000).toISOString(),
-        durationMs: 2 * 60 * 60_000,
-        encodedAssets: undefined,
-        sizeBytes: undefined,
-      })
-    const origin = live(3, 10)
-    const other = live(4, 5)
-    const { fetchMock } = createFakeServer({ recording: origin, seriesRecordings: [other, origin] })
-    renderAt('/recordings/3')
-
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    const chasePaths = () =>
-      fetchMock.mock.calls
-        .map(([input]) => new URL(String(input), 'http://localhost').pathname)
-        .filter((path) => path.endsWith('/playlist.m3u8') && path.includes('/chase'))
-    // 前の回で、録画の先端（End キー）へ移って offset 付きのセッションを張り直しておく。
-    const originSlider = await screen.findByRole('slider', { name: 'シークバー' })
-    fireEvent.keyDown(originSlider, { key: 'End' })
-    fireEvent.keyUp(originSlider, { key: 'End' })
-    await waitFor(() => expect(chasePaths().some((path) => /\/recordings\/3\/chase\/offset\/\d+\//.test(path))).toBe(true))
-
-    const shelf = screen.getByTestId('recording-series-shelf')
-    await user.click(within(within(shelf).getByRole('list')).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')!)
-    expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    await waitFor(() => expect(chasePaths().filter((path) => path.includes('/recordings/4/'))).toHaveLength(1))
-    // 次の回は前の回の offset を引き継がず、録画の先頭のセッションから始める。
-    expect(chasePaths().filter((path) => path.includes('/recordings/4/'))).toEqual([
-      '/api/sites/default/recordings/4/chase/playlist.m3u8',
-    ])
-    expect(slider).toHaveAttribute('aria-valuenow', '0')
-    fireEvent.keyUp(slider, { key: 'ArrowRight' })
-    // 前の回の位置を確定していれば、次の回の offset 付きプレイリストを取りに行く。
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(chasePaths().filter((path) => path.includes('/recordings/4/chase/offset/'))).toEqual([])
-  })
-
   it('棚のサムネイルに視聴の進み線を重ねる（視聴済みは全幅、途中は保存位置の割合、未視聴は出さない）', async () => {
     const watched = seriesEpisode(2, '2025-12-25T12:00:00Z', { watchedAt: '2026-01-02T00:00:00Z' })
     const origin = seriesEpisode(3, '2026-01-01T12:00:00Z', { resumePositionMs: 450_000, durationMs: 1_800_000 })
@@ -3371,50 +2612,46 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     expect(screen.queryByRole('button', { name: 'このまま確認' })).not.toBeInTheDocument()
   })
 
-  it('live が有効なら cut-only asset がある録画も original HLS から編集でき、編集開始で session を作り直さない', async () => {
+  it('cut-only asset がある録画も録画 HLS から編集でき、編集開始で player を作り直さない', async () => {
     const user = userEvent.setup()
     const chapters: RecordingChapters = {
-      version: 'original-vod-v1',
+      version: 'recording-hls-v1',
       detectionPending: false,
       source: 'auto',
       spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
     }
-    const { fetchMock } = createFakeServer({
+    createFakeServer({
       recording: sampleRecording({
         sizeBytes: 1_000_000,
         encodeProfiles: ['cut-only'],
         encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000 }],
+        hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8' }],
       }),
-      liveProfiles: [{ name: 'hd', height: 720 }],
       chapters,
     })
     renderAt('/recordings/3')
     await user.click(await screen.findByTestId('recording-playback-start'))
     const video = (await screen.findByLabelText('録画映像')) as HTMLVideoElement
-    const originalPlaylistRequests = () => fetchMock.mock.calls.filter(([input]) => {
-      const url = new URL(String(input), 'http://localhost')
-      return url.pathname === '/api/sites/default/recordings/3/original-vod/playlist.m3u8'
-    }).length
-    await waitFor(() => expect(originalPlaylistRequests()).toBeGreaterThan(0))
-    const playlistsBeforeEdit = originalPlaylistRequests()
+    const masterUrl = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
+    await waitFor(() => expect(video.getAttribute('data-hls-source')).toBe(masterUrl))
 
     await user.click(screen.getByRole('button', { name: '再生設定' }))
     await user.click(await screen.findByRole('menuitem', { name: 'チャプターを直す' }))
     await screen.findByTestId('chapter-edit-layout')
 
     expect(screen.getByLabelText('録画映像')).toBe(video)
-    expect(originalPlaylistRequests()).toBe(playlistsBeforeEdit)
+    expect(video.getAttribute('data-hls-source')).toBe(masterUrl)
   })
 
-  it('原本 HLS の reset API が失敗したら編集画面と下書きを保つ', async () => {
+  it('録画 HLS の reset API が失敗したら編集画面と下書きを保つ', async () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: sampleRecording({
         sizeBytes: 1_000_000,
         encodeProfiles: ['cut-only'],
         encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000 }],
+        hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8' }],
       }),
-      liveProfiles: [{ name: 'hd', height: 720 }],
       chapters: {
         version: 'user-v1',
         detectionPending: false,
@@ -3440,20 +2677,20 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     expect(within(screen.getByTestId('chapter-edit-layout')).getByLabelText('ラベル')).toHaveValue('直した')
   })
 
-  it('版タブからカット版と原本 HLS を切り替え、再生中表示を追従させる', async () => {
+  it('版タブからカット版と録画 HLS を切り替え、再生中表示を追従させる', async () => {
     const user = userEvent.setup()
-    const { fetchMock } = createFakeServer({
+    createFakeServer({
       recording: sampleRecording({
         sizeBytes: 1_000_000,
         encodeProfiles: ['cut-only'],
         encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000, cutStale: true }],
+        hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8' }],
       }),
-      liveProfiles: [{ name: 'hd', height: 720 }],
     })
     renderAt('/recordings/3')
     await selectDetailTab('版')
 
-    const originalButton = await screen.findByRole('button', { name: '原本 HLS を再生' })
+    const originalButton = await screen.findByRole('button', { name: '録画 HLS を再生' })
     await user.click(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' })).toBeDisabled())
     const cutRow = screen.getByTestId('recording-version-row')
@@ -3461,9 +2698,8 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     expect(screen.getByRole('button', { name: '作り直す' })).toBeInTheDocument()
 
     await user.click(originalButton)
-    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
-    )).toBe(true))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source'))
+      .toBe('/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'))
     await waitFor(() => expect(within(screen.getByTestId('recording-original-row')).getByText('再生中')).toBeInTheDocument())
     expect(within(cutRow).queryByText('再生中')).not.toBeInTheDocument()
   })
@@ -3481,7 +2717,6 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
           { profile: 'cut-only', cut: true, sizeBytes: 500_000, keepRanges: [{ startMs: 0, endMs: 1000 }] },
         ],
       }),
-      liveProfiles: [{ name: 'hd', height: 720 }],
     })
     renderAt('/recordings/3')
     await selectDetailTab('版')
@@ -3567,927 +2802,68 @@ describe('RecordingDetailPage メニューと版タブの細部 (#1018)', () => 
   })
 })
 
-// 再生元の選び直し（範囲外のシーク・エラー。終端では選び直さない）。レイアウトと実再生は web/e2e/chase.mjs と
-// web/e2e/recording-original-vod.mjs が実ブラウザで見る。ここは「どの契機で、どの再生元へ、
-// どの位置を持ち越すか」の配線を固定する。
-describe('RecordingDetailPage 再生元の選び直し', () => {
-  const LIVE_PROFILES: LiveProfileSummary[] = [
-    { name: 'hd', height: 720 },
-    { name: 'sd', height: 480 },
-  ]
-  const RUNNING = {
-    startAt: '2026-01-01T12:00:00Z',
-    startedAt: '2026-01-01T12:00:00Z',
-    durationMs: 120_000,
-    status: 'recording' as const,
-    encodeProfiles: ['vod-h264'],
-  }
-  // 録画が終わった後の同じ録画（encoded あり）。
-  const FINISHED = {
-    ...RUNNING,
-    status: 'finished' as const,
-    endedAt: '2026-01-01T12:02:00Z',
-    sizeBytes: 1_000_000,
-    encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
-  }
-  const playlistPaths = (fetchMock: ReturnType<typeof createFakeServer>['fetchMock'], kind: string) =>
-    fetchMock.mock.calls
-      .map(([input]) => new URL(String(input), 'http://localhost').pathname)
-      .filter((path) => path.endsWith('/playlist.m3u8') && path.includes(kind))
+// 世代付き録画 HLS の選択と世代切替を固定する。
+describe('RecordingDetailPage 録画 HLS', () => {
+  const urlFor = (generation: number, profile = 'hd') =>
+    `/api/media/stores/media/recordings/3/hls/v${generation}/${profile}/master.m3u8`
 
-  async function startChase() {
+  it('録画 HLS はポスター操作後にのみ選択した世代の URL を player に渡す', async () => {
     const user = userEvent.setup()
+    const url = urlFor(1)
     const fake = createFakeServer({
-      recording: sampleRecording(RUNNING),
-      liveProfiles: LIVE_PROFILES,
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodedAssets: [],
+        hlsPlayback: [{ profile: 'hd', masterUrl: url }],
+      }),
     })
-    const rendered = renderAt('/recordings/3')
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    await waitFor(() => expect(document.querySelector('video')).not.toBeNull())
-    return { user, ...fake, ...rendered }
-  }
-
-  it('録画開始直後に hlsPlayback が現れたら、ポスターから v1 を再生する', async () => {
-    const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
-    const fake = createFakeServer({
-      recording: sampleRecording({ ...RUNNING, ingest: { state: 'pending' }, hlsPlayback: [], encodedAssets: [] }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { queryClient } = renderAt('/recordings/3')
-    await screen.findByTestId('recording-playback-preview-timeline')
-
-    fake.setRecording(sampleRecording({
-      ...RUNNING,
-      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
-      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
-      encodedAssets: [],
-    }))
-    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-    await waitFor(() => expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-      data: { hlsPlayback: [{ masterUrl: url }] },
-    }))
-    await waitFor(() => expect(screen.queryByTestId('recording-playback-preview-timeline')).not.toBeInTheDocument())
-
-    await userEvent.setup().click(screen.getByTestId('recording-playback-start'))
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(url))
-    expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
-  })
-
-  it('#chase が source none で開いても、後から現れた v1 を自動再生する', async () => {
-    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
-    const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
-    const fake = createFakeServer({
-      recording: sampleRecording({ ...RUNNING, ingest: { state: 'pending' }, hlsPlayback: [], encodedAssets: [] }),
-      liveCapability: false,
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { queryClient } = renderAt('/recordings/3#chase')
-    await waitFor(() => expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toBeDefined())
-    expect(document.querySelector('video')).toBeNull()
-
-    fake.setRecording(sampleRecording({
-      ...RUNNING,
-      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
-      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
-      encodedAssets: [],
-    }))
-    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(url))
-    const video = document.querySelector('video')!
-    fireEvent.canPlay(video)
-    await waitFor(() => expect(play).toHaveBeenCalled())
-    expect(play.mock.contexts[0]).toBe(video)
-    expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
-  })
-
-  it('次のエピソードへ自動再生で移った先が source none で始まり、後から v1 が現れると、操作なしで v1 の再生が始まる', async () => {
-    const user = userEvent.setup()
-    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
-    const url = '/api/media/stores/media/recordings/4/hls/v1/hd/master.m3u8'
-    const origin = sampleRecording({
-      id: 3,
-      title: '作品X 第1話',
-      series: '作品X',
-      sizeBytes: 1_000_000,
-      encodedAssets: [{ profile: 'h264', sizeBytes: 900_000 }],
-    })
-    // 一覧の行は原本つきで「再生できる行」に数える。詳細は録画開始直後（原本なし・hlsPlayback 空）。
-    const nextListed = sampleRecording({
-      id: 4,
-      title: '作品X 第2話',
-      series: '作品X',
-      sizeBytes: 1_000_000,
-      encodedAssets: [],
-      startAt: '2026-01-08T12:00:00Z',
-    })
-    const nextDetail = sampleRecording({
-      ...RUNNING,
-      id: 4,
-      title: '作品X 第2話',
-      series: '作品X',
-      startAt: '2026-01-08T12:00:00Z',
-      ingest: { state: 'pending' },
-      hlsPlayback: [],
-      encodedAssets: [],
-    })
-    const fake = createFakeServer({
-      recording: origin,
-      seriesRecordings: [origin, nextListed],
-      liveCapability: false,
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { queryClient } = renderAt('/recordings/3')
-    fireEvent.ended(await screen.findByLabelText('録画映像'))
-    const card = await screen.findByTestId('recording-end-card')
-    fake.setRecording(nextDetail)
-    await user.click(within(card).getByRole('button', { name: '今すぐ再生' }))
-    await waitFor(() => expect(queryClient.getQueryData(recordingDetailQueryKey(4))).toBeDefined())
-    expect(document.querySelector('video')).toBeNull()
-
-    fake.setRecording(sampleRecording({
-      ...nextDetail,
-      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
-      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
-    }))
-    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(4) })
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(url))
-    const video = document.querySelector('video')!
-    fireEvent.canPlay(video)
-    await waitFor(() => expect(play).toHaveBeenCalled())
-    expect(play.mock.contexts.at(-1)).toBe(video)
-    expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
-  })
-
-  it('追っかけ再生中に hlsPlayback が現れても、再生元は追っかけのまま替わらない', async () => {
-    const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
-    const server = await startChase()
-    expect(playlistPaths(server.fetchMock, '/chase').length).toBeGreaterThan(0)
-    const video = document.querySelector('video')!
-    const before = video.getAttribute('data-hls-source')
-
-    server.setRecording(sampleRecording({
-      ...RUNNING,
-      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
-      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
-      encodedAssets: [],
-    }))
-    await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-    await waitFor(() => expect(server.queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-      data: { hlsPlayback: [{ masterUrl: url }] },
-    }))
-
-    expect(document.querySelector('video')).toBe(video)
-    expect(video.getAttribute('data-hls-source')).toBe(before)
-    expect(video.getAttribute('data-hls-source')).not.toBe(url)
-  })
-
-  /** finishRecording は録画が終わった状態を取り直させる（追っかけのセッションはそのまま）。 */
-  async function finishRecording(
-    server: Awaited<ReturnType<typeof startChase>>,
-    overrides: Partial<Recording> = {},
-  ) {
-    server.setRecording(sampleRecording({ ...FINISHED, ...overrides }))
-    await server.queryClient.invalidateQueries()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
-
-  // 追っかけの ENDLIST は mirakc の録画が終わってから付く（docs/api/media.md）。終端はどの位置でも
-  // 録画ファイルの終端で、壁時計の録画時間（ここでは 120 秒）とは比べない。
-  it('録画が終わっても追っかけを替えず、追っかけの終端では壁時計の録画時間より手前でも終了の状態のまま止まる', async () => {
-    const server = await startChase()
-    const chaseVideo = document.querySelector('video')!
-    await finishRecording(server)
-    expect(document.querySelector('video')).toBe(chaseVideo)
-
-    setMediaProps(chaseVideo, { currentTime: 10 })
-    fireEvent.ended(chaseVideo)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(document.querySelector('video')).toBe(chaseVideo)
-    expect(playlistPaths(server.fetchMock, '/original-vod')).toEqual([])
-  })
-
-  it('録画完了の取得より先に追っかけが終わっても、完了の状態が届いた後に別の再生元を作らない', async () => {
-    const server = await startChase()
-    const chaseVideo = document.querySelector('video')!
-    setMediaProps(chaseVideo, { currentTime: 10 })
-    fireEvent.ended(chaseVideo)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-
-    await finishRecording(server)
-    expect(document.querySelector('video')).toBe(chaseVideo)
-    expect(playlistPaths(server.fetchMock, '/original-vod')).toEqual([])
-  })
-
-  it('追っかけのセッションが消えたら、録画の状態から選び直して今の位置を持ち越す', async () => {
-    const server = await startChase()
-    const chaseVideo = document.querySelector('video')!
-    await finishRecording(server)
-
-    // 位置は 30 秒（再生イベントはまだ無い = このセッションは「再生した」と見なさない）。
-    setMediaProps(chaseVideo, { currentTime: 30 })
-    fireEvent.seeked(chaseVideo)
-    server.setChaseGone(true)
-    // 画質の切替でセッションを張り直すと、追っかけの playlist が 404 になる。
-    await server.user.click(await screen.findByRole('button', { name: '再生設定' }))
-    await server.user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
-    await server.user.click(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'sd（480p）' }))
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
-    const encoded = document.querySelector('video')!
-    setMediaProps(encoded, { currentTime: 0 })
-    fireEvent.loadedMetadata(encoded)
-    expect(encoded.currentTime).toBe(30)
-  })
-
-  it('押す前に録画が終わって追っかけが 404 でも、保存位置を 0 秒で上書きせず、移った先で再生を始める', async () => {
-    const user = userEvent.setup()
-    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
-    const fake = createFakeServer({
-      recording: sampleRecording({ ...RUNNING, resumePositionMs: 12_000 }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { queryClient } = renderAt('/recordings/3')
-    await screen.findByTestId('recording-playback-start')
-    // ポスターを出したまま録画が終わり（原本のみ）、追っかけは作れなくなる。
-    fake.setRecording(sampleRecording({
-      ...RUNNING,
-      status: 'finished',
-      endedAt: '2026-01-01T12:02:00Z',
-      sizeBytes: 1_000_000,
-      resumePositionMs: 12_000,
-    }))
-    fake.setChaseGone(true)
-    await queryClient.invalidateQueries()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    await user.click(screen.getByTestId('recording-playback-start'))
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod').length).toBeGreaterThan(0))
-    expect(playlistPaths(fake.fetchMock, '/original-vod')[0]).toContain('/original-vod/offset/12/')
-    const video = document.querySelector('video')!
-    setMediaProps(video, { currentTime: 0 })
-    fireEvent.loadedMetadata(video)
-    // offset 12 の起点（11.97863 秒）からの端数だけが残る。絶対位置 12 を渡す退行はここで 12 になる。
-    expect(video.currentTime).toBeLessThan(1)
-    // ▶ を押した意図は、再生前に消えた追っかけから原本 HLS へ持ち越す（押し直させない）。
-    expect(playSpy).not.toHaveBeenCalled()
-    fireEvent.canPlay(video)
-    await waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1))
-    expect(playSpy.mock.contexts[0]).toBe(video)
-  })
-
-  it('同じ再生元のままのエラーは上限つきで張り直し、上限を超えたらエラー表示に落とす', async () => {
-    const user = userEvent.setup()
-    const fake = createFakeServer({
-      recording: sampleRecording(RUNNING),
-      liveProfiles: LIVE_PROFILES,
-    })
-    fake.setChaseGone(true)
     renderAt('/recordings/3')
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    await screen.findByRole('button', { name: '再読み込み' })
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    // 最初の 1 回 + 張り直し 2 回。
-    expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(3)
+
+    await screen.findByTestId('recording-playback-start')
+    expect(document.querySelector('video')).toBeNull()
+    expect(fake.fetchMock.mock.calls.some(([input]) => String(input).includes('/hls/'))).toBe(false)
+
+    await user.click(screen.getByTestId('recording-playback-start'))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(url))
+    expect(screen.getByTestId('recording-hls-source-label')).toHaveTextContent('録画 HLS')
   })
 
-  it('追っかけのエラー時は詳細を REST で取り直し、commit 済みなら原本 HLS へ移る', async () => {
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('probably')
-    const fake = createFakeServer({
-      recording: sampleRecording({
-        ...RUNNING,
-        status: 'finished',
-        endedAt: '2026-01-01T12:02:00Z',
-        ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
-        encodedAssets: [],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    renderAt('/recordings/3#chase')
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1))
-    const detailRequestsBeforeError = fake.fetchMock.mock.calls.filter(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
-    ).length
-
-    // commit はサーバー側で先に終わる。SSE/invalidate は送らず query cache を未 commit のままにする。
-    fake.setRecording(sampleRecording({
-      ...FINISHED,
-      ingest: { state: 'committed' },
-      encodedAssets: [],
-    }))
-    emitRecordingHlsError(document.querySelector('video')!)
-
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod').length).toBeGreaterThan(0))
-    const detailRequestsAfterError = fake.fetchMock.mock.calls.filter(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
-    ).length
-    expect(detailRequestsAfterError).toBeGreaterThan(detailRequestsBeforeError)
-    expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
-    expect(screen.queryByText('追っかけ再生中にエラーが発生しました')).not.toBeInTheDocument()
-  })
-
-  it('初回再生前に追っかけから録画 API HLS へ移るとき、最新の保存位置を固定する', async () => {
+  it('410 になった世代は最新世代へ切り替え、保存位置から再生する', async () => {
+    const user = userEvent.setup()
     vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
-    const mediaLoad = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
-    const urlFor = (generation: number) =>
-      `/api/media/stores/media/recordings/3/hls/v${generation}/hd/master.m3u8`
-    const fake = createFakeServer({
-      recording: sampleRecording({
-        ...FINISHED,
-        ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
-        encodedAssets: [],
-        hlsPlayback: [],
-        resumePositionMs: 0,
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { queryClient } = renderAt('/recordings/3#chase')
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1))
-
-    const latest = sampleRecording({
-      ...FINISHED,
-      ingest: { state: 'committed' },
+    const first = sampleRecording({
+      sizeBytes: 1_000_000,
       encodedAssets: [],
       hlsPlayback: [{ profile: 'hd', masterUrl: urlFor(1) }],
-      resumePositionMs: 12_500,
     })
-    fake.setRecording(latest)
-    emitRecordingHlsError(document.querySelector('video')!)
+    const latest = sampleRecording({
+      ...first,
+      hlsPlayback: [{ profile: 'hd', masterUrl: urlFor(2) }],
+    })
+    const fake = createFakeServer({
+      recording: first,
+      playbackState: { positionMs: 12_500 },
+    })
+    renderAt('/recordings/3')
 
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toContain(urlFor(1)))
-    const hlsVideo = document.querySelector('video')!
+    await screen.findByText('単体ページの録画')
+    fake.setRecording(latest)
+    fake.failRecordingHLS(1)
+    await user.click(await screen.findByTestId('recording-playback-start'))
+
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(urlFor(2)))
+    const video = document.querySelector('video')!
     let currentTime = 0
-    Object.defineProperty(hlsVideo, 'currentTime', {
+    Object.defineProperty(video, 'currentTime', {
       get: () => currentTime,
       set: (value: number) => { currentTime = value },
       configurable: true,
     })
-    fireEvent.loadedMetadata(hlsVideo)
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
     expect(currentTime).toBe(12.5)
-    const mediaLoadsAfterHlsStart = mediaLoad.mock.calls.length
-
-    const recordingRequestsBeforeRefresh = fake.fetchMock.mock.calls.filter(([input, init]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3' && (init?.method ?? 'GET') === 'GET',
-    ).length
-    fake.setRecording({ ...latest, resumePositionMs: 20_000 })
-    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-    await waitFor(() => {
-      expect(fake.fetchMock.mock.calls.filter(([input, init]) =>
-        new URL(String(input), 'http://localhost').pathname === '/api/recordings/3' && (init?.method ?? 'GET') === 'GET',
-      )).toHaveLength(recordingRequestsBeforeRefresh + 1)
-      expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-        data: { resumePositionMs: 20_000 },
-      })
-    })
-    fireEvent.loadedMetadata(hlsVideo)
-    expect(currentTime).toBe(12.5)
-    expect(mediaLoad).toHaveBeenCalledTimes(mediaLoadsAfterHlsStart)
-  })
-
-  /**
-   * 世代を替える間（temp を捨てて取り込みをやり直す間）は、API の hlsPlayback が v1 → 空 → v2 と動く。
-   * 空の間も再生元を選び直さず、最後の URL を保って v2 で最後の再生位置から続けることを固定する。
-   */
-  describe('世代の切り替え中（hlsPlayback が一時的に空）', () => {
-    const urlFor = (generation: number) => `/api/media/stores/media/recordings/3/hls/v${generation}/hd/master.m3u8`
-    const base = { ...FINISHED, encodedAssets: [], resumePositionMs: 12_500 }
-    const v1 = sampleRecording({
-      ...base,
-      ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:03:00Z' },
-      hlsPlayback: [{ profile: 'hd', masterUrl: urlFor(1) }],
-    })
-    const empty = sampleRecording({ ...base, ingest: { state: 'pending' }, hlsPlayback: [] })
-    const v2 = sampleRecording({
-      ...base,
-      ingest: { state: 'transferring', writtenBytes: 100, observedAt: '2026-01-01T12:04:00Z' },
-      hlsPlayback: [{ profile: 'hd', masterUrl: urlFor(2) }],
-    })
-
-    /** controllableVideo は jsdom の video に再生位置と一時停止の状態を持たせる。 */
-    function controllableVideo(video: HTMLVideoElement) {
-      const state = { currentTime: 0, paused: true }
-      Object.defineProperty(video, 'currentTime', {
-        get: () => state.currentTime,
-        set: (value: number) => { state.currentTime = value },
-        configurable: true,
-      })
-      Object.defineProperty(video, 'paused', { get: () => state.paused, configurable: true })
-      return state
-    }
-
-    /** playV1 は v1 の URL で再生を始め、40 秒まで進めた状態を返す（セッション開始は 12.5 秒）。 */
-    async function playV1() {
-      vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
-      vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
-      const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
-      const user = userEvent.setup()
-      const fake = createFakeServer({ recording: v1, liveProfiles: LIVE_PROFILES })
-      const rendered = renderAt('/recordings/3')
-      await user.click(await screen.findByTestId('recording-playback-start'))
-      await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(urlFor(1)))
-      const video = document.querySelector('video')!
-      const media = controllableVideo(video)
-      fireEvent.loadedMetadata(video)
-      fireEvent.canPlay(video)
-      expect(media.currentTime).toBe(12.5)
-      media.paused = false
-      fireEvent.playing(video)
-      media.currentTime = 40
-      fireEvent.timeUpdate(video)
-      return { ...fake, ...rendered, video, media, play }
-    }
-
-    const otherSourceRequests = (fetchMock: ReturnType<typeof createFakeServer>['fetchMock']) =>
-      fetchMock.mock.calls
-        .map(([input]) => new URL(String(input), 'http://localhost').pathname)
-        .filter((path) => path.includes('/chase/') || path.includes('/original-vod/'))
-
-    it('再生中の recording-hls は空の hlsPlayback でも再選択しない', async () => {
-      const server = await playV1()
-      server.setRecording(empty)
-      await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-      await waitFor(() => expect(server.queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-        data: { hlsPlayback: [] },
-      }))
-
-      expect(document.querySelector('video')).toBe(server.video)
-      expect(server.video.getAttribute('data-hls-source')).toBe(urlFor(1))
-      expect(otherSourceRequests(server.fetchMock)).toEqual([])
-    })
-
-    it('空になってもプレイヤーを外さず、v2 の URL で同じ要素のまま最後の位置から続ける', async () => {
-      const server = await playV1()
-      server.setRecording(empty)
-      await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-      await waitFor(() => expect(server.queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-        data: { hlsPlayback: [] },
-      }))
-      expect(document.querySelector('video')).toBe(server.video)
-      expect(server.video.getAttribute('data-hls-source')).toBe(urlFor(1))
-
-      server.setRecording(v2)
-      await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-      await waitFor(() => expect(server.video.getAttribute('data-hls-source')).toBe(urlFor(2)))
-      expect(document.querySelector('video')).toBe(server.video)
-      fireEvent.loadedMetadata(server.video)
-      expect(server.media.currentTime).toBe(40)
-      const playsBefore = server.play.mock.calls.length
-      fireEvent.canPlay(server.video)
-      expect(server.play.mock.calls.length).toBe(playsBefore + 1)
-      expect(otherSourceRequests(server.fetchMock)).toEqual([])
-    })
-
-    it('空の間のエラーでも追っかけ・原本 HLS へ逸れず、次のエラーで v2 を最後の位置から再生する', async () => {
-      const server = await playV1()
-      server.setRecording(empty)
-      emitRecordingHlsError(server.video)
-      await waitFor(() => expect(document.querySelector('video')).not.toBe(server.video))
-      const retried = document.querySelector('video')!
-      await waitFor(() => expect(retried.getAttribute('data-hls-source')).toBe(urlFor(1)))
-      expect(otherSourceRequests(server.fetchMock)).toEqual([])
-
-      server.setRecording(v2)
-      emitRecordingHlsError(retried)
-      await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(urlFor(2)))
-      const resumed = document.querySelector('video')!
-      const media = controllableVideo(resumed)
-      fireEvent.loadedMetadata(resumed)
-      expect(media.currentTime).toBe(40)
-      expect(otherSourceRequests(server.fetchMock)).toEqual([])
-      expect(screen.queryByText('録画映像を再生できませんでした（映像データを読み込めません）')).not.toBeInTheDocument()
-    })
-
-    it('エラー表示に落ちた後でも、v2 の URL が来れば操作なしで最後の位置から再生を続ける', async () => {
-      const server = await playV1()
-      server.setRecording(empty)
-      // 作り直した 2 回とも v1 の master が 410 になり、3 回目で作り直しの上限に当たる。
-      server.failRecordingHLS(2)
-      emitRecordingHlsError(server.video)
-      expect(await screen.findByRole('button', { name: '再読み込み' })).toBeInTheDocument()
-      const failed = document.querySelector('video')!
-      expect(otherSourceRequests(server.fetchMock)).toEqual([])
-
-      server.setRecording(v2)
-      await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-      await waitFor(() => expect(failed.getAttribute('data-hls-source')).toBe(urlFor(2)))
-      await waitFor(() => expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument())
-      const media = controllableVideo(failed)
-      fireEvent.loadedMetadata(failed)
-      expect(media.currentTime).toBe(40)
-      const playsBefore = server.play.mock.calls.length
-      fireEvent.canPlay(failed)
-      expect(server.play.mock.calls.length).toBe(playsBefore + 1)
-    })
-
-    it.each([
-      ['失敗', { status: 'failed' as const }],
-      ['キャンセル', { status: 'canceled' as const }],
-      ['ごみ箱', { deletedAt: '2026-01-01T13:00:00Z' }],
-    ])('空の間に%sになったらプレイヤーを出さない', async (_label, overrides) => {
-      const server = await playV1()
-      server.setRecording(sampleRecording({ ...empty, ...overrides }))
-      await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-      await waitFor(() => expect(document.querySelector('video')).toBeNull())
-    })
-  })
-
-  it('追っかけ入力 cooldown 中でも commit 済みなら REST 最新状態で原本 HLS へ移る', async () => {
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('probably')
-    const fake = createFakeServer({
-      recording: sampleRecording({
-        ...RUNNING,
-        status: 'finished',
-        endedAt: '2026-01-01T12:02:00Z',
-        ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
-        encodedAssets: [],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const baseFetch = fake.fetchMock.getMockImplementation()
-    if (!baseFetch) throw new Error('fake fetch implementation is unavailable')
-    let releaseChaseProbe!: (response: Response) => void
-    let chaseProbeStarted = false
-    const chaseProbe = new Promise<Response>((resolve) => {
-      releaseChaseProbe = resolve
-    })
-    fake.fetchMock.mockImplementation((input, init) => {
-      const path = new URL(String(input), 'http://localhost').pathname
-      if (!chaseProbeStarted && path.endsWith('/chase/playlist.m3u8')) {
-        chaseProbeStarted = true
-        return chaseProbe
-      }
-      return baseFetch(input, init)
-    })
-
-    const { queryClient } = renderAt('/recordings/3#chase')
-    await waitFor(() => expect(chaseProbeStarted).toBe(true))
-    const detailRequestsBeforeCooldown = fake.fetchMock.mock.calls.filter(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
-    ).length
-    fake.setRecording(sampleRecording({ ...FINISHED, ingest: { state: 'committed' }, encodedAssets: [] }))
-
-    await act(async () => {
-      releaseChaseProbe(new Response('input cooldown', { status: 502, headers: { 'Retry-After': '5' } }))
-    })
-
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod').length).toBeGreaterThan(0))
-    const detailRequestsAfterCooldown = fake.fetchMock.mock.calls.filter(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
-    ).length
-    expect(detailRequestsAfterCooldown).toBeGreaterThan(detailRequestsBeforeCooldown)
-    expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1)
-    expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-      data: { ingest: { state: 'committed' } },
-    })
-    expect(screen.queryByText('追っかけ再生の入力に失敗したため、一時停止しています。')).not.toBeInTheDocument()
-  })
-
-  it('追っかけ入力 cooldown 中は最新状態を取り直して同じ入力を張り直さない', async () => {
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('probably')
-    const fake = createFakeServer({
-      recording: sampleRecording({
-        ...RUNNING,
-        status: 'finished',
-        endedAt: '2026-01-01T12:02:00Z',
-        ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
-        encodedAssets: [],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const baseFetch = fake.fetchMock.getMockImplementation()
-    if (!baseFetch) throw new Error('fake fetch implementation is unavailable')
-    let releaseChaseProbe!: (response: Response) => void
-    let chaseProbeStarted = false
-    const chaseProbe = new Promise<Response>((resolve) => {
-      releaseChaseProbe = resolve
-    })
-    fake.fetchMock.mockImplementation((input, init) => {
-      const path = new URL(String(input), 'http://localhost').pathname
-      if (!chaseProbeStarted && path.endsWith('/chase/playlist.m3u8')) {
-        chaseProbeStarted = true
-        return chaseProbe
-      }
-      return baseFetch(input, init)
-    })
-
-    const { queryClient } = renderAt('/recordings/3#chase')
-    await waitFor(() => expect(chaseProbeStarted).toBe(true))
-    const detailRequestsBeforeCooldown = fake.fetchMock.mock.calls.filter(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
-    ).length
-
-    await act(async () => {
-      releaseChaseProbe(new Response('input cooldown', { status: 502, headers: { 'Retry-After': '5' } }))
-    })
-
-    await screen.findByText('追っかけ再生の入力に失敗したため、一時停止しています。')
-    const detailRequestsAfterCooldown = fake.fetchMock.mock.calls.filter(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
-    ).length
-    expect(detailRequestsAfterCooldown).toBeGreaterThan(detailRequestsBeforeCooldown)
-    expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1)
-    expect(playlistPaths(fake.fetchMock, '/original-vod')).toHaveLength(0)
-    expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-      data: { ingest: { state: 'transferring' } },
-    })
-  })
-
-  it('別の録画へ移った後、遅れた追っかけ REST 応答で再生元を変えない', async () => {
-    const user = userEvent.setup()
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('probably')
-    const first = sampleRecording({
-      ...RUNNING,
-      title: '作品X 第1話',
-      series: '作品X',
-      status: 'finished',
-      endedAt: '2026-01-01T12:02:00Z',
-      ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
-      encodedAssets: [],
-    })
-    const second = sampleRecording({
-      ...FINISHED,
-      id: 4,
-      title: '作品X 第2話',
-      series: '作品X',
-      startAt: '2026-01-08T12:00:00Z',
-    })
-    const fake = createFakeServer({ recording: first, seriesRecordings: [first, second], liveProfiles: LIVE_PROFILES })
-    const baseFetch = fake.fetchMock.getMockImplementation()
-    if (!baseFetch) throw new Error('fake fetch implementation is unavailable')
-    let deferDetailRefresh = false
-    let detailRefreshStarted = false
-    let releaseDetailRefresh!: (response: Response) => void
-    const delayedDetailRefresh = new Promise<Response>((resolve) => {
-      releaseDetailRefresh = resolve
-    })
-    fake.fetchMock.mockImplementation((input, init) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (deferDetailRefresh && url.pathname === '/api/recordings/3') {
-        deferDetailRefresh = false
-        detailRefreshStarted = true
-        return delayedDetailRefresh
-      }
-      return baseFetch(input, init)
-    })
-
-    const { queryClient, router } = renderAt('/recordings/3')
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1))
-    const playbackGroup = screen.getByTestId('recording-playback-group')
-    deferDetailRefresh = true
-    emitRecordingHlsError(document.querySelector('video')!)
-    await waitFor(() => expect(detailRefreshStarted).toBe(true))
-
-    await act(async () => {
-      seedRecordingDetail(queryClient, second)
-      await router.navigate({ to: '/recordings/$id', params: { id: '4' } })
-    })
-    expect(await screen.findByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
-    expect(screen.getByTestId('recording-playback-group')).toBe(playbackGroup)
-    await waitFor(() => {
-      expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/4/file')
-    })
-
-    await act(async () => {
-      releaseDetailRefresh(jsonResponse(sampleRecording({
-        ...FINISHED,
-        title: '作品X 第1話',
-        series: '作品X',
-        ingest: { state: 'committed' },
-        encodedAssets: [],
-      })))
-      await new Promise((resolve) => setTimeout(resolve, 25))
-    })
-
-    expect(queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
-      data: { ingest: { state: 'committed' } },
-    })
-    expect(screen.getByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
-    expect(screen.getByTestId('recording-playback-group')).toBe(playbackGroup)
-    expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/4/file')
-    expect(fake.fetchMock.mock.calls.some(([input]) =>
-      new URL(String(input), 'http://localhost').pathname === '/api/sites/default/recordings/4/original-vod/playlist.m3u8',
-    )).toBe(false)
-  })
-
-  it('追っかけ probe の REST 待機中に別の追っかけ録画へ移ったら旧エラーを表示しない', async () => {
-    const first = sampleRecording({
-      ...RUNNING,
-      title: '作品X 第1話',
-      series: '作品X',
-      status: 'finished',
-      endedAt: '2026-01-01T12:02:00Z',
-      ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
-      encodedAssets: [],
-    })
-    const second = sampleRecording({
-      ...RUNNING,
-      id: 4,
-      title: '作品X 第2話',
-      series: '作品X',
-      status: 'finished',
-      endedAt: '2026-01-08T12:02:00Z',
-      ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-08T12:00:00Z' },
-      encodedAssets: [],
-      startAt: '2026-01-08T12:00:00Z',
-    })
-    const fake = createFakeServer({ recording: first, seriesRecordings: [first, second], liveProfiles: LIVE_PROFILES })
-    const baseFetch = fake.fetchMock.getMockImplementation()
-    if (!baseFetch) throw new Error('fake fetch implementation is unavailable')
-    let releaseChaseProbe!: (response: Response) => void
-    let chaseProbeStarted = false
-    const chaseProbe = new Promise<Response>((resolve) => {
-      releaseChaseProbe = resolve
-    })
-    let deferDetailRefresh = false
-    let detailRefreshStarted = false
-    let releaseDetailRefresh!: (response: Response) => void
-    const detailRefresh = new Promise<Response>((resolve) => {
-      releaseDetailRefresh = resolve
-    })
-    fake.fetchMock.mockImplementation((input, init) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (!chaseProbeStarted && url.pathname === '/api/sites/default/recordings/3/chase/playlist.m3u8') {
-        chaseProbeStarted = true
-        return chaseProbe
-      }
-      if (deferDetailRefresh && url.pathname === '/api/recordings/3') {
-        deferDetailRefresh = false
-        detailRefreshStarted = true
-        return detailRefresh
-      }
-      return baseFetch(input, init)
-    })
-
-    const { queryClient, router } = renderAt('/recordings/3#chase')
-    await waitFor(() => expect(chaseProbeStarted).toBe(true))
-    const playbackGroup = screen.getByTestId('recording-playback-group')
-    deferDetailRefresh = true
-    await act(async () => {
-      releaseChaseProbe(new Response('input cooldown', { status: 502, headers: { 'Retry-After': '5' } }))
-    })
-    await waitFor(() => expect(detailRefreshStarted).toBe(true))
-
-    await act(async () => {
-      seedRecordingDetail(queryClient, second)
-      await router.navigate({ to: '/recordings/$id', params: { id: '4' }, hash: 'chase' })
-    })
-    expect(await screen.findByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
-    expect(screen.getByTestId('recording-playback-group')).toBe(playbackGroup)
-    await waitFor(() => {
-      expect(fake.fetchMock.mock.calls.some(([input]) =>
-        new URL(String(input), 'http://localhost').pathname === '/api/sites/default/recordings/4/chase/playlist.m3u8',
-      )).toBe(true)
-    })
-
-    await act(async () => {
-      releaseDetailRefresh(jsonResponse(sampleRecording({
-        ...FINISHED,
-        title: '作品X 第1話',
-        series: '作品X',
-        ingest: { state: 'committed' },
-        encodedAssets: [],
-      })))
-      await new Promise((resolve) => setTimeout(resolve, 25))
-    })
-
-    expect(screen.getByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
-    expect(screen.getByTestId('recording-playback-group')).toBe(playbackGroup)
-    expect(screen.queryByText('追っかけ再生の入力に失敗したため、一時停止しています。')).not.toBeInTheDocument()
-  })
-
-  it('原本 HLS のまま範囲外へシークしても video を作り直さない（再生元が同じなら中で張り直す）', async () => {
-    const user = userEvent.setup()
-    const fake = createFakeServer({
-      recording: sampleRecording({ ...FINISHED, encodedAssets: [] }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    renderAt('/recordings/3')
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    await waitFor(() => expect(document.querySelector('video')).not.toBeNull())
-    const video = document.querySelector('video')!
-    const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    fireEvent.keyDown(slider, { key: 'End' })
-    fireEvent.keyUp(slider, { key: 'End' })
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/').length).toBeGreaterThan(0))
-    expect(document.querySelector('video')).toBe(video)
-  })
-
-  it('版タブで明示した原本 HLS は範囲外 seek で encoded に切り替えない', async () => {
-    const user = userEvent.setup()
-    const fake = createFakeServer({
-      recording: sampleRecording({
-        ...FINISHED,
-        resumePositionMs: 20_000,
-        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    renderAt('/recordings/3')
-
-    // 自動選択は encoded。版タブから利用者が原本 HLS を選ぶと、その選択を範囲外 seek で保つ。
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
-    await selectDetailTab('版')
-    await user.click(await screen.findByRole('button', { name: '原本 HLS を再生' }))
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/20/')).toHaveLength(1))
-    const originalRow = screen.getByTestId('recording-original-row')
-    const encodedRow = screen.getByTestId('recording-version-row')
-    expect(originalRow).toHaveTextContent('再生中')
-    const video = document.querySelector('video')!
-
-    const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    fireEvent.keyDown(slider, { key: 'Home' })
-    fireEvent.keyUp(slider, { key: 'Home' })
-
-    // 原本 HLS のまま先頭（offset 0 は `/offset/` を付けない）で張り直す。親が再生元を替えたと答えると張り直しが起きない。
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').filter((path) => !path.includes('/offset/')).length).toBeGreaterThan(0))
-    expect(document.querySelector('video')).toBe(video)
-    expect(slider).toHaveAttribute('aria-valuenow', '0')
-    expect(originalRow).toHaveTextContent('再生中')
-    expect(encodedRow).not.toHaveTextContent('再生中')
-  })
-
-  it('版タブで明示した原本 HLS でも、エラーでは自動選択の encoded へ移る', async () => {
-    const user = userEvent.setup()
-    const fake = createFakeServer({
-      recording: sampleRecording({
-        ...FINISHED,
-        resumePositionMs: 20_000,
-        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    renderAt('/recordings/3')
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
-    await selectDetailTab('版')
-    await user.click(await screen.findByRole('button', { name: '原本 HLS を再生' }))
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/20/')).toHaveLength(1))
-
-    // 範囲外 seek では原本 HLS のまま張り直し、その playlist が 404 になる。
-    fake.failOriginalVOD(Infinity)
-    const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    fireEvent.keyDown(slider, { key: 'Home' })
-    fireEvent.keyUp(slider, { key: 'Home' })
-
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').filter((path) => !path.includes('/offset/')).length).toBeGreaterThan(0))
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
-    expect(screen.getByTestId('recording-version-row')).toHaveTextContent('再生中')
-  })
-
-  it('版タブで明示した原本 HLS も、エラーで張り直した後は自動選択に従う', async () => {
-    const user = userEvent.setup()
-    const fake = createFakeServer({
-      recording: sampleRecording({
-        ...FINISHED,
-        resumePositionMs: 20_000,
-        encodedAssets: [{ profile: 'cut', cut: true, sizeBytes: 500_000 }],
-      }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { queryClient } = renderAt('/recordings/3')
-    // cut だけの録画は原本 HLS が自動選択。版タブで cut 版を経由して原本 HLS を明示選択する。
-    await selectDetailTab('版')
-    await user.click(await screen.findByRole('button', { name: 'カット版 (cut)を再生' }))
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
-    await user.click(screen.getByRole('button', { name: '原本 HLS を再生' }))
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').length).toBeGreaterThan(0))
-
-    // 1 回だけ失敗させ、同じ原本 HLS のまま張り直させる（ここで明示選択が解除される）。
-    const before = playlistPaths(fake.fetchMock, '/original-vod/').length
-    fake.failOriginalVOD(1)
-    await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
-    await user.click(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'sd（480p）' }))
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').length).toBeGreaterThanOrEqual(before + 2))
-    expect(document.querySelector('video')?.getAttribute('src') ?? '').not.toContain('/api/media/recordings/3/file')
-
-    // 再生中にカットなし encoded ができると、次の範囲外 seek で encoded へ移る。
-    fake.setRecording(sampleRecording(FINISHED))
-    await queryClient.invalidateQueries()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    fireEvent.keyDown(slider, { key: 'End' })
-    fireEvent.keyUp(slider, { key: 'End' })
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
-  })
-
-  it('自動選択の原本 HLS は、再生中に encoded ができると次の範囲外 seek で encoded へ移る', async () => {
-    const user = userEvent.setup()
-    const fake = createFakeServer({
-      recording: sampleRecording({ ...FINISHED, encodedAssets: [] }),
-      liveProfiles: LIVE_PROFILES,
-    })
-    const { queryClient } = renderAt('/recordings/3')
-    await user.click(await screen.findByTestId('recording-playback-start'))
-    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').length).toBeGreaterThan(0))
-
-    fake.setRecording(sampleRecording(FINISHED))
-    await queryClient.invalidateQueries()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    // 録画状態の更新だけでは替えない。
-    expect(document.querySelector('video')?.getAttribute('src') ?? '').not.toContain('/api/media/recordings/3/file')
-
-    const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    fireEvent.keyDown(slider, { key: 'End' })
-    fireEvent.keyUp(slider, { key: 'End' })
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
+    expect(fake.fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.includes('/hls/')))
+      .toEqual(expect.arrayContaining([urlFor(1), urlFor(2)]))
   })
 })
 
@@ -4692,7 +3068,7 @@ describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
     await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h265'))
   })
 
-  it('最後のエンコード版を消すと（原本あり）、encoded のプレイヤーを残さず原本 HLS へ選び直す', async () => {
+  it('最後のエンコード版を消すと、HLS URL が無い場合は browser player を外す', async () => {
     const user = userEvent.setup()
     createFakeServer({
       recording: sampleRecording({
@@ -4700,7 +3076,6 @@ describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
         encodeProfiles: ['h264'],
         encodedAssets: [{ profile: 'h264', sizeBytes: 2_000_000 }],
       }),
-      liveProfiles: [{ name: 'hd', height: 720 }],
     })
     renderAt('/recordings/3')
 
@@ -4709,7 +3084,7 @@ describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
     await user.click(within(dialog).getByRole('button', { name: '削除する' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'h264のその他の操作' })).not.toBeInTheDocument())
     await waitFor(() => expect(document.querySelector('video[src*="/file"]')).not.toBeInTheDocument())
-    // 原本 HLS のポスターに替わる（選び直さないと、版の無い encoded のプレイヤーが残る）。
-    expect(await screen.findByTestId('recording-playback-poster')).toBeInTheDocument()
+    expect(document.querySelector('video')).toBeNull()
+    expect(screen.queryByTestId('recording-playback-poster')).not.toBeInTheDocument()
   })
 })

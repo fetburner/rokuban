@@ -15,12 +15,6 @@ type MediaAsset struct {
 	SizeBytes int64
 }
 
-// OriginalVODTarget はサイト内で配信できる原本を表す。
-type OriginalVODTarget struct {
-	MediaAsset
-	Site string
-}
-
 // RecordingHLSInputKind は世代付き録画 HLS の入力種別を表す。
 type RecordingHLSInputKind uint8
 
@@ -42,20 +36,11 @@ type RecordingHLSInputTarget struct {
 	StartedAt        *time.Time
 }
 
-// RecordingRemovalState は原本 VOD の継続中セッションが確認する録画状態を表す。
+// RecordingRemovalState は継続中の録画 HLS セッションが確認する録画状態を表す。
 type RecordingRemovalState struct {
 	DeletedAt    *time.Time
 	PurgedAt     *time.Time
 	SupersededAt *time.Time
-}
-
-// ChaseTarget は追っかけ再生の録画と mirakc record の対応を表す。
-type ChaseTarget struct {
-	Site             string
-	RecordID         string
-	Status           string
-	RecordingStatus  string
-	HasOriginalAsset bool
 }
 
 // MediaServing は streamer が使うメディアと録画状態の読み取り契約である。
@@ -68,19 +53,12 @@ type MediaServing interface {
 	GetThumbnailMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
 	// GetSeekTilesMediaAssetForServing は配信可能なシークタイルを返す。
 	GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
-	// GetActiveOriginalMediaAsset は追っかけ配信に使う active な原本を返す。
+	// GetActiveOriginalMediaAsset は録画 HLS が使う active な原本を返す。
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
-	// GetOriginalVODTarget はサイトに属する完了済み録画の配信可能な原本を返す。
-	// 録画完了済み・ごみ箱/ purge 前・active original のみを開始可能とし、site は URL の
-	// site-scoped streamer と照合する。既存セッションの再取得では使わず、セッション開始前と
-	// rel_path lock 取得後に呼ぶ。
-	GetOriginalVODTarget(ctx context.Context, recordingID int64, site string) (OriginalVODTarget, error)
 	// GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。
 	GetRecordingHLSTarget(ctx context.Context, recordingID int64) (RecordingHLSInputTarget, error)
 	// GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。
 	GetRecordingRemovalState(ctx context.Context, recordingID int64) (RecordingRemovalState, error)
-	// GetChaseTarget は追っかけ再生に必要な mirakc record と録画状態を返す。
-	GetChaseTarget(ctx context.Context, recordingID int64) (ChaseTarget, error)
 }
 
 // MissingEncodeProfilesParams は未生成 encoded のページ条件を表す。

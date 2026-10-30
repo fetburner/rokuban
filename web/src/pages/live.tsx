@@ -22,7 +22,6 @@ import { LivePlayer } from '@/components/live-player'
 import { TunerStatus } from '@/components/tuner-status'
 import { buttonVariants } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
-import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import { useNow } from '@/lib/use-now'
 import {
   currentProgramWindow,
@@ -510,33 +509,38 @@ export function LivePage() {
   const [playback, setPlayback] = useState<
     | { source: 'live' }
     | {
-        source: 'chase'
+        source: 'recording-hls'
         target: {
           site: string
           recordingId: number
           recording: Recording
-          programmeStartAt: string
-          programmeEndAt: string
+          masterUrl: string
+          profile: string
+          startSeconds: number
         }
-        offset: OffsetSessionStart
       }
   >({ source: 'live' })
-  const onStartOver = () => {
-    if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
+  const startRecordingHLS = (startSeconds: number) => {
+    const selectedHls = selectedRecording?.hlsPlayback.find(({ profile }) => profile === effectiveProfile)
+      ?? selectedRecording?.hlsPlayback[0]
+    if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt || !selectedHls) return
     setPlayback({
-      source: 'chase',
+      source: 'recording-hls',
       target: {
         site: selectedService?.site ?? 'default',
         recordingId: selectedRecordingId,
         recording: selectedRecording,
-        programmeStartAt: nowPlaying.startAt,
-        programmeEndAt: nowPlaying.endAt,
+        masterUrl: selectedHls.masterUrl,
+        profile: selectedHls.profile,
+        startSeconds,
       },
-      offset: { type: 'offset', offsetSeconds: 0 },
     })
   }
+  const onStartOver = () => {
+    startRecordingHLS(0)
+  }
   const onLiveProgramSeek = (programSeconds: number) => {
-    if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
+    if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt || selectedRecording.hlsPlayback.length === 0) return
     const timeline = recordingTimeline(selectedRecording, {
       nowMs,
       programmeStartAt: nowPlaying.startAt,
@@ -547,29 +551,16 @@ export function LivePage() {
     if (!isRecordedProgramOffset(programSeconds, timeline.recordingHeadSeconds, liveEdgeSeconds)) return
     const offset = timeline.programRecordingOffsetSeconds
     if (offset === null) return
-    setPlayback({
-      source: 'chase',
-      target: {
-        site: selectedService?.site ?? 'default',
-        recordingId: selectedRecordingId,
-        recording: selectedRecording,
-        programmeStartAt: nowPlaying.startAt,
-        programmeEndAt: nowPlaying.endAt,
-      },
-      offset: { type: 'offset', offsetSeconds: offset },
-    })
+    startRecordingHLS(offset)
   }
-  const livePlayerModeProps = playback.source === 'chase'
+  const livePlayerModeProps = playback.source === 'recording-hls'
     ? {
-        mode: 'chase' as const,
+        mode: 'recording-hls' as const,
         site: playback.target.site,
         recordingId: playback.target.recordingId,
-        chaseTimeline: recordingTimeline(playback.target.recording, {
-          nowMs,
-          programmeStartAt: playback.target.programmeStartAt,
-          programmeEndAt: playback.target.programmeEndAt,
-        }),
-        offsetSessionStart: playback.offset,
+        recordingDurationMs: playback.target.recording.durationMs,
+        recordingHlsUrl: playback.target.masterUrl,
+        recordingHlsStartSeconds: playback.target.startSeconds,
         onReturnLive: () => setPlayback({ source: 'live' }),
       }
     : selectedService === undefined ? null : {
@@ -581,16 +572,29 @@ export function LivePage() {
           startAt: nowPlaying.startAt,
           endAt: nowPlaying.endAt,
           nowMs,
-          recordingId: selectedRecordingId,
-          recordingStartedAt: selectedRecording?.startedAt,
+          recordingId: selectedRecording?.hlsPlayback.length ? selectedRecordingId : undefined,
+          recordingStartedAt: selectedRecording?.hlsPlayback.length ? selectedRecording?.startedAt : undefined,
         } : undefined,
-        onLiveProgramSeek,
-        onStartOver,
+        onLiveProgramSeek: selectedRecording?.hlsPlayback.length ? onLiveProgramSeek : undefined,
+        onStartOver: selectedRecording?.hlsPlayback.length ? onStartOver : undefined,
         liveDiagnostics: diagnostics ? formatLiveDiagnostics(diagnostics) : undefined,
         liveNotice: visibleDowngradeNotice === autoDowngradedProfile?.name && autoDowngradedProfile
           ? `映像が止まったため、画質を ${liveProfileLabel(autoDowngradedProfile)}に下げました`
           : undefined,
       }
+
+  const selectPlaybackProfile = (name: string) => {
+    if (playback.source === 'recording-hls') {
+      const selectedHls = playback.target.recording.hlsPlayback.find((entry) => entry.profile === name)
+      if (!selectedHls) return
+      setPlayback({
+        ...playback,
+        target: { ...playback.target, masterUrl: selectedHls.masterUrl, profile: selectedHls.profile },
+      })
+      return
+    }
+    selectProfile(name)
+  }
 
   // 録画予約による中断予測（M7-2, issue #235）。
   //
@@ -670,16 +674,18 @@ export function LivePage() {
             {isPlaying && livePlayerModeProps !== null ? (
               <LivePlayer
                 {...livePlayerModeProps}
-                profile={effectiveProfile}
+                profile={playback.source === 'recording-hls' ? playback.target.profile : effectiveProfile}
                 audio={routeSearch.audio}
-                availableProfiles={liveProfiles.map((profile) => ({
-                  ...profile,
-                  label: `${liveProfileLabel(profile)}${autoDowngradedProfile?.name === profile.name ? ' · 自動で下げた' : ''}`,
-                }))}
-                onProfileChange={selectProfile}
+                availableProfiles={playback.source === 'recording-hls'
+                  ? playback.target.recording.hlsPlayback.map(({ profile }) => ({ name: profile }))
+                  : liveProfiles.map((profile) => ({
+                      ...profile,
+                      label: `${liveProfileLabel(profile)}${autoDowngradedProfile?.name === profile.name ? ' · 自動で下げた' : ''}`,
+                    }))}
+                onProfileChange={selectPlaybackProfile}
                 onAudioChange={selectAudio}
-                onStalled={handleStalled}
-                onDiagnostics={setDiagnostics}
+                onStalled={playback.source === 'live' ? handleStalled : undefined}
+                onDiagnostics={playback.source === 'live' ? setDiagnostics : undefined}
               />
             ) : (
               <LiveSelectionPreview

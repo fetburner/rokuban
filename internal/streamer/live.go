@@ -10,8 +10,8 @@
 //   - 同時セッション上限はプロセスローカル（グローバルな天井はチューナー数で、
 //     裁定者は mirakc）
 //
-// **サービスライブの資源同定では DB を引かない**（issue #91 の決定 3）。追っかけ再生と
-// 原本 VOD は別の handler で store を読み、サービスライブはパスの値だけで資源を定める。
+// **サービスライブの資源同定では DB を引かない**（issue #91 の決定 3）。録画 HLS は
+// 別の handler で store を読み、サービスライブはパスの値だけで資源を定める。
 // パスの (networkId, serviceId) は
 // SI の値そのもの（`GET /api/sites/{site}/services` が返すのと同じ id 空間）で、
 // mirakc が要求する合成 id への変換は programid.ServiceID による純関数（issue #217）。
@@ -40,7 +40,6 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/programid"
-	"github.com/fetburner/rokuban/internal/store"
 )
 
 // LiveConfig はライブ視聴の設定。streamer.Config が config.StorageConfig を
@@ -59,10 +58,6 @@ type LiveConfig struct {
 	// SegmentDir は HLS セグメント/プレイリストの書き出し先ルート。録画バッファとは
 	// 別ディスク（tmpfs 前提）。
 	SegmentDir string
-
-	// MediaDir は site streamer が参照する録画原本の root。原本 VOD はここから
-	// read-only で開き、HLS 出力は SegmentDir にだけ書く（マウントも read-only でよい）。
-	MediaDir string
 
 	// MaxSessions はこのプロセスが同時に持てるライブセッション数（プロセスローカル）。
 	MaxSessions int
@@ -131,29 +126,11 @@ type mirakcLiveClient interface {
 	StreamService(ctx context.Context, serviceID int64, priority int) (io.ReadCloser, error)
 }
 
-// mirakcRecordClient is kept separate from mirakcLiveClient so existing live-only
-// test doubles do not need to implement the recording endpoint. The production
-// *mirakc.Client implements both interfaces.
-type mirakcRecordClient interface {
-	StreamRecordFollow(ctx context.Context, recordID string) (io.ReadCloser, error)
-}
-
-// mirakcSeekRecordClient is the additional mirakc surface required when a
-// chase session starts after the recording head. StreamRecord returns a finite
-// Range response; the streamer requests the next Range as it catches up.
-type mirakcSeekRecordClient interface {
-	mirakcRecordClient
-	StreamRecord(ctx context.Context, recordID string, offset int64) (io.ReadCloser, int64, error)
-	GetRecord(ctx context.Context, recordID string) (*mirakc.Record, error)
-}
-
 var (
 	// errSessionLimit はプロセスローカルな同時セッション上限に達したことを示す。
 	// **プロセスローカル**であり、グローバルな天井（チューナー数、mirakc が裁定）
 	// ではない（docs/operations.md §5）。
 	errSessionLimit = errors.New("live session limit reached (process-local)")
-	// errChaseInputCoolingDown は同じ録画の追っかけ入力失敗後、再作成を一時停止している。
-	errChaseInputCoolingDown = errors.New("chase input failure is cooling down")
 	// errShuttingDown は Run の ctx が既に完了し、新規セッションを受け付けないことを示す。
 	errShuttingDown = errors.New("streamer is shutting down")
 	// errStartupTimeout は getOrCreateSession の `<-s.ready` 待ちが
@@ -166,17 +143,6 @@ var (
 	// errPlaylistSessionEnded は waitForPlaylist が、プレイリストが書かれる前に
 	// セッションの ffmpeg が終わったことを示す（シャットダウン中は errShuttingDown）。
 	errPlaylistSessionEnded = errors.New("session ended before the playlist was ready")
-	// errChaseRecordNotReadyTimeout is deliberately not a liveUpstreamStartError:
-	// repeated 204 responses are a normal recording-start state, not a failed tuner
-	// connection. It becomes a 503 only after the shared startup budget expires.
-	errChaseRecordNotReadyTimeout = errors.New("chase record did not become readable in time")
-	// errChaseOffsetUnavailable means the requested recording-relative second is
-	// not in the currently available recording range. It is translated to 416
-	// by the HTTP handler, rather than starting a session at an invalid byte.
-	errChaseOffsetUnavailable = errors.New("chase offset is outside the available recording range")
-	// errOriginalVODOffsetUnavailable means the requested second is at or beyond
-	// the completed original's measured duration. It becomes HTTP 416.
-	errOriginalVODOffsetUnavailable = errors.New("original VOD offset is outside the recording range")
 )
 
 const (
@@ -196,8 +162,7 @@ const (
 // LiveStreamer はライブ視聴の HLS ルートを配信する。
 //
 // 1 サービス = 1 セッション = 1 ffmpeg プロセス = mirakc の 1 チューナー。同じ
-// サービスを複数クライアントが見ても共有する。ライブのセッションキーは
-// `sessions map[int64]*liveSession`、追っかけは録画 ID と開始オフセットを含む。
+// サービスを複数クライアントが見ても共有する。
 // **これらが site を含まないのは、この LiveStreamer 自身が
 // 単一の site（下記 site フィールド）にしか対応しないため** --- 1 プロセスが
 // N site を束縛できるようになった今（issue #532）も、それは cmd/rokuban が
@@ -210,21 +175,14 @@ type LiveStreamer struct {
 	mirakc mirakcLiveClient
 	site   string
 	cfg    LiveConfig
-	media  store.MediaServing
 
-	mu            sync.Mutex
-	sessions      map[int64]*liveSession
-	chaseSessions map[sessionKey]*liveSession
-	// failedChaseInputs は入力エラーで終わった追っかけ録画 ID と再試行可能時刻。
-	// offset を含めないのは、フロントの再選択が新しい offset で来るため。
-	failedChaseInputs map[int64]time.Time
+	mu       sync.Mutex
+	sessions map[int64]*liveSession
 
 	// afterEvictRelease はテスト専用: 退避を終えて evictMu を放した直後に呼ぶ。
 	afterEvictRelease func()
 
-	// afterOriginalVODOpen はテスト専用: 原本を open した直後、DB を再確認する前に呼ぶ。
-	afterOriginalVODOpen func()
-	closed               bool
+	closed bool
 
 	// evictMu は退避（takeIdleSessionForRetry → stop → 解放待ち）を直列化する。
 	// getOrCreateSession の doc コメント参照 --- 「1 つの圧力イベントに対して退避は
@@ -256,32 +214,22 @@ type LiveStreamer struct {
 // 1 回でよい仕事。site 数が増えて無視できないコストになったら
 // newLiveStreamersBySite 側で 1 回だけ呼ぶ形に上げる。
 func NewLive(mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamerWithMedia(nil, mirakcClient, site, cfg)
+	return newLiveStreamerForSite(mirakcClient, site, cfg)
 }
 
 func newLiveStreamer(client mirakcLiveClient, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamerWithMedia(nil, client, "default", cfg)
+	return newLiveStreamerForSite(client, "default", cfg)
 }
 
-// NewLiveWithMedia is the production constructor. Live and chase sessions share
-// the same LiveStreamer so their process-local cap, idle GC, leave semantics,
-// and active-session gauge describe one resource pool.
-func NewLiveWithMedia(media store.MediaServing, mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamerWithMedia(media, mirakcClient, site, cfg)
-}
-
-func newLiveStreamerWithMedia(media store.MediaServing, client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
+func newLiveStreamerForSite(client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
 	if cfg.Enabled && cfg.SegmentDir != "" {
 		sweepStaleLiveSegments(cfg.SegmentDir)
 	}
 	return &LiveStreamer{
-		mirakc:            client,
-		site:              site,
-		cfg:               cfg,
-		media:             media,
-		sessions:          make(map[int64]*liveSession),
-		chaseSessions:     make(map[sessionKey]*liveSession),
-		failedChaseInputs: make(map[int64]time.Time),
+		mirakc:   client,
+		site:     site,
+		cfg:      cfg,
+		sessions: make(map[int64]*liveSession),
 	}
 }
 
@@ -328,16 +276,6 @@ func sweepStaleLiveSegments(dir string) {
 // 罠）ので、export してどちらもこの定数を参照する。
 const LiveRoutePattern = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
 
-// ChaseRoutePattern は録画中の追っかけ再生の固定深さパターン。site は前段の
-// site ごとの Service へ振り分けるために URL に含め、mirakc record id は DB から
-// 解決する。OpenAPI には載せず、streamer がバイナリとして登録する。
-const ChaseRoutePattern = "/api/sites/{site}/recordings/{id}/chase"
-
-// OriginalVODRoutePattern は完成済み録画の原本を HLS 化する固定深さパターン。
-// site streamer が recordings.id でセッションを共有し、クエリの profile は
-// 出力 playlist だけを選ぶ。
-const OriginalVODRoutePattern = "/api/sites/{site}/recordings/{id}/original-vod"
-
 // Mount はライブ視聴のルートを登録する（cfg.Enabled が true のときだけ）。
 //
 // **production では呼ばれない。** cmd/rokuban は 1 プロセスが束縛する site ごとに
@@ -358,28 +296,6 @@ func (ls *LiveStreamer) Mount(r chi.Router) {
 	// master の相対 URI（`h264.0.m3u8` / `playlist_0.m3u8`）をそのまま解決できるようにする。
 	r.Get(LiveRoutePattern+"/{name}", ls.Segment)
 	r.Post(LiveRoutePattern+"/leave", ls.Leave)
-
-	// 追っかけ再生も同じ LiveStreamer のセッションプールを使う。captions の
-	// 設定は site ごとに異なり得るので、variant playlist の固定深さルートは
-	// liveSites と同様に常に登録し、実際の可否は Segment 側で判定する。
-	r.Get(ChaseRoutePattern+"/playlist.m3u8", ls.ChasePlaylist)
-	r.Get(ChaseRoutePattern+"/offset/{offset}/playlist.m3u8", ls.ChasePlaylist)
-	r.Get(ChaseRoutePattern+"/segments/{name}", ls.ChaseSegment)
-	r.Get(ChaseRoutePattern+"/offset/{offset}/segments/{name}", ls.ChaseSegment)
-	r.Get(ChaseRoutePattern+"/{name}", ls.ChaseSegment)
-	r.Get(ChaseRoutePattern+"/offset/{offset}/{name}", ls.ChaseSegment)
-	r.Post(ChaseRoutePattern+"/leave", ls.ChaseLeave)
-	r.Post(ChaseRoutePattern+"/offset/{offset}/leave", ls.ChaseLeave)
-
-	// 完了済み原本 VOD も live / chase と同じ process-local session pool を使う。
-	r.Get(OriginalVODRoutePattern+"/playlist.m3u8", ls.OriginalVODPlaylist)
-	r.Get(OriginalVODRoutePattern+"/offset/{offset}/playlist.m3u8", ls.OriginalVODPlaylist)
-	r.Get(OriginalVODRoutePattern+"/segments/{name}", ls.OriginalVODSegment)
-	r.Get(OriginalVODRoutePattern+"/offset/{offset}/segments/{name}", ls.OriginalVODSegment)
-	r.Get(OriginalVODRoutePattern+"/{name}", ls.OriginalVODSegment)
-	r.Get(OriginalVODRoutePattern+"/offset/{offset}/{name}", ls.OriginalVODSegment)
-	r.Post(OriginalVODRoutePattern+"/leave", ls.OriginalVODLeave)
-	r.Post(OriginalVODRoutePattern+"/offset/{offset}/leave", ls.OriginalVODLeave)
 }
 
 // Run は idle GC ループを ctx が Done になるまで回す。ctx が Done になったら
@@ -810,27 +726,6 @@ func parseCanonicalRecordingID(raw string) (int64, bool) {
 	return v, true
 }
 
-// parseCanonicalChaseOffset accepts the decimal seconds used in the chase URL.
-// Keeping the spelling canonical prevents one requested position from creating
-// multiple sessions or segment directories.
-func parseCanonicalChaseOffset(raw string) (int64, bool) {
-	if raw == "" {
-		return 0, true
-	}
-	if len(raw) > 1 && raw[0] == '0' {
-		return 0, false
-	}
-	v, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || v < 0 || strconv.FormatInt(v, 10) != raw {
-		return 0, false
-	}
-	return v, true
-}
-
-func chaseOffsetFromRequest(r *http.Request) (int64, bool) {
-	return parseCanonicalChaseOffset(chi.URLParam(r, "offset"))
-}
-
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
 // このプロセスの担当（`--sites` で束縛された site）と一致することを確かめたうえで、
 // mirakc に渡す合成 service id を返す。DB は引かない（issue #91 の決定 3）---
@@ -892,14 +787,6 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errSessionLimit):
 		http.Error(w, "too many concurrent live sessions on this process", http.StatusServiceUnavailable)
-	case errors.Is(err, errChaseInputCoolingDown):
-		var cooldown *chaseInputCooldownError
-		seconds := 1
-		if errors.As(err, &cooldown) && cooldown.retryAfter > 0 {
-			seconds = int((cooldown.retryAfter + time.Second - 1) / time.Second)
-		}
-		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		http.Error(w, chaseInputCooldownMessage, http.StatusBadGateway)
 	case errors.Is(err, errShuttingDown):
 		http.Error(w, "streamer is shutting down", http.StatusServiceUnavailable)
 	case errors.Is(err, errStartupTimeout):
@@ -914,18 +801,10 @@ func writeSessionError(w http.ResponseWriter, err error) {
 }
 
 const (
-	liveSessionKind        sessionKind = "live"
-	chaseSessionKind       sessionKind = "chase"
-	originalVODSessionKind sessionKind = "original_vod"
-)
-
-const (
 	hlsLivePlaylist hlsPlaylistType = iota
-	hlsEventPlaylist
-	// hlsOriginalEventPlaylist is an EVENT playlist like chase, but reads the original
-	// file with a frame-aligned -ss and encodes with -bf 0 so the HLS timeline matches
-	// the original MP4 timeline. Its hls_flags are the same as chase's.
-	hlsOriginalEventPlaylist
+	// hlsRecordingEventPlaylist builds a growing EVENT playlist for the recording HLS
+	// transformer, which reads an input file with a PTS-aligned seek.
+	hlsRecordingEventPlaylist
 )
 
 // waitForPlaylist は path に有効な HLS プレイリストが書かれるまでポーリングし、

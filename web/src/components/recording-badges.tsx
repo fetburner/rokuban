@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
 
 import { type DropSummary, type Recording } from '@/api/generated'
-import type { LiveCapability } from '@/lib/capabilities'
 import { encodeJobStatusLabel } from '@/lib/encode-status'
 import { useEncodeProgress } from '@/lib/events'
 import { formatBytes } from '@/lib/format'
@@ -16,22 +15,19 @@ import { cn } from '@/lib/utils'
  * 「要対応」のように結論と処理内訳を混ぜる語は使わない。見られる録画の
  * エンコード失敗やドロップは、後続の内訳バッジが destructive で示す。
  *
- * `pending` / `unknown` capability を `false` に潰さず、原本だけの録画を
- * 誤って「再生不可」としないため、useLiveCapability の 4 値を使う。
+ * 再生可否は録画ごとの HLS URL と encoded アセットで決める。
  */
 export function RecordingVerdictBadge({
   recording,
-  liveCapability,
   isTrashed = false,
   onClick,
 }: {
   recording: Recording
-  liveCapability: LiveCapability
   isTrashed?: boolean
   /** 詳細ヘッダーでは結論から記録タブへ移動する。 */
   onClick?: () => void
 }) {
-  const verdict = recordingVerdict({ recording, liveCapability, isTrashed })
+  const verdict = recordingVerdict({ recording, isTrashed })
   if (verdict === undefined || verdict === 'viewable') return null
 
   const badge = (

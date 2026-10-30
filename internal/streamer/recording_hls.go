@@ -27,6 +27,7 @@ import (
 )
 
 const (
+	recordingHLSFFmpegInputPath = "/dev/fd/3"
 	// RecordingHLSRoutePattern は世代付き録画 HLS の固定深さパスである。
 	RecordingHLSRoutePattern    = "/api/media/stores/{store}/recordings/{id}/hls/{version}/{profile}"
 	recordingHLSProbeTimeout    = 30 * time.Second
@@ -795,7 +796,7 @@ func probeRecordingHLSTiming(ctx context.Context, ffprobe string, file *os.File)
 	}
 	packetCmd := exec.CommandContext(probeCtx, ffprobe,
 		"-v", "error", "-select_streams", "v:0", "-show_packets", "-show_entries", "packet=pts",
-		"-read_intervals", "%+#1", "-of", "csv=p=0", "-i", originalVODFFmpegInputPath,
+		"-read_intervals", "%+#1", "-of", "csv=p=0", "-i", recordingHLSFFmpegInputPath,
 	)
 	packetCmd.ExtraFiles = []*os.File{file}
 	packetOutput, err := packetCmd.Output()
@@ -814,7 +815,7 @@ func probeRecordingHLSTiming(ctx context.Context, ffprobe string, file *os.File)
 		return recordingHLSTiming{}, fmt.Errorf("rewinding recording HLS original: %w", err)
 	}
 	streamCmd := exec.CommandContext(probeCtx, ffprobe,
-		"-v", "error", "-show_entries", "stream=codec_type", "-of", "json", "-i", originalVODFFmpegInputPath,
+		"-v", "error", "-show_entries", "stream=codec_type", "-of", "json", "-i", recordingHLSFFmpegInputPath,
 	)
 	streamCmd.ExtraFiles = []*os.File{file}
 	streamOutput, err := streamCmd.Output()

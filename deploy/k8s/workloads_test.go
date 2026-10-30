@@ -1129,8 +1129,8 @@ func TestLiveStreamerScratchBudget(t *testing.T) {
 	if got := fmt.Sprint(mapAt(container, "resources", "requests")["memory"]); got != "1Gi" {
 		t.Errorf("%s memory request = %q, want %q", deploymentID, got, "1Gi")
 	}
-	if got := fmt.Sprint(mapAt(container, "resources", "limits")["memory"]); got != "3Gi" {
-		t.Errorf("%s memory limit = %q, want %q", deploymentID, got, "3Gi")
+	if got := fmt.Sprint(mapAt(container, "resources", "limits")["memory"]); got != "2176Mi" {
+		t.Errorf("%s memory limit = %q, want %q", deploymentID, got, "2176Mi")
 	}
 
 	spec := mapAt(podTemplate(streamer.object), "spec")
@@ -1152,8 +1152,8 @@ func TestLiveStreamerScratchBudget(t *testing.T) {
 	if got := strAt(emptyDir, "medium"); got != "Memory" {
 		t.Errorf("%s emptyDir.medium = %q, want %q", deploymentID, got, "Memory")
 	}
-	if got := fmt.Sprint(emptyDir["sizeLimit"]); got != "1Gi" {
-		t.Errorf("%s emptyDir.sizeLimit = %q, want %q", deploymentID, got, "1Gi")
+	if got := fmt.Sprint(emptyDir["sizeLimit"]); got != "128Mi" {
+		t.Errorf("%s emptyDir.sizeLimit = %q, want %q", deploymentID, got, "128Mi")
 	}
 }
 

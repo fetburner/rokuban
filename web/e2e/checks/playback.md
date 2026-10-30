@@ -1,114 +1,23 @@
-> [web/e2e/README.md](../README.md) の一部。索引から辿る
+# 録画再生のブラウザ確認
 
-### 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`）
+### 世代付き録画 HLS
 
-追っかけ再生では、録画の進行に沿った位置と音声切替を実ブラウザで確認する。
+`recording-playback-timeline.mjs` は、実ブラウザが録画 API の `hlsPlayback` にある master URL を直接読み、録画時間軸から seek することを確認する。Go の fixture test が実装の変換引数で HLS と目印入り TS を作るため、Go と ffmpeg が要る。
 
-録画詳細を `#chase` で開き、実 H.264/AAC セグメントを返す成長中の EVENT playlist を Chromium または Playwright WebKit の hls.js で再生する。録画 API・追っかけ HLS・離脱 API は `page.route` で差し替えるため mirakc と実録画は要らない。次を実ブラウザで見る。
+確認する項目:
 
-`pnpm e2e:chase` は `chase.mjs` の後に `chase-audio.mjs` も実行する。後者は ffmpeg で標準 / 主 / 副の rendition を含む EVENT master を作り、Chromium では WebAudio の左右周波数で切替を測る。各トラックを 15 秒聴いて戻った後も再生が進むこと、同じ master 形式での範囲内 seek・offset 張り直し・保存位置からの開始を確認する。WebKit も hls.js 経路で実行する。
-
-- 録画中の詳細ページから追っかけプレイヤーが開き、`<video>` に `controls` が無く、時間軸は操作バーのシークバー 1 本である
-- EVENT playlist がセグメントを増やしても再生位置は録画先頭から始まる
-- セッションの範囲内へのシークは playlist を取り直さない。ドラッグ中は張り直さない（要求回数で見る）
-- 変換済みの端より先・開始 offset より前へのシークは、その秒の offset で張り直す。先頭セグメントがその秒のものであること、直前のセッションの leave ヒント（`/offset/{前の offset}/leave` まで）を見る
-- **offset のセッションから 0 秒へ戻すと、offset 無しの playlist に張り直し、保存位置を復元しない**。パネルで 0 秒を「未選択」にしてしまう変異で、保存位置の 5 秒へ戻って落ちる
-- 録画の先端の印と End キーで先端へ移る。範囲内か張り直しかは実装から予測しない。最後に要求した playlist の offset + `currentTime` が選んだ位置に落ち着くことを見る。予測すると、変換済みの端が読み込みに応じて伸びるため 10 回中 7 回落ちた
-- 再生中に張り直しても再生を続け、選んだ位置から進む
-- バー下の目盛り: 延長中は「予定 … ¦」の ¦ が予定終端の印を、録画済みが短いときは先端の時刻の中心が先端の印を指す（許容 3px）。印が左端に近いときはラベルが行の中に寄り、ラベル同士が重ならない。先端の印の下は時刻だけで、「録画の先端 …（押すと先端へ）」は印の title にある
-- 保存済みの VOD 共通速度が追っかけの `<video>` に適用され、`ratechange` が同じ `localStorage` キーへ保存される
-- 成長後の playlist が `ENDLIST` になり、完了した録画を追える
-- **画質（プロファイル）の切替で再生位置が続く**（issue #874）。先頭再生と offset 付き再生の 2 通りを見る。**`LivePlayer` を `key={profile}` で作り直す変異で offset 付きが 1.5 秒 → 0 秒に巻き戻って落ちる**（先頭再生は保存位置が近いので差が出にくい）。あわせて切替が離脱ヒントを送らないこと・`?profile=` が要求に載ることも見る
-- **画質の切替の途中で「続きから」を別の位置で上書きしない**。途中で書かれた値をすべて記録して見る（最終値は切替後の seek で正しい値に戻るため）。2 秒未満は `removeItem` になるので、それも 0 として記録する。持ち越し中の保存ガードを外す変異で途中の位置が書かれることを確認する
-- **追っかけで見た位置から、完了後の VOD を開くと同じ位置 ± 3 秒から始まる**（⑧、issue #975 受け入れ 2）。追っかけの保存位置（スタブ API が保持）を読み、録画を完了に切り替えて `/recordings/1` を開き直し、原本 VOD の `currentTime` を比べる。**原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
-- **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から次に進んだ時刻までの最大停止時間を記録し、2 秒以下を判定する。再生を引き継がない変異は、範囲外 seek の `reselectPlaybackSource` へ `playing && false` を渡すものである。**停止 10073ms・`advances=0` になって落ちる**（Chromium で確認）。**再生元を替えない変異（`selected !== current.source` を `false &&` にする）で、offset を要求せず ⑩ の 4 判定が落ちる**（Chromium で確認）
-- **追っかけの終端（`ended`）では、別の再生元を作らず終了状態のまま止まる**（⑪・⑫）。追っかけの `ENDLIST` は mirakc の録画が終わった後にだけ付くので、終端は常に録画ファイルの終端である（`docs/api/media.md`）。fixture は伸びる EVENT playlist を 6 segment（12 秒）で止め、そこへ `ENDLIST` を付ける。壁時計の録画時間は 20 秒、原本 HLS fixture は 20 秒以上ある。⑪ は完了の取得の後に、⑫ は前に `ENDLIST` を付ける。**main の実装（壁時計の終端の 1.5 秒手前より前なら移る）で ⑪ が `sameVideo:false`・原本 HLS 要求 2 件になって落ちる**。**前回の実装（5 秒の許容と、完了の取得を待つ保留）では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。
-
-  終端の 1 秒後の `ended` は判定に使わない。Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出し、`currentTime` を 0 に戻すことがある。13 回の実行の 26 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない。次のポスター判定は⑬
-
-`E2E_BROWSER=webkit` では同じ hls.js 経路を Playwright WebKit で診断する。
-
-フィクスチャ生成に `ffmpeg` を使う。無い環境ではこの判定だけを skip として終了し、他の CI 判定を失敗扱いにしない。
+- `hlsPlayback` が空のとき HLS を要求せず、encoded が無い場合は再生可能ファイルの空状態を出す
+- recordings SSE 後に `hlsPlayback` が届くと再生開始操作を出す
+- `/api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8` を使い、録画中の時間軸と seek を実メディアで測る
+- ingest commit の前後で同じ世代付き URL を維持する
+- 世代 URL が 410 になり API が一時的に HLS を返さない場合も、新世代の URL を取得して停止直前の位置から再生を続ける
 
 ```sh
-E2E_URL=http://localhost:4173 pnpm e2e:chase
-E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
-```
-
-### LivePlayer の 503 文言・離脱ヒント・追っかけの表示時刻（`live-player-modes.mjs`）
-
-ライブ・追っかけ・原本 VOD の 3 モードで、短い実メディアを実ブラウザに再生させ、503 の文言・離脱ヒントの送信・追っかけの表示時刻を測る。mirakc と実録画は要らない。
-
-`/api/**` と HLS は `page.route` で差し替える。fixture は ffmpeg が作った 20 秒の HLS で、Chromium の hls.js が再生する。jsdom には `navigator.sendBeacon` が無く fetch に落ちるため、離脱ヒントの実送信は実ブラウザでしか測れない。
-
-- 各モードで `visibilityState` を `visible` にした `visibilitychange` は、leave を 1 件も増やさない。hidden の判定を外す変異（visible でも送る）を落とす
-- `visibilityState` を `hidden` にした `visibilitychange` と `pagehide` は、そのモードの宛先へ POST を 1 件ずつ送る。宛先はライブが `/live/leave`、追っかけが `/chase/leave`、原本 VOD が続き位置の `/original-vod/offset/12/leave` である
-- 原本 VOD は続き位置 12 秒の offset playlist を要求する
-- 追っかけの表示時刻は、録画先頭（番組開始から録画開始までの秒）に実メディアの `currentTime` を足した値と 2 秒以内で一致する。`aria-valuenow` は映像が進む前は props から導いた値で、実装と同じ式を読むので使わない
-- playlist の 503 は、ライブがチューナー案内、追っかけと原本 VOD がそれぞれの見出しと再試行案内を表示し、録画系にライブの案内を出さない
-
-```sh
-E2E_URL=http://localhost:4173 pnpm e2e:live-player-modes
-E2E_VALIDATE_FIXTURES_ONLY=1 node e2e/live-player-modes.mjs
-```
-
-`E2E_VALIDATE_FIXTURES_ONLY=1` は録画 fixture を Zod 契約で検査するだけでブラウザを起動しない。CI の `browser-e2e` ジョブが実ブラウザ判定を回す。
-
-### 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`）
-
-Go テストで放送 TS に似せた MPEG-2 29.97 fps の fixture を作る。HLS は製品の `BuildOriginalVODFFmpegArgs`（offset 0 / 10 秒）で生成する。MP4 は製品の `BuildFFmpegArgs` と `config.example.yml` の h264 例で生成する。入力は先頭 PTS が 0 でない。音声を映像より約 700 ms 先に置く。不規則な間隔の9フレームに白い目印を入れ、位置で各フレームの ID を表す。期待時刻は、チャプターの軸である非カット MP4 を ffprobe して得た目印フレームの PTS とする。原本 TS の「目印 PTS - 最早 `start_time`」との差は参考値としてログにだけ出す。
-
-Chrome と Playwright WebKit の hls.js 経路で、原本 HLS offset 0、シークで張り直した offset 10 秒、非カット MP4 を再生する。各目印の表示を画素で検出し、その時点の `requestVideoFrameCallback` の `mediaTime` を読む。offset 付き HLS は入力 seek と同じ 30000/1001 のフレーム格子上の起点を足して原本時間軸へ戻し、フレーム番号の順序と 1ms 以内の差を記録する。`E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1` を付けると期待値を 1 フレームずらす変異確認になる。
-
-```sh
+cd web
+pnpm build
+pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
-E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 pnpm e2e:recording-playback-timeline
-```
-
-この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。現在の合成 fixture では Chromium + hls.js の全目印が 1ms 以内で一致した。WebKit + hls.js の再測定は未実施である。
-
-比較の許容差は半フレームではなく 1ms である。原本 HLS は B フレームを無効にし、`-ss` と再生軸を同じフレーム格子へ揃える。offset 10 秒の起点は 9.976633 秒なので、整数の 10 秒を足すと 23.37ms ずれる。表の再生時刻比較と編集モードの境界操作は別の判定であり、スクリプト全体の終了状態には両方が含まれる。この合成 fixture はソフトウェア libx264 に限る。実録画（GR/BS）とハードウェアエンコーダーは未測定である。測定条件と差の内訳は [`docs/frontend/recordings.md`](../../../docs/frontend/recordings.md) に記録している。
-
-### 原本 HLS VOD の再生開始（`recording-original-vod.mjs`）
-
-FFmpeg で MPEG-2 TS と H.264/AAC HLS の fixture を作り、録画 API と streamer の URL を `page.route` で差し替える。mirakc と実録画は要らない。⑤-manual は自動再生を意図的に `NotAllowedError` で拒否し、0 / 1 / 3 秒待ってから操作バーの ▶ を押す。fixture は EVENT playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに segment を増やす。
-
-⑦ は原本 HLS と encoded の両方について 1280px / 400px で再生開始と枠の寸法を測る。クリック後 15 秒以内に video が一時停止状態を抜けて `currentTime > 0.5` になることを待つ。原本 HLS は先頭 4 segment の EVENT playlist から始め、2 秒ごとに segment を追加して最大 8 segment まで配る。
-
-原本 HLS は開始位置も測る。クリック後に最初に取得した映像 segment が `0_seg00000.ts` で、最初の `playing` の `currentTime` が 1 未満でなければ NG にする。`currentTime > 0.5` だけでは、最新端から始まって進む再生も通ってしまうためである。診断には `playing` / `seeking` と `currentTime` への代入、詳細 API が返した再開位置を載せる。
-
-前のページの再開位置 PUT は遷移の後に届くことがある。⑦ と ④ は書き込みの反映を止めて（`applyPositionWrites`）から `resumePositionMs` を消す。止めないと製品は残った位置から再開し、8 秒分の fixture の端で止まる。
-
-④ で `video` が表示されない、または metadata が揃わない場合は、NG で終了する前に診断ログを出す。再生ボタンの `aria-label` と文言（`続きから` の有無）はクリック前に控える。クリックでポスターごと消えるからである。ログにはその控えと video の状態、詳細 API の `resumePositionMs`、再開位置 PUT の記録（`playbackPositionWrites`）を載せる。HLS playlist / segment の要求・HTTP 応答・失敗も同じログに含める。DOM の取得に失敗した場合も、その理由を記録して残りの診断を出す。
-
-⑦が失敗した場合は待機エラー、`paused`・`currentTime`・`readyState`・`seekable`・`buffered` とメディアエラーを記録する。`play()` の呼び出し・成否、playlist / segment の要求と HTTP 応答も記録する。再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、枠の上でマウスを動かして表示を待つ。
-
-⑧〜⑪ は続きから再生を測る。到達位置は `offset の起点 + currentTime` で読む。起点は fixture の `-ss` と同じ `streamerSeekSeconds` で、製品の `originalVODSessionOriginSeconds` は使わない（同じ式で測ると、式が間違っていても通る）。aria-valuenow も使わない。最初の timeupdate までは props から導いた値だからである。
-
-- ⑧: 変換済みが 2 秒しかない新しいセッションで、保存位置 4.5 秒から 1 秒以内の位置に到達する。
-- ⑨: 保存位置 12 秒が 8 秒の EVENT playlist の先端より先にあっても、最初に offset 12 を開いて約 12 秒の位置に到達する。
-- ⑩: 保存位置 61 秒が映像の終端（58.5 秒）より先でも、416 の後退丸めで端の近くから読み込む。
-- ⑪: 保存位置より前への巻き戻しは、その秒の offset で張り直す。
-- ⑫-a: 変換中 EVENT playlist の `<video>.duration` が有限でも、数字キー `9` は固定した録画尺から 14.4 秒を選び、`offset/14/playlist.m3u8` を要求する。Chrome 156 では最初の 4 segment を読んだ時点の duration が 8 秒だった。判定は `recording-original-vod.mjs` の「⑫-a」である。
-
-直す前の実装（offset 0 に保存位置を渡す）では、⑨ ⑩ ⑪（Chromium・WebKit）と ⑧（WebKit）が落ちる。
-
-```sh
-E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
-```
-
-### 原本 HLS から encoded への切替（`recording-original-vod.mjs`）
-
-⑥ は原本 HLS 再生中に encoded が追加されても現在の HLS を保ち、次の範囲外 seek で encoded MP4 へ位置を渡す。切替後に `currentTime` が進むことと、最後に進んだ時刻からの最大停止時間が 2 秒以下であることも、Chromium と WebKit で確認する。再生を引き継がない変異は、⑩ と同じ `playing && false` である。**切替後が `paused:true`・停止 10077ms・`advances=0` になって落ちる**（Chromium で確認）。
-
-切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 88〜177ms（5 回）・⑥ 113〜165ms（3 回）、WebKit で ⑩ 202〜281ms（13 回）・⑥ 241〜310ms（3 回）だった。
-
-⑬ は、カットなし encoded がある録画で版タブから原本 HLS を選び、保存位置より前へ巻き戻す。新しい offset の HLS playlist が要求され、encoded MP4 を要求しないことを確認する。
-
-```sh
-E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod
-E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 ```
 
 ### 録画 HLS の再起動境界（`recording-segmented-vod.mjs`）

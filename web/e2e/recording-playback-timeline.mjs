@@ -1,19 +1,9 @@
-// 原本 HLS と非カット MP4 が同じ原本時間軸を使うか、表示中のフレームで測る。
-// 期待値はチャプターの軸である非カット MP4（encoded.mp4）の各目印フレームの PTS を
-// ffprobe で読んで求める。原本 TS の「目印 PTS - 最早 start_time」は参考値としてログにだけ出す。
-// fixture は Go のテストが製品の BuildOriginalVODFFmpegArgs / BuildFFmpegArgs で作る。
-//
+// 録画 HLS の実ブラウザ時間軸と ingest 世代の切り替え後の再生継続を測る。
+// fixture は Go のテストが製品の HLS 引数ビルダーで作る。
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
 //   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
-//   E2E_TIMELINE_CHAPTER_SEEK_ONLY=1 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
-//   E2E_TIMELINE_API_HLS_ONLY=1 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
-//
-// 変異確認: E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 を付けると、期待時刻を 1 フレーム
-// ずらした判定が落ちる。原本 HLS の offset セッションでは、表示中フレームの境界が
-// 「現在位置に合わせる」で保存した PUT の ms と一致するかも見る（live-player.tsx の
-// getDisplayedFrameSeconds の起点を整数 offset に戻すと 33 ms ずれて落ちる）。
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'
@@ -36,10 +26,6 @@ const RECORDING_ID = 1067
 const LIVE_PROFILE = 'hd'
 const ENCODE_PROFILE = 'h264'
 const SOURCE_FRAME_RATE = 30_000 / 1_001
-// 原本 HLS の offset セッションの起点。streamer は -ss を floor(N×30000/1001)×1001/30000 秒へ写す。
-const sessionOrigin = (offset) => (offset > 0 ? Math.floor(offset * 30_000 / 1_001) * 1_001 / 30_000 : 0)
-// 判定は格子の一致。浮動小数の誤差だけ許す（1 ms 未満。半フレームは 16.7 ms で、ずれを通してしまう）。
-const GRID_TOLERANCE_SECONDS = 0.001
 // 目印の 3x3 の位置を、64x36 に縮めたフレームの画素で読む（fixture の drawbox と同じ並び）。
 const MARKER_PIXELS = [
   [16, 9], [32, 9], [48, 9],
@@ -47,11 +33,6 @@ const MARKER_PIXELS = [
   [16, 27], [32, 27], [48, 27],
 ]
 const INITIAL_HLS_SEGMENTS = 5
-const CHAPTER_SEEK_ONLY = process.env.E2E_TIMELINE_CHAPTER_SEEK_ONLY === '1'
-const BOUNDARY_SEEK_ONLY = process.env.E2E_TIMELINE_BOUNDARY_SEEK_ONLY === '1'
-const RAW_SEEK_ONLY = process.env.E2E_TIMELINE_RAW_SEEK_ONLY === '1'
-const RAW_SEEK_DIAGNOSTICS = RAW_SEEK_ONLY || process.env.E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS === '1'
-const API_HLS_ONLY = process.env.E2E_TIMELINE_API_HLS_ONLY === '1'
 const REAL_HLS_URL = process.env.E2E_TIMELINE_REAL_HLS_URL ?? ''
 const REAL_HLS_BOUNDARY_MS = Math.round((Number(process.env.E2E_TIMELINE_REAL_HLS_BOUNDARY_SECONDS ?? '1') || 1) * 1000)
 if (REAL_HLS_URL) {
@@ -60,9 +41,7 @@ if (REAL_HLS_URL) {
     throw new Error('実録画 HLS の診断 URL は localhost のみ指定できます')
   }
 }
-const EXPECTED_SHIFT_FRAMES = Number.parseInt(process.env.E2E_TIMELINE_EXPECTED_SHIFT_FRAMES ?? '0', 10) || 0
 const ng = []
-const chapterPuts = []
 const now = Date.now()
 const recordingSeconds = 22
 const startedAt = new Date(now - 30_000).toISOString()
@@ -192,16 +171,6 @@ if (!(audioStart < videoStart) || Math.abs((videoStart - audioStart) - 0.7) > 0.
 }
 
 const decodedFrames = probe.frames ?? []
-// API_HLS_ONLY は encoded を使わない（期待値は HLS fixture の目印時刻）ので、encoded の生成物は読まない。
-const encodedTimes = API_HLS_ONLY ? [] : runFFprobe([
-  '-v', 'error', '-select_streams', 'v:0',
-  '-show_entries', 'frame=pts_time,best_effort_timestamp_time', '-of', 'json', encodedPath,
-]).frames.map((frame) => Number(frame.best_effort_timestamp_time ?? frame.pts_time)).sort((a, b) => a - b)
-// API_HLS_ONLY は原本 HLS の fixture だけを使う。原本と encoded のフレーム対応は
-// 通常の時間軸判定でだけ必要であり、API HLS 専用判定を別環境の encoder 差で落とさない。
-if (!API_HLS_ONLY && encodedTimes.length !== decodedFrames.length) {
-  ng.push(`encoded の frame 数が原本と違う (encoded=${encodedTimes.length}, source=${decodedFrames.length})`)
-}
 const markerTimes = manifest.markerFrames.map((frameIndex, markerSlot) => {
   const frame = decodedFrames[frameIndex]
   const pts = Number(frame?.best_effort_timestamp_time ?? frame?.pts_time)
@@ -209,13 +178,9 @@ const markerTimes = manifest.markerFrames.map((frameIndex, markerSlot) => {
     ng.push(`ffprobe で目印 frame ${frameIndex} の PTS を得られない`)
     return { frame: frameIndex, markerSlot, pts: Number.NaN, expectedSeconds: Number.NaN }
   }
-  // 目印の i 番目の frame は、encoded でも表示順の i 番目（frame 数の一致は下で検査する）。
-  const encodedPts = encodedTimes[frameIndex]
-  if (!API_HLS_ONLY && !Number.isFinite(encodedPts)) ng.push(`encoded の目印 frame ${frameIndex} の PTS を得られない`)
-  return { frame: frameIndex, markerSlot, pts, legacySeconds: pts - earliestStart, expectedSeconds: encodedPts }
+  return { frame: frameIndex, markerSlot, pts, legacySeconds: pts - earliestStart, expectedSeconds: Number.NaN }
 })
 log(`  ffprobe: fps=${videoStream?.r_frame_rate}, earliest=${earliestStart.toFixed(6)}s, audio lead=${(videoStart - audioStart).toFixed(6)}s`)
-if (!API_HLS_ONLY) log(`  目印 encoded PTS (主判定の基準): ${markerTimes.map((item) => `${item.frame}:${item.expectedSeconds.toFixed(6)}`).join(', ')}`)
 log(`  目印 原本 PTS - earliest start_time (参考): ${markerTimes.map((item) => `${item.frame}:${item.legacySeconds.toFixed(6)}`).join(', ')}`)
 
 // 録画 API HLS の途中シークの期待値は、ブラウザが実際に再生する HLS fixture（offset 0 の master）の
@@ -244,20 +209,18 @@ function hlsFixtureMarkerSeconds() {
   }
   return seconds
 }
-if (API_HLS_ONLY) {
-  const hlsMarkerSeconds = hlsFixtureMarkerSeconds()
-  for (const marker of markerTimes) {
-    marker.hlsSeconds = hlsMarkerSeconds.get(marker.markerSlot) ?? Number.NaN
-    if (!Number.isFinite(marker.hlsSeconds)) ng.push(`HLS fixture に目印 ${marker.markerSlot} のフレームが無い`)
-  }
-  log(`  目印 HLS fixture の時刻 (録画 API HLS の基準): ${markerTimes.map((item) => `${item.frame}:${item.hlsSeconds.toFixed(6)}`).join(', ')}`)
-  log(`  HLS fixture - 原本 PTS の差 (ms): ${markerTimes.map((item) => `${item.frame}:${((item.hlsSeconds - item.legacySeconds) * 1000).toFixed(3)}`).join(', ')}`)
+const hlsMarkerSeconds = hlsFixtureMarkerSeconds()
+for (const marker of markerTimes) {
+  marker.expectedSeconds = hlsMarkerSeconds.get(marker.markerSlot) ?? Number.NaN
+  if (!Number.isFinite(marker.expectedSeconds)) ng.push(`HLS fixture に目印 ${marker.markerSlot} のフレームが無い`)
 }
+log(`  目印 HLS fixture の時刻 (録画 API HLS の基準): ${markerTimes.map((item) => `${item.frame}:${item.expectedSeconds.toFixed(6)}`).join(', ')}`)
+log(`  HLS fixture - 原本 PTS の差 (ms): ${markerTimes.map((item) => `${item.frame}:${((item.expectedSeconds - item.legacySeconds) * 1000).toFixed(3)}`).join(', ')}`)
 
 recording.encodedAssets = [{ profile: ENCODE_PROFILE, sizeBytes: statSync(encodedPath).size }]
 const liveRecording = { ...recording, encodedAssets: [] }
 let activeRecording = liveRecording
-let chaptersForHls = false // 原本 HLS のページでも章を返す（offset セッションの「現在位置に合わせる」判定用）
+let chaptersForHls = false // 録画 HLS のページでも章を返す（再生位置との対応を確認する）
 await validateFixturesOrExit([
   ['recording for original HLS', ListRecordingsResponseItem, liveRecording],
   ['recording for encoded MP4', ListRecordingsResponseItem, recording],
@@ -269,8 +232,6 @@ const browser = engine === 'chrome'
   ? await launchBrowser('chromium', { channel: 'chrome' })
   : await launchBrowser(engine)
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' })
-const playlistRequests = []
-const mp4Requests = []
 const recordingHlsRequests = []
 const recordingHls410Requests = []
 const recordingHlsApiResponses = []
@@ -374,583 +335,7 @@ await context.addInitScript((markerPixels) => {
   }
 }, MARKER_PIXELS)
 
-async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarkers, label) {
-  const observed = []
-  for (const marker of expectedMarkers) {
-    const localTime = marker.expectedSeconds - sessionOrigin(sessionOffsetSeconds)
-    const seekTime = Math.max(0, localTime - 0.25)
-    try {
-      await page.waitForFunction((target) => {
-        const video = document.querySelector('video')
-        if (!video || video.seekable.length === 0) return false
-        for (let i = 0; i < video.seekable.length; i += 1) {
-          if (video.seekable.start(i) <= target && video.seekable.end(i) >= target) return true
-        }
-        return false
-      }, seekTime, { timeout: 10_000 })
-      await page.locator('video').evaluate(async (video, target) => {
-        video.pause()
-        video.playbackRate = 0.5
-        if (Math.abs(video.currentTime - target) < 0.02) return
-        await new Promise((resolve) => {
-          let settled = false
-          const finish = () => {
-            if (settled) return
-            settled = true
-            clearTimeout(timer)
-            resolve()
-          }
-          const timer = setTimeout(finish, 2000)
-          video.addEventListener('seeked', finish, { once: true })
-          try {
-            video.currentTime = target
-          } catch {
-            finish()
-          }
-        })
-      }, seekTime)
-      const previousCount = await page.evaluate(() => window.__timelineMarks.length)
-      await page.evaluate((offset) => window.__startTimelineCapture(offset), sessionOffsetSeconds)
-      await page.waitForFunction((count) => (
-        window.__timelineMarks.length > count || window.__timelineCaptureError !== null
-      ), previousCount, { timeout: 5000 })
-      const capture = await page.evaluate((index) => window.__timelineMarks[index], previousCount)
-      if (capture) {
-        const frame = manifest.markerFrames[capture.markerSlot]
-        if (!Number.isInteger(frame)) {
-          ng.push(`${label}: unknown marker slot ${capture.markerSlot}`)
-        } else {
-          observed.push({ ...capture, frame })
-        }
-      }
-      else ng.push(`${label}: frame ${marker.frame} の目印を取得できない (${await page.evaluate(() => window.__timelineCaptureError)})`)
-    } catch (err) {
-      ng.push(`${label}: frame ${marker.frame} が表示されない (${err.message})`)
-    }
-  }
-  return observed
-}
-
-async function capturePresentedFrameAt(page, action, targetTime) {
-  await page.locator('video').evaluate((video) => {
-    window.__nextPresentedFrame = new Promise((resolve) => {
-      if (typeof video.requestVideoFrameCallback !== 'function') {
-        resolve(null)
-        return
-      }
-      let done = false
-      let callbackId
-      const finish = (frame) => {
-        if (done) return
-        done = true
-        clearTimeout(timer)
-        if (callbackId !== undefined) video.cancelVideoFrameCallback?.(callbackId)
-        window.__armPresentedFramePaintCapture = undefined
-        resolve(frame)
-      }
-      const snapshot = (mediaTime, source) => ({
-        mediaTime,
-        source,
-        currentTime: video.currentTime,
-        paused: video.paused,
-        seeking: video.seeking,
-        markerSlot: window.__displayedMarkerSlot(),
-        fingerprint: window.__videoFrameFingerprint(),
-      })
-      // 補助経路（seeked 後の二重 rAF）は表示中の目印 slot と fingerprint だけ記録する。mediaTime は
-      // 表示フレームの PTS を読めないので NaN にし、currentTime から逆算した値で判定を通さない。
-      // rVFC が来なければタイムアウトでこの結果を返し、時刻の判定は NG になる。
-      let seeked = false
-      let paintSnapshot = null
-      const capturePaint = () => {
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          if (done || video.seeking) return
-          try {
-            paintSnapshot = snapshot(Number.NaN, 'paint')
-          } catch {
-            // 読めなければ補助の記録は無し。
-          }
-        }))
-      }
-      const timer = setTimeout(() => finish(paintSnapshot), 5000)
-      window.__armPresentedFramePaintCapture = () => {
-        if (seeked) capturePaint()
-      }
-      const captureVisibleFrame = (_now, metadata) => {
-        callbackId = undefined
-        // seeking 中の callback も採る。Chromium の原本 HLS は目的のフレームの callback が seeking:true で
-        // 来て、一時停止中は次が来ない。seek 前の古いフレームで発火しても、mediaTime か目印が合わず NG に
-        // なる側に倒れる（誤って通ることはない）。
-        try {
-          finish(snapshot(metadata.mediaTime, 'rvfc'))
-        } catch {
-          finish(null)
-        }
-      }
-      // 一時停止中の seek は、seeked より前にフレームが出る実装があるので、callback は action の前に
-      // 登録する（seeked から登録すると rVFC を取りこぼす）。
-      callbackId = video.requestVideoFrameCallback(captureVisibleFrame)
-      video.addEventListener('seeked', () => {
-        seeked = true
-        capturePaint()
-      }, { once: true })
-    })
-  })
-  await action()
-  await page.evaluate(() => {
-    // rVFC を優先する。一時停止中に次の callback を出さないブラウザでは、seeked 後に落ち着いた
-    // 最初の描画を読む。
-    window.__armPresentedFramePaintCapture?.()
-  })
-  const frame = await page.evaluate(() => window.__nextPresentedFrame)
-  // captured は rVFC か補助経路で何かを捕捉できたか。タイムアウトなら false。matched は rVFC の
-  // mediaTime が targetTime の 1 フレーム内か（補助経路の NaN は常に false）。
-  return {
-    ...frame,
-    captured: frame !== null,
-    matched: frame !== null && Number.isFinite(targetTime) &&
-      Math.abs(frame.mediaTime - targetTime) <= 1 / (2 * SOURCE_FRAME_RATE) + GRID_TOLERANCE_SECONDS,
-  }
-}
-
-async function seekThroughChapterCards(page) {
-  log('\n=== 非カット MP4: 境界カードのシーク ===')
-  await page.getByTestId('recording-player-shell').hover()
-  await page.getByRole('button', { name: '再生設定' }).click()
-  await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
-  const rows = page.getByTestId('chapter-span-row')
-  const rowCount = await rows.count()
-  if (rowCount !== markerTimes.length) {
-    ng.push(`チャプター境界カード数が目印数と違う (got=${rowCount}, want=${markerTimes.length})`)
-    return
-  }
-
-  for (let index = 0; index < markerTimes.length; index += 1) {
-    const marker = markerTimes[index]
-    const boundaryMs = Math.round(marker.expectedSeconds * 1000)
-    // 押す前は境界の 0.5 秒手前（目印でないフレーム）に置く。整数 ms の境界へ置くと、
-    // 切り上がる境界では押す前から目印が映っており、判定が空振りする。
-    const beforeSeconds = boundaryMs / 1000 - 0.5
-    try {
-      await page.locator('video').evaluate((video, target) => {
-        video.pause()
-        video.currentTime = target
-      }, beforeSeconds)
-      await page.waitForFunction((target) => {
-        const video = document.querySelector('video')
-        return video && !video.seeking && Math.abs(video.currentTime - target) < 0.05
-      }, beforeSeconds, { timeout: 5000 })
-      const slotBefore = await page.evaluate(() => window.__displayedMarkerSlot())
-      if (slotBefore === marker.markerSlot) {
-        ng.push(`境界カード ${index + 1}: 押す前から frame ${marker.frame} が映っている（判定が空振りする）`)
-      }
-      await rows.nth(index).locator('button').first().click()
-      await page.waitForFunction((slot) => {
-        const video = document.querySelector('video')
-        return video && !video.seeking && window.__displayedMarkerSlot() === slot
-      }, marker.markerSlot, { timeout: 5000 })
-      log(`  card ${index + 1}: boundary=${boundaryMs}ms frame=${marker.frame} displayed slot=${marker.markerSlot}`)
-    } catch (err) {
-      const slot = await page.evaluate(() => window.__displayedMarkerSlot()).catch(() => -2)
-      ng.push(`境界カード ${index + 1} のシークで frame ${marker.frame} を表示できない (slot=${slot}, ${err.message})`)
-    }
-  }
-
-  await exerciseBoundaryControls(page, '非カット MP4', { first: 0, stop: 2, from: 3 }, 0)
-  await page.setViewportSize({ width: 400, height: 800 })
-  // 400 幅の帯: 3 つのモードボタンが映像の枠内に収まり、帯の中の要素（再生ボタン・時刻・3 ボタン・速度）
-  // 同士が重ならない。
-  const modeLayout = await page.getByTestId('chapter-edit-playback-modes').evaluate((element) => {
-    const frame = element.closest('[data-testid="recording-player-frame"]')
-    if (!frame) return null
-    const frameRect = frame.getBoundingClientRect()
-    const band = element.parentElement
-    // 速度ボタンも含む（`chapter-edit-playback-modes` の中にある）。
-    const items = Array.from(band.querySelectorAll('button, [data-testid="chapter-edit-playhead"]'))
-      .map((node) => {
-        const rect = node.getBoundingClientRect()
-        return { name: node.getAttribute('aria-label') ?? node.textContent?.trim() ?? '', left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width }
-      })
-      .filter((item) => item.width > 0)
-    const inside = items.every((item) => item.left >= frameRect.left - 1 && item.right <= frameRect.right + 1)
-    const overlaps = []
-    for (let i = 0; i < items.length; i += 1) {
-      for (let j = i + 1; j < items.length; j += 1) {
-        const a = items[i]
-        const b = items[j]
-        if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) {
-          overlaps.push(`${a.name} と ${b.name}`)
-        }
-      }
-    }
-    return { inside, overlaps, count: items.length }
-  })
-  if (modeLayout === null || !modeLayout.inside) ng.push('400×800 で再生型のボタンが映像下端の帯からはみ出す')
-  else if (modeLayout.overlaps.length > 0) ng.push(`400×800 の帯の中で要素が重なる (${modeLayout.overlaps.join(', ')})`)
-  else if (modeLayout.count < 6) ng.push(`400×800 の帯の要素が 6 個（再生・時刻・3 ボタン・速度）に満たない (${modeLayout.count})`)
-  await page.setViewportSize({ width: 1280, height: 900 })
-}
-
-/**
- * exerciseBoundaryControls は編集モードで、境界の選択・±1 フレーム・「境界まで」「境界から」を
- * 目印フレームの表示で判定する。picks は使う目印の index（選択と ±1 フレーム / 境界まで / 境界から）。
- * offset は原本 HLS のセッション起点（`video.currentTime` = 原本時間 - offset）。非カット MP4 は 0。
- * preroll は押す前に境界の何秒手前へ置くか。利用者は遠い位置から境界を選ぶので、原本 HLS offset 0 は
- * 0.5 秒手前から選んだ後に最初に表示されるフレームも見る。
- */
-async function exerciseBoundaryControls(page, label, picks, offset, preroll = 0.5) {
-  log(`\n=== ${label}: 境界の選択と1フレーム調整 ===`)
-  const video = page.locator('video')
-  const toSession = (seconds) => seconds - offset
-  const settledOn = (slot) => page.waitForFunction((target) => {
-    const el = document.querySelector('video')
-    return el && el.paused && !el.seeking && window.__displayedMarkerSlot() === target
-  }, slot, { timeout: 5000 })
-  const clickBoundary = async (marker) => {
-    const ms = Math.round(marker.expectedSeconds * 1000)
-    try {
-      await page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${ms}"]`)
-        .evaluate((button) => button.click(), undefined, { timeout: 5000 })
-      return true
-    } catch {
-      const present = await page.$$eval('[data-testid="chapter-filmstrip-boundary"]', (nodes) => nodes.map((n) => n.getAttribute('data-time-ms')))
-      ng.push(`${label}: 境界 ${ms}ms のボタンが無い (あるのは ${present.join(',')})`)
-      return false
-    }
-  }
-  // 一時停止して目印 slot が映るまで待つ。落ちたら理由を ng に積んで false。
-  const T = 1 / SOURCE_FRAME_RATE
-  const expectSettled = async (marker, what) => {
-    try {
-      await settledOn(marker.markerSlot)
-      return true
-    } catch {
-      const state = await page.evaluate(() => {
-        const el = document.querySelector('video')
-        return { slot: window.__displayedMarkerSlot(), paused: el?.paused, seeking: el?.seeking, t: el?.currentTime }
-      }).catch(() => ({}))
-      if (engine === 'webkit' && label.startsWith('原本 HLS')) {
-        // 判定には使わない。同じ位置への微小 seek で表示が直るかをログに残す。
-        await video.evaluate((el) => { el.currentTime += 0.0001 }).catch(() => {})
-        await page.waitForTimeout(500)
-        const nudged = await page.evaluate(() => {
-          const el = document.querySelector('video')
-          return { slot: window.__displayedMarkerSlot(), paused: el?.paused, seeking: el?.seeking, t: el?.currentTime }
-        }).catch(() => ({}))
-        log(`  診断: ${what} の後に追加 +0.0001 → ${JSON.stringify(nudged)}`)
-      }
-      ng.push(`${label}: ${what} (目印 frame ${marker.frame} slot=${marker.markerSlot} が映らない: ${JSON.stringify(state)})`)
-      return false
-    }
-  }
-  await video.evaluate((el) => {
-    el.pause()
-    el.playbackRate = 1
-  })
-  const placeBefore = async (marker, distance = preroll) => {
-    const target = toSession(marker.expectedSeconds - distance)
-    await video.evaluate((el, seconds) => {
-      el.pause()
-      el.currentTime = seconds
-    }, target)
-    await page.waitForFunction((t) => {
-      const el = document.querySelector('video')
-      return el && el.paused && !el.seeking && Math.abs(el.currentTime - t) < 0.05
-    }, target, { timeout: 10_000 })
-  }
-  const firstMarker = markerTimes[picks.first]
-  if (label === '原本 HLS offset 0') {
-    await placeBefore(firstMarker, 0.5)
-    await page.evaluate(() => {
-      window.__boundarySelectSeeked = false
-      document.querySelector('video')?.addEventListener('seeked', () => {
-        window.__boundarySelectSeeked = true
-      }, { once: true })
-    })
-    const center = toSession(encodedTimes[firstMarker.frame] + T / 2)
-    const selectedPresented = await capturePresentedFrameAt(
-      page,
-      () => clickBoundary(firstMarker),
-      center,
-    )
-    if (!selectedPresented.captured || selectedPresented.markerSlot !== firstMarker.markerSlot) {
-      ng.push(`${label}: 遠距離境界選択後の最初の表示フレームが frame ${firstMarker.frame} ではない (${JSON.stringify(selectedPresented)})`)
-    }
-    if (selectedPresented.captured) {
-      const selectedSettled = await page.waitForFunction(([target, tolerance]) => {
-        const el = document.querySelector('video')
-        return el && el.paused && !el.seeking && Math.abs(el.currentTime - target) < tolerance
-      }, [center, 0.003], { timeout: 3000 }).then(() => true).catch(() => false)
-      const selectSeeked = await page.waitForFunction(() => window.__boundarySelectSeeked, undefined, { timeout: 3000 }).then(() => true).catch(() => false)
-      await page.waitForTimeout(500)
-      const selectedState = await page.evaluate(() => {
-        const el = document.querySelector('video')
-        return { slot: window.__displayedMarkerSlot(), currentTime: el?.currentTime, paused: el?.paused, seeking: el?.seeking }
-      })
-      log(`  遠距離から境界を選択 (0.5s 手前): firstFrame=${JSON.stringify(selectedPresented)}, settled=${selectedSettled}/${selectSeeked}, slot=${selectedState.slot}, t=${selectedState.currentTime?.toFixed(6)}, paused=${selectedState.paused}, seeking=${selectedState.seeking}`)
-      if (selectedState.slot !== firstMarker.markerSlot) {
-        ng.push(`${label}: 0.5秒手前から境界を選んでも frame ${firstMarker.frame} が表示されない (${JSON.stringify(selectedState)})`)
-      }
-
-      await page.evaluate(() => {
-        window.__boundaryModeStarted = false
-        document.querySelector('video')?.addEventListener('playing', () => {
-          window.__boundaryModeStarted = true
-        }, { once: true })
-      })
-      await page.getByRole('button', { name: '選択中の境界まで再生' }).click()
-      const modeStarted = await page.waitForFunction(() => window.__boundaryModeStarted, undefined, { timeout: 5000 }).then(() => true).catch(() => false)
-      const playedToBoundary = modeStarted && await page.waitForFunction(([target, tolerance]) => {
-        const el = document.querySelector('video')
-        return window.__boundaryModeStarted && el && el.paused && !el.seeking && Math.abs(el.currentTime - target) < tolerance
-      }, [center, 0.003], { timeout: 7000 }).then(() => true).catch(() => false)
-      await page.waitForTimeout(500)
-      const boundaryModeState = await page.evaluate(() => {
-        const el = document.querySelector('video')
-        return { slot: window.__displayedMarkerSlot(), currentTime: el?.currentTime, paused: el?.paused, seeking: el?.seeking }
-      })
-      log(`  遠距離から「境界まで」: playing=${modeStarted}, settled=${playedToBoundary}, slot=${boundaryModeState.slot}, t=${boundaryModeState.currentTime?.toFixed(6)}, paused=${boundaryModeState.paused}, seeking=${boundaryModeState.seeking}`)
-      if (!playedToBoundary || boundaryModeState.slot !== firstMarker.markerSlot) {
-        ng.push(`${label}: 0.5秒手前から「境界まで」で frame ${firstMarker.frame} に止まらない (${JSON.stringify(boundaryModeState)})`)
-      }
-    }
-  }
-  await placeBefore(firstMarker)
-  // 隣り合う境界は数 px しか離れない。DOM のボタンを直接 click して隣へ当たらないようにする。
-  if (!(await clickBoundary(firstMarker))) return
-  await expectSettled(firstMarker, '境界を選んでも一時停止して境界のコマが映らない')
-  if (!(await page.getByTestId('chapter-boundary-frame-note').isVisible())) {
-    ng.push(`${label}: 境界フレームの表示中に「境界の直後」の説明が出ない`)
-  }
-
-  // ±1 フレームは区間の終端の境界（目印の次のフレーム k+1）で測る。1 フレームの区間の開始境界を
-  // 進めると区間が空になって消えてしまい、選択が別の境界へ移る。終端なら区間は残る。
-  const endMs = Math.round((firstMarker.expectedSeconds + 1 / SOURCE_FRAME_RATE) * 1000)
-  await page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${endMs}"]`)
-    .evaluate((button) => button.click(), undefined, { timeout: 5000 })
-    .catch((err) => ng.push(`${label}: 終端の境界 ${endMs}ms を選べない (${err.message})`))
-  await page.waitForFunction(() => {
-    const el = document.querySelector('video')
-    return el && el.paused && !el.seeking
-  }, undefined, { timeout: 5000 })
-  const frameTime = (index) => encodedTimes[index]
-  const expectPresented = async (button, index, what) => {
-    const expectedTime = frameTime(index) - offset
-    const presented = await capturePresentedFrameAt(
-      page,
-      () => button.click(),
-      expectedTime,
-    )
-    log(`  SRC ${label} ${what} ${presented.source}`)
-    const presentedTime = presented.mediaTime
-    if (!Number.isFinite(presentedTime) || !Number.isFinite(frameTime(index)) || Math.abs(presentedTime + offset - frameTime(index)) > GRID_TOLERANCE_SECONDS) {
-      ng.push(`${label}: ${what} (frame=${JSON.stringify(presented)}, want=${frameTime(index)}, index=${index})`)
-    }
-  }
-  await expectPresented(
-    page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true }),
-    firstMarker.frame + 2,
-    '+1フレーム後に隣のフレームへ seek しない',
-  )
-  await expectPresented(
-    page.getByRole('button', { name: '選択中の境界を1フレーム戻す', exact: true }),
-    firstMarker.frame + 1,
-    '-1フレーム後に元のフレームへ seek しない',
-  )
-
-  // 長押しの連続送り（初回遅延 450ms + 200ms 間隔）。押している間にシークが詰まらないか、離した後に
-  // 最後の境界のコマへ着地するか、元に戻す 1 回で押す前へ戻るかを測る。
-  const selectedText = () => page.getByTestId('chapter-selected-boundary').textContent()
-  const msOf = (text) => {
-    const m = /^(\d+):(\d\d)\.(\d{3})$/.exec((text ?? '').trim())
-    return m ? (Number(m[1]) * 60 + Number(m[2])) * 1000 + Number(m[3]) : Number.NaN
-  }
-  const beforeHold = await selectedText()
-  await video.evaluate((el) => {
-    window.__seekLog = []
-    const mark = (type) => window.__seekLog.push({ type, at: performance.now() })
-    el.addEventListener('seeking', () => mark('seeking'))
-    el.addEventListener('seeked', () => mark('seeked'))
-  })
-  const holdButton = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })
-  const holdBox = await holdButton.boundingBox()
-  if (!holdBox) {
-    ng.push(`${label}: 長押しのボタンの位置を取れない`)
-  } else {
-    await page.mouse.move(holdBox.x + holdBox.width / 2, holdBox.y + holdBox.height / 2)
-    await page.mouse.down()
-    await page.waitForTimeout(1500)
-    const releasedAt = await page.evaluate(() => performance.now())
-    await page.mouse.up()
-    await page.waitForFunction(() => {
-      const el = document.querySelector('video')
-      return el && el.paused && !el.seeking
-    }, undefined, { timeout: 5000 })
-    await page.waitForTimeout(300)
-    const afterHold = await selectedText()
-    const log2 = await page.evaluate(() => window.__seekLog)
-    const seekings = log2.filter((e) => e.type === 'seeking').length
-    const seekeds = log2.filter((e) => e.type === 'seeked').length
-    const lastSeeked = log2.filter((e) => e.type === 'seeked').at(-1)?.at ?? Number.NaN
-    // 各 seeking から次の seeked までの時間の最大（詰まり）。
-    let maxSeekMs = 0
-    for (let i = 0; i < log2.length; i += 1) {
-      if (log2[i].type !== 'seeking') continue
-      const done = log2.slice(i + 1).find((e) => e.type === 'seeked')
-      if (done) maxSeekMs = Math.max(maxSeekMs, done.at - log2[i].at)
-    }
-    const heldFrames = Math.round((msOf(afterHold) - msOf(beforeHold)) / (T * 1000))
-    log(`  長押し 1.5 秒: 境界 ${beforeHold} -> ${afterHold} (${heldFrames} フレーム) seeking=${seekings} seeked=${seekeds} 最大シーク時間=${maxSeekMs.toFixed(0)}ms 離してから最後の seeked まで=${(lastSeeked - releasedAt).toFixed(0)}ms`)
-    // 初回 1 回 + 450ms 後から 200ms ごと（1.5 秒で 6 回）= 7 回前後。クリック 1 回分（1）や押した全時間の
-    // 連打（200ms 無しで 30 回超）ではない。
-    if (heldFrames < 5 || heldFrames > 8) ng.push(`${label}: 長押し 1.5 秒の送りが 5〜8 フレームでない (${heldFrames})`)
-    const finalFrame = Math.round(msOf(afterHold) / (T * 1000))
-    const settled = await page.evaluate(([center, tolerance]) => Math.abs(document.querySelector('video').currentTime - center) < tolerance,
-      [toSession((finalFrame + 0.5) * T), 0.003])
-    if (!settled) {
-      const t = await video.evaluate((el) => el.currentTime)
-      ng.push(`${label}: 長押しを離した後、最後の境界 ${afterHold} のコマ中央に着地しない (currentTime=${t})`)
-    }
-    await page.getByRole('button', { name: '元に戻す', exact: true }).click()
-    const afterUndo = await selectedText()
-    if (afterUndo !== beforeHold) {
-      // 元に戻すは選択を動かさないので、境界が押す前の位置へ戻ったかは filmstrip の境界で見る。
-      const stillThere = await page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${msOf(beforeHold)}"]`).count()
-      if (stillThere !== 1) ng.push(`${label}: 長押しを元に戻す 1 回で押す前の境界 ${beforeHold} に戻らない`)
-    }
-  }
-
-  log(`\n=== ${label}: 境界まで / 境界から ===`)
-  const stopMarker = markerTimes[picks.stop]
-  await placeBefore(stopMarker)
-  if (!(await clickBoundary(stopMarker))) return
-  if (!(await expectSettled(stopMarker, '境界を選んでも一時停止して境界のコマが映らない'))) return
-  await video.evaluate((el) => {
-    window.__boundaryModeStarted = false
-    el.addEventListener('playing', () => {
-      window.__boundaryModeStarted = true
-    }, { once: true })
-  })
-  await page.getByRole('button', { name: '選択中の境界まで再生' }).click()
-  const modeStarted = await page.waitForFunction(() => window.__boundaryModeStarted, undefined, { timeout: 5000 }).then(() => true).catch(() => false)
-  if (!modeStarted) ng.push(`${label}: 「境界まで」が再生を始めない`)
-  await expectSettled(stopMarker, '「境界まで」が境界のコマで止まらない')
-
-  const fromMarker = markerTimes[picks.from]
-  await placeBefore(fromMarker)
-  if (!(await clickBoundary(fromMarker))) return
-  if (!(await expectSettled(fromMarker, '境界を選んでも一時停止して境界のコマが映らない'))) return
-  // 開始位置は play() を呼んだ瞬間の currentTime で測る（play イベントの時点では再生が数 ms 進みうる）。
-  await video.evaluate((el) => {
-    window.__playCalls = []
-    const original = el.play.bind(el)
-    el.play = () => {
-      window.__playCalls.push(el.currentTime)
-      return original()
-    }
-  })
-  await page.getByRole('button', { name: '選択中の境界から再生' }).click()
-  const playCalls = await page.evaluate(() => window.__playCalls)
-  await video.evaluate((el) => { delete el.play })
-  const actualPlayStart = (playCalls.at(-1) ?? Number.NaN) + offset
-  const fromFrameStart = encodedTimes[fromMarker.frame]
-  const fromFrameEnd = encodedTimes[fromMarker.frame + 1] ?? (fromFrameStart + 1 / SOURCE_FRAME_RATE)
-  if (!(actualPlayStart >= fromFrameStart && actualPlayStart < fromFrameEnd)) {
-    ng.push(`${label}: 「境界から」の再生開始が選択フレーム内でない (start=${actualPlayStart}, frame=[${fromFrameStart}, ${fromFrameEnd}))`)
-  }
-  const modeCompletion = await video.evaluate((el, boundarySession) => new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(false), 8000)
-    const check = () => {
-      if (el.paused && !el.seeking && el.currentTime >= boundarySession + 2.9) {
-        clearTimeout(timer)
-        resolve(true)
-        return
-      }
-      requestAnimationFrame(check)
-    }
-    check()
-  }), toSession(fromMarker.expectedSeconds))
-  if (!modeCompletion) ng.push(`${label}: 「境界から」が境界から約 3 秒で停止しない`)
-}
-
-// 目印のフレームが表示された瞬間（requestVideoFrameCallback）に一時停止し、「再生位置に合わせる」を
-// 押して保存した PUT の ms が、そのフレームの境界になることを見る。行 j の終了境界を目印 j+1 へ
-// 合わせる（i を大きい方から回し、1 つの下書きに積む。区間は [目印 j, 目印 j+1] の正当な形）。
-// 再生して目印を捉える判定とは別の周回で行う（混ぜると WebKit でタイムアウトした）。
-// 原本 HLS の offset セッションでは video の時刻がセッション起点ぶん小さい。first は合わせ始める
-// 行 j の下限、offset は video に入れる時刻の補正（セッション起点）。
-async function alignBoundariesToPausedFrames(page, label = '非カット MP4', first = 0, offset = 0) {
-  log(`\n=== ${label}: 現在位置に合わせる ===`)
-  const rows = page.getByTestId('chapter-span-row')
-  const expectedStarts = markerTimes.map((marker) => Math.round(marker.expectedSeconds * 1000))
-  const alignedFrames = new Map()
-  for (let i = markerTimes.length - 1; i >= first + 1; i -= 1) {
-    const j = i - 1
-    const target = markerTimes[i]
-    try {
-      await page.locator('video').evaluate((video, seconds) => {
-        video.pause()
-        video.currentTime = seconds
-      }, expectedStarts[j] / 1000 + 0.5 - offset)
-      await page.waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 })
-      await rows.nth(j).locator('button').first().click()
-      const paused = await page.locator('video').evaluate((video, [seconds, slot]) => new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(false), 8000)
-        const onFrame = () => {
-          if (window.__displayedMarkerSlot() === slot) {
-            video.pause()
-            clearTimeout(timer)
-            resolve(true)
-            return
-          }
-          video.requestVideoFrameCallback(onFrame)
-        }
-        video.addEventListener('seeked', () => {
-          video.requestVideoFrameCallback(onFrame)
-          void video.play()
-        }, { once: true })
-        video.currentTime = seconds
-      }), [target.expectedSeconds - 0.3 - offset, target.markerSlot])
-      if (!paused) {
-        ng.push(`${label} 現在位置に合わせる: frame ${target.frame} で一時停止できない`)
-        continue
-      }
-      await page.waitForTimeout(300)
-      const slot = await page.evaluate(() => window.__displayedMarkerSlot())
-      if (slot !== target.markerSlot) {
-        ng.push(`${label} 現在位置に合わせる: 一時停止後に frame ${target.frame} が映っていない (slot=${slot})`)
-        continue
-      }
-      await page.getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }).click()
-      alignedFrames.set(j, target)
-    } catch (err) {
-      ng.push(`${label} 現在位置に合わせる: frame ${target.frame} の操作に失敗 (${err.message})`)
-    }
-  }
-  const putCountBefore = chapterPuts.length
-  const saveButton = page.getByRole('button', { name: '保存' })
-  if (!await saveButton.isEnabled()) {
-    ng.push(`${label} 現在位置に合わせる: 保存できる境界変更が無い`)
-    return
-  }
-  await saveButton.click()
-  await page.waitForFunction(() => document.querySelector('[data-testid="chapter-span-row"]') === null, undefined, { timeout: 5000 }).catch(() => {})
-  if (chapterPuts.length !== putCountBefore + 1) {
-    ng.push(`${label} 現在位置に合わせる: 保存の PUT が 1 回ではない (${chapterPuts.length - putCountBefore})`)
-    return
-  }
-  const spans = chapterPuts.at(-1).spans
-  for (const [j, target] of alignedFrames) {
-    // encoded の表示順の番号 k（目印 PTS ÷ 1 フレーム）。フィクスチャの原本 frame 番号とは音ずれ補正ぶん違う。
-    const k = Math.round(target.expectedSeconds * 30_000 / 1_001)
-    const want = Math.round(k * 1001 / 30)
-    const got = spans[j]?.endMs
-    log(`  span ${j + 1}: PUT endMs=${got} want=${want} (k=${k})`)
-    if (got !== want) ng.push(`${label} 現在位置に合わせる: span ${j + 1} の PUT endMs が目印 frame ${target.frame} の境界ではない (got=${got}, want=${want})`)
-  }
-}
-
-async function timelineHandler({ path: requestPath, url, json, route }) {
+async function timelineHandler({ path: requestPath, json, route }) {
   const method = route.request().method()
   if (requestPath === '/api/sites') return json([SITE])
   if (requestPath === '/api/capabilities') return json({ live: true, cmDetect: false })
@@ -973,7 +358,6 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
   }
   if (requestPath === `/api/recordings/${RECORDING_ID}/chapter-edits` && method === 'PUT') {
     const body = route.request().postDataJSON()
-    chapterPuts.push(body)
     return json({ version: 'timeline-v2', detectionPending: false, source: 'user', spans: body.spans })
   }
   if (requestPath === `/api/recordings/${RECORDING_ID}/chapters`) {
@@ -1035,75 +419,6 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
     })
   }
 
-  const originalPrefix = `/api/sites/${SITE}/recordings/${RECORDING_ID}/original-vod/`
-  if (requestPath.startsWith(originalPrefix)) {
-    const relative = requestPath.slice(originalPrefix.length)
-    const offsetMatch = relative.match(/^offset\/(\d+)\//)
-    const offset = offsetMatch ? Number(offsetMatch[1]) : 0
-    const resource = offsetMatch ? relative.slice(offsetMatch[0].length) : relative
-    if (resource === 'leave') return route.fulfill({ status: 204 })
-    if (REAL_HLS_URL) {
-      const remoteURL = resource === 'playlist.m3u8'
-        ? new URL(REAL_HLS_URL)
-        : new URL(resource, REAL_HLS_URL)
-      remoteURL.searchParams.delete('profile')
-      const response = await route.fetch({ url: remoteURL.href })
-      return route.fulfill({ response })
-    }
-    const manifestPath = offset === 0
-      ? manifest.hls.offset0
-      : offset === OFFSET_SECONDS
-        ? manifest.hls.offset10
-        : null
-    if (!manifestPath) return route.fulfill({ status: 404, body: `fixture missing for offset ${offset}` })
-    const outputDir = path.dirname(path.join(fixtureDir, manifestPath))
-    if (resource === 'playlist.m3u8') {
-      playlistRequests.push({ offset, resource })
-      const master = path.join(fixtureDir, manifestPath)
-      if (!existsSync(master)) return route.fulfill({ status: 404, body: `fixture missing for offset ${offset}` })
-      return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(master) })
-    }
-    const file = path.join(outputDir, resource)
-    if (!existsSync(file)) return route.fulfill({ status: 404, body: `fixture missing: ${resource}` })
-    let body = readFileSync(file)
-    if (offset === 0 && /^hd\.0\.m3u8$/.test(resource)) body = Buffer.from(growingPlaylist(body.toString('utf8')))
-    if (resource.endsWith('.m3u8')) playlistRequests.push({ offset, resource })
-    return route.fulfill({
-      status: 200,
-      contentType: resource.endsWith('.ts') ? 'video/mp2t' : 'application/vnd.apple.mpegurl',
-      body,
-    })
-  }
-
-  if (requestPath === `/api/media/recordings/${RECORDING_ID}/file`) {
-    if (activeRecording.encodedAssets.length === 0) return route.fulfill({ status: 404 })
-    const bytes = readFileSync(encodedPath)
-    mp4Requests.push(url.href)
-    const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '')
-    if (!range) {
-      return route.fulfill({
-        status: 200,
-        contentType: 'video/mp4',
-        body: method === 'HEAD' ? undefined : bytes,
-        headers: { 'Accept-Ranges': 'bytes', 'Content-Length': String(bytes.length) },
-      })
-    }
-    const start = Number(range[1])
-    const end = Math.min(range[2] ? Number(range[2]) : bytes.length - 1, bytes.length - 1)
-    if (start >= bytes.length || end < start) {
-      return route.fulfill({ status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } })
-    }
-    return route.fulfill({
-      status: 206,
-      contentType: 'video/mp4',
-      body: method === 'HEAD' ? undefined : bytes.subarray(start, end + 1),
-      headers: {
-        'Accept-Ranges': 'bytes',
-        'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
-        'Content-Length': String(end - start + 1),
-      },
-    })
-  }
   return json([])
 }
 
@@ -1157,6 +472,7 @@ async function runRecordingApiHlsCheck() {
     ...apiHlsRecording,
     startAt: apiHlsStartedAtNow,
     startedAt: apiHlsStartedAtNow,
+    sizeBytes: undefined,
     ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
   }
   activeRecording = {
@@ -1165,15 +481,12 @@ async function runRecordingApiHlsCheck() {
     hlsPlayback: [],
   }
   recordingHlsRequests.length = 0
-  playlistRequests.length = 0
   const page = await context.newPage()
   await installApiStubs(page, timelineHandler)
   await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-  await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
-  // 追っかけ用のポスターは時間軸を載せる。再生元が recording-hls へ替わるとこれが消えるので、
-  // 切替の指標にする（再描画前に ▶ を押すと追っかけで始まり得る）。
-  await page.getByTestId('recording-playback-preview-timeline').waitFor({ timeout: 10000 })
+  await page.getByText('再生可能なファイルがありません').waitFor({ timeout: 15000 })
+  if (recordingHlsRequests.length > 0) ng.push('hlsPlayback が空の間に HLS を要求した')
   await page.waitForFunction(() => window.__recordingEventSources.length > 0, undefined, { timeout: 10000 })
   activeRecording = apiHlsLiveRecording
   const pendingRefreshed = page.waitForResponse((response) => {
@@ -1188,7 +501,7 @@ async function runRecordingApiHlsCheck() {
     return
   }
   log('\n=== 録画 API HLS: pending から recordings SSE で v1 を選び直す ===')
-  await page.getByTestId('recording-playback-preview-timeline').waitFor({ state: 'detached', timeout: 10000 })
+  await page.getByTestId('recording-playback-start').waitFor({ state: 'visible', timeout: 10000 })
   await page.getByTestId('recording-playback-start').click()
   await page.locator('video').waitFor({ timeout: 15000 })
 
@@ -1317,7 +630,6 @@ async function runRecordingApiHlsCheck() {
     }))
     ng.push(`時間軸の末尾への操作で currentTime が playlist 末尾に収まらない (${JSON.stringify(afterSeek)})`)
   }
-  if (playlistRequests.length > 0) ng.push(`録画 API HLS が従来の原本 VOD URL へ逸れる (${JSON.stringify(playlistRequests)})`)
 
   const masterRequestsBeforeCommit = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
   activeRecording = {
@@ -1356,7 +668,6 @@ async function runRecordingApiHlsRecoveryCheck() {
   recordingHlsRequests.length = 0
   recordingHls410Requests.length = 0
   recordingHlsApiResponses.length = 0
-  playlistRequests.length = 0
   expiredRecordingHlsGeneration = null
   recordingHlsStopPositionSeconds = null
   recordingHlsGap = {
@@ -1365,11 +676,6 @@ async function runRecordingApiHlsRecoveryCheck() {
     next: () => ({ ...apiHlsRecoveryV2, ingest: { ...apiHlsRecoveryV2.ingest, observedAt: fresh() } }),
   }
   const page = await context.newPage()
-  const otherSourceRequests = []
-  page.on('request', (request) => {
-    const { pathname } = new URL(request.url())
-    if (pathname.includes('/chase/') || pathname.includes('/original-vod/')) otherSourceRequests.push(pathname)
-  })
   await installApiStubs(page, timelineHandler)
   await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
@@ -1439,448 +745,12 @@ async function runRecordingApiHlsRecoveryCheck() {
     return video && !video.paused && video.currentTime > from + 0.5
   }, resumedAt, { timeout: 10000 }).then(() => true).catch(() => false)
   if (!playingContinued) ng.push('410 後に v2 で再開位置から再生が続かない')
-  if (otherSourceRequests.length > 0) ng.push(`世代の切り替え中に追っかけ・原本 HLS へ逸れる (${JSON.stringify(otherSourceRequests)})`)
-  if (playlistRequests.length > 0) ng.push(`世代の切り替え中に従来の原本 VOD URL へ逸れる (${JSON.stringify(playlistRequests)})`)
   expiredRecordingHlsGeneration = null
   recordingHlsGap = null
   await page.evaluate(() => localStorage.clear())
   await page.close()
 }
 
-if (API_HLS_ONLY) {
-  await runRecordingApiHlsCheck()
-  await runRecordingApiHlsRecoveryCheck()
-  await finish(ng, browser)
-}
-
-async function runRawSeekDiagnostics() {
-  if (REAL_HLS_URL) return runRealRecordingSeekDiagnostics()
-  const marker = markerTimes.find((item) => item.frame === 45)
-  const label = '原本 HLS offset 0'
-
-  chaptersForHls = true
-  log(`\n=== ${engine} 原本 HLS の素の currentTime seek 診断 (編集モード、frame ${marker.frame}; 連続再生で時刻を校正) ===`)
-  const page = await context.newPage()
-  await installApiStubs(page, timelineHandler)
-  await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-  await page.getByTestId('recording-playback-start').click()
-  await page.locator('video').waitFor({ timeout: 15000 })
-  await page.waitForFunction(() => {
-    const video = document.querySelector('video')
-    return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-  }, undefined, { timeout: 15000 })
-  await page.getByTestId('recording-player-shell').hover()
-  await page.getByRole('button', { name: '再生設定' }).click()
-  await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
-  await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
-
-  await page.evaluate(() => {
-    window.__timelineMarks.length = 0
-    window.__startTimelineCapture(0)
-  })
-  await page.waitForFunction(() => (
-    window.__timelineMarks.length > 0 || window.__timelineCaptureError !== null
-  ), undefined, { timeout: 10_000 })
-  const calibration = await page.evaluate(() => window.__timelineMarks[0])
-  if (calibration?.markerSlot !== marker.markerSlot || !Number.isFinite(calibration?.mediaTime)) {
-    ng.push(`${label}: 連続再生で frame ${marker.frame} の時刻を校正できない (${JSON.stringify(calibration)})`)
-    await page.close()
-    return
-  }
-  const target = calibration.mediaTime + 1 / (2 * SOURCE_FRAME_RATE)
-
-  const measure = async (from, nudgeCount = 0) => page.locator('video').evaluate(async (video, input) => {
-    const seek = (seconds, timeoutMs = 5000) => new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve(false), timeoutMs)
-      video.addEventListener('seeked', () => {
-        clearTimeout(timeout)
-        resolve(true)
-      }, { once: true })
-      video.pause()
-      video.currentTime = seconds
-    })
-    const beforeSeeked = await seek(input.from)
-    const seeked = await seek(input.target)
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    const afterSeek = {
-      slot: window.__displayedMarkerSlot(),
-      currentTime: video.currentTime,
-      paused: video.paused,
-      seeking: video.seeking,
-    }
-    const afterNudges = []
-    for (let index = 0; index < input.nudgeCount; index += 1) {
-      const nudgeSeeked = await seek(video.currentTime + 0.0001, 1000)
-      await new Promise((resolve) => setTimeout(resolve, 500))
-      afterNudges.push({
-        seeked: nudgeSeeked,
-        slot: window.__displayedMarkerSlot(),
-        currentTime: video.currentTime,
-        paused: video.paused,
-        seeking: video.seeking,
-      })
-    }
-    return { beforeSeeked, seeked, afterSeek, afterNudges }
-  }, { from, target, nudgeCount })
-
-  const far = await measure(target - 0.5)
-  const near = await measure(target - 0.05)
-  const oneNudge = await measure(target - 0.5, 1)
-  const twoNudges = await measure(target - 0.5, 2)
-  const format = (sample) => `slot=${sample.slot}, t=${sample.currentTime.toFixed(6)}, paused=${sample.paused}, seeking=${sample.seeking}`
-  const nudgesSummary = (sample) => sample.afterNudges.map((nudge, index) => `#${index + 1} seeked=${nudge.seeked} ${format(nudge)}`).join('; ')
-  log(`  ${label}: frame=${marker.frame} calibrated=${calibration.mediaTime.toFixed(6)}s; 遠距離(0.5s) seeked=${far.seeked}/${far.beforeSeeked} ${format(far.afterSeek)}; 近距離(0.05s) seeked=${near.seeked}/${near.beforeSeeked} ${format(near.afterSeek)}; 遠距離 + 1 微小 seek: ${nudgesSummary(oneNudge)}; 遠距離 + 2 微小 seek: ${nudgesSummary(twoNudges)}`)
-  if (!far.beforeSeeked || !far.seeked || !near.beforeSeeked || !near.seeked ||
-    !oneNudge.beforeSeeked || !oneNudge.seeked || oneNudge.afterNudges.some((item) => !item.seeked) ||
-    !twoNudges.beforeSeeked || !twoNudges.seeked || twoNudges.afterNudges.some((item) => !item.seeked)) {
-    ng.push(`${label}: 素の seek 診断で seeked イベントを観測できない`)
-  }
-  await page.close()
-}
-
-async function runRealRecordingSeekDiagnostics() {
-  const boundaryFrame = Math.round(REAL_HLS_BOUNDARY_MS / (1001 / 30))
-  const target = (boundaryFrame + 0.5) / SOURCE_FRAME_RATE
-  chaptersForHls = true
-  log(`\n=== ${engine} 実録画 HLS 診断 (編集モード、境界=${REAL_HLS_BOUNDARY_MS}ms / target=${target.toFixed(6)}s) ===`)
-  const page = await context.newPage()
-  await installApiStubs(page, timelineHandler)
-  await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-  await page.getByTestId('recording-playback-start').click()
-  await page.locator('video').waitFor({ timeout: 15000 })
-  await page.waitForFunction(() => {
-    const video = document.querySelector('video')
-    return video?.videoWidth > 0 && video.seekable.length > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-  }, undefined, { timeout: 30000 })
-  const initialMediaRange = await page.locator('video').evaluate((video) => ({
-    currentTime: video.currentTime,
-    seekable: Array.from({ length: video.seekable.length }, (_, index) => [video.seekable.start(index), video.seekable.end(index)]),
-  }))
-  if (!initialMediaRange.seekable.some(([start, end]) => start <= target && target <= end)) {
-    ng.push(`実録画の境界 target=${target.toFixed(6)}s が seekable 範囲にない (${JSON.stringify(initialMediaRange.seekable)})`)
-    await page.unrouteAll({ behavior: 'ignoreErrors' })
-    await page.close()
-    return
-  }
-  await page.getByTestId('recording-player-shell').hover()
-  await page.getByRole('button', { name: '再生設定' }).click()
-  await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
-  await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
-
-  const referenceFrames = await page.locator('video').evaluate(async (video, stopAt) => {
-    video.pause()
-    const start = video.seekable.length > 0 ? video.seekable.start(0) : 0
-    if (Math.abs(video.currentTime - start) > 0.01) {
-      await new Promise((resolve, reject) => {
-        const check = () => {
-          if (!video.seeking && Math.abs(video.currentTime - start) <= 0.05) {
-            clearTimeout(timer)
-            video.removeEventListener('seeked', check)
-            video.removeEventListener('timeupdate', check)
-            resolve()
-          }
-        }
-        const timer = setTimeout(() => {
-          video.removeEventListener('seeked', check)
-          video.removeEventListener('timeupdate', check)
-          reject(new Error(`seek to start ${start} timed out at ${video.currentTime}; ranges=${video.seekable.length}`))
-        }, 10_000)
-        video.addEventListener('seeked', check)
-        video.addEventListener('timeupdate', check)
-        video.currentTime = start
-        check()
-      })
-    }
-    video.muted = true
-    const frames = []
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`sequential playback did not reach ${stopAt}s`)), 30_000)
-      const capture = (_now, metadata) => {
-        frames.push({ mediaTime: metadata.mediaTime, fingerprint: window.__videoFrameFingerprint() })
-        if (metadata.mediaTime >= stopAt) {
-          clearTimeout(timer)
-          video.pause()
-          resolve(frames)
-        } else {
-          video.requestVideoFrameCallback(capture)
-        }
-      }
-      video.requestVideoFrameCallback(capture)
-      void video.play().catch((error) => {
-        clearTimeout(timer)
-        reject(error)
-      })
-    })
-  }, target + 0.5)
-  if (referenceFrames.length === 0) throw new Error('連続再生から基準フレームを取得できない')
-
-  const closestReference = (sample) => {
-    if (!sample || !Number.isFinite(sample.mediaTime)) return null
-    return referenceFrames.reduce((closest, frame) =>
-      Math.abs(frame.mediaTime - sample.mediaTime) < Math.abs(closest.mediaTime - sample.mediaTime) ? frame : closest,
-    )
-  }
-  const compareAt = (sample, expectedTime) => {
-    const reference = Number.isFinite(sample?.mediaTime)
-      ? closestReference(sample)
-      : referenceFrames.reduce((closest, frame) =>
-        Math.abs(frame.mediaTime - expectedTime) < Math.abs(closest.mediaTime - expectedTime) ? frame : closest,
-      )
-    return reference !== null && reference.fingerprint === sample?.fingerprint
-  }
-  const measureRaw = async (from, nudges = 0) => page.locator('video').evaluate(async (video, input) => {
-    const seek = (seconds) => new Promise((resolve, reject) => {
-      const before = video.currentTime
-      let seeked = false
-      const ranges = Array.from({ length: video.seekable.length }, (_, index) => [video.seekable.start(index), video.seekable.end(index)])
-      const timer = setTimeout(() => {
-        reject(new Error(`seek timed out from ${before} to ${seconds}; currentTime=${video.currentTime}, seeking=${video.seeking}, paused=${video.paused}, readyState=${video.readyState}, seeked=${seeked}, ranges=${JSON.stringify(ranges)}`))
-      }, 10_000)
-      const onSeeked = () => { seeked = true }
-      const captureAfterPaint = () => {
-        if (!video.seeking && Math.abs(video.currentTime - seconds) < 0.05) {
-          clearTimeout(timer)
-          video.removeEventListener('seeked', onSeeked)
-          resolve({ currentTime: video.currentTime, fingerprint: window.__videoFrameFingerprint(), seeked })
-          return
-        }
-        requestAnimationFrame(captureAfterPaint)
-      }
-      video.addEventListener('seeked', onSeeked)
-      video.pause()
-      requestAnimationFrame(() => requestAnimationFrame(captureAfterPaint))
-      video.currentTime = seconds
-    })
-    await seek(input.from)
-    const first = await seek(input.target)
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    const settled = {
-      currentTime: video.currentTime,
-      fingerprint: window.__videoFrameFingerprint(),
-      paused: video.paused,
-      seeking: video.seeking,
-    }
-    const nudged = []
-    for (let index = 0; index < input.nudges; index += 1) {
-      nudged.push(await seek(video.currentTime + 0.0001))
-    }
-    if (input.nudges > 0) await new Promise((resolve) => setTimeout(resolve, 500))
-    return {
-      first,
-      settled: input.nudges > 0
-        ? { currentTime: video.currentTime, fingerprint: window.__videoFrameFingerprint(), paused: video.paused, seeking: video.seeking }
-        : settled,
-      nudged,
-    }
-  }, { from, target, nudges })
-
-  const far = await measureRaw(target - 0.5)
-  const near = await measureRaw(target - 0.05)
-  const oneNudge = await measureRaw(target - 0.5, 1)
-  const twoNudges = await measureRaw(target - 0.5, 2)
-  const summary = (sample) => `first=${sample.first.currentTime.toFixed(6)}s/${compareAt(sample.first, target)}, settled=${sample.settled.currentTime.toFixed(6)}s/${compareAt(sample.settled, target)}, paused=${sample.settled.paused}, seeking=${sample.settled.seeking}`
-  const expectedFrameStart = target - 1 / (2 * SOURCE_FRAME_RATE)
-  const expectedFrame = referenceFrames.reduce((closest, frame) =>
-    Math.abs(frame.mediaTime - expectedFrameStart) < Math.abs(closest.mediaTime - expectedFrameStart) ? frame : closest,
-  )
-  const expectedFrameTimeDiff = Math.abs(expectedFrame.mediaTime - expectedFrameStart)
-  log(`  連続再生で frame ${boundaryFrame} を ${referenceFrames.length} 枚取得`)
-  log(`  基準 frame PTS=${expectedFrame.mediaTime.toFixed(6)}s (want=${expectedFrameStart.toFixed(6)}s, diff=${(expectedFrameTimeDiff * 1000).toFixed(2)}ms), hash=${expectedFrame.fingerprint}`)
-  log(`  素の遠距離 seek: ${summary(far)} hash=${far.settled.fingerprint}`)
-  log(`  素の近距離 seek: ${summary(near)} hash=${near.settled.fingerprint}`)
-  log(`  遠距離 + 1 回微小 seek: ${summary(oneNudge)} hash=${oneNudge.settled.fingerprint}`)
-  log(`  遠距離 + 2 回微小 seek: ${summary(twoNudges)} hash=${twoNudges.settled.fingerprint}`)
-
-  const from = target - 0.5
-  await page.locator('video').evaluate((video, seconds) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('製品 seek 前の位置へ移動できない')), 10_000)
-    const finish = () => {
-      clearTimeout(timer)
-      resolve()
-    }
-    video.addEventListener('seeked', finish, { once: true })
-    video.pause()
-    video.currentTime = seconds
-  }), from)
-  const boundaryButton = page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${REAL_HLS_BOUNDARY_MS}"]`)
-  await page.locator('video').evaluate((video, expected) => {
-    window.__boundaryFrameCallbacks = []
-    const sourceBeforeSeek = { src: video.getAttribute('src'), currentSrc: video.currentSrc }
-    const requestFrame = video.requestVideoFrameCallback.bind(video)
-    video.requestVideoFrameCallback = (callback) => requestFrame((now, metadata) => {
-      const sample = {
-        mediaTime: metadata.mediaTime,
-        currentTime: video.currentTime,
-        seeking: video.seeking,
-      }
-      callback(now, metadata)
-      window.__boundaryFrameCallbacks.push({
-        ...sample,
-        nearTarget: Math.abs(video.currentTime - expected.target) <= 0.01,
-        nearFrame: Math.abs(metadata.mediaTime - video.currentTime) <= 1001 / 30000 / 2 + 0.001,
-        sourceUnchanged: sourceBeforeSeek.src === video.getAttribute('src') && sourceBeforeSeek.currentSrc === video.currentSrc,
-      })
-    })
-  }, { target })
-  const productFirst = await capturePresentedFrameAt(page, () => boundaryButton.evaluate((button) => button.click()), target)
-  await page.waitForTimeout(500)
-  const productSettled = await page.locator('video').evaluate((video) => ({
-    currentTime: video.currentTime,
-    fingerprint: window.__videoFrameFingerprint(),
-    paused: video.paused,
-    seeking: video.seeking,
-  }))
-  const callbackLog = await page.evaluate(() => window.__boundaryFrameCallbacks)
-  log(`  製品の境界選択: first=${productFirst.mediaTime?.toFixed(6)}s/${compareAt(productFirst, target)} hash=${productFirst.fingerprint}, settled=${productSettled.currentTime.toFixed(6)}s/${compareAt(productSettled, target)} hash=${productSettled.fingerprint}, paused=${productSettled.paused}, seeking=${productSettled.seeking}, callbacks=${JSON.stringify(callbackLog.slice(-6))}`)
-  if (
-    expectedFrameTimeDiff > GRID_TOLERANCE_SECONDS ||
-    !productFirst.matched ||
-    !Number.isFinite(productFirst.mediaTime) ||
-    Math.abs(productFirst.mediaTime - expectedFrameStart) > GRID_TOLERANCE_SECONDS ||
-    productFirst.fingerprint !== expectedFrame.fingerprint
-  ) {
-    ng.push('実録画: 製品の境界選択後、最初に表示したフレームが連続再生の対象フレームと一致しない')
-  }
-  if (!compareAt(productSettled, target)) ng.push('実録画: 製品の境界選択後に連続再生で見た同じフレームを表示しない')
-  await page.unrouteAll({ behavior: 'ignoreErrors' })
-  await page.close()
-}
-
-function compareMarkers(label, observed, expected, sessionOffset) {
-  if (observed.length !== expected.length) {
-    ng.push(`${label}: 目印フレーム数が違う (got=${observed.length}, want=${expected.length})`)
-  }
-  const count = Math.min(observed.length, expected.length)
-  for (let i = 0; i < count; i += 1) {
-    if (observed[i].markerSlot !== expected[i].markerSlot || observed[i].frame !== expected[i].frame) {
-      ng.push(`${label}: 目印フレームの順序が違う (got=${observed[i].frame}, want=${expected[i].frame})`)
-    }
-    const actual = sessionOrigin(sessionOffset) + observed[i].mediaTime
-    const expectedSeconds = expected[i].expectedSeconds + EXPECTED_SHIFT_FRAMES / SOURCE_FRAME_RATE
-    const diff = actual - expectedSeconds
-    const legacyDiff = actual - expected[i].legacySeconds
-    log(`  frame=${observed[i].frame} want=${expected[i].frame} encodedPts=${expectedSeconds.toFixed(6)} actual=${actual.toFixed(6)} diff=${diff >= 0 ? '+' : ''}${(diff * 1000).toFixed(2)}ms (参考: 原本PTS基準 ${legacyDiff >= 0 ? '+' : ''}${(legacyDiff * 1000).toFixed(2)}ms) presentedFrames=${observed[i].presentedFrames}`)
-    if (!Number.isFinite(actual) || Math.abs(diff) > GRID_TOLERANCE_SECONDS) {
-      ng.push(`${label}: frame ${expected[i].frame} の差が格子の一致（1ms 未満）を外れる (${(diff * 1000).toFixed(2)}ms)`)
-    }
-  }
-}
-
-if (RAW_SEEK_DIAGNOSTICS) await runRawSeekDiagnostics()
-if (RAW_SEEK_ONLY) await finish(ng, browser)
-
-if (!CHAPTER_SEEK_ONLY) {
-  chaptersForHls = true
-  const hlsPage = await context.newPage()
-  await installApiStubs(hlsPage, timelineHandler)
-  await hlsPage.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-  await hlsPage.getByTestId('recording-playback-start').click()
-  await hlsPage.locator('video').waitFor({ timeout: 15000 })
-  await hlsPage.waitForFunction(() => {
-    const video = document.querySelector('video')
-    return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-  }, undefined, { timeout: 15000 })
-
-  log('\n=== 原本 HLS offset 0 ===')
-  const rootMarkers = markerTimes.slice(0, 4)
-  const rootObserved = await captureExpectedMarkers(hlsPage, 0, rootMarkers, '原本 HLS offset 0')
-  compareMarkers('原本 HLS offset 0', rootObserved, rootMarkers, 0)
-
-  await hlsPage.locator('video').evaluate((video) => video.pause())
-  // 原本 HLS（LivePlayer）でも、境界を選ぶと一時停止して目印フレームが映り、「境界まで」「境界から」が
-  // 目印フレームで止まる / 始まる。この後のシークバー操作に備えて編集は閉じる。
-  await hlsPage.getByTestId('recording-player-shell').hover()
-  await hlsPage.getByRole('button', { name: '再生設定' }).click()
-  await hlsPage.getByRole('menuitem', { name: 'チャプターを直す' }).click()
-  await exerciseBoundaryControls(hlsPage, '原本 HLS offset 0', { first: 0, stop: 2, from: 1 }, 0, 0.1)
-  if (BOUNDARY_SEEK_ONLY) await finish(ng, browser)
-  await hlsPage.getByRole('button', { name: 'やめる', exact: true }).click()
-  await hlsPage.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
-  await hlsPage.locator('video').evaluate((video) => video.pause())
-  const seekbar = hlsPage.getByTestId('seek-scrub')
-  const seekbarBox = await seekbar.boundingBox()
-  if (!seekbarBox) {
-    ng.push('offset セッション測定用のシークバーを取得できない')
-  } else {
-    const targetSeconds = OFFSET_SECONDS + 0.5
-    const x = seekbarBox.x + seekbarBox.width * targetSeconds / recordingSeconds
-    const y = seekbarBox.y + seekbarBox.height / 2
-    await hlsPage.mouse.move(seekbarBox.x + seekbarBox.width * 0.2, y)
-    await hlsPage.mouse.down()
-    await hlsPage.mouse.move(x, y)
-    await hlsPage.mouse.up()
-  }
-
-  const offsetRequestDeadline = Date.now() + 15_000
-  while (
-    !playlistRequests.some((request) => request.offset === OFFSET_SECONDS && request.resource === 'playlist.m3u8') &&
-    Date.now() < offsetRequestDeadline
-  ) {
-    await hlsPage.waitForTimeout(50)
-  }
-  if (!playlistRequests.some((request) => request.offset === OFFSET_SECONDS && request.resource === 'playlist.m3u8')) {
-    ng.push(`seek で原本 HLS offset/${OFFSET_SECONDS} セッションを要求しない (${JSON.stringify(playlistRequests)})`)
-  } else {
-    const hlsOffsetDeadline = Date.now() + 15_000
-    while (Date.now() < hlsOffsetDeadline) {
-      const state = await hlsPage.evaluate(() => {
-        const video = document.querySelector('video')
-        return { videoWidth: video?.videoWidth ?? 0, currentTime: video?.currentTime ?? -1 }
-      })
-      if (state.videoWidth > 0 && state.currentTime >= 0.25) break
-      await hlsPage.waitForTimeout(50)
-    }
-    log(`\n=== 原本 HLS offset ${OFFSET_SECONDS} ===`)
-    const offsetMarkers = markerTimes.slice(4)
-    const offsetObserved = await captureExpectedMarkers(hlsPage, OFFSET_SECONDS, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
-    compareMarkers(`原本 HLS offset ${OFFSET_SECONDS}`, offsetObserved, offsetMarkers, OFFSET_SECONDS)
-    // 製品の整数 offset セッション上で、表示フレームの境界が PUT の ms と一致するか。
-    // 表示位置 = セッション起点 + mediaTime の起点を壊すとここが落ちる。
-    await hlsPage.getByTestId('recording-player-shell').hover()
-    await hlsPage.getByRole('button', { name: '再生設定' }).click()
-    await hlsPage.getByRole('menuitem', { name: 'チャプターを直す' }).click()
-    await exerciseBoundaryControls(hlsPage, `原本 HLS offset ${OFFSET_SECONDS}`, { first: 6, stop: 5, from: 4 }, sessionOrigin(OFFSET_SECONDS), 0.1)
-    await alignBoundariesToPausedFrames(hlsPage, `原本 HLS offset ${OFFSET_SECONDS}`, 4, sessionOrigin(OFFSET_SECONDS))
-  }
-
-  await hlsPage.evaluate(() => localStorage.clear())
-  await hlsPage.close()
-  chaptersForHls = false
-}
-activeRecording = recording
-const mp4Page = await context.newPage()
-await installApiStubs(mp4Page, timelineHandler)
-await mp4Page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-await mp4Page.locator('video').waitFor({ timeout: 15000 })
-const mp4Ready = await mp4Page.waitForFunction(() => {
-  const video = document.querySelector('video')
-  return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_METADATA
-}, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
-log('\n=== 非カット MP4 ===')
-if (mp4Ready) {
-  const mp4Observed = await captureExpectedMarkers(mp4Page, 0, markerTimes, '非カット MP4')
-  compareMarkers('非カット MP4', mp4Observed, markerTimes, 0)
-  // playback mediaTime の全判定を終えてから、UI 経由のシークを別の周回で行う。
-  // 追加のシークは再生判定が終わった後に行い、後続の待機条件に影響させない。
-  await seekThroughChapterCards(mp4Page)
-  await alignBoundariesToPausedFrames(mp4Page)
-} else {
-  const videoState = await mp4Page.locator('video').evaluate((video) => ({
-    currentTime: video.currentTime,
-    duration: video.duration,
-    readyState: video.readyState,
-    networkState: video.networkState,
-    paused: video.paused,
-    videoWidth: video.videoWidth,
-    videoHeight: video.videoHeight,
-    currentSrc: video.currentSrc,
-    error: video.error ? { code: video.error.code, message: video.error.message } : null,
-  }))
-  ng.push(`非カット MP4 の metadata が読めない (video=${JSON.stringify(videoState)}, requests=${JSON.stringify(mp4Requests)})`)
-}
-if (mp4Requests.length === 0) ng.push('encoded MP4 の Range 配信を要求しない')
-if (!CHAPTER_SEEK_ONLY && !playlistRequests.some((request) => request.offset === 0 && request.resource === 'playlist.m3u8')) {
-  ng.push('原本 HLS offset 0 の master playlist を要求しない')
-}
-if (EXPECTED_SHIFT_FRAMES !== 0) log(`  変異: 期待時刻に ${EXPECTED_SHIFT_FRAMES} frame を加算`)
+await runRecordingApiHlsCheck()
+await runRecordingApiHlsRecoveryCheck()
 await finish(ng, browser)

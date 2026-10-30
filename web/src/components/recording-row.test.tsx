@@ -60,7 +60,7 @@ const recording: Recording = {
 }
 
 describe('RecordingRow', () => {
-  it('録画中でも一覧に追っかけ再生の導線を出さない', async () => {
+  it('録画中でも一覧から再生を直接開始しない', async () => {
     renderInRouter(
       <RecordingRow recording={{ ...recording, status: 'recording' }} {...base} />,
       { path: '/recordings' },
@@ -68,7 +68,6 @@ describe('RecordingRow', () => {
 
     await screen.findByText('共有する録画')
     expect(await screen.findByText('録画中')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: '共有する録画を追っかけ再生' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '共有する録画' })).toHaveAttribute(
       'href',
       '/recordings/42',
@@ -172,7 +171,14 @@ describe('RecordingRow', () => {
 
   it('再生元がある録画は結論バッジを出さない', async () => {
     renderInRouter(
-      <RecordingRow recording={{ ...recording, sizeBytes: 1_000 }} {...base} />,
+      <RecordingRow
+        recording={{
+          ...recording,
+          sizeBytes: 1_000,
+          hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8' }],
+        }}
+        {...base}
+      />,
       { path: '/recordings' },
     )
 

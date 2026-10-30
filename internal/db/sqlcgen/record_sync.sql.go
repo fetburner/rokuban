@@ -74,49 +74,6 @@ func (q *Queries) DeleteStaleRecordSyncs(ctx context.Context, arg DeleteStaleRec
 	return result.RowsAffected(), nil
 }
 
-const getChaseTarget = `-- name: GetChaseTarget :one
-SELECT rs.site,
-       rs.record_id,
-       rs.status,
-       r.status AS recording_status,
-       EXISTS (
-           SELECT 1 FROM media_assets AS ma
-           WHERE ma.recording_id = r.id AND ma.kind = 'original'
-       ) AS has_original_asset,
-       r.deleted_at
-FROM recordings AS r
-JOIN record_sync AS rs ON rs.recording_id = r.id
-WHERE r.id = $1
-`
-
-type GetChaseTargetRow struct {
-	Site             string
-	RecordID         string
-	Status           string
-	RecordingStatus  string
-	HasOriginalAsset bool
-	DeletedAt        *time.Time
-}
-
-// recordings.id は URL の正準な資源 id。record_sync から mirakc の site / record_id
-// を逆引きし、録画状態と原本行の有無も返す。原本行は state を問わず見る:
-// state='deleted' は取り込み後に原本を削除した事実なので、未 commit と混同しない。
-// 完了済みの追っかけセッションが保持する EVENT playlist は録画終了後も配信する。
-// deleted_at はごみ箱の録画を追っかけ再生へ流さないために必要。
-func (q *Queries) GetChaseTarget(ctx context.Context, id int64) (GetChaseTargetRow, error) {
-	row := q.db.QueryRow(ctx, getChaseTarget, id)
-	var i GetChaseTargetRow
-	err := row.Scan(
-		&i.Site,
-		&i.RecordID,
-		&i.Status,
-		&i.RecordingStatus,
-		&i.HasOriginalAsset,
-		&i.DeletedAt,
-	)
-	return i, err
-}
-
 const getRecordSyncRecordingID = `-- name: GetRecordSyncRecordingID :one
 SELECT recording_id FROM record_sync
 WHERE site = $1 AND record_id = $2

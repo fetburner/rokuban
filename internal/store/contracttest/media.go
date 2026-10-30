@@ -92,10 +92,8 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("encode progress reaches the listener", func(t *testing.T) { runEncodeProgressReport(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
-	t.Run("original VOD target is scoped to the recording's site", func(t *testing.T) { runMediaOriginalVODTarget(t, newFixture) })
-	t.Run("recording HLS original target shares the original VOD visibility predicate except the finished status", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
+	t.Run("recording HLS target shares the committed-original visibility predicate", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
 	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
-	t.Run("chase target requires a record and a recording outside the trash", func(t *testing.T) { runMediaChaseTarget(t, newFixture) })
 	t.Run("namespace guard accepts site paths and rejects malformed ones", func(t *testing.T) { runMediaNamespaceMalformed(t, newFixture) })
 	t.Run("namespace guard rejects unprefixed originals and encoded files", func(t *testing.T) { runMediaNamespaceUnprefixed(t, newFixture) })
 	t.Run("namespace guard leaves thumbnails and seek tiles to their own namespace", func(t *testing.T) { runMediaNamespaceDerived(t, newFixture) })
@@ -619,27 +617,6 @@ func runMediaServingDerived(t *testing.T, newFixture NewMediaFixture) {
 	}
 }
 
-func runMediaOriginalVODTarget(t *testing.T, newFixture NewMediaFixture) {
-	f := newFixture(t)
-	ctx := context.Background()
-	id := f.NewRecording(t)
-	assetID := f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "active")
-	got, err := f.Serving.GetOriginalVODTarget(ctx, id, f.Site)
-	if err != nil {
-		t.Fatalf("GetOriginalVODTarget(own site): %v", err)
-	}
-	if got.ID != assetID || got.Site != f.Site {
-		t.Fatalf("target = %+v, want asset %d in site %q", got, assetID, f.Site)
-	}
-	if _, err := f.Serving.GetOriginalVODTarget(ctx, id, f.Site+"-other"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetOriginalVODTarget(other site) error = %v, want ErrNotFound", err)
-	}
-	f.SetRecordingTrashed(t, id)
-	if _, err := f.Serving.GetOriginalVODTarget(ctx, id, f.Site); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetOriginalVODTarget(trashed) error = %v, want ErrNotFound", err)
-	}
-}
-
 func runMediaRecordingHLSTarget(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -725,31 +702,6 @@ func runMediaRecordingRemovalState(t *testing.T, newFixture NewMediaFixture) {
 	}
 	if _, err := f.Serving.GetRecordingRemovalState(ctx, -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetRecordingRemovalState(missing) error = %v, want ErrNotFound", err)
-	}
-}
-
-func runMediaChaseTarget(t *testing.T, newFixture NewMediaFixture) {
-	f := newFixture(t)
-	ctx := context.Background()
-	id := f.NewRecording(t)
-	if _, err := f.Serving.GetChaseTarget(ctx, id); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetChaseTarget without record_sync error = %v, want ErrNotFound", err)
-	}
-	f.NewRecordSync(t, id, f.Site, "record-1", "recording")
-	got, err := f.Serving.GetChaseTarget(ctx, id)
-	if err != nil {
-		t.Fatalf("GetChaseTarget: %v", err)
-	}
-	if got.Site != f.Site || got.RecordID != "record-1" || got.Status != "recording" || got.RecordingStatus != "finished" || got.HasOriginalAsset {
-		t.Fatalf("chase target = %+v, want site %q record-1 recording/finished without an original", got, f.Site)
-	}
-	f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "deleted")
-	if got, err := f.Serving.GetChaseTarget(ctx, id); err != nil || !got.HasOriginalAsset {
-		t.Fatalf("GetChaseTarget with a deleted original = (%+v, %v), want HasOriginalAsset regardless of state", got, err)
-	}
-	f.SetRecordingTrashed(t, id)
-	if _, err := f.Serving.GetChaseTarget(ctx, id); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetChaseTarget of a trashed recording error = %v, want ErrNotFound", err)
 	}
 }
 

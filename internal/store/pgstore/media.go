@@ -183,7 +183,7 @@ func (s *Media) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingI
 	return store.MediaAsset{ID: row.ID, Store: row.Store, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
 }
 
-// GetActiveOriginalMediaAsset は追っかけ配信に使う active な原本を返す。
+// GetActiveOriginalMediaAsset は録画 HLS 配信に使う active な原本を返す。
 func (s *Media) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
 		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
@@ -348,25 +348,6 @@ func (s *Media) GetEncodedPublishState(
 	return state, nil
 }
 
-// GetOriginalVODTarget はサイトに属する完了済み録画の配信可能な原本を返す。
-func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, site string) (store.OriginalVODTarget, error) {
-	var target store.OriginalVODTarget
-	err := s.pool.QueryRow(ctx, `SELECT a.id, c.rel_path, a.size_bytes, r.site
- FROM media_assets a
- JOIN recordings r ON r.id = a.recording_id
- JOIN LATERAL (
-     SELECT copy.rel_path
-     FROM preferred_active_media_asset_copy(a.id, $1::text) copy
- ) c ON true
- WHERE a.recording_id = $2 AND r.site = $3
- AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL("$1")+` AND `+recordingPlaybackVisibleSQL,
-		s.storeName, recordingID, site).Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.Site)
-	if err != nil {
-		return store.OriginalVODTarget{}, mediaQueryError(err, fmt.Sprintf("loading original VOD target for recording %d site %q", recordingID, site))
-	}
-	return target, nil
-}
-
 // GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。
 func (s *Media) GetRecordingHLSTarget(ctx context.Context, recordingID int64) (store.RecordingHLSInputTarget, error) {
 	var startedAt *time.Time
@@ -431,24 +412,6 @@ func (s *Media) GetRecordingRemovalState(ctx context.Context, recordingID int64)
 		DeletedAt:    row.DeletedAt,
 		PurgedAt:     row.PurgedAt,
 		SupersededAt: row.SupersededAt,
-	}, nil
-}
-
-// GetChaseTarget は追っかけ再生に必要な mirakc record と録画状態を返す。
-func (s *Media) GetChaseTarget(ctx context.Context, recordingID int64) (store.ChaseTarget, error) {
-	row, err := sqlcgen.New(s.pool).GetChaseTarget(ctx, recordingID)
-	if err != nil {
-		return store.ChaseTarget{}, mediaQueryError(err, fmt.Sprintf("loading chase target for recording %d", recordingID))
-	}
-	if row.DeletedAt != nil || row.Site == "" || row.RecordID == "" {
-		return store.ChaseTarget{}, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
-	}
-	return store.ChaseTarget{
-		Site:             row.Site,
-		RecordID:         row.RecordID,
-		Status:           row.Status,
-		RecordingStatus:  row.RecordingStatus,
-		HasOriginalAsset: row.HasOriginalAsset,
 	}, nil
 }
 

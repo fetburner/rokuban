@@ -2,34 +2,6 @@
 SELECT recording_id FROM record_sync
 WHERE site = $1 AND record_id = $2;
 
--- name: GetChaseTarget :one
--- recordings.id は URL の正準な資源 id。record_sync から mirakc の site / record_id
--- を逆引きし、録画状態と原本行の有無も返す。原本行は state を問わず見る:
--- state='deleted' は取り込み後に原本を削除した事実なので、未 commit と混同しない。
--- 完了済みの追っかけセッションが保持する EVENT playlist は録画終了後も配信する。
--- deleted_at はごみ箱の録画を追っかけ再生へ流さないために必要。
-SELECT rs.site,
-       rs.record_id,
-       rs.status,
-       r.status AS recording_status,
-       EXISTS (
-           SELECT 1 FROM media_assets AS ma
-           WHERE ma.recording_id = r.id AND ma.kind = 'original'
-       ) AS has_original_asset,
-       r.deleted_at
-FROM recordings AS r
-JOIN record_sync AS rs ON rs.recording_id = r.id
-WHERE r.id = $1;
-
--- DeleteStaleRecordSyncs は成功した ListRecords の結果に無い record_sync 行を消す。
--- `observed_at` の時刻比較を使わないのは、processRecord が 1 record = 1 tx で
--- SSE と並行して動くため。PostgreSQL の now() はトランザクション開始時刻なので、
--- sweep 開始前に始まった processRecord が sweep 後にコミットすると、実際には
--- 新しい観測でも古い時刻を持ち、ingest 投入直後の行を stale として消し得る。
--- 呼び出し側は全量応答から ID を集めた直後、snapshot の processRecord より前に
--- 実行する。これにより、ListRecords 後に SSE が作った行をこの削除が巻き込まない。
--- 空配列は「この site の record が 1 件も無い」なので、site の全行を消す。
--- record_ids は呼び出し側で non-nil の空スライスも含めて渡すこと。
 -- name: DeleteStaleRecordSyncs :execrows
 DELETE FROM record_sync
 WHERE site = $1

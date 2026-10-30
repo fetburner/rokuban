@@ -73,7 +73,7 @@ PMT は原本内で更新されうる。version の更新や、番組の境目�
 
 #### hls.js の demux
 
-hls.js が MPEG-TS のセグメントを demux するのは、この境界の対象外である。ライブと追っかけ再生のセグメントは、ffmpeg が書いた MPEG-TS である。中身は H.264 / AAC と、ffmpeg が作り直した PAT / PMT / SDT で、放送由来の SI・ARIB 字幕・データ放送は含まない。字幕は ffmpeg が WebVTT に変換して別に書く。
+hls.js が MPEG-TS のセグメントを demux するのは、この境界の対象外である。ライブ視聴のセグメントは、ffmpeg が書いた MPEG-TS である。中身は H.264 / AAC と、ffmpeg が作り直した PAT / PMT / SDT で、放送由来の SI・ARIB 字幕・データ放送は含まない。字幕は ffmpeg が WebVTT に変換して別に書く。録画 HLS のセグメントも同じ境界を守る。
 
 境界は、器の形式では引かない。放送由来の構造を読むかどうかで引く。
 
@@ -196,7 +196,7 @@ onair tracker は採らない。多重化波ごとにチューナーを恒久的
 
 #### timeshift との比較
 
-同じ単価なら、timeshift のほうが優れる。チューナーを多重化波に固定して同一波の全サービスで共有し、実イベント境界を連続で返した上に、追っかけ再生と全録が付く。
+同じ単価なら、timeshift のほうが優れる。チューナーを多重化波に固定して同一波の全サービスで共有し、実イベント境界を連続で返した上に、録画再生と全録が付く。
 
 timeshift の設定は `timeshift.recorders` である。実イベント境界は `EventStart` / `EventUpdate` / `EventEnd` である。
 

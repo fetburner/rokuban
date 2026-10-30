@@ -6,7 +6,7 @@
 //   - hover なしでダイアログ内の予約ボタンが可視・操作可能で、1 回のクリックで予約できる
 //   - Escape / overlay クリックで閉じ、クリック元セルへフォーカスが戻る
 //   - 操作列が閉じるボタンの左側に収まり、通常 81px / 放送中 125px である
-//   - 放送中のグリッドダイアログと番組リストの両方から録画 id の追っかけへ遷移できる
+//   - 放送中のグリッドダイアログと番組リストの両方から対応する録画詳細へ遷移できる
 //   - 通常 / 放送中のダイアログを e2e/screenshots/ に保存する
 //
 // API は `page.route` で差し替える。mirakc・実チューナー・DB は要らない。
@@ -319,12 +319,12 @@ await airingCell.click()
 const airingDialog = page.getByRole('dialog', { name: airingProgram.name })
 await airingDialog.waitFor({ timeout: 15000 })
 await page.waitForTimeout(250)
-const chaseLink = airingDialog.getByRole('link', {
-  name: `${airingProgram.name}を追っかけ再生`,
+const dialogRecordingLink = airingDialog.getByRole('link', {
+  name: `${airingProgram.name}の録画を開く`,
 })
-await chaseLink.waitFor({ state: 'visible', timeout: 15000 })
-if ((await chaseLink.getAttribute('href')) !== '/recordings/42#chase') {
-  ng.push(`グリッドの追っかけリンクが録画 id 42 へ向かない（href=${await chaseLink.getAttribute('href')}）`)
+await dialogRecordingLink.waitFor({ state: 'visible', timeout: 15000 })
+if ((await dialogRecordingLink.getAttribute('href')) !== '/recordings/42') {
+  ng.push(`グリッドの録画リンクが録画 id 42 へ向かない（href=${await dialogRecordingLink.getAttribute('href')}）`)
 }
 const airingReserveButton = airingDialog.getByRole('button', { name: '予約', exact: true })
 const airingReserveBox = await airingReserveButton.boundingBox()
@@ -366,19 +366,19 @@ if (
 }
 await airingDialog.screenshot({ path: path.join(SCREENSHOT_DIR, 'program-dialog-airing.png') })
 
-log('\n=== 番組リストから追っかけへ遷移 ===')
+log('\n=== 番組リストから録画詳細へ遷移 ===')
 await page.goto(`${BASE}/programs?view=list`, { waitUntil: 'domcontentloaded' })
 const airingRow = page.locator(
   `li[data-program-id="${AIRING_PROGRAM_ID}"][data-site="${SITE}"] [data-testid="program-row"]`,
 )
 await airingRow.waitFor({ timeout: 15000 })
 await airingRow.hover()
-const listChaseLink = airingRow.getByRole('link', {
-  name: `${airingProgram.name}を追っかけ再生`,
+const recordingLink = airingRow.getByRole('link', {
+  name: `${airingProgram.name}の録画を開く`,
 })
-await listChaseLink.waitFor({ state: 'visible', timeout: 15000 })
-if ((await listChaseLink.getAttribute('href')) !== '/recordings/42#chase') {
-  ng.push(`番組リストの追っかけリンクが録画 id 42 へ向かない（href=${await listChaseLink.getAttribute('href')}）`)
+await recordingLink.waitFor({ state: 'visible', timeout: 15000 })
+if ((await recordingLink.getAttribute('href')) !== '/recordings/42') {
+  ng.push(`番組リストの録画リンクが録画 id 42 へ向かない（href=${await recordingLink.getAttribute('href')}）`)
 }
 
 await context.close()

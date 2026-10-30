@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  chasePlaybackTimeline,
-  fixedPlaybackTimeline,
-  liveProgramPlaybackTimeline,
-} from '@/lib/playback-timeline'
+import { fixedPlaybackTimeline, liveProgramPlaybackTimeline } from '@/lib/playback-timeline'
 
 describe('playback timeline descriptions', () => {
   it('describes a fixed playback range', () => {
@@ -13,28 +9,6 @@ describe('playback timeline descriptions', () => {
       minSeconds: 0,
       maxSeconds: 3600,
       canSeek: true,
-      extended: false,
-    })
-  })
-
-  it('uses the recording file start and puts the chase live edge one second before recorded end', () => {
-    const timeline = chasePlaybackTimeline({
-      chaseHeadOffsetSeconds: 180,
-      plannedSeconds: 3600,
-      recordedSeconds: 2520,
-    }, 3000)
-
-    expect(timeline).toEqual({
-      kind: 'chase',
-      minSeconds: 0,
-      maxSeconds: 3600,
-      canSeek: true,
-      headSeconds: 180,
-      recordedEndSeconds: 2700,
-      plannedEndSeconds: 3600,
-      liveEdgeSeconds: 2699,
-      hoverSeconds: 3000,
-      hoverLabel: 'まだ録画されていません',
       extended: false,
     })
   })

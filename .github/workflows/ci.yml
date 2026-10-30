@@ -52,7 +52,7 @@ jobs:
   #   - API スタブで載せられるが所要時間を測っていない（PR ごとに払う価値をまだ判断していない）
   #       - 画面別判定（番組表・予約・検索など）
   #       - ffmpeg で fixture を作るもの
-  #           - 追っかけと原本の再生: chase / chase-audio / recording-original-vod / recording-playback-timeline の全時間軸判定（recording-playback-timeline は Go も要る）
+  #           - 録画 HLS の実ブラウザ再生と世代切替: recording-playback-timeline（Go も要る）
   #           - そのほか: chapters / home-resume-frame / seek-tiles / subtitles / recording-next-episode
   #       - design: 63 枚のショットを撮るぶん重い
   # safe-area-inline は CDP で非ゼロの左右 inset を与え、横向き 844px のサイドバーと 700px のボトムタブが inset の内側に入る寸法を測る。
@@ -61,7 +61,7 @@ jobs:
   # search-shortcut は録画一覧・シリーズ・番組検索で `/` が検索欄へ移ることと、入力欄・IME・録画詳細のプレイヤー表示中では横取りしないことを測る。
   # issue-1233-dialog-focus は確認ダイアログを開いた直後の初期フォーカスと Tab / Return / Escape の行き先を測る。
   # design のルールカード判定（`E2E_RULE_CARD_ONLY`）は 360 / 390px でルールカードの縦積みと補助導線の muted 色・アイコン位置を測る。
-  # live-player-modes は 3 方式の 503 文言、ffmpeg で作った実メディア、pagehide と visibilitychange の離脱ヒント（jsdom には sendBeacon が無く fetch に落ちる）、追っかけの表示時刻を測る。
+  # recording-playback-timeline は録画 API の世代付き HLS、実メディア再生、410 後の位置復元を測る。
   # reservations-series は 360px での行全体リンクと内側リンクの当たり判定・折り返しを、
   # reservation-detail-layout は詳細の欄の折り返しと viewport への収まりを測る。どちらも jsdom には測れない。
   # 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
@@ -182,10 +182,7 @@ jobs:
         run: E2E_RULE_CARD_ONLY=1 pnpm e2e:design
         working-directory: web
       - if: ${{ !cancelled() }}
-        run: pnpm e2e:live-player-modes
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: E2E_TIMELINE_API_HLS_ONLY=1 pnpm e2e:recording-playback-timeline
+        run: pnpm e2e:recording-playback-timeline
         working-directory: web
       - name: Show API server log
         if: failure()

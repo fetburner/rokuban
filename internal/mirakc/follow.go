@@ -61,7 +61,7 @@ type RecordFollowOptions struct {
 //
 // 通常の Range 要求は 500ms 以上あける。追い付き状態の recording では間隔を 500ms から
 // 1 秒へ広げる。再試行には RetryDelay を使い、終端 status 後の最後の Range はすぐ要求する。
-// GetRecord は空応答の後だけ呼ぶ。この polling 方針を ingest と chase 再生で共有する。
+// GetRecord は空応答の後だけ呼ぶ。この polling 方針は ingest で使う。
 //
 // Read と並行して Close を呼べる。StallTimeout は現在の本文の Read が止まっている間だけ
 // 適用され、消費側が Read を呼ぶまでの待ち時間は mirakc の stall に数えない。

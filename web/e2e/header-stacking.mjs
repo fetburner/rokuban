@@ -4,7 +4,7 @@
 // stacking context が無いことも実行時に検査する）をヘッダーの位置までスクロールし、
 // document.elementFromPoint がヘッダーを返すことを見る。DOM は書き換えない。
 // ② 録画一覧を 400px / デスクトップ幅でスクロールし、sticky header が残ることと、
-// 録画中の行に追っかけリンクが無いことを見る。
+// sticky header がページ内の要素と重ならないことを見る。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:header-stacking
@@ -41,8 +41,7 @@ const breakers = [
   },
 ]
 
-// 完了済み・原本のみ（encodedAssets なし、sizeBytes あり）。live 有効時は再生元が original-vod になり、
-// 詳細のポスターに「視聴済みにする」（absolute z-10）が出る。
+// 完了済み・原本のみ（encodedAssets なし、sizeBytes あり）。
 const detailRecording = {
   id: 77,
   site: SITE,
@@ -269,8 +268,7 @@ for (const width of [400, 1280]) {
       })(),
     }
   })
-  const chaseLinks = await page.getByRole('link', { name: /を追っかけ再生/ }).count()
-  log(`  scrollY=${Math.round(result.scrollY)} header=${result.headerTop}..${result.headerBottom} chaseLinks=${chaseLinks}`)
+  log(`  scrollY=${Math.round(result.scrollY)} header=${result.headerTop}..${result.headerBottom}`)
   if (result.scrollY <= 0 || result.headerTop === null || result.headerTop < -1 || result.headerBottom > result.viewportHeight) {
     ng.push(`② ${width}px: 録画一覧のスクロール後に sticky header が表示領域にない`)
   }
@@ -280,7 +278,6 @@ for (const width of [400, 1280]) {
   if (result.bottomNavTop !== null && result.headerBottom >= result.bottomNavTop) {
     ng.push(`② ${width}px: PageHeader が下部ナビの領域に重なる`)
   }
-  if (chaseLinks !== 0) ng.push(`② ${width}px: 録画中の行に追っかけリンクが残っている`)
 
   await page.getByRole('button', { name: '選択' }).click()
   const selectionBar = page.getByRole('toolbar', { name: '選択した録画の操作' })

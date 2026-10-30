@@ -54,7 +54,7 @@ export function ProgramRow({
 
   const detailId = `program-row-detail-${program.site}-${program.programId}`
   const skipIntent = program.intent === 'skip' && !reserved
-  // リストの操作列は、既存の再生ボタン（ライブまたは追っかけ）44px と
+  // リストの操作列は、既存の再生ボタン（ライブまたは録画詳細）44px と
   // 予約ボタン 80px をまとめて開く。これはリストだけの幅アニメーションで、
   // 共有操作側へ渡さない。開いた列は右 padding 16px を持ち、ボタンの右余白を
   // 折りたたみ行の右 padding と揃える。列が 16px 広がる分、題名の「…」は 16px
@@ -116,7 +116,7 @@ export function ProgramRow({
             reserveBlocked={draft.reserveBlocked}
             skipIntent={skipIntent}
             showLiveLink={draft.showLiveLink}
-            showChaseLink={draft.showChaseLink}
+            showRecordingLink={draft.showRecordingLink}
             onReserve={draft.handleReserve}
             onCancel={onCancel}
             onClearIntent={() => onClearIntent?.()}

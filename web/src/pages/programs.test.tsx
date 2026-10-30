@@ -128,7 +128,7 @@ function program(
 
 /** 1 時間後の番組。リストの最初の窓（6 時間）にもグリッドの窓にも入る。 */
 const soon = program(1, 1024, 1, 'ニュース7')
-/** 現在放送中の番組。既存の再生ボタンを追っかけへ置き換えるテストに使う。 */
+/** 現在放送中の番組。再生ボタンの録画詳細リンクをテストする。 */
 const airingSoon: ProgramListItem = {
   ...soon,
   startAt: new Date(origin - 30 * 60_000).toISOString(),
@@ -761,13 +761,13 @@ describe('ProgramsPage の表示形式', () => {
     expect(await screen.findByText(laterMatch.name)).toBeInTheDocument()
   })
 
-  it('番組リストの録画中番組に対応する録画の追っかけリンクを出す', async () => {
+  it('番組リストの録画中番組から対応する録画詳細を開ける', async () => {
     const fetchMock = stubApi([], [], [airingSoon])
     renderPage()
 
     const row = await screen.findByTestId('program-row')
-    const link = await within(row).findByRole('link', { name: 'ニュース7を追っかけ再生' })
-    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+    const link = await within(row).findByRole('link', { name: 'ニュース7の録画を開く' })
+    expect(link).toHaveAttribute('href', '/recordings/42')
     expect(
       fetchMock.mock.calls.some(
         (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/recordings',
@@ -775,7 +775,7 @@ describe('ProgramsPage の表示形式', () => {
     ).toBe(false)
   })
 
-  it('番組表の番組ダイアログにも対応する録画の追っかけリンクを出す', async () => {
+  it('番組表の番組ダイアログからも対応する録画詳細を開ける', async () => {
     stubApi([], [], [airingSoon])
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
@@ -785,8 +785,8 @@ describe('ProgramsPage の表示形式', () => {
     await userEvent.click(cell as HTMLElement)
 
     const dialog = await screen.findByRole('dialog', { name: airingSoon.name })
-    const link = await within(dialog).findByRole('link', { name: 'ニュース7を追っかけ再生' })
-    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+    const link = await within(dialog).findByRole('link', { name: 'ニュース7の録画を開く' })
+    expect(link).toHaveAttribute('href', '/recordings/42')
   })
 
   it('予約一覧から重なり警告を導出し、番組別 overlaps API を取得しない', async () => {

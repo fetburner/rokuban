@@ -55,34 +55,12 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsLivePlaylist, "pipe:0", 0, 1)
 }
 
-// BuildChaseFFmpegArgs は live と同じ画質・音声 rendition を出し、EVENT playlist にする。
-// EVENT は録画履歴全体を残すため delete_segments を使わない。
-//
-// **追っかけもライブ・原本 HLS と同じ音声選択（標準 / 主 / 副）を提供する。** EVENT は
-// segment を保持するためライブ窓のずれは起きない。実ブラウザの切替・シーク・再開の
-// 判定は web/e2e/chase-audio.mjs が担う。
-func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist, "pipe:0", 0, 1)
-}
-
-// BuildOriginalVODFFmpegArgs converts the original MPEG-2 TS into an EVENT HLS
-// playlist that grows while ffmpeg converts and gains ENDLIST at EOF. It is not
-// `-hls_playlist_type vod`: ffmpeg 9.0.2 writes no .m3u8 until it exits in that
-// mode (measured), so a recording longer than playlistStartupTimeout would never
-// become playable. Every segment is kept until shared idle GC, and the output
-// has the same profile, audio rendition, and optional subtitle graph as live.
-// offsetSeconds is mapped down to the 30000/1001 fps input frame grid before
-// accurate input-side -ss, and the video encoder gets -bf 0. Measured on the
-// synthetic MPEG-2 fixture of web/e2e/recording-playback-timeline.mjs with
-// libx264 (Chrome + hls.js shows frames 66.73 ms late without -bf 0). The
-// Playwright WebKit + hls.js path, captions, hardware encoders, and recordings
-// whose audio lead has a phase other than the fixture's (audio start 10.4067 s,
-// video start 11.1007 s; an integer -ss showed frames 33.37 ms early there) are
-// unverified. fd 3 is the original opened by the Go process and passed via
-// Cmd.ExtraFiles, so unlinking its canonical path cannot break the session.
-func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
+// BuildRecordingHLSFFmpegArgs builds the EVENT playlist used by recording HLS
+// timeline fixtures. Production recording HLS uses the same lower-level builder
+// with a PTS-aligned seek derived from the current recording input.
+func BuildRecordingHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
 	return buildHLSFFmpegArgsForPlaylistType(
-		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds, 1,
+		cfg, dir, withSubtitles, hlsRecordingEventPlaylist, recordingHLSFFmpegInputPath, offsetSeconds, 1,
 	)
 }
 
@@ -92,7 +70,7 @@ func appendMPEGTSInput(args []string, inputPath string, offsetSeconds int64) []s
 	return appendMPEGTSInputWithSeek(args, inputPath, offsetSeconds, strconv.FormatInt(offsetSeconds, 10))
 }
 
-func appendOriginalVODMPEGTSInput(args []string, inputPath string, offsetSeconds int64) []string {
+func appendFrameAlignedMPEGTSInput(args []string, inputPath string, offsetSeconds int64) []string {
 	if offsetSeconds <= 0 {
 		return appendMPEGTSInput(args, inputPath, 0)
 	}
@@ -120,7 +98,7 @@ func buildHLSFFmpegArgsForPlaylistType(
 	offsetSeconds int64,
 	audioStreamCount int,
 ) []string {
-	originalVOD := playlistType == hlsOriginalEventPlaylist
+	recordingHLS := playlistType == hlsRecordingEventPlaylist
 	if cfg.Captions {
 		return buildLiveCaptionFFmpegArgsForPlaylistType(
 			cfg, dir, withSubtitles, playlistType, inputPath, offsetSeconds, audioStreamCount,
@@ -138,8 +116,8 @@ func buildHLSFFmpegArgsForPlaylistType(
 		"-analyzeduration", "3M",
 	)
 	args = append(args, cfg.InputExtraArgs...)
-	if originalVOD {
-		args = appendOriginalVODMPEGTSInput(args, inputPath, offsetSeconds)
+	if recordingHLS {
+		args = appendFrameAlignedMPEGTSInput(args, inputPath, offsetSeconds)
 	} else {
 		args = appendMPEGTSInput(args, inputPath, offsetSeconds)
 	}
@@ -151,7 +129,7 @@ func buildHLSFFmpegArgsForPlaylistType(
 		args = appendAudioRenditionMaps(args, audioStreamCount)
 		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
 		args = appendAudioRenditionFilters(args, 0, audioStreamCount)
-		if originalVOD {
+		if recordingHLS {
 			// With B frames, Chrome/hls.js showed frames 2 frames (66.73 ms) behind the
 			// original MP4 timeline on the synthetic fixture (e2e
 			// recording-playback-timeline, libx264). Unverified for hardware encoders.
@@ -193,8 +171,8 @@ func buildHLSFFmpegArgsForPlaylistType(
 			// delete_segments: プレイリスト長を超えた古いセグメントを削除する
 			//（プロセスが落ちても残骸を溜め続けない。正常系の掃除）。
 			// temp_file: 一時ファイルに書いてから rename するので、配信側が
-			// 書き込み途中のファイルを読むことがない。追っかけ再生は
-			// delete_segments を使わない（BuildChaseFFmpegArgs）。
+			// 書き込み途中のファイルを読むことがない。録画 HLS は録画全体を
+			// seek できる EVENT playlist のため delete_segments を使わない。
 			"-hls_flags", hlsFlagsForPlaylistType(playlistType),
 			"-hls_segment_filename", filepath.Join(dir, "segments", segmentFile),
 			// hls_base_url: プレイリストの各セグメント行に付ける接頭辞。
@@ -272,9 +250,7 @@ func audioRenditionEntries(first int, group string) []string {
 // playlist が今の窓と重ならず、PDT 無しでは揃えられない）。窓の内側ですぐ戻る分には
 // 止まらない。判定は `web/e2e/live-audio.mjs` の ①（各トラックを 15 秒聴いてから
 // 戻る。PDT を外すと標準へ戻る所で落ち、付けると通る。WebAudio で左右の周波数を
-// 測る）。追っかけは EVENT playlist で segment を消さず窓がスライドしないので、PDT が
-// 無くても各トラックを 15 秒聴いて戻っても止まらない（`web/e2e/chase-audio.mjs`。
-// hls.js が何で位置を揃えているかは測っていない）。
+// 測る）。録画 HLS は録画全体を seek できる固定格子の EVENT playlist を使う。
 func hlsFlags(eventPlaylist bool) string {
 	if eventPlaylist {
 		return "temp_file"
@@ -316,7 +292,7 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	offsetSeconds int64,
 	audioStreamCount int,
 ) []string {
-	originalVOD := playlistType == hlsOriginalEventPlaylist
+	recordingHLS := playlistType == hlsRecordingEventPlaylist
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
 	args = append(args, "-probesize", "5M", "-analyzeduration", "3M")
@@ -328,8 +304,8 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 		// 入力側オプションなので -i より前に置く。
 		args = append(args, "-fix_sub_duration")
 	}
-	if originalVOD {
-		args = appendOriginalVODMPEGTSInput(args, inputPath, offsetSeconds)
+	if recordingHLS {
+		args = appendFrameAlignedMPEGTSInput(args, inputPath, offsetSeconds)
 	} else {
 		args = appendMPEGTSInput(args, inputPath, offsetSeconds)
 	}
@@ -343,7 +319,7 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 		}
 		a := 3 * i
 		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec)
-		if originalVOD {
+		if recordingHLS {
 			args = append(args, "-bf:v:"+strconv.Itoa(i), "0")
 		}
 		for output := 0; output < 3; output++ {

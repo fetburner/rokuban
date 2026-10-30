@@ -1,5 +1,4 @@
 import type { Recording } from '@/api/generated'
-import type { LiveCapability } from '@/lib/capabilities'
 import { ingestDisplay } from '@/lib/ingest'
 import { selectRecordingPlaybackSource } from '@/lib/recording-playback-source'
 
@@ -8,7 +7,6 @@ export type RecordingVerdict = 'recording' | 'failed' | 'viewable' | 'preparing'
 
 export type RecordingVerdictInput = {
   recording: Recording
-  liveCapability: LiveCapability
   /** ごみ箱では削除日時が結論になるため、結論を出さない。 */
   isTrashed?: boolean
 }
@@ -25,20 +23,16 @@ export type RecordingVerdictInput = {
  */
 export function recordingVerdict({
   recording,
-  liveCapability,
   isTrashed = false,
 }: RecordingVerdictInput): RecordingVerdict | undefined {
   if (isTrashed) return undefined
   const hasEncoded = (recording.encodedAssets?.length ?? 0) > 0
   const hasNonCutEncoded = recording.encodedAssets?.some((asset) => asset.cut !== true) ?? false
-  const hasOriginal = recording.sizeBytes !== undefined
   const playbackSource = selectRecordingPlaybackSource({
     status: recording.status,
     hasEncoded,
     hasNonCutEncoded,
-    hasOriginal,
     hasHlsPlayback: recording.hlsPlayback.length > 0,
-    liveEnabled: liveCapability === 'enabled',
   })
 
   if (recording.status === 'recording') return 'recording'
@@ -46,15 +40,6 @@ export function recordingVerdict({
   if (playbackSource !== 'none') return 'viewable'
 
   if (recording.status !== 'finished') return 'unavailable'
-
-  // 原本だけの録画は、ライブ capability が未確定だと再生元も未確定。
-  if (
-    hasOriginal &&
-    !hasEncoded &&
-    (liveCapability === 'pending' || liveCapability === 'unknown')
-  ) {
-    return undefined
-  }
 
   // 結論は kind（転送中かどうか）だけを見る。停滞（stale）は kind に影響しないので時刻は固定値でよい。
   const ingest = ingestDisplay(recording, 0)

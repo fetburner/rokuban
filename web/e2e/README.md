@@ -81,12 +81,8 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 
 | 節 | ファイル |
 |---|---|
-| 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`） | [checks/playback.md](checks/playback.md) |
-| LivePlayer の 503 文言・離脱ヒント・追っかけの表示時刻（`live-player-modes.mjs`） | [checks/playback.md](checks/playback.md) |
-| 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
-| 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
+| 録画 HLS の時間軸・世代切替・再開（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画 HLS の再起動境界（`recording-segmented-vod.mjs`） | [checks/playback.md](checks/playback.md) |
-| 原本 HLS から encoded への切替（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | S3 の署名付き URL への 302（`s3-302.mjs`） | [checks/playback.md](checks/playback.md) |
 
 ### その他の判定
@@ -135,7 +131,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 
 - **判定を足す** → 冒頭・§使い方・§判定を足すときの規律を読んでから、近い画面のファイルを開く
 - **番組表（グリッド・番組リストの空時間窓）** → [checks/programs.md](checks/programs.md)（⓪ の説明もここ）
-- **再生（追っかけ・原本 VOD・シークバー・チャプター）** → [checks/playback.md](checks/playback.md)
+- **再生（録画 HLS・シークバー・チャプター）** → [checks/playback.md](checks/playback.md)
 - **ライブ視聴** → [checks/live.md](checks/live.md)
 - **色・トークン・スクリーンショット・フォントスケール** → [checks/design.md](checks/design.md)
 - **ヘッダー・ボトムタブ・セーフエリア・CLS** → [checks/layout.md](checks/layout.md)
@@ -167,8 +163,7 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 - API スタブで載せられるが所要時間を測っていない: 全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない
   - 画面別判定（番組表・予約・検索など）
   - ffmpeg で fixture を作るもの
-    - 追っかけと原本の再生: `chase` / `chase-audio` / `recording-original-vod` / `recording-playback-timeline`
-    - `recording-playback-timeline` は fixture を Go のテストで作るので Go も要る
+    - 録画 HLS の時間軸と世代切替: `recording-playback-timeline`（fixture を Go のテストで作るため Go も要る）
     - そのほか: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`
   - `design.mjs`: 63 枚のショットを撮るぶん重い
 

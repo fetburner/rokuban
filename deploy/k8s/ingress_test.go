@@ -71,9 +71,9 @@ func TestBaseIngressUsesOnlyFixedCommonRoutes(t *testing.T) {
 	}
 }
 
-// overlay の live / chase route patch は、具体的な site 名と同じ site Service を指す。
+// overlay の live route patch は、具体的な site 名と同じ site Service を指す。
 // JSON patch の value は kubeconform には見えるが、Service 名の typo は見えない。
-func TestIngressOverlaysAddConcreteLiveAndChaseRoutes(t *testing.T) {
+func TestIngressOverlaysAddConcreteLiveRoutes(t *testing.T) {
 	cases := []struct {
 		dir  string
 		want map[string]string
@@ -81,17 +81,14 @@ func TestIngressOverlaysAddConcreteLiveAndChaseRoutes(t *testing.T) {
 		{
 			dir: "overlays/kind",
 			want: map[string]string{
-				"/api/sites/default/recordings": "rokuban-live-streamer",
-				"/api/sites/default/networks":   "rokuban-live-streamer",
+				"/api/sites/default/networks": "rokuban-live-streamer",
 			},
 		},
 		{
 			dir: "overlays/e2e",
 			want: map[string]string{
-				"/api/sites/sitea/recordings": "rokuban-live-streamer-sitea",
-				"/api/sites/sitea/networks":   "rokuban-live-streamer-sitea",
-				"/api/sites/siteb/recordings": "rokuban-live-streamer-siteb",
-				"/api/sites/siteb/networks":   "rokuban-live-streamer-siteb",
+				"/api/sites/sitea/networks": "rokuban-live-streamer-sitea",
+				"/api/sites/siteb/networks": "rokuban-live-streamer-siteb",
 			},
 		},
 	}
@@ -135,11 +132,11 @@ func TestIngressOverlaysAddConcreteLiveAndChaseRoutes(t *testing.T) {
 			}
 			for path := range tc.want {
 				if !seen[path] {
-					t.Errorf("%s does not add live route %q", tc.dir, path)
+					t.Errorf("%s does not add live network route %q", tc.dir, path)
 				}
 			}
 			if len(seen) != len(tc.want) {
-				t.Errorf("%s adds %d live routes, want %d", tc.dir, len(seen), len(tc.want))
+				t.Errorf("%s adds %d live network routes, want %d", tc.dir, len(seen), len(tc.want))
 			}
 		})
 	}

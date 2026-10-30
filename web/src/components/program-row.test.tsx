@@ -143,7 +143,7 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     expect(params.get('site')).toBe(testSite)
   })
 
-  it('対応する録画中録画がある行では既存の再生ボタンを録画 id の追っかけリンクにする', async () => {
+  it('対応する録画がある行では既存の再生ボタンを録画詳細リンクにする', async () => {
     const fetchMock = stubFetch()
     renderInRouter(
       <ProgramRow
@@ -165,9 +165,9 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     )
 
     const link = await within(screen.getByTestId('program-row-reserve')).findByRole('link', {
-      name: '対象番組を追っかけ再生',
+      name: '対象番組の録画を開く',
     })
-    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+    expect(link).toHaveAttribute('href', '/recordings/42')
     expect(
       within(screen.getByTestId('program-row-reserve')).queryByRole('link', {
         name: 'ライブで見る',
@@ -262,7 +262,7 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('live.enabled=false（能力 API が disabled）では追っかけリンクも出さない', async () => {
+  it('live.enabled=false（能力 API が disabled）では録画リンクも出さない', async () => {
     const fetchMock = stubFetch({ live: false })
     renderInRouter(
       <ProgramRow
@@ -284,7 +284,7 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     )
     expect(
       within(screen.getByTestId('program-row-reserve')).queryByRole('link', {
-        name: '対象番組を追っかけ再生',
+        name: '対象番組の録画を開く',
       }),
     ).not.toBeInTheDocument()
   })

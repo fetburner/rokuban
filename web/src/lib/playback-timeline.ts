@@ -1,6 +1,5 @@
 import { formatPlaybackTime, formatTime } from '@/lib/format'
 import { liveProgramAxis, programRecordingAccess } from '@/lib/live'
-import type { RecordingTimeline } from '@/lib/recording-timeline'
 
 type PlaybackTimelineBase = {
   minSeconds: number
@@ -18,17 +17,6 @@ type FixedPlaybackTimeline = PlaybackTimelineBase & {
   canSeek: true
 }
 
-/** ChasePlaybackTimeline は録画先頭を起点にした追っかけ用の時間軸記述。 */
-type ChasePlaybackTimeline = PlaybackTimelineBase & {
-  kind: 'chase'
-  headSeconds: number
-  recordedEndSeconds: number
-  plannedEndSeconds: number
-  liveEdgeSeconds: number
-  hoverSeconds: number | null
-  hoverLabel: string | null
-}
-
 /** LiveProgramPlaybackTimeline は番組予定を起点にしたライブ用の時間軸記述。 */
 type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   kind: 'live-program'
@@ -44,8 +32,8 @@ type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   endClock: string
 }
 
-/** PlaybackTimeline は共有操作バーが描く固定尺・追っかけ・ライブの時間軸記述。 */
-export type PlaybackTimeline = FixedPlaybackTimeline | ChasePlaybackTimeline | LiveProgramPlaybackTimeline
+/** PlaybackTimeline は共有操作バーが描く固定尺・ライブの時間軸記述。 */
+export type PlaybackTimeline = FixedPlaybackTimeline | LiveProgramPlaybackTimeline
 
 /** fixedPlaybackTimeline は録画尺の固定軸を操作バー向けの記述にする。 */
 export function fixedPlaybackTimeline(durationSeconds: number): FixedPlaybackTimeline {
@@ -56,36 +44,6 @@ export function fixedPlaybackTimeline(durationSeconds: number): FixedPlaybackTim
     maxSeconds,
     canSeek: true,
     extended: false,
-  }
-}
-
-/** chasePlaybackTimeline は録画ファイル先頭を基準に追っかけの時間軸記述を作る。 */
-export function chasePlaybackTimeline(
-  source: Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>,
-  hoverSeconds: number | null,
-): ChasePlaybackTimeline {
-  const headSeconds = source.chaseHeadOffsetSeconds
-  const recordedEndSeconds = headSeconds + source.recordedSeconds
-  const plannedEndSeconds = source.plannedSeconds
-  const maxSeconds = Math.max(1, plannedEndSeconds, recordedEndSeconds)
-  const liveEdgeSeconds = Math.max(0, recordedEndSeconds - 1)
-
-  return {
-    kind: 'chase',
-    minSeconds: 0,
-    maxSeconds,
-    canSeek: true,
-    hoverSeconds,
-    hoverLabel: hoverSeconds === null
-      ? null
-      : hoverSeconds > recordedEndSeconds || hoverSeconds < headSeconds
-        ? 'まだ録画されていません'
-        : null,
-    extended: recordedEndSeconds > plannedEndSeconds,
-    headSeconds,
-    recordedEndSeconds,
-    plannedEndSeconds,
-    liveEdgeSeconds,
   }
 }
 

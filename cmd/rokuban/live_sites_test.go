@@ -94,33 +94,6 @@ func TestLiveSites_DispatchesByURLSite(t *testing.T) {
 		t.Errorf("tokyo mirakc stub received %d requests after the takamatsu call, want 1 (unchanged)", got)
 	}
 
-	for _, site := range []string{"tokyo", "takamatsu"} {
-		resp, err := http.Post(ts.URL+"/api/sites/"+site+"/recordings/1/chase/leave", "", nil)
-		if err != nil {
-			t.Fatalf("POST chase leave (site=%s): %v", site, err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("chase leave (site=%s) status = %d, want 204", site, resp.StatusCode)
-		}
-		resp, err = http.Post(ts.URL+"/api/sites/"+site+"/recordings/1/original-vod/leave", "", nil)
-		if err != nil {
-			t.Fatalf("POST original VOD leave (site=%s): %v", site, err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("original VOD leave (site=%s) status = %d, want 204", site, resp.StatusCode)
-		}
-		resp, err = http.Post(ts.URL+"/api/sites/"+site+"/recordings/1/original-vod/offset/0/leave", "", nil)
-		if err != nil {
-			t.Fatalf("POST original VOD offset leave (site=%s): %v", site, err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("original VOD offset leave (site=%s) status = %d, want 204", site, resp.StatusCode)
-		}
-	}
-
 	if status := get(t, "osaka"); status != http.StatusNotFound {
 		t.Errorf("unbound site status = %d, want 404", status)
 	}

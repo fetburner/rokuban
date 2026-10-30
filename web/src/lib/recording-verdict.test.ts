@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Recording } from '@/api/generated'
-import type { LiveCapability } from '@/lib/capabilities'
-import { recordingVerdict, type RecordingVerdict } from '@/lib/recording-verdict'
+import { recordingVerdict } from '@/lib/recording-verdict'
 
 const base: Recording = {
   id: 42,
@@ -24,130 +23,38 @@ const base: Recording = {
   createdAt: '2026-01-01T12:30:00Z',
 }
 
-const verdictCases: {
-  name: string
-  recording: Partial<Recording>
-  liveCapability: LiveCapability
-  expected: RecordingVerdict
-}[] = [
-  { name: 'recording', recording: { status: 'recording' }, liveCapability: 'enabled', expected: 'recording' },
-  { name: 'failed', recording: { status: 'failed' }, liveCapability: 'enabled', expected: 'failed' },
-  {
-    name: 'viewable through an encoded asset',
-    recording: { encodedAssets: [{ profile: 'web', sizeBytes: 500 }] },
-    liveCapability: 'unknown',
-    expected: 'viewable',
-  },
-  {
-    name: 'preparing while ingest is pending',
-    recording: { ingest: { state: 'pending' } },
-    liveCapability: 'enabled',
-    expected: 'preparing',
-  },
-  {
-    name: 'unavailable with no source or active processing',
-    recording: {},
-    liveCapability: 'enabled',
-    expected: 'unavailable',
-  },
-]
-
 describe('recordingVerdict', () => {
-  it.each(verdictCases)('returns $expected for $name', ({ recording, liveCapability, expected }) => {
-      expect(
-        recordingVerdict({
-          recording: { ...base, ...recording },
-          liveCapability,
-        }),
-      ).toBe(expected)
+  it.each([
+    ['recording', { status: 'recording' }, 'recording'],
+    ['failed', { status: 'failed' }, 'failed'],
+    ['encoded asset', { encodedAssets: [{ profile: 'web', sizeBytes: 500 }] }, 'viewable'],
+    ['ingest pending', { ingest: { state: 'pending' } }, 'preparing'],
+    ['no playback source', {}, 'unavailable'],
+    ['original without recording HLS', { sizeBytes: 1_000 }, 'unavailable'],
+    ['recording HLS', {
+      sizeBytes: 1_000,
+      hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/main/recordings/42/hls/v1/hd/master.m3u8' }],
+    }, 'viewable'],
+  ] as const)('returns %s verdict', (_name, recording, expected) => {
+    expect(recordingVerdict({ recording: { ...base, ...recording } as Recording })).toBe(expected)
   })
 
-  it('原本の転送が停滞していても準備中にする', () => {
-    expect(
-      recordingVerdict({
-        recording: {
-          ...base,
-          ingest: {
-            state: 'transferring',
-            writtenBytes: 12,
-            observedAt: '2026-01-01T12:00:00Z',
-          },
-        },
-        liveCapability: 'enabled',
-      }),
-    ).toBe('preparing')
+  it('keeps a stalled ingest in preparing', () => {
+    expect(recordingVerdict({
+      recording: {
+        ...base,
+        ingest: { state: 'transferring', writtenBytes: 12, observedAt: '2026-01-01T12:00:00Z' },
+      },
+    })).toBe('preparing')
   })
 
-  it.each(['queued', 'running'] as const)('エンコード %s を準備中にする', (state) => {
-    expect(
-      recordingVerdict({
-        recording: { ...base, encodeStatus: [{ profile: 'web', state }] },
-        liveCapability: 'enabled',
-      }),
-    ).toBe('preparing')
+  it.each(['queued', 'running'] as const)('keeps encode %s in preparing', (state) => {
+    expect(recordingVerdict({
+      recording: { ...base, encodeStatus: [{ profile: 'web', state }] },
+    })).toBe('preparing')
   })
 
-  it.each(['pending', 'unknown'] as const)(
-    '原本のみの録画は capability が %s の間、再生不可と断定しない',
-    (liveCapability) => {
-      expect(
-        recordingVerdict({
-          recording: { ...base, sizeBytes: 1_000 },
-          liveCapability,
-        }),
-      ).toBeUndefined()
-    },
-  )
-
-  it.each(['queued', 'running'] as const)(
-    '原本のみ + エンコード %s は capability 未確定なら結論を出さず、disabled なら準備中',
-    (state) => {
-      const recording = { ...base, sizeBytes: 1_000, encodeStatus: [{ profile: 'web', state }] }
-      for (const liveCapability of ['pending', 'unknown'] as const) {
-        expect(recordingVerdict({ recording, liveCapability })).toBeUndefined()
-      }
-      expect(recordingVerdict({ recording, liveCapability: 'disabled' })).toBe('preparing')
-    },
-  )
-
-  it('原本のみの録画はライブ capability が disabled なら再生不可', () => {
-    expect(
-      recordingVerdict({
-        recording: { ...base, sizeBytes: 1_000 },
-        liveCapability: 'disabled',
-      }),
-    ).toBe('unavailable')
-  })
-
-  it('原本のみの録画はライブ capability が有効なら見られる', () => {
-    expect(
-      recordingVerdict({
-        recording: { ...base, sizeBytes: 1_000 },
-        liveCapability: 'enabled',
-      }),
-    ).toBe('viewable')
-  })
-
-  it('hlsPlayback がある録画はライブ capability を待たずに見られる', () => {
-    expect(
-      recordingVerdict({
-        recording: {
-          ...base,
-          sizeBytes: 1_000_000,
-          hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8' }],
-        },
-        liveCapability: 'disabled',
-      }),
-    ).toBe('viewable')
-  })
-
-  it('ごみ箱の録画には結論を出さない', () => {
-    expect(
-      recordingVerdict({
-        recording: { ...base, status: 'failed' },
-        liveCapability: 'enabled',
-        isTrashed: true,
-      }),
-    ).toBeUndefined()
+  it('does not report a verdict for recordings in trash', () => {
+    expect(recordingVerdict({ recording: { ...base, status: 'failed' }, isTrashed: true })).toBeUndefined()
   })
 })

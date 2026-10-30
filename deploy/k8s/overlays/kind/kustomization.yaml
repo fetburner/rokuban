@@ -49,7 +49,7 @@ secretGenerator:
       - POSTGRES_CONNECTION_STRING=postgresql://rokuban:kindtest@postgres.default.svc.cluster.local:5432/rokuban?sslmode=disable
 
 patches:
-  # `/api/sites/<site>/networks` と `/api/sites/<site>/recordings` は site 名を
+  # `/api/sites/<site>/networks` は site 名を
   # 具体化しないと標準 Ingress で backend を一意に決められない。単一サイト
   # overlay の Service 名は suffix 無しの `rokuban-live-streamer` である。
   - target:
@@ -58,16 +58,6 @@ patches:
     patch: |-
       - op: add
         path: /spec/rules/0/http/paths/3
-        value:
-          path: /api/sites/default/recordings
-          pathType: Prefix
-          backend:
-            service:
-              name: rokuban-live-streamer
-              port:
-                name: http
-      - op: add
-        path: /spec/rules/0/http/paths/4
         value:
           path: /api/sites/default/networks
           pathType: Prefix

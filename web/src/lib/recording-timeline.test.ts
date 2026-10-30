@@ -37,9 +37,7 @@ describe('recordingTimeline', () => {
 
     expect(timeline.recordingFileStartAtMs).toBe(Date.parse(recordingLate))
     expect(timeline.recordingHeadSeconds).toBe(180)
-    expect(timeline.chaseHeadOffsetSeconds).toBe(180)
     expect(timeline.recordedSeconds).toBe(2520)
-    expect(timeline.recordedEndSeconds).toBe(2700)
     expect(timeline.programRecordingOffsetSeconds).toBe(360)
     expect(recordingTimeline(recording({ startedAt: recordingLate }), { programSeconds: 180 }).programRecordingOffsetSeconds)
       .toBe(0)
@@ -58,14 +56,11 @@ describe('recordingTimeline', () => {
     expect(timeline.programRecordingOffsetSeconds).toBe(540)
   })
 
-  it('keeps a future scheduled end while extending the recorded edge to now', () => {
+  it('uses the current time for an in-progress recording and the scheduled end for its date', () => {
     const timeline = recordingTimeline(recording(), { nowMs: nowAt45Minutes })
 
     expect(timeline.programmeEndAt).toBe('2026-10-02T11:00:00.000Z')
-    expect(timeline.plannedSeconds).toBe(3600)
     expect(timeline.recordedSeconds).toBe(2700)
-    expect(timeline.recordedEndSeconds).toBe(2700)
-    expect(timeline.maxSeconds).toBe(3600)
     expect(timeline.recordedDurationMs).toBeNull()
   })
 
@@ -78,14 +73,6 @@ describe('recordingTimeline', () => {
     expect(timeline.recordedSeconds).toBe(3960)
     expect(timeline.recordedDurationMs).toBe(3_960_000)
     expect(timeline.recordedAfterProgramStartPercent).toBeCloseTo(90.9091, 3)
-  })
-
-  it('extends maxSeconds to the recorded edge once it passes the planned end', () => {
-    const timeline = recordingTimeline(recording(), { nowMs: Date.parse('2026-10-02T11:10:00.000Z') })
-
-    expect(timeline.plannedSeconds).toBe(3600)
-    expect(timeline.recordedEndSeconds).toBe(4200)
-    expect(timeline.maxSeconds).toBe(4200)
   })
 
   it('returns no file axis when either timestamp cannot be parsed', () => {

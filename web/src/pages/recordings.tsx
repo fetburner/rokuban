@@ -41,7 +41,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
-import { useLiveCapability } from '@/lib/capabilities'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
@@ -96,7 +95,6 @@ export function RecordingsPage() {
   const search = useRouteSearch({ from: '/recordings' })
   const navigate = useNavigate()
   const trash = search.tab === 'trash'
-  const liveCapability = useLiveCapability()
 
   const sitesQuery = useListSites()
   const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
@@ -646,7 +644,6 @@ export function RecordingsPage() {
               <li key={r.id} data-testid={view === 'card' ? 'recording-card' : undefined}>
                 <RecordingRow
                   recording={r}
-                  liveCapability={liveCapability}
                   trash={trash}
                   showSite={showSite}
                   view={view}

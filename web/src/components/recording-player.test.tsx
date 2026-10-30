@@ -647,7 +647,7 @@ describe('RecordingPlayer の再生操作', () => {
 })
 
 describe('RecordingPlayer の selectedProfile 導出', () => {
-  it('preferredProfile が資産にあれば追っかけと同じ既定値を選ぶ', () => {
+  it('preferredProfile が資産にあれば録画 HLS と同じ既定値を選ぶ', () => {
     const { container } = render(
       <RecordingPlayer
         recordingId={39}

@@ -112,7 +112,7 @@ describe('ProgramDialogPanel', () => {
     )
   })
 
-  it('追っかけリンクは番組 id ではなく対応する録画 id を使う', async () => {
+  it('録画詳細リンクは番組 id ではなく対応する録画 id を使う', async () => {
     stubFetch(true)
     const airingProgram = {
       ...program,
@@ -136,9 +136,9 @@ describe('ProgramDialogPanel', () => {
 
     const dialog = await screen.findByRole('dialog', { name: airingProgram.name })
     const link = await within(dialog).findByRole('link', {
-      name: `${airingProgram.name}を追っかけ再生`,
+      name: `${airingProgram.name}の録画を開く`,
     })
-    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+    expect(link).toHaveAttribute('href', '/recordings/42')
     expect(within(dialog).getByTestId('program-dialog-actions')).toHaveClass('w-[7.75rem]')
   })
 

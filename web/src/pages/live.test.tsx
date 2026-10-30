@@ -9,7 +9,9 @@ import { ToastProvider } from '@/components/toaster'
 import { liveStallTimeoutMs } from '@/lib/live'
 import { routeTree } from '@/routes'
 
-const pageHlsMockState = vi.hoisted(() => ({ instances: [] as unknown[] }))
+const pageHlsMockState = vi.hoisted(() => ({
+  instances: [] as Array<{ options: { startPosition?: number } | undefined; sources: string[] }>,
+}))
 
 vi.mock('hls.js', () => {
   class FakeHls {
@@ -21,7 +23,7 @@ vi.mock('hls.js', () => {
     }
     static isSupported = () => true
     on = vi.fn()
-    loadSource = vi.fn()
+    loadSource = vi.fn((source: string) => this.record.sources.push(source))
     attachMedia = vi.fn()
     destroy = vi.fn()
     subtitleDisplay = true
@@ -29,8 +31,10 @@ vi.mock('hls.js', () => {
     audioTracks: unknown[] = []
     latency = 0
     mainForwardBufferInfo: { len: number } | null = null
-    constructor() {
-      pageHlsMockState.instances.push(this)
+    private record: { options: { startPosition?: number } | undefined; sources: string[] }
+    constructor(options?: { startPosition?: number }) {
+      this.record = { options, sources: [] }
+      pageHlsMockState.instances.push(this.record)
     }
   }
   return { default: FakeHls }
@@ -332,10 +336,6 @@ function stubFetch(options: {
       }
       return Promise.reject(new TypeError('Failed to fetch'))
     }
-    if (url.pathname.includes('/chase/playlist.m3u8')) {
-      return Promise.resolve(new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 }))
-    }
-
     if (url.pathname === '/api/breakers') {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
     }
@@ -382,11 +382,6 @@ function playlistFetchCallCount(): number {
 function playlistFetchURLs(): string[] {
   const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
   return calls.map(([url]) => String(url)).filter((url) => url.includes('/live/playlist.m3u8'))
-}
-
-function chasePlaylistURLs(): string[] {
-  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
-  return calls.map(([url]) => String(url)).filter((url) => url.includes('/chase/') && url.includes('playlist.m3u8'))
 }
 
 /**
@@ -1142,7 +1137,7 @@ describe('LivePage', () => {
 })
 
 describe('LivePage / 録画時間軸', () => {
-  it('番組軸の位置を録画先頭からの chase offset に変換する', async () => {
+  it('番組軸の位置を録画 HLS の開始位置に変換する', async () => {
     const user = userEvent.setup()
     const now = Date.now()
     const startAt = new Date(now - 30 * 60_000).toISOString()
@@ -1155,6 +1150,7 @@ describe('LivePage / 録画時間軸', () => {
       durationMs: 60 * 60_000,
       recordingId: 501,
     })
+    const masterUrl = '/api/media/stores/media/recordings/501/hls/v1/hd/master.m3u8'
     stubFetch({
       services: [service({ serviceId: 10, name: 'チャンネル A' })],
       programsByServiceId: { 10: [airing] },
@@ -1163,6 +1159,7 @@ describe('LivePage / 録画時間軸', () => {
         startAt: new Date(Date.parse(startAt) - 60_000).toISOString(),
         durationMs: 61 * 60_000,
         startedAt,
+        hlsPlayback: [{ profile: 'hd', masterUrl }],
       }),
     })
     renderLive('/live?service=100010')
@@ -1179,8 +1176,11 @@ describe('LivePage / 録画時間軸', () => {
     fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 12 })
     fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 12 })
 
-    await waitFor(() => expect(chasePlaylistURLs()).toHaveLength(1))
-    expect(chasePlaylistURLs()[0]).toContain('/chase/offset/300/playlist.m3u8')
+    await waitFor(() => expect(pageHlsMockState.instances).toContainEqual(
+      expect.objectContaining({ options: { startPosition: 300 }, sources: [masterUrl] }),
+    ))
+    expect(screen.getByTestId('recording-hls-source-label')).toBeInTheDocument()
+    expect(screen.getByTestId('recording-hls-return-live')).toBeInTheDocument()
   })
 })
 

@@ -1,172 +1,61 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  selectRecordingPlaybackSource,
-  type RecordingPlaybackSource,
-  type RecordingPlaybackSourceInput,
-} from '@/lib/recording-playback-source'
+import { selectRecordingPlaybackSource } from '@/lib/recording-playback-source'
 
 describe('selectRecordingPlaybackSource', () => {
-  it.each([
-    {
-      name: 'recording with HLS playback selects recording HLS without live capability',
-      input: { status: 'recording', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: false },
-      expected: 'recording-hls',
-    },
-    {
-      name: 'finished recording with encoded keeps encoded even when HLS playback exists',
-      input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true },
-      expected: 'encoded',
-    },
-    {
-      name: 'finished cut-only recording with original and HLS playback selects recording HLS without live capability',
-      input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: true, liveEnabled: false },
-      expected: 'recording-hls',
-    },
-    {
-      name: 'finished original-only recording with HLS playback selects recording HLS without live capability',
-      input: { status: 'finished', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: true, liveEnabled: false },
-      expected: 'recording-hls',
-    },
-    {
-      name: 'finished recording with pending ingest and HLS playback selects recording HLS without live capability',
-      input: { status: 'finished', ingestState: 'pending', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: false, hasHlsPlayback: true, liveEnabled: false },
-      expected: 'recording-hls',
-    },
-    {
-      name: 'failed recording with HLS playback does not select a source',
-      input: { status: 'failed', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true },
-      expected: 'none',
-    },
-    {
-      name: 'canceled recording with HLS playback does not select a source',
-      input: { status: 'canceled', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true },
-      expected: 'none',
-    },
-    {
-      name: 'trashed recording with HLS playback does not select a source',
-      input: { status: 'recording', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true, isTrashed: true },
-      expected: 'none',
-    },
-    {
-      name: 'recording with live capability selects chase',
-      input: { status: 'recording', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'chase',
-    },
-    {
-      name: 'recording with live capability still selects chase when encoded media is present',
-      input: { status: 'recording', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'chase',
-    },
-    {
-      name: 'recording without live capability has no browser source',
-      input: { status: 'recording', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: false, liveEnabled: false },
-      expected: 'none',
-    },
-    {
-      name: 'finished recording with pending ingest selects chase',
-      input: { status: 'finished', ingestState: 'pending', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: false, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'chase',
-    },
-    {
-      name: 'finished recording with transferring ingest selects chase even when progress is stale',
-      input: { status: 'finished', ingestState: 'transferring', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: false, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'chase',
-    },
-    {
-      name: 'finished recording with pending ingest needs live capability',
-      input: { status: 'finished', ingestState: 'pending', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: false, hasHlsPlayback: false, liveEnabled: false },
-      expected: 'none',
-    },
-    {
-      name: 'finished recording prefers encoded even when original HLS is available',
-      input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'encoded',
-    },
-    {
-      name: 'finished recording with encoded does not require live capability',
-      input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: false, hasHlsPlayback: false, liveEnabled: false },
-      expected: 'encoded',
-    },
-    {
-      name: 'finished original without encoded selects original HLS when live is enabled',
-      input: { status: 'finished', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'original-vod',
-    },
-    {
-      name: 'finished recording with committed ingest follows the normal original HLS selection',
-      input: { status: 'finished', ingestState: 'committed', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'original-vod',
-    },
-    {
-      name: 'finished recording with unknown ingest follows the normal original HLS selection',
-      input: { status: 'finished', ingestState: 'unknown', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'original-vod',
-    },
-    {
-      name: 'finished cut-only recording prefers original HLS for review when live is enabled',
-      input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'original-vod',
-    },
-    {
-      name: 'finished cut-only recording falls back to its cut version after original deletion',
-      input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: false, hasOriginal: false, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'encoded',
-    },
-    {
-      name: 'finished original without live capability has no browser source',
-      input: { status: 'finished', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: false, liveEnabled: false },
-      expected: 'none',
-    },
-    {
-      name: 'finished recording without browser media has no source',
-      input: { status: 'finished', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: false, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'none',
-    },
-    {
-      name: 'failed or canceled recordings do not select a source',
-      input: { status: 'failed', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'none',
-    },
-    {
-      name: 'canceled recording does not select a source',
-      input: { status: 'canceled', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: false, liveEnabled: true },
-      expected: 'none',
-    },
-    {
-      name: 'trashed recordings do not select a source',
-      input: {
-        status: 'finished',
-        hasEncoded: true,
-        hasNonCutEncoded: true,
-        hasOriginal: true,
-        hasHlsPlayback: false,
-        liveEnabled: true,
-        isTrashed: true,
-      },
-      expected: 'none',
-    },
-    {
-      name: 'trashed recording with live capability does not select chase',
-      input: {
-        status: 'recording',
-        hasEncoded: false,
-        hasNonCutEncoded: false,
-        hasOriginal: true,
-        hasHlsPlayback: false,
-        liveEnabled: true,
-        isTrashed: true,
-      },
-      expected: 'none',
-    },
-  ] satisfies {
-    name: string
-    input: RecordingPlaybackSourceInput
-    expected: RecordingPlaybackSource
-  }[])(
-    '$name',
-    ({ input, expected }) => {
-      expect(selectRecordingPlaybackSource(input)).toBe(expected)
-    },
-  )
+  it('uses recording HLS while a recording is in progress', () => {
+    expect(selectRecordingPlaybackSource({
+      status: 'recording', hasEncoded: false, hasNonCutEncoded: false, hasHlsPlayback: true,
+    })).toBe('recording-hls')
+  })
+
+  it('falls back to an encoded file when recording HLS is not advertised', () => {
+    expect(selectRecordingPlaybackSource({
+      status: 'recording', hasEncoded: true, hasNonCutEncoded: true, hasHlsPlayback: false,
+    })).toBe('encoded')
+    expect(selectRecordingPlaybackSource({
+      status: 'finished', hasEncoded: true, hasNonCutEncoded: true, hasHlsPlayback: false,
+    })).toBe('encoded')
+  })
+
+  it('keeps a completed recording on its normal encoded version', () => {
+    expect(selectRecordingPlaybackSource({
+      status: 'finished', hasEncoded: true, hasNonCutEncoded: true, hasHlsPlayback: true,
+    })).toBe('encoded')
+  })
+
+  it('uses recording HLS while a finished recording is still ingesting', () => {
+    expect(selectRecordingPlaybackSource({
+      status: 'finished', ingestState: 'transferring', hasEncoded: true,
+      hasNonCutEncoded: true, hasHlsPlayback: true,
+    })).toBe('recording-hls')
+  })
+
+  it('falls back to cut encoded media when HLS is unavailable', () => {
+    expect(selectRecordingPlaybackSource({
+      status: 'finished', hasEncoded: true, hasNonCutEncoded: false, hasHlsPlayback: false,
+    })).toBe('encoded')
+  })
+
+  it('returns no source when neither HLS nor an encoded file is available', () => {
+    expect(selectRecordingPlaybackSource({
+      status: 'recording', hasEncoded: false, hasNonCutEncoded: false, hasHlsPlayback: false,
+    })).toBe('none')
+    expect(selectRecordingPlaybackSource({
+      status: 'finished', hasEncoded: false, hasNonCutEncoded: false, hasHlsPlayback: false,
+    })).toBe('none')
+  })
+
+  it.each(['failed', 'canceled'] as const)('does not play a %s recording', (status) => {
+    expect(selectRecordingPlaybackSource({
+      status, hasEncoded: true, hasNonCutEncoded: true, hasHlsPlayback: true,
+    })).toBe('none')
+  })
+
+  it('does not play a trashed recording', () => {
+    expect(selectRecordingPlaybackSource({
+      status: 'finished', hasEncoded: true, hasNonCutEncoded: true,
+      hasHlsPlayback: true, isTrashed: true,
+    })).toBe('none')
+  })
 })

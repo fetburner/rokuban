@@ -49,7 +49,7 @@ export type ProgramReservationProgram = Pick<
  * 番組予約 UI の下書きと導出状態。
  *
  * リスト行とグリッドのダイアログは表示 chrome だけが異なる。同じ下書きと
- * `reserveBlocked` / `showLiveLink` / `showChaseLink` を使うことで、encode 既定値・
+ * `reserveBlocked` / `showLiveLink` / `showRecordingLink` を使うことで、encode 既定値・
  * 予約状態不明・放送中判定・録画対応付けの片側だけがずれる経路を作らない。
  */
 export type ProgramReservationDraft = {
@@ -58,7 +58,7 @@ export type ProgramReservationDraft = {
   reserveBlocked: boolean
   handleReserve: () => void
   showLiveLink: boolean
-  showChaseLink: boolean
+  showRecordingLink: boolean
 }
 
 /**
@@ -109,9 +109,9 @@ export function useProgramReservation({
     // （networkId + serviceId）だけを渡すため --- /live が「いま何が流れているか」を
     // 自前で再取得する側に真実がある。
     showLiveLink: liveEnabled && airing,
-    // 追っかけは現在放送中の番組に対応する録画へ入る既存の再生ボタンを
-    // 置き換える。番組一覧 API の recordingId が無い場合は従来のライブリンクへ戻る。
-    showChaseLink: liveEnabled && airing && program.recordingId !== undefined,
+    // 現在放送中の番組に対応する録画があれば、その録画詳細へ入るリンクを
+    // 置く。番組一覧 API の recordingId が無い場合はライブリンクを表示する。
+    showRecordingLink: liveEnabled && airing && program.recordingId !== undefined,
   }
 }
 
@@ -193,7 +193,7 @@ export function ProgramReservationSummary({
 }
 
 /**
- * 予約 / 取消 / ライブ / 追っかけのボタンそのもの。ライブと追っかけは同じ
+ * 予約 / 取消 / ライブ / 録画詳細のボタンそのもの。ライブと録画詳細は同じ
  * 44px の既存再生枠を共有し、対応する録画中録画があればリンク先だけを置き換える。
  * 配置と幅のアニメーションは親の chrome に任せる。
  */
@@ -204,7 +204,7 @@ export function ProgramReservationActions({
   reserveBlocked,
   skipIntent,
   showLiveLink,
-  showChaseLink,
+  showRecordingLink,
   onReserve,
   onCancel,
   onClearIntent,
@@ -215,7 +215,7 @@ export function ProgramReservationActions({
   reserveBlocked: boolean
   skipIntent: boolean
   showLiveLink: boolean
-  showChaseLink: boolean
+  showRecordingLink: boolean
   onReserve: () => void
   onCancel: () => void
   onClearIntent: () => void
@@ -223,17 +223,16 @@ export function ProgramReservationActions({
   return (
     <>
       {showLiveLink && (
-        <div data-program-action={showChaseLink ? 'chase' : 'live'} className="shrink-0">
+        <div data-program-action={showRecordingLink ? 'recording' : 'live'} className="shrink-0">
           <Button
             variant="default"
             size="icon"
-            aria-label={showChaseLink ? `${program.name}を追っかけ再生` : 'ライブで見る'}
+            aria-label={showRecordingLink ? `${program.name}の録画を開く` : 'ライブで見る'}
             render={
-              showChaseLink && program.recordingId !== undefined ? (
+              showRecordingLink && program.recordingId !== undefined ? (
                 <Link
                   to="/recordings/$id"
                   params={{ id: String(program.recordingId) }}
-                  hash="chase"
                 />
               ) : (
                 <Link

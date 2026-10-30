@@ -1,4 +1,4 @@
-import { Link, useBlocker, useLocation, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { Link, useBlocker, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useCallback, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 
@@ -33,7 +33,6 @@ import type { LiveAudioChoice } from '@/lib/live'
  */
 export function RecordingDetailPage() {
   const { id } = useParams({ from: '/recordings/$id' })
-  const location = useLocation()
   const search = useSearch({ from: '/recordings/$id' })
   const navigate = useNavigate({ from: '/recordings/$id' })
   const idNum = Number(id)
@@ -96,23 +95,16 @@ export function RecordingDetailPage() {
     if (navigationBlocker.status === 'blocked') navigationBlocker.proceed()
   }
 
-  // 追っかけ再生の画質は `?liveProfile=` に持つ（issue #874）。**既定は URL に
-  // 書き戻さない** --- 明示的に選んだ値だけを載せる（`/live` の `?profile=` と
-  // 同じ規律。`docs/frontend/live.md`）。`replace` にするのは、切替のたびに
+  // 録画 HLS の画質は `?recordingProfile=` に持つ。**既定は URL に
+  // 書き戻さない** --- 明示的に選んだ値だけを載せる。`replace` にするのは、切替のたびに
   // ブラウザ履歴が積み上がらないようにするためである。
-  //
-  // **`hash` を明示的に渡す。** `navigate` は指定しなかった部分を現在の
-  // location から引き継がない（実測: `#chase` を渡さないと href が
-  // `/recordings/3?liveProfile=sd` になり、下の `key` が変わって
-  // `RecordingDetail` ごと作り直される = 追っかけが先頭から再生し直しになる）。
-  const selectLiveProfile = (name: string) => {
-    void navigate({ search: { ...search, liveProfile: name }, hash: location.hash, replace: true })
+  const selectRecordingProfile = (name: string) => {
+    void navigate({ search: { ...search, recordingProfile: name }, replace: true })
   }
 
-  // 追っかけの音声は `/live` と同じ `?audio=main|sub` に置き、標準は URL から省く。
-  // 切替で search だけを置き換え、`#chase` と同じ LivePlayer instance を保つ。
+  // 録画 HLS の音声は `/live` と同じ `?audio=main|sub` に置き、標準は URL から省く。
   const selectAudio = (choice: LiveAudioChoice | undefined) => {
-    void navigate({ search: { ...search, audio: choice }, hash: location.hash, replace: true })
+    void navigate({ search: { ...search, audio: choice }, replace: true })
   }
 
   // 進捗の数字が動いている間だけ定期再取得する（issue #212。一覧側の
@@ -220,11 +212,9 @@ export function RecordingDetailPage() {
           <RecordingDetail
             // key に録画 id を含めない。次のエピソードへ移るとき、プレイヤーの DOM を作り直すと
             // 全画面が解除される。録画ごとの state は RecordingDetail が id の変化で自分で戻す。
-            key={location.hash}
             recording={recording}
             trash={trash}
-            chase={location.hash === 'chase'}
-            liveProfile={search.liveProfile}
+            recordingProfile={search.recordingProfile}
             audio={search.audio}
             onSelectAudio={selectAudio}
             startAtBeginning={search.fromBeginning}
@@ -235,12 +225,11 @@ export function RecordingDetailPage() {
             }}
             chapterEditorCommandsRef={chapterEditorCommandsRef}
             onChapterEditorStatusChange={onChapterEditorStatusChange}
-            onSelectLiveProfile={selectLiveProfile}
+            onSelectRecordingProfile={selectRecordingProfile}
             onNavigateToRecording={(nextId) =>
               void navigate({
                 to: '/recordings/$id',
                 params: { id: String(nextId) },
-                hash: '',
               })
             }
           />

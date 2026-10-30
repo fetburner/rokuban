@@ -1,38 +1,38 @@
 import type { IngestProgress, RecordingStatus } from '@/api/generated'
 
-export type RecordingPlaybackSource = 'recording-hls' | 'chase' | 'original-vod' | 'encoded' | 'none'
+export type RecordingPlaybackSource = 'recording-hls' | 'encoded' | 'none'
 
 export type RecordingPlaybackSourceInput = {
   status: RecordingStatus
   ingestState?: IngestProgress['state']
   hasEncoded: boolean
   hasNonCutEncoded: boolean
-  hasOriginal: boolean
   hasHlsPlayback: boolean
-  liveEnabled: boolean
   isTrashed?: boolean
 }
 
-/**
- * 録画詳細で選ぶ再生元を決める。
- * 初期選択と、範囲外のシーク・終端・エラーでの選び直しが使う純関数。
- * 再生元を替えるかどうかの判定（今と同じなら張り直さない等）は呼び出し側（録画詳細）が持つ。
- */
+/** 録画詳細で選ぶ再生元を決める。 */
 export function selectRecordingPlaybackSource(
   input: RecordingPlaybackSourceInput,
 ): RecordingPlaybackSource {
   if (input.isTrashed) return 'none'
-  const live = input.hasHlsPlayback ? 'recording-hls' : input.liveEnabled ? 'chase' : 'none'
-  if (input.status === 'recording') return live
-  if (input.status !== 'finished') return 'none'
-  if (input.ingestState === 'pending' || input.ingestState === 'transferring') {
-    if (live !== 'none') return live
-  }
-  if (input.hasNonCutEncoded) return 'encoded'
-  if (input.hasOriginal) {
-    if (input.hasHlsPlayback) return 'recording-hls'
-    if (input.liveEnabled) return 'original-vod'
-  }
+  if (input.status !== 'recording' && input.status !== 'finished') return 'none'
+
+  if (
+    input.status === 'finished' &&
+    (input.ingestState === 'pending' || input.ingestState === 'transferring') &&
+    input.hasHlsPlayback
+  ) return 'recording-hls'
+
+  // 完了済みで通常版の encoded があれば引き続きそれを既定にする。
+  if (input.status === 'finished' && input.hasNonCutEncoded) return 'encoded'
+
+  // 録画中、または ingest 中は世代付き HLS が現在の入力を追う。
+  if (input.hasHlsPlayback) return 'recording-hls'
+
+  // hlsPlayback が空の応答では、利用可能なファイル版へ落とす。
   if (input.hasEncoded) return 'encoded'
+
+  // 録画中の HLS URL がまだ用意されていない場合も、配信要求は作らない。
   return 'none'
 }
