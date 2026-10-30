@@ -20,17 +20,19 @@
 
 コピーの完了時に、期待するサイズと SHA-256 を照合する。論理資産の SHA-256 が未計測なら、完了時に観測値を書く。値があるときは書き換えず照合だけを行い、合わなければ完了を拒否する。
 
-原本の既存宛先は、転送 temp と同じ inode なら前回の公開として採用する。inode が違う場合も、サイズと SHA-256 が一致するときだけ採用する。派生物の object key は、サイズと SHA-256 が一致すれば再開に使う。転送が新規作成した key は所有記録を付け、同じ pending copy の再試行だけが再利用する。所有記録のない既存 key も内容が一致すれば採用できるが、commit が拒否されたときに削除しない。
+原本の既存宛先は、転送 temp と同じ inode なら前回の公開として採用する。inode が違う場合も、サイズと SHA-256 が一致するときだけ採用する。派生物のキーは、サイズと SHA-256 が一致すれば再開に使う。転送が新規作成したキーは所有記録を付け、同じ pending のコピーの再試行だけが再利用する。所有記録のない既存のキーも内容が一致すれば採用できるが、commit が拒否されたときに削除しない。
 
-内容が異なる既存の動画 key は衝突として扱う。encoded の字幕 key は source と同期するため、内容が異なる既存 key を消してから作り直す。既知の SHA-256 が合わないときは、転送元を帯域制限の下で読み直し、原本の宛先 temp の破損と転送元の破損を区別する。異なる動画を rename や link で上書きしない。
+派生物の論理資産の SHA-256 が既知なら、転送元の読み取りを帯域制限の下で scratch に複製せず `Store.Put` へ流し、`Put` が宣言サイズと SHA-256 を照合する。合わなければ何も公開されず、転送元の不一致として扱う。SHA-256 が未計測のときだけ scratch に複製してハッシュを取る。
+
+内容が異なる既存のキーは、動画も encoded の字幕も、所有記録の有無にかかわらず衝突として扱う。転送は失敗として記録し、そのキーは消さない。既知の SHA-256 が合わないときは、転送元を帯域制限の下で読み直し、原本の宛先 temp の破損と転送元の破損を区別する。異なる動画を rename や link で上書きしない。
 
 temp の fsync と Close、正規名への上書きしない link、親ディレクトリの fsync を行う。その後に DB transaction で宛先のコピーを active にする。DB commit が公開点である。
 
-commit が拒否されたとき、原本ではこの転送の temp と同じ inode の宛先を消し、派生物では所有記録のある key だけを消す。派生物の字幕 sidecar は本体より先に消し、sidecar の削除に失敗したら本体と pending 行を残して次回に再試行する。拒否は世代や規則の変化、または記録済みの SHA-256 との不一致で起きる。派生物は Put 成功後に所有記録を commit するため、その間にプロセスが落ちた key は未記録のまま残り、回収では他の書き手の key と区別できないので消さない。
+commit が拒否されたとき、原本ではこの転送の temp と同じ inode の宛先を消し、派生物では所有記録のあるキーだけを消す。派生物の字幕 sidecar は本体より先に消し、sidecar の削除に失敗したら本体と pending 行を残して次回に再試行する。拒否は世代や規則の変化、または記録済みの SHA-256 との不一致で起きる。派生物は Put 成功後に所有記録を commit するため、その間にプロセスが落ちたキーは未記録のまま残り、回収では他の書き手のキーと区別できないので消さない。
 
 採用する宛先が、この転送の temp と同じ inode なら、採用と同時に temp と checkpoint を片付ける。inode が違う宛先は他の書き手が置いたものなので、temp に触れない。同じ pending 行を別の worker が先に active にしたときは、そのコピーを完了済みとして扱い、公開済みの宛先と sidecar を消さない。
 
-encoded の隣接 `.vtt` は、media asset と同じ rel_path lock の下で宛先に同期してから、コピーを active にする。転送元に sidecar が無ければ、宛先に残った古い sidecar を消す。字幕は独立した `media_assets` 行ではないので、動画のコピー状態を commit する前に sidecar を揃える。
+encoded の隣接 `.vtt` は、本体のキーを作った後、コピーを active にする前に、宛先のキーへ作る。転送元に sidecar が無いときは、この転送が作った（所有記録のある）宛先の sidecar だけを消し、所有記録のない sidecar は残す。字幕は独立した `media_assets` 行ではないので、動画のコピー状態を commit する前に sidecar を揃える。
 
 ### 失敗と壊れた転送元
 
@@ -52,7 +54,7 @@ deleted への確定は、コピー自身の置き場の行をロックして行
 
 ごみ箱・世代・desired の置き場の変更、または until_encoded の保持条件の成立で不要になった pending のコピーは、削除 reconcile が回収する。候補を列挙した後に rel_path lock を取り、録画・論理資産・コピーの行をロックした transaction で、不要になった条件を再評価する。
 
-原本の回収では、正規名の宛先を転送 temp と inode が一致するときだけ消す。派生物の回収では、所有記録のある object key だけを消す。所有記録のない宛先は残す。いずれも字幕 sidecar を本体より先に消し、sidecar を消せなかったときは本体と pending 行を残して次回に再試行する。
+原本の回収では、正規名の宛先を転送 temp と inode が一致するときだけ消す。派生物の回収では、所有記録のあるキーだけを消す。所有記録のない宛先は残す。いずれも字幕 sidecar を本体より先に消し、sidecar を消せなかったときは本体と pending 行を残して次回に再試行する。
 
 回収が終わった pending 行は、転送 temp と checkpoint も含めて退役させる。今も desired の pending のコピーは、失敗回数と checkpoint からの再開を保つために残す。最後の pending のコピーが退役すると、録画の完全削除（purge）が完了する。
 
@@ -67,13 +69,15 @@ transfer temp と checkpoint は、孤児監査で予約ファイルとして分
 - 再開、hash、上書きしない公開、復旧後の採用: `TestStorageTransferWorkerCopiesAndAdopts`
 - 自分の temp と checkpoint の片付け、他の書き手の宛先を採用するときの temp の保持: `TestStorageTransferWorkerCopiesAndAdopts`
 - 記録済みの SHA-256 を上書きしない: `TestCompleteMediaAssetTransferRejectsChangedSHA`
-- 転送時の sidecar 同期: `TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync`
-- 先行 worker が active にしたコピーの sidecar 保持: `TestStorageTransferWorkerPreservesSubtitleAfterConcurrentActivation`
+- 内容の違う既存の sidecar の衝突、source に sidecar が無いときは所有記録のある sidecar だけを消す: `TestStorageTransferWorkerEncodedSubtitleKeys`
+- SHA-256 が既知の派生物を scratch に複製せず Put する: `TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch`
+- 宣言サイズや SHA-256 と違う転送元は何も公開せず、転送元の不一致にする: `TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing`
 - 壊れた派生コピーのファイルと sidecar の削除、原本が無いときの保持: `TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebuild`
 - 束縛と違う置き場の転送元を deleted に確定する: 同じテスト
 - 退役した encoded のコピーが `unencoded_desired_profiles` に現れる: 同じテスト
 - 退役と until_encoded の原本削除の直列化: `TestStorageTransferCorruptRetirementSerializesWithUntilEncoded`
 - 配置の削除時の sidecar 削除: `TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar`
+- S3 切替後の旧 FS の派生物の削除: `TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFilesystemStore`
 - deleting の配置コピーを拾い直して終わらせる: `TestDeleteReconcilePendingPathFinishesPlacementDeleting`
 - desired が実体無しになった deleting の配置コピーを active に戻す: `TestDeleteReconcileRevertsPlacementDeletingWhenDesiredMissing`
 - 規則を A → B → A と切り替えても有効なコピーが 0 にならない: `TestStorageTransferPolicyRoundTripConverges`
