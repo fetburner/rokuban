@@ -101,7 +101,8 @@ func activatePendingCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64,
 		return mapDatabaseError(err)
 	}
 	if updated != 1 {
-		return fmt.Errorf("pending copy %q of asset %d generation %d is gone: %w", relPath, assetID, generation, store.ErrStalePublishPlan)
+		return fmt.Errorf("pending copy %q of asset %d generation %d is gone: %w", relPath, assetID, generation,
+			errors.Join(store.ErrStalePublishPlan, store.ErrPendingMediaAssetCopyReclaimed))
 	}
 	return nil
 }

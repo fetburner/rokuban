@@ -8,8 +8,11 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 )
 
-// ErrStalePublishPlan は公開中に encoded の計画が古くなったことを表す。
+// ErrStalePublishPlan は公開中に encoded または派生物の計画が古くなったことを表す。
 var ErrStalePublishPlan = errors.New("encoded publish plan is stale")
+
+// ErrPendingMediaAssetCopyReclaimed は公開前に pending copy が回収されたことを表す。
+var ErrPendingMediaAssetCopyReclaimed = errors.New("pending media asset copy was reclaimed")
 
 // ErrGenerationAdvanced は別の pending または公開済みコピーが観測した世代を使用済みにしたことを表す。
 var ErrGenerationAdvanced = errors.New("derived media generation advanced")

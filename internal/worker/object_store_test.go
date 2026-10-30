@@ -729,8 +729,8 @@ func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T)
 	if !reclaimed {
 		t.Fatal("pending copy was not reclaimed before Put")
 	}
-	if published || !errors.Is(err, store.ErrStalePublishPlan) {
-		t.Fatalf("publishing after pending reclaim = (%t, %v), want (false, ErrStalePublishPlan)", published, err)
+	if published || !errors.Is(err, store.ErrStalePublishPlan) || !errors.Is(err, store.ErrPendingMediaAssetCopyReclaimed) {
+		t.Fatalf("publishing after pending reclaim = (%t, %v), want both stale-plan and reclaimed-copy errors", published, err)
 	}
 	if env.objectExists(t, key) {
 		t.Fatal("object written after pending reclaim remains without a live copy")

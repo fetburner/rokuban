@@ -31,8 +31,8 @@ const generatedObjectCleanupTimeout = 10 * time.Second
 //  3. commit が公開の tx で pending を active にし、SHA-256 を論理行へ書く。
 //
 // guard は Put と DB commit の直前に呼び、メディア置き場のマウント状態を再確認する。
-// commit は Put の後に呼ぶ。公開に至らなかった Put 済み key は自分が作った分だけ即時削除し、
-// cleanup に失敗した場合やプロセス停止時は pending reclaim が猶予後に回収する。
+// commit は Put の後に呼ぶ。通常の未公開 pending は reclaim まで保持するが、
+// pending row が Put と競合して回収されたときは、自分が Put した key を即時削除する。
 func publishGeneratedObject(
 	ctx context.Context,
 	objects objstore.Store,
@@ -48,9 +48,9 @@ func publishGeneratedObject(
 		return 0, false, fmt.Errorf("object store and derived media publisher are required")
 	}
 	var uploadedKeys []string
-	keepUploadedObjects := false
+	cleanupUploadedObjects := false
 	defer func() {
-		if keepUploadedObjects || len(uploadedKeys) == 0 {
+		if !cleanupUploadedObjects || len(uploadedKeys) == 0 {
 			return
 		}
 		if cleanupErr := deleteUnpublishedGeneratedObjects(ctx, objects, uploadedKeys); cleanupErr != nil {
@@ -124,16 +124,15 @@ func publishGeneratedObject(
 	}
 	published, err = commit(size, checksum)
 	if err != nil {
-		// ErrStalePublishPlan is a definitive rejection before activation. In
-		// particular, pending reclaim may have deleted the key just before Put;
-		// remove the bytes this publisher created after its row was reclaimed.
-		keepUploadedObjects = !errors.Is(err, store.ErrStalePublishPlan)
+		// A stale plan can also leave a live pending row for normal reclaim. Only
+		// the missing-row sentinel means pending reclaim raced Put and deleted its
+		// ownership record before this publisher wrote the key.
+		cleanupUploadedObjects = errors.Is(err, store.ErrPendingMediaAssetCopyReclaimed)
 		return size, false, err
 	}
 	if !published {
 		return 0, false, nil
 	}
-	keepUploadedObjects = true
 	return size, published, nil
 }
 
