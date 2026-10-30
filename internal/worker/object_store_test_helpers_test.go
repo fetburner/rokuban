@@ -1,8 +1,6 @@
 package worker
 
 import (
-	"testing"
-
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 )
