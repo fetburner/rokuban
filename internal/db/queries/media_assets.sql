@@ -1,14 +1,14 @@
 -- name: CreateMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
-VALUES ($1, $2, $3, $4, $5, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
+INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation)
+VALUES ($1, $2, $3, $4, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
 RETURNING id;
 
 -- 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
 -- 転送中の recording_ingest_progress からコピーする。SHA-256 は ingest が算出し、
 -- 原本の INSERT と同じ tx で保存する。
 -- name: CreateOriginalMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, sha256, ingest_generation)
-SELECT p.recording_id, 'original', sqlc.arg('rel_path'), sqlc.arg('size_bytes'), sqlc.arg('sha256')::bytea, p.temp_generation
+INSERT INTO media_assets (recording_id, kind, size_bytes, sha256, ingest_generation)
+SELECT p.recording_id, 'original', sqlc.arg('size_bytes'), sqlc.narg('sha256'), p.temp_generation
 FROM recording_ingest_progress p
 WHERE p.recording_id = sqlc.arg('recording_id')
 RETURNING id;
@@ -70,12 +70,25 @@ WHERE recording_id = $1
   AND profile = $2
   AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
 
--- 世代カウンターと論理行の状態は置き場によらない。コピー表へ JOIN すると、
--- 書き手の store にコピーがないときにカウンターを読み落とす。
+-- publish が観測する論理行。世代カウンターは置き場によらない（コピー表へ JOIN すると、
+-- 書き手の store にコピーが無いときにカウンターを読み落とす）。
+-- active は現行世代のコピーがどこかの置き場にあるかで、active_media_asset_copies の現行判定を使う。
+-- 公開の計画は derived_generation を「観測した後に行が進んだか」の目印にする。
 -- name: GetEncodedMediaAssetForProfile :one
-SELECT a.id, a.rel_path, a.state,
+SELECT a.id,
+       EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, NULL)) AS active,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
+WHERE a.recording_id = sqlc.arg('recording_id')
+  AND a.kind = 'encoded'
+  AND a.profile = sqlc.arg('profile');
+
+-- 公開前に止まった世代と回収済みの世代も使用済みとして数える。encode は ffmpeg の前に
+-- 世代を予約し、同じ key を別の出力で再利用しないために、この最大値より大きい世代を使う。
+-- name: GetMaxEncodedMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(copy.generation), -1)::bigint AS max_generation
+FROM media_assets a
+LEFT JOIN media_asset_copies copy ON copy.media_asset_id = a.id
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'encoded'
   AND a.profile = sqlc.arg('profile');
@@ -117,16 +130,15 @@ WHERE c.media_asset_id = sqlc.arg('media_asset_id');
 -- 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
 -- derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
 -- 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
--- sha256 は生成ファイルから計算し、論理行の公開と同じ tx で保存する。
--- state / deleted_at は書かない。コピー行を書いた後の ReconcileMediaAssetStateFromCopies が決める。
+-- sha256 は作り手が公開の tx で書く。FS はステージしたファイルから、S3 は PUT 前に計算した値を渡す。
+-- 置き換えでは新しい世代の値に書き換える。
 -- name: UpsertDerivedMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, sha256, derived_generation)
+INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation, sha256)
 VALUES (
     sqlc.arg('recording_id'), sqlc.arg('kind'), sqlc.narg('profile'),
-    sqlc.arg('rel_path'), sqlc.arg('size_bytes'), sqlc.arg('sha256')::bytea, sqlc.arg('derived_generation')
+    sqlc.arg('size_bytes'), sqlc.arg('derived_generation'), sqlc.narg('sha256')
 )
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
     sha256     = EXCLUDED.sha256,

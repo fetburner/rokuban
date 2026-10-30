@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -56,13 +58,15 @@ const (
 // 失敗したら scratch を捨ててやり直す。部分成果はコミットしない ---
 // 行の存在 = タイルが全部そろっている（不変条件 10）。
 type SeekTilesWorker struct {
-	Media          store.MediaReconcile
-	Publisher      store.MediaPublish
-	MediaDir       string
-	MediaStoreName string
-	ScratchDir     string
-	FFmpeg         string
-	FFprobe        string
+	Media           store.MediaReconcile
+	Publisher       store.MediaPublish
+	Objects         objstore.Store
+	ObjectPublisher store.DerivedMediaPublisher
+	MediaDir        string
+	MediaStoreName  string
+	ScratchDir      string
+	FFmpeg          string
+	FFprobe         string
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	// ThumbnailWorker と同じ契約（stdout を返すのは ffprobe 用）。
@@ -120,7 +124,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	if found {
 		generation++
 	}
-	relPath, generation, err := w.nextUnusedSeekTilesRelPath(recordingID, generation)
+	relPath, generation, err := w.nextUnusedSeekTilesRelPath(ctx, recordingID, generation)
 	if err != nil {
 		return fmt.Errorf("choosing seek tile path: %w", err)
 	}
@@ -184,14 +188,29 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 		return fmt.Errorf("scratch tile sheet is empty")
 	}
 
-	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, relPath, sheetPath,
-		func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
-			return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
-				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
-				SHA256:            contentSHA256,
-				DerivedGeneration: generation,
-			}, publish)
-		})
+	var size int64
+	var published bool
+	if w.Objects != nil {
+		pending := store.PendingMediaAssetCopy{
+			RecordingID: recordingID, Kind: "seek_tiles", RelPath: relPath,
+			DerivedGeneration: generation,
+		}
+		size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, sheetPath, objectContentType(relPath), false,
+			func(size int64, sum [sha256.Size]byte) (bool, error) {
+				return w.ObjectPublisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
+					RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+					DerivedGeneration: generation, SHA256: sum[:], PendingCopy: true,
+				}, func() error { return nil })
+			})
+	} else {
+		size, published, err = publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, relPath, sheetPath,
+			func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
+				return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
+					RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+					SHA256: contentSHA256, DerivedGeneration: generation,
+				}, publish)
+			})
+	}
 	if err != nil {
 		return fmt.Errorf("publishing seek tiles: %w", err)
 	}
@@ -220,19 +239,33 @@ func seekTilesRelPath(recordingID, generation int64) string {
 	return fmt.Sprintf("thumbnails/%d_tiles%s.jpg", recordingID, suffix)
 }
 
-func (w *SeekTilesWorker) nextUnusedSeekTilesRelPath(recordingID, generation int64) (string, int64, error) {
+func (w *SeekTilesWorker) nextUnusedSeekTilesRelPath(ctx context.Context, recordingID, generation int64) (string, int64, error) {
 	for {
 		relPath := seekTilesRelPath(recordingID, generation)
-		fullPath, err := mediapath.Resolve(w.MediaDir, relPath)
-		if err != nil {
-			return "", 0, err
-		}
-		_, err = os.Lstat(fullPath)
-		if errors.Is(err, os.ErrNotExist) {
-			return relPath, generation, nil
-		}
-		if err != nil {
-			return "", 0, err
+		if w.Objects != nil {
+			if _, err := mediapath.Resolve(w.MediaDir, relPath); err != nil {
+				return "", 0, err
+			}
+			_, err := w.Objects.Head(ctx, relPath)
+			if errors.Is(err, objstore.ErrNotFound) {
+				return relPath, generation, nil
+			}
+			if err != nil {
+				metrics.RecordObjectStoreError("head", err)
+				return "", 0, err
+			}
+		} else {
+			fullPath, err := mediapath.Resolve(w.MediaDir, relPath)
+			if err != nil {
+				return "", 0, err
+			}
+			_, err = os.Lstat(fullPath)
+			if errors.Is(err, os.ErrNotExist) {
+				return relPath, generation, nil
+			}
+			if err != nil {
+				return "", 0, err
+			}
 		}
 		if generation == int64(^uint64(0)>>1) {
 			return "", 0, fmt.Errorf("seek tile generation overflow")

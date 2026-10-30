@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -45,13 +47,16 @@ const (
 // の doc コメント参照。
 type ThumbnailWorker struct {
 	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
-	Media          store.MediaReconcile
-	Publisher      store.MediaPublish
-	MediaDir       string
-	MediaStoreName string
-	ScratchDir     string
-	FFmpeg         string
-	FFprobe        string
+	Media            store.MediaReconcile
+	Publisher        store.MediaPublish
+	Objects          objstore.Store
+	ObjectPublisher  store.DerivedMediaPublisher
+	MediaDir         string
+	MediaStoreName   string
+	DerivedStoreName string
+	ScratchDir       string
+	FFmpeg           string
+	FFprobe          string
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	// stdout を返す（ffprobe）。ffmpeg はファイル副作用だけを使う。
@@ -59,13 +64,14 @@ type ThumbnailWorker struct {
 }
 
 type thumbnailWorkPlan struct {
-	inputID    int64
-	inputPath  string
-	inputSeek  time.Duration
-	seekMs     int64
-	relPath    string
-	generation int64
-	expected   *thumbnailObserved
+	inputID      int64
+	inputRelPath string
+	inputStore   string
+	inputSeek    time.Duration
+	seekMs       int64
+	relPath      string
+	generation   int64
+	expected     *thumbnailObserved
 }
 
 // Work は thumbnail ジョブを実行する。
@@ -101,8 +107,12 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 	}
 	defer func() { _ = os.RemoveAll(scratchDir) }()
 	scratchPath := filepath.Join(scratchDir, "thumbnail.jpg")
+	inputPath, err := w.resolveThumbnailInput(ctx, plan.inputRelPath, plan.inputStore, scratchDir)
+	if err != nil {
+		return fmt.Errorf("resolving thumbnail input: %w", err)
+	}
 
-	if err := w.extractFrame(ctx, plan.inputPath, scratchPath, plan.inputSeek); err != nil {
+	if err := w.extractFrame(ctx, inputPath, scratchPath, plan.inputSeek); err != nil {
 		return fmt.Errorf("extracting frame: %w", err)
 	}
 
@@ -121,15 +131,32 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 			SeekMs: plan.expected.SeekMs, DerivedGeneration: plan.expected.DerivedGeneration,
 		}
 	}
-	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, plan.relPath, scratchPath,
-		func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
-			return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
-				RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
-				SHA256: contentSHA256,
-				SeekMs: plan.seekMs, InputAssetID: plan.inputID,
-				DerivedGeneration: plan.generation, Expected: expected,
-			}, publish)
-		})
+	var size int64
+	var published bool
+	if w.Objects != nil {
+		pending := store.PendingMediaAssetCopy{
+			RecordingID: recordingID, Kind: "thumbnail", RelPath: plan.relPath,
+			DerivedGeneration: plan.generation,
+		}
+		size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, scratchPath, objectContentType(plan.relPath), false,
+			func(size int64, sum [sha256.Size]byte) (bool, error) {
+				return w.ObjectPublisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+					RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
+					SeekMs: plan.seekMs, InputAssetID: plan.inputID, InputStore: plan.inputStore,
+					DerivedGeneration: plan.generation, Expected: expected,
+					SHA256: sum[:], PendingCopy: true,
+				}, func() error { return nil })
+			})
+	} else {
+		size, published, err = publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, plan.relPath, scratchPath,
+			func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
+				return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+					RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
+					SHA256: contentSHA256, SeekMs: plan.seekMs, InputAssetID: plan.inputID,
+					DerivedGeneration: plan.generation, Expected: expected,
+				}, publish)
+			})
+	}
 	if err != nil {
 		return fmt.Errorf("publishing thumbnail: %w", err)
 	}
@@ -169,7 +196,7 @@ func (w *ThumbnailWorker) buildThumbnailPlan(
 		log.Info("thumbnail: not a reselection candidate, skipping")
 		return thumbnailWorkPlan{}, false, nil
 	}
-	return w.reselectionThumbnailPlan(rows[0], log)
+	return w.reselectionThumbnailPlan(ctx, rows[0], log)
 }
 
 func (w *ThumbnailWorker) initialThumbnailPlan(
@@ -206,17 +233,18 @@ func (w *ThumbnailWorker) initialThumbnailPlan(
 	if found {
 		generation++
 	}
-	relPath, generation, err := w.nextUnusedThumbnailRelPath(recordingID, generation)
+	relPath, generation, err := w.nextUnusedThumbnailRelPath(ctx, recordingID, generation)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail path: %w", err)
 	}
 	return thumbnailWorkPlan{
-		inputID: orig.ID, inputPath: inputPath, inputSeek: inputSeek,
+		inputID: orig.ID, inputRelPath: orig.RelPath, inputStore: orig.Store, inputSeek: inputSeek,
 		seekMs: seekMs, relPath: relPath, generation: generation,
 	}, true, nil
 }
 
 func (w *ThumbnailWorker) reselectionThumbnailPlan(
+	ctx context.Context,
 	state store.ThumbnailReselectCandidate,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
@@ -236,10 +264,6 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		log.Info("thumbnail: no usable input, skipping")
 		return thumbnailWorkPlan{}, false, nil
 	}
-	inputPath, err := mediapath.Resolve(w.MediaDir, plan.Source.RelPath)
-	if err != nil {
-		return thumbnailWorkPlan{}, false, fmt.Errorf("resolving thumbnail input path: %w", err)
-	}
 	if state.ThumbnailRelPath == nil || state.ThumbnailMediaAssetID == nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("active thumbnail planning state is incomplete")
 	}
@@ -250,16 +274,55 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		DerivedGeneration: state.ThumbnailGeneration,
 	}
 	generation := state.ThumbnailGeneration + 1
-	relPath, generation, err := w.nextUnusedThumbnailRelPath(state.RecordingID, generation)
+	relPath, generation, err := w.nextUnusedThumbnailRelPath(ctx, state.RecordingID, generation)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail replacement path: %w", err)
 	}
 	return thumbnailWorkPlan{
-		inputID: plan.Source.MediaAssetID, inputPath: inputPath,
+		inputID: plan.Source.MediaAssetID, inputRelPath: plan.Source.RelPath, inputStore: plan.Source.Store,
 		inputSeek: time.Duration(plan.InputSeekMs) * time.Millisecond,
 		seekMs:    plan.RecordedSeek, relPath: relPath, generation: generation,
 		expected: expected,
 	}, true, nil
+}
+
+// resolveThumbnailInput はサムネイルの入力を ffmpeg が読める scratch 上のパスにする。
+// FS の置き場の入力は media_dir 上のパスをそのまま返し、S3 の置き場の encoded は scratch へ取得する。
+func (w *ThumbnailWorker) resolveThumbnailInput(ctx context.Context, relPath, storeName, scratchDir string) (string, error) {
+	if w.Objects == nil || storeName == w.MediaStoreName {
+		return mediapath.Resolve(w.MediaDir, relPath)
+	}
+	if w.DerivedStoreName == "" || storeName != w.DerivedStoreName {
+		return "", fmt.Errorf("thumbnail input store %q is not readable by this worker", storeName)
+	}
+	reader, ok := w.Objects.(objstore.Reader)
+	if !ok {
+		return "", fmt.Errorf("object store %q does not support streaming reads", storeName)
+	}
+	body, err := reader.Get(ctx, relPath)
+	if err != nil {
+		metrics.RecordObjectStoreError("get", err)
+		return "", fmt.Errorf("getting thumbnail input object %q: %w", relPath, err)
+	}
+	defer func() { _ = body.Close() }()
+	inputPath := filepath.Join(scratchDir, "input"+filepath.Ext(relPath))
+	file, err := os.OpenFile(inputPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("creating scratch thumbnail input: %w", err)
+	}
+	n, copyErr := io.Copy(file, body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		metrics.RecordObjectStoreError("get", copyErr)
+		return "", fmt.Errorf("downloading thumbnail input object %q: %w", relPath, copyErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("closing scratch thumbnail input: %w", closeErr)
+	}
+	if n == 0 {
+		return "", fmt.Errorf("thumbnail input object %q is empty", relPath)
+	}
+	return inputPath, nil
 }
 
 // thumbnailRelPath returns the path for a persisted generation. Generation zero
@@ -271,19 +334,33 @@ func thumbnailRelPath(recordingID, generation int64) string {
 	return fmt.Sprintf("thumbnails/%d.g%d.jpg", recordingID, generation)
 }
 
-func (w *ThumbnailWorker) nextUnusedThumbnailRelPath(recordingID, generation int64) (string, int64, error) {
+func (w *ThumbnailWorker) nextUnusedThumbnailRelPath(ctx context.Context, recordingID, generation int64) (string, int64, error) {
 	for {
 		candidate := thumbnailRelPath(recordingID, generation)
-		path, err := mediapath.Resolve(w.MediaDir, candidate)
-		if err != nil {
-			return "", 0, err
-		}
-		_, err = os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return candidate, generation, nil
-		}
-		if err != nil {
-			return "", 0, err
+		if w.Objects != nil {
+			if _, err := mediapath.Resolve(w.MediaDir, candidate); err != nil {
+				return "", 0, err
+			}
+			_, err := w.Objects.Head(ctx, candidate)
+			if errors.Is(err, objstore.ErrNotFound) {
+				return candidate, generation, nil
+			}
+			if err != nil {
+				metrics.RecordObjectStoreError("head", err)
+				return "", 0, err
+			}
+		} else {
+			path, err := mediapath.Resolve(w.MediaDir, candidate)
+			if err != nil {
+				return "", 0, err
+			}
+			_, err = os.Lstat(path)
+			if errors.Is(err, os.ErrNotExist) {
+				return candidate, generation, nil
+			}
+			if err != nil {
+				return "", 0, err
+			}
 		}
 		if generation == int64(^uint64(0)>>1) {
 			return "", 0, fmt.Errorf("thumbnail generation is exhausted")

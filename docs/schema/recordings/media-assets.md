@@ -11,20 +11,14 @@ CREATE TABLE media_assets (
     kind         text   NOT NULL CHECK (kind IN ('original', 'encoded', 'thumbnail', 'seek_tiles')),
     profile      text,                -- kind = 'encoded' のみ: エンコードプロファイル名
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
-    rel_path     text   NOT NULL,     -- ストレージルートからの相対パス（不変条件: 絶対パス禁止）
     size_bytes   bigint NOT NULL,
-    sha256       bytea,                -- 作り手が公開時に記録する内容の SHA-256。コピー数によらず 1 回だけ持つ
+    sha256       bytea,                -- 作り手が公開の transaction で書く内容の SHA-256。in-place 登録の行は NULL。コピー数によらず 1 回だけ持つ
     derived_generation bigint,         -- 派生物のパスに最後に採った世代。original は NULL
     CHECK (derived_generation IS NULL OR (kind <> 'original' AND derived_generation >= 0)),
     CHECK (sha256 IS NULL OR octet_length(sha256) = 32),
     ingest_generation bigint,         -- kind = 'original' のみ: 原本にした temp の世代
     CHECK (ingest_generation IS NULL OR ingest_generation > 0),
     CHECK (kind = 'original' OR ingest_generation IS NULL),
-
-    -- 物理削除プロトコル: active → deleting → deleted（冪等。どこで落ちても reconcile が拾い直す）
-    state        text NOT NULL DEFAULT 'active'
-                      CHECK (state IN ('active', 'deleting', 'deleted')),
-    deleted_at   timestamptz,         -- 物理削除の完了時刻（tombstone）
 
     created_at   timestamptz NOT NULL DEFAULT now(),
     updated_at   timestamptz NOT NULL DEFAULT now(),
@@ -34,12 +28,9 @@ CREATE TABLE media_assets (
 );
 
 CREATE INDEX ON media_assets (recording_id);
-CREATE INDEX ON media_assets (kind, state);
--- 生きているアセットのパス衝突を防ぐ（tombstone のパスは再利用可）
-CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
-`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。ローリングアップデート中の旧 binary が読むため、`rel_path` / `state` / `deleted_at` も残し、新しい書き手は両表を更新する。同じ理由で、view `removed_encoded_assets` と、関数と同名の旧 view `until_encoded_deletable_originals` が旧列を射影する。後者の旧 view は、置き場を引数に取る同名の関数を呼ぶ。現在の読み手は物理パスとライフサイクルを `media_asset_copies` から読む。コピーの数が増えても、サイズと SHA-256 は論理資産の 1 か所にしか置かない。
+`media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。物理パスとライフサイクルは `media_asset_copies` だけに置き、コピー数によらずサイズと SHA-256 は論理資産に 1 つだけ持つ。`media_assets.rel_path` / `state` / `deleted_at` を消した後は、コピーの無い論理資産に物理パスを復元する元が残らない。そのため列を消す migration は、コピーの無い論理資産が残っていれば失敗する。巻き戻すときは、現行世代のコピー 1 つを旧列へ写す。旧列は論理資産ごとに 1 つのパスと状態しか持てないので、現行世代のコピーが無い資産と `pending` のコピーは拒否する。
 
 ### media_asset_copies — 物理ファイルごとのコピー
 
@@ -76,9 +67,9 @@ CREATE TABLE missing_media_assets (
 
 `missing_media_assets` の行は、走査が観測できなかった物理コピーの ID を主キーに持つ。コピーのパス・置き場・論理資産はコピー表から引く。同じ論理資産に複数の世代や置き場があっても、観測できなかったコピーを個別に記録でき、コピーが削除されると観測も cascade で消える。
 
-コピーの無い論理資産が、未割り当てを表す。マイグレーションはコピー行を作らず、`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
+書き手は論理資産とコピー行を同じ tx で作り、列を消す migration はコピーの無い論理資産が残っていれば止まる。`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
-`storage adopt <store-name>` は、コピーが一つも無い論理資産に `media_assets` の互換列からコピー行を作り、パスからそのコピーの世代を記録する。既存コピーのパス・状態・世代は書き換えず、論理カウンターは全コピーの最大世代と比べて大きい方に引き上げる。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーも、指定した置き場へ移す。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+`storage adopt <store-name>` はコピー行を作らない。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移し、論理カウンターは全コピーの最大世代と比べて大きい方に引き上げる。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
 
 旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)` と `storage_sync(root)` である。新しい複合キーと並存するので、同じ `rel_path` を 2 つの置き場の孤児として記録できず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
 
@@ -92,13 +83,19 @@ CREATE TABLE missing_media_assets (
 
 uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
 
-行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）と in-place 登録（rescue / EPGStation 取り込み）で、衝突時は冪等に書く。削除済みへ遷移した後も行は消さない（tombstone）。ドロップ統計と元サイズは、原本削除後も UI で見られる。
+行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）と in-place 登録（rescue / EPGStation 取り込み）で、衝突時は冪等に書く。物理コピーの状態はコピー行だけで遷移し、削除済みの行も消さない（tombstone）。ドロップ統計と元サイズは、原本コピーの削除後も UI で見られる。
+
+S3 の置き場への公開は、PUT の前に `pending` のコピー行を新しい世代で commit する。`pending` は現行にも旧世代にも入らず、読み手には見えない。論理行が無い初回の公開だけは、予約する世代で論理行を先に作る。この時点では現行のコピーが無いので、読み手はこの資産を公開済みと見ない。PUT の後、公開の transaction が `pending` を `active` にし、`created_at` を公開の時刻に書き換えて、SHA-256 を論理行へ書く。overlap は現行世代の最初のコピー行の `created_at` から数えるので、予約の時刻のままだと encode の所要時間の分だけ猶予が縮む。置き換えでは旧世代の行に触れず、削除 reconcile が overlap の後に消す。
+
+公開されないまま猶予（`cleanup.orphan_age`）を過ぎた `pending` は、削除 reconcile が行をロックして S3 のキーを消し、`deleted` にする。`deleting` を経由させない。経由させると、削除の述語に当たらない行として `active` に戻される。encode は、回収済みを含む既存のどのコピーより大きい世代だけを予約する。
 
 in-place 登録は、論理資産が既にあるとき、次の 3 つを満たす場合だけ通す。この置き場に生きたコピー（`active` / `deleting` / `pending`）が無い。パスの世代が `COALESCE(derived_generation, 0)` と等しい。録画がごみ箱にない。満たさなければ `ErrConflict` で拒否し、論理資産が無ければ新規に登録する。
 
 同じパスの `active` な再登録は何も変えずに通し、同じパスの `deleting` / `pending` は unlink される予定のファイルなので拒否する。パスの世代が古いファイルを受け付けると、登録したファイル自体が旧世代として overlap の後に消える。新しいファイルを受け付けると、そのコピーは現行にも旧世代にもならず、配信も削除もされない。論理行の世代は in-place 登録では動かさない。生きたコピーがある置き場へ足すと、配信が選ぶ行が決まらない。規則は 1 文の SQL に置き、並行する 2 本の登録は前述の一意索引が止める。
 
-ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。`sha256` は作り手が公開 commit と同じトランザクションで書く。値が NULL の旧行と in-place・rescue の行だけ、転送が照合時に計算した値で埋める。値のある行は転送が照合し、コピー単位には複製しない。
+ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。
+
+`sha256` は、作り手（ingest・encode・サムネイル・シークタイル）が公開の transaction で書く。転送が最初に読んだコピーの値を正とすると、それより前に化けたファイルの値が正として残り、以後の照合で見つけられないためである。置き換えでは、新しい世代の値に書き換える。in-place 登録の行は NULL のままにする。大きな原本を読み直す費用を避けるためで、値は後の転送が観測として埋める。値のある行では、転送は照合だけを行い、上書きしない。`sha256` はコピー単位には複製しない。未解決: 転送はまだ無いので、NULL の行は埋まらない。
 
 物理削除に至るアセットの 4 ソースと公開前孤児の回収は、1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。アセットのソースは、ごみ箱の猶予超過、原本の保持を派生物の完備までとした録画の原本、ユーザーが外したエンコード結果、overlap を過ぎた旧世代コピーである。
 
@@ -106,13 +103,17 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 
 <details><summary>根拠</summary>
 
-- 削除済みの tombstone の列: `state`、`deleted_at`
+- コピーの tombstone の列: `media_asset_copies.state`、`media_asset_copies.deleted_at`
 - ドロップ統計: `drop_stats`
 - 原本の保持を派生物の完備までとした設定: `until_encoded`
 - 実体ファイルの不在を持つ衛星表: `missing_media_assets`（物理コピー ID を PK かつ FK に取り、`ON DELETE CASCADE`）
-- 複製しない列: `rel_path` / `kind`
-- 走査時の状態: `state = 'active'`
-- 移行時と adopt 時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations` / `TestAdoptUnassignedStoreRows`
+- 複製しない列: コピーの `rel_path` と論理資産の `kind`
+- 走査時の状態: `media_asset_copies.state = 'active'`
+- 移行時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations`
+- worker 起動時のコピー必須検査と adopt の割り当て: `TestAdoptUnassignedStoreRows`
+- 列削除の拒否: `TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets`
+- 巻き戻しの代表コピー: `TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy`
+- 巻き戻しの拒否: `TestDropMediaAssetCopyColumnsDownRefusesUnrepresentableState`
 
 </details>
 
@@ -141,7 +142,7 @@ CREATE TABLE media_asset_cuts (
 
 - カットするプロファイル: `cut: true`
 - 主キー: `media_asset_id`
-- 同時に書くパス: `rel_path`、書き手 `EncodeWorker`
+- 同時に書くコピーのパス: `media_asset_copies.rel_path`、書き手 `EncodeWorker`
 - 残す区間: `keep_ranges`、同じ単位の表 `recording_chapter_spans`
 - カット版の切り出し: `internal/ffargs/cut.go`、プレイヤーの時刻: `currentTime`
 - API への写し方: `encodedAssets[].cut`

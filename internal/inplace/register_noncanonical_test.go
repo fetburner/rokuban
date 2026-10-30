@@ -36,7 +36,7 @@ func TestRegister_AcceptsNonCanonicalRelPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	var relPath string
-	if err := pool.QueryRow(context.Background(), `SELECT rel_path FROM media_assets WHERE id = $1`, res.AssetIDs[0]).Scan(&relPath); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1`, res.AssetIDs[0]).Scan(&relPath); err != nil {
 		t.Fatal(err)
 	}
 	if relPath != "imported/show.mp4" {

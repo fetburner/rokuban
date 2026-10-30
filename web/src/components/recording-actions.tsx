@@ -295,8 +295,8 @@ export function RecordingAssetControls({ recording }: { recording: Recording }) 
  * --- `AddEncodeProfilesAction` と同じ `hasOriginal`
  * （`recording.sizeBytes !== undefined`）近似を再利用し、理由の文言は隣の
  * `AddEncodeProfilesAction` が出す 1 つに任せる（同じ理由を 2 文並べない）。
- * `state='deleting'`
- * （unlink 待ち）は一覧の射影上 `sizeBytes` を持つ（`a.state <> 'deleted'`）ので
+ * コピーの `state='deleting'`
+ * （unlink 待ち）は一覧の射影上 `sizeBytes` を持つ（`copy.state <> 'deleted'`）ので
  * `hasOriginal` は真のまま --- 「削除処理中に always へ戻す」（issue #105）経路は
  * この画面から到達できる。
  */
@@ -456,7 +456,7 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
  * 黙って握りつぶすため、UI 側で「追加済み」を出して二重依頼に見せない）。
  *
  * `sizeBytes` は一覧の射影（`recordingsFromJoins`、`internal/api/recordings_query.go`）
- * が `a.kind = 'original' AND a.state <> 'deleted'` の行から埋める。一方サーバー側の
+ * が original のコピーを `copy.state <> 'deleted'` で結合して埋める。一方サーバー側の
  * 409 判定（`GetActiveOriginalMediaAsset`、`internal/db/queries/media_assets.sql`）は
  * `state = 'active'` だけを見る --- **2 つの条件は同じではない**。`state = 'deleting'`
  * （unlink 待ち）の原本は射影には出る（`sizeBytes` あり）が 409 判定には出ないため、

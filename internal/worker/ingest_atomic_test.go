@@ -155,7 +155,7 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 
 	var liveAssets int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM media_assets WHERE rel_path = $1 AND state <> 'deleted'",
+		"SELECT count(*) FROM media_asset_copies WHERE rel_path = $1 AND state <> 'deleted'",
 		"sites/default/"+contentPath,
 	).Scan(&liveAssets); err != nil {
 		t.Fatalf("counting live assets for concurrent rel_path: %v", err)

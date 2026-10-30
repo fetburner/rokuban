@@ -100,13 +100,15 @@
 
 置き場の名前の長さは、River のキュー名 `{queue}_{store}` が 64 文字に収まる式で決まる。
 
-`storage.originals` は上から評価して最初に一致した規則を使う。時刻の条件を `older_than`（放送終了時刻からの経過時間）だけにするのは、`newer_than` や時刻の窓を許すと desired の置き場が行き来し、転送と削除が往復するからである。最後の規則を無条件にするのは、どの資産にも desired の置き場が決まるようにするためである。原本の置き場を FS に限るのは、原本の保存先を、`fsync` と atomic rename と hard link を信頼できる POSIX FS に限っているためである（[ストレージ契約](../storage/contract.md) §1）。S3 API の実装は、この操作列の保証に使わない。`storage.derived` には、全 site 共通の派生物の置き場を指定する。
+`storage.originals` は上から評価して最初に一致した規則を使う。時刻の条件を `older_than`（放送終了時刻からの経過時間）だけにするのは、`newer_than` や時刻の窓を許すと desired の置き場が行き来し、転送と削除が往復するからである。最後の規則を無条件にするのは、どの資産にも desired の置き場が決まるようにするためである。原本の置き場は `fsync` と atomic rename と hard link を信頼できる POSIX FS に限る（[ストレージ契約](../storage/contract.md) §1）。`storage.derived` は、全 site 共通の派生物の置き場を 1 つ選ぶ。派生物には FS と S3 API の置き場を使える。
 
 `storage.transfer.overlap` の下限は、実体無しの猶予（`cleanup.missing_asset_age`）に削除 reconcile の周期の 2 倍を足した値である。新しいコピーの実体無しの判定が確定する前に、旧コピーを消さないためである。省略すると `48h` になり、既定の猶予ならこの下限を満たす。猶予を延ばして下限を割るときは、検証が overlap の明示を求める。
 
 `storage.transfer` は規則の指紋に含めない。帯域と overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
-未解決: 置き場の規則は、FS 置き場がちょうど 1 つの構成だけを受け付ける。今の worker は `storage.media_dir` の 1 つの root にしか書かず、別の置き場を指す規則は書き込みに効かないためである。S3 置き場の定義は、どの規則も参照しなければ受け付ける。複数の置き場の形は `config.example.yml` にコメントで示してあり、検証が拒否する。
+`storage.originals` の参照先には FS 置き場を 1 つだけ指定できる。`storage.derived` は、その FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
+
+未解決: 複数の FS 原本置き場は使えない。今の worker は原本を `storage.media_dir` の 1 つの root にしか書かず、別の置き場を指す規則は書き込みに効かないためである。複数の置き場の形は `config.example.yml` にコメントで示してあり、検証が拒否する。
 
 <details><summary>根拠</summary>
 

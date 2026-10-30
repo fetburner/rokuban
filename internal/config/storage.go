@@ -23,6 +23,7 @@ type StoreConfig struct {
 	Kind        string `yaml:"kind" json:"kind"`
 	InternalURL string `yaml:"internal_url,omitempty" json:"internal_url,omitempty"`
 	Endpoint    string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Region      string `yaml:"region,omitempty" json:"region,omitempty"`
 	Bucket      string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
 }
 
@@ -118,9 +119,7 @@ func (c StorageConfig) validate(sites []MirakcSite, missingAssetAge time.Duratio
 	return nil
 }
 
-// validateSingleFSStore は暫定の制限を強制する。
-// 今の worker は唯一の FS 置き場（MediaStoreName）にしか書かないので、
-// 別の置き場を指す規則は書き込みに効かないまま受け付けると誤解を生む。
+// validateSingleFSStore は原本用の FS 置き場を 1 つに制限する。
 func (c StorageConfig) validateSingleFSStore() []string {
 	const limit = "not supported yet: workers currently write only to a single fs store"
 	fsNames := c.fsStoreNames()
@@ -129,7 +128,8 @@ func (c StorageConfig) validateSingleFSStore() []string {
 	}
 	// originals の store は FS に限られる（validatePolicyTargets）。FS 置き場が 1 つなら、規則は全てそれを指す。
 	only := fsNames[0]
-	if _, ok := c.Stores[c.Derived]; ok && c.Derived != only {
+	derived, exists := c.Stores[c.Derived]
+	if exists && derived.Kind == "fs" && c.Derived != only {
 		return []string{fmt.Sprintf("storage.derived %q must be the single fs store %q (%s)", c.Derived, only, limit)}
 	}
 	return nil
@@ -166,8 +166,8 @@ func (c StorageConfig) validateStoreDefinitions() []string {
 		}
 		switch store.Kind {
 		case "fs":
-			if store.Endpoint != "" || store.Bucket != "" {
-				errs = append(errs, fmt.Sprintf("storage.stores.%s: endpoint and bucket are only valid for kind s3", name))
+			if store.Endpoint != "" || store.Region != "" || store.Bucket != "" {
+				errs = append(errs, fmt.Sprintf("storage.stores.%s: endpoint, region, and bucket are only valid for kind s3", name))
 			}
 		case "s3":
 			if store.Bucket == "" {

@@ -253,7 +253,7 @@ LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN current_cm_attempts ca ON ca.recording_id = r.id
 LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
 LEFT JOIN recording_playback_positions pp ON pp.recording_id = r.id
--- state を絞らず kind = 'original' の media_assets 行を JOIN しても二重計上しないのは、
+-- 論理資産の kind = 'original' の行を JOIN しても二重計上しないのは、
 -- media_assets_recording_id_kind_profile_key（UNIQUE NULLS NOT DISTINCT
 -- (recording_id, kind, profile)）が recording_id ごとに original を高々 1 行に
 -- 制約しているため。

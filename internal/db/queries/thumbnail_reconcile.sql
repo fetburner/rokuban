@@ -7,7 +7,7 @@
 -- name: ListMissingThumbnailRecordings :many
 SELECT o.recording_id
 FROM media_assets o
-JOIN LATERAL active_media_asset_copies(o.id, sqlc.arg('store_name')::text) original_copy ON true
+JOIN LATERAL active_media_asset_copies(o.id, sqlc.arg('original_store')::text) original_copy ON true
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
   AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
@@ -18,7 +18,7 @@ WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
     WHERE t.recording_id = o.recording_id
       AND t.kind = 'thumbnail'
       AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(t.id, sqlc.arg('store_name')::text)
+          SELECT 1 FROM active_media_asset_copies(t.id, sqlc.arg('derived_store')::text)
       )
   )
   AND NOT EXISTS (
@@ -58,6 +58,7 @@ WITH planning AS (
             WHERE s.recording_id = r.id
         ), '[]'::jsonb)::jsonb AS user_spans,
         COALESCE(original.id, 0)::bigint AS original_media_asset_id,
+        COALESCE(original.store, '')::text AS original_store,
         COALESCE(original.rel_path, '')::text AS original_rel_path,
         COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
         thumbnail.id AS thumbnail_media_asset_id,
@@ -66,9 +67,9 @@ WITH planning AS (
         thumbnail.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (
-        SELECT a.id, copy.rel_path
+        SELECT a.id, copy.rel_path, copy.store
         FROM media_assets a
-        JOIN LATERAL active_media_asset_copies(a.id, sqlc.arg('store_name')::text) copy ON true
+        JOIN LATERAL active_media_asset_copies(a.id, sqlc.arg('original_store')::text) copy ON true
         WHERE a.recording_id = r.id
           AND a.kind = 'original'
           AND NOT EXISTS (
@@ -81,6 +82,7 @@ WITH planning AS (
         SELECT jsonb_agg(
             jsonb_build_object(
                 'mediaAssetId', a.id,
+                'store', copy.store,
                 'profile', a.profile,
                 'relPath', copy.rel_path,
                 'cut', c.media_asset_id IS NOT NULL,
@@ -88,7 +90,7 @@ WITH planning AS (
             ) ORDER BY a.profile
         ) AS assets
         FROM media_assets a
-        JOIN LATERAL active_media_asset_copies(a.id, sqlc.arg('store_name')::text) copy ON true
+        JOIN LATERAL active_media_asset_copies(a.id, sqlc.arg('derived_store')::text) copy ON true
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
             SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
@@ -105,7 +107,7 @@ WITH planning AS (
     LEFT JOIN LATERAL (
         SELECT a.id, copy.rel_path, a.derived_generation, thumbnail_seek.seek_ms
         FROM media_assets a
-        JOIN LATERAL preferred_active_media_asset_copy(a.id, sqlc.arg('store_name')::text) copy ON true
+        JOIN LATERAL preferred_active_media_asset_copy(a.id, sqlc.arg('derived_store')::text) copy ON true
         LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
         WHERE a.recording_id = r.id
           AND a.kind = 'thumbnail'
@@ -130,7 +132,7 @@ LIMIT sqlc.arg('row_limit');
 -- name: ListMissingSeekTilesRecordings :many
 SELECT o.recording_id
 FROM media_assets o
-JOIN LATERAL active_media_asset_copies(o.id, sqlc.arg('store_name')::text) original_copy ON true
+JOIN LATERAL active_media_asset_copies(o.id, sqlc.arg('original_store')::text) original_copy ON true
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
   AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
@@ -141,7 +143,7 @@ WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
     WHERE s.recording_id = o.recording_id
       AND s.kind = 'seek_tiles'
       AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(s.id, sqlc.arg('store_name')::text)
+          SELECT 1 FROM active_media_asset_copies(s.id, sqlc.arg('derived_store')::text)
       )
   )
   AND NOT EXISTS (

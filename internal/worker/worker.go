@@ -9,6 +9,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -132,6 +133,16 @@ type Deps struct {
 	LabelRuleReevaluation store.LabelRuleReevaluation
 	MediaReconcile        store.MediaReconcile
 	MediaPublish          store.MediaPublish
+	// DerivedMediaPublish と DerivedObjects は、派生物の置き場が S3 のときだけ設定する。
+	// DerivedMediaPublish は S3 の置き場に束ねた store で、encode・サムネイル・シークタイルが使う。
+	DerivedMediaPublish    store.DerivedMediaPublisher
+	DerivedObjects         objstore.Store
+	DerivedObjectStoreName string
+	// DerivedMediaDelete・DerivedPendingReclaim・DerivedStorage は、同じ S3 の置き場に束ねた
+	// 削除 reconcile 用の store。
+	DerivedMediaDelete    store.MediaDelete
+	DerivedPendingReclaim store.PendingCopyReclaim
+	DerivedStorage        store.StorageObservation
 	IngestPrecheck        store.IngestPrecheck
 	EncodeProgress        store.EncodeProgressReporter
 	MediaDelete           store.MediaDelete
@@ -221,17 +232,19 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LiveEnabled:      deps.LiveEnabled,
 	})
 	riveradapter.Register(workers, &EncodeWorker{
-		Media:          deps.MediaReconcile,
-		Attempts:       deps.EncodeAttempts,
-		Publisher:      deps.MediaPublish,
-		Progress:       deps.EncodeProgress,
-		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName,
-		ScratchDir:     deps.ScratchDir,
-		FFmpeg:         deps.Encode.FFmpeg,
-		FFprobe:        deps.Encode.FFprobe,
-		Profiles:       deps.Encode,
-		Webhook:        deps.Webhook,
+		Media:           deps.MediaReconcile,
+		Attempts:        deps.EncodeAttempts,
+		Publisher:       deps.MediaPublish,
+		ObjectPublisher: deps.DerivedMediaPublish,
+		Objects:         deps.DerivedObjects,
+		Progress:        deps.EncodeProgress,
+		MediaDir:        deps.MediaDir,
+		MediaStoreName:  deps.MediaStoreName,
+		ScratchDir:      deps.ScratchDir,
+		FFmpeg:          deps.Encode.FFmpeg,
+		FFprobe:         deps.Encode.FFprobe,
+		Profiles:        deps.Encode,
+		Webhook:         deps.Webhook,
 	})
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
@@ -284,22 +297,27 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		MediaStoreName: deps.MediaStoreName,
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
-		Media:          deps.MediaReconcile,
-		Publisher:      deps.MediaPublish,
-		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName,
-		ScratchDir:     deps.ScratchDir,
-		FFmpeg:         deps.Encode.FFmpeg,
-		FFprobe:        deps.Encode.FFprobe,
+		Media:            deps.MediaReconcile,
+		Publisher:        deps.MediaPublish,
+		ObjectPublisher:  deps.DerivedMediaPublish,
+		Objects:          deps.DerivedObjects,
+		MediaDir:         deps.MediaDir,
+		MediaStoreName:   deps.MediaStoreName,
+		DerivedStoreName: deps.DerivedObjectStoreName,
+		ScratchDir:       deps.ScratchDir,
+		FFmpeg:           deps.Encode.FFmpeg,
+		FFprobe:          deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &SeekTilesWorker{
-		Media:          deps.MediaReconcile,
-		Publisher:      deps.MediaPublish,
-		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName,
-		ScratchDir:     deps.ScratchDir,
-		FFmpeg:         deps.Encode.FFmpeg,
-		FFprobe:        deps.Encode.FFprobe,
+		Media:           deps.MediaReconcile,
+		Publisher:       deps.MediaPublish,
+		ObjectPublisher: deps.DerivedMediaPublish,
+		Objects:         deps.DerivedObjects,
+		MediaDir:        deps.MediaDir,
+		MediaStoreName:  deps.MediaStoreName,
+		ScratchDir:      deps.ScratchDir,
+		FFmpeg:          deps.Encode.FFmpeg,
+		FFprobe:         deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
@@ -325,21 +343,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		DetectionStore: deps.CMDetectionStore,
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
-	riveradapter.Register(workers, &DeleteReconcileWorker{
-		MediaDelete:       deps.MediaDelete,
-		RecordingPurge:    deps.RecordingPurge,
-		Breakers:          deps.Breakers,
-		Storage:           deps.StorageObservation,
-		MediaDir:          deps.MediaDir,
-		MediaStoreName:    deps.MediaStoreName,
-		TransferOverlap:   deps.TransferOverlap,
-		TrashRetention:    deps.Cleanup.TrashRetention,
-		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
-		OrphanAge:         deps.Cleanup.OrphanAge,
-		MaxDeletesPerPass: deps.Cleanup.MaxDeletesPerPass,
-		MissingAssetAge:   deps.Cleanup.MissingAssetAge,
-		Webhook:           deps.Webhook,
-	})
+	riveradapter.Register(workers, newDeleteReconcileWorker(deps))
 	riveradapter.Register(workers, &StorageSyncWorker{
 		Storage:    deps.StorageObservation,
 		MediaDir:   deps.MediaDir,
@@ -348,4 +352,28 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &tsscan.ScanWorker{Media: deps.TSScan, MediaDir: deps.MediaDir})
 	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan})
 	return workers
+}
+
+// newDeleteReconcileWorker は削除 reconcile worker を Deps から組み立てる。
+func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
+	return &DeleteReconcileWorker{
+		MediaDelete:            deps.MediaDelete,
+		RecordingPurge:         deps.RecordingPurge,
+		Breakers:               deps.Breakers,
+		Storage:                deps.StorageObservation,
+		MediaDir:               deps.MediaDir,
+		MediaStoreName:         deps.MediaStoreName,
+		DerivedObjects:         deps.DerivedObjects,
+		DerivedObjectStoreName: deps.DerivedObjectStoreName,
+		DerivedMediaDelete:     deps.DerivedMediaDelete,
+		DerivedPendingReclaim:  deps.DerivedPendingReclaim,
+		DerivedStorage:         deps.DerivedStorage,
+		TransferOverlap:        deps.TransferOverlap,
+		TrashRetention:         deps.Cleanup.TrashRetention,
+		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
+		OrphanAge:              deps.Cleanup.OrphanAge,
+		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
+		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
+		Webhook:                deps.Webhook,
+	}
 }

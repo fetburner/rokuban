@@ -155,7 +155,7 @@ func TestNextUnusedThumbnailRelPathAdvancesPastExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &ThumbnailWorker{MediaDir: mediaDir}
-	path, generation, err := w.nextUnusedThumbnailRelPath(12, 3)
+	path, generation, err := w.nextUnusedThumbnailRelPath(context.Background(), 12, 3)
 	if err != nil {
 		t.Fatalf("nextUnusedThumbnailRelPath: %v", err)
 	}
@@ -636,7 +636,6 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	generation := int64(0)
 	if _, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID:       recordingID,
-		RelPath:           rel,
 		SizeBytes:         int64(len(tinyJPEG)),
 		DerivedGeneration: &generation,
 	}); err != nil {

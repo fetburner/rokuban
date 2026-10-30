@@ -142,6 +142,9 @@ type RouterConfig struct {
 	RecordingHLSEnabled bool
 	// MediaStoreName は原本と temp の置き場に対応するルートの名前。
 	MediaStoreName string
+	// DerivedStoreName は storage.derived の置き場の名前。S3 など FS 置き場と別のときだけ、
+	// 削除ブレーカーの再開が FS 置き場の次にこの置き場の範囲の行を引く。
+	DerivedStoreName string
 
 	// CMDetectEnabled は config.cm_detect.enabled。GET /api/capabilities の cmDetect に出し、
 	// false のとき encode-policy の cmDetect=true と検出の再試行を 409 にする。
@@ -206,6 +209,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	handler.breakerStoreScope = cfg.MediaStoreName
+	if cfg.DerivedStoreName != cfg.MediaStoreName {
+		handler.breakerDerivedScope = cfg.DerivedStoreName
+	}
 	handler.recordingPlayback = recordingPlaybackConfig{enabled: cfg.RecordingHLSEnabled, store: cfg.MediaStoreName, profiles: cfg.LiveProfiles}
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: writeRequestError,

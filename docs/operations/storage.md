@@ -30,7 +30,7 @@ worker は起動時と、ファイルシステム操作や DB への記録の前
 
 目印を確認できないまま起動した worker は、ingest probe を保留する。probe は `media_dir/sites` を作る書き込みなので、最初の ingest ジョブが目印の照合を通った後に 1 回だけ走る。失敗した probe は固定せず、次の ingest ジョブが再試行する。
 
-目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印を書き、DB にも接続して、コピーの無い論理資産と `store` が空の観測行と、範囲が空の `delete_reconcile` のブレーカーの行を、その置き場に割り当てる。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。目印が無い root に目印を新しく作る前に、DB にその置き場のコピー行が 1 件でもあるかを確かめる。あれば、マウント漏れか別のボリュームの可能性があるので、エラーにして目印を書かない。置き場の名前変更は未対応である。
+目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印を書き、DB にも接続して、`store` が空の観測行と、範囲が空の `delete_reconcile` のブレーカーの行を、その置き場に割り当てる。コピー行は作らず、コピーのパスから派生世代を補正する。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。目印が無い root に目印を新しく作る前に、DB にその置き場のコピー行が 1 件でもあるかを確かめる。あれば、マウント漏れか別のボリュームの可能性があるので、エラーにして目印を書かない。置き場の名前変更は未対応である。
 
 導入と、`storage.media_store_name` を設定済みの構成の移行手順は [runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 
@@ -195,9 +195,21 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
 
+接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。worker には S3 の権限として `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject`、`AbortMultipartUpload` が要る。streamer に要るのは `HeadObject` と署名付き URL の作成だけである。
+
+worker は起動時に S3 へ接続しない。S3 に繋がらなくても、資格情報が失効していても worker は起動する。S3 のコードを通らないジョブ（ingest など）は、S3 の状態に左右されない。S3 を使うジョブ（派生物の公開と削除）だけが失敗し、`rokuban_object_store_errors_total{operation}` に数える。資格情報の失効と取得失敗は `rokuban_object_store_credential_errors_total` にも数えるので、権限や接続の失敗と区別できる。S3 へ書けない間は、派生物の置き場に encoded のコピーが揃わず、`until_encoded` の原本は消えない。
+
+署名付き URL の寿命は 24 時間で固定し、設定からは変えられない。SigV4 の上限は 7 日である。`web/e2e/s3-302.mjs` の Chrome 156.0.8078.48 と Safari 27.0.1 の測定では、Range 要求は署名付き URL に送られ、期限切れ後に元の URL へ戻らなかった。24 時間を超える 1 回の再生は、途中で止まりうる。再生の途中で期限が切れる場合は測っていない（未検証）。
+
+署名する資格情報の有効期間が 24 時間より短いと、URL はその期間で先に無効になる。署名するのは streamer だけなので、24 時間以上有効な資格情報が要るのは streamer である。workload identity や STS の一時的な資格情報はセッションが失効するので、streamer には使わない。IAM ユーザーの長期のアクセスキーと、MinIO や R2 の静的なキーは、24 時間以上有効な資格情報に当たる。worker の書き込みは、一時的な資格情報でもよい。この制約は AWS の仕様から書いたもので、この設計では測っていない（未検証）。
+
+動画の再生そのものに CORS が要る。プレイヤーの `<video>` は `crossorigin="anonymous"` を付けて S3 の URL を読むためである。bucket の CORS では、UI の origin からの GET と HEAD、`Range` request header を許可する。`Content-Range` と `Accept-Ranges` は expose する。字幕の取得も同じ設定を使う。bucket の CORS を変えたときは、実ブラウザの S3 配信判定（`web/e2e/s3-302.mjs`）も通す。
+
 適合テストが測るのは 4 つで、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range である。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。
 
 置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残るためである。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後にする。
+
+孤児の回収では、DB にコピー行が無い S3 のキーを報告して保持し、削除しない。DB を復元した直後に、唯一の実体を消さないためである。DB にある古い `pending` のキーは孤児ではなく、削除 reconcile が回収する。
 
 multipart の SHA-256 は、AWS では常に部品から作る composite checksum である。オブジェクト全体の SHA-256 にはならないので、HEAD で得た値を全体の SHA-256 と直接比較してはならない。アプリは、データを流しながら全体の SHA-256 を自分で計算し、照合にはその値を使う。
 
@@ -226,6 +238,10 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 <details><summary>根拠</summary>
 
 - 適合テスト: `internal/objstore/conformance/conformance_test.go`
+- 資格情報が無く S3 に繋がらなくても worker が起動すること: `TestServerCmd_WorkerStartsWithUnreachableS3AndNoCredentials`。ジョブごとの実行は未検証で、ingest が S3 のコードを呼ばないことはコードを読んで確かめた
+- `until_encoded` の原本が消えない条件（派生物のコピーが desired の置き場に揃うこと）: `TestUntilEncodedDeletableRequiresDerivedCopiesInDesiredStore`
+- 署名付き URL の寿命が 24 時間固定であること: `internal/streamer/streamer.go` の `SignedURLExpiry`（0 なら 24 時間）で、`cmd/rokuban` は値を渡さない
+- 一時的な資格情報で署名した URL がセッションの失効で無効になること: [Sharing objects with presigned URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)
 - CI の MinIO: `.github/workflows/ci.yml` `s3-conformance`
 - multipart の上限（部品の大きさと個数）: [S3 multipart upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
 - checksum の種類（SHA-256 は multipart で composite だけ）: [S3 object integrity](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)

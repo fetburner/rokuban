@@ -692,6 +692,7 @@ export function RecordingPlayer({
             {...frame.video}
             aria-label="録画映像"
             playsInline
+            crossOrigin="anonymous"
             preload="metadata"
             src={src}
             className="absolute inset-0 size-full bg-black object-contain"

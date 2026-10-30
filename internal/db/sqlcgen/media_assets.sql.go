@@ -14,8 +14,8 @@ import (
 )
 
 const createMediaAsset = `-- name: CreateMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
-VALUES ($1, $2, $3, $4, $5, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
+INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation)
+VALUES ($1, $2, $3, $4, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
 RETURNING id
 `
 
@@ -23,7 +23,6 @@ type CreateMediaAssetParams struct {
 	RecordingID int64
 	Kind        string
 	Profile     *string
-	RelPath     string
 	SizeBytes   int64
 }
 
@@ -32,7 +31,6 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 		arg.RecordingID,
 		arg.Kind,
 		arg.Profile,
-		arg.RelPath,
 		arg.SizeBytes,
 	)
 	var id int64
@@ -41,15 +39,14 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 }
 
 const createOriginalMediaAsset = `-- name: CreateOriginalMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, sha256, ingest_generation)
-SELECT p.recording_id, 'original', $1, $2, $3::bytea, p.temp_generation
+INSERT INTO media_assets (recording_id, kind, size_bytes, sha256, ingest_generation)
+SELECT p.recording_id, 'original', $1, $2, p.temp_generation
 FROM recording_ingest_progress p
-WHERE p.recording_id = $4
+WHERE p.recording_id = $3
 RETURNING id
 `
 
 type CreateOriginalMediaAssetParams struct {
-	RelPath     string
 	SizeBytes   int64
 	Sha256      []byte
 	RecordingID int64
@@ -59,12 +56,7 @@ type CreateOriginalMediaAssetParams struct {
 // 転送中の recording_ingest_progress からコピーする。SHA-256 は ingest が算出し、
 // 原本の INSERT と同じ tx で保存する。
 func (q *Queries) CreateOriginalMediaAsset(ctx context.Context, arg CreateOriginalMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, createOriginalMediaAsset,
-		arg.RelPath,
-		arg.SizeBytes,
-		arg.Sha256,
-		arg.RecordingID,
-	)
+	row := q.db.QueryRow(ctx, createOriginalMediaAsset, arg.SizeBytes, arg.Sha256, arg.RecordingID)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -201,7 +193,8 @@ func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDer
 }
 
 const getEncodedMediaAssetForProfile = `-- name: GetEncodedMediaAssetForProfile :one
-SELECT a.id, a.rel_path, a.state,
+SELECT a.id,
+       EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, NULL)) AS active,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
 WHERE a.recording_id = $1
@@ -216,22 +209,18 @@ type GetEncodedMediaAssetForProfileParams struct {
 
 type GetEncodedMediaAssetForProfileRow struct {
 	ID                int64
-	RelPath           string
-	State             string
+	Active            bool
 	DerivedGeneration int64
 }
 
-// 世代カウンターと論理行の状態は置き場によらない。コピー表へ JOIN すると、
-// 書き手の store にコピーがないときにカウンターを読み落とす。
+// publish が観測する論理行。世代カウンターは置き場によらない（コピー表へ JOIN すると、
+// 書き手の store にコピーが無いときにカウンターを読み落とす）。
+// active は現行世代のコピーがどこかの置き場にあるかで、active_media_asset_copies の現行判定を使う。
+// 公開の計画は derived_generation を「観測した後に行が進んだか」の目印にする。
 func (q *Queries) GetEncodedMediaAssetForProfile(ctx context.Context, arg GetEncodedMediaAssetForProfileParams) (GetEncodedMediaAssetForProfileRow, error) {
 	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.RecordingID, arg.Profile)
 	var i GetEncodedMediaAssetForProfileRow
-	err := row.Scan(
-		&i.ID,
-		&i.RelPath,
-		&i.State,
-		&i.DerivedGeneration,
-	)
+	err := row.Scan(&i.ID, &i.Active, &i.DerivedGeneration)
 	return i, err
 }
 
@@ -322,6 +311,29 @@ func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, arg GetLiveMed
 	var recording_id int64
 	err := row.Scan(&recording_id)
 	return recording_id, err
+}
+
+const getMaxEncodedMediaAssetCopyGeneration = `-- name: GetMaxEncodedMediaAssetCopyGeneration :one
+SELECT COALESCE(MAX(copy.generation), -1)::bigint AS max_generation
+FROM media_assets a
+LEFT JOIN media_asset_copies copy ON copy.media_asset_id = a.id
+WHERE a.recording_id = $1
+  AND a.kind = 'encoded'
+  AND a.profile = $2
+`
+
+type GetMaxEncodedMediaAssetCopyGenerationParams struct {
+	RecordingID int64
+	Profile     *string
+}
+
+// 公開前に止まった世代と回収済みの世代も使用済みとして数える。encode は ffmpeg の前に
+// 世代を予約し、同じ key を別の出力で再利用しないために、この最大値より大きい世代を使う。
+func (q *Queries) GetMaxEncodedMediaAssetCopyGeneration(ctx context.Context, arg GetMaxEncodedMediaAssetCopyGenerationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getMaxEncodedMediaAssetCopyGeneration, arg.RecordingID, arg.Profile)
+	var max_generation int64
+	err := row.Scan(&max_generation)
+	return max_generation, err
 }
 
 const getMediaAssetKeepRangesJSON = `-- name: GetMediaAssetKeepRangesJSON :one
@@ -630,13 +642,12 @@ func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, arg LockAct
 }
 
 const upsertDerivedMediaAsset = `-- name: UpsertDerivedMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, sha256, derived_generation)
+INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation, sha256)
 VALUES (
     $1, $2, $3,
-    $4, $5, $6::bytea, $7
+    $4, $5, $6
 )
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
-    rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
     sha256     = EXCLUDED.sha256,
@@ -649,26 +660,24 @@ type UpsertDerivedMediaAssetParams struct {
 	RecordingID       int64
 	Kind              string
 	Profile           *string
-	RelPath           string
 	SizeBytes         int64
-	Sha256            []byte
 	DerivedGeneration *int64
+	Sha256            []byte
 }
 
 // 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
 // derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
 // 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
-// sha256 は生成ファイルから計算し、論理行の公開と同じ tx で保存する。
-// state / deleted_at は書かない。コピー行を書いた後の ReconcileMediaAssetStateFromCopies が決める。
+// sha256 は作り手が公開の tx で書く。FS はステージしたファイルから、S3 は PUT 前に計算した値を渡す。
+// 置き換えでは新しい世代の値に書き換える。
 func (q *Queries) UpsertDerivedMediaAsset(ctx context.Context, arg UpsertDerivedMediaAssetParams) (int64, error) {
 	row := q.db.QueryRow(ctx, upsertDerivedMediaAsset,
 		arg.RecordingID,
 		arg.Kind,
 		arg.Profile,
-		arg.RelPath,
 		arg.SizeBytes,
-		arg.Sha256,
 		arg.DerivedGeneration,
+		arg.Sha256,
 	)
 	var id int64
 	err := row.Scan(&id)

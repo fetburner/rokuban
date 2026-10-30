@@ -899,8 +899,8 @@ func runMediaEncodePlanningContract(t *testing.T, f MediaFixture) {
 	if err != nil {
 		t.Fatalf("GetEncodedPublishState(%d, %q): %v", id, profile, err)
 	}
-	if asset.EncodedAsset == nil || asset.EncodedAsset.ID != assetID || asset.EncodedAsset.State != "deleted" || asset.EncodedAsset.RelPath != fmt.Sprintf("sites/home/%d/cut.mp4", id) {
-		t.Fatalf("encoded asset observation = %+v, want id %d with deleted state and its path", asset, assetID)
+	if asset.EncodedAsset == nil || asset.EncodedAsset.ID != assetID || asset.EncodedAsset.Active || asset.EncodedAsset.DerivedGeneration != 0 {
+		t.Fatalf("encoded asset observation = %+v, want id %d, inactive, generation 0", asset, assetID)
 	}
 	if len(asset.EncodedAsset.KeepRanges) != 0 {
 		t.Fatalf("keep ranges before freezing = %v, want none", asset.EncodedAsset.KeepRanges)
@@ -916,7 +916,7 @@ func runMediaEncodePlanningContract(t *testing.T, f MediaFixture) {
 	if err != nil {
 		t.Fatalf("GetEncodedPublishState(%d, %q) after freezing: %v", id, profile, err)
 	}
-	if frozen.EncodedAsset == nil || frozen.EncodedAsset.State != "active" || !chapters.SameRanges(frozen.EncodedAsset.KeepRanges, keep) {
+	if frozen.EncodedAsset == nil || !frozen.EncodedAsset.Active || !chapters.SameRanges(frozen.EncodedAsset.KeepRanges, keep) {
 		t.Fatalf("observation after freezing = %+v, want active with keep ranges %v in the same read", frozen, keep)
 	}
 

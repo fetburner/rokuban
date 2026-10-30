@@ -51,7 +51,7 @@ func utcTimePtr(t *time.Time) *time.Time {
 //
 // 優先順位が意味を持つ:
 //
-//  1. 原本 media_asset 行があれば committed。state='deleted' でも committed の
+//  1. 原本 media_asset 行があれば committed。コピーの state='deleted' でも committed の
 //     ままにする --- 「取り込めなかった」と「取り込んだ後に消した」を混同しない
 //     ため（issue #211）。原本が**いま**あるかどうかは Recording.sizeBytes の
 //     有無が答える。原本行を進捗行より先に見るのは、コミット済みの録画に

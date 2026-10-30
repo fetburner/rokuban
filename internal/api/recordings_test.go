@@ -272,7 +272,7 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 }
 
 // 一覧の射影（recordingsFromJoins、internal/store/pgstore/recordingquery.go）は
-// `a.state <> 'deleted'` で結合するため、`state = 'deleting'`（unlink 待ち）の
+// `copy.state <> 'deleted'` で結合するため、`state = 'deleting'`（unlink 待ち）の
 // 原本でも sizeBytes が付き「原本あり」に見える --- 一方サーバーの 409 判定
 // （GetActiveOriginalMediaAsset）は `state = 'active'` だけを見るので、この
 // 非対称の上でボタンを押すと決定的に 409 になる。openapi.yaml の 409

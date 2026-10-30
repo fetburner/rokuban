@@ -45,7 +45,7 @@ ingest は同じ root・同じディレクトリの record 固有 temp へ書く
 
 rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。置き場の目印の root の `.rokuban-store` も同じく予約する。ネストした同名ファイルは予約しない。
 
-ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original 行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、temp の `flock` を保持したまま置き場の目印を照合して temp を unlink する。
+ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original の論理資産とコピー行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、temp の `flock` を保持したまま置き場の目印を照合して temp を unlink する。
 
 公開に `os.Rename` を使わないのは、宛先が既存でも無言で置き換えるからである。この契約は、DB に行の無い canonical 名のファイルを自動で消さないと決めている。rename はそのファイルを無言で置き換えて失わせる。`link` は宛先が既存なら `EEXIST` で失敗するので上書きしない。
 
@@ -123,6 +123,14 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 エンコード出力は既にある行のパスへ公開する。そのため canonical を直接開かず、同じディレクトリの staging file へ書く。パスは、ファイルを置く前に DB で予約する。古い試行は、試行回数の照合と行の再確認で公開できない。
 
+FS 置き場では、staging file へコピーしながら SHA-256 を計算する。rename して親ディレクトリを `fsync` した後に DB を commit し、その公開の transaction で SHA-256 を論理行へ書く。
+
+S3 置き場では、先に `pending` のコピー行を新しい世代で commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、公開の transaction でコピーを `active` にして、SHA-256 を論理行へ書く。upload の完了が 412 で拒まれたときは、HEAD で得たサイズと、アプリが保存した SHA-256 の metadata を照合する。どちらも一致すれば成功として扱い、一致しなければ失敗にする。公開されないまま猶予を過ぎた `pending` は、削除 reconcile が行をロックしたまま S3 のキーを消す。
+
+置き換えは新しい世代の行を足すだけで、旧世代のコピーには触れない。旧世代のキーは、署名付き URL で再生中の視聴者がいても 404 にならないよう、削除 reconcile が `storage.transfer.overlap` の後に消す。コピー行の世代は INSERT の後に変えず、現行のコピーを選ぶ述語は `active_media_asset_copies` と `preferred_active_media_asset_copy` だけに置く（[schema](../schema/recordings/media-assets.md)）。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代のキーを使う。Matroska のように同じ入力でも出力のバイト列が変わる形式で、既に upload 済みのキーを別の内容で上書きしないためである。
+
+S3 置き場の失敗は、S3 を使うジョブだけを失敗させる。worker は起動時に S3 へ接続しない（運用は [ストレージ運用](../operations/storage.md) の「S3 の置き場の運用要件」）。
+
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 
 - scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。長い profile 名でも作成できる。
@@ -191,6 +199,8 @@ flowchart TD
 
 サムネイルとシークタイルは、完成したファイルを staging にコピーして fsync し、lock と transaction の中で rename して commit する。同じ録画のジョブが重なっても、先行が公開済みか原本が消えていれば、後続は公開を飛ばして成功扱いにする。
 
+S3 置き場では、派生物のキーを `pending` として先に commit し、完成した JPEG をアップロードする。チェックサムの照合が済んだ後、公開の transaction で `active` にする。FS と S3 のどちらでも、DB で `active` のコピーが配信を許す。
+
 thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして `MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の実行が重なっても scratch file を共有しない。
 
 完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして file `fsync` する。次に rel_path filesystem lock → transaction の順に取る。
@@ -219,7 +229,7 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 カット版とサムネイルを作り直すときは、同じパスへ上書きせず、新しい世代のコピー行を追加して公開する。旧世代の物理行は残し、配信・派生物の有無を調べる読み手からは世代カウンターで隠す。旧世代の unlink は削除 reconcile が overlap の後に行う。
 
-カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きている行の `rel_path` 部分一意索引とも衝突するからである。
+カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きているコピーの `(store, rel_path)` 部分一意索引とも衝突するからである。
 
 - 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時に読み、旧 worker 停止後の adopt でも再照合する
 - 新しいファイルを置き、1 つの tx で論理サイズ・`derived_generation`・`media_asset_cuts` と新しい物理コピー行を commit する。コピー行の世代は後から書き換えない。旧世代は同じ置き場に残り、削除 reconcile が overlap 後に回収する
@@ -299,7 +309,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 原本の相対パスは、取り込みが先頭に固定の予約ディレクトリとサイト名を前置する。site 名だけを先頭にすると、既存行の先頭成分と偶然一致して衝突するからである。
 
-アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると、同じ実ファイルを取り合う。DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて失われる。そのため原本は `sites/{site}/` を前置する。
+アーカイブの論理資産（`media_assets`）は `site` 列を持たず単一だが、原本コピーの `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。同じ置き場で 2 サイトが同じ contentPath から録ると、同じ実ファイルを取り合う。DB は `media_asset_copies` の `(store, rel_path)` 一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて失われる。そのため原本コピーは `sites/{site}/` を前置する。
 
 #### 予約ディレクトリと前置の規則
 
@@ -401,6 +411,8 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 再選択の入力は、active かつ `missing_media_assets` に無い原本を優先し、次にプロファイル名昇順のカットしない encoded、最後に同じ順のカット版を選ぶ。未確認の自動 CM 検出も使う。チャプターがない録画は再選択せず、keep が空なら再選択を繰り返さない。
 
+S3 上の encoded 版を入力に選んだ場合は、scratch へ取得してから抽出する。
+
 作り直す条件は、記録済み位置が現在の keep 外にあり、同じ入力選択で計画した位置とも異なる場合だけである。`seek_ms` が無い旧サムネイルは、チャプターと使える入力があれば一度選び直す。位置が keep 内なら、望ましい位置との違いだけでは作り直さない。
 
 再選択 reconcile は、active なサムネイルと CM 検出または所有済みチャプターがある録画を recording ID の窓で巡回し、Go の共通判定で再選択の対象を投入する。ごみ箱は除外し、`seek_tiles` や初回生成とは別の再開位置を持つ。窓の再開位置は継続ジョブの引数で引き継ぐ（[ingest-followup.md](../recording/ingest-followup.md) §5.5）。再選択が要らない録画も窓に入るので、対象が上限を超えると、通常運転でも周期ごとに継続ジョブが連鎖する。CM 検出の保存後に 1 件ヒントを出すが、ヒントはベストエフォート。手動編集は次の窓で拾う。
@@ -409,6 +421,11 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 - keep range の位置を原本時間へ写すこと: `UnmapMs(keep, seek)`
 - 入力の時間原点を 0 にしてカット境界を適用すること: `ffargs.CutFilterComplex`
+- S3 上の encoded 版からサムネイルを再選択すること:
+
+  ```text
+  TestS3DerivedObjectPublicationAndRecovery/thumbnail_reselection_reads_encoded_input_from_S3
+  ```
 
 </details>
 

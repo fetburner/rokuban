@@ -223,19 +223,9 @@ storage:
 		}
 	})
 
-	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.MediaAsset(t, pool, recordingID)
-	if _, err := pool.Exec(t.Context(), `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatal(err)
-	}
-	t.Run("first migration: assets without copies", func(t *testing.T) {
-		dir := t.TempDir()
-		if err := adopt(t, dir); err != nil || !markerExists(dir) {
-			t.Fatalf("adopt = %v, marker exists %v; want success with a marker", err, markerExists(dir))
-		}
-	})
+	dbtest.MediaAsset(t, pool, dbtest.Recording(t, pool)) // test-store のコピーを 1 件作る
 
-	// 直前のケースの adopt がコピー行を作った。別の（空の）root では拒否される。
+	// コピーがある別の（空の）root では拒否される。
 	t.Run("copies exist but the root has no marker", func(t *testing.T) {
 		dir := t.TempDir()
 		err := adopt(t, dir)
