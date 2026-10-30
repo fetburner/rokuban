@@ -35,7 +35,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 		{name: "api alone", cfg: testDBConfig(), roles: []string{"api"}, want: 10},
 		{
 			name: "worker alone", cfg: testDBConfig(), roles: []string{"worker"},
-			want: 8,
+			want: 9,
 		},
 		{name: "watcher alone", cfg: testDBConfig(), roles: []string{"watcher"}, want: 3},
 		{name: "notifier alone", cfg: testDBConfig(), roles: []string{"notifier"}, want: 3},
@@ -44,8 +44,8 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			name:  "all roles (monolith --all)",
 			cfg:   testDBConfig(),
 			roles: []string{"api", "worker", "watcher", "streamer", "notifier"},
-			// 10 + 8(worker) + 3 + 4 + 3
-			want: 28,
+			// 10 + 9(worker) + 3 + 4 + 3
+			want: 29,
 		},
 		{
 			name:  "unknown role only falls back to the minimum (never 0)",
@@ -65,7 +65,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			name:  "duplicate role names across a larger set are not double-counted",
 			cfg:   testDBConfig(),
 			roles: []string{"api", "worker", "worker", "api", "watcher"},
-			want:  21, // 10(api) + 8(worker) + 3(watcher), each counted once
+			want:  22, // 10(api) + 9(worker) + 3(watcher), each counted once
 		},
 		{
 			name: "explicit db.max_conns overrides role-derived sizing",
@@ -111,13 +111,13 @@ func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 			name:     "worker, 2 sites: the budget term does not grow with site count",
 			roles:    []string{"worker"},
 			numSites: 2,
-			want:     8,
+			want:     9,
 		},
 		{
 			name:     "watcher+worker, 2 sites: only watcher gets the per-site addition",
 			roles:    []string{"watcher", "worker"},
 			numSites: 2,
-			want:     12, // 3+1(watcher) + 8(worker)
+			want:     13, // 3+1(watcher) + 9(worker)
 		},
 		{name: "api alone, 2 sites: unaffected (not a site-scoped role)", roles: []string{"api"}, numSites: 2, want: 10},
 		{name: "watcher, 1 site: no addition (baseline)", roles: []string{"watcher"}, numSites: 1, want: 3},

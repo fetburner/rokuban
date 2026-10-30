@@ -11,9 +11,9 @@
 //
 // ファイル操作は次の表のとおり。字幕 sidecar は encoded 本体と同じ段階で消すので派生物、
 // staging（encode / 生成アセットの予約名の一時出力）は派生物の公開前ファイル、
-// checkpoint は base temp と同じ flock の下で消すので ingest temp に入れる。
+// checkpoint は base temp と同じ flock の下で消すので temp に入れる。
 //
-//	操作      原本                         派生物                          ingest temp
+//	操作      原本                         派生物                          ingest / transfer temp
 //	解決      mediapath.Resolve            同左（字幕・staging も）         同左（checkpoint も）
 //	flock     media root の rel_path lock  同左（字幕は本体の lock に含む。  temp 自身の flock
 //	                                       staging は取らない）             （checkpoint は base temp の）
@@ -21,7 +21,7 @@
 //	                                                                        flock との inode 照合
 //	unlink    する                         する（encoded は字幕も）         する（checkpoint も同時）
 //
-// ストレージ port（#1283）の候補になるのは派生物の列だけで、原本と ingest temp の
+// ストレージ port（#1283）の候補になるのは派生物の列だけで、原本と temp の
 // flock・inode 照合は常にファイルシステムに残る。asset の flock は種類を問わず同じ
 // 関数（lockMediaRelPathFile）で取るので、派生物側の flock を port に出すかは #1283 で決める。
 
@@ -33,9 +33,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/breaker"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -63,12 +66,15 @@ func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, brea
 // active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
 // 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
 // 罠で、revert 経路自身がこの窓を作らないようにする）。
-func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff, overlapCutoff time.Time) error {
+func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff, overlapCutoff time.Time, placementPending map[int64]struct{}) error {
 	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, trashCutoff, overlapCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting assets: %w", err)
 	}
 	for _, a := range rows {
+		if _, ok := placementPending[a.ID]; ok {
+			continue
+		}
 		w.resolveUnqualifiedDeletingAsset(ctx, a, trashCutoff, overlapCutoff)
 	}
 	return nil
@@ -106,6 +112,9 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCa
 	for _, a := range c.oldGeneration {
 		w.deleteMediaAsset(ctx, a, "old_generation")
 	}
+	for _, a := range c.placement {
+		w.deletePlacementCopy(ctx, a)
+	}
 	for _, relPath := range c.agedOrphans {
 		// ctx 死亡後は残りを打ち切る（DeleteOrphanFile 1 件ごとに
 		// deleteOrphanCleanupTimeout を待ち切って進むと、DB が詰まった状態では
@@ -115,6 +124,75 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCa
 			return
 		}
 		w.deleteOrphanFile(relPath, orphanMTimeGrace)
+	}
+}
+
+func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate) {
+	log := slog.With("media_asset_id", candidate.MediaAssetID, "media_asset_copy_id", candidate.CopyID,
+		"store", candidate.Store, "rel_path", candidate.RelPath, "source", "placement")
+	if ctx.Err() != nil {
+		return
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting stale placement copy"); err != nil {
+		log.Warn("delete_reconcile: withholding placement deletion because the store marker did not match", "err", err)
+		return
+	}
+	path, err := mediapath.Resolve(w.MediaDir, candidate.RelPath)
+	if err != nil {
+		log.Error("delete_reconcile: rejecting placement rel_path outside the media directory", "err", err)
+		return
+	}
+	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, candidate.RelPath)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Error("delete_reconcile: acquiring filesystem lock before placement removal", "err", err)
+		}
+		return
+	}
+	if fileLock != nil {
+		defer func() { _ = fileLock.Close() }()
+	}
+	rules, err := w.StorageTransferPolicy.OriginalRulesJSON()
+	if err != nil {
+		log.Error("delete_reconcile: encoding current placement policy", "err", err)
+		return
+	}
+	markedPath, marked, err := w.StorageTransfer.MarkMediaAssetCopyDeleting(
+		ctx, candidate, rules, w.StorageTransferPolicy.Derived, w.settings().transferOverlap.Microseconds(),
+	)
+	if err != nil {
+		log.Error("delete_reconcile: rechecking placement copy before unlink", "err", err)
+		return
+	}
+	if !marked || markedPath != candidate.RelPath {
+		return
+	}
+	beforeMediaAssetUnlink(candidate.RelPath)
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking stale placement copy"); err != nil {
+		log.Warn("delete_reconcile: withholding placement unlink because the store marker did not match", "err", err)
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Error("delete_reconcile: removing stale placement copy", "err", err)
+		return
+	}
+	if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Error("delete_reconcile: syncing directory after placement unlink", "err", err)
+		return
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking stale placement copy deleted"); err != nil {
+		log.Warn("delete_reconcile: withholding deleted state because the store marker did not match", "err", err)
+		return
+	}
+	deleted, err := w.StorageTransfer.MarkMediaAssetCopyDeleted(ctx, candidate)
+	if err != nil {
+		log.Error("delete_reconcile: marking placement copy deleted", "err", err)
+		return
+	}
+	if deleted {
+		metrics.DeleteReconcileDeleted.WithLabelValues("placement").Inc()
+		metrics.DeleteReconcileBytes.WithLabelValues("placement").Add(float64(candidate.SizeBytes))
+		log.Info("delete_reconcile: deleted stale placement copy")
 	}
 }
 
@@ -328,24 +406,40 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		w.deleteOrphanIngestCheckpoint(path, relPath, mtimeGrace, log)
 		return
 	}
+	if kind == orphanCleanupTransferCheckpoint {
+		w.deleteOrphanTransferCheckpoint(path, relPath, mtimeGrace, log)
+		return
+	}
 
-	isTemp := kind == orphanCleanupIngestTemp
+	isTransferTemp := kind == orphanCleanupTransferTemp
+	isTemp := kind == orphanCleanupIngestTemp || isTransferTemp
 	var tempLock *os.File
+	var checkpointPath, checkpointRelPath string
 	if isTemp {
 		var ok bool
-		tempLock, ok = w.lockOrphanIngestTemp(path, relPath, log)
+		if isTransferTemp {
+			tempLock, ok = w.lockOrphanTransferTemp(path, relPath, log)
+		} else {
+			tempLock, ok = w.lockOrphanIngestTemp(path, relPath, log)
+		}
 		if !ok {
 			return
 		}
 		defer closeOrphanTempLock(tempLock, log)
-		// A recent checkpoint means a snoozed ingest still owns this temp. Keep the
-		// temp mtime unchanged because it anchors the fallback SHA-256 wait deadline.
-		checkpointInfo, err := os.Stat(ingestCheckpointPath(path))
+		// A recent checkpoint means active work still owns this temp. Keep the temp
+		// mtime unchanged because it anchors the fallback SHA-256 wait deadline.
+		checkpointPath = ingestCheckpointPath(path)
+		checkpointRelPath = relPath + ingestCheckpointSuffix
+		if isTransferTemp {
+			checkpointPath = fsink.CheckpointPath(path)
+			checkpointRelPath = relPath + fsink.CheckpointSuffix
+		}
+		checkpointInfo, err := os.Stat(checkpointPath)
 		if err == nil && checkpointInfo.ModTime().After(time.Now().Add(-mtimeGrace)) {
 			return
 		}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Warn("delete_reconcile: stating ingest checkpoint before temp cleanup", "err", err)
+			log.Warn("delete_reconcile: stating temp checkpoint before temp cleanup", "err", err)
 			return
 		}
 	}
@@ -381,20 +475,78 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 	if isTemp {
 		// checkpoint は base temp と同じ寿命である。base の flock を保持したまま
 		// 消し、古い hash 状態を次の同名 temp が誤って読む経路を閉じる。
-		checkpointRelPath := relPath + ingestCheckpointSuffix
 		// 直前の temp の unlink と同じ照合で守られている。
-		removeCheckpointErr := os.Remove(ingestCheckpointPath(path))
+		removeCheckpointErr := os.Remove(checkpointPath)
 		if removeCheckpointErr != nil && !errors.Is(removeCheckpointErr, os.ErrNotExist) {
-			log.Warn("delete_reconcile: removing ingest checkpoint with aged temp failed", "err", removeCheckpointErr)
+			log.Warn("delete_reconcile: removing checkpoint with aged temp failed", "err", removeCheckpointErr)
 		} else {
 			if err := w.Storage.DeleteOrphanFile(context.Background(), checkpointRelPath); err != nil {
-				log.Warn("delete_reconcile: clearing ingest checkpoint orphan row", "err", err)
+				log.Warn("delete_reconcile: clearing checkpoint orphan row", "err", err)
 			}
 		}
 		w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
 		return
 	}
 	w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
+}
+
+// deleteOrphanTransferCheckpoint は source temp の flock の下で checkpoint と atomic checkpoint temp を回収する。
+func (w *DeleteReconcileWorker) deleteOrphanTransferCheckpoint(path, relPath string, mtimeGrace time.Duration, log *slog.Logger) {
+	base := filepath.Base(path)
+	basePath := path
+	if checkpointAt := strings.Index(base, fsink.CheckpointSuffix); checkpointAt >= 0 {
+		basePath = filepath.Join(filepath.Dir(path), base[:checkpointAt])
+	}
+	tempLock, err := fsink.LockExistingTempFile(basePath)
+	if err == nil {
+		defer closeOrphanTempLock(tempLock, log)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		if fsink.TempLockBusy(err) {
+			log.Debug("delete_reconcile: transfer temp is locked; deferring checkpoint removal")
+			return
+		}
+		log.Warn("delete_reconcile: locking transfer temp before checkpoint removal", "err", err)
+		return
+	}
+
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		w.clearAbsentOrphanRecord(relPath, log)
+		return
+	}
+	if err != nil {
+		log.Warn("delete_reconcile: stating transfer checkpoint", "err", err)
+		return
+	}
+	if info.ModTime().After(time.Now().Add(-mtimeGrace)) {
+		return
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking transfer checkpoint"); err != nil {
+		log.Warn("delete_reconcile: withholding transfer checkpoint unlink because the store marker did not match", "err", err)
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn("delete_reconcile: removing transfer checkpoint", "err", err)
+		return
+	}
+	w.clearOrphanFileRecord(relPath, info.Size(), true, log)
+}
+
+func (w *DeleteReconcileWorker) lockOrphanTransferTemp(path, relPath string, log *slog.Logger) (*os.File, bool) {
+	tempLock, err := fsink.LockExistingTempFile(path)
+	if err == nil {
+		return tempLock, true
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		w.clearAbsentOrphanRecord(relPath, log)
+		return nil, false
+	}
+	if fsink.TempLockBusy(err) {
+		log.Debug("delete_reconcile: transfer temp is locked; deferring orphan removal")
+		return nil, false
+	}
+	log.Warn("delete_reconcile: locking transfer temp before orphan removal", "err", err)
+	return nil, false
 }
 
 // deleteOrphanIngestCheckpoint は SHA-256 状態を base temp の flock の下で回収する。

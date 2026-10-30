@@ -816,6 +816,9 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		IngestPrecheck:           mediaStore,
 		EncodeProgress:           mediaStore,
 		MediaDelete:              mediaStore,
+		StorageTransfer:          mediaStore,
+		StorageTransferPolicy:    cfg.Storage,
+		StorageRoots:             configuredStorageRoots(cfg.Storage),
 		TSScan:                   mediaStore,
 		EncodeAttempts:           mediaStore,
 		StorageObservation:       mediaStore,
@@ -843,6 +846,15 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	}
 	deferred.Set(adapter)
 	return adapter, nil
+}
+
+// configuredStorageRoots は現在この process がマウントする FS 置き場と root を返す。
+// 複数 FS の実行時束縛は後続の置き場分割タスクで扱うため、ここでは既存の単一 media_dir を使う。
+func configuredStorageRoots(storage config.StorageConfig) map[string]string {
+	if storage.MediaStoreName == "" || storage.MediaDir == "" {
+		return nil
+	}
+	return map[string]string{storage.MediaStoreName: storage.MediaDir}
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。

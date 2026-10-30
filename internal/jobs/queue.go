@@ -46,7 +46,7 @@ const (
 	CleanupQueue = "cleanup"
 	// StorageQueue はストレージ観測ジョブのキュー名。
 	StorageQueue = "storage"
-	// TransferQueue は物理コピーの転送・削除ジョブの論理キュー名。
+	// TransferQueue は desired store への物理コピー転送ジョブの論理キュー名。
 	TransferQueue = "transfer"
 	// TSScanQueue は原本 TS の解析ジョブを site 非依存で処理するキュー名。
 	TSScanQueue = "ts_scan"

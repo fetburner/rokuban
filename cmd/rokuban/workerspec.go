@@ -35,7 +35,7 @@ func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
 		return jobq.QueueSpec{Logical: logical, Physical: physicalQueueNames(logical, sites), MaxWorkers: maxWorkers}
 	}
 	storeQueue := func(logical string, maxWorkers int) jobq.QueueSpec {
-		stores := cfg.Storage.FSStoreNames()
+		stores := mountedFSStoreNames(cfg.Storage)
 		physical := make([]string, 0, len(stores))
 		for _, name := range stores {
 			physical = append(physical, jobs.PhysicalStoreQueueName(logical, name))
@@ -69,6 +69,15 @@ func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
 		// ts_scan は原本全体を読み直すため、同時 I/O を 1 件に抑える。
 		queue(jobs.TSScanQueue, 1),
 	}
+}
+
+func mountedFSStoreNames(storage config.StorageConfig) []string {
+	name := storage.MediaStoreName
+	store, ok := storage.Stores[name]
+	if name == "" || !ok || store.Kind != "fs" {
+		return nil
+	}
+	return []string{name}
 }
 
 // physicalQueueNames は論理キューの物理名を、束縛 site ごとに展開して返す。

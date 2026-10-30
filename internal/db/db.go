@@ -29,8 +29,9 @@ const defaultAPIStatementTimeout = 30 * time.Second
 // 根拠（世帯スケール。数値は保守的な上限であり、実測に基づくチューニングは運用開始後に行う）:
 //   - api (10): HTTP リクエストの同時実行に応じる。SSE 配送は notifier が別に持つため
 //     api 自身が保持し続める接続はなく、ブラウザの複数タブ・同時操作を吸収する余裕を見た値
-//   - worker (8): River の LISTEN 用に 1 本を保持し続け、残りはジョブ claim・
-//     進捗書き込み・`/metrics` のバックログクエリ等に使う。値は実測に基づかない
+//   - worker (9): River の LISTEN 用に 1 本を保持し続け、transfer worker の
+//     転送元ごとの advisory lock 用に 1 本を専有し、残りはジョブ claim・進捗書き込み・
+//     `/metrics` のバックログクエリ等に使う。値は実測に基づかない
 //   - watcher (3): 1 site ぶんのリーダー選出の advisory lock 用に 1 本を保持し
 //     続け、record 処理の短いクエリが散発する。2 site 目以降は site ごとに
 //     goroutine + advisory lock を持つため（cmd/rokuban/server.go の watcher
@@ -48,8 +49,9 @@ var roleConnBudget = map[string]int32{
 
 const (
 	// workerConnFloor は worker ロールの予算（roleConnBudget の worker の値）。
+	// transfer worker の source advisory lock はジョブ中に専用接続を保持する。
 	// 実測に基づかない。
-	workerConnFloor = 8
+	workerConnFloor = 9
 
 	// watcherPerSiteConns は、2 site 目以降の束縛サイトごとに watcher ロールへ
 	// 追加で見込むコネクション数（perSiteConnBudget / minRequiredConns が使う）。
@@ -209,7 +211,8 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpoo
 				"db.max_conns=%d is too small for roles %v bound to %d site(s): at least %d connections are required so that roles holding a "+
 					"connection whose release depends on acquiring another one don't starve the "+
 					"rest of the process's work out of the single shared pool -- watcher's "+
-					"advisory lock (one per bound site) and worker's/notifier's LISTEN "+
+					"advisory lock (one per bound site), worker transfer's source advisory lock, "+
+					"and worker's/notifier's LISTEN "+
 					"(docs/operations.md §3)",
 				cfg.MaxConns, roles, numSites, min)
 		}

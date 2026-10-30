@@ -139,18 +139,19 @@ func TestNewWorkerSpec_PeriodicJobs(t *testing.T) {
 	}
 }
 
-func TestWorkerQueueSpecsQualifyTransferByFSStore(t *testing.T) {
+func TestWorkerQueueSpecsQualifyTransferByMountedFSStore(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.Storage.Stores = map[string]config.StoreConfig{
 		"tokyo":     {Kind: "fs"},
 		"takamatsu": {Kind: "fs"},
 		"s3main":    {Kind: "s3"},
 	}
+	cfg.Storage.MediaStoreName = "tokyo"
 	for _, spec := range workerQueueSpecs(cfg, registryNames(cfg.Registry())) {
 		if spec.Logical != "transfer" {
 			continue
 		}
-		if want := []string{"transfer_takamatsu", "transfer_tokyo"}; !slices.Equal(spec.Physical, want) {
+		if want := []string{"transfer_tokyo"}; !slices.Equal(spec.Physical, want) {
 			t.Fatalf("transfer physical queues = %v, want literal %v", spec.Physical, want)
 		}
 		return

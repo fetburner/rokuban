@@ -197,22 +197,14 @@ type StorageTransferReconcileArgs struct{}
 // Kind はジョブ種別名を返す。
 func (StorageTransferReconcileArgs) Kind() string { return "storage_transfer_reconcile" }
 
-// StorageTransferActionCopy and StorageTransferActionDelete are storage transfer operations.
-const (
-	StorageTransferActionCopy   = "copy"
-	StorageTransferActionDelete = "delete"
-)
-
-// StorageTransferArgs identifies one physical copy transfer or stale-copy deletion.
+// StorageTransferArgs は desired store へコピーする論理資産を指定する。
 type StorageTransferArgs struct {
-	Action            string `json:"action"`
 	MediaAssetID      int64  `json:"media_asset_id"`
-	CopyID            int64  `json:"copy_id,omitempty"`
 	Store             string `json:"store"`
 	PolicyFingerprint string `json:"policy_fingerprint"`
 }
 
-// QueueStore は書き込みまたは削除する物理コピーの置き場を返す。
+// QueueStore は書き込み先の物理コピー置き場を返す。
 func (a StorageTransferArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。

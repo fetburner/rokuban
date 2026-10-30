@@ -20,9 +20,6 @@ import (
 )
 
 func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T], args T) error {
-	if deletion, ok := any(worker).(*DeleteReconcileWorker); ok && deletion.DerivedStore == "" && deletion.MediaStoreName == "" {
-		deletion.DerivedStore = pgstoretest.TestStore
-	}
 	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
 }
 

@@ -86,7 +86,7 @@ ingest が `epg.retention_grace` を跨ぐと、既定値で凍結される。�
 | ロール | budget |
 |---|---|
 | api | 10 |
-| worker | 床 8 |
+| worker | 床 9 |
 | watcher | 3 |
 | notifier | 3 |
 | streamer | 4 |
@@ -105,11 +105,11 @@ ingest が `epg.retention_grace` を跨ぐと、既定値で凍結される。�
 
 #### worker の budget
 
-worker の budget は、床 8 の固定値で、実測に基づく値ではない。
+worker の budget は、床 9 の固定値で、実測に基づく値ではない。
 
-内訳は River の LISTEN 1 本と、ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリである。
+内訳は River の LISTEN 1 本、転送元置き場ごとの advisory lock 1 本、ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリである。転送 lock は pool から取得した接続を転送中に専有するため、worker が 1 件の転送を行える余地を加えている。
 
-**どのジョブも Work の間に接続を保持し続けないので、`ingest.concurrency` や束縛サイト数では増えない。**
+**転送以外の job は Work の間に接続を保持し続けない。worker の転送 queue は 1 本なので、`ingest.concurrency` や束縛サイト数では増えない。**
 
 #### 接続数の fail-fast
 
@@ -117,7 +117,7 @@ worker の budget は、床 8 の固定値で、実測に基づく値ではな�
 
 数える対象は「解放が別の接続取得に依存する専有」である。内訳は watcher の advisory lock（1 サイトあたり 1 本）と、worker / notifier の LISTEN である。合計に余地 1 本を足した値が、`db.max_conns` の下限になる。
 
-lock をプール外の接続で張る案は採らない。`db.max_conns` がプロセスの接続上限だという契約を破るためである。
+advisory lock は pool から借りた接続を `Hijack` して保持する。独立した接続を pool の上限外に作らない。
 
 <details><summary>根拠</summary>
 

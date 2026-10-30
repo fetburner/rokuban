@@ -26,6 +26,7 @@ type deleteCandidateSet struct {
 	untilEncoded   []store.MediaDeleteAsset
 	removedEncoded []store.MediaDeleteAsset
 	oldGeneration  []store.MediaDeleteAsset
+	placement      []store.MediaAssetCopyDeleteCandidate
 	agedOrphans    []string
 }
 
@@ -36,6 +37,11 @@ func (c deleteCandidateSet) total() int {
 			if row.ID > 0 {
 				seen[row.ID] = struct{}{}
 			}
+		}
+	}
+	for _, row := range c.placement {
+		if row.CopyID > 0 {
+			seen[row.CopyID] = struct{}{}
 		}
 	}
 	return len(seen) + len(c.agedOrphans)

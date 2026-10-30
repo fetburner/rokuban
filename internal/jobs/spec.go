@@ -226,7 +226,7 @@ func (a StorageTransferReconcileArgs) Spec() jobq.Spec {
 	return spec(StorageQueue, fixedTimeout(storageTransferReconcileJobTimeout), 1, true, 1)
 }
 
-// Spec は 1 件の転送またはコピー削除の論理キューと締切を返す。
+// Spec は 1 件の物理コピー転送の論理キューと締切を返す。
 func (a StorageTransferArgs) Spec() jobq.Spec {
 	return spec(TransferQueue, fixedTimeout(storageTransferJobTimeout), 1, true, 1)
 }

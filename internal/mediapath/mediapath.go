@@ -31,6 +31,9 @@ const StoreMarkerFileName = ".rokuban-store"
 // rescue の catalog 無し走査だけが原本へ昇格させない。
 const IngestTempFilePrefix = ".rokuban-ingest-"
 
+// StorageTransferTempFilePrefix は物理コピー転送の公開前 temp の接頭辞。
+const StorageTransferTempFilePrefix = ".rokuban-transfer-"
+
 // GeneratedAssetTempFilePrefix は生成アセットを公開する前に canonical と同じ
 // ディレクトリへ作る staged file の予約接頭辞。孤児回収の候補には残すが、
 // catalog 無し rescue では原本へ昇格させない。
@@ -177,6 +180,33 @@ func WriteStoreMarker(mediaDir, expected string) error {
 // パス全体ではなく basename だけを見るため、走査側と ingest 側で同じ判定を使える。
 func IsIngestTempFile(name string) bool {
 	return strings.HasPrefix(filepath.Base(name), IngestTempFilePrefix)
+}
+
+// IsStorageTransferTempFile はファイル名が物理コピー転送の temp かを返す。
+func IsStorageTransferTempFile(name string) bool {
+	base := filepath.Base(name)
+	return strings.HasPrefix(base, StorageTransferTempFilePrefix) && !strings.Contains(base, ".checkpoint")
+}
+
+// IsStorageTransferCheckpointFile は転送 temp の checkpoint または atomic temp かを返す。
+func IsStorageTransferCheckpointFile(name string) bool {
+	base := filepath.Base(name)
+	if !strings.HasPrefix(base, StorageTransferTempFilePrefix) {
+		return false
+	}
+	checkpointAt := strings.Index(base, ".checkpoint")
+	if checkpointAt < 0 {
+		return false
+	}
+	suffix := base[checkpointAt+len(".checkpoint"):]
+	if suffix == "" {
+		return true
+	}
+	if !strings.HasPrefix(suffix, ".tmp-") {
+		return false
+	}
+	tempID := suffix[len(".tmp-"):]
+	return tempID != "" && !strings.ContainsAny(tempID, ".\\/")
 }
 
 // IsGeneratedAssetTempFile は生成アセットの公開前 staged file かを返す。

@@ -10,63 +10,124 @@ import (
 	"encoding/json"
 )
 
+const clearObsoleteMediaAssetTransferAttempts = `-- name: ClearObsoleteMediaAssetTransferAttempts :exec
+DELETE FROM media_asset_transfer_attempts t
+USING media_asset_copies c, media_assets a, recordings r
+WHERE t.copy_id = c.id
+  AND c.media_asset_id = a.id
+  AND a.recording_id = r.id
+  AND (
+      r.deleted_at IS NOT NULL
+      OR c.generation <> COALESCE(a.derived_generation, 0)
+      OR c.store IS DISTINCT FROM desired_media_store(
+          a.kind,
+          $1::jsonb,
+          $2::text,
+          r.site,
+          (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+      )
+      OR (
+          a.kind = 'original'
+          AND EXISTS (
+              SELECT 1 FROM until_encoded_deletable_originals($2) u
+              WHERE u.asset_id = a.id
+          )
+      )
+      OR EXISTS (
+          SELECT 1 FROM active_media_asset_copies(a.id, c.store) target
+          WHERE NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = target.id
+          )
+      )
+      OR NOT storage_transfer_candidate(
+          a.id, $1::jsonb, $3::text[], $2::text
+      )
+  )
+`
+
+type ClearObsoleteMediaAssetTransferAttemptsParams struct {
+	OriginalRules json.RawMessage
+	DerivedStore  string
+	FsStores      []string
+}
+
+// Failures belong to a destination copy. Remove them when it is no longer the
+// current desired copy, including when its logical asset advances generation.
+func (q *Queries) ClearObsoleteMediaAssetTransferAttempts(ctx context.Context, arg ClearObsoleteMediaAssetTransferAttemptsParams) error {
+	_, err := q.db.Exec(ctx, clearObsoleteMediaAssetTransferAttempts, arg.OriginalRules, arg.DerivedStore, arg.FsStores)
+	return err
+}
+
 const completeMediaAssetTransfer = `-- name: CompleteMediaAssetTransfer :one
 WITH observed AS (
     UPDATE media_assets a
-    SET sha256 = COALESCE(a.sha256, $1::bytea)
+    SET sha256 = COALESCE(a.sha256, $2::bytea)
     FROM recordings r
-    WHERE a.id = $2
+    WHERE a.id = $1
       AND a.recording_id = r.id
-      AND a.state = 'active'
       AND r.deleted_at IS NULL
+      AND COALESCE(a.derived_generation, 0) = $3
       AND desired_media_store(
           a.kind,
-          $3::jsonb,
-          $4::text,
+          $4::jsonb,
+          $5::text,
           r.site,
           (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-      ) = $5
-      AND a.size_bytes = $6
-      AND (a.sha256 IS NULL OR a.sha256 = $1::bytea)
+      ) = $6
+      AND a.size_bytes = $7
+      AND (a.sha256 IS NULL OR a.sha256 = $2::bytea)
       AND EXISTS (
           SELECT 1 FROM media_asset_copies c
-          WHERE c.id = $7
+          WHERE c.id = $8
             AND c.media_asset_id = a.id
-            AND c.store = $5
+            AND c.store = $6
+            AND c.generation = COALESCE(a.derived_generation, 0)
             AND c.state = 'pending'
       )
       AND NOT (
           a.kind = 'original'
           AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals($4) u
-              WHERE u.id = a.id
+              SELECT 1 FROM until_encoded_deletable_originals($5) u
+              WHERE u.asset_id = a.id
           )
       )
     RETURNING a.id
 ), activated AS (
     UPDATE media_asset_copies c
     SET state = 'active', created_at = now(), deleted_at = NULL
-    FROM observed o
-    WHERE c.id = $7
+    FROM observed o, media_assets a
+    WHERE c.id = $8
       AND c.media_asset_id = o.id
-      AND c.store = $5
+      AND a.id = o.id
+      AND c.store = $6
+      AND c.generation = COALESCE(a.derived_generation, 0)
       AND c.state = 'pending'
-    RETURNING c.media_asset_id, c.store
+    RETURNING c.id
 ), cleared_missing AS (
     DELETE FROM missing_media_assets m
     USING activated a
-    WHERE m.media_asset_id = a.media_asset_id AND m.store = a.store
+    WHERE m.media_asset_copy_id = a.id
 ), cleared_attempts AS (
     DELETE FROM media_asset_transfer_attempts t
     USING activated a
-    WHERE t.media_asset_id = a.media_asset_id AND t.store = a.store
+    WHERE t.copy_id = a.id
 )
-SELECT count(*)::bigint AS activated_count FROM activated
+SELECT CASE
+         WHEN EXISTS (SELECT 1 FROM activated) THEN 'activated'::text
+         WHEN EXISTS (
+             SELECT 1 FROM media_assets current_asset
+             WHERE current_asset.id = $1
+               AND current_asset.sha256 IS NOT NULL
+               AND current_asset.sha256 <> $2::bytea
+         ) THEN 'sha_mismatch'::text
+         ELSE 'stale'::text
+       END AS outcome
 `
 
 type CompleteMediaAssetTransferParams struct {
-	Sha256        []byte
 	MediaAssetID  int64
+	Sha256        []byte
+	Generation    *int64
 	OriginalRules json.RawMessage
 	DerivedStore  string
 	TargetStore   string
@@ -74,85 +135,44 @@ type CompleteMediaAssetTransferParams struct {
 	CopyID        int64
 }
 
-func (q *Queries) CompleteMediaAssetTransfer(ctx context.Context, arg CompleteMediaAssetTransferParams) (int64, error) {
+func (q *Queries) CompleteMediaAssetTransfer(ctx context.Context, arg CompleteMediaAssetTransferParams) (string, error) {
 	row := q.db.QueryRow(ctx, completeMediaAssetTransfer,
-		arg.Sha256,
 		arg.MediaAssetID,
+		arg.Sha256,
+		arg.Generation,
 		arg.OriginalRules,
 		arg.DerivedStore,
 		arg.TargetStore,
 		arg.SizeBytes,
 		arg.CopyID,
 	)
-	var activated_count int64
-	err := row.Scan(&activated_count)
-	return activated_count, err
+	var outcome string
+	err := row.Scan(&outcome)
+	return outcome, err
 }
 
 const countMediaAssetTransferCandidates = `-- name: CountMediaAssetTransferCandidates :one
-WITH desired_assets AS (
-    SELECT a.id,
-           a.size_bytes,
-           a.kind,
-           desired_media_store(
-               a.kind,
-               $1::jsonb,
-               $2::text,
-               r.site,
-               (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-           ) AS desired_store
-    FROM media_assets a
-    JOIN recordings r ON r.id = a.recording_id
-    WHERE a.state = 'active'
-      AND r.deleted_at IS NULL
-), candidates AS (
-    SELECT d.id, d.size_bytes
-    FROM desired_assets d
-    WHERE d.desired_store IS NOT NULL
-      AND d.desired_store = ANY($3::text[])
-      AND NOT EXISTS (
-          SELECT 1 FROM media_asset_copies target
-          WHERE target.media_asset_id = d.id
-            AND target.store = d.desired_store
-            AND target.state = 'active'
-            AND NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m
-                WHERE m.media_asset_id = d.id AND m.store = d.desired_store
-            )
-      )
-      AND EXISTS (
-          SELECT 1 FROM media_asset_copies source
-          WHERE source.media_asset_id = d.id
-            AND source.store <> d.desired_store
-            AND source.state = 'active'
-            AND NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m
-                WHERE m.media_asset_id = d.id AND m.store = source.store
-            )
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM media_asset_transfer_attempts t
-          WHERE t.media_asset_id = d.id
-            AND t.store = d.desired_store
-            AND t.attempt_count >= $4
-      )
-      AND NOT (
-          d.kind = 'original'
-          AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals($2) u
-              WHERE u.id = d.id
-          )
-      )
+SELECT count(*)::bigint AS asset_count,
+       COALESCE(sum(a.size_bytes), 0)::bigint AS byte_count
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE storage_transfer_candidate(
+    a.id, $1::jsonb, $2::text[], $3::text
 )
-SELECT count(*)::bigint AS asset_count, COALESCE(sum(size_bytes), 0)::bigint AS byte_count
-FROM candidates
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, $1::jsonb, $3::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+      )
+  ) < $4
 `
 
 type CountMediaAssetTransferCandidatesParams struct {
 	OriginalRules json.RawMessage
-	DerivedStore  string
 	FsStores      []string
-	AttemptLimit  int32
+	DerivedStore  string
+	AttemptLimit  int64
 }
 
 type CountMediaAssetTransferCandidatesRow struct {
@@ -163,8 +183,8 @@ type CountMediaAssetTransferCandidatesRow struct {
 func (q *Queries) CountMediaAssetTransferCandidates(ctx context.Context, arg CountMediaAssetTransferCandidatesParams) (CountMediaAssetTransferCandidatesRow, error) {
 	row := q.db.QueryRow(ctx, countMediaAssetTransferCandidates,
 		arg.OriginalRules,
-		arg.DerivedStore,
 		arg.FsStores,
+		arg.DerivedStore,
 		arg.AttemptLimit,
 	)
 	var i CountMediaAssetTransferCandidatesRow
@@ -172,46 +192,64 @@ func (q *Queries) CountMediaAssetTransferCandidates(ctx context.Context, arg Cou
 	return i, err
 }
 
+const countMediaAssetTransferExhausted = `-- name: CountMediaAssetTransferExhausted :one
+SELECT count(*)::bigint
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE storage_transfer_candidate(
+    a.id, $1::jsonb, $2::text[], $3::text
+)
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, $1::jsonb, $3::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+      )
+  ) >= $4
+`
+
+type CountMediaAssetTransferExhaustedParams struct {
+	OriginalRules json.RawMessage
+	FsStores      []string
+	DerivedStore  string
+	AttemptLimit  int64
+}
+
+func (q *Queries) CountMediaAssetTransferExhausted(ctx context.Context, arg CountMediaAssetTransferExhaustedParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countMediaAssetTransferExhausted,
+		arg.OriginalRules,
+		arg.FsStores,
+		arg.DerivedStore,
+		arg.AttemptLimit,
+	)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const discardPendingMediaAssetCopy = `-- name: DiscardPendingMediaAssetCopy :exec
 WITH discarded AS (
     UPDATE media_asset_copies c
     SET state = 'deleted', deleted_at = now()
-    WHERE c.media_asset_id = $1
-      AND c.store = $2
+    WHERE c.id = $1
       AND c.state = 'pending'
-    RETURNING c.media_asset_id, c.store
-), cleared AS (
-    DELETE FROM media_asset_transfer_attempts t
-    USING discarded d
-    WHERE t.media_asset_id = d.media_asset_id AND t.store = d.store
+    RETURNING c.id
+), cleared_missing AS (
+    DELETE FROM missing_media_assets m USING discarded d
+    WHERE m.media_asset_copy_id = d.id
 )
-UPDATE media_assets a
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE a.id = (SELECT media_asset_id FROM discarded)
-  AND a.kind <> 'original'
-  AND a.state = 'active'
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = a.id AND c.state IN ('active', 'pending')
-        AND NOT EXISTS (
-            SELECT 1 FROM discarded d
-            WHERE d.media_asset_id = c.media_asset_id AND d.store = c.store
-        )
-  )
+DELETE FROM media_asset_transfer_attempts t USING discarded d
+WHERE t.copy_id = d.id
 `
 
-type DiscardPendingMediaAssetCopyParams struct {
-	MediaAssetID int64
-	Store        string
-}
-
-func (q *Queries) DiscardPendingMediaAssetCopy(ctx context.Context, arg DiscardPendingMediaAssetCopyParams) error {
-	_, err := q.db.Exec(ctx, discardPendingMediaAssetCopy, arg.MediaAssetID, arg.Store)
+func (q *Queries) DiscardPendingMediaAssetCopy(ctx context.Context, copyID int64) error {
+	_, err := q.db.Exec(ctx, discardPendingMediaAssetCopy, copyID)
 	return err
 }
 
 const getMediaAssetCopyForDeletion = `-- name: GetMediaAssetCopyForDeletion :one
-SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, a.size_bytes, a.kind
+SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, c.state,
+       a.recording_id, a.size_bytes, a.kind, c.generation
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.id = $1
@@ -230,8 +268,11 @@ type GetMediaAssetCopyForDeletionRow struct {
 	MediaAssetID int64
 	Store        string
 	RelPath      string
+	State        string
+	RecordingID  int64
 	SizeBytes    int64
 	Kind         string
+	Generation   int64
 }
 
 func (q *Queries) GetMediaAssetCopyForDeletion(ctx context.Context, arg GetMediaAssetCopyForDeletionParams) (GetMediaAssetCopyForDeletionRow, error) {
@@ -242,32 +283,37 @@ func (q *Queries) GetMediaAssetCopyForDeletion(ctx context.Context, arg GetMedia
 		&i.MediaAssetID,
 		&i.Store,
 		&i.RelPath,
+		&i.State,
+		&i.RecordingID,
 		&i.SizeBytes,
 		&i.Kind,
+		&i.Generation,
 	)
 	return i, err
 }
 
 const listMediaAssetCopiesToDelete = `-- name: ListMediaAssetCopiesToDelete :many
-SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, a.size_bytes, a.kind
+SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, c.state,
+       a.recording_id, a.size_bytes, a.kind, c.generation
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
-WHERE c.state IN ('active', 'deleting')
+WHERE c.store = $1
+  AND c.state IN ('active', 'deleting')
   AND media_asset_copy_prunable(
-      c.media_asset_id,
-      c.store,
-      $1::jsonb,
-      $2,
-      $3::bigint * interval '1 microsecond'
+      c.id,
+      $2::jsonb,
+      $3::text,
+      $4::bigint * interval '1 microsecond'
   )
-ORDER BY c.media_asset_id, c.store
-LIMIT $4
+ORDER BY c.id
+LIMIT $5
 `
 
 type ListMediaAssetCopiesToDeleteParams struct {
+	StoreName     string
 	OriginalRules json.RawMessage
 	DerivedStore  string
-	OverlapUs     int64
+	Overlap       int64
 	RowLimit      int32
 }
 
@@ -276,15 +322,21 @@ type ListMediaAssetCopiesToDeleteRow struct {
 	MediaAssetID int64
 	Store        string
 	RelPath      string
+	State        string
+	RecordingID  int64
 	SizeBytes    int64
 	Kind         string
+	Generation   int64
 }
 
+// Placement cleanup runs inside delete_reconcile. Its list and mark operations
+// both reference the named predicate so the row lock closes the policy-switch race.
 func (q *Queries) ListMediaAssetCopiesToDelete(ctx context.Context, arg ListMediaAssetCopiesToDeleteParams) ([]ListMediaAssetCopiesToDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listMediaAssetCopiesToDelete,
+		arg.StoreName,
 		arg.OriginalRules,
 		arg.DerivedStore,
-		arg.OverlapUs,
+		arg.Overlap,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -299,8 +351,11 @@ func (q *Queries) ListMediaAssetCopiesToDelete(ctx context.Context, arg ListMedi
 			&i.MediaAssetID,
 			&i.Store,
 			&i.RelPath,
+			&i.State,
+			&i.RecordingID,
 			&i.SizeBytes,
 			&i.Kind,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}
@@ -313,70 +368,33 @@ func (q *Queries) ListMediaAssetCopiesToDelete(ctx context.Context, arg ListMedi
 }
 
 const listMediaAssetTransferCandidates = `-- name: ListMediaAssetTransferCandidates :many
-WITH desired_assets AS (
-    SELECT a.id,
-           a.recording_id,
-           a.size_bytes,
-           a.kind,
-           desired_media_store(
-               a.kind,
-               $5::jsonb,
-               $3::text,
-               r.site,
-               (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-           ) AS desired_store
-    FROM media_assets a
-    JOIN recordings r ON r.id = a.recording_id
-    WHERE a.state = 'active'
-      AND r.deleted_at IS NULL
+SELECT a.id AS media_asset_id,
+       desired_media_store(
+           a.kind, $1::jsonb, $2::text,
+           r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+       ) AS desired_store
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE storage_transfer_candidate(
+    a.id, $1::jsonb, $3::text[], $2::text
 )
-SELECT d.id AS media_asset_id, d.desired_store
-FROM desired_assets d
-WHERE d.desired_store IS NOT NULL
-  AND d.desired_store = ANY($1::text[])
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies target
-      WHERE target.media_asset_id = d.id
-        AND target.store = d.desired_store
-        AND target.state = 'active'
-        AND NOT EXISTS (
-            SELECT 1 FROM missing_media_assets m
-            WHERE m.media_asset_id = d.id AND m.store = d.desired_store
-        )
-  )
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies source
-      WHERE source.media_asset_id = d.id
-        AND source.store <> d.desired_store
-        AND source.state = 'active'
-        AND NOT EXISTS (
-            SELECT 1 FROM missing_media_assets m
-            WHERE m.media_asset_id = d.id AND m.store = source.store
-        )
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_transfer_attempts t
-      WHERE t.media_asset_id = d.id
-        AND t.store = d.desired_store
-        AND t.attempt_count >= $2
-  )
-  AND NOT (
-      d.kind = 'original'
-      AND EXISTS (
-          SELECT 1 FROM until_encoded_deletable_originals($3) u
-          WHERE u.id = d.id
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, $1::jsonb, $2::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
       )
-  )
-ORDER BY d.id
-LIMIT $4
+  ) < $4
+ORDER BY a.id
+LIMIT $5
 `
 
 type ListMediaAssetTransferCandidatesParams struct {
-	FsStores      []string
-	AttemptLimit  int32
-	DerivedStore  string
-	RowLimit      int32
 	OriginalRules json.RawMessage
+	DerivedStore  string
+	FsStores      []string
+	AttemptLimit  int64
+	RowLimit      int32
 }
 
 type ListMediaAssetTransferCandidatesRow struct {
@@ -384,15 +402,14 @@ type ListMediaAssetTransferCandidatesRow struct {
 	DesiredStore string
 }
 
-// Transfer reconcile creates jobs from current desired state. Source data is
-// read only from an active, non-missing physical copy.
+// Candidate selection and waiting metrics use the same named predicate.
 func (q *Queries) ListMediaAssetTransferCandidates(ctx context.Context, arg ListMediaAssetTransferCandidatesParams) ([]ListMediaAssetTransferCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, listMediaAssetTransferCandidates,
+		arg.OriginalRules,
+		arg.DerivedStore,
 		arg.FsStores,
 		arg.AttemptLimit,
-		arg.DerivedStore,
 		arg.RowLimit,
-		arg.OriginalRules,
 	)
 	if err != nil {
 		return nil, err
@@ -416,8 +433,6 @@ const lockMediaAssetForStorageTransfer = `-- name: LockMediaAssetForStorageTrans
 SELECT id FROM media_assets WHERE id = $1 FOR UPDATE
 `
 
-// Callers lock this logical row in a separate statement, then invoke the
-// predicate again in this statement so concurrent copy removals serialize.
 func (q *Queries) LockMediaAssetForStorageTransfer(ctx context.Context, mediaAssetID int64) (int64, error) {
 	row := q.db.QueryRow(ctx, lockMediaAssetForStorageTransfer, mediaAssetID)
 	var id int64
@@ -425,37 +440,41 @@ func (q *Queries) LockMediaAssetForStorageTransfer(ctx context.Context, mediaAss
 	return id, err
 }
 
-const markMediaAssetCopyCorrupt = `-- name: MarkMediaAssetCopyCorrupt :exec
+const markMediaAssetCopyCorrupt = `-- name: MarkMediaAssetCopyCorrupt :one
 WITH deleted AS (
     UPDATE media_asset_copies c
     SET state = 'deleted', deleted_at = now()
+    FROM media_assets a
     WHERE c.id = $1
       AND c.media_asset_id = $2
       AND c.store = $3
-      AND c.state <> 'deleted'
-    RETURNING c.media_asset_id, c.store
-), cleared AS (
-    DELETE FROM media_asset_transfer_attempts t
-    USING deleted d
-    WHERE t.media_asset_id = d.media_asset_id AND t.store = d.store
+      AND c.media_asset_id = a.id
+      AND c.generation = COALESCE(a.derived_generation, 0)
+      AND c.state = 'active'
+      AND a.kind <> 'original'
+      AND EXISTS (
+          SELECT 1
+          FROM media_assets original
+          JOIN media_asset_copies original_copy ON original_copy.media_asset_id = original.id
+          WHERE original.recording_id = a.recording_id
+            AND original.kind = 'original'
+            AND original_copy.state = 'active'
+            AND original_copy.generation = COALESCE(original.derived_generation, 0)
+            AND NOT EXISTS (
+                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = original_copy.id
+            )
+      )
+    RETURNING c.id
+), cleared_missing AS (
+    DELETE FROM missing_media_assets m USING deleted d
+    WHERE m.media_asset_copy_id = d.id
+    RETURNING m.media_asset_copy_id
+), cleared_attempts AS (
+    DELETE FROM media_asset_transfer_attempts t USING deleted d
+    WHERE t.copy_id = d.id
+    RETURNING t.copy_id
 )
-UPDATE media_assets a
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE a.id = (SELECT media_asset_id FROM deleted)
-  AND a.kind <> 'original'
-  AND a.state = 'active'
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = a.id AND c.state = 'active'
-        AND NOT EXISTS (
-            SELECT 1 FROM deleted d
-            WHERE d.media_asset_id = c.media_asset_id AND d.store = c.store
-        )
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = a.id AND c.state = 'pending'
-  )
+SELECT count(*)::bigint FROM deleted
 `
 
 type MarkMediaAssetCopyCorruptParams struct {
@@ -464,36 +483,11 @@ type MarkMediaAssetCopyCorruptParams struct {
 	Store        string
 }
 
-func (q *Queries) MarkMediaAssetCopyCorrupt(ctx context.Context, arg MarkMediaAssetCopyCorruptParams) error {
-	_, err := q.db.Exec(ctx, markMediaAssetCopyCorrupt, arg.CopyID, arg.MediaAssetID, arg.Store)
-	return err
-}
-
-const markMediaAssetCopyDeleted = `-- name: MarkMediaAssetCopyDeleted :one
-WITH deleted AS (
-    UPDATE media_asset_copies c
-    SET state = 'deleted', deleted_at = now()
-    WHERE c.id = $1
-      AND c.media_asset_id = $2
-      AND c.store = $3
-      AND c.state = 'deleting'
-    RETURNING c.media_asset_id, c.store
-), cleared_missing AS (
-    DELETE FROM missing_media_assets m
-    USING deleted d
-    WHERE m.media_asset_id = d.media_asset_id AND m.store = d.store
-)
-SELECT count(*)::bigint FROM deleted
-`
-
-type MarkMediaAssetCopyDeletedParams struct {
-	CopyID       int64
-	MediaAssetID int64
-	Store        string
-}
-
-func (q *Queries) MarkMediaAssetCopyDeleted(ctx context.Context, arg MarkMediaAssetCopyDeletedParams) (int64, error) {
-	row := q.db.QueryRow(ctx, markMediaAssetCopyDeleted, arg.CopyID, arg.MediaAssetID, arg.Store)
+// A damaged derived source is retired as a physical copy. The logical row stays
+// available for encode reconcile, which sees that its current generation has no
+// active copy and publishes a replacement.
+func (q *Queries) MarkMediaAssetCopyCorrupt(ctx context.Context, arg MarkMediaAssetCopyCorruptParams) (int64, error) {
+	row := q.db.QueryRow(ctx, markMediaAssetCopyCorrupt, arg.CopyID, arg.MediaAssetID, arg.Store)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -501,16 +495,15 @@ func (q *Queries) MarkMediaAssetCopyDeleted(ctx context.Context, arg MarkMediaAs
 
 const markMediaAssetCopyDeleting = `-- name: MarkMediaAssetCopyDeleting :one
 UPDATE media_asset_copies c
-SET state = 'deleting'
+SET state = 'deleting', deleted_at = NULL
 WHERE c.id = $1
   AND c.media_asset_id = $2
   AND c.store = $3
   AND c.state IN ('active', 'deleting')
   AND media_asset_copy_prunable(
-      c.media_asset_id,
-      c.store,
+      c.id,
       $4::jsonb,
-      $5,
+      $5::text,
       $6::bigint * interval '1 microsecond'
   )
 RETURNING c.rel_path
@@ -522,7 +515,7 @@ type MarkMediaAssetCopyDeletingParams struct {
 	Store         string
 	OriginalRules json.RawMessage
 	DerivedStore  string
-	OverlapUs     int64
+	Overlap       int64
 }
 
 func (q *Queries) MarkMediaAssetCopyDeleting(ctx context.Context, arg MarkMediaAssetCopyDeletingParams) (string, error) {
@@ -532,7 +525,7 @@ func (q *Queries) MarkMediaAssetCopyDeleting(ctx context.Context, arg MarkMediaA
 		arg.Store,
 		arg.OriginalRules,
 		arg.DerivedStore,
-		arg.OverlapUs,
+		arg.Overlap,
 	)
 	var rel_path string
 	err := row.Scan(&rel_path)
@@ -543,10 +536,10 @@ const prepareMediaAssetTransfer = `-- name: PrepareMediaAssetTransfer :one
 WITH asset AS MATERIALIZED (
     SELECT a.id,
            a.recording_id,
-           a.rel_path,
            a.size_bytes,
            a.kind,
            a.sha256,
+           COALESCE(a.derived_generation, 0)::bigint AS generation,
            desired_media_store(
                a.kind,
                $1::jsonb,
@@ -557,74 +550,66 @@ WITH asset AS MATERIALIZED (
     FROM media_assets a
     JOIN recordings r ON r.id = a.recording_id
     WHERE a.id = $3
-      AND a.state = 'active'
       AND r.deleted_at IS NULL
-    FOR UPDATE OF a, r
 ), source AS MATERIALIZED (
-    SELECT c.id, c.store, c.rel_path
-    FROM asset a
-    JOIN media_asset_copies c ON c.media_asset_id = a.id
-    WHERE c.store <> $4
-      AND c.store = ANY($5::text[])
-      AND c.state = 'active'
+    SELECT source_copy.id, source_copy.store, source_copy.rel_path
+    FROM asset
+    JOIN media_asset_copies source_copy ON source_copy.media_asset_id = asset.id
+    JOIN media_assets source_asset ON source_asset.id = source_copy.media_asset_id
+    WHERE source_copy.store <> $4
+      AND source_copy.store = ANY($5::text[])
+      AND source_copy.state = 'active'
+      AND source_copy.generation = COALESCE(source_asset.derived_generation, 0)
       AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_id = a.id AND m.store = c.store
+          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source_copy.id
       )
-    ORDER BY c.created_at DESC, c.id
+    ORDER BY source_copy.created_at DESC, source_copy.id
     LIMIT 1
-), previous AS (
-    SELECT c.id, c.state
-    FROM media_asset_copies c
-    WHERE c.media_asset_id = $3
-      AND c.store = $4
+), eligible AS MATERIALIZED (
+    SELECT asset.id, asset.recording_id, asset.size_bytes, asset.kind, asset.sha256, asset.generation, asset.desired_store
+    FROM asset
+    CROSS JOIN source
+    WHERE asset.desired_store = $4
+      AND storage_transfer_candidate(
+          $3, $1::jsonb,
+          $5::text[], $2::text
+      )
+      AND storage_transfer_attempt_count($3, $4) < $6
 ), upserted AS (
-    INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-    SELECT a.id, $4, a.rel_path, 'pending'
-    FROM asset a
-    CROSS JOIN source s
-    WHERE a.desired_store = $4
-      AND NOT (
-          a.kind = 'original'
-          AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals($2) u
-              WHERE u.id = a.id
-          )
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM media_asset_transfer_attempts t
-          WHERE t.media_asset_id = a.id
-            AND t.store = $4
-            AND t.attempt_count >= $6
-      )
-    ON CONFLICT (media_asset_id, store) DO UPDATE SET
+    INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+    SELECT asset.id, $4, source.rel_path, asset.generation, 'pending'
+    FROM eligible asset
+    CROSS JOIN source
+    ON CONFLICT (media_asset_id, store, generation) WHERE state <> 'deleted'
+    DO UPDATE SET
         rel_path = EXCLUDED.rel_path,
         state = 'pending',
         deleted_at = NULL
-    WHERE media_asset_copies.state <> 'active'
-       OR EXISTS (
-           SELECT 1 FROM missing_media_assets m
-           WHERE m.media_asset_id = EXCLUDED.media_asset_id
-             AND m.store = EXCLUDED.store
+    WHERE media_asset_copies.state = 'pending'
+       OR (
+           media_asset_copies.state = 'active'
+           AND EXISTS (
+               SELECT 1 FROM missing_media_assets m
+               WHERE m.media_asset_copy_id = media_asset_copies.id
+           )
        )
-    RETURNING id, media_asset_id
+    RETURNING id, media_asset_id, store, rel_path
 )
-SELECT a.id AS media_asset_id,
-       a.recording_id,
-       a.rel_path,
-       a.size_bytes,
-       a.kind,
-       a.sha256,
-       a.desired_store,
-       s.store AS source_store,
-       s.rel_path AS source_rel_path,
-       s.id AS source_copy_id,
-       u.id AS copy_id,
-       COALESCE(p.state, '')::text AS previous_copy_state
-FROM asset a
-CROSS JOIN source s
-JOIN upserted u ON u.media_asset_id = a.id
-LEFT JOIN previous p ON p.id = u.id
+SELECT asset.id AS media_asset_id,
+       asset.recording_id,
+       asset.size_bytes,
+       asset.kind,
+       asset.sha256,
+       asset.generation,
+       asset.desired_store,
+       source.store AS source_store,
+       source.rel_path AS source_rel_path,
+       source.id AS source_copy_id,
+       upserted.id AS copy_id,
+       upserted.rel_path
+FROM eligible asset
+CROSS JOIN source
+JOIN upserted ON upserted.media_asset_id = asset.id
 `
 
 type PrepareMediaAssetTransferParams struct {
@@ -633,26 +618,26 @@ type PrepareMediaAssetTransferParams struct {
 	MediaAssetID  int64
 	TargetStore   string
 	FsStores      []string
-	AttemptLimit  int32
+	AttemptLimit  interface{}
 }
 
 type PrepareMediaAssetTransferRow struct {
-	MediaAssetID      int64
-	RecordingID       int64
-	RelPath           string
-	SizeBytes         int64
-	Kind              string
-	Sha256            []byte
-	DesiredStore      string
-	SourceStore       string
-	SourceRelPath     string
-	SourceCopyID      int64
-	CopyID            int64
-	PreviousCopyState string
+	MediaAssetID  int64
+	RecordingID   int64
+	SizeBytes     int64
+	Kind          string
+	Sha256        []byte
+	Generation    int64
+	DesiredStore  string
+	SourceStore   string
+	SourceRelPath string
+	SourceCopyID  int64
+	CopyID        int64
+	RelPath       string
 }
 
-// Lock the logical row before reserving the destination copy. This serializes
-// transfer publication with deletion and recording state changes.
+// The caller first locks the logical asset row in a separate statement, so this
+// statement gets a current READ COMMITTED snapshot before deciding to reserve.
 func (q *Queries) PrepareMediaAssetTransfer(ctx context.Context, arg PrepareMediaAssetTransferParams) (PrepareMediaAssetTransferRow, error) {
 	row := q.db.QueryRow(ctx, prepareMediaAssetTransfer,
 		arg.OriginalRules,
@@ -666,36 +651,35 @@ func (q *Queries) PrepareMediaAssetTransfer(ctx context.Context, arg PrepareMedi
 	err := row.Scan(
 		&i.MediaAssetID,
 		&i.RecordingID,
-		&i.RelPath,
 		&i.SizeBytes,
 		&i.Kind,
 		&i.Sha256,
+		&i.Generation,
 		&i.DesiredStore,
 		&i.SourceStore,
 		&i.SourceRelPath,
 		&i.SourceCopyID,
 		&i.CopyID,
-		&i.PreviousCopyState,
+		&i.RelPath,
 	)
 	return i, err
 }
 
 const recordMediaAssetTransferFailure = `-- name: RecordMediaAssetTransferFailure :exec
-INSERT INTO media_asset_transfer_attempts (media_asset_id, store, attempt_count, last_error)
-VALUES ($1, $2, 1, left($3, 2048))
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
+INSERT INTO media_asset_transfer_attempts (copy_id, attempt_count, last_error)
+VALUES ($1, 1, left($2, 2048))
+ON CONFLICT (copy_id) DO UPDATE SET
     attempt_count = media_asset_transfer_attempts.attempt_count + 1,
     last_error = EXCLUDED.last_error,
     updated_at = now()
 `
 
 type RecordMediaAssetTransferFailureParams struct {
-	MediaAssetID int64
-	Store        string
-	LastError    string
+	CopyID    int64
+	LastError string
 }
 
 func (q *Queries) RecordMediaAssetTransferFailure(ctx context.Context, arg RecordMediaAssetTransferFailureParams) error {
-	_, err := q.db.Exec(ctx, recordMediaAssetTransferFailure, arg.MediaAssetID, arg.Store, arg.LastError)
+	_, err := q.db.Exec(ctx, recordMediaAssetTransferFailure, arg.CopyID, arg.LastError)
 	return err
 }

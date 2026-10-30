@@ -282,6 +282,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 | 原本の保持ポリシー（`until_encoded`） | なし（派生物完備が条件） | ポリシー削除 |
 | ユーザーが外したエンコード版 | なし（他の版が残ることが条件） | 容量を空ける操作 |
 | 旧世代の派生コピー | `storage.transfer.overlap` | 置き換え中の旧ファイルを猶予後に回収 |
+| desired から外れた FS コピー | desired copy が実体ありで猶予経過、別 copy も実体あり | policy 切替後の余分な配置を回収 |
 | 公開前と分かる孤児 | mtime 猶予 + エイジング | temp / staging の回収 |
 | canonical 名の孤児 | エイジング後に報告 | 公開済みファイルの保持と調査 |
 
@@ -309,7 +310,7 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 削除してよいかを決める条件は、スキーマ側に名前付きの述語として 1 箇所に置き、消費するクエリはそれを参照する。手で複製した条件の一部にだけガードが入るドリフトを防ぐためである。
 
-「このアセットは消してよいか」を決める腕は、ごみ箱腕（猶予超過 or 今すぐ purge）・until_encoded 腕（派生物完備）・外した版の腕・旧世代コピーの腕の 4 つである。これを消費するのは `internal/db/queries/delete_reconcile.sql` の入口（腕ごとに 1 つ）・前パスの拾い直し・否定形 2 つである。以前は 2 腕を 5 クエリに手で複製しており、`cardinality(encode_profiles) > 0` のガードが複製の 1 つ（入口）にしか入らずドリフトした。削除可否の腕はスキーマ側に名前を与え、消費するクエリはそこへの参照にする。共有する TS 計測済み条件も別の述語にまとめる。
+「このアセットは消してよいか」を決める腕は、ごみ箱腕（猶予超過 or 今すぐ purge）・until_encoded 腕（派生物完備）・外した版の腕・旧世代コピーの腕・desired から外れた FS コピーの腕の 5 つである。これを消費するのは `internal/db/queries/delete_reconcile.sql` の入口と `internal/db/queries/storage_transfer.sql` の placement 候補・再判定である。削除可否の腕はスキーマ側に名前を与え、消費するクエリはそこへの参照にする。共有する TS 計測済み条件も別の述語にまとめる。
 
 #### 腕ごとの述語
 

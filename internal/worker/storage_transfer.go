@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"os"
@@ -25,11 +26,12 @@ import (
 const (
 	storageTransferAttemptLimit int32 = 10
 	storageTransferRowLimit     int32 = 1000
+	storageTransferLockSnooze         = 30 * time.Second
 )
 
 var errTransferSourceMismatch = errors.New("source copy does not match the logical media asset")
 
-// StorageTransferReconcileWorker enqueues transfer and stale-copy jobs from current policy state.
+// StorageTransferReconcileWorker enqueues missing desired-store copies from current policy state.
 type StorageTransferReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Storage  store.StorageTransfer
@@ -37,7 +39,7 @@ type StorageTransferReconcileWorker struct {
 	RowLimit int32
 }
 
-// Work enqueues desired copies and stale-copy deletions after its read queries have completed.
+// Work enqueues desired copies after the read queries have completed.
 func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.StorageTransferReconcileArgs) error {
 	if w.Enqueuer == nil {
 		return fmt.Errorf("storage transfer reconcile: job enqueuer is nil")
@@ -45,15 +47,19 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	if w.Storage == nil {
 		return fmt.Errorf("storage transfer reconcile: storage contract is nil")
 	}
-	fsStores := w.Config.FSStoreNames()
-	if len(fsStores) < 2 {
-		metrics.StorageTransferWaitingAssets.Set(0)
-		metrics.StorageTransferWaitingBytes.Set(0)
-		return nil
-	}
 	rules, err := w.Config.OriginalRulesJSON()
 	if err != nil {
 		return fmt.Errorf("encoding storage original rules: %w", err)
+	}
+	fsStores := w.Config.FSStoreNames()
+	if err := w.Storage.ClearObsoleteMediaAssetTransferAttempts(ctx, rules, fsStores, w.Config.Derived); err != nil {
+		return fmt.Errorf("clearing obsolete storage transfer attempts: %w", err)
+	}
+	if len(fsStores) < 2 {
+		metrics.StorageTransferWaitingAssets.Set(0)
+		metrics.StorageTransferWaitingBytes.Set(0)
+		metrics.StorageTransferExhaustedAssets.Set(0)
+		return nil
 	}
 	fingerprint, err := w.Config.PolicyFingerprint()
 	if err != nil {
@@ -69,42 +75,33 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	}
 	metrics.StorageTransferWaitingAssets.Set(float64(assets))
 	metrics.StorageTransferWaitingBytes.Set(float64(byteCount))
+	exhausted, err := w.Storage.CountMediaAssetTransferExhausted(ctx, rules, fsStores, w.Config.Derived, storageTransferAttemptLimit)
+	if err != nil {
+		return fmt.Errorf("counting exhausted storage transfers: %w", err)
+	}
+	metrics.StorageTransferExhaustedAssets.Set(float64(exhausted))
 	transfers, err := w.Storage.ListMediaAssetTransferCandidates(ctx, rules, fsStores, w.Config.Derived, storageTransferAttemptLimit, rowLimit)
 	if err != nil {
 		return fmt.Errorf("listing storage transfer candidates: %w", err)
 	}
-	deletions, err := w.Storage.ListMediaAssetCopiesToDelete(ctx, rules, w.Config.Derived, w.Config.Transfer.Overlap.Microseconds(), rowLimit)
-	if err != nil {
-		return fmt.Errorf("listing stale storage copies: %w", err)
-	}
 	for _, candidate := range transfers {
 		if err := enqueueJob(ctx, w.Enqueuer, jobs.StorageTransferArgs{
-			Action: jobs.StorageTransferActionCopy, MediaAssetID: candidate.MediaAssetID,
-			Store: candidate.Store, PolicyFingerprint: fingerprint,
+			MediaAssetID: candidate.MediaAssetID, Store: candidate.Store, PolicyFingerprint: fingerprint,
 		}); err != nil {
 			slog.Error("storage transfer reconcile: failed to enqueue copy", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store, "err", err)
-		}
-	}
-	for _, candidate := range deletions {
-		if err := enqueueJob(ctx, w.Enqueuer, jobs.StorageTransferArgs{
-			Action: jobs.StorageTransferActionDelete, MediaAssetID: candidate.MediaAssetID,
-			CopyID: candidate.CopyID, Store: candidate.Store, PolicyFingerprint: fingerprint,
-		}); err != nil {
-			slog.Error("storage transfer reconcile: failed to enqueue stale-copy delete",
-				"media_asset_id", candidate.MediaAssetID, "copy_id", candidate.CopyID, "store", candidate.Store, "err", err)
 		}
 	}
 	return nil
 }
 
-// StorageTransferWorker copies one logical asset between mounted FS stores or removes one stale copy.
+// StorageTransferWorker copies one logical asset between mounted FS stores.
 type StorageTransferWorker struct {
 	Storage store.StorageTransfer
 	Config  config.StorageConfig
 	Roots   map[string]string
 }
 
-// Work verifies the policy token before touching a store and then runs one copy operation.
+// Work verifies the policy token and mounted destination before reserving one copy operation.
 func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTransferArgs) error {
 	if w.Storage == nil {
 		return fmt.Errorf("storage transfer: storage contract is nil")
@@ -125,22 +122,47 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 	if cfg, ok := w.Config.Stores[args.Store]; !ok || cfg.Kind != "fs" {
 		return fmt.Errorf("storage transfer: store %q is not a configured fs store: %w", args.Store, jobq.ErrDiscard)
 	}
+	targetRoot, ok := w.Roots[args.Store]
+	if !ok || targetRoot == "" {
+		metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
+		return fmt.Errorf("storage transfer: target store %q is not mounted on this worker", args.Store)
+	}
+	if err := requireMediaStoreMarker(targetRoot, args.Store, "starting storage transfer"); err != nil {
+		metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
+		return err
+	}
 	rules, err := w.Config.OriginalRulesJSON()
 	if err != nil {
 		return fmt.Errorf("encoding storage original rules: %w", err)
 	}
-	switch args.Action {
-	case jobs.StorageTransferActionCopy:
-		return w.copyAsset(ctx, args, rules)
-	case jobs.StorageTransferActionDelete:
-		return w.deleteCopy(ctx, args, rules)
-	default:
-		return fmt.Errorf("storage transfer: unknown action %q: %w", args.Action, jobq.ErrDiscard)
+	fsStores, err := w.mountedFSStores(args.Store)
+	if err != nil {
+		return err
 	}
+	return w.copyAsset(ctx, args, rules, fsStores, targetRoot)
 }
 
-func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte) error {
-	fsStores := w.Config.FSStoreNames()
+func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, error) {
+	var mounted []string
+	for _, name := range w.Config.FSStoreNames() {
+		root := w.Roots[name]
+		if root == "" {
+			continue
+		}
+		if err := requireMediaStoreMarker(root, name, "checking storage transfer mount"); err != nil {
+			if name == targetStore {
+				metrics.StorageTransferMountMismatches.WithLabelValues(name).Inc()
+				return nil, fmt.Errorf("storage transfer: target store %q became unavailable before reservation: %w", name, err)
+			}
+			slog.Warn("storage transfer: skipping source store with a mismatched marker", "store", name, "err", err)
+			continue
+		}
+		mounted = append(mounted, name)
+	}
+	return mounted, nil
+}
+
+func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte, fsStores []string, targetRoot string) (retErr error) {
 	transfer, ok, err := w.Storage.PrepareMediaAssetTransfer(
 		ctx, args.MediaAssetID, args.Store, rules, fsStores, w.Config.Derived, storageTransferAttemptLimit,
 	)
@@ -148,18 +170,26 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 		return err
 	}
 	log := slog.With("media_asset_id", transfer.MediaAssetID, "source_store", transfer.SourceStore, "target_store", args.Store)
-	targetRoot, ok := w.Roots[args.Store]
-	if !ok || targetRoot == "" {
-		return fmt.Errorf("storage transfer: target store %q is not mounted on this worker", args.Store)
-	}
 	sourceRoot := w.Roots[transfer.SourceStore]
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "starting storage transfer"); err != nil {
-		return err
+	if sourceRoot == "" {
+		return jobq.Snooze(storageTransferLockSnooze)
 	}
-	if sourceRoot != "" {
-		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
-			return err
+	lease, acquired, err := w.Storage.AcquireTransferSourceBandwidth(ctx, transfer.SourceStore)
+	if err != nil {
+		return fmt.Errorf("acquiring transfer source bandwidth lock: %w", err)
+	}
+	if !acquired {
+		return jobq.Snooze(storageTransferLockSnooze)
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lease.Release(releaseCtx); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("releasing transfer source bandwidth lock: %w", err))
 		}
+	}()
+	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
+		return err
 	}
 	targetPath, err := mediapath.Resolve(targetRoot, transfer.RelPath)
 	if err != nil {
@@ -173,98 +203,81 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 		}
 	}
 	paths := []transferPathLock{{store: args.Store, root: targetRoot, relPath: transfer.RelPath}}
-	if sourcePath != "" {
-		paths = append(paths, transferPathLock{store: transfer.SourceStore, root: sourceRoot, relPath: transfer.SourceRelPath})
-	}
+	paths = append(paths, transferPathLock{store: transfer.SourceStore, root: sourceRoot, relPath: transfer.SourceRelPath})
 	locks, err := lockTransferPaths(ctx, paths)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return w.recordTransferFailure(ctx, transfer, args.Store, log, err)
+		return w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	defer closeTransferLocks(locks)
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing storage transfer destination"); err != nil {
 		return err
 	}
-	if sourceRoot != "" {
-		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
-			return err
-		}
+	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
+		return err
 	}
 
 	if handled, err := w.adoptExistingDestination(ctx, transfer, args, rules, targetPath, sourcePath, log); handled {
 		return err
 	}
-	if sourcePath == "" {
-		return w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("source store %q is not mounted on this worker", transfer.SourceStore))
-	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "creating transfer destination directory"); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("creating transfer destination directory: %w", err))
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("creating transfer destination directory: %w", err))
 	}
-	tempPath := filepath.Join(filepath.Dir(targetPath), fmt.Sprintf(".rokuban-transfer-%d-%d", transfer.MediaAssetID, transfer.CopyID))
+	tempPath := filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, transfer.MediaAssetID, transfer.CopyID))
 	tempLock, created, err := fsink.LockTempFile(tempPath)
 	if err != nil {
 		if fsink.TempLockBusy(err) {
 			return nil
 		}
-		return w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("locking transfer temp: %w", err))
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("locking transfer temp: %w", err))
 	}
 	defer func() { _ = tempLock.Close() }()
 	if created {
 		if err := os.Chmod(tempPath, 0o644); err != nil {
-			return w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("setting transfer temp mode: %w", err))
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("setting transfer temp mode: %w", err))
 		}
 	}
 	if fsink.SameFile(tempPath, targetPath) {
 		digest, size, hashErr := hashTransferFile(ctx, targetPath)
 		if hashErr != nil {
-			return w.recordTransferFailure(ctx, transfer, args.Store, log, hashErr)
+			return w.recordTransferFailure(ctx, transfer, log, hashErr)
 		}
 		if size != transfer.SizeBytes || (len(transfer.SHA256) > 0 && !bytes.Equal(digest, transfer.SHA256)) {
-			return w.sourceMismatch(ctx, transfer, args.Store, log, digest, tempPath, "published transfer temp does not match the logical asset")
+			return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "published transfer temp does not match the logical asset")
 		}
-		return w.completeTransfer(ctx, transfer, args, rules, digest, targetPath, tempPath, false, log)
+		return w.completeTransfer(ctx, transfer, args, rules, digest, sourcePath, targetPath, tempPath, false, log)
 	}
-	digest, size, paused, copyErr := w.copyToTransferTemp(ctx, sourcePath, tempPath, tempLock, transfer.SourceStore, args.Store, transfer.SizeBytes)
+	digest, size, paused, copyErr := w.copyToTransferTemp(ctx, sourcePath, tempPath, tempLock, transfer.SourceStore, args.Store, transfer.SizeBytes, len(transfer.SHA256) > 0)
 	if paused {
 		return nil
 	}
 	if errors.Is(copyErr, errTransferSourceMismatch) {
-		sourceSHA, sourceSize, hashErr := hashTransferFile(ctx, sourcePath)
-		if hashErr != nil {
-			return w.recordTransferFailure(ctx, transfer, args.Store, log, hashErr)
-		}
-		if sourceMatchesTransferMetadata(transfer, sourceSize, sourceSHA) {
-			if err := fsink.RemoveTemp(tempPath); err != nil {
-				return w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("discarding transfer temp that differs from the valid source: %w", err))
-			}
-			return w.recordTransferFailure(ctx, transfer, args.Store, log, errors.New("transfer temp differs from the current source"))
-		}
-		return w.sourceMismatch(ctx, transfer, args.Store, log, sourceSHA, tempPath, "source content or size differs from logical asset")
+		return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "transfer temp prefix differs from source")
 	}
 	if copyErr != nil {
-		return w.recordTransferFailure(ctx, transfer, args.Store, log, copyErr)
+		return w.recordTransferFailure(ctx, transfer, log, copyErr)
 	}
 	if size != transfer.SizeBytes {
-		return w.sourceMismatch(ctx, transfer, args.Store, log, digest, tempPath, fmt.Sprintf("source size %d differs from logical asset size %d", size, transfer.SizeBytes))
+		return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, fmt.Sprintf("source size %d differs from logical asset size %d", size, transfer.SizeBytes))
 	}
 	if len(transfer.SHA256) > 0 && !bytes.Equal(digest, transfer.SHA256) {
-		return w.sourceMismatch(ctx, transfer, args.Store, log, digest, tempPath, "source SHA-256 differs from the logical asset")
+		return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "transfer SHA-256 differs from logical asset")
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing storage transfer"); err != nil {
 		return err
 	}
 	if err := fsink.PublishLink(tempPath, targetPath); err != nil {
-		return w.recordTransferFailure(ctx, transfer, args.Store, log, err)
+		return w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if err := fsink.SyncParentDir(targetPath); err != nil {
-		return w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("syncing transfer destination directory: %w", err))
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("syncing transfer destination directory: %w", err))
 	}
-	return w.completeTransfer(ctx, transfer, args, rules, digest, targetPath, tempPath, true, log)
+	return w.completeTransfer(ctx, transfer, args, rules, digest, sourcePath, targetPath, tempPath, true, log)
 }
 
 func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath, sourcePath string, log *slog.Logger) (bool, error) {
@@ -273,88 +286,50 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 		return false, nil
 	}
 	if statErr != nil {
-		return true, w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("stating transfer destination: %w", statErr))
+		return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("stating transfer destination: %w", statErr))
 	}
 	destinationSHA, size, err := hashTransferFile(ctx, targetPath)
 	if err != nil {
-		return true, w.recordTransferFailure(ctx, transfer, args.Store, log, err)
+		return true, w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if size == transfer.SizeBytes && len(transfer.SHA256) > 0 && bytes.Equal(destinationSHA, transfer.SHA256) {
-		return true, w.completeTransfer(ctx, transfer, args, rules, destinationSHA, targetPath, "", false, log)
+		return true, w.completeTransfer(ctx, transfer, args, rules, destinationSHA, sourcePath, targetPath, "", false, log)
 	}
-	if size == transfer.SizeBytes && sourcePath != "" && len(transfer.SHA256) == 0 {
-		sourceSHA, sourceSize, sourceErr := hashTransferFile(ctx, sourcePath)
+	if size == transfer.SizeBytes && len(transfer.SHA256) == 0 {
+		sourceSHA, sourceSize, sourceErr := w.hashTransferSource(ctx, sourcePath, transfer.SourceStore)
 		if sourceErr != nil {
-			return true, w.recordTransferFailure(ctx, transfer, args.Store, log, sourceErr)
+			return true, w.recordTransferFailure(ctx, transfer, log, sourceErr)
 		}
 		if sourceSize != transfer.SizeBytes {
-			return true, w.sourceMismatch(ctx, transfer, args.Store, log, sourceSHA, "", "source size differs from logical asset")
+			return true, w.handleTransferMismatch(ctx, transfer, log, sourcePath, "", "source size differs from logical asset")
 		}
 		if bytes.Equal(destinationSHA, sourceSHA) {
-			return true, w.completeTransfer(ctx, transfer, args, rules, sourceSHA, targetPath, "", false, log)
+			return true, w.completeTransfer(ctx, transfer, args, rules, sourceSHA, sourcePath, targetPath, "", false, log)
 		}
 	}
-	return true, w.recordTransferFailure(ctx, transfer, args.Store, log, fmt.Errorf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes))
+	return true, w.handleTransferMismatch(ctx, transfer, log, sourcePath, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes))
 }
 
-func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePath, tempPath string, tempLock *os.File, sourceStore, targetStore string, expectedSize int64) ([]byte, int64, bool, error) {
-	info, err := os.Lstat(sourcePath)
+func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePath, tempPath string, tempLock *os.File, sourceStore, targetStore string, expectedSize int64, sourceSHAKnown bool) ([]byte, int64, bool, error) {
+	info, err := validateTransferSource(sourcePath, expectedSize)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("stating transfer source: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, 0, false, fmt.Errorf("transfer source is not a regular file")
-	}
-	if info.Size() != expectedSize {
-		return nil, info.Size(), false, errTransferSourceMismatch
-	}
-	tempInfo, err := tempLock.Stat()
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("stating transfer temp: %w", err)
-	}
-	if tempInfo.Size() > expectedSize {
-		if err := fsink.RemoveCheckpoint(tempPath); err != nil {
-			return nil, 0, false, fmt.Errorf("removing checkpoint for oversized transfer temp: %w", err)
+		if errors.Is(err, errTransferSourceMismatch) {
+			return nil, info.Size(), false, err
 		}
-		if err := tempLock.Truncate(0); err != nil {
-			return nil, 0, false, fmt.Errorf("truncating oversized transfer temp: %w", err)
-		}
+		return nil, 0, false, err
 	}
-	tempInfo, err = tempLock.Stat()
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("stating transfer temp after size check: %w", err)
+	if err := resetOversizedTransferTemp(tempPath, tempLock, expectedSize); err != nil {
+		return nil, 0, false, err
 	}
-	checkpointHasher := sha256.New()
-	checkpointOffset, checkpointed := fsink.RestoreCheckpoint(tempPath, tempInfo.Size(), checkpointHasher)
-	if checkpointed && checkpointOffset > 0 {
-		tempPrefixHasher := sha256.New()
-		tempPrefixReader := io.NewSectionReader(tempLock, 0, checkpointOffset)
-		verifiedPrefixBytes, prefixErr := io.CopyN(tempPrefixHasher, &storageTransferContextReader{ctx: ctx, reader: tempPrefixReader}, checkpointOffset)
-		if ctx.Err() != nil {
-			return nil, verifiedPrefixBytes, true, nil
-		}
-		if prefixErr != nil {
-			return nil, verifiedPrefixBytes, false, fmt.Errorf("verifying checkpointed transfer temp prefix: %w", prefixErr)
-		}
-		if verifiedPrefixBytes != checkpointOffset {
-			return nil, verifiedPrefixBytes, false, fmt.Errorf("verifying checkpointed transfer temp prefix: read=%d expected=%d", verifiedPrefixBytes, checkpointOffset)
-		}
-		if !bytes.Equal(tempPrefixHasher.Sum(nil), checkpointHasher.Sum(nil)) {
-			if err := fsink.RemoveCheckpoint(tempPath); err != nil {
-				return nil, 0, false, fmt.Errorf("removing checkpoint for damaged transfer temp: %w", err)
-			}
-			if err := tempLock.Truncate(0); err != nil {
-				return nil, 0, false, fmt.Errorf("truncating damaged transfer temp: %w", err)
-			}
-		}
+	paused, err := verifyCheckpointedTransferTemp(ctx, tempPath, tempLock)
+	if paused || err != nil {
+		return nil, info.Size(), paused, err
 	}
 	hasher := sha256.New()
-	offset, replayComplete, err := fsink.ReplayTempFileWithCheckpoint(ctx, tempPath, tempLock, hasher, func() error {
-		return requireMediaStoreMarker(w.Roots[targetStore], targetStore, "saving transfer checkpoint")
-	})
+	offset, replayComplete, err := replayTransferTemp(ctx, tempPath, tempLock, w.Roots[targetStore], targetStore, hasher)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, 0, true, nil
+			return nil, 0, true, nil //nolint:nilerr // Shutdown cancellation pauses the transfer instead of recording a failure.
 		}
 		return nil, 0, false, fmt.Errorf("replaying transfer temp: %w", err)
 	}
@@ -366,34 +341,133 @@ func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePa
 		return nil, offset, false, fmt.Errorf("opening transfer source: %w", err)
 	}
 	defer func() { _ = source.Close() }()
-	bandwidth, err := w.Config.TransferBandwidthBytesPerSecond(sourceStore)
+	sourceReader, err := w.transferSourceReader(ctx, sourceStore, source)
 	if err != nil {
-		return nil, offset, false, fmt.Errorf("parsing source bandwidth limit: %w", err)
+		return nil, offset, false, err
 	}
-	sourceReader := io.Reader(&storageTransferContextReader{ctx: ctx, reader: source})
-	if bandwidth > 0 {
-		sourceReader = &transferRateReader{ctx: ctx, reader: sourceReader, bytesPerSecond: bandwidth, started: time.Now()}
+	paused, err = verifyTransferSourcePrefix(ctx, source, sourceReader, offset, sourceSHAKnown, hasher)
+	if paused || err != nil {
+		return nil, offset, paused, err
+	}
+	written, paused, err := w.copyTransferSourceRemainder(ctx, sourceReader, tempPath, tempLock, targetStore, offset, expectedSize, hasher)
+	if paused || err != nil {
+		return nil, written, paused, err
+	}
+	if written != expectedSize {
+		return hasher.Sum(nil), written, false, nil
+	}
+	if err := writeFinalTransferCheckpoint(tempPath, targetStore, written, hasher, w.Roots); err != nil {
+		return nil, written, false, err
+	}
+	return hasher.Sum(nil), written, false, nil
+}
+
+func validateTransferSource(sourcePath string, expectedSize int64) (os.FileInfo, error) {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("stating transfer source: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("transfer source is not a regular file")
+	}
+	if info.Size() != expectedSize {
+		return info, errTransferSourceMismatch
+	}
+	return info, nil
+}
+
+func resetOversizedTransferTemp(tempPath string, tempLock *os.File, expectedSize int64) error {
+	tempInfo, err := tempLock.Stat()
+	if err != nil {
+		return fmt.Errorf("stating transfer temp: %w", err)
+	}
+	if tempInfo.Size() > expectedSize {
+		if err := fsink.RemoveCheckpoint(tempPath); err != nil {
+			return fmt.Errorf("removing checkpoint for oversized transfer temp: %w", err)
+		}
+		if err := tempLock.Truncate(0); err != nil {
+			return fmt.Errorf("truncating oversized transfer temp: %w", err)
+		}
+	}
+	if _, err := tempLock.Stat(); err != nil {
+		return fmt.Errorf("stating transfer temp after size check: %w", err)
+	}
+	return nil
+}
+
+func verifyCheckpointedTransferTemp(ctx context.Context, tempPath string, tempLock *os.File) (bool, error) {
+	tempInfo, err := tempLock.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stating transfer temp after size check: %w", err)
+	}
+	checkpointHasher := sha256.New()
+	checkpointOffset, checkpointed := fsink.RestoreCheckpoint(tempPath, tempInfo.Size(), checkpointHasher)
+	if !checkpointed || checkpointOffset == 0 {
+		return false, nil
+	}
+	tempPrefixHasher := sha256.New()
+	tempPrefixReader := io.NewSectionReader(tempLock, 0, checkpointOffset)
+	verifiedPrefixBytes, prefixErr := io.CopyN(tempPrefixHasher, &storageTransferContextReader{ctx: ctx, reader: tempPrefixReader}, checkpointOffset)
+	if ctx.Err() != nil {
+		return true, nil //nolint:nilerr // Shutdown cancellation pauses the transfer instead of recording a failure.
+	}
+	if prefixErr != nil {
+		return false, fmt.Errorf("verifying checkpointed transfer temp prefix: %w", prefixErr)
+	}
+	if verifiedPrefixBytes != checkpointOffset {
+		return false, fmt.Errorf("verifying checkpointed transfer temp prefix: read=%d expected=%d", verifiedPrefixBytes, checkpointOffset)
+	}
+	if bytes.Equal(tempPrefixHasher.Sum(nil), checkpointHasher.Sum(nil)) {
+		return false, nil
+	}
+	if err := fsink.RemoveCheckpoint(tempPath); err != nil {
+		return false, fmt.Errorf("removing checkpoint for damaged transfer temp: %w", err)
+	}
+	if err := tempLock.Truncate(0); err != nil {
+		return false, fmt.Errorf("truncating damaged transfer temp: %w", err)
+	}
+	return false, nil
+}
+
+func replayTransferTemp(ctx context.Context, tempPath string, tempLock *os.File, targetRoot, targetStore string, hasher hash.Hash) (int64, bool, error) {
+	return fsink.ReplayTempFileWithCheckpoint(ctx, tempPath, tempLock, hasher, func() error {
+		return requireMediaStoreMarker(targetRoot, targetStore, "saving transfer checkpoint")
+	})
+}
+
+func verifyTransferSourcePrefix(ctx context.Context, source *os.File, sourceReader io.Reader, offset int64, sourceSHAKnown bool, tempHasher hash.Hash) (bool, error) {
+	if offset == 0 {
+		return false, nil
+	}
+	if sourceSHAKnown {
+		if _, err := source.Seek(offset, io.SeekStart); err != nil {
+			return false, fmt.Errorf("seeking transfer source to checkpoint offset %d: %w", offset, err)
+		}
+		return false, nil
 	}
 	sourcePrefixHasher := sha256.New()
-	verifiedPrefixBytes, prefixErr := io.CopyN(sourcePrefixHasher, sourceReader, offset)
-	if prefixErr != nil {
+	_, err := io.CopyN(sourcePrefixHasher, sourceReader, offset)
+	if err != nil {
 		if ctx.Err() != nil {
-			return nil, offset, true, nil
+			return true, nil //nolint:nilerr // Shutdown cancellation pauses the transfer instead of recording a failure.
 		}
-		if errors.Is(prefixErr, io.EOF) || errors.Is(prefixErr, io.ErrUnexpectedEOF) {
-			return nil, verifiedPrefixBytes, false, errTransferSourceMismatch
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, errTransferSourceMismatch
 		}
-		return nil, verifiedPrefixBytes, false, fmt.Errorf("hashing current transfer source prefix: %w", prefixErr)
+		return false, fmt.Errorf("hashing current transfer source prefix: %w", err)
 	}
-	if !bytes.Equal(sourcePrefixHasher.Sum(nil), hasher.Sum(nil)) {
-		return nil, offset, false, errTransferSourceMismatch
+	if !bytes.Equal(sourcePrefixHasher.Sum(nil), tempHasher.Sum(nil)) {
+		return false, errTransferSourceMismatch
 	}
+	return false, nil
+}
+
+func (w *StorageTransferWorker) copyTransferSourceRemainder(ctx context.Context, sourceReader io.Reader, tempPath string, tempLock *os.File, targetStore string, offset, expectedSize int64, hasher hash.Hash) (int64, bool, error) {
 	writer, err := fsink.OpenFileFromLock(tempLock)
 	if err != nil {
-		return nil, offset, false, fmt.Errorf("duplicating transfer temp descriptor: %w", err)
+		return offset, false, fmt.Errorf("duplicating transfer temp descriptor: %w", err)
 	}
-	reader := io.LimitReader(sourceReader, expectedSize-offset)
-	count, copyErr := io.CopyBuffer(fsink.NewHashingWriter(writer, hasher), reader, make([]byte, 128*1024))
+	count, copyErr := io.CopyBuffer(fsink.NewHashingWriter(writer, hasher), io.LimitReader(sourceReader, expectedSize-offset), make([]byte, 128*1024))
 	closeErr := writer.Close()
 	written := offset + count
 	if copyErr != nil {
@@ -401,40 +475,55 @@ func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePa
 			if err := fsink.PersistCheckpoint(tempPath, tempLock, written, hasher, func() error {
 				return requireMediaStoreMarker(w.Roots[targetStore], targetStore, "persisting transfer checkpoint")
 			}); err != nil {
-				return nil, written, false, fmt.Errorf("persisting interrupted transfer: %w", err)
+				return written, false, fmt.Errorf("persisting interrupted transfer: %w", err)
 			}
-			return nil, written, true, nil
+			return written, true, nil
 		}
-		return nil, written, false, fmt.Errorf("copying transfer source: %w", copyErr)
+		return written, false, fmt.Errorf("copying transfer source: %w", copyErr)
 	}
 	if closeErr != nil {
-		return nil, written, false, fmt.Errorf("closing transfer temp writer: %w", closeErr)
+		return written, false, fmt.Errorf("closing transfer temp writer: %w", closeErr)
 	}
 	if err := tempLock.Sync(); err != nil {
-		return nil, written, false, fmt.Errorf("syncing transfer temp: %w", err)
+		return written, false, fmt.Errorf("syncing transfer temp: %w", err)
 	}
-	if written != expectedSize {
-		return hasher.Sum(nil), written, false, nil
-	}
-	if err := requireMediaStoreMarker(w.Roots[targetStore], targetStore, "writing transfer checkpoint"); err != nil {
-		return nil, written, false, err
-	}
-	if err := fsink.WriteCheckpoint(tempPath, written, hasher, nil); err != nil {
-		return nil, written, false, fmt.Errorf("writing final transfer checkpoint: %w", err)
-	}
-	return hasher.Sum(nil), written, false, nil
+	return written, false, nil
 }
 
-func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
+func writeFinalTransferCheckpoint(tempPath, targetStore string, written int64, hasher hash.Hash, roots map[string]string) error {
+	if err := requireMediaStoreMarker(roots[targetStore], targetStore, "writing transfer checkpoint"); err != nil {
+		return err
+	}
+	if err := fsink.WriteCheckpoint(tempPath, written, hasher, nil); err != nil {
+		return fmt.Errorf("writing final transfer checkpoint: %w", err)
+	}
+	return nil
+}
+
+func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, sourcePath, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
 	if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
 		return err
 	}
-	activated, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
+	activated, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
 	if err != nil {
 		return err
 	}
 	if !activated {
-		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.MediaAssetID, args.Store); err != nil {
+		if rejection == "sha_mismatch" {
+			if createdCanonical {
+				if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing transfer rejected by a newer SHA-256 observation"); err != nil {
+					return err
+				}
+				if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("removing transfer rejected by a newer SHA-256 observation: %w", err)
+				}
+				if err := fsink.SyncParentDir(targetPath); err != nil {
+					return fmt.Errorf("syncing transfer directory after SHA-256 rejection: %w", err)
+				}
+			}
+			return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "completion rejected a stale SHA-256")
+		}
+		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
 			return err
 		}
 		if createdCanonical {
@@ -467,100 +556,58 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 	return nil
 }
 
-func (w *StorageTransferWorker) sourceMismatch(ctx context.Context, transfer store.MediaAssetTransfer, targetStore string, log *slog.Logger, digest []byte, tempPath, reason string) error {
-	if transfer.Kind != "original" {
-		if err := w.Storage.MarkMediaAssetCopyCorrupt(ctx, transfer.MediaAssetID, transfer.SourceCopyID, transfer.SourceStore); err != nil {
-			return err
+func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger, sourcePath, tempPath, reason string) error {
+	sourceSHA, sourceSize, err := w.hashTransferSource(ctx, sourcePath, transfer.SourceStore)
+	if err != nil {
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("rechecking transfer source after %s: %w", reason, err))
+	}
+	if sourceMatchesTransferMetadata(transfer, sourceSize, sourceSHA) {
+		if tempPath != "" {
+			if err := fsink.RemoveTemp(tempPath); err != nil {
+				return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("discarding transfer temp that differs from the valid source: %w", err))
+			}
 		}
-		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.MediaAssetID, targetStore); err != nil {
-			return err
-		}
-		log.Warn("storage transfer: marked corrupt derived source for recreation", "reason", reason, "sha256", fmt.Sprintf("%x", digest))
-	} else {
-		log.Error("storage transfer: original source does not match its logical asset; preserving source", "reason", reason, "sha256", fmt.Sprintf("%x", digest))
-		if err := w.recordTransferFailure(ctx, transfer, targetStore, log, fmt.Errorf("%w: %s", errTransferSourceMismatch, reason)); err != nil {
-			return err
-		}
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("destination differs from the valid source: %s", reason))
+	}
+	if transfer.Kind == "original" {
+		log.Error("storage transfer: original source does not match its logical asset; preserving source",
+			"reason", reason, "sha256", fmt.Sprintf("%x", sourceSHA), "size", sourceSize)
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("%w: %s", errTransferSourceMismatch, reason))
+	}
+
+	corrupt, err := w.Storage.MarkMediaAssetCopyCorrupt(ctx, transfer.MediaAssetID, transfer.SourceCopyID, transfer.SourceStore)
+	if err != nil {
+		return err
 	}
 	if tempPath != "" {
 		if err := fsink.RemoveTemp(tempPath); err != nil {
 			log.Warn("storage transfer: removing mismatched temp failed", "path", tempPath, "err", err)
 		}
 	}
-	return nil
+	if corrupt {
+		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
+			return err
+		}
+		log.Warn("storage transfer: marked corrupt derived source for recreation", "reason", reason, "sha256", fmt.Sprintf("%x", sourceSHA))
+		return nil
+	}
+	log.Error("storage transfer: derived source is inconsistent but no present original copy can rebuild it",
+		"reason", reason, "sha256", fmt.Sprintf("%x", sourceSHA))
+	return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived source mismatch without a present original: %s", reason))
 }
 
 func sourceMatchesTransferMetadata(transfer store.MediaAssetTransfer, sourceSize int64, sourceSHA []byte) bool {
 	return sourceSize == transfer.SizeBytes && (len(transfer.SHA256) == 0 || bytes.Equal(sourceSHA, transfer.SHA256))
 }
 
-func (w *StorageTransferWorker) recordTransferFailure(ctx context.Context, transfer store.MediaAssetTransfer, targetStore string, log *slog.Logger, cause error) error {
+func (w *StorageTransferWorker) recordTransferFailure(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger, cause error) error {
 	if ctx.Err() != nil {
 		return nil //nolint:nilerr // Shutdown cancellation must not count as a transfer failure.
 	}
-	if err := w.Storage.RecordMediaAssetTransferFailure(ctx, transfer.MediaAssetID, targetStore, cause.Error()); err != nil {
+	if err := w.Storage.RecordMediaAssetTransferFailure(ctx, transfer.CopyID, cause.Error()); err != nil {
 		return fmt.Errorf("recording transfer failure after %w: %w", cause, err)
 	}
 	log.Warn("storage transfer: copy attempt failed", "err", cause)
-	return nil
-}
-
-func (w *StorageTransferWorker) deleteCopy(ctx context.Context, args jobs.StorageTransferArgs, rules []byte) error {
-	if args.CopyID <= 0 {
-		return fmt.Errorf("storage transfer: delete action has no copy ID: %w", jobq.ErrDiscard)
-	}
-	candidate, ok, err := w.Storage.GetMediaAssetCopyForDeletion(ctx, store.MediaAssetCopyDeleteCandidate{
-		CopyID: args.CopyID, MediaAssetID: args.MediaAssetID, Store: args.Store,
-	})
-	if err != nil || !ok {
-		return err
-	}
-	root, ok := w.Roots[args.Store]
-	if !ok || root == "" {
-		return fmt.Errorf("storage transfer: store %q is not mounted on this worker", args.Store)
-	}
-	if err := requireMediaStoreMarker(root, args.Store, "starting stale-copy deletion"); err != nil {
-		return err
-	}
-	path, err := mediapath.Resolve(root, candidate.RelPath)
-	if err != nil {
-		return fmt.Errorf("resolving stale copy path: %w", err)
-	}
-	locks, err := lockTransferPaths(ctx, []transferPathLock{{store: args.Store, root: root, relPath: candidate.RelPath}})
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		return fmt.Errorf("locking stale copy before delete: %w", err)
-	}
-	defer closeTransferLocks(locks)
-	markedPath, marked, err := w.Storage.MarkMediaAssetCopyDeleting(ctx, candidate, rules, w.Config.Derived, w.Config.Transfer.Overlap.Microseconds())
-	if err != nil || !marked {
-		return err
-	}
-	if markedPath != candidate.RelPath {
-		return nil
-	}
-	if err := requireMediaStoreMarker(root, args.Store, "unlinking stale media copy"); err != nil {
-		return err
-	}
-	if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-		return fmt.Errorf("removing stale media copy: %w", removeErr)
-	}
-	if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("syncing stale copy directory after unlink: %w", err)
-	}
-	if err := requireMediaStoreMarker(root, args.Store, "marking stale copy deleted"); err != nil {
-		return err
-	}
-	deleted, err := w.Storage.MarkMediaAssetCopyDeleted(ctx, candidate)
-	if err != nil {
-		return err
-	}
-	if deleted {
-		metrics.DeleteReconcileDeleted.WithLabelValues("placement").Inc()
-		metrics.DeleteReconcileBytes.WithLabelValues("placement").Add(float64(candidate.SizeBytes))
-	}
 	return nil
 }
 
@@ -618,6 +665,50 @@ func hashTransferFile(ctx context.Context, path string) ([]byte, int64, error) {
 	}
 	if count != info.Size() {
 		return nil, count, fmt.Errorf("transfer file changed while hashing: read=%d size=%d", count, info.Size())
+	}
+	return hasher.Sum(nil), count, nil
+}
+
+func (w *StorageTransferWorker) transferSourceReader(ctx context.Context, sourceStore string, source io.Reader) (io.Reader, error) {
+	bandwidth, err := w.Config.TransferBandwidthBytesPerSecond(sourceStore)
+	if err != nil {
+		return nil, fmt.Errorf("parsing source bandwidth limit: %w", err)
+	}
+	reader := io.Reader(&storageTransferContextReader{ctx: ctx, reader: source})
+	if bandwidth > 0 {
+		reader = &transferRateReader{ctx: ctx, reader: reader, bytesPerSecond: bandwidth, started: time.Now()}
+	}
+	return reader, nil
+}
+
+func (w *StorageTransferWorker) hashTransferSource(ctx context.Context, path, sourceStore string) ([]byte, int64, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("stating transfer source: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, 0, errors.New("transfer source is not a regular file")
+	}
+	source, err := os.Open(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("opening transfer source: %w", err)
+	}
+	reader, readerErr := w.transferSourceReader(ctx, sourceStore, source)
+	if readerErr != nil {
+		_ = source.Close()
+		return nil, 0, readerErr
+	}
+	hasher := sha256.New()
+	count, copyErr := io.Copy(hasher, reader)
+	closeErr := source.Close()
+	if copyErr != nil {
+		return nil, count, fmt.Errorf("hashing transfer source: %w", copyErr)
+	}
+	if closeErr != nil {
+		return nil, count, fmt.Errorf("closing transfer source after hashing: %w", closeErr)
+	}
+	if count != info.Size() {
+		return nil, count, fmt.Errorf("transfer source changed while hashing: read=%d size=%d", count, info.Size())
 	}
 	return hasher.Sum(nil), count, nil
 }

@@ -1,131 +1,102 @@
--- Transfer reconcile creates jobs from current desired state. Source data is
--- read only from an active, non-missing physical copy.
+-- Candidate selection and waiting metrics use the same named predicate.
 -- name: ListMediaAssetTransferCandidates :many
-WITH desired_assets AS (
-    SELECT a.id,
-           a.recording_id,
-           a.size_bytes,
-           a.kind,
-           desired_media_store(
-               a.kind,
-               sqlc.arg('original_rules')::jsonb,
-               sqlc.arg('derived_store')::text,
-               r.site,
-               (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-           ) AS desired_store
-    FROM media_assets a
-    JOIN recordings r ON r.id = a.recording_id
-    WHERE a.state = 'active'
-      AND r.deleted_at IS NULL
+SELECT a.id AS media_asset_id,
+       desired_media_store(
+           a.kind, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+           r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+       ) AS desired_store
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE storage_transfer_candidate(
+    a.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
 )
-SELECT d.id AS media_asset_id, d.desired_store
-FROM desired_assets d
-WHERE d.desired_store IS NOT NULL
-  AND d.desired_store = ANY(sqlc.arg('fs_stores')::text[])
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies target
-      WHERE target.media_asset_id = d.id
-        AND target.store = d.desired_store
-        AND target.state = 'active'
-        AND NOT EXISTS (
-            SELECT 1 FROM missing_media_assets m
-            WHERE m.media_asset_id = d.id AND m.store = d.desired_store
-        )
-  )
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies source
-      WHERE source.media_asset_id = d.id
-        AND source.store <> d.desired_store
-        AND source.state = 'active'
-        AND NOT EXISTS (
-            SELECT 1 FROM missing_media_assets m
-            WHERE m.media_asset_id = d.id AND m.store = source.store
-        )
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_transfer_attempts t
-      WHERE t.media_asset_id = d.id
-        AND t.store = d.desired_store
-        AND t.attempt_count >= sqlc.arg('attempt_limit')
-  )
-  AND NOT (
-      d.kind = 'original'
-      AND EXISTS (
-          SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) u
-          WHERE u.id = d.id
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
       )
-  )
-ORDER BY d.id
+  ) < sqlc.arg('attempt_limit')
+ORDER BY a.id
 LIMIT sqlc.arg('row_limit');
 
 -- name: CountMediaAssetTransferCandidates :one
-WITH desired_assets AS (
-    SELECT a.id,
-           a.size_bytes,
-           a.kind,
-           desired_media_store(
-               a.kind,
-               sqlc.arg('original_rules')::jsonb,
-               sqlc.arg('derived_store')::text,
-               r.site,
-               (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-           ) AS desired_store
-    FROM media_assets a
-    JOIN recordings r ON r.id = a.recording_id
-    WHERE a.state = 'active'
-      AND r.deleted_at IS NULL
-), candidates AS (
-    SELECT d.id, d.size_bytes
-    FROM desired_assets d
-    WHERE d.desired_store IS NOT NULL
-      AND d.desired_store = ANY(sqlc.arg('fs_stores')::text[])
-      AND NOT EXISTS (
-          SELECT 1 FROM media_asset_copies target
-          WHERE target.media_asset_id = d.id
-            AND target.store = d.desired_store
-            AND target.state = 'active'
-            AND NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m
-                WHERE m.media_asset_id = d.id AND m.store = d.desired_store
-            )
+SELECT count(*)::bigint AS asset_count,
+       COALESCE(sum(a.size_bytes), 0)::bigint AS byte_count
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE storage_transfer_candidate(
+    a.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
+)
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
       )
-      AND EXISTS (
-          SELECT 1 FROM media_asset_copies source
-          WHERE source.media_asset_id = d.id
-            AND source.store <> d.desired_store
-            AND source.state = 'active'
-            AND NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m
-                WHERE m.media_asset_id = d.id AND m.store = source.store
-            )
+  ) < sqlc.arg('attempt_limit');
+
+-- name: CountMediaAssetTransferExhausted :one
+SELECT count(*)::bigint
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE storage_transfer_candidate(
+    a.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
+)
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
       )
-      AND NOT EXISTS (
-          SELECT 1 FROM media_asset_transfer_attempts t
-          WHERE t.media_asset_id = d.id
-            AND t.store = d.desired_store
-            AND t.attempt_count >= sqlc.arg('attempt_limit')
+  ) >= sqlc.arg('attempt_limit');
+
+-- Failures belong to a destination copy. Remove them when it is no longer the
+-- current desired copy, including when its logical asset advances generation.
+-- name: ClearObsoleteMediaAssetTransferAttempts :exec
+DELETE FROM media_asset_transfer_attempts t
+USING media_asset_copies c, media_assets a, recordings r
+WHERE t.copy_id = c.id
+  AND c.media_asset_id = a.id
+  AND a.recording_id = r.id
+  AND (
+      r.deleted_at IS NOT NULL
+      OR c.generation <> COALESCE(a.derived_generation, 0)
+      OR c.store IS DISTINCT FROM desired_media_store(
+          a.kind,
+          sqlc.arg('original_rules')::jsonb,
+          sqlc.arg('derived_store')::text,
+          r.site,
+          (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
       )
-      AND NOT (
-          d.kind = 'original'
+      OR (
+          a.kind = 'original'
           AND EXISTS (
               SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) u
-              WHERE u.id = d.id
+              WHERE u.asset_id = a.id
           )
       )
-)
-SELECT count(*)::bigint AS asset_count, COALESCE(sum(size_bytes), 0)::bigint AS byte_count
-FROM candidates;
+      OR EXISTS (
+          SELECT 1 FROM active_media_asset_copies(a.id, c.store) target
+          WHERE NOT EXISTS (
+              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = target.id
+          )
+      )
+      OR NOT storage_transfer_candidate(
+          a.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
+      )
+  );
 
--- Lock the logical row before reserving the destination copy. This serializes
--- transfer publication with deletion and recording state changes.
+-- The caller first locks the logical asset row in a separate statement, so this
+-- statement gets a current READ COMMITTED snapshot before deciding to reserve.
 -- name: PrepareMediaAssetTransfer :one
 WITH asset AS MATERIALIZED (
     SELECT a.id,
            a.recording_id,
-           a.rel_path,
            a.size_bytes,
            a.kind,
            a.sha256,
+           COALESCE(a.derived_generation, 0)::bigint AS generation,
            desired_media_store(
                a.kind,
                sqlc.arg('original_rules')::jsonb,
@@ -136,74 +107,66 @@ WITH asset AS MATERIALIZED (
     FROM media_assets a
     JOIN recordings r ON r.id = a.recording_id
     WHERE a.id = sqlc.arg('media_asset_id')
-      AND a.state = 'active'
       AND r.deleted_at IS NULL
-    FOR UPDATE OF a, r
 ), source AS MATERIALIZED (
-    SELECT c.id, c.store, c.rel_path
-    FROM asset a
-    JOIN media_asset_copies c ON c.media_asset_id = a.id
-    WHERE c.store <> sqlc.arg('target_store')
-      AND c.store = ANY(sqlc.arg('fs_stores')::text[])
-      AND c.state = 'active'
+    SELECT source_copy.id, source_copy.store, source_copy.rel_path
+    FROM asset
+    JOIN media_asset_copies source_copy ON source_copy.media_asset_id = asset.id
+    JOIN media_assets source_asset ON source_asset.id = source_copy.media_asset_id
+    WHERE source_copy.store <> sqlc.arg('target_store')
+      AND source_copy.store = ANY(sqlc.arg('fs_stores')::text[])
+      AND source_copy.state = 'active'
+      AND source_copy.generation = COALESCE(source_asset.derived_generation, 0)
       AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_id = a.id AND m.store = c.store
+          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source_copy.id
       )
-    ORDER BY c.created_at DESC, c.id
+    ORDER BY source_copy.created_at DESC, source_copy.id
     LIMIT 1
-), previous AS (
-    SELECT c.id, c.state
-    FROM media_asset_copies c
-    WHERE c.media_asset_id = sqlc.arg('media_asset_id')
-      AND c.store = sqlc.arg('target_store')
+), eligible AS MATERIALIZED (
+    SELECT asset.*
+    FROM asset
+    CROSS JOIN source
+    WHERE asset.desired_store = sqlc.arg('target_store')
+      AND storage_transfer_candidate(
+          sqlc.arg('media_asset_id'), sqlc.arg('original_rules')::jsonb,
+          sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
+      )
+      AND storage_transfer_attempt_count(sqlc.arg('media_asset_id'), sqlc.arg('target_store')) < sqlc.arg('attempt_limit')
 ), upserted AS (
-    INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state)
-    SELECT a.id, sqlc.arg('target_store'), a.rel_path, 'pending'
-    FROM asset a
-    CROSS JOIN source s
-    WHERE a.desired_store = sqlc.arg('target_store')
-      AND NOT (
-          a.kind = 'original'
-          AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) u
-              WHERE u.id = a.id
-          )
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM media_asset_transfer_attempts t
-          WHERE t.media_asset_id = a.id
-            AND t.store = sqlc.arg('target_store')
-            AND t.attempt_count >= sqlc.arg('attempt_limit')
-      )
-    ON CONFLICT (media_asset_id, store) DO UPDATE SET
+    INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+    SELECT asset.id, sqlc.arg('target_store'), source.rel_path, asset.generation, 'pending'
+    FROM eligible asset
+    CROSS JOIN source
+    ON CONFLICT (media_asset_id, store, generation) WHERE state <> 'deleted'
+    DO UPDATE SET
         rel_path = EXCLUDED.rel_path,
         state = 'pending',
         deleted_at = NULL
-    WHERE media_asset_copies.state <> 'active'
-       OR EXISTS (
-           SELECT 1 FROM missing_media_assets m
-           WHERE m.media_asset_id = EXCLUDED.media_asset_id
-             AND m.store = EXCLUDED.store
+    WHERE media_asset_copies.state = 'pending'
+       OR (
+           media_asset_copies.state = 'active'
+           AND EXISTS (
+               SELECT 1 FROM missing_media_assets m
+               WHERE m.media_asset_copy_id = media_asset_copies.id
+           )
        )
-    RETURNING id, media_asset_id
+    RETURNING id, media_asset_id, store, rel_path
 )
-SELECT a.id AS media_asset_id,
-       a.recording_id,
-       a.rel_path,
-       a.size_bytes,
-       a.kind,
-       a.sha256,
-       a.desired_store,
-       s.store AS source_store,
-       s.rel_path AS source_rel_path,
-       s.id AS source_copy_id,
-       u.id AS copy_id,
-       COALESCE(p.state, '')::text AS previous_copy_state
-FROM asset a
-CROSS JOIN source s
-JOIN upserted u ON u.media_asset_id = a.id
-LEFT JOIN previous p ON p.id = u.id;
+SELECT asset.id AS media_asset_id,
+       asset.recording_id,
+       asset.size_bytes,
+       asset.kind,
+       asset.sha256,
+       asset.generation,
+       asset.desired_store,
+       source.store AS source_store,
+       source.rel_path AS source_rel_path,
+       source.id AS source_copy_id,
+       upserted.id AS copy_id,
+       upserted.rel_path
+FROM eligible asset
+CROSS JOIN source
+JOIN upserted ON upserted.media_asset_id = asset.id;
 
 -- name: CompleteMediaAssetTransfer :one
 WITH observed AS (
@@ -212,8 +175,8 @@ WITH observed AS (
     FROM recordings r
     WHERE a.id = sqlc.arg('media_asset_id')
       AND a.recording_id = r.id
-      AND a.state = 'active'
       AND r.deleted_at IS NULL
+      AND COALESCE(a.derived_generation, 0) = sqlc.arg('generation')
       AND desired_media_store(
           a.kind,
           sqlc.arg('original_rules')::jsonb,
@@ -228,159 +191,150 @@ WITH observed AS (
           WHERE c.id = sqlc.arg('copy_id')
             AND c.media_asset_id = a.id
             AND c.store = sqlc.arg('target_store')
+            AND c.generation = COALESCE(a.derived_generation, 0)
             AND c.state = 'pending'
       )
       AND NOT (
           a.kind = 'original'
           AND EXISTS (
               SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) u
-              WHERE u.id = a.id
+              WHERE u.asset_id = a.id
           )
       )
     RETURNING a.id
 ), activated AS (
     UPDATE media_asset_copies c
     SET state = 'active', created_at = now(), deleted_at = NULL
-    FROM observed o
+    FROM observed o, media_assets a
     WHERE c.id = sqlc.arg('copy_id')
       AND c.media_asset_id = o.id
+      AND a.id = o.id
       AND c.store = sqlc.arg('target_store')
+      AND c.generation = COALESCE(a.derived_generation, 0)
       AND c.state = 'pending'
-    RETURNING c.media_asset_id, c.store
+    RETURNING c.id
 ), cleared_missing AS (
     DELETE FROM missing_media_assets m
     USING activated a
-    WHERE m.media_asset_id = a.media_asset_id AND m.store = a.store
+    WHERE m.media_asset_copy_id = a.id
 ), cleared_attempts AS (
     DELETE FROM media_asset_transfer_attempts t
     USING activated a
-    WHERE t.media_asset_id = a.media_asset_id AND t.store = a.store
+    WHERE t.copy_id = a.id
 )
-SELECT count(*)::bigint AS activated_count FROM activated;
+SELECT CASE
+         WHEN EXISTS (SELECT 1 FROM activated) THEN 'activated'::text
+         WHEN EXISTS (
+             SELECT 1 FROM media_assets current_asset
+             WHERE current_asset.id = sqlc.arg('media_asset_id')
+               AND current_asset.sha256 IS NOT NULL
+               AND current_asset.sha256 <> sqlc.arg('sha256')::bytea
+         ) THEN 'sha_mismatch'::text
+         ELSE 'stale'::text
+       END AS outcome;
 
 -- name: RecordMediaAssetTransferFailure :exec
-INSERT INTO media_asset_transfer_attempts (media_asset_id, store, attempt_count, last_error)
-VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), 1, left(sqlc.arg('last_error'), 2048))
-ON CONFLICT (media_asset_id, store) DO UPDATE SET
+INSERT INTO media_asset_transfer_attempts (copy_id, attempt_count, last_error)
+VALUES (sqlc.arg('copy_id'), 1, left(sqlc.arg('last_error'), 2048))
+ON CONFLICT (copy_id) DO UPDATE SET
     attempt_count = media_asset_transfer_attempts.attempt_count + 1,
     last_error = EXCLUDED.last_error,
     updated_at = now();
 
--- name: MarkMediaAssetCopyCorrupt :exec
+-- A damaged derived source is retired as a physical copy. The logical row stays
+-- available for encode reconcile, which sees that its current generation has no
+-- active copy and publishes a replacement.
+-- name: MarkMediaAssetCopyCorrupt :one
 WITH deleted AS (
     UPDATE media_asset_copies c
     SET state = 'deleted', deleted_at = now()
+    FROM media_assets a
     WHERE c.id = sqlc.arg('copy_id')
       AND c.media_asset_id = sqlc.arg('media_asset_id')
       AND c.store = sqlc.arg('store')
-      AND c.state <> 'deleted'
-    RETURNING c.media_asset_id, c.store
-), cleared AS (
-    DELETE FROM media_asset_transfer_attempts t
-    USING deleted d
-    WHERE t.media_asset_id = d.media_asset_id AND t.store = d.store
+      AND c.media_asset_id = a.id
+      AND c.generation = COALESCE(a.derived_generation, 0)
+      AND c.state = 'active'
+      AND a.kind <> 'original'
+      AND EXISTS (
+          SELECT 1
+          FROM media_assets original
+          JOIN media_asset_copies original_copy ON original_copy.media_asset_id = original.id
+          WHERE original.recording_id = a.recording_id
+            AND original.kind = 'original'
+            AND original_copy.state = 'active'
+            AND original_copy.generation = COALESCE(original.derived_generation, 0)
+            AND NOT EXISTS (
+                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = original_copy.id
+            )
+      )
+    RETURNING c.id
+), cleared_missing AS (
+    DELETE FROM missing_media_assets m USING deleted d
+    WHERE m.media_asset_copy_id = d.id
+    RETURNING m.media_asset_copy_id
+), cleared_attempts AS (
+    DELETE FROM media_asset_transfer_attempts t USING deleted d
+    WHERE t.copy_id = d.id
+    RETURNING t.copy_id
 )
-UPDATE media_assets a
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE a.id = (SELECT media_asset_id FROM deleted)
-  AND a.kind <> 'original'
-  AND a.state = 'active'
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = a.id AND c.state = 'active'
-        AND NOT EXISTS (
-            SELECT 1 FROM deleted d
-            WHERE d.media_asset_id = c.media_asset_id AND d.store = c.store
-        )
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = a.id AND c.state = 'pending'
-  );
+SELECT count(*)::bigint FROM deleted;
 
 -- name: DiscardPendingMediaAssetCopy :exec
 WITH discarded AS (
     UPDATE media_asset_copies c
     SET state = 'deleted', deleted_at = now()
-    WHERE c.media_asset_id = sqlc.arg('media_asset_id')
-      AND c.store = sqlc.arg('store')
+    WHERE c.id = sqlc.arg('copy_id')
       AND c.state = 'pending'
-    RETURNING c.media_asset_id, c.store
-), cleared AS (
-    DELETE FROM media_asset_transfer_attempts t
-    USING discarded d
-    WHERE t.media_asset_id = d.media_asset_id AND t.store = d.store
+    RETURNING c.id
+), cleared_missing AS (
+    DELETE FROM missing_media_assets m USING discarded d
+    WHERE m.media_asset_copy_id = d.id
 )
-UPDATE media_assets a
-SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE a.id = (SELECT media_asset_id FROM discarded)
-  AND a.kind <> 'original'
-  AND a.state = 'active'
-  AND NOT EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = a.id AND c.state IN ('active', 'pending')
-        AND NOT EXISTS (
-            SELECT 1 FROM discarded d
-            WHERE d.media_asset_id = c.media_asset_id AND d.store = c.store
-        )
-  );
+DELETE FROM media_asset_transfer_attempts t USING discarded d
+WHERE t.copy_id = d.id;
 
+-- Placement cleanup runs inside delete_reconcile. Its list and mark operations
+-- both reference the named predicate so the row lock closes the policy-switch race.
 -- name: ListMediaAssetCopiesToDelete :many
-SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, a.size_bytes, a.kind
+SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, c.state,
+       a.recording_id, a.size_bytes, a.kind, c.generation
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
-WHERE c.state IN ('active', 'deleting')
+WHERE c.store = sqlc.arg('store_name')
+  AND c.state IN ('active', 'deleting')
   AND media_asset_copy_prunable(
-      c.media_asset_id,
-      c.store,
+      c.id,
       sqlc.arg('original_rules')::jsonb,
-      sqlc.arg('derived_store'),
-      sqlc.arg('overlap_us')::bigint * interval '1 microsecond'
+      sqlc.arg('derived_store')::text,
+      sqlc.arg('overlap')::bigint * interval '1 microsecond'
   )
-ORDER BY c.media_asset_id, c.store
+ORDER BY c.id
 LIMIT sqlc.arg('row_limit');
 
 -- name: GetMediaAssetCopyForDeletion :one
-SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, a.size_bytes, a.kind
+SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, c.state,
+       a.recording_id, a.size_bytes, a.kind, c.generation
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.id = sqlc.arg('copy_id')
   AND c.media_asset_id = sqlc.arg('media_asset_id')
   AND c.store = sqlc.arg('store');
 
--- Callers lock this logical row in a separate statement, then invoke the
--- predicate again in this statement so concurrent copy removals serialize.
 -- name: LockMediaAssetForStorageTransfer :one
 SELECT id FROM media_assets WHERE id = sqlc.arg('media_asset_id') FOR UPDATE;
 
 -- name: MarkMediaAssetCopyDeleting :one
 UPDATE media_asset_copies c
-SET state = 'deleting'
+SET state = 'deleting', deleted_at = NULL
 WHERE c.id = sqlc.arg('copy_id')
   AND c.media_asset_id = sqlc.arg('media_asset_id')
   AND c.store = sqlc.arg('store')
   AND c.state IN ('active', 'deleting')
   AND media_asset_copy_prunable(
-      c.media_asset_id,
-      c.store,
+      c.id,
       sqlc.arg('original_rules')::jsonb,
-      sqlc.arg('derived_store'),
-      sqlc.arg('overlap_us')::bigint * interval '1 microsecond'
+      sqlc.arg('derived_store')::text,
+      sqlc.arg('overlap')::bigint * interval '1 microsecond'
   )
 RETURNING c.rel_path;
-
--- name: MarkMediaAssetCopyDeleted :one
-WITH deleted AS (
-    UPDATE media_asset_copies c
-    SET state = 'deleted', deleted_at = now()
-    WHERE c.id = sqlc.arg('copy_id')
-      AND c.media_asset_id = sqlc.arg('media_asset_id')
-      AND c.store = sqlc.arg('store')
-      AND c.state = 'deleting'
-    RETURNING c.media_asset_id, c.store
-), cleared_missing AS (
-    DELETE FROM missing_media_assets m
-    USING deleted d
-    WHERE m.media_asset_id = d.media_asset_id AND m.store = d.store
-)
-SELECT count(*)::bigint FROM deleted;

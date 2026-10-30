@@ -24,6 +24,7 @@ func TestSiteRelPath(t *testing.T) {
 
 	for _, relPath := range []string{
 		".rokuban-ingest-42.ts",
+		".rokuban-transfer-42-7",
 		"archive/.rokuban-rel-path-lock-deadbeef.lock",
 		"archive/.rokuban-encode-job.ts",
 		"archive/.rokuban-media-asset-stage",

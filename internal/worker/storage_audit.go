@@ -298,6 +298,8 @@ const (
 	orphanCleanupCanonical orphanCleanupKind = iota
 	orphanCleanupIngestTemp
 	orphanCleanupIngestCheckpoint
+	orphanCleanupTransferTemp
+	orphanCleanupTransferCheckpoint
 	orphanCleanupStaging
 )
 
@@ -308,8 +310,12 @@ func classifyOrphanCleanup(relPath string) orphanCleanupKind {
 	switch {
 	case isIngestCheckpointFile(base):
 		return orphanCleanupIngestCheckpoint
+	case mediapath.IsStorageTransferCheckpointFile(base):
+		return orphanCleanupTransferCheckpoint
 	case mediapath.IsIngestTempFile(base):
 		return orphanCleanupIngestTemp
+	case mediapath.IsStorageTransferTempFile(base):
+		return orphanCleanupTransferTemp
 	case mediapath.IsEncodeTempFile(base), mediapath.IsGeneratedAssetTempFile(base):
 		return orphanCleanupStaging
 	default:
