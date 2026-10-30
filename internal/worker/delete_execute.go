@@ -246,25 +246,35 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 	}
 	beforeMediaAssetUnlink(candidate.RelPath)
 	fsStores := w.StorageTransferPolicy.FSStoreNames()
+	tempPath := filepath.Join(filepath.Dir(path), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, candidate.MediaAssetID, candidate.CopyID))
+	subtitleTempPath := transferSubtitleTempPath(path, candidate.MediaAssetID, candidate.CopyID)
 	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
 		ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
 		func() error {
 			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending transfer copy"); err != nil {
 				return err
 			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("removing pending transfer destination: %w", err)
+			owned, err := pendingTransferDestinationOwnedByTemp(path, tempPath)
+			if err != nil {
+				return fmt.Errorf("checking pending transfer destination ownership: %w", err)
 			}
-			if candidate.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(candidate.RelPath) {
+			if owned {
+				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("removing pending transfer destination: %w", err)
+				}
+			} else if _, err := os.Lstat(path); err == nil {
+				log.Warn("delete_reconcile: preserving pending transfer destination not owned by this transfer")
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("stating pending transfer destination: %w", err)
+			}
+			if owned && candidate.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(candidate.RelPath) {
 				if err := removeEncodedSubtitleSidecar(w.MediaDir, w.MediaStoreName, candidate.RelPath, "unlinking pending transfer subtitle sidecar"); err != nil {
 					return err
 				}
 			}
-			tempPath := filepath.Join(filepath.Dir(path), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, candidate.MediaAssetID, candidate.CopyID))
 			if err := removeTransferTempUnderPathLock(tempPath); err != nil {
 				return fmt.Errorf("removing pending transfer temp and checkpoint: %w", err)
 			}
-			subtitleTempPath := transferSubtitleTempPath(path, candidate.MediaAssetID, candidate.CopyID)
 			if err := removeTransferTempUnderPathLock(subtitleTempPath); err != nil {
 				return fmt.Errorf("removing pending transfer subtitle temp: %w", err)
 			}
@@ -285,6 +295,30 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 		metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim").Inc()
 		log.Info("delete_reconcile: reclaimed obsolete pending transfer copy")
 	}
+}
+
+func pendingTransferDestinationOwnedByTemp(path, tempPath string) (bool, error) {
+	destinationInfo, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stating destination: %w", err)
+	}
+	if !destinationInfo.Mode().IsRegular() {
+		return false, nil
+	}
+	tempInfo, err := os.Lstat(tempPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stating transfer temp: %w", err)
+	}
+	if !tempInfo.Mode().IsRegular() {
+		return false, nil
+	}
+	return os.SameFile(destinationInfo, tempInfo), nil
 }
 
 func removeEncodedSubtitleSidecar(mediaDir, storeName, relPath, operation string) error {
