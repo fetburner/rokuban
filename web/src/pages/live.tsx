@@ -545,9 +545,17 @@ export function LivePage() {
       ? selectedRecording
       : playback.target.recording
     : undefined
+  // 空の間は、次の世代が来る見込みのとき（isRecordingHlsGenerationGap）だけ開始時の URL を保つ。
+  // 失敗・キャンセルなどで空なら URL を保たず、プレイヤーを外して選択状態に戻す。
   const playbackHlsEntries = playback.source === 'recording-hls'
-    ? playbackRecording?.hlsPlayback.length
-      ? playbackRecording.hlsPlayback
+    ? playbackRecording === undefined || playbackRecording.hlsPlayback.length > 0
+      || !isRecordingHlsGenerationGap({
+        status: playbackRecording.status,
+        ingestState: playbackRecording.ingest?.state,
+        hasHlsPlayback: false,
+        isTrashed: playbackRecording.deletedAt != null,
+      })
+      ? playbackRecording?.hlsPlayback ?? []
       : playback.target.recording.hlsPlayback
     : []
   const selectedPlaybackHls = playback.source === 'recording-hls'

@@ -325,8 +325,8 @@ export type RecordingDetailSearch = {
    * 一覧 API（`GET /api/live-profiles`）の名前に一致する。
    *
    * **値域の検査はここでは書けない**（`?site=` と同じ分担）。選べる名前の一覧は
-   * 実行時に `GET /api/live-profiles` から来るので、ここでできるのは「非空の
-   * 文字列か」までである。実在の判定は一覧を読める
+   * 録画 API の `hlsPlayback`（その録画で再生できる profile）から実行時に決まるので、
+   * ここでできるのは「非空の文字列か」までである。実在の判定は一覧を読める
    * `components/recording-detail-panel.tsx` が `validLiveProfile`（`lib/live.ts`）
    * で行う。
    */
