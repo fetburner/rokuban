@@ -35,10 +35,10 @@ jobs:
         working-directory: web
 
   # 実バイナリが go:embed した web/dist を配り、DB readiness を通る実 HTTP サーバーに
-  # Chromium からアクセスする。15 本とも Playwright 内で /api/** をスタブするため mirakc は不要。
+  # Chromium からアクセスする。16 本とも Playwright 内で /api/** をスタブするため mirakc は不要。
   # recordings-selection は実ブラウザ判定の前に 20 件の録画 fixture を Zod 契約で検査する。
   #
-  # 回すのは web/e2e/*.mjs の判定スクリプト（共有部品を除く）のうち 15 本。
+  # 回すのは web/e2e/*.mjs の判定スクリプト（共有部品を除く）のうち 16 本。
   # recording-playback-timeline は録画詳細とライブ画面の API HLS 世代切替を Chromium で回す。
   # 選定基準は次の 3 つを全部満たすこと。
   #   - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり・実画素コントラスト・計算済み文字サイズ・キー操作によるネイティブのスクロール・safe-area inset の解決・`navigator.sendBeacon` の実送信・実メディアの `currentTime`）
@@ -61,11 +61,12 @@ jobs:
   # search-shortcut は録画一覧・シリーズ・番組検索で `/` が検索欄へ移ることと、入力欄・IME・録画詳細のプレイヤー表示中では横取りしないことを測る。
   # issue-1233-dialog-focus は確認ダイアログを開いた直後の初期フォーカスと Tab / Return / Escape の行き先を測る。
   # design のルールカード判定（`E2E_RULE_CARD_ONLY`）は 360 / 390px でルールカードの縦積みと補助導線の muted 色・アイコン位置を測る。
+  # live-player-modes はライブの pagehide と visibilitychange の離脱ヒント（jsdom には sendBeacon が無く fetch に落ちる）、ライブと録画 HLS の 503 文言、ffmpeg で作った実メディアの再生を測る。
   # recording-playback-timeline は録画詳細とライブ画面の世代付き HLS、実メディア再生、410 後の位置復元を測る。
   # reservations-series は 360px での行全体リンクと内側リンクの当たり判定・折り返しを、
   # reservation-detail-layout は詳細の欄の折り返しと viewport への収まりを測る。どちらも jsdom には測れない。
   # 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
-  # 誰も見ない赤い定期ジョブは PR ごとに回す 15 本より信号として弱いため。
+  # 誰も見ない赤い定期ジョブは PR ごとに回す 16 本より信号として弱いため。
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
@@ -180,6 +181,9 @@ jobs:
         working-directory: web
       - if: ${{ !cancelled() }}
         run: E2E_RULE_CARD_ONLY=1 pnpm e2e:design
+        working-directory: web
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:live-player-modes
         working-directory: web
       - if: ${{ !cancelled() }}
         run: pnpm e2e:recording-playback-timeline

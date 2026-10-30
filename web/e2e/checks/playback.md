@@ -20,6 +20,23 @@ E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
 ```
 
+### LivePlayer の 503 文言・離脱ヒント（`live-player-modes.mjs`）
+
+ライブの離脱ヒントと、ライブ・録画 HLS の 503 文言を、短い実メディアを再生する実ブラウザで測る。mirakc と実録画は要らない。
+
+`/api/**` と HLS は `page.route` で差し替える。fixture は ffmpeg が作った 20 秒の HLS で、Chromium の hls.js が再生する。jsdom には `navigator.sendBeacon` が無く fetch に落ちるため、離脱ヒントの実送信は実ブラウザでしか測れない。
+
+- `visibilityState` を `visible` にした `visibilitychange` は、leave を 1 件も増やさない。hidden の判定を外す変異（visible でも送る）を落とす
+- `visibilityState` を `hidden` にした `visibilitychange` と `pagehide` は、ライブの `/live/leave` へ POST を 1 件ずつ送る。録画 HLS はセッションを作らないので離脱ヒントを持たない
+- playlist の 503 は、ライブがチューナー案内、録画 HLS が「いま録画を再生できません。」と再試行案内を表示し、録画 HLS にライブの案内を出さない
+
+```sh
+E2E_URL=http://localhost:4173 pnpm e2e:live-player-modes
+E2E_VALIDATE_FIXTURES_ONLY=1 node e2e/live-player-modes.mjs
+```
+
+`E2E_VALIDATE_FIXTURES_ONLY=1` は録画 fixture を Zod 契約で検査するだけでブラウザを起動しない。CI の `browser-e2e` ジョブが実ブラウザ判定を回す。
+
 ### 録画 HLS の再起動境界（`recording-segmented-vod.mjs`）
 
 録画再生は、録画時刻上の固定長セグメントを合成 playlist で配り、位置が離れたら ffmpeg を 1 つ前の格子点から起動し直す方式である。この方式の合否は jsdom では測れない。止まらずに再生できるか、継ぎ目で音が切れないかを実ブラウザで判定する。アプリの実装より先に判定手段を置いている。

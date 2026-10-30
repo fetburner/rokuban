@@ -81,6 +81,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 
 | 節 | ファイル |
 |---|---|
+| LivePlayer の 503 文言・離脱ヒント（`live-player-modes.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画 HLS の時間軸・世代切替・再開（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画 HLS の再起動境界（`recording-segmented-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | S3 の署名付き URL への 302（`s3-302.mjs`） | [checks/playback.md](checks/playback.md) |
