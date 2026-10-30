@@ -378,8 +378,12 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 		MediaDir: roots["archive"], MediaStoreName: "archive", TrashRetention: time.Hour,
 		OrphanAge: time.Hour, OrphanMTimeGrace: time.Minute,
 	}
+	deletedBefore := promtestutil.ToFloat64(metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim"))
 	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim")); got != deletedBefore+1 {
+		t.Errorf("pending transfer reclaim metric = %v, want one increment from %v", got, deletedBefore)
 	}
 	for _, path := range []string{
 		filepath.Join(roots["archive"], filepath.FromSlash(relPath)),
