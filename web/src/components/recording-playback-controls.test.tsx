@@ -196,6 +196,28 @@ describe('共有シークバーのポインタ操作', () => {
     expect(onSeek).not.toHaveBeenCalled()
   })
 
+  it('スクラブ中に録画軸が伸びても最後に表示した秒を確定する', () => {
+    const onSeek = vi.fn()
+    const props = controlProps({
+      timeline: fixedPlaybackTimeline(100),
+      commitLastDisplayedPreview: true,
+      onSeek,
+    })
+    const { rerender } = render(<RecordingPlaybackControls {...props} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 20 })
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+
+    // 録画中に時間軸が 100 秒から 110 秒へ伸びる。同じ座標を再計算すると 77 秒になる。
+    rerender(<RecordingPlaybackControls {...props} timeline={fixedPlaybackTimeline(110)} />)
+    fireEvent.pointerUp(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+
+    expect(onSeek).toHaveBeenCalledTimes(1)
+    expect(onSeek).toHaveBeenCalledWith(70)
+  })
+
   it('時間軸のホバーは帯を離れたら消える', () => {
     const onTimelineHoverChange = vi.fn()
     render(<RecordingPlaybackControls {...controlProps({ onTimelineHoverChange })} />)

@@ -125,6 +125,8 @@ type RecordingPlaybackControlsProps = {
   onTileImageError: () => void
   /** 録画ファイルのように、ドラッグ中も実際の再生位置を動かす。 */
   seekDuringDrag?: boolean
+  /** 時間軸がスクラブ中に伸びるとき、最後に表示した秒を確定する。 */
+  commitLastDisplayedPreview?: boolean
   /** HLS のように、ドラッグ中だけ操作つまみを仮表示する。 */
   onScrubPreview?: (seconds: number | null) => void
   /** ライブ軸のホバー位置を更新する。 */
@@ -215,6 +217,7 @@ export function RecordingPlaybackControls({
   onTileImageLoad,
   onTileImageError,
   seekDuringDrag = false,
+  commitLastDisplayedPreview = false,
   onScrubPreview,
   onTimelineHoverChange,
   onScrubbingChange,
@@ -502,7 +505,9 @@ export function RecordingPlaybackControls({
   }
   const handleSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isScrubbingRef.current) return
-    const target = seekSecondsAtPointer(event)
+    const target = commitLastDisplayedPreview
+      ? lastDisplayedScrubSecondsRef.current
+      : seekSecondsAtPointer(event)
     isScrubbingRef.current = false
     releasePointerCapture(event)
     onScrubbingChange?.(false)

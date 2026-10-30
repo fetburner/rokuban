@@ -1517,6 +1517,7 @@ export function LivePlayer(props: LivePlayerProps) {
       onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
       seekTilesEnabled={isRecordingHLS}
       requestSeekTilesOnMount={chapterEditing && isRecordingHLS}
+      commitLastDisplayedPreview={isRecordingHLS}
       onTileImageLoad={() => setRecordingTilesAvailable(true)}
       onTileImageError={() => {
         setRecordingTilesAvailable(false)
