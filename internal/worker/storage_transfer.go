@@ -325,14 +325,14 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	var openMain func() (io.ReadCloser, error)
 	digest, size := transfer.SHA256, transfer.SizeBytes
 	var streamed *countingReadCloser
-	if len(transfer.SHA256) == sha256.Size && transfer.SizeBytes >= 0 {
+	if len(transfer.SHA256) == sha256.Size {
 		openMain = func() (io.ReadCloser, error) {
 			source, err := w.openTransferSourceStream(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath)
-			streamed = source
-			if source == nil {
+			if err != nil {
 				return nil, err
 			}
-			return source, err
+			streamed = source
+			return source, nil
 		}
 	} else {
 		assetPath, stagedDigest, stagedSize, err := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)

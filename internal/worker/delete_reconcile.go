@@ -364,8 +364,3 @@ func (w *DeleteReconcileWorker) objectsFor(name string) (objstore.Store, error) 
 	}
 	return objects, nil
 }
-
-// copyObjects は、この worker が担当する FS の置き場の objstore.Store を返す。
-func (w *DeleteReconcileWorker) copyObjects() (objstore.Store, error) {
-	return w.objectsFor(w.MediaStoreName)
-}

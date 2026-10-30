@@ -229,7 +229,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		if a.Kind != store.AssetKindOriginal {
 			// 派生物は、そのコピーの置き場の objstore で現存を確かめる。置き場が S3 に切り替わった後も、
 			// この FS の置き場に残る旧いコピーはこの FS の置き場の Store で見る。
-			objects, objErr := w.copyObjects()
+			objects, objErr := w.objectsFor(w.MediaStoreName)
 			if objErr != nil {
 				return false, fmt.Errorf("auditing active media asset copy %d: %w", a.ID, objErr)
 			}

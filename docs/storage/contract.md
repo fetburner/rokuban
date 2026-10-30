@@ -25,7 +25,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 原本の `storage.media_dir` とローカル `scratch_dir` には、強い POSIX FS を使う。ingest はファイル `fsync`、`Close` のエラー報告、hard link、親ディレクトリ `fsync` に依存する。ローカル FS、JuiceFS、条件を満たす NFS は対象内で、FUSE S3 は対象外とする。派生物は次の共通契約で扱い、呼び出し側は POSIX rename や lock を前提にしない。
 
 1. ffmpeg などの生成処理はワーカーのローカル scratch で行い、完成した出力だけを `objstore.Store.Put` に渡す。書き込みはシーケンシャルにし、Put には正確なサイズと SHA-256 を渡す
-2. `Store.Put` は全バイトを検証し、同じキーを上書きせず、完全なオブジェクトが durable になった後にだけ成功を返す。キーが無いことは `Head`、`Get`、`Open` が `ErrNotFound` で返し、一時的なエラーと区別する。`Delete` は冪等で、無いキーの削除も成功にする。`List` は完成したキーだけを返し、書き込み直後のキーが載るのが遅れてもよい。`Get`・`Open`・署名付き URL は、実装が持つ能力に応じて足す
+2. `Store.Put` は全バイトを検証し、同じキーを上書きせず、完全なオブジェクトが durable になった後にだけ成功を返す。キーが無いことは `Head`、`Get`、`Open` が `ErrNotFound` で返し、一時的なエラーと区別する。`Delete` は冪等で、無いキーの削除も成功にする。`List` は完成したキーだけを返し、載るのが遅れてもよい。`Get`・`Open`・署名付き URL は、実装が持つ能力に応じて `objstore.Reader`・`Local`・`SignedURL` の別のインターフェースとして提供する
 3. **派生物の公開点は DB commit** とする。キーへの Put が成功した後、同じ transaction でコピーを `active` にして論理メタデータを記録する。DB commit 前のキーは配信対象にせず、失敗した `pending` のコピーと孤立したキーは reconcile が回収する
 4. 派生物のキーは世代ごとに一度だけ使う。差し替えは新世代のキーを作り旧世代を保持する。DB の現行 active 行だけが配信を許し、旧世代は `storage.transfer.overlap` 後に削除する
 
@@ -156,7 +156,7 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - 各試行は開始時に増えた attempt count を fencing token として公開時に照合する。古い token の試行は canonical を公開できない。
 - ctx cancellation に従わない古い ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる。
 - 公開は **事前計画 → `Store.Put` → DB transaction で attempt token と論理状態を再確認し、pending を active にする**。削除済みでない別行が同じ `(store, rel_path)` を持てば DB の一意制約が拒み、既存キーは上書きされない。canonical file の filesystem lock は派生物の Put / commit には使わない。
-- Store 実装が内部に残した staging file や multipart upload は、その実装の責任で非公開のまま扱う。公開済みだが DB commit されなかったキーは `pending` 行を基準に reconcile が削除する。通常削除も派生物では `Store.Delete` を使い、original の file unlink と混同しない。
+- Store 実装は、内部の staging file や multipart upload を `List` に出さない。公開済みだが DB commit されなかったキーは `pending` 行を基準に reconcile が削除する。通常削除も派生物では `Store.Delete` を使い、original の file unlink と混同しない。
 - encoded の `pending` のコピーを回収するときは字幕 sidecar を先に削除する。失敗したら本体と pending 行を残して、次の reconcile で再試行する。
 - `fsstore` は staging file（`.rokuban-media-asset-`）を `List` に返さない。`Put` が止まって残った staging file は、削除 reconcile が FS の走査で孤児として観測し、mtime 猶予と aging の後に、走査した root 上で mtime を再確認して消す。fsstore 内部のファイルなので objstore のキーとしては扱わず、派生物の置き場が S3 でも FS 上で回収する。S3 の multipart upload は成功前に `List` に現れず、Put の失敗時に abort する。DB に `active` な行が無い canonical なキーは自動では消さない。
 
