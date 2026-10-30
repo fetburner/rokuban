@@ -124,10 +124,14 @@ func publishGeneratedObject(
 	}
 	published, err = commit(size, checksum)
 	if err != nil {
-		// A stale plan can also leave a live pending row for normal reclaim. Only
-		// the missing-row sentinel means pending reclaim raced Put and deleted its
-		// ownership record before this publisher wrote the key.
-		cleanupUploadedObjects = errors.Is(err, store.ErrPendingMediaAssetCopyReclaimed)
+		// A stale plan can also leave a live pending row for normal reclaim. A
+		// missing-row sentinel means this Put no longer has a live copy owner, so
+		// remove its bytes. Preserve stale-plan errors for encode replanning; an
+		// early skip with no live row is still a successful skip after cleanup.
+		cleanupUploadedObjects = errors.Is(err, store.ErrPendingMediaAssetCopyMissing)
+		if cleanupUploadedObjects && !errors.Is(err, store.ErrStalePublishPlan) {
+			return 0, false, nil
+		}
 		return size, false, err
 	}
 	if !published {

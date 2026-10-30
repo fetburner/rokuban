@@ -168,7 +168,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		// cut の公開はごみ箱の録画にも許す。消去済みと行なしだけ公開しない。
 		locked, err := lockRecordingState(ctx, q, in.RecordingID)
 		if errors.Is(err, store.ErrNotFound) || (err == nil && locked.IsPurged) {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		if err != nil {
 			return false, fmt.Errorf("locking recording %d before encoded publish: %w", in.RecordingID, err)
@@ -180,7 +180,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		Profile:     in.Profile,
 	})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (attempt.State != "running" || attempt.AttemptCount != in.Attempt)) {
-		return false, nil
+		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	}
 	if err != nil {
 		return false, fmt.Errorf("loading current encode attempt: %w", err)
@@ -248,7 +248,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		return false, store.ErrStalePublishPlan
 	}
 	if plan.Skip {
-		return false, nil
+		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	}
 
 	derivedGeneration := in.DerivedGeneration
@@ -372,12 +372,12 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 	locked, err := lockRecordingState(ctx, q, in.RecordingID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		return false, err
 	}
 	if locked.IsTrashed || locked.IsPurged {
-		return false, nil
+		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	}
 
 	var assetID int64
@@ -385,7 +385,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		if _, err := q.GetActiveThumbnailMediaAssetID(ctx, sqlcgen.GetActiveThumbnailMediaAssetIDParams{
 			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
 		}); err == nil {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return false, fmt.Errorf("checking active thumbnail: %w", err)
 		}
@@ -393,13 +393,13 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		if err != nil {
 			return false, fmt.Errorf("loading active original: %w", err)
 		}
 		if original.ID != in.InputAssetID {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		derivedGeneration := in.DerivedGeneration
 		assetID, err = q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
@@ -414,14 +414,14 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			RecordingID: in.RecordingID, StoreName: s.storeName,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		if err != nil {
 			return false, fmt.Errorf("locking active thumbnail: %w", err)
 		}
 		if current.ID != in.Expected.ID || current.RelPath != in.Expected.RelPath ||
 			current.DerivedGeneration != in.Expected.DerivedGeneration || !sameOptionalInt64(current.SeekMs, in.Expected.SeekMs) {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		inputStore := in.InputStore
 		if inputStore == "" {
@@ -437,7 +437,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, fmt.Errorf("checking thumbnail input asset: %w", err)
 		}
 		if !active {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		assetID = current.ID
 		derivedGeneration := in.DerivedGeneration
@@ -487,24 +487,24 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 	locked, err := lockRecordingState(ctx, q, in.RecordingID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
+			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		}
 		return false, err
 	}
 	if locked.IsTrashed || locked.IsPurged {
-		return false, nil
+		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	}
 	if _, err := q.GetActiveSeekTilesMediaAssetID(ctx, sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
 		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
 	}); err == nil {
-		return false, nil
+		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("checking active seek tiles: %w", err)
 	}
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
 		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 	}); errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	} else if err != nil {
 		return false, fmt.Errorf("loading active original for seek tiles: %w", err)
 	}

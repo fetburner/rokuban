@@ -490,8 +490,12 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if _, err := os.Stat(abs(g3)); err != nil {
 		t.Errorf("g3 file is missing: %v", err)
 	}
-	if _, err := os.Stat(abs(g2)); err != nil {
-		t.Errorf("g2 pending object is missing after Put (err=%v)", err)
+	if rowState == "active" {
+		if _, err := os.Stat(abs(g2)); err != nil {
+			t.Errorf("g2 pending object is missing after stale plan (err=%v)", err)
+		}
+	} else if _, err := os.Stat(abs(g2)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("g2 object after inactive-row skip err = %v, want os.ErrNotExist", err)
 	}
 	if rowState == "active" && currentCopyRelPath(t, pool, assetID) != g3 {
 		t.Errorf("active copy path = %q, want newer path %q", currentCopyRelPath(t, pool, assetID), g3)

@@ -11,8 +11,8 @@ import (
 // ErrStalePublishPlan は公開中に encoded または派生物の計画が古くなったことを表す。
 var ErrStalePublishPlan = errors.New("encoded publish plan is stale")
 
-// ErrPendingMediaAssetCopyReclaimed は公開前に pending copy が回収されたことを表す。
-var ErrPendingMediaAssetCopyReclaimed = errors.New("pending media asset copy was reclaimed")
+// ErrPendingMediaAssetCopyMissing は公開前に pending copy の live 行が無くなったことを表す。
+var ErrPendingMediaAssetCopyMissing = errors.New("pending media asset copy is no longer live")
 
 // ErrGenerationAdvanced は別の pending または公開済みコピーが観測した世代を使用済みにしたことを表す。
 var ErrGenerationAdvanced = errors.New("derived media generation advanced")

@@ -675,8 +675,8 @@ func TestObjectPublishFailsWhenPendingCopyWasReclaimed(t *testing.T) {
 		RecordingID: recordingID, RelPath: key, SizeBytes: 1, SeekMs: 1000, InputAssetID: originalID,
 		PendingCopy: true,
 	}, func() error { return nil })
-	if published || !errors.Is(err, store.ErrStalePublishPlan) {
-		t.Fatalf("publishing a reclaimed pending copy = (%t, %v), want (false, ErrStalePublishPlan)", published, err)
+	if published || !errors.Is(err, store.ErrStalePublishPlan) || !errors.Is(err, store.ErrPendingMediaAssetCopyMissing) {
+		t.Fatalf("publishing a reclaimed pending copy = (%t, %v), want stale-plan and missing-copy errors", published, err)
 	}
 	if got := env.copyState(t, key); got != "deleted" {
 		t.Fatalf("reclaimed copy state = %q, want deleted", got)
@@ -685,58 +685,77 @@ func TestObjectPublishFailsWhenPendingCopyWasReclaimed(t *testing.T) {
 
 // A live Put that finishes after pending reclaim must not leave its canonical key unowned.
 func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T) {
-	env := newObjectEnv(t)
-	ctx := context.Background()
-	recordingID := dbtest.Recording(t, env.pool)
-	originalID := dbtest.MediaAsset(t, env.pool, recordingID)
-	key := thumbnailRelPath(recordingID, 0)
-	pending := store.PendingMediaAssetCopy{
-		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
-	}
-	if err := env.media.PreparePendingMediaAssetCopy(ctx, pending); err != nil {
-		t.Fatalf("reserving pending copy: %v", err)
-	}
-	var copyID int64
-	if err := env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID); err != nil {
-		t.Fatalf("loading copy: %v", err)
-	}
-	if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID); err != nil {
-		t.Fatalf("aging the copy: %v", err)
-	}
-	scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
-	writeFile(t, scratch, []byte("thumbnail"))
-	reclaimed := false
-	objects := beforePutObjectStore{
-		Store: env.objects,
-		beforePut: func(putCtx context.Context, putKey string) error {
-			if putKey != key {
-				return fmt.Errorf("unexpected Put key %q", putKey)
+	for _, markTrashed := range []bool{false, true} {
+		name := "activation_detects_missing_copy"
+		if markTrashed {
+			name = "early_skip_detects_missing_copy"
+		}
+		t.Run(name, func(t *testing.T) {
+			env := newObjectEnv(t)
+			ctx := context.Background()
+			recordingID := dbtest.Recording(t, env.pool)
+			originalID := dbtest.MediaAsset(t, env.pool, recordingID)
+			key := thumbnailRelPath(recordingID, 0)
+			pending := store.PendingMediaAssetCopy{
+				RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
 			}
-			var err error
-			reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
-				return env.objects.Delete(putCtx, key)
-			})
-			return err
-		},
-	}
-	_, published, err := publishGeneratedObject(ctx, objects, env.media, pending, scratch, "image/jpeg", true, nil,
-		func(size int64, sum [sha256.Size]byte) (bool, error) {
-			return env.media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
-				RecordingID: recordingID, RelPath: key, SizeBytes: size, SeekMs: 1000, InputAssetID: originalID,
-				SHA256: sum[:], PendingCopy: true,
-			}, func() error { return nil })
+			if err := env.media.PreparePendingMediaAssetCopy(ctx, pending); err != nil {
+				t.Fatalf("reserving pending copy: %v", err)
+			}
+			var copyID int64
+			if err := env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID); err != nil {
+				t.Fatalf("loading copy: %v", err)
+			}
+			if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID); err != nil {
+				t.Fatalf("aging the copy: %v", err)
+			}
+			scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
+			writeFile(t, scratch, []byte("thumbnail"))
+			reclaimed := false
+			objects := beforePutObjectStore{
+				Store: env.objects,
+				beforePut: func(putCtx context.Context, putKey string) error {
+					if putKey != key {
+						return fmt.Errorf("unexpected Put key %q", putKey)
+					}
+					var err error
+					reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
+						return env.objects.Delete(putCtx, key)
+					})
+					if err != nil || !markTrashed {
+						return err
+					}
+					_, err = env.pool.Exec(putCtx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, recordingID)
+					return err
+				},
+			}
+			_, published, err := publishGeneratedObject(ctx, objects, env.media, pending, scratch, "image/jpeg", true, nil,
+				func(size int64, sum [sha256.Size]byte) (bool, error) {
+					return env.media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+						RecordingID: recordingID, RelPath: key, SizeBytes: size, SeekMs: 1000, InputAssetID: originalID,
+						SHA256: sum[:], PendingCopy: true,
+					}, func() error { return nil })
+				})
+			if !reclaimed {
+				t.Fatal("pending copy was not reclaimed before Put")
+			}
+			if published {
+				t.Fatal("published after pending reclaim")
+			}
+			if markTrashed {
+				if err != nil {
+					t.Fatalf("publishing after a trashed recording skip = %v, want successful skip", err)
+				}
+			} else if !errors.Is(err, store.ErrStalePublishPlan) || !errors.Is(err, store.ErrPendingMediaAssetCopyMissing) {
+				t.Fatalf("publishing after pending reclaim = %v, want stale-plan and missing-copy errors", err)
+			}
+			if env.objectExists(t, key) {
+				t.Fatal("object written after pending reclaim remains without a live copy")
+			}
+			if got := env.copyState(t, key); got != "deleted" {
+				t.Fatalf("reclaimed copy state = %q, want deleted", got)
+			}
 		})
-	if !reclaimed {
-		t.Fatal("pending copy was not reclaimed before Put")
-	}
-	if published || !errors.Is(err, store.ErrStalePublishPlan) || !errors.Is(err, store.ErrPendingMediaAssetCopyReclaimed) {
-		t.Fatalf("publishing after pending reclaim = (%t, %v), want both stale-plan and reclaimed-copy errors", published, err)
-	}
-	if env.objectExists(t, key) {
-		t.Fatal("object written after pending reclaim remains without a live copy")
-	}
-	if got := env.copyState(t, key); got != "deleted" {
-		t.Fatalf("reclaimed copy state = %q, want deleted", got)
 	}
 }
 
