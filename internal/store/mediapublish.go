@@ -47,6 +47,7 @@ type CommitOriginalInput struct {
 	RecordingID int64
 	RelPath     string
 	SizeBytes   int64
+	SHA256      []byte
 }
 
 // ReservationPolicyInputs は予約・意図・上書きから方針を解決する入力を表す。
@@ -92,7 +93,7 @@ type EncodedPublishInput struct {
 	KeepRanges         []chapters.Range
 	HasRebuildRequest  bool
 	RequestedKeep      []chapters.Range
-	// SHA256 は公開するファイル全体の SHA-256。作り手が commit の tx で論理行へ書く。FS の公開は nil。
+	// SHA256 は公開するファイル全体の SHA-256。作り手が commit の tx で論理行へ書く。FS は stage 時に計算し、S3 は PUT 前に計算する。
 	SHA256 []byte
 	// PendingCopy は、このコピーを PreparePendingMediaAssetCopy で先に commit 済みであることを表す。
 	// true なら commit の tx で pending を active にし、行を新しく書かない。
@@ -218,20 +219,20 @@ type MediaPublish interface {
 	NextIngestTempGeneration(ctx context.Context) (int64, error)
 	// ClearIngestProgress は録画の ingest 進捗行を削除する。行が無くても成功する。
 	ClearIngestProgress(ctx context.Context, recordingID int64) error
-	// CommitOriginal は原本・進捗の削除・凍結方針を一つの tx で確定する。
+	// CommitOriginal は原本の SHA-256・進捗の削除・凍結方針を一つの tx で確定する。
 	// 進捗行が必要である（原本の世代を進捗行から写す）。行が無ければ原本を作らずエラーを返す。
 	// 同じ rel_path の原本が既にあれば ErrConflict を返し、publish は呼ばない。
 	// resolvePolicy は同じ tx で読んだ予約・上書き・意図に対して 1 回だけ呼ぶ。
 	CommitOriginal(ctx context.Context, input CommitOriginalInput, resolvePolicy ResolveEncodePolicy, publish func() error) error
-	// PublishEncoded は試行・desired・作り直し要求・cut 区間を再確認して encoded を公開する。
+	// PublishEncoded は試行・desired・作り直し要求・cut 区間を再確認し、ファイルの SHA-256 と encoded を公開する。
 	// 同じ録画の版の削除・事後追加と直列化する。cut の公開はさらに、チャプター編集・作り直し要求の書き込みとも直列化する。
 	// 計画が古くなっていたら ErrStalePublishPlan を返す。公開しないと決めたときは published=false を返す。
 	PublishEncoded(ctx context.Context, input EncodedPublishInput, publish func() error) (published bool, err error)
-	// PublishThumbnail は録画とサムネイルの状態を再確認して公開する。
+	// PublishThumbnail は録画とサムネイルの状態を再確認し、ファイルの SHA-256 とともに公開する。
 	// 同じ録画のごみ箱移動・完全削除と直列化し、ごみ箱か削除済みの録画は公開しない。
 	// 置き換えは、同じ録画への別のサムネイル公開とも直列化する。
 	PublishThumbnail(ctx context.Context, input ThumbnailPublishInput, publish func() error) (published bool, err error)
-	// PublishSeekTiles は録画とシークタイルの状態を再確認して公開する。
+	// PublishSeekTiles は録画とシークタイルの状態を再確認し、ファイルの SHA-256 とともに公開する。
 	// 同じ録画のごみ箱移動・完全削除と直列化し、ごみ箱か削除済みの録画は公開しない。
 	PublishSeekTiles(ctx context.Context, input SeekTilesPublishInput, publish func() error) (published bool, err error)
 	// RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。

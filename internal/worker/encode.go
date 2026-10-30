@@ -813,6 +813,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		Attempt:            in.attempt,
 		RelPath:            in.relPath,
 		SizeBytes:          staged.size,
+		SHA256:             staged.sha256,
 		DerivedGeneration:  in.observed.generation,
 		ObservedGeneration: in.observed.observedGeneration,
 		Cut:                cut,
@@ -1260,46 +1261,48 @@ func parseFFmpegProgress(r io.Reader, log *slog.Logger, onProgress func(time.Dur
 	}
 }
 
-// streamCopyFile は ctx に従って src を dst へシーケンシャルにコピーし、ファイルと
-// 親ディレクトリを fsync する（ストレージ契約: 作業は scratch、置くのは一回）。
-func streamCopyFile(ctx context.Context, src, dst string) (int64, error) {
+// streamCopyFile は ctx に従って src を dst へシーケンシャルにコピーし、コピーした
+// バイト列のサイズと SHA-256 を返す。ファイルと親ディレクトリも fsync する
+// （ストレージ契約: 作業は scratch、置くのは一回）。
+func streamCopyFile(ctx context.Context, src, dst string) (int64, []byte, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return 0, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
+		return 0, nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 	}
 
 	in, err := os.Open(src)
 	if err != nil {
-		return 0, fmt.Errorf("open src: %w", err)
+		return 0, nil, fmt.Errorf("open src: %w", err)
 	}
 	defer func() { _ = in.Close() }()
 
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return 0, fmt.Errorf("create dst: %w", err)
+		return 0, nil, fmt.Errorf("create dst: %w", err)
 	}
 
-	n, copyErr := copyWithContext(ctx, out, in)
+	hasher := sha256.New()
+	n, copyErr := copyWithContext(ctx, io.MultiWriter(out, hasher), in)
 	if copyErr != nil {
 		_ = out.Close()
 		_ = os.Remove(dst)
-		return n, fmt.Errorf("copy: %w", copyErr)
+		return n, nil, fmt.Errorf("copy: %w", copyErr)
 	}
 	if err := ctx.Err(); err != nil {
 		_ = out.Close()
 		_ = os.Remove(dst)
-		return n, fmt.Errorf("copy canceled: %w", err)
+		return n, nil, fmt.Errorf("copy canceled: %w", err)
 	}
 	if err := out.Sync(); err != nil {
 		_ = out.Close()
-		return n, fmt.Errorf("fsync file: %w", err)
+		return n, nil, fmt.Errorf("fsync file: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		_ = out.Close()
 		_ = os.Remove(dst)
-		return n, fmt.Errorf("sync canceled: %w", err)
+		return n, nil, fmt.Errorf("sync canceled: %w", err)
 	}
 	if err := out.Close(); err != nil {
-		return n, fmt.Errorf("close dst: %w", err)
+		return n, nil, fmt.Errorf("close dst: %w", err)
 	}
 
 	// ディレクトリエントリの永続化（best-effort。一部 FS では no-op）。
@@ -1307,7 +1310,7 @@ func streamCopyFile(ctx context.Context, src, dst string) (int64, error) {
 		_ = dir.Sync()
 		_ = dir.Close()
 	}
-	return n, nil
+	return n, hasher.Sum(nil), nil
 }
 
 type contextReader struct {

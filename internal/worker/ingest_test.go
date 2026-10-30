@@ -165,6 +165,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindOriginal, "", data)
 
 	if fake.CallCount(http.MethodDelete, "/api/recording/records/rec-001") == 0 {
 		t.Error("edge record was not deleted after successful commit")
@@ -2529,7 +2530,32 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if n := env.assetCount(t); n != 0 {
 		t.Fatalf("media_assets rows after failed commit = %d, want 0", n)
 	}
+	checkpointHash := sha256.New()
+	offset, restored := fsink.RestoreCheckpoint(env.tempPath, first.Size(), checkpointHash)
+	if !restored || offset != first.Size() {
+		t.Fatalf("ingest checkpoint = (%d, %v), want (%d, true) before linked retry", offset, restored, first.Size())
+	}
+	wantHash := sha256.Sum256(env.tsData)
+	if !bytes.Equal(checkpointHash.Sum(nil), wantHash[:]) {
+		t.Fatalf("checkpoint SHA-256 = %x, want %x", checkpointHash.Sum(nil), wantHash)
+	}
 	getsAfterFirst := env.streamGets()
+
+	// checkpoint が無い linked retry は bounded slice で読み進める。
+	// slice の切れ目では全量を読む代わりに snooze する。
+	if err := fsink.RemoveCheckpoint(env.tempPath); err != nil {
+		t.Fatalf("removing checkpoint to exercise linked retry replay: %v", err)
+	}
+	oldSlice := ingestTransferSlice
+	ingestTransferSlice = 0
+	err = env.w.Work(context.Background(), IngestJobArgs{Site: "default", RecordID: env.recordID})
+	ingestTransferSlice = oldSlice
+	if _, ok := jobq.SnoozeDelay(err); !ok {
+		t.Fatalf("linked retry with an expired hash slice = %v, want Snooze", err)
+	}
+	if n := env.assetCount(t); n != 0 {
+		t.Fatalf("media_assets rows after interrupted hash replay = %d, want 0", n)
+	}
 
 	if err := env.run(); err != nil {
 		t.Fatalf("second Work() error = %v, want commit-only retry to succeed", err)
@@ -2552,6 +2578,7 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
 		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
 	}
+	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
 }
 
 // 公開済みの canonical は、mirakc が長い stream を返しても 1 バイトも変わらない。

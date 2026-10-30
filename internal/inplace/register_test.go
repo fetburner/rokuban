@@ -91,6 +91,64 @@ func TestRegister_IdempotentExistingFile(t *testing.T) {
 	}
 }
 
+func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mediaDir, "shows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const relPath = "shows/rescue.ts"
+	if err := os.WriteFile(filepath.Join(mediaDir, relPath), []byte("original bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input := Input{
+		Recording: Recording{
+			Source: "manual", Site: "default", NetworkID: -1, ServiceID: -2, EventID: -3,
+			ServiceName: "Recovered file", ChannelType: "GR", Channel: "unknown", Title: "show",
+			ProgramStartAt: time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC), Status: "finished",
+		},
+		Assets: []Asset{{Kind: store.AssetKindOriginal, RelPath: relPath}},
+	}
+	publisher := pgstoretest.Media(pool)
+	first, err := Register(ctx, publisher, mediaDir, input)
+	if err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	assertUnknownSHA256 := func() {
+		t.Helper()
+		var got []byte
+		if err := pool.QueryRow(ctx, "SELECT sha256 FROM media_assets WHERE id = $1", first.AssetIDs[0]).Scan(&got); err != nil {
+			t.Fatalf("reading rescued original SHA-256: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("rescued original SHA-256 = %x, want NULL", got)
+		}
+	}
+	assertUnknownSHA256()
+
+	// Re-register a physically present file whose copy was marked deleted. This
+	// follows the rescue upsert path and must discard any prior, unverified digest.
+	oldSHA := make([]byte, 32)
+	for i := range oldSHA {
+		oldSHA[i] = 0x5a
+	}
+	if _, err := pool.Exec(ctx, "UPDATE media_assets SET sha256 = $2 WHERE id = $1", first.AssetIDs[0], oldSHA); err != nil {
+		t.Fatalf("seeding stale SHA-256: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1", first.AssetIDs[0]); err != nil {
+		t.Fatalf("marking previous physical copy deleted: %v", err)
+	}
+	second, err := Register(ctx, publisher, mediaDir, input)
+	if err != nil {
+		t.Fatalf("rescuing deleted copy: %v", err)
+	}
+	if second.AssetIDs[0] != first.AssetIDs[0] {
+		t.Fatalf("asset id after rescue = %d, want %d", second.AssetIDs[0], first.AssetIDs[0])
+	}
+	assertUnknownSHA256()
+}
+
 func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()

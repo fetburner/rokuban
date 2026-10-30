@@ -39,22 +39,24 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 }
 
 const createOriginalMediaAsset = `-- name: CreateOriginalMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, size_bytes, ingest_generation)
-SELECT p.recording_id, 'original', $1, p.temp_generation
+INSERT INTO media_assets (recording_id, kind, size_bytes, sha256, ingest_generation)
+SELECT p.recording_id, 'original', $1, $2, p.temp_generation
 FROM recording_ingest_progress p
-WHERE p.recording_id = $2
+WHERE p.recording_id = $3
 RETURNING id
 `
 
 type CreateOriginalMediaAssetParams struct {
 	SizeBytes   int64
+	Sha256      []byte
 	RecordingID int64
 }
 
 // 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
-// 転送中の recording_ingest_progress からコピーする。
+// 転送中の recording_ingest_progress からコピーする。SHA-256 は ingest が算出し、
+// 原本の INSERT と同じ tx で保存する。
 func (q *Queries) CreateOriginalMediaAsset(ctx context.Context, arg CreateOriginalMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, createOriginalMediaAsset, arg.SizeBytes, arg.RecordingID)
+	row := q.db.QueryRow(ctx, createOriginalMediaAsset, arg.SizeBytes, arg.Sha256, arg.RecordingID)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -666,7 +668,8 @@ type UpsertDerivedMediaAssetParams struct {
 // 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
 // derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
 // 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
-// sha256 は作り手が commit の tx で書く。FS の公開は計算しないので NULL のままにする。
+// sha256 は作り手が公開の tx で書く。FS はステージしたファイルから、S3 は PUT 前に計算した値を渡す。
+// 置き換えでは新しい世代の値に書き換える。
 func (q *Queries) UpsertDerivedMediaAsset(ctx context.Context, arg UpsertDerivedMediaAssetParams) (int64, error) {
 	row := q.db.QueryRow(ctx, upsertDerivedMediaAsset,
 		arg.RecordingID,

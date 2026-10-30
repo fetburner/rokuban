@@ -75,7 +75,7 @@ func TestGeneratedMediaPublishDoesNotStageWhenStoreMarkerIsMissing(t *testing.T)
 	}
 	called := false
 	_, _, err := publishGeneratedMediaAsset(context.Background(), mediaDir, "tokyo", "thumbnails/1.jpg", scratch,
-		func(int64, func() error) (bool, error) {
+		func(int64, []byte, func() error) (bool, error) {
 			called = true
 			return false, nil
 		})

@@ -469,14 +469,38 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}()
 	// 前の試行が link した後に commit で失敗した場合、temp は canonical と同じ inode である。
 	// temp は O_APPEND で開いているので、ここから 1 バイトでも書くと公開済みの canonical が変わる。
-	// replay も転送もせず、commit だけをやり直す。
+	// mirakc からは再転送せず、SHA checkpoint の続きだけ読んで commit をやり直す。
 	if fsink.SameFile(tempPath, fullPath) {
 		info, err := tempLock.Stat()
 		if err != nil {
 			return fmt.Errorf("stat ingest temp already linked to canonical path: %w", err)
 		}
+		sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
+		defer cancelSlice()
+		hasher := sha256.New()
+		offset, complete, err := fsink.ReplayTempFileWithCheckpoint(sliceCtx, tempPath, f, hasher,
+			func() error {
+				return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving linked ingest checkpoint")
+			},
+		)
+		if err != nil {
+			if isIngestSliceDeadline(err, sliceCtx, ctx) {
+				return errIngestSliceElapsed
+			}
+			return fmt.Errorf("hashing ingest temp already linked to canonical path: %w", err)
+		}
+		if !complete || offset != info.Size() {
+			return fmt.Errorf("replaying linked ingest hash: complete=%v offset=%d size=%d", complete, offset, info.Size())
+		}
+		if err := fsink.WriteCheckpoint(tempPath, offset, hasher,
+			func() error {
+				return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing linked ingest checkpoint")
+			},
+		); err != nil {
+			return fmt.Errorf("writing linked ingest checkpoint: %w", err)
+		}
 		log.Info("ingest: temp is already linked to canonical path, retrying commit only", "bytes", info.Size())
-		return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, info.Size(), log, result)
+		return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, info.Size(), hasher.Sum(nil), log, result)
 	}
 	progress := &ingestProgressReporter{
 		publisher:      w.Publisher,
@@ -635,6 +659,26 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
 	}
+	// commit 直前に、受信しながら計算したハッシュを checkpoint に残す。mirakc が SHA-256 を返したときは、
+	// 照合済みの値である（返さなかったとき、sha256_verification が timeout_skipped / invalid_skipped なら
+	// 照合していないが、受信しながら計算した値であることは変わらない）。
+	// link の後で commit が失敗して再試行するとき、論理行へ書く値はこのハッシュであるべきで、
+	// ディスクを読み直した値ではない。読み直すと、その間に化けたファイルの値が作り手の値として
+	// 残る（SHA-256 を作り手が書く理由そのものが崩れる）。
+	// この checkpoint は link の前に書き、失敗すれば link せずに返る。そのため link 済みの temp に有効な
+	// checkpoint が無いのは、次の場合に限られる（fsink.RestoreCheckpoint の判定と、この書き込みの位置から読み取った）。
+	//   - この変更より前のバイナリが link した temp。commit 直前の checkpoint が無いか、途中の slice の
+	//     checkpoint しか無い（後者は offset がファイル末尾より前なので、残りだけ読み直す）。
+	//   - checkpoint が壊れていて RestoreCheckpoint が無効と判断した場合。
+	// その経路（上の linked 経路）はディスクを読み直した値を作り手の値として書くことになる。
+	// 例外として許容する。
+	if err := fsink.WriteCheckpoint(tempPath, offset, hasher,
+		func() error {
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint before publication")
+		},
+	); err != nil {
+		return fmt.Errorf("writing ingest checkpoint before publication: %w", err)
+	}
 
 	log.Info("ingest: transfer complete", "bytes", offset,
 		"sha256_verification", sha256Verification,
@@ -642,7 +686,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 
 	recordIngestMetrics(offset)
 
-	return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, offset, log, result)
+	return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, offset, hasher.Sum(nil), log, result)
 }
 
 // commitAndFinish は原本を commit し、成功したら temp を片付けてエッジ record の後続処理を投入する。
@@ -651,8 +695,8 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 // link した後の temp は canonical と同じ inode なので、DB commit が失敗した間は消さない。
 // 消してよいのは commit 成功後だけで、その unlink は canonical を残したままリンク数を 1 に戻す。
 // unlink に失敗しても ingest は成功として扱う（行がコミットされており、残った temp は孤児回収の対象）。
-func (w *IngestWorker) commitAndFinish(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, relPath, tempPath, fullPath string, size int64, log *slog.Logger, result *string) error {
-	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, size); err != nil {
+func (w *IngestWorker) commitAndFinish(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, relPath, tempPath, fullPath string, size int64, contentSHA256 []byte, log *slog.Logger, result *string) error {
+	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, size, contentSHA256); err != nil {
 		if errors.Is(err, fsink.ErrForeignDestination) {
 			// temp・mirakc の record・media_assets のいずれにも触れずに止まる。運用者の調査対象
 			// （docs/runbook/troubleshooting.md）なので、他の失敗と区別できる key を付ける。
@@ -1043,7 +1087,7 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // 次の試行は temp と canonical が同じ inode であることを見て、転送せずにこの関数だけをやり直す。
 // link 前の失敗では、中身の不一致や record の cancel / fail と確定した場合だけ呼び出し側が
 // tempPath を消し、それ以外は次の試行へ残す。
-func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
+func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, contentSHA256 []byte) error {
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "locking original for publication"); err != nil {
 		return err
 	}
@@ -1053,7 +1097,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	}
 	defer func() { _ = fileLock.Close() }()
 	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
-		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+		RecordingID: recordingID, RelPath: relPath, SizeBytes: size, SHA256: contentSHA256,
 	}, w.resolveEncodePolicy, func() error {
 		if err := beforeIngestFilePublication(); err != nil {
 			return fmt.Errorf("preparing canonical file publication: %w", err)

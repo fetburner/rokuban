@@ -274,6 +274,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	if !bytesEqual(data, tinyJPEG) {
 		t.Errorf("thumbnail content = %v, want tinyJPEG", data)
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindThumbnail, "", data)
 
 	// ジョブ固有 scratch directory は掃除されている。
 	entries, err := os.ReadDir(filepath.Join(scratchDir, "thumbnail"))
@@ -298,7 +299,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "reselect/original.ts", []byte("fake-ts"))
 	oldRelPath := thumbnailRelPath(recordingID, 0)
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-		store.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
+		store.AssetKindThumbnail, nil, oldRelPath, []byte("old thumbnail generation"))
 	q := sqlcgen.New(pool)
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
@@ -363,6 +364,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	if data, err := os.ReadFile(newPath); err != nil || !bytesEqual(data, tinyJPEG) {
 		t.Errorf("new thumbnail file = %v, err = %v", data, err)
 	}
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindThumbnail, "", tinyJPEG)
 	if active, err := q.IsActiveThumbnailInput(ctx, sqlcgen.IsActiveThumbnailInputParams{MediaAssetID: originalID, StoreName: dbtest.StoreName}); err != nil || !active {
 		t.Errorf("original input active after replacement = %v, err = %v", active, err)
 	}

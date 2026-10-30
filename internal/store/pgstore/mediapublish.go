@@ -45,6 +45,7 @@ func (s *Media) CommitOriginal(
 	assetID, err := q.CreateOriginalMediaAsset(ctx, sqlcgen.CreateOriginalMediaAssetParams{
 		RecordingID: in.RecordingID,
 		SizeBytes:   in.SizeBytes,
+		Sha256:      in.SHA256,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

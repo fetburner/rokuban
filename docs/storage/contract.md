@@ -123,7 +123,9 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 エンコード出力は既にある行のパスへ公開する。そのため canonical を直接開かず、同じディレクトリの staging file へ書く。パスは、ファイルを置く前に DB で予約する。古い試行は、試行回数の照合と行の再確認で公開できない。
 
-FS 置き場では、staging file を rename して親ディレクトリを `fsync` した後に DB を commit する。S3 置き場では、先に `pending` のコピー行を新しい世代で commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、公開の transaction でコピーを `active` にして、SHA-256 を論理行へ書く。upload の完了が 412 で拒まれたときは、HEAD で得たサイズと、アプリが保存した SHA-256 の metadata を照合する。どちらも一致すれば成功として扱い、一致しなければ失敗にする。公開されないまま猶予を過ぎた `pending` は、削除 reconcile が行をロックしたまま S3 のキーを消す。
+FS 置き場では、staging file へコピーしながら SHA-256 を計算する。rename して親ディレクトリを `fsync` した後に DB を commit し、その公開の transaction で SHA-256 を論理行へ書く。
+
+S3 置き場では、先に `pending` のコピー行を新しい世代で commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、公開の transaction でコピーを `active` にして、SHA-256 を論理行へ書く。upload の完了が 412 で拒まれたときは、HEAD で得たサイズと、アプリが保存した SHA-256 の metadata を照合する。どちらも一致すれば成功として扱い、一致しなければ失敗にする。公開されないまま猶予を過ぎた `pending` は、削除 reconcile が行をロックしたまま S3 のキーを消す。
 
 置き換えは新しい世代の行を足すだけで、旧世代のコピーには触れない。旧世代のキーは、署名付き URL で再生中の視聴者がいても 404 にならないよう、削除 reconcile が `storage.transfer.overlap` の後に消す。コピー行の世代は INSERT の後に変えず、現行のコピーを選ぶ述語は `active_media_asset_copies` と `preferred_active_media_asset_copy` だけに置く（[schema](../schema/recordings/media-assets.md)）。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代のキーを使う。Matroska のように同じ入力でも出力のバイト列が変わる形式で、既に upload 済みのキーを別の内容で上書きしないためである。
 

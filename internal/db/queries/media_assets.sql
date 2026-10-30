@@ -4,10 +4,11 @@ VALUES ($1, $2, $3, $4, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
 RETURNING id;
 
 -- 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
--- 転送中の recording_ingest_progress からコピーする。
+-- 転送中の recording_ingest_progress からコピーする。SHA-256 は ingest が算出し、
+-- 原本の INSERT と同じ tx で保存する。
 -- name: CreateOriginalMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, size_bytes, ingest_generation)
-SELECT p.recording_id, 'original', sqlc.arg('size_bytes'), p.temp_generation
+INSERT INTO media_assets (recording_id, kind, size_bytes, sha256, ingest_generation)
+SELECT p.recording_id, 'original', sqlc.arg('size_bytes'), sqlc.narg('sha256'), p.temp_generation
 FROM recording_ingest_progress p
 WHERE p.recording_id = sqlc.arg('recording_id')
 RETURNING id;
@@ -129,7 +130,8 @@ WHERE c.media_asset_id = sqlc.arg('media_asset_id');
 -- 派生物（encoded / thumbnail / seek_tiles）の論理行を公開する。UNIQUE (recording_id, kind, profile) で冪等。
 -- derived_generation は現行のコピーを決める値なので、DO UPDATE は同じ世代か新しい世代のときだけ通す。
 -- 同じ世代の再試行は通り、低い世代は 0 行になる（呼び出し側が失敗として扱う）。
--- sha256 は作り手が commit の tx で書く。FS の公開は計算しないので NULL のままにする。
+-- sha256 は作り手が公開の tx で書く。FS はステージしたファイルから、S3 は PUT 前に計算した値を渡す。
+-- 置き換えでは新しい世代の値に書き換える。
 -- name: UpsertDerivedMediaAsset :one
 INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation, sha256)
 VALUES (
