@@ -224,7 +224,7 @@ FS 置き場間の転送の進み具合と、失敗の止まり方を、次の�
 | `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
 
-セッション数のゲージは per-process なので、全体は Prometheus 側で sum する（[k8s 運用](k8s-streamer.md) §5「streamer のスケール」）。`kind` の値は `live` である。開始失敗の `reason` の値は、実装の呼び出し箇所が権威で、`session_limit` や `ffmpeg_error` などがある。退避のラベルは、ライブ視聴の節にある。
+セッション数のゲージは per-process なので、全体は Prometheus 側で sum する（[k8s 運用](k8s-streamer.md) §5「streamer のスケール」）。`kind` の値は `live` である。開始失敗の `reason` の値は、実装の呼び出し箇所が権威で、`session_limit` や `ffmpeg_error` などがある。`rokuban_live_session_evictions_total` の `reason` と `result` の値は、本書の「ライブ視聴」節にある。
 
 離脱ヒントの `result` は `deadline_shortened` / `no_session` / `no_effect` の 3 値である。回収数と対で読む。ヒントは停止命令ではないので、回収数とは一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら、猶予が `live.idle_timeout` 以上で、ヒントが機能しない設定になっている。
 

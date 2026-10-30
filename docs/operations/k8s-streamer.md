@@ -87,7 +87,7 @@ Pod が落ちても、ハッシュの担当が移っても自己修復する。�
 
 エッジの録画バッファ（mirakc `recording.basedir`）は I/O が飽和するとドロップへ直結し、要求されるのはレイテンシで、絶対帯域は問われない（[§4](storage.md)）。Postgres datadir や encode scratch と分けるのと同じ規則である。
 
-ライブ streamer は `live.segment_dir`（Pod の `live-segments`）に、playlist と直近の segment を保持する。録画 HLS は専用の別 volume を使う。
+ライブ streamer は `live.segment_dir`（Pod の `live-segments`）に、playlist と直近の segment を保持する。世代付き録画 HLS はこの tmpfs を使わず、専用 Pod の別 volume（`recording-hls-scratch`）に置く。その中身と容量は「世代付き録画 HLS の scratch」で扱う。
 
 ##### ライブ scratch の容量
 
@@ -95,7 +95,7 @@ scratch の上限は、保持する秒数と同時ライブ数から見積もる
 
 k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライブが保持するのは `playlist_size × segment_seconds` 秒の窓だけである。容量は窓の秒数 × 全 profile の bitrate の合計 × 同時ライブセッション数 ÷ 8 で見積もる。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。bitrate が bit/s なら結果はバイトである。
 
-同梱設定は 4 セッション分の 12 秒窓を 128Mi に収める。地上波の NHK 総合を 150 秒測った。条件は 720p libx264 veryfast、音声 3 rendition、2 秒 segment である。実測は約 2.2 Mbit/s（2,225 kbit/s）、出力 41,776,725 バイトだった。4 セッション分の見積もりは約 13 MiBで、128Mi は可変 bitrate と管理用ファイルの余裕を含む。
+同梱設定は 4 セッション分の 12 秒窓を 128Mi に収める。地上波の NHK 総合を 150 秒測った。条件は 720p libx264 veryfast、音声 3 rendition、2 秒 segment である。実測は約 2.2 Mbit/s（2,225 kbit/s）、出力 41,776,725 バイトだった。4 セッション分の見積もりは約 13 MiB で、128Mi は可変 bitrate と管理用ファイルの余裕を含む。
 
 ##### sizeLimit は満杯で止まる値として置く
 

@@ -8,7 +8,7 @@
 
 ライブ視聴は mirakc のサービスストリームを ffmpeg で HLS に変換して配る。site streamer が入力を読み、セグメントを Pod 内 scratch に書く。セッションはチャンネル単位のインメモリ状態で、idle GC と離脱ヒントを使って回収する。
 
-ライブ URL は site・network ID・service ID から資源を同定し、セッション ID を持たない。録画 HLS は別の置き場単位の経路を使う（[メディア配信](../../api/media.md)）。
+ライブ URL は site・network ID・service ID から資源を同定し、セッション ID を持たない。録画 HLS の URL は置き場名と録画 ID で同定し（`/api/media/stores/<store>/recordings/<id>/…`）、ライブとは別の経路で配る（[録画中・完了後の世代付き HLS 配信](../../api/media/playback.md)）。
 
 ## 番組中の録画への切り替え
 
