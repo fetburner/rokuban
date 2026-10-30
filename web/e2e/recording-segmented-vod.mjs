@@ -8,7 +8,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createPlaywrightAdapter, log } from './lib.mjs'
 import {
   buildGrowingEventPlaylist,
-  EVENT_FINAL_SEGMENT_SECONDS,
   EVENT_GROW_INTERVAL_MS,
   EVENT_SEGMENT_COUNT,
   ensurePlaybackFixtures,
@@ -32,6 +31,8 @@ const FAR_SEEK = envNumber('E2E_FAR_SEEK_SECONDS', 52)
 const MASTER_URL = process.env.E2E_MASTER_URL
 const EVENT_ENDLIST_TIMEOUT_MS = envNumber('E2E_EVENT_ENDLIST_TIMEOUT_MS', 90_000)
 const HLS_FORWARD_BUFFER_SECONDS = 30
+// ENDLIST の後に、総尺への到達と終端までの再生を待つ上限。
+const ENDED_TIMEOUT_MS = (3 * SEGMENT + 15) * 1000
 const HARNESS_PATH = '/__e2e/'
 
 const HARNESS_HTML = String.raw`<!doctype html>
@@ -204,7 +205,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
           const hls = new window.Hls({ startPosition: 0 })
           state.hls = hls
           hls.on(window.Hls.Events.ERROR, (_event, data) => {
-            state.hlsErrors.push({ details: data.details, fatal: !!data.fatal, at: video.currentTime })
+            state.hlsErrors.push({ details: data.details, fatal: !!data.fatal, at: video.currentTime, sn: data.frag?.sn })
           })
           const metadataReady = new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('hls.js の loadedmetadata が 15 秒以内に来ない')), 15_000)
@@ -483,27 +484,14 @@ async function startServer(upstream, eventShortSegments) {
     const mode = activeCase.eventMode
     const isNegative = mode === 'shrink' || mode === 'extinf-change'
     const boundary = activeCase.boundary ?? DEFAULT_BOUNDARY
-    const initialCount = Math.max(1, Math.ceil((boundary + 1) / SEGMENT))
-    if (EVENT_SEGMENT_COUNT > readMediaPlaylistRows(source).length) {
-      throw new Error(`E2E_EVENT_SEGMENT_COUNT=${EVENT_SEGMENT_COUNT} は fixture の最大行数 ${readMediaPlaylistRows(source).length} を超える`)
-    }
-    if (mode === 'growing' && EVENT_SEGMENT_COUNT <= initialCount) {
-      throw new Error(`E2E_EVENT_SEGMENT_COUNT=${EVENT_SEGMENT_COUNT} は境界 ${boundary}s の seek に必要な ${initialCount} 行を超える必要がある`)
-    }
-    if (mode === 'growing') {
-      const maxOpenSeekTarget = (EVENT_SEGMENT_COUNT - 4) * SEGMENT_SECONDS
-      const forwardBufferHorizon = boundary + 2.5 + HLS_FORWARD_BUFFER_SECONDS
-      if (maxOpenSeekTarget <= forwardBufferHorizon) {
-        const minimumCount = Math.floor(forwardBufferHorizon / SEGMENT_SECONDS) + 5
-        throw new Error(`E2E_EVENT_SEGMENT_COUNT=${EVENT_SEGMENT_COUNT} は短すぎる。伸びている間に先読み外へ seek するには ${minimumCount} 行以上が必要`)
-      }
-    }
+    const initialCount = Math.max(1, Math.ceil((boundary + 1) / SEGMENT_SECONDS))
     if (eventStartedAt === undefined) eventStartedAt = now
     const elapsed = now - eventStartedAt
     const finalDelay = isNegative ? 2 * EVENT_GROW_INTERVAL_MS : (EVENT_SEGMENT_COUNT - initialCount) * EVENT_GROW_INTERVAL_MS
     const ended = elapsed >= finalDelay
     if (mode === 'growing') {
       const visibleCount = Math.min(EVENT_SEGMENT_COUNT, initialCount + Math.floor(elapsed / EVENT_GROW_INTERVAL_MS))
+      if (ended) eventFinalSegmentPublished = true
       return buildGrowingEventPlaylist(source, {
         segmentCount: EVENT_SEGMENT_COUNT,
         visibleCount,
@@ -562,12 +550,7 @@ async function startServer(upstream, eventShortSegments) {
           ? readFixtureFile(`/${shortSegment}`, request.headers.range)
           : readFixtureFile(fixturePath, request.headers.range)
         if (requestPath.endsWith('.m3u8') && requestPath !== '/event/master.m3u8' && result.status === 200) {
-          const body = eventPlaylist(requestPath, result.body.toString('utf8'), Date.now())
-          if (activeCase.eventMode === 'growing') {
-            const rows = readMediaPlaylistRows(body)
-            eventFinalSegmentPublished = body.includes('#EXT-X-ENDLIST') && rows.length === EVENT_SEGMENT_COUNT && rows.at(-1)?.extinf === EVENT_FINAL_SEGMENT_SECONDS.toFixed(3)
-          }
-          result.body = Buffer.from(body)
+          result.body = Buffer.from(eventPlaylist(requestPath, result.body.toString('utf8'), Date.now()))
         }
       } else {
         result = readFixtureFile(requestPath, request.headers.range)
@@ -609,15 +592,6 @@ async function startServer(upstream, eventShortSegments) {
     requestsBetween: (from, to) => requests.slice(from, to),
     // `time` 秒を含む segment の path。
     segmentsAt: (time) => [...segmentRanges].filter(([, [from, to]]) => from <= time && time < to).map(([name]) => name),
-    hasRepeatedPlaylistSince(mark) {
-      const counts = new Map()
-      for (const observation of playlistObservations.slice(mark)) {
-        const count = (counts.get(observation.key) ?? 0) + 1
-        if (count >= 2) return true
-        counts.set(observation.key, count)
-      }
-      return false
-    },
     hasRepeatedPlaylistGrowthSince(mark) {
       const seen = new Set()
       for (const observation of playlistObservations.slice(mark)) {
@@ -626,10 +600,11 @@ async function startServer(upstream, eventShortSegments) {
       }
       return false
     },
-    hasObservedGrowthSince: (mark) => playlistObservations.slice(mark).some((observation) => observation.grewWhileOpen),
     firstPlaylistSince: (mark) => playlistObservations[mark],
     hasEndListSince: (mark) => playlistObservations.slice(mark).some((observation) => observation.endList),
     latestPlaylistDurationSince: (mark) => Math.max(0, ...playlistObservations.slice(mark).map((observation) => observation.duration)),
+    // ENDLIST を含んで配った media playlist の総尺。
+    endListDurationSince: (mark) => Math.max(0, ...playlistObservations.slice(mark).filter((observation) => observation.endList).map((observation) => observation.duration)),
     unrequestedSeekTargetsSince(mark, notBefore) {
       const latest = new Map()
       for (const observation of playlistObservations.slice(mark)) latest.set(observation.key, observation)
@@ -637,8 +612,10 @@ async function startServer(upstream, eventShortSegments) {
       for (const observation of latest.values()) {
         let start = 0
         for (const row of observation.rows) {
-          if (start >= notBefore && start + 1 <= observation.duration) targets.add(start)
-          start += Number(row.extinf)
+          const end = start + Number(row.extinf)
+          // その行の後ろに 2 行以上が載っている行だけを選ぶ。行き先を載っている範囲の端にしない。
+          if (start >= notBefore && observation.duration - end >= 2 * SEGMENT - 0.01) targets.add(start)
+          start = end
         }
       }
       const requested = new Set(requests)
@@ -714,29 +691,36 @@ async function waitForState(adapter, predicate, timeoutMs, description) {
   throw new Error(`${description} を ${timeoutMs}ms 以内に確認できない: ${JSON.stringify({ currentTime, paused, ended, readyState, buffered, hlsErrors, frameError, startStage, audioContextState })}`)
 }
 
-async function chooseFarSeekTarget(adapter, server, playlistMark, growing, maxSeekTarget) {
+// 伸びている間に遠距離シークできる最小の行数。先読みの端（境界 + 2.5 + 先読み 30 秒）以降の行、その後ろの 2 行、
+// ENDLIST の前に載る最後の 1 行ぶん。実機の URL ではこの式を使わない。
+function minimumEventRows(boundary) {
+  return Math.ceil((boundary + 2.5 + HLS_FORWARD_BUFFER_SECONDS) / SEGMENT_SECONDS) + 4
+}
+
+// 伸びる EVENT の遠距離シーク先。先読みの外で未要求、後ろに 2 行以上が載っている行の先頭のうち最も手前を選ぶ。
+async function chooseFarSeekTarget(adapter, server, playlistMark, growing) {
   if (!growing) return { target: FAR_SEEK, published: undefined }
 
   await adapter.evaluate(() => window.__e2e.pause())
   const state = await adapter.evaluate(() => window.__e2e.state())
   const bufferedEnd = Math.max(0, ...state.buffered.map(([, end]) => end))
   const forwardBufferHorizon = Math.max(bufferedEnd, state.currentTime + HLS_FORWARD_BUFFER_SECONDS)
-  const requested = Math.min(Math.max(FAR_SEEK, forwardBufferHorizon), maxSeekTarget ?? Number.POSITIVE_INFINITY)
-  const findTargets = () => server.unrequestedSeekTargetsSince(playlistMark, forwardBufferHorizon)
+  // 実機の URL は E2E_FAR_SEEK_SECONDS も下限にする。内蔵フィクスチャは先読みの外であれば足りる。
+  const notBefore = MASTER_URL ? Math.max(FAR_SEEK, forwardBufferHorizon) : forwardBufferHorizon
+  const findTargets = () => server.unrequestedSeekTargetsSince(playlistMark, notBefore)
   try {
     await waitForServer(
-      () => findTargets().some((target) => target >= requested) || server.hasEndListSince(playlistMark),
+      () => findTargets().length > 0 || server.hasEndListSince(playlistMark),
       EVENT_ENDLIST_TIMEOUT_MS,
-      `先読み範囲の外に未要求 segment がある playlist (${requested.toFixed(2)}s 以降)`,
+      `先読み範囲の外で、後ろに 2 行以上が載った未要求 segment がある playlist (${notBefore.toFixed(2)}s 以降)`,
     )
   } catch {
     // playlist の更新が止まったときも、現在公開済みで未要求の範囲を調べる。
   }
   const published = server.latestPlaylistDurationSince(playlistMark)
-  const targets = findTargets()
-  const target = targets.find((candidate) => candidate >= requested)
+  const [target] = findTargets()
   if (target === undefined) {
-    throw new Error(`先読み範囲の外に未要求 segment がない (published=${published.toFixed(3)}s, buffer=${bufferedEnd.toFixed(3)}s, horizon=${forwardBufferHorizon.toFixed(3)}s)`)
+    throw new Error(`先読み範囲の外に、後ろに 2 行以上が載った未要求 segment がない (published=${published.toFixed(3)}s, buffer=${bufferedEnd.toFixed(3)}s, horizon=${forwardBufferHorizon.toFixed(3)}s)`)
   }
   return { target, published }
 }
@@ -744,9 +728,10 @@ async function chooseFarSeekTarget(adapter, server, playlistMark, growing, maxSe
 /**
  * checkCase は 1 つの master を再生し、failures を `[名前] 説明` の形で返す。
  * 名前: progress（再生が進まない）/ timecode / seek-frame / seek-buffered / audio-gap / audio-frequency /
- * audio-unavailable / track / stall / content-jump / frame-freeze / hls-gap / hls-error。
+ * audio-unavailable / track / stall / content-jump / frame-freeze / hls-gap / hls-error /
+ * event-growth / ended / playlist-shrink / playlist-mutated。
  */
-async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY = DEFAULT_BOUNDARY, checkPrefetch = true, eventURL = false, requireEnded = false, maxSeekTarget }) {
+async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY = DEFAULT_BOUNDARY, checkPrefetch = true, eventURL = false, requireEnded = false }) {
   const failures = []
   const add = (tag, message) => failures.push(`[${tag}] ${message}`)
   const playlistMark = server.playlistMark()
@@ -862,15 +847,13 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     }
     checkGrowthState('再生停止・境界音声・時刻判定')
 
-    if (!growing) {
-      for (const [trackIndex, expected, label] of [[1, [440, 440], '主'], [2, [880, 880], '副'], [0, [440, 880], '標準']]) {
-        await adapter.evaluate(async (index) => window.__e2e.selectTrack(index), trackIndex)
-        state = await waitForState(adapter, (s) => channelMatches(s.audio.at(-1), expected), 8_000, `${label}音声への切替 (WebAudio の左右周波数)`)
-      }
-      checkGrowthState('音声 rendition 切替')
+    for (const [trackIndex, expected, label] of [[1, [440, 440], '主'], [2, [880, 880], '副'], [0, [440, 880], '標準']]) {
+      await adapter.evaluate(async (index) => window.__e2e.selectTrack(index), trackIndex)
+      state = await waitForState(adapter, (s) => channelMatches(s.audio.at(-1), expected), 8_000, `${label}音声への切替 (WebAudio の左右周波数)`)
     }
+    checkGrowthState('音声 rendition 切替')
 
-    const farSeek = await chooseFarSeekTarget(adapter, server, playlistMark, growing, maxSeekTarget)
+    const farSeek = await chooseFarSeekTarget(adapter, server, playlistMark, growing)
     summary.farSeekTarget = farSeek.target
     summary.publishedSeconds = farSeek.published
     const mark = server.mark()
@@ -884,18 +867,16 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= farSeek.target + 1, 15_000, '遠距離シーク後の再生継続')
     checkGrowthState('遠距離 seek の着地')
 
-    if (growing) {
-      for (const [trackIndex, expected, label] of [[1, [440, 440], '主'], [2, [880, 880], '副'], [0, [440, 880], '標準']]) {
-        await adapter.evaluate(async (index) => window.__e2e.selectTrack(index), trackIndex)
-        state = await waitForState(adapter, (s) => channelMatches(s.audio.at(-1), expected), 8_000, `${label}音声への切替 (WebAudio の左右周波数)`)
-      }
-      checkGrowthState('音声 rendition 切替')
-    }
-
     if (requireEnded && growing) {
       await waitForServer(() => server.hasEndListSince(playlistMark), EVENT_ENDLIST_TIMEOUT_MS, 'ENDLIST を含む media playlist')
+      // ENDLIST の後、終端の 3 セグメント手前から終端まで再生して ended に届くことを見る。
+      // 着地から 5 秒以上進むことも要る（着地がすでに終端なら ended は再生なしで立つ）。
       try {
-        state = await waitForState(adapter, (s) => s.ended, EVENT_ENDLIST_TIMEOUT_MS, 'ENDLIST 後の video.ended')
+        const total = server.endListDurationSince(playlistMark)
+        await waitForState(adapter, (s) => Math.abs(s.duration - total) <= 0.5, ENDED_TIMEOUT_MS, `video.duration が ENDLIST 時の総尺 ${total.toFixed(3)}s に届く`)
+        const landed = (await adapter.evaluate(async (seconds) => window.__e2e.seek(seconds), Math.max(0, total - 3 * SEGMENT))).landing
+        await adapter.evaluate(async () => window.__e2e.start())
+        state = await waitForState(adapter, (s) => s.ended && s.currentTime >= landed + 5, ENDED_TIMEOUT_MS, `着地 ${landed.toFixed(3)}s から 5 秒以上進んだ video.ended`)
         summary.ended = true
         summary.endedAt = state.currentTime
       } catch (error) {
@@ -921,35 +902,6 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
   return summary
 }
 
-async function checkPlaylistMutationCase(adapter, server, { masterURL, expectedTag }) {
-  const failures = []
-  const add = (tag, message) => failures.push(`[${tag}] ${message}`)
-  const playlistMark = server.playlistMark()
-  let browserPath
-  try {
-    await adapter.navigate(adapter.serverURL + HARNESS_PATH)
-    const loaded = await adapter.evaluate(async (url) => window.__e2e.load(url), masterURL)
-    browserPath = loaded.path
-    await waitForState(adapter, (s) => s.tracks.length === 3, 10_000, '音声 rendition 3 本')
-    await adapter.click('#start')
-    await waitForState(adapter, (s) => !s.paused && s.currentTime > 0.5, 15_000, 'プレーヤーの再生位置が進む')
-    await waitForServer(() => server.hasRepeatedPlaylistSince(playlistMark), 15_000, '同じ media playlist の 2 回目の要求')
-    await waitForServer(() => server.hasEndListSince(playlistMark), EVENT_ENDLIST_TIMEOUT_MS, 'commit 後の ENDLIST')
-  } catch (error) {
-    add('progress', error.message)
-  }
-
-  const observations = server.playlistObservationsSince(playlistMark)
-  const violations = server.violationsSince(playlistMark)
-  for (const violation of violations) {
-    add(violation.tag, `${violation.path} の行 ${violation.index ?? ''}: ${violation.previous ?? JSON.stringify(violation.before)} → ${violation.current ?? JSON.stringify(violation.after)}`)
-  }
-  if (!violations.some((violation) => violation.tag === expectedTag)) {
-    add('playlist-invariant', `期待した [${expectedTag}] を検出しなかった (${observations.length} 件のプレーヤー要求)`)
-  }
-  return { browserPath, playlistRequests: observations.length, failures }
-}
-
 async function main() {
   const engine = process.env.E2E_BROWSER ?? 'chrome'
   if (!['chrome', 'webkit'].includes(engine)) throw new Error(`E2E_BROWSER が不正: ${engine}`)
@@ -973,21 +925,17 @@ async function main() {
       const extension = format === 'ts' ? 'ts' : 'm4s'
       cases.push({ name: `${format}/stall`, masterPath: `/${format}/restarted/master.m3u8`, expect: ['stall'], holdPath: `/${format}/restarted/segments/restart-video-000.${extension}`, boundary: SPLIT_SECONDS })
     }
-    cases.push({ name: 'event/growing', masterPath: '/event/master.m3u8', eventMode: 'growing', eventURL: true, requireEnded: true, boundary: SPLIT_SECONDS, maxSeekTarget: (EVENT_SEGMENT_COUNT - 4) * SEGMENT_SECONDS })
-    cases.push({ name: 'event/shrink', masterPath: '/event/master.m3u8', eventMode: 'shrink', protocolOnly: true, expect: ['playlist-shrink'], boundary: SPLIT_SECONDS })
-    cases.push({ name: 'event/extinf-change', masterPath: '/event/master.m3u8', eventMode: 'extinf-change', protocolOnly: true, expect: ['playlist-mutated'], boundary: SPLIT_SECONDS })
+    cases.push({ name: 'event/growing', masterPath: '/event/master.m3u8', eventMode: 'growing', eventURL: true, requireEnded: true, boundary: SPLIT_SECONDS })
+    cases.push({ name: 'event/shrink', masterPath: '/event/master.m3u8', eventMode: 'shrink', expect: ['playlist-shrink'], boundary: SPLIT_SECONDS })
+    cases.push({ name: 'event/extinf-change', masterPath: '/event/master.m3u8', eventMode: 'extinf-change', expect: ['playlist-mutated'], boundary: SPLIT_SECONDS })
   }
 
   const only = process.env.E2E_CASES ? process.env.E2E_CASES.split(',') : undefined
   // optIn のケースは、既定では回さない。E2E_CASES に名前を書くと回る。
   const selected = only ? cases.filter((entry) => only.includes(entry.name)) : cases.filter((entry) => !entry.optIn)
   if (selected.length === 0) throw new Error(`E2E_CASES=${process.env.E2E_CASES} に一致するケースがない (${cases.map((entry) => entry.name).join(', ')})`)
-  if (selected.some((entry) => entry.eventMode === 'growing')) {
-    const forwardBufferHorizon = SPLIT_SECONDS + 2.5 + HLS_FORWARD_BUFFER_SECONDS
-    const minimumCount = Math.floor(forwardBufferHorizon / SEGMENT_SECONDS) + 5
-    if (EVENT_SEGMENT_COUNT < minimumCount) {
-      throw new Error(`E2E_EVENT_SEGMENT_COUNT=${EVENT_SEGMENT_COUNT} は短すぎる。伸びている間に先読み外へ seek するには ${minimumCount} 行以上が必要`)
-    }
+  if (selected.some((entry) => entry.eventMode === 'growing') && EVENT_SEGMENT_COUNT < minimumEventRows(SPLIT_SECONDS)) {
+    throw new Error(`E2E_EVENT_SEGMENT_COUNT=${EVENT_SEGMENT_COUNT} は短すぎる。伸びている間に先読み外へ遠距離シークするには ${minimumEventRows(SPLIT_SECONDS)} 行以上が必要`)
   }
   const served = await startServer(upstream, eventShortSegments)
   let adapter
@@ -1002,29 +950,22 @@ async function main() {
       let summary
       try {
         const masterURL = `${served.url}${entry.masterPath}`
-        summary = entry.protocolOnly
-          ? await checkPlaylistMutationCase(adapter, served, { masterURL, expectedTag: entry.expect[0] })
-          : await checkCase(adapter, served, {
-              masterURL,
-              hold,
-              boundary: entry.boundary,
-              checkPrefetch: entry.checkPrefetch,
-              eventURL: entry.eventURL,
-              requireEnded: entry.requireEnded,
-              maxSeekTarget: entry.maxSeekTarget,
-            })
+        summary = await checkCase(adapter, served, {
+          masterURL,
+          hold,
+          boundary: entry.boundary,
+          checkPrefetch: entry.checkPrefetch,
+          eventURL: entry.eventURL,
+          requireEnded: entry.requireEnded,
+        })
       } catch (error) {
         log(`NG: ${entry.name}: ${error.message}`)
         problems.push(`${entry.name}: ${error.message}`)
         continue
       }
       const expectedFailures = entry.expect ? summary.failures.filter((failure) => entry.expect.some((tag) => failure.startsWith(`[${tag}]`))) : []
-      const met = entry.expect
-        ? expectedFailures.length > 0 && (!entry.protocolOnly || expectedFailures.length === summary.failures.length)
-        : summary.failures.length === 0
-      const metrics = entry.protocolOnly
-        ? `playlist requests=${summary.playlistRequests}`
-        : `boundary frames=${summary.boundaryFrames}; audio=${summary.audio}; far-seek=${summary.farSeekTarget ?? 'n/a'}s (${summary.farSeekSegments ?? 'n/a'} segments); playlist requests=${summary.playlistRequests ?? 'n/a'}${summary.ended ? `; ended=${summary.endedAt.toFixed(3)}s` : ''}${summary.skipped ? `; 省略: ${summary.skipped}` : ''}`
+      const met = entry.expect ? expectedFailures.length > 0 : summary.failures.length === 0
+      const metrics = `boundary frames=${summary.boundaryFrames}; audio=${summary.audio}; far-seek=${summary.farSeekTarget ?? 'n/a'}s (published ${summary.publishedSeconds === undefined ? 'n/a' : `${summary.publishedSeconds.toFixed(3)}s`}; ${summary.farSeekSegments ?? 'n/a'} segments); playlist requests=${summary.playlistRequests ?? 'n/a'}${summary.ended ? `; ended=${summary.endedAt.toFixed(3)}s` : ''}${summary.skipped ? `; 省略: ${summary.skipped}` : ''}`
       log(`${met ? 'OK' : 'NG'}: ${entry.name}${entry.note ? ` (${entry.note})` : ''}${entry.expect ? ` (期待する失敗: ${entry.expect.join(' か ')})` : ''} via ${summary.browserPath}; ${metrics}`)
       if (summary.dump) log(`  境界のフレーム:\n    ${summary.dump.join('\n    ')}`)
       if (summary.hlsErrors?.length) log(`  hls.js のエラー: ${JSON.stringify(summary.hlsErrors)}`)

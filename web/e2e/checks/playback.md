@@ -160,24 +160,14 @@ hls.js は、各トラックの先頭の DTS の最小を起点にする（`node
 
 hls.js が non-fatal で報告する次の 4 つは、内容の欠けか停止の現れとして失敗にする。`bufferSeekOverHole`・`bufferNudgeOnStall`・`bufferStalledError`・`bufferAppendNoProgress` である。
 
-#### 録画中の EVENT playlist
-
-通常実行には `event/growing` を加え、既存 fixture の TS segment から、行が増える EVENT playlist を返す。最初は境界へ seek できる数行を載せ、その後 `E2E_EVENT_GROW_INTERVAL_MS`（既定 1000 ms）ごとに 1 行ずつ増やす。`E2E_EVENT_SEGMENT_COUNT`（既定 30）行に達したら、最後の短い segment と `#EXT-X-ENDLIST` を同じ応答に付ける。最後の TS は 1 秒に切り詰め、`#EXTINF:1.000` と一致させる。行数は fixture が持つ 30 本を上限とし、境界を再生する行数より大きくする。既定の境界 12 秒では、伸びている間に先読み外の far seek を行うため 27 行以上が必要である。
-
-同じ media playlist をプレーヤーが 2 回以上要求し、再生位置が進んだことと、ENDLIST の前に行が増えたことを確認してから判定する。既存の 5 項目はすべて ENDLIST が配られる前に終える。判定用の追加 fetch はせず、hls.js が実際に要求した各 playlist 応答を記録する。前回までの各行について URI・EXTINF・PROGRAM-DATE-TIME が次の応答の同じ位置に一致するかを確認し、行数の減少は `[playlist-shrink]`、既出行の変更は `[playlist-mutated]` にする。遠距離 seek は hls.js の先読み範囲の外にある未要求 segment を選ぶ。指定した seek 位置が短い playlist の終端より先なら、commit 前に公開される範囲内に丸めて選ぶ。最後は ENDLIST を含む応答をプレーヤーが取得した後、終端まで再生して `video.ended` を確認する。
-
-`event/shrink` は以前に見つかった 240 行から 182 行への commit 後縮退を、既存 segment の URI を使って再現する。`event/extinf-change` は ENDLIST の応答で既出行の EXTINF を変える。どちらも再生位置が進み、同じ playlist が繰り返し要求された後の応答を使って、期待した不変条件だけで検出できることを確かめる。
-
-```sh
-E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change corepack pnpm e2e:recording-segmented-vod
-```
-
 負例は、期待する名前の失敗で落ちたときだけ「期待どおり」とする。名前は `[timecode]`・`[content-jump]`・`[frame-freeze]`・`[seek-frame]`・`[seek-buffered]`・`[audio-gap]`・`[stall]`・`[hls-gap]` のように、各失敗の先頭に付く。待ちが尽きて例外になったものは `[progress]` であり、検出とは数えない。期待する名前は次のとおりである。
 
 - `off-grid` は `[timecode]`・`[content-jump]`・`[frame-freeze]` のどれか
 - `no-offset` は `[seek-frame]`・`[content-jump]`・`[frame-freeze]` のどれか
 - `audio-gap` は `[audio-gap]`
 - `stall` は `[stall]`
+- `event/shrink` は `[playlist-shrink]`
+- `event/extinf-change` は `[playlist-mutated]`
 
 `no-offset` は、Chrome の hls.js では境界を通して再生するだけでは検出できなかった。境界の ±0.5 秒は判定を通り、遠距離シークの後で着地が 48.6 秒になって `[seek-frame]` になり、`bufferAppendNoProgress` が出て再生が進まなかった（`[progress]`）。原因は調べていない。ほかの条件での挙動は未検証である。
 
@@ -206,13 +196,39 @@ fMP4 の `tfdt` は、既定ではその run の先頭を 0 にし、`-output_ts
 
 Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・再起動版と負例 4 つが TS と同じく期待どおりになった。Safari 27.0.1 では、fMP4 の連続版・再起動版の映像の判定が通った。音声は WebAudio で測れなかった（下記）。
 
+#### 録画中の EVENT playlist
+
+録画中の playlist は、載せた行を後から変えずに伸び、commit の後に同じ URL のまま最後の短いセグメントと ENDLIST が付く。内蔵のフィクスチャでこの形を再現し、伸びている間に上の 6 つの判定を回してから、終端まで再生する。
+
+内蔵の `event/growing` は、`ts/restarted` のセグメントから伸びる playlist を作る。
+
+- 最初は境界の手前へシークできる行数を載せ、`E2E_EVENT_GROW_INTERVAL_MS`（既定はセグメント長）ごとに 1 行足す
+- `E2E_EVENT_SEGMENT_COUNT`（既定 30）行に達した応答で、最後の行の EXTINF を 1 秒にし、`#EXT-X-ENDLIST` を付ける。最後の TS も 1 秒に切り詰め、EXTINF と長さをそろえる
+- 行数の上限はフィクスチャの 30 本である。足りなければ起動時に必要な行数を出して止まる
+
+判定は次の順に進む。
+
+1. 再生位置が進み、同じ media playlist をプレーヤーが 2 回以上要求し、ENDLIST の前に行が増えたことを待つ。待たずに判定すると、取得が始まる前に「止まらない」「行が変わらない」が通ってしまう
+2. プレーヤーが要求した playlist の応答だけを記録し、判定のための要求は足さない。前回の応答の各行の URI・EXTINF・PROGRAM-DATE-TIME が、次の応答の同じ位置にあることを確かめる。行が減れば `[playlist-shrink]`、既出の行が変われば `[playlist-mutated]` にする
+3. 上の 6 つの判定を、ENDLIST が配られる前に終える。先に配られたら `[event-growth]` にする
+4. 遠距離シークの行き先は、先読みの外で、まだ要求しておらず、後ろに 2 行が載っているセグメントの先頭から選ぶ。載っている範囲の端を選ぶと、まだ作られていない続きを hls.js が待って止まる
+5. ENDLIST を含む応答をプレーヤーが取った後、`video.duration` がその playlist の総尺に届くのを待つ。終端の 3 セグメント手前へシークし、再生が着地から 5 秒以上進んで `video.ended` になることを確かめる。外れたら `[ended]` にする
+
+負例は 2 つある。`event/shrink` は、240 行の playlist を commit の応答で 182 行に縮める。commit の後に載せ済みの行が縮んだ実録画の不具合を再現する。`event/extinf-change` は、commit の応答で先頭の行の EXTINF を変える。どちらも通常の判定と同じ手順で回し、期待する名前が 1 つでも出れば期待どおりとする。
+
+```sh
+E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change corepack pnpm e2e:recording-segmented-vod
+```
+
 #### アプリの URL に向ける
 
 録画の master を持つ URL に向けると、正例の判定だけをその URL に回す。負例は内蔵フィクスチャでしか作れない。
 
 URL は `E2E_MASTER_URL` で渡す。
 
-録画中の master に向けた場合は、再生位置の進行と同じ media playlist の複数回取得を待ってから既出行の不変を判定し、5 項目を ENDLIST 前に終え、録画の ENDLIST 後まで再生して `ended` を確認する。最初の media playlist に ENDLIST がある完成済み録画は、従来どおり完成した VOD として判定する。URL と playlist はハーネスの同一オリジン proxy を通り、記録する要求は hls.js がプレーヤーから送ったものだけである。録画が ENDLIST になるまで既定 90 秒を超える場合は `E2E_EVENT_ENDLIST_TIMEOUT_MS` を延ばす。
+録画中の master を渡すと、「録画中の EVENT playlist」と同じ手順で、伸びている間から ENDLIST の後まで判定を回す。最初に取った media playlist に ENDLIST があれば、完成した録画として今までどおり判定する。`E2E_EVENT_ENDLIST_TIMEOUT_MS`（既定 90 秒）は、シーク先が載るまでと ENDLIST が付くまでの待ちの上限である。
+
+録画中の URL は、録画開始から 1 分以上経ったものに向ける。録画終了の 2 分以上前に始める。ENDLIST が付くまでに、遠距離シークの行き先が載る時間を残すためである。
 
 ```sh
 E2E_MASTER_URL=http://localhost:40773/<録画の master.m3u8> \
@@ -222,7 +238,7 @@ E2E_EVENT_ENDLIST_TIMEOUT_MS=180000 corepack pnpm e2e:recording-segmented-vod
 
 - `E2E_SEGMENT_SECONDS` はセグメント長で、既定は 2 である。判定を始める位置を決める
 - `E2E_BOUNDARY_SECONDS` は、古い実行のセグメントから新しい実行のセグメントへ切り替わる秒で、既定は 12 である。ffmpeg を起動し直した位置（内蔵では 10 秒）ではない
-- `E2E_FAR_SEEK_SECONDS` は遠距離 seek の希望秒で、既定は 52 である。録画中の EVENT では、まだ playlist に載っていない秒へは飛ばさず、その時点で取得済みの範囲に収める。先読みの内側を選んだ場合は `[seek-buffered]` で分かる
+- `E2E_FAR_SEEK_SECONDS` は遠距離シークの秒で、既定は 52 である。完成した録画では、アプリの master の BANDWIDTH から先読みの目安を `maxBufferSize × 8 / BANDWIDTH` 秒（`maxBufferLength` が大きければそちら）と見積もり、その外を選ぶ。録画中の録画では、この秒と先読みの端の遅い方を下限にして、playlist に載っていて未要求のセグメントを選ぶ。先読みの内側を選ぶと `[seek-buffered]` で分かる
 - ハーネスのページとメディアは同一オリジンでなければならない。オリジンが違うと、hls.js の XHR が CORS で止まり、`createMediaElementSource` が無音になる。そのためローカルのサーバーが、`E2E_MASTER_URL` のオリジンへ同じパスで中継する
 
 アプリの実装の受け入れでは、フィクスチャが作る `source.ts` を録画として登録し、その録画の master を `E2E_MASTER_URL` に渡す。`source.ts` は `<os.tmpdir()>/rokuban-e2e-recording-segmented-v3/generated/source.ts` にある。境界の秒は、アプリが新しい ffmpeg の出力へ切り替わる位置に合わせる。
