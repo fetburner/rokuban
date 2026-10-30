@@ -705,13 +705,6 @@ func (ls *LiveStreamer) Leave(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func writeHLSPlaylist(w http.ResponseWriter, content []byte) {
-	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(content)
-}
-
 // parseCanonicalRecordingID accepts only the decimal spelling used by
 // recordings.id in URLs. Aliases such as 00123 are rejected so one recording
 // cannot have multiple cache or session identities.

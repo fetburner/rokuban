@@ -422,6 +422,8 @@ master の `NAME` は ffmpeg が `audio_<n>` で固定し、n はプロファイ
 
 ##### 再生位置の時刻情報
 
+ライブの playlist には時刻情報を含め、音声切替後の復帰に使う。
+
 ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。これが無いと、hls.js はライブの窓（`playlist_size` × `segment_seconds`）より後で前に聴いた音声へ戻ったときに止まる。
 
 <details><summary>根拠</summary>

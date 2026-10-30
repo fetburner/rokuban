@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
@@ -378,7 +377,7 @@ func (ls *LiveStreamer) startSessionOnceFor(serviceID int64, source sessionSourc
 
 	sessionCtx, cancel := context.WithCancel(context.Background())
 	s := &liveSession{
-		serviceID: serviceID,
+		serviceID:  serviceID,
 		source:     source,
 		ready:      make(chan struct{}),
 		done:       make(chan struct{}),
@@ -565,25 +564,14 @@ func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr error, k
 			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
 			// セッション終了なので運用者向けの Error にはしない。
 			slog.Warn("streamer: ffmpeg exited successfully but WaitDelay expired before I/O completed",
-				"kind", string(kind), "session_id", sessionID, "wait_delay", cmd.WaitDelay)
+				"kind", kind, "session_id", sessionID, "wait_delay", cmd.WaitDelay)
 		} else {
 			// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
 			// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
 			slog.Error("streamer: ffmpeg exited unexpectedly",
-				"kind", string(kind), "session_id", sessionID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
+				"kind", kind, "session_id", sessionID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
 		}
 	}
-}
-
-// ffmpegExitedOnItsOwn は Wait のエラーが、こちらの kill（SIGKILL）以外での ffmpeg の
-// 異常終了（0 以外の終了コードか、SIGKILL 以外のシグナル）か。
-func ffmpegExitedOnItsOwn(waitErr error) bool {
-	var exitErr *exec.ExitError
-	if !errors.As(waitErr, &exitErr) {
-		return false
-	}
-	status, ok := exitErr.Sys().(syscall.WaitStatus)
-	return !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL
 }
 
 func cleanupSessionDir(s *liveSession) {

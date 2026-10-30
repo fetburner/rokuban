@@ -8,7 +8,6 @@ package sqlcgen
 import (
 	"context"
 	"encoding/json"
-	"time"
 )
 
 const acquireRecordSync = `-- name: AcquireRecordSync :one

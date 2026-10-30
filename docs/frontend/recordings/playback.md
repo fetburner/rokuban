@@ -6,6 +6,8 @@
 
 ## 再生元の選び方
 
+録画の状態と利用できるファイルに応じて、再生元を選び分ける。
+
 | 録画の状態 | 選ぶ再生元 |
 |---|---|
 | 録画中で `hlsPlayback` がある | 世代付き録画 HLS |
@@ -19,11 +21,15 @@
 
 ## 世代付き録画 HLS
 
-録画 HLS の master URL は `/api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8` の形で、録画 API が `hlsPlayback` に返す。録画中は ingest temp、commit 後は原本を、同じ世代の URL で読む。詳細は [API の録画 HLS](../../api/media/playback.md) を参照する。
+録画中から commit 後まで同じ URL で再生する。
+
+録画 API は、profile ごとの master URL を返す。録画中は ingest temp、commit 後は原本を同じ世代の URL で読む。詳細は [API の録画 HLS](../../api/media/playback.md) を参照する。
 
 世代が期限切れになると playlist 要求は 410 を返す。プレイヤーは録画詳細を再取得し、新しい世代の URL で止まる直前の位置から再開する。世代切り替え中に `hlsPlayback` が空になっても、再生中に最後に得た URL を保持する。新しい世代が届いたら同じ再生元を更新し、録画状態の通知だけでプレイヤーを作り直さない。
 
 ## 再生位置と操作
+
+再生位置は録画全体の時間軸で扱う。
 
 再生位置は `/api/recordings/{id}/playback-position` に録画時間軸のミリ秒で保存する。HLS と encoded は同じ値を共有し、profile ごとには分けない。cut 版は keep 区間を使って原本時間軸との対応を取る。
 
@@ -33,4 +39,6 @@
 
 ## 検証
 
-再生元の選択と `hlsPlayback` が空のときのフォールバックは `recording-playback-source.test.ts`、世代切り替え時の位置保持は `recording-detail.test.tsx` と `web/e2e/recording-playback-timeline.mjs` で固定する。録画 HLS の固定長 segment と変換再起動境界は `web/e2e/recording-segmented-vod.mjs` で測る。
+ユニットテストと実ブラウザの判定で再生の切り替えを確かめる。
+
+再生元の選択と `hlsPlayback` が空のときのフォールバックは `recording-playback-source.test.ts` で固定する。世代切り替え時の位置保持は `recording-detail.test.tsx` と `web/e2e/recording-playback-timeline.mjs` で固定する。録画 HLS の固定長 segment と変換再起動境界は `web/e2e/recording-segmented-vod.mjs` で測る。

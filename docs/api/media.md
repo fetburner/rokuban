@@ -4,6 +4,8 @@
 
 ## 節 → ファイル
 
+各ファイルには、配信方式ごとの仕様を分けて記す。
+
 | 内容 | ファイル |
 |---|---|
 | 録画済みファイルの Range 配信と X-Accel-Redirect | [media/recording.md](media/recording.md) |
@@ -13,6 +15,8 @@
 
 ## 外部から参照されている節名
 
+他の文書から参照する節名と、その所在を示す。
+
 | 節名 | ファイル |
 |---|---|
 | 録画済みファイルのストリーミング | [media/recording.md](media/recording.md) |
@@ -21,6 +25,8 @@
 | SPA アセット配信 / サービスロゴ: ドロップ | [media/assets.md](media/assets.md) |
 
 ## 読む順の目安
+
+目的に応じて、読むファイルを選べる。
 
 - 録画ファイル配信 → [media/recording.md](media/recording.md)
 - ライブ視聴 → [media/live-hls.md](media/live-hls.md)

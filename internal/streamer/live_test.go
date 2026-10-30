@@ -3157,6 +3157,17 @@ func TestReadLiveStreamPrefix_PreservesAllBytesInOrder(t *testing.T) {
 	}
 }
 
+// gatedReader は gate が開くまで Read を待たせる。
+type gatedReader struct {
+	gate <-chan struct{}
+	r    io.Reader
+}
+
+func (g *gatedReader) Read(p []byte) (int, error) {
+	<-g.gate
+	return g.r.Read(p)
+}
+
 func TestReadLiveStreamPrefix_ReturnsWhenInputIsBlocked(t *testing.T) {
 	gate := make(chan struct{})
 	defer func() {

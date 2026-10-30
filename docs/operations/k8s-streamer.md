@@ -91,9 +91,11 @@ Pod が落ちても、ハッシュの担当が移っても自己修復する。�
 
 ##### ライブ scratch の容量
 
+scratch の上限は、保持する秒数と同時ライブ数から見積もる。
+
 k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライブが保持するのは `playlist_size × segment_seconds` 秒の窓だけである。容量は窓の秒数 × 全 profile の bitrate の合計 × 同時ライブセッション数 ÷ 8 で見積もる。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。bitrate が bit/s なら結果はバイトである。
 
-同梱設定は 4 セッション分の 12 秒窓を 128Mi に収める。地上波の NHK 総合 150 秒を 720p libx264 veryfast、音声 3 rendition、2 秒 segment に変換した実測は約 2.2 Mbit/s（2,225 kbit/s）、出力 41,776,725 バイトだった。4 セッション分の見積もりは約 13 MiBで、128Mi は可変 bitrate と管理用ファイルの余裕を含む。
+同梱設定は 4 セッション分の 12 秒窓を 128Mi に収める。地上波の NHK 総合を 150 秒測った。条件は 720p libx264 veryfast、音声 3 rendition、2 秒 segment である。実測は約 2.2 Mbit/s（2,225 kbit/s）、出力 41,776,725 バイトだった。4 セッション分の見積もりは約 13 MiBで、128Mi は可変 bitrate と管理用ファイルの余裕を含む。
 
 ##### sizeLimit は満杯で止まる値として置く
 
