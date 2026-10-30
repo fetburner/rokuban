@@ -559,6 +559,13 @@ export function LivePlayer(props: LivePlayerProps) {
   // 録画時間を持ち越して再開する。録画 ID が変わった場合は持ち越さない。
   const lastRecordingHLSPositionRef = useRef<number | null>(null)
   const lastRecordingHLSInputsRef = useRef<string | null>(null)
+  // A generation-changing error can pause/reset the media element when hls.js is destroyed.
+  // Save the error-time snapshot before handing control to the caller; effect cleanup consumes it.
+  const pendingRecordingHLSRecoveryRef = useRef<{
+    recordingId: number | undefined
+    positionSeconds: number | undefined
+    wasPlaying: boolean
+  } | null>(null)
   // 持ち越した位置へまだ戻し終えていない間は位置を保存しない。ソースの張り直し中に
   // 位置 0 の `timeupdate` が届いて保存位置を上書きするのを防ぐ。
   const recordingResumePending = useRef<number | null>(null)
@@ -778,7 +785,21 @@ export function LivePlayer(props: LivePlayerProps) {
         ? (recordingHlsPositionApplied ? media.currentTime : undefined)
         : undefined
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
-      return onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
+      const recovery = { recordingId, positionSeconds: position, wasPlaying }
+      pendingRecordingHLSRecoveryRef.current = recovery
+      const clearUnclaimedRecovery = (handled: boolean) => {
+        if (!handled && pendingRecordingHLSRecoveryRef.current === recovery) {
+          pendingRecordingHLSRecoveryRef.current = null
+        }
+        return handled
+      }
+      const handedOff = onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
+      return typeof handedOff === 'boolean'
+        ? clearUnclaimedRecovery(handedOff)
+        : handedOff.then(clearUnclaimedRecovery, (error) => {
+          clearUnclaimedRecovery(false)
+          throw error
+        })
     }
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
@@ -1070,21 +1091,28 @@ export function LivePlayer(props: LivePlayerProps) {
       // 画質切替・再読み込みを跨いで持ち越す表示状態を、壊す前の要素から読む
       // （issue #869）。unmount のときも走るが、ref ごと捨てられるので無害。
       if (video) {
+        const recovery = pendingRecordingHLSRecoveryRef.current
+        const recoveryMatchesRecording = isRecordingHLS && recovery?.recordingId === recordingId
         preservedState.current = {
           subtitles: readSubtitleVisibility(Array.from(video.textTracks)),
           // 切替の直前（= cleanup の時点）の再生状態。`load()` は paused を
           // true に戻すので、これを見ないと切替のたびに利用者が押し直すことになる
           // 再開を待っている間（canplay の前）に張り直したときも、再生の意図を引き継ぐ。
-          playing: !video.paused || resumePlaybackPendingRef.current,
+          playing: recoveryMatchesRecording
+            ? recovery.wasPlaying
+            : !video.paused || resumePlaybackPendingRef.current,
           recordingId,
         }
         // 画質の切替で持ち越す再生位置（issue #874）。**`src` を外す前に読む。**
         // 前の持ち越しを戻し終える前にもう一度切り替えたときは、要素の位置
         // （まだ 0）ではなく持ち越し中の位置を引き継ぐ。
         lastRecordingHLSPositionRef.current = isRecordingHLS
-          ? (recordingResumePending.current ??
-            (recordingMetadataLoaded.current ? video.currentTime : null))
+          ? (recoveryMatchesRecording && recovery.positionSeconds !== undefined
+            ? recovery.positionSeconds
+            : recordingResumePending.current ??
+              (recordingMetadataLoaded.current ? video.currentTime : null))
           : null
+        if (recoveryMatchesRecording) pendingRecordingHLSRecoveryRef.current = null
       }
       // メディアイベントのリスナと stall タイマーを外す。
       //
