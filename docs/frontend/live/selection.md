@@ -32,7 +32,7 @@ SI のサービス ID 単独では network をまたぐと一意でないので�
 
 Mirakurun はネットワーク ID × 100000 + サービス ID の合成 id を使う。GR / BS / CS を混ぜる一覧では同じサービス ID が重なることがあるため、API は合成値を `Service.id` として返す。選択中のハイライトと再生中チャンネルの記憶も、site と `Service.id` の組で行う。`/live` の URL は `?service=<Service.id>&site=<site>` とする。`service` の値域は `/programs` と同じ生成スキーマで検証する。初期選択は、site と `Service.id` が一致すればそれを使い、無ければ番組を持つ先頭にする。
 
-番組リストの放送中行には、予約ボタンの左に再生アイコンのボタンを置く。行に対する動作なので、展開領域のテキストリンクにはしない。対応する録画中録画が無いときは「ライブで見る」で `/live?service=<Service.id>&site=<site>` へ進む。録画があるときだけ「追っかけ再生」で `/recordings/{recordingId}#chase` へ進む。
+番組リストの放送中行には、予約ボタンの左に再生アイコンのボタンを置く。行に対する動作なので、展開領域のテキストリンクにはしない。対応する録画が無いときは「ライブで見る」で `/live?service=<Service.id>&site=<site>` へ進む。録画があるときは録画詳細 `/recordings/{recordingId}` へ進む。
 
 高松の地上波だけを受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の範囲しか覆わない。公式割当には、BS と 110 度 CS で同じサービス ID 101 を持つ実例がある。そのため GR / BS / CS を混ぜる一般の構成では、サービス ID 単独を identity にできない。
 
@@ -44,7 +44,7 @@ Mirakurun はネットワーク ID × 100000 + サービス ID の合成 id を�
 - 公式割当で重なる例: `(network_id=4, service_id=101)`、`(network_id=6, service_id=101)`
 - 初期選択の判定: `pickInitialService(services, requestedId, requestedSite)`（`lib/live.ts`）
 - 放送中行の再生アイコンボタン: `Play`
-- 放送中行の「ライブで見る」「追っかけ再生」の遷移先を合成 id で渡す: `components/program-row.tsx`、`ProgramListItem`、`composeServiceId`（`lib/service-id.ts`）
+- 放送中行の「ライブで見る」「録画を開く」の遷移先を合成 id で渡す: `components/program-row.tsx`、`ProgramListItem`、`composeServiceId`（`lib/service-id.ts`）
 
 </details>
 

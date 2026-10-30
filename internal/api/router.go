@@ -115,7 +115,7 @@ type RouterConfig struct {
 	EncodeProfileNames []string
 
 	// CutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
-	// live.enabled=false での cut だけの選択を 400 で拒否し（config.ValidateCutSelection）、
+	// recording_hls.enabled=false での cut だけの選択を 400 で拒否し（config.ValidateCutSelection）、
 	// `EncodeJobStatus.state = awaiting_review` の導出にも使う。
 	// 空/nil なら cut の規則を検査しない（テストの部分構成を許す）。
 	CutProfileNames []string
@@ -124,9 +124,9 @@ type RouterConfig struct {
 	// （issue #869）。順序は設定順で、ffmpeg のパス・extra_args・品質指定は含めない。
 	LiveProfiles []LiveProfileSummary
 
-	// LiveEnabled は config.live.enabled。GET /api/capabilities の live と、cut だけの
-	// プロファイル選択を許すかに使う。フロントはライブへの導線（主ナビ・番組行の
-	// リンク）を出すかどうかをこの値で決める。
+	// LiveEnabled は config.live.enabled。GET /api/capabilities の live に使う。
+	// フロントはライブへの導線（主ナビ・番組行のリンク）を出すかどうかをこの値で決める。
+	// cut だけのプロファイル選択を許すかは RecordingHLSEnabled で決める。
 	//
 	// **この値は「streamer がライブのルートを登録したか」ではなく config の状態**。
 	// api は不変条件 1 により streamer にも mirakc にも問い合わせないので、
@@ -138,7 +138,8 @@ type RouterConfig struct {
 	// 代入すると同じ config の別プロセスが違う答えを返す（cmd/rokuban/server.go）。
 	LiveEnabled bool
 
-	// RecordingHLSEnabled は世代付き録画 HLS URL の公開を有効にする。
+	// RecordingHLSEnabled は世代付き録画 HLS URL の公開を有効にする。cut だけの
+	// プロファイル選択を許すかにも使う（チャプターの確認は録画 HLS の再生でする）。
 	RecordingHLSEnabled bool
 	// MediaStoreName は原本と temp の置き場に対応するルートの名前。
 	MediaStoreName string

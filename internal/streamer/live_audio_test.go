@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -150,8 +151,7 @@ func TestBuildLiveFFmpegArgs_RealFFmpegSeparateAudioStreams(t *testing.T) {
 		inputPath    string
 	}{
 		{name: "live", playlistType: hlsLivePlaylist, inputPath: "pipe:0"},
-		{name: "chase", playlistType: hlsEventPlaylist, inputPath: "pipe:0"},
-		{name: "original", playlistType: hlsOriginalEventPlaylist, inputPath: originalVODFFmpegInputPath},
+		{name: "recording HLS", playlistType: hlsRecordingEventPlaylist, inputPath: recordingHLSFFmpegInputPath},
 	} {
 		for _, captions := range []bool{false, true} {
 			name := route.name + "/captions-" + strconv.FormatBool(captions)
@@ -169,7 +169,7 @@ func TestBuildLiveFFmpegArgs_RealFFmpegSeparateAudioStreams(t *testing.T) {
 					t.Fatal(err)
 				}
 				cmd := exec.Command(ffmpeg, args...)
-				if route.playlistType == hlsOriginalEventPlaylist {
+				if route.playlistType == hlsRecordingEventPlaylist {
 					cmd.ExtraFiles = []*os.File{inputFile}
 				} else {
 					cmd.Stdin = inputFile
@@ -211,54 +211,130 @@ func TestBuildLiveFFmpegArgs_RealFFmpegSeparateAudioStreams(t *testing.T) {
 		}
 	}
 
-	t.Run("runSession probes and replays the input prefix", func(t *testing.T) {
-		segmentDir := t.TempDir()
-		cfg := LiveConfig{
-			FFmpeg:     ffmpeg,
-			FFprobe:    ffprobe,
-			SegmentDir: segmentDir,
-			Profiles:   profiles[:1],
-		}
-		ls := newLiveStreamer(nil, cfg)
-		ls.site = "test"
-		s := &liveSession{
-			key: sessionKey{kind: chaseSessionKind, id: 42},
-			source: func(context.Context) (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(input)), nil
-			},
-			ready: make(chan struct{}),
-			done:  make(chan struct{}),
-		}
+	t.Run("runSession probes, replays, and maps both audio ES", func(t *testing.T) {
+		assertRunSessionMapsBothAudioES(t, input, ffmpeg, ffprobe, profiles[0])
+	})
+}
 
-		ls.runSession(context.Background(), s)
-		if s.startErr != nil {
-			t.Fatalf("runSession start error: %v", s.startErr)
-		}
-		if _, err := os.Stat(s.dir); err != nil {
-			t.Fatalf("completed chase output directory: %v", err)
-		}
-		master, err := os.ReadFile(filepath.Join(s.dir, "hd.m3u8"))
-		if err != nil {
-			t.Fatalf("reading runSession master playlist: %v", err)
-		}
-		variants := parseMaster(t, string(master))
-		if len(variants) != 1 || len(variants[0].audio) != 3 {
-			t.Fatalf("runSession master has %d variants and %d audio renditions, want 1 and 3:\n%s",
-				len(variants), func() int {
-					if len(variants) == 0 {
-						return 0
-					}
-					return len(variants[0].audio)
-				}(), master)
-		}
-		for i, wantHz := range []float64{440, 440, 880} {
-			left, right := decodeChannelFrequencies(t, ffmpeg, filepath.Join(s.dir, variants[0].audio[i]))
-			if math.Abs(left-wantHz) > 15 || math.Abs(right-wantHz) > 15 {
-				t.Errorf("runSession audio rendition %d L/R = %.0f/%.0f Hz, want %.0f/%.0f Hz",
-					i, left, right, wantHz, wantHz)
-			}
+func assertRunSessionMapsBothAudioES(t *testing.T, input []byte, ffmpeg, ffprobe string, profile LiveProfile) {
+	t.Helper()
+	segmentDir := t.TempDir()
+	cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffprobe, SegmentDir: segmentDir, Profiles: []LiveProfile{profile}}
+	ls := newLiveStreamer(nil, cfg)
+	ls.site = "test"
+	upstream := &blockingEOFReadCloser{reader: bytes.NewReader(input), unblock: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &liveSession{
+		serviceID: 42,
+		source: func(context.Context) (io.ReadCloser, error) {
+			return upstream, nil
+		},
+		ready: make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	runDone := make(chan struct{})
+	go func() {
+		ls.runSession(ctx, s)
+		close(runDone)
+	}()
+	t.Cleanup(func() {
+		upstream.release()
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(10 * time.Second):
+			t.Error("runSession did not stop after cancellation")
 		}
 	})
+
+	select {
+	case <-s.ready:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runSession did not start ffmpeg")
+	}
+	if s.startErr != nil {
+		t.Fatalf("runSession start error: %v", s.startErr)
+	}
+
+	masterPath := filepath.Join(segmentDir, "test", "42", "hd.m3u8")
+	deadline := time.Now().Add(10 * time.Second)
+	var master []byte
+	for time.Now().Before(deadline) {
+		master, _ = os.ReadFile(masterPath)
+		if bytes.Count(master, []byte("#EXT-X-MEDIA:")) == 3 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if bytes.Count(master, []byte("#EXT-X-MEDIA:")) != 3 {
+		t.Fatalf("runSession master has no three audio renditions:\n%s", master)
+	}
+	variants := parseMaster(t, string(master))
+	if len(variants) != 1 {
+		t.Fatalf("runSession has %d video variants, want 1:\n%s", len(variants), master)
+	}
+
+	for i, wantHz := range []float64{440, 440, 880} {
+		audioPlaylistPath := filepath.Join(segmentDir, "test", "42", variants[0].audio[i])
+		deadline = time.Now().Add(10 * time.Second)
+		var playlist []byte
+		var segmentPath string
+		for time.Now().Before(deadline) {
+			playlist, _ = os.ReadFile(audioPlaylistPath)
+			for _, line := range strings.Split(string(playlist), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				segmentPath = filepath.Join(filepath.Dir(audioPlaylistPath), line)
+				if info, err := os.Stat(segmentPath); err == nil && info.Size() > 0 {
+					break
+				}
+				segmentPath = ""
+			}
+			if segmentPath != "" {
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		if segmentPath == "" {
+			t.Fatalf("runSession audio rendition %d has no completed segment:\n%s", i, playlist)
+		}
+		left, right := decodeChannelFrequencies(t, ffmpeg, segmentPath)
+		if math.Abs(left-wantHz) > 15 || math.Abs(right-wantHz) > 15 {
+			t.Errorf("runSession audio rendition %d L/R = %.0f/%.0f Hz, want %.0f/%.0f Hz",
+				i, left, right, wantHz, wantHz)
+		}
+	}
+	upstream.release()
+	select {
+	case <-runDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runSession did not finish after the source reached EOF")
+	}
+}
+
+type blockingEOFReadCloser struct {
+	reader  *bytes.Reader
+	unblock chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingEOFReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err == io.EOF {
+		<-r.unblock
+	}
+	return n, err
+}
+
+func (r *blockingEOFReadCloser) Close() error {
+	r.release()
+	return nil
+}
+
+func (r *blockingEOFReadCloser) release() {
+	r.once.Do(func() { close(r.unblock) })
 }
 
 func TestLiveFFmpegAudioMapsWithCaptionsAndExtraAudioES(t *testing.T) {
@@ -433,11 +509,9 @@ func runFFmpeg(t *testing.T, ffmpeg string, stdin *os.File, args ...string) {
 	}
 }
 
-// TestBuildChaseFFmpegArgs_RealFFmpegAudioRenditions は追っかけの実出力に標準 / 主 / 副
-// の rendition があり、master の並びと聞こえる音が UI の選択契約に一致することを測る。
-// イベント playlist で長く聴いた後のトラック切替と seek・再開の実ブラウザ判定は
-// web/e2e/chase-audio.mjs が担う。
-func TestBuildChaseFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
+// TestBuildRecordingHLSFFmpegArgs_RealFFmpegAudioRenditions checks the EVENT
+// playlist emitted by the recording HLS argument builder.
+func TestBuildRecordingHLSFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
 	ffmpeg := lookPathFFmpeg(t)
 	in := filepath.Join(t.TempDir(), "in.ts")
 	runFFmpeg(t, ffmpeg, nil,
@@ -468,13 +542,17 @@ func TestBuildChaseFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			stdin, err := os.Open(in)
+			inputFile, err := os.Open(in)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = stdin.Close() }()
-			args := BuildChaseFFmpegArgs(LiveConfig{Captions: tc.captions, Profiles: profiles}, dir, false)
-			runFFmpeg(t, ffmpeg, stdin, args...)
+			defer func() { _ = inputFile.Close() }()
+			args := BuildRecordingHLSFFmpegArgs(LiveConfig{Captions: tc.captions, Profiles: profiles}, dir, false, 0)
+			cmd := exec.Command(ffmpeg, args...)
+			cmd.ExtraFiles = []*os.File{inputFile}
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("ffmpeg recording HLS: %v\n%s", err, output)
+			}
 
 			var videoVariants int
 			for _, master := range tc.masters {
@@ -518,18 +596,18 @@ func TestBuildChaseFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
 	}
 }
 
-// TestBuildChaseFFmpegArgs_AudioRenditions は追っかけの両経路に標準 / 主 / 副の
-// audio rendition を出し、HLS master を使う形を固定する。
-func TestBuildChaseFFmpegArgs_AudioRenditions(t *testing.T) {
+// TestBuildRecordingHLSFFmpegArgs_AudioRenditions fixes the recording HLS
+// EVENT playlist audio rendition mapping and master layout.
+func TestBuildRecordingHLSFFmpegArgs_AudioRenditions(t *testing.T) {
 	profiles := []LiveProfile{
 		{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
 		{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
 	}
 	for _, captions := range []bool{false, true} {
-		args := BuildChaseFFmpegArgs(LiveConfig{Captions: captions, Profiles: profiles}, "/tmp/chase", false)
+		args := BuildRecordingHLSFFmpegArgs(LiveConfig{Captions: captions, Profiles: profiles}, "/tmp/recording-hls", false, 0)
 		joined := strings.Join(args, " ")
 		if !strings.Contains(joined, "agroup") || strings.Count(joined, "pan=") != 2*len(profiles) {
-			t.Errorf("captions=%v: chase args are missing standard/main/sub audio renditions: %v", captions, args)
+			t.Errorf("captions=%v: recording HLS args are missing standard/main/sub audio renditions: %v", captions, args)
 		}
 		if n := strings.Count(joined, "-map 0:a:0"); n != 3*len(profiles) {
 			t.Errorf("captions=%v: -map 0:a:0 count = %d, want %d: %v", captions, n, 3*len(profiles), args)
@@ -537,9 +615,9 @@ func TestBuildChaseFFmpegArgs_AudioRenditions(t *testing.T) {
 		if !captions {
 			for _, want := range []string{
 				"-master_pl_name hd.m3u8",
-				"-hls_segment_filename /tmp/chase/segments/hd.%v_seg%05d.ts -hls_base_url segments/ /tmp/chase/hd.%v.m3u8",
+				"-hls_segment_filename /tmp/recording-hls/segments/hd.%v_seg%05d.ts -hls_base_url segments/ /tmp/recording-hls/hd.%v.m3u8",
 				"-master_pl_name sd.m3u8",
-				"-hls_segment_filename /tmp/chase/segments/sd.%v_seg%05d.ts -hls_base_url segments/ /tmp/chase/sd.%v.m3u8",
+				"-hls_segment_filename /tmp/recording-hls/segments/sd.%v_seg%05d.ts -hls_base_url segments/ /tmp/recording-hls/sd.%v.m3u8",
 			} {
 				if !strings.Contains(joined, want) {
 					t.Errorf("args missing %q: %v", want, args)
@@ -547,7 +625,7 @@ func TestBuildChaseFFmpegArgs_AudioRenditions(t *testing.T) {
 			}
 		} else if !strings.Contains(joined, "-master_pl_name playlist.m3u8") ||
 			!strings.Contains(joined, "-var_stream_map v:0,agroup:a0 v:1,agroup:a1 a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0 a:3,agroup:a1,default:yes a:4,agroup:a1 a:5,agroup:a1") {
-			t.Errorf("captions chase var_stream_map or master changed: %v", args)
+			t.Errorf("captions recording HLS var_stream_map or master changed: %v", args)
 		}
 	}
 }

@@ -164,8 +164,8 @@ function rangeResponse(route, bytes, contentType) {
 }
 
 let videoBytes = Buffer.alloc(0)
-// ⑪ だけ: ライブ能力を有効にして原本 HLS を再生可能にし、チャプター検出中の兄弟要素を出す。
-let originalHLSDir
+// ⑪ だけ: ライブ能力を有効にして録画 HLS を再生可能にし、チャプター検出中の兄弟要素を出す。
+let recordingHLSDir
 let detecting = false
 const thumbnailSVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#263650"/><path d="M0 70 60 25l36 32 22-20 42 34v19H0Z" fill="#485d7c"/></svg>'
@@ -173,11 +173,19 @@ const thumbnailSVG =
 async function apiHandler({ path: apiPath, url, json, route }) {
   const method = route.request().method()
   if (apiPath === '/api/sites') return json(['default'])
-  if (apiPath === '/api/capabilities') return json({ live: originalHLSDir !== undefined, cmDetect: true })
+  if (apiPath === '/api/capabilities') return json({ live: recordingHLSDir !== undefined, cmDetect: true })
   if (apiPath === '/api/live-profiles') return json([{ name: 'hd', height: 720 }])
-  if (originalHLSDir !== undefined && apiPath.startsWith('/api/sites/default/recordings/3/original-vod/')) {
-    const name = apiPath.split('/original-vod/')[1]
-    const file = path.join(originalHLSDir, name)
+  if (recordingHLSDir !== undefined && apiPath.startsWith('/api/media/stores/media/recordings/3/hls/v1/hd/')) {
+    const resource = apiPath.split('/hls/v1/hd/')[1]
+    if (resource === 'master.m3u8') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/vnd.apple.mpegurl',
+        body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=320x180\nvideo/index.m3u8\n',
+      })
+    }
+    const name = resource === 'video/index.m3u8' ? 'playlist.m3u8' : resource.replace(/^video\//, '')
+    const file = path.join(recordingHLSDir, name)
     if (!existsSync(file)) return route.fulfill({ status: 404 })
     const contentType = name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t'
     return route.fulfill({ status: 200, contentType, body: readFileSync(file) })
@@ -672,7 +680,12 @@ async function transitionsAlong(png) {
       '-hls_segment_filename', path.join(hlsDir, 'seg%05d.ts'), path.join(hlsDir, 'playlist.m3u8'),
     ], { stdio: 'pipe' })
   }
-  originalHLSDir = hlsDir
+  recordingHLSDir = hlsDir
+  originalOnly.startedAt = originalOnly.startAt
+  originalOnly.hlsPlayback = [{
+    profile: 'hd',
+    masterUrl: '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8',
+  }]
   detecting = true
   delete originalOnly.resumePositionMs
   const fits = (box, vw, vh) => box && box.x >= -0.5 && box.y >= -0.5 && box.x + box.width <= vw + 0.5 && box.y + box.height <= vh + 0.5
@@ -735,7 +748,7 @@ async function transitionsAlong(png) {
     await page.evaluate(() => document.fullscreenElement && document.exitFullscreen()).catch(() => {})
   }
   await context.close()
-  originalHLSDir = undefined
+  recordingHLSDir = undefined
 }
 
 // ===== 証跡のスクリーンショット（E2E_SHOT_DIR があるときだけ。判定には使わない） =====

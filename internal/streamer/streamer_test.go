@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -25,7 +27,32 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-const testSite = "default"
+// lockedLogBuffer は複数の goroutine から書かれるログを集める。
+type lockedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureSlog(t *testing.T) *lockedLogBuffer {
+	t.Helper()
+	logs := &lockedLogBuffer{}
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return logs
+}
 
 func testObjectStores(t *testing.T, root string) map[string]objstore.Store {
 	t.Helper()

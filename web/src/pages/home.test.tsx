@@ -389,7 +389,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(screen.getAllByTestId('home-hero-station')).toHaveLength(1)
   })
 
-  it('録画中の主役サムネイルは主ボタンと同じ #chase 付きの詳細へ向ける', async () => {
+  it('録画中の主役サムネイルは再生用ハッシュなしの録画詳細へ向ける', async () => {
     stubApi({
       continueWatching: [recording(41, '録画中の続き', 'recording', { resumePositionMs: 330_000 })],
     })
@@ -397,8 +397,8 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
 
     const primaryAction = await screen.findByTestId('home-primary-action')
     const thumbnail = screen.getByTestId('home-next-watch-thumbnail')
-    expect(primaryAction).toHaveAttribute('href', '/recordings/41#chase')
-    expect(thumbnail).toHaveAttribute('href', '/recordings/41#chase')
+    expect(primaryAction).toHaveAttribute('href', '/recordings/41')
+    expect(thumbnail).toHaveAttribute('href', '/recordings/41')
     expect(thumbnail).toHaveAttribute('tabindex', '-1')
     expect(thumbnail).toHaveAttribute('aria-hidden', 'true')
   })
@@ -807,7 +807,7 @@ describe('ホーム管理モード: 時間軸から詳細へ移る', () => {
 })
 
 describe('ホーム: 続きから', () => {
-  it('再開対象を表示し、録画中の行は追っかけページに向ける', async () => {
+  it('再開対象を表示し、録画の再開操作から詳細を開く', async () => {
     stubApi({
       continueWatching: [
         recording(31, '再開する録画', 'finished', { resumePositionMs: 12_000 }),

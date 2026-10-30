@@ -240,7 +240,7 @@ func (c *Client) StreamRecord(ctx context.Context, id string, offset int64) (io.
 // 呼び、録画中の content file を先頭から追従する body を返す。
 //
 // StreamRecord は ingest の差分転送用であり、Range を付けると mirakc は「要求時点
-// までの有限な差分」を返す。一方この経路は streamer の追っかけ再生用なので、
+// までの有限な差分」を返す。一方この経路は録画の ingest follow 用なので、
 // mirakc の `(None, RecordingStatus::Recording)` 分岐（tail -f -c +0）を明示的に選ぶ。
 // このメソッドへ Range や X-Mirakurun-Priority を足してはいけない。
 //

@@ -8,7 +8,7 @@
 
 | 節 | 内容 | ファイル |
 |---|---|---|
-| 実装方式 / セッション管理 / 録画中の追っかけ再生 | 画面とセッションの基本 | [live/overview.md](live/overview.md) |
+| 実装方式 / セッション管理 / 番組中の録画への切り替え | 画面とセッションの基本 | [live/overview.md](live/overview.md) |
 | フロントエンド実装 | 操作・選択・再生・状態表示の各判断 | [live/ui.md](live/ui.md) |
 
 ## 外部から参照されている節名の対応
@@ -28,4 +28,4 @@
 
 - ライブ画面の実装 → [live/ui.md](live/ui.md)
 - HLS 配信・資源同定・音声 rendition → [api.md](../api.md) のメディア配信
-- 録画追っかけ再生 → [live/overview.md](live/overview.md) とメディア配信の追っかけ再生
+- 番組中の録画再生 → [live/overview.md](live/overview.md) と [recordings/playback.md](recordings/playback.md)

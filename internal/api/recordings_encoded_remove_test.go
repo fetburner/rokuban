@@ -597,11 +597,12 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowLastCopyRollsBackFreeze(t *testi
 
 func cutRouterForRemoval(pool *pgxpool.Pool, live bool) http.Handler {
 	return NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut", "cut2"},
-		CutProfileNames:    []string{"cut", "cut2"},
-		LiveEnabled:        live,
+		Ready:               pool.Ping,
+		EncodePolicyStore:   pgstoretest.Media(pool),
+		EncodeProfileNames:  []string{"h264", "cut", "cut2"},
+		CutProfileNames:     []string{"cut", "cut2"},
+		RecordingHLSEnabled: live,
+		MediaStoreName:      dbtest.StoreName,
 	})
 }
 

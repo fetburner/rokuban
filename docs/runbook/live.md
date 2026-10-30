@@ -27,7 +27,6 @@ docker compose restart rokuban
    ```sh
    curl -s http://localhost:40773/metrics | grep rokuban_live
    # rokuban_live_active_sessions{kind="live"} 0
-   # rokuban_live_active_sessions{kind="chase"} 0
    # rokuban_live_idle_gc_reclaimed_total 0
    # rokuban_live_leave_hints_total{result="deadline_shortened"} 0
    # rokuban_live_idle_gc_last_pass_timestamp_seconds 1.7...e9
@@ -105,21 +104,6 @@ curl -s "$B?profile=hd" | tail -1            # 先頭のプロファイル
 curl -s "$B?profile=sd" | tail -1            # 別プロファイル（同じセッション）
 curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="live"}'
 ```
-
-#### 追っかけの画質切替でセッションが増えないことの確認（偽 mirakc + 偽 ffmpeg で足りる）
-
-追っかけ再生で画質を切り替えても、セッションが増えないことを確かめる。同じ録画・同じ offset のセッションから別プロファイルの playlist を取るだけなので、実チューナーは要らず、偽 mirakc と偽 ffmpeg で足りる。
-
-見るのは `rokuban_live_active_sessions{kind="chase"}` が増えないことである。`live.profiles` を 2 つ以上書いた config で `--roles streamer` を起動し、偽 mirakc と偽 ffmpeg を用意する。
-
-```sh
-B=http://localhost:40773/api/sites/default/recordings/1/chase/playlist.m3u8
-curl -s "$B" | tail -1                 # 先頭のプロファイル
-curl -s "$B?profile=sd" | tail -1     # 同じ録画の別プロファイル
-curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="chase"}'
-```
-
-実バイナリ（`rokuban server --roles streamer`）+ 偽 mirakc + 偽 ffmpeg で測定した。結果は `?profile=hd` / `?profile=sd` とも 200、active sessions は 1 だった。偽 mirakc の録画 stream 要求は 1 件、`?profile=does-not-exist` は 400 `unknown chase profile` だった。オフセット付きでも同じ `/chase/offset/{offset}/playlist.m3u8` を 2 プロファイルで取り、offset を跨いでいないことを確認する。実チューナー・実 ffmpeg での追っかけ画質切替は未測定である。
 
 #### 音声（二重音声の主 / 副）の確認（実放送が必要）
 

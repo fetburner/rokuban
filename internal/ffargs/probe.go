@@ -67,17 +67,6 @@ func VideoStreamDurationProbeArgs(inputPath string) []string {
 	}
 }
 
-// OriginalVODDurationProbeArgs は原本 HLS の尺計算に使う format と映像 stream の時刻を読む argv を返す。
-func OriginalVODDurationProbeArgs(inputPath string) []string {
-	return []string{
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "format=start_time,duration:stream=start_time,duration",
-		"-of", "json",
-		"-i", inputPath,
-	}
-}
-
 // VideoGeometryProbeArgs は最初の映像ストリームの記録上の大きさを問う ffprobe の
 // argv を返す。worker（CM 検出）と streamer（/frame）が同じ問い合わせをするための
 // 共有点で、出力は ParseVideoGeometry で読む。

@@ -36,15 +36,13 @@ import type {
   StallTracker,
 } from '@/lib/live'
 import {
-  chasePlaylistURL,
   createStallTracker,
   liveAudioTrackIndex,
+  liveLeaveURL,
   livePlaylistURL,
-  originalVODPlaylistURL,
   observeStall,
   probeLivePlaylist,
   readSubtitleVisibility,
-  sendPlaybackLeaveHint,
 } from '@/lib/live'
 import {
   applyPlaybackRate,
@@ -57,16 +55,14 @@ import {
   saveChapterEditPlaybackRate,
   savePlaybackRate,
 } from '@/lib/playback-position'
-import { formatPlaybackTime } from '@/lib/format'
 import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
-import { useOffsetSession } from '@/lib/use-offset-session'
-import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { usePlaybackLeave } from '@/lib/use-playback-leave'
+import { formatPlaybackTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { RecordingTimeline } from '@/lib/recording-timeline'
 import { playbackStrategy, recordingDurationSeconds } from '@/lib/playback-mode'
 import type { PlaybackErrorMessages, PlaybackMode } from '@/lib/playback-mode'
+import type { LiveRecordingSource } from '@/lib/playback-timeline'
 
 const hlsSubtitleTracks = (video: HTMLVideoElement) =>
   Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
@@ -120,9 +116,8 @@ function createPlaybackAxisIdentity(
   networkId: number | undefined,
   serviceId: number | undefined,
   recordingId: number | undefined,
-  offsetSessionKey: string,
 ): string {
-  return JSON.stringify([mode, site, networkId, serviceId, recordingId, offsetSessionKey])
+  return JSON.stringify([mode, site, networkId, serviceId, recordingId])
 }
 
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
@@ -185,21 +180,20 @@ function applyHlsAudioTrack(hls: HlsLike, index: number): void {
 type LivePlayerCommonProps = {
   site: string
   /**
-   * chase playlist / live playlist の画質（`live.profiles` の名前）。省略時は
+   * live playlist の画質（`live.profiles` の名前）。省略時は
    * streamer の先頭プロファイル（既定）。
    *
    * 再開位置とは独立している。画質切替でも同じ再生位置を引き継ぐ（issue #874）。
    *
-   * **切替はセッションを作り直さない。** 1 サービス / 1 録画 = ffmpeg 1 本が全
-   * プロファイルを同時に出力しているので、替わるのは同じセッションのプレイリストの
-   * URL だけである。再生位置は `lastChasePositionRef` で持ち越す（下記）。
+   * ライブの切替はセッションを共有したまま playlist URL だけを替える。録画 HLS は
+   * 選んだ generation の profile URL を読み直し、現在位置を持ち越す。
    */
   profile?: string
   /**
    * 音声（二重音声の主 / 副。issue #870）。省略時は標準トラック。
    *
-   * **`profile` と違って HLS playlist の URL を変えない。** streamer が live / chase /
-   * original VOD に 3 本の音声レンディションを出すので、切替はプレイヤーが取る
+   * **`profile` と違って HLS playlist の URL を変えない。** streamer が live と
+   * recording HLS に 3 本の音声レンディションを出すので、切替はプレイヤーが取る
    * トラックを替えるだけで、playlist の取り直しもセッションの作り直しも起きない。
    */
   audio?: LiveAudioChoice
@@ -208,7 +202,7 @@ type LivePlayerCommonProps = {
   onProfileChange?: (profile: string) => void
   onAudioChange?: (audio: LiveAudioChoice | undefined) => void
   /**
-   * 最初の読み込みが終わったら再生を始める（ポスターの ▶ や `#chase` で開いた、再生元を替えて続きを
+   * 最初の読み込みが終わったら再生を始める（ポスターの ▶ や再生元を替えて続きを
    * 見る、など利用者が再生を求めた後に作られるプレイヤー用）。最初のセッションにだけ効き、
    * その後の画質切替では利用者が止めた状態を保つ。
    */
@@ -248,40 +242,25 @@ type LivePlayerCommonProps = {
 }
 
 type RecordingPlaybackProps = {
-  /** recordings.id。追っかけまたは原本 VOD の録画。 */
+  /** recordings.id。録画 HLS の録画。 */
   recordingId: number
-  /** true のあいだ、チャプター編集用の再生速度で再生する。追っかけでは編集 UI を開かない。 */
+  /** true のあいだ、チャプター編集用の再生速度で再生する。 */
   chapterEditing?: boolean
-  /** 録画 HLS セッションの開始意図。offset の変化後は LivePlayer 内で張り直す。 */
-  offsetSessionStart?: OffsetSessionStart
   /** 録画先頭からの現在位置（秒）。再生元を選び直すとき親が持ち越す。 */
   onRecordingPositionChange?: (seconds: number) => void
   /**
-   * 今の再生元の範囲の外へのシークを親に委ねる。true なら親が再生元を替えた（このプレイヤーは
-   * 何もしない）。false なら、このプレイヤーが同じ再生元のまま張り直す。
-   */
-  onSourceRangeExit?: (recordingPositionSeconds: number, wasPlaying: boolean) => boolean
-  /**
    * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
-   * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
+   * 「明示の位置」として渡さない）。true なら親が切替を引き受けた（世代の一時 gap を
+   * 含む。エラー表示に落ちず、次の URL まで位置と再生意図を保持する）。
    */
   onRecordingPlaybackError?: (
     recordingPositionSeconds: number | undefined,
     wasPlaying: boolean,
     allowSameSourceRetry?: boolean,
   ) => boolean | Promise<boolean>
-}
-
-type OriginalVODProps = {
-  /**
-   * 原本ファイルの実尺（呼び出し側で求めたファイル先頭から `endedAt` まで）。予定尺 `durationMs` ではない。
-   * 固定タイムラインと視聴済み閾値に使う。映像より長いときの末尾は 416 の丸めが受ける。
-   * `endedAt` が無い録画だけは呼び出し側が予定尺で代用する（0 だとシークバーが効かない）。
-   */
   recordingDurationMs: number
-  /** 原本の時間軸で保存されたチャプター（目盛り・一覧・自動スキップ・編集）。 */
   chapters?: ChapterSpan[]
-  /** 原本 VOD の確認状態と編集操作。 */
+  /** 録画 HLS のチャプター状態と編集操作。 */
   chapterSource?: RecordingChaptersSource
   chapterVersion?: string
   chapterDetectionPending?: boolean
@@ -305,6 +284,17 @@ type RecordingHLSProps = {
   recordingHlsStartSeconds: number
   /** 録画中は視聴済み操作を出さない。 */
   showWatched?: boolean
+  /**
+   * ライブ画面が録画 HLS を再生しているときだけ渡す。軸が番組基準（左端が番組開始）になり、
+   * 軸上の位置は録画ファイル先頭の位置（headSeconds）に media の秒を足したものになる。
+   */
+  liveRecording?: LiveRecordingSource
+  /**
+   * ライブ画面から録画 HLS へ切り替えているときに、ライブへ戻る操作を出す。渡すと軸の
+   * ライブ位置の印が「ライブへ戻る」になり、操作バーに「● 録画から再生中」を出す。
+   * 録画詳細は渡さないので、どちらも出ない。
+   */
+  onReturnLive?: () => void
 }
 
 type LivePlayerProps =
@@ -324,16 +314,14 @@ type LivePlayerProps =
       onLiveProgramSeek?: (programSeconds: number) => void
       onStartOver?: () => void
       onReturnLive?: never
+      liveRecording?: never
       liveDiagnostics?: string
       liveNotice?: string
       recordingId?: never
       recordingHlsUrl?: never
       recordingHlsStartSeconds?: never
       recordingDurationMs?: never
-      chaseTimeline?: never
-      offsetSessionStart?: never
       onRecordingPositionChange?: never
-      onSourceRangeExit?: never
       onRecordingPlaybackError?: never
       chapterEditing?: never
       chapters?: never
@@ -353,70 +341,15 @@ type LivePlayerProps =
       onDeleteWatched?: never
       onWatched?: never
     })
-  | (LivePlayerCommonProps & RecordingPlaybackProps & {
-      mode: 'chase'
-      networkId?: never
-      serviceId?: never
-      /** 番組開始と録画ファイル先頭を基準に追っかけバーを描く時間情報。 */
-      chaseTimeline: Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
-      recordingHlsUrl?: never
-      recordingHlsStartSeconds?: never
-      showWatched?: never
-      recordingDurationMs?: never
-      liveProgram?: never
-      onLiveProgramSeek?: never
-      onStartOver?: never
-      /**
-       * 追っかけをやめてライブ配信へ戻す操作。渡さないと、ライブ端の操作は追っかけのまま
-       * 録画済みの端へシークする。
-       */
-      onReturnLive?: () => void
-      liveDiagnostics?: never
-      liveNotice?: never
-      chapters?: never
-      chapterSource?: never
-      chapterVersion?: never
-      chapterDetectionPending?: never
-      onEnterChapterEditing?: never
-      chapterEditorCommandsRef?: never
-      onChapterEditorStatusChange?: never
-      onSaveChapters?: never
-      onResetChapters?: never
-      chapterSavePending?: never
-      watched?: never
-      watchedPending?: never
-      onPutWatched?: never
-      onDeleteWatched?: never
-      onWatched?: never
-    })
-  | (LivePlayerCommonProps & RecordingPlaybackProps & OriginalVODProps & {
-      mode: 'original-vod'
-      networkId?: never
-      serviceId?: never
-      chaseTimeline?: never
-      liveProgram?: never
-      onLiveProgramSeek?: never
-      onStartOver?: never
-      onReturnLive?: never
-      liveDiagnostics?: never
-      liveNotice?: never
-      recordingHlsUrl?: never
-      recordingHlsStartSeconds?: never
-      showWatched?: never
-    })
-  | (LivePlayerCommonProps & RecordingPlaybackProps & OriginalVODProps & RecordingHLSProps & {
+  | (LivePlayerCommonProps & RecordingPlaybackProps & RecordingHLSProps & {
       mode: 'recording-hls'
       networkId?: never
       serviceId?: never
-      chaseTimeline?: never
       liveProgram?: never
       onLiveProgramSeek?: never
       onStartOver?: never
-      onReturnLive?: never
       liveDiagnostics?: never
       liveNotice?: never
-      offsetSessionStart?: never
-      onSourceRangeExit?: never
     })
 
 /**
@@ -470,13 +403,11 @@ export function LivePlayer(props: LivePlayerProps) {
     networkId,
     serviceId,
     recordingId,
-    offsetSessionStart,
     fullscreenContainerRef,
     profile,
     audio,
     autoPlay = false,
     onRecordingPositionChange,
-    onSourceRangeExit,
     onRecordingPlaybackError,
     className,
     onDiagnostics,
@@ -505,54 +436,17 @@ export function LivePlayer(props: LivePlayerProps) {
     recordingHlsStartSeconds,
     showWatched: recordingHlsShowWatched,
   } = props
-  const isChase = mode === 'chase'
-  const isOriginalVOD = mode === 'original-vod'
   const isRecordingHLS = mode === 'recording-hls'
   const isLive = mode === 'live'
-  const isOffsetRecordingPlayback = isChase || isOriginalVOD
-  const isRecordingPlayback = isOffsetRecordingPlayback || isRecordingHLS
-  const isOriginalPlayback = isOriginalVOD || isRecordingHLS
-  const originalDurationSeconds = recordingDurationSeconds(recordingDurationMs)
+  const recordingDuration = recordingDurationSeconds(recordingDurationMs)
   const strategy = playbackStrategy(props)
   const videoRef = useRef<HTMLVideoElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
-  const isOriginalScrubbingRef = useRef(false)
-  const leaveOffsetSession = (offsetSeconds: number) => {
-    const url = strategy.leaveURL(offsetSeconds)
-    if (url !== null) sendPlaybackLeaveHint(url)
-  }
-  const {
-    offsetSeconds: offsetSessionSeconds,
-    sessionStartSeconds,
-    startPositionSeconds: sessionStartPositionSeconds,
-    hasExplicitStart: hasExplicitSessionStart,
-    sessionKey: offsetSessionKey,
-    restartAtOffset,
-    seek: seekOffsetSession,
-    clearStartPosition,
-    reportPosition,
-    getAppliedRecordingSeconds,
-    getStartPositionSeconds,
-    resumePlaybackPendingRef,
-    retry: retryOffsetSession,
-  } = useOffsetSession({
-    active: isOffsetRecordingPlayback,
-    identity: mode,
-    recordingId,
-    start: isRecordingHLS ? { type: 'beginning' } : offsetSessionStart ?? { type: 'saved-position' },
-    videoRef,
-    originSeconds: strategy.originSeconds,
-    onLeave: leaveOffsetSession,
-    onSourceRangeExit,
-    onRecordingPositionChange,
-  })
-  usePlaybackLeave(strategy.leaveURL(offsetSessionSeconds))
-  const hasExplicitChaseStart = isChase && hasExplicitSessionStart
-  // 原本 VOD で最後に playlist が取れた offset（録画ごと）。終端付近の 416 を丸める下限。
-  const lastGoodOffsetRef = useRef<{ recordingId: number | undefined; offset: number }>({ recordingId, offset: 0 })
-  // 416 のたびに手前へ戻す幅（秒）。成功したら 1 に戻す。
-  const rangeStepRef = useRef(1)
+  const isRecordingScrubbingRef = useRef(false)
+  const initialRecordingPositionSeconds = recordingHlsStartSeconds ?? 0
+  const resumePlaybackPendingRef = useRef(false)
+  usePlaybackLeave(mode === 'live' ? liveLeaveURL(site, props.networkId, props.serviceId) : null)
   // 最初のセッションの自動再生が残っているか（上の autoPlay）。
   const autoPlayPendingRef = useRef(autoPlay)
   // この要素が一度でも再生を始めたか。始めていないセッションのエラーは「位置」を持たない。
@@ -571,43 +465,39 @@ export function LivePlayer(props: LivePlayerProps) {
   const playbackRateRef = useRef(playbackRate)
   const saveActivePlaybackRateRef = useRef(saveActivePlaybackRate)
   const setActivePlaybackRateRef = useRef(setActivePlaybackRate)
-  const [originalVODProfileOverrideState, setOriginalVODProfileOverrideState] = useState<{
+  const [recordingHLSProfileOverrideState, setRecordingHLSProfileOverrideState] = useState<{
     recordingId: number | undefined
     value: string | undefined
   }>({ recordingId, value: undefined })
-  const originalVODProfileOverride = originalVODProfileOverrideState.recordingId === recordingId
-    ? originalVODProfileOverrideState.value
+  const recordingHLSProfileOverride = recordingHLSProfileOverrideState.recordingId === recordingId
+    ? recordingHLSProfileOverrideState.value
     : undefined
-  const [originalVODAudioOverrideState, setOriginalVODAudioOverrideState] = useState<{
+  const [recordingHLSAudioOverrideState, setRecordingHLSAudioOverrideState] = useState<{
     recordingId: number | undefined
     set: boolean
     value: LiveAudioChoice | undefined
   }>({ recordingId, set: false, value: undefined })
-  const originalVODAudioOverride = originalVODAudioOverrideState.recordingId === recordingId
-    ? originalVODAudioOverrideState
+  const recordingHLSAudioOverride = recordingHLSAudioOverrideState.recordingId === recordingId
+    ? recordingHLSAudioOverrideState
     : { recordingId, set: false, value: undefined }
   const [liveAudioOverrideState, setLiveAudioOverrideState] = useState<{
     set: boolean
     value: LiveAudioChoice | undefined
   }>({ set: false, value: undefined })
-  const playbackProfile = isOriginalPlayback
-    ? onProfileChange ? profile : originalVODProfileOverride ?? profile
+  const playbackProfile = isRecordingHLS
+    ? onProfileChange ? profile : recordingHLSProfileOverride ?? profile
     : profile
-  const displayedFrameVideoKey = `${recordingId}:${playbackProfile ?? ''}:${offsetSessionSeconds}`
-  const getSessionDisplayedFrameSeconds = useDisplayedFrameSeconds(
+  const displayedFrameVideoKey = `${recordingId}:${playbackProfile ?? ''}`
+  const getDisplayedFrameSeconds = useDisplayedFrameSeconds(
     videoRef,
-    chapterEditing && isOriginalPlayback,
+    chapterEditing && isRecordingHLS,
     displayedFrameVideoKey,
   )
-  const getDisplayedFrameSeconds = useCallback(() => {
-    const mediaTime = getSessionDisplayedFrameSeconds()
-    return mediaTime === null ? null : sessionStartSeconds + mediaTime
-  }, [getSessionDisplayedFrameSeconds, sessionStartSeconds])
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
-  const playbackAudio = isOriginalPlayback && !onAudioChange && originalVODAudioOverride.set
-    ? originalVODAudioOverride.value
+  const playbackAudio = isRecordingHLS && !onAudioChange && recordingHLSAudioOverride.set
+    ? recordingHLSAudioOverride.value
     : isLive && !onAudioChange && liveAudioOverrideState.set
       ? liveAudioOverrideState.value
       : audio
@@ -623,18 +513,20 @@ export function LivePlayer(props: LivePlayerProps) {
     networkId,
     serviceId,
     recordingId,
-    offsetSessionKey,
   )
   const hasCurrentPlaybackAxisState = playbackAxisState.identity === playbackAxisIdentity
   const playbackHoverSeconds = hasCurrentPlaybackAxisState ? playbackAxisState.hoverSeconds : null
   const playbackAxis = strategy.axis(playbackHoverSeconds)
-  const chaseAxis = playbackAxis?.kind === 'chase' ? playbackAxis : undefined
   const liveTimelineBar = playbackAxis?.kind === 'live-program' ? playbackAxis : undefined
-  const chaseHeadOffsetSeconds = chaseAxis?.headSeconds ?? 0
-  // 軸上の位置は全モードで head + sessionStartSeconds + media。chase の sessionStartSeconds は offset と
-  // 同じ値、live は 3 項とも 0。
-  const initialAxisPositionSeconds = chaseHeadOffsetSeconds + sessionStartSeconds +
-    (isRecordingHLS ? recordingHlsStartSeconds ?? 0 : sessionStartPositionSeconds ?? 0)
+  const liveRecordingAxis = playbackAxis?.kind === 'live-recording' ? playbackAxis : undefined
+  // 軸上の位置は録画ファイル先頭の位置（番組開始から何秒後か）に media の秒を足したもの。
+  // 録画詳細の軸は録画ファイル先頭が 0 なので 0 になる。
+  const axisHeadSeconds = liveRecordingAxis?.headSeconds ?? 0
+  const axisHeadSecondsRef = useRef(axisHeadSeconds)
+  useEffect(() => {
+    axisHeadSecondsRef.current = axisHeadSeconds
+  }, [axisHeadSeconds])
+  const initialAxisPositionSeconds = axisHeadSeconds + initialRecordingPositionSeconds
   const playbackAxisForRender: PlaybackAxisState = hasCurrentPlaybackAxisState
     ? playbackAxisState
     : {
@@ -652,15 +544,15 @@ export function LivePlayer(props: LivePlayerProps) {
       patch,
     ))
   }
-  const [originalTilesAvailable, setOriginalTilesAvailable] = useState(false)
+  const [recordingTilesAvailable, setRecordingTilesAvailable] = useState(false)
   const playAroundStopRef = useRef<number | null>(null)
   const playAroundStopBoundaryMsRef = useRef<number | null>(null)
   const playAroundTimerRef = useRef<number | undefined>(undefined)
   const pendingBoundarySeekMsRef = useRef<number | null>(null)
-  const [originalSubtitlesEnabled, setOriginalSubtitlesEnabled] = useState(isRecordingPlayback)
+  const [recordingSubtitlesEnabled, setRecordingSubtitlesEnabled] = useState(isRecordingHLS)
   const [chapterSkipEnabled, setChapterSkipEnabled] = useState(loadChapterSkip)
   const chapterEditorStatusChange = onChapterEditorStatusChange ?? (() => {})
-  const originalPreviousSecondsRef = useRef(0)
+  const previousRecordingSecondsRef = useRef(0)
   const onWatchedRef = useRef(onWatched)
   useEffect(() => {
     onWatchedRef.current = onWatched
@@ -682,50 +574,56 @@ export function LivePlayer(props: LivePlayerProps) {
   // 既定に戻す（下の effect のコメント参照）。effect の cleanup（= 切替の直前）で
   // 読み、次の setup で戻す。
   const preservedState = useRef<{ subtitles: boolean | null; playing: boolean; recordingId?: number } | null>(null)
-  // 追っかけの再生位置を画質の切替で持ち越す（issue #874）。
+  // 録画 HLS の再生位置を画質の切替で持ち越す（issue #874）。
   //
-  // **画質の切替は位置の基準を変えない。** 追っかけのセッション鍵は
-  // `(recordingID, offset)` でプロファイルを含まず、サーバーの ffmpeg 1 本が
-  // 全プロファイルを同時に出力している（`internal/streamer/hls_args.go` の
-  // `buildChaseFFmpegArgs`）ので、プロファイル間でメディア時刻の座標は同じである。
-  // それでも `src` を差し替える以上 `<video>` の位置は 0 に戻るので、切替の
-  // 直前の位置を控えて戻す --- **画質の切替が再生位置の巻き戻りに見える実装に
-  // しない**。
-  //
-  // **プロファイル以外の入力が変わったときは持ち越さない。** `offset` は新しい
-  // セッションの先頭からの秒数で位置の基準そのものが変わるし、`offsetSessionKey` は
-  // 「保存位置からやり直す」が正しい（既存の復元規則に任せる）。判定は effect の
-  // setup で行う --- cleanup の時点では次に何が変わるかが分からない。
-  const lastChasePositionRef = useRef<number | null>(null)
-  const lastChaseInputsRef = useRef<string | null>(null)
-  // 持ち越した位置へまだ戻し終えていない間の、その位置。**この間は位置を保存
-  // しない** --- ソースの張り直し中に位置 0 の `timeupdate` が届くと、保存位置を
-  // 0（offset 付きなら offset）で上書きするため、再生可能になるまでは書き込みを止める。
-  const chaseResumePending = useRef<number | null>(null)
+  // プロファイルを替えると HLS URL と media element を読み直すため、切替直前の
+  // 録画時間を持ち越して再開する。録画 ID が変わった場合は持ち越さない。
+  const lastRecordingHLSPositionRef = useRef<number | null>(null)
+  const lastRecordingHLSInputsRef = useRef<string | null>(null)
+  // 世代が替わるエラーでは、hls.js を破棄した映像が一時停止・先頭へ戻ることがある。
+  // 親へ渡す前にエラー時点の位置と再生状態を控え、effect の cleanup がそれを消費する。
+  const pendingRecordingHLSRecoveryRef = useRef<{
+    recordingId: number | undefined
+    positionSeconds: number | undefined
+    wasPlaying: boolean
+  } | null>(null)
+  // 同じ再生元（同じ URL）のエラー受け渡しは 1 回に共有する。エラーを親へ渡す経路は 2 つある
+  // （probe の失敗と hls.js の ERROR イベント）。ERROR イベントは 410 の応答ごと（`expiredRecordingHls`）と
+  // fatal のそれぞれで届くので、1 つの再生元で重なりうる。実ブラウザで重なる頻度は未検証。
+  // 重なりを模したテストは `live-player.test.tsx` の「coalesces concurrent 410 errors」。
+  // 共有しないと、遅れて届いた片方が受理済みの復旧用スナップショットを消し、REST の再取得をもう 1 回始める。
+  const recordingHandoffRef = useRef<{
+    recordingId: number | undefined
+    sourceURL: string | undefined
+    result: Promise<boolean>
+  } | null>(null)
+  // 持ち越した位置へまだ戻し終えていない間は位置を保存しない。ソースの張り直し中に
+  // 位置 0 の `timeupdate` が届いて保存位置を上書きするのを防ぐ。
+  const recordingResumePending = useRef<number | null>(null)
   // 今の読み込みが `loadedmetadata` に届いたか。**届く前の要素の位置（0）は
   // 持ち越さない** --- probe 中（ffmpeg の起動待ちで最長 15 秒）に切り替えると、
   // 0 を持ち越して既存の復元を潰し、保存位置が消える。jsdom の `readyState`
   // は動かないので、要素の状態ではなく自前で持つ。
-  const chaseMetadataLoaded = useRef(false)
+  const recordingMetadataLoaded = useRef(false)
   const watchedRequestPending = useRef(false)
   /**
-   * 原本 VOD の playlist が ENDLIST まで書かれたか。変換中の EVENT playlist の
+   * 録画 HLS playlist が ENDLIST まで書かれたか。変換中の EVENT playlist の
    * `video.duration` は変換の先端でしかないので、これが true になるまで
    * 「終端付近」の判定に duration を渡さない（渡すと先端付近で位置が消える）。
    * 信号は hls.js の LEVEL_LOADED の `details.live === false`（ENDLIST あり）と
    * `ended` イベントである。
    */
-  const originalVODFinalized = useRef(false)
+  const recordingHLSFinalized = useRef(false)
   const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
-    if (mode === 'live' || chaseResumePending.current !== null) return
-    const globalPosition = video.currentTime + sessionStartSeconds
-    const knownFinalDuration = originalVODFinalized.current
-      ? originalDurationSeconds || (video.duration + sessionStartSeconds)
+    if (mode === 'live' || recordingResumePending.current !== null) return
+    const globalPosition = video.currentTime
+    const knownFinalDuration = recordingHLSFinalized.current
+      ? recordingDuration || video.duration
       : video.duration
     const write = playbackPositionWrite(
       globalPosition,
       knownFinalDuration,
-      isOriginalPlayback && originalVODFinalized.current,
+      isRecordingHLS && recordingHLSFinalized.current,
     )
     if (write.kind === 'watched') {
       if (watchedRequestPending.current) return
@@ -737,10 +635,10 @@ export function LivePlayer(props: LivePlayerProps) {
       return
     }
     void persistPlaybackPosition(recordingId, write, keepalive)
-  }, [isOriginalPlayback, mode, originalDurationSeconds, recordingId, sessionStartSeconds])
+  }, [isRecordingHLS, mode, recordingDuration, recordingId])
 
   // Shared frame behavior lives here. The playback source supplies its own seek semantics and
-  // HLS subtitle-track classification; live has no seek callbacks and chase has no ratio seek.
+  // HLS subtitle-track classification; live has no recording seek callbacks.
   const frame = usePlayerFrame(videoRef, frameRef, undefined, {
     fullscreenContainerRef,
     // commitRecordingSeek は後方の const。usePlayerFrame がコールバックを ref に入れ直し、
@@ -749,19 +647,19 @@ export function LivePlayer(props: LivePlayerProps) {
       ? (seconds) => {
           const video = videoRef.current
           if (!video) return
-          commitRecordingSeek(chaseHeadOffsetSeconds + sessionStartSeconds + video.currentTime + seconds)
+          commitRecordingSeek(axisHeadSeconds + video.currentTime + seconds)
         }
       : undefined,
-    onSeekToFraction: isOriginalPlayback && originalDurationSeconds > 0
+    onSeekToFraction: isRecordingHLS && !liveRecordingAxis && recordingDuration > 0
       ? (fraction) => {
-          seekRecording(originalDurationSeconds * fraction)
+          seekRecording(recordingDuration * fraction)
           return true
         }
       : undefined,
-    onSavePosition: isRecordingPlayback ? saveCurrentPosition : undefined,
-    savePositionKey: `${mode}:${recordingId}:${sessionStartSeconds}:${offsetSessionKey}`,
+    onSavePosition: isRecordingHLS ? saveCurrentPosition : undefined,
+    savePositionKey: `${mode}:${recordingId}`,
     getSubtitleTracks: hlsSubtitleTracks,
-    subtitleState: originalSubtitlesEnabled,
+    subtitleState: recordingSubtitlesEnabled,
   })
   const { setMediaPlaying } = frame
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -783,18 +681,14 @@ export function LivePlayer(props: LivePlayerProps) {
   }, [
     mode,
     recordingId,
-    // **`profile` を依存に入れない（issue #874）。** 入れると画質の切替のたびに
-    // 復元が立ち直り、切替が「保存位置まで巻き戻る」操作になる（`offset` 付きなら
-    // 先頭へ戻る）。位置の持ち越しは下の effect が `lastChasePositionRef` で行う。
+    // **`profile` を依存に入れない（issue #874）。** 入れると画質切替のたびに
+    // 復元が立ち直り、切替が保存位置まで巻き戻る。位置の持ち越しは下の effect が
+    // `lastRecordingHLSPositionRef` で行う。
     // 画質の切替は再生位置の基準を変えないので、復元をやり直す理由が無い。
     site,
     networkId,
     serviceId,
-    offsetSessionKey,
-    sessionStartSeconds,
-    hasExplicitSessionStart,
-    hasExplicitChaseStart,
-    isOriginalPlayback,
+    isRecordingHLS,
   ])
 
   useEffect(() => {
@@ -836,13 +730,13 @@ export function LivePlayer(props: LivePlayerProps) {
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const rate = effectivePlaybackRate(activePlaybackRate, isRecordingPlayback)
+    const rate = effectivePlaybackRate(activePlaybackRate, isRecordingHLS)
     const appliedRate = applyPlaybackRate(video, rate, saveActivePlaybackRate)
-    if (isRecordingPlayback && appliedRate !== activePlaybackRate) {
+    if (isRecordingHLS && appliedRate !== activePlaybackRate) {
       playbackRateRef.current = appliedRate
       setActivePlaybackRate(appliedRate)
     }
-  }, [activePlaybackRate, chapterEditing, isRecordingPlayback, saveActivePlaybackRate, setActivePlaybackRate, videoRef])
+  }, [activePlaybackRate, chapterEditing, isRecordingHLS, saveActivePlaybackRate, setActivePlaybackRate, videoRef])
 
   useEffect(() => {
     let cancelled = false
@@ -860,26 +754,18 @@ export function LivePlayer(props: LivePlayerProps) {
     // 作り直さない（このコンポーネントは unmount しない）が、`load()` を挟む以上
     // 要素の状態に頼らず明示的に戻す。
     const preserved = preservedState.current
-    // 画質（プロファイル）だけが変わった再実行か（`lastChasePositionRef` の
+    // 画質（プロファイル）だけが変わった再実行か（`lastRecordingHLSPositionRef` の
     // コメント参照）。プロファイルを含めない入力の同一性で判定する。
-    const recordingInputs = `${mode}|${site}|${recordingId}|${sessionStartSeconds}|${hasExplicitSessionStart}|${offsetSessionKey}`
+    const recordingInputs = `${mode}|${site}|${recordingId}`
     const resumePosition =
-      isRecordingPlayback && lastChaseInputsRef.current === recordingInputs
-        ? lastChasePositionRef.current
+      isRecordingHLS && lastRecordingHLSInputsRef.current === recordingInputs
+        ? lastRecordingHLSPositionRef.current
         : null
-    lastChaseInputsRef.current = recordingInputs
-    originalVODFinalized.current = false
-    // 原本 VOD は開始位置を明示する（続きから・画質切替の持ち越し・張り直しの端数の
-    // どれも無ければ 0）。offset のセッションも同じ hls.js の設定で開始位置を揃える。
-    // 追っかけも開始位置を明示したセッション（offset 付き・明示 0 秒）は同じ経路で 0 を明示する。
-    const startAt = isRecordingHLS
-      ? (resumePosition ?? recordingHlsStartSeconds ?? 0)
-      : isOriginalVOD || hasExplicitChaseStart
-        ? (resumePosition ?? getStartPositionSeconds() ?? 0)
-        : isChase
-          ? (resumePosition ?? getStartPositionSeconds())
-          : null
-    chaseResumePending.current = startAt
+    lastRecordingHLSInputsRef.current = recordingInputs
+    recordingHLSFinalized.current = false
+    // 録画 HLS は再開位置を hls.js の開始位置に渡す。位置が無いときは 0 秒から始める。
+    const startAt = isRecordingHLS ? (resumePosition ?? recordingHlsStartSeconds ?? 0) : null
+    recordingResumePending.current = startAt
     if (startAt !== null) {
       // 持ち越しは既存の復元より優先する。サーバーの再開位置が更新されて復元が
       // 立ち直っていると、`onLoadedMetadata` が保存位置へ戻してしまう。
@@ -888,18 +774,17 @@ export function LivePlayer(props: LivePlayerProps) {
     // 同じ録画の中で張り直した（セッション外へのシーク・画質の切替・416 の丸め）ときは再生を
     // 引き継ぐ。`load()` は pause を発火しないので、引き継がないときは操作バーの状態を戻す。
     // 別の録画へ替わったときは勝手に再生を始めない。ライブ（`recordingId` を持たない）から
-    // 追っかけへ替えたとき（ライブページの「最初から」・軸のシーク）は同じ番組なので引き継ぐ
-    // （`live.mjs` の「frame c)」。引き継がないと 0:00 で止まったままになる）。
+    // 録画 HLS へ替えたとき（ライブページの「最初から」・軸のシーク）は同じ番組なので引き継ぐ。
     // 自動再生の指定は最初のセッションにだけ効く。張り直し前に消費しても、再開待ちの
     // `resumePlaybackPendingRef` が次のセッションへ持ち越す（下の `preservedState`）。
-    const autoPlayNow = isRecordingPlayback && autoPlayPendingRef.current
+    const autoPlayNow = isRecordingHLS && autoPlayPendingRef.current
     autoPlayPendingRef.current = false
     const resumePlaying =
       (preserved?.playing === true &&
-        (!isRecordingPlayback || preserved.recordingId === undefined || preserved.recordingId === recordingId)) ||
+        (!isRecordingHLS || preserved.recordingId === undefined || preserved.recordingId === recordingId)) ||
       autoPlayNow
     resumePlaybackPendingRef.current = resumePlaying
-    if (isRecordingPlayback && !resumePlaying) setMediaPlaying(false)
+    if (isRecordingHLS && !resumePlaying) setMediaPlaying(false)
     // video / hls の外部再生状態と UI の loading/error 表示を同期する effect。
     // render 中に導出すると、再生開始・失敗イベントの境界を表現できない。
     // oxlint-disable-next-line react/set-state-in-effect -- 別ソースの読込状態を setup ごとに初期化する
@@ -907,20 +792,17 @@ export function LivePlayer(props: LivePlayerProps) {
     setError(null)
     onDiagnosticsRef.current?.(null)
 
-    const url = mode === 'chase'
-      ? chasePlaylistURL(site, recordingId, playbackProfile, offsetSessionSeconds)
-      : mode === 'original-vod'
-        ? originalVODPlaylistURL(site, recordingId, playbackProfile, offsetSessionSeconds)
-        : mode === 'recording-hls'
-          ? recordingHlsUrl!
-          : livePlaylistURL(site, networkId, serviceId, playbackProfile)
+    const url = mode === 'recording-hls'
+      ? recordingHlsUrl
+      : livePlaylistURL(site, networkId, serviceId, playbackProfile)
 
     /**
-     * handOffError は録画再生のエラーを親に渡し、親が再生元を選び直したら true を返す
-     * （このプレイヤーはエラー表示に落ちない）。一度も再生していないセッションのエラーは
+     * handOffError は録画再生のエラーを親へ渡す。親が再生元を選び直すか、一時的な
+     * 世代 gap を引き受けて次の URL を待つ場合は true を返す（このプレイヤーは
+     * エラー表示に落ちず、受け渡し前の位置と再生意図を保持する）。一度も再生していないセッションのエラーは
      * 位置を渡さない --- 0 秒を「明示の位置」にすると、親が持つ保存位置・先頭からの意図を上書きする。
-     * 要求した開始位置が適用中の間も currentTime は位置として使わない。原本 HLS と追っかけの
-     * seek 失敗で誤った秒を作り直しへ渡さない（`recording-original-vod.mjs` ⑪-b、`chase.mjs` ⑭-b）。
+     * 要求した開始位置が適用中の間も currentTime は位置として使わない。seek 失敗で
+     * 誤った秒を作り直しへ渡さない（`recording-playback-timeline.mjs`）。
      * 再生の意図は、始まる前なら再開待ち（▶ の autoPlay・張り直しの持ち越し）だけで決める。
      * 「再生していない」ことを再生の意図にすると、止めたまま移った先のエラーで勝手に再生が始まる
      * （両方向は `live-player.test.tsx` の「再生前のエラー」）。
@@ -929,24 +811,52 @@ export function LivePlayer(props: LivePlayerProps) {
       media: HTMLVideoElement | null,
       allowSameSourceRetry = true,
     ): boolean | Promise<boolean> => {
-      if (!isRecordingPlayback) return false
-      const recordingHlsPositionApplied = !isRecordingHLS || chaseResumePending.current === null
+      if (!isRecordingHLS) return false
+      const currentHandoff = recordingHandoffRef.current
+      if (
+        currentHandoff?.recordingId === recordingId &&
+        currentHandoff.sourceURL === recordingHlsUrl
+      ) return currentHandoff.result
+      const recordingHlsPositionApplied = recordingResumePending.current === null
       const position = playedRef.current && media
-        ? (recordingHlsPositionApplied ? getAppliedRecordingSeconds(media.currentTime) ?? undefined : undefined)
+        ? (recordingHlsPositionApplied ? media.currentTime : undefined)
         : undefined
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
-      return onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
+      const recovery = { recordingId, positionSeconds: position, wasPlaying }
+      pendingRecordingHLSRecoveryRef.current = recovery
+      const clearUnclaimedRecovery = (handled: boolean) => {
+        if (!handled && pendingRecordingHLSRecoveryRef.current === recovery) {
+          pendingRecordingHLSRecoveryRef.current = null
+        }
+        return handled
+      }
+      const handedOff = onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
+      if (typeof handedOff === 'boolean') {
+        const handled = clearUnclaimedRecovery(handedOff)
+        recordingHandoffRef.current = {
+          recordingId,
+          sourceURL: recordingHlsUrl,
+          result: Promise.resolve(handled),
+        }
+        return handled
+      }
+      const result = handedOff.then(clearUnclaimedRecovery, (error) => {
+        clearUnclaimedRecovery(false)
+        throw error
+      })
+      recordingHandoffRef.current = { recordingId, sourceURL: recordingHlsUrl, result }
+      return result
     }
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
     // リスナと stall 監視のタイマー）。cleanup から呼ぶ
     const teardown: Array<() => void> = []
 
-    chaseMetadataLoaded.current = false
+    recordingMetadataLoaded.current = false
     const markLoaded = () => {
-      chaseMetadataLoaded.current = true
+      recordingMetadataLoaded.current = true
     }
-    if (video && isRecordingPlayback) {
+    if (video && isRecordingHLS) {
       video.addEventListener('loadedmetadata', markLoaded, { once: true })
       teardown.push(() => video.removeEventListener('loadedmetadata', markLoaded))
     }
@@ -960,15 +870,13 @@ export function LivePlayer(props: LivePlayerProps) {
         }
       }
       const settle = () => {
-        if (chaseResumePending.current !== null) apply()
+        if (recordingResumePending.current !== null) apply()
         if (cancelled) return
-        chaseResumePending.current = null
-        clearStartPosition()
-        if (isOriginalPlayback) {
+        recordingResumePending.current = null
+        if (isRecordingHLS) {
           // cancelled を見たあとなので、state の identity はこの effect のもの。
-          const positionSeconds = sessionStartSeconds + startAt
+          const positionSeconds = axisHeadSecondsRef.current + startAt
           setPlaybackAxisState((current) => ({ ...current, positionSeconds }))
-          if (isRecordingHLS) reportPosition(startAt)
         }
       }
       video.addEventListener('loadedmetadata', apply, { once: true })
@@ -1040,39 +948,17 @@ export function LivePlayer(props: LivePlayerProps) {
         throw err
       }
       if (cancelled) return
-      const lastGood = lastGoodOffsetRef.current.recordingId === recordingId ? lastGoodOffsetRef.current.offset : 0
       if (!probe.ok) {
-        // 終端付近の 416（docs/api/media.md: 映像の終端 - 0.5 秒より後ろの offset）。シークバーの
-        // 長さは DB の実尺で、映像の長さより長いことがある。映像の長さは分からないので、最後に
-        // 取れた offset を下限に 1, 2, 4… 秒ずつ手前へ丸めて張り直す（下限は取れたので必ず止まる）。
-        if (
-          isOriginalVOD &&
-          probe.error.kind === 'other' &&
-          probe.error.status === 416 &&
-          offsetSessionSeconds > lastGood
-        ) {
-          const next = Math.max(lastGood, offsetSessionSeconds - rangeStepRef.current)
-          rangeStepRef.current *= 2
-          restartAtOffset(next)
-          return
-        }
-        // 入力失敗の cooldown 応答でも詳細を取り直し、並行した ingest commit があれば
-        // 別の再生元へ移る。同じ追っかけの再試行は cooldown 中なので許可しない。
-        const handedOff = await handOffError(video, probe.error.kind !== 'chase-input')
+        const handedOff = await handOffError(video)
         if (cancelled || handedOff) return
         // 世代付き録画 HLS は、親が次の世代の URL を渡すとこの effect が読み直す。再生の意図を
         // 残し、利用者の操作なしで再生を続ける（`recording-detail.test.tsx` の「エラー表示に落ちた後でも」）。
         if (!isRecordingHLS) resumePlaybackPendingRef.current = false
-        if (isRecordingPlayback) setMediaPlaying(false)
+        if (isRecordingHLS) setMediaPlaying(false)
         setError(probe.error)
         setLoading(false)
         return
       }
-      if (isOriginalVOD) {
-        lastGoodOffsetRef.current = { recordingId, offset: offsetSessionSeconds }
-        rangeStepRef.current = 1
-      }
-
       if (!video) return
 
       // **自動再開を待っている間は `paused` を利用者の停止として扱わない。**
@@ -1102,7 +988,7 @@ export function LivePlayer(props: LivePlayerProps) {
           resumePlaybackPendingRef.current = false
           // 上の effect が canplay で開始位置を確定してから再開する。
           void video.play().catch(() => {
-            if (isRecordingPlayback) setMediaPlaying(false)
+            if (isRecordingHLS) setMediaPlaying(false)
           })
         }
         video.addEventListener('canplay', resume, { once: true })
@@ -1116,11 +1002,8 @@ export function LivePlayer(props: LivePlayerProps) {
       //（`lib/live.ts` の `bundlesProfiles` --- API の一覧ではなく本文が権威）。
       // プロファイルごとの master（音声レンディション入り）では試す。
       //
-      // **追っかけ再生（`isChase`）でも試さない。** 下げ先（`?liveProfile=`）は
-      // 追っかけの画面にもあるが、この降格は `pages/live.tsx` の `autoProfile` に
-      // 配線されており、追っかけのセレクタへ同じ下げ方を広げるのは別の判断である
-      // （呼び出し側が `onStalled` を渡さないことでも止まる）。
-      const canDowngrade = !probe.bundlesProfiles && !isRecordingPlayback
+      // 録画 HLS では自動降格しない。ライブの `onStalled` は視聴ページに配線される。
+      const canDowngrade = !probe.bundlesProfiles && !isRecordingHLS
       const { default: Hls } = await import('hls.js')
       if (cancelled) return
       if (!Hls.isSupported()) {
@@ -1152,11 +1035,10 @@ export function LivePlayer(props: LivePlayerProps) {
       // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
       // 実際に map できたときだけ rendition が master に載るので、この問題が無い
       // --- 既定 ON にできるのはライブ側だけ、という非対称である。
-      // hls.js otherwise chooses the live edge for an EVENT playlist. Chase
-      // playback must begin at the first segment of the selected session;
-      // the streamer has already applied any recording-relative offset.
+      // hls.js otherwise chooses the live edge for an EVENT playlist. Recording HLS
+      // starts at the requested recording second within the generation's playlist.
       const hls = new Hls(
-        isRecordingPlayback ? { startPosition: startAt ?? 0 } : undefined,
+        isRecordingHLS ? { startPosition: startAt ?? 0 } : undefined,
       ) as unknown as HlsLike
       hls.subtitleDisplay = true
       // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
@@ -1214,9 +1096,9 @@ export function LivePlayer(props: LivePlayerProps) {
           if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
         },
       )
-      if (isOriginalPlayback) {
+      if (isRecordingHLS) {
         hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
-          if (data.details?.live === false) originalVODFinalized.current = true
+          if (data.details?.live === false) recordingHLSFinalized.current = true
         })
       }
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -1255,22 +1137,30 @@ export function LivePlayer(props: LivePlayerProps) {
       // 画質切替・再読み込みを跨いで持ち越す表示状態を、壊す前の要素から読む
       // （issue #869）。unmount のときも走るが、ref ごと捨てられるので無害。
       if (video) {
+        const recovery = pendingRecordingHLSRecoveryRef.current
+        const recoveryMatchesRecording = isRecordingHLS && recovery?.recordingId === recordingId
         preservedState.current = {
           subtitles: readSubtitleVisibility(Array.from(video.textTracks)),
           // 切替の直前（= cleanup の時点）の再生状態。`load()` は paused を
           // true に戻すので、これを見ないと切替のたびに利用者が押し直すことになる
           // 再開を待っている間（canplay の前）に張り直したときも、再生の意図を引き継ぐ。
-          playing: !video.paused || resumePlaybackPendingRef.current,
+          playing: recoveryMatchesRecording
+            ? recovery.wasPlaying
+            : !video.paused || resumePlaybackPendingRef.current,
           recordingId,
         }
         // 画質の切替で持ち越す再生位置（issue #874）。**`src` を外す前に読む。**
         // 前の持ち越しを戻し終える前にもう一度切り替えたときは、要素の位置
         // （まだ 0）ではなく持ち越し中の位置を引き継ぐ。
-        lastChasePositionRef.current = isRecordingPlayback
-          ? (chaseResumePending.current ??
-            (chaseMetadataLoaded.current ? video.currentTime : null))
+        lastRecordingHLSPositionRef.current = isRecordingHLS
+          ? (recoveryMatchesRecording && recovery.positionSeconds !== undefined
+            ? recovery.positionSeconds
+            : recordingResumePending.current ??
+              (recordingMetadataLoaded.current ? video.currentTime : null))
           : null
+        if (recoveryMatchesRecording) pendingRecordingHLSRecoveryRef.current = null
       }
+      recordingHandoffRef.current = null
       // メディアイベントのリスナと stall タイマーを外す。
       //
       // **実際に効いている防御は `failed()` の `cancelled` チェックの方である。**
@@ -1288,11 +1178,7 @@ export function LivePlayer(props: LivePlayerProps) {
       }
     }
   }, [
-    isChase,
-    isOriginalVOD,
-    isOriginalPlayback,
     isRecordingHLS,
-    isRecordingPlayback,
     mode,
     recordingHlsUrl,
     recordingHlsStartSeconds,
@@ -1302,17 +1188,7 @@ export function LivePlayer(props: LivePlayerProps) {
     site,
     networkId,
     serviceId,
-    offsetSessionKey,
-    offsetSessionSeconds,
-    sessionStartSeconds,
-    hasExplicitChaseStart,
-    hasExplicitSessionStart,
-    clearStartPosition,
-    getAppliedRecordingSeconds,
-    getStartPositionSeconds,
-    reportPosition,
     resumePlaybackPendingRef,
-    restartAtOffset,
     setMediaPlaying,
     strategy.classifyLoadError,
     strategy.errorMessages.fatalTitle,
@@ -1321,19 +1197,19 @@ export function LivePlayer(props: LivePlayerProps) {
 
   const currentAxisSeconds = liveTimelineBar?.liveEdgeSeconds ??
     playbackAxisForRender.previewSeconds ?? playbackAxisForRender.positionSeconds
-  const originalPlayedFraction = originalDurationSeconds > 0
-    ? Math.max(0, Math.min(1, playbackAxisForRender.positionSeconds / originalDurationSeconds))
+  const recordingPlayedFraction = recordingDuration > 0
+    ? Math.max(0, Math.min(1, (playbackAxisForRender.positionSeconds - axisHeadSeconds) / recordingDuration))
     : 0
   // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
   const playbackDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? playbackAxis?.maxSeconds ?? 0
   const updateRecordingPosition = (video: HTMLVideoElement) => {
     if (mode === 'live') return
     if (positionReportBlockedRef.current) return
-    if (isRecordingHLS && chaseResumePending.current !== null) return
-    const seconds = chaseHeadOffsetSeconds + sessionStartSeconds + video.currentTime
-    if (isOriginalPlayback) originalPreviousSecondsRef.current = seconds
-    updatePlaybackAxisState({ positionSeconds: seconds })
-    reportPosition(video.currentTime)
+    if (isRecordingHLS && recordingResumePending.current !== null) return
+    const seconds = video.currentTime
+    if (isRecordingHLS) previousRecordingSecondsRef.current = seconds
+    updatePlaybackAxisState({ positionSeconds: axisHeadSeconds + seconds })
+    onRecordingPositionChange?.(video.currentTime)
   }
   const isSelectableLiveProgramPoint = (seconds: number | null): seconds is number => {
     const range = liveTimelineBar?.selectableRange
@@ -1345,42 +1221,26 @@ export function LivePlayer(props: LivePlayerProps) {
     updatePlaybackAxisState({ hoverSeconds: null })
     onLiveProgramSeek?.(seconds)
   }
-  /**
-   * seekRecording は時間軸上の秒（追っかけは番組開始から、原本は録画先頭から）へ移る。範囲は strategy が丸める。
-   * 今のセッションの seekable の中ならセッション内をシークし、外なら、その秒を offset にして
-   * セッションを張り直す（古いセッションへの leave ヒントは offset が変わったときの effect の
-   * cleanup が送る）。範囲はバッファ済みではなく seekable で判定する（`seekOffsetSession`。追っかけも同じ）。
-   * 原本 HLS の EVENT playlist は、セッション内の seekable の外へ出るときに
-   * offset を指定して張り直す。バッファ済み範囲だけで判定すると、読める範囲外への
-   * seek を見逃すため seekable を使う。
-   */
+  /** seekRecording は軸上の秒を録画先頭からの秒へ直し、HLS の seekable 範囲へ丸めて移る。 */
   const seekRecording = (seconds: number) => {
     const video = videoRef.current
-    const playlistEndSeconds = isRecordingHLS && video ? mediaSeekableEndSeconds(video) : undefined
-    if (isRecordingHLS && playlistEndSeconds === undefined) return
+    const playlistEndSeconds = video ? mediaSeekableEndSeconds(video) : undefined
+    if (playlistEndSeconds === undefined) return
     const target = strategy.recording?.seekTarget(seconds, playlistEndSeconds)
     if (target === undefined) return
     pendingBoundarySeekMsRef.current = null
-    originalPreviousSecondsRef.current = target
-    if (isRecordingHLS) {
-      if (!video) return
-      video.currentTime = target
-      chaseResumePending.current = null
-      clearStartPosition()
-      reportPosition(target)
-      updatePlaybackAxisState({ positionSeconds: target })
-      return
-    }
-    const result = seekOffsetSession(target)
-    if (result.type === 'source-changed' || result.type === 'unavailable') return
-    updatePlaybackAxisState({ positionSeconds: chaseHeadOffsetSeconds + target })
+    previousRecordingSecondsRef.current = target
+    if (!video) return
+    video.currentTime = target
+    recordingResumePending.current = null
+    updatePlaybackAxisState({ positionSeconds: axisHeadSeconds + target })
   }
   /** commitRecordingSeek はシークバー・キー操作の確定。位置のプレビューを消してから移る。 */
   const commitRecordingSeek = (seconds: number) => {
     updatePlaybackAxisState({ previewSeconds: null })
     seekRecording(seconds)
   }
-  const seekToOriginalBoundary = (boundaryMs: number) => {
+  const seekToRecordingBoundary = (boundaryMs: number) => {
     const media = videoRef.current
     if (!media) return
     if (media.seeking) {
@@ -1401,27 +1261,27 @@ export function LivePlayer(props: LivePlayerProps) {
     if (!media) return
     clearPlayAround()
     // Boundary selection is an explicit stop, including while a restarted
-    // original-HLS session is waiting for its canplay auto-resume.
+    // a recording HLS source is waiting for its canplay auto-resume.
     resumePlaybackPendingRef.current = false
     if (!media.paused) media.pause()
-    seekToOriginalBoundary(Math.round(seconds * 1000))
+    seekToRecordingBoundary(Math.round(seconds * 1000))
   }
   const finishPlayAround = (media: HTMLVideoElement) => {
     const boundaryMs = playAroundStopBoundaryMsRef.current
     clearPlayAround()
     media.pause()
-    if (boundaryMs !== null) seekToOriginalBoundary(boundaryMs)
+    if (boundaryMs !== null) seekToRecordingBoundary(boundaryMs)
   }
   const schedulePlayAroundStop = (media: HTMLVideoElement) => {
     const stop = playAroundStopRef.current
     if (stop === null || media.paused) return
     window.clearTimeout(playAroundTimerRef.current)
-    const remainingSeconds = Math.max(0, stop - (sessionStartSeconds + media.currentTime))
-    // セッション起動前に時計を進めると、offset HLS の起動待ちだけで境界が失われる。
-    // playing/timeupdate 後に残り時間を測り、タイマー発火時にも位置を再確認する。
+    const remainingSeconds = Math.max(0, stop - media.currentTime)
+    // HLS の起動待ちで境界を失わないよう、playing/timeupdate 後に残り時間を測り、
+    // タイマー発火時にも位置を再確認する。
     playAroundTimerRef.current = window.setTimeout(() => {
       if (playAroundStopRef.current !== stop) return
-      if (sessionStartSeconds + media.currentTime >= stop) {
+      if (media.currentTime >= stop) {
         finishPlayAround(media)
       } else {
         schedulePlayAroundStop(media)
@@ -1443,17 +1303,17 @@ export function LivePlayer(props: LivePlayerProps) {
     seekRecording(start)
     void media.play().catch(() => {})
   }
-  const jumpOriginalChapter = (direction: 'next' | 'prev') => {
+  const jumpRecordingChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapters ?? [], playbackAxisForRender.positionSeconds, direction)
     if (target !== undefined) seekRecording(chapterBoundaryMsToSeekSeconds(Math.round(target * 1000)))
   }
-  // 再開位置は原本時間軸で API に保存する。`profile` は映像品質の選択だけに使う。
+  // 再開位置は録画時間軸で API に保存する。`profile` は映像品質の選択だけに使う。
   const video = (
     <video
       ref={videoRef}
       controls={false}
       playsInline
-      aria-label={isRecordingPlayback ? (isChase ? '追っかけ映像' : '録画映像') : undefined}
+      aria-label={isRecordingHLS ? '録画映像' : undefined}
       {...frame.video}
       className={cn(
         'absolute inset-0 size-full rounded object-contain',
@@ -1461,64 +1321,64 @@ export function LivePlayer(props: LivePlayerProps) {
       )}
       onLoadedMetadata={(event) => {
         frame.onVolumeChange(event.currentTarget)
-        // 追っかけは保存位置へ戻す前の位置を報告しない（再試行の上限が効かなくなる）。
-        if (isOriginalPlayback) updateRecordingPosition(event.currentTarget)
+        // 録画 HLS は保存位置へ戻す前の位置を報告しない（再試行の上限が効かなくなる）。
+        if (isRecordingHLS) updateRecordingPosition(event.currentTarget)
         if (mode === 'live' || !restorePending.current) return
         restorePending.current = false
-        event.currentTarget.currentTime = sessionStartPositionSeconds ?? 0
+        event.currentTarget.currentTime = initialRecordingPositionSeconds
         updateRecordingPosition(event.currentTarget)
       }}
       onSeeked={(event) => {
         saveCurrentPosition(event.currentTarget)
         updateRecordingPosition(event.currentTarget)
         const pendingBoundaryMs = pendingBoundarySeekMsRef.current
-        if (pendingBoundaryMs !== null) seekToOriginalBoundary(pendingBoundaryMs)
+        if (pendingBoundaryMs !== null) seekToRecordingBoundary(pendingBoundaryMs)
       }}
       onSeeking={(event) => {
-        if (!isOriginalPlayback) return
+        if (!isRecordingHLS) return
         // seeking → timeupdate → seeked の順に来る環境では、保存位置からの再開が
         // cut 区間の途中でも timeupdate が「0 秒から区間へ入った」と誤認しないよう
-        // seek 開始時に原本時間軸の直前位置を更新する。
-        originalPreviousSecondsRef.current = sessionStartSeconds + event.currentTarget.currentTime
+        // seek 開始時に直前位置を更新する。
+        previousRecordingSecondsRef.current = event.currentTarget.currentTime
       }}
       onTimeUpdate={(event) => {
-        if (mode === 'live' || chaseResumePending.current !== null) return
+        if (mode === 'live' || recordingResumePending.current !== null) return
         const media = event.currentTarget
-        const previousSeconds = originalPreviousSecondsRef.current
+        const previousSeconds = previousRecordingSecondsRef.current
         updateRecordingPosition(media)
-        if (!isOriginalPlayback) return
+        if (!isRecordingHLS) return
         const playAroundStop = playAroundStopRef.current
         if (playAroundStop !== null) {
-          if (sessionStartSeconds + media.currentTime >= playAroundStop) {
+          if (media.currentTime >= playAroundStop) {
             finishPlayAround(media)
           } else {
             schedulePlayAroundStop(media)
           }
         }
-        if (chapterSkipEnabled && !chapterEditing && !isOriginalScrubbingRef.current && !media.paused) {
+        if (chapterSkipEnabled && !chapterEditing && !isRecordingScrubbingRef.current && !media.paused) {
           const target = skipTarget(
             chapters ?? [],
             previousSeconds,
-            sessionStartSeconds + media.currentTime,
-            originalDurationSeconds,
+            media.currentTime,
+            recordingDuration,
           )
           if (target !== undefined) {
-            seekRecording(autoSkipSeekSeconds(target, originalDurationSeconds))
+            seekRecording(autoSkipSeekSeconds(target, recordingDuration))
             return
           }
         }
         // EVENT duration is only the current conversion edge. Auto-watch is valid
         // only after ENDLIST or `ended` finalizes the VOD.
-        const finalLength = originalDurationSeconds || (media.duration + sessionStartSeconds)
+        const finalLength = recordingDuration || media.duration
         if (
-          originalVODFinalized.current &&
+          recordingHLSFinalized.current &&
           finalLength > 0 &&
-          sessionStartSeconds + media.currentTime >= finalLength * 0.9
+          media.currentTime >= finalLength * 0.9
         ) saveCurrentPosition(media)
       }}
       onPlaying={(event) => {
         playedRef.current = true
-        if (isOriginalPlayback) schedulePlayAroundStop(event.currentTarget)
+        if (isRecordingHLS) schedulePlayAroundStop(event.currentTarget)
       }}
       onPlay={() => frame.onPlay()}
       onPause={(event) => {
@@ -1527,14 +1387,14 @@ export function LivePlayer(props: LivePlayerProps) {
       }}
       onVolumeChange={(event) => frame.onVolumeChange(event.currentTarget)}
       onEnded={(event) => {
-        if (!isOriginalPlayback || (isRecordingHLS && !recordingHlsShowWatched)) return
+        if (!isRecordingHLS || !recordingHlsShowWatched) return
         if (playAroundStopRef.current !== null) finishPlayAround(event.currentTarget)
         // ended は ENDLIST 済みの終端でだけ発火する前提で位置を消す。
-        originalVODFinalized.current = true
+        recordingHLSFinalized.current = true
         saveCurrentPosition(event.currentTarget)
       }}
       onRateChange={(event) => {
-        if (!isRecordingPlayback) return
+        if (!isRecordingHLS) return
         const rate = event.currentTarget.playbackRate
         playbackRateRef.current = rate
         setActivePlaybackRateRef.current(rate)
@@ -1554,24 +1414,23 @@ export function LivePlayer(props: LivePlayerProps) {
         </div>
       )}
       {error && (
-        // 原本 VOD では操作の幕（z-10）より上に出す。幕の下だと 400px で「再読み込み」を押せない。
+        // 録画 HLS では操作の幕（z-10）より上に出す。幕の下だと 400px で「再読み込み」を押せない。
         <div
           className={cn(
             'absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center',
-            isOriginalPlayback && 'z-20 bg-black',
+            isRecordingHLS && 'z-20 bg-black',
           )}
         >
           <LiveErrorMessage error={error} errorMessages={strategy.errorMessages} />
           <button
             type="button"
             onClick={() => {
-              if (isRecordingHLS) setManualRetryGeneration((generation) => generation + 1)
-              else retryOffsetSession()
+              setManualRetryGeneration((generation) => generation + 1)
             }}
             className={cn(
               'rounded-md border px-3 py-1.5 text-sm transition-colors',
-              // 原本 VOD は黒い枠の上に出すので、テーマに依らず映像の上の配色にする。
-              isOriginalPlayback
+              // 録画 HLS は黒い枠の上に出すので、テーマに依らず映像の上の配色にする。
+              isRecordingHLS
                 ? 'border-white/40 text-white hover:bg-white/15'
                 : 'border-border text-foreground hover:bg-muted',
             )}
@@ -1600,7 +1459,7 @@ export function LivePlayer(props: LivePlayerProps) {
       >
         {frame.controls.isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
       </Button>
-      {liveTimelineBar?.canStartOver && (
+      {liveTimelineBar?.canStartOver && onStartOver && (
         <Button
           type="button"
           variant="ghost"
@@ -1623,8 +1482,8 @@ export function LivePlayer(props: LivePlayerProps) {
         </span>
       )}
     </>
-  ) : isChase && onReturnLive ? (
-    <span data-testid="chase-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-xs font-medium text-white">
+  ) : onReturnLive ? (
+    <span data-testid="live-recording-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-xs font-medium text-white">
       ● 録画から再生中
     </span>
   ) : undefined
@@ -1636,9 +1495,9 @@ export function LivePlayer(props: LivePlayerProps) {
       timeline={playbackAxis}
       className={className}
       liveNotice={isLive ? liveNotice : undefined}
-      liveEdgeAction={chaseAxis && onReturnLive ? {
+      liveEdgeAction={liveRecordingAxis && onReturnLive ? {
         label: 'ライブへ戻る',
-        title: `ライブ ${formatPlaybackTime(chaseAxis.recordedEndSeconds, false)}（押すとライブへ戻る）`,
+        title: `ライブ ${formatPlaybackTime(liveRecordingAxis.recordedEndSeconds, false)}（押すとライブへ戻る）`,
       } : undefined}
       toolbarSlot={toolbarSlot}
       showCenterControls={!isLive}
@@ -1651,31 +1510,31 @@ export function LivePlayer(props: LivePlayerProps) {
       onSelectAudio={(choice) => {
         if (onAudioChange) onAudioChange(choice)
         else if (isLive) setLiveAudioOverrideState({ set: true, value: choice })
-        else if (isOriginalPlayback) setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
+        else if (isRecordingHLS) setRecordingHLSAudioOverrideState({ recordingId, set: true, value: choice })
       }}
       {...frame.controls}
       video={<>{video}{playerOverlay}</>}
       currentSeconds={currentAxisSeconds}
       durationSeconds={playbackDurationSeconds}
-      playedFraction={originalPlayedFraction}
+      playedFraction={recordingPlayedFraction}
       chapters={chapterEditing ? [] : (chapters ?? [])}
       playingCut={false}
       chapterEditing={chapterEditing}
       canEditChapters={
-        isOriginalPlayback && !chapterEditing && !chapterDetectionPending && chapterVersion !== undefined &&
+        isRecordingHLS && !chapterEditing && !chapterDetectionPending && chapterVersion !== undefined &&
         onSaveChapters !== undefined && onResetChapters !== undefined
       }
       onEnterChapterEditing={onEnterChapterEditing}
       onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
       onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
       onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
-      seekTilesEnabled={isOriginalPlayback}
-      requestSeekTilesOnMount={chapterEditing && isOriginalPlayback}
-      onTileImageLoad={() => setOriginalTilesAvailable(true)}
+      seekTilesEnabled={isRecordingHLS}
+      requestSeekTilesOnMount={chapterEditing && isRecordingHLS}
+      commitLastDisplayedPreview={isRecordingHLS}
+      onTileImageLoad={() => setRecordingTilesAvailable(true)}
       onTileImageError={() => {
-        setOriginalTilesAvailable(false)
+        setRecordingTilesAvailable(false)
       }}
-      commitLastDisplayedPreview={isChase}
       onScrubPreview={(seconds) => {
         updatePlaybackAxisState({ previewSeconds: seconds })
       }}
@@ -1683,7 +1542,7 @@ export function LivePlayer(props: LivePlayerProps) {
         updatePlaybackAxisState({ hoverSeconds: seconds })
       }}
       onScrubbingChange={(scrubbing) => {
-        if (isOriginalPlayback) isOriginalScrubbingRef.current = scrubbing
+        if (isRecordingHLS) isRecordingScrubbingRef.current = scrubbing
       }}
       onSeek={(seconds) => {
         if (isLive) {
@@ -1692,7 +1551,7 @@ export function LivePlayer(props: LivePlayerProps) {
           commitRecordingSeek(seconds)
         }
       }}
-      onLiveEdgeSeek={chaseAxis ? onReturnLive ?? (() => commitRecordingSeek(chaseAxis.liveEdgeSeconds)) : undefined}
+      onLiveEdgeSeek={liveRecordingAxis ? onReturnLive ?? (() => commitRecordingSeek(liveRecordingAxis.liveEdgeSeconds)) : undefined}
       deferKeyboardSeek
       onSeekPreview={(seconds) => {
         if (isLive) {
@@ -1701,14 +1560,14 @@ export function LivePlayer(props: LivePlayerProps) {
       }}
       onSelectProfile={(nextProfile) => {
         if (onProfileChange) onProfileChange(nextProfile)
-        else if (isOriginalPlayback) setOriginalVODProfileOverrideState({ recordingId, value: nextProfile })
+        else if (isRecordingHLS) setRecordingHLSProfileOverrideState({ recordingId, value: nextProfile })
       }}
-      onPreviousChapter={() => jumpOriginalChapter('prev')}
-      onNextChapter={() => jumpOriginalChapter('next')}
+      onPreviousChapter={() => jumpRecordingChapter('prev')}
+      onNextChapter={() => jumpRecordingChapter('next')}
       playbackRate={activePlaybackRate}
-      subtitlesEnabled={originalSubtitlesEnabled}
+      subtitlesEnabled={recordingSubtitlesEnabled}
       skipEnabled={chapterSkipEnabled}
-      showWatched={isOriginalVOD || (isRecordingHLS && recordingHlsShowWatched === true)}
+      showWatched={isRecordingHLS && recordingHlsShowWatched === true}
       watched={watched}
       watchedPending={watchedPending}
       onPutWatched={onPutWatched}
@@ -1722,9 +1581,9 @@ export function LivePlayer(props: LivePlayerProps) {
         saveActivePlaybackRate(applied)
       }}
       onToggleSubtitles={() => {
-        const enabled = !originalSubtitlesEnabled
+        const enabled = !recordingSubtitlesEnabled
         if (hlsRef.current) hlsRef.current.subtitleDisplay = enabled
-        setOriginalSubtitlesEnabled(enabled)
+        setRecordingSubtitlesEnabled(enabled)
       }}
       onToggleSkip={(enabled) => {
         setChapterSkipEnabled(enabled)
@@ -1733,7 +1592,7 @@ export function LivePlayer(props: LivePlayerProps) {
     />
   )
   const editorOpen =
-    isOriginalPlayback && chapterEditing && chapterVersion !== undefined &&
+    isRecordingHLS && chapterEditing && chapterVersion !== undefined &&
     onSaveChapters !== undefined && onResetChapters !== undefined
 
   // 元 HLS の編集では保存時刻は録画先頭からの ms、編集画面の終端も recordingDurationMs
@@ -1756,7 +1615,7 @@ export function LivePlayer(props: LivePlayerProps) {
         >
           {playbackControls}
         </div>
-        {isOriginalPlayback && editorOpen && (
+        {isRecordingHLS && editorOpen && (
           <RecordingChapterEditor
             key={recordingId}
             spans={chapters ?? []}
@@ -1767,8 +1626,8 @@ export function LivePlayer(props: LivePlayerProps) {
             currentSeconds={currentAxisSeconds}
             getDisplayedFrameSeconds={getDisplayedFrameSeconds}
             isPlaying={frame.mediaPlaying}
-            durationSeconds={originalDurationSeconds}
-            tilesAvailable={originalTilesAvailable}
+            durationSeconds={recordingDuration}
+            tilesAvailable={recordingTilesAvailable}
             jumpTo={seekRecording}
             onBoundaryAction={selectChapterBoundary}
             onSelectedBoundaryChange={setEditorSelected}
@@ -1812,14 +1671,6 @@ function LiveErrorMessage({
       <div className="text-sm text-destructive">
         <p>{errorMessages.capacity.title}</p>
         <p className="text-muted-foreground">{errorMessages.capacity.guidance}</p>
-        {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
-      </div>
-    )
-  }
-  if (error.kind === 'chase-input') {
-    return (
-      <div className="text-sm text-destructive">
-        <p>{error.title}</p>
         {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
       </div>
     )

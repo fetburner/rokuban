@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Service } from '@/api/generated'
-import { playbackStrategy } from '@/lib/playback-mode'
 import {
-  chaseLeaveURL,
-  chasePlaylistURL,
   classifyLiveLoadError,
   currentProgramWindow,
   formatLiveDiagnostics,
@@ -16,9 +13,6 @@ import {
   nextLowerProfile,
   nextProgressWatch,
   observeStall,
-  originalVODLeaveURL,
-  originalVODPlaylistURL,
-  originalVODSessionOriginSeconds,
   pickInitialService,
   probeLivePlaylist,
   liveProfileLabel,
@@ -84,73 +78,6 @@ describe('livePlaylistURL', () => {
     const url = livePlaylistURL('default', 31920, 53248)
     expect(url).toBe('/api/sites/default/networks/31920/services/53248/live/playlist.m3u8')
     expect(url).not.toContain('3192053248')
-  })
-})
-
-describe('chasePlaylistURL', () => {
-  it('recordings.id を固定深さの追っかけ URL に載せる', () => {
-    expect(chasePlaylistURL('default', 42)).toBe(
-      '/api/sites/default/recordings/42/chase/playlist.m3u8',
-    )
-  })
-
-  it('profile をエスケープし、leave は同じ recording id を使う', () => {
-    expect(chasePlaylistURL('a b', 42, 'h264 720p')).toBe(
-      '/api/sites/a%20b/recordings/42/chase/playlist.m3u8?profile=h264%20720p',
-    )
-    expect(chaseLeaveURL('a b', 42)).toBe('/api/sites/a%20b/recordings/42/chase/leave')
-  })
-
-  it('開始オフセットを playlist / leave の同じパスに載せる', () => {
-    expect(chasePlaylistURL('default', 42, 'h264', 90)).toBe(
-      '/api/sites/default/recordings/42/chase/offset/90/playlist.m3u8?profile=h264',
-    )
-    expect(chaseLeaveURL('default', 42, 90)).toBe(
-      '/api/sites/default/recordings/42/chase/offset/90/leave',
-    )
-  })
-})
-
-describe('originalVODPlaylistURL', () => {
-  it('recording id と profile を原本 VOD HLS URL に載せる', () => {
-    expect(originalVODPlaylistURL('default', 42)).toBe(
-      '/api/sites/default/recordings/42/original-vod/playlist.m3u8',
-    )
-    expect(originalVODPlaylistURL('a b', 42, 'hd 720p')).toBe(
-      '/api/sites/a%20b/recordings/42/original-vod/playlist.m3u8?profile=hd%20720p',
-    )
-    expect(originalVODPlaylistURL('default', 42, undefined, 90)).toBe(
-      '/api/sites/default/recordings/42/original-vod/offset/90/playlist.m3u8',
-    )
-    expect(originalVODPlaylistURL('default', 42, 'hd', 90)).toBe(
-      '/api/sites/default/recordings/42/original-vod/offset/90/playlist.m3u8?profile=hd',
-    )
-    expect(originalVODPlaylistURL('default', 42, undefined, 0)).toBe(
-      '/api/sites/default/recordings/42/original-vod/playlist.m3u8',
-    )
-    expect(originalVODLeaveURL('a b', 42)).toBe(
-      '/api/sites/a%20b/recordings/42/original-vod/leave',
-    )
-    expect(originalVODLeaveURL('default', 42, 90)).toBe(
-      '/api/sites/default/recordings/42/original-vod/offset/90/leave',
-    )
-    expect(originalVODLeaveURL('default', 42, 0)).toBe(
-      '/api/sites/default/recordings/42/original-vod/leave',
-    )
-  })
-})
-
-describe('originalVODSessionOriginSeconds', () => {
-  it('session origin follows the 30000/1001 frame grid used by the streamer', () => {
-    expect(originalVODSessionOriginSeconds(0)).toBe(0)
-    expect(originalVODSessionOriginSeconds(10)).toBeCloseTo(9.976633333, 9)
-    expect(originalVODSessionOriginSeconds(60)).toBeCloseTo(59.993266667, 9)
-  })
-
-  it('invalid offsets fall back to the original recording head', () => {
-    expect(originalVODSessionOriginSeconds(undefined)).toBe(0)
-    expect(originalVODSessionOriginSeconds(-1)).toBe(0)
-    expect(originalVODSessionOriginSeconds(1.5)).toBe(0)
   })
 })
 
@@ -430,7 +357,6 @@ describe('classifyLiveLoadError', () => {
       kind: 'http',
       status: 502,
       body: '<html>Bad Gateway</html>',
-      retryAfter: '5',
     })).toEqual({ kind: 'other', status: 502, message: '<html>Bad Gateway</html>' })
   })
 
@@ -442,13 +368,6 @@ describe('classifyLiveLoadError', () => {
 })
 
 describe('probeLivePlaylist', () => {
-  const chaseClassifier = playbackStrategy({
-    mode: 'chase',
-    site: 'default',
-    recordingId: 42,
-    chaseTimeline: { chaseHeadOffsetSeconds: 0, plannedSeconds: 3600, recordedSeconds: 1800 },
-  }).classifyLoadError
-
   it('200 なら ok（本文が media playlist なら束ねていない）', async () => {
     vi.stubGlobal(
       'fetch',
@@ -486,39 +405,6 @@ describe('probeLivePlaylist', () => {
     expect(await probeLivePlaylist('/x')).toEqual({
       ok: false,
       error: { kind: 'capacity', message: 'live stream unavailable' },
-    })
-  })
-
-  it('追っかけの502でも Retry-After が無ければ other（プロキシ由来）', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => Promise.resolve(new Response('Bad Gateway', { status: 502 }))),
-    )
-    expect(await probeLivePlaylist('/chase', undefined, chaseClassifier)).toEqual({
-      ok: false,
-      error: { kind: 'other', status: 502, message: 'Bad Gateway' },
-    })
-  })
-
-  it('追っかけの502は Retry-After があれば入力失敗として分類する', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() =>
-        Promise.resolve(
-          new Response('追っかけ入力のエラーが続いています', {
-            status: 502,
-            headers: { 'Retry-After': '5' },
-          }),
-        ),
-      ),
-    )
-    expect(await probeLivePlaylist('/chase', undefined, chaseClassifier)).toEqual({
-      ok: false,
-      error: {
-        kind: 'chase-input',
-        title: '追っかけ再生の入力に失敗したため、一時停止しています。',
-        message: '追っかけ入力のエラーが続いています',
-      },
     })
   })
 
@@ -650,7 +536,7 @@ describe('live auto downgrade', () => {
         `#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",URI="hd.1.m3u8"\n${inf}hd.0.m3u8\n`,
       ),
     ).toBe(false)
-    // media playlist（追っかけ）
+    // media playlist（録画 HLS）
     expect(bundlesProfiles('#EXTM3U\n#EXTINF:2,\nsegments/0.ts')).toBe(false)
   })
 })

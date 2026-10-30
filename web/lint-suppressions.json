@@ -12,7 +12,8 @@
     "src/pages/cm-logos.tsx": 3
   },
   "react/refs": {
-    "src/components/program-list.tsx": 2
+    "src/components/program-list.tsx": 2,
+    "src/pages/live.tsx": 1
   },
   "react/set-state-in-effect": {
     "src/components/connection-banner.tsx": 1,

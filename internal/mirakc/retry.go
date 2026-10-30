@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// MaxConsecutiveRetries は record の追従（worker の ingest 転送と streamer の追っかけ入力）が、
-// 一過性の失敗を連続して再試行する上限。これを超えた失敗は呼び出し側がエラーとして返す。
+// MaxConsecutiveRetries は record の ingest 転送が、一過性の失敗を連続して再試行する上限。
+// これを超えた失敗は呼び出し側がエラーとして返す。
 const MaxConsecutiveRetries = 5
 
 // retryBaseDelay / retryMaxDelay は RetryDelay の指数バックオフの下限・上限。mirakc が

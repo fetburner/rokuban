@@ -6,10 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LiveProfileSummary, ProgramListItem, Recording, Reservation, Service, Tuner } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
+import { recordingDetailQueryKey } from '@/lib/recording-detail-cache'
 import { liveStallTimeoutMs } from '@/lib/live'
 import { routeTree } from '@/routes'
 
-const pageHlsMockState = vi.hoisted(() => ({ instances: [] as unknown[] }))
+const pageHlsMockState = vi.hoisted(() => ({
+  instances: [] as Array<{ options: { startPosition?: number } | undefined; sources: string[] }>,
+}))
 
 vi.mock('hls.js', () => {
   class FakeHls {
@@ -21,7 +24,7 @@ vi.mock('hls.js', () => {
     }
     static isSupported = () => true
     on = vi.fn()
-    loadSource = vi.fn()
+    loadSource = vi.fn((source: string) => this.record.sources.push(source))
     attachMedia = vi.fn()
     destroy = vi.fn()
     subtitleDisplay = true
@@ -29,8 +32,10 @@ vi.mock('hls.js', () => {
     audioTracks: unknown[] = []
     latency = 0
     mainForwardBufferInfo: { len: number } | null = null
-    constructor() {
-      pageHlsMockState.instances.push(this)
+    private record: { options: { startPosition?: number } | undefined; sources: string[] }
+    constructor(options?: { startPosition?: number }) {
+      this.record = { options, sources: [] }
+      pageHlsMockState.instances.push(this.record)
     }
   }
   return { default: FakeHls }
@@ -227,7 +232,8 @@ function stubFetch(options: {
    * 「一覧が無いデプロイ」の挙動（設定メニューに画質項目を出さない）をそのまま見る。
    */
   liveProfiles?: LiveProfileSummary[]
-  recording?: Recording
+  recording?: Recording | (() => Recording)
+  recordingHlsResponse?: (path: string) => Response
   /** `GET /api/sites/{site}/tuners`。site ごとに指定しない限り空配列（issue #474）。 */
   tunersBySite?: Record<string, Tuner[]>
   tunerStatusBySite?: Record<string, number>
@@ -257,6 +263,7 @@ function stubFetch(options: {
     sites = ['default'],
     liveProfiles = [],
     recording: recordingResponse,
+    recordingHlsResponse,
     tunersBySite = {},
     tunerStatusBySite = {},
     pendingTunerSites = [],
@@ -278,11 +285,16 @@ function stubFetch(options: {
     }
 
     const recordingMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
-    if (recordingMatch && recordingResponse?.id === Number(recordingMatch[1])) {
-      return Promise.resolve(new Response(JSON.stringify(recordingResponse), {
+    const currentRecording = typeof recordingResponse === 'function' ? recordingResponse() : recordingResponse
+    if (recordingMatch && currentRecording?.id === Number(recordingMatch[1])) {
+      return Promise.resolve(new Response(JSON.stringify(currentRecording), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
+    }
+
+    if (url.pathname.includes('/api/media/stores/media/recordings/') && recordingHlsResponse) {
+      return Promise.resolve(recordingHlsResponse(url.pathname))
     }
 
     if (url.pathname === '/api/reservations') {
@@ -332,10 +344,6 @@ function stubFetch(options: {
       }
       return Promise.reject(new TypeError('Failed to fetch'))
     }
-    if (url.pathname.includes('/chase/playlist.m3u8')) {
-      return Promise.resolve(new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 }))
-    }
-
     if (url.pathname === '/api/breakers') {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
     }
@@ -382,11 +390,6 @@ function playlistFetchCallCount(): number {
 function playlistFetchURLs(): string[] {
   const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
   return calls.map(([url]) => String(url)).filter((url) => url.includes('/live/playlist.m3u8'))
-}
-
-function chasePlaylistURLs(): string[] {
-  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
-  return calls.map(([url]) => String(url)).filter((url) => url.includes('/chase/') && url.includes('playlist.m3u8'))
 }
 
 /**
@@ -1142,7 +1145,7 @@ describe('LivePage', () => {
 })
 
 describe('LivePage / 録画時間軸', () => {
-  it('番組軸の位置を録画先頭からの chase offset に変換する', async () => {
+  it('番組軸の位置を録画 HLS の開始位置に変換する', async () => {
     const user = userEvent.setup()
     const now = Date.now()
     const startAt = new Date(now - 30 * 60_000).toISOString()
@@ -1155,6 +1158,7 @@ describe('LivePage / 録画時間軸', () => {
       durationMs: 60 * 60_000,
       recordingId: 501,
     })
+    const masterUrl = '/api/media/stores/media/recordings/501/hls/v1/hd/master.m3u8'
     stubFetch({
       services: [service({ serviceId: 10, name: 'チャンネル A' })],
       programsByServiceId: { 10: [airing] },
@@ -1163,6 +1167,7 @@ describe('LivePage / 録画時間軸', () => {
         startAt: new Date(Date.parse(startAt) - 60_000).toISOString(),
         durationMs: 61 * 60_000,
         startedAt,
+        hlsPlayback: [{ profile: 'hd', masterUrl }],
       }),
     })
     renderLive('/live?service=100010')
@@ -1179,8 +1184,184 @@ describe('LivePage / 録画時間軸', () => {
     fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 12 })
     fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 12 })
 
-    await waitFor(() => expect(chasePlaylistURLs()).toHaveLength(1))
-    expect(chasePlaylistURLs()[0]).toContain('/chase/offset/300/playlist.m3u8')
+    await waitFor(() => expect(pageHlsMockState.instances).toContainEqual(
+      expect.objectContaining({ options: { startPosition: 300 }, sources: [masterUrl] }),
+    ))
+    expect(screen.getByTestId('live-recording-source-label')).toHaveTextContent('● 録画から再生中')
+    // 軸は番組基準のまま（右端は番組の予定 60 分）。録画の長さではない。
+    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '3600')
+
+    // 軸のライブ位置の印を押すとライブへ戻る。別のボタンは置かない。
+    await user.click(screen.getByRole('button', { name: 'ライブへ戻る' }))
+    await waitFor(() => expect(screen.queryByTestId('live-recording-source-label')).not.toBeInTheDocument())
+    expect(screen.getByTestId('live-source-label')).toBeInTheDocument()
+  })
+
+  it('410 後に録画詳細を再取得し、新しい世代と実際の録画済み尺を使う', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    const startAt = new Date(now - 30 * 60_000).toISOString()
+    const endAt = new Date(now + 30 * 60_000).toISOString()
+    const masterV1 = '/api/media/stores/media/recordings/501/hls/v1/hd/master.m3u8'
+    const masterV2 = '/api/media/stores/media/recordings/501/hls/v2/hd/master.m3u8'
+    const airing = program({
+      serviceId: 10,
+      startAt,
+      endAt,
+      durationMs: 60 * 60_000,
+      recordingId: 501,
+    })
+    let currentRecording = recording({
+      startAt,
+      durationMs: 60 * 60_000,
+      status: 'recording',
+      startedAt: startAt,
+      hlsPlayback: [{ profile: 'hd', masterUrl: masterV1 }],
+    })
+    const recordingHlsRequests: string[] = []
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A' })],
+      programsByServiceId: { 10: [airing] },
+      recording: () => currentRecording,
+      recordingHlsResponse: (path) => {
+        recordingHlsRequests.push(path)
+        if (path === masterV1) {
+          currentRecording = {
+            ...currentRecording,
+            hlsPlayback: [{ profile: 'hd', masterUrl: masterV2 }],
+          }
+          return new Response('generation expired', { status: 410 })
+        }
+        return path === masterV2
+          ? new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 })
+          : new Response('not found', { status: 404 })
+      },
+    })
+    const initialInstanceCount = pageHlsMockState.instances.length
+    renderLive('/live?service=100010')
+
+    await startLivePlayback(user)
+    await screen.findByText(/接続できません/)
+    await user.click(await screen.findByRole('button', { name: '最初から' }))
+
+    await waitFor(() => expect(recordingHlsRequests).toEqual([masterV1, masterV2]))
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    // 録画済みの尺は軸のライブ位置（番組開始から約 30 分）に出る。軸の右端は番組の予定 60 分のまま。
+    expect(slider).toHaveAttribute('aria-valuemax', '3600')
+    expect(screen.getByRole('button', { name: 'ライブへ戻る' }).getAttribute('title'))
+      .toMatch(/^ライブ 30:0\d（押すとライブへ戻る）$/)
+    expect(pageHlsMockState.instances.slice(initialInstanceCount)).toContainEqual(
+      expect.objectContaining({ sources: [masterV2] }),
+    )
+    expect(screen.getByTestId('live-recording-source-label')).toBeInTheDocument()
+  })
+
+  // 410 の後の再取得で hlsPlayback が空のとき、待つのは世代の作り直し（録画中）だけ。
+  // 失敗した録画で待ち続けると、エラーも再試行も出ないまま止まる。
+  describe.each([
+    ['録画中の世代切替は待つ（エラーを出さない）', { status: 'recording' as const }, false],
+    ['失敗した録画は待たずにプレイヤーを外す', { status: 'failed' as const }, true],
+  ])('410 後に hlsPlayback が空: %s', (_label, emptyOverrides, showsError) => {
+    it(showsError ? '選択状態へ戻る' : 'エラーを出さず、プレイヤーを保つ', async () => {
+      const user = userEvent.setup()
+      const now = Date.now()
+      const startAt = new Date(now - 30 * 60_000).toISOString()
+      const endAt = new Date(now + 30 * 60_000).toISOString()
+      const masterV1 = '/api/media/stores/media/recordings/501/hls/v1/hd/master.m3u8'
+      const airing = program({ serviceId: 10, startAt, endAt, durationMs: 60 * 60_000, recordingId: 501 })
+      const withHls = recording({
+        startAt,
+        durationMs: 60 * 60_000,
+        status: 'recording',
+        startedAt: startAt,
+        hlsPlayback: [{ profile: 'hd', masterUrl: masterV1 }],
+      })
+      let currentRecording = withHls
+      let recordingFetches = 0
+      let fetchesAtExpiry = -1
+      stubFetch({
+        services: [service({ serviceId: 10, name: 'チャンネル A' })],
+        programsByServiceId: { 10: [airing] },
+        recording: () => {
+          recordingFetches += 1
+          return currentRecording
+        },
+        recordingHlsResponse: (path) => {
+          if (path !== masterV1) return new Response('not found', { status: 404 })
+          // 410 を返すと同時に、世代が無い状態（hlsPlayback が空）へ切り替える。
+          currentRecording = { ...withHls, ...emptyOverrides, hlsPlayback: [] }
+          fetchesAtExpiry = recordingFetches
+          return new Response('generation expired', { status: 410 })
+        },
+      })
+      renderLive('/live?service=100010')
+
+      await startLivePlayback(user)
+      await screen.findByText(/接続できません/)
+      await user.click(await screen.findByRole('button', { name: '最初から' }))
+      await waitFor(() => expect(fetchesAtExpiry).toBeGreaterThanOrEqual(0))
+      // 410 の後の REST 再取得が起きたことを待ってから判定する（待たないと空虚に通る）。
+      await waitFor(() => expect(recordingFetches).toBeGreaterThan(fetchesAtExpiry))
+
+      if (showsError) {
+        // 次の世代は来ないので、古い URL を保たずプレイヤーを外して選択状態へ戻る。
+        await waitFor(() => expect(screen.queryByTestId('live-recording-source-label')).not.toBeInTheDocument())
+        expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+        expect(screen.getByTestId('live-recording-source-label')).toBeInTheDocument()
+      }
+    })
+  })
+
+  it('世代の空きを待っている間に録画が失敗したら、古い URL を保たずプレイヤーを外して選択状態に戻る', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    const startAt = new Date(now - 30 * 60_000).toISOString()
+    const endAt = new Date(now + 30 * 60_000).toISOString()
+    const masterV1 = '/api/media/stores/media/recordings/501/hls/v1/hd/master.m3u8'
+    const airing = program({ serviceId: 10, startAt, endAt, durationMs: 60 * 60_000, recordingId: 501 })
+    const withHls = recording({
+      startAt,
+      durationMs: 60 * 60_000,
+      status: 'recording',
+      startedAt: startAt,
+      hlsPlayback: [{ profile: 'hd', masterUrl: masterV1 }],
+    })
+    let currentRecording = withHls
+    let recordingFetches = 0
+    let fetchesAtExpiry = -1
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A' })],
+      programsByServiceId: { 10: [airing] },
+      recording: () => {
+        recordingFetches += 1
+        return currentRecording
+      },
+      recordingHlsResponse: (path) => {
+        if (path !== masterV1) return new Response('not found', { status: 404 })
+        currentRecording = { ...withHls, hlsPlayback: [] }
+        fetchesAtExpiry = recordingFetches
+        return new Response('generation expired', { status: 410 })
+      },
+    })
+    const { queryClient } = renderLive('/live?service=100010')
+
+    await startLivePlayback(user)
+    await screen.findByText(/接続できません/)
+    await user.click(await screen.findByRole('button', { name: '最初から' }))
+    await waitFor(() => expect(fetchesAtExpiry).toBeGreaterThanOrEqual(0))
+    await waitFor(() => expect(recordingFetches).toBeGreaterThan(fetchesAtExpiry))
+    // 録画中の空きは待つ（プレイヤーは残る）。
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(screen.getByTestId('live-recording-source-label')).toBeInTheDocument()
+
+    currentRecording = { ...withHls, status: 'failed', hlsPlayback: [] }
+    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(501) })
+
+    await waitFor(() => expect(screen.queryByTestId('live-recording-source-label')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
   })
 })
 

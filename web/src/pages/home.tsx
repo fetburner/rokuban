@@ -933,7 +933,6 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
   const detail: RecordingDetailLink = {
     to: '/recordings/$id',
     params: { id: String(recording.id) },
-    hash: recording.status === 'recording' ? 'chase' : undefined,
   }
   const resumePosition = recording.resumePositionMs
   const playbackPositionLabel = resumePosition === undefined
@@ -1052,7 +1051,6 @@ function HomeNewArrivals({ recordings }: { recordings: Recording[] }) {
             <Link
               to="/recordings/$id"
               params={{ id: String(recording.id) }}
-              hash={recording.status === 'recording' ? 'chase' : undefined}
               className="flex min-w-0 flex-col gap-1.5"
             >
               <HomeThumbnail recording={recording} />
@@ -1070,7 +1068,6 @@ function HomeNewArrivals({ recordings }: { recordings: Recording[] }) {
 type RecordingDetailLink = {
   to: '/recordings/$id'
   params: { id: string }
-  hash?: 'chase'
 }
 
 function HomeThumbnail({
@@ -1250,7 +1247,7 @@ function WatchBreakerBand({ breakers }: { breakers: readonly CircuitBreaker[] })
   )
 }
 
-/** 録画中の件数と追っかけ導線だけを一行に畳む。 */
+/** 録画中の件数と録画詳細への導線を一行に畳む。 */
 function RecordingStrip({ recordings }: { recordings: readonly Recording[] }) {
   const first = recordings[0]
   if (first === undefined) return null
@@ -1268,10 +1265,9 @@ function RecordingStrip({ recordings }: { recordings: readonly Recording[] }) {
       <Link
         to="/recordings/$id"
         params={{ id: String(first.id) }}
-        hash="chase"
         className="inline-flex min-h-6 pointer-coarse:min-h-11 shrink-0 items-center text-primary underline-offset-2 hover:underline"
       >
-        追っかけ再生 →
+        録画を見る →
       </Link>
     </section>
   )

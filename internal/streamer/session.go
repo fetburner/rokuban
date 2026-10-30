@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
@@ -59,26 +58,15 @@ var liveMirakcReleaseWait = 5 * time.Second
 
 const playlistPollInterval = 100 * time.Millisecond
 
-type sessionKind string
-
-type sessionKey struct {
-	kind          sessionKind
-	id            int64
-	offsetSeconds int64
-}
-
 type sessionSource func(context.Context) (io.ReadCloser, error)
 
-// liveSession はライブまたは追っかけ再生の 1 セッション（1 mirakc 接続 +
-// 1 ffmpeg プロセス）。種別だけが資源の入口と出力ディレクトリを変え、上限・
-// startup wait・idle GC・leave は同じ状態機械を通る。
+// liveSession はライブ視聴の 1 セッション（1 mirakc 接続 + 1 ffmpeg プロセス）。
 //
 // crash-only の唯一の例外（使い捨てのインメモリ状態）。DB には一切書かない。
 type liveSession struct {
 	serviceID int64
-	key       sessionKey
 	source    sessionSource
-	dir       string // SegmentDir/site/{serviceID|chase/recordingID/offset/seconds}
+	dir       string // SegmentDir/site/serviceID
 
 	ready chan struct{} // startSession が終わったら閉じる（成功でも失敗でも）
 	done  chan struct{} // ffmpeg プロセスが完全に終了したら閉じる
@@ -181,80 +169,34 @@ func (s *liveSession) stop() {
 func (ls *LiveStreamer) sessionCount() int {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	return len(ls.sessions) + len(ls.chaseSessions)
+	return len(ls.sessions)
 }
 
-func sessionKindOf(s *liveSession) sessionKind {
-	switch s.key.kind {
-	case chaseSessionKind, originalVODSessionKind:
-		return s.key.kind
-	default:
-		return liveSessionKind
-	}
-}
-
-func sessionIDOf(s *liveSession) int64 {
-	if sessionKindOf(s) != liveSessionKind {
-		return s.key.id
-	}
-	return s.serviceID
-}
-
-// getSessionLocked returns the session for a complete key. The caller must
-// hold ls.mu. Chase offsets are part of the key so two initial positions never
-// share an HLS timeline accidentally.
-func (ls *LiveStreamer) getSessionLocked(key sessionKey) (*liveSession, bool) {
-	if key.kind == chaseSessionKind || key.kind == originalVODSessionKind {
-		if ls.chaseSessions == nil {
-			return nil, false
-		}
-		s, ok := ls.chaseSessions[key]
-		return s, ok
-	}
+// getSessionLocked returns the service session. The caller must hold ls.mu.
+func (ls *LiveStreamer) getSessionLocked(serviceID int64) (*liveSession, bool) {
 	if ls.sessions == nil {
 		return nil, false
 	}
-	s, ok := ls.sessions[key.id]
+	s, ok := ls.sessions[serviceID]
 	return s, ok
 }
 
 func (ls *LiveStreamer) putSessionLocked(s *liveSession) {
-	if sessionKindOf(s) == chaseSessionKind || sessionKindOf(s) == originalVODSessionKind {
-		if ls.chaseSessions == nil {
-			ls.chaseSessions = make(map[sessionKey]*liveSession)
-		}
-		ls.chaseSessions[s.key] = s
-		return
-	}
 	if ls.sessions == nil {
 		ls.sessions = make(map[int64]*liveSession)
 	}
-	ls.sessions[s.key.id] = s
+	ls.sessions[s.serviceID] = s
 }
 
 func (ls *LiveStreamer) deleteSessionLocked(s *liveSession) {
-	if sessionKindOf(s) == chaseSessionKind || sessionKindOf(s) == originalVODSessionKind {
-		delete(ls.chaseSessions, s.key)
-		return
-	}
-	delete(ls.sessions, s.key.id)
+	delete(ls.sessions, s.serviceID)
 }
 
 func (ls *LiveStreamer) setActiveSessionMetrics() {
 	ls.mu.Lock()
 	live := len(ls.sessions)
-	chase := len(ls.chaseSessions)
-	vod := 0
-	for key := range ls.chaseSessions {
-		if key.kind == originalVODSessionKind {
-			vod++
-			chase--
-		}
-	}
 	ls.mu.Unlock()
-	metrics.LiveActiveSessions.WithLabelValues(string(liveSessionKind)).Set(float64(live))
-	metrics.LiveActiveSessions.WithLabelValues(string(chaseSessionKind)).Set(float64(chase))
-	metrics.LiveActiveSessions.WithLabelValues(string(originalVODSessionKind)).Set(float64(vod))
+	metrics.LiveActiveSessions.WithLabelValues("live").Set(float64(live))
 }
 
 // getOrCreateSession は serviceID のセッションを返す。無ければ作る。
@@ -290,17 +232,17 @@ func (ls *LiveStreamer) setActiveSessionMetrics() {
 // 起動待ち）を含めない** --- 含めると、無関係な別サービスへの要求まで他サービスの
 // 起動待ちで足止めされる。実際の起動 I/O はロックの外で行う。
 func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64) (*liveSession, error) {
-	return ls.getOrCreateSessionFor(ctx, sessionKey{kind: liveSessionKind, id: serviceID}, func(ctx context.Context) (io.ReadCloser, error) {
+	return ls.getOrCreateSessionFor(ctx, serviceID, func(ctx context.Context) (io.ReadCloser, error) {
 		return ls.mirakc.StreamService(ctx, serviceID, ls.cfg.TunerPriority)
 	})
 }
 
-func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
-	s, err := ls.getOrCreateSessionOnceFor(ctx, key, source)
-	return ls.recoverSessionStartup(ctx, key, source, s, err)
+func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, serviceID int64, source sessionSource) (*liveSession, error) {
+	s, err := ls.getOrCreateSessionOnceFor(ctx, serviceID, source)
+	return ls.recoverSessionStartup(ctx, serviceID, source, s, err)
 }
 
-func (ls *LiveStreamer) recoverSessionStartup(ctx context.Context, key sessionKey, source sessionSource, s *liveSession, err error) (*liveSession, error) {
+func (ls *LiveStreamer) recoverSessionStartup(ctx context.Context, serviceID int64, source sessionSource, s *liveSession, err error) (*liveSession, error) {
 	if err == nil {
 		return s, nil
 	}
@@ -330,11 +272,11 @@ func (ls *LiveStreamer) recoverSessionStartup(ctx context.Context, key sessionKe
 	// （相乗り経路では eviction counter を計上しない --- 実際に退避したのは
 	// 先着の 1 本だけである）。
 	ls.mu.Lock()
-	_, alreadyRecovered := ls.getSessionLocked(key)
+	_, alreadyRecovered := ls.getSessionLocked(serviceID)
 	ls.mu.Unlock()
 	if alreadyRecovered {
 		ls.evictMu.Unlock()
-		return ls.getOrCreateSessionOnceFor(ctx, key, source)
+		return ls.getOrCreateSessionOnceFor(ctx, serviceID, source)
 	}
 
 	victim := ls.takeIdleSessionForRetry(time.Now())
@@ -344,21 +286,12 @@ func (ls *LiveStreamer) recoverSessionStartup(ctx context.Context, key sessionKe
 	}
 
 	slog.Info("streamer: evicting idle session before retry",
-		"kind", string(sessionKindOf(victim)), "session_id", sessionIDOf(victim), "reason", reason)
+		"kind", "live", "session_id", victim.serviceID, "reason", reason)
 	victim.stop()
-	// live の runSession は自分で掃除するが、完了済み chase は EVENT playlist
-	// を idle GC まで保持するため defer が掃除を意図的に省略する。退去経路では
-	// map から既に外れており通常の GC / shutdown が到達できないため、ここで明示的
-	// にディレクトリを解放する。live 側に対しても冪等なので共通化する。
 	cleanupSessionDir(victim)
 	// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない。
 	// stop が done まで待っても、直後の要求が容量エラーになる窓が実物で観測された。
 	releaseWait := liveMirakcReleaseWait
-	if sessionKindOf(victim) == originalVODSessionKind {
-		// 原本 VOD はチューナーを持たないので、解放待ちは無意味（シークのたびに
-		// 5 秒止まる。実バイナリで測定）。
-		releaseWait = 0
-	}
 	select {
 	case <-ctx.Done():
 		// **退避は既に起きている**（victim.stop() は完了済み）。ここで諦めるのは
@@ -372,7 +305,7 @@ func (ls *LiveStreamer) recoverSessionStartup(ctx context.Context, key sessionKe
 	// 再試行セッションは evictMu を放す前に map へ登録する。放した後に登録すると、
 	// evictMu を待っていた同時要求がその間に alreadyRecovered を確認して空振りし、
 	// victim も既に無いので元のエラーを返してしまう。ready 待ちは evictMu の外で行う。
-	retry, retryErr := ls.startSessionOnceFor(key, source)
+	retry, retryErr := ls.startSessionOnceFor(serviceID, source)
 	ls.evictMu.Unlock()
 	if ls.afterEvictRelease != nil {
 		ls.afterEvictRelease()
@@ -402,8 +335,8 @@ func liveEvictionReason(err error) (string, bool) {
 	return "", false
 }
 
-func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
-	s, err := ls.startSessionOnceFor(key, source)
+func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, serviceID int64, source sessionSource) (*liveSession, error) {
+	s, err := ls.startSessionOnceFor(serviceID, source)
 	return ls.awaitSessionReady(ctx, s, err)
 }
 
@@ -426,23 +359,17 @@ func (ls *LiveStreamer) awaitSessionReady(ctx context.Context, s *liveSession, e
 // startSessionOnceFor は key のセッションが無ければ作って map に登録し、ready は待たずに返す。
 // 既にあればそれを返す。登録までを 1 回のロックで行うので、evictMu を持ったまま呼べば
 // 「退避した本人の登録」が evictMu を待つ同時要求より先に見える。
-func (ls *LiveStreamer) startSessionOnceFor(key sessionKey, source sessionSource) (*liveSession, error) {
+func (ls *LiveStreamer) startSessionOnceFor(serviceID int64, source sessionSource) (*liveSession, error) {
 	ls.mu.Lock()
-	if s, ok := ls.getSessionLocked(key); ok {
+	if s, ok := ls.getSessionLocked(serviceID); ok {
 		ls.mu.Unlock()
 		return s, nil
-	}
-	if key.kind == chaseSessionKind {
-		if err := ls.chaseInputCooldownLocked(key.id); err != nil {
-			ls.mu.Unlock()
-			return nil, err
-		}
 	}
 	if ls.closed {
 		ls.mu.Unlock()
 		return nil, errShuttingDown
 	}
-	if len(ls.sessions)+len(ls.chaseSessions) >= ls.cfg.MaxSessions {
+	if len(ls.sessions) >= ls.cfg.MaxSessions {
 		ls.mu.Unlock()
 		metrics.LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
 		return nil, errSessionLimit
@@ -450,17 +377,12 @@ func (ls *LiveStreamer) startSessionOnceFor(key sessionKey, source sessionSource
 
 	sessionCtx, cancel := context.WithCancel(context.Background())
 	s := &liveSession{
-		serviceID:  key.id,
-		key:        key,
+		serviceID:  serviceID,
 		source:     source,
 		ready:      make(chan struct{}),
 		done:       make(chan struct{}),
 		lastAccess: time.Now(),
 		cancel:     cancel,
-	}
-	if key.kind == chaseSessionKind || key.kind == originalVODSessionKind {
-		// Recording sessions use recordings.id (and chase also includes its offset).
-		s.serviceID = 0
 	}
 	ls.putSessionLocked(s)
 	ls.mu.Unlock()
@@ -511,19 +433,6 @@ func (ls *LiveStreamer) takeIdleSessionForRetry(now time.Time) *liveSession {
 			oldest = idle
 		}
 	}
-	for _, s := range ls.chaseSessions {
-		idle := s.idleSince(now)
-		if idle <= threshold {
-			continue
-		}
-		if !sessionReady(s) && idle <= playlistStartupTimeout {
-			continue
-		}
-		if victim == nil || idle > oldest {
-			victim = s
-			oldest = idle
-		}
-	}
 	if victim != nil {
 		ls.deleteSessionLocked(victim)
 	}
@@ -547,41 +456,20 @@ func sessionReady(s *liveSession) bool {
 // runSession は 1 セッションの全生涯（mirakc 接続 → ffmpeg 起動 → 終了待ち →
 // 後片付け）を担う。呼び出し元は go で起動し、s.ready / s.done で同期する。
 func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
-	kind := sessionKindOf(s)
-	keepCompletedRecordingSession := false
-	inputFailed := false
-	// close(s.done) は必ず最後（他の全ての後片付けの後）に行う。stop() は
-	// `<-s.done` が閉じたら「片付け完了」とみなして戻るので、途中の状態
-	// （map から消す前・ディレクトリを消す前）で閉じると、呼び出し側が
-	// 「もう消えている」つもりで見に行った os.Stat がまだ古いディレクトリを
-	// 見つけてしまう（実際にテストで踏んだ競合）。
+	// close(s.done) はすべての後片付けの後に行う。stop() は done が閉じたら
+	// セッションの終了とディレクトリ掃除が完了したものとして戻る。
 	defer close(s.done)
 	defer func() {
 		ls.mu.Lock()
-		if inputFailed {
-			ls.recordFailedChaseInputLocked(s.key.id)
-		}
-		// idle GC が先にこの id を削除して新しいセッションに入れ替えていたら、
-		// 新しいセッションを消さない（cur == s のときだけ削除）。
-		if !keepCompletedRecordingSession {
-			if cur, ok := ls.getSessionLocked(s.key); ok && cur == s {
-				ls.deleteSessionLocked(s)
-			}
+		if cur, ok := ls.getSessionLocked(s.serviceID); ok && cur == s {
+			ls.deleteSessionLocked(s)
 		}
 		ls.mu.Unlock()
-		if !keepCompletedRecordingSession && s.dir != "" {
-			cleanupSessionDir(s)
-		}
+		cleanupSessionDir(s)
 		ls.setActiveSessionMetrics()
 	}()
 
-	dir := filepath.Join(ls.cfg.SegmentDir, ls.site, strconv.FormatInt(sessionIDOf(s), 10))
-	switch kind {
-	case chaseSessionKind:
-		dir = chaseSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s), s.key.offsetSeconds)
-	case originalVODSessionKind:
-		dir = originalVODSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s), s.key.offsetSeconds)
-	}
+	dir := filepath.Join(ls.cfg.SegmentDir, ls.site, strconv.FormatInt(s.serviceID, 10))
 	if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
 		s.startErr = fmt.Errorf("creating live segment dir: %w", err)
 		metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
@@ -592,82 +480,29 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 
 	body, err := s.source(ctx)
 	if err != nil {
-		if kind == originalVODSessionKind {
-			s.startErr = err
-			metrics.LiveSessionStartFailures.WithLabelValues("original_vod_error").Inc()
-		} else if errors.Is(err, errChaseRecordNotReadyTimeout) {
-			s.startErr = err
-			metrics.LiveSessionStartFailures.WithLabelValues("record_not_ready_timeout").Inc()
-		} else {
-			s.startErr = &liveUpstreamStartError{err: err}
-			metrics.LiveSessionStartFailures.WithLabelValues("upstream_error").Inc()
-		}
-		// 範囲外の offset は利用者入力の結果で、サーバーの障害ではない（416 になる）。
-		level := slog.LevelError
-		if errors.Is(err, errOriginalVODOffsetUnavailable) {
-			level = slog.LevelInfo
-		}
-		slog.Log(ctx, level, "streamer: requesting session upstream",
-			"kind", string(kind), "session_id", sessionIDOf(s), "err", err)
+		s.startErr = &liveUpstreamStartError{err: err}
+		metrics.LiveSessionStartFailures.WithLabelValues("upstream_error").Inc()
+		slog.ErrorContext(ctx, "streamer: requesting live stream",
+			"session_id", s.serviceID, "err", err)
 		close(s.ready)
 		return
 	}
 	defer func() { _ = body.Close() }()
 
-	var originalFile *os.File
-	if kind == originalVODSessionKind {
-		var ok bool
-		originalFile, ok = body.(*os.File)
-		if !ok {
-			s.startErr = errors.New("original VOD source is not a seekable file")
-			metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
-			close(s.ready)
-			return
-		}
-	}
-
-	input, streamInfo, err := probeLiveSessionInput(ctx, ls.cfg.FFprobe, kind, sessionIDOf(s), body, originalFile)
+	input, streamInfo, err := probeLiveStreamInput(ctx, ls.cfg.FFprobe, s.serviceID, body)
 	if err != nil {
 		s.startErr = err
 		close(s.ready)
 		return
 	}
 	defer func() { _ = input.Close() }()
-	captionInput := ls.cfg.Captions && streamInfo.hasSubtitles
-	audioStreamCount := streamInfo.audioStreams
 
-	playlistType := hlsLivePlaylist
-	inputPath := "pipe:0"
-	var offsetSeconds int64
-	switch kind {
-	case chaseSessionKind:
-		playlistType = hlsEventPlaylist
-	case originalVODSessionKind:
-		playlistType = hlsOriginalEventPlaylist
-		inputPath = originalVODFFmpegInputPath
-		offsetSeconds = s.key.offsetSeconds
-	}
 	args := buildHLSFFmpegArgsForPlaylistType(
-		ls.cfg, dir, captionInput, playlistType, inputPath, offsetSeconds, audioStreamCount,
+		ls.cfg, dir, ls.cfg.Captions && streamInfo.hasSubtitles,
+		hlsLivePlaylist, "pipe:0", 0, streamInfo.audioStreams,
 	)
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
-	if originalFile != nil {
-		// Go maps ExtraFiles[0] to child fd 3. Passing the already-open original
-		// keeps ffmpeg's seekable input alive if until_encoded unlinks its name.
-		cmd.ExtraFiles = []*os.File{originalFile}
-	}
-	var chaseInput *chaseInputCopy
-	switch {
-	case originalFile != nil:
-	case kind == chaseSessionKind:
-		if chaseInput, s.startErr = attachChaseInput(cmd); s.startErr != nil {
-			metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
-			close(s.ready)
-			return
-		}
-	default:
-		cmd.Stdin = input
-	}
+	cmd.Stdin = input
 	stderr := newCappedWriter(stderrCap)
 	cmd.Stderr = stderr
 	// ctx がキャンセルされてプロセスを kill した後、I/O をコピーするゴルーチン
@@ -678,61 +513,37 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	// 詰まる --- 上限を設けて必ず前に進めるようにする。
 	cmd.WaitDelay = 5 * time.Second
 
-	startErr := cmd.Start()
-	chaseInput.started(startErr)
-	if err := startErr; err != nil {
+	if err := cmd.Start(); err != nil {
 		s.startErr = fmt.Errorf("starting live ffmpeg: %w", err)
 		metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
 		close(s.ready)
 		return
 	}
 
-	slog.Info("streamer: session started", "kind", string(kind), "session_id", sessionIDOf(s), "dir", dir,
+	slog.Info("streamer: session started", "kind", "live", "session_id", s.serviceID, "dir", dir,
 		"profiles", len(ls.cfg.Profiles))
 	close(s.ready)
 
-	chaseInput.copy(input, cmd.Process.Kill)
-
 	waitErr := cmd.Wait()
-	inputErr := chaseInput.finish(body)
-	inputFailed = kind == chaseSessionKind && inputErr != nil && ctx.Err() == nil
-	ffmpegCompleted := ffmpegSessionCompleted(ctx, cmd, waitErr, inputErr, kind, sessionIDOf(s), stderr)
-	if (kind == chaseSessionKind || kind == originalVODSessionKind) && ctx.Err() == nil && ffmpegCompleted {
-		// Keep completed recording playlists and all segments until the shared idle
-		// GC reclaims the session, so clients can fetch ENDLIST and seek the full VOD.
-		keepCompletedRecordingSession = true
-	}
+	ffmpegSessionCompleted(ctx, cmd, waitErr, "live", s.serviceID, stderr)
 }
 
-// probeLiveSessionInput reads a finite input prefix, probes its audio/subtitle streams, and
-// returns a reader that replays the prefix before the remaining live input. For an opened
-// original VOD file it uses ReadAt so ffmpeg retains the seekable input at offset zero.
-func probeLiveSessionInput(
+// probeLiveStreamInput reads a finite input prefix, probes its audio/subtitle streams, and
+// returns a reader that replays the prefix before the remaining live input.
+func probeLiveStreamInput(
 	ctx context.Context,
 	ffprobe string,
-	kind sessionKind,
 	sessionID int64,
 	body io.ReadCloser,
-	originalFile *os.File,
 ) (io.ReadCloser, liveStreamInfo, error) {
-	input := body
-	var prefix []byte
-	var readErr error
-	if originalFile != nil {
-		prefix = make([]byte, liveStreamProbeBytes)
-		n, err := originalFile.ReadAt(prefix, 0)
-		prefix = prefix[:n]
-		readErr = err
-	} else {
-		input, prefix, readErr = readLiveStreamPrefix(ctx, body, liveStreamProbeBytes, liveStreamProbeWait)
-	}
+	input, prefix, readErr := readLiveStreamPrefix(ctx, body, liveStreamProbeBytes, liveStreamProbeWait)
 	if ctx.Err() != nil {
 		_ = input.Close()
 		return nil, liveStreamInfo{}, ctx.Err()
 	}
 	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
 		slog.Warn("streamer: reading probe prefix failed; using single audio ES fallback",
-			"kind", string(kind), "session_id", sessionID, "err", readErr)
+			"kind", "live", "session_id", sessionID, "err", readErr)
 	}
 	streamInfo, err := probeLiveStreamInfo(ctx, ffprobe, prefix)
 	if err != nil {
@@ -741,58 +552,29 @@ func probeLiveSessionInput(
 			return nil, liveStreamInfo{}, ctx.Err()
 		}
 		slog.Warn("streamer: probing live stream failed; using single audio ES fallback",
-			"kind", string(kind), "session_id", sessionID, "err", err)
+			"kind", "live", "session_id", sessionID, "err", err)
 		streamInfo.audioStreams = 1
 	}
 	return input, streamInfo, nil
 }
 
-// ffmpegSessionCompleted は ffmpeg が完走したか（ENDLIST を書いて正常終了したか）を判定し、
-// 終わり方をログに残す。inputErr は追っかけの入力のエラー（chaseInputCopy.finish）。
-func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr, inputErr error, kind sessionKind, sessionID int64, stderr *cappedWriter) bool {
-	// 入力のエラーで kill した（idle GC / shutdown の ctx キャンセルは除く）。ffmpeg の
-	// 異常終了ではないので、その旨を 1 回だけ記録する。
-	inputFailed := inputErr != nil && ctx.Err() == nil
-	if inputFailed {
-		slog.Error("streamer: chase input failed; killed ffmpeg so the playlist does not get ENDLIST",
-			"session_id", sessionID, "err", inputErr)
-		// 入力の失敗と同じころに ffmpeg が自分で落ちていたら（kill より先に終わっていて、
-		// 終わり方が SIGKILL でない）、その落ち方も stderr ごと残す
-		// （TestFFmpegSessionCompletedKeepsCrashBesideInputFailure）。
-		if ffmpegExitedOnItsOwn(waitErr) {
-			slog.Error("streamer: ffmpeg exited unexpectedly",
-				"kind", string(kind), "session_id", sessionID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
-		}
-	}
-	ffmpegCompleted := waitErr == nil && !inputFailed
-	if waitErr != nil && ctx.Err() == nil && !inputFailed {
+// ffmpegSessionCompleted は ffmpeg の終了状態をログに残す。
+func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr error, kind string, sessionID int64, stderr *cappedWriter) {
+	if waitErr != nil && ctx.Err() == nil {
 		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
-			ffmpegCompleted = true
 			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdin/stderr の
 			// fd を握ったままで WaitDelay が先に切れた（internal/worker の
 			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
 			// セッション終了なので運用者向けの Error にはしない。
 			slog.Warn("streamer: ffmpeg exited successfully but WaitDelay expired before I/O completed",
-				"kind", string(kind), "session_id", sessionID, "wait_delay", cmd.WaitDelay)
+				"kind", kind, "session_id", sessionID, "wait_delay", cmd.WaitDelay)
 		} else {
 			// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
 			// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
 			slog.Error("streamer: ffmpeg exited unexpectedly",
-				"kind", string(kind), "session_id", sessionID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
+				"kind", kind, "session_id", sessionID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
 		}
 	}
-	return ffmpegCompleted
-}
-
-// ffmpegExitedOnItsOwn は Wait のエラーが、こちらの kill（SIGKILL）以外での ffmpeg の
-// 異常終了（0 以外の終了コードか、SIGKILL 以外のシグナル）か。
-func ffmpegExitedOnItsOwn(waitErr error) bool {
-	var exitErr *exec.ExitError
-	if !errors.As(waitErr, &exitErr) {
-		return false
-	}
-	status, ok := exitErr.Sys().(syscall.WaitStatus)
-	return !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL
 }
 
 func cleanupSessionDir(s *liveSession) {
@@ -800,8 +582,8 @@ func cleanupSessionDir(s *liveSession) {
 		return
 	}
 	if err := os.RemoveAll(s.dir); err != nil {
-		slog.Warn("streamer: segment cleanup failed", "kind", string(sessionKindOf(s)),
-			"session_id", sessionIDOf(s), "dir", s.dir, "err", err)
+		slog.Warn("streamer: segment cleanup failed", "kind", "live",
+			"session_id", s.serviceID, "dir", s.dir, "err", err)
 	}
 }
 
@@ -823,11 +605,6 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 	defer metrics.LiveIdleGCLastPass.SetToCurrentTime()
 
 	ls.mu.Lock()
-	for recordingID, retryAt := range ls.failedChaseInputs {
-		if !now.Before(retryAt) {
-			delete(ls.failedChaseInputs, recordingID)
-		}
-	}
 	var idle []*liveSession
 	for id, s := range ls.sessions {
 		if s.idleSince(now) >= ls.cfg.IdleTimeout {
@@ -835,14 +612,6 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 			// 即座にマップから外す。新しい要求が stop() の完了を待たずに
 			// 別のセッションを起こせるようにする。
 			delete(ls.sessions, id)
-		}
-	}
-	for key, s := range ls.chaseSessions {
-		if s.idleSince(now) >= ls.cfg.IdleTimeout {
-			idle = append(idle, s)
-			// 即座にマップから外す。新しい要求が stop() の完了を待たずに
-			// 別のセッションを起こせるようにする。
-			delete(ls.chaseSessions, key)
 		}
 	}
 	ls.mu.Unlock()
@@ -858,10 +627,8 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 		wg.Add(1)
 		go func(s *liveSession) {
 			defer wg.Done()
-			slog.Info("streamer: session idle, stopping", "kind", string(sessionKindOf(s)), "session_id", sessionIDOf(s))
+			slog.Info("streamer: session idle, stopping", "kind", "live", "session_id", s.serviceID)
 			s.stop()
-			// A chase session whose ffmpeg already reached EOF keeps its EVENT
-			// files until this common idle-GC path. Live cleanup is idempotent.
 			cleanupSessionDir(s)
 			metrics.LiveIdleGCReclaimed.Inc()
 		}(s)
@@ -879,11 +646,8 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 func (ls *LiveStreamer) shutdown() {
 	ls.mu.Lock()
 	ls.closed = true
-	sessions := make([]*liveSession, 0, len(ls.sessions)+len(ls.chaseSessions))
+	sessions := make([]*liveSession, 0, len(ls.sessions))
 	for _, s := range ls.sessions {
-		sessions = append(sessions, s)
-	}
-	for _, s := range ls.chaseSessions {
 		sessions = append(sessions, s)
 	}
 	ls.mu.Unlock()
@@ -900,7 +664,7 @@ func (ls *LiveStreamer) shutdown() {
 	wg.Wait()
 	ls.mu.Lock()
 	for _, s := range sessions {
-		if cur, ok := ls.getSessionLocked(s.key); ok && cur == s {
+		if cur, ok := ls.getSessionLocked(s.serviceID); ok && cur == s {
 			ls.deleteSessionLocked(s)
 		}
 	}
@@ -1020,7 +784,7 @@ func (r *liveStreamPrefixReplay) Close() error {
 
 // readLiveStreamPrefix asynchronously buffers up to limit bytes for ffprobe, then
 // returns a reader that replays that prefix before the rest of body. It stops
-// waiting after wait even when an upstream Read is blocked, so a chase playlist
+// waiting after wait even when an upstream Read is blocked, so a live playlist
 // can start before a growing recording produces more data. The pump owns body
 // reads until it reaches EOF or body is closed.
 func readLiveStreamPrefix(

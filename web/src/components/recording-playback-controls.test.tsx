@@ -139,20 +139,6 @@ describe('再生元固有の行は渡された事実から出す', () => {
   })
 })
 
-const chaseTimeline = {
-  kind: 'chase',
-  minSeconds: 0,
-  maxSeconds: 100,
-  canSeek: true,
-  extended: false,
-  headSeconds: 0,
-  recordedEndSeconds: 80,
-  plannedEndSeconds: 80,
-  liveEdgeSeconds: 79,
-  hoverSeconds: null,
-  hoverLabel: null,
-} as const
-
 describe('共有シークバーのポインタ操作', () => {
   const setSeekbarRect = (seekbar: HTMLElement) => {
     vi.spyOn(seekbar, 'getBoundingClientRect').mockReturnValue({
@@ -210,10 +196,31 @@ describe('共有シークバーのポインタ操作', () => {
     expect(onSeek).not.toHaveBeenCalled()
   })
 
+  it('スクラブ中に録画軸が伸びても最後に表示した秒を確定する', () => {
+    const onSeek = vi.fn()
+    const props = controlProps({
+      timeline: fixedPlaybackTimeline(100),
+      commitLastDisplayedPreview: true,
+      onSeek,
+    })
+    const { rerender } = render(<RecordingPlaybackControls {...props} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 20 })
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+
+    // 録画中に時間軸が 100 秒から 110 秒へ伸びる。同じ座標を再計算すると 77 秒になる。
+    rerender(<RecordingPlaybackControls {...props} timeline={fixedPlaybackTimeline(110)} />)
+    fireEvent.pointerUp(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+
+    expect(onSeek).toHaveBeenCalledTimes(1)
+    expect(onSeek).toHaveBeenCalledWith(70)
+  })
+
   it('時間軸のホバーは帯を離れたら消える', () => {
     const onTimelineHoverChange = vi.fn()
-    const timeline = chaseTimeline
-    render(<RecordingPlaybackControls {...controlProps({ timeline, onTimelineHoverChange })} />)
+    render(<RecordingPlaybackControls {...controlProps({ onTimelineHoverChange })} />)
     const seekbar = screen.getByTestId('seek-scrub')
     setSeekbarRect(seekbar)
 
@@ -227,7 +234,6 @@ describe('共有シークバーのポインタ操作', () => {
     const onTimelineHoverChange = vi.fn()
     const onScrubPreview = vi.fn()
     render(<RecordingPlaybackControls {...controlProps({
-      timeline: chaseTimeline,
       recordingId: 92,
       seekTilesEnabled: true,
       onTimelineHoverChange,
@@ -253,7 +259,6 @@ describe('共有シークバーのポインタ操作', () => {
     const onTimelineHoverChange = vi.fn()
     const onScrubPreview = vi.fn()
     render(<RecordingPlaybackControls {...controlProps({
-      timeline: chaseTimeline,
       recordingId: 92,
       seekTilesEnabled: true,
       onTimelineHoverChange,
@@ -272,9 +277,9 @@ describe('共有シークバーのポインタ操作', () => {
     expect(onScrubPreview).not.toHaveBeenCalled()
   })
 
-  it('追っかけ軸: タッチは掴んでいる間だけホバーを出し、離すと消す', () => {
+  it('タッチは掴んでいる間だけホバーを出し、離すと消す', () => {
     const onTimelineHoverChange = vi.fn()
-    render(<RecordingPlaybackControls {...controlProps({ timeline: chaseTimeline, onTimelineHoverChange })} />)
+    render(<RecordingPlaybackControls {...controlProps({ onTimelineHoverChange })} />)
     const seekbar = screen.getByTestId('seek-scrub')
     setSeekbarRect(seekbar)
 
@@ -331,23 +336,6 @@ describe('共有シークバーのポインタ操作', () => {
       expect(onScrubbingChange).not.toHaveBeenCalled()
       expect(onSeek).not.toHaveBeenCalled()
     })
-  })
-
-  it('追っかけ軸: 離した時点で軸が伸びていても、最後に見せた秒を確定する', () => {
-    const onSeek = vi.fn()
-    const props = controlProps({ timeline: chaseTimeline, commitLastDisplayedPreview: true, onSeek })
-    const { rerender } = render(<RecordingPlaybackControls {...props} />)
-    const seekbar = screen.getByTestId('seek-scrub')
-    setSeekbarRect(seekbar)
-    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 20 })
-    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
-
-    // 軸が 100 → 200 秒に伸びた。同じ座標を計算し直すと 140 秒になる。
-    rerender(<RecordingPlaybackControls {...props} timeline={{ ...chaseTimeline, maxSeconds: 200 }} />)
-    fireEvent.pointerUp(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
-
-    expect(onSeek).toHaveBeenCalledTimes(1)
-    expect(onSeek).toHaveBeenCalledWith(70)
   })
 
   it('空の変換表（tileTimeAtSeconds が null）ではタイルを問い合わせない', () => {

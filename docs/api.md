@@ -17,7 +17,7 @@
 |---|---|---|
 | REST API（OpenAPI ファースト・コード生成・後方互換）/ エンドポイント設計の規約 / 機能の有効/無効は能力 API で観測する（`/api/` の未マッチを SPA に落とさない理由も同節）/ EPG の読み取り（時間窓がカーソル）/ 録画一覧: 絞り込み + キーセットページング（動的 WHERE ビルダ含む） | REST 各節の判断だけ | [api/rest.md](api/rest.md) |
 | SSE (`/api/events`) / トピック / ストリーム形式 / レベルトリガーの対称性（取りこぼしを回復する定期 invalidate の周期と対象）/ 水平スケール / サーバーレスの関係 / 2 つの SSE を 1 つに集約しない | SSE の唯一の権威 | [api/sse.md](api/sse.md) |
-| メディア配信 / 録画済みファイルのストリーミング / X-Accel-Redirect / ライブ視聴の HLS / 追っかけ再生 / SPA アセット配信 / サービスロゴ: ドロップ | メディア配信の索引 | [api/media.md](api/media.md) |
+| メディア配信 / 録画済みファイルのストリーミング / X-Accel-Redirect / ライブ視聴の HLS / SPA アセット配信 / サービスロゴ: ドロップ | メディア配信の索引 | [api/media.md](api/media.md) |
 | 認証: アプリ内に持たない / リバースプロキシ・フレンドリー要件 / nginx リファレンス構成 / プロトコル選定の根拠 | デプロイ境界の要件 | [api/deployment.md](api/deployment.md) |
 
 ## 設計方針: REST + SSE + メディア配信の 3 本

@@ -12,7 +12,6 @@ import {
   useDeleteRecordingChapterEdits,
   useGetRecordingChapters,
   useListEncodeProfiles,
-  useListLiveProfiles,
   useListRules,
   useListSites,
   usePutRecordingChapterEdits,
@@ -32,8 +31,7 @@ import {
   IngestBadge,
   RecordingVerdictBadge,
 } from '@/components/recording-badges'
-import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recording-playback-poster'
-import { chasePlaybackTimeline } from '@/lib/playback-timeline'
+import { RecordingPlaybackPoster } from '@/components/recording-playback-poster'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
 import { ThumbnailProgressLine } from '@/components/thumbnail-overlay'
@@ -53,13 +51,15 @@ import {
 import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useNow } from '@/lib/use-now'
-import { useLiveCapability } from '@/lib/capabilities'
 import { PLAYBACK_POSITION_MINIMUM_MS, recordingFileURL } from '@/lib/playback-position'
 import { recordingDetailQueryKey, seedRecordingDetail } from '@/lib/recording-detail-cache'
-import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
+import {
+  isRecordingHlsGenerationGap,
+  selectRecordingPlaybackSource,
+  type RecordingPlaybackSource,
+} from '@/lib/recording-playback-source'
 import { type LiveAudioChoice, validLiveProfile } from '@/lib/live'
-import { recordingTimeline } from '@/lib/recording-timeline'
-import type { OffsetSessionStart } from '@/lib/use-offset-session'
+import { recordingPlaybackDurationMs, recordingTimeline } from '@/lib/recording-timeline'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -122,7 +122,7 @@ type PlaybackState = {
   /** 版タブで利用者が明示的に選んだ再生元。範囲外シークでは維持する。 */
   pinned: boolean
   started: boolean
-  /** プレイヤーが最初の読み込みを終えたら再生を始めるか（ポスターの ▶・`#chase`・再生中の再選択）。 */
+  /** プレイヤーが最初の読み込みを終えたら再生を始めるか（シリーズから次の録画へ進んだ場合）。 */
   autoPlay: boolean
   startFromBeginning: boolean
   /** 再選択で持ち越した録画先頭からの秒。 */
@@ -156,7 +156,6 @@ type PlaybackState = {
 export function RecordingDetail({
   recording,
   trash,
-  chase = false,
   liveProfile,
   audio,
   startAtBeginning = false,
@@ -170,23 +169,20 @@ export function RecordingDetail({
 }: {
   recording: Recording
   trash: boolean
-  chase?: boolean
   /** ホームの「最初から」から来た場合は保存位置を復元しない。 */
   startAtBeginning?: boolean
   chapterEditing?: boolean
   onEnterChapterEditing?: () => void
   chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
   onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
-  /** 追っかけ再生の画質（`?liveProfile=`。issue #874）。未検証の生の値。 */
+  /** 録画 HLS の画質（`?liveProfile=`）。未検証の生の値。 */
   liveProfile?: string
   onSelectLiveProfile: (name: string) => void
-  /** 追っかけ再生の音声（`?audio=`。省略時は標準）。 */
+  /** 録画 HLS の音声（`?audio=`。省略時は標準）。 */
   audio?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
   onNavigateToRecording: (id: number) => void
 }) {
-  const liveCapability = useLiveCapability()
-  const liveEnabled = liveCapability === 'enabled'
   const queryClient = useQueryClient()
   const toast = useToast()
   const { moveToTrash } = useMoveRecordingToTrash(recording.id)
@@ -202,20 +198,18 @@ export function RecordingDetail({
       ingestState: candidate.ingest?.state,
       hasEncoded: candidateEncodedAssets.length > 0,
       hasNonCutEncoded: candidateEncodedAssets.some((asset) => asset.cut !== true),
-      hasOriginal: candidate.sizeBytes !== undefined,
       hasHlsPlayback: candidate.hlsPlayback.length > 0,
-      liveEnabled,
       isTrashed,
     }
   }
   const playbackSelection = playbackSelectionFor(recording, trash)
   const initialPlaybackState = (autoPlayOnOpen = false): PlaybackState => {
     const source = selectRecordingPlaybackSource(playbackSelection)
-    const autoPlay = chase || autoPlayOnOpen
+    const autoPlay = autoPlayOnOpen
     return {
       source,
       pinned: false,
-      // `#chase` は「開いたら再生する」。変換を伴う再生元はそれ以外ではポスターの ▶ で始める。
+      // HLS はポスターの ▶ を押してから要求する。
       started: autoPlay || source === 'encoded',
       autoPlay,
       startFromBeginning: startAtBeginning,
@@ -250,7 +244,7 @@ export function RecordingDetail({
   const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
   const playbackFullscreenContainerRef = useRef<HTMLElement>(null)
   // 次のエピソードへ移るときページは作り直さず（全画面を保つため）、同じ部品に別の録画が来る。
-  // 録画ごとの state（タブ・追っかけの位置・選んだ画質・説明の展開）はここで戻す。
+  // 録画ごとの state（タブ・再生位置・選んだ画質・説明の展開）はここで戻す。
   const [shownRecordingId, setShownRecordingId] = useState(recording.id)
   if (shownRecordingId !== recording.id) {
     const shouldAutoPlay = autoPlayNextRecordingId === recording.id
@@ -276,9 +270,7 @@ export function RecordingDetail({
       })
     }
   } else if (!playbackState.started || playbackState.source === 'none') {
-    // プレイヤーを載せる前の選択だけ、録画 API の更新に追従する。`#chase` は started=true でも
-    // source=none から始まることがあり、hlsPlayback が届いたら初期化して自動再生を保つ
-    // （`recording-detail.test.tsx` の「#chase が source none で開いても」）。
+    // プレイヤーを載せる前の選択だけ、録画 API の更新に追従する。
     const source = selectRecordingPlaybackSource(playbackSelection)
     if (source !== playbackState.source) {
       setPlaybackState({
@@ -295,11 +287,9 @@ export function RecordingDetail({
   ) {
     setLastRecordingHls({ recordingId: recording.id, entries: recording.hlsPlayback })
   }
-  const showChase = playbackState.source === 'chase'
-  const showOriginalVOD = playbackState.source === 'original-vod'
   const showRecordingHLS = playbackState.source === 'recording-hls'
   const showEncoded = playbackState.source === 'encoded'
-  const showLiveSource = showChase || showOriginalVOD || showRecordingHLS
+  const showLiveSource = showRecordingHLS
   const updatePlaybackState = (next: PlaybackState) => {
     playbackStateRef.current = next
     setPlaybackState(next)
@@ -333,7 +323,7 @@ export function RecordingDetail({
       generation: playbackStateRef.current.generation + 1,
     })
   }
-  const startPlaybackSource = (source: 'encoded' | 'original-vod' | 'recording-hls', profile?: string) => {
+  const startPlaybackSource = (source: 'encoded' | 'recording-hls', profile?: string) => {
     const current = playbackStateRef.current
     const position = recordingPositionSecondsRef.current ?? current.positionSeconds ?? (
       source === 'recording-hls' && !current.startFromBeginning
@@ -351,26 +341,20 @@ export function RecordingDetail({
       generation: current.generation + 1,
     })
   }
-  // 追っかけ中の録画端を 1 秒ごとに進める。非表示時は購読せず、従来の表示中だけ進む挙動を保つ。
-  const now = useNow({ intervalMs: 1000, active: (showChase || showRecordingHLS) && recording.status === 'recording' })
+  // 録画中の HLS 時間軸を 1 秒ごとに進める。
+  const now = useNow({ intervalMs: 1000, active: showRecordingHLS && recording.status === 'recording' })
   const ingestNow = useNow({ intervalMs: 10_000, active: recording.ingest?.state === 'transferring' })
   const timeline = recordingTimeline(recording, recording.status === 'recording' ? { nowMs: now } : {})
-  const recordedSpanMs = timeline.recordedDurationMs ?? Number.NaN
-  const recordingHlsDurationMs = recording.status === 'recording'
-    ? timeline.recordedSeconds * 1000
-    : Number.isFinite(recordedSpanMs)
-      ? recordedSpanMs
-      : recording.durationMs
+  const recordingHlsDurationMs = recordingPlaybackDurationMs(recording, now)
   /**
    * reselectPlaybackSource は範囲外のシーク・エラーのときだけ呼ばれ、そのときの録画の状態で
    * 再生元を選び直す。版タブで選んだ再生元は範囲外シークでは選び直さず、プレイヤーに張り直しを任せる。
    * エラーで再生元を作り直すときは版タブの選択を解除し、以後は自動選択に従う（作り直さずに false を返す
-   * 経路では選択が残る）。終端では呼ばない。どの再生元の終端も録画ファイルの終端で（追っかけの ENDLIST は
-   * mirakc の録画が終わってから付く。docs/api/media.md）、移った先に見る続きが無いため。
+   * 経路では選択が残る）。終端では呼ばない。どの再生元の終端も録画ファイルの終端で、移った先に見る続きが無いため。
    * true を返したら親が再生元を替えた（プレイヤーは何もしない）。
    * 再生元が今と同じなら false を返し、プレイヤー自身が張り直す（範囲外のシークは中の張り直しが
    * 再生と全画面を保つ）。通常のエラーは同じ再生元でも上限つきで作り直すが、
-   * chase input cooldown 中は最新状態が同じ chase なら再作成しない。
+   * 録画 HLS の再取得待ち中は、最新状態が同じ再生元なら作り直さない。
    *
    * 位置は録画先頭からの秒。一度も再生していないセッションのエラーでは undefined で、
    * 保存位置・先頭から・シークで選んだ offset といった開始の意図をそのまま持ち越す。
@@ -386,10 +370,11 @@ export function RecordingDetail({
     const current = playbackStateRef.current
     if (trigger === 'source-range-exit' && current.pinned) return false
     const position = positionSeconds ?? recordingPositionSecondsRef.current
-    // 世代を替える間の空の hlsPlayback では、追っかけ・原本 HLS・none へ逸れない（上の lastRecordingHls）。
+    // 世代を替える間の空の hlsPlayback では、encoded や none へ逸れない（上の lastRecordingHls）。
     const selected = selectRecordingPlaybackSource({
       ...selection,
-      hasHlsPlayback: selection.hasHlsPlayback || current.source === 'recording-hls',
+      hasHlsPlayback: selection.hasHlsPlayback ||
+        (current.source === 'recording-hls' && isRecordingHlsGenerationGap(selection)),
     })
     if (selected !== current.source) {
       if (selected === 'none') return false
@@ -401,7 +386,7 @@ export function RecordingDetail({
       sourceRetryRef.current = { count: retry.count + 1, position: position ?? 0 }
     }
     // 再生前エラーから初めて HLS に移ると、イベント位置と current state が両方 undefined になりうる。
-    // recording-detail.test.tsx の「初回再生前に追っかけから録画 API HLS へ移るとき」で見るとおり、
+    // recording-detail.test.tsx の「初回再生前に録画 HLS へ移るとき」で見るとおり、
     // この時点の保存位置を state に固定して、後の進捗更新で playback effect を張り直さない。
     const hlsStartPosition = selected === 'recording-hls' && !current.startFromBeginning
       ? resumePositionMs !== undefined && resumePositionMs >= PLAYBACK_POSITION_MINIMUM_MS
@@ -482,44 +467,14 @@ export function RecordingDetail({
         ? resumePositionMs / 1000
         : 0
   )
-  const playbackStart: OffsetSessionStart = playbackState.positionSeconds !== undefined
-    ? { type: 'position', recordingSeconds: playbackState.positionSeconds }
-    : playbackState.startFromBeginning
-      ? { type: 'beginning' }
-      : { type: 'saved-position', positionMs: recording.resumePositionMs }
-  // 追っかけ・原本 VOD、または版タブから原本 HLS へ切り替えられる録画だけ live
-  // プロファイルを取る。一覧取得ではセッションを作らない。
-  const canSwitchToOriginalVOD =
-    recording.hlsPlayback.length === 0 && recording.status === 'finished' && liveEnabled && hasOriginal && encodedAssets.length > 0
-  const liveProfilesQuery = useListLiveProfiles({
-    query: { enabled: showChase || showOriginalVOD || canSwitchToOriginalVOD },
-  })
-  const liveProfiles = useMemo(
-    () => unwrap(liveProfilesQuery.data) ?? [],
-    [liveProfilesQuery.data],
-  )
-  const showOriginalVODPlayer =
-    showOriginalVOD && !liveProfilesQuery.isPending && liveProfiles.length > 0
-  // 未知の名前は落として既定（サーバー側の先頭）に倒す。streamer は未知の
-  // 名前を 400 で返すので（`internal/streamer/chase.go` / `original_vod.go` の Playlist）、旧ブックマーク・
-  // 綴り違いの共有リンクをエラー画面にしない（`lib/live.ts` の `validLiveProfile`）。
-  //
-  // **既定は URL に書き戻さない。** 明示的に選んだ値だけを載せる --- 既定は
-  // 両側で同じ先頭プロファイルに解決するので、URL に書く意味が無い
-  // （`pages/live.tsx` と同じ規律）。
-  const explicitLiveProfile = useMemo(
-    () => validLiveProfile(liveProfiles, liveProfile),
-    [liveProfiles, liveProfile],
-  )
   // 世代を替える間（temp を捨てて取り込みをやり直す間）は hlsPlayback が空になり、進捗行の削除が
   // recordings SSE を送る（`TestRecordingIngestProgressNotify`）。
   // 空の間は最後の URL を持ち続ける。持たずに LivePlayer を外すと、次の世代で作り直したときに
   // 位置がセッション開始へ戻る（recording-detail.test.tsx の「世代の切り替え中」）。
-  const recordingHlsPlayback = recording.hlsPlayback.length > 0 ||
-    (recording.status !== 'recording' && recording.status !== 'finished') ||
-    lastRecordingHls.recordingId !== recording.id
-    ? recording.hlsPlayback
-    : lastRecordingHls.entries
+  const recordingHlsPlayback = lastRecordingHls.recordingId === recording.id &&
+    isRecordingHlsGenerationGap(playbackSelection)
+    ? lastRecordingHls.entries
+    : recording.hlsPlayback
   const recordingHlsProfileOptions = recordingHlsPlayback.map(({ profile }) => ({ name: profile }))
   const explicitRecordingHlsProfile = validLiveProfile(recordingHlsProfileOptions, liveProfile)
   const selectedRecordingHls = recordingHlsPlayback.find(
@@ -527,24 +482,18 @@ export function RecordingDetail({
   ) ?? recordingHlsPlayback[0]
   const recordingStartMs = timeline.recordingFileStartAtMs ?? Number.NaN
   const programStartMs = timeline.programmeStartMs
-  const availableChaseSeconds = timeline.availableChaseSeconds
-  const posterTimeline: PosterTimeline = chasePlaybackTimeline({
-    chaseHeadOffsetSeconds: timeline.chaseHeadOffsetSeconds,
-    plannedSeconds: timeline.plannedSeconds,
-    recordedSeconds: timeline.availableChaseSeconds,
-  }, null)
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
   // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
   //
-  // 編集 UI は、cut でない encoded があるか live.enabled が有効で原本 HLS を使える
+  // 編集 UI は、cut でない encoded があるか録画 HLS を使える
   // ときに出す。cut だけの encoded と原本の両方があるときは再生元選択で原本 HLS を
   // 優先する。cut でない encoded がある場合はこれまでどおり encoded を優先し、実際に
   // cut 版を選んだときはプレイヤーが `playingCut` で編集を止める。
-  // 原本 HLS は再生開始前に chapters を読んでもセッションを作らない。配信自体は再生
-  // ボタンで始める規律を保つ。
-  const canEditChapters = !trash && (hasNonCutEncoded || ((liveEnabled || recording.hlsPlayback.length > 0) && hasOriginal))
+  // 録画 HLS は再生開始前に chapters を読んでも変換を要求しない。配信は再生
+  // ボタンを押してから始める。
+  const canEditChapters = !trash && (hasNonCutEncoded || (recording.hlsPlayback.length > 0 && hasOriginal))
   const chaptersQuery = useGetRecordingChapters(recording.id, {
-    query: { enabled: canEditChapters || showOriginalVODPlayer || showRecordingHLS },
+    query: { enabled: canEditChapters || showRecordingHLS },
   })
   const chapters = unwrap(chaptersQuery.data)
   const putChapters = usePutRecordingChapterEdits()
@@ -612,7 +561,7 @@ export function RecordingDetail({
     )
   }
 
-  // 追っかけの配信プロファイル（live.profiles）と、完了後のVODプロファイル
+  // 録画中の live.profiles と、完了後の VOD プロファイル
   // （encode.profiles）は別設定なので、URL用の profile を共有しない。再生位置だけ
   // VODの既定プロファイル名に寄せる。active asset が既にあればその実在する先頭を
   // 優先し、録画中でまだ無ければ凍結済み desired の先頭を使う。
@@ -749,100 +698,16 @@ export function RecordingDetail({
           {showLiveSource && !playbackState.started && (
             <RecordingPlaybackPoster
               recordingId={recording.id}
-              timeline={showChase ? posterTimeline : undefined}
               resumeSeconds={recording.resumePositionMs === undefined ? undefined : recording.resumePositionMs / 1000}
-              recordedSeconds={availableChaseSeconds}
               onStart={startPlayback}
-              onStartFromBeginning={showChase || showRecordingHLS ? startPlaybackFromBeginning : undefined}
-              watched={(showOriginalVOD || showRecordingHLS) && recording.status === 'finished'
+              onStartFromBeginning={showRecordingHLS ? startPlaybackFromBeginning : undefined}
+              watched={showRecordingHLS && recording.status === 'finished'
                 ? {
                     value: recording.watchedAt !== undefined,
                     pending: putWatchedMutation.isPending || deleteWatchedMutation.isPending,
                     onToggle: () => void updateWatched(recording.watchedAt === undefined),
                   }
                 : undefined}
-            />
-          )}
-
-          {showChase && playbackState.started && liveProfile !== undefined && liveProfilesQuery.isPending && (
-            <p role="status" className="text-muted-foreground">再生設定を読み込み中…</p>
-          )}
-          {showChase && playbackState.started && !(liveProfile !== undefined && liveProfilesQuery.isPending) && (
-            <LivePlayer
-              key={`${playbackState.source}:${playbackState.generation}`}
-              mode="chase"
-              site={recording.site}
-              recordingId={recording.id}
-              offsetSessionStart={playbackStart}
-              profile={explicitLiveProfile}
-              audio={audio}
-              availableProfiles={liveProfiles}
-              onProfileChange={onSelectLiveProfile}
-              onAudioChange={onSelectAudio}
-              autoPlay={playbackState.autoPlay}
-              fullscreenContainerRef={playbackFullscreenContainerRef}
-              chaseTimeline={{
-                chaseHeadOffsetSeconds: timeline.chaseHeadOffsetSeconds,
-                plannedSeconds: timeline.plannedSeconds,
-                recordedSeconds: timeline.availableChaseSeconds,
-              }}
-              onRecordingPositionChange={reportRecordingPosition}
-              onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackError={(seconds, playing, allowSameSourceRetry) =>
-                reselectPlaybackSource('source-error', seconds, playing, allowSameSourceRetry)
-              }
-            />
-          )}
-
-          {showOriginalVOD && playbackState.started && liveProfilesQuery.isPending && (
-            <p role="status" className="text-muted-foreground">再生設定を読み込み中…</p>
-          )}
-          {showOriginalVOD && playbackState.started && !liveProfilesQuery.isPending && liveProfiles.length === 0 && (
-            <p className="text-muted-foreground">
-              HLS 再生プロファイルを利用できません。原本は{' '}
-              <a
-                href={recordingFileURL(recording.id)}
-                className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline"
-              >
-                VLC 等で開く
-              </a>
-              ことができます。
-            </p>
-          )}
-          {showOriginalVOD && playbackState.started && !liveProfilesQuery.isPending && liveProfiles.length > 0 && (
-            <LivePlayer
-              key={`${playbackState.source}:${playbackState.generation}`}
-              mode="original-vod"
-              site={recording.site}
-              recordingId={recording.id}
-              chapters={chapters?.spans}
-              chapterSource={chapters?.source}
-              chapterVersion={chapters?.version}
-              chapterDetectionPending={chapters?.detectionPending}
-              chapterEditing={chapterEditing}
-              onEnterChapterEditing={onEnterChapterEditing}
-              chapterEditorCommandsRef={chapterEditorCommandsRef}
-              onChapterEditorStatusChange={onChapterEditorStatusChange}
-              onSaveChapters={canEditChapters ? saveChapters : undefined}
-              onResetChapters={canEditChapters ? resetChapters : undefined}
-              chapterSavePending={putChapters.isPending || deleteChapters.isPending}
-              watched={recording.watchedAt !== undefined}
-              watchedPending={putWatchedMutation.isPending || deleteWatchedMutation.isPending}
-              onPutWatched={() => void updateWatched(true)}
-              onDeleteWatched={() => void updateWatched(false)}
-              onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
-              offsetSessionStart={playbackStart}
-              autoPlay={playbackState.autoPlay}
-              fullscreenContainerRef={playbackFullscreenContainerRef}
-              recordingDurationMs={Number.isFinite(recordedSpanMs) ? recordedSpanMs : recording.durationMs}
-              profile={explicitLiveProfile}
-              availableProfiles={liveProfiles}
-              onProfileChange={onSelectLiveProfile}
-              onRecordingPositionChange={reportRecordingPosition}
-              onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackError={(seconds, playing, allowSameSourceRetry) =>
-                reselectPlaybackSource('source-error', seconds, playing, allowSameSourceRetry)
-              }
             />
           )}
 
@@ -949,8 +814,6 @@ export function RecordingDetail({
           {/* 操作バーを持つプレイヤー以外では、視聴済みの操作をここに残す。
               再生できない原本のみ・資産なしでも完了録画の操作口になる。 */}
           {!trash && recording.status === 'finished' && !showEncoded &&
-            !(showOriginalVODPlayer && playbackState.started) &&
-            !(showOriginalVOD && !playbackState.started) &&
             !showRecordingHLS && (
             <Button
               type="button"
@@ -974,7 +837,6 @@ export function RecordingDetail({
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <RecordingVerdictBadge
               recording={recording}
-              liveCapability={liveCapability}
               isTrashed={trash}
               onClick={() => setSelectedTab('record')}
             />
@@ -1165,16 +1027,16 @@ export function RecordingDetail({
                     {hasOriginal ? (
                       <div role="listitem" data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
                         <span className="font-medium">原本 TS</span>
-                        {(showOriginalVOD || showRecordingHLS) && playbackState.started && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
+                        {showRecordingHLS && playbackState.started && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
                         <span className="ml-auto text-muted-foreground">{formatBytes(recording.sizeBytes!)}</span>
-                        {(recording.hlsPlayback.length > 0 || (canSwitchToOriginalVOD && liveProfiles.length > 0)) && (
+                        {recording.hlsPlayback.length > 0 && (
                           <Button
                             type="button"
                             size="sm"
                             variant="outline"
-                            aria-label="原本 HLS を再生"
-                            disabled={showOriginalVOD || showRecordingHLS}
-                            onClick={() => startPlaybackSource(recording.hlsPlayback.length > 0 ? 'recording-hls' : 'original-vod')}
+                            aria-label="録画 HLS を再生"
+                            disabled={showRecordingHLS}
+                            onClick={() => startPlaybackSource('recording-hls')}
                           >
                             HLS で再生
                           </Button>

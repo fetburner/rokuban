@@ -31,11 +31,6 @@ func TestProbeArgumentBuilders(t *testing.T) {
 			got:  VideoStreamDurationProbeArgs("/input.ts"),
 			want: []string{"-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "default=noprint_wrappers=1:nokey=1", "/input.ts"},
 		},
-		{
-			name: "original VOD timestamps",
-			got:  OriginalVODDurationProbeArgs("/dev/fd/3"),
-			want: []string{"-v", "error", "-select_streams", "v:0", "-show_entries", "format=start_time,duration:stream=start_time,duration", "-of", "json", "-i", "/dev/fd/3"},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

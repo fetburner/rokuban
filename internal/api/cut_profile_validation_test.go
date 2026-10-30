@@ -20,9 +20,10 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// TestCutProfileSelection_RejectedOnEveryAPIPath は live.enabled=false の構成で
+// TestCutProfileSelection_RejectedOnEveryAPIPath は recording_hls.enabled=false の構成で
 // cut のみのルール / override / 追記 API が拒否され、cut でない profile を含めば
-// 通ることを API の 3 経路ぶん固定する（4 経路目は ingest の凍結）。
+// 通ることを API の 3 経路ぶん固定する（4 経路目は ingest の凍結）。live.enabled=true
+// を渡しても拒否されることで、判定が live ではなく録画 HLS を見ていることも固定する。
 //
 // **1 経路でも抜けると、その経路からしか作れない録画が「確認に再生が要り、
 // 再生に encode が要り、encode に確認が要る」循環に落ちる。**
@@ -30,15 +31,16 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		RuleStore:          pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch:      pgstoretest.EPG(pool),
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		ReservationStore:   pgstoretest.Reservations(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-		LiveEnabled:        false,
+		Ready:               pool.Ping,
+		RuleStore:           pgstoretest.Rules(pool, []string{"default"}...),
+		ProgramSearch:       pgstoretest.EPG(pool),
+		EncodePolicyStore:   pgstoretest.Media(pool),
+		ReservationStore:    pgstoretest.Reservations(pool),
+		MediaReader:         pgstoretest.Media(pool),
+		EncodeProfileNames:  []string{"h264", "cut"},
+		CutProfileNames:     []string{"cut"},
+		LiveEnabled:         true, // live.enabled=true でも録画 HLS が無ければ拒否する
+		RecordingHLSEnabled: false,
 	}))
 	t.Cleanup(srv.Close)
 
@@ -127,22 +129,24 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	})
 }
 
-// TestCutProfileSelection_AllowedOnEveryAPIPathWithLive は live.enabled=true の構成で
-// 原本 HLS を確認に使えるため、cut だけのルール / override / 追記 API が通ることを
-// 固定する。live 無効へ条件が固定されると、このテストが失敗する。
+// TestCutProfileSelection_AllowedOnEveryAPIPathWithLive は recording_hls.enabled=true の
+// 構成で録画 HLS を確認に使えるため、cut だけのルール / override / 追記 API が通ることを
+// 固定する。live.enabled=false でも通るので、条件が live へ戻るとこのテストが失敗する。
 func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		RuleStore:          pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch:      pgstoretest.EPG(pool),
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		ReservationStore:   pgstoretest.Reservations(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-		LiveEnabled:        true,
+		Ready:               pool.Ping,
+		RuleStore:           pgstoretest.Rules(pool, []string{"default"}...),
+		ProgramSearch:       pgstoretest.EPG(pool),
+		EncodePolicyStore:   pgstoretest.Media(pool),
+		ReservationStore:    pgstoretest.Reservations(pool),
+		MediaReader:         pgstoretest.Media(pool),
+		EncodeProfileNames:  []string{"h264", "cut"},
+		CutProfileNames:     []string{"cut"},
+		LiveEnabled:         false, // live.enabled=false でも録画 HLS があれば許す
+		RecordingHLSEnabled: true,
+		MediaStoreName:      dbtest.StoreName,
 	}))
 	t.Cleanup(srv.Close)
 

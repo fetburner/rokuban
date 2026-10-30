@@ -1,6 +1,7 @@
-// LivePlayer の live / chase / original-vod 各モードで、離脱時のヒントと
-// 503 の表示が実ブラウザで方式に合うこと、追っかけの表示時刻が録画先頭 + media time に
-// 対応することを測る。各判定は browser-e2e で実行する。
+// LivePlayer の live で離脱時のヒント（pagehide / visibilitychange(hidden) は navigator.sendBeacon で
+// 実際に送り、visible では送らない）が実ブラウザで届くこと、live と録画 HLS の 503 の文言が方式に合うことを測る。
+// jsdom には sendBeacon が無く fetch に落ちるので、離脱ヒントの送信経路は実ブラウザでしか測れない。
+// 録画 HLS は離脱ヒントを持たない（セッションを作らない）。各判定は browser-e2e で実行する。
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
@@ -11,18 +12,18 @@ import { finish, launchBrowser, log, validateFixturesOrExit, verifyBundleMatches
 
 const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = 'default'
-const CHASE_ID = 14701
-const ORIGINAL_ID = 14702
+const RECORDING_ID = 14701
 const ng = []
 
 const programStartMs = Date.now() - 25 * 60_000
 const recordingStartMs = programStartMs + 20 * 60_000
 const programStartAt = new Date(programStartMs).toISOString()
 const recordingStartedAt = new Date(recordingStartMs).toISOString()
-const originalEndedAt = new Date(recordingStartMs + 20_000).toISOString()
+const recordingMasterUrl = `/api/media/stores/media/recordings/${RECORDING_ID}/hls/v1/hd/master.m3u8`
 
-const chaseRecording = {
-  id: CHASE_ID,
+// 録画 HLS の 503 を見る録画詳細の fixture。
+const hlsRecording = {
+  id: RECORDING_ID,
   site: SITE,
   source: 'manual',
   serviceName: 'テスト局',
@@ -31,13 +32,14 @@ const chaseRecording = {
   networkId: 1,
   serviceId: 9001,
   eventId: 1,
-  title: 'LivePlayer chase mode fixture',
-  description: '実メディア上の追っかけ時間軸と離脱ヒントの fixture。',
+  title: 'LivePlayer recording HLS fixture',
+  description: '録画 HLS の 503 文言を測る fixture。',
   startAt: programStartAt,
   durationMs: 60 * 60_000,
   status: 'recording',
   keepOriginal: 'always',
-  hlsPlayback: [], cmDetection: { state: 'disabled' },
+  hlsPlayback: [{ profile: 'hd', masterUrl: recordingMasterUrl }],
+  cmDetection: { state: 'disabled' },
   startedAt: recordingStartedAt,
   createdAt: '2026-01-01T12:00:00Z',
   encodeProfiles: ['vod-h264'],
@@ -45,25 +47,11 @@ const chaseRecording = {
   encodedAssets: [],
 }
 
-const originalRecording = {
-  ...chaseRecording,
-  id: ORIGINAL_ID,
-  title: 'LivePlayer original-vod mode fixture',
-  description: '原本 VOD offset の離脱ヒントを収集する fixture。',
-  status: 'finished',
-  startAt: recordingStartedAt,
-  durationMs: 20_000,
-  startedAt: recordingStartedAt,
-  endedAt: originalEndedAt,
-  resumePositionMs: 12_000,
-}
-
 const program = {
   programId: 201,
   networkId: 1,
   serviceId: 9001,
   eventId: 1,
-  recordingId: CHASE_ID,
   startAt: programStartAt,
   endAt: new Date(programStartMs + 60 * 60_000).toISOString(),
   durationMs: 60 * 60_000,
@@ -96,8 +84,7 @@ function ensureFixture() {
 }
 
 await validateFixturesOrExit([
-  ['chase recording', ListRecordingsResponseItem, chaseRecording],
-  ['original-vod recording', ListRecordingsResponseItem, originalRecording],
+  ['recording HLS recording', ListRecordingsResponseItem, hlsRecording],
 ], ng)
 await verifyBundleMatchesOrExit(BASE_URL, ng)
 
@@ -179,20 +166,18 @@ async function installRoutes(page, playlistErrorMode) {
     if (requestPath === '/api/reservations' || requestPath === '/api/breakers' ||
       requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return json([])
     if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
-    if (requestPath === '/api/recordings') return json([chaseRecording, originalRecording])
-    if (requestPath === `/api/recordings/${CHASE_ID}`) return json(chaseRecording)
-    if (requestPath === `/api/recordings/${ORIGINAL_ID}`) return json(originalRecording)
+    if (requestPath === '/api/recordings') return json([hlsRecording])
+    if (requestPath === `/api/recordings/${RECORDING_ID}`) return json(hlsRecording)
     if (/^\/api\/recordings\/\d+\/chapters$/.test(requestPath)) {
       return json({ version: 'chapters-v1', detectionPending: false, source: 'auto', spans: [] })
     }
     if (method !== 'GET' && !requestPath.endsWith('/leave')) return route.fulfill({ status: 204 })
 
     if (requestPath.endsWith('/leave') && method === 'POST') return route.fulfill({ status: 204 })
-    if (/\/live\/playlist\.m3u8$/.test(requestPath) ||
-      /\/(?:chase|original-vod)(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(requestPath)) {
-      let requestMode = 'live'
-      if (requestPath.includes('/original-vod/')) requestMode = 'original-vod'
-      else if (requestPath.includes('/chase/')) requestMode = 'chase'
+    const isLivePlaylist = /\/live\/playlist\.m3u8$/.test(requestPath)
+    const isRecordingMaster = requestPath === recordingMasterUrl
+    if (isLivePlaylist || isRecordingMaster) {
+      const requestMode = isRecordingMaster ? 'recording-hls' : 'live'
       if (requestMode === playlistErrorMode) {
         return route.fulfill({
           status: 503,
@@ -202,7 +187,7 @@ async function installRoutes(page, playlistErrorMode) {
       }
       return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: master })
     }
-    if (/\/(?:live|chase|original-vod)(?:\/offset\/\d+)?\/variant\.m3u8$/.test(requestPath)) {
+    if (/\/(?:live\/variant\.m3u8|hls\/v\d+\/[^/]+\/variant\.m3u8)$/.test(requestPath)) {
       return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: variant })
     }
     if (requestPath.endsWith('.ts')) {
@@ -253,19 +238,12 @@ async function waitForRealPlayback(page, label) {
   return started
 }
 
-async function openMode(mode) {
+async function openLive() {
   const page = await context.newPage()
   const { leaveRequests, mediaRequests } = await installRoutes(page)
-  if (mode === 'live') {
-    await page.goto(`${BASE_URL}/live?site=${SITE}&service=109001`, { waitUntil: 'domcontentloaded' })
-    await page.getByRole('button', { name: /再生/ }).click()
-  } else if (mode === 'chase') {
-    await page.goto(`${BASE_URL}/recordings/${CHASE_ID}#chase`, { waitUntil: 'domcontentloaded' })
-  } else {
-    await page.goto(`${BASE_URL}/recordings/${ORIGINAL_ID}`, { waitUntil: 'domcontentloaded' })
-    await page.getByTestId('recording-playback-start').click()
-  }
-  await waitForRealPlayback(page, mode)
+  await page.goto(`${BASE_URL}/live?site=${SITE}&service=109001`, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('button', { name: /再生/ }).click()
+  await waitForRealPlayback(page, 'live')
   await page.waitForTimeout(250)
   return { page, leaveRequests, mediaRequests }
 }
@@ -276,10 +254,8 @@ async function check503Mode(mode) {
   if (mode === 'live') {
     await page.goto(`${BASE_URL}/live?site=${SITE}&service=109001`, { waitUntil: 'domcontentloaded' })
     await page.getByRole('button', { name: /再生/ }).click()
-  } else if (mode === 'chase') {
-    await page.goto(`${BASE_URL}/recordings/${CHASE_ID}#chase`, { waitUntil: 'domcontentloaded' })
   } else {
-    await page.goto(`${BASE_URL}/recordings/${ORIGINAL_ID}`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${BASE_URL}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
     await page.getByTestId('recording-playback-start').click()
   }
 
@@ -288,12 +264,8 @@ async function check503Mode(mode) {
       title: 'いま視聴できません（チューナー不足または同時視聴数の上限）。',
       guidance: /チャンネルを切り替えた直後は/,
     },
-    chase: {
-      title: 'いま追っかけ再生を始められません。',
-      guidance: 'しばらく待ってから再読み込みしてください。',
-    },
-    'original-vod': {
-      title: 'いま再生を始められません（同時再生数の上限、または streamer の再起動中）。',
+    'recording-hls': {
+      title: 'いま録画を再生できません。',
       guidance: 'しばらく待ってから再読み込みしてください。',
     },
   }
@@ -351,59 +323,17 @@ async function triggerAndCheck(page, leaveRequests, expectedPath, eventType, lab
 }
 
 log(`browser: Chromium ${browser.version()}`)
-for (const scenario of [
-  {
-    mode: 'live',
-    expectedPath: `/api/sites/${SITE}/networks/1/services/9001/live/leave`,
-  },
-  {
-    mode: 'chase',
-    expectedPath: `/api/sites/${SITE}/recordings/${CHASE_ID}/chase/leave`,
-  },
-  {
-    mode: 'original-vod',
-    expectedPath: `/api/sites/${SITE}/recordings/${ORIGINAL_ID}/original-vod/offset/12/leave`,
-  },
-]) {
-  log(`\n=== ${scenario.mode}: hidden / pagehide ===`)
-  const { page, leaveRequests, mediaRequests } = await openMode(scenario.mode)
-
-  if (scenario.mode === 'chase') {
-    await page.waitForFunction(() => (document.querySelector('video')?.currentTime ?? 0) > 5.5, undefined, {
-      timeout: 10_000,
-    }).catch(() => ng.push('chase: 実メディアの currentTime が 5.5 秒に達しない'))
-    const originCheck = await page.evaluate(() => {
-      const video = document.querySelector('video')
-      const output = document.querySelector('[data-testid="playback-time"]')
-      const match = /^\s*(\d+):(\d{2})/.exec(output?.textContent ?? '')
-      return {
-        mediaSeconds: video?.currentTime ?? Number.NaN,
-        displayedSeconds: match ? Number(match[1]) * 60 + Number(match[2]) : Number.NaN,
-      }
-    })
-    const headSeconds = (Date.parse(recordingStartedAt) - Date.parse(programStartAt)) / 1000
-    const expectedSeconds = Math.floor(headSeconds + originCheck.mediaSeconds)
-    if (!Number.isFinite(originCheck.displayedSeconds) ||
-      Math.abs(originCheck.displayedSeconds - expectedSeconds) > 2 || originCheck.mediaSeconds < 1) {
-      ng.push(
-        `chase: 録画先頭 ${headSeconds}s + 実 media time ${originCheck.mediaSeconds.toFixed(2)}s と表示時刻が対応しない ` +
-          `(表示=${originCheck.displayedSeconds}, 期待=${expectedSeconds})`,
-      )
-    }
-  }
-
-  if (scenario.mode === 'original-vod' &&
-    !mediaRequests.some((pathname) => pathname.includes(`/original-vod/offset/12/playlist.m3u8`))) {
-    const requested = mediaRequests.filter((pathname) => pathname.includes('/original-vod/'))
-    ng.push(`original-vod: 続き位置 12 秒の offset playlist を要求しない（${JSON.stringify(requested)}）`)
-  }
-  await checkNoLeaveOnVisible(page, leaveRequests, scenario.expectedPath, scenario.mode)
-  await triggerAndCheck(page, leaveRequests, scenario.expectedPath, 'visibilitychange', scenario.mode)
-  await triggerAndCheck(page, leaveRequests, scenario.expectedPath, 'pagehide', scenario.mode)
+log('\n=== live: hidden / pagehide ===')
+{
+  const expectedPath = `/api/sites/${SITE}/networks/1/services/9001/live/leave`
+  const { page, leaveRequests } = await openLive()
+  await checkNoLeaveOnVisible(page, leaveRequests, expectedPath, 'live')
+  await triggerAndCheck(page, leaveRequests, expectedPath, 'visibilitychange', 'live')
+  await triggerAndCheck(page, leaveRequests, expectedPath, 'pagehide', 'live')
   await page.close()
 }
 
-for (const mode of ['live', 'chase', 'original-vod']) {
+for (const mode of ['live', 'recording-hls']) {
   log(`\n=== ${mode}: 503 error copy ===`)
   await check503Mode(mode)
 }

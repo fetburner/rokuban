@@ -30,7 +30,7 @@
 
 セグメントの公開間隔そのものが揺らぐので、`segment_seconds` は遅延の目標値にならない。実測では p95 が 2.3 秒 → 3.6 秒、最大が 4.7 秒 → 10.2 秒へ広がった。プレイヤーはライブ端より数本後ろから開始するので、公開の揺らぎはそのままバッファ不足による再生停止になる。**短くするほど遅延が縮むという関係は、ここには無い。**
 
-1 秒級を狙うとき、セグメントをさらに短くする案は採らない。1 秒台に届かず、再生が途切れるためである。代わりにパッケージャを替える（下記「パッケージャは MediaMTX の LL-HLS を選べる形にする」）。また `live.profiles[].segment_seconds` はライブと追っかけ再生で共有しているので、ライブだけ短くするには値の分離も要る。
+1 秒級を狙うとき、セグメントをさらに短くする案は採らない。1 秒台に届かず、再生が途切れるためである。代わりにパッケージャを替える（下記「パッケージャは MediaMTX の LL-HLS を選べる形にする」）。
 
 この値はセグメントの公開端とプレイヤーの latency からの導出値である。放送時刻を映像に焼き込んだ比較ではない（ffmpeg の再 mux で TDT/TOT が落ちるため）。したがって「放送から 6.2 秒」と断言はしない。測定の条件と経路ごとの内訳は [frontend/live/metrics.md](../../frontend/live/metrics.md) §「遅延・バッファの計器」に置く。
 
@@ -422,33 +422,13 @@ master の `NAME` は ffmpeg が `audio_<n>` で固定し、n はプロファイ
 
 ##### 再生位置の時刻情報
 
-ライブの playlist には時刻情報（PDT）を付け、追っかけの playlist には付けない。
+ライブの playlist には時刻情報を含め、音声切替後の復帰に使う。
 
-ライブでは `EXT-X-PROGRAM-DATE-TIME` が無いと、hls.js は、ライブの窓（`playlist_size` × `segment_seconds`）より後で前に聴いた音声へ戻ったときに止まる。
-
-追っかけの EVENT playlist には PDT を付けない。segment を消さず窓もスライドしないため、PDT が無くても各トラックを 15 秒聴いて戻れる。hls.js が位置を揃える仕組みは未測定である。
+ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。これが無いと、hls.js はライブの窓（`playlist_size` × `segment_seconds`）より後で前に聴いた音声へ戻ったときに止まる。
 
 <details><summary>根拠</summary>
 
 - PDT によるライブ音声の切替・復帰（PDT を外すと落ちる。変異で確認済み）: `web/e2e/live-audio.mjs`
-- 追っかけ音声の切替、同一セッション内 seek、offset 再開: `web/e2e/chase-audio.mjs`
-
-</details>
-
-##### プロファイル別の master と追っかけ再生
-
-追っかけ再生でも、画質と音声は視聴者ごとに選べる。どちらも共有セッションは変えず、画質はクエリで選んだ別の playlist を取得するだけ、音声は rendition を切り替えるだけである。
-
-captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）。
-
-追っかけ再生は、画質を `?profile=` で選ぶ。セレクタは `/recordings/$id?liveProfile=<name>#chase` に置き、一覧 API の名前を streamer へ渡す。画質切替は、録画と開始位置の組が決めるセッションを共有し、別 playlist を取得するだけである。再生位置は profile によらず原本時間軸で保存する。
-
-追っかけ再生は、音声 rendition も視聴者ごとに選べる。追っかけも profile 別 master から標準 / 主 / 副の 3 rendition を選ぶ。`/recordings/$id?audio=main|sub#chase` に選択を保持し、HLS URL と共有セッションは変えず rendition だけを切り替える。EVENT は過去の segment を保持するため、同じ session 内の seek と offset 再開も続けられる。
-
-<details><summary>根拠</summary>
-
-- 画質切替が共有するセッションの単位: `(recordingID, offset)`
-
 </details>
 
 ##### 拒否する引数

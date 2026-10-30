@@ -9,7 +9,7 @@
   "web/e2e/checks/design.md": 3,
   "web/e2e/checks/layout.md": 3,
   "web/e2e/checks/live.md": 1,
-  "web/e2e/checks/playback.md": 3,
+  "web/e2e/checks/playback.md": 2,
   "web/e2e/checks/programs.md": 3,
   "web/e2e/checks/recordings.md": 1,
   "web/e2e/checks/reservations-search.md": 3

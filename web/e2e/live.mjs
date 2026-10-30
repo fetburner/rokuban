@@ -819,28 +819,39 @@ async function runIssue1022Acceptance(engine = 'chromium') {
     await page.route('**/api/reservations', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
     )
+    const recordingHlsPath = (id) => `/api/media/stores/media/recordings/${id}/hls/v1/hd/`
     await page.route('**/api/recordings/501', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ id: 501, site: 'default', startAt: new Date(programAStart).toISOString(), startedAt: recordingStartedAt, durationMs: 45 * 60_000, status: 'recording' }),
+        body: JSON.stringify({
+          id: 501, site: 'default', startAt: new Date(programAStart).toISOString(),
+          startedAt: recordingStartedAt, durationMs: 45 * 60_000, status: 'recording',
+          hlsPlayback: [{ profile: 'hd', masterUrl: `${recordingHlsPath(501)}master.m3u8` }],
+        }),
       }),
     )
-    const fulfillChase = (route) => route.fulfill({
-      status: 200,
-      contentType: 'application/vnd.apple.mpegurl',
-      body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/segment_000.ts\n',
+    await page.route('**/api/media/stores/media/recordings/*/hls/v1/*/**', async (route) => {
+      const requestURL = new URL(route.request().url())
+      const resource = requestURL.pathname.split('/hls/v1/')[1]
+      if (resource?.endsWith('/master.m3u8')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/vnd.apple.mpegurl',
+          body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=320x180\nvideo/index.m3u8\n',
+        })
+      }
+      if (resource?.endsWith('/video/index.m3u8')) {
+        return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(PLAYLIST_PATH) })
+      }
+      if (resource?.includes('/video/segments/')) {
+        const file = path.join(SEGMENTS_DIR, resource.split('/').pop())
+        return existsSync(file)
+          ? route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
+          : route.fulfill({ status: 404, body: '' })
+      }
+      return route.fulfill({ status: 404, body: '' })
     })
-    for (const id of [501, 502]) {
-      await page.route(`**/api/sites/default/recordings/${id}/chase/playlist.m3u8*`, fulfillChase)
-      await page.route(`**/api/sites/default/recordings/${id}/chase/offset/*/playlist.m3u8*`, fulfillChase)
-      await page.route(`**/api/sites/default/recordings/${id}/chase/leave`, (route) =>
-        route.fulfill({ status: 204, body: '' }),
-      )
-      await page.route(`**/api/sites/default/recordings/${id}/chase/offset/*/leave`, (route) =>
-        route.fulfill({ status: 204, body: '' }),
-      )
-    }
     await page.route('**/api/sites/default/networks/1/services/9001/live/leave', (route) =>
       route.fulfill({ status: 204, body: '' }),
     )
@@ -974,7 +985,7 @@ async function runIssue1022Acceptance(engine = 'chromium') {
     if (!markBox || !liveTimeBox || Math.abs(markBox.x + markBox.width / 2 - (liveTimeBox.x + liveTimeBox.width / 2)) > 8) {
       ng.push(`#1022 経過時刻が赤い印の真下にない (${JSON.stringify({ markBox, liveTimeBox })})`)
     }
-    // ホバーの吹き出しは追っかけと同じ作り（タイルの偽画像を出さない）。
+    // ホバーの吹き出しは録画 HLS と同じ作り（タイルの偽画像を出さない）。
     const hoverBox = await timeline.boundingBox()
     if (hoverBox) {
       await page.mouse.move(hoverBox.x + hoverBox.width * 0.25, hoverBox.y + hoverBox.height / 2)
@@ -1012,12 +1023,12 @@ async function runIssue1022Acceptance(engine = 'chromium') {
     await page.setViewportSize({ width: 1182, height: 942 })
 
     if (await page.getByRole('button', { name: '最初から' }).count() === 0) {
-      ng.push('#1022 録画中番組の最初からボタンが無い')
+      ng.push('#1022 録画 HLS が利用可能な放送中番組に最初からボタンが無い')
     } else {
       const routeBefore = new URL(page.url()).pathname
       await video.evaluate((element) => { window.__issue1022Video = element })
-      const chaseStartWaiter = page.waitForRequest((request) =>
-        /\/recordings\/501\/chase\/playlist\.m3u8/.test(request.url()) && !/\/offset\//.test(request.url()),
+      const recordingMasterWaiter = page.waitForRequest((request) =>
+        request.url().includes(recordingHlsPath(501)) && request.url().endsWith('/master.m3u8'),
       { timeout: 10000 }).catch(() => null)
       const liveLeaveBefore = requestLog.filter((request) =>
         request.method === 'POST' && request.url.includes('/networks/1/services/9001/live/leave'),
@@ -1026,35 +1037,39 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         request.method() === 'POST' && request.url().includes('/networks/1/services/9001/live/leave'),
       { timeout: 5000 }).catch(() => null)
       await page.getByRole('button', { name: '最初から' }).click()
-      const chaseStartRequest = await chaseStartWaiter
-      if (!chaseStartRequest) {
-        ng.push('#1022 最初からで番組開始（ファイル先頭）の offset 無し chase を要求しない')
-      }
+      const recordingMaster = await recordingMasterWaiter
+      if (!recordingMaster) ng.push('#1022 最初からで recordings.hlsPlayback の master URL を要求しない')
       const leaveRequest = await leaveWaiter
       const liveLeaveAfter = requestLog.filter((request) =>
         request.method === 'POST' && request.url.includes('/networks/1/services/9001/live/leave'),
       ).length
-      if (!leaveRequest || liveLeaveAfter <= liveLeaveBefore) ng.push('#1022 live→追っかけ切替時に POST 離脱ヒントを送らない')
-      await page.waitForFunction(() => document.querySelector('video') === window.__issue1022Video, undefined, { timeout: 10000 }).catch(() => {
-        ng.push('#1022 live→追っかけ切替で同じ video 要素を保たない')
-      })
+      if (!leaveRequest || liveLeaveAfter <= liveLeaveBefore) ng.push('#1022 live から録画 HLS への切替時に POST 離脱ヒントを送らない')
       if (new URL(page.url()).pathname !== routeBefore || routeBefore !== '/live') ng.push('#1022 最初からが /live ページ内の切替ではない')
-      await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 }).catch(() => {
-        ng.push('#1022 最初からで追っかけ（先端の印つきの時間軸）に切り替わらない')
+      await page.getByTestId('live-recording-source-label').waitFor({ timeout: 10000 }).catch(() => {
+        ng.push('#1022 最初からで「録画から再生中」の表示へ切り替わらない')
       })
-      const edge = page.getByTestId('chase-live-edge')
-      if ((await edge.count()) === 0) ng.push('#1022 chase timeline にライブ先端への赤い印が無い')
-      else {
-        if ((await edge.getAttribute('aria-label')) !== 'ライブへ戻る' || !/ライブ/.test((await edge.getAttribute('title')) ?? '')) {
-          ng.push(`#1022 ライブページの追っかけで先端の印の名前が「ライブへ戻る」でない (${await edge.getAttribute('aria-label')})`)
+      // ライブへ戻る操作は軸の先端の印 1 つだけ。別のボタンは置かない。
+      const returnLive = page.getByTestId('live-recording-live-edge')
+      if (await returnLive.count() === 0) {
+        ng.push('#1022 録画 HLS の軸にライブへ戻る印が無い')
+      } else {
+        if ((await returnLive.getAttribute('aria-label')) !== 'ライブへ戻る' || !/^ライブ .*押すとライブへ戻る/.test((await returnLive.getAttribute('title')) ?? '')) {
+          ng.push(`#1022 録画 HLS の軸の印の名前が「ライブへ戻る」でない (${await returnLive.getAttribute('aria-label')} / ${await returnLive.getAttribute('title')})`)
         }
-        // 「ライブ」の印は「録画から再生中」に替わる（文言で見る。testid に依らない）。
+        if (await page.getByRole('button', { name: 'ライブへ戻る' }).count() !== 1) {
+          ng.push('#1022 「ライブへ戻る」が軸の印のほかにもある')
+        }
+        // 「ライブ」の印は「録画から再生中」に替わる。
         const controls = page.getByTestId('player-controls')
-        if (!(await controls.getByText('録画から再生中').isVisible().catch(() => false))) {
-          ng.push('#1022 ライブページの追っかけで「ライブ」の印が「録画から再生中」に替わらない')
-        }
-        if (await controls.getByText('ライブ', { exact: true }).count() + await controls.getByText('● ライブ', { exact: true }).count() > 0) {
-          ng.push('#1022 ライブページの追っかけに「ライブ」の印が残る')
+        if (await controls.getByText('● ライブ', { exact: true }).count() > 0) ng.push('#1022 録画 HLS の再生中に「ライブ」の印が残る')
+        // 軸は番組基準。録画が始まる前（左 3%）と先端より後ろ（右 97%）は「まだ録画されていません」。
+        const recordedAxis = page.getByTestId('live-recording-timeline-track')
+        const axisBox = await recordedAxis.boundingBox()
+        if (!axisBox) ng.push('#1022 録画 HLS の番組基準の軸が取得できない')
+        else {
+          await page.mouse.move(axisBox.x + axisBox.width * 0.97, axisBox.y + axisBox.height / 2)
+          const unrecorded = await page.getByTestId('live-recording-hover-label').textContent({ timeout: 3000 }).catch(() => null)
+          if (!unrecorded?.includes('まだ録画されていません')) ng.push(`#1022 先端より後ろにホバーしても「まだ録画されていません」が出ない (${unrecorded})`)
         }
         const livePlaylistBefore = requestLog.filter((request) =>
           request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
@@ -1062,29 +1077,26 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         const freshLivePlaylistWaiter = page.waitForRequest((request) =>
           request.url().includes('/networks/1/services/9001/live/playlist.m3u8'),
         { timeout: 10000 }).catch(() => null)
-        await edge.click()
+        await returnLive.click()
         const freshLivePlaylist = await freshLivePlaylistWaiter
         const livePlaylistAfter = requestLog.filter((request) =>
           request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
         ).length
-        if (!freshLivePlaylist || livePlaylistAfter <= livePlaylistBefore) ng.push('#1022 chase の赤い先端印から新しいライブ playlist 要求で戻らない')
+        if (!freshLivePlaylist || livePlaylistAfter <= livePlaylistBefore) ng.push('#1022 録画 HLS の軸の印から新しい live playlist 要求で戻らない')
         if (!(await page.getByTestId('live-source-label').isVisible().catch(() => false))) {
-          ng.push('#1022 ライブ先端を押しても UI がライブ再生へ戻らない')
+          ng.push('#1022 録画 HLS からライブ再生へ戻っても UI がライブ表示にならない')
         }
-        if (await page.getByTestId('player-controls').getByText('録画から再生中').count() > 0) ng.push('#1022 ライブ先端へ戻った後も「録画から再生中」が残る')
+        if (await page.getByTestId('player-controls').getByText('録画から再生中').count() > 0) ng.push('#1022 ライブへ戻った後も「録画から再生中」が残る')
 
+        // ライブ軸の過去位置（25%）を押すと録画 HLS の master URL を要求する。
         const timelineBox = await timeline.boundingBox()
         if (!timelineBox) ng.push('#1022 再生位置指定用のライブ軸が取得できない')
         else {
-          const pickedOffsetWaiter = page.waitForRequest((request) =>
-            /\/recordings\/501\/chase\/offset\/\d+\/playlist\.m3u8/.test(request.url()),
+          const pickedMasterWaiter = page.waitForRequest((request) =>
+            request.url().includes(recordingHlsPath(501)) && request.url().endsWith('/master.m3u8'),
           { timeout: 10000 }).catch(() => null)
           await timeline.click({ position: { x: timelineBox.width * 0.25, y: timelineBox.height / 2 } })
-          const pickedOffsetRequest = await pickedOffsetWaiter
-          const pickedOffset = pickedOffsetRequest && Number(/\/offset\/(\d+)\/playlist/.exec(pickedOffsetRequest.url())?.[1])
-          if (!Number.isFinite(pickedOffset) || Math.abs(pickedOffset - 675) > 3) {
-            ng.push(`#1022 番組軸の選択位置から chase offset≈675（番組開始から 25%）を再生しない (${pickedOffset ?? '要求なし'})`)
-          }
+          if (!(await pickedMasterWaiter)) ng.push('#1022 番組軸の過去位置から録画 HLS の master URL を要求しない')
         }
       }
     }
@@ -1103,20 +1115,19 @@ async function runIssue1022Acceptance(engine = 'chromium') {
       ng.push('#1022 録画のない番組の時間軸を無効化しない')
     } else {
       const before = await noRecordingTimeline.getAttribute('aria-valuenow')
-      const chaseRequestsBefore = requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length
+      const recordingRequestsBefore = requestLog.filter((request) => request.url.includes(recordingHlsPath(502))).length
       const box = await noRecordingTimeline.boundingBox()
       if (box) await noRecordingTimeline.click({ position: { x: box.width * 0.5, y: box.height / 2 }, force: true })
       const after = await noRecordingTimeline.getAttribute('aria-valuenow')
       if (Math.abs(Number(after) - Number(before)) > 2) ng.push('#1022 録画のない番組で無効時間軸のクリックが選択位置を変える')
-      if (requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length !== chaseRequestsBefore) {
-        ng.push('#1022 録画のない番組の時間軸クリックで chase playlist を要求する')
+      if (requestLog.filter((request) => request.url.includes(recordingHlsPath(502))).length !== recordingRequestsBefore) {
+        ng.push('#1022 録画のない番組の時間軸クリックで録画 HLS を要求する')
       }
       if (await page.getByTestId('live-seek-preview-label').count() > 0) ng.push('#1022 録画のない番組で選択可能な録画位置プレビューを表示する')
     }
 
-    // A late recording starts five minutes into the scheduled programme. The
-    // earlier part of the axis must stay unselectable; a later recorded point
-    // must map to a recording-relative chase offset.
+    // A late recording starts five minutes into the scheduled programme. Earlier
+    // timeline points must stay unavailable; a recorded point must use the API HLS URL.
     programsBySite.default = [
       programFor(9001, 201, '番組 A（予定）', 501),
       programFor(9002, 202, '番組 B（予定）', 502),
@@ -1125,11 +1136,14 @@ async function runIssue1022Acceptance(engine = 'chromium') {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ id: 502, site: 'default', startAt: new Date(programAStart).toISOString(), startedAt: new Date(programAStart + 5 * 60_000).toISOString(), durationMs: 45 * 60_000, status: 'recording' }),
+        body: JSON.stringify({
+          id: 502, site: 'default', startAt: new Date(programAStart).toISOString(),
+          startedAt: new Date(programAStart + 5 * 60_000).toISOString(),
+          durationMs: 45 * 60_000, status: 'recording',
+          hlsPlayback: [{ profile: 'hd', masterUrl: `${recordingHlsPath(502)}master.m3u8` }],
+        }),
       }),
     )
-    // Reload to start with a clean React Query cache after the earlier
-    // no-recording case for this same selected service.
     await page.reload({ waitUntil: 'domcontentloaded' })
     await page.getByRole('link', { name: /放送局 B/ }).waitFor({ timeout: 15000 })
     const lateRecordingLoaded = page.waitForResponse((response) =>
@@ -1150,17 +1164,20 @@ async function runIssue1022Acceptance(engine = 'chromium') {
     const lateStartOver = page.getByRole('button', { name: '最初から' })
     if (!(await lateStartOver.isVisible().catch(() => false))) ng.push('#1022 遅れて始まった録画に最初からの開始操作が無い')
     else {
-      const earliestRecordingWaiter = page.waitForRequest((request) =>
-        /\/recordings\/502\/chase\/playlist\.m3u8/.test(request.url()) && !/\/offset\//.test(request.url()),
+      const lateMasterWaiter = page.waitForRequest((request) =>
+        request.url().includes(recordingHlsPath(502)) && request.url().endsWith('/master.m3u8'),
       { timeout: 10000 }).catch(() => null)
       await lateStartOver.click()
-      const earliestRecordingRequest = await earliestRecordingWaiter
-      if (!earliestRecordingRequest) ng.push('#1022 遅れて始まった録画の最初からが録画開始 offset=0 を使わない')
+      if (!(await lateMasterWaiter)) ng.push('#1022 遅れて始まった録画の最初からが録画 HLS の master URL を要求しない')
+      if (!(await page.getByTestId('live-recording-source-label').isVisible().catch(() => false))) {
+        ng.push('#1022 遅れて始まった録画の最初からで録画 HLS に切り替わらない')
+      }
+      // 録画 HLS の再生中は番組基準の録画軸になり、ライブ軸は無い。軸の印でライブへ戻ると下の検証が続く。
       const liveAfterLateStartWaiter = page.waitForRequest((request) =>
         request.url().includes('/networks/1/services/9002/live/playlist.m3u8'),
       { timeout: 10000 }).catch(() => null)
-      const lateEdge = page.getByTestId('chase-live-edge')
-      if (await lateEdge.count() === 0) ng.push('#1022 遅い録画の chase にライブ先端ボタンが無い')
+      const lateEdge = page.getByTestId('live-recording-live-edge')
+      if (await lateEdge.count() === 0) ng.push('#1022 遅い録画の録画軸にライブへ戻る印が無い')
       else {
         await lateEdge.click()
         if (!(await liveAfterLateStartWaiter)) ng.push('#1022 遅い録画の開始後にライブへ戻らない')
@@ -1168,24 +1185,20 @@ async function runIssue1022Acceptance(engine = 'chromium') {
     }
     const lateBox = lateTimelineVisible ? await lateTimeline.boundingBox() : null
     if (lateBox) {
-      const chaseRequestsBefore = requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length
-      const selectedOffsetBefore = await lateTimeline.getAttribute('aria-valuenow')
+      const recordingRequestsBefore = requestLog.filter((request) => request.url.includes(recordingHlsPath(502))).length
+      const selectedPositionBefore = await lateTimeline.getAttribute('aria-valuenow')
       await lateTimeline.click({ position: { x: lateBox.width * 0.03, y: lateBox.height / 2 } })
-      await page.getByText('● ライブ').waitFor({ timeout: 3000 }).catch(() => null)
-      const chaseRequestsAfterMissingPart = requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length
-      if (chaseRequestsAfterMissingPart !== chaseRequestsBefore) ng.push('#1022 録画開始前の未録画部分を選択できる')
-      const selectedOffsetAfter = await lateTimeline.getAttribute('aria-valuenow')
-      if (Math.abs(Number(selectedOffsetAfter) - Number(selectedOffsetBefore)) > 2) ng.push('#1022 録画開始前の未録画位置へ時間軸の選択値を動かせる')
+      await page.getByTestId('live-source-label').waitFor({ timeout: 3000 }).catch(() => null)
+      const recordingRequestsAfterMissingPart = requestLog.filter((request) => request.url.includes(recordingHlsPath(502))).length
+      if (recordingRequestsAfterMissingPart !== recordingRequestsBefore) ng.push('#1022 録画開始前の未録画部分を選択できる')
+      const selectedPositionAfter = await lateTimeline.getAttribute('aria-valuenow')
+      if (Math.abs(Number(selectedPositionAfter) - Number(selectedPositionBefore)) > 2) ng.push('#1022 録画開始前の未録画位置へ時間軸の選択値を動かせる')
 
-      const latePickedWaiter = page.waitForRequest((request) =>
-        /\/recordings\/502\/chase\/offset\/\d+\/playlist\.m3u8/.test(request.url()),
+      const lateMasterWaiter = page.waitForRequest((request) =>
+        request.url().includes(recordingHlsPath(502)) && request.url().endsWith('/master.m3u8'),
       { timeout: 10000 }).catch(() => null)
       await lateTimeline.click({ position: { x: lateBox.width * 0.20, y: lateBox.height / 2 } })
-      const latePicked = await latePickedWaiter
-      const lateOffset = latePicked && Number(/\/offset\/(\d+)\/playlist/.exec(latePicked.url())?.[1])
-      if (!Number.isFinite(lateOffset) || Math.abs(lateOffset - 240) > 3) {
-        ng.push(`#1022 遅れて始まった録画の既録画位置を正しい offset≈240 で再生しない (${lateOffset ?? '要求なし'})`)
-      }
+      if (!(await lateMasterWaiter)) ng.push('#1022 遅れて始まった録画の記録済み位置から録画 HLS を要求しない')
     }
 
     // EPG is a schedule, not a live signal. Keep its planned end marked while
@@ -1266,43 +1279,14 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
     }
     const service = { id: 109001, networkId: 1, serviceId: 9001, name: '放送局 A', channelType: 'GR', channel: '1', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true }
     const json = (body) => (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    // 追っかけの offset playlist の要求記録と、失敗させる切替（#1143 の再読み込み判定が使う）。
-    const chaseOffsetFixture = { failSegments: false, requests: [], releaseSegments: () => {}, segmentGate: Promise.resolve() }
-    // recorded: いまの番組を録画中にする（録画は番組開始の 3 分前から）。追っかけの playlist も同じ実映像を返す。
-    const open = async (contextOptions, { recorded = false } = {}) => {
+    const open = async (contextOptions) => {
       const context = await browser.newContext(contextOptions)
       const page = await context.newPage()
       await page.route('**/api/capabilities', json({ live: true, cmDetect: false }))
       await page.route('**/api/live-profiles', json(E2E_LIVE_PROFILES))
       await page.route('**/api/sites', json(['default']))
       await page.route('**/api/sites/*/services', json([service]))
-      await page.route('**/api/sites/*/programs*', json([recorded ? { ...program, recordingId: 501 } : program]))
-      if (recorded) {
-        await page.route('**/api/recordings/501', json({
-          id: 501, site: 'default', startAt: program.startAt,
-          startedAt: new Date(Date.parse(program.startAt) - 180_000).toISOString(),
-          durationMs: program.durationMs, status: 'recording',
-        }))
-        await page.route('**/recordings/501/chase/**', async (route) => {
-          const url = new URL(route.request().url())
-          if (url.pathname.endsWith('/leave')) return route.fulfill({ status: 204, body: '' })
-          if (url.pathname.endsWith('.m3u8')) {
-            const offsetMatch = url.pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
-            if (offsetMatch !== null) {
-              chaseOffsetFixture.requests.push({ offset: Number(offsetMatch[1]), status: 200 })
-            }
-            return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(PLAYLIST_PATH) })
-          }
-          if (chaseOffsetFixture.failSegments && /segment_00[23]\.ts$/.test(url.pathname)) {
-            await chaseOffsetFixture.segmentGate
-            return route.fulfill({ status: 500, body: 'retry fixture failure' })
-          }
-          const file = path.join(SEGMENTS_DIR, url.pathname.split('/').pop())
-          return existsSync(file)
-            ? route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
-            : route.fulfill({ status: 404, body: '' })
-        })
-      }
+      await page.route('**/api/sites/*/programs*', json([program]))
       await page.route('**/api/sites/*/tuners', json([]))
       await page.route('**/api/reservations', json([]))
       await page.route('**/live/leave', (route) => route.fulfill({ status: 204, body: '' }))
@@ -1348,94 +1332,6 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
       const idle = await sample(page)
       log(`  #1022 frame a) マウス操作後 4.5 秒: ${JSON.stringify(idle)}`)
       if (idle.opacity !== '0') ng.push(`#1022 マウスで再生・歯車を押してポインタを外しても 4.5 秒後にバーが隠れない (${JSON.stringify(idle)})`)
-      await context.close()
-    }
-
-    // c) 再生中のライブから「最初から」・軸のシークで追っかけへ替えても、再生が続く（0:00 で止まらない）。
-    //    追っかけ → ライブも続く。判定は「止まっていない」かつ「新しいセッションで位置が進んだ」。
-    const chase = await open({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' }, { recorded: true }).catch((err) => {
-      ng.push(`#1022 フレーム c) 録画中の番組で実再生を始められない: ${err.message}`)
-      return null
-    })
-    if (chase) {
-      const { page, context } = chase
-      const controls = page.getByTestId('player-controls')
-      const expectPlaying = async (label) => {
-        const ok = await page.waitForFunction(() => {
-          const v = document.querySelector('video')
-          return Boolean(v) && !v.paused && v.currentTime > 0.3
-        }, undefined, { timeout: 6000 }).then(() => true, () => false)
-        const state = await page.evaluate(() => {
-          const v = document.querySelector('video')
-          return { paused: v.paused, t: Number(v.currentTime.toFixed(1)), rs: v.readyState }
-        })
-        log(`  #1022 frame c) ${label}: ${JSON.stringify(state)}`)
-        if (!ok) ng.push(`#1022 ${label}に再生が続かない (${JSON.stringify(state)})`)
-      }
-      const show = () => page.getByTestId('recording-player-frame').hover()
-      await show()
-      await controls.getByRole('button', { name: '最初から' }).click()
-      await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 })
-      await expectPlaying('「最初から」で追っかけへ替えた後')
-      await show()
-      await page.getByTestId('chase-live-edge').click()
-      await page.getByTestId('live-program-timeline').waitFor({ timeout: 10000 })
-      await expectPlaying('先端の印でライブへ戻った後')
-      await show()
-      const axis = await page.getByTestId('live-program-timeline').boundingBox()
-      await page.mouse.click(axis.x + axis.width * 0.25, axis.y + axis.height / 2)
-      await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 })
-      await expectPlaying('軸のシークで追っかけへ替えた後')
-
-        // #1143 /live の追っかけで再生を進めた後、offset playlist が失敗すると、再読み込みは最後の位置を保つ。
-        // 位置は映像で測る（⑪-b / ⑭-b と同じ）。追っかけの録画秒は、要求した offset（セッションの起点）+ video.currentTime。
-        const lastRequestedOffset = (cursor) => chaseOffsetFixture.requests.slice(cursor).findLast(() => true)?.offset
-        // 軸のシークで新しい offset セッションを再生し、セッション内の 15.75 秒へ動かして止めてから fatal にする。
-        // 軸のシークの目標は整数秒なので、端数のある位置は seeked の報告からしか出ない。3 本目以降の segment は
-        // 位置を動かすまで返さず、動かしたら 500 にする。
-        chaseOffsetFixture.failSegments = true
-        chaseOffsetFixture.segmentGate = new Promise((resolve) => { chaseOffsetFixture.releaseSegments = resolve })
-        const failedCursor = chaseOffsetFixture.requests.length
-        await show()
-        const retryAxis = await page.getByTestId('seek-scrub').boundingBox()
-        await page.mouse.click(retryAxis.x + retryAxis.width * 0.3, retryAxis.y + retryAxis.height / 2)
-        const playedBeforeFail = await page.waitForFunction(() => document.querySelector('video').currentTime > 2, undefined, { timeout: 30000 })
-          .then(() => true, () => false)
-        if (!playedBeforeFail) ng.push('#1143 前提: 軸のシークで開いた追っかけが 2 秒まで再生されない')
-        await page.locator('video').evaluate((v) => { v.pause(); v.currentTime = 15.75 })
-        const settledBeforeFail = await page.waitForFunction(() => !document.querySelector('video').seeking, undefined, { timeout: 5000 })
-          .then(() => true, () => false)
-        if (!settledBeforeFail) ng.push('#1143 前提: セッション内の 15.75 秒への seek が終わらない')
-        const failedOffset = lastRequestedOffset(failedCursor)
-        const selectedPosition = failedOffset + await page.locator('video').evaluate((v) => v.currentTime)
-        chaseOffsetFixture.releaseSegments()
-        const errorShown = await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 120000 }).then(() => true, () => false)
-        if (!errorShown) ng.push('#1143 前提: segment の失敗後に「再読み込み」が出ない')
-        log(`  #1143 chase 再読み込み: 失敗前の offset=${failedOffset}, selected=${selectedPosition}`)
-        if (!(selectedPosition > failedOffset + 15)) {
-          ng.push(`#1143 前提: セッション内の seek 後の位置が offset+15 秒より先でない (${selectedPosition})`)
-        }
-        chaseOffsetFixture.failSegments = false
-        const reloadCursor = chaseOffsetFixture.requests.length
-        if (errorShown) {
-          await page.getByRole('button', { name: '再読み込み' }).click()
-          const reloaded = await page.waitForFunction(() => {
-            const v = document.querySelector('video')
-            return v !== null && v.readyState >= 2 && !v.seeking
-          }, undefined, { timeout: 15000 }).then(() => true, () => false)
-          if (!reloaded) ng.push('#1143 再読み込み後に映像が読み込めない（readyState >= 2 にならない）')
-          await page.locator('video').evaluate((v) => v.pause())
-          const reloadRequests = chaseOffsetFixture.requests.slice(reloadCursor)
-          const reloadOffset = reloadRequests.findLast((r) => r.status === 200)?.offset
-          const landing = reloadOffset + await page.locator('video').evaluate((v) => v.currentTime)
-          log(`  #1143 chase 再読み込み後: requests=${JSON.stringify(reloadRequests)}, landing=${landing}`)
-          if (reloadOffset !== Math.floor(selectedPosition)) {
-            ng.push(`#1143 /live の追っかけの再読み込みが floor(最後の位置)=${Math.floor(selectedPosition)} の offset を要求しない (${JSON.stringify(reloadRequests)})`)
-          }
-          if (!(Math.abs(landing - selectedPosition) <= 0.5)) {
-            ng.push(`#1143 /live の追っかけの再読み込みの着地が最後の位置の 0.5 秒以内でない (${landing} / ${selectedPosition})`)
-          }
-        }
       await context.close()
     }
 

@@ -18,9 +18,12 @@ type FixedPlaybackTimeline = PlaybackTimelineBase & {
   canSeek: true
 }
 
-/** ChasePlaybackTimeline は録画先頭を起点にした追っかけ用の時間軸記述。 */
-type ChasePlaybackTimeline = PlaybackTimelineBase & {
-  kind: 'chase'
+/**
+ * LiveRecordingPlaybackTimeline はライブ画面が録画 HLS を再生しているときの番組軸の記述。
+ * 軸は番組開始を左端にし、録画ファイルの先頭（headSeconds）から録画済みの先端までを再生できる。
+ */
+type LiveRecordingPlaybackTimeline = PlaybackTimelineBase & {
+  kind: 'live-recording'
   headSeconds: number
   recordedEndSeconds: number
   plannedEndSeconds: number
@@ -44,8 +47,8 @@ type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   endClock: string
 }
 
-/** PlaybackTimeline は共有操作バーが描く固定尺・追っかけ・ライブの時間軸記述。 */
-export type PlaybackTimeline = FixedPlaybackTimeline | ChasePlaybackTimeline | LiveProgramPlaybackTimeline
+/** PlaybackTimeline は共有操作バーが描く固定尺・ライブ番組・ライブ画面の録画の時間軸記述。 */
+export type PlaybackTimeline = FixedPlaybackTimeline | LiveRecordingPlaybackTimeline | LiveProgramPlaybackTimeline
 
 /** fixedPlaybackTimeline は録画尺の固定軸を操作バー向けの記述にする。 */
 export function fixedPlaybackTimeline(durationSeconds: number): FixedPlaybackTimeline {
@@ -59,19 +62,25 @@ export function fixedPlaybackTimeline(durationSeconds: number): FixedPlaybackTim
   }
 }
 
-/** chasePlaybackTimeline は録画ファイル先頭を基準に追っかけの時間軸記述を作る。 */
-export function chasePlaybackTimeline(
-  source: Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>,
+/** LiveRecordingSource は録画軸が読む RecordingTimeline の欄。 */
+export type LiveRecordingSource = Pick<RecordingTimeline, 'recordingHeadSeconds' | 'plannedSeconds' | 'recordedSeconds'>
+
+/**
+ * liveRecordingPlaybackTimeline は録画ファイル先頭を基準に、ライブ画面の録画軸の記述を作る。
+ * ライブ位置は録画済みの先端の 1 秒前に置く。
+ */
+export function liveRecordingPlaybackTimeline(
+  source: LiveRecordingSource,
   hoverSeconds: number | null,
-): ChasePlaybackTimeline {
-  const headSeconds = source.chaseHeadOffsetSeconds
+): LiveRecordingPlaybackTimeline {
+  const headSeconds = source.recordingHeadSeconds ?? 0
   const recordedEndSeconds = headSeconds + source.recordedSeconds
   const plannedEndSeconds = source.plannedSeconds
   const maxSeconds = Math.max(1, plannedEndSeconds, recordedEndSeconds)
   const liveEdgeSeconds = Math.max(0, recordedEndSeconds - 1)
 
   return {
-    kind: 'chase',
+    kind: 'live-recording',
     minSeconds: 0,
     maxSeconds,
     canSeek: true,

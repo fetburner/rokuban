@@ -85,21 +85,17 @@ Pod が落ちても、ハッシュの担当が移っても自己修復する。�
 
 ライブ HLS のセグメントは tmpfs に置き、録画バッファと同じディスクには書かない。同じディスクに書くと、視聴が録画を妨げる。
 
-エッジの録画バッファ（mirakc `recording.basedir`）は I/O が飽和するとドロップへ直結し、要求されるのはレイテンシで、絶対帯域は問われない（[§4](storage.md)）。これは Postgres datadir と encode scratch を分ける指針（[§3](database.md)）と同じ規則である。ライブ・追っかけ・原本 VOD のどの経路でも、scratch を `recording.basedir` や archive PVC と同じ mount / volume に置かない。
+エッジの録画バッファ（mirakc `recording.basedir`）は I/O が飽和するとドロップへ直結し、要求されるのはレイテンシで、絶対帯域は問われない（[§4](storage.md)）。Postgres datadir や encode scratch と分けるのと同じ規則である。
 
-ライブ・追っかけ・原本 VOD は同じ `live.segment_dir`（Pod の `live-segments`）を共有し、同じ process-local な `live.max_sessions` を数える。メトリクスは `rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` / `{kind="original_vod"}` に分かれるが、scratch 容量は合算する。
+ライブ streamer は `live.segment_dir`（Pod の `live-segments`）に、playlist と直近の segment を保持する。世代付き録画 HLS はこの tmpfs を使わず、専用 Pod の別 volume（`recording-hls-scratch`）に置く。その中身と容量は「世代付き録画 HLS の scratch」で扱う。
 
-##### 容量の見積もり
+##### ライブ scratch の容量
 
-容量はセッションの種類で決まり方が違う。ライブは窓の分だけ、追っかけと原本 VOD は録画全体の分が要る。
+scratch の上限は、保持する秒数と同時ライブ数から見積もる。
 
-k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライブが保持するのは `playlist_size` × `segment_seconds` 秒の窓だけなので、容量は窓の秒数 × 全 profile の bitrate の合計 × 同時セッション数 ÷ 8 で見積もる。追っかけと原本 VOD は録画全体の EVENT セグメントを idle GC まで保持する。容量は録画時間 × 全 profile の出力 bitrate の合計 × 同時セッション数 ÷ 8 で見積もる。どちらの式も、bitrate が bit/s なら結果はバイトである。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。この見積もり式はここだけに置き、[api/media/playback.md](../api/media/playback.md) はここを参照する。
+k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライブが保持するのは `playlist_size × segment_seconds` 秒の窓だけである。容量は窓の秒数 × 全 profile の bitrate の合計 × 同時ライブセッション数 ÷ 8 で見積もる。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。bitrate が bit/s なら結果はバイトである。
 
-同梱設定（`deploy/k8s/base/config.yml` の h264 profile）は CRF も bitrate も指定しない。したがって出力 bitrate は設定から決まらず、入力の絵柄で変わる。測れたのは 1 点だけである。
-
-測定の条件は次の通りである。入力は地上波の NHK 総合（1440x1080i の MPEG-2、音声 ES 1 本）で、自宅 mirakc から 150 秒取った。変換は追っかけと同じ ffmpeg 引数（720p の libx264 veryfast、音声 3 rendition、2 秒セグメント、`delete_segments` 無し）で、FFmpeg 9.0.2（macOS）を使った。出力 HLS ディレクトリは合計 41,776,725 バイトで、約 2.2 Mbit/s（2,225 kbit/s）である。
-
-この値だと `sizeLimit: 1Gi` は 1 セッションで約 64 分、`live.max_sessions` の 4 本が同時に追っかけると 1 本あたり約 16 分で満杯になる。測っていないのは、動きの多い番組・BS（測った site に BS が無い）・民放（測った時点でチューナー 1 基が録画中で、同じ mux の NHK 総合しか取れなかった）である。この値は約 2.2 Mbit/s の 1 点の実測から出した。同梱設定では 64 分を超える録画は、1 本だけでも追っかけと原本 VOD が途中で失敗する。原本 VOD は完了録画の既定の再生経路である（[api/media/playback.md](../api/media/playback.md) 「既定の再生経路と容量」）。対処は `sizeLimit` を上げるか `live.max_sessions` を絞ることで、天井はノードのメモリ（参照クラスタは約 4Gi）である。
+同梱設定は 4 セッション分の 12 秒窓を 128Mi に収める。地上波の NHK 総合を 150 秒測った。条件は 720p libx264 veryfast、音声 3 rendition、2 秒 segment である。実測は約 2.2 Mbit/s（2,225 kbit/s）、出力 41,776,725 バイトだった。4 セッション分の見積もりは約 13 MiB で、128Mi は可変 bitrate と管理用ファイルの余裕を含む。
 
 ##### sizeLimit は満杯で止まる値として置く
 
@@ -107,44 +103,16 @@ k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライ
 
 Kubernetes の [volumes 文書の emptyDir 節](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir) は、`medium: Memory` なら tmpfs を mount すると書く。そこに書いたファイルは、書いた container の memory limit に算入される。同じ節は、サイズ未指定の memory-backed volume はノードの allocatable メモリの大きさになると書く。
 
-`sizeLimit` を指定すると tmpfs の大きさがその値になる、という読みは文書の文面からの推論である。次の測定で確かめた。
+参照クラスタでは `sizeLimit: 16Mi` の tmpfs に 32Mi を書くと、16Mi 書いた後に ENOSPC で終了し、Pod は Running のままだった（観察時間は記録していない）。上限超過時の書き込みだけを測定しており、ノード全体のメモリ圧迫による eviction は測っていない。
 
-参照クラスタは K3s v1.36.2+k3s1、containerd 2.3.2（amd64、Linux 6.12.94）である。`sizeLimit: 16Mi`、container memory limit `256Mi` の Pod に `dd` で 32Mi を書くと、16Mi 書いた後に ENOSPC で終了した。Pod は Running のままで、eviction は観察されなかった。観察時間は記録していない。クラスタの CSI driver は `nfs.csi.k8s.io` と `driver.longhorn.io` だが、memory `emptyDir` は CSI を通らずノード内 tmpfs を使う。この測定で確かめたのは小さい上限を超えたときの挙動だけで、ノード全体のメモリ圧迫による eviction は測っていない。
-
-ENOSPC で止まるので、上限を見積もりより大きく取ってセッション数で先に止める必要は無い。ただし ENOSPC はそのセッションに閉じず、`live-segments` を共有する同じ Pod の全セッションに及ぶ。追っかけや原本 VOD が `sizeLimit` を使い切ると、同じ Pod のライブもセグメントを書けない。そのとき書き込みに失敗したライブの ffmpeg が終了するか書き込みを再試行するかは、未検証である。
-
-memory limit は `sizeLimit` + 512Mi（ffmpeg の実測 peak 173Mi の約 3 倍）× `live.max_sessions` で決める。tmpfs のページは container の limit に算入されるので、`sizeLimit` を limit の内側に含める。同梱の 4 セッションなら 1Gi + 4 × 512Mi = 3Gi である。memory request は、普段は空の tmpfs を予約しない。実測 peak × `live.max_sessions` にアプリの 128Mi を足した約 1Gi にする。
-
-##### 原本 VOD の scratch
-
-原本だけの完了録画は、原本 TS を読み取り専用で開き、変換した HLS だけを scratch に書く。
-
-開くのは site streamer で、media PVC の mount は read-only のままでよい。録画パスのロックは取らず、開いてから DB で再確認するので、media root にロック用ディレクトリを作らない（根拠は [api.md](../api.md) 「録画原本のブラウザ再生」）。原本 VOD は録画全体の EVENT playlist と全 segment を idle GC まで保持する。`sizeLimit` を超えた書き込みの失敗は、この Pod の他セッションにも及ぶ（上記）。原本や録画バッファへは書き込まない。
-
-<details><summary>根拠</summary>
-
-- 原本 VOD は録画パスのロックを取らない: `rel_path` / `.rokuban-locks`
-
-</details>
+FFmpeg の実測 peak は 173Mi だったため、1 セッションに 512Mi を見積もる。memory limit は `sizeLimit + 512Mi × live.max_sessions` とし、tmpfs のページを limit の内側に含める。同梱の 4 セッションでは 128Mi + 4 × 512Mi = 2176Mi である。memory request は、普段は空の tmpfs を予約せず、実測 peak × 4 とアプリの 128Mi を足した約 1Gi にする。
 
 ##### 世代付き録画 HLS の scratch
 
 キャッシュの下限は式で決まり、tmpfs の大きさは見積もりと未検証の余白で決めている。
 
-世代付き録画 HLS は専用 Pod の tmpfs（`recording_hls.segment_dir`、Pod の `recording-hls-scratch`）に 2 つを置く。バイト上限付きのセグメントキャッシュ（`recording_hls.cache_bytes`）と、変換ごとの作業 scratch（ffmpeg の出力がキャッシュへ公開されるまでの置き場）である。`live.segment_dir` とは別の volume で、ライブ・追っかけ・原本 VOD の scratch とは合算しない。
+世代付き録画 HLS は専用 Pod の tmpfs（`recording_hls.segment_dir`、Pod の `recording-hls-scratch`）に 2 つを置く。バイト上限付きのセグメントキャッシュ（`recording_hls.cache_bytes`）と、変換ごとの作業 scratch（ffmpeg の出力がキャッシュへ公開されるまでの置き場）である。`live.segment_dir` とは別の volume で、ライブ scratch とは合算しない。
 
 キャッシュの下限は `max_concurrent × (先読み 5 + 要求 1) × 最大 5 rendition（映像・音声 3・字幕）× 16 MiB` である。`cache_bytes` はこの値より大きくし、起動時の検証が下回る設定を弾く。同梱設定は 3 × 6 × 5 × 16 MiB = 1440 MiB に対して 1536 MiB である。既定を 3 にしたのは、追従変換 2 本では 3 人目の視聴中に idle 変換を止めて起動し直す往復が起きると見込んだためである。この往復は測っていない（未検証）。16 MiB は下限を計算するための見積もりで、実セグメントの上限ではない。見積もりを超えるセグメントも配信は止めず、キャッシュ全体より大きい場合だけエラーにする。この式はここだけに置き、[playback.md](../api/media/playback.md) と `config.example.yml` はここを参照する。
 
 同梱の `sizeLimit: 2Gi` は、キャッシュの 1.5Gi に 512Mi の余白を足した値である。作業 scratch の実測値は無い（未検証）ので、この余白は見積もりにとどまる。memory limit の `3584Mi` は、`sizeLimit` + 512Mi × 同時変換数（2Gi + 3 × 512Mi）で決めた。512Mi はライブの ffmpeg の実測 peak に由来し、この経路の ffmpeg の peak は未測定（未検証）である。tmpfs が満杯になったときにこの経路の変換とキャッシュがどう振る舞うかも未検証である。
-
-##### 追っかけ再生の scratch
-
-録画中の追っかけ再生は、同じ streamer 内でセッションを共有し、録画開始から EOF までの変換結果を scratch に保持する。
-
-- URL は固定深さで、開始位置を指定する場合は `/offset/{offset}` を含む。
-- site を前段のルーティングキーにして、録画を担当する site の streamer へ送る。標準の Ingress では各 site overlay が `/api/sites/<site>/recordings` をその Service へ追加する。
-- 録画 id は DB 内の mirakc record id を隠す公開キーで、同じ streamer 内のセッションを共有する。同じ録画の異なる開始位置は別セッションになる。
-- hash key は `(site, recordings.id)` とし、同じ録画の全オフセットを同じ Pod に固定する。
-
-`delete_segments` は使わず、ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存のセッションはこの保持ファイルを配信する。容量不足は録画バッファへ移さない。`sizeLimit` を超えた書き込みの失敗は、この Pod の他セッションにも及ぶ（上記）。
-

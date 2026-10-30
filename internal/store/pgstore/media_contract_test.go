@@ -80,40 +80,6 @@ func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 	}
 }
 
-func TestOriginalVODTargetUsesOnlyConfiguredStoreCopy(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
-	assetID := dbtest.MediaAsset(t, pool, recordingID)
-
-	for _, copy := range []struct {
-		store string
-		path  string
-	}{
-		{store: "z-store", path: "sites/default/vod-z-copy.m2ts"},
-		{store: "a-store", path: "sites/default/vod-a-copy.m2ts"},
-	} {
-		if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-			MediaAssetID: assetID, Store: copy.store, RelPath: copy.path, State: "active",
-		}); err != nil {
-			t.Fatalf("creating %s copy: %v", copy.store, err)
-		}
-	}
-
-	target, err := NewMedia(pool, "z-store", "").GetOriginalVODTarget(ctx, recordingID, "default")
-	if err != nil {
-		t.Fatalf("GetOriginalVODTarget(z-store): %v", err)
-	}
-	if target.ID != assetID || target.RelPath != "sites/default/vod-z-copy.m2ts" {
-		t.Fatalf("target = %+v, want the copy in z-store, not the lexically first a-store", target)
-	}
-	for _, name := range []string{"", "missing-store"} {
-		if _, err := NewMedia(pool, name, "").GetOriginalVODTarget(ctx, recordingID, "default"); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("GetOriginalVODTarget(store %q) error = %v, want ErrNotFound", name, err)
-		}
-	}
-}
-
 func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	media := NewMedia(pool, "tokyo", "")

@@ -164,9 +164,9 @@ type Deps struct {
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
-	Encode      config.EncodeConfig
-	CMDetect    config.CMDetectConfig
-	LiveEnabled bool
+	Encode              config.EncodeConfig
+	CMDetect            config.CMDetectConfig
+	RecordingHLSEnabled bool
 
 	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を埋める）。
@@ -222,19 +222,19 @@ type Deps struct {
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
 	riveradapter.Register(workers, &IngestWorker{
-		storageProbed:    deps.IngestStorageProbed,
-		Enqueuer:         deps.Enqueuer,
-		MirakcClients:    deps.MirakcClients,
-		Publisher:        deps.MediaPublish,
-		Precheck:         deps.IngestPrecheck,
-		RecordTarget:     deps.IngestTarget,
-		CMDetectionStore: deps.CMDetectionStore,
-		MediaDir:         deps.MediaDir,
-		MediaStoreName:   deps.MediaStoreName,
-		StallTimeout:     deps.IngestStallTimeout,
-		CMDetect:         deps.CMDetect,
-		CutProfiles:      deps.Encode.CutProfileSet(),
-		LiveEnabled:      deps.LiveEnabled,
+		storageProbed:       deps.IngestStorageProbed,
+		Enqueuer:            deps.Enqueuer,
+		MirakcClients:       deps.MirakcClients,
+		Publisher:           deps.MediaPublish,
+		Precheck:            deps.IngestPrecheck,
+		RecordTarget:        deps.IngestTarget,
+		CMDetectionStore:    deps.CMDetectionStore,
+		MediaDir:            deps.MediaDir,
+		MediaStoreName:      deps.MediaStoreName,
+		StallTimeout:        deps.IngestStallTimeout,
+		CMDetect:            deps.CMDetect,
+		CutProfiles:         deps.Encode.CutProfileSet(),
+		RecordingHLSEnabled: deps.RecordingHLSEnabled,
 	})
 	riveradapter.Register(workers, &EncodeWorker{
 		Media:           deps.MediaReconcile,

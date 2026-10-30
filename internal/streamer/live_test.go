@@ -1886,27 +1886,11 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 		// 離脱ヒント（issue #191）。セッション ID を持たない = 宛先はプレイリスト /
 		// セグメントと同じ (site, networkId, serviceId) のまま、固定深さも保つ。
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave",
-		"/api/sites/{site}/recordings/{id}/chase/playlist.m3u8",
-		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/playlist.m3u8",
-		"/api/sites/{site}/recordings/{id}/chase/segments/{name}",
-		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/segments/{name}",
-		"/api/sites/{site}/recordings/{id}/chase/{name}",
-		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/{name}",
-		"/api/sites/{site}/recordings/{id}/chase/leave",
-		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave",
-		"/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8",
-		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/playlist.m3u8",
-		"/api/sites/{site}/recordings/{id}/original-vod/segments/{name}",
-		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/segments/{name}",
-		"/api/sites/{site}/recordings/{id}/original-vod/{name}",
-		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/{name}",
-		"/api/sites/{site}/recordings/{id}/original-vod/leave",
-		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
 	if !slices.Equal(routes, want) {
-		t.Fatalf("mounted live/chase routes = %v, want exactly %v", routes, want)
+		t.Fatalf("mounted live routes = %v, want exactly %v", routes, want)
 	}
 
 	// 実際に 200 が返る要求の URL にも、docs/operations.md §5 の nginx map と同じ
@@ -3171,6 +3155,17 @@ func TestReadLiveStreamPrefix_PreservesAllBytesInOrder(t *testing.T) {
 			}
 		})
 	}
+}
+
+// gatedReader は gate が開くまで Read を待たせる。
+type gatedReader struct {
+	gate <-chan struct{}
+	r    io.Reader
+}
+
+func (g *gatedReader) Read(p []byte) (int, error) {
+	<-g.gate
+	return g.r.Read(p)
 }
 
 func TestReadLiveStreamPrefix_ReturnsWhenInputIsBlocked(t *testing.T) {

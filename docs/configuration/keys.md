@@ -71,7 +71,7 @@
 | `live.ffprobe` | `ffprobe` | `live.captions` 有効時の字幕ストリーム判定。PATH 検索 |
 | `live.captions` | `false` | ARIB 字幕を WebVTT で出力するか |
 | `live.segment_dir` | —（`enabled: true` なら必須） | HLS セグメントの書き出し先 |
-| `live.max_sessions` | `4` | プロセスローカルの同時セッション上限 |
+| `live.max_sessions` | `4` | プロセスローカルの同時ライブセッション上限 |
 | `live.idle_timeout` | `30s` | サービス単位の idle GC 猶予 |
 | `live.tuner_priority` | `1` | mirakc への X-Mirakurun-Priority |
 | `live.hwaccel` / `live.input_extra_args` | なし | HW アクセラレーション / 入力側追加引数 |

@@ -95,7 +95,7 @@ flowchart RL
     media[("メディアストレージ（分散時は共有）")]
     user -->|"REST / UI 配信（go:embed）"| api
     user -->|"SSE（変更通知）"| notifier
-    user -->|"HLS・ファイル配信（ライブ・追っかけ・VOD）"| streamer
+    user -->|"HLS・ファイル配信（ライブ・録画 HLS・VOD）"| streamer
     api -->|"読み書き・ジョブ投入"| pg
     notifier -->|"LISTEN"| pg
     watcher -->|"録画の観測・ingest 投入"| pg

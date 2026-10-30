@@ -42,8 +42,8 @@ Rokuban は TLS や認証を抱え込まず、リバースプロキシの背後�
 | 経路 | Ingress での振り分け |
 |---|---|
 | SSE | `/api/events` を Exact で notifier へ送る |
-| ライブ配信・追っかけ再生 | site を含む `/api/sites/<site>/networks` と `/api/sites/<site>/recordings` の Prefix で site streamer へ送る |
-| 録画 VOD | 固定接頭辞 `/api/media/recordings` で送る |
+| ライブ配信 | site を含む `/api/sites/<site>/networks` の Prefix で site streamer へ送る |
+| 録画ファイル | 固定接頭辞 `/api/media/recordings` で送る |
 | 世代付き録画 HLS | 置き場ごとの `/api/media/stores/<store>` Prefix で `rokuban-recording-hls` へ送る |
 
 録画 VOD は、`{id}` の後ろで api と streamer が分かれる `/api/recordings/{id}/...` を使わず、応答の性質を示す固定接頭辞で送る。

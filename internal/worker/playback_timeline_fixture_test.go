@@ -100,7 +100,7 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open source TS for offset %d: %v", offset, err)
 		}
-		args := streamer.BuildOriginalVODFFmpegArgs(liveConfig, dir, false, offset)
+		args := streamer.BuildRecordingHLSFFmpegArgs(liveConfig, dir, false, offset)
 		runPlaybackTimelineFFmpeg(t, ffmpeg, args, []*os.File{source})
 		if err := source.Close(); err != nil {
 			t.Fatalf("close source TS after offset %d: %v", offset, err)

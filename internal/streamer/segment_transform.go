@@ -1128,12 +1128,12 @@ func buildSegmentTransformArgs(
 	withSubtitles := cfg.Captions && input.HasSubtitles
 	inputPath := input.Path
 	if inputPath == "" {
-		inputPath = originalVODFFmpegInputPath
+		inputPath = recordingHLSFFmpegInputPath
 	}
 	// オフセット 1 は共有ビルダーに入力側の -ss を出させるための仮の値で、
 	// pre-roll を引いた絶対秒を下で差し込む。
 	args := buildHLSFFmpegArgsForPlaylistType(
-		cfg, workDir, withSubtitles, hlsOriginalEventPlaylist, inputPath, 1, input.AudioStreamCount,
+		cfg, workDir, withSubtitles, hlsRecordingEventPlaylist, inputPath, 1, input.AudioStreamCount,
 	)
 	var err error
 	ssIndex := indexOf(args, "-ss")

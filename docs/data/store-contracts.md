@@ -223,7 +223,7 @@ SQL の組み立ては pgstore に置く。ジャンルの配列の重なり、�
 
 streamer のハンドラは `MediaServing` を受け取る。worker のジョブは `MediaReconcile` と `StorageObservation` を、API のハンドラは `MediaReader` と `StorageObservation` を受け取る。api ロールと worker ロールの起動時の検査も `MediaReconcile` を使う。実装はどれも `pgstore.Media` が持つ。streamer が SQL の行型を知ると、配信してよい行の条件が streamer の中に散らばる。API が行型を知ると、読み取り条件が API の中に散らばる。
 
-`MediaServing` は、配信元のアセットと、追っかけの対象と、原本 VOD の録画状態を返す。対象が無ければ `ErrNotFound` を返す。`deleting` と `deleted` のアセットは配信元にしない。ごみ箱の録画は、アセットも追っかけの対象も返さない。
+`MediaServing` は、録画 HLS の原本または ingest temp と世代、配信元アセット、録画状態を返す。対象が無ければ `ErrNotFound` を返す。`deleting` と `deleted` のアセットは配信元にしない。ごみ箱の録画は配信対象にしない。
 
 worker のジョブは `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料を読む。比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
 
@@ -250,8 +250,7 @@ worker は `StorageObservation` に置き場単位の `storage_sync` と、孤�
 - ドロップ位置の録画での絞り込み: `TestMediaStoreContract` の `drop positions are scoped to the target recording`
 - 送ったエンコード進捗が、同じ値のまま通知で届くこと: `TestMediaStoreContract` の `encode progress reaches the listener`
 - サムネイル・シークタイルとごみ箱の録画: `TestMediaStoreContract` の `serving covers thumbnails and seek tiles`
-- 原本 VOD の site の絞り込み: `TestMediaStoreContract` の `original VOD target is scoped to the recording's site`
-- 追っかけの対象: `TestMediaStoreContract` の `chase target requires a record and a recording outside the trash`
+- 録画 HLS の対象: `TestRecordingHLSTargetPreservesCommittedGeneration` と `TestRecordingHLSTargetUsesIngestTempUntilCommit`
 - エンコード計画の観測と作り直し要求の照合: `TestMediaStoreContract` の `encode planning reads asset and request state through its contract`
 - keep 区間の導出・所有・purged の扱い: `TestMediaStoreContract` の `current cut keep is derived from owned chapters`
 - 所有状態と区間が同じ時点の読み取りであること: `pgstore` の `TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot`
@@ -407,7 +406,7 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 エンコード方針の契約は、追加・削除・作り直し要求・保持と CM 検出の更新をそれぞれ自身の tx で確定する。プロファイル名の検証と cut の選択規則は API が所有し、評価は store がロック後の desired に対して行う。
 
-cut の選択規則は設定の `live.enabled` に依存し、store は設定を知らない。そのため所有者は API で、規則を検証関数として store へ渡す。評価を store に置くのは、方針の行をロックした後の desired に当てるためである。ロック前に desired を読むと、版の削除が commit した後の集合を見落とす。
+cut の選択規則は設定の `recording_hls.enabled` に依存し、store は設定を知らない。そのため所有者は API で、規則を検証関数として store へ渡す。評価を store に置くのは、方針の行をロックした後の desired に当てるためである。ロック前に desired を読むと、版の削除が commit した後の集合を見落とす。
 
 版の削除は録画の行から方針の行の順に直列化する。残りのコピーの検査は要求を書いた後の状態で行うので、同じ録画の削除が競合しても最後のコピーを失わない。削除と作り直し要求は、ごみ箱にある録画にも適用できる。keep は、録画の行をロックしてから確認済みチャプターを読んで導出する。ロックの前に読むと、チャプター編集が commit した後の区間を見落とす。
 

@@ -311,64 +311,6 @@ export function liveLeaveURL(site: string, networkId: number, serviceId: number)
   )
 }
 
-/** offsetPathSegment は offset > 0 のときだけ `/offset/{n}` を返す（追っかけと原本 VOD で共通）。 */
-function offsetPathSegment(offsetSeconds?: number): string {
-  return Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
-    ? `/offset/${offsetSeconds}`
-    : ''
-}
-
-/**
- * originalVODSessionOriginSeconds は原本 HLS の integer path offset を、映像フレーム格子上の
- * 実際の入力 seek 位置へ写す。streamer は `floor(N×30000/1001)` frame の時刻へ seek するため、
- * offset session 内の `mediaTime` に足す録画軸の起点も同じ値にする。
- */
-export function originalVODSessionOriginSeconds(offsetSeconds?: number): number {
-  if (!Number.isSafeInteger(offsetSeconds) || offsetSeconds === undefined || offsetSeconds <= 0) return 0
-  const frame = Math.floor(offsetSeconds * 30_000 / 1_001)
-  return frame * 1_001 / 30_000
-}
-
-/** chasePlaylistURL は録画中の追っかけ再生 EVENT playlist の URL を組み立てる。 */
-export function chasePlaylistURL(
-  site: string,
-  recordingId: number,
-  profile?: string,
-  offsetSeconds?: number,
-): string {
-  const offset = offsetPathSegment(offsetSeconds)
-  const base =
-    `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase` +
-    `${offset}/playlist.m3u8`
-  return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
-}
-
-/** chaseLeaveURL は追っかけ再生セッションへの離脱ヒントの宛先。 */
-export function chaseLeaveURL(site: string, recordingId: number, offsetSeconds?: number): string {
-  const offset = offsetPathSegment(offsetSeconds)
-  return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase${offset}/leave`
-}
-
-/** originalVODPlaylistURL は完成済み録画の原本を HLS 化する URL を組み立てる。 */
-export function originalVODPlaylistURL(
-  site: string,
-  recordingId: number,
-  profile?: string,
-  offsetSeconds?: number,
-): string {
-  const offset = offsetPathSegment(offsetSeconds)
-  const base =
-    `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod` +
-    `${offset}/playlist.m3u8`
-  return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
-}
-
-/** originalVODLeaveURL は原本 VOD HLS セッションへの離脱ヒントの宛先。 */
-export function originalVODLeaveURL(site: string, recordingId: number, offsetSeconds?: number): string {
-  const offset = offsetPathSegment(offsetSeconds)
-  return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod${offset}/leave`
-}
-
 /**
  * sendPlaybackLeaveHint は離脱先 URL へ離脱のヒントを 1 回 fire-and-forget の POST で送る（失敗は無視する）。
  *
@@ -572,15 +514,13 @@ export type LiveLoadError =
   // 503。同時セッション上限 / チューナー枯渇 / シャットダウン中のいずれか。
   // 本文（プレーンテキスト）はそのまま運ぶ
   | { kind: 'capacity'; message: string }
-  // 追っかけ入力失敗後の再作成クールダウン。503 の容量不足とは区別する。
-  | { kind: 'chase-input'; title: string; message: string }
   // 想定外のステータス
   | { kind: 'other'; status: number; message: string }
 
 /** LiveLoadErrorInput はプレイリスト取得に失敗したときの HTTP / network 情報。 */
 export type LiveLoadErrorInput =
   | { kind: 'network' }
-  | { kind: 'http'; status: number; body: string; retryAfter?: string | null }
+  | { kind: 'http'; status: number; body: string }
 
 /** LiveLoadErrorClassifier は再生方式に応じて取得失敗を分類する関数。 */
 export type LiveLoadErrorClassifier = (result: LiveLoadErrorInput) => LiveLoadError
@@ -588,8 +528,7 @@ export type LiveLoadErrorClassifier = (result: LiveLoadErrorInput) => LiveLoadEr
 /**
  * classifyLiveLoadError はプレイリスト取得の結果をエラー種別に分類する。
  *
- * 503 はすべて `capacity` に落とす --- 原因の違いは再生方式ごとの strategy が伝える。
- * 追っかけ入力失敗の cooldown は方式ごとの strategy が `chase-input` に分類する。
+ * 503 は `capacity` に分類する。
  * 本文は必ずそのまま運ぶ（docs/frontend.md「エラーの本文も UI まで運ぶ」）。
  */
 export function classifyLiveLoadError(result: LiveLoadErrorInput): LiveLoadError {
@@ -692,7 +631,6 @@ export async function probeLivePlaylist(
       kind: 'http',
       status: response.status,
       body,
-      retryAfter: response.headers.get('Retry-After'),
     }),
   }
 }

@@ -656,8 +656,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 				return nil, err
 			}
 			liveConfig := convertLiveConfig(cfg.Live)
-			liveConfig.MediaDir = cfg.Storage.MediaDir
-			liveStreamers := newLiveStreamersBySiteWithMedia(mediaStore, bound, liveConfig)
+			liveStreamers := newLiveStreamersBySite(bound, liveConfig)
 			mounters = append(mounters, liveStreamers)
 			// idle GC ループ。egCtx が終わったら全セッションを止めて mirakc の
 			// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。
@@ -864,7 +863,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
 		CMDetect:                 cfg.CMDetect,
-		LiveEnabled:              cfg.Live.Enabled,
+		RecordingHLSEnabled:      cfg.RecordingHLS.Enabled,
 		EpgRetentionGrace:        cfg.Epg.RetentionGrace,
 		RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 		RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,

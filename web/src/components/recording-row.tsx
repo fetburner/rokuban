@@ -3,7 +3,6 @@ import { ChevronRight, Copy, ExternalLink, FolderOpen, Trash2 } from 'lucide-rea
 import { useRef, useState, type KeyboardEvent } from 'react'
 
 import type { Recording } from '@/api/generated'
-import type { LiveCapability } from '@/lib/capabilities'
 import { DropBadges, EncodeStatusBadges, IngestBadge, RecordingVerdictBadge } from '@/components/recording-badges'
 import { useCopyLink } from '@/lib/use-copy-link'
 import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
@@ -40,7 +39,6 @@ export type RecordingRowView = RecordingView
  */
 export function RecordingRow({
   recording,
-  liveCapability,
   trash,
   showSite,
   view,
@@ -53,7 +51,6 @@ export function RecordingRow({
   onOptionFocus,
 }: {
   recording: Recording
-  liveCapability: LiveCapability
   trash: boolean
   /** レジストリと読み込み済み録画の site の和集合が 2 件以上のときに出す。 */
   showSite: boolean
@@ -183,7 +180,6 @@ export function RecordingRow({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <RecordingVerdictBadge
             recording={recording}
-            liveCapability={liveCapability}
             isTrashed={trash}
           />
           {!trash && recording.status === 'finished' && recording.watchedAt === undefined && (

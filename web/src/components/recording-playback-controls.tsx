@@ -127,13 +127,13 @@ type RecordingPlaybackControlsProps = {
   /** 録画ファイルのように、ドラッグ中も実際の再生位置を動かす。 */
   seekDuringDrag?: boolean
   /**
-   * 追っかけのように、pointerup で最後に表示した秒を確定する。延長中は軸が毎秒伸びるので、
-   * 離した時点で同じ座標を計算し直すと見せた時刻と 1 秒ずれる（chase.mjs で実測）。
+   * 時間軸がスクラブ中に伸びるとき、pointerup で最後に表示した秒を確定する。延長中は軸が毎秒伸びるので、
+   * 離した時点で同じ座標を計算し直すと見せた時刻とずれうる。
    */
   commitLastDisplayedPreview?: boolean
   /** HLS のように、ドラッグ中だけ操作つまみを仮表示する。 */
   onScrubPreview?: (seconds: number | null) => void
-  /** 追っかけ・ライブ軸のホバー位置を更新する。 */
+  /** ライブ画面の番組軸・録画軸のホバー位置を更新する。 */
   onTimelineHoverChange?: (seconds: number | null) => void
   /** ポインタによるスクラブ開始・終了を通知する。 */
   onScrubbingChange?: (scrubbing: boolean) => void
@@ -273,7 +273,7 @@ export function RecordingPlaybackControls({
   // 幕を押したポインタの種類（click には pointerType が載らないブラウザがある）。
   const scrimPointerTypeRef = useRef('')
   const pendingKeyboardSeek = useRef<number | null>(null)
-  const chaseTimeline = timeline?.kind === 'chase' ? timeline : undefined
+  const liveRecordingTimeline = timeline?.kind === 'live-recording' ? timeline : undefined
   const liveTimeline = timeline?.kind === 'live-program' ? timeline : undefined
   const isLiveTimeline = liveTimeline !== undefined
   const hasTimeline = timeline !== undefined && timeline.kind !== 'fixed'
@@ -304,9 +304,9 @@ export function RecordingPlaybackControls({
   const recordingStartFraction = liveTimeline && range > 0 ? axisFraction(liveTimeline.recordingStartSeconds) : 0
   const plannedFraction = liveTimeline && range > 0 ? axisFraction(liveTimeline.plannedEndSeconds) : 0
   const liveEdgeFraction = liveTimeline && range > 0 ? axisFraction(liveTimeline.liveEdgeSeconds) : 0
-  // 追っかけの時刻は番組の長さに合わせて分で数える（ラフ: 「60:00」「70:12」）。
+  // ライブ画面の録画軸の時刻は番組の長さに合わせて分で数える（ラフ: 「60:00」「70:12」）。
   const formatAxisTime = (value: number) => formatPlaybackTime(value, !hasTimeline)
-  const chaseExtended = chaseTimeline?.extended ?? false
+  const liveRecordingExtended = liveRecordingTimeline?.extended ?? false
   const liveExtended = liveTimeline?.extended ?? false
   const axisExtended = timeline?.extended ?? false
   const volumeValue = muted ? 0 : volume
@@ -384,7 +384,7 @@ export function RecordingPlaybackControls({
         target = rangeMin
         break
       case 'End':
-        target = chaseTimeline?.liveEdgeSeconds ?? liveTimeline?.liveEdgeSeconds ?? durationSeconds
+        target = liveRecordingTimeline?.liveEdgeSeconds ?? liveTimeline?.liveEdgeSeconds ?? durationSeconds
         break
       default:
         return
@@ -711,7 +711,7 @@ export function RecordingPlaybackControls({
           >
             {timeline !== undefined && (
               <div
-                data-testid={chaseTimeline ? 'chase-timeline-track' : isLiveTimeline ? 'live-program-timeline-track' : undefined}
+                data-testid={liveRecordingTimeline ? 'live-recording-timeline-track' : isLiveTimeline ? 'live-program-timeline-track' : undefined}
                 className={cn(
                   isLiveTimeline
                     ? 'order-first mt-1 md:order-none md:mt-0 md:mb-1'
@@ -725,8 +725,8 @@ export function RecordingPlaybackControls({
                 aria-valuemin={rangeMin}
                 aria-valuemax={Math.max(rangeMin, rangeMax)}
                 aria-valuenow={seconds}
-                aria-valuetext={chaseTimeline
-                  ? `${formatAxisTime(seconds)} / 録画済み ${formatAxisTime(chaseTimeline.recordedEndSeconds)}`
+                aria-valuetext={liveRecordingTimeline
+                  ? `${formatAxisTime(seconds)} / 録画済み ${formatAxisTime(liveRecordingTimeline.recordedEndSeconds)}`
                   : liveTimeline?.ariaValueText ?? `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
                 aria-disabled={liveTimeline !== undefined ? !liveTimeline.canSeek : undefined}
                 tabIndex={!timeline.canSeek ? -1 : 0}
@@ -751,19 +751,19 @@ export function RecordingPlaybackControls({
                 onPointerCancel={handleSeekPointerCancel}
                 onPointerLeave={handleSeekPointerLeave}
               >
-                {chaseTimeline ? (
-                  // 追っかけ: 録っていない部分（録画開始より前・先端より後ろ）は点線、録画済みは灰、
+                {liveRecordingTimeline ? (
+                  // ライブ画面の録画軸: 録っていない部分（録画開始より前・先端より後ろ）は点線、録画済みは灰、
                   // 見たところ（録画開始からつまみまで）は白。
                   <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2">
                     {([
-                      ['before', 0, chaseTimeline.headSeconds],
-                      ['after', chaseTimeline.recordedEndSeconds, chaseTimeline.maxSeconds],
+                      ['before', 0, liveRecordingTimeline.headSeconds],
+                      ['after', liveRecordingTimeline.recordedEndSeconds, liveRecordingTimeline.maxSeconds],
                     ] as const)
                       .filter(([, start, end]) => end > start)
                       .map(([id, start, end]) => (
                         <div
                           key={id}
-                          data-testid={`chase-timeline-unrecorded-${id}`}
+                          data-testid={`live-recording-timeline-unrecorded-${id}`}
                           className="absolute inset-y-0 bg-[repeating-linear-gradient(to_right,white_0_3px,transparent_3px_6px)] opacity-40"
                           style={{
                             left: `${axisFraction(start) * 100}%`,
@@ -772,19 +772,19 @@ export function RecordingPlaybackControls({
                         />
                       ))}
                     <div
-                      data-testid="chase-timeline-recorded"
+                      data-testid="live-recording-timeline-recorded"
                       className="absolute inset-y-0 bg-white/40"
                       style={{
-                        left: `${axisFraction(chaseTimeline.headSeconds) * 100}%`,
-                        width: `${(axisFraction(chaseTimeline.recordedEndSeconds) - axisFraction(chaseTimeline.headSeconds)) * 100}%`,
+                        left: `${axisFraction(liveRecordingTimeline.headSeconds) * 100}%`,
+                        width: `${(axisFraction(liveRecordingTimeline.recordedEndSeconds) - axisFraction(liveRecordingTimeline.headSeconds)) * 100}%`,
                       }}
                     />
                     <div
-                      data-testid="chase-timeline-played"
+                      data-testid="live-recording-timeline-played"
                       className="absolute inset-y-0 bg-white"
                       style={{
-                        left: `${axisFraction(chaseTimeline.headSeconds) * 100}%`,
-                        width: `${Math.max(0, seekFraction - axisFraction(chaseTimeline.headSeconds)) * 100}%`,
+                        left: `${axisFraction(liveRecordingTimeline.headSeconds) * 100}%`,
+                        width: `${Math.max(0, seekFraction - axisFraction(liveRecordingTimeline.headSeconds)) * 100}%`,
                       }}
                     />
                   </div>
@@ -822,17 +822,17 @@ export function RecordingPlaybackControls({
                     />
                   </>
                 )}
-                {chaseTimeline && chaseTimeline.hoverSeconds !== null && (
+                {liveRecordingTimeline && liveRecordingTimeline.hoverSeconds !== null && (
                   <div
-                    data-testid="chase-hover-label"
+                    data-testid="live-recording-hover-label"
                     className="pointer-events-none absolute bottom-full z-20 mb-2 rounded bg-black/85 px-2 py-1 text-xs whitespace-nowrap"
                     style={{
-                      left: `${axisFraction(chaseTimeline.hoverSeconds) * 100}%`,
-                      transform: `translateX(-${axisFraction(chaseTimeline.hoverSeconds) * 100}%)`,
+                      left: `${axisFraction(liveRecordingTimeline.hoverSeconds) * 100}%`,
+                      transform: `translateX(-${axisFraction(liveRecordingTimeline.hoverSeconds) * 100}%)`,
                     }}
                   >
-                    <span className="font-mono">{formatAxisTime(chaseTimeline.hoverSeconds)}</span>
-                    {chaseTimeline.hoverLabel ? ` · ${chaseTimeline.hoverLabel}` : ''}
+                    <span className="font-mono">{formatAxisTime(liveRecordingTimeline.hoverSeconds)}</span>
+                    {liveRecordingTimeline.hoverLabel ? ` · ${liveRecordingTimeline.hoverLabel}` : ''}
                   </div>
                 )}
                 {liveTimeline && liveTimeline.hoverSeconds !== null && liveTimeline.hoverLabel !== null && (
@@ -927,26 +927,26 @@ export function RecordingPlaybackControls({
                   </div>
                 )}
               </div>
-              {chaseTimeline && (
+              {liveRecordingTimeline && (
                 <>
                   <div
                     aria-hidden="true"
-                    data-testid="chase-timeline-planned-end"
+                    data-testid="live-recording-timeline-planned-end"
                     className="pointer-events-none absolute top-1/2 z-[2] h-4 -translate-y-1/2 border-l-2 border-dashed border-white"
-                    style={{ left: `${axisFraction(chaseTimeline.plannedEndSeconds) * 100}%` }}
+                    style={{ left: `${axisFraction(liveRecordingTimeline.plannedEndSeconds) * 100}%` }}
                   />
                   <button
                     type="button"
-                    data-testid="chase-live-edge"
+                    data-testid="live-recording-live-edge"
                     aria-label={liveEdgeAction?.label ?? '録画の先端へ'}
-                    title={liveEdgeAction?.title ?? `録画の先端 ${formatAxisTime(chaseTimeline.recordedEndSeconds)}（押すと先端へ）`}
+                    title={liveEdgeAction?.title ?? `録画の先端 ${formatAxisTime(liveRecordingTimeline.recordedEndSeconds)}（押すと先端へ）`}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation()
                       onLiveEdgeSeek?.()
                     }}
                     className="absolute top-1/2 z-[3] size-6 -translate-x-1/2 -translate-y-1/2 rounded-full focus-visible:outline-2 focus-visible:outline-white"
-                    style={{ left: `${axisFraction(chaseTimeline.liveEdgeSeconds) * 100}%` }}
+                    style={{ left: `${axisFraction(liveRecordingTimeline.liveEdgeSeconds) * 100}%` }}
                   >
                     <span aria-hidden="true" className="mx-auto block h-4 w-0.5 bg-red-500" />
                   </button>
@@ -960,38 +960,38 @@ export function RecordingPlaybackControls({
               延長中は「予定 … ¦」の ¦ を予定終端の印に合わせて置く（ラフ 7。ラフ 6 の文言は利用者の決定で時刻だけに変えた）。
               置き場は実レイアウトの幅で決める（上の `axisLabelsRef` の effect）。
             */}
-            {chaseTimeline && (
+            {liveRecordingTimeline && (
               <div
                 ref={axisLabelsRef}
-                data-testid="chase-timeline-labels"
+                data-testid="live-recording-timeline-labels"
                 className="relative mb-1 hidden h-4 text-xs whitespace-nowrap text-white/75 md:block"
               >
                 <span data-axis-start className="absolute left-0 font-mono">{formatAxisTime(rangeMin)}</span>
-                {chaseExtended ? (
+                {liveRecordingExtended ? (
                   <>
                     <span
-                      data-testid="chase-timeline-planned-label"
-                      data-axis-mark={axisFraction(chaseTimeline.plannedEndSeconds)}
+                      data-testid="live-recording-timeline-planned-label"
+                      data-axis-mark={axisFraction(liveRecordingTimeline.plannedEndSeconds)}
                       className="absolute"
                     >
-                      予定 <span className="font-mono">{formatAxisTime(chaseTimeline.plannedEndSeconds)}</span>{' '}
+                      予定 <span className="font-mono">{formatAxisTime(liveRecordingTimeline.plannedEndSeconds)}</span>{' '}
                       <span data-axis-pointer>¦</span>
                     </span>
-                    <span data-testid="chase-timeline-end" data-axis-end className="absolute right-0 text-red-400">
-                      延長中 · 先端 <span className="font-mono">{formatAxisTime(chaseTimeline.recordedEndSeconds)}</span>
+                    <span data-testid="live-recording-timeline-end" data-axis-end className="absolute right-0 text-red-400">
+                      延長中 · 先端 <span className="font-mono">{formatAxisTime(liveRecordingTimeline.recordedEndSeconds)}</span>
                     </span>
                   </>
                 ) : (
                   <>
                     <span
-                      data-testid="chase-live-edge-label"
-                      data-axis-mark={axisFraction(chaseTimeline.liveEdgeSeconds)}
+                      data-testid="live-recording-live-edge-label"
+                      data-axis-mark={axisFraction(liveRecordingTimeline.liveEdgeSeconds)}
                       className="absolute font-mono text-red-400"
                     >
-                      {formatAxisTime(chaseTimeline.recordedEndSeconds)}
+                      {formatAxisTime(liveRecordingTimeline.recordedEndSeconds)}
                     </span>
-                    <span data-testid="chase-timeline-end" data-axis-end className="absolute right-0">
-                      <span className="font-mono">{formatAxisTime(chaseTimeline.plannedEndSeconds)}</span> まで（予定）
+                    <span data-testid="live-recording-timeline-end" data-axis-end className="absolute right-0">
+                      <span className="font-mono">{formatAxisTime(liveRecordingTimeline.plannedEndSeconds)}</span> まで（予定）
                     </span>
                   </>
                 )}
@@ -1110,10 +1110,10 @@ export function RecordingPlaybackControls({
                 <span data-testid="playback-time" className="shrink-0 px-1 font-mono text-xs whitespace-nowrap md:px-2 md:text-sm">
                   {liveTimeline
                     ? `${formatPlaybackTime(liveTimeline.liveEdgeSeconds, false)} / ${formatPlaybackTime(liveTimeline.plannedEndSeconds, false)}`
-                    : chaseTimeline ? (
+                    : liveRecordingTimeline ? (
                       <>
                         {formatAxisTime(seconds)} / <span className="hidden md:inline">録画済み </span>
-                        {formatAxisTime(chaseTimeline.recordedEndSeconds)}
+                        {formatAxisTime(liveRecordingTimeline.recordedEndSeconds)}
                       </>
                     ) : `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
                 </span>
