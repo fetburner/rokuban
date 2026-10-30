@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -21,6 +22,8 @@ type objectCompanion struct {
 	ContentType string
 }
 
+const generatedObjectCleanupTimeout = 10 * time.Second
+
 // publishGeneratedObject は派生物の置き場への公開を、予約・Put・DB 公開の順に進める。
 //
 //  1. pending のコピー行を commit する（pendingPrepared なら呼び出し側が済ませている）。
@@ -28,7 +31,8 @@ type objectCompanion struct {
 //  3. commit が公開の tx で pending を active にし、SHA-256 を論理行へ書く。
 //
 // guard は Put と DB commit の直前に呼び、メディア置き場のマウント状態を再確認する。
-// commit は Put の後に呼ぶ。公開に至らなかった pending と key は、削除 reconcile が猶予後に回収する。
+// commit は Put の後に呼ぶ。公開に至らなかった Put 済み key は自分が作った分だけ即時削除し、
+// cleanup に失敗した場合やプロセス停止時は pending reclaim が猶予後に回収する。
 func publishGeneratedObject(
 	ctx context.Context,
 	objects objstore.Store,
@@ -43,6 +47,20 @@ func publishGeneratedObject(
 	if objects == nil || publisher == nil {
 		return 0, false, fmt.Errorf("object store and derived media publisher are required")
 	}
+	var uploadedKeys []string
+	keepUploadedObjects := false
+	defer func() {
+		if keepUploadedObjects || len(uploadedKeys) == 0 {
+			return
+		}
+		if cleanupErr := deleteUnpublishedGeneratedObjects(ctx, objects, uploadedKeys); cleanupErr != nil {
+			if retErr != nil {
+				retErr = fmt.Errorf("cleaning up generated objects after %s: %w", retErr.Error(), cleanupErr)
+			} else {
+				retErr = fmt.Errorf("cleaning up unpublished generated objects: %w", cleanupErr)
+			}
+		}
+	}()
 	size, checksum, err := hashObjectFile(ctx, scratchPath)
 	if err != nil {
 		return 0, false, fmt.Errorf("hashing generated object %q: %w", pending.RelPath, err)
@@ -69,8 +87,12 @@ func publishGeneratedObject(
 			return 0, false, err
 		}
 	}
-	if err := uploadObjectFile(ctx, objects, pending.RelPath, scratchPath, size, checksum, contentType); err != nil {
-		if errors.Is(err, objstore.ErrAlreadyExists) {
+	putSucceeded, err := uploadObjectFileTracked(ctx, objects, pending.RelPath, scratchPath, size, checksum, contentType)
+	if putSucceeded {
+		uploadedKeys = append(uploadedKeys, pending.RelPath)
+	}
+	if err != nil {
+		if errors.Is(err, objstore.ErrAlreadyExists) && !putSucceeded {
 			// Another publisher won the no-replace race for this reserved key. Its
 			// pending row owns the bytes and will either activate or reclaim them.
 			return 0, false, nil
@@ -87,7 +109,11 @@ func publishGeneratedObject(
 				return size, false, err
 			}
 		}
-		if err := uploadObjectFile(ctx, objects, companion.Key, companion.Path, companionSize, companionChecksum, companion.ContentType); err != nil {
+		putSucceeded, err := uploadObjectFileTracked(ctx, objects, companion.Key, companion.Path, companionSize, companionChecksum, companion.ContentType)
+		if putSucceeded {
+			uploadedKeys = append(uploadedKeys, companion.Key)
+		}
+		if err != nil {
 			return size, false, err
 		}
 	}
@@ -98,12 +124,31 @@ func publishGeneratedObject(
 	}
 	published, err = commit(size, checksum)
 	if err != nil {
+		// ErrStalePublishPlan is a definitive rejection before activation. In
+		// particular, pending reclaim may have deleted the key just before Put;
+		// remove the bytes this publisher created after its row was reclaimed.
+		keepUploadedObjects = !errors.Is(err, store.ErrStalePublishPlan)
 		return size, false, err
 	}
 	if !published {
 		return 0, false, nil
 	}
+	keepUploadedObjects = true
 	return size, published, nil
+}
+
+func deleteUnpublishedGeneratedObjects(ctx context.Context, objects objstore.Store, keys []string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), generatedObjectCleanupTimeout)
+	defer cancel()
+	var cleanupErr error
+	// Companion subtitles are adjacent to the encoded object, so remove them first.
+	for i := len(keys) - 1; i >= 0; i-- {
+		if err := objects.Delete(cleanupCtx, keys[i]); err != nil {
+			metrics.RecordObjectStoreError("delete", err)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("deleting generated object %q: %w", keys[i], err))
+		}
+	}
+	return cleanupErr
 }
 
 func requireGeneratedObjectKeyAvailable(ctx context.Context, objects objstore.Store, key string) error {
@@ -164,20 +209,25 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, 
 }
 
 func uploadObjectFile(ctx context.Context, objects objstore.Store, key, path string, size int64, checksum [sha256.Size]byte, contentType string) error {
+	_, err := uploadObjectFileTracked(ctx, objects, key, path, size, checksum, contentType)
+	return err
+}
+
+func uploadObjectFileTracked(ctx context.Context, objects objstore.Store, key, path string, size int64, checksum [sha256.Size]byte, contentType string) (bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("reopening generated object %q: %w", key, err)
+		return false, fmt.Errorf("reopening generated object %q: %w", key, err)
 	}
 	putErr := objects.Put(ctx, key, f, size, checksum, contentType)
 	closeErr := f.Close()
 	if putErr != nil {
 		metrics.RecordObjectStoreError("put", putErr)
-		return fmt.Errorf("putting generated object %q: %w", key, putErr)
+		return false, fmt.Errorf("putting generated object %q: %w", key, putErr)
 	}
 	if closeErr != nil {
-		return fmt.Errorf("closing generated object %q after upload: %w", key, closeErr)
+		return true, fmt.Errorf("closing generated object %q after upload: %w", key, closeErr)
 	}
-	return nil
+	return true, nil
 }
 
 func objectContentType(relPath string) string {

@@ -3202,6 +3202,40 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 	}
 }
 
+// FS に残る derived copy は、storage.derived の切替後も FS の実体として監査する。
+func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesystem(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
+		"encoded/old-filesystem-copy.mp4", []byte("encoded"))
+	seenOnDisk := make(map[string]struct{})
+	if err := walkMediaFiles(mediaDir, func(relPath string, _ fs.FileInfo) {
+		seenOnDisk[relPath] = struct{}{}
+	}); err != nil {
+		t.Fatalf("walking media dir: %v", err)
+	}
+	worker := &DeleteReconcileWorker{
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		DerivedObjects: testFilesystemObjectStore(t, t.TempDir()), DerivedObjectStoreName: objectStoreName,
+	}
+	if _, err := worker.reconcileMissingAssets(context.Background(), seenOnDisk); err != nil {
+		t.Fatalf("reconciling missing assets after derived-store switch: %v", err)
+	}
+	var missingCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&missingCount); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if missingCount != 0 {
+		t.Fatalf("missing_media_assets count for the present FS copy = %d, want 0", missingCount)
+	}
+}
+
 // エイジング窓を過ぎた実体無し候補は Warn ログ相当のメトリクスに反映される。
 // first_seen をあらかじめ過去に投入し、14 日待たずに検証する
 // （TestDeleteReconcileWorker_Orphan_AgedOut_Deletes と同じ手法）。

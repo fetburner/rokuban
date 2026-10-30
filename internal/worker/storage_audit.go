@@ -226,7 +226,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 	candidates := make(map[int64]struct{})
 	for _, a := range active {
 		present := false
-		if a.Kind != store.AssetKindOriginal {
+		if a.Kind != store.AssetKindOriginal && w.MediaStoreName == w.DerivedObjectStoreName {
 			if w.DerivedObjects == nil {
 				return false, fmt.Errorf("derived object store is not configured while auditing active media asset copy %d", a.ID)
 			}
@@ -238,6 +238,10 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 				return false, fmt.Errorf("checking derived media asset copy %d: %w", a.ID, headErr)
 			}
 		} else {
+			// active is scoped to MediaStoreName. After storage.derived changes from
+			// this filesystem store to an independent object store, older derived
+			// copies still belong to this filesystem and must be checked against its
+			// walk, not Head'ed in the new object store.
 			_, present = seenOnDisk[a.RelPath]
 		}
 		if present {
