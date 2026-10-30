@@ -759,6 +759,60 @@ func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T)
 	}
 }
 
+// A failed companion Put still cleans a main key whose pending row was reclaimed during Put.
+func TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim(t *testing.T) {
+	env := newObjectEnv(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, env.pool)
+	key := thumbnailRelPath(recordingID, 0)
+	companionKey := "subtitles/reclaimed.vtt"
+	pending := store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
+	}
+	mainScratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
+	companionScratch := filepath.Join(t.TempDir(), "subtitle.vtt")
+	writeFile(t, mainScratch, []byte("thumbnail"))
+	writeFile(t, companionScratch, []byte("subtitle"))
+	companionErr := errors.New("injected companion Put failure")
+	reclaimed := false
+	objects := beforePutObjectStore{
+		Store: env.objects,
+		beforePut: func(putCtx context.Context, putKey string) error {
+			switch putKey {
+			case key:
+				var copyID int64
+				if err := env.pool.QueryRow(putCtx,
+					`SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2 AND state = 'pending'`, objectStoreName, key,
+				).Scan(&copyID); err != nil {
+					return fmt.Errorf("loading pending copy before Put: %w", err)
+				}
+				var err error
+				reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now().Add(time.Second), func() error { return nil })
+				return err
+			case companionKey:
+				return companionErr
+			default:
+				return fmt.Errorf("unexpected Put key %q", putKey)
+			}
+		},
+	}
+	commitCalled := false
+	_, published, err := publishGeneratedObject(ctx, objects, env.media, pending, mainScratch, "image/jpeg", false, nil,
+		func(int64, [sha256.Size]byte) (bool, error) {
+			commitCalled = true
+			return false, nil
+		}, objectCompanion{Key: companionKey, Path: companionScratch, ContentType: "text/vtt"})
+	if !reclaimed {
+		t.Fatal("pending copy was not reclaimed during the main Put")
+	}
+	if published || !errors.Is(err, companionErr) || commitCalled {
+		t.Fatalf("publish after companion failure = (published %t, err %v, commit called %t), want companion error without commit", published, err, commitCalled)
+	}
+	if env.objectExists(t, key) {
+		t.Fatal("main object written after pending reclaim remains without a live copy")
+	}
+}
+
 // encode が ffmpeg の前に予約した世代は、公開前に止まっても再利用しない。
 func TestObjectEncodeReservationNeverReusesAnInterruptedGeneration(t *testing.T) {
 	env := newObjectEnv(t)

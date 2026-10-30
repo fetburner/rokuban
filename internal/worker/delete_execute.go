@@ -480,7 +480,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", err)
 		return
 	}
-	if t.Kind != store.AssetKindOriginal && w.MediaStoreName != "" && w.MediaStoreName == w.DerivedObjectStoreName {
+	if t.Kind != store.AssetKindOriginal && w.MediaStoreName != "" && mediaScopeIsDerivedObjectStore(w.MediaStoreName, w.DerivedObjectStoreName) {
 		if w.DerivedObjects == nil {
 			log.Error("delete_reconcile: derived object store is not configured")
 			return
@@ -623,7 +623,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 	log := slog.With("media_asset_id", a.MediaAssetID, "media_asset_copy_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
 
 	var statErr error
-	if a.Kind == store.AssetKindOriginal {
+	if a.Kind == store.AssetKindOriginal || !mediaScopeIsDerivedObjectStore(w.MediaStoreName, w.DerivedObjectStoreName) {
 		path, err := mediapath.Resolve(w.MediaDir, a.RelPath)
 		if err != nil {
 			log.Error("delete_reconcile: rejecting rel_path outside the media directory while resolving revert candidate", "err", err)

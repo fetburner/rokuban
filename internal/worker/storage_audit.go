@@ -226,7 +226,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 	candidates := make(map[int64]struct{})
 	for _, a := range active {
 		present := false
-		if a.Kind != store.AssetKindOriginal && w.MediaStoreName == w.DerivedObjectStoreName {
+		if a.Kind != store.AssetKindOriginal && mediaScopeIsDerivedObjectStore(w.MediaStoreName, w.DerivedObjectStoreName) {
 			if w.DerivedObjects == nil {
 				return false, fmt.Errorf("derived object store is not configured while auditing active media asset copy %d", a.ID)
 			}

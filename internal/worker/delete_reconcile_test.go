@@ -30,6 +30,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -881,6 +882,42 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 	}
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("webhook fired for a restored recording: %+v", events)
+	}
+}
+
+// 古い FS 派生コピーの deleting 状態は、derived の置き場を S3 に切り替えた後も FS で実体を確認する。
+func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFilesystem(t *testing.T) {
+	ctx := context.Background()
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	const relPath = "encoded/old-filesystem-copy.mp4"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("encoded"))
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("marking filesystem copy deleting: %v", err)
+	}
+
+	mediaDelete := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, objectStoreName)
+	worker := &DeleteReconcileWorker{
+		MediaDelete:            mediaDelete,
+		MediaDir:               mediaDir,
+		MediaStoreName:         dbtest.StoreName,
+		DerivedObjects:         testFilesystemObjectStore(t, t.TempDir()),
+		DerivedObjectStoreName: objectStoreName,
+	}
+	if err := worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName); err != nil {
+		t.Fatalf("restoring unqualified deleting copies: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("filesystem derived copy state = %q, want active", got)
+	}
+	if !fileExists(filepath.Join(mediaDir, filepath.FromSlash(relPath))) {
+		t.Fatal("filesystem derived object was lost after switching the derived store to S3")
 	}
 }
 

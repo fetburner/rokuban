@@ -32,7 +32,7 @@ const generatedObjectCleanupTimeout = 10 * time.Second
 //
 // guard は Put と DB commit の直前に呼び、メディア置き場のマウント状態を再確認する。
 // commit は Put の後に呼ぶ。通常の未公開 pending は reclaim まで保持するが、
-// pending row が Put と競合して回収されたときは、自分が Put した key を即時削除する。
+// pending row が公開中に退役し、終了時に live copy が無ければ自分の key を削除する。
 func publishGeneratedObject(
 	ctx context.Context,
 	objects objstore.Store,
@@ -48,17 +48,12 @@ func publishGeneratedObject(
 		return 0, false, fmt.Errorf("object store and derived media publisher are required")
 	}
 	var uploadedKeys []string
-	cleanupUploadedObjects := false
 	defer func() {
-		if !cleanupUploadedObjects || len(uploadedKeys) == 0 {
+		if published || len(uploadedKeys) == 0 {
 			return
 		}
-		if cleanupErr := deleteUnpublishedGeneratedObjects(ctx, objects, uploadedKeys); cleanupErr != nil {
-			if retErr != nil {
-				retErr = fmt.Errorf("cleaning up generated objects after %s: %w", retErr.Error(), cleanupErr)
-			} else {
-				retErr = fmt.Errorf("cleaning up unpublished generated objects: %w", cleanupErr)
-			}
+		if cleanupErr := cleanupGeneratedObjectsIfUnowned(ctx, publisher, objects, pending.RelPath, uploadedKeys); cleanupErr != nil {
+			retErr = combineGeneratedObjectCleanupError(retErr, cleanupErr)
 		}
 	}()
 	size, checksum, err := hashObjectFile(ctx, scratchPath)
@@ -125,11 +120,9 @@ func publishGeneratedObject(
 	published, err = commit(size, checksum)
 	if err != nil {
 		// A stale plan can also leave a live pending row for normal reclaim. A
-		// missing-row sentinel means this Put no longer has a live copy owner, so
-		// remove its bytes. Preserve stale-plan errors for encode replanning; an
-		// early skip with no live row is still a successful skip after cleanup.
-		cleanupUploadedObjects = errors.Is(err, store.ErrPendingMediaAssetCopyMissing)
-		if cleanupUploadedObjects && !errors.Is(err, store.ErrStalePublishPlan) {
+		// missing-row sentinel identifies a reclaim race. The deferred owner check
+		// also covers failures before commit, such as a companion Put error.
+		if errors.Is(err, store.ErrPendingMediaAssetCopyMissing) && !errors.Is(err, store.ErrStalePublishPlan) {
 			return 0, false, nil
 		}
 		return size, false, err
@@ -138,6 +131,30 @@ func publishGeneratedObject(
 		return 0, false, nil
 	}
 	return size, published, nil
+}
+
+func cleanupGeneratedObjectsIfUnowned(ctx context.Context, publisher store.DerivedMediaPublisher, objects objstore.Store, relPath string, keys []string) error {
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), generatedObjectCleanupTimeout)
+	defer cancel()
+	live, err := publisher.HasLiveMediaAssetCopy(checkCtx, relPath)
+	if err != nil {
+		return fmt.Errorf("checking ownership of uploaded generated object %q: %w", relPath, err)
+	}
+	if live {
+		return nil
+	}
+	return deleteUnpublishedGeneratedObjects(ctx, objects, keys)
+}
+
+func combineGeneratedObjectCleanupError(publishErr, cleanupErr error) error {
+	if publishErr == nil {
+		return fmt.Errorf("cleaning up unpublished generated objects: %w", cleanupErr)
+	}
+	if errors.Is(publishErr, store.ErrStalePublishPlan) {
+		// Do not let EncodeWorker treat a failed ownership check as a clean stale-plan replan.
+		return fmt.Errorf("checking cleanup ownership after stale publish plan (%s): %w", publishErr.Error(), cleanupErr)
+	}
+	return errors.Join(publishErr, fmt.Errorf("cleaning up generated objects after %s: %w", publishErr.Error(), cleanupErr))
 }
 
 func deleteUnpublishedGeneratedObjects(ctx context.Context, objects objstore.Store, keys []string) error {

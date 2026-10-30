@@ -156,6 +156,8 @@ type DerivedMediaPublisher interface {
 	// PreparePendingMediaAssetCopy は Store.Put の前に pending のコピー行を commit する。
 	// 世代がすでに使われていれば ErrGenerationAdvanced を返す。
 	PreparePendingMediaAssetCopy(ctx context.Context, input PendingMediaAssetCopy) error
+	// HasLiveMediaAssetCopy は置き場に未削除のコピー行があるかを返す。
+	HasLiveMediaAssetCopy(ctx context.Context, relPath string) (bool, error)
 	// PublishEncoded は encode の計画を再確認し、Put 済み PendingCopy を active にする。
 	PublishEncoded(ctx context.Context, input EncodedPublishInput, publish func() error) (published bool, err error)
 	// PublishThumbnail はサムネイルの資格を再確認し、Put 済み PendingCopy を active にする。

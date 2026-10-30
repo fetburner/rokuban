@@ -137,7 +137,7 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 encode は ffmpeg の前に DB で新世代の `pending` コピーを予約し、その世代のキーへ出力する。ffmpeg はローカル scratch に書く。完成したファイルの正確なサイズと SHA-256 を計算し、`Store.Put` に渡してから公開 transaction を実行する。transaction は attempt token と論理行を再確認し、コピーを `active` にして論理サイズ・チェックサムを更新する。Put または commit が失敗した場合はキーを配信せず、猶予後の reconcile が `pending` 行と孤立キーを回収する。
 
-回収が Put 中に pending 行を退役させた場合、公開側は live 行が無いことを再確認して自分のキーを削除する。
+回収が Put 中または後続の公開処理中に pending 行を退役させた場合、公開側は処理終了時に live 行が無いことを再確認して自分のキーを削除する。
 
 この順序は object-store 実装に依存しない。`Store.Put` の保証は「全バイトか何もない」「既存キーを上書きしない」「サイズと SHA-256 を検証する」「成功時には durable」であり、DB の `active` commit がアプリケーション上の公開点である。キー世代は再利用しないので、失敗後の再試行も別キーを使う。旧世代は `storage.transfer.overlap` が過ぎるまで残す。
 
@@ -173,6 +173,7 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - staged file の walk と削除: `walkMediaFiles`、`deleteOrphanFile`
 - encoded pending の字幕削除失敗時に本体と行を残す: `TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds`
 - Put 中に回収された派生物 key を公開側が削除する: `TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed`
+- companion Put の失敗時に main key を片付ける: `TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim`
 
 </details>
 
