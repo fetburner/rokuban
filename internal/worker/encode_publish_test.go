@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -298,8 +299,10 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 		t.Errorf("canonical = %d bytes, want A's %d bytes", len(got), len(contentA))
 	}
 	var size int64
-	if err := pool.QueryRow(ctx, `SELECT size_bytes FROM media_assets
-		WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264' AND state = 'active'`, recordingID).Scan(&size); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT a.size_bytes FROM media_assets a
+		JOIN media_asset_copies c ON c.media_asset_id = a.id AND c.store = $2
+		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`,
+		recordingID, dbtest.StoreName).Scan(&size); err != nil {
 		t.Fatal(err)
 	}
 	if size != int64(len(contentA)) {
@@ -345,7 +348,7 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	}
 	var ownerIDAfter int64
 	var ownerProfile, ownerState string
-	if err := pool.QueryRow(ctx, `SELECT recording_id, profile, state FROM media_assets WHERE id = $1`, ownerAssetID).
+	if err := pool.QueryRow(ctx, `SELECT a.recording_id, a.profile, c.state FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.id = $1`, ownerAssetID).
 		Scan(&ownerIDAfter, &ownerProfile, &ownerState); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +375,8 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	if attemptError == nil {
 		t.Fatal("candidate attempt error is NULL, want the rel_path reservation failure")
 	}
-	if !strings.Contains(*attemptError, "upserting encoded media asset: conflict") {
+	if !strings.Contains(*attemptError, "recording encoded media asset copy: upserting media asset copy") ||
+		!strings.Contains(*attemptError, "affected 0 rows: conflict") {
 		t.Errorf("candidate attempt error = %s, want the rel_path reservation failure", *attemptError)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
@@ -475,7 +479,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 		t.Fatalf("publishEncoded err = %v, want a successful skip", r.err)
 	}
 	var rel string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_assets WHERE id = $1`, assetID).Scan(&rel); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 ORDER BY generation DESC, id DESC LIMIT 1`, assetID).Scan(&rel); err != nil {
 		t.Fatal(err)
 	}
 	if rel != g3 {
@@ -588,7 +592,7 @@ func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
 		RecordingID: sc.recordingID,
 		Profile:     stringPtr("cut"),
 	})
-	if err != nil || asset.ID != sc.assetID || asset.RelPath != sc.finalRel {
+	if err != nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != sc.finalRel {
 		t.Fatalf("encoded asset after publish = %+v, err %v; want id %d at %s", asset, err, sc.assetID, sc.finalRel)
 	}
 	frozen, err := frozenKeepRanges(ctx, pool, sc.recordingID, "cut")
@@ -644,7 +648,7 @@ func TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain(t *testing.T) {
 		RecordingID: sc.recordingID,
 		Profile:     stringPtr("cut"),
 	})
-	if err != nil || asset.ID != sc.assetID || asset.RelPath != "rebuild/pressed-again_cut.g1.mp4" {
+	if err != nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != "rebuild/pressed-again_cut.g1.mp4" {
 		t.Fatalf("encoded asset after skip = %+v, err %v; want the previous generation", asset, err)
 	}
 	if got := unsatisfiedRebuildCount(t, pool, sc.recordingID); got != 1 {
@@ -952,7 +956,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		t.Fatal("delete did not reach the unlink boundary")
 	}
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_assets WHERE id = $1`, assetID).Scan(&state); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&state); err != nil {
 		release()
 		<-deleteDone
 		t.Fatal(err)
@@ -969,7 +973,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		_, _, err := worker.publishEncoded(ctx, encodePublishInput{
 			recordingID: recordingID, profile: "h264", attempt: attempt,
 			relPath: relPath, finalPath: finalPath, scratchOut: scratchOut,
-			observed: encodePlan{observedRelPath: relPath},
+			observed: encodePlan{observedGeneration: new(int64)},
 		})
 		encodeDone <- err
 	}()
@@ -1005,7 +1009,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 	}
 	var finalState string
 	var size int64
-	if err := pool.QueryRow(ctx, `SELECT state, size_bytes FROM media_assets WHERE id = $1`, assetID).Scan(&finalState, &size); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.id = $1 ORDER BY c.id DESC LIMIT 1`, assetID).Scan(&finalState, &size); err != nil {
 		t.Fatal(err)
 	}
 	if finalState != "active" || size != int64(len(next)) {
@@ -1101,7 +1105,6 @@ func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
 			_, published, err := worker.publishEncoded(ctx, encodePublishInput{
 				recordingID: recordingID, profile: "h264", attempt: attempt,
 				relPath: relPath, finalPath: finalPath, scratchOut: scratch,
-				observed: encodePlan{},
 			})
 			done <- publishResult{published: published, err: err}
 		}()
@@ -1149,8 +1152,8 @@ func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
 	}
 	var state string
 	var size int64
-	if err := pool.QueryRow(ctx, `SELECT state, size_bytes FROM media_assets
-		WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264'`, recordingID).Scan(&state, &size); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.recording_id = $1 AND kind = 'encoded' AND profile = 'h264'`, recordingID).Scan(&state, &size); err != nil {
 		t.Fatal(err)
 	}
 	if state != "active" || size != int64(len(contentB)) {
@@ -1221,4 +1224,15 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	if got := unsatisfiedRebuildCount(t, pool, recordingID); got != 0 {
 		t.Fatalf("unsatisfied rebuilds after satisfied skip = %d, want 0", got)
 	}
+}
+
+// currentCopyRelPath は論理資産の現行世代の active コピーのパスを返す。無ければ空文字列を返す。
+func currentCopyRelPath(t *testing.T, pool *pgxpool.Pool, assetID int64) string {
+	t.Helper()
+	var relPath string
+	err := pool.QueryRow(context.Background(), `SELECT rel_path FROM active_media_asset_copies($1, NULL) LIMIT 1`, assetID).Scan(&relPath)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("reading the current copy of asset %d: %v", assetID, err)
+	}
+	return relPath
 }

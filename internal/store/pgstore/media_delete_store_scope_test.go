@@ -125,17 +125,6 @@ func (e storeScopeEnv) functionAssetIDs(t *testing.T) []int64 {
 	return scanInt64s(t, rows)
 }
 
-func (e storeScopeEnv) legacyViewAssetIDs(t *testing.T) []int64 {
-	t.Helper()
-	rows, err := e.pool.Query(context.Background(),
-		`SELECT asset_id FROM until_encoded_deletable_originals ORDER BY asset_id`)
-	if err != nil {
-		t.Fatalf("querying legacy until_encoded_deletable_originals view: %v", err)
-	}
-	defer rows.Close()
-	return scanInt64s(t, rows)
-}
-
 type int64Rows interface {
 	Next() bool
 	Scan(...any) error
@@ -192,7 +181,7 @@ func TestDerivedReadersRequireCurrentGenerationAcrossStores(t *testing.T) {
 	recordingID, originalID, assets := env.untilEncodedFixture(t)
 	encodedID := assets[store.AssetKindEncoded]
 	env.moveCopy(t, encodedID, otherStoreName)
-	if _, err := env.pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1, rel_path = 'encoded/h264.g1.mp4' WHERE id = $1`, encodedID); err != nil {
+	if _, err := env.pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, encodedID); err != nil {
 		t.Fatalf("advancing encoded generation: %v", err)
 	}
 	if _, err := env.pool.Exec(ctx, `
@@ -281,49 +270,6 @@ VALUES ($1, 'h264', '{[0,60000)}'::int8multirange)`, recordingID); err != nil {
 }
 
 func stringPointer(value string) *string { return &value }
-
-// 旧 binary が読む旧 view は、関数と同じ原本を返す（対象になる録画とならない録画の両方）。
-func TestLegacyUntilEncodedViewMatchesFunction(t *testing.T) {
-	env := newStoreScopeEnv(t)
-	_, qualifying, _ := env.untilEncodedFixture(t)
-	_, incompleteOriginal, incompleteDerived := env.untilEncodedFixture(t)
-	env.setCopyState(t, incompleteDerived[store.AssetKindThumbnail], dbtest.StoreName, "deleted")
-
-	fn := env.functionAssetIDs(t)
-	view := env.legacyViewAssetIDs(t)
-	if !slices.Equal(fn, []int64{qualifying}) {
-		t.Fatalf("function originals = %v, want [%d] (and not %d)", fn, qualifying, incompleteOriginal)
-	}
-	if !slices.Equal(view, fn) {
-		t.Fatalf("legacy view originals = %v, function originals = %v, want equal", view, fn)
-	}
-
-	var relPath, state string
-	var size int64
-	if err := env.pool.QueryRow(context.Background(),
-		`SELECT rel_path, size_bytes, state FROM until_encoded_deletable_originals WHERE asset_id = $1`, qualifying).Scan(&relPath, &size, &state); err != nil {
-		t.Fatalf("reading legacy view columns: %v", err)
-	}
-	if relPath == "" || size != 1 || state != "active" {
-		t.Fatalf("legacy view columns = (%q, %d, %q), want the media_assets row's rel_path, size 1, active", relPath, size, state)
-	}
-}
-
-// 2 つの置き場で資格を満たす原本も、旧 view は 1 行しか返さない。
-func TestLegacyUntilEncodedViewReturnsOneRowPerOriginal(t *testing.T) {
-	env := newStoreScopeEnv(t)
-	_, originalID, derived := env.untilEncodedFixture(t)
-	for _, id := range []int64{originalID, derived[store.AssetKindEncoded], derived[store.AssetKindThumbnail], derived[store.AssetKindSeekTiles]} {
-		if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
-			MediaAssetID: id, Store: otherStoreName, RelPath: fmt.Sprintf("sites/default/store-scope-other-%d", id), State: "active",
-		}); err != nil {
-			t.Fatalf("adding other-store copy for asset %d: %v", id, err)
-		}
-	}
-	if got := env.legacyViewAssetIDs(t); !slices.Equal(got, []int64{originalID}) {
-		t.Fatalf("legacy view originals = %v, want one row [%d]", got, originalID)
-	}
-}
 
 // forEachCopyStore は同じ検査を、コピーが別の置き場にある場合と自分の置き場にある場合で走らせる。
 func forEachCopyStore(t *testing.T, check func(t *testing.T, copyStore string, own bool)) {
@@ -723,5 +669,58 @@ func TestUntilEncodedUsesDerivedStoreNotWorkerStore(t *testing.T) {
 				t.Fatalf("MarkUntilEncodedDeleting = %v, want %v", marked, tc.want)
 			}
 		})
+	}
+}
+
+// removed_encoded_assets の「他に現行のコピーがある版が残る」は、active_media_asset_copies の現行判定を使う。
+// 旧世代のコピーしか active でない版を残る版に数えると、現行ファイルが無いのに最後の版を消してしまう。
+func TestRemovedEncodedAssetsCountsOnlyCurrentGenerationCopies(t *testing.T) {
+	ctx := context.Background()
+	env := newStoreScopeEnv(t)
+	recordingID := env.recording(t)
+	removed, kept := "h264", "h265"
+	encoded := func(profile *string) int64 {
+		return dbtest.MediaAsset(t, env.pool, recordingID, func(p *dbtest.MediaAssetParams) {
+			p.Kind = store.AssetKindEncoded
+			p.Profile = profile
+			p.RelPath = fmt.Sprintf("encoded/%d.%s.mp4", recordingID, *profile)
+		})
+	}
+	removedID, keptID := encoded(&removed), encoded(&kept)
+	if _, err := env.pool.Exec(ctx, `
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', ARRAY['h265'], false)`, recordingID); err != nil {
+		t.Fatalf("seeding encode policy: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `INSERT INTO encoded_asset_removal_requests (recording_id, profile) VALUES ($1, 'h264')`, recordingID); err != nil {
+		t.Fatalf("seeding removal request: %v", err)
+	}
+	removable := func() bool {
+		t.Helper()
+		var exists bool
+		if err := env.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1)`, removedID).Scan(&exists); err != nil {
+			t.Fatalf("querying removed_encoded_assets: %v", err)
+		}
+		return exists
+	}
+	if !removable() {
+		t.Fatal("removed version is not removable while the kept version has a current active copy")
+	}
+
+	// 残る版の論理世代だけを進める。active なコピーは旧世代（0）のままになる。
+	if _, err := env.pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, keptID); err != nil {
+		t.Fatalf("advancing the kept version's generation: %v", err)
+	}
+	if removable() {
+		t.Fatal("removed version is removable although the kept version has only an old-generation active copy")
+	}
+
+	if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: keptID, Store: dbtest.StoreName, RelPath: "encoded/h265.g1.mp4", Generation: 1, State: "active",
+	}); err != nil {
+		t.Fatalf("adding the current-generation copy: %v", err)
+	}
+	if !removable() {
+		t.Fatal("removed version is not removable once the kept version has a current-generation copy")
 	}
 }

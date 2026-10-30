@@ -3727,7 +3727,7 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 
 // TestIngestWorker_RelPathPrefixedWithSite は、issue #186 (M4-14) 受け入れの
 // 1 項目目を固定する: site "tokyo" の worker が ingest した原本の
-// media_assets.rel_path が "sites/tokyo/" で始まり、実ファイルがその下に置かれる
+// media_asset_copies.rel_path が "sites/tokyo/" で始まり、実ファイルがその下に置かれる
 // （contentPath に階層があってもその下に入る）。
 //
 // catalog.SiteRelPath が site 前置をしなくなると rel_path が
@@ -3772,7 +3772,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	}
 	const wantRelPath = "sites/tokyo/20240101/prog.m2ts"
 	if asset.RelPath != wantRelPath {
-		t.Errorf("media_assets.rel_path = %q, want %q (site prefix missing)", asset.RelPath, wantRelPath)
+		t.Errorf("media_asset_copies.rel_path = %q, want %q (site prefix missing)", asset.RelPath, wantRelPath)
 	}
 
 	fullPath := filepath.Join(mediaDir, "sites", "tokyo", "20240101", "prog.m2ts")
@@ -3827,7 +3827,7 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	// そこに "sites/tokyo/" が前置される。
 	const wantRelPath = "sites/tokyo/plain.m2ts"
 	if asset.RelPath != wantRelPath {
-		t.Errorf("media_assets.rel_path = %q, want %q (site prefix missing on fallback path)", asset.RelPath, wantRelPath)
+		t.Errorf("media_asset_copies.rel_path = %q, want %q (site prefix missing on fallback path)", asset.RelPath, wantRelPath)
 	}
 }
 
@@ -3914,8 +3914,8 @@ func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
 // しても、rel_path の site 前置で実ファイルが別々になり両方が commit できる。
 //
 // 反転確認: determineRelPath の前置（"relPath = "sites/" + args.Site + "/" +
-// relPath"）を削ると、2 回目の Work() が media_assets の一意索引違反
-// （CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'）で
+// relPath"）を削ると、2 回目の Work() が media_asset_copies の一意索引違反
+// （CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted'）で
 // 失敗し、このテストは "second Work() error" で落ちる。実際に前置行を削って
 // 確認済み（PR 本文参照）。
 func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
@@ -4050,7 +4050,7 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 // 無効化する変異では先行ファイルはバイト一致のまま残り、落ちるのは下記の
 // エラー文言アサーションと streamRequests == 0 のアサーションだけだった）:
 // 事前チェックが無いと、2 つ目の Work() は衝突に気付かないまま無駄な全量転送を
-// 完走し、commit 内の media_assets 一意索引違反（23505）でようやく失敗する
+// 完走し、commit 内の media_asset_copies 一意索引違反（23505）でようやく失敗する
 // --- エラーメッセージは "refusing to overwrite" ではなく生の unique-violation
 // になり、streamRequests も 0 のままにはならない。事前チェックはこの無駄な
 // 転送とエラー文言の劣化を防ぐためのものであり、先行ファイルの保護そのものは

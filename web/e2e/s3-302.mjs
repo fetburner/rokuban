@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
 import { Transform, pipeline } from 'node:stream'
@@ -14,6 +15,7 @@ const ACCESS_KEY = process.env.E2E_MINIO_ACCESS_KEY ?? 'rokuban'
 const SECRET_KEY = process.env.E2E_MINIO_SECRET_KEY ?? 'rokuban-test-secret'
 const REGION = 'us-east-1'
 const RUN_ID = randomUUID().replace(/-/g, '').slice(0, 12)
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const GOOD_BUCKET = 'rokuban-1614-cors-' + RUN_ID
 const BAD_BUCKET = 'rokuban-1614-no-cors-' + RUN_ID
 const createdBuckets = []
@@ -22,6 +24,8 @@ const RESUME_KEY = 'rokuban-s3-302-resume-position'
 const VIDEO_TTL_SECONDS = Number(process.env.E2E_S3_VIDEO_TTL_SECONDS ?? 600)
 const EXPIRED_TTL_SECONDS = 5
 const VIDEO_SECONDS = 90
+const STREAMER_PROFILE = 's3conformance'
+const STREAMER_PORT = 4176
 // MinIO の CORS 許可がこのオリジンに固定されているので、変えられない。
 const FIXTURE_PORT = 4174
 const S3_PROXY_PORT = 4175
@@ -30,8 +34,11 @@ const EXPIRED_SEEK_SECONDS = 64
 // Safari は小さい fixture をまるごと先読みしてシークをキャッシュから返すので、fixture を大きくする（エンコードと転送で所要時間が伸びる）代わりに、動画の応答をビットレート（映像 1000k + 音声 96k）の 3 倍に絞る。
 const VIDEO_BYTES_PER_SECOND = (1000 + 96) * 1000 / 8 * 3
 const BROWSER = process.env.E2E_BROWSER ?? 'chrome'
+const PLAYBACK_READY_TIMEOUT_MS = BROWSER === 'safari' ? 60000 : 15000
 const requests = []
 const failures = []
+let streamerOrigin = ''
+let streamerRecordingID = 0
 
 if (MINIO_URL.protocol !== 'http:') {
   throw new Error('E2E_MINIO_URL must use http for the local MinIO fixture')
@@ -196,6 +203,60 @@ async function waitForMinio() {
   throw new Error('MinIO did not become ready at ' + healthUrl)
 }
 
+async function startStreamerFixture(videoKey, videoSize, s3Origin) {
+  const binary = process.env.E2E_STREAMER_FIXTURE_BINARY
+  if (!binary) {
+    if (process.env.E2E_S3_APP_REQUIRED === '1') throw new Error('E2E_STREAMER_FIXTURE_BINARY is required for the application S3 browser test')
+    return null
+  }
+  const child = spawn(binary, [], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      AWS_ACCESS_KEY_ID: ACCESS_KEY,
+      AWS_SECRET_ACCESS_KEY: SECRET_KEY,
+      AWS_REGION: REGION,
+      ROKUBAN_S3_CONFORMANCE_ENDPOINT: s3Origin,
+      ROKUBAN_S3_CONFORMANCE_REGION: REGION,
+      ROKUBAN_S3_CONFORMANCE_BUCKET: GOOD_BUCKET,
+      E2E_S3_VIDEO_KEY: videoKey,
+      E2E_S3_VIDEO_SIZE: String(videoSize),
+    },
+  })
+  let spawnError
+  child.once('error', (error) => { spawnError = error })
+  const healthURL = 'http://127.0.0.1:' + STREAMER_PORT + '/__health'
+  const deadline = Date.now() + 60000
+  while (Date.now() < deadline) {
+    if (spawnError) throw new Error('could not start the application streamer fixture: ' + spawnError.message)
+    if (child.exitCode !== null) throw new Error('application streamer fixture exited early with code ' + child.exitCode)
+    try {
+      const response = await fetch(healthURL)
+      if (response.ok) {
+        const body = await response.json()
+        streamerOrigin = 'http://127.0.0.1:' + STREAMER_PORT
+        streamerRecordingID = body.recordingId
+        return child
+      }
+    } catch {}
+    await delay(250)
+  }
+  child.kill('SIGTERM')
+  throw new Error('application streamer fixture did not become ready at ' + healthURL)
+}
+
+async function stopStreamerFixture(child) {
+  if (!child) return
+  if (child.exitCode === null) child.kill('SIGTERM')
+  await new Promise((resolve) => {
+    if (child.exitCode !== null) resolve()
+    else child.once('exit', resolve)
+  })
+  streamerOrigin = ''
+  streamerRecordingID = 0
+}
+
 async function createBucket(bucket) {
   await signedS3Request('PUT', '/' + bucket)
 }
@@ -227,9 +288,11 @@ function parseExpiresAt(searchParams) {
 }
 
 function htmlForScenario(scenario) {
-  const videoPath = '/media/video?scenario=' + scenario
-  const subtitlePath = '/media/subtitles?scenario=' + scenario
-  const config = JSON.stringify({ scenario, videoPath, subtitlePath, resumeKey: RESUME_KEY })
+  const application = scenario === 'application'
+  const videoPath = application ? '/actual-media/video' : '/media/video?scenario=' + scenario
+  const subtitlePath = application ? '/actual-media/subtitles' : '/media/subtitles?scenario=' + scenario
+  const rangePath = application ? '/actual-media/range' : '/media/range'
+  const config = JSON.stringify({ scenario, videoPath, subtitlePath, rangePath, resumeKey: RESUME_KEY })
     .replace(/</g, '\\u003c')
   return [
     '<!doctype html>',
@@ -275,7 +338,7 @@ function htmlForScenario(scenario) {
     '  });',
     '  window.runRangeProbe = function () {',
     '    state.rangeProbe = { pending: true };',
-    '    fetch("/media/range", { headers: { Range: "bytes=0-1023" }, cache: "no-store" })',
+    '    fetch(config.rangePath, { headers: { Range: "bytes=0-1023" }, cache: "no-store" })',
     '      .then(function (response) {',
     '        state.rangeProbe = { status: response.status, contentRange: response.headers.get("Content-Range"), acceptRanges: response.headers.get("Accept-Ranges"), error: null };',
     '        return response.body ? response.body.cancel() : undefined;',
@@ -298,12 +361,39 @@ function startFixtureServers(videoKey, subtitleKey) {
     const url = new URL(req.url, publicOrigin)
     if (req.method === 'GET' && url.pathname === '/probe') {
       const scenario = url.searchParams.get('scenario') ?? 'normal'
-      if (!['normal', 'negative-cors', 'restore', 'expiry'].includes(scenario)) {
+      if (!['normal', 'negative-cors', 'restore', 'expiry', 'application'].includes(scenario)) {
         res.writeHead(400).end('unknown scenario')
         return
       }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
       res.end(htmlForScenario(scenario))
+      return
+    }
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/actual-media/')) {
+      if (!streamerOrigin || !streamerRecordingID) {
+        res.writeHead(503).end('application streamer fixture is not ready')
+        return
+      }
+      const track = url.pathname === '/actual-media/subtitles'
+      const profileQuery = new URLSearchParams({ profile: STREAMER_PROFILE })
+      if (track) profileQuery.set('track', 'subtitles')
+      const appPath = '/api/media/recordings/' + streamerRecordingID + '/file?' + profileQuery.toString()
+      const target = new URL(appPath, streamerOrigin)
+      const upstream = httpRequest({
+        hostname: target.hostname,
+        port: Number(target.port),
+        method: req.method,
+        path: target.pathname + target.search,
+        headers: { ...req.headers, host: target.host },
+      }, (upstreamResponse) => {
+        res.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers)
+        upstreamResponse.pipe(res)
+      })
+      upstream.on('error', (error) => {
+        if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' })
+        res.end(String(error))
+      })
+      req.pipe(upstream)
       return
     }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/media/video' || url.pathname === '/media/range' || url.pathname === '/media/subtitles')) {
@@ -456,11 +546,14 @@ async function main() {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'rokuban-s3-302-'))
   let browser
   let fixture
+  let streamerFixture
   try {
     const videoPath = makeVideo(tempDir)
     const video = await readFile(videoPath)
-    const videoKey = 'video-' + randomUUID() + '.mp4'
-    const subtitleKey = 'subtitles-' + randomUUID() + '.vtt'
+    const videoKey = 'encoded/rokuban-s3-302-' + randomUUID() + '.mp4'
+    const subtitleKey = videoKey.replace(/\.mp4$/i, '.vtt')
+    const applicationVideoKey = 'encoded/rokuban-s3-302-app-' + randomUUID() + '.mp4'
+    const applicationSubtitleKey = applicationVideoKey.replace(/\.mp4$/i, '.vtt')
     const vtt = Buffer.from('WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nS3 subtitle loaded\n\n00:00:05.000 --> 00:00:10.000\n302 subtitle still visible\n')
     await createBucket(GOOD_BUCKET)
     createdBuckets.push(GOOD_BUCKET)
@@ -470,11 +563,16 @@ async function main() {
     createdObjects.push({ bucket: GOOD_BUCKET, key: videoKey })
     await signedS3Request('PUT', '/' + GOOD_BUCKET + '/' + subtitleKey, vtt, { 'content-type': 'text/vtt; charset=utf-8' })
     createdObjects.push({ bucket: GOOD_BUCKET, key: subtitleKey })
+    await signedS3Request('PUT', '/' + GOOD_BUCKET + '/' + applicationVideoKey, video, { 'content-type': 'video/mp4' })
+    createdObjects.push({ bucket: GOOD_BUCKET, key: applicationVideoKey })
+    await signedS3Request('PUT', '/' + GOOD_BUCKET + '/' + applicationSubtitleKey, vtt, { 'content-type': 'text/vtt; charset=utf-8' })
+    createdObjects.push({ bucket: GOOD_BUCKET, key: applicationSubtitleKey })
     await signedS3Request('PUT', '/' + BAD_BUCKET + '/' + subtitleKey, vtt, { 'content-type': 'text/vtt; charset=utf-8' })
     createdObjects.push({ bucket: BAD_BUCKET, key: subtitleKey })
 
     fixture = startFixtureServers(videoKey, subtitleKey)
     const origins = await fixture.start()
+    streamerFixture = await startStreamerFixture(applicationVideoKey, video.length, origins.s3Origin)
 
     browser = BROWSER === 'chrome' ? await createPlaywrightAdapter('chrome') : await createSafariAdapter()
     console.log('Browser: ' + BROWSER + ' ' + browser.version)
@@ -490,6 +588,44 @@ async function main() {
     expect(normalReady.trackMode === 'showing', 'cross-origin WebVTT track did not enter showing mode')
     expect(normalReady.cueCount > 0, 'cross-origin WebVTT track loaded no cues')
 
+    if (streamerFixture) {
+      const appURL = streamerOrigin + '/api/media/recordings/' + streamerRecordingID + '/file?profile=' + STREAMER_PROFILE
+      const appHead = await fetch(appURL, { method: 'HEAD', redirect: 'manual' })
+      const signedLocation = appHead.headers.get('location') ?? ''
+      expect(appHead.status === 302, 'Rokuban streamer HEAD returned ' + appHead.status + ', want 302')
+      expect(signedLocation.includes('/' + GOOD_BUCKET + '/' + applicationVideoKey) && signedLocation.includes('X-Amz-Signature='),
+        'Rokuban streamer did not redirect to the signed S3 object: ' + signedLocation)
+
+      const appRequestStart = requests.length
+      await browser.navigate(origins.publicOrigin + '/probe?scenario=application')
+      await waitFor(browser, () => window.__state && window.__state.metadata)
+      await waitFor(browser, () => window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0, undefined, 20000)
+      const appReady = await browser.evaluate(() => window.__state)
+      expect(appReady.crossOrigin === 'anonymous', 'application browser test is missing crossorigin="anonymous"')
+      expect(appReady.trackMode === 'showing' && appReady.cueCount > 0,
+        'application streamer subtitle did not load through the signed S3 URL: ' + JSON.stringify(appReady))
+      await browser.evaluate(() => window.runRangeProbe())
+      await waitFor(browser, () => window.__state && window.__state.rangeProbe && !window.__state.rangeProbe.pending)
+      const appRange = await browser.evaluate(() => window.__state.rangeProbe)
+      expect(appRange.status === 206 && Boolean(appRange.contentRange) && appRange.acceptRanges === 'bytes',
+        'application streamer Range request did not return readable 206 metadata: ' + JSON.stringify(appRange))
+      const appSeekCached = await seekTargetIsBuffered(browser, TARGET_SEEK_SECONDS, 'application')
+      await browser.evaluate((seconds) => window.seekTo(seconds), TARGET_SEEK_SECONDS)
+      await waitFor(browser, () => window.__state && (window.__state.seekedCount > 0 || window.__state.mediaError), undefined, 60000)
+      const appSeek = await browser.evaluate(() => ({ currentTime: document.querySelector('#player').currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError }))
+      expect(appSeek.seekedCount > 0 && Math.abs(appSeek.currentTime - TARGET_SEEK_SECONDS) < 0.5 && !appSeek.error,
+        'application streamer seek after 302 did not complete: ' + JSON.stringify(appSeek))
+      const appRequests = requests.slice(appRequestStart)
+      const appVideoRanges = appRequests.filter((request) => request.route === 's3' && request.path?.endsWith('/' + applicationVideoKey) && request.range)
+      expect(appVideoRanges.some((request) => request.status === 206),
+        'real browser sent no successful Range request to the application signed URL: ' + JSON.stringify(conciseRequests(appRequests)))
+      if (!appSeekCached) expect(appVideoRanges.length > 0, 'application browser seek produced no Range request at the S3 destination')
+      console.log('Rokuban streamer browser path: ' + JSON.stringify({ headStatus: appHead.status, range: appRange, seek: appSeek, s3Ranges: appVideoRanges.length }))
+      await browser.navigate(origins.publicOrigin + '/probe?scenario=normal')
+      await waitFor(browser, () => window.__state && window.__state.metadata)
+      await waitFor(browser, () => window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0, undefined, 20000)
+    }
+
     await browser.evaluate(() => window.runRangeProbe())
     await waitFor(browser, () => window.__state && window.__state.rangeProbe && !window.__state.rangeProbe.pending)
     const rangeProbe = await browser.evaluate(() => window.__state.rangeProbe)
@@ -498,12 +634,12 @@ async function main() {
     expect(rangeProbe.acceptRanges === 'bytes', 'Accept-Ranges was not readable through CORS')
 
     await browser.click('#play')
-    await waitFor(browser, () => window.__state && window.__state.playing && window.__state.currentTime >= 1)
+    await waitFor(browser, () => window.__state && window.__state.playing && window.__state.currentTime >= 1, undefined, PLAYBACK_READY_TIMEOUT_MS)
     await delay(3000)
     const normalSeekCached = await seekTargetIsBuffered(browser, TARGET_SEEK_SECONDS, 'normal')
     const beforeSeek = requests.length
     await browser.evaluate((seconds) => window.seekTo(seconds), TARGET_SEEK_SECONDS)
-    await waitFor(browser, () => window.__state && (window.__state.seekedCount > 0 || window.__state.mediaError))
+    await waitFor(browser, () => window.__state && (window.__state.seekedCount > 0 || window.__state.mediaError), undefined, 60000)
     const afterSeek = await browser.evaluate(() => ({ currentTime: document.querySelector('#player').currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError }))
     expect(afterSeek.seekedCount > 0 && Math.abs(afterSeek.currentTime - TARGET_SEEK_SECONDS) < 0.5,
       'normal signed URL seek did not complete: ' + JSON.stringify(afterSeek))
@@ -525,12 +661,12 @@ async function main() {
     const restoreStart = requests.length
     await browser.navigate(origins.publicOrigin + '/probe?scenario=restore')
     await waitFor(browser, () => window.__state && window.__state.metadata && window.__state.restoreTarget !== null)
-    await waitFor(browser, (saved) => window.__state && window.__state.seekedCount > 0 && Math.abs(window.__state.lastSeekedTime - saved) < 0.5, savedPosition)
+    await waitFor(browser, (saved) => window.__state && window.__state.seekedCount > 0 && Math.abs(window.__state.lastSeekedTime - saved) < 0.5, savedPosition, 60000)
     const restoredPosition = await browser.evaluate(() => ({ saved: window.__state.restoreTarget, currentTime: document.querySelector('#player').currentTime, seekedCount: window.__state.seekedCount, error: window.__state.mediaError }))
     expect(Math.abs(restoredPosition.currentTime - savedPosition) < 0.5, 'saved playback position was not restored after a 302: ' + JSON.stringify(restoredPosition))
     expect(restoredPosition.seekedCount > 0 && !restoredPosition.error, 'restored position did not complete a seek: ' + JSON.stringify(restoredPosition))
     await browser.click('#play')
-    await waitFor(browser, (saved) => window.__state && window.__state.playing && window.__state.currentTime > saved + 0.5, savedPosition)
+    await waitFor(browser, (saved) => window.__state && window.__state.playing && window.__state.currentTime > saved + 0.5, savedPosition, PLAYBACK_READY_TIMEOUT_MS)
     const resumedPlayback = await browser.evaluate(() => ({ currentTime: document.querySelector('#player').currentTime, error: window.__state.mediaError }))
     expect(resumedPlayback.currentTime > savedPosition + 0.5 && !resumedPlayback.error,
       'playback did not advance from the restored position: ' + JSON.stringify(resumedPlayback))
@@ -550,7 +686,7 @@ async function main() {
     await browser.navigate(origins.publicOrigin + '/probe?scenario=expiry')
     await waitFor(browser, () => window.__state && window.__state.metadata)
     await browser.click('#play')
-    await waitFor(browser, () => window.__state && window.__state.playing && window.__state.currentTime >= 1)
+    await waitFor(browser, () => window.__state && window.__state.playing && window.__state.currentTime >= 1, undefined, PLAYBACK_READY_TIMEOUT_MS)
     const expiringRedirect = requests.slice(expiryStart).find((request) => request.route === 'redirect' && request.path === '/media/video')
     if (!expiringRedirect) throw new Error('expiry scenario issued no signed redirect')
     await delay(Math.max(0, expiringRedirect.expiresAt - Date.now() + 300))
@@ -612,6 +748,7 @@ async function main() {
     }
   } finally {
     if (browser) await browser.close().catch((error) => console.error('Could not close browser: ' + error.message))
+    await stopStreamerFixture(streamerFixture).catch((error) => console.error('Could not stop application streamer fixture: ' + error.message))
     if (fixture) await fixture.close()
     for (const object of createdObjects.reverse()) {
       await signedS3Request('DELETE', '/' + object.bucket + '/' + object.key).catch(() => {})

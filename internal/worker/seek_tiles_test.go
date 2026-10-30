@@ -388,11 +388,8 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 		t.Fatalf("loading initial seek_tiles asset: %v", err)
 	}
 	var oldRelPath string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_assets WHERE id = $1`, assetID).Scan(&oldRelPath); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&oldRelPath); err != nil {
 		t.Fatalf("loading initial seek_tiles path: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
-		t.Fatalf("tombstoning seek_tiles asset: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("tombstoning seek_tiles copy: %v", err)

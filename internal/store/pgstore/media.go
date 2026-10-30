@@ -21,8 +21,9 @@ import (
 // Media はメディア配信・reconcile・API・ストレージ観測の契約を PostgreSQL で実装する。
 // pool を持ち、利用側の用途ごとに分けた interface を満たす。
 type Media struct {
-	pool      *pgxpool.Pool
-	storeName string
+	pool          *pgxpool.Pool
+	storeName     string
+	originalStore string
 	// derivedStore は until_encoded の原本を消してよいかを判定する、派生物の desired 置き場。
 	// 空なら規則が無く、原本は消さない。コピーを読み書きする置き場（storeName）とは別の値で、
 	// storeName を代わりに使ってはならない。
@@ -34,7 +35,26 @@ type Media struct {
 // derivedStore は storage.derived で、until_encoded の原本を消してよいかの判定にだけ使う。
 // 削除の判定をしない呼び出し元は "" を渡す。"" は規則が無い扱いで、原本は消えない。
 func NewMedia(pool *pgxpool.Pool, storeName, derivedStore string) *Media {
-	return &Media{pool: pool, storeName: storeName, derivedStore: derivedStore}
+	return NewMediaWithStores(pool, storeName, storeName, derivedStore)
+}
+
+// NewMediaWithStores builds a Media implementation with distinct stores for source and derived assets.
+func NewMediaWithStores(pool *pgxpool.Pool, storeName, originalStore, derivedStore string) *Media {
+	return &Media{pool: pool, storeName: storeName, originalStore: originalStore, derivedStore: derivedStore}
+}
+
+func (s *Media) originalStoreName() string {
+	if s.originalStore != "" {
+		return s.originalStore
+	}
+	return s.storeName
+}
+
+func (s *Media) derivedStoreName() string {
+	if s.derivedStore != "" {
+		return s.derivedStore
+	}
+	return s.storeName
 }
 
 func mediaStoreNameArg(storeName string) *string {
@@ -44,8 +64,8 @@ func mediaStoreNameArg(storeName string) *string {
 	return &storeName
 }
 
-// AdoptUnassignedStoreRows は未割り当ての論理資産にコピー行を作り、既存コピーを保ったまま、
-// コピーのパスから派生世代を補正する（TestAdoptUnassignedStoreRows）。
+// AdoptUnassignedStoreRows は置き場が空の観測行・進捗行をこの置き場へ割り当て、
+// コピーのパスから派生世代を補正する（TestAdoptUnassignedStoreRows）。コピー行は作らない。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
@@ -56,9 +76,6 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	if err := q.AdoptUnassignedMediaAssetCopies(ctx, s.storeName); err != nil {
-		return fmt.Errorf("adopting legacy media asset copies: %w", err)
-	}
 	if err := q.ReconcileDerivedGenerationFromCopyPaths(ctx); err != nil {
 		return fmt.Errorf("reconciling derived media generations from copy paths: %w", err)
 	}
@@ -123,7 +140,7 @@ func servingAsset(row sqlcgen.GetOriginalMediaAssetForServingRow) store.MediaAss
 // GetOriginalMediaAssetForServing は配信可能な原本を返す。
 func (s *Media) GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetOriginalMediaAssetForServing(ctx, sqlcgen.GetOriginalMediaAssetForServingParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading original media asset for recording %d", recordingID))
@@ -136,7 +153,7 @@ func (s *Media) GetEncodedMediaAssetForServing(ctx context.Context, recordingID 
 	row, err := sqlcgen.New(s.pool).GetEncodedMediaAssetForServing(ctx, sqlcgen.GetEncodedMediaAssetForServingParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
-		StoreName:   mediaStoreNameArg(s.storeName),
+		StoreName:   mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading encoded media asset for recording %d profile %q", recordingID, profile))
@@ -147,7 +164,7 @@ func (s *Media) GetEncodedMediaAssetForServing(ctx context.Context, recordingID 
 // GetThumbnailMediaAssetForServing は配信可能なサムネイルを返す。
 func (s *Media) GetThumbnailMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForServing(ctx, sqlcgen.GetThumbnailMediaAssetForServingParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading thumbnail media asset for recording %d", recordingID))
@@ -158,7 +175,7 @@ func (s *Media) GetThumbnailMediaAssetForServing(ctx context.Context, recordingI
 // GetSeekTilesMediaAssetForServing は配信可能なシークタイルを返す。
 func (s *Media) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetSeekTilesMediaAssetForServing(ctx, sqlcgen.GetSeekTilesMediaAssetForServingParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading seek tiles media asset for recording %d", recordingID))
@@ -169,7 +186,7 @@ func (s *Media) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingI
 // GetActiveOriginalMediaAsset は追っかけ配信に使う active な原本を返す。
 func (s *Media) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original media asset for recording %d", recordingID))
@@ -226,7 +243,7 @@ func (s *Media) GetLiveMediaAssetRecordingID(ctx context.Context, relPath string
 // HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。
 func (s *Media) HasActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
 	_, err := sqlcgen.New(s.pool).GetActiveThumbnailMediaAssetID(ctx, sqlcgen.GetActiveThumbnailMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -240,7 +257,7 @@ func (s *Media) HasActiveThumbnailMediaAsset(ctx context.Context, recordingID in
 // HasActiveSeekTilesMediaAsset は active なシークタイルがあれば true を返す。
 func (s *Media) HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
 	_, err := sqlcgen.New(s.pool).GetActiveSeekTilesMediaAssetID(ctx, sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -302,7 +319,7 @@ func (s *Media) GetEncodedPublishState(
 	})
 	if err == nil {
 		asset := store.EncodedAssetObservation{
-			ID: row.ID, RelPath: row.RelPath, State: row.State, DerivedGeneration: row.DerivedGeneration,
+			ID: row.ID, Active: row.Active, DerivedGeneration: row.DerivedGeneration,
 		}
 		if cut {
 			asset.KeepRanges, err = assetKeepRanges(ctx, q, row.ID)
@@ -313,6 +330,16 @@ func (s *Media) GetEncodedPublishState(
 		state.EncodedAsset = &asset
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return store.EncodedPublishState{}, fmt.Errorf("loading existing encoded asset for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	maxGeneration, err := q.GetMaxEncodedMediaAssetCopyGeneration(ctx, sqlcgen.GetMaxEncodedMediaAssetCopyGenerationParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+	})
+	if err != nil {
+		return store.EncodedPublishState{}, fmt.Errorf("loading used encoded generations for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	if maxGeneration >= 0 {
+		state.MaxCopyGeneration = &maxGeneration
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -501,7 +528,7 @@ func cutAwaitingReviewProfileCounts(rows []sqlcgen.ListCutAwaitingReviewRow) []s
 
 // ListEncodedMeaningEvidence は過去の encoded と作り直し要求から意味の証拠を返す。
 func (s *Media) ListEncodedMeaningEvidence(ctx context.Context) ([]store.EncodedMeaningEvidence, error) {
-	rows, err := sqlcgen.New(s.pool).ListEncodedMeaningEvidence(ctx, mediaStoreNameArg(s.storeName))
+	rows, err := sqlcgen.New(s.pool).ListEncodedMeaningEvidence(ctx, mediaStoreNameArg(s.derivedStoreName()))
 	if err != nil {
 		return nil, fmt.Errorf("listing encoded meaning evidence: %w", err)
 	}
@@ -534,7 +561,8 @@ func (s *Media) ListMissingThumbnailRecordings(ctx context.Context, page store.M
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		StoreName:        s.storeName,
+		OriginalStore:    s.originalStoreName(),
+		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing missing thumbnail recordings: %w", err)
@@ -548,7 +576,8 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		StoreName:        s.storeName,
+		OriginalStore:    s.originalStoreName(),
+		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing thumbnail reselection candidates: %w", err)
@@ -562,6 +591,7 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 			Detected:              row.Detected,
 			Owned:                 row.Owned,
 			OriginalMediaAssetID:  row.OriginalMediaAssetID,
+			OriginalStore:         row.OriginalStore,
 			OriginalRelPath:       row.OriginalRelPath,
 			ThumbnailMediaAssetID: &row.ThumbnailMediaAssetID,
 			ThumbnailRelPath:      &row.ThumbnailRelPath,
@@ -595,6 +625,7 @@ func decodeThumbnailTimeline(cmRanges, userSpans []byte) ([]chapters.Range, []ch
 func decodeThumbnailEncodedAssets(raw []byte) ([]store.ThumbnailEncodedAsset, error) {
 	var rows []struct {
 		MediaAssetID int64            `json:"mediaAssetId"`
+		Store        string           `json:"store"`
 		Profile      string           `json:"profile"`
 		RelPath      string           `json:"relPath"`
 		Cut          bool             `json:"cut"`
@@ -605,7 +636,10 @@ func decodeThumbnailEncodedAssets(raw []byte) ([]store.ThumbnailEncodedAsset, er
 	}
 	out := make([]store.ThumbnailEncodedAsset, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, store.ThumbnailEncodedAsset{MediaAssetID: r.MediaAssetID, Profile: r.Profile, RelPath: r.RelPath, Cut: r.Cut, KeepRanges: r.KeepRanges})
+		out = append(out, store.ThumbnailEncodedAsset{
+			MediaAssetID: r.MediaAssetID, Store: r.Store, Profile: r.Profile, RelPath: r.RelPath,
+			Cut: r.Cut, KeepRanges: r.KeepRanges,
+		})
 	}
 	return out, nil
 }
@@ -616,7 +650,8 @@ func (s *Media) ListMissingSeekTilesRecordings(ctx context.Context, page store.M
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		StoreName:        s.storeName,
+		OriginalStore:    s.originalStoreName(),
+		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing missing seek tiles recordings: %w", err)

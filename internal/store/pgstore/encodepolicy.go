@@ -30,7 +30,7 @@ func (s *Media) AppendProfiles(ctx context.Context, recordingID int64, names []s
 		return fmt.Errorf("loading recording %d: %w", recordingID, err)
 	}
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("recording %d: %w", recordingID, store.ErrOriginalUnavailable)
@@ -89,7 +89,7 @@ func (s *Media) RemoveEncodedAsset(ctx context.Context, recordingID int64, profi
 	assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
-		StoreName:   mediaStoreNameArg(s.storeName),
+		StoreName:   mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("recording %d profile %q: %w", recordingID, profile, store.ErrEncodedAssetNotFound)
@@ -146,7 +146,7 @@ func (s *Media) RequestCutRebuild(ctx context.Context, recordingID int64, profil
 		return err
 	}
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("recording %d: %w", recordingID, store.ErrOriginalUnavailable)

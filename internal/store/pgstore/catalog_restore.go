@@ -414,7 +414,6 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 // applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
 func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetCopyKeys map[store.MediaAssetCopyKey]struct{}, storeName string) error {
 	var missingAt time.Time
-	assetIDs := make(map[int64]struct{}, len(assets))
 	for _, a := range assets {
 		assetStore := a.Store
 		if assetStore == "" {
@@ -443,7 +442,7 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		copyGeneration := catalogCopyGeneration(a)
 		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
 			ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
-			RelPath: a.RelPath, SizeBytes: a.SizeBytes, State: a.State, DeletedAt: a.DeletedAt,
+			SizeBytes: a.SizeBytes,
 			CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes, CopyGeneration: copyGeneration,
 		}); err != nil {
@@ -454,12 +453,6 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 			Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
 		}, fileVerifiedMissing); err != nil {
 			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
-		}
-		assetIDs[a.ID] = struct{}{}
-	}
-	for assetID := range assetIDs {
-		if err := q.ReconcileMediaAssetStateFromCopies(ctx, assetID); err != nil {
-			return fmt.Errorf("reconciling logical media asset %d after catalog restore: %w", assetID, err)
 		}
 	}
 	res.MediaAssets = len(assets)

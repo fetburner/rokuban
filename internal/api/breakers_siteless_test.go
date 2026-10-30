@@ -290,3 +290,62 @@ func TestEPGEndpoint_UnregisteredDefaultSiteStill404(t *testing.T) {
 		t.Errorf("GET .../sites/default/programs status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// 派生物の置き場が S3 のとき、その置き場の範囲の delete_reconcile も、site 無指定ルートで再開できる。
+// FS 置き場の行が無いときだけ、派生物の置き場の行を引く。
+func TestResumeSitelessCircuitBreaker_ResumesDerivedStoreScope(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	router := api.NewRouter(api.RouterConfig{
+		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: []string{"tokyo"},
+		MediaStoreName: "test-store", DerivedStoreName: "s3main",
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+	for _, scope := range []string{"test-store", "s3main"} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
+VALUES ($1, 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`, scope); err != nil {
+			t.Fatalf("inserting circuit breaker fixture for %s: %v", scope, err)
+		}
+	}
+	resume := func() int {
+		resp, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+	remaining := func() []string {
+		rows, err := pool.Query(ctx, `SELECT scope FROM circuit_breakers WHERE name = 'delete_reconcile' ORDER BY scope`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var scope string
+			if err := rows.Scan(&scope); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, scope)
+		}
+		return out
+	}
+	if got := resume(); got != http.StatusNoContent {
+		t.Fatalf("first resume status = %d, want 204", got)
+	}
+	if got := remaining(); len(got) != 1 || got[0] != "s3main" {
+		t.Fatalf("scopes after the first resume = %v, want only [s3main]", got)
+	}
+	if got := resume(); got != http.StatusNoContent {
+		t.Fatalf("second resume status = %d, want 204 for the derived store scope", got)
+	}
+	if got := remaining(); len(got) != 0 {
+		t.Fatalf("scopes after the second resume = %v, want none", got)
+	}
+	if got := resume(); got != http.StatusNotFound {
+		t.Fatalf("third resume status = %d, want 404 when nothing is tripped", got)
+	}
+}

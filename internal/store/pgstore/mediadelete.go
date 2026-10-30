@@ -138,9 +138,6 @@ func (s *Media) MarkDeleting(ctx context.Context, copyID int64, expectedState st
 	if updated != 1 {
 		return false, nil
 	}
-	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
-		return false, fmt.Errorf("reconciling logical media asset state after copy %d entered deleting: %w", copyID, err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing media asset copy delete transition: %w", mapDatabaseError(err))
 	}
@@ -180,9 +177,6 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, media
 	if marked != 1 {
 		return false, nil
 	}
-	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
-		return false, fmt.Errorf("reconciling logical original state after copy %d entered deleting: %w", copyID, err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing until_encoded delete for media asset copy %d: %w", copyID, mapDatabaseError(err))
 	}
@@ -217,9 +211,6 @@ func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
 		if updated != 1 {
 			return fmt.Errorf("marking media asset copy %d deleted updated %d rows, want one", copyID, updated)
 		}
-	}
-	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
-		return fmt.Errorf("reconciling logical media asset state after copy %d was deleted: %w", copyID, err)
 	}
 	if err := q.ClearDeletedEncodedAssetRemovalRequest(ctx, copyID); err != nil {
 		return fmt.Errorf("clearing completed encoded asset removal request for copy %d: %w", copyID, mapDatabaseError(err))
@@ -258,9 +249,6 @@ func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, o
 	if updated == 0 {
 		return false, nil
 	}
-	if err := reconcileMediaAssetState(ctx, q, copy.MediaAssetID); err != nil {
-		return false, fmt.Errorf("reconciling logical media asset state after copy %d was restored: %w", copyID, err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing media asset copy restore transition: %w", mapDatabaseError(err))
 	}
@@ -282,8 +270,4 @@ func lockMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, copyID int64, s
 		return lockedMediaAssetCopy{}, fmt.Errorf("locking media asset copy %d: %w", copyID, mapDatabaseError(err))
 	}
 	return lockedMediaAssetCopy{MediaAssetID: row.MediaAssetID, State: row.State}, nil
-}
-
-func reconcileMediaAssetState(ctx context.Context, q *sqlcgen.Queries, mediaAssetID int64) error {
-	return q.ReconcileMediaAssetStateFromCopies(ctx, mediaAssetID)
 }

@@ -324,10 +324,10 @@ WITH playable_events AS (
     WHERE r.deleted_at IS NULL
       AND r.superseded_at IS NULL
       AND EXISTS (
-          SELECT 1 FROM media_assets ma
+          SELECT 1 FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
           WHERE ma.recording_id = r.id
-            AND ((ma.kind = 'original' AND ma.state <> 'deleted')
-              OR (ma.kind = 'encoded' AND ma.state = 'active'))
+            AND ((ma.kind = 'original' AND c.state <> 'deleted')
+              OR (ma.kind = 'encoded' AND c.state = 'active'))
       )
 )
 SELECT e.value, count(*)
@@ -608,16 +608,18 @@ SELECT
     'lv1', CASE WHEN (event_index - 1) % 141 < 47 THEN 7 ELSE 3 END, 'lv2', 0, 'un1', 0, 'un2', 0))
 FROM seed;
 
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+INSERT INTO media_assets (recording_id, kind, profile, size_bytes)
 SELECT
   i,
   CASE WHEN i BETWEEN 60001 AND 65000 THEN 'encoded' ELSE 'original' END,
   CASE WHEN i BETWEEN 60001 AND 65000 THEN 'bench' ELSE NULL END,
-  format('bench/%s', i),
-  1,
-  'active'
+  1
 FROM generate_series(1, 73000) AS s(i)
 WHERE i <= 65000 OR i BETWEEN 71026 AND 73000;
+
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT a.id, 'bench', format('bench/%s', a.recording_id), COALESCE(a.derived_generation, 0), 'active'
+FROM media_assets a;
 
 INSERT INTO label_rules (key, value, keyword, priority)
 SELECT
@@ -648,7 +650,7 @@ WHERE id BETWEEN 101 AND 200
 		t.Fatalf("evaluating benchmark label rules: %v", err)
 	}
 	// VACUUM は暗黙のトランザクションになる複数文の送信では実行できないので 1 文ずつ送る。
-	for _, table := range []string{"recordings", "media_assets", "recording_watched", "label_rules", "label_rule_hits"} {
+	for _, table := range []string{"recordings", "media_assets", "media_asset_copies", "recording_watched", "label_rules", "label_rule_hits"} {
 		if _, err := conn.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
 			t.Fatalf("vacuum-analyzing %s: %v", table, err)
 		}
@@ -660,9 +662,9 @@ WHERE id BETWEEN 101 AND 200
 const previousInlineShelfQuery = `
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
+    FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
+    WHERE (ma.kind = 'original' AND c.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND c.state = 'active')
 ),
 playable AS MATERIALIZED (
     SELECT r.id,
@@ -688,9 +690,9 @@ ORDER BY recording_count DESC, p.value ASC NULLS LAST
 const previousShelfQuery = `
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
+    FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
+    WHERE (ma.kind = 'original' AND c.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND c.state = 'active')
 ),
 playable AS MATERIALIZED (
     SELECT r.id,
@@ -715,9 +717,9 @@ ORDER BY recording_count DESC, p.value ASC NULLS LAST
 const previousUnmaterializedShelfQuery = `
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
+    FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
+    WHERE (ma.kind = 'original' AND c.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND c.state = 'active')
 ),
 playable AS (
     SELECT r.id,
@@ -742,9 +744,9 @@ ORDER BY recording_count DESC, p.value ASC NULLS LAST
 const liveMaterializedShelfQuery = `
 WITH playable_assets AS (
     SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
+    FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
+    WHERE (ma.kind = 'original' AND c.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND c.state = 'active')
 ),
 watched_events AS MATERIALIZED (
     SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
@@ -786,9 +788,9 @@ ORDER BY recording_count DESC, l.value ASC NULLS LAST
 const materializedAssetsShelfQuery = `
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
+    FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
+    WHERE (ma.kind = 'original' AND c.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND c.state = 'active')
 ),
 watched_events AS MATERIALIZED (
     -- 印を束ねる側は status を絞らない。ごみ箱 / supersede 済みの行の印も読む。
@@ -906,9 +908,9 @@ func queryProductionShelves(ctx context.Context, pool *pgxpool.Pool, f store.Rec
 const staticFilteredShelfQuery = `
 WITH playable_assets AS (
     SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
+    FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
+    WHERE (ma.kind = 'original' AND c.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND c.state = 'active')
 ),
 watched_events AS MATERIALIZED (
     SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
@@ -999,10 +1001,10 @@ func checkFilteredShelves(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	rows, err := pool.Query(ctx, `
 SELECT rs.value, r.id, r.title, r.program_start_at, r.network_id, r.service_id,
        EXISTS (
-           SELECT 1 FROM media_assets ma
+           SELECT 1 FROM media_assets ma JOIN media_asset_copies c ON c.media_asset_id = ma.id
            WHERE ma.recording_id = r.id
-             AND ((ma.kind = 'original' AND ma.state <> 'deleted')
-               OR (ma.kind = 'encoded' AND ma.state = 'active'))
+             AND ((ma.kind = 'original' AND c.state <> 'deleted')
+               OR (ma.kind = 'encoded' AND c.state = 'active'))
        ),
        EXISTS (
            SELECT 1

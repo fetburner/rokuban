@@ -250,12 +250,12 @@ catalog の健全性は、専用の検証コマンドで確認する。manifest 
 
 rescue は破壊的な操作なので、健全性の確認には使わない。使うのは DB を失った後だけである。
 
-`rokuban rescue` は、検証の後に必ず DB へ書き、live DB を catalog スナップショットで**上書きする**。録画の状態・削除日時・パージ日時と、asset の状態・削除日時を catalog の値で上書きし、id シーケンスを巻き戻す。健全な DB に対して実行すると、catalog を書き出した時点まで状態が巻き戻る（削除済み asset の復活を含む）。
+`rokuban rescue` は、検証の後に必ず DB へ書き、live DB を catalog スナップショットで**上書きする**。録画の状態・削除日時・パージ日時と、asset の属性と各置き場のコピー状態・削除日時を catalog の値で上書きし、id シーケンスを巻き戻す。健全な DB に対して実行すると、catalog を書き出した時点まで状態が巻き戻る（削除済み asset の復活を含む）。
 
 <details><summary>根拠</summary>
 
 - 上書きされる録画の列: `recordings.status` / `deleted_at` / `purged_at`
-- 上書きされる asset の列: 旧 binary が読む `media_assets.state` / `deleted_at` と、全置き場の `media_asset_copies.state` / `deleted_at`
+- 上書きされる asset の状態: 全置き場の `media_asset_copies.state` / `deleted_at`
 
 </details>
 

@@ -162,6 +162,9 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
 | `rokuban_media_assets_missing{kind}` | Gauge | 実体ファイルが無いと確認できた media_asset 数 |
 | `rokuban_orphan_files_unresolved` | Gauge | 登録されないまま残っている canonical file の数 |
+| `rokuban_object_store_errors_total{operation}` | Counter | S3 の置き場の操作（put / head / get / list / delete / presign）の失敗回数 |
+| `rokuban_object_store_credential_errors_total` | Counter | 上の失敗のうち、資格情報の取得失敗・失効・不明が原因のもの |
+| `rokuban_object_store_orphans_unresolved` | Gauge | DB にコピー行が無いまま残っている S3 のキーの数。報告だけで削除しない |
 | `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
 | `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
 | `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | 全 root を観測できたパスの時刻 |

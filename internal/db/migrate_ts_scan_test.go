@@ -24,6 +24,16 @@ func migrateDownTo(t *testing.T, dbURL string, version int64) {
 	}
 }
 
+func migrateUpTo(t *testing.T, dbURL string, version int64) {
+	t.Helper()
+	if err := runGooseMigration(context.Background(), dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.UpTo(ctx, version)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating up to version %d: %v", version, err)
+	}
+}
+
 func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 	ctx := context.Background()
 	dbURL := testDatabaseURL(t)
@@ -85,8 +95,12 @@ func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 	encodedID := createAsset(createRecording(23003), "encoded", &profile, 126)
 	addDropStat(encodedID)
 
+	migrateUpTo(t, dbURL, 39)
+	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
+		t.Fatalf("creating media asset copies before dropping media_assets.rel_path: %v", err)
+	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("applying TS scan migration: %v", err)
+		t.Fatalf("applying TS scan and media asset copy migrations: %v", err)
 	}
 	rows, err := pool.Query(ctx, `
 		SELECT media_asset_id, scanned_size_bytes
@@ -174,8 +188,12 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 	encodedID := createPre24MediaAsset(t, pool, createRecording(23104), "encoded", &profile, "retention-migration-test/encoded", 21)
 	addDropStat(encodedID)
 
+	migrateUpTo(t, dbURL, 39)
+	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
+		t.Fatalf("creating media asset copies before dropping media_assets.rel_path: %v", err)
+	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
-		t.Fatalf("applying original-retention migration: %v", err)
+		t.Fatalf("applying original-retention and media asset copy migrations: %v", err)
 	}
 	rows, err := pool.Query(ctx, `
 		SELECT media_asset_id, scanned_size_bytes
@@ -216,4 +234,22 @@ RETURNING id`, recordingID, kind, profile, relPath, sizeBytes).Scan(&id)
 		t.Fatalf("creating pre-24 media asset: %v", err)
 	}
 	return id
+}
+
+func adoptLegacyMediaAssetsForTest(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+SELECT id, 'migration-test', rel_path, state, created_at, deleted_at
+FROM media_assets`)
+	return err
+}
+
+// adoptLegacyMediaAssetsWithGenerationsForTest はコピー表に世代の列がある版（42 以降）で、
+// 各論理資産のコピーを 1 つずつ作る。世代は original が 0、派生物は論理資産の derived_generation である。
+func adoptLegacyMediaAssetsWithGenerationsForTest(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
+SELECT id, 'migration-test', rel_path, COALESCE(derived_generation, 0), state, created_at, deleted_at
+FROM media_assets`)
+	return err
 }

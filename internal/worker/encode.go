@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -94,15 +96,18 @@ import (
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
-	Media          store.MediaReconcile
-	Attempts       store.EncodeAttempts
-	Publisher      store.MediaPublish
-	Progress       store.EncodeProgressReporter
-	MediaDir       string
-	MediaStoreName string
-	ScratchDir     string
-	FFmpeg         string
-	FFprobe        string
+	Media     store.MediaReconcile
+	Attempts  store.EncodeAttempts
+	Publisher store.MediaPublish
+	// Objects を設定すると派生物の置き場が S3 になり、公開は ObjectPublisher の pending → active で行う。
+	Objects         objstore.Store
+	ObjectPublisher store.DerivedMediaPublisher
+	Progress        store.EncodeProgressReporter
+	MediaDir        string
+	MediaStoreName  string
+	ScratchDir      string
+	FFmpeg          string
+	FFprobe         string
 	// Profiles は名前解決用。config.EncodeConfig.Profile を使う。
 	Profiles config.EncodeConfig
 
@@ -228,6 +233,23 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	if err != nil {
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
+	pendingObjectPrepared := false
+	if w.Objects != nil {
+		if w.ObjectPublisher == nil {
+			return errors.New("derived object publication requires a media publisher")
+		}
+		profileName := profile.Name
+		if err := w.ObjectPublisher.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+			RecordingID: args.RecordingID, Kind: store.AssetKindEncoded, Profile: &profileName,
+			RelPath: relPath, DerivedGeneration: generation, ReserveNewGeneration: true,
+		}); err != nil {
+			if errors.Is(err, store.ErrGenerationAdvanced) {
+				return jobq.Snooze(encodeReplanDelay)
+			}
+			return fmt.Errorf("reserving encoded object generation: %w", err)
+		}
+		pendingObjectPrepared = true
+	}
 
 	// プロセス死の残骸を回収し、domain attempt ごとに scratch を分ける。
 	// cleanup は同じ (recording_id, profile) の、dir lock を誰も持たない dir だけを消す。
@@ -280,17 +302,18 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 		}
 	}
 	size, published, err := w.publishEncoded(ctx, encodePublishInput{
-		attempt:       attempt,
-		observed:      observed,
-		recordingID:   args.RecordingID,
-		profile:       profile.Name,
-		relPath:       relPath,
-		finalPath:     finalPath,
-		scratchOut:    scratchOut,
-		subtitleOut:   subtitleOut,
-		withSubtitles: withSubtitles,
-		cut:           cut,
-		expectedKeep:  expectedCutKeep,
+		attempt:               attempt,
+		observed:              observed,
+		recordingID:           args.RecordingID,
+		profile:               profile.Name,
+		relPath:               relPath,
+		finalPath:             finalPath,
+		scratchOut:            scratchOut,
+		subtitleOut:           subtitleOut,
+		withSubtitles:         withSubtitles,
+		pendingObjectPrepared: pendingObjectPrepared,
+		cut:                   cut,
+		expectedKeep:          expectedCutKeep,
 	})
 	if err != nil {
 		if _, snoozed := jobq.SnoozeDelay(err); snoozed {
@@ -385,6 +408,9 @@ func (w *EncodeWorker) observeEncodePlan(
 	if observed.skip {
 		log.Info("encode: skipped before encoding", "reason", string(observed.skipReason))
 		return observed, nil, expectedKeep, true, nil
+	}
+	if state.MaxCopyGeneration != nil && *state.MaxCopyGeneration == int64(^uint64(0)>>1) {
+		return encodePlan{}, nil, nil, false, fmt.Errorf("encoded generation exhausted for recording %d profile %q", args.RecordingID, args.Profile)
 	}
 	if profileIsCut {
 		cut = &cutContext{keep: input.KeepRanges}
@@ -694,14 +720,15 @@ var (
 
 // encodePublishInput は publishEncoded の入力。
 type encodePublishInput struct {
-	recordingID   int64
-	profile       string
-	attempt       int32
-	relPath       string
-	finalPath     string
-	scratchOut    string
-	subtitleOut   string
-	withSubtitles bool
+	recordingID           int64
+	profile               string
+	attempt               int32
+	relPath               string
+	finalPath             string
+	scratchOut            string
+	subtitleOut           string
+	withSubtitles         bool
+	pendingObjectPrepared bool
 	// observed は runEncode 冒頭の観測（tx 内の判定 (a) の比較元）。
 	observed encodePlan
 	// cut はカット版のときだけ非 nil。commit で凍結した keep 区間を同じ tx で
@@ -731,6 +758,9 @@ type encodePublishInput struct {
 func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded output"); err != nil {
 		return 0, false, err
+	}
+	if w.Objects != nil {
+		return w.publishEncodedObject(ctx, in)
 	}
 	// 親ディレクトリが無いと temp も lock file も作れない。ingest はストレージ層が
 	// commit 前に作るが、encode はここが最初の書き込みなので stage の前に作る。
@@ -778,17 +808,17 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		keep = in.cut.keep
 	}
 	input := store.EncodedPublishInput{
-		RecordingID:       in.recordingID,
-		Profile:           in.profile,
-		Attempt:           in.attempt,
-		RelPath:           in.relPath,
-		SizeBytes:         staged.size,
-		DerivedGeneration: in.observed.generation,
-		ObservedRelPath:   in.observed.observedRelPath,
-		Cut:               cut,
-		KeepRanges:        keep,
-		HasRebuildRequest: in.expectedKeep != nil,
-		RequestedKeep:     in.expectedKeep,
+		RecordingID:        in.recordingID,
+		Profile:            in.profile,
+		Attempt:            in.attempt,
+		RelPath:            in.relPath,
+		SizeBytes:          staged.size,
+		DerivedGeneration:  in.observed.generation,
+		ObservedGeneration: in.observed.observedGeneration,
+		Cut:                cut,
+		KeepRanges:         keep,
+		HasRebuildRequest:  in.expectedKeep != nil,
+		RequestedKeep:      in.expectedKeep,
 	}
 	publish := func() error {
 		if err := beforeEncodeFilePublication(in.scratchOut); err != nil {
@@ -815,6 +845,63 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	return staged.size, published, nil
+}
+
+// publishEncodedObject は encoded を S3 の置き場へ公開する。pending は ffmpeg の前に予約済みで、
+// ここでは PUT してから、公開の tx で pending を active にし SHA-256 を論理行へ書く。
+func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
+	info, err := os.Stat(in.scratchOut)
+	if err != nil {
+		return 0, false, fmt.Errorf("stating encoded scratch output: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return 0, false, fmt.Errorf("encoded scratch output is not a non-empty regular file")
+	}
+	cut := in.cut != nil
+	keep := []chapters.Range(nil)
+	if cut {
+		keep = in.cut.keep
+	}
+	input := store.EncodedPublishInput{
+		RecordingID: in.recordingID, Profile: in.profile, Attempt: in.attempt,
+		RelPath: in.relPath, SizeBytes: info.Size(), DerivedGeneration: in.observed.generation,
+		ObservedGeneration: in.observed.observedGeneration, Cut: cut, KeepRanges: keep,
+		HasRebuildRequest: in.expectedKeep != nil, RequestedKeep: in.expectedKeep,
+		PendingCopy: true,
+	}
+	pending := store.PendingMediaAssetCopy{
+		RecordingID: in.recordingID, Kind: store.AssetKindEncoded, Profile: &in.profile,
+		RelPath: in.relPath, SizeBytes: info.Size(), DerivedGeneration: in.observed.generation,
+	}
+	var companions []objectCompanion
+	if in.withSubtitles {
+		subtitleKey, err := mediapath.SubtitleSibling(in.relPath)
+		if err != nil {
+			return 0, false, fmt.Errorf("building subtitle object key: %w", err)
+		}
+		companions = append(companions, objectCompanion{Key: subtitleKey, Path: in.subtitleOut, ContentType: objectContentType(subtitleKey)})
+	}
+	size, published, err = publishGeneratedObject(
+		ctx, w.Objects, w.ObjectPublisher, pending, in.scratchOut, objectContentType(in.relPath),
+		in.pendingObjectPrepared,
+		func(size int64, sum [sha256.Size]byte) (bool, error) {
+			input.SizeBytes = size
+			input.SHA256 = sum[:]
+			return w.ObjectPublisher.PublishEncoded(ctx, input, func() error {
+				if err := beforeEncodeFilePublication(in.scratchOut); err != nil {
+					return fmt.Errorf("preparing encoded object publication: %w", err)
+				}
+				return beforeEncodeCommit(in.scratchOut)
+			})
+		}, companions...,
+	)
+	if errors.Is(err, store.ErrStalePublishPlan) {
+		return 0, false, jobq.Snooze(encodeReplanDelay)
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return size, published, nil
 }
 
 // notify は ev に録画のスナップショット（site / title）を足して webhook を送る。
@@ -880,15 +967,15 @@ func truncateEncodeAttemptError(msg string) string {
 
 // encodePlan は encoded 行の 1 回の観測から導いた、公開の判断材料。
 type encodePlan struct {
-	// observedRelPath は行の rel_path（state は問わない）。行が無ければ ""。
-	observedRelPath string
+	// observedGeneration は行の derived_generation（active かは問わない）。nil は行が無いことを表す。
+	observedGeneration *int64
 	// generation はこの試行が使う派生世代。初回の cut は 1、他の初回出力は 0。
 	generation int64
 	// skip は公開を飛ばして成功扱いにする判定。
 	skip bool
 	// skipReason は飛ばす理由。skip でないときは空。
 	skipReason store.EncodedPublishSkipReason
-	// stale は「自分の計画が古い」ことを表す: 行が active のまま rel_path だけが
+	// stale は「自分の計画が古い」ことを表す: 行が active のまま derived_generation だけが
 	// 観測時から進み、区間が自分の keep と違う ((a) だけが立つ。cut でだけ起きる)。
 	// 成功扱いで飛ばさず、公開せずに計画をやり直す（結果はジョブの種類で分かれる。冒頭の (a)）。
 	stale bool
@@ -899,20 +986,26 @@ func planEncodePublishFromState(
 	in store.EncodedPublishInput,
 	state store.EncodedPublishState,
 ) encodePlan {
-	plan := store.PlanEncodedPublish(in, state, nil)
+	plan := store.PlanEncodedPublish(in, state, false)
 	p := encodePlan{
-		observedRelPath: plan.ObservedRelPath,
-		skip:            plan.Skip,
-		skipReason:      plan.SkipReason,
-		stale:           plan.Stale,
+		observedGeneration: plan.ObservedGeneration,
+		skip:               plan.Skip,
+		skipReason:         plan.SkipReason,
+		stale:              plan.Stale,
 	}
 	if state.EncodedAsset != nil {
 		p.generation = state.EncodedAsset.DerivedGeneration
-		if plan.Replaces || state.EncodedAsset.State != "active" {
+		if plan.Replaces || !state.EncodedAsset.Active {
 			p.generation++
 		}
 	} else if in.Cut {
 		p.generation = 1
+	}
+	// 公開前に止まった試行が予約した世代と、回収済みの世代は使わない。
+	// 同じ key を別の出力で再利用しないためである（S3 の置き場だけがコピー行を先に予約する）。
+	if !p.skip && state.MaxCopyGeneration != nil && *state.MaxCopyGeneration >= p.generation &&
+		*state.MaxCopyGeneration < int64(^uint64(0)>>1) {
+		p.generation = *state.MaxCopyGeneration + 1
 	}
 	return p
 }

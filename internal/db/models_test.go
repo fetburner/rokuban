@@ -291,7 +291,7 @@ func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
 
 	// encoded + profile=NULL: NG
 	_, err := pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'encoded', 'test.mp4', 512)`, recID)
+		`INSERT INTO media_assets (recording_id, kind, size_bytes) VALUES ($1, 'encoded', 512)`, recID)
 	assertPgError(t, err, "23514")
 
 	// encoded + profile='h265': OK
@@ -305,12 +305,12 @@ func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
 
 	// original + profile='x': NG
 	_, err = pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-		 VALUES ($1, 'original', 'x', 'test2.m2ts', 1024)`, recID)
+		`INSERT INTO media_assets (recording_id, kind, profile, size_bytes)
+		 VALUES ($1, 'original', 'x', 1024)`, recID)
 	assertPgError(t, err, "23514")
 }
 
-func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
+func TestSchemaV1_MediaAssetCopyUniqueStoreRelPath(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
@@ -322,25 +322,29 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 	})
 
 	recID2 := dbtest.Recording(t, pool)
-	// active なアセットとパスが重複: NG
-	_, err := pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'original', 'same/path.m2ts', 2048)`, recID2)
+	// 同じ置き場で live な物理コピーとパスが重複: NG
+	secondAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recID2, Kind: "original", SizeBytes: 2048,
+	})
+	if err != nil {
+		t.Fatalf("creating second logical asset: %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, 'same/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName)
 	assertPgError(t, err, "23505")
 
 	// deleted にすればパス再利用可
 	_, err = pool.Exec(ctx,
-		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1`, recID)
+		`UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, firstAssetID)
 	if err != nil {
 		t.Fatalf("update to deleted: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, firstAssetID); err != nil {
-		t.Fatalf("update copy to deleted: %v", err)
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, 'same/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName); err != nil {
+		t.Fatalf("reusing path after deleting its former copy: %v", err)
 	}
-	dbtest.MediaAsset(t, pool, recID2, func(p *dbtest.MediaAssetParams) {
-		p.RelPath = "same/path.m2ts"
-		p.SizeBytes = 2048
-	})
 }
 
 func TestSchemaV1_MediaAssetUniqueNullsNotDistinct(t *testing.T) {
@@ -356,8 +360,8 @@ func TestSchemaV1_MediaAssetUniqueNullsNotDistinct(t *testing.T) {
 
 	// 同一 recording に 2 つ目の original (profile=NULL) は UNIQUE NULLS NOT DISTINCT で拒否
 	_, err := pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-		 VALUES ($1, 'original', 'b.m2ts', 2048)`, recID)
+		`INSERT INTO media_assets (recording_id, kind, size_bytes)
+		 VALUES ($1, 'original', 2048)`, recID)
 	assertPgError(t, err, "23505")
 }
 

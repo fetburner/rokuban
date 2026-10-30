@@ -926,7 +926,8 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// と同じ形の検査）。
 	var encodedCount int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264' AND state = 'active'`,
+		`SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		 WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`,
 		recordingID,
 	).Scan(&encodedCount); err != nil {
 		t.Fatal(err)

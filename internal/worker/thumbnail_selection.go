@@ -39,6 +39,7 @@ func thumbnailInputsOf(p store.ThumbnailReselectCandidate) thumbnailInputs {
 	if p.OriginalMediaAssetID > 0 && p.OriginalRelPath != "" {
 		inputs.Original = &thumbnailSource{
 			MediaAssetID: p.OriginalMediaAssetID,
+			Store:        p.OriginalStore,
 			RelPath:      p.OriginalRelPath,
 		}
 	}

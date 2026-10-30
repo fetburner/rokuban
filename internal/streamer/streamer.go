@@ -16,10 +16,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -44,6 +47,13 @@ type Config struct {
 	// ヘッダー 1 個。値は nginx の internal location（例: /_media/）で、
 	// store があれば /stores/<名前>/ を挟んで相対パスを連結した URI を返す。
 	AccelLocation string
+
+	// ObjectStores は S3 派生物など、署名付き URL を発行できる置き場。
+	// API ロールからは渡さず、streamer ロールだけがオブジェクトストレージへ接続する。
+	ObjectStores map[string]objstore.Store
+
+	// SignedURLExpiry は S3 へ 302 するときの URL の寿命。0 なら 24 時間。
+	SignedURLExpiry time.Duration
 
 	// FFmpeg / FFprobe はコマの切り出し（/frame）で使う。空なら PATH の
 	// ffmpeg / ffprobe。**ライブ視聴の LiveConfig とは別に持つ** --- ライブを
@@ -231,6 +241,11 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 		return
 	}
 
+	if objects, ok := s.cfg.ObjectStores[asset.store]; ok {
+		s.serveSignedAsset(w, r, recordingID, asset, objects)
+		return
+	}
+
 	// X-Accel-Redirect が有効なら、認可判定だけ済ませてバイト転送は
 	// リバースプロキシに委ねる。Range の扱いも nginx 側になる。
 	// パス検証を通した後に返すのが要点（検証前に返すと任意ファイルを配らせられる）。
@@ -294,6 +309,51 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 
 	// name は Content-Type 推測にしか使われない。上で明示済みなので空でよい。
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset, objects objstore.Store) {
+	object, err := objects.Head(r.Context(), asset.relPath)
+	if err != nil {
+		if errors.Is(err, objstore.ErrNotFound) {
+			if !asset.sidecar {
+				slog.Warn("streamer: media asset row exists but the S3 object is missing",
+					"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath)
+			}
+			http.NotFound(w, r)
+			return
+		}
+		metrics.RecordObjectStoreError("head", err)
+		slog.Error("streamer: checking S3 object", "recording_id", recordingID, "store", asset.store,
+			"rel_path", asset.relPath, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !asset.sidecar && object.Size != asset.sizeBytes {
+		slog.Warn("streamer: S3 object size differs from the committed size",
+			"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath,
+			"committed", asset.sizeBytes, "actual", object.Size)
+	}
+	signer, ok := objects.(objstore.SignedURL)
+	if !ok {
+		slog.Error("streamer: object store cannot issue signed URLs", "store", asset.store)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	expires := s.cfg.SignedURLExpiry
+	if expires <= 0 {
+		expires = objstore.DefaultURLExpiry
+	}
+	target, err := signer.Presign(r.Context(), asset.relPath, r.Method, expires, asset.contentType, "")
+	if err != nil {
+		metrics.RecordObjectStoreError("presign", err)
+		slog.Error("streamer: creating signed S3 URL", "recording_id", recordingID, "store", asset.store,
+			"rel_path", asset.relPath, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", asset.contentType)
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // lookupAsset は profile の有無で original / encoded を解決する。

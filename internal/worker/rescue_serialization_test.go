@@ -57,7 +57,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			const relPath = "sites/default/show.m2ts"
 			prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, relPath, nil, []byte("original"))
 			var assetID int64
-			if err := pool.QueryRow(ctx, "SELECT id FROM media_assets WHERE rel_path = $1", relPath).Scan(&assetID); err != nil {
+			if err := pool.QueryRow(ctx, "SELECT media_asset_id FROM media_asset_copies WHERE rel_path = $1", relPath).Scan(&assetID); err != nil {
 				t.Fatal(err)
 			}
 			if mode == "catalog" {
@@ -110,7 +110,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 				t.Fatal(err)
 			}
 			var state string
-			if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE id=$1", assetID).Scan(&state); err != nil {
+			if err := pool.QueryRow(ctx, "SELECT state FROM media_asset_copies WHERE media_asset_id=$1", assetID).Scan(&state); err != nil {
 				t.Fatal(err)
 			}
 			if state != "active" {
@@ -120,7 +120,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("file after deletion = %v", err)
 			}
-			if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE id=$1", assetID).Scan(&state); err != nil {
+			if err := pool.QueryRow(ctx, "SELECT state FROM media_asset_copies WHERE media_asset_id=$1", assetID).Scan(&state); err != nil {
 				t.Fatal(err)
 			}
 			if state != "deleted" {
@@ -134,7 +134,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 				if result.MissingMediaFiles != 1 {
 					t.Fatalf("missing files = %d", result.MissingMediaFiles)
 				}
-				if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE id=$1", assetID).Scan(&state); err != nil {
+				if err := pool.QueryRow(ctx, "SELECT state FROM media_asset_copies WHERE media_asset_id=$1", assetID).Scan(&state); err != nil {
 					t.Fatal(err)
 				}
 				if state != "deleted" {

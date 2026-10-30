@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -452,7 +454,6 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID:       recordingID,
 		Profile:           &profile,
-		RelPath:           relPath,
 		SizeBytes:         1,
 		DerivedGeneration: &generation,
 	})
@@ -724,6 +725,147 @@ worker:
   periodic_jobs: false
 %s`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mirakcURL, t.TempDir(),
 		strings.Join(extra, "\n")))
+}
+
+func TestServerRecordingQueryShowsS3EncodedCopyAfterOriginalRemoval(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	originalID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "server-s3-query/original.ts"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
+		t.Fatalf("removing the original copy: %v", err)
+	}
+	profile := "h264"
+	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "server-s3-query/encoded.mp4"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
+		t.Fatalf("placing encoded copy in S3 derived store: %v", err)
+	}
+
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+	configPath := writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:0"
+  allowed_hosts: []
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakcs:
+  - site: default
+    url: http://127.0.0.1:1
+storage:
+  media_dir: %q
+  stores:
+    test-store:
+      kind: fs
+    s3-derived:
+      kind: s3
+      bucket: rokuban-derived
+  originals:
+    - store: test-store
+  derived: s3-derived
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("loading API configuration: %v", err)
+	}
+	var eg errgroup.Group
+	server, err := buildHTTPServer(ctx, cfg, []string{"api"}, nil, pool, &eg, true)
+	if err != nil {
+		t.Fatalf("building API HTTP server: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler)
+	t.Cleanup(httpServer.Close)
+
+	response, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", httpServer.URL, recordingID))
+	if err != nil {
+		t.Fatalf("GET recording detail: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET recording detail status = %d, want 200", response.StatusCode)
+	}
+	var got struct {
+		EncodedAssets []struct {
+			Profile string `json:"profile"`
+		} `json:"encodedAssets"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding recording detail: %v", err)
+	}
+	if len(got.EncodedAssets) != 1 || got.EncodedAssets[0].Profile != profile {
+		t.Fatalf("recording encoded assets = %+v, want S3 profile %q after original removal", got.EncodedAssets, profile)
+	}
+}
+
+// S3 に繋がらず資格情報も無くても、worker は起動する。S3 を使うジョブは、ジョブが実行されたときに失敗する。
+// 起動時に S3 へ接続すると、ここでプロセスが落ちる。
+func TestServerCmd_WorkerStartsWithUnreachableS3AndNoCredentials(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	_ = pool
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+	path := writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:0"
+  allowed_hosts: []
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakcs:
+  - site: home
+    url: http://127.0.0.1:1
+storage:
+  media_dir: %q
+  stores:
+    test-store:
+      kind: fs
+    s3-derived:
+      kind: s3
+      endpoint: http://127.0.0.1:1
+      bucket: rokuban-derived
+  originals:
+    - store: test-store
+  derived: s3-derived
+worker:
+  periodic_jobs: false
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
+	if _, err := runServerCmdBounded(t, 30*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=encode", "--once", "--once-idle-timeout=2s"); err != nil {
+		t.Fatalf("worker with an unreachable S3 store and no credentials: %v", err)
+	}
 }
 
 // syncBuffer は複数 goroutine から書かれるログを集める。サーバーは

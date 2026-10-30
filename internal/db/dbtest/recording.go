@@ -22,8 +22,13 @@ const (
 // RecordingParams は Recording の上書き対象で、sqlc の生成型の別名。
 type RecordingParams = sqlcgen.CreateRecordingParams
 
-// MediaAssetParams は MediaAsset の上書き対象で、sqlc の生成型の別名。
-type MediaAssetParams = sqlcgen.CreateMediaAssetParams
+// MediaAssetParams は MediaAsset のメタデータと物理コピーの上書き対象。
+type MediaAssetParams struct {
+	Kind      string
+	Profile   *string
+	RelPath   string
+	SizeBytes int64
+}
 
 // StoreName はテストの media_asset_copies が使う置き場の名前。コピー行は実在の置き場名が要る。
 const StoreName = "test-store"
@@ -103,7 +108,7 @@ func ReplaceDerivedMediaAssetCopy(t testing.TB, db sqlcgen.DBTX, mediaAssetID in
 	err := db.QueryRow(t.Context(), `
 WITH logical AS (
     UPDATE media_assets
-    SET rel_path = $3, derived_generation = $4, updated_at = now()
+    SET derived_generation = $4, updated_at = now()
     WHERE id = $1 AND kind <> 'original'
     RETURNING id
 )
@@ -118,17 +123,21 @@ RETURNING id`, mediaAssetID, store, relPath, generation).Scan(&copyID)
 
 // MediaAssetWithError は MediaAsset と同じ media_asset を作り、エラーを返す。
 func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64, opts ...func(*MediaAssetParams)) (int64, error) {
-	params := sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        "original",
-		RelPath:     fmt.Sprintf("test-original/%d.ts", assetPathID.Add(1)),
-		SizeBytes:   1,
+	params := MediaAssetParams{
+		Kind:      "original",
+		RelPath:   fmt.Sprintf("test-original/%d.ts", assetPathID.Add(1)),
+		SizeBytes: 1,
 	}
 	for _, opt := range opts {
 		opt(&params)
 	}
 
-	id, err := sqlcgen.New(db).CreateMediaAsset(ctx, params)
+	id, err := sqlcgen.New(db).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        params.Kind,
+		Profile:     params.Profile,
+		SizeBytes:   params.SizeBytes,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("create test media asset: %w", err)
 	}
@@ -140,22 +149,14 @@ func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64
 	return id, nil
 }
 
-// SetMediaAssetState はテスト資産とすべてのコピーの状態を同じ tx で変更する。
+// SetMediaAssetState はテスト資産のすべての物理コピーの状態を変更する。
 func SetMediaAssetState(t testing.TB, db sqlcgen.DBTX, assetID int64, state string) {
 	t.Helper()
 	_, err := db.Exec(t.Context(), `
-WITH logical AS (
-    UPDATE media_assets
-    SET state = $2,
-        deleted_at = CASE WHEN $2 = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
-    WHERE id = $1
-    RETURNING id
-)
 UPDATE media_asset_copies copy
 SET state = $2,
     deleted_at = CASE WHEN $2 = 'deleted' THEN COALESCE(copy.deleted_at, now()) ELSE NULL END
-FROM logical
-WHERE copy.media_asset_id = logical.id`, assetID, state)
+WHERE copy.media_asset_id = $1`, assetID, state)
 	if err != nil {
 		t.Fatalf("setting media asset %d and copy state to %s: %v", assetID, state, err)
 	}
@@ -165,18 +166,13 @@ WHERE copy.media_asset_id = logical.id`, assetID, state)
 func SetRecordingMediaAssetState(t testing.TB, db sqlcgen.DBTX, recordingID int64, kind, state string) {
 	t.Helper()
 	_, err := db.Exec(t.Context(), `
-WITH logical AS (
-    UPDATE media_assets
-    SET state = $3,
-        deleted_at = CASE WHEN $3 = 'deleted' THEN COALESCE(deleted_at, now()) ELSE NULL END
-    WHERE recording_id = $1 AND ($2 = '' OR kind = $2)
-    RETURNING id
-)
 UPDATE media_asset_copies copy
 SET state = $3,
     deleted_at = CASE WHEN $3 = 'deleted' THEN COALESCE(copy.deleted_at, now()) ELSE NULL END
-FROM logical
-WHERE copy.media_asset_id = logical.id`, recordingID, kind, state)
+WHERE copy.media_asset_id IN (
+    SELECT id FROM media_assets
+    WHERE recording_id = $1 AND ($2 = '' OR kind = $2)
+)`, recordingID, kind, state)
 	if err != nil {
 		t.Fatalf("setting recording %d %s media asset and copy states to %s: %v", recordingID, kind, state, err)
 	}
@@ -186,13 +182,9 @@ WHERE copy.media_asset_id = logical.id`, recordingID, kind, state)
 func SetMediaAssetRelPath(t testing.TB, db sqlcgen.DBTX, assetID int64, relPath string) {
 	t.Helper()
 	_, err := db.Exec(t.Context(), `
-WITH logical AS (
-    UPDATE media_assets SET rel_path = $2 WHERE id = $1 RETURNING id
-)
-UPDATE media_asset_copies copy
+UPDATE media_asset_copies
 SET rel_path = $2
-FROM logical
-WHERE copy.media_asset_id = logical.id`, assetID, relPath)
+WHERE media_asset_id = $1`, assetID, relPath)
 	if err != nil {
 		t.Fatalf("setting media asset %d and copy path to %q: %v", assetID, relPath, err)
 	}
