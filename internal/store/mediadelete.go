@@ -24,6 +24,7 @@ type MediaDeleteRevertCandidate struct {
 	MediaAssetID int64
 	RecordingID  int64
 	RelPath      string
+	Kind         string
 }
 
 // MediaDelete は削除 reconcile がメディアアセットの削除状態を読み書きする契約である。

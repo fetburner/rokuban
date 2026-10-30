@@ -592,7 +592,7 @@ func (q *Queries) ListTrashMediaAssetsToDelete(ctx context.Context, arg ListTras
 }
 
 const listUnqualifiedDeletingAssets = `-- name: ListUnqualifiedDeletingAssets :many
-SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id, physical_copy.rel_path
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id, physical_copy.rel_path, a.kind
 FROM media_assets a
 JOIN media_asset_copies physical_copy
   ON physical_copy.media_asset_id = a.id
@@ -638,6 +638,7 @@ type ListUnqualifiedDeletingAssetsRow struct {
 	MediaAssetID int64
 	RecordingID  int64
 	RelPath      string
+	Kind         string
 }
 
 // deleting のまま止まっていて、上の削除条件のどれにも該当しなくなった行の
@@ -677,6 +678,7 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 			&i.MediaAssetID,
 			&i.RecordingID,
 			&i.RelPath,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}

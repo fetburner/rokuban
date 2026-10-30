@@ -38,7 +38,7 @@ func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, 
 	out := make([]store.MediaDeleteRevertCandidate, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, store.MediaDeleteRevertCandidate{
-			ID: row.CopyID, MediaAssetID: row.MediaAssetID, RecordingID: row.RecordingID, RelPath: row.RelPath,
+			ID: row.CopyID, MediaAssetID: row.MediaAssetID, RecordingID: row.RecordingID, RelPath: row.RelPath, Kind: row.Kind,
 		})
 	}
 	return out, nil

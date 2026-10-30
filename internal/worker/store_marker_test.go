@@ -529,7 +529,7 @@ func TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat(t *t
 				metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 				worker.resolveUnqualifiedDeletingAsset(context.Background(),
-					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath}, time.Now(), time.Time{}, nil, "")
+					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath, Kind: store.AssetKindOriginal}, time.Now(), time.Time{}, nil, "")
 
 				if mediaDelete.markDeletedCalls != 0 || mediaDelete.revertCalls != 0 {
 					t.Errorf("DB calls = MarkDeleted:%d RevertToActive:%d, want 0:0", mediaDelete.markDeletedCalls, mediaDelete.revertCalls)

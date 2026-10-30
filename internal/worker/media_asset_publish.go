@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-
 )
 
 // newWorkerScratchDir は指定されたキーに乱数接尾辞を付けた scratch directory を作る。
