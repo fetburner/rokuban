@@ -24,7 +24,6 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // planEncodePublish は store の読み取りと共通の判定から、テストの前状態の公開計画を導出する。
