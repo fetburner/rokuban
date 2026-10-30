@@ -701,7 +701,7 @@ const encodeReplanDelay = 10 * time.Second
 // あるいは commit の失敗を注入するためのフックである（本番では何もしない）。
 // 引数は試行の scratch 出力パス（どの試行かをテストが見分けるため）。
 var (
-	// beforeEncodeObjectPut は hash 後、派生物を置き場へ送る直前のマウント目印検査前に呼ぶ。
+	// beforeEncodeObjectPut は hash 後、本体を置き場へ Put する直前のマウント目印検査前に 1 回だけ呼ぶ（字幕の Put と commit の前では呼ばない）。
 	// テストでその間に目印が変わる状況を再現する。
 	beforeEncodeObjectPut = func(string) {}
 	// beforeEncodeObjectActivation は Store.Put の後、公開 transaction を開始する前に呼ぶ。
@@ -781,7 +781,9 @@ func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublis
 		ctx, w.Objects, w.ObjectPublisher, pending, in.scratchOut, objectContentType(in.relPath),
 		in.pendingObjectPrepared,
 		func(operation string) error {
-			beforeEncodeObjectPut(in.scratchOut)
+			if operation == guardOperationPutObject {
+				beforeEncodeObjectPut(in.scratchOut)
+			}
 			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
 		},
 		func(size int64, sum [sha256.Size]byte) (bool, error) {

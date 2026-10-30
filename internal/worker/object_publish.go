@@ -30,6 +30,9 @@ const generatedObjectCleanupTimeout = 10 * time.Second
 //  2. 宣言サイズどおりに読み切った全体の SHA-256 を照合しながら Put する。
 //  3. commit が公開の tx で pending を active にし、SHA-256 を論理行へ書く。
 //
+// guardOperationPutObject は、guard に渡す本体の Put の前の操作名。呼び出し側がこの Put だけを見分けるのに使う。
+const guardOperationPutObject = "putting generated object"
+
 // guard は Put と DB commit の直前に呼び、メディア置き場のマウント状態を再確認する。
 // commit は Put の後に呼ぶ。通常の未公開 pending は reclaim まで保持するが、
 // pending row が公開中に退役し、終了時に live copy が無ければ自分の key を削除する。
@@ -78,7 +81,7 @@ func publishGeneratedObject(
 		}
 	}
 	if guard != nil {
-		if err := guard("putting generated object"); err != nil {
+		if err := guard(guardOperationPutObject); err != nil {
 			return 0, false, err
 		}
 	}

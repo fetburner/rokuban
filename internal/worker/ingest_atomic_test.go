@@ -431,7 +431,7 @@ func runCanonicalOrphanSurvives(
 	}
 
 	// The path lock prevents cleanup from deleting the file while the transaction is unresolved.
-	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	cleanup.deleteOrphanFile(relPath, 0)
 	var orphanCount int

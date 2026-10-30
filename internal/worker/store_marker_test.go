@@ -280,7 +280,7 @@ func TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears(t *testing.T) {
 				t.Fatal(err)
 			}
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetUnlink
 			beforeMediaAssetUnlink = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetUnlink = previous })
@@ -319,7 +319,7 @@ func TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears(t *testing.T) 
 				t.Fatal(err)
 			}
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetMarkDeleted
 			beforeMediaAssetMarkDeleted = func(int64) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetMarkDeleted = previous })
@@ -352,7 +352,7 @@ func TestStoreMarkerMismatchWithholdsMissingAssetAndOrphanActions(t *testing.T) 
 				activeAssets: []store.ActiveMediaAsset{{ID: 17, RelPath: "sites/tokyo/missing.ts"}},
 				agedOrphans:  []string{filepath.ToSlash(relPath)},
 			}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 			// 実体無しの記録（walk の結果 → DB）。
 			if _, err := worker.reconcileMissingAssets(context.Background(), nil); err == nil {
@@ -410,7 +410,7 @@ func TestMissingAssetRecordRechecksStoreMarkerImmediatelyBeforeWrite(t *testing.
 				activeAssets: []store.ActiveMediaAsset{{ID: 18, RelPath: "sites/tokyo/missing.ts"}},
 				onListActive: func() { mismatchStoreMarker(t, mediaDir, state) },
 			}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 			if _, err := worker.reconcileMissingAssets(context.Background(), nil); err == nil {
 				t.Fatal("reconcileMissingAssets() succeeded after the marker changed")
@@ -445,7 +445,7 @@ func TestOrphanUnlinkRechecksStoreMarkerImmediatelyBeforeRemoval(t *testing.T) {
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			previous := beforeOrphanFileUnlink
 			beforeOrphanFileUnlink = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeOrphanFileUnlink = previous })
@@ -477,7 +477,7 @@ func TestDeleteMediaAssetWithholdsMarkDeletedAfterErrNotExistWhenMarkerDisappear
 			}
 			// ファイルは最初から無い。unlink は ErrNotExist になる。
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetMarkDeleted
 			beforeMediaAssetMarkDeleted = func(int64) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetMarkDeleted = previous })
@@ -522,7 +522,7 @@ func TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat(t *t
 					}
 				}
 				mediaDelete := &markerTestMediaDelete{}
-				worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+				worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 				previous := afterDeletingAssetStat
 				afterDeletingAssetStat = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 				t.Cleanup(func() { afterDeletingAssetStat = previous })
@@ -562,7 +562,7 @@ func TestOrphanAbsentAfterUnlinkWithholdsRecordWhenMarkerDisappears(t *testing.T
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			// 再確認の後に別の誰かがファイルを消す。unlink は ErrNotExist になる。
 			previousBefore := beforeOrphanFileUnlink
 			beforeOrphanFileUnlink = func(string) {
@@ -695,7 +695,7 @@ func TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk(t *testing.T) {
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{onListKnown: func() { mismatchStoreMarker(t, mediaDir, state) }}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 			if _, err := worker.reconcileOrphanCandidates(context.Background(), time.Second); err == nil {

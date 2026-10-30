@@ -292,11 +292,24 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing derived storage transfer destination"); err != nil {
 		return err
 	}
-	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "storage-transfer", fmt.Sprintf("derived-%d-%d-", transfer.MediaAssetID, transfer.CopyID))
-	if err != nil {
-		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("creating derived transfer scratch: %w", err))
+	// scratch は、内容を複製して照合する必要があるときだけ作る（SHA-256 が既知の本体と、字幕が無い encoded は作らない）。
+	var scratchPath string
+	defer func() {
+		if scratchPath != "" {
+			_ = os.RemoveAll(scratchPath)
+		}
+	}()
+	scratchDir := func() (string, error) {
+		if scratchPath != "" {
+			return scratchPath, nil
+		}
+		path, err := newWorkerScratchDir(w.ScratchDir, "storage-transfer", fmt.Sprintf("derived-%d-%d-", transfer.MediaAssetID, transfer.CopyID))
+		if err != nil {
+			return "", fmt.Errorf("creating derived transfer scratch: %w", err)
+		}
+		scratchPath = path
+		return path, nil
 	}
-	defer func() { _ = os.RemoveAll(scratchDir) }()
 	ownedRelPaths, err := w.Storage.ListMediaAssetTransferObjectsOwned(ctx, transfer.CopyID, args.Store)
 	if err != nil {
 		return fmt.Errorf("listing owned derived transfer objects: %w", err)
@@ -306,19 +319,41 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		owned[relPath] = struct{}{}
 	}
 
-	assetPath, digest, size, err := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
-	if err != nil {
-		if errors.Is(err, errTransferSourceMismatch) {
-			return w.handleTransferMismatch(ctx, transfer, log, "", "", "derived source differs from logical asset metadata")
+	// 論理資産の SHA-256 が既知なら、source の Get を（帯域制限を通して）そのまま Put に流す。
+	// Store.Put は宣言サイズと SHA-256 が合わなければ何も公開しないので、scratch に複製して照合する必要が無い。
+	// 未計測のときだけ scratch に複製してハッシュを取る。
+	var openMain func() (io.ReadCloser, error)
+	digest, size := transfer.SHA256, transfer.SizeBytes
+	var streamed *countingReadCloser
+	if len(transfer.SHA256) == sha256.Size && transfer.SizeBytes >= 0 {
+		openMain = func() (io.ReadCloser, error) {
+			source, err := w.openTransferSourceStream(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath)
+			streamed = source
+			if source == nil {
+				return nil, err
+			}
+			return source, err
 		}
-		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", err))
+	} else {
+		assetPath, stagedDigest, stagedSize, err := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
+		if err != nil {
+			if errors.Is(err, errTransferSourceMismatch) {
+				return w.handleTransferMismatch(ctx, transfer, log, "", "", "derived source differs from logical asset metadata")
+			}
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", err))
+		}
+		digest, size = stagedDigest, stagedSize
+		openMain = func() (io.ReadCloser, error) { return os.Open(assetPath) }
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
 		return err
 	}
 	_, mainOwned := owned[transfer.RelPath]
-	mainCreated, err := putTransferredObject(ctx, targetStore, transfer.RelPath, assetPath, size, digest, objectContentType(transfer.RelPath), mainOwned, false)
+	mainCreated, err := putTransferredObject(ctx, targetStore, transfer.RelPath, openMain, size, digest, objectContentType(transfer.RelPath), mainOwned)
 	if err != nil {
+		if streamed != nil && streamed.sourceDiffers(size, err) {
+			return w.handleTransferMismatch(ctx, transfer, log, "", "", "derived source differs from logical asset metadata")
+		}
 		metrics.RecordObjectStoreError("put", err)
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
 	}
@@ -376,7 +411,7 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 	transfer store.MediaAssetTransfer,
 	args jobs.StorageTransferArgs,
 	sourceStore, targetStore objstore.Store,
-	scratchDir string,
+	scratchDir func() (string, error),
 	owned map[string]struct{},
 	log *slog.Logger,
 ) (bool, error) {
@@ -393,10 +428,12 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 	}
 	subtitlePath, subtitleDigest, subtitleSize, subtitleErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, sourceSubtitleKey, scratchDir, -1, nil)
 	if errors.Is(subtitleErr, objstore.ErrNotFound) {
-		if err := targetStore.Delete(ctx, subtitleKey); err != nil {
-			return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("removing absent transferred subtitle: %w", err))
-		}
+		// source に字幕が無いとき、宛先の字幕 key は所有記録のある（この転送が作った）ものだけ消す。
+		// 所有記録の無い key は、この転送が作ったものではないので残す。
 		if _, subtitleOwned := owned[subtitleKey]; subtitleOwned {
+			if err := targetStore.Delete(ctx, subtitleKey); err != nil {
+				return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("removing absent transferred subtitle: %w", err))
+			}
 			if err := w.Storage.DeleteMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, subtitleKey); err != nil {
 				return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("clearing absent transferred subtitle ownership: %w", err))
 			}
@@ -408,7 +445,7 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading transferred subtitle: %w", subtitleErr))
 	}
 	_, subtitleOwned := owned[subtitleKey]
-	subtitleCreated, err := putTransferredObject(ctx, targetStore, subtitleKey, subtitlePath, subtitleSize, subtitleDigest, "text/vtt; charset=utf-8", subtitleOwned, true)
+	subtitleCreated, err := putTransferredObject(ctx, targetStore, subtitleKey, func() (io.ReadCloser, error) { return os.Open(subtitlePath) }, subtitleSize, subtitleDigest, "text/vtt; charset=utf-8", subtitleOwned)
 	if err != nil {
 		metrics.RecordObjectStoreError("put", err)
 		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing transferred subtitle: %w", err))
@@ -433,7 +470,7 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 	return true, nil
 }
 
-func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, objects objstore.Store, sourceStoreName, key, scratchDir string, expectedSize int64, expectedSHA []byte) (string, []byte, int64, error) {
+func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, objects objstore.Store, sourceStoreName, key string, scratchDir func() (string, error), expectedSize int64, expectedSHA []byte) (string, []byte, int64, error) {
 	reader, ok := objects.(objstore.Reader)
 	if !ok {
 		return "", nil, 0, fmt.Errorf("object store %q does not support reads", sourceStoreName)
@@ -442,7 +479,12 @@ func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, obje
 	if err != nil {
 		return "", nil, 0, err
 	}
-	path, err := os.CreateTemp(scratchDir, "object-*")
+	dir, err := scratchDir()
+	if err != nil {
+		_ = source.Close()
+		return "", nil, 0, err
+	}
+	path, err := os.CreateTemp(dir, "object-*")
 	if err != nil {
 		_ = source.Close()
 		return "", nil, 0, fmt.Errorf("creating scratch object: %w", err)
@@ -483,7 +525,9 @@ func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, obje
 	return name, digest, count, nil
 }
 
-func putTransferredObject(ctx context.Context, objects objstore.Store, key, path string, size int64, digest []byte, contentType string, alreadyOwned, replaceStale bool) (created bool, err error) {
+// putTransferredObject は key が無ければ open が返す内容を Put する。既に内容の同じ key があれば何もせず、
+// 内容の違う既存の key は所有記録の有無にかかわらず衝突として扱い、消さない。
+func putTransferredObject(ctx context.Context, objects objstore.Store, key string, open func() (io.ReadCloser, error), size int64, digest []byte, contentType string, alreadyOwned bool) (created bool, err error) {
 	var checksum [sha256.Size]byte
 	if len(digest) != len(checksum) {
 		return false, fmt.Errorf("invalid SHA-256 length %d", len(digest))
@@ -497,23 +541,78 @@ func putTransferredObject(ctx context.Context, objects objstore.Store, key, path
 		if actualSize == size && bytes.Equal(actual, digest) {
 			return false, nil
 		}
-		if !replaceStale || alreadyOwned {
-			ownership := "pre-existing"
-			if alreadyOwned {
-				ownership = "owned"
-			}
-			return false, fmt.Errorf("%s destination object differs from transfer source: %w", ownership, objstore.ErrAlreadyExists)
+		ownership := "pre-existing"
+		if alreadyOwned {
+			ownership = "owned"
 		}
-		if err := objects.Delete(ctx, key); err != nil {
-			return false, fmt.Errorf("removing stale subtitle object %q: %w", key, err)
-		}
+		return false, fmt.Errorf("%s destination object differs from transfer source: %w", ownership, objstore.ErrAlreadyExists)
 	} else if !errors.Is(headErr, objstore.ErrNotFound) {
 		return false, headErr
 	}
-	if err := uploadObjectFile(ctx, objects, key, path, size, checksum, contentType); err != nil {
+	src, err := open()
+	if err != nil {
 		return false, err
 	}
+	putErr := objects.Put(ctx, key, src, size, checksum, contentType)
+	closeErr := src.Close()
+	if putErr != nil {
+		return false, fmt.Errorf("putting transferred object %q: %w", key, putErr)
+	}
+	if closeErr != nil {
+		return true, fmt.Errorf("closing transfer source for %q: %w", key, closeErr)
+	}
 	return true, nil
+}
+
+// countingReadCloser は、Put に流す source の読んだ長さと読み取りエラーを覚える。
+type countingReadCloser struct {
+	io.Reader
+	closer  io.Closer
+	n       int64
+	eof     bool
+	readErr error
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	c.n += int64(n)
+	if errors.Is(err, io.EOF) {
+		c.eof = true
+	} else if err != nil {
+		c.readErr = err
+	}
+	return n, err
+}
+
+func (c *countingReadCloser) Close() error { return c.closer.Close() }
+
+// sourceDiffers は Put の失敗が、source の内容が論理資産と違うことによるかを返す。
+// SHA-256 の不一致のほか、source が宣言サイズより短く終わった場合と、宣言サイズを超えて続く場合も含む。
+// source の読み取り自体が失敗したときや、書き込み側の失敗で途中までしか読んでいないときは、
+// 内容が違うとは言えないので false を返す。
+func (c *countingReadCloser) sourceDiffers(size int64, putErr error) bool {
+	if c.readErr != nil {
+		return false
+	}
+	return errors.Is(putErr, objstore.ErrChecksumMismatch) || (c.eof && c.n != size) || c.n > size
+}
+
+// openTransferSourceStream は source の Get を、帯域制限を通した読み取りとして開く。
+func (w *StorageTransferWorker) openTransferSourceStream(ctx context.Context, objects objstore.Store, sourceStoreName, key string) (*countingReadCloser, error) {
+	reader, ok := objects.(objstore.Reader)
+	if !ok {
+		return nil, fmt.Errorf("object store %q does not support reads", sourceStoreName)
+	}
+	source, err := reader.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	limited, err := w.transferSourceReader(ctx, sourceStoreName, source)
+	if err != nil {
+		_ = source.Close()
+		return nil, err
+	}
+	return &countingReadCloser{Reader: limited, closer: source}, nil
 }
 
 func ownedRelPathsFromSet(owned map[string]struct{}) []string {
@@ -822,12 +921,6 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 	if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
 		return err
 	}
-	if err := w.syncTransferSubtitle(ctx, transfer, args); err != nil {
-		if errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
-			return err
-		}
-		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("synchronizing encoded subtitle sidecar: %w", err))
-	}
 	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
 	if err != nil {
 		return err
@@ -845,9 +938,6 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 					return fmt.Errorf("syncing transfer directory after SHA-256 rejection: %w", err)
 				}
 			}
-			if err := w.removeTransferSubtitle(transfer, args); err != nil {
-				return fmt.Errorf("removing rejected transfer subtitle sidecar: %w", err)
-			}
 			return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "completion rejected a stale SHA-256")
 		}
 		if createdCanonical {
@@ -860,9 +950,6 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 			if err := fsink.SyncParentDir(targetPath); err != nil {
 				return fmt.Errorf("syncing directory after removing uncommitted transfer: %w", err)
 			}
-		}
-		if err := w.removeTransferSubtitle(transfer, args); err != nil {
-			return fmt.Errorf("removing rejected transfer subtitle sidecar: %w", err)
 		}
 		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
 			return err
@@ -883,173 +970,6 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 	}
 	metrics.StorageTransferLastSuccess.Set(float64(time.Now().Unix()))
 	log.Info("storage transfer: copy active", "bytes", transfer.SizeBytes)
-	return nil
-}
-
-func (w *StorageTransferWorker) removeTransferSubtitle(transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs) error {
-	if transfer.Kind != store.AssetKindEncoded || !canHaveSubtitleSidecar(transfer.RelPath) {
-		return nil
-	}
-	subtitleRelPath, err := mediapath.SubtitleSibling(transfer.RelPath)
-	if err != nil {
-		return fmt.Errorf("building rejected subtitle sidecar path: %w", err)
-	}
-	subtitlePath, err := mediapath.Resolve(w.Roots[args.Store], subtitleRelPath)
-	if err != nil {
-		return fmt.Errorf("resolving rejected subtitle sidecar path: %w", err)
-	}
-	return removeAbsentTransferSubtitle(w.Roots[args.Store], args.Store, subtitlePath)
-}
-
-// syncTransferSubtitle mirrors the optional sidecar before the destination copy becomes active.
-// The caller holds the encoded asset's source and destination rel_path locks; encode and delete
-// use those same locks for the sidecar.
-func (w *StorageTransferWorker) syncTransferSubtitle(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs) error {
-	if transfer.Kind != store.AssetKindEncoded || !canHaveSubtitleSidecar(transfer.RelPath) {
-		return nil
-	}
-	sourceRoot := w.Roots[transfer.SourceStore]
-	targetRoot := w.Roots[args.Store]
-	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading transferred subtitle sidecar"); err != nil {
-		return err
-	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing transferred subtitle sidecar"); err != nil {
-		return err
-	}
-	sourceRelPath, err := mediapath.SubtitleSibling(transfer.SourceRelPath)
-	if err != nil {
-		return fmt.Errorf("building source subtitle path: %w", err)
-	}
-	targetRelPath, err := mediapath.SubtitleSibling(transfer.RelPath)
-	if err != nil {
-		return fmt.Errorf("building destination subtitle path: %w", err)
-	}
-	sourceSubtitle, err := mediapath.Resolve(sourceRoot, sourceRelPath)
-	if err != nil {
-		return fmt.Errorf("resolving source subtitle path: %w", err)
-	}
-	targetSubtitle, err := mediapath.Resolve(targetRoot, targetRelPath)
-	if err != nil {
-		return fmt.Errorf("resolving destination subtitle path: %w", err)
-	}
-	sourceInfo, err := os.Lstat(sourceSubtitle)
-	if errors.Is(err, os.ErrNotExist) {
-		return removeAbsentTransferSubtitle(targetRoot, args.Store, targetSubtitle)
-	}
-	if err != nil {
-		return fmt.Errorf("stating source subtitle sidecar: %w", err)
-	}
-	if !sourceInfo.Mode().IsRegular() {
-		return fmt.Errorf("source subtitle sidecar is not a regular file: %s", sourceSubtitle)
-	}
-	if err := os.MkdirAll(filepath.Dir(targetSubtitle), 0o755); err != nil {
-		return fmt.Errorf("creating subtitle destination directory: %w", err)
-	}
-	if targetInfo, statErr := os.Lstat(targetSubtitle); statErr == nil && !targetInfo.Mode().IsRegular() {
-		return fmt.Errorf("destination subtitle sidecar is not a regular file: %s", targetSubtitle)
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("stating destination subtitle sidecar: %w", statErr)
-	}
-	return w.copyTransferSubtitle(ctx, sourceSubtitle, sourceInfo, transfer.SourceStore, targetSubtitle,
-		targetRoot, args.Store, transfer.MediaAssetID, transfer.CopyID)
-}
-
-func (w *StorageTransferWorker) copyTransferSubtitle(ctx context.Context, sourcePath string, sourceInfo os.FileInfo, sourceStore, targetPath, targetRoot, targetStore string, mediaAssetID, copyID int64) error {
-	source, err := os.Open(sourcePath)
-	if err != nil {
-		return fmt.Errorf("opening source subtitle sidecar: %w", err)
-	}
-	openedInfo, err := source.Stat()
-	if err != nil {
-		_ = source.Close()
-		return fmt.Errorf("stating opened subtitle sidecar: %w", err)
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, openedInfo) {
-		_ = source.Close()
-		return fmt.Errorf("source subtitle sidecar changed while opening")
-	}
-	tempPath := transferSubtitleTempPath(targetPath, mediaAssetID, copyID)
-	tempLock, _, err := fsink.LockTempFile(tempPath)
-	if err != nil {
-		_ = source.Close()
-		return fmt.Errorf("locking staged subtitle sidecar: %w", err)
-	}
-	defer func() { _ = tempLock.Close() }()
-	defer func() { _ = source.Close() }()
-	if err := tempLock.Chmod(0o644); err != nil {
-		return fmt.Errorf("setting staged subtitle permissions: %w", err)
-	}
-	if err := fsink.RemoveCheckpoint(tempPath); err != nil {
-		return fmt.Errorf("removing stale subtitle checkpoint: %w", err)
-	}
-	if err := tempLock.Truncate(0); err != nil {
-		return fmt.Errorf("truncating staged subtitle sidecar: %w", err)
-	}
-	temp, err := fsink.OpenFileFromLock(tempLock)
-	if err != nil {
-		return fmt.Errorf("opening staged subtitle writer: %w", err)
-	}
-	reader, err := w.transferSourceReader(ctx, sourceStore, source)
-	if err != nil {
-		_ = temp.Close()
-		return err
-	}
-	written, copyErr := io.CopyBuffer(temp, reader, make([]byte, 32*1024))
-	if copyErr != nil {
-		_ = temp.Close()
-		return fmt.Errorf("copying subtitle sidecar: %w", copyErr)
-	}
-	if written != sourceInfo.Size() {
-		_ = temp.Close()
-		return fmt.Errorf("subtitle sidecar size changed while copying: read=%d size=%d", written, sourceInfo.Size())
-	}
-	if err := ctx.Err(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return fmt.Errorf("syncing staged subtitle sidecar: %w", err)
-	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("closing staged subtitle sidecar: %w", err)
-	}
-	if err := requireMediaStoreMarker(targetRoot, targetStore, "publishing transferred subtitle sidecar"); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, targetPath); err != nil {
-		return fmt.Errorf("publishing transferred subtitle sidecar: %w", err)
-	}
-	if err := fsink.SyncParentDir(targetPath); err != nil {
-		return fmt.Errorf("syncing directory after publishing subtitle sidecar: %w", err)
-	}
-	return nil
-}
-
-func transferSubtitleTempPath(targetPath string, mediaAssetID, copyID int64) string {
-	return filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d-subtitle", mediapath.StorageTransferTempFilePrefix, mediaAssetID, copyID))
-}
-
-func removeAbsentTransferSubtitle(targetRoot, targetStore, targetPath string) error {
-	if err := requireMediaStoreMarker(targetRoot, targetStore, "removing absent transferred subtitle sidecar"); err != nil {
-		return err
-	}
-	info, err := os.Lstat(targetPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stating stale destination subtitle sidecar: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("stale destination subtitle sidecar is not a regular file: %s", targetPath)
-	}
-	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("removing stale destination subtitle sidecar: %w", err)
-	}
-	if err := fsink.SyncParentDir(targetPath); err != nil {
-		return fmt.Errorf("syncing directory after removing stale subtitle sidecar: %w", err)
-	}
 	return nil
 }
 

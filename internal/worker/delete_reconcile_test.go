@@ -245,7 +245,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -334,7 +334,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 	w := &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir), TransferOverlap: time.Hour,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), TransferOverlap: time.Hour,
 		MediaStoreName: dbtest.StoreName,
 	}
 	previousHook := beforeMediaAssetUnlink
@@ -426,7 +426,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -470,7 +470,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -505,7 +505,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -554,7 +554,7 @@ func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -601,8 +601,8 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
-		Webhook:        client,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
+		Webhook: client,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -666,7 +666,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -703,7 +703,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 		Webhook:        client,
 	}
@@ -761,7 +761,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 		Webhook:        client,
 	}
@@ -801,8 +801,8 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
-		Webhook:        client,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
+		Webhook: client,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -851,7 +851,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 		Webhook:        client,
 	}
@@ -903,8 +903,8 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 
 	mediaDelete := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, objectStoreName)
 	worker := &DeleteReconcileWorker{
-		MediaDelete:            mediaDelete,
-		MediaDir:               mediaDir,
+		MediaDelete: mediaDelete,
+		MediaDir:    mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir),
 		MediaStoreName:         dbtest.StoreName,
 		DerivedObjects:         testFilesystemObjectStore(t, t.TempDir()),
 		DerivedObjectStoreName: objectStoreName,
@@ -952,7 +952,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -983,12 +983,13 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 	markRecordingTrashed(t, pool, recordingID)
 
 	rec, client := newWebhookRecorder(t)
+	failing := &failDeleteObjectStore{Store: testFilesystemObjectStore(t, mediaDir), key: blockedKey, failures: 1}
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), MediaPendingReclaim: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:         pgstoretest.Recordings(pool),
-		Breakers:               pgstoretest.Breakers(pool),
-		MediaDir:               mediaDir,
-		DerivedObjects:         &failDeleteObjectStore{Store: testFilesystemObjectStore(t, mediaDir), key: blockedKey, failures: 1},
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir, StorageObjects: map[string]objstore.Store{dbtest.StoreName: failing},
+		DerivedObjects:         failing,
 		DerivedObjectStoreName: dbtest.StoreName,
 		MediaStoreName:         dbtest.StoreName,
 		TrashRetention:         30 * 24 * time.Hour,
@@ -1062,7 +1063,7 @@ func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 		Webhook:        webhook.New(config.WebhookConfig{URL: srv.URL, Timeout: 50 * time.Millisecond}),
 	}
@@ -1090,8 +1091,8 @@ func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
-		Webhook:        client,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
+		Webhook: client,
 	}
 	// notifyPurgedRecordings はもう「発火してよいか」を計算し直さない
 	// （issue #135 —— それを RecordingPurge.MarkPurged に一本化したのがこの issue の
@@ -1124,7 +1125,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1159,7 +1160,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 			dbtest.SetMediaAssetState(t, pool, target, "deleted")
 			assertUntilEncodedQualifies(t, pool, assetID, false)
 
-			w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+			w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 				DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 			if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 				t.Fatalf("Work() error: %v", err)
@@ -1194,7 +1195,7 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	}
 	assertUntilEncodedQualifies(t, pool, originalID, false)
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1237,7 +1238,7 @@ func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) 
 	}
 	assertUntilEncodedQualifies(t, pool, originalID, true)
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1292,7 +1293,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 		}
 	}
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1344,7 +1345,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 		t.Fatalf("eligible originals = %d, want only the matching scanned size", eligible)
 	}
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1418,7 +1419,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 		t.Fatalf("setting keep_original with empty encode_profiles: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1465,7 +1466,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1488,7 +1489,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1514,7 +1515,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1566,7 +1567,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	seedSeekTilesAsset(t, pool, mediaDir, recordingC, "thumb/partial-c-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingC, []string{profile})
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1623,7 +1624,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 		t.Fatalf("creating blocker file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1706,7 +1707,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 
 	assertUntilEncodedQualifies(t, pool, assetID, false)
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1753,7 +1754,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 
 	assertUntilEncodedQualifies(t, pool, assetID, false)
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1882,10 +1883,10 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -1955,10 +1956,10 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -2017,10 +2018,10 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -2136,10 +2137,10 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -2193,10 +2194,10 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -2228,10 +2229,10 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -2278,10 +2279,10 @@ func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
@@ -2332,10 +2333,10 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
@@ -2425,7 +2426,7 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 		t.Fatalf("locking rel_path file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	w.deleteOrphanFile(relPath, time.Hour)
 	if !fileExists(orphanPath) {
@@ -2462,7 +2463,7 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	}
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	q := sqlcgen.New(pool)
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	for _, relPath := range paths {
 		if classifyOrphanCleanup(relPath) != orphanCleanupCanonical {
@@ -2600,7 +2601,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	worker := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	worker := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/recording.m2ts", func() {})
 }
@@ -2622,7 +2623,7 @@ func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t
 		RecordingPurge: pgstoretest.Recordings(cleanupPool),
 		Breakers:       pgstoretest.Breakers(cleanupPool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 	}
 	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/db-disconnect.m2ts", closeCleanupPool)
 }
@@ -2654,10 +2655,10 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:    pgstoretest.Recordings(pool),
-		Breakers:          pgstoretest.Breakers(pool),
-		MediaDir:          mediaDir,
-		DerivedObjects:    testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MaxDeletesPerPass: 1,
 		OrphanMTimeGrace:  7 * 24 * time.Hour,
 		OrphanAge:         14 * 24 * time.Hour,
@@ -2727,10 +2728,10 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        24 * time.Hour,
 	}
@@ -2780,10 +2781,10 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *tes
 	}
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
@@ -2835,7 +2836,7 @@ func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
 		"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	aged, err := w.agedUnpublishedOrphans(ctx, time.Hour, time.Hour)
 	if err != nil {
@@ -2882,10 +2883,10 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 	}
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
@@ -2949,10 +2950,10 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:   pgstoretest.Recordings(pool),
-		Breakers:         pgstoretest.Breakers(pool),
-		MediaDir:         mediaDir,
-		DerivedObjects:   testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
@@ -2994,7 +2995,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 		t.Fatalf("writing orphan file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -3026,10 +3027,10 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:    pgstoretest.Recordings(pool),
-		Breakers:          pgstoretest.Breakers(pool),
-		MediaDir:          mediaDir,
-		DerivedObjects:    testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention:    30 * 24 * time.Hour,
 		MaxDeletesPerPass: 2, // 候補は 3 件 > 2 なので発動するはず
 	}
@@ -3096,7 +3097,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 		RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		MediaDir:       mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -3123,7 +3124,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 	recordingID := dbtest.Recording(t, pool)
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "present/original.m2ts", []byte("data"))
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -3167,7 +3168,7 @@ func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
 		RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -3209,10 +3210,10 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 		MediaStoreName:  dbtest.StoreName,
 	}
@@ -3257,7 +3258,7 @@ func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesyst
 		t.Fatalf("walking media dir: %v", err)
 	}
 	worker := &DeleteReconcileWorker{
-		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
 		DerivedObjects: testFilesystemObjectStore(t, t.TempDir()), DerivedObjectStoreName: objectStoreName,
 	}
 	if _, err := worker.reconcileMissingAssets(context.Background(), seenOnDisk); err != nil {
@@ -3302,10 +3303,10 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -3359,10 +3360,10 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 1 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -3413,10 +3414,10 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -3468,7 +3469,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -3499,7 +3500,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDirNoActiveAssets_DoesNotT
 
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -3531,7 +3532,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 
 	// mediaDir は空のまま(この資産の実ファイルも他の資産も一切無い) ---
 	// このパスはゼロ件観測になり全損シグネチャでスキップされるはず。
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -3589,10 +3590,10 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -3648,10 +3649,10 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 		MediaStoreName:  dbtest.StoreName,
 	}
@@ -3708,10 +3709,10 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -3762,10 +3763,10 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge:  pgstoretest.Recordings(pool),
-		Breakers:        pgstoretest.Breakers(pool),
-		MediaDir:        mediaDir,
-		DerivedObjects:  testFilesystemObjectStore(t, mediaDir),
+		RecordingPurge: pgstoretest.Recordings(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		MediaDir:       mediaDir,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
@@ -3871,7 +3872,7 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	w := &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir), TransferOverlap: time.Hour,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), TransferOverlap: time.Hour,
 		MediaStoreName: dbtest.StoreName,
 	}
 
@@ -3924,7 +3925,7 @@ func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *te
 	w := &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir), TransferOverlap: time.Hour,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), TransferOverlap: time.Hour,
 		MediaStoreName: dbtest.StoreName,
 	}
 	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
@@ -3960,7 +3961,7 @@ func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
 	w := &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
 		Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir), TransferOverlap: time.Hour,
+		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), TransferOverlap: time.Hour,
 		MediaStoreName: dbtest.StoreName, MaxDeletesPerPass: 1,
 	}
 	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {

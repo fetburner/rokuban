@@ -98,6 +98,10 @@ type DeleteReconcileWorker struct {
 	DerivedMediaDelete     store.MediaDelete
 	DerivedPendingReclaim  store.PendingCopyReclaim
 	DerivedStorage         store.StorageObservation
+	// StorageObjects は置き場の名前ごとの objstore.Store。派生物のコピーは、そのコピーの置き場の
+	// Store で消す・確かめる。派生物の置き場を S3 に切り替えた後も、FS の置き場に残る旧いコピーは
+	// その FS の置き場の Store を通る。
+	StorageObjects map[string]objstore.Store
 
 	TrashRetention    time.Duration
 	TransferOverlap   time.Duration
@@ -350,4 +354,18 @@ func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, purg
 				"type", webhook.EventRecordingDeleted, "recording_id", r.ID, "err", err)
 		}
 	}
+}
+
+// objectsFor は置き場 name の objstore.Store を返す。
+func (w *DeleteReconcileWorker) objectsFor(name string) (objstore.Store, error) {
+	objects, ok := w.StorageObjects[name]
+	if !ok || objects == nil {
+		return nil, fmt.Errorf("object store %q is not configured", name)
+	}
+	return objects, nil
+}
+
+// copyObjects は、この worker が担当する FS の置き場の objstore.Store を返す。
+func (w *DeleteReconcileWorker) copyObjects() (objstore.Store, error) {
+	return w.objectsFor(w.MediaStoreName)
 }

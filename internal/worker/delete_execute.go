@@ -9,8 +9,12 @@
 // orphan_files の書き手は 2 者いる。候補は storage_audit.go が書き、実行が unlink の後に
 // 行を消す。実行が消すのは、ctx が取り消された後も削除の事実を記録するためである。
 //
-// ファイル操作は次の表のとおり。派生物の canonical key は objstore.Store で操作し、
-// FS 固有の staging と永続化は fsstore に閉じる。ここに残るファイル操作は原本と scratch/temp。
+// ファイル操作は次の表のとおり。派生物（encoded・サムネイル・シークタイル・字幕 sidecar）の
+// key は、そのコピーの置き場の objstore.Store（StorageObjects）で確かめて消す。派生物の置き場を
+// S3 に切り替えた後も、FS の置き場に残る旧いコピーはその FS の置き場の Store を通る。
+// FS 固有の staging と永続化は fsstore に閉じる。ここの os.* は原本・ingest / transfer temp・
+// 孤児の走査（fsstore の staging ファイルを含む）に使う。staging は fsstore 内部のファイルなので、
+// objstore の key としては扱わず、走査した root 上で mtime を再確認して消す。
 //
 //	操作      原本                         派生物                     ingest / transfer temp
 //	解決      mediapath.Resolve            objstore key                mediapath.Resolve
@@ -18,8 +22,7 @@
 //	stat      巻き戻し時の現存確認         objstore.Head               mtime・サイズ・inode
 //	unlink    os.Remove                    objstore.Delete             os.Remove
 //
-// 字幕 sidecar も encoded と同じ object API で削除する。原本と temp の flock・inode 照合は
-// ファイルシステム上に残る。
+// 原本と temp の flock・inode 照合はファイルシステム上に残る。
 
 package worker
 
@@ -145,7 +148,7 @@ func (w *DeleteReconcileWorker) reclaimPendingFilesystemDerivedCopy(ctx context.
 		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming pending derived object"); err != nil {
 			return err
 		}
-		if err := w.deletePendingObjectKey(ctx, copy.RelPath, copy.Kind); err != nil {
+		if err := deletePendingObjectKey(ctx, w.DerivedObjects, copy.RelPath, copy.Kind); err != nil {
 			return err
 		}
 		return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking pending derived object deleted")
@@ -172,9 +175,12 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		log.Warn("delete_reconcile: withholding placement deletion because the store marker did not match", "err", err)
 		return
 	}
-	if candidate.Kind != store.AssetKindOriginal && candidate.Store == w.DerivedObjectStoreName {
-		if w.DerivedObjects == nil {
-			log.Error("delete_reconcile: derived placement object store is not configured", "derived_store", w.DerivedObjectStoreName)
+	if candidate.Kind != store.AssetKindOriginal {
+		// 派生物は、そのコピーの置き場の Store で消す。置き場が S3 に切り替わった後も、
+		// FS の置き場に残る旧いコピーはその FS の Store を通る。
+		objects, err := w.objectsFor(candidate.Store)
+		if err != nil {
+			log.Error("delete_reconcile: derived placement object store is not configured", "err", err)
 			return
 		}
 		markedPath, marked, err := w.StorageTransfer.MarkMediaAssetCopyDeleting(ctx, candidate, arm.rules, arm.derived, arm.overlapCutoff)
@@ -190,7 +196,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 			log.Warn("delete_reconcile: withholding derived placement deletion because the store marker did not match", "err", err)
 			return
 		}
-		if err := w.deleteObjectKey(ctx, candidate.RelPath, candidate.Kind); err != nil {
+		if err := deleteObjectKey(ctx, objects, candidate.RelPath, candidate.Kind); err != nil {
 			log.Error("delete_reconcile: deleting stale derived placement object", "err", err)
 			return
 		}
@@ -241,12 +247,6 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Error("delete_reconcile: removing stale placement copy", "err", err)
 		return
-	}
-	if candidate.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(candidate.RelPath) {
-		if err := removeEncodedSubtitleSidecar(w.MediaDir, w.MediaStoreName, candidate.RelPath, "unlinking stale placement subtitle sidecar"); err != nil {
-			log.Error("delete_reconcile: removing stale placement subtitle sidecar", "err", err)
-			return
-		}
 	}
 	if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Error("delete_reconcile: syncing directory after placement unlink", "err", err)
@@ -311,7 +311,6 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 	beforeMediaAssetUnlink(candidate.RelPath)
 	fsStores := w.StorageTransferPolicy.FSStoreNames()
 	tempPath := transferTempPath(path, candidate.MediaAssetID, candidate.CopyID)
-	subtitleTempPath := transferSubtitleTempPath(path, candidate.MediaAssetID, candidate.CopyID)
 	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
 		ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
 		func(ownedRelPaths []string) error {
@@ -325,11 +324,6 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 			if err != nil {
 				return fmt.Errorf("checking pending transfer destination ownership: %w", err)
 			}
-			if owned && candidate.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(candidate.RelPath) {
-				if err := removeEncodedSubtitleSidecar(w.MediaDir, w.MediaStoreName, candidate.RelPath, "unlinking pending transfer subtitle sidecar"); err != nil {
-					return err
-				}
-			}
 			if owned {
 				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 					return fmt.Errorf("removing pending transfer destination: %w", err)
@@ -341,9 +335,6 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 			}
 			if err := removeTransferTempUnderPathLock(tempPath); err != nil {
 				return fmt.Errorf("removing pending transfer temp and checkpoint: %w", err)
-			}
-			if err := removeTransferTempUnderPathLock(subtitleTempPath); err != nil {
-				return fmt.Errorf("removing pending transfer subtitle temp: %w", err)
 			}
 			if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("syncing pending transfer directory: %w", err)
@@ -423,37 +414,6 @@ func pendingTransferDestinationOwnedByTemp(path, tempPath string) (bool, error) 
 	return os.SameFile(destinationInfo, tempInfo), nil
 }
 
-func removeEncodedSubtitleSidecar(mediaDir, storeName, relPath, operation string) error {
-	sidecarRelPath, err := mediapath.SubtitleSibling(relPath)
-	if err != nil {
-		return fmt.Errorf("building encoded subtitle sidecar path: %w", err)
-	}
-	sidecarPath, err := mediapath.Resolve(mediaDir, sidecarRelPath)
-	if err != nil {
-		return fmt.Errorf("resolving encoded subtitle sidecar path: %w", err)
-	}
-	if err := requireMediaStoreMarker(mediaDir, storeName, operation); err != nil {
-		return err
-	}
-	info, err := os.Lstat(sidecarPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stating encoded subtitle sidecar: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("encoded subtitle sidecar is not a regular file: %s", sidecarPath)
-	}
-	if err := os.Remove(sidecarPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("removing encoded subtitle sidecar: %w", err)
-	}
-	if err := fsink.SyncParentDir(sidecarPath); err != nil {
-		return fmt.Errorf("syncing directory after encoded subtitle sidecar removal: %w", err)
-	}
-	return nil
-}
-
 func removeTransferTempUnderPathLock(path string) error {
 	tempLock, err := fsink.LockExistingTempFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -480,12 +440,15 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", err)
 		return
 	}
-	if t.Kind != store.AssetKindOriginal && w.MediaStoreName != "" && mediaScopeIsDerivedObjectStore(w.MediaStoreName, w.DerivedObjectStoreName) {
-		if w.DerivedObjects == nil {
-			log.Error("delete_reconcile: derived object store is not configured")
+	if t.Kind != store.AssetKindOriginal {
+		// 派生物は、この worker の FS の置き場の Store で消す。派生物の置き場が S3 でも、
+		// FS の置き場に残る旧いコピーはこの FS の Store を通る。
+		objects, err := w.objectsFor(w.MediaStoreName)
+		if err != nil {
+			log.Error("delete_reconcile: derived object store is not configured", "err", err)
 			return
 		}
-		w.deleteObjectCopyWithStore(ctx, w.MediaDelete, t, source, w.MediaStoreName,
+		w.deleteObjectCopyWithStore(ctx, objects, w.MediaDelete, t, source, w.MediaStoreName,
 			func(operation string) error { return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation) })
 		return
 	}
@@ -546,29 +509,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		return
 	}
 
-	// VOD の字幕は encoded アセットに隣接する sidecar で、独立した
-	// media_assets 行を持たない。encoded 本体を削除する段階で同時に削除し、
-	// tombstone が残る間に orphan 判定から除外され続けるリークを防ぐ。
-	//
-	// **失敗しても継続する（return しない）。** サイドカーは主資産ではない
-	// --- rel_path に拡張子が無い、権限で消せない等の理由で 3 経路のどれかが
-	// 失敗しても、それを理由に encoded 本体（映像そのもの）を永久に回収不能に
-	// してはならない。失敗は log のみで、サイドカーは canonical 孤児として残り、
-	// aging 後に報告される（TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly）。
-	if t.Kind == store.AssetKindEncoded {
-		if subtitleRelPath, pathErr := mediapath.SubtitleSibling(t.RelPath); pathErr != nil {
-			log.Warn("delete_reconcile: building subtitle sidecar path; continuing without removing it", "err", pathErr)
-		} else if subtitlePath, resolveErr := mediapath.Resolve(w.MediaDir, subtitleRelPath); resolveErr != nil {
-			log.Warn("delete_reconcile: resolving subtitle sidecar path; continuing without removing it", "err", resolveErr)
-		} else if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking subtitle sidecar"); markerErr != nil {
-			log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", markerErr)
-			return
-		} else if removeErr := os.Remove(subtitlePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			log.Warn("delete_reconcile: removing subtitle sidecar; continuing", "err", removeErr)
-		}
-	}
-
-	// 本体と sidecar の ErrNotExist も、unlink の成功と同じくこの 1 回の照合で deleted にしてよいと確かめる。
+	// ErrNotExist も、unlink の成功と同じくこの 1 回の照合で deleted にしてよいと確かめる。
 	beforeMediaAssetMarkDeleted(t.ID)
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking media asset deleted"); err != nil {
 		log.Warn("delete_reconcile: withholding deleted state because media store marker did not match", "err", err)
@@ -623,7 +564,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 	log := slog.With("media_asset_id", a.MediaAssetID, "media_asset_copy_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
 
 	var statErr error
-	if a.Kind == store.AssetKindOriginal || !mediaScopeIsDerivedObjectStore(w.MediaStoreName, w.DerivedObjectStoreName) {
+	if a.Kind == store.AssetKindOriginal {
 		path, err := mediapath.Resolve(w.MediaDir, a.RelPath)
 		if err != nil {
 			log.Error("delete_reconcile: rejecting rel_path outside the media directory while resolving revert candidate", "err", err)
@@ -631,11 +572,12 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 		}
 		_, statErr = os.Stat(path)
 	} else {
-		if w.DerivedObjects == nil {
-			log.Error("delete_reconcile: derived object store is not configured while resolving revert candidate")
+		objects, err := w.objectsFor(w.MediaStoreName)
+		if err != nil {
+			log.Error("delete_reconcile: derived object store is not configured while resolving revert candidate", "err", err)
 			return
 		}
-		_, statErr = w.DerivedObjects.Head(ctx, a.RelPath)
+		_, statErr = objects.Head(ctx, a.RelPath)
 		if errors.Is(statErr, objstore.ErrNotFound) {
 			statErr = os.ErrNotExist
 		}
@@ -685,11 +627,6 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		// 直接の呼び出し元が canonical 名を unlink しないための防御として残している。
 		return
 	}
-	if kind == orphanCleanupStaging && mediapath.IsGeneratedAssetTempFile(filepath.Base(relPath)) {
-		w.deleteGeneratedAssetStagingOrphan(relPath, mtimeGrace, log)
-		return
-	}
-
 	path, err := mediapath.Resolve(w.MediaDir, relPath)
 	if err != nil {
 		log.Error("delete_reconcile: rejecting orphan rel_path outside the media directory", "err", err)
@@ -781,42 +718,6 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		return
 	}
 	w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
-}
-
-func (w *DeleteReconcileWorker) deleteGeneratedAssetStagingOrphan(key string, mtimeGrace time.Duration, log *slog.Logger) {
-	if w.DerivedObjects == nil {
-		log.Error("delete_reconcile: derived object store is not configured for generated staging key")
-		return
-	}
-	object, err := w.DerivedObjects.Head(context.Background(), key)
-	if errors.Is(err, objstore.ErrNotFound) {
-		w.clearAbsentOrphanRecord(key, log)
-		return
-	}
-	if err != nil {
-		metrics.RecordObjectStoreError("head", err)
-		log.Warn("delete_reconcile: checking generated staging key", "err", err)
-		return
-	}
-	if object.LastModified.After(time.Now().Add(-mtimeGrace)) {
-		return
-	}
-	beforeOrphanFileUnlink(key)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking generated staging key"); err != nil {
-		log.Warn("delete_reconcile: withholding generated staging delete because media store marker did not match", "err", err)
-		return
-	}
-	if err := w.DerivedObjects.Delete(context.Background(), key); err != nil {
-		metrics.RecordObjectStoreError("delete", err)
-		log.Error("delete_reconcile: deleting generated staging key", "err", err)
-		return
-	}
-	afterOrphanFileUnlink(key)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming generated staging key removal"); err != nil {
-		log.Warn("delete_reconcile: withholding staging orphan record removal because media store marker did not match", "err", err)
-		return
-	}
-	w.clearOrphanFileRecord(key, object.Size, true, log)
 }
 
 // deleteOrphanTransferCheckpoint は source temp の flock の下で checkpoint と atomic checkpoint temp を回収する。

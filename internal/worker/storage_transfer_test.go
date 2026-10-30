@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -277,17 +276,25 @@ WHERE c.media_asset_id = $1 AND c.store = 'archive'`, assetID).Scan(&state, &att
 	}
 }
 
-func TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync(t *testing.T) {
+// encoded の字幕 key の転送は、内容の違う既存の key を所有記録の有無にかかわらず衝突として扱い、消さない。
+// source に字幕が無いときは、この転送が作った（所有記録のある）宛先の字幕だけを消す。
+func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
+	const sourceCaptions = "WEBVTT\n\nsource captions\n"
+	const otherCaptions = "WEBVTT\n\nother captions\n"
 	for _, tc := range []struct {
 		name           string
 		existingVideo  bool
 		sourceSubtitle bool
-		targetSubtitle bool
-		wantTargetVTT  bool
+		targetSubtitle string
+		targetOwned    bool
+		wantActive     bool
+		wantTargetVTT  string // 空ならファイルが無いこと
 	}{
-		{name: "new destination copies sidecar", sourceSubtitle: true, wantTargetVTT: true},
-		{name: "adopted destination replaces stale sidecar", existingVideo: true, sourceSubtitle: true, targetSubtitle: true, wantTargetVTT: true},
-		{name: "destination without source sidecar removes stale sidecar", existingVideo: true, targetSubtitle: true},
+		{name: "new destination copies sidecar", sourceSubtitle: true, wantActive: true, wantTargetVTT: sourceCaptions},
+		{name: "pre-existing different sidecar is a collision and is kept", existingVideo: true, sourceSubtitle: true, targetSubtitle: otherCaptions, wantTargetVTT: otherCaptions},
+		{name: "owned different sidecar is a collision and is kept", sourceSubtitle: true, targetSubtitle: otherCaptions, targetOwned: true, wantTargetVTT: otherCaptions},
+		{name: "unowned sidecar stays when the source has none", existingVideo: true, targetSubtitle: otherCaptions, wantActive: true, wantTargetVTT: otherCaptions},
+		{name: "owned sidecar is removed when the source has none", targetSubtitle: otherCaptions, targetOwned: true, wantActive: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
@@ -301,26 +308,23 @@ func TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sourceSubtitle := filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath))
 			if tc.sourceSubtitle {
-				if err := os.WriteFile(sourceSubtitle, []byte("WEBVTT\n\nsource captions\n"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte(sourceCaptions), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
 			targetVideo := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-			if tc.existingVideo || tc.targetSubtitle {
-				if err := os.MkdirAll(filepath.Dir(targetVideo), 0o755); err != nil {
-					t.Fatal(err)
-				}
+			targetSubtitle := filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath))
+			if err := os.MkdirAll(filepath.Dir(targetVideo), 0o755); err != nil {
+				t.Fatal(err)
 			}
 			if tc.existingVideo {
 				if err := os.WriteFile(targetVideo, video, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			targetSubtitle := filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath))
-			if tc.targetSubtitle {
-				if err := os.WriteFile(targetSubtitle, []byte("WEBVTT\n\nstale captions\n"), 0o644); err != nil {
+			if tc.targetSubtitle != "" {
+				if err := os.WriteFile(targetSubtitle, []byte(tc.targetSubtitle), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -330,105 +334,48 @@ func TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+			media := pgstore.NewMedia(pool, "test-store", "")
+			if tc.targetOwned {
+				transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+				if err != nil || !ok {
+					t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
+				}
+				if pending, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", subtitleRelPath); err != nil || !pending {
+					t.Fatalf("recording subtitle ownership = (%t, %v)", pending, err)
+				}
+			}
+			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
 				t.Fatalf("StorageTransferWorker.Work: %v", err)
 			}
-			gotSubtitle, err := os.ReadFile(targetSubtitle)
-			if tc.wantTargetVTT {
-				if err != nil || string(gotSubtitle) != "WEBVTT\n\nsource captions\n" {
-					t.Fatalf("destination subtitle = %q, %v; want source sidecar", gotSubtitle, err)
+
+			got, err := os.ReadFile(targetSubtitle)
+			if tc.wantTargetVTT != "" {
+				if err != nil || string(got) != tc.wantTargetVTT {
+					t.Fatalf("destination subtitle = %q, %v; want %q", got, err, tc.wantTargetVTT)
 				}
 			} else if !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("destination subtitle read error = %v, want sidecar removed", err)
+				t.Fatalf("destination subtitle read error = %v, want removed", err)
 			}
 			var state string
 			if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state); err != nil {
 				t.Fatal(err)
 			}
-			if state != "active" {
-				t.Fatalf("destination copy state = %q, want active", state)
+			wantState := "pending"
+			if tc.wantActive {
+				wantState = "active"
 			}
-			var ownedObjects int
-			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_objects WHERE copy_id = (SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive')`, assetID).Scan(&ownedObjects); err != nil {
+			if state != wantState {
+				t.Fatalf("destination copy state = %q, want %q", state, wantState)
+			}
+			var attempts int
+			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts a JOIN media_asset_copies c ON c.id = a.copy_id WHERE c.media_asset_id = $1`, assetID).Scan(&attempts); err != nil {
 				t.Fatal(err)
 			}
-			if ownedObjects != 0 {
-				t.Errorf("transfer ownership rows after activating destination = %d, want none", ownedObjects)
+			if (attempts == 1) == tc.wantActive {
+				t.Errorf("transfer failure attempts = %d, want a recorded failure exactly when the copy is not activated (active=%t)", attempts, tc.wantActive)
 			}
 		})
-	}
-}
-
-func TestStorageTransferWorkerPreservesSubtitleAfterConcurrentActivation(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	roots := transferTestRoots(t, "test-store", "archive")
-	recordingID := dbtest.Recording(t, pool)
-	profile := "web"
-	relPath := "sites/default/transfer/concurrent-captions.mp4"
-	video := []byte("encoded-video")
-	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, video)
-	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourcePath := filepath.Join(roots["test-store"], filepath.FromSlash(relPath))
-	sourceSubtitle := filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath))
-	if err := os.WriteFile(sourceSubtitle, []byte("WEBVTT\n\nsource captions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfgA := transferTestConfig("archive", "archive", "test-store")
-	cfgB := transferTestConfig("archive", "archive", "test-store")
-	cfgB.Stores["archive"] = config.StoreConfig{Kind: "fs", InternalURL: "http://archive-v2.internal:8080"}
-	fingerprintA, err := cfgA.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fingerprintB, err := cfgB.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fingerprintA == fingerprintB {
-		t.Fatal("rollout configs have the same policy fingerprint")
-	}
-	rulesB := mustOriginalRules(t, cfgB)
-	media := pgstore.NewMedia(pool, "test-store", "")
-	transferB, ok, err := media.PrepareMediaAssetTransfer(
-		context.Background(), assetID, "archive", rulesB, cfgB.FSStoreNames(), cfgB.Derived, storageTransferAttemptLimit,
-	)
-	if err != nil || !ok {
-		t.Fatalf("preparing delayed transfer = (%+v, %t, %v)", transferB, ok, err)
-	}
-
-	workerA := StorageTransferWorker{Storage: media, Config: cfgA, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-	if err := workerA.Work(context.Background(), jobs.StorageTransferArgs{
-		MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprintA,
-	}); err != nil {
-		t.Fatalf("first rollout transfer: %v", err)
-	}
-	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-	targetSubtitle := filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath))
-	workerB := StorageTransferWorker{Storage: media, Config: cfgB, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-	digest := sha256.Sum256(video)
-	if err := workerB.completeTransfer(
-		context.Background(), transferB,
-		jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprintB},
-		rulesB, digest[:], sourcePath, targetPath, "", false, slog.Default(),
-	); err != nil {
-		t.Fatalf("delayed rollout completion: %v", err)
-	}
-
-	gotSubtitle, err := os.ReadFile(targetSubtitle)
-	if err != nil || string(gotSubtitle) != "WEBVTT\n\nsource captions\n" {
-		t.Fatalf("active destination subtitle = %q, %v; want preserved captions", gotSubtitle, err)
-	}
-	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transferB.CopyID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
-	if state != "active" {
-		t.Fatalf("destination state after stale completion = %q, want active", state)
 	}
 }
 
@@ -465,7 +412,7 @@ func TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar(t *testin
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 		RecordingPurge: pgstore.NewRecordings(pool, "test-store"), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: roots["test-store"], MediaStoreName: "test-store", TransferOverlap: time.Hour,
+		MediaDir: roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 		DerivedObjects: objects["archive"],
 	}
 	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
@@ -526,7 +473,7 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: roots["archive"], MediaStoreName: "archive", TrashRetention: time.Hour,
+		MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive", TrashRetention: time.Hour,
 		OrphanAge: time.Hour, OrphanMTimeGrace: time.Minute,
 		MediaPendingReclaim: media,
 		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
@@ -620,7 +567,7 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	deleteWorker := DeleteReconcileWorker{
 		MediaDelete: deleteMedia, Storage: deleteMedia, StorageTransfer: deleteMedia, StorageTransferPolicy: deleteConfig,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: roots["archive"], MediaStoreName: "archive",
+		MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
 		MediaPendingReclaim: deleteMedia,
 		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
 	}
@@ -693,7 +640,7 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: deleteConfig,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: roots["archive"], MediaStoreName: "archive",
+		MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
 		MediaPendingReclaim: media,
 		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
 	}
@@ -1007,7 +954,7 @@ func TestTransferTempOrphanCleanupWaitsForTransferLock(t *testing.T) {
 		}
 	}
 	worker := DeleteReconcileWorker{
-		Storage: pgstore.NewMedia(pool, "archive", ""), MediaDir: roots["archive"], MediaStoreName: "archive",
+		Storage: pgstore.NewMedia(pool, "archive", ""), MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
 	}
 	worker.deleteOrphanFile(relPath, time.Hour)
 	if !fileExists(tempPath) || !fileExists(fsink.CheckpointPath(tempPath)) {
@@ -1280,7 +1227,7 @@ func TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy(t
 	deleteWorker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: newConfig,
 		RecordingPurge: pgstore.NewRecordings(pool, "test-store"), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: roots["test-store"], MediaStoreName: "test-store", TransferOverlap: time.Hour,
+		MediaDir: roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 	}
 	if err := deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("deleting stale source copy: %v", err)
@@ -1587,7 +1534,7 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 		worker := &DeleteReconcileWorker{
 			MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 			RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
-			MediaDir: roots[storeName], MediaStoreName: storeName, TrashRetention: time.Hour,
+			MediaDir: roots[storeName], StorageObjects: testStorageObjects(t, storeName, roots[storeName]), MediaStoreName: storeName, TrashRetention: time.Hour,
 			DerivedObjects: objects["archive"], DerivedObjectStoreName: "archive",
 			DerivedMediaDelete: derivedMedia, DerivedPendingReclaim: derivedMedia, DerivedStorage: derivedMedia,
 		}
@@ -1898,4 +1845,104 @@ func mustOriginalRules(t *testing.T, cfg config.StorageConfig) []byte {
 		t.Fatal(err)
 	}
 	return rules
+}
+
+// 論理資産の SHA-256 が既知の派生物は、source の Get をそのまま Put に流し、scratch に複製しない。
+// ScratchDir を作れない場所にしても転送が成功することで確かめる。
+func TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	recordingID := dbtest.Recording(t, pool)
+	profile := "web"
+	relPath := "sites/default/transfer/streamed.mp4"
+	content := []byte("encoded bytes streamed without a scratch copy")
+	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, content)
+	sum := sha256.Sum256(content)
+	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := StorageTransferWorker{
+		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots,
+		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: filepath.Join(blocker, "scratch"),
+	}
+	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(relPath)))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("destination = %q, %v; want the source bytes", got, err)
+	}
+	var state string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" {
+		t.Fatalf("destination copy state = %q, want active", state)
+	}
+}
+
+// 既知の SHA-256 または宣言サイズと違う source は、Put が何も公開せず、source 不一致として扱われる。
+func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		declare    func(content []byte) (size int64, sum [sha256.Size]byte)
+		wantReason string
+	}{
+		{name: "different SHA-256", declare: func(c []byte) (int64, [sha256.Size]byte) {
+			return int64(len(c)), sha256.Sum256([]byte("other bytes"))
+		}},
+		{name: "source shorter than declared size", declare: func(c []byte) (int64, [sha256.Size]byte) {
+			return int64(len(c)) + 5, sha256.Sum256(c)
+		}},
+		{name: "source longer than declared size", declare: func(c []byte) (int64, [sha256.Size]byte) {
+			return int64(len(c)) - 5, sha256.Sum256(c)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			roots := transferTestRoots(t, "test-store", "archive")
+			recordingID := dbtest.Recording(t, pool)
+			seedOriginalAsset(t, pool, roots["test-store"], recordingID, "sites/default/transfer/original.ts", []byte("original source"))
+			profile := "web"
+			relPath := "sites/default/transfer/mismatch.mp4"
+			content := []byte("encoded bytes that disagree with the logical row")
+			assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, content)
+			size, sum := tc.declare(content)
+			if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1, size_bytes = $2 WHERE id = $3", sum[:], size, assetID); err != nil {
+				t.Fatal(err)
+			}
+			cfg := transferTestConfig("archive", "archive", "test-store")
+			fingerprint, err := cfg.PolicyFingerprint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker := StorageTransferWorker{
+				Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots,
+				ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
+			}
+			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
+				t.Fatalf("Work: %v", err)
+			}
+			if fileExists(filepath.Join(roots["archive"], filepath.FromSlash(relPath))) {
+				t.Fatal("a mismatched derived source created the destination key")
+			}
+			// 原本が残っているので、不一致の source は再構築のために退役する（handleTransferMismatch）。
+			var sourceState string
+			if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, assetID).Scan(&sourceState); err != nil {
+				t.Fatal(err)
+			}
+			if sourceState != "deleted" {
+				t.Fatalf("mismatched source copy state = %q, want deleted (treated as a source mismatch)", sourceState)
+			}
+		})
+	}
 }

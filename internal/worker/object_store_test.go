@@ -523,7 +523,7 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 	worker := &DeleteReconcileWorker{
 		MediaDelete: media, MediaPendingReclaim: media,
 		Storage: media, RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName),
-		Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
 		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName,
 		TrashRetention: 24 * time.Hour, OrphanMTimeGrace: 24 * time.Hour, OrphanAge: 24 * time.Hour,
 		MissingAssetAge: 24 * time.Hour, MaxDeletesPerPass: 1,
@@ -623,7 +623,7 @@ func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t 
 	worker := &DeleteReconcileWorker{
 		MediaDelete: media, MediaPendingReclaim: media, Storage: media,
 		RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
 		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName, OrphanAge: time.Hour,
 	}
 	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {

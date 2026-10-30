@@ -211,15 +211,15 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Conte
 
 // deleteObjectCopy は派生物のコピーを object API 経由で削除する。
 func (w *DeleteReconcileWorker) deleteObjectCopy(ctx context.Context, t store.MediaDeleteAsset, source string) {
-	w.deleteObjectCopyWithStore(ctx, w.DerivedMediaDelete, t, source, w.DerivedObjectStoreName, nil)
+	w.deleteObjectCopyWithStore(ctx, w.DerivedObjects, w.DerivedMediaDelete, t, source, w.DerivedObjectStoreName, nil)
 }
 
 // deleteObjectCopyWithStore は 1 コピーを active → deleting → key の削除 → deleted の順で消す。
 // 各段階の失敗はログに残すだけで、行を deleting のまま次パスへ持ち越す。
-func (w *DeleteReconcileWorker) deleteObjectCopyWithStore(ctx context.Context, copies store.MediaDelete, t store.MediaDeleteAsset, source, storeName string, guard func(string) error) {
+func (w *DeleteReconcileWorker) deleteObjectCopyWithStore(ctx context.Context, objects objstore.Store, copies store.MediaDelete, t store.MediaDeleteAsset, source, storeName string, guard func(string) error) {
 	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath,
 		"source", source, "store", storeName)
-	if copies == nil || w.DerivedObjects == nil {
+	if copies == nil || objects == nil {
 		log.Error("delete_reconcile: derived object store or media copy store is not configured")
 		return
 	}
@@ -240,7 +240,7 @@ func (w *DeleteReconcileWorker) deleteObjectCopyWithStore(ctx context.Context, c
 			return
 		}
 	}
-	if err := w.deleteObjectKey(ctx, t.RelPath, t.Kind); err != nil {
+	if err := deleteObjectKey(ctx, objects, t.RelPath, t.Kind); err != nil {
 		log.Error("delete_reconcile: deleting object", "err", err)
 		return
 	}
@@ -267,7 +267,7 @@ func (w *DeleteReconcileWorker) reclaimPendingObjectCopy(ctx context.Context, t 
 	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath,
 		"source", "pending_reclaim", "store", w.DerivedObjectStoreName)
 	reclaimed, err := w.DerivedPendingReclaim.ReclaimPendingMediaAssetCopy(ctx, t.ID, before, func() error {
-		return w.deletePendingObjectKey(ctx, t.RelPath, t.Kind)
+		return deletePendingObjectKey(ctx, w.DerivedObjects, t.RelPath, t.Kind)
 	})
 	if err != nil {
 		log.Error("delete_reconcile: reclaiming pending object copy", "err", err)
@@ -280,8 +280,8 @@ func (w *DeleteReconcileWorker) reclaimPendingObjectCopy(ctx context.Context, t 
 }
 
 // deleteObjectKey は key と、encoded に隣接する字幕の sidecar を消す。object の削除は冪等である。
-func (w *DeleteReconcileWorker) deleteObjectKey(ctx context.Context, key, kind string) error {
-	if err := w.DerivedObjects.Delete(ctx, key); err != nil {
+func deleteObjectKey(ctx context.Context, objects objstore.Store, key, kind string) error {
+	if err := objects.Delete(ctx, key); err != nil {
 		metrics.RecordObjectStoreError("delete", err)
 		return fmt.Errorf("deleting derived object %q: %w", key, err)
 	}
@@ -291,7 +291,7 @@ func (w *DeleteReconcileWorker) deleteObjectKey(ctx context.Context, key, kind s
 			slog.Warn("delete_reconcile: building subtitle sidecar key; continuing without removing it", "key", key, "err", err)
 			return nil
 		}
-		if err := w.DerivedObjects.Delete(ctx, sidecar); err != nil {
+		if err := objects.Delete(ctx, sidecar); err != nil {
 			metrics.RecordObjectStoreError("delete", err)
 			slog.Warn("delete_reconcile: deleting subtitle sidecar; continuing", "key", sidecar, "err", err)
 		}
@@ -300,18 +300,18 @@ func (w *DeleteReconcileWorker) deleteObjectKey(ctx context.Context, key, kind s
 }
 
 // deletePendingObjectKey は公開されていない encoded copy の subtitle を先に消し、失敗時には本体を残す。
-func (w *DeleteReconcileWorker) deletePendingObjectKey(ctx context.Context, key, kind string) error {
+func deletePendingObjectKey(ctx context.Context, objects objstore.Store, key, kind string) error {
 	if kind == store.AssetKindEncoded && canHaveSubtitleSidecar(key) {
 		sidecar, err := mediapath.SubtitleSibling(key)
 		if err != nil {
 			return fmt.Errorf("building pending subtitle object key for %q: %w", key, err)
 		}
-		if err := w.DerivedObjects.Delete(ctx, sidecar); err != nil {
+		if err := objects.Delete(ctx, sidecar); err != nil {
 			metrics.RecordObjectStoreError("delete", err)
 			return fmt.Errorf("deleting pending subtitle object %q: %w", sidecar, err)
 		}
 	}
-	if err := w.DerivedObjects.Delete(ctx, key); err != nil {
+	if err := objects.Delete(ctx, key); err != nil {
 		metrics.RecordObjectStoreError("delete", err)
 		return fmt.Errorf("deleting pending derived object %q: %w", key, err)
 	}

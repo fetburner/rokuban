@@ -226,11 +226,14 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 	candidates := make(map[int64]struct{})
 	for _, a := range active {
 		present := false
-		if a.Kind != store.AssetKindOriginal && mediaScopeIsDerivedObjectStore(w.MediaStoreName, w.DerivedObjectStoreName) {
-			if w.DerivedObjects == nil {
-				return false, fmt.Errorf("derived object store is not configured while auditing active media asset copy %d", a.ID)
+		if a.Kind != store.AssetKindOriginal {
+			// 派生物は、そのコピーの置き場の objstore で現存を確かめる。置き場が S3 に切り替わった後も、
+			// この FS の置き場に残る旧いコピーはこの FS の置き場の Store で見る。
+			objects, objErr := w.copyObjects()
+			if objErr != nil {
+				return false, fmt.Errorf("auditing active media asset copy %d: %w", a.ID, objErr)
 			}
-			_, headErr := w.DerivedObjects.Head(ctx, a.RelPath)
+			_, headErr := objects.Head(ctx, a.RelPath)
 			if headErr == nil {
 				present = true
 			} else if !errors.Is(headErr, objstore.ErrNotFound) {
@@ -238,10 +241,6 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 				return false, fmt.Errorf("checking derived media asset copy %d: %w", a.ID, headErr)
 			}
 		} else {
-			// active is scoped to MediaStoreName. After storage.derived changes from
-			// this filesystem store to an independent object store, older derived
-			// copies still belong to this filesystem and must be checked against its
-			// walk, not Head'ed in the new object store.
 			_, present = seenOnDisk[a.RelPath]
 		}
 		if present {
@@ -378,16 +377,6 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 			}
 			continue
 		}
-		if kind == orphanCleanupStaging && mediapath.IsGeneratedAssetTempFile(filepath.Base(relPath)) {
-			eligible, err := w.isAgedGeneratedAssetStagingOrphan(ctx, relPath, mtimeCutoff)
-			if err != nil {
-				return nil, err
-			}
-			if eligible {
-				verified = append(verified, relPath)
-			}
-			continue
-		}
 		path, err := mediapath.Resolve(w.MediaDir, relPath)
 		if err != nil {
 			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
@@ -415,27 +404,6 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		verified = append(verified, relPath)
 	}
 	return verified, nil
-}
-
-func (w *DeleteReconcileWorker) isAgedGeneratedAssetStagingOrphan(ctx context.Context, relPath string, mtimeCutoff time.Time) (bool, error) {
-	if w.DerivedObjects == nil {
-		return false, fmt.Errorf("derived object store is not configured while checking generated staging key %q", relPath)
-	}
-	object, err := w.DerivedObjects.Head(ctx, relPath)
-	if errors.Is(err, objstore.ErrNotFound) {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing vanished generated staging key"); err != nil {
-			return false, err
-		}
-		if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
-			return false, fmt.Errorf("clearing vanished generated staging key %q: %w", relPath, err)
-		}
-		return false, nil
-	}
-	if err != nil {
-		metrics.RecordObjectStoreError("head", err)
-		return false, fmt.Errorf("checking generated staging key %q: %w", relPath, err)
-	}
-	return !object.LastModified.After(mtimeCutoff), nil
 }
 
 // reportAgedOrphanFiles はエイジング済みの canonical 孤児を Warn とゲージで報告する。

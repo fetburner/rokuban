@@ -386,6 +386,7 @@ func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
 		DerivedMediaDelete:     deps.DerivedMediaDelete,
 		DerivedPendingReclaim:  deps.DerivedPendingReclaim,
 		DerivedStorage:         deps.DerivedStorage,
+		StorageObjects:         deps.StorageObjects,
 		TransferOverlap:        deps.TransferOverlap,
 		TrashRetention:         deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
