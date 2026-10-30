@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -560,6 +561,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 		RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool),
 		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
 		DerivedObjects: derivedObjects, DerivedObjectStoreName: dbtest.StoreName,
+		StorageObjects:      map[string]objstore.Store{dbtest.StoreName: derivedObjects},
 		MediaPendingReclaim: pgstoretest.Media(pool),
 	}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
