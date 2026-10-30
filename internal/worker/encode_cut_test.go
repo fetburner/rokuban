@@ -471,9 +471,9 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -751,9 +751,9 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -811,9 +811,9 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,

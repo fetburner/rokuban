@@ -89,9 +89,9 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, rel, []string{"h264"}, content)
 
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -99,7 +99,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 		ObjectPublisher: pgstoretest.Media(pool),
 		ScratchDir:      scratchDir,
 		FFmpeg:          ffmpegPath,
-		Profiles:        config.EncodeConfig{
+		Profiles: config.EncodeConfig{
 			FFmpeg: ffmpegPath,
 			Profiles: []config.EncodeProfile{{
 				Name:       "h264",
@@ -132,9 +132,9 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-fail.m2ts", nil, []byte("data"))
 
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -287,9 +287,9 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	}()
 
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -301,8 +301,8 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 		// shell out し、cmd.Start() 前の待ちを timeout 上限（3 秒）まで
 		// 引き延ばしうる。存在しないパスにして即失敗させる（上のテスト
 		// doc コメントの計測参照）。
-		FFprobe:         "/nonexistent/ffprobe",
-		Profiles:        config.EncodeConfig{
+		FFprobe: "/nonexistent/ffprobe",
+		Profiles: config.EncodeConfig{
 			FFmpeg: slowFFmpeg,
 			Profiles: []config.EncodeProfile{{
 				Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
@@ -590,9 +590,9 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -601,7 +601,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 		ScratchDir:      t.TempDir(),
 		FFmpeg:          ffmpegPath,
 		FFprobe:         "ffprobe",
-		Profiles:        config.EncodeConfig{Profiles: []config.EncodeProfile{{
+		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
 	}
@@ -895,9 +895,9 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
 
 	w := &EncodeWorker{
-		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -907,8 +907,8 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 		FFmpeg:          leakyFFmpeg,
 		// 実 ffprobe を shell out させない（本題である WaitDelay の再現には
 		// 無関係。probeEncodeDuration の失敗は進捗計測を無効にするだけ）。
-		FFprobe:         "/nonexistent/ffprobe",
-		Profiles:        config.EncodeConfig{
+		FFprobe: "/nonexistent/ffprobe",
+		Profiles: config.EncodeConfig{
 			FFmpeg: leakyFFmpeg,
 			Profiles: []config.EncodeProfile{{
 				Name:       "h264",
