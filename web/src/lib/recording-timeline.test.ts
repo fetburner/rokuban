@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { recordingTimeline } from '@/lib/recording-timeline'
+import { recordingPlaybackDurationMs, recordingTimeline } from '@/lib/recording-timeline'
 
 const programmeStartAt = '2026-10-02T10:00:00.000Z'
 const recordingBefore = '2026-10-02T09:57:00.000Z'
@@ -89,5 +89,15 @@ describe('recordingTimeline', () => {
       expect(badStart.recordingHeadSeconds).toBeNull()
       expect(badStart.programRecordingOffsetSeconds).toBeNull()
     }
+  })
+})
+
+describe('recordingPlaybackDurationMs', () => {
+  it('uses elapsed recorded time while recording and the actual final span when finished', () => {
+    expect(recordingPlaybackDurationMs(recording(), nowAt45Minutes)).toBe(45 * 60_000)
+    expect(recordingPlaybackDurationMs(recording({
+      status: 'finished',
+      endedAt: '2026-10-02T11:06:00.000Z',
+    }), nowAt45Minutes)).toBe(66 * 60_000)
   })
 })

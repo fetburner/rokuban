@@ -231,7 +231,8 @@ function stubFetch(options: {
    * 「一覧が無いデプロイ」の挙動（設定メニューに画質項目を出さない）をそのまま見る。
    */
   liveProfiles?: LiveProfileSummary[]
-  recording?: Recording
+  recording?: Recording | (() => Recording)
+  recordingHlsResponse?: (path: string) => Response
   /** `GET /api/sites/{site}/tuners`。site ごとに指定しない限り空配列（issue #474）。 */
   tunersBySite?: Record<string, Tuner[]>
   tunerStatusBySite?: Record<string, number>
@@ -261,6 +262,7 @@ function stubFetch(options: {
     sites = ['default'],
     liveProfiles = [],
     recording: recordingResponse,
+    recordingHlsResponse,
     tunersBySite = {},
     tunerStatusBySite = {},
     pendingTunerSites = [],
@@ -282,11 +284,16 @@ function stubFetch(options: {
     }
 
     const recordingMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
-    if (recordingMatch && recordingResponse?.id === Number(recordingMatch[1])) {
-      return Promise.resolve(new Response(JSON.stringify(recordingResponse), {
+    const currentRecording = typeof recordingResponse === 'function' ? recordingResponse() : recordingResponse
+    if (recordingMatch && currentRecording?.id === Number(recordingMatch[1])) {
+      return Promise.resolve(new Response(JSON.stringify(currentRecording), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
+    }
+
+    if (url.pathname.includes('/api/media/stores/media/recordings/') && recordingHlsResponse) {
+      return Promise.resolve(recordingHlsResponse(url.pathname))
     }
 
     if (url.pathname === '/api/reservations') {
@@ -1181,6 +1188,64 @@ describe('LivePage / 録画時間軸', () => {
     ))
     expect(screen.getByTestId('recording-hls-source-label')).toBeInTheDocument()
     expect(screen.getByTestId('recording-hls-return-live')).toBeInTheDocument()
+  })
+
+  it('410 後に録画詳細を再取得し、新しい世代と実際の録画済み尺を使う', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    const startAt = new Date(now - 30 * 60_000).toISOString()
+    const endAt = new Date(now + 30 * 60_000).toISOString()
+    const masterV1 = '/api/media/stores/media/recordings/501/hls/v1/hd/master.m3u8'
+    const masterV2 = '/api/media/stores/media/recordings/501/hls/v2/hd/master.m3u8'
+    const airing = program({
+      serviceId: 10,
+      startAt,
+      endAt,
+      durationMs: 60 * 60_000,
+      recordingId: 501,
+    })
+    let currentRecording = recording({
+      startAt,
+      durationMs: 60 * 60_000,
+      status: 'recording',
+      startedAt: startAt,
+      hlsPlayback: [{ profile: 'hd', masterUrl: masterV1 }],
+    })
+    const recordingHlsRequests: string[] = []
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A' })],
+      programsByServiceId: { 10: [airing] },
+      recording: () => currentRecording,
+      recordingHlsResponse: (path) => {
+        recordingHlsRequests.push(path)
+        if (path === masterV1) {
+          currentRecording = {
+            ...currentRecording,
+            hlsPlayback: [{ profile: 'hd', masterUrl: masterV2 }],
+          }
+          return new Response('generation expired', { status: 410 })
+        }
+        return path === masterV2
+          ? new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 })
+          : new Response('not found', { status: 404 })
+      },
+    })
+    const initialInstanceCount = pageHlsMockState.instances.length
+    renderLive('/live?service=100010')
+
+    await startLivePlayback(user)
+    await screen.findByText(/接続できません/)
+    await user.click(await screen.findByRole('button', { name: '最初から' }))
+
+    await waitFor(() => expect(recordingHlsRequests).toEqual([masterV1, masterV2]))
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    const availableSeconds = Number(slider.getAttribute('aria-valuemax'))
+    expect(availableSeconds).toBeGreaterThanOrEqual(30 * 60)
+    expect(availableSeconds).toBeLessThan(60 * 60)
+    expect(pageHlsMockState.instances.slice(initialInstanceCount)).toContainEqual(
+      expect.objectContaining({ sources: [masterV2] }),
+    )
+    expect(screen.getByTestId('recording-hls-source-label')).toBeInTheDocument()
   })
 })
 

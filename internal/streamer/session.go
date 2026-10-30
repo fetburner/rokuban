@@ -497,7 +497,10 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	}
 	defer func() { _ = input.Close() }()
 
-	args := BuildLiveFFmpegArgs(ls.cfg, dir, ls.cfg.Captions && streamInfo.hasSubtitles)
+	args := buildHLSFFmpegArgsForPlaylistType(
+		ls.cfg, dir, ls.cfg.Captions && streamInfo.hasSubtitles,
+		hlsLivePlaylist, "pipe:0", 0, streamInfo.audioStreams,
+	)
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
 	cmd.Stdin = input
 	stderr := newCappedWriter(stderrCap)

@@ -1,11 +1,12 @@
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useQueries, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getListProgramsQueryKey,
   getListProgramsQueryOptions,
+  getRecording,
   listPrograms,
   useGetRecording,
   useListLiveProfiles,
@@ -38,7 +39,8 @@ import {
   type LiveDiagnostics,
   type StallHandling,
 } from '@/lib/live'
-import { recordingTimeline } from '@/lib/recording-timeline'
+import { recordingPlaybackDurationMs, recordingTimeline } from '@/lib/recording-timeline'
+import { recordingDetailQueryKey } from '@/lib/recording-detail-cache'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, formatTimeRange, isAiring } from '@/lib/format'
@@ -501,11 +503,6 @@ export function LivePage() {
       .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))[0]
   }, [selectedPrograms, nowMs])
   const selectedRecordingId = nowPlaying?.recordingId
-  const selectedRecordingQuery = useGetRecording(selectedRecordingId ?? 0, {
-    query: { enabled: isPlaying && selectedRecordingId !== undefined },
-  })
-  const selectedRecording = unwrap(selectedRecordingQuery.data)
-
   const [playback, setPlayback] = useState<
     | { source: 'live' }
     | {
@@ -514,23 +511,59 @@ export function LivePage() {
           site: string
           recordingId: number
           recording: Recording
-          masterUrl: string
           profile: string
           startSeconds: number
         }
       }
   >({ source: 'live' })
+  const playbackRef = useRef(playback)
+  const updatePlayback = useCallback((next: typeof playback) => {
+    playbackRef.current = next
+    setPlayback(next)
+  }, [])
+  const recordingQueryId = playback.source === 'recording-hls'
+    ? playback.target.recordingId
+    : selectedRecordingId
+  const selectedRecordingQuery = useGetRecording(recordingQueryId ?? 0, {
+    query: {
+      enabled: isPlaying && recordingQueryId !== undefined,
+      queryKey: recordingDetailQueryKey(recordingQueryId ?? 0),
+    },
+  })
+  const queriedRecording = unwrap(selectedRecordingQuery.data)
+  // 録画中の世代切り替えでは hlsPlayback が一時的に空になる。詳細 API の最新値を使いつつ、
+  // その間は開始時の録画と HLS URL を保持して、プレイヤーを外さない。
+  const selectedRecording = queriedRecording ?? (
+    playback.source === 'recording-hls' ? playback.target.recording : undefined
+  )
+  const playbackRecording = playback.source === 'recording-hls'
+    ? selectedRecording?.id === playback.target.recordingId
+      ? selectedRecording
+      : playback.target.recording
+    : undefined
+  const playbackHlsEntries = playback.source === 'recording-hls'
+    ? playbackRecording?.hlsPlayback.length
+      ? playbackRecording.hlsPlayback
+      : playback.target.recording.hlsPlayback
+    : []
+  const selectedPlaybackHls = playback.source === 'recording-hls'
+    ? playbackHlsEntries.find(({ profile }) => profile === playback.target.profile) ?? playbackHlsEntries[0]
+    : undefined
+  const playbackProfile = playback.source === 'recording-hls'
+    ? playbackHlsEntries.find(({ profile }) => profile === playback.target.profile)?.profile
+      ?? playbackHlsEntries[0]?.profile
+      ?? playback.target.profile
+    : undefined
   const startRecordingHLS = (startSeconds: number) => {
     const selectedHls = selectedRecording?.hlsPlayback.find(({ profile }) => profile === effectiveProfile)
       ?? selectedRecording?.hlsPlayback[0]
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt || !selectedHls) return
-    setPlayback({
+    updatePlayback({
       source: 'recording-hls',
       target: {
         site: selectedService?.site ?? 'default',
         recordingId: selectedRecordingId,
         recording: selectedRecording,
-        masterUrl: selectedHls.masterUrl,
         profile: selectedHls.profile,
         startSeconds,
       },
@@ -553,16 +586,59 @@ export function LivePage() {
     if (offset === null) return
     startRecordingHLS(offset)
   }
+  const onRecordingPlaybackError = useCallback(async (positionSeconds: number | undefined) => {
+    const requestedPlayback = playbackRef.current
+    if (requestedPlayback.source !== 'recording-hls') return false
+    const recordingId = requestedPlayback.target.recordingId
+    try {
+      // SSE はヒントなので、410 後は REST から世代の最新状態を取り直す。
+      const response = await getRecording(recordingId)
+      const latest = unwrap(response)
+      if (!latest || latest.id !== recordingId) return false
+      queryClient.setQueryData(recordingDetailQueryKey(recordingId), response)
+      if (playbackRef.current !== requestedPlayback) return false
+
+      const previousHls = requestedPlayback.target.recording.hlsPlayback
+      const nextHls = latest.hlsPlayback.find(({ profile }) => profile === requestedPlayback.target.profile)
+        ?? latest.hlsPlayback[0]
+      const previousMasterUrl = previousHls.find(({ profile }) => profile === requestedPlayback.target.profile)?.masterUrl
+        ?? previousHls[0]?.masterUrl
+      const fallbackRecording = latest.hlsPlayback.length > 0
+        ? latest
+        : { ...latest, hlsPlayback: previousHls }
+      if (nextHls && nextHls.masterUrl !== previousMasterUrl) {
+        updatePlayback({
+          ...requestedPlayback,
+          target: {
+            ...requestedPlayback.target,
+            recording: fallbackRecording,
+            profile: nextHls.profile,
+            startSeconds: positionSeconds ?? requestedPlayback.target.startSeconds,
+          },
+        })
+        return true
+      }
+      if (fallbackRecording !== requestedPlayback.target.recording) {
+        updatePlayback({ ...requestedPlayback, target: { ...requestedPlayback.target, recording: fallbackRecording } })
+      }
+      return false
+    } catch {
+      return false
+    }
+  }, [queryClient, updatePlayback])
   const livePlayerModeProps = playback.source === 'recording-hls'
-    ? {
+    ? playbackRecording && selectedPlaybackHls
+      ? {
         mode: 'recording-hls' as const,
         site: playback.target.site,
         recordingId: playback.target.recordingId,
-        recordingDurationMs: playback.target.recording.durationMs,
-        recordingHlsUrl: playback.target.masterUrl,
+        recordingDurationMs: recordingPlaybackDurationMs(playbackRecording, nowMs),
+        recordingHlsUrl: selectedPlaybackHls.masterUrl,
         recordingHlsStartSeconds: playback.target.startSeconds,
-        onReturnLive: () => setPlayback({ source: 'live' }),
+        onRecordingPlaybackError,
+        onReturnLive: () => updatePlayback({ source: 'live' }),
       }
+      : null
     : selectedService === undefined ? null : {
         mode: 'live' as const,
         site: selectedService.site,
@@ -585,11 +661,11 @@ export function LivePage() {
 
   const selectPlaybackProfile = (name: string) => {
     if (playback.source === 'recording-hls') {
-      const selectedHls = playback.target.recording.hlsPlayback.find((entry) => entry.profile === name)
+      const selectedHls = playbackHlsEntries.find((entry) => entry.profile === name)
       if (!selectedHls) return
-      setPlayback({
+      updatePlayback({
         ...playback,
-        target: { ...playback.target, masterUrl: selectedHls.masterUrl, profile: selectedHls.profile },
+        target: { ...playback.target, profile: selectedHls.profile },
       })
       return
     }
@@ -671,13 +747,14 @@ export function LivePage() {
               top: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
             }}
           >
+            {/* oxlint-disable-next-line react/refs -- LivePlayer calls this recovery callback after a media error, not during render. */}
             {isPlaying && livePlayerModeProps !== null ? (
               <LivePlayer
                 {...livePlayerModeProps}
-                profile={playback.source === 'recording-hls' ? playback.target.profile : effectiveProfile}
+                profile={playback.source === 'recording-hls' ? playbackProfile ?? effectiveProfile : effectiveProfile}
                 audio={routeSearch.audio}
                 availableProfiles={playback.source === 'recording-hls'
-                  ? playback.target.recording.hlsPlayback.map(({ profile }) => ({ name: profile }))
+                  ? playbackHlsEntries.map(({ profile }) => ({ name: profile }))
                   : liveProfiles.map((profile) => ({
                       ...profile,
                       label: `${liveProfileLabel(profile)}${autoDowngradedProfile?.name === profile.name ? ' · 自動で下げた' : ''}`,
@@ -692,7 +769,7 @@ export function LivePage() {
                 serviceName={selectedService.name}
                 onPlay={() => {
                   setVisibleDowngradeNotice(null)
-                  setPlayback({ source: 'live' })
+                  updatePlayback({ source: 'live' })
                   setPlayingKey(selectedKey ?? null)
                 }}
               />

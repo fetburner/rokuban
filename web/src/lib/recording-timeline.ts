@@ -87,3 +87,17 @@ export function recordingTimeline(
     recordedAfterProgramStartPercent,
   }
 }
+
+/** recordingPlaybackDurationMs returns the actual range available in recording playback. */
+export function recordingPlaybackDurationMs(
+  recording: RecordingTimelineSource,
+  nowMs = Date.now(),
+): number {
+  const timeline = recordingTimeline(
+    recording,
+    recording.status === 'recording' ? { nowMs } : {},
+  )
+  return recording.status === 'recording'
+    ? timeline.recordedSeconds * 1000
+    : timeline.recordedDurationMs ?? recording.durationMs
+}

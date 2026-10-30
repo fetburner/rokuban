@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -210,25 +211,130 @@ func TestBuildLiveFFmpegArgs_RealFFmpegSeparateAudioStreams(t *testing.T) {
 		}
 	}
 
-	t.Run("live probe replays the buffered input prefix", func(t *testing.T) {
-		inputReader, streamInfo, err := probeLiveStreamInput(
-			context.Background(), ffprobe, 42, io.NopCloser(bytes.NewReader(input)),
-		)
-		if err != nil {
-			t.Fatalf("probeLiveStreamInput: %v", err)
-		}
-		defer func() { _ = inputReader.Close() }()
-		got, err := io.ReadAll(inputReader)
-		if err != nil {
-			t.Fatalf("reading replayed input: %v", err)
-		}
-		if !bytes.Equal(got, input) {
-			t.Fatalf("replayed input is %d bytes, want original %d-byte stream", len(got), len(input))
-		}
-		if streamInfo.audioStreams != 2 {
-			t.Fatalf("probe found %d audio streams, want 2", streamInfo.audioStreams)
+	t.Run("runSession probes, replays, and maps both audio ES", func(t *testing.T) {
+		assertRunSessionMapsBothAudioES(t, input, ffmpeg, ffprobe, profiles[0])
+	})
+}
+
+func assertRunSessionMapsBothAudioES(t *testing.T, input []byte, ffmpeg, ffprobe string, profile LiveProfile) {
+	t.Helper()
+	segmentDir := t.TempDir()
+	cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffprobe, SegmentDir: segmentDir, Profiles: []LiveProfile{profile}}
+	ls := newLiveStreamer(nil, cfg)
+	ls.site = "test"
+	upstream := &blockingEOFReadCloser{reader: bytes.NewReader(input), unblock: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &liveSession{
+		serviceID: 42,
+		source: func(context.Context) (io.ReadCloser, error) {
+			return upstream, nil
+		},
+		ready: make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	runDone := make(chan struct{})
+	go func() {
+		ls.runSession(ctx, s)
+		close(runDone)
+	}()
+	t.Cleanup(func() {
+		upstream.release()
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(10 * time.Second):
+			t.Error("runSession did not stop after cancellation")
 		}
 	})
+
+	select {
+	case <-s.ready:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runSession did not start ffmpeg")
+	}
+	if s.startErr != nil {
+		t.Fatalf("runSession start error: %v", s.startErr)
+	}
+
+	masterPath := filepath.Join(segmentDir, "test", "42", "hd.m3u8")
+	deadline := time.Now().Add(10 * time.Second)
+	var master []byte
+	for time.Now().Before(deadline) {
+		master, _ = os.ReadFile(masterPath)
+		if bytes.Count(master, []byte("#EXT-X-MEDIA:")) == 3 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if bytes.Count(master, []byte("#EXT-X-MEDIA:")) != 3 {
+		t.Fatalf("runSession master has no three audio renditions:\n%s", master)
+	}
+	variants := parseMaster(t, string(master))
+	if len(variants) != 1 {
+		t.Fatalf("runSession has %d video variants, want 1:\n%s", len(variants), master)
+	}
+
+	for i, wantHz := range []float64{440, 440, 880} {
+		audioPlaylistPath := filepath.Join(segmentDir, "test", "42", variants[0].audio[i])
+		deadline = time.Now().Add(10 * time.Second)
+		var playlist []byte
+		var segmentPath string
+		for time.Now().Before(deadline) {
+			playlist, _ = os.ReadFile(audioPlaylistPath)
+			for _, line := range strings.Split(string(playlist), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				segmentPath = filepath.Join(filepath.Dir(audioPlaylistPath), line)
+				if info, err := os.Stat(segmentPath); err == nil && info.Size() > 0 {
+					break
+				}
+				segmentPath = ""
+			}
+			if segmentPath != "" {
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		if segmentPath == "" {
+			t.Fatalf("runSession audio rendition %d has no completed segment:\n%s", i, playlist)
+		}
+		left, right := decodeChannelFrequencies(t, ffmpeg, segmentPath)
+		if math.Abs(left-wantHz) > 15 || math.Abs(right-wantHz) > 15 {
+			t.Errorf("runSession audio rendition %d L/R = %.0f/%.0f Hz, want %.0f/%.0f Hz",
+				i, left, right, wantHz, wantHz)
+		}
+	}
+	upstream.release()
+	select {
+	case <-runDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runSession did not finish after the source reached EOF")
+	}
+}
+
+type blockingEOFReadCloser struct {
+	reader  *bytes.Reader
+	unblock chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingEOFReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if err == io.EOF {
+		<-r.unblock
+	}
+	return n, err
+}
+
+func (r *blockingEOFReadCloser) Close() error {
+	r.release()
+	return nil
+}
+
+func (r *blockingEOFReadCloser) release() {
+	r.once.Do(func() { close(r.unblock) })
 }
 
 func TestLiveFFmpegAudioMapsWithCaptionsAndExtraAudioES(t *testing.T) {

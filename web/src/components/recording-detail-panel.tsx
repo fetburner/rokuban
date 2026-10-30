@@ -55,7 +55,7 @@ import { PLAYBACK_POSITION_MINIMUM_MS, recordingFileURL } from '@/lib/playback-p
 import { recordingDetailQueryKey, seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
 import { type LiveAudioChoice, validLiveProfile } from '@/lib/live'
-import { recordingTimeline } from '@/lib/recording-timeline'
+import { recordingPlaybackDurationMs, recordingTimeline } from '@/lib/recording-timeline'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -341,12 +341,7 @@ export function RecordingDetail({
   const now = useNow({ intervalMs: 1000, active: showRecordingHLS && recording.status === 'recording' })
   const ingestNow = useNow({ intervalMs: 10_000, active: recording.ingest?.state === 'transferring' })
   const timeline = recordingTimeline(recording, recording.status === 'recording' ? { nowMs: now } : {})
-  const recordedSpanMs = timeline.recordedDurationMs ?? Number.NaN
-  const recordingHlsDurationMs = recording.status === 'recording'
-    ? timeline.recordedSeconds * 1000
-    : Number.isFinite(recordedSpanMs)
-      ? recordedSpanMs
-      : recording.durationMs
+  const recordingHlsDurationMs = recordingPlaybackDurationMs(recording, now)
   /**
    * reselectPlaybackSource は範囲外のシーク・エラーのときだけ呼ばれ、そのときの録画の状態で
    * 再生元を選び直す。版タブで選んだ再生元は範囲外シークでは選び直さず、プレイヤーに張り直しを任せる。
