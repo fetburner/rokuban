@@ -1,6 +1,6 @@
 // Package mediapath はメディアディレクトリ配下の相対パスの解決と検証を行う。
 //
-// media_assets.rel_path は mirakc が返す contentPath 由来で（M1-5-2）、
+// media_asset_copies.rel_path は mirakc が返す contentPath 由来で（M1-5-2）、
 // 番組名から生成されるため `..` や絶対パスが混じりうる。書き込み側（ingest）と
 // 読み出し側（streamer）の両方で独立に検証する。DB に不正な行が入った場合でも
 // 配信側が任意ファイルを読み出さないようにするため、片方だけでは足りない。

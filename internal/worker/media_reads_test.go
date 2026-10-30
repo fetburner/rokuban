@@ -82,7 +82,7 @@ func TestEncodeWorkerPreflightUsesSnapshotAndLogsReasons(t *testing.T) {
 		{
 			name:       "encoded asset already satisfies request",
 			profile:    config.EncodeProfile{Name: "h264"},
-			state:      store.EncodedPublishState{Desired: true, EncodedAsset: &store.EncodedAssetObservation{RelPath: "encoded.mp4", State: "active"}},
+			state:      store.EncodedPublishState{Desired: true, EncodedAsset: &store.EncodedAssetObservation{Active: true}},
 			wantReason: store.EncodedPublishSkipAssetSatisfied,
 		},
 		{
@@ -90,7 +90,7 @@ func TestEncodeWorkerPreflightUsesSnapshotAndLogsReasons(t *testing.T) {
 			profile: config.EncodeProfile{Name: "cut", Cut: true},
 			state: store.EncodedPublishState{
 				Desired: true, ChapterOwned: true, CurrentCutKeep: keepA,
-				EncodedAsset: &store.EncodedAssetObservation{RelPath: "cut.mp4", State: "active", KeepRanges: keepB},
+				EncodedAsset: &store.EncodedAssetObservation{Active: true, KeepRanges: keepB},
 			},
 			wantReason:     store.EncodedPublishSkipActiveCutProtected,
 			wantCut:        true,

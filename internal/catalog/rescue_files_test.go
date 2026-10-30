@@ -47,7 +47,7 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 			t.Fatalf("result = %+v", result)
 		}
 		var active, deleted int
-		if err := pool.QueryRow(context.Background(), "SELECT count(*) FILTER (WHERE state <> 'deleted'), count(*) FILTER (WHERE state='deleted' AND deleted_at IS NOT NULL) FROM media_assets").Scan(&active, &deleted); err != nil {
+		if err := pool.QueryRow(context.Background(), "SELECT count(*) FILTER (WHERE state <> 'deleted'), count(*) FILTER (WHERE state='deleted' AND deleted_at IS NOT NULL) FROM media_asset_copies").Scan(&active, &deleted); err != nil {
 			t.Fatal(err)
 		}
 		if active != 1 || deleted != 3 {
@@ -106,17 +106,18 @@ func TestRescueCatalogMissingOldGenerationKeepsCurrentCopy(t *testing.T) {
 	if result.MissingMediaFiles != 1 {
 		t.Fatalf("MissingMediaFiles = %d, want 1 missing physical copy", result.MissingMediaFiles)
 	}
-	var oldState, currentState, logicalState string
+	var oldState, currentState string
+	var hasActiveCopy bool
 	if err := pool.QueryRow(context.Background(), `
-SELECT old_copy.state, current_copy.state, asset.state
+SELECT old_copy.state, current_copy.state, EXISTS (SELECT 1 FROM active_media_asset_copies(asset.id, NULL))
 FROM media_assets asset
 	JOIN media_asset_copies old_copy ON old_copy.media_asset_id = asset.id AND old_copy.rel_path = $2
 	JOIN media_asset_copies current_copy ON current_copy.media_asset_id = asset.id AND current_copy.rel_path = $3
-	WHERE asset.id = $1`, 10, oldPath, currentPath).Scan(&oldState, &currentState, &logicalState); err != nil {
+	WHERE asset.id = $1`, 10, oldPath, currentPath).Scan(&oldState, &currentState, &hasActiveCopy); err != nil {
 		t.Fatalf("reading restored generation copies: %v", err)
 	}
-	if oldState != "deleted" || currentState != "active" || logicalState != "active" {
-		t.Fatalf("old/current/logical states = %q/%q/%q, want deleted/active/active", oldState, currentState, logicalState)
+	if oldState != "deleted" || currentState != "active" || !hasActiveCopy {
+		t.Fatalf("old/current copy states and current active copy = %q/%q/%v, want deleted/active/true", oldState, currentState, hasActiveCopy)
 	}
 }
 
@@ -163,19 +164,15 @@ func TestRescueCatalogMarksPreviouslyRestoredCopyDeletedWhenFileDisappears(t *te
 		t.Fatalf("MissingMediaFiles = %d, want 1", result.MissingMediaFiles)
 	}
 	var activeCopies, deletedCopies int
-	var logicalState string
 	if err := pool.QueryRow(context.Background(), `
 SELECT count(*) FILTER (WHERE copy.state = 'active'),
-       count(*) FILTER (WHERE copy.state = 'deleted'),
-       asset.state
-FROM media_assets asset
-JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
-WHERE asset.id = 11
-GROUP BY asset.state`).Scan(&activeCopies, &deletedCopies, &logicalState); err != nil {
+       count(*) FILTER (WHERE copy.state = 'deleted')
+FROM media_asset_copies copy
+WHERE copy.media_asset_id = 11`).Scan(&activeCopies, &deletedCopies); err != nil {
 		t.Fatalf("reading copy state after second rescue: %v", err)
 	}
-	if activeCopies != 0 || deletedCopies != 1 || logicalState != "deleted" {
-		t.Fatalf("active/deleted/logical = %d/%d/%q, want 0/1/deleted", activeCopies, deletedCopies, logicalState)
+	if activeCopies != 0 || deletedCopies != 1 {
+		t.Fatalf("active/deleted copies = %d/%d, want 0/1", activeCopies, deletedCopies)
 	}
 }
 
@@ -222,7 +219,7 @@ func TestRescueScanCandidateRemoved(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	var count int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE state='active'").Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_asset_copies WHERE state='active'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {

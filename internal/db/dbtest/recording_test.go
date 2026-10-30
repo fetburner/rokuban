@@ -69,8 +69,10 @@ func TestMediaAsset_DefaultsAndOptions(t *testing.T) {
 		state       string
 	}
 	if err := pool.QueryRow(context.Background(), `
-SELECT recording_id, kind, profile, rel_path, size_bytes, state
-FROM media_assets WHERE id = $1`, assetID).Scan(&got.recordingID, &got.kind, &got.profile, &got.relPath, &got.sizeBytes, &got.state); err != nil {
+SELECT a.recording_id, a.kind, a.profile, c.rel_path, a.size_bytes, c.state
+FROM media_assets a
+JOIN media_asset_copies c ON c.media_asset_id = a.id
+WHERE a.id = $1`, assetID).Scan(&got.recordingID, &got.kind, &got.profile, &got.relPath, &got.sizeBytes, &got.state); err != nil {
 		t.Fatalf("reading default original asset: %v", err)
 	}
 	if got.recordingID != recordingID || got.kind != "original" || got.profile != nil || got.relPath == "" || got.sizeBytes <= 0 || got.state != "active" {
@@ -83,8 +85,10 @@ FROM media_assets WHERE id = $1`, assetID).Scan(&got.recordingID, &got.kind, &go
 		fixtureParams.SizeBytes = 42
 	})
 	if err := pool.QueryRow(context.Background(), `
-SELECT kind, profile, rel_path, size_bytes
-FROM media_assets WHERE id = $1`, overriddenID).Scan(&got.kind, &got.profile, &got.relPath, &got.sizeBytes); err != nil {
+SELECT a.kind, a.profile, c.rel_path, a.size_bytes
+FROM media_assets a
+JOIN media_asset_copies c ON c.media_asset_id = a.id
+WHERE a.id = $1`, overriddenID).Scan(&got.kind, &got.profile, &got.relPath, &got.sizeBytes); err != nil {
 		t.Fatalf("reading overridden media asset: %v", err)
 	}
 	if got.kind != "original" || got.profile != nil || got.relPath != "test/override.ts" || got.sizeBytes != 42 {

@@ -454,7 +454,6 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID:       recordingID,
 		Profile:           &profile,
-		RelPath:           relPath,
 		SizeBytes:         1,
 		DerivedGeneration: &generation,
 	})

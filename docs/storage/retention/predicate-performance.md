@@ -4,6 +4,8 @@
 
 until_encoded の削除可否について、置き場の条件の無い view と、置き場の条件を足した関数の計画と時間を測った。
 
+下記の測定は、`media_assets.rel_path` / `state` を読む引数なしの `until_encoded_deletable_originals` view を使った履歴資料である。この列と view は現行スキーマから削除されているため、測定用 SQL は現行の DB では実行できない。数値は現行スキーマで再測定していない。
+
 ### 置き場の条件の無い view の計画と時間
 
 TS の計測済み判定を JOIN から副問い合わせに変えると、50% の合成データで 2,939 ms が 44 ms になった。
@@ -23,9 +25,9 @@ PostgreSQL 16 で、原本 2 万、現行サイズの計測済み 1.9 万、enco
 
 #### 測定条件
 
-本番と同じスキーマの専用 DB に、置き場のコピー表だけを足して測った。
+当時のスキーマを持つ専用 DB で測った。測定 SQL は、論理資産に物理パスと状態の列があった時点の view と表を使い、当時まだ無かったコピー表、置き場を引数に取る関数、コピー表の候補索引を足す。
 
-[測定用 SQL](../../../scripts/measure-until-encoded-store-predicate.sql) は、本番の migration を当てた専用 DB の上で動く。view、表、索引、`trash_deletable_recordings`、`removed_encoded_assets` は本物で、足すのは `media_asset_copies`、置き場を引数に取る関数、コピー表の候補索引だけである。表はすべて本表で、データを入れた後に `VACUUM (ANALYZE)` した。
+[測定用 SQL](../../../scripts/measure-until-encoded-store-predicate.sql) は、測定時の view、表、索引、`trash_deletable_recordings`、`removed_encoded_assets` を使い、表はすべて本表で、データを入れた後に `VACUUM (ANALYZE)` した。
 
 - PostgreSQL 16.2（macOS の Postgres.app、1 台）
 - recordings 2 万。1.95 万が生きている録画で、500 がごみ箱の録画

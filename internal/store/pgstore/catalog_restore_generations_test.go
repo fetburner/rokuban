@@ -15,14 +15,13 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func TestCatalogRestoreKeepsLogicalPathOnCurrentGeneration(t *testing.T) {
+func TestCatalogRestoreKeepsCurrentGenerationOnLogicalRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        "thumbnail",
-		RelPath:     "thumbnails/current.g8.jpg",
 		SizeBytes:   100,
 	})
 	if err != nil {
@@ -64,22 +63,17 @@ func TestCatalogRestoreKeepsLogicalPathOnCurrentGeneration(t *testing.T) {
 		t.Fatalf("committing catalog media asset restore: %v", err)
 	}
 
-	var relPath string
 	var derivedGeneration int64
-	if err := pool.QueryRow(ctx, `
-SELECT rel_path, derived_generation
-FROM media_assets
-WHERE id = $1`, assetID).Scan(&relPath, &derivedGeneration); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, assetID).Scan(&derivedGeneration); err != nil {
 		t.Fatalf("reading restored logical thumbnail: %v", err)
 	}
-	if relPath != "thumbnails/current.g8.jpg" || derivedGeneration != 8 {
-		t.Fatalf("restored logical thumbnail = (%q, generation %d), want current path and generation 8", relPath, derivedGeneration)
+	if derivedGeneration != 8 {
+		t.Fatalf("restored logical thumbnail generation = %d, want 8", derivedGeneration)
 	}
 
 	staleAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        "seek_tiles",
-		RelPath:     "thumbnails/current_tiles.g8.jpg",
 		SizeBytes:   100,
 	})
 	if err != nil {
@@ -110,11 +104,11 @@ WHERE id = $1`, assetID).Scan(&relPath, &derivedGeneration); err != nil {
 	}
 	var sizeBytes int64
 	var sha256Bytes []byte
-	if err := pool.QueryRow(ctx, `SELECT rel_path, derived_generation, size_bytes, sha256 FROM media_assets WHERE id = $1`, staleAssetID).Scan(&relPath, &derivedGeneration, &sizeBytes, &sha256Bytes); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT derived_generation, size_bytes, sha256 FROM media_assets WHERE id = $1`, staleAssetID).Scan(&derivedGeneration, &sizeBytes, &sha256Bytes); err != nil {
 		t.Fatalf("reading seek tiles after stale catalog restore: %v", err)
 	}
-	if relPath != "thumbnails/current_tiles.g8.jpg" || derivedGeneration != 8 {
-		t.Fatalf("stale catalog changed logical seek tiles to (%q, generation %d), want current path and generation 8", relPath, derivedGeneration)
+	if derivedGeneration != 8 {
+		t.Fatalf("stale catalog changed logical seek tiles to generation %d, want 8", derivedGeneration)
 	}
 	if sizeBytes != 100 || !bytes.Equal(sha256Bytes, currentSHA) {
 		t.Fatalf("stale catalog changed current-generation size/hash to %d/%x, want 100/%x", sizeBytes, sha256Bytes, currentSHA)
@@ -129,7 +123,6 @@ func TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive(t *testing.
 	assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        "original",
-		RelPath:     path,
 		SizeBytes:   100,
 	})
 	if err != nil {
@@ -182,12 +175,12 @@ func TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive(t *testing.
 	if deletedCopies != 1 {
 		t.Fatalf("historical tombstones = %d, want exactly one", deletedCopies)
 	}
-	var logicalState string
-	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE id = $1", assetID).Scan(&logicalState); err != nil {
-		t.Fatalf("reading logical original state: %v", err)
+	var hasActiveCopy bool
+	if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM active_media_asset_copies($1, NULL))", assetID).Scan(&hasActiveCopy); err != nil {
+		t.Fatalf("reading current copies of the logical original: %v", err)
 	}
-	if logicalState != "active" {
-		t.Fatalf("logical original state = %q, want active", logicalState)
+	if !hasActiveCopy {
+		t.Fatal("logical original has no current active copy after restore")
 	}
 }
 
@@ -203,14 +196,10 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	oldAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: oldRecordingID,
 		Kind:        "original",
-		RelPath:     path,
 		SizeBytes:   100,
 	})
 	if err != nil {
 		t.Fatalf("creating historical logical original: %v", err)
-	}
-	if _, err := pool.Exec(ctx, "UPDATE media_assets SET state = 'deleted', deleted_at = $2 WHERE id = $1", oldAssetID, oldDeletedAt); err != nil {
-		t.Fatalf("marking historical logical original deleted: %v", err)
 	}
 	insertCatalogRestoreCopy(t, pool, oldAssetID, path, "deleted", oldCreatedAt, &oldDeletedAt)
 
@@ -218,7 +207,6 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	currentAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: currentRecordingID,
 		Kind:        "original",
-		RelPath:     path,
 		SizeBytes:   100,
 	})
 	if err != nil {

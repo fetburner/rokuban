@@ -54,11 +54,22 @@ case "$recording_id" in
     exit 0 ;;
 esac
 
-if ! psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-              VALUES (${recording_id}, 'original', '${E2E_ENCODE_REL_PATH}', ${size}, 'active')" >/dev/null ||
-   ! psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-              VALUES (${recording_id}, 'thumbnail', 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_thumb.jpg', 1, 'active'),
-                     (${recording_id}, 'seek_tiles', 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_tiles.jpg', 1, 'active')" >/dev/null ||
+if ! psql_q "WITH assets AS (
+                INSERT INTO media_assets (recording_id, kind, size_bytes, derived_generation)
+                VALUES (${recording_id}, 'original', ${size}, NULL),
+                       (${recording_id}, 'thumbnail', 1, 0),
+                       (${recording_id}, 'seek_tiles', 1, 0)
+                RETURNING id, kind
+              )
+              INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+              SELECT id, 'main',
+                     CASE kind
+                       WHEN 'original' THEN '${E2E_ENCODE_REL_PATH}'
+                       WHEN 'thumbnail' THEN 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_thumb.jpg'
+                       ELSE 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_tiles.jpg'
+                     END,
+                     0, 'active'
+              FROM assets" >/dev/null ||
    ! psql_q "INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
               VALUES (${recording_id}, 'until_encoded', ARRAY['${profile}'])" >/dev/null ||
    ! psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
@@ -144,8 +155,9 @@ if [ -z "$delete_job_id" ] || ! fault_wait_job_complete "$delete_job_id" "delete
   exit 0
 fi
 original_still_active() {
-  [ "$(psql_q "SELECT state FROM media_assets
-                WHERE recording_id = ${recording_id} AND kind = 'original'")" = active ]
+  [ "$(psql_q "SELECT c.state FROM media_assets a
+                JOIN media_asset_copies c ON c.media_asset_id = a.id
+                WHERE a.recording_id = ${recording_id} AND a.kind = 'original'")" = active ]
 }
 if original_still_active && fault_check_media_file "$E2E_ENCODE_REL_PATH"; then
   pass "F1.3" "encoded asset が無い間、delete_reconcile は until_encoded original を残した"
@@ -176,9 +188,10 @@ if ! retry_until 300 "JobRescuer to retry the killed encode job" recovered; then
 fi
 
 encoded_asset_active() {
-  [ "$(psql_q "SELECT count(*) FROM media_assets
-                WHERE recording_id = ${recording_id} AND kind = 'encoded'
-                  AND profile = '${profile}' AND state = 'active' AND size_bytes > 0" | tr -d '[:space:]')" = 1 ]
+  [ "$(psql_q "SELECT count(*) FROM media_assets a
+                WHERE a.recording_id = ${recording_id} AND a.kind = 'encoded'
+                  AND a.profile = '${profile}' AND a.size_bytes > 0
+                  AND EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, NULL))" | tr -d '[:space:]')" = 1 ]
 }
 if ! retry_until 900 "replacement encode to publish its asset" encoded_asset_active; then
   fail_from "F1.4" "recovered encode job が encoded media_asset を公開しない --- River=$(psql_q "SELECT state FROM river_job WHERE kind='encode' AND args->>'recording_id'='${recording_id}' ORDER BY id DESC LIMIT 1")"

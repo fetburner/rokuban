@@ -73,7 +73,7 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 
 // TestImportLibrary_OriginalRelPathGetsSitePrefix is the acceptance
 // criterion behind blocking finding 1 (PR #763 review): worker startup
-// rejects any live original/encoded media_assets row whose rel_path is not
+// rejects any live original/encoded media asset copy whose rel_path is not
 // under `sites/{site}/` (internal/worker/media_asset_namespace.go). Imported
 // "ts" video files must be registered with that prefix, or a documented
 // `rokuban import epgstation` run crash-loops the worker on next restart.
@@ -102,7 +102,7 @@ func TestImportLibrary_OriginalRelPathGetsSitePrefix(t *testing.T) {
 
 	var relPath string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT rel_path FROM media_assets WHERE kind = 'original'`).Scan(&relPath); err != nil {
+		`SELECT c.rel_path FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.kind = 'original'`).Scan(&relPath); err != nil {
 		t.Fatal(err)
 	}
 	const want = "sites/tokyo/imported/show.ts"
@@ -236,7 +236,7 @@ func TestImportLibrary_MultipleThumbnails_ImportsFirstAndWarns(t *testing.T) {
 	}
 
 	var relPath string
-	if err := pool.QueryRow(context.Background(), `SELECT rel_path FROM media_assets`).Scan(&relPath); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies`).Scan(&relPath); err != nil {
 		t.Fatal(err)
 	}
 	if relPath != "thumb1.jpg" {

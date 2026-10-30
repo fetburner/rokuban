@@ -183,7 +183,7 @@ worker:
 	var relPath string
 	workItems := 1
 	for i := 0; i < 8; i++ {
-		err := pool.QueryRow(ctx, "SELECT rel_path FROM media_assets WHERE kind = 'original' AND state = 'active'").Scan(&relPath)
+		err := pool.QueryRow(ctx, "SELECT c.rel_path FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.kind = 'original' AND c.state = 'active'").Scan(&relPath)
 		if err == nil {
 			break
 		}

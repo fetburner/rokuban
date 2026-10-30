@@ -89,7 +89,8 @@ func activeAssetSize(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind s
 	t.Helper()
 	var size int64
 	err := pool.QueryRow(context.Background(),
-		`SELECT size_bytes FROM media_assets WHERE recording_id = $1 AND kind = $2 AND state = 'active'`,
+		`SELECT a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		 WHERE a.recording_id = $1 AND a.kind = $2 AND c.state = 'active'`,
 		recordingID, kind).Scan(&size)
 	if errors.Is(err, pgx5.ErrNoRows) {
 		return 0, false
@@ -193,10 +194,6 @@ func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 		p.RelPath = thumbnailRelPath(id, 0)
 	})
 	if _, err := pool.Exec(context.Background(), `
-UPDATE media_assets SET state = 'deleted', deleted_at = now(), derived_generation = 0 WHERE id = $1`, deletedID); err != nil {
-		t.Fatalf("seeding deleted thumbnail tombstone: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `
 UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, deletedID); err != nil {
 		t.Fatalf("seeding deleted thumbnail copy: %v", err)
 	}
@@ -210,7 +207,7 @@ UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_
 				ThumbnailJobArgs{RecordingID: id})
 		}, tinyJPEG)
 	var assetID int64
-	if err := pool.QueryRow(context.Background(), `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail' AND state = 'active'`, id).Scan(&assetID); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT a.id FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.recording_id = $1 AND a.kind = 'thumbnail' AND c.state = 'active'`, id).Scan(&assetID); err != nil {
 		t.Fatalf("reading active thumbnail id: %v", err)
 	}
 	assertMediaAssetCopy(t, pool, assetID, relPath)
@@ -340,7 +337,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	}
 	generation := int64(0)
 	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
-		RecordingID: id, RelPath: relPath, SizeBytes: int64(len(prior)),
+		RecordingID: id, SizeBytes: int64(len(prior)),
 		DerivedGeneration: &generation,
 	})
 	if err != nil {

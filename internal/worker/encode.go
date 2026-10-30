@@ -808,17 +808,17 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		keep = in.cut.keep
 	}
 	input := store.EncodedPublishInput{
-		RecordingID:       in.recordingID,
-		Profile:           in.profile,
-		Attempt:           in.attempt,
-		RelPath:           in.relPath,
-		SizeBytes:         staged.size,
-		DerivedGeneration: in.observed.generation,
-		ObservedRelPath:   in.observed.observedRelPath,
-		Cut:               cut,
-		KeepRanges:        keep,
-		HasRebuildRequest: in.expectedKeep != nil,
-		RequestedKeep:     in.expectedKeep,
+		RecordingID:        in.recordingID,
+		Profile:            in.profile,
+		Attempt:            in.attempt,
+		RelPath:            in.relPath,
+		SizeBytes:          staged.size,
+		DerivedGeneration:  in.observed.generation,
+		ObservedGeneration: in.observed.observedGeneration,
+		Cut:                cut,
+		KeepRanges:         keep,
+		HasRebuildRequest:  in.expectedKeep != nil,
+		RequestedKeep:      in.expectedKeep,
 	}
 	publish := func() error {
 		if err := beforeEncodeFilePublication(in.scratchOut); err != nil {
@@ -865,7 +865,7 @@ func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublis
 	input := store.EncodedPublishInput{
 		RecordingID: in.recordingID, Profile: in.profile, Attempt: in.attempt,
 		RelPath: in.relPath, SizeBytes: info.Size(), DerivedGeneration: in.observed.generation,
-		ObservedRelPath: in.observed.observedRelPath, Cut: cut, KeepRanges: keep,
+		ObservedGeneration: in.observed.observedGeneration, Cut: cut, KeepRanges: keep,
 		HasRebuildRequest: in.expectedKeep != nil, RequestedKeep: in.expectedKeep,
 		PendingCopy: true,
 	}
@@ -967,15 +967,15 @@ func truncateEncodeAttemptError(msg string) string {
 
 // encodePlan は encoded 行の 1 回の観測から導いた、公開の判断材料。
 type encodePlan struct {
-	// observedRelPath は行の rel_path（state は問わない）。行が無ければ ""。
-	observedRelPath string
+	// observedGeneration は行の derived_generation（active かは問わない）。nil は行が無いことを表す。
+	observedGeneration *int64
 	// generation はこの試行が使う派生世代。初回の cut は 1、他の初回出力は 0。
 	generation int64
 	// skip は公開を飛ばして成功扱いにする判定。
 	skip bool
 	// skipReason は飛ばす理由。skip でないときは空。
 	skipReason store.EncodedPublishSkipReason
-	// stale は「自分の計画が古い」ことを表す: 行が active のまま rel_path だけが
+	// stale は「自分の計画が古い」ことを表す: 行が active のまま derived_generation だけが
 	// 観測時から進み、区間が自分の keep と違う ((a) だけが立つ。cut でだけ起きる)。
 	// 成功扱いで飛ばさず、公開せずに計画をやり直す（結果はジョブの種類で分かれる。冒頭の (a)）。
 	stale bool
@@ -986,16 +986,16 @@ func planEncodePublishFromState(
 	in store.EncodedPublishInput,
 	state store.EncodedPublishState,
 ) encodePlan {
-	plan := store.PlanEncodedPublish(in, state, nil)
+	plan := store.PlanEncodedPublish(in, state, false)
 	p := encodePlan{
-		observedRelPath: plan.ObservedRelPath,
-		skip:            plan.Skip,
-		skipReason:      plan.SkipReason,
-		stale:           plan.Stale,
+		observedGeneration: plan.ObservedGeneration,
+		skip:               plan.Skip,
+		skipReason:         plan.SkipReason,
+		stale:              plan.Stale,
 	}
 	if state.EncodedAsset != nil {
 		p.generation = state.EncodedAsset.DerivedGeneration
-		if plan.Replaces || state.EncodedAsset.State != "active" {
+		if plan.Replaces || !state.EncodedAsset.Active {
 			p.generation++
 		}
 	} else if in.Cut {

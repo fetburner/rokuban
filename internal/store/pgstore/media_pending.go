@@ -47,9 +47,8 @@ func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.Pendi
 	generation := in.DerivedGeneration
 	assetID, err := q.InsertMediaAssetForPendingCopy(ctx, sqlcgen.InsertMediaAssetForPendingCopyParams{
 		RecordingID: in.RecordingID, Kind: in.Kind, Profile: in.Profile,
-		RelPath: in.RelPath, SizeBytes: in.SizeBytes, DerivedGeneration: &generation,
+		SizeBytes: in.SizeBytes, DerivedGeneration: &generation,
 	})
-	created := err == nil
 	if errors.Is(err, pgx.ErrNoRows) {
 		assetID, err = q.GetMediaAssetIDForPendingCopy(ctx, sqlcgen.GetMediaAssetIDForPendingCopyParams{
 			RecordingID: in.RecordingID, Kind: in.Kind, Profile: in.Profile,
@@ -86,18 +85,13 @@ func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.Pendi
 			return fmt.Errorf("media asset copy key %q is already assigned to another asset, generation, or lifecycle state: %w", in.RelPath, store.ErrConflict)
 		}
 	}
-	if created {
-		if err := q.ReconcileMediaAssetStateFromCopies(ctx, assetID); err != nil {
-			return fmt.Errorf("reconciling new media asset %d state: %w", assetID, err)
-		}
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing pending media asset copy: %w", mapDatabaseError(err))
 	}
 	return nil
 }
 
-// activatePendingCopy は commit の tx で pending を active にし、論理行の state を決め直す。
+// activatePendingCopy は commit の tx で pending を active にする。
 // 行が回収されていれば ErrStalePublishPlan を返す。PUT した key は回収側が消す。
 func activatePendingCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64, storeName, relPath string, generation int64) error {
 	updated, err := q.ActivatePendingMediaAssetCopy(ctx, sqlcgen.ActivatePendingMediaAssetCopyParams{
@@ -108,9 +102,6 @@ func activatePendingCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64,
 	}
 	if updated != 1 {
 		return fmt.Errorf("pending copy %q of asset %d generation %d is gone: %w", relPath, assetID, generation, store.ErrStalePublishPlan)
-	}
-	if err := q.ReconcileMediaAssetStateFromCopies(ctx, assetID); err != nil {
-		return fmt.Errorf("reconciling media asset %d state: %w", assetID, err)
 	}
 	return nil
 }
@@ -139,7 +130,7 @@ func (s *Media) ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, 
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	assetID, err := q.LockAgedPendingMediaAssetCopy(ctx, sqlcgen.LockAgedPendingMediaAssetCopyParams{
+	_, err = q.LockAgedPendingMediaAssetCopy(ctx, sqlcgen.LockAgedPendingMediaAssetCopyParams{
 		CopyID: copyID, StoreName: s.storeName, CreatedBefore: before,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -157,9 +148,6 @@ func (s *Media) ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, 
 	}
 	if updated != 1 {
 		return false, fmt.Errorf("marking pending media asset copy %d deleted updated %d rows, want one", copyID, updated)
-	}
-	if err := reconcileMediaAssetState(ctx, q, assetID); err != nil {
-		return false, fmt.Errorf("reconciling media asset %d state after pending copy %d was reclaimed: %w", assetID, copyID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing pending media asset copy reclaim: %w", mapDatabaseError(err))

@@ -348,24 +348,20 @@ VALUES ($1, $2)
 ON CONFLICT (recording_id) DO UPDATE SET watched_at = EXCLUDED.watched_at;
 
 -- 「この行は現行の世代か」の判定は copy_generation = GREATEST(既存, EXCLUDED) の 1 つで、
--- rel_path / size_bytes / sha256 はその判定で切り替える（original は copy_generation 0・世代 NULL で常に真）。
--- state / deleted_at は DO UPDATE で書かない。直後の ReconcileMediaAssetStateFromCopies が決める。
+-- size_bytes / sha256 はその判定で切り替える（original は copy_generation 0・世代 NULL で常に真）。
 -- name: CatalogUpsertMediaAsset :exec
 INSERT INTO media_assets (
-    id, recording_id, kind, profile, rel_path, size_bytes,
-    state, deleted_at, created_at, updated_at, derived_generation, sha256
+    id, recording_id, kind, profile, size_bytes,
+    created_at, updated_at, derived_generation, sha256
 ) OVERRIDING SYSTEM VALUE
 VALUES (
-    $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9
 )
 ON CONFLICT (id) DO UPDATE SET
     recording_id = EXCLUDED.recording_id,
     kind         = EXCLUDED.kind,
     profile      = EXCLUDED.profile,
-    rel_path     = CASE WHEN sqlc.arg('copy_generation')::bigint = GREATEST(
-        COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
-    ) THEN EXCLUDED.rel_path ELSE media_assets.rel_path END,
     size_bytes   = CASE WHEN sqlc.arg('copy_generation')::bigint = GREATEST(
         COALESCE(media_assets.derived_generation, 0), COALESCE(EXCLUDED.derived_generation, 0)
     ) THEN EXCLUDED.size_bytes ELSE media_assets.size_bytes END,

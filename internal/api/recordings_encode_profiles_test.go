@@ -552,7 +552,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 		t.Fatalf("delete reconcile: %v", err)
 	}
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_assets WHERE id = $1`, originalID).Scan(&state); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1`, originalID).Scan(&state); err != nil {
 		t.Fatalf("loading original state: %v", err)
 	}
 	if state != "deleted" {
@@ -598,7 +598,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 		t.Fatalf("delete reconcile: %v", err)
 	}
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_assets WHERE id = $1`, originalID).Scan(&state); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1`, originalID).Scan(&state); err != nil {
 		t.Fatalf("loading original state: %v", err)
 	}
 	if state != "active" {
@@ -917,7 +917,7 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	}
 }
 
-// 原本削除済み（media_assets の original が state='deleted'）の録画も同様に 409。
+// 原本削除済み（original のコピーが state='deleted'）の録画も同様に 409。
 // until_encoded でエンコード完了後に retention reconcile が原本を消した状態を模す。
 func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -952,7 +952,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 
 // 原本が deleting（unlink 待ち）の録画も 409。
 //
-// 一覧の射影（recordings_query.go の recordingsFromJoins の LEFT JOIN）は `a.state <> 'deleted'` なので
+// 一覧の射影（recordings_query.go の recordingsFromJoins の LEFT JOIN）は `copy.state <> 'deleted'` なので
 // deleting の原本でも sizeBytes が付き、UI は「原本あり」と見てボタンを出す。
 // 一方サーバーの判定は GetActiveOriginalMediaAsset（`state = 'active'`）なので
 // ここに落ちる。**この非対称を意図された振る舞いとして固定する** ---
@@ -1198,8 +1198,8 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 		}
 	}
 	var activeOriginals int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets
-		WHERE id = $1 AND recording_id = $2 AND kind = 'original' AND state = 'active'`, originalID, id).Scan(&activeOriginals); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.id = $1 AND a.recording_id = $2 AND a.kind = 'original' AND c.state = 'active'`, originalID, id).Scan(&activeOriginals); err != nil {
 		t.Fatalf("checking active original: %v", err)
 	}
 	if activeOriginals != 1 {

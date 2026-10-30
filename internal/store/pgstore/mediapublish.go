@@ -44,7 +44,6 @@ func (s *Media) CommitOriginal(
 
 	assetID, err := q.CreateOriginalMediaAsset(ctx, sqlcgen.CreateOriginalMediaAssetParams{
 		RecordingID: in.RecordingID,
-		RelPath:     in.RelPath,
 		SizeBytes:   in.SizeBytes,
 	})
 	if err != nil {
@@ -223,7 +222,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	})
 	if err == nil {
 		observation := store.EncodedAssetObservation{
-			ID: row.ID, RelPath: row.RelPath, State: row.State, DerivedGeneration: row.DerivedGeneration,
+			ID: row.ID, Active: row.Active, DerivedGeneration: row.DerivedGeneration,
 		}
 		if in.Cut {
 			keep, err := assetKeepRanges(ctx, q, row.ID)
@@ -237,14 +236,13 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		return false, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
 
-	previous := in.ObservedRelPath
-	if in.PendingCopy && state.EncodedAsset != nil && state.EncodedAsset.State != "active" &&
-		state.EncodedAsset.RelPath == in.RelPath && previous == "" {
+	if in.PendingCopy && in.ObservedGeneration == nil && state.EncodedAsset != nil &&
+		!state.EncodedAsset.Active && state.EncodedAsset.DerivedGeneration == in.DerivedGeneration {
 		// 初回の公開で、論理行はこの試行の PreparePendingMediaAssetCopy が作った。
 		// 観測の時点には無かった行だが、別の試行が進めた行ではないので「動いた」と数えない。
-		previous = state.EncodedAsset.RelPath
+		in.ObservedGeneration = &state.EncodedAsset.DerivedGeneration
 	}
-	plan := store.PlanEncodedPublish(in, state, &previous)
+	plan := store.PlanEncodedPublish(in, state, true)
 	if plan.Stale {
 		return false, store.ErrStalePublishPlan
 	}
@@ -257,7 +255,6 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		RecordingID:       in.RecordingID,
 		Kind:              "encoded",
 		Profile:           &in.Profile,
-		RelPath:           in.RelPath,
 		SizeBytes:         in.SizeBytes,
 		DerivedGeneration: &derivedGeneration,
 		Sha256:            in.SHA256,
@@ -405,7 +402,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		}
 		derivedGeneration := in.DerivedGeneration
 		assetID, err = q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
-			RecordingID: in.RecordingID, Kind: "thumbnail", RelPath: in.RelPath, SizeBytes: in.SizeBytes,
+			RecordingID: in.RecordingID, Kind: "thumbnail", SizeBytes: in.SizeBytes,
 			DerivedGeneration: &derivedGeneration, Sha256: in.SHA256,
 		})
 		if err != nil {
@@ -444,7 +441,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		assetID = current.ID
 		derivedGeneration := in.DerivedGeneration
 		if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
-			RecordingID: in.RecordingID, Kind: "thumbnail", RelPath: in.RelPath, SizeBytes: in.SizeBytes,
+			RecordingID: in.RecordingID, Kind: "thumbnail", SizeBytes: in.SizeBytes,
 			DerivedGeneration: &derivedGeneration, Sha256: in.SHA256,
 		}); err != nil {
 			return false, fmt.Errorf("updating thumbnail media asset: %w", mapStaleDerivedGeneration(err))
@@ -512,7 +509,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 	}
 	derivedGeneration := in.DerivedGeneration
 	assetID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
-		RecordingID: in.RecordingID, Kind: "seek_tiles", RelPath: in.RelPath, SizeBytes: in.SizeBytes,
+		RecordingID: in.RecordingID, Kind: "seek_tiles", SizeBytes: in.SizeBytes,
 		DerivedGeneration: &derivedGeneration, Sha256: in.SHA256,
 	})
 	if err != nil {
@@ -612,7 +609,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 			return store.InPlaceResult{}, fmt.Errorf("upserting in-place asset %q: %w", asset.RelPath, mapDatabaseError(err))
 		}
 		result.AssetIDs[i] = publishedAsset.ID
-		if err := recordPublishedCopy(ctx, q, publishedAsset.ID, s.storeName, asset.RelPath, publishedAsset.Generation); err != nil {
+		if err := upsertMediaAssetCopy(ctx, q, publishedAsset.ID, s.storeName, asset.RelPath, publishedAsset.Generation); err != nil {
 			return store.InPlaceResult{}, fmt.Errorf("recording in-place media asset copy %q: %w", asset.RelPath, err)
 		}
 	}
@@ -650,24 +647,7 @@ func (s *Media) recordCopy(ctx context.Context, q *sqlcgen.Queries, assetID int6
 	if pendingCopy {
 		return activatePendingCopy(ctx, q, assetID, s.storeName, relPath, generation)
 	}
-	return recordPublishedCopy(ctx, q, assetID, s.storeName, relPath, generation)
-}
-
-// recordPublishedCopy はコピー行を書き、論理行の state / deleted_at をコピーから決め直す。
-func recordPublishedCopy(
-	ctx context.Context,
-	q *sqlcgen.Queries,
-	assetID int64,
-	storeName, relPath string,
-	generation int64,
-) error {
-	if err := upsertMediaAssetCopy(ctx, q, assetID, storeName, relPath, generation); err != nil {
-		return err
-	}
-	if err := q.ReconcileMediaAssetStateFromCopies(ctx, assetID); err != nil {
-		return fmt.Errorf("reconciling media asset %d state: %w", assetID, err)
-	}
-	return nil
+	return upsertMediaAssetCopy(ctx, q, assetID, s.storeName, relPath, generation)
 }
 
 func upsertMediaAssetCopy(
@@ -700,7 +680,9 @@ func upsertMediaAssetCopyState(
 		return mapDatabaseError(err)
 	}
 	if updated != 1 {
-		return fmt.Errorf("upserting media asset copy for asset %d store %q path %q generation %d affected %d rows", assetID, storeName, relPath, generation, updated)
+		// 0 行は、生きたコピーが別の論理資産か別の世代として同じ置き場・パスを使っていること。
+		// 論理資産の行にはパスの一意索引が無いので、占有はここで初めて分かる。
+		return fmt.Errorf("upserting media asset copy for asset %d store %q path %q generation %d affected %d rows: %w", assetID, storeName, relPath, generation, updated, store.ErrConflict)
 	}
 	return nil
 }

@@ -56,7 +56,7 @@ func TestListRecordingsIngestState(t *testing.T) {
 	})
 	seedIngested(t, pool, committed, 4096, nil)
 
-	// (2) 原本行はあるが state='deleted' = 取り込み後に消した
+	// (2) 原本行はあるがコピーの state='deleted' = 取り込み後に消した
 	deletedOriginal := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除済み", base.Add(-2*time.Hour), "finished", 2
 	})

@@ -26,14 +26,14 @@ import (
 func ValidateMediaAssetRelPathNamespace(ctx context.Context, media store.MediaReconcile) error {
 	violation, err := media.FindInvalidMediaAssetRelPath(ctx)
 	if err != nil {
-		return fmt.Errorf("checking media_assets rel_path namespace: %w", err)
+		return fmt.Errorf("checking media_asset_copies rel_path namespace: %w", err)
 	}
 	if violation == nil {
 		return nil
 	}
 
 	return fmt.Errorf(
-		"media_assets row %d (%s) has rel_path %q without the required sites/{site}/ prefix; migrate media_assets before starting the worker",
+		"media asset copy for row %d (%s) has rel_path %q without the required sites/{site}/ prefix; migrate media asset copy paths before starting the worker",
 		violation.ID, violation.Kind, violation.RelPath,
 	)
 }

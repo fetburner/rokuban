@@ -83,7 +83,7 @@ func run(ctx context.Context) error {
 	profileName := profile
 	assetID, err := queries.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID, Kind: store.AssetKindEncoded, Profile: &profileName,
-		RelPath: videoKey, SizeBytes: videoSize,
+		SizeBytes: videoSize,
 	})
 	if err != nil {
 		return fmt.Errorf("creating conformance encoded asset: %w", err)
