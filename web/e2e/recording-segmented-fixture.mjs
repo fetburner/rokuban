@@ -1,4 +1,4 @@
-// 録画の連続 HLS と ffmpeg 再起動をまたぐ HLS を実ブラウザで比べる fixture。
+// 録画の連続 HLS、ffmpeg 再起動をまたぐ HLS、録画中 EVENT playlist を実ブラウザで測る fixture。
 // 原本 TS と各 run の変換は Go のテスト（internal/streamer の TestWriteSegmentedPlaybackFixture）が、
 // 製品の buildSegmentTransformArgs で行う。ここは run の出力を playlist でつなぐだけで、ffmpeg の
 // HLS の引数は組まない。
@@ -38,6 +38,70 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const VARIANTS = ['video', 'standard', 'main', 'sub']
 const PROGRAM_DATE_TIME = Date.parse('2025-01-01T00:00:00.000Z')
 
+function positiveIntegerEnv(name, fallback) {
+  if (process.env[name] === undefined) return fallback
+  const value = Number(process.env[name])
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} は 1 以上の整数にする: ${process.env[name]}`)
+  return value
+}
+
+// 録画中 EVENT fixture の公開間隔と終端までの行数。既定の間隔は録画と同じ、セグメント長ごとに 1 行。
+export const EVENT_GROW_INTERVAL_MS = positiveIntegerEnv('E2E_EVENT_GROW_INTERVAL_MS', SEGMENT_SECONDS * 1_000)
+export const EVENT_SEGMENT_COUNT = positiveIntegerEnv('E2E_EVENT_SEGMENT_COUNT', FIXTURE_SECONDS / SEGMENT_SECONDS)
+export const EVENT_FINAL_SEGMENT_SECONDS = SEGMENT_SECONDS / 2
+
+/** readMediaPlaylistRows は media playlist から既出行の比較に使う 3 項目を読む。 */
+export function readMediaPlaylistRows(playlist) {
+  const rows = []
+  let programDateTime
+  let extinf
+  for (const line of playlist.split(/\r?\n/)) {
+    if (line.startsWith('#EXT-X-PROGRAM-DATE-TIME:')) programDateTime = line.slice('#EXT-X-PROGRAM-DATE-TIME:'.length)
+    else if (line.startsWith('#EXTINF:')) extinf = line.slice('#EXTINF:'.length).split(',')[0]
+    else if (extinf !== undefined && line && !line.startsWith('#')) {
+      rows.push({ uri: line, extinf, programDateTime })
+      programDateTime = undefined
+      extinf = undefined
+    }
+  }
+  return rows
+}
+
+/** buildGrowingEventPlaylist は既存の segment 行を使い、録画中 EVENT playlist の応答を作る。 */
+export function buildGrowingEventPlaylist(playlist, { segmentCount, visibleCount, ended = false, shortFinal = false, mutation } = {}) {
+  const sourceLines = playlist.split(/\r?\n/).filter(Boolean)
+  const sourceRows = readMediaPlaylistRows(playlist)
+  if (!Number.isSafeInteger(segmentCount) || segmentCount < 1) {
+    throw new Error(`EVENT fixture の行数 ${segmentCount} は 1 以上の整数にする`)
+  }
+  if (!Number.isSafeInteger(visibleCount) || visibleCount < 1 || visibleCount > segmentCount) {
+    throw new Error(`EVENT fixture の公開行数 ${visibleCount} は不正 (1–${segmentCount})`)
+  }
+  const firstRowIndex = sourceLines.findIndex((line) => line.startsWith('#EXT-X-PROGRAM-DATE-TIME:') || line.startsWith('#EXTINF:'))
+  if (firstRowIndex < 0) throw new Error('EVENT fixture に media playlist の segment 行がない')
+  const lines = sourceLines.slice(0, firstRowIndex).filter((line) => line !== '#EXT-X-ENDLIST')
+  const firstDate = Date.parse(sourceRows[0]?.programDateTime)
+  if (!Number.isFinite(firstDate)) throw new Error('EVENT fixture の最初の PROGRAM-DATE-TIME が不正')
+  const rows = Array.from({ length: segmentCount }, (_, index) => {
+    const source = sourceRows[index % sourceRows.length]
+    return {
+      ...source,
+      // 240 行の commit 縮退負例では、実在する fixture segment の URI を繰り返し、PDT は格子に沿わせる。
+      programDateTime: new Date(firstDate + index * SEGMENT_SECONDS * 1_000).toISOString(),
+    }
+  })
+  for (const [index, row] of rows.slice(0, visibleCount).entries()) {
+    let duration = Number(row.extinf)
+    if (shortFinal && index === segmentCount - 1) duration = EVENT_FINAL_SEGMENT_SECONDS
+    if (mutation === 'extinf' && ended && index === 0) duration += 0.5
+    lines.push(`#EXT-X-PROGRAM-DATE-TIME:${row.programDateTime}`)
+    lines.push(`#EXTINF:${duration.toFixed(3)},`)
+    lines.push(row.uri)
+  }
+  if (ended) lines.push('#EXT-X-ENDLIST')
+  return `${lines.join('\n')}\n`
+}
+
 // kind → 再起動の run（null は連続 1 本）。run の名前は Go のテストが付ける。
 const KINDS = {
   direct: { run: null },
@@ -55,6 +119,45 @@ function runOutput(name, args, options = {}) {
     const detail = error.stderr?.toString().trim() || error.stdout?.toString().trim() || error.message
     throw new Error(`${name} ${args.join(' ')} に失敗した: ${detail}`, { cause: error })
   }
+}
+
+/** createEventShortSegments は EVENT playlist の最後に載る fixture segment を切り詰め、EXTINF と一致する TS を用意する。 */
+export function createEventShortSegments(fixture, segmentCount = EVENT_SEGMENT_COUNT) {
+  const outputRoot = path.join(FIXTURE_ROOT, 'event-short')
+  mkdirSync(outputRoot, { recursive: true })
+  const result = new Map()
+  for (const variant of VARIANTS) {
+    const playlist = readFileSync(path.join(fixture.directory, `${variant}.m3u8`), 'utf8')
+    const sourceRows = readMediaPlaylistRows(playlist)
+    if (!Number.isSafeInteger(segmentCount) || segmentCount < 1 || segmentCount > sourceRows.length) {
+      throw new Error(`EVENT fixture の終端行 ${segmentCount} が範囲外 (1–${sourceRows.length})`)
+    }
+    // buildGrowingEventPlaylist は sourceRows を循環して使う。設定行数が既定の 30 と違うときも、
+    // 短い EXTINF を付けた最終行と、実際に切り詰める TS の URI を一致させる。
+    const last = sourceRows[(segmentCount - 1) % sourceRows.length]
+    if (!last) throw new Error(`${fixture.format}/${fixture.kind}/${variant}: 最後の segment がない`)
+    const input = path.join(fixture.directory, last.uri)
+    const output = path.join(outputRoot, `${variant}-${path.basename(last.uri)}`)
+    const start = Number(runOutput('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=start_time',
+      '-of', 'default=noprint_wrappers=1:nokey=1', input,
+    ]).trim())
+    if (!Number.isFinite(start)) throw new Error(`${input}: start_time を読めない`)
+    runOutput('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y', '-copyts', '-i', input,
+      '-to', String(start + EVENT_FINAL_SEGMENT_SECONDS), '-map', '0', '-c', 'copy',
+      '-muxdelay', '0', '-muxpreload', '0', '-mpegts_copyts', '1', '-f', 'mpegts', output,
+    ])
+    const duration = Number(runOutput('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', output,
+    ]).trim())
+    if (!Number.isFinite(duration) || duration < EVENT_FINAL_SEGMENT_SECONDS - 0.25 || duration > EVENT_FINAL_SEGMENT_SECONDS + 0.25) {
+      throw new Error(`${output}: 短い segment の長さが不正 (${duration}s; 期待は約 ${EVENT_FINAL_SEGMENT_SECONDS}s)`)
+    }
+    result.set(last.uri, path.relative(FIXTURE_ROOT, output))
+  }
+  return result
 }
 
 // 製品のビルダーで run を作る。出力は GENERATED の manifest.json から読む。
@@ -232,7 +335,9 @@ export function ensurePlaybackFixtures() {
   const manifest = generateRuns()
   const fixtures = FORMATS.flatMap((format) => Object.keys(KINDS).map((kind) => writeFixture(manifest, kind, format)))
   for (const fixture of fixtures) validateFixture(fixture)
-  return { root: FIXTURE_ROOT, source: path.join(GENERATED, manifest.source), fixtures }
+  const eventSource = fixtures.find((fixture) => fixture.format === 'ts' && fixture.kind === 'restarted')
+  const eventShortSegments = createEventShortSegments(eventSource, EVENT_SEGMENT_COUNT)
+  return { root: FIXTURE_ROOT, source: path.join(GENERATED, manifest.source), fixtures, eventShortSegments }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
