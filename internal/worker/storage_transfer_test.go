@@ -994,12 +994,14 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 		name            string
 		originalPresent bool
 		encoded         bool
+		boundStore      string
 		wantSource      string
 		wantTarget      string
 		wantAttempts    int
 	}{
 		{name: "present original permits rebuild", originalPresent: true, wantSource: "deleted", wantTarget: "deleted"},
 		{name: "present original permits encoded rebuild", originalPresent: true, encoded: true, wantSource: "deleted", wantTarget: "deleted"},
+		{name: "source in a store other than the Media binding is marked deleted", originalPresent: true, boundStore: "archive", wantSource: "deleted", wantTarget: "deleted"},
 		{name: "missing original reports without retiring source", wantSource: "active", wantTarget: "pending", wantAttempts: 1},
 		{name: "missing original keeps encoded source", encoded: true, wantSource: "active", wantTarget: "pending", wantAttempts: 1},
 	} {
@@ -1045,7 +1047,11 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 				t.Fatal(err)
 			}
 			retiredBefore := promtestutil.ToFloat64(metrics.StorageTransferCorruptSourcesRetired)
-			worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots}
+			bound := tc.boundStore
+			if bound == "" {
+				bound = "test-store"
+			}
+			worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, bound, ""), Config: cfg, Roots: roots}
 			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
 				MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
 			}); err != nil {

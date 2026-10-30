@@ -2,9 +2,9 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -263,85 +263,143 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 // TestStorageTransferCorruptRetirementSerializesWithUntilEncoded は、破損した派生コピーの退役と
 // until_encoded の原本削除が、同じ録画の行ロックで直列化されることを確かめる。
 // 派生物の desired の置き場を test-store にして、どちらが先でも他方の資格が消える構成にしてある。
+// 順序は advisory lock で決める。先に動く側の deleting への遷移を、テストが持つ lock の解放まで
+// トリガで止め、止まったのを pg_locks で確かめてから後の側を起動する。
 func TestStorageTransferCorruptRetirementSerializesWithUntilEncoded(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	roots := transferTestRoots(t, "test-store")
-	recordingID := dbtest.Recording(t, pool)
-	originalID := seedOriginalAsset(t, pool, roots["test-store"], recordingID, "sites/default/serialize/original.ts", []byte("original"))
-	profile := "web"
-	seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/serialize/encoded.mp4", []byte("encoded"))
-	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, "sites/default/serialize/thumbnail.jpg", []byte("thumbnail"))
-	seedSeekTilesAsset(t, pool, roots["test-store"], recordingID, "sites/default/serialize/tiles.jpg")
-	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
-	var eligible bool
-	if err := pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('test-store') WHERE asset_id = $1)`, originalID).Scan(&eligible); err != nil || !eligible {
-		t.Fatalf("until_encoded fixture eligibility = %t, %v; want true", eligible, err)
-	}
-	originalCopyID := transferTestCopyID(t, pool, originalID, "test-store")
-	thumbnailCopyID := transferTestCopyID(t, pool, thumbnailID, "test-store")
+	for _, tc := range []struct {
+		name         string
+		corruptFirst bool
+	}{
+		{name: "until_encoded stalls before commit", corruptFirst: false},
+		{name: "corrupt retirement stalls before commit", corruptFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const gateKey = 7771
+			pool := testutil.SetupDB(t)
+			ctx := context.Background()
+			roots := transferTestRoots(t, "test-store")
+			recordingID := dbtest.Recording(t, pool)
+			originalID := seedOriginalAsset(t, pool, roots["test-store"], recordingID, "sites/default/serialize/original.ts", []byte("original"))
+			profile := "web"
+			seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/serialize/encoded.mp4", []byte("encoded"))
+			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, "sites/default/serialize/thumbnail.jpg", []byte("thumbnail"))
+			seedSeekTilesAsset(t, pool, roots["test-store"], recordingID, "sites/default/serialize/tiles.jpg")
+			markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+			var eligible bool
+			if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('test-store') WHERE asset_id = $1)`, originalID).Scan(&eligible); err != nil || !eligible {
+				t.Fatalf("until_encoded fixture eligibility = %t, %v; want true", eligible, err)
+			}
+			originalCopyID := transferTestCopyID(t, pool, originalID, "test-store")
+			thumbnailCopyID := transferTestCopyID(t, pool, thumbnailID, "test-store")
+			gatedCopyID := originalCopyID
+			if tc.corruptFirst {
+				gatedCopyID = thumbnailCopyID
+			}
 
-	if _, err := pool.Exec(context.Background(), `
-CREATE FUNCTION public.pause_storage_copy_delete_for_test() RETURNS trigger
+			if _, err := pool.Exec(ctx, fmt.Sprintf(`
+CREATE FUNCTION public.gate_storage_copy_delete_for_test() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    IF OLD.state IS DISTINCT FROM NEW.state AND NEW.state = 'deleting' THEN
-        PERFORM pg_sleep(0.3);
+    IF OLD.state IS DISTINCT FROM NEW.state AND NEW.state = 'deleting' AND NEW.id = %d THEN
+        PERFORM pg_advisory_lock(%d);
+        PERFORM pg_advisory_unlock(%d);
     END IF;
     RETURN NEW;
 END
-$$`); err != nil {
-		t.Fatalf("creating delete-race trigger function: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `
-CREATE TRIGGER pause_storage_copy_delete_for_test
+$$`, gatedCopyID, gateKey, gateKey)); err != nil {
+				t.Fatalf("creating gate trigger function: %v", err)
+			}
+			if _, err := pool.Exec(ctx, `
+CREATE TRIGGER gate_storage_copy_delete_for_test
 BEFORE UPDATE OF state ON media_asset_copies
-FOR EACH ROW EXECUTE FUNCTION public.pause_storage_copy_delete_for_test()`); err != nil {
-		t.Fatalf("creating delete-race trigger: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS pause_storage_copy_delete_for_test ON media_asset_copies`)
-		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS public.pause_storage_copy_delete_for_test()`)
-	})
+FOR EACH ROW EXECUTE FUNCTION public.gate_storage_copy_delete_for_test()`); err != nil {
+				t.Fatalf("creating gate trigger: %v", err)
+			}
+			t.Cleanup(func() {
+				_, _ = pool.Exec(ctx, `DROP TRIGGER IF EXISTS gate_storage_copy_delete_for_test ON media_asset_copies`)
+				_, _ = pool.Exec(ctx, `DROP FUNCTION IF EXISTS public.gate_storage_copy_delete_for_test()`)
+			})
 
-	media := pgstore.NewMedia(pool, "test-store", "test-store")
-	start := make(chan struct{})
-	results := make(chan struct {
-		marked bool
-		err    error
-	}, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		<-start
-		marked, err := media.MarkMediaAssetCopyCorrupt(context.Background(), recordingID, thumbnailID, thumbnailCopyID, "test-store")
-		results <- struct {
-			marked bool
-			err    error
-		}{marked, err}
-	}()
-	go func() {
-		defer wg.Done()
-		<-start
-		marked, err := media.MarkUntilEncodedDeleting(context.Background(), recordingID, originalID, originalCopyID)
-		results <- struct {
-			marked bool
-			err    error
-		}{marked, err}
-	}()
-	close(start)
-	wg.Wait()
-	close(results)
-	markedCount := 0
-	for got := range results {
-		if got.err != nil {
-			t.Fatalf("marking copies deleting: %v", got.err)
-		}
-		if got.marked {
-			markedCount++
-		}
-	}
-	if markedCount != 1 {
-		t.Fatalf("copies marked deleting by the corrupt retirement and the until_encoded deletion = %d, want exactly one", markedCount)
+			gate, err := pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := gate.Exec(ctx, `SELECT pg_advisory_lock($1)`, int64(gateKey)); err != nil {
+				t.Fatal(err)
+			}
+			released := false
+			release := func() {
+				if released {
+					return
+				}
+				released = true
+				if _, err := gate.Exec(ctx, `SELECT pg_advisory_unlock($1)`, int64(gateKey)); err != nil {
+					t.Errorf("releasing gate lock: %v", err)
+				}
+				gate.Release()
+			}
+			defer release()
+
+			media := pgstore.NewMedia(pool, "test-store", "test-store")
+			type result struct {
+				marked bool
+				err    error
+			}
+			corrupt := make(chan result, 1)
+			untilEncoded := make(chan result, 1)
+			runCorrupt := func() {
+				go func() {
+					marked, err := media.MarkMediaAssetCopyCorrupt(ctx, recordingID, thumbnailID, thumbnailCopyID, "test-store")
+					corrupt <- result{marked, err}
+				}()
+			}
+			runUntilEncoded := func() {
+				go func() {
+					marked, err := media.MarkUntilEncodedDeleting(ctx, recordingID, originalID, originalCopyID)
+					untilEncoded <- result{marked, err}
+				}()
+			}
+			if tc.corruptFirst {
+				runCorrupt()
+			} else {
+				runUntilEncoded()
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				var waiting int
+				if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1`, int64(gateKey)).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the first transaction never reached the gate")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if tc.corruptFirst {
+				runUntilEncoded()
+			} else {
+				runCorrupt()
+			}
+			// 後の側が先の側を追い越せるなら、この間に commit まで進む。
+			time.Sleep(500 * time.Millisecond)
+			release()
+
+			markedCount := 0
+			for _, ch := range []chan result{corrupt, untilEncoded} {
+				got := <-ch
+				if got.err != nil {
+					t.Fatalf("marking copies deleting: %v", got.err)
+				}
+				if got.marked {
+					markedCount++
+				}
+			}
+			if markedCount != 1 {
+				t.Fatalf("copies marked deleting by the corrupt retirement and the until_encoded deletion = %d, want exactly one", markedCount)
+			}
+		})
 	}
 }

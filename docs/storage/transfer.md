@@ -14,7 +14,7 @@
 
 転送元と宛先の rel_path lock は、置き場名と相対パスの順で取る。転送元の root の目印を照合してから読み、lock を取れない job は snooze する。
 
-宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}-{copy_id}` を作り、checkpoint から再開する。帯域の上限は転送元の設定で適用する。転送元の SHA-256 が既知なら、再開のとき転送元の先頭を読み直さず、temp と残りの転送元を結合して全体を検査する。
+宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}-{copy_id}` を作り、checkpoint から再開する。帯域の上限は転送元の設定で適用する。論理資産の SHA-256 が既知なら、再開のとき転送元の先頭を読み直さず、temp と残りの転送元を結合して全体を検査する。
 
 ### 照合と公開
 
@@ -38,7 +38,9 @@ encoded の隣接 `.vtt` は、media asset と同じ rel_path lock の下で宛�
 
 派生コピーが壊れていたときは、同じ録画に active・実体ありの原本コピーが残る場合だけ、壊れた転送元のコピーを退役させる。転送 worker は録画の行、派生の論理行の順にロックした 1 つの transaction で、転送元のコピーを deleting にする。この順序は until_encoded の原本削除と同じで、両者を直列化する。直列化しないと、原本の削除と派生コピーの退役が同時に通り、どちらの実体も残らない。
 
-退役の続きは、転送元の rel_path lock の下で行う。目印を照合してからファイル（encoded なら字幕の sidecar も）を消し、親ディレクトリを fsync して deleted にする。退役させたら `rokuban_storage_transfer_corrupt_sources_retired_total` を増やし、Error ログを出す。deleting にして unlink の前に落ちた場合は、削除 reconcile がどの腕にも該当しない deleting 行として active に戻し、転送の再試行が不一致を再検出して消す。原本が無ければコピーを残して報告し、試行回数を記録する。
+退役の続きは、転送元の rel_path lock の下で行う。目印を照合してからファイル（encoded なら字幕の sidecar も）を消し、親ディレクトリを fsync して deleted にする。
+
+deleted への確定は、コピー自身の置き場の行をロックして行うので、転送 worker が束縛された置き場と違う置き場の転送元でも確定できる。同じ transaction で、実体無しの記録と転送の試行行も消す。退役させたら `rokuban_storage_transfer_corrupt_sources_retired_total` を増やし、Error ログを出す。deleting にして unlink の前に落ちた場合は、削除 reconcile がどの腕にも該当しない deleting 行として active に戻し、転送の再試行が不一致を再検出して消す。原本が無ければコピーを残して報告し、試行回数を記録する。
 
 退役した encoded のコピーは、encode の補完の入力である `unencoded_desired_profiles` に行として現れる。この行から encode が再生成するところまでは確かめていない。thumbnail とシークタイルが再生成されるかも未検証である。
 
@@ -46,11 +48,11 @@ encoded の隣接 `.vtt` は、media asset と同じ rel_path lock の下で宛�
 
 不要になった pending のコピーは、転送と同じ順序で lock を取り、削除 reconcile が回収する。
 
-trash・generation・desired の置き場の変更、または until_encoded の保持条件の成立で不要になった pending のコピーは、削除 reconcile が回収する。候補を列挙した後に rel_path lock を取り、recording・asset・copy を lock した transaction で、不要になった条件を再評価する。
+ごみ箱・世代・desired の置き場の変更、または until_encoded の保持条件の成立で不要になった pending のコピーは、削除 reconcile が回収する。候補を列挙した後に rel_path lock を取り、録画・論理資産・コピーの行をロックした transaction で、不要になった条件を再評価する。
 
 回収では、正規名の宛先を、転送 temp と inode が一致するときだけ消す。所有できない宛先は、sidecar と一緒に残す。所有できる宛先の sidecar は、宛先を消す前に消す。消せなかったときは、宛先と pending 行を残し、同じ inode の確認を保って次回に再開する。
 
-回収が終わった pending 行は、転送 temp と checkpoint も含めて退役させる。今も desired の pending のコピーは、失敗回数と checkpoint からの再開を保つために残す。最後の pending のコピーが退役すると、recording purge が完了する。
+回収が終わった pending 行は、転送 temp と checkpoint も含めて退役させる。今も desired の pending のコピーは、失敗回数と checkpoint からの再開を保つために残す。最後の pending のコピーが退役すると、録画の完全削除（purge）が完了する。
 
 desired の置き場から外れた配置は、削除 reconcile の腕の 1 つとして消す。腕は名前付き述語 `media_asset_copy_prunable` で、desired の置き場に active・実体ありのコピーがあり、overlap を過ぎていることだけを条件にする。desired のコピーは別の置き場の実体あるコピーなので、最後のコピーを消さないことをこの条件が守る。
 
@@ -66,6 +68,7 @@ transfer temp と checkpoint は、孤児監査で予約ファイルとして分
 - 転送時の sidecar 同期: `TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync`
 - 先行 worker が active にしたコピーの sidecar 保持: `TestStorageTransferWorkerPreservesSubtitleAfterConcurrentActivation`
 - 壊れた派生コピーのファイルと sidecar の削除、原本が無いときの保持: `TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebuild`
+- 束縛と違う置き場の転送元を deleted に確定する: 同じテスト
 - 退役した encoded のコピーが `unencoded_desired_profiles` に現れる: 同じテスト
 - 退役と until_encoded の原本削除の直列化: `TestStorageTransferCorruptRetirementSerializesWithUntilEncoded`
 - 配置の削除時の sidecar 削除: `TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar`
@@ -75,7 +78,7 @@ transfer temp と checkpoint は、孤児監査で予約ファイルとして分
 - desired のコピーが無いとき、最後のコピーを消さない: `TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap`
 - 削除時の論理行の lock と規則の再判定: `TestStorageTransferDeletionSerializesPolicySwitches`
 - 不要になった試行記録の削除: `TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts`
-- pending のコピーの退役後の recording purge: `TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge`
+- pending のコピーの退役後の録画の完全削除（purge）: `TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge`
 - 既にあった宛先の保持: `TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferReclaim`
 - sidecar の削除に失敗した後の pending の回収の再開: `TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails`
 - until_encoded で不要になった pending の原本コピーの退役: `TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded`

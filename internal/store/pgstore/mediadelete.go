@@ -185,13 +185,20 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, media
 
 // MarkDeleted は deleting コピーを deleted にし、全コピーの削除後に encoded 削除要求を消す。
 func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
+	return s.markCopyDeleted(ctx, copyID, s.storeName)
+}
+
+// markCopyDeleted は storeName の置き場にある copyID の deleting コピーを deleted にする。
+// 束縛された置き場と違う置き場のコピーも、行をコピー自身の置き場でロックして確定できる。
+// 実体無しの記録と転送の試行行は、コピーが deleted になるのと同じ tx で消す。
+func (s *Media) markCopyDeleted(ctx context.Context, copyID int64, storeName string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning media asset copy delete completion: %w", err)
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	copy, err := lockMediaAssetCopy(ctx, q, copyID, s.storeName)
+	copy, err := lockMediaAssetCopy(ctx, q, copyID, storeName)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil
@@ -203,7 +210,7 @@ func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
 			return fmt.Errorf("media asset copy %d has state %q, want deleting or deleted", copyID, copy.State)
 		}
 		updated, err := q.MarkMediaAssetCopyDeleted(ctx, sqlcgen.MarkMediaAssetCopyDeletedParams{
-			CopyID: copyID, StoreName: s.storeName,
+			CopyID: copyID, StoreName: storeName,
 		})
 		if err != nil {
 			return fmt.Errorf("marking media asset copy %d deleted: %w", copyID, mapDatabaseError(err))
@@ -211,6 +218,12 @@ func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
 		if updated != 1 {
 			return fmt.Errorf("marking media asset copy %d deleted updated %d rows, want one", copyID, updated)
 		}
+	}
+	if err := q.DeleteMissingMediaAsset(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing missing observation for deleted copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if err := q.DeleteMediaAssetTransferAttemptsForCopy(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing transfer attempts for deleted copy %d: %w", copyID, mapDatabaseError(err))
 	}
 	if err := q.ClearDeletedEncodedAssetRemovalRequest(ctx, copyID); err != nil {
 		return fmt.Errorf("clearing completed encoded asset removal request for copy %d: %w", copyID, mapDatabaseError(err))

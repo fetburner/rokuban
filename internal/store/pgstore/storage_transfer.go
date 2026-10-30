@@ -363,7 +363,7 @@ func (s *Media) MarkMediaAssetCopyDeleted(ctx context.Context, candidate store.M
 	if err != nil || !ok || current.State != "deleting" {
 		return false, err
 	}
-	if err := s.MarkDeleted(ctx, candidate.CopyID); err != nil {
+	if err := s.markCopyDeleted(ctx, candidate.CopyID, candidate.Store); err != nil {
 		return false, err
 	}
 	return true, nil
