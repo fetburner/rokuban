@@ -1171,6 +1171,9 @@ async function runRecordingApiHlsCheck() {
   await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
   await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+  // 追っかけ用のポスターは時間軸を載せる。再生元が recording-hls へ替わるとこれが消えるので、
+  // 切替の指標にする（再描画前に ▶ を押すと追っかけで始まり得る）。
+  await page.getByTestId('recording-playback-preview-timeline').waitFor({ timeout: 10000 })
   await page.waitForFunction(() => window.__recordingEventSources.length > 0, undefined, { timeout: 10000 })
   activeRecording = apiHlsLiveRecording
   const pendingRefreshed = page.waitForResponse((response) => {
@@ -1185,6 +1188,7 @@ async function runRecordingApiHlsCheck() {
     return
   }
   log('\n=== 録画 API HLS: pending から recordings SSE で v1 を選び直す ===')
+  await page.getByTestId('recording-playback-preview-timeline').waitFor({ state: 'detached', timeout: 10000 })
   await page.getByTestId('recording-playback-start').click()
   await page.locator('video').waitFor({ timeout: 15000 })
 

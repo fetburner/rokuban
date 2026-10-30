@@ -3602,6 +3602,89 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
   })
 
+  it('次のエピソードへ自動再生で移った先が source none で始まり、後から v1 が現れると、操作なしで v1 の再生が始まる', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const url = '/api/media/stores/media/recordings/4/hls/v1/hd/master.m3u8'
+    const origin = sampleRecording({
+      id: 3,
+      title: '作品X 第1話',
+      series: '作品X',
+      sizeBytes: 1_000_000,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 900_000 }],
+    })
+    // 一覧の行は原本つきで「再生できる行」に数える。詳細は録画開始直後（原本なし・hlsPlayback 空）。
+    const nextListed = sampleRecording({
+      id: 4,
+      title: '作品X 第2話',
+      series: '作品X',
+      sizeBytes: 1_000_000,
+      encodedAssets: [],
+      startAt: '2026-01-08T12:00:00Z',
+    })
+    const nextDetail = sampleRecording({
+      ...RUNNING,
+      id: 4,
+      title: '作品X 第2話',
+      series: '作品X',
+      startAt: '2026-01-08T12:00:00Z',
+      ingest: { state: 'pending' },
+      hlsPlayback: [],
+      encodedAssets: [],
+    })
+    const fake = createFakeServer({
+      recording: origin,
+      seriesRecordings: [origin, nextListed],
+      liveCapability: false,
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    fireEvent.ended(await screen.findByLabelText('録画映像'))
+    const card = await screen.findByTestId('recording-end-card')
+    fake.setRecording(nextDetail)
+    await user.click(within(card).getByRole('button', { name: '今すぐ再生' }))
+    await waitFor(() => expect(queryClient.getQueryData(recordingDetailQueryKey(4))).toBeDefined())
+    expect(document.querySelector('video')).toBeNull()
+
+    fake.setRecording(sampleRecording({
+      ...nextDetail,
+      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
+      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
+    }))
+    await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(4) })
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(url))
+    const video = document.querySelector('video')!
+    fireEvent.canPlay(video)
+    await waitFor(() => expect(play).toHaveBeenCalled())
+    expect(play.mock.contexts.at(-1)).toBe(video)
+    expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
+  })
+
+  it('追っかけ再生中に hlsPlayback が現れても、再生元は追っかけのまま替わらない', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
+    const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
+    const server = await startChase()
+    expect(playlistPaths(server.fetchMock, '/chase').length).toBeGreaterThan(0)
+    const video = document.querySelector('video')!
+    const before = video.getAttribute('src')
+
+    server.setRecording(sampleRecording({
+      ...RUNNING,
+      ingest: { state: 'transferring', writtenBytes: 100, observedAt: new Date().toISOString() },
+      hlsPlayback: [{ profile: 'hd', masterUrl: url }],
+      encodedAssets: [],
+    }))
+    await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
+    await waitFor(() => expect(server.queryClient.getQueryData(recordingDetailQueryKey(3))).toMatchObject({
+      data: { hlsPlayback: [{ masterUrl: url }] },
+    }))
+
+    expect(document.querySelector('video')).toBe(video)
+    expect(video.getAttribute('src')).toBe(before)
+    expect(video.getAttribute('src')).not.toBe(url)
+  })
+
   /** finishRecording は録画が終わった状態を取り直させる（追っかけのセッションはそのまま）。 */
   async function finishRecording(
     server: Awaited<ReturnType<typeof startChase>>,

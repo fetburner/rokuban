@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 func TestRecordingIngestProgressNotify(t *testing.T) {
@@ -26,7 +27,7 @@ func TestRecordingIngestProgressNotify(t *testing.T) {
 		t.Fatalf("clearing prior recording fixtures: %v", err)
 	}
 
-	migrateDownTo(t, dbURL, 42)
+	migrateDownTo(t, dbURL, 43)
 	t.Cleanup(func() {
 		if err := MigrateUp(context.Background(), dbURL); err != nil {
 			t.Errorf("restoring latest schema: %v", err)
@@ -43,29 +44,27 @@ func TestRecordingIngestProgressNotify(t *testing.T) {
 		t.Fatalf("listening for notifications: %v", err)
 	}
 
+	q := sqlcgen.New(pool)
+	expected := int64(100)
 	upsertProgress := func(generation int64, writtenBytes int64) {
 		t.Helper()
-		_, err := pool.Exec(ctx, `
-INSERT INTO recording_ingest_progress (
-    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, temp_store, observed_at
-) VALUES ($1, $2, 100, 'ingest.tmp', $3, 'media', now())
-ON CONFLICT (recording_id) DO UPDATE SET
-    written_bytes = EXCLUDED.written_bytes,
-    expected_bytes = EXCLUDED.expected_bytes,
-    temp_rel_path = EXCLUDED.temp_rel_path,
-    temp_generation = EXCLUDED.temp_generation,
-    temp_store = EXCLUDED.temp_store,
-    observed_at = now()`, recordingID, writtenBytes, generation)
-		if err != nil {
+		if err := q.UpsertRecordingIngestProgress(ctx, sqlcgen.UpsertRecordingIngestProgressParams{
+			RecordingID: recordingID, WrittenBytes: writtenBytes, ExpectedBytes: &expected,
+			TempRelPath: "ingest.tmp", TempGeneration: generation, TempStore: "media",
+		}); err != nil {
 			t.Fatalf("upserting ingest progress: %v", err)
+		}
+	}
+	deleteProgress := func() {
+		t.Helper()
+		if err := q.DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
+			t.Fatalf("deleting ingest progress: %v", err)
 		}
 	}
 
 	upsertProgress(1, 10)
 	expectNoRecordingNotification(t, listener)
-	if _, err := pool.Exec(ctx, `DELETE FROM recording_ingest_progress WHERE recording_id = $1`, recordingID); err != nil {
-		t.Fatalf("deleting progress before migration: %v", err)
-	}
+	deleteProgress()
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("applying ingest progress notification migration: %v", err)
 	}
@@ -74,13 +73,9 @@ ON CONFLICT (recording_id) DO UPDATE SET
 	expectRecordingNotification(t, listener)
 	upsertProgress(2, 20)
 	expectNoRecordingNotification(t, listener)
-	if _, err := pool.Exec(ctx, `UPDATE recording_ingest_progress SET temp_generation = 3 WHERE recording_id = $1`, recordingID); err != nil {
-		t.Fatalf("changing temp generation: %v", err)
-	}
+	upsertProgress(3, 20)
 	expectRecordingNotification(t, listener)
-	if _, err := pool.Exec(ctx, `DELETE FROM recording_ingest_progress WHERE recording_id = $1`, recordingID); err != nil {
-		t.Fatalf("deleting ingest progress: %v", err)
-	}
+	deleteProgress()
 	expectRecordingNotification(t, listener)
 }
 

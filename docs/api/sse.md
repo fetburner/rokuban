@@ -54,9 +54,9 @@ SSE は OpenAPI に載せず、ルーターへ直接登録して仕様をここ�
 
 **通知の出し方はテーブルの書き込み量で分ける。** 書き込み量が小さいテーブルは行トリガー、全量 upsert する EPG は同期ジョブがパス完了時に 1 回だけ明示的に送る。
 
-行トリガー（`reservations` / `recordings` / `media_assets` / `recording_ingest_progress`）は、書き手が通知を忘れる種類のバグを構造的に消せる。書き込み量が大きい EPG は同期ジョブがパス完了時に通知する。
+行トリガー（`reservations` / `recordings` / `media_assets` / `recording_ingest_progress`）は、書き手が通知を忘れる種類のバグを構造的に消せる。
 
-`recording_ingest_progress` は行の出入りと `temp_generation` の変化だけを通知する。毎回の進捗 UPSERT は同じ世代なら通知しない。
+`recording_ingest_progress` は転送中に進捗を数秒ごとに UPSERT するので、トリガーを行の出入りと `temp_generation` の変化に絞る。再生 URL（`hlsPlayback`）が替わるのはこの 2 つのときだけである。
 
 明示的な `pg_notify`（EPG の番組表）は、全量 upsert で 1 パス数千行になるためトリガーでは細かすぎる。同期ジョブがパス完了時に 1 回だけ送る。EPG が実際に更新されたときだけ通知できる利点もある。
 

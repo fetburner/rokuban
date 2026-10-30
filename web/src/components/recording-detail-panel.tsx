@@ -282,7 +282,7 @@ export function RecordingDetail({
     const source = selectRecordingPlaybackSource(playbackSelection)
     if (source !== playbackState.source) {
       setPlaybackState({
-        ...initialPlaybackState(),
+        ...initialPlaybackState(playbackState.autoPlay),
         generation: playbackState.generation + 1,
       })
     }
