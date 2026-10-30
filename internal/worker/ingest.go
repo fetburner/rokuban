@@ -659,12 +659,19 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
 	}
-	// commit 直前に、受信しながら計算し mirakc の値と照合したハッシュを checkpoint に残す。
+	// commit 直前に、受信しながら計算したハッシュを checkpoint に残す。mirakc が SHA-256 を返したときは、
+	// 照合済みの値である（返さなかったとき、sha256_verification が timeout_skipped / invalid_skipped なら
+	// 照合していないが、受信しながら計算した値であることは変わらない）。
 	// link の後で commit が失敗して再試行するとき、論理行へ書く値はこのハッシュであるべきで、
 	// ディスクを読み直した値ではない。読み直すと、その間に化けたファイルの値が作り手の値として
 	// 残る（SHA-256 を作り手が書く理由そのものが崩れる）。
-	// checkpoint が無いときの全量の読み直し（上の linked 経路）は、この例外の後退経路である。
-	// 読み直しが後退経路としてどの程度の頻度で通るかは測っていない。
+	// この checkpoint は link の前に書き、失敗すれば link せずに返る。そのため link 済みの temp に有効な
+	// checkpoint が無いのは、次の場合に限られる（fsink.RestoreCheckpoint の判定と、この書き込みの位置から読み取った）。
+	//   - この変更より前のバイナリが link した temp。commit 直前の checkpoint が無いか、途中の slice の
+	//     checkpoint しか無い（後者は offset がファイル末尾より前なので、残りだけ読み直す）。
+	//   - checkpoint が壊れていて RestoreCheckpoint が無効と判断した場合。
+	// その経路（上の linked 経路）はディスクを読み直した値を作り手の値として書くことになる。
+	// 例外として許容する。
 	if err := fsink.WriteCheckpoint(tempPath, offset, hasher,
 		func() error {
 			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint before publication")
