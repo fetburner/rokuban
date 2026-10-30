@@ -722,7 +722,7 @@ async function chooseFarSeekTarget(adapter, server, playlistMark, growing) {
   if (target === undefined) {
     throw new Error(`先読み範囲の外に、後ろに 2 行以上が載った未要求 segment がない (published=${published.toFixed(3)}s, buffer=${bufferedEnd.toFixed(3)}s, horizon=${forwardBufferHorizon.toFixed(3)}s)`)
   }
-  return { target, published }
+  return { target, published, horizon: forwardBufferHorizon }
 }
 
 /**
@@ -731,7 +731,7 @@ async function chooseFarSeekTarget(adapter, server, playlistMark, growing) {
  * audio-unavailable / track / stall / content-jump / frame-freeze / hls-gap / hls-error /
  * event-growth / ended / playlist-shrink / playlist-mutated。
  */
-async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY = DEFAULT_BOUNDARY, checkPrefetch = true, eventURL = false, requireEnded = false }) {
+async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY = DEFAULT_BOUNDARY, checkPrefetch = true, eventURL = false, expectGrowing = false, requireEnded = false }) {
   const failures = []
   const add = (tag, message) => failures.push(`[${tag}] ${message}`)
   const playlistMark = server.playlistMark()
@@ -745,6 +745,8 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
   if (eventURL) {
     await waitForServer(() => server.firstPlaylistSince(playlistMark) !== undefined, 10_000, '最初の media playlist')
     growing = !server.firstPlaylistSince(playlistMark).endList
+    // 内蔵の伸びる fixture が最初から ENDLIST を返すと、完成した録画として判定が進み、伸びる経路を測らないまま通ってしまう。
+    if (expectGrowing && !growing) add('event-growth', '最初の media playlist がすでに ENDLIST を含み、伸びる録画として始まらない')
   }
   const checkGrowthState = (stage) => {
     if (!growing) return
@@ -791,11 +793,16 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     if (growing) {
       // 再生位置が進み、同じ media playlist を再取得して行が増えたことを確認する。
       // EVENT の既出行を評価するための追加 fetch は発行しない。
-      await waitForServer(
-        () => server.hasRepeatedPlaylistGrowthSince(playlistMark) || server.hasEndListSince(playlistMark),
-        15_000,
-        '同じ media playlist の成長中の再要求',
-      )
+      try {
+        await waitForServer(
+          () => server.hasRepeatedPlaylistGrowthSince(playlistMark) || server.hasEndListSince(playlistMark),
+          15_000,
+          '同じ media playlist の成長中の再要求',
+        )
+      } catch (error) {
+        add('event-growth', error.message)
+        growthEvidenceFailureReported = true
+      }
       checkGrowthState('境界判定の開始')
     }
     let state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= BOUNDARY - 1.5 * SEGMENT + 0.5, 15_000, '再生開始')
@@ -856,6 +863,8 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     const farSeek = await chooseFarSeekTarget(adapter, server, playlistMark, growing)
     summary.farSeekTarget = farSeek.target
     summary.publishedSeconds = farSeek.published
+    // 選び方の下限とは別に、行き先が先読みの端より手前でないことを確かめる。
+    if (growing && farSeek.target < farSeek.horizon) add('seek-buffered', `シーク先 ${farSeek.target}s が先読みの端 ${farSeek.horizon.toFixed(3)}s より手前`)
     const mark = server.mark()
     await seekAndCheck(farSeek.target, () => adapter.evaluate(async () => window.__e2e.start()))
     const target = server.segmentsAt(farSeek.target)
@@ -956,6 +965,7 @@ async function main() {
           boundary: entry.boundary,
           checkPrefetch: entry.checkPrefetch,
           eventURL: entry.eventURL,
+          expectGrowing: entry.eventMode === 'growing',
           requireEnded: entry.requireEnded,
         })
       } catch (error) {
