@@ -891,7 +891,7 @@ async function runLiveRecordingApiHlsRecoveryCheck() {
   await startOver.click()
   const recordingStarted = await page.waitForFunction(() => {
     const video = document.querySelector('video')
-    return document.querySelector('[data-testid="recording-hls-source-label"]') && video && !video.paused &&
+    return document.querySelector('[data-testid="live-recording-source-label"]') && video && !video.paused &&
       video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime > 0
   }, undefined, { timeout: 20000 }).then(() => true).catch(() => false)
   if (!recordingStarted || liveRecordingHlsProgressBaseline === null) {
