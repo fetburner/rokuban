@@ -1748,7 +1748,8 @@ worker:
 `, maxConns, mediaDir)
 }
 
-// db.max_conns の下限は引くキューに依らず、worker ロールなら LISTEN 1 本 + 余地 1 本の 2 である。
+// db.max_conns の下限は引くキューに依らず、worker ロールなら LISTEN 1 本 + マウントした FS 置き場
+// ごとの転送 lock 1 本 + 余地 1 本で、この config（置き場 1 つ）では 3 である。
 // 下限の検査が DB に触る前に走ることを確かめる。
 func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
 	t.Run("max_conns=1 is too small and fails before touching the DB", func(t *testing.T) {
@@ -1762,8 +1763,16 @@ func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
 		}
 	})
 
-	t.Run("max_conns=2 passes the check and fails at the unreachable DB", func(t *testing.T) {
+	t.Run("max_conns=2 is too small for LISTEN, the transfer lock of the mounted store, and the room", func(t *testing.T) {
 		path := writeServerTestConfig(t, poolSizingTestConfig(2, t.TempDir()))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
+		if err == nil || !strings.Contains(err.Error(), "at least 3 connections") {
+			t.Errorf("err = %v, want the db.max_conns fail-fast naming a floor of 3", err)
+		}
+	})
+
+	t.Run("max_conns=3 passes the check and fails at the unreachable DB", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(3, t.TempDir()))
 		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
 		if err == nil {
 			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")

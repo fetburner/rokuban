@@ -29,9 +29,10 @@ const defaultAPIStatementTimeout = 30 * time.Second
 // 根拠（世帯スケール。数値は保守的な上限であり、実測に基づくチューニングは運用開始後に行う）:
 //   - api (10): HTTP リクエストの同時実行に応じる。SSE 配送は notifier が別に持つため
 //     api 自身が保持し続める接続はなく、ブラウザの複数タブ・同時操作を吸収する余裕を見た値
-//   - worker (9): River の LISTEN 用に 1 本を保持し続け、transfer worker の
-//     転送元ごとの advisory lock 用に 1 本を専有し、残りはジョブ claim・進捗書き込み・
-//     `/metrics` のバックログクエリ等に使う。値は実測に基づかない
+//   - worker (9): River の LISTEN 用に 1 本を保持し続け、マウントした FS 置き場 1 つぶんの
+//     転送 advisory lock 用に 1 本を専有し、残りはジョブ claim・進捗書き込み・
+//     `/metrics` のバックログクエリ等に使う。2 つ目以降の置き場は perStoreConnBudget が
+//     置き場ごとに workerPerStoreConns を上乗せする。値は実測に基づかない
 //   - watcher (3): 1 site ぶんのリーダー選出の advisory lock 用に 1 本を保持し
 //     続け、record 処理の短いクエリが散発する。2 site 目以降は site ごとに
 //     goroutine + advisory lock を持つため（cmd/rokuban/server.go の watcher
@@ -49,9 +50,14 @@ var roleConnBudget = map[string]int32{
 
 const (
 	// workerConnFloor は worker ロールの予算（roleConnBudget の worker の値）。
-	// transfer worker の source advisory lock はジョブ中に専用接続を保持する。
+	// 従来の 8 に、FS 置き場 1 つぶんの転送 advisory lock（workerPerStoreConns）を足した値で、
 	// 実測に基づかない。
 	workerConnFloor = 9
+
+	// workerPerStoreConns は、worker がマウントした FS 置き場ごとに見込む
+	// コネクション数。転送の queue は置き場ごとに 1 本で、転送中の job が
+	// pool から借りた接続のまま advisory lock を保持するため、置き場ごとに 1 本が専有される。
+	workerPerStoreConns = 1
 
 	// watcherPerSiteConns は、2 site 目以降の束縛サイトごとに watcher ロールへ
 	// 追加で見込むコネクション数（perSiteConnBudget / minRequiredConns が使う）。
@@ -65,7 +71,8 @@ const (
 // コネクション数を返す（1 site 以下は roleConnBudget の値がそのまま 1 site 分の
 // 見込みなので上乗せ 0）。
 //
-// **worker はここに含まれない。** worker の予算は site 数に依存しない。
+// **worker はここに含まれない。** worker の予算は site 数に依存しない
+// （置き場の数には依存する。perStoreConnBudget）。
 func perSiteConnBudget(roles []string, numSites int) int32 {
 	if numSites <= 1 {
 		return 0
@@ -76,6 +83,16 @@ func perSiteConnBudget(roles []string, numSites int) int32 {
 		per += watcherPerSiteConns
 	}
 	return per * extraSites
+}
+
+// perStoreConnBudget は、worker がマウントした FS 置き場が 2 つ以上のとき
+// roleConnBudget に上乗せするコネクション数を返す。1 つぶんは worker の予算
+// （workerConnFloor）に入っているので、2 つ目以降だけを足す。
+func perStoreConnBudget(roles []string, numStores int) int32 {
+	if numStores <= 1 || !slices.Contains(roles, "worker") {
+		return 0
+	}
+	return workerPerStoreConns * int32(numStores-1)
 }
 
 // minAutoMaxConns はロール集合から算出した MaxConns の下限。roleConnBudget に
@@ -126,8 +143,12 @@ func KnownRoles() []string {
 // doc コメント参照）。site 束縛の概念が無い呼び出し元（rescue/enqueue
 // 等の単発 CLI コマンド、testutil）は 0 を渡す --- roles が空ならどのみち
 // site 数は判定に使われない。
-func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Pool, error) {
-	poolCfg, err := buildPoolConfig(cfg, roles, numSites)
+//
+// numStores はこのプロセスがマウントしている FS 置き場の数。worker の転送 job は
+// 置き場ごとに advisory lock 用の接続を 1 本ずつ専有するので、watcher の site 数と
+// 同じ形で pool サイジングに反映する。置き場の概念が無い呼び出し元は 0 を渡す。
+func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites, numStores int) (*pgxpool.Pool, error) {
+	poolCfg, err := buildPoolConfig(cfg, roles, numSites, numStores)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +219,7 @@ func checkLocaleSupport(ctx context.Context, db pgxQueryRower) error {
 
 // buildPoolConfig は NewPool のロジック本体（MaxConns の算出と
 // statement_timeout の設定）を、実接続を伴わずにテストできる形で切り出す。
-func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Config, error) {
+func buildPoolConfig(cfg config.DBConfig, roles []string, numSites, numStores int) (*pgxpool.Config, error) {
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
 	if err != nil {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
@@ -206,19 +227,19 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpoo
 
 	switch {
 	case cfg.MaxConns > 0:
-		if min := minRequiredConns(roles, numSites); int32(cfg.MaxConns) < min {
+		if min := minRequiredConns(roles, numSites, numStores); int32(cfg.MaxConns) < min {
 			return nil, fmt.Errorf(
 				"db.max_conns=%d is too small for roles %v bound to %d site(s): at least %d connections are required so that roles holding a "+
 					"connection whose release depends on acquiring another one don't starve the "+
 					"rest of the process's work out of the single shared pool -- watcher's "+
-					"advisory lock (one per bound site), worker transfer's source advisory lock, "+
+					"advisory lock (one per bound site), worker's transfer advisory lock (one per mounted fs store), "+
 					"and worker's/notifier's LISTEN "+
 					"(docs/operations.md §3)",
 				cfg.MaxConns, roles, numSites, min)
 		}
 		poolCfg.MaxConns = int32(cfg.MaxConns)
 	case len(roles) > 0:
-		poolCfg.MaxConns = maxConnsForRoles(roles, numSites)
+		poolCfg.MaxConns = maxConnsForRoles(roles, numSites, numStores)
 	}
 
 	if slices.Contains(roles, "api") {
@@ -242,12 +263,13 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpoo
 // 二重に数えてプール上限が過大になる（issue #90 レビュー）。resolveRoles
 // （cmd/rokuban/server.go）が `--roles api,api` を畳むようになった後も、
 // ここは多重防御として残す --- db.NewPool の呼び出し元は server だけではない。
-func maxConnsForRoles(roles []string, numSites int) int32 {
+func maxConnsForRoles(roles []string, numSites, numStores int) int32 {
 	var total int32
 	for r := range uniqueRoles(roles) {
 		total += roleConnBudget[r]
 	}
 	total += perSiteConnBudget(roles, numSites)
+	total += perStoreConnBudget(roles, numStores)
 	if total < minAutoMaxConns {
 		total = minAutoMaxConns
 	}
@@ -273,7 +295,9 @@ func uniqueRoles(roles []string) map[string]struct{} {
 //     この専有が増える（cmd/rokuban/server.go の watcher ループ）
 //   - worker: River の内部機構の LISTEN（elector と notifier で共有される 1 本。
 //     `river@v0.47.0 client.go` の `notifier.New` と `leadership.NewElector` で確認済み）。これは site 数に依存
-//     しないプロセス単位の資源なので、site が増えても専有本数は変わらない
+//     しないプロセス単位の資源なので、site が増えても専有本数は変わらない。
+//     もう 1 つは転送 job の advisory lock（マウントした FS 置き場ごとに 1 本。
+//     store.StorageTransfer.AcquireTransferSourceBandwidth が pool から借りた接続を転送中保持する）
 //   - notifier: ブラウザへの SSE 配送のための LISTEN
 //     （internal/notifier.EventHub.Run が保持し続ける。site 数に依存しない）
 var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
@@ -286,12 +310,13 @@ var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
 //
 //   - watcher / worker / notifier の恒久専有（dedicatedConnRoles）。watcher は
 //     束縛サイトごとに 1 本（2 site 目以降 watcherPerSiteConns ずつ追加）
+//   - worker の転送 advisory lock。マウントした FS 置き場ごとに workerPerStoreConns
 //
 // 専有分だけでプールが埋まると、同じプロセスが行う他の仕事（watcher の record 処理
 // クエリ、worker のジョブ claim、/metrics のバックログクエリ等）が「二度と解放
 // されないコネクション」を待ち続けて無症状にデッドロックする。そのため専有分の
 // 合計に加えて、他の仕事のための余地を最低 1 本要求する。
-func minRequiredConns(roles []string, numSites int) int32 {
+func minRequiredConns(roles []string, numSites, numStores int) int32 {
 	var dedicated int32
 	for _, r := range dedicatedConnRoles {
 		if slices.Contains(roles, r) {
@@ -300,6 +325,9 @@ func minRequiredConns(roles []string, numSites int) int32 {
 	}
 	if slices.Contains(roles, "watcher") && numSites > 1 {
 		dedicated += watcherPerSiteConns * int32(numSites-1)
+	}
+	if slices.Contains(roles, "worker") && numStores > 0 {
+		dedicated += workerPerStoreConns * int32(numStores)
 	}
 	return dedicated + 1
 }

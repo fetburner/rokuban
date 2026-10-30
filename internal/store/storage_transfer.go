@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // MediaAssetTransferCandidate は desired store にコピーが必要な論理資産を表す。
 type MediaAssetTransferCandidate struct {
@@ -36,9 +39,10 @@ type MediaAssetCopyDeleteCandidate struct {
 	Generation   int64
 }
 
-// TransferBandwidthLease は転送元置き場の排他を保持する専用 DB 接続を表す。
+// TransferBandwidthLease は転送元置き場の排他を保持する、pool から借りた DB 接続を表す。
 type TransferBandwidthLease interface {
-	// Release は advisory lock を解放し、専用接続を閉じる。
+	// Release は advisory lock を解放して接続を pool に戻す。
+	// 解放に失敗した接続は lock を持ったままの恐れがあるので、pool に戻さず閉じる。
 	Release(ctx context.Context) error
 }
 
@@ -61,20 +65,22 @@ type StorageTransfer interface {
 	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore, derivedStore string, originalRules, sha256 []byte) (active bool, rejection string, err error)
 	// RecordMediaAssetTransferFailure は転送失敗を記録する。
 	RecordMediaAssetTransferFailure(ctx context.Context, copyID int64, message string) error
-	// MarkMediaAssetCopyCorrupt は破損が確認されたコピーを deleted にする。
-	MarkMediaAssetCopyCorrupt(ctx context.Context, mediaAssetID, copyID int64, storeName string) (bool, error)
+	// MarkMediaAssetCopyCorrupt は、破損が確認された派生コピーを deleting にする。
+	// 録画の行、派生の論理行の順にロックし、同じ録画に active・実体ありの原本コピーがあるときだけ遷移させる。
+	// unlink と deleted への確定は呼び出し側が行う。
+	MarkMediaAssetCopyCorrupt(ctx context.Context, recordingID, mediaAssetID, copyID int64, storeName string) (bool, error)
 	// DiscardPendingMediaAssetCopy は失敗した転送先コピーを deleted にする。
 	DiscardPendingMediaAssetCopy(ctx context.Context, copyID int64) error
 	// ListObsoletePendingMediaAssetTransferCopies は trash・generation・placement により不要になった pending コピーを返す。
 	ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
 	// ReclaimObsoletePendingMediaAssetTransferCopy は path lock の下で pending の obsolete 条件を再評価し、物理削除して deleted にする。
 	ReclaimObsoletePendingMediaAssetTransferCopy(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, originalRules []byte, fsStores []string, derivedStore string, deleteFile func() error) (reclaimed bool, err error)
-	// ListMediaAssetCopiesToDelete は、現行 policy の desired copy を確認できる stale copy を返す。
-	ListMediaAssetCopiesToDelete(ctx context.Context, originalRules []byte, derivedStore string, overlapMicros int64, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
+	// ListMediaAssetCopiesToDelete は、現行 policy の desired copy を確認できる active の stale copy を返す。
+	ListMediaAssetCopiesToDelete(ctx context.Context, originalRules []byte, derivedStore string, overlapCutoff time.Time, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
 	// GetMediaAssetCopyForDeletion はジョブ引数の copy ID から現在のパスを返す。
 	GetMediaAssetCopyForDeletion(ctx context.Context, candidate MediaAssetCopyDeleteCandidate) (MediaAssetCopyDeleteCandidate, bool, error)
 	// MarkMediaAssetCopyDeleting は media_assets をロックし直し、削除条件を再評価して path を返す。
-	MarkMediaAssetCopyDeleting(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, originalRules []byte, derivedStore string, overlapMicros int64) (relPath string, marked bool, err error)
+	MarkMediaAssetCopyDeleting(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, originalRules []byte, derivedStore string, overlapCutoff time.Time) (relPath string, marked bool, err error)
 	// MarkMediaAssetCopyDeleted は unlink 済みの deleting copy を deleted にする。
 	MarkMediaAssetCopyDeleted(ctx context.Context, candidate MediaAssetCopyDeleteCandidate) (bool, error)
 }

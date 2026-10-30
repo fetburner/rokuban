@@ -166,12 +166,6 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_object_store_credential_errors_total` | Counter | 上の失敗のうち、資格情報の取得失敗・失効・不明が原因のもの |
 | `rokuban_object_store_orphans_unresolved` | Gauge | DB にコピー行が無いまま残っている S3 のキーの数。報告だけで削除しない |
 | `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
-| `rokuban_storage_transfer_waiting_assets` | Gauge | desired な置き場へのコピーが必要な論理資産数 |
-| `rokuban_storage_transfer_waiting_bytes` | Gauge | 転送待ち資産の合計バイト数 |
-| `rokuban_storage_transfer_exhausted_assets` | Gauge | 転送失敗上限に達し、自動再投入を止めている論理資産数 |
-| `rokuban_storage_transfer_last_success_timestamp_seconds` | Gauge | 最後に成功した物理コピー転送の時刻 |
-| `rokuban_storage_transfer_policy_mismatch_total` | Counter | 設定変更後に古い policy fingerprint で破棄した job 数 |
-| `rokuban_storage_transfer_mount_mismatch_total{store}` | Counter | root が未設定、または目印が一致せず転送開始を見送った回数 |
 | `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
 | `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | 全 root を観測できたパスの時刻 |
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root ごとに最後に観測できた時刻 |
@@ -180,12 +174,6 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 `rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
 
 `rokuban_store_marker_mismatch_total{store}` は、設定した置き場名と `.rokuban-store` が一致しない、または目印を読めないときに操作を見送った回数である。起動時と操作ごとに増えるため、同じ障害中は再試行のたびに増える。
-
-待機中の 2 つのゲージは転送 reconcile が見た差分を表す。失敗上限に達した宛先は数えない。削除可能な until_encoded 原本も除外する。last success が古く backlog が残るときは、worker と mount を調べる。
-
-`rokuban_storage_transfer_exhausted_assets` が 0 以外なら、対象の source、destination、ログの失敗理由を確認し、原因を直してから runbook の手順で試行記録を消す。mount mismatch は mount と `.rokuban-store` の値を確認する。
-
-`rokuban_storage_transfer_policy_mismatch_total` は、設定変更前の policy fingerprint を持つ job を捨てた累計である。通常の rule switch で増えることがある。増加だけで障害とは判定しない。
 
 `rokuban_orphan_files_unresolved` は、`media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数である。
 
@@ -200,6 +188,28 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 - 欠損ゲージが数える状態: `state='active'`
 
 </details>
+
+#### FS 置き場間の転送のメトリクス
+
+FS 置き場間の転送の進み具合と、失敗の止まり方を、次のメトリクスで見る。
+
+| メトリクス | 型 | 意味 |
+|---|---|---|
+| `rokuban_storage_transfer_waiting_assets` | Gauge | desired の置き場へのコピーが必要な論理資産数 |
+| `rokuban_storage_transfer_waiting_bytes` | Gauge | 転送待ちの論理資産の合計バイト数 |
+| `rokuban_storage_transfer_exhausted_assets` | Gauge | 失敗が上限に達し、自動再投入を止めている論理資産数 |
+| `rokuban_storage_transfer_last_success_timestamp_seconds` | Gauge | 最後に成功した物理コピーの転送の時刻 |
+| `rokuban_storage_transfer_policy_mismatch_total` | Counter | 設定変更後に、古い規則の指紋を持つため破棄した job 数 |
+| `rokuban_storage_transfer_corrupt_sources_retired_total` | Counter | 壊れた派生コピーを、転送 worker が転送元から退役させた回数 |
+| `rokuban_storage_transfer_mount_mismatch_total{store}` | Counter | root が未設定、または目印が一致せず転送の開始を見送った回数 |
+
+転送待ちの 2 つのゲージは、転送 reconcile が見た差分を表す。失敗が上限に達した宛先と、削除してよい until_encoded の原本は数えない。最後の成功が古いまま転送待ちが残るときは、worker とマウントを調べる。
+
+`rokuban_storage_transfer_exhausted_assets` が 0 以外なら、対象の転送元、宛先、ログの失敗理由を確認し、原因を直してから runbook の手順で試行記録を消す。マウントの不一致は、マウントと `.rokuban-store` の値を確認する。
+
+`rokuban_storage_transfer_policy_mismatch_total` は、設定変更前の規則の指紋を持つ job を捨てた累計である。通常の規則の切り替えで増えることがある。増加だけで障害とは判定しない。
+
+`rokuban_storage_transfer_corrupt_sources_retired_total` は、転送の照合で壊れていると分かった派生コピーを退役させた累計である。増えたときは Error ログで転送元の置き場とパスを調べ、置き場の障害を疑う。退役の手順と、再生成について確かめた範囲は [FS 置き場間の転送](../storage/transfer.md) にある。
 
 #### ライブ視聴のメトリクス
 

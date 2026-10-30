@@ -27,6 +27,7 @@ type deleteCandidateSet struct {
 	removedEncoded          []store.MediaDeleteAsset
 	oldGeneration           []store.MediaDeleteAsset
 	placement               []store.MediaAssetCopyDeleteCandidate
+	placementArm            placementArm
 	obsoletePendingTransfer []store.MediaAssetCopyDeleteCandidate
 	agedOrphans             []string
 }

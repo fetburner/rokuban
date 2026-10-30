@@ -51,40 +51,18 @@ WHERE storage_transfer_candidate(
       )
   ) >= sqlc.arg('attempt_limit');
 
--- Failures belong to a destination copy. Remove them when it is no longer the
--- current desired copy, including when its logical asset advances generation.
+-- Failures belong to a destination copy. A failure row is obsolete exactly when
+-- the pending copy it belongs to is, so this references that named predicate
+-- instead of repeating its conditions.
 -- name: ClearObsoleteMediaAssetTransferAttempts :exec
 DELETE FROM media_asset_transfer_attempts t
-USING media_asset_copies c, media_assets a, recordings r
+USING media_asset_copies c
 WHERE t.copy_id = c.id
-  AND c.media_asset_id = a.id
-  AND a.recording_id = r.id
-  AND (
-      r.deleted_at IS NOT NULL
-      OR c.generation <> COALESCE(a.derived_generation, 0)
-      OR c.store IS DISTINCT FROM desired_media_store(
-          a.kind,
-          sqlc.arg('original_rules')::jsonb,
-          sqlc.arg('derived_store')::text,
-          r.site,
-          (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-      )
-      OR (
-          a.kind = 'original'
-          AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('derived_store')) u
-              WHERE u.asset_id = a.id
-          )
-      )
-      OR EXISTS (
-          SELECT 1 FROM active_media_asset_copies(a.id, c.store) target
-          WHERE NOT EXISTS (
-              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = target.id
-          )
-      )
-      OR NOT storage_transfer_candidate(
-          a.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
-      )
+  AND storage_transfer_pending_copy_obsolete(
+      c.id,
+      sqlc.arg('original_rules')::jsonb,
+      sqlc.arg('fs_stores')::text[],
+      sqlc.arg('derived_store')::text
   );
 
 -- The caller first locks the logical asset row in a separate statement, so this
@@ -171,7 +149,7 @@ JOIN upserted ON upserted.media_asset_id = asset.id;
 -- name: CompleteMediaAssetTransfer :one
 WITH observed AS (
     UPDATE media_assets a
-    SET sha256 = COALESCE(a.sha256, sqlc.arg('sha256')::bytea)
+    SET sha256 = sqlc.arg('sha256')::bytea
     FROM recordings r
     WHERE a.id = sqlc.arg('media_asset_id')
       AND a.recording_id = r.id
@@ -248,44 +226,37 @@ ON CONFLICT (copy_id) DO UPDATE SET
     last_error = EXCLUDED.last_error,
     updated_at = now();
 
--- A damaged derived source is retired as a physical copy. The logical row stays
--- available for encode reconcile, which sees that its current generation has no
--- active copy and publishes a replacement.
--- name: MarkMediaAssetCopyCorrupt :one
-WITH deleted AS (
-    UPDATE media_asset_copies c
-    SET state = 'deleted', deleted_at = now()
-    FROM media_assets a
-    WHERE c.id = sqlc.arg('copy_id')
-      AND c.media_asset_id = sqlc.arg('media_asset_id')
-      AND c.store = sqlc.arg('store')
-      AND c.media_asset_id = a.id
-      AND c.generation = COALESCE(a.derived_generation, 0)
-      AND c.state = 'active'
-      AND a.kind <> 'original'
-      AND EXISTS (
-          SELECT 1
-          FROM media_assets original
-          JOIN media_asset_copies original_copy ON original_copy.media_asset_id = original.id
-          WHERE original.recording_id = a.recording_id
-            AND original.kind = 'original'
-            AND original_copy.state = 'active'
-            AND original_copy.generation = COALESCE(original.derived_generation, 0)
-            AND NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = original_copy.id
-            )
-      )
-    RETURNING c.id
-), cleared_missing AS (
-    DELETE FROM missing_media_assets m USING deleted d
-    WHERE m.media_asset_copy_id = d.id
-    RETURNING m.media_asset_copy_id
-), cleared_attempts AS (
-    DELETE FROM media_asset_transfer_attempts t USING deleted d
-    WHERE t.copy_id = d.id
-    RETURNING t.copy_id
-)
-SELECT count(*)::bigint FROM deleted;
+-- A damaged derived source is retired as a physical copy: active -> deleting
+-- here, then the transfer worker unlinks the file and marks it deleted. The
+-- logical row stays available for encode reconcile, which sees that its current
+-- generation has no active copy and publishes a replacement. The caller locks the
+-- recording and then the derived asset row before this statement, the same order
+-- as MarkUntilEncodedDeleting, so the original check below cannot race with an
+-- until_encoded original deletion.
+-- name: MarkMediaAssetCopyCorruptDeleting :execrows
+UPDATE media_asset_copies c
+SET state = 'deleting', deleted_at = NULL
+FROM media_assets a
+WHERE c.id = sqlc.arg('copy_id')
+  AND c.media_asset_id = sqlc.arg('media_asset_id')
+  AND c.store = sqlc.arg('store')
+  AND c.media_asset_id = a.id
+  AND a.recording_id = sqlc.arg('recording_id')
+  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND c.state = 'active'
+  AND a.kind <> 'original'
+  AND EXISTS (
+      SELECT 1
+      FROM media_assets original
+      JOIN media_asset_copies original_copy ON original_copy.media_asset_id = original.id
+      WHERE original.recording_id = a.recording_id
+        AND original.kind = 'original'
+        AND original_copy.state = 'active'
+        AND original_copy.generation = COALESCE(original.derived_generation, 0)
+        AND NOT EXISTS (
+            SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = original_copy.id
+        )
+  );
 
 -- name: DiscardPendingMediaAssetCopy :exec
 WITH discarded AS (
@@ -360,18 +331,20 @@ WHERE copy_id = sqlc.arg('copy_id');
 
 -- Placement cleanup runs inside delete_reconcile. Its list and mark operations
 -- both reference the named predicate so the row lock closes the policy-switch race.
+-- Only active copies are new candidates; a copy already deleting is picked up
+-- again by ListMediaAssetsPendingDelete, which references the same predicate.
 -- name: ListMediaAssetCopiesToDelete :many
 SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, c.state,
        a.recording_id, a.size_bytes, a.kind, c.generation
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.store = sqlc.arg('store_name')
-  AND c.state IN ('active', 'deleting')
+  AND c.state = 'active'
   AND media_asset_copy_prunable(
       c.id,
       sqlc.arg('original_rules')::jsonb,
       sqlc.arg('derived_store')::text,
-      sqlc.arg('overlap')::bigint * interval '1 microsecond'
+      sqlc.arg('overlap_cutoff')::timestamptz
   )
 ORDER BY c.id
 LIMIT sqlc.arg('row_limit');
@@ -394,11 +367,11 @@ SET state = 'deleting', deleted_at = NULL
 WHERE c.id = sqlc.arg('copy_id')
   AND c.media_asset_id = sqlc.arg('media_asset_id')
   AND c.store = sqlc.arg('store')
-  AND c.state IN ('active', 'deleting')
+  AND c.state = 'active'
   AND media_asset_copy_prunable(
       c.id,
       sqlc.arg('original_rules')::jsonb,
       sqlc.arg('derived_store')::text,
-      sqlc.arg('overlap')::bigint * interval '1 microsecond'
+      sqlc.arg('overlap_cutoff')::timestamptz
   )
 RETURNING c.rel_path;

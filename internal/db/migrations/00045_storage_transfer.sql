@@ -122,14 +122,16 @@ $$;
 COMMENT ON FUNCTION storage_transfer_attempt_count(bigint, text) IS
     'Returns the failure count for the current-generation destination copy.';
 
--- This named predicate is shared by placement deletion selection and the
--- transaction which marks a copy deleting. The caller holds the media_assets row
--- lock before the latter call, so a policy change cannot remove both copies.
+-- This named predicate is one arm of the delete-reconcile predicates: the entry,
+-- the pending re-pick, and their negations all reference it. The desired copy is
+-- an active, present row in another store, so it is itself the surviving copy and
+-- no separate survivor check exists. The caller holds the media_assets row lock
+-- before marking a copy deleting, so a policy change cannot remove both copies.
 CREATE FUNCTION media_asset_copy_prunable(
     p_copy_id bigint,
     p_original_rules jsonb,
     p_derived_store text,
-    p_overlap interval
+    p_overlap_cutoff timestamptz
 )
 RETURNS boolean
 LANGUAGE sql STABLE
@@ -163,24 +165,16 @@ AS $$
           AND EXISTS (
               SELECT 1
               FROM active_media_asset_copies(retiring.media_asset_id, retiring.desired_store) desired
-              WHERE desired.created_at <= now() - p_overlap
+              WHERE desired.created_at <= p_overlap_cutoff
                 AND NOT EXISTS (
                     SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = desired.id
-                )
-          )
-          AND EXISTS (
-              SELECT 1
-              FROM active_media_asset_copies(retiring.media_asset_id, NULL) survivor
-              WHERE survivor.id <> retiring.id
-                AND NOT EXISTS (
-                    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = survivor.id
                 )
           )
     )
 $$;
 
-COMMENT ON FUNCTION media_asset_copy_prunable(bigint, jsonb, text, interval) IS
-    'Returns true only when a present desired copy passed overlap and another present active copy survives.';
+COMMENT ON FUNCTION media_asset_copy_prunable(bigint, jsonb, text, timestamptz) IS
+    'Returns true only when a present active copy in the desired store was created at or before the overlap cutoff.';
 
 -- The existing until_encoded function already accepts the desired derived store.
 -- Add physical presence to that same decision: an active row with a missing-file
@@ -268,7 +262,7 @@ COMMENT ON FUNCTION until_encoded_deletable_originals(text) IS
 
 -- +goose Down
 
-DROP FUNCTION media_asset_copy_prunable(bigint, jsonb, text, interval);
+DROP FUNCTION media_asset_copy_prunable(bigint, jsonb, text, timestamptz);
 DROP FUNCTION storage_transfer_pending_copy_obsolete(bigint, jsonb, text[], text);
 DROP FUNCTION storage_transfer_attempt_count(bigint, text);
 DROP FUNCTION storage_transfer_candidate(bigint, jsonb, text[], text);

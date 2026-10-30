@@ -83,6 +83,54 @@ SET rel_path = EXCLUDED.rel_path, state = 'active', deleted_at = NULL, created_a
 	}
 }
 
+// prepareAdoptedTransferTemp は、宛先を採用する時点の転送 temp と checkpoint を作る。
+// owner が "linked" なら宛先を temp への link にし、"foreign" なら別の inode のままにする。空なら何もしない。
+func prepareAdoptedTransferTemp(t *testing.T, media *pgstore.Media, cfg config.StorageConfig, assetID int64, targetPath string, content []byte, owner string) string {
+	t.Helper()
+	if owner == "" {
+		return ""
+	}
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10)
+	if err != nil || !ok {
+		t.Fatalf("preparing transfer whose destination is adopted = (%+v, %t, %v)", transfer, ok, err)
+	}
+	tempPath := transferTempPath(targetPath, assetID, transfer.CopyID)
+	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if owner == "linked" {
+		if err := os.Remove(targetPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(tempPath, targetPath); err != nil {
+			t.Fatalf("linking destination to transfer temp: %v", err)
+		}
+	}
+	hasher := sha256.New()
+	_, _ = hasher.Write(content)
+	if err := fsink.WriteCheckpoint(tempPath, int64(len(content)), hasher, nil); err != nil {
+		t.Fatalf("writing transfer checkpoint: %v", err)
+	}
+	return tempPath
+}
+
+// assertAdoptedTransferTemp は、宛先の採用後に temp と checkpoint が残る・残らないを確かめる。
+func assertAdoptedTransferTemp(t *testing.T, tempPath, owner string) {
+	t.Helper()
+	for _, path := range []string{tempPath, fsink.CheckpointPath(tempPath)} {
+		switch owner {
+		case "linked":
+			if fileExists(path) {
+				t.Errorf("%q remains after adopting the destination this transfer published", path)
+			}
+		case "foreign":
+			if !fileExists(path) {
+				t.Errorf("%q was removed although the adopted destination is not this transfer's temp", path)
+			}
+		}
+	}
+}
+
 func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string
@@ -90,9 +138,14 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 		resume                    bool
 		sourceChanged             bool
 		corruptCheckpointedPrefix bool
+		// tempOwner は、宛先を採用する時点の転送 temp の関係。"linked" は link 済み・commit 前に落ちた転送
+		// （temp と宛先が同じ inode）、"foreign" は別の inode（他人の宛先）を表す。
+		tempOwner string
 	}{
 		{name: "copy computes and stores SHA-256"},
 		{name: "matching restored destination is adopted", existing: true},
+		{name: "adopting a destination linked from this transfer's temp removes the temp and checkpoint", existing: true, tempOwner: "linked"},
+		{name: "adopting a destination that is not this transfer's temp keeps the temp", existing: true, tempOwner: "foreign"},
 		{name: "checkpointed temp resumes", resume: true},
 		{name: "changed source prefix rejects checkpoint without deleting original", resume: true, sourceChanged: true},
 		{name: "damaged checkpointed temp prefix is recopied", resume: true, corruptCheckpointedPrefix: true},
@@ -155,6 +208,7 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 					}
 				}
 			}
+			adoptedTempPath := prepareAdoptedTransferTemp(t, media, cfg, assetID, targetPath, content, tc.tempOwner)
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots}
 			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
 				MediaAssetID: assetID,
@@ -162,6 +216,7 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("StorageTransferWorker.Work: %v", err)
 			}
+			assertAdoptedTransferTemp(t, adoptedTempPath, tc.tempOwner)
 			if tc.sourceChanged {
 				if _, err := os.Lstat(targetPath); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("destination stat error = %v, want unpublished destination", err)
@@ -938,12 +993,15 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 	for _, tc := range []struct {
 		name            string
 		originalPresent bool
+		encoded         bool
 		wantSource      string
 		wantTarget      string
 		wantAttempts    int
 	}{
 		{name: "present original permits rebuild", originalPresent: true, wantSource: "deleted", wantTarget: "deleted"},
+		{name: "present original permits encoded rebuild", originalPresent: true, encoded: true, wantSource: "deleted", wantTarget: "deleted"},
 		{name: "missing original reports without retiring source", wantSource: "active", wantTarget: "pending", wantAttempts: 1},
+		{name: "missing original keeps encoded source", encoded: true, wantSource: "active", wantTarget: "pending", wantAttempts: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
@@ -953,9 +1011,31 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 				seedOriginalAsset(t, pool, roots["test-store"], recordingID, "sites/default/transfer/original.ts", []byte("original source"))
 			}
 			relPath := "sites/default/transfer/thumbnail.jpg"
+			kind := store.AssetKindThumbnail
+			var profile *string
 			content := []byte("thumbnail bytes")
-			assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, relPath, content)
-			wrongSHA := sha256.Sum256([]byte("different thumbnail bytes"))
+			if tc.encoded {
+				relPath = "sites/default/transfer/encoded.mp4"
+				kind = store.AssetKindEncoded
+				web := "web"
+				profile = &web
+				content = []byte("encoded bytes")
+			}
+			assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, kind, profile, relPath, content)
+			sourcePath := filepath.Join(roots["test-store"], filepath.FromSlash(relPath))
+			sidecarPath := ""
+			if tc.encoded {
+				sidecarRelPath, err := mediapath.SubtitleSibling(relPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sidecarPath = filepath.Join(roots["test-store"], filepath.FromSlash(sidecarRelPath))
+				if err := os.WriteFile(sidecarPath, []byte("WEBVTT\n\ncaptions\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				markRecordingUntilEncoded(t, pool, recordingID, []string{"web"})
+			}
+			wrongSHA := sha256.Sum256([]byte("different derived bytes"))
 			if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", wrongSHA[:], assetID); err != nil {
 				t.Fatalf("setting mismatched logical checksum: %v", err)
 			}
@@ -964,6 +1044,7 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 			if err != nil {
 				t.Fatal(err)
 			}
+			retiredBefore := promtestutil.ToFloat64(metrics.StorageTransferCorruptSourcesRetired)
 			worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots}
 			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
 				MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
@@ -989,6 +1070,31 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 			}
 			if fileExists(filepath.Join(roots["archive"], filepath.FromSlash(relPath))) {
 				t.Fatal("mismatched derived source was published to the destination")
+			}
+			retired := tc.wantSource == "deleted"
+			if got := fileExists(sourcePath); got == retired {
+				t.Fatalf("source file exists = %t after retirement = %t, want the file removed exactly when the copy is retired", got, retired)
+			}
+			if sidecarPath != "" {
+				if got := fileExists(sidecarPath); got == retired {
+					t.Fatalf("subtitle sidecar exists = %t after retirement = %t, want the sidecar removed together with the encoded file", got, retired)
+				}
+			}
+			wantRetired := 0.0
+			if retired {
+				wantRetired = 1
+			}
+			if got := promtestutil.ToFloat64(metrics.StorageTransferCorruptSourcesRetired) - retiredBefore; got != wantRetired {
+				t.Fatalf("corrupt source retirement counter increased by %v, want %v", got, wantRetired)
+			}
+			if tc.encoded {
+				var missingProfile bool
+				if err := pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM unencoded_desired_profiles WHERE recording_id = $1 AND profile = 'web')`, recordingID).Scan(&missingProfile); err != nil {
+					t.Fatal(err)
+				}
+				if missingProfile != retired {
+					t.Fatalf("unencoded_desired_profiles has the retired profile = %t, want %t", missingProfile, retired)
+				}
 			}
 		})
 	}
@@ -1113,7 +1219,7 @@ func TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy(t
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cold'`, assetID); err != nil {
 		t.Fatal(err)
 	}
-	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), mustOriginalRules(t, newConfig), "cold", newConfig.Transfer.Overlap.Microseconds(), 10)
+	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), mustOriginalRules(t, newConfig), "cold", time.Now().Add(-newConfig.Transfer.Overlap), 10)
 	if err != nil {
 		t.Fatalf("listing stale copies after policy switch: %v", err)
 	}
@@ -1572,12 +1678,12 @@ func TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap(t *testing.
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	rules := mustOriginalRules(t, cfg)
 	media := pgstore.NewMedia(pool, "test-store", "")
-	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", 0, 10); err != nil || len(candidates) != 0 {
+	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10); err != nil || len(candidates) != 0 {
 		t.Fatalf("deletion candidates without a desired copy = %+v, %v; want none", candidates, err)
 	}
 
 	transferTestAddCopy(t, pool, assetID, "archive", "sites/default/delete/source.ts")
-	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", int64(time.Hour/time.Microsecond), 10); err != nil || len(candidates) != 0 {
+	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now().Add(-time.Hour), 10); err != nil || len(candidates) != 0 {
 		t.Fatalf("deletion candidates before overlap = %+v, %v; want none", candidates, err)
 	}
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID); err != nil {
@@ -1587,25 +1693,25 @@ func TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap(t *testing.
 	if _, err := pool.Exec(context.Background(), `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, archiveCopyID); err != nil {
 		t.Fatal(err)
 	}
-	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", 0, 10); err != nil || len(candidates) != 0 {
+	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10); err != nil || len(candidates) != 0 {
 		t.Fatalf("deletion candidates with desired copy marked missing = %+v, %v; want none", candidates, err)
 	}
 	if _, err := pool.Exec(context.Background(), `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, archiveCopyID); err != nil {
 		t.Fatal(err)
 	}
-	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", 0, 10)
+	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(candidates) != 1 || candidates[0].Store != "test-store" {
 		t.Fatalf("stale copy candidates = %+v, want only test-store", candidates)
 	}
-	path, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), candidates[0], rules, "archive", 0)
+	path, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), candidates[0], rules, "archive", time.Now())
 	if err != nil || !marked || path != "sites/default/delete/source.ts" {
 		t.Fatalf("marking stale copy = (%q, %t, %v), want path, true, nil", path, marked, err)
 	}
-	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", 0, 10); err != nil || len(candidates) != 1 || candidates[0].Store != "test-store" {
-		t.Fatalf("deletion candidates after stale copy marked = %+v, %v; want deleting test-store copy for retry", candidates, err)
+	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10); err != nil || len(candidates) != 0 {
+		t.Fatalf("deletion candidates after stale copy marked = %+v, %v; want none (a deleting copy is picked up again by the pending path)", candidates, err)
 	}
 }
 
@@ -1620,7 +1726,7 @@ func TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore(t *testin
 	media := pgstore.NewMedia(pool, "archive", "")
 	rules := []byte(`[]`)
 
-	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "", 0, 10)
+	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "", time.Now(), 10)
 	if err != nil || len(candidates) != 0 {
 		t.Fatalf("deletion candidates with no desired store = %+v, %v; want none", candidates, err)
 	}
@@ -1628,7 +1734,7 @@ func TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore(t *testin
 		CopyID:       transferTestCopyID(t, pool, assetID, "archive"),
 		MediaAssetID: assetID, Store: "archive", RelPath: "sites/default/no-desired/source.ts",
 	}
-	if _, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), candidate, rules, "", 0); err != nil || marked {
+	if _, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), candidate, rules, "", time.Now()); err != nil || marked {
 		t.Fatalf("marking copy with no desired store = %v, %v; want false, nil", marked, err)
 	}
 	var activeCopies int
@@ -1694,7 +1800,7 @@ FOR EACH ROW EXECUTE FUNCTION public.pause_storage_copy_delete_for_test()`); err
 	go func() {
 		defer wg.Done()
 		<-start
-		_, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), cold, oldRules, "archive", 0)
+		_, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), cold, oldRules, "archive", time.Now())
 		results <- struct {
 			marked bool
 			err    error
@@ -1703,7 +1809,7 @@ FOR EACH ROW EXECUTE FUNCTION public.pause_storage_copy_delete_for_test()`); err
 	go func() {
 		defer wg.Done()
 		<-start
-		_, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), archive, newRules, "cold", 0)
+		_, marked, err := media.MarkMediaAssetCopyDeleting(context.Background(), archive, newRules, "cold", time.Now())
 		results <- struct {
 			marked bool
 			err    error

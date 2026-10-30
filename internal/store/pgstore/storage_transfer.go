@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
@@ -59,47 +61,45 @@ func (s *Media) ClearObsoleteMediaAssetTransferAttempts(ctx context.Context, ori
 	return nil
 }
 
-// AcquireTransferSourceBandwidth は転送元置き場の advisory lock を専用接続で保持する。
+// AcquireTransferSourceBandwidth は転送元置き場の advisory lock を、pool から借りた接続のまま保持する。
 func (s *Media) AcquireTransferSourceBandwidth(ctx context.Context, sourceStore string) (store.TransferBandwidthLease, bool, error) {
 	if sourceStore == "" {
 		return nil, false, errors.New("transfer source store is empty")
 	}
-	pooled, err := s.pool.Acquire(ctx)
+	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("acquiring transfer bandwidth connection: %w", err)
 	}
-	conn := pooled.Hijack()
 	key := "rokuban-storage-transfer:" + sourceStore
 	var acquired bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, key).Scan(&acquired); err != nil {
-		closeErr := conn.Close(context.Background())
-		return nil, false, errors.Join(fmt.Errorf("acquiring transfer bandwidth lock for %q: %w", sourceStore, err), closeErr)
+		// lock が取れたかどうか分からない接続は pool に戻さない。
+		return nil, false, errors.Join(fmt.Errorf("acquiring transfer bandwidth lock for %q: %w", sourceStore, err), conn.Hijack().Close(context.Background()))
 	}
 	if !acquired {
-		if err := conn.Close(ctx); err != nil {
-			return nil, false, fmt.Errorf("closing unused transfer bandwidth connection: %w", err)
-		}
+		conn.Release()
 		return nil, false, nil
 	}
 	return &transferBandwidthLease{conn: conn, key: key}, true, nil
 }
 
 type transferBandwidthLease struct {
-	conn *pgx.Conn
+	conn *pgxpool.Conn
 	key  string
 	once sync.Once
 	err  error
 }
 
+// Release は pg_advisory_unlock が成功すれば接続を pool に戻し、失敗したら接続を Hijack して閉じる。
+// Hijack した接続は pgxpool の契約で二度と配られないので、lock を持ったまま他の処理に渡らない。
 func (l *transferBandwidthLease) Release(ctx context.Context) error {
 	l.once.Do(func() {
 		var unlocked bool
-		unlockErr := l.conn.QueryRow(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, l.key).Scan(&unlocked)
-		if unlockErr == nil && !unlocked {
-			unlockErr = errors.New("transfer bandwidth advisory lock was not held")
+		if err := l.conn.QueryRow(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, l.key).Scan(&unlocked); err != nil {
+			l.err = errors.Join(fmt.Errorf("releasing transfer bandwidth lock: %w", err), l.conn.Hijack().Close(context.Background()))
+			return
 		}
-		closeErr := l.conn.Close(ctx)
-		l.err = errors.Join(unlockErr, closeErr)
+		l.conn.Release()
 	})
 	return l.err
 }
@@ -172,15 +172,40 @@ func (s *Media) RecordMediaAssetTransferFailure(ctx context.Context, copyID int6
 	return nil
 }
 
-// MarkMediaAssetCopyCorrupt は照合で破損が分かったコピーを deleted にする。
-func (s *Media) MarkMediaAssetCopyCorrupt(ctx context.Context, mediaAssetID, copyID int64, storeName string) (bool, error) {
-	updated, err := sqlcgen.New(s.pool).MarkMediaAssetCopyCorrupt(ctx, sqlcgen.MarkMediaAssetCopyCorruptParams{
-		CopyID: copyID, MediaAssetID: mediaAssetID, Store: storeName,
+// MarkMediaAssetCopyCorrupt は照合で破損が分かった派生コピーを deleting にする。
+// until_encoded の原本削除と同じ順序（録画の行、論理行）でロックするので、原本の削除とは直列化する。
+func (s *Media) MarkMediaAssetCopyCorrupt(ctx context.Context, recordingID, mediaAssetID, copyID int64, storeName string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning corrupt media asset %d copy retirement: %w", mediaAssetID, err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	if err := lockRecording(ctx, q, recordingID); err != nil {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTrashed) {
+			return false, nil
+		}
+		return false, fmt.Errorf("locking recording %d before corrupt copy retirement: %w", recordingID, err)
+	}
+	if _, err := q.LockMediaAssetForStorageTransfer(ctx, mediaAssetID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("locking media asset %d before corrupt copy retirement: %w", mediaAssetID, mapDatabaseError(err))
+	}
+	updated, err := q.MarkMediaAssetCopyCorruptDeleting(ctx, sqlcgen.MarkMediaAssetCopyCorruptDeletingParams{
+		CopyID: copyID, MediaAssetID: mediaAssetID, Store: storeName, RecordingID: recordingID,
 	})
 	if err != nil {
-		return false, fmt.Errorf("marking corrupt media asset %d copy in %q: %w", mediaAssetID, storeName, err)
+		return false, fmt.Errorf("marking corrupt media asset %d copy in %q deleting: %w", mediaAssetID, storeName, mapDatabaseError(err))
 	}
-	return updated == 1, nil
+	if updated != 1 {
+		return false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing corrupt media asset copy retirement: %w", mapDatabaseError(err))
+	}
+	return true, nil
 }
 
 // DiscardPendingMediaAssetCopy は pending な転送先コピーを無効にする。
@@ -268,9 +293,9 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 }
 
 // ListMediaAssetCopiesToDelete は overlap を過ぎ、現行 policy で削除可能なコピーを列挙する。
-func (s *Media) ListMediaAssetCopiesToDelete(ctx context.Context, originalRules []byte, derivedStore string, overlapMicros int64, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
+func (s *Media) ListMediaAssetCopiesToDelete(ctx context.Context, originalRules []byte, derivedStore string, overlapCutoff time.Time, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetCopiesToDelete(ctx, sqlcgen.ListMediaAssetCopiesToDeleteParams{
-		StoreName: s.storeName, OriginalRules: originalRules, DerivedStore: derivedStore, Overlap: overlapMicros, RowLimit: limit,
+		StoreName: s.storeName, OriginalRules: originalRules, DerivedStore: derivedStore, OverlapCutoff: overlapCutoff, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing stale media asset copies: %w", err)
@@ -303,7 +328,7 @@ func (s *Media) GetMediaAssetCopyForDeletion(ctx context.Context, candidate stor
 }
 
 // MarkMediaAssetCopyDeleting は論理行を先にロックし、その後の SQL 文で削除条件を再評価する。
-func (s *Media) MarkMediaAssetCopyDeleting(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate, originalRules []byte, derivedStore string, overlapMicros int64) (string, bool, error) {
+func (s *Media) MarkMediaAssetCopyDeleting(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate, originalRules []byte, derivedStore string, overlapCutoff time.Time) (string, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("beginning media asset copy delete: %w", err)
@@ -318,7 +343,7 @@ func (s *Media) MarkMediaAssetCopyDeleting(ctx context.Context, candidate store.
 	}
 	path, err := q.MarkMediaAssetCopyDeleting(ctx, sqlcgen.MarkMediaAssetCopyDeletingParams{
 		CopyID: candidate.CopyID, MediaAssetID: candidate.MediaAssetID, Store: candidate.Store,
-		OriginalRules: originalRules, DerivedStore: derivedStore, Overlap: overlapMicros,
+		OriginalRules: originalRules, DerivedStore: derivedStore, OverlapCutoff: overlapCutoff,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil

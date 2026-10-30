@@ -119,7 +119,7 @@ func runDeletedAssetIsNotReverted(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	recordingID, assetID := f.NewDeletedAsset(t)
 	copyID := f.CopyID(t, assetID)
-	updated, err := f.Store.RevertToActive(context.Background(), copyID, time.Now(), time.Time{})
+	updated, err := f.Store.RevertToActive(context.Background(), copyID, time.Now(), time.Time{}, nil, "")
 	if err != nil {
 		t.Fatalf("RevertToActive(deleted) error = %v", err)
 	}
@@ -167,11 +167,11 @@ func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, as
 	}
 	cutoff := time.Now().Add(time.Hour)
 	keepCurrentCopies := time.Now().Add(time.Hour)
-	pending, err := f.Store.ListPendingDeleteAssets(context.Background(), cutoff, keepCurrentCopies, 100)
+	pending, err := f.Store.ListPendingDeleteAssets(context.Background(), cutoff, keepCurrentCopies, nil, "", 100)
 	if err != nil {
 		t.Fatalf("ListPendingDeleteAssets when checking deleted asset %d: %v", assetID, err)
 	}
-	unqualified, err := f.Store.ListUnqualifiedDeletingAssets(context.Background(), cutoff, keepCurrentCopies, 100)
+	unqualified, err := f.Store.ListUnqualifiedDeletingAssets(context.Background(), cutoff, keepCurrentCopies, nil, "", 100)
 	if err != nil {
 		t.Fatalf("ListUnqualifiedDeletingAssets when checking deleted asset %d: %v", assetID, err)
 	}

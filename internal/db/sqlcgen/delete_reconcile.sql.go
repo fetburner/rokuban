@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -311,9 +312,13 @@ WHERE (
       WHERE old_copy.id = physical_copy.id
         AND old_copy.generation_started_at <= $4::timestamptz
     )
+    OR media_asset_copy_prunable(
+      physical_copy.id, $5::jsonb, $6::text,
+      $4::timestamptz
+    )
   )
 ORDER BY a.id
-LIMIT $5
+LIMIT $7
 `
 
 type ListMediaAssetsPendingDeleteParams struct {
@@ -321,6 +326,8 @@ type ListMediaAssetsPendingDeleteParams struct {
 	GraceCutoff   time.Time
 	DesiredStore  *string
 	OverlapCutoff time.Time
+	OriginalRules json.RawMessage
+	DerivedStore  string
 	RowLimit      int32
 }
 
@@ -340,13 +347,15 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 削除プロトコルは冪等: コピーの active → deleting → deleted。deleting のまま
 // プロセスが落ちても ListMediaAssetsPendingDelete が次パスで拾い直す。
 //
-// 「このアセットは消してよいか」の 3 つの腕（ごみ箱の猶予超過 or 今すぐ
-// purge / until_encoded の派生物完備 / ユーザーが外したエンコード版）は、
-// いずれもスキーマ側の名前付き述語を参照する。until_encoded 腕は
-// set-returning 関数 `until_encoded_deletable_originals(desired_store)`、
+// 「このアセットは消してよいか」の腕（ごみ箱の猶予超過 or 今すぐ
+// purge / until_encoded の派生物完備 / ユーザーが外したエンコード版 / 旧世代 /
+// desired の置き場から外れた配置）は、いずれもスキーマ側の名前付き述語を参照する。
+// until_encoded 腕は set-returning 関数 `until_encoded_deletable_originals(desired_store)`、
 // ごみ箱腕は set-returning 関数 `trash_deletable_recordings(grace_cutoff)`、
-// 外した版の腕は view `removed_encoded_assets`。この 3 つが唯一の定義であり、
-// 以下の入口・拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
+// 外した版の腕は view `removed_encoded_assets`、旧世代の腕は view
+// `old_generation_media_asset_copies`、配置の腕は関数 `media_asset_copy_prunable`。
+// これが唯一の定義であり、以下の拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
+// 配置の腕の入口（active → deleting の候補）は storage_transfer.sql にある。
 // 前パスで deleting にマークしたまま unlink できずに終わった行を拾い直す。
 //
 // WHERE の削除資格の EXISTS は名前付き述語（上記）への参照であって複製ではない
@@ -374,6 +383,8 @@ func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMedi
 		arg.GraceCutoff,
 		arg.DesiredStore,
 		arg.OverlapCutoff,
+		arg.OriginalRules,
+		arg.DerivedStore,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -604,8 +615,12 @@ WHERE NOT EXISTS (
     WHERE old_copy.id = physical_copy.id
       AND old_copy.generation_started_at <= $4::timestamptz
   )
+  AND NOT media_asset_copy_prunable(
+    physical_copy.id, $5::jsonb, $6::text,
+    $4::timestamptz
+  )
 ORDER BY a.id
-LIMIT $5
+LIMIT $7
 `
 
 type ListUnqualifiedDeletingAssetsParams struct {
@@ -613,6 +628,8 @@ type ListUnqualifiedDeletingAssetsParams struct {
 	GraceCutoff   time.Time
 	DesiredStore  *string
 	OverlapCutoff time.Time
+	OriginalRules json.RawMessage
+	DerivedStore  string
 	RowLimit      int32
 }
 
@@ -644,6 +661,8 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 		arg.GraceCutoff,
 		arg.DesiredStore,
 		arg.OverlapCutoff,
+		arg.OriginalRules,
+		arg.DerivedStore,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -882,6 +901,10 @@ WHERE copy.id = $1
       WHERE old_copy.id = copy.id
         AND old_copy.generation_started_at <= $5::timestamptz
   )
+  AND NOT media_asset_copy_prunable(
+      copy.id, $6::jsonb, $7::text,
+      $5::timestamptz
+  )
 `
 
 type RevertMediaAssetCopyToActiveParams struct {
@@ -890,6 +913,8 @@ type RevertMediaAssetCopyToActiveParams struct {
 	GraceCutoff   time.Time
 	DesiredStore  *string
 	OverlapCutoff time.Time
+	OriginalRules json.RawMessage
+	DerivedStore  string
 }
 
 // ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
@@ -917,6 +942,8 @@ func (q *Queries) RevertMediaAssetCopyToActive(ctx context.Context, arg RevertMe
 		arg.GraceCutoff,
 		arg.DesiredStore,
 		arg.OverlapCutoff,
+		arg.OriginalRules,
+		arg.DerivedStore,
 	)
 	if err != nil {
 		return 0, err

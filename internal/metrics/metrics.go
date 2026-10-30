@@ -621,6 +621,10 @@ var (
 		Name: "rokuban_storage_transfer_policy_mismatch_total",
 		Help: "Total storage transfer jobs discarded because their policy fingerprint differs from the worker configuration.",
 	})
+	StorageTransferCorruptSourcesRetired = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_storage_transfer_corrupt_sources_retired_total",
+		Help: "Total damaged derived source copies that a transfer worker retired so encode reconcile can recreate them.",
+	})
 	StorageTransferMountMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_storage_transfer_mount_mismatch_total",
 		Help: "Total transfer jobs withheld because the target root is not mounted or its store marker does not match.",
@@ -882,6 +886,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		StorageTransferExhaustedAssets,
 		StorageTransferLastSuccess,
 		StorageTransferPolicyMismatches,
+		StorageTransferCorruptSourcesRetired,
 		StorageTransferMountMismatches,
 		StorageRootLastSuccess,
 		StorageRootTotalBytes,

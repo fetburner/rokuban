@@ -351,7 +351,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()
 
-	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound))
+	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound), len(mountedFSStoreNames(cfg.Storage)))
 	if err != nil {
 		return err
 	}

@@ -338,7 +338,7 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 			env.moveCopy(t, id, copyStore)
 			env.setCopyState(t, id, copyStore, "deleting")
 			env.trash(t, rec)
-			rows, err := env.media.ListPendingDeleteAssets(ctx, cutoff, time.Time{}, 10)
+			rows, err := env.media.ListPendingDeleteAssets(ctx, cutoff, time.Time{}, nil, "", 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -348,7 +348,7 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 			id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
 			env.setCopyState(t, id, copyStore, "deleting")
-			rows, err := env.media.ListUnqualifiedDeletingAssets(ctx, cutoff, time.Time{}, 10)
+			rows, err := env.media.ListUnqualifiedDeletingAssets(ctx, cutoff, time.Time{}, nil, "", 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -399,7 +399,7 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 			env.moveCopy(t, id, copyStore)
 			env.setCopyState(t, id, copyStore, "deleting")
 			copyID := dbtest.MediaAssetCopyID(t, env.pool, id, copyStore)
-			reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{})
+			reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{}, nil, "")
 			if err != nil {
 				t.Fatalf("RevertToActive: %v", err)
 			}
@@ -416,7 +416,7 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 		id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 		copyID := dbtest.MediaAssetCopyID(t, env.pool, id, dbtest.StoreName)
 		env.setCopyState(t, id, dbtest.StoreName, "deleted")
-		reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{})
+		reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{}, nil, "")
 		if err != nil {
 			t.Fatalf("RevertToActive for deleted copy: %v", err)
 		}

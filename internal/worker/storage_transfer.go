@@ -228,7 +228,7 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("creating transfer destination directory: %w", err))
 	}
-	tempPath := filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, transfer.MediaAssetID, transfer.CopyID))
+	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID)
 	tempLock, created, err := fsink.LockTempFile(tempPath)
 	if err != nil {
 		if fsink.TempLockBusy(err) {
@@ -241,16 +241,6 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 		if err := os.Chmod(tempPath, 0o644); err != nil {
 			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("setting transfer temp mode: %w", err))
 		}
-	}
-	if fsink.SameFile(tempPath, targetPath) {
-		digest, size, hashErr := hashTransferFile(ctx, targetPath)
-		if hashErr != nil {
-			return w.recordTransferFailure(ctx, transfer, log, hashErr)
-		}
-		if size != transfer.SizeBytes || (len(transfer.SHA256) > 0 && !bytes.Equal(digest, transfer.SHA256)) {
-			return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "published transfer temp does not match the logical asset")
-		}
-		return w.completeTransfer(ctx, transfer, args, rules, digest, sourcePath, targetPath, tempPath, false, log)
 	}
 	digest, size, paused, copyErr := w.copyToTransferTemp(ctx, sourcePath, tempPath, tempLock, transfer.SourceStore, args.Store, transfer.SizeBytes, len(transfer.SHA256) > 0)
 	if paused {
@@ -280,6 +270,11 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	return w.completeTransfer(ctx, transfer, args, rules, digest, sourcePath, targetPath, tempPath, true, log)
 }
 
+// transferTempPath は、1 つの宛先コピーの転送が使う temp のパスを返す。
+func transferTempPath(targetPath string, mediaAssetID, copyID int64) string {
+	return filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, mediaAssetID, copyID))
+}
+
 func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath, sourcePath string, log *slog.Logger) (bool, error) {
 	_, statErr := os.Lstat(targetPath)
 	if errors.Is(statErr, os.ErrNotExist) {
@@ -288,12 +283,23 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 	if statErr != nil {
 		return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("stating transfer destination: %w", statErr))
 	}
+	// link 済み・commit 前に落ちた転送は、宛先と temp が同じ inode を指す。その temp と checkpoint は
+	// 採用と同時に片付ける。他人の宛先を採用するときは temp に触れない。
+	ownedTempPath := ""
+	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID)
+	owned, err := pendingTransferDestinationOwnedByTemp(targetPath, tempPath)
+	if err != nil {
+		return true, w.recordTransferFailure(ctx, transfer, log, err)
+	}
+	if owned {
+		ownedTempPath = tempPath
+	}
 	destinationSHA, size, err := hashTransferFile(ctx, targetPath)
 	if err != nil {
 		return true, w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if size == transfer.SizeBytes && len(transfer.SHA256) > 0 && bytes.Equal(destinationSHA, transfer.SHA256) {
-		return true, w.completeTransfer(ctx, transfer, args, rules, destinationSHA, sourcePath, targetPath, "", false, log)
+		return true, w.completeTransfer(ctx, transfer, args, rules, destinationSHA, sourcePath, targetPath, ownedTempPath, false, log)
 	}
 	if size == transfer.SizeBytes && len(transfer.SHA256) == 0 {
 		sourceSHA, sourceSize, sourceErr := w.hashTransferSource(ctx, sourcePath, transfer.SourceStore)
@@ -304,7 +310,7 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 			return true, w.handleTransferMismatch(ctx, transfer, log, sourcePath, "", "source size differs from logical asset")
 		}
 		if bytes.Equal(destinationSHA, sourceSHA) {
-			return true, w.completeTransfer(ctx, transfer, args, rules, sourceSHA, sourcePath, targetPath, "", false, log)
+			return true, w.completeTransfer(ctx, transfer, args, rules, sourceSHA, sourcePath, targetPath, ownedTempPath, false, log)
 		}
 	}
 	return true, w.handleTransferMismatch(ctx, transfer, log, sourcePath, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes))
@@ -754,7 +760,7 @@ func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, tran
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("%w: %s", errTransferSourceMismatch, reason))
 	}
 
-	corrupt, err := w.Storage.MarkMediaAssetCopyCorrupt(ctx, transfer.MediaAssetID, transfer.SourceCopyID, transfer.SourceStore)
+	corrupt, err := w.Storage.MarkMediaAssetCopyCorrupt(ctx, transfer.RecordingID, transfer.MediaAssetID, transfer.SourceCopyID, transfer.SourceStore)
 	if err != nil {
 		return err
 	}
@@ -764,15 +770,56 @@ func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, tran
 		}
 	}
 	if corrupt {
+		if err := w.unlinkRetiredDerivedSource(ctx, transfer); err != nil {
+			if errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
+				return err
+			}
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("removing corrupt derived source: %w", err))
+		}
 		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
 			return err
 		}
-		log.Warn("storage transfer: marked corrupt derived source for recreation", "reason", reason, "sha256", fmt.Sprintf("%x", sourceSHA))
+		metrics.StorageTransferCorruptSourcesRetired.Inc()
+		log.Error("storage transfer: retired corrupt derived source for recreation", "reason", reason, "sha256", fmt.Sprintf("%x", sourceSHA))
 		return nil
 	}
 	log.Error("storage transfer: derived source is inconsistent but no present original copy can rebuild it",
 		"reason", reason, "sha256", fmt.Sprintf("%x", sourceSHA))
 	return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived source mismatch without a present original: %s", reason))
+}
+
+// unlinkRetiredDerivedSource は deleting にした破損コピーのファイルを消し、deleted に確定する。
+// 呼び出し元が転送元の rel_path の flock を持っている間に呼ぶ。unlink の前に落ちた場合は、
+// 削除 reconcile がどの腕にも該当しない deleting 行として active に戻す。
+func (w *StorageTransferWorker) unlinkRetiredDerivedSource(ctx context.Context, transfer store.MediaAssetTransfer) error {
+	sourceRoot := w.Roots[transfer.SourceStore]
+	path, err := mediapath.Resolve(sourceRoot, transfer.SourceRelPath)
+	if err != nil {
+		return fmt.Errorf("resolving corrupt derived source: %w", err)
+	}
+	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "unlinking corrupt derived source"); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing corrupt derived source: %w", err)
+	}
+	if transfer.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(transfer.SourceRelPath) {
+		if err := removeEncodedSubtitleSidecar(sourceRoot, transfer.SourceStore, transfer.SourceRelPath, "unlinking corrupt derived source subtitle sidecar"); err != nil {
+			return err
+		}
+	}
+	if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("syncing directory after corrupt derived source removal: %w", err)
+	}
+	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "marking corrupt derived source deleted"); err != nil {
+		return err
+	}
+	if _, err := w.Storage.MarkMediaAssetCopyDeleted(ctx, store.MediaAssetCopyDeleteCandidate{
+		CopyID: transfer.SourceCopyID, MediaAssetID: transfer.MediaAssetID, Store: transfer.SourceStore,
+	}); err != nil {
+		return fmt.Errorf("marking corrupt derived source deleted: %w", err)
+	}
+	return nil
 }
 
 func sourceMatchesTransferMetadata(transfer store.MediaAssetTransfer, sourceSize int64, sourceSHA []byte) bool {

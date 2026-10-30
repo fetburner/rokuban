@@ -8,60 +8,39 @@ package sqlcgen
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 const clearObsoleteMediaAssetTransferAttempts = `-- name: ClearObsoleteMediaAssetTransferAttempts :exec
 DELETE FROM media_asset_transfer_attempts t
-USING media_asset_copies c, media_assets a, recordings r
+USING media_asset_copies c
 WHERE t.copy_id = c.id
-  AND c.media_asset_id = a.id
-  AND a.recording_id = r.id
-  AND (
-      r.deleted_at IS NOT NULL
-      OR c.generation <> COALESCE(a.derived_generation, 0)
-      OR c.store IS DISTINCT FROM desired_media_store(
-          a.kind,
-          $1::jsonb,
-          $2::text,
-          r.site,
-          (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-      )
-      OR (
-          a.kind = 'original'
-          AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals($2) u
-              WHERE u.asset_id = a.id
-          )
-      )
-      OR EXISTS (
-          SELECT 1 FROM active_media_asset_copies(a.id, c.store) target
-          WHERE NOT EXISTS (
-              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = target.id
-          )
-      )
-      OR NOT storage_transfer_candidate(
-          a.id, $1::jsonb, $3::text[], $2::text
-      )
+  AND storage_transfer_pending_copy_obsolete(
+      c.id,
+      $1::jsonb,
+      $2::text[],
+      $3::text
   )
 `
 
 type ClearObsoleteMediaAssetTransferAttemptsParams struct {
 	OriginalRules json.RawMessage
-	DerivedStore  string
 	FsStores      []string
+	DerivedStore  string
 }
 
-// Failures belong to a destination copy. Remove them when it is no longer the
-// current desired copy, including when its logical asset advances generation.
+// Failures belong to a destination copy. A failure row is obsolete exactly when
+// the pending copy it belongs to is, so this references that named predicate
+// instead of repeating its conditions.
 func (q *Queries) ClearObsoleteMediaAssetTransferAttempts(ctx context.Context, arg ClearObsoleteMediaAssetTransferAttemptsParams) error {
-	_, err := q.db.Exec(ctx, clearObsoleteMediaAssetTransferAttempts, arg.OriginalRules, arg.DerivedStore, arg.FsStores)
+	_, err := q.db.Exec(ctx, clearObsoleteMediaAssetTransferAttempts, arg.OriginalRules, arg.FsStores, arg.DerivedStore)
 	return err
 }
 
 const completeMediaAssetTransfer = `-- name: CompleteMediaAssetTransfer :one
 WITH observed AS (
     UPDATE media_assets a
-    SET sha256 = COALESCE(a.sha256, $4::bytea)
+    SET sha256 = $4::bytea
     FROM recordings r
     WHERE a.id = $2
       AND a.recording_id = r.id
@@ -345,12 +324,12 @@ SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, c.state,
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.store = $1
-  AND c.state IN ('active', 'deleting')
+  AND c.state = 'active'
   AND media_asset_copy_prunable(
       c.id,
       $2::jsonb,
       $3::text,
-      $4::bigint * interval '1 microsecond'
+      $4::timestamptz
   )
 ORDER BY c.id
 LIMIT $5
@@ -360,7 +339,7 @@ type ListMediaAssetCopiesToDeleteParams struct {
 	StoreName     string
 	OriginalRules json.RawMessage
 	DerivedStore  string
-	Overlap       int64
+	OverlapCutoff time.Time
 	RowLimit      int32
 }
 
@@ -378,12 +357,14 @@ type ListMediaAssetCopiesToDeleteRow struct {
 
 // Placement cleanup runs inside delete_reconcile. Its list and mark operations
 // both reference the named predicate so the row lock closes the policy-switch race.
+// Only active copies are new candidates; a copy already deleting is picked up
+// again by ListMediaAssetsPendingDelete, which references the same predicate.
 func (q *Queries) ListMediaAssetCopiesToDelete(ctx context.Context, arg ListMediaAssetCopiesToDeleteParams) ([]ListMediaAssetCopiesToDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listMediaAssetCopiesToDelete,
 		arg.StoreName,
 		arg.OriginalRules,
 		arg.DerivedStore,
-		arg.Overlap,
+		arg.OverlapCutoff,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -585,57 +566,57 @@ func (q *Queries) LockPendingMediaAssetTransferCopy(ctx context.Context, arg Loc
 	return id, err
 }
 
-const markMediaAssetCopyCorrupt = `-- name: MarkMediaAssetCopyCorrupt :one
-WITH deleted AS (
-    UPDATE media_asset_copies c
-    SET state = 'deleted', deleted_at = now()
-    FROM media_assets a
-    WHERE c.id = $1
-      AND c.media_asset_id = $2
-      AND c.store = $3
-      AND c.media_asset_id = a.id
-      AND c.generation = COALESCE(a.derived_generation, 0)
-      AND c.state = 'active'
-      AND a.kind <> 'original'
-      AND EXISTS (
-          SELECT 1
-          FROM media_assets original
-          JOIN media_asset_copies original_copy ON original_copy.media_asset_id = original.id
-          WHERE original.recording_id = a.recording_id
-            AND original.kind = 'original'
-            AND original_copy.state = 'active'
-            AND original_copy.generation = COALESCE(original.derived_generation, 0)
-            AND NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = original_copy.id
-            )
-      )
-    RETURNING c.id
-), cleared_missing AS (
-    DELETE FROM missing_media_assets m USING deleted d
-    WHERE m.media_asset_copy_id = d.id
-    RETURNING m.media_asset_copy_id
-), cleared_attempts AS (
-    DELETE FROM media_asset_transfer_attempts t USING deleted d
-    WHERE t.copy_id = d.id
-    RETURNING t.copy_id
-)
-SELECT count(*)::bigint FROM deleted
+const markMediaAssetCopyCorruptDeleting = `-- name: MarkMediaAssetCopyCorruptDeleting :execrows
+UPDATE media_asset_copies c
+SET state = 'deleting', deleted_at = NULL
+FROM media_assets a
+WHERE c.id = $1
+  AND c.media_asset_id = $2
+  AND c.store = $3
+  AND c.media_asset_id = a.id
+  AND a.recording_id = $4
+  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND c.state = 'active'
+  AND a.kind <> 'original'
+  AND EXISTS (
+      SELECT 1
+      FROM media_assets original
+      JOIN media_asset_copies original_copy ON original_copy.media_asset_id = original.id
+      WHERE original.recording_id = a.recording_id
+        AND original.kind = 'original'
+        AND original_copy.state = 'active'
+        AND original_copy.generation = COALESCE(original.derived_generation, 0)
+        AND NOT EXISTS (
+            SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = original_copy.id
+        )
+  )
 `
 
-type MarkMediaAssetCopyCorruptParams struct {
+type MarkMediaAssetCopyCorruptDeletingParams struct {
 	CopyID       int64
 	MediaAssetID int64
 	Store        string
+	RecordingID  int64
 }
 
-// A damaged derived source is retired as a physical copy. The logical row stays
-// available for encode reconcile, which sees that its current generation has no
-// active copy and publishes a replacement.
-func (q *Queries) MarkMediaAssetCopyCorrupt(ctx context.Context, arg MarkMediaAssetCopyCorruptParams) (int64, error) {
-	row := q.db.QueryRow(ctx, markMediaAssetCopyCorrupt, arg.CopyID, arg.MediaAssetID, arg.Store)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
+// A damaged derived source is retired as a physical copy: active -> deleting
+// here, then the transfer worker unlinks the file and marks it deleted. The
+// logical row stays available for encode reconcile, which sees that its current
+// generation has no active copy and publishes a replacement. The caller locks the
+// recording and then the derived asset row before this statement, the same order
+// as MarkUntilEncodedDeleting, so the original check below cannot race with an
+// until_encoded original deletion.
+func (q *Queries) MarkMediaAssetCopyCorruptDeleting(ctx context.Context, arg MarkMediaAssetCopyCorruptDeletingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markMediaAssetCopyCorruptDeleting,
+		arg.CopyID,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.RecordingID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markMediaAssetCopyDeleting = `-- name: MarkMediaAssetCopyDeleting :one
@@ -644,12 +625,12 @@ SET state = 'deleting', deleted_at = NULL
 WHERE c.id = $1
   AND c.media_asset_id = $2
   AND c.store = $3
-  AND c.state IN ('active', 'deleting')
+  AND c.state = 'active'
   AND media_asset_copy_prunable(
       c.id,
       $4::jsonb,
       $5::text,
-      $6::bigint * interval '1 microsecond'
+      $6::timestamptz
   )
 RETURNING c.rel_path
 `
@@ -660,7 +641,7 @@ type MarkMediaAssetCopyDeletingParams struct {
 	Store         string
 	OriginalRules json.RawMessage
 	DerivedStore  string
-	Overlap       int64
+	OverlapCutoff time.Time
 }
 
 func (q *Queries) MarkMediaAssetCopyDeleting(ctx context.Context, arg MarkMediaAssetCopyDeletingParams) (string, error) {
@@ -670,7 +651,7 @@ func (q *Queries) MarkMediaAssetCopyDeleting(ctx context.Context, arg MarkMediaA
 		arg.Store,
 		arg.OriginalRules,
 		arg.DerivedStore,
-		arg.Overlap,
+		arg.OverlapCutoff,
 	)
 	var rel_path string
 	err := row.Scan(&rel_path)
