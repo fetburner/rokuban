@@ -191,12 +191,12 @@ func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testi
 	}
 
 	thumbnailWorker := &ThumbnailWorker{
-		Objects: testFSObjectStore(mediaDir),
+		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		runCmd:     fakeThumbnailTools(t, 60),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		ScratchDir:      scratchDir,
+		runCmd:          fakeThumbnailTools(t, 60),
 	}
 	job := ThumbnailJobArgs{RecordingID: recordingID}
 	if err := runWorkerViaJobQFake(context.Background(), thumbnailWorker, job); err != nil {
@@ -997,9 +997,9 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	}
 
 	w := &ThumbnailWorker{
-		Objects: testFSObjectStore(mediaDir),
+		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool),
-		Media:     pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		runCmd: func(context.Context, string, ...string) ([]byte, error) {
 			t.Error("recording without chapters must not run ffmpeg/ffprobe")
 			return nil, fmt.Errorf("unexpected command")
@@ -1049,9 +1049,9 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	}
 
 	w := &ThumbnailWorker{
-		Objects: testFSObjectStore(mediaDir),
+		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool),
-		Media:     pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		runCmd: func(context.Context, string, ...string) ([]byte, error) {
 			t.Error("no usable input must not run ffmpeg/ffprobe")
 			return nil, fmt.Errorf("unexpected command")

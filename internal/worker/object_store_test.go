@@ -425,7 +425,9 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 		_, published, err := publishGeneratedObject(ctx, objects, media,
 			store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key},
 			scratch, "image/jpeg", false, nil,
-			func(int64, [sha256.Size]byte) (bool, error) { return false, errors.New("injected DB publication failure") },
+			func(int64, [sha256.Size]byte) (bool, error) {
+				return false, errors.New("injected DB publication failure")
+			},
 		)
 		if err == nil || published {
 			t.Fatalf("publication result = (%t, %v), want failed after Put", published, err)
