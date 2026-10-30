@@ -31,6 +31,8 @@ import (
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // reconcileDeleteObservations は孤児と欠損アセットを同じディスク走査結果で観測する。
@@ -223,7 +225,22 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 	}
 	candidates := make(map[int64]struct{})
 	for _, a := range active {
-		if _, ok := seenOnDisk[a.RelPath]; ok {
+		present := false
+		if a.Kind != store.AssetKindOriginal {
+			if w.DerivedObjects == nil {
+				return false, fmt.Errorf("derived object store is not configured while auditing active media asset copy %d", a.ID)
+			}
+			_, headErr := w.DerivedObjects.Head(ctx, a.RelPath)
+			if headErr == nil {
+				present = true
+			} else if !errors.Is(headErr, objstore.ErrNotFound) {
+				metrics.RecordObjectStoreError("head", headErr)
+				return false, fmt.Errorf("checking derived media asset copy %d: %w", a.ID, headErr)
+			}
+		} else {
+			_, present = seenOnDisk[a.RelPath]
+		}
+		if present {
 			continue
 		}
 		candidates[a.ID] = struct{}{}
@@ -355,6 +372,30 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 				return nil, fmt.Errorf("clearing reclaimed orphan record %q: %w", relPath, err)
 			}
+			continue
+		}
+		if kind == orphanCleanupStaging && mediapath.IsGeneratedAssetTempFile(filepath.Base(relPath)) {
+			if w.DerivedObjects == nil {
+				return nil, fmt.Errorf("derived object store is not configured while checking generated staging key %q", relPath)
+			}
+			object, headErr := w.DerivedObjects.Head(ctx, relPath)
+			if errors.Is(headErr, objstore.ErrNotFound) {
+				if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing vanished generated staging key"); err != nil {
+					return nil, err
+				}
+				if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
+					return nil, fmt.Errorf("clearing vanished generated staging key %q: %w", relPath, err)
+				}
+				continue
+			}
+			if headErr != nil {
+				metrics.RecordObjectStoreError("head", headErr)
+				return nil, fmt.Errorf("checking generated staging key %q: %w", relPath, headErr)
+			}
+			if object.LastModified.After(mtimeCutoff) {
+				continue
+			}
+			verified = append(verified, relPath)
 			continue
 		}
 		path, err := mediapath.Resolve(w.MediaDir, relPath)

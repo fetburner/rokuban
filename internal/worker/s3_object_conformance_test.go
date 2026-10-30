@@ -72,7 +72,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		pending := store.PendingMediaAssetCopy{
 			RecordingID: recordingID, Kind: store.AssetKindEncoded, Profile: &profile, RelPath: encodedKey, ReserveNewGeneration: true,
 		}
-		size, published, err := publishGeneratedObject(ctx, objects, media, pending, scratchPath, "video/mp4", false,
+		size, published, err := publishGeneratedObject(ctx, objects, media, pending, scratchPath, "video/mp4", false, nil,
 			func(size int64, sum [sha256.Size]byte) (bool, error) {
 				return media.PublishEncoded(ctx, store.EncodedPublishInput{
 					RecordingID: recordingID, Profile: profile, Attempt: 1, RelPath: encodedKey, SizeBytes: size,
@@ -167,7 +167,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		writeFile(t, scratchPath, payload)
 		observing := &pendingObservedStore{Store: objects, t: t, pool: pool, storeName: objectStoreName}
 		pending := store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key}
-		size, published, err := publishGeneratedObject(ctx, observing, media, pending, scratchPath, "image/jpeg", false,
+		size, published, err := publishGeneratedObject(ctx, observing, media, pending, scratchPath, "image/jpeg", false, nil,
 			func(size int64, sum [sha256.Size]byte) (bool, error) {
 				return media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 					RecordingID: recordingID, RelPath: key, SizeBytes: size, InputAssetID: originalID,
@@ -267,7 +267,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		}
 		verifiedRemoteInput := false
 		worker := &ThumbnailWorker{
-			Media: media, Publisher: media, Objects: objects, ObjectPublisher: media, MediaDir: mediaDir,
+			Media: media, Objects: objects, ObjectPublisher: media, MediaDir: mediaDir,
 			MediaStoreName: dbtest.StoreName, DerivedStoreName: objectStoreName, ScratchDir: t.TempDir(),
 			runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 				if containsArg(args, "format=duration") {

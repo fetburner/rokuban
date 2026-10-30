@@ -89,15 +89,17 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, rel, []string{"h264"}, content)
 
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     ffmpegPath,
-		Profiles: config.EncodeConfig{
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          ffmpegPath,
+		Profiles:        config.EncodeConfig{
 			FFmpeg: ffmpegPath,
 			Profiles: []config.EncodeProfile{{
 				Name:       "h264",
@@ -130,13 +132,15 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-fail.m2ts", nil, []byte("data"))
 
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:    pgstoretest.Media(pool),
-		MediaDir: mediaDir,
-		Profiles: config.EncodeConfig{}, // "missing" は未定義 → 失敗する
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Profiles:        config.EncodeConfig{}, // "missing" は未定義 → 失敗する
 	}
 
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
@@ -283,20 +287,22 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	}()
 
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: t.TempDir(),
-		FFmpeg:     slowFFmpeg,
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      t.TempDir(),
+		FFmpeg:          slowFFmpeg,
 		// 実 machine に ffprobe があると probeEncodeDuration が実 ffprobe を
 		// shell out し、cmd.Start() 前の待ちを timeout 上限（3 秒）まで
 		// 引き延ばしうる。存在しないパスにして即失敗させる（上のテスト
 		// doc コメントの計測参照）。
-		FFprobe: "/nonexistent/ffprobe",
-		Profiles: config.EncodeConfig{
+		FFprobe:         "/nonexistent/ffprobe",
+		Profiles:        config.EncodeConfig{
 			FFmpeg: slowFFmpeg,
 			Profiles: []config.EncodeProfile{{
 				Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
@@ -378,7 +384,15 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/domain-attempt-limit.m2ts", nil, []byte("data"))
-	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir}
+	w := &EncodeWorker{
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+	}
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
 	for attempt := int32(1); attempt <= 25; attempt++ {
 		err := runWorkerViaJobQFake(context.Background(), w, job)
@@ -530,7 +544,15 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 		 VALUES ($1, 'missing', 'failed', 'x', now(), 25)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir}
+	w := &EncodeWorker{
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+	}
 	if _, err := sqlcgen.New(pool).DeleteFailedRecordingEncodeAttempts(context.Background(), sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
 		RecordingID: recordingID, Profiles: []string{"missing"},
 	}); err != nil {
@@ -568,16 +590,18 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: t.TempDir(),
-		FFmpeg:     ffmpegPath,
-		FFprobe:    "ffprobe",
-		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      t.TempDir(),
+		FFmpeg:          ffmpegPath,
+		FFprobe:         "ffprobe",
+		Profiles:        config.EncodeConfig{Profiles: []config.EncodeProfile{{
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
 	}
@@ -871,18 +895,20 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
 
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     leakyFFmpeg,
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          leakyFFmpeg,
 		// 実 ffprobe を shell out させない（本題である WaitDelay の再現には
 		// 無関係。probeEncodeDuration の失敗は進捗計測を無効にするだけ）。
-		FFprobe: "/nonexistent/ffprobe",
-		Profiles: config.EncodeConfig{
+		FFprobe:         "/nonexistent/ffprobe",
+		Profiles:        config.EncodeConfig{
 			FFmpeg: leakyFFmpeg,
 			Profiles: []config.EncodeProfile{{
 				Name:       "h264",

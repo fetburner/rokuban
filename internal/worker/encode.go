@@ -31,16 +31,12 @@ import (
 )
 
 // EncodeWorker は原本 media_asset から構造化プロファイルで派生物を作る。
+// 原本は mediapath.Resolve で読み、ffmpeg 出力はローカル scratch に書く。完成した
+// 派生物は objstore.Store.Put で永続化し、その後 DB transaction が pending copy を
+// active にする。ファイルシステム固有の staging と原子的な公開は fsstore が担う。
+// 進捗は ffmpeg -progress pipe:1 から読み、stderr のスクレイピングはしない。
 //
-// ストレージ契約（docs/storage.md §3）:
-//  1. 原本は mediapath.Resolve で読む
-//  2. ffmpeg 出力は scratch に書く（media_dir へ直接書かない）
-//  3. 進捗は ffmpeg -progress pipe:1（stderr スクレイピング禁止）
-//  4. 成功時のみ scratch → media へストリームコピー + fsync → tx 内で media_assets の
-//     rel_path を予約 → canonical へ rename → commit
-//  5. 失敗時はコミット行を残さず、scratch は best-effort で掃除
-//
-// # 並走する 2 本の encode から canonical を守る
+// # 並走する encode の世代と公開を守る
 //
 // job timeout 後、queue adapter が同じ Args を再配送する前に以前の Work が
 // 終わる保証はなく、同じ (recording, profile) の encode が 2 本並走しうる。
@@ -48,16 +44,13 @@ import (
 //   - **scratch は recording / profile / domain attempt ごと**に作る。queue job ID や
 //     配送回数は使わず、再配送後もドメインキーで追える。各試行は自分の scratch dir に
 //     flock を持ち続け、cleanup は lock が取れた（死んだ）dir だけを消す。encode 同士は
-//     別 dir なので直列化しない（TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts）。canonical の公開直前には
+//     別 dir なので直列化しない（TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts）。公開 transaction では
 //     `recording_encode_attempts.attempt_count` を読み直し、古い試行を拒否する。代償として、
 //     cancel を無視する古い試行が新しい試行とともに ffmpeg を完走することはある。
-//   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
-//     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
-//     → store transaction）の中で判定 → Upsert で rel_path を予約 → rename（サイドカー → 本体）→ 親 dir
-//     fsync → commit する。tx 内では desired・要求行・通常のカット版ジョブの章の状態・
+//   - **派生物の公開はキーを再利用しない**（publishEncoded）。attempt token、desired・要求行・通常のカット版ジョブの章の状態・
 //     encoded 行を読み直し、エンコード前の判定（observeEncodePlan）と同じ純関数
-//     （store.PlanEncodedPublish）で判定する。次のどれかなら公開を飛ばす（temp を消して戻り、
-//     旧ファイルの unlink も encode.finished も出さない）:
+//     （store.PlanEncodedPublish）で判定する。次のどれかなら active commit を飛ばす。
+//     Put 済みの pending object は配信されず、削除 reconcile が回収する:
 //     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
 //     encoded 行の rel_path を書くのは UpsertDerivedMediaAsset だけで、行は DELETE
 //     されず tombstone で残るので、rel_path は世代順に前へしか進まない。古い計画の
@@ -71,9 +64,8 @@ import (
 //     行が active でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
 //     encode.failed も試行の failed 行も出さない。
 //     (b) 行が active で（カット版なら）凍結区間がこの試行の keep と一致する（誰かが
-//     既に commit した）。A が commit → B が rename で A のファイルを上書き → B の
-//     commit が失敗、と進むと、canonical は B の中身で行は A の size になる。
-//     これが止める。
+//     既に commit した）。各試行は異なる世代キーへ Put するので、遅い試行が active
+//     copy のバイト列を上書きできない。
 //     (c) profile が desired（recording_encode_policy.encode_profiles）に無い。
 //     ユーザーが外した版を、外す前に積まれたジョブが公開して復活させるのを止める。
 //     (d) 作り直し要求に由来するジョブで、要求行が無いか keep が上書き済み。または
@@ -81,15 +73,15 @@ import (
 //     要求に由来しないジョブは active なカット版を置き換えない（置き換えてよいのは
 //     利用者が押した作り直しだけ）。
 //
-// **flock の前提は ingest と同じ**: RWX のメディア越しに効くかは未検証
-// （docs/storage/contract.md §3 ルール 4）。rel_path flock は通常削除
-// （deleteMediaAsset）との公開競合を防ぐ。canonical orphan は削除せず aging 後に報告する。
+// DB の公開・削除 transaction は同じ論理資産の状態を直列化する。Store のキーは
+// 使い回さず、DB の active copy だけを streamer に公開する。Put 後に DB commit
+// されなかったキーは pending reconcile が回収する。
 //
 // # site 照合ガード（issue #139）は不要と判断
 //
 // EncodeJobArgs は recording_id + profile のみで site を持たない。エンコードは
-// 原本 media_asset（mediapath.Resolve で解決する単一の MediaDir 配下）を読んで
-// FS に書くだけで mirakc には一切触れない（不変条件 4「ffmpeg/ffprobe の exec は
+// 原本 media_asset（mediapath.Resolve で解決する単一の MediaDir 配下）を読み、
+// 派生物は object store に公開するだけで mirakc には一切触れない（不変条件 4「ffmpeg/ffprobe の exec は
 // worker / streamer パッケージのみ」であって mirakc 呼び出しではない）。
 // アーカイブは複数サイト構成でも単一（site に従属しない。docs/storage.md）ため、
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
@@ -99,7 +91,7 @@ type EncodeWorker struct {
 	Media     store.MediaReconcile
 	Attempts  store.EncodeAttempts
 	Publisher store.MediaPublish
-	// Objects を設定すると派生物の置き場が S3 になり、公開は ObjectPublisher の pending → active で行う。
+	// Objects は派生物の置き場。実装差は objstore に閉じ、公開は ObjectPublisher の pending → active で行う。
 	Objects         objstore.Store
 	ObjectPublisher store.DerivedMediaPublisher
 	Progress        store.EncodeProgressReporter
@@ -229,26 +221,18 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
 	}
-	finalPath, err := mediapath.Resolve(w.MediaDir, relPath)
-	if err != nil {
-		return fmt.Errorf("resolving encoded path: %w", err)
+	profileName := profile.Name
+	if w.ObjectPublisher == nil {
+		return errors.New("derived media publisher is required")
 	}
-	pendingObjectPrepared := false
-	if w.Objects != nil {
-		if w.ObjectPublisher == nil {
-			return errors.New("derived object publication requires a media publisher")
+	if err := w.ObjectPublisher.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+		RecordingID: args.RecordingID, Kind: store.AssetKindEncoded, Profile: &profileName,
+		RelPath: relPath, DerivedGeneration: generation, ReserveNewGeneration: true,
+	}); err != nil {
+		if errors.Is(err, store.ErrGenerationAdvanced) {
+			return jobq.Snooze(encodeReplanDelay)
 		}
-		profileName := profile.Name
-		if err := w.ObjectPublisher.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
-			RecordingID: args.RecordingID, Kind: store.AssetKindEncoded, Profile: &profileName,
-			RelPath: relPath, DerivedGeneration: generation, ReserveNewGeneration: true,
-		}); err != nil {
-			if errors.Is(err, store.ErrGenerationAdvanced) {
-				return jobq.Snooze(encodeReplanDelay)
-			}
-			return fmt.Errorf("reserving encoded object generation: %w", err)
-		}
-		pendingObjectPrepared = true
+		return fmt.Errorf("reserving encoded object generation: %w", err)
 	}
 
 	// プロセス死の残骸を回収し、domain attempt ごとに scratch を分ける。
@@ -307,11 +291,10 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 		recordingID:           args.RecordingID,
 		profile:               profile.Name,
 		relPath:               relPath,
-		finalPath:             finalPath,
 		scratchOut:            scratchOut,
 		subtitleOut:           subtitleOut,
 		withSubtitles:         withSubtitles,
-		pendingObjectPrepared: pendingObjectPrepared,
+		pendingObjectPrepared: true,
 		cut:                   cut,
 		expectedKeep:          expectedCutKeep,
 	})
@@ -699,21 +682,19 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 }
 
 // encodeReplanDelay は、publishEncoded が tx 内の判定で計画が古いと分かったとき
-// （temp は消してあり、DB にも canonical にも触っていない）に返す snooze の待ち。
+// （pending object は配信されず、DB reconcile が回収する）に返す snooze の待ち。
 const encodeReplanDelay = 10 * time.Second
 
-// beforeEncodeLock / beforeEncodeFilePublication / beforeEncodeCommit はテストが公開手順の途中で実行を止め、
+// beforeEncodeObjectActivation / beforeEncodeCommit はテストが公開手順の途中で実行を止め、
 // あるいは commit の失敗を注入するためのフックである（本番では何もしない）。
 // 引数は試行の scratch 出力パス（どの試行かをテストが見分けるため）。
 var (
-	// afterEncodeBodyStaged は本体の stage の後、字幕の stage と lock の前に呼ぶ。
-	afterEncodeBodyStaged = func(scratchOut string) {}
-	// beforeEncodeLock は stage（コピーと fsync）の後、rel_path lock を取る前に呼ぶ。
-	beforeEncodeLock = func(scratchOut string) {}
-	// beforeEncodeFilePublication は DB の fencing と計画判定の後、rename の前に呼ぶ。
-	// テストはここで公開を止め、古い試行の rename が後の公開を上書きしないことを確かめる。
-	beforeEncodeFilePublication = func(string) error { return nil }
-	// beforeEncodeCommit は rename 済み・Upsert 済みの tx.Commit の直前に呼ぶ。
+	// beforeEncodeObjectPut は hash 後、派生物を置き場へ送る直前のマウント目印検査前に呼ぶ。
+	// テストでその間に目印が変わる状況を再現する。
+	beforeEncodeObjectPut = func(string) {}
+	// beforeEncodeObjectActivation は DB の fencing と計画判定の後、active commit の前に呼ぶ。
+	beforeEncodeObjectActivation = func(string) error { return nil }
+	// beforeEncodeCommit は active row を更新する tx.Commit の直前に呼ぶ。
 	// エラーを返すと commit せずに失敗させる。
 	beforeEncodeCommit = func(scratchOut string) error { return nil }
 )
@@ -724,7 +705,6 @@ type encodePublishInput struct {
 	profile               string
 	attempt               int32
 	relPath               string
-	finalPath             string
 	scratchOut            string
 	subtitleOut           string
 	withSubtitles         bool
@@ -739,117 +719,19 @@ type encodePublishInput struct {
 	expectedKeep []chapters.Range
 }
 
-// publishEncoded は検証済みの scratch 出力を canonical へ公開し、media_assets を
-// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → filesystem lock →
-// store transaction → 判定 → Upsert（rel_path を予約）→ rename（サイドカー → 本体）→ 親 dir
-// fsync → commit** と進む。順序を逆にしない --- DB commit を先にすると、
-// 行が指す実体の欠落を作る。サイドカーを先に置くのは、本体を置いた後にサイドカーの
-// rename が失敗して、既存の active 行とファイルが食い違うのを避けるため。
-// 削除済みでない別行が同じ rel_path を持つ場合、Upsert の一意制約で rename 前に失敗する。
-//
-// lock を commit まで保持するのは、通常削除が同じ lock の下で DB 状態と canonical
-// file を更新し、他の公開がその間へ割り込まないようにするためである。
-//
-// 戻り値の published が false のときは判定 (a)/(b)/(c) で公開を飛ばした（temp は消して
-// あり、DB にも canonical にも触っていない）。size は置いたファイルのバイト数。
-// temp を作った後の失敗経路はすべて temp を消す。rename 済みで commit に失敗した
-// canonical は消さない（commit が実は成功していた場合に、生きている行が指す実体を
-// 失う）。孤児として報告するか、次の試行の rename に任せる。
+// publishEncoded は検証済みの scratch 出力を派生物の置き場へ書き、media_assets を
+// commit する。pending copy を予約し、置き場の Store.Put が完成・永続化した後に
+// pending を active にする。ファイルシステム固有の staging、rename、親 directory
+// fsync、上書き防止は fsstore.Put が担う。
 func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded output"); err != nil {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing encoded object"); err != nil {
 		return 0, false, err
 	}
-	if w.Objects != nil {
-		return w.publishEncodedObject(ctx, in)
-	}
-	// 親ディレクトリが無いと temp も lock file も作れない。ingest はストレージ層が
-	// commit 前に作るが、encode はここが最初の書き込みなので stage の前に作る。
-	if err := os.MkdirAll(filepath.Dir(in.finalPath), 0o755); err != nil {
-		return 0, false, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
-	}
-
-	staged, err := stageMediaFile(ctx, in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
-	if err != nil {
-		return 0, false, err
-	}
-	defer staged.discard()
-	afterEncodeBodyStaged(in.scratchOut)
-	// 本体の stage（数 GB のコピー）の後、字幕の CreateTemp と lock file の作成を 1 回で守る。
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded subtitle and locking"); err != nil {
-		return 0, false, err
-	}
-	var stagedSubtitle stagedMediaFile
-	if in.withSubtitles {
-		subtitleRelPath, err := mediapath.SubtitleSibling(in.relPath)
-		if err != nil {
-			return 0, false, fmt.Errorf("building subtitle rel_path: %w", err)
-		}
-		subtitleFinalPath, err := mediapath.Resolve(w.MediaDir, subtitleRelPath)
-		if err != nil {
-			return 0, false, fmt.Errorf("resolving subtitle path: %w", err)
-		}
-		stagedSubtitle, err = stageMediaFile(ctx, in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
-		if err != nil {
-			return 0, false, fmt.Errorf("staging subtitle sidecar: %w", err)
-		}
-		defer stagedSubtitle.discard()
-	}
-
-	beforeEncodeLock(in.scratchOut)
-	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, in.relPath)
-	if err != nil {
-		return 0, false, fmt.Errorf("locking canonical file protocol: %w", err)
-	}
-	defer func() { _ = fileLock.Close() }()
-
-	cut := in.cut != nil
-	keep := []chapters.Range(nil)
-	if cut {
-		keep = in.cut.keep
-	}
-	input := store.EncodedPublishInput{
-		RecordingID:        in.recordingID,
-		Profile:            in.profile,
-		Attempt:            in.attempt,
-		RelPath:            in.relPath,
-		SizeBytes:          staged.size,
-		SHA256:             staged.sha256,
-		DerivedGeneration:  in.observed.generation,
-		ObservedGeneration: in.observed.observedGeneration,
-		Cut:                cut,
-		KeepRanges:         keep,
-		HasRebuildRequest:  in.expectedKeep != nil,
-		RequestedKeep:      in.expectedKeep,
-	}
-	publish := func() error {
-		if err := beforeEncodeFilePublication(in.scratchOut); err != nil {
-			return fmt.Errorf("preparing encoded file publication: %w", err)
-		}
-		if in.withSubtitles {
-			if err := stagedSubtitle.publish(); err != nil {
-				return err
-			}
-		}
-		if err := staged.publish(); err != nil {
-			return err
-		}
-		if err := beforeEncodeCommit(in.scratchOut); err != nil {
-			return fmt.Errorf("committing encoded asset: %w", err)
-		}
-		return nil
-	}
-	published, err = w.Publisher.PublishEncoded(ctx, input, publish)
-	if errors.Is(err, store.ErrStalePublishPlan) {
-		return 0, false, jobq.Snooze(encodeReplanDelay)
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	return staged.size, published, nil
+	return w.publishEncodedObject(ctx, in)
 }
 
-// publishEncodedObject は encoded を S3 の置き場へ公開する。pending は ffmpeg の前に予約済みで、
-// ここでは PUT してから、公開の tx で pending を active にし SHA-256 を論理行へ書く。
+// publishEncodedObject は encoded を派生物の置き場へ公開する。pending は ffmpeg の前に予約済みで、
+// ここでは Put してから、公開の tx で pending を active にし SHA-256 を論理行へ書く。
 func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
 	info, err := os.Stat(in.scratchOut)
 	if err != nil {
@@ -873,6 +755,7 @@ func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublis
 	pending := store.PendingMediaAssetCopy{
 		RecordingID: in.recordingID, Kind: store.AssetKindEncoded, Profile: &in.profile,
 		RelPath: in.relPath, SizeBytes: info.Size(), DerivedGeneration: in.observed.generation,
+		ReserveNewGeneration: !in.pendingObjectPrepared,
 	}
 	var companions []objectCompanion
 	if in.withSubtitles {
@@ -885,11 +768,15 @@ func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublis
 	size, published, err = publishGeneratedObject(
 		ctx, w.Objects, w.ObjectPublisher, pending, in.scratchOut, objectContentType(in.relPath),
 		in.pendingObjectPrepared,
+		func(operation string) error {
+			beforeEncodeObjectPut(in.scratchOut)
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
+		},
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			input.SizeBytes = size
 			input.SHA256 = sum[:]
 			return w.ObjectPublisher.PublishEncoded(ctx, input, func() error {
-				if err := beforeEncodeFilePublication(in.scratchOut); err != nil {
+				if err := beforeEncodeObjectActivation(in.scratchOut); err != nil {
 					return fmt.Errorf("preparing encoded object publication: %w", err)
 				}
 				return beforeEncodeCommit(in.scratchOut)
@@ -1003,7 +890,7 @@ func planEncodePublishFromState(
 		p.generation = 1
 	}
 	// 公開前に止まった試行が予約した世代と、回収済みの世代は使わない。
-	// 同じ key を別の出力で再利用しないためである（S3 の置き場だけがコピー行を先に予約する）。
+	// 同じ key を別の出力で再利用しないため、全ての置き場でコピー行を先に予約する。
 	if !p.skip && state.MaxCopyGeneration != nil && *state.MaxCopyGeneration >= p.generation &&
 		*state.MaxCopyGeneration < int64(^uint64(0)>>1) {
 		p.generation = *state.MaxCopyGeneration + 1
@@ -1259,74 +1146,6 @@ func parseFFmpegProgress(r io.Reader, log *slog.Logger, onProgress func(time.Dur
 	if err := sc.Err(); err != nil {
 		log.Warn("encode: progress parser stopped", "err", err)
 	}
-}
-
-// streamCopyFile は ctx に従って src を dst へシーケンシャルにコピーし、コピーした
-// バイト列のサイズと SHA-256 を返す。ファイルと親ディレクトリも fsync する
-// （ストレージ契約: 作業は scratch、置くのは一回）。
-func streamCopyFile(ctx context.Context, src, dst string) (int64, []byte, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return 0, nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return 0, nil, fmt.Errorf("open src: %w", err)
-	}
-	defer func() { _ = in.Close() }()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return 0, nil, fmt.Errorf("create dst: %w", err)
-	}
-
-	hasher := sha256.New()
-	n, copyErr := copyWithContext(ctx, io.MultiWriter(out, hasher), in)
-	if copyErr != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return n, nil, fmt.Errorf("copy: %w", copyErr)
-	}
-	if err := ctx.Err(); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return n, nil, fmt.Errorf("copy canceled: %w", err)
-	}
-	if err := out.Sync(); err != nil {
-		_ = out.Close()
-		return n, nil, fmt.Errorf("fsync file: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst)
-		return n, nil, fmt.Errorf("sync canceled: %w", err)
-	}
-	if err := out.Close(); err != nil {
-		return n, nil, fmt.Errorf("close dst: %w", err)
-	}
-
-	// ディレクトリエントリの永続化（best-effort。一部 FS では no-op）。
-	if dir, err := os.Open(filepath.Dir(dst)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
-	}
-	return n, hasher.Sum(nil), nil
-}
-
-type contextReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.r.Read(p)
-}
-
-func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
-	return io.Copy(dst, contextReader{ctx: ctx, r: src})
 }
 
 func newEncodeJobArgs(ctx context.Context, media store.MediaReconcile, recordingID int64, profile string, profiles config.EncodeConfig) (jobs.EncodeJobArgs, error) {

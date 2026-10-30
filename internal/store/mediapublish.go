@@ -93,7 +93,7 @@ type EncodedPublishInput struct {
 	KeepRanges         []chapters.Range
 	HasRebuildRequest  bool
 	RequestedKeep      []chapters.Range
-	// SHA256 は公開するファイル全体の SHA-256。作り手が commit の tx で論理行へ書く。FS は stage 時に計算し、S3 は PUT 前に計算する。
+	// SHA256 は公開するオブジェクト全体の SHA-256。Put 前に計算し、commit の tx で論理行へ書く。
 	SHA256 []byte
 	// PendingCopy は、このコピーを PreparePendingMediaAssetCopy で先に commit 済みであることを表す。
 	// true なら commit の tx で pending を active にし、行を新しく書かない。
@@ -134,7 +134,7 @@ type SeekTilesPublishInput struct {
 	PendingCopy bool
 }
 
-// PendingMediaAssetCopy は、S3 の PUT の前に commit する pending のコピー行を表す。
+// PendingMediaAssetCopy は、派生物の Store.Put 前に commit する pending のコピー行を表す。
 // 公開の tx が同じ行を active にするまで、読み手には現行のコピーとして見えない。
 type PendingMediaAssetCopy struct {
 	RecordingID       int64
@@ -148,16 +148,16 @@ type PendingMediaAssetCopy struct {
 	ReserveNewGeneration bool
 }
 
-// DerivedMediaPublisher は encoded・サムネイル・シークタイルを S3 の置き場へ公開する契約である。
+// DerivedMediaPublisher は encoded・サムネイル・シークタイルを派生物置き場へ公開する契約である。
 type DerivedMediaPublisher interface {
-	// PreparePendingMediaAssetCopy は PUT の前に pending のコピー行を commit する。
+	// PreparePendingMediaAssetCopy は Store.Put の前に pending のコピー行を commit する。
 	// 世代がすでに使われていれば ErrGenerationAdvanced を返す。
 	PreparePendingMediaAssetCopy(ctx context.Context, input PendingMediaAssetCopy) error
-	// PublishEncoded は encode の計画を再確認し、PendingCopy なら pending を active にする。
+	// PublishEncoded は encode の計画を再確認し、Put 済み PendingCopy を active にする。
 	PublishEncoded(ctx context.Context, input EncodedPublishInput, publish func() error) (published bool, err error)
-	// PublishThumbnail はサムネイルの資格を再確認し、PendingCopy なら pending を active にする。
+	// PublishThumbnail はサムネイルの資格を再確認し、Put 済み PendingCopy を active にする。
 	PublishThumbnail(ctx context.Context, input ThumbnailPublishInput, publish func() error) (published bool, err error)
-	// PublishSeekTiles はシークタイルの資格を再確認し、PendingCopy なら pending を active にする。
+	// PublishSeekTiles はシークタイルの資格を再確認し、Put 済み PendingCopy を active にする。
 	PublishSeekTiles(ctx context.Context, input SeekTilesPublishInput, publish func() error) (published bool, err error)
 }
 

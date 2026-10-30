@@ -471,16 +471,18 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     ffmpeg,
-		FFprobe:    filepath.Join(filepath.Dir(ffmpeg), "ffprobe"),
-		Profiles:   config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}},
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          ffmpeg,
+		FFprobe:         filepath.Join(filepath.Dir(ffmpeg), "ffprobe"),
+		Profiles:        config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}},
 	}
 
 	// 所有の行を作る（cut は確認済みを前提にする）。
@@ -749,15 +751,17 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
-		Profiles:   config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
+		Profiles:        config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
 	}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestedKeep
@@ -807,15 +811,17 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
-		Profiles:   config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
+		Profiles:        config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
 	}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON

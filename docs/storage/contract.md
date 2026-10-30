@@ -16,20 +16,26 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 したがって FUSE S3 は置き場として使わない。派生物を S3 に置くときは S3 API 実装を使う。
 
-## 3. ストレージ契約（4 つのルール）
+## 3. ストレージ契約
 
-原本の保存先は、fsync と atomic rename、hard link を信頼できる通常の POSIX FS に限る。書き込みは常にシーケンシャルにし、作業はローカルで行って完成品を一度だけ置く。公開点は DB の commit で、DB には相対パスだけを保存する。
+この節では、原本と派生物に共通する永続化と公開のルールを定める。
 
-`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename と hard link、公開後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本・派生物とも対象外である。次のルールのうちファイル操作の手順は、原本 root、ローカル `scratch_dir`、派生物の FS 実装に適用する。ルール 3 の「公開点は DB commit」は、S3 API 実装にも掛かる（不変条件 3）。S3 API 実装で外れるのは、ファイルシステムの rename・fsync・flock に依存する手順だけである。
+原本と派生物では公開方法が異なる。原本は強い POSIX FS 上のファイルとして保存し、派生物は `internal/objstore` の `Store` 契約を通して読み書きする。どちらも DB には置き場内の相対キーだけを保存する。
 
-1. 書き込みは常にシーケンシャルにする。初回は一発書き、プロセス再起動後は同じ temp の EOF へ追記する。ランダムライトはしない
-2. 「作業はローカル、置くのは一回」とする。ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync する。MP4 のシーク問題と書きかけファイル問題が同時に消える
-3. **公開点は DB commit** とする。DB transaction 内の INSERT は一意性を予約するが、他セッションから見える公開ではない。`link`（派生物は rename）と親ディレクトリ `fsync` が成功してから transaction を commit し、commit が成功した時点で `media_assets` 行と canonical file の組を公開する
-4. DB には相対パスのみ保存する。ルートは設定で与える。DB にロック・xattr・パーミッションの状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
+原本の `storage.media_dir` とローカル `scratch_dir` には、強い POSIX FS を使う。ingest は file `fsync`、`Close` のエラー報告、hard link、親 directory `fsync` に依存する。ローカル FS、JuiceFS、条件を満たす NFS は対象内で、FUSE S3 は対象外とする。原本の詳細はこの節の ingest と lock の説明に従う。派生物は次の共通契約で扱い、呼び出し側は POSIX rename や lock を前提にしない。
+
+1. ffmpeg などの生成処理はワーカーのローカル scratch で行い、完成した出力だけを `objstore.Store.Put` に渡す。書き込みはシーケンシャルにし、Put には正確なサイズと SHA-256 を渡す
+2. `Store.Put` は全バイトを検証し、同じキーを上書きせず、完全なオブジェクトが durable になった後にだけ成功を返す。`List` は未完了の書き込みを返さない。`Head`、`Get`、`Open`、`Delete` は実装が持つ読み書き能力に従う
+3. **派生物の公開点は DB commit** とする。オブジェクトの Put 成功後、同じ transaction でコピーを `active` にして論理メタデータを記録する。DB commit 前のオブジェクトは配信対象にせず、失敗した `pending` copy と孤立キーは reconcile が回収する
+4. 派生物のキーは世代ごとに一度だけ使う。差し替えは新世代のキーを作り旧世代を保持する。DB の現行 active 行だけが配信を許し、旧世代は `storage.transfer.overlap` 後に削除する
+
+配信側も置き場の能力で経路を選ぶ。seekable な `objstore.Local` は Range 対応のローカル配信に使い、`storage.accel_location` が設定されていれば `Open` で存在を確認してから `X-Accel-Redirect` を返す。そうでなければ `objstore.SignedURL` で署名付き URL へ redirect する。原本の配信は引き続き POSIX file を開き、同じ `X-Accel-Redirect` 設定を使う。
 
 ### scratch と temp の置き場所
 
-ffmpeg の出力はワーカーのローカルスクラッチへ書く。FS 実装では、取り込みの一時ファイルと派生物の staging file を、最終的に置くのと同じ root・同じディレクトリに作る。別の FS をまたぐ rename は失敗し、コピーへの劣化を許すことになるので、scratch からの rename は確定操作には使わない。
+生成物は一時領域で完成させ、公開先の名前を直接書き換えない。
+
+ffmpeg の出力はワーカーのローカルスクラッチへ書く。原本の ingest temp は最終配置と同じ root・同じ directory に作る。派生物は scratch から `Store.Put` で公開するため、呼び出し側から canonical directory への rename は行わない。
 
 scratch から rename すると `EXDEV` になり、コピーへの劣化を許すことになる。
 
@@ -37,11 +43,11 @@ scratch directory 名は Worker の復旧単位から決める。encode は `(re
 
 CM detect と CM logo candidate はプロセス死の残骸を回収しない。CM 検出は死後の次の開始で `attempt_count` が進み同じ名前に戻らず、ロゴ候補は `MkdirTemp` だからである。中身は原本への symlink と小さいファイルだけなので、残っても実害は小さいとして許容する。
 
-ingest は同じ root・同じディレクトリの record 固有 temp へ書く。temp 名は `.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを開く。encode の staged 出力も同じディレクトリに置く。
+ingest は同じ root・同じ directory の record 固有 temp へ書く。temp 名は `.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを開く。
 
 予約 basename は、mirakc の contentPath には使わない。次の 4 つの prefix で始まる名前である。
 
-`.rokuban-ingest-` は ingest temp、`.rokuban-rel-path-lock-` は旧形式 lock file、`.rokuban-encode-` は encode staging file を表す。`.rokuban-media-asset-` は thumbnail / seek tiles staging file を表す。
+`.rokuban-ingest-` は ingest temp、`.rokuban-rel-path-lock-` は旧形式 lock file の prefix である。`.rokuban-encode-` と `.rokuban-media-asset-` は fsstore の staging file に使う。これらは予約済みの名前で、object store の List にも現れない。
 
 rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。置き場の目印の root の `.rokuban-store` も同じく予約する。ネストした同名ファイルは予約しない。
 
@@ -66,21 +72,23 @@ link 後の temp は canonical と同じ inode である。temp は `O_APPEND` �
 
 ### 公開順序と失敗時の扱い
 
-公開点は DB commit であり、link と親ディレクトリの fsync の成功が先に来る。名前だけでは公開済みか判定できないので、canonical file は自動で消さない。
+失敗した公開は DB に反映せず、再試行や reconcile で回復する。
 
-link 前の失敗では、temp を残して次の試行へ渡す。中身の不一致、または record の cancel / fail が分かった場合だけ temp を消す。
+原本の公開点は DB commit であり、link と親 directory の fsync の成功が先に来る。名前だけでは公開済みか判定できないので、canonical file は自動で消さない。派生物の公開順序は後述の `Store.Put` 成功後に DB commit する。
 
-link の後で fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行がそれを見て commit だけをやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。例えば再試行が成功しないまま temp が mtime 猶予と aging を過ぎると、孤児回収が temp を消す。次の試行は別の inode の temp を作るので、canonical は他人のファイルとして扱われて ingest が止まり、aging 後に orphan として報告される。
+原本は link 前の失敗では temp を残して次の試行へ渡す。中身の不一致、または record の cancel / fail が分かった場合だけ temp を消す。
+
+原本の link 後に fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行がそれを見て commit だけをやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。例えば再試行が成功しないまま temp が mtime 猶予と aging を過ぎると、孤児回収が temp を消す。次の試行は別の inode の temp を作るので、canonical は他人のファイルとして扱われて ingest が止まり、aging 後に orphan として報告される。
 
 mirakc record は、commit が成功するまで削除しない。commit 後の temp の unlink が失敗しても、ログだけで成功扱いにする。
 
 **この順序を反転させない**。DB commit 後に link すると、行が指す実体の欠落を作る。
 
-ingest のコピー完了には、fsync と Close のエラー確認まで含める。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書くのは、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないためである。
+原本 ingest のコピー完了には、fsync と Close のエラー確認まで含める。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書くのは、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないためである。
 
-区切りごとの fsync のコストは NFS / JuiceFS で未測定である。FUSE S3 は置き場に使わないので、途中 fsync で fd に書けなくなる実装は考慮しない。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。link 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
+区切りごとの fsync のコストは NFS / JuiceFS で未測定である。FUSE S3 は原本の置き場に使わないので、途中 fsync で fd に書けなくなる実装は考慮しない。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。link 後の親 directory `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
 
-ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ rename すると元のパスは消える。そのため回収時に lock は取らず、unlink 直前に mtime を再確認する。
+ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。ingest temp は公開前を示す予約名で、一意な CreateTemp パスから canonical へ link すると temp のパスが残る。そのため回収時に lock は取り、unlink 直前に mtime を再確認する。
 
 canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
 
@@ -125,15 +133,17 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 ### 派生物の公開（encode）
 
-エンコード出力は既にある行のパスへ公開する。そのため canonical を直接開かず、同じディレクトリの staging file へ書く。パスは、ファイルを置く前に DB で予約する。古い試行は、試行回数の照合と行の再確認で公開できない。
+エンコード成果物は世代ごとのキーに保存し、DB の commit で公開する。
 
-FS 置き場では、staging file へコピーしながら SHA-256 を計算する。rename して親ディレクトリを `fsync` した後に DB を commit し、その公開の transaction で SHA-256 を論理行へ書く。
+encode は ffmpeg の前に DB で新世代の `pending` コピーを予約し、その世代のキーへ出力する。ffmpeg はローカル scratch に書く。完成したファイルの正確なサイズと SHA-256 を計算し、`Store.Put` に渡してから公開 transaction を実行する。transaction は attempt token と論理行を再確認し、コピーを `active` にして論理サイズ・チェックサムを更新する。Put または commit が失敗した場合はキーを配信せず、猶予後の reconcile が `pending` 行と孤立キーを回収する。
 
-S3 置き場では、先に `pending` のコピー行を新しい世代で commit し、そのキーへ multipart upload する。宣言サイズどおりに読み切った全体の SHA-256 を照合してから upload を完了し、公開の transaction でコピーを `active` にして、SHA-256 を論理行へ書く。upload の完了が 412 で拒まれたときは、HEAD で得たサイズと、アプリが保存した SHA-256 の metadata を照合する。どちらも一致すれば成功として扱い、一致しなければ失敗にする。公開されないまま猶予を過ぎた `pending` は、削除 reconcile が行をロックしたまま S3 のキーを消す。
+この順序は object-store 実装に依存しない。`Store.Put` の保証は「全バイトか何もない」「既存キーを上書きしない」「サイズと SHA-256 を検証する」「成功時には durable」であり、DB の `active` commit がアプリケーション上の公開点である。キー世代は再利用しないので、失敗後の再試行も別キーを使う。旧世代は `storage.transfer.overlap` が過ぎるまで残す。
+
+FS 実装は key と同じ directory に staging file を作る。サイズと SHA-256 を検証し、file `fsync` と `Close` の成功後に no-replace hard link で公開する。最後に親 directory を `fsync` する。S3 実装は multipart upload で checksum を検証し、条件付きで完了する。条件付き完了が 412 のときだけ、HEAD のサイズとアプリ保存 SHA-256 metadata で既存 object を照合する。同一内容なら成功、それ以外は失敗とする。どちらも `Store` の共通約束を保ち、実装の違いを呼び出し元へ漏らさない。
 
 置き換えは新しい世代の行を足すだけで、旧世代のコピーには触れない。旧世代のキーは、署名付き URL で再生中の視聴者がいても 404 にならないよう、削除 reconcile が `storage.transfer.overlap` の後に消す。コピー行の世代は INSERT の後に変えず、現行のコピーを選ぶ述語は `active_media_asset_copies` と `preferred_active_media_asset_copy` だけに置く（[schema](../schema/recordings/media-assets.md)）。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代のキーを使う。Matroska のように同じ入力でも出力のバイト列が変わる形式で、既に upload 済みのキーを別の内容で上書きしないためである。
 
-S3 置き場の失敗は、S3 を使うジョブだけを失敗させる。worker は起動時に S3 へ接続しない（運用は [ストレージ運用](../operations/storage.md) の「S3 の置き場の運用要件」）。
+派生物置き場の操作失敗は、該当するジョブだけを失敗させる。worker は起動時にオブジェクト置き場へ接続しない（S3 の運用は [ストレージ運用](../operations/storage.md) の「S3 の置き場の運用要件」）。
 
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 
@@ -143,12 +153,9 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - 作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る。
 - 各試行は開始時に増えた attempt count を fencing token として公開時に照合する。古い token の試行は canonical を公開できない。
 - ctx cancellation に従わない古い ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる。
-- staging は canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、rel_path lock の外でストリームコピー + `fsync` する。
-- 公開は lock（filesystem lock → tx）の中で、**判定 → Upsert で `rel_path` を予約 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → commit** の順に行う。削除済みでない別行が同じパスを持つと、Upsert の一意制約で rename 前に失敗し、既存ファイルは変わらず、試行は失敗として記録される。canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。通常削除も同じ filesystem lock を取る。そのため公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
-- 通常削除は同じ filesystem lock を取る。RWX 越しに `flock` が効くかは未検証（ルール 4 と同じ前提）。
-- 置き忘れた staging file は孤児候補になる。`.rokuban-locks/` と catalog directory と旧形式 lock filename は走査から除外する。
-- mtime 猶予（既定 7 日）と孤児エイジング（既定 14 日）の後、canonical 名でない孤児を lock なしで消す。mtime は unlink 直前に再確認する。canonical 名の orphan は削除せず、確認を促す Warn と `rokuban_orphan_files_unresolved` に出す。
-- rel_path lock file は Close または次回 GC で消える。拡張子が無い staging file は catalog 無し rescue の対象にはならず、原本へ昇格しない。
+- 公開は **事前計画 → `Store.Put` → DB transaction で attempt token と論理状態を再確認し、pending を active にする**。削除済みでない別行が同じ `(store, rel_path)` を持てば DB の一意制約が拒み、既存キーは上書きされない。canonical file の filesystem lock は派生物の Put / commit には使わない。
+- Store 実装が内部に残した staging file や multipart upload は、その実装の責任で非公開のまま扱う。公開済みだが DB commit されなかったキーは `pending` 行を基準に reconcile が削除する。通常削除も派生物では `Store.Delete` を使い、original の file unlink と混同しない。
+- `fsstore` は `.rokuban-encode-` / `.rokuban-media-asset-` staging key を List に返さない。内部 staging file は FS orphan cleanup が回収する。S3 multipart upload は成功前に List に現れず、Put 失敗時に abort する。DB に active row が無い canonical object は自動削除せず、pending reconcile が回収する。
 
 <details><summary>根拠</summary>
 
@@ -159,7 +166,7 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - 別 scope の実行中 encode がいても stale scratch を掃除する: `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`
 - scratch cleanup が作成 gate を待つ: `TestRemoveStaleEncodeScratchWaitsForScratchCreationGate`
 - 新しい scratch directory の作成が gate を待つ: `TestNewEncodeScratchDirWaitsForScratchCreationGate`
-- remove と publish の同じ filesystem lock: `deleteMediaAsset`
+- 原本 file の unlink と ingest publish を直列化する filesystem lock: `deleteMediaAsset`
 - staged file の walk と削除: `walkMediaFiles`、`deleteOrphanFile`
 
 </details>
@@ -170,14 +177,15 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 
 ```mermaid
 flowchart TD
-    A[tx 開始: token を照合] -->|不一致| X[古い試行: 公開しない]
+    P[Store.Put で新しいキーを確定] --> A[tx 開始: token を照合]
+    A -->|不一致| X[古い試行: 公開しない]
     A -->|一致| B[行を読み直す]
     B -->|c: profile が desired に無い| S[成功で飛ばす]
     B -->|b: 既に active で一致| S
     B -->|a: rel_path が計画時と違う| C{行は active か}
     C -->|active| R[公開せず snooze で戻し計画をやり直す]
     C -->|active でない| S
-    B -->|どれにも当たらない| P[Upsert で rel_path を予約 → rename して commit]
+    B -->|どれにも当たらない| D[DB transaction で pending を active にして commit]
 ```
 
 この確認は、最初に `recording_encode_attempts.attempt_count` がこの試行の token と一致することを確かめ、続けて行を読み直して行う。次のどれかなら公開しない。
@@ -186,7 +194,7 @@ flowchart TD
 - (b) 既に active で（カット版は凍結区間も）この試行と一致する
 - (c) profile が desired に無い
 
-(b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が失敗すると、ファイルは後発の中身で行は先発のサイズになる。(a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
+(b) が無いと、先発の commit の後に後発が同じ object key を再利用しようとする。`Store.Put` は既存キーを上書きしないため、後発の異なる内容で active object が変わることはない。(a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
 
 (b) は成功で飛ばす。(a) は自分の計画が古いことを意味し、他の誰かが済ませたことを意味する (b) とは別である。行が active のまま (a) だけが立つ（カット版で区間が違う）ときは、成功で飛ばすと新しいチャプター編集が気づかないうちに消える。公開せずに River の snooze で戻し、現在の keep で計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。行が active でない（ごみ箱など）ときは成功で飛ばす。
 
@@ -201,19 +209,17 @@ flowchart TD
 
 ### thumbnail / seek tiles の公開
 
-サムネイルとシークタイルは、完成したファイルを staging にコピーして fsync し、lock と transaction の中で rename して commit する。同じ録画のジョブが重なっても、先行が公開済みか原本が消えていれば、後続は公開を飛ばして成功扱いにする。
+サムネイルとシークタイルは、完成してから置き場へ保存し、DB commit で公開する。
 
-S3 置き場では、派生物のキーを `pending` として先に commit し、完成した JPEG をアップロードする。チェックサムの照合が済んだ後、公開の transaction で `active` にする。FS と S3 のどちらでも、DB で `active` のコピーが配信を許す。
+thumbnail と seek tiles も、完成したファイルを scratch で作って `Store.Put` し、その後の DB transaction で `active` にする。DB で active のコピーだけが配信を許す。同じ録画の job が重なっても、先行が公開済みか原本が active でなければ、後続は commit を飛ばして成功扱いにする。
 
 thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして `MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の実行が重なっても scratch file を共有しない。
 
-完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして file `fsync` する。次に rel_path filesystem lock → transaction の順に取る。
-
-transaction 内で active な派生行と原本の生存を再確認する。派生行がまだ無く原本も active なら media asset row を予約し、staged file を canonical へ rename して親 directory を `fsync` した後に commit する。
+生成後は pending copy を準備し、`Store.Put` で canonical key を一度だけ作る。active な派生行と原本の生存を再確認してから DB transaction を commit する。
 
 先行 job がすでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
 
-staged file は予約名付きの orphan 候補として mtime 猶予と aging の後に回収する。回収時に lock は取らず mtime を再確認する。拡張子によらず catalog 無し rescue から除外する。canonical を `O_TRUNC` で直接開かないため、処理中に配信・削除側が途中の画像を観測する窓を作らない。
+FS store 内の staging file は予約 prefix 付きで `List` から隠し、mtime 猶予と aging の後に回収する。S3 store の multipart upload は Put の中で完了または abort する。canonical を直接書き換えないため、処理中に配信側が途中の画像を観測しない。
 
 <details><summary>根拠</summary>
 
@@ -236,14 +242,14 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きているコピーの `(store, rel_path)` 部分一意索引とも衝突するからである。
 
 - 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時に読み、旧 worker 停止後の adopt でも再照合する
-- 新しいファイルを置き、1 つの tx で論理サイズ・`derived_generation`・`media_asset_cuts` と新しい物理コピー行を commit する。コピー行の世代は後から書き換えない。旧世代は同じ置き場に残り、削除 reconcile が overlap 後に回収する
-- 置き換え時に旧コピー行を書き換えない。書き換えると、旧ファイルの所在と世代を削除 reconcile が追えなくなる。公開した worker は旧ファイルを消さないので、commit が失敗しても旧ファイルと旧行は残る
+- 新しいキーへ `Store.Put` し、1 つの tx で論理サイズ・`derived_generation`・`media_asset_cuts` と新しい物理コピー行を active にする。コピー行の世代は後から書き換えない。旧世代は同じ置き場に残り、削除 reconcile が overlap 後に回収する
+- 置き換え時に旧コピー行を書き換えない。書き換えると、旧キーの所在と世代を削除 reconcile が追えなくなる。公開した worker は旧キーを消さないので、commit が失敗しても旧キーと旧行は残る
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
 - 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は `derived_generation` から進める
-- 新しい JPEG を置く。1 つの tx で論理サイズ・`derived_generation`・新しい物理コピー行と `media_asset_thumbnail_seeks` を commit する。旧コピー行は保持し、旧ファイルは overlap 後に削除 reconcile が回収する
-- 公開した worker は、旧コピーをその場で unlink しない。commit 直後に落ちても、定期の削除 reconcile が旧世代を見つけ、通常の削除と同じ path lock と状態遷移で削除を再開する
+- 新しいキーへ `Store.Put` し、1 つの tx で論理サイズ・`derived_generation`・新しい物理コピー行と `media_asset_thumbnail_seeks` を active にする。旧コピー行は保持し、旧キーは overlap 後に削除 reconcile が回収する
+- 公開した worker は旧コピーをその場で削除しない。commit 直後に落ちても、定期の削除 reconcile が旧世代を見つけ、`Store.Delete` と DB の deleting/deleted 状態遷移で削除を再開する
 
 <details><summary>根拠</summary>
 
@@ -251,7 +257,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 </details>
 
-ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS 契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の種類や atomic rename の実装品質をパス文字列から推測しない。
+ポイントはルール 3。DB commit を公開点にする。原本は link と親 directory の fsync が成功してから DB に登録し、派生物は `Store.Put` の完了後に DB の active copy を確定する。起動時 probe は原本 ingest の操作列を確認し、FS の種類や atomic rename の実装品質をパス文字列から推測しない。
 
 ## 4. クラウド側のマウント選択肢
 
@@ -384,7 +390,7 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 
 - 時間軸: カット境界は入力の最早 `start_time` を 0 とする秒で適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ数値の位置を渡す。chapter ranges と `seek_ms` は `recording_chapter_spans` / `media_asset_cuts.keep_ranges` と同じ ms を使う。放送 TS は音声が映像より先に始まることがあり、章の原点（最初の映像フレーム）と入力の最早 `start_time` の差は未測定。そのため、この値が同じ画面を指すことと、原本 / encoded 版間で同じ `seek_ms` が揃うことは実録画で確認する
 - 画素縦横比: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
-- ストレージ契約: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後にメディアへストリームコピー + fsync する。初回は `media_assets` と `media_asset_thumbnail_seeks` を同じ tx で INSERT し、差し替えでは世代付きコピー行と両者を同じ tx で更新する（差し替え規約は §3）
+- ストレージ契約: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後に `Store.Put` で派生物の置き場へ確定する。DB transaction は active copy と `media_asset_thumbnail_seeks` を同時に commit する（差し替え規約は §3）
 - 相対パス: 初回は `thumbnails/{recording_id}.jpg`。差し替えは `thumbnails/{recording_id}.g{n}.jpg`（n は `derived_generation` から進めた世代）。原本の contentPath に依存しないので、原本削除後もパスが安定する
 - 位置の事実: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
 - 配信: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）

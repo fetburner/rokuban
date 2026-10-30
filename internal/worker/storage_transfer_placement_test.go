@@ -183,7 +183,7 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		transfer := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots}
+		transfer := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		deleters := []*DeleteReconcileWorker{
 			placementDeleteWorker(pool, cfg, roots, "test-store"), placementDeleteWorker(pool, cfg, roots, "archive"),
 		}

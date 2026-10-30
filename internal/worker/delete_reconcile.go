@@ -80,6 +80,9 @@ type DeleteReconcileWorker struct {
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
 	Storage               store.StorageObservation
 	MediaDelete           store.MediaDelete
+	// MediaPendingReclaim は MediaStoreName と DerivedObjectStoreName が同じ FS の
+	// pending 派生物を回収する。S3 の独立 pass は DerivedPendingReclaim を使う。
+	MediaPendingReclaim   store.PendingCopyReclaim
 	StorageTransfer       store.StorageTransfer
 	StorageTransferPolicy config.StorageConfig
 	RecordingPurge        store.RecordingPurge
@@ -87,7 +90,7 @@ type DeleteReconcileWorker struct {
 	MediaDir              string
 	MediaStoreName        string
 
-	// 派生物の置き場が S3 のときだけ設定する（object_delete.go）。DerivedObjectStoreName は
+	// 派生物の置き場が original と別スコープのときに設定する（object_delete.go）。DerivedObjectStoreName は
 	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
 	// DerivedMediaDelete と DerivedStorage は、その置き場に束ねた store を渡す。
 	DerivedObjects         objstore.Store
@@ -108,8 +111,8 @@ type DeleteReconcileWorker struct {
 }
 
 // Work は 1 パス分の削除 reconcile を実行する。
-// S3 の置き場を先に処理する。FS の置き場の末尾で押す完全削除の確定が、同じパスで消した S3 のコピーを
-// 反映できるようにするためである。S3 の失敗は FS の置き場の削除を止めず、パスの末尾で返す。
+// 独立した派生物の置き場を先に処理する。FS の置き場の末尾で押す完全削除の確定が、同じパスで消した
+// 派生コピーを反映できるようにするためである。置き場の失敗は FS の置き場の削除を止めず、末尾で返す。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
 	cfg := w.settings()
 	objectErr := w.workObjectStore(ctx, cfg)
@@ -153,7 +156,7 @@ func (w *DeleteReconcileWorker) settings() deleteSettings {
 	return s
 }
 
-// workObjectStore は S3 の置き場の削除 reconcile を、FS の置き場と同じ設定値で実行する。
+// workObjectStore は独立した派生物置き場の削除 reconcile を、FS の置き場と同じ設定値で実行する。
 func (w *DeleteReconcileWorker) workObjectStore(ctx context.Context, cfg deleteSettings) error {
 	return w.objectStorePass(ctx, time.Now().Add(-cfg.trashRetention), time.Now().Add(-cfg.transferOverlap),
 		cfg.orphanMTimeGrace, cfg.orphanAge, cfg.maxPerPass)
@@ -247,6 +250,16 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	candidates, err := collectDeleteCandidates(ctx, w.MediaDelete, trashCutoff, overlapCutoff)
 	if err != nil {
 		return err
+	}
+	if w.DerivedObjectStoreName != "" && w.DerivedObjectStoreName == w.MediaStoreName {
+		if w.DerivedObjects == nil || w.MediaPendingReclaim == nil {
+			return errors.New("shared filesystem derived-object store and pending-copy reclaimer are required")
+		}
+		candidates.pendingBefore = time.Now().Add(-orphanAge)
+		candidates.agedPendingDerived, err = w.MediaPendingReclaim.ListAgedPendingMediaAssetCopies(ctx, candidates.pendingBefore, deleteReconcileRowLimit)
+		if err != nil {
+			return fmt.Errorf("listing aged pending filesystem derived copies: %w", err)
+		}
 	}
 	candidates.obsoletePendingTransfer = obsoletePendingTransferCandidates
 	if w.StorageTransfer != nil && placementEnabled {

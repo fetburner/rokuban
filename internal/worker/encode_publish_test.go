@@ -101,25 +101,26 @@ yes | head -c $((n*10)) >> "$output"
 	return path
 }
 
-// pauseBeforeEncodeLock は match した試行を、stage 完了後・rel_path lock 取得前で
+// pauseBeforeEncodeObjectPublication は match した試行を、Put 完了後・DB 公開前で
 // 止める。reached にはその試行の scratch 出力パスが届く。
-func pauseBeforeEncodeLock(t *testing.T, match func(scratchOut string) bool) (reached <-chan string, release func()) {
+func pauseBeforeEncodeObjectPublication(t *testing.T, match func(scratchOut string) bool) (reached <-chan string, release func()) {
 	t.Helper()
 	ch := make(chan string, 4)
 	gate := make(chan struct{})
 	var once sync.Once
 	release = func() { once.Do(func() { close(gate) }) }
-	orig := beforeEncodeLock
+	orig := beforeEncodeObjectActivation
 	t.Cleanup(func() {
 		release()
-		beforeEncodeLock = orig
+		beforeEncodeObjectActivation = orig
 	})
-	beforeEncodeLock = func(scratchOut string) {
+	beforeEncodeObjectActivation = func(scratchOut string) error {
 		if !match(scratchOut) {
-			return
+			return nil
 		}
 		ch <- scratchOut
 		<-gate
+		return nil
 	}
 	return ch, release
 }
@@ -159,9 +160,11 @@ func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int3
 
 func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) *EncodeWorker {
 	return &EncodeWorker{
-		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Publisher:       pgstoretest.Media(pool),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Objects:         testFSObjectStore(mediaDir),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
 
 		Media:      pgstoretest.Media(pool),
 		MediaDir:   mediaDir,
@@ -196,16 +199,15 @@ func assertNoEncodeTemp(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), mediapath.EncodeTempFilePrefix) {
+		if strings.HasPrefix(e.Name(), mediapath.EncodeTempFilePrefix) || strings.HasPrefix(e.Name(), mediapath.GeneratedAssetTempFilePrefix) {
 			t.Errorf("staged temp file was left behind: %s", e.Name())
 		}
 	}
 }
 
-// T1: stage はコピー完了まで canonical に触らない。lock 取得前の観測点で、事前に
-// 置いた canonical（active 行なし）が変わっていない。canonical を直接 O_TRUNC で
-// 開く実装では、この時点で中身が切り詰められている。
-func TestEncodeWorker_StagingDoesNotTouchCanonical(t *testing.T) {
+// 派生物のキーは再利用しない。DB の行が無い既存オブジェクトも Put で上書きせず、
+// active copy として公開しない。
+func TestEncodeWorker_ExistingObjectKeyIsNotOverwritten(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -220,34 +222,31 @@ func TestEncodeWorker_StagingDoesNotTouchCanonical(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
-	done := make(chan error, 1)
-	go func() { done <- runWorkerViaJobQFake(context.Background(), w, jobWithID(recordingID)) }()
-
-	waitReached(t, reached, done)
+	err := runWorkerViaJobQFake(context.Background(), w, jobWithID(recordingID))
+	if err == nil {
+		t.Fatal("Work succeeded while the derived object key was already occupied")
+	}
 	got, err := os.ReadFile(finalPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, previous) {
-		t.Errorf("canonical before the lock = %d bytes, want the previous %d bytes untouched", len(got), len(previous))
+		t.Errorf("existing object = %d bytes, want previous %d bytes untouched", len(got), len(previous))
 	}
-	release()
-	if err := waitDone(t, done); err != nil {
-		t.Fatalf("Work: %v", err)
+	var activeCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets a
+		JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`, recordingID).Scan(&activeCount); err != nil {
+		t.Fatal(err)
 	}
-	got, _ = os.ReadFile(finalPath)
-	if !bytes.HasPrefix(got, []byte("original payload t1attempt-1:")) {
-		t.Errorf("published canonical = %q, want the encoded content", got)
+	if activeCount != 0 {
+		t.Errorf("active encoded copies = %d, want none after conflicting Put", activeCount)
 	}
-	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindEncoded, "h264", got)
-	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
 
-// T2: A が commit した後に、古い観測（行は deleted で rel_path は target と同じ）の
-// B が公開へ進み、commit に失敗する順序。判定 (b) が無いと B が A のファイルを
-// rename で上書きし、canonical は B の中身、行は A の size_bytes になる。
+// T2: B の古い attempt が Put した後に A が新しい世代を active にし、B が DB 公開へ
+// 進む順序。B の pending object は active copy を上書きせず、古い attempt は公開されない。
 func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -260,13 +259,10 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 
 	// 削除済みの行（rel_path = target）から始める。行なしだと B は (a) で止まる。
 	encRel := "20240101/t2_h264.mp4"
-	seedEncodedAsset(t, pool, recordingID, "h264", encRel)
+	assetID := seedEncodedAsset(t, pool, recordingID, "h264", encRel)
 	dbtest.SetRecordingMediaAssetState(t, pool, recordingID, store.AssetKindEncoded, "deleted")
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash("20240101/t2_h264.u1.mp4"))
 
-	reached, release := pauseBeforeEncodeLock(t, inEncodeScratchAttempt(recordingID, "h264", 1))
-	origCommit := beforeEncodeCommit
-	t.Cleanup(func() { beforeEncodeCommit = origCommit })
+	reached, release := pauseBeforeEncodeObjectPublication(t, inEncodeScratchAttempt(recordingID, "h264", 1))
 
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
@@ -276,6 +272,8 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	if err := runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
+	activeRelPath := currentCopyRelPath(t, pool, assetID)
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(activeRelPath))
 	contentA, err := os.ReadFile(finalPath)
 	if err != nil {
 		t.Fatal(err)
@@ -284,12 +282,6 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 		t.Fatalf("A's canonical = %q, want attempt-2 content", contentA)
 	}
 
-	beforeEncodeCommit = func(scratchOut string) error {
-		if inEncodeScratchAttempt(recordingID, "h264", 1)(scratchOut) {
-			return context.DeadlineExceeded
-		}
-		return nil
-	}
 	release()
 	if err := waitDone(t, doneB); err != nil {
 		t.Errorf("Work B: %v (want skip because A already committed)", err)
@@ -439,7 +431,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if err := os.WriteFile(scratchOut, []byte("X output"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
+	reached, release := pauseBeforeEncodeObjectPublication(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
 	type result struct {
 		published bool
@@ -449,7 +441,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	never := make(chan error)
 	go func() {
 		_, published, err := w.publishEncoded(ctx, encodePublishInput{
-			recordingID: recordingID, profile: "cut", attempt: attempt, relPath: g2, finalPath: abs(g2),
+			recordingID: recordingID, profile: "cut", attempt: attempt, relPath: g2,
 			scratchOut: scratchOut, observed: observed, cut: cut, expectedKeep: cutKeep,
 		})
 		res <- result{published, err}
@@ -490,8 +482,11 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if _, err := os.Stat(abs(g3)); err != nil {
 		t.Errorf("g3 file is missing: %v", err)
 	}
-	if _, err := os.Stat(abs(g2)); !os.IsNotExist(err) {
-		t.Errorf("g2 file exists (err=%v), want it never published", err)
+	if _, err := os.Stat(abs(g2)); err != nil {
+		t.Errorf("g2 pending object is missing after Put (err=%v)", err)
+	}
+	if rowState == "active" && currentCopyRelPath(t, pool, assetID) != g3 {
+		t.Errorf("active copy path = %q, want newer path %q", currentCopyRelPath(t, pool, assetID), g3)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(abs(g2)))
 }
@@ -550,7 +545,6 @@ func newRebuildPublishScene(t *testing.T, pool *pgxpool.Pool, name string) rebui
 			profile:      "cut",
 			attempt:      attempt,
 			relPath:      finalRel,
-			finalPath:    finalPath,
 			scratchOut:   scratchOut,
 			observed:     observed,
 			cut:          cut,
@@ -726,7 +720,6 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	}
 
 	relPath := "20240101/late-attempt_h264.mp4"
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	scratchOut := filepath.Join(scratchDir, "old-attempt.mp4")
 	if err := os.WriteFile(scratchOut, []byte("old attempt output"), 0o644); err != nil {
 		t.Fatal(err)
@@ -740,14 +733,18 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 		profile:     "h264",
 		attempt:     oldAttempt.Count,
 		relPath:     relPath,
-		finalPath:   finalPath,
 		scratchOut:  scratchOut,
 		observed:    observed,
 	}); err != nil || published {
 		t.Fatalf("old attempt publish = published %v, err %v; want fenced skip", published, err)
 	}
-	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
-		t.Errorf("old attempt published a canonical file (stat err = %v)", err)
+	var activeCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`, recordingID).Scan(&activeCount); err != nil {
+		t.Fatal(err)
+	}
+	if activeCount != 0 {
+		t.Errorf("active encoded copies after stale attempt = %d, want none", activeCount)
 	}
 	if count, ok := encodeAttemptCount(t, pool, recordingID, "h264"); !ok || count != newAttempt.Count {
 		t.Errorf("attempt_count after stale publish = %d, ok=%v, want %d", count, ok, newAttempt.Count)
@@ -777,7 +774,7 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/t4.m2ts", []string{"h264"}, []byte("original payload t4"))
 
 	var first atomic.Bool
-	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return first.CompareAndSwap(false, true) })
+	reached, release := pauseBeforeEncodeObjectPublication(t, func(string) bool { return first.CompareAndSwap(false, true) })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
 	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)) }()
@@ -807,359 +804,56 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	}
 }
 
-// commit の直前まで rel_path filesystem lock を保持し、通常削除と公開を直列化する。
-func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
+// Put が完了してから DB transaction が active copy を公開することを固定する。
+func TestEncodeWorker_PutPrecedesActiveCommit(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
+	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/lock.m2ts", []string{"h264"}, []byte("seed"))
-	encRel := "20240101/lock_h264.mp4"
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/put-order.m2ts", []string{"h264"}, []byte("original"))
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "h264", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relPath, err := EncodedRelPath("20240101/put-order.m2ts", "h264", "mp4", int(observed.generation), false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	scratchOut := filepath.Join(scratchDir, "out.mp4")
 	if err := os.WriteFile(scratchOut, []byte("encoded bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	var acquiredDuringCommit bool
-	orig := beforeEncodeCommit
-	t.Cleanup(func() { beforeEncodeCommit = orig })
+	worker := newH264Worker(pool, mediaDir, scratchDir, "")
+	originalCommitHook := beforeEncodeCommit
+	t.Cleanup(func() { beforeEncodeCommit = originalCommitHook })
 	beforeEncodeCommit = func(string) error {
-		l, ok, err := tryLockMediaRelPathFile(mediaDir, encRel)
-		if err != nil {
+		if _, err := worker.Objects.Head(ctx, relPath); err != nil {
+			return fmt.Errorf("object is not durable before DB commit: %w", err)
+		}
+		var state string
+		if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, relPath).Scan(&state); err != nil {
 			return err
 		}
-		if ok {
-			acquiredDuringCommit = true
-			_ = l.Close()
+		if state != "pending" {
+			return fmt.Errorf("copy state before DB commit = %q, want pending", state)
 		}
 		return nil
 	}
-	w := newH264Worker(pool, mediaDir, scratchDir, "")
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
-	if _, published, err := w.publishEncoded(context.Background(), encodePublishInput{
-		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
+	if _, published, err := worker.publishEncoded(ctx, encodePublishInput{
+		recordingID: recordingID, profile: "h264", attempt: attempt,
+		relPath: relPath, scratchOut: scratchOut, observed: observed,
 	}); err != nil || !published {
-		t.Fatalf("publishEncoded = published %v, err %v", published, err)
-	}
-	if acquiredDuringCommit {
-		t.Fatal("rel_path file lock was free right before the commit")
-	}
-}
-
-// lock 待ちで ctx が切れたら、stage 済みの temp は消える。
-func TestEncodeWorker_PublishCancelledWhileWaitingForLockRemovesTemp(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/cancel.m2ts", []string{"h264"}, []byte("seed"))
-	encRel := "20240101/cancel_h264.mp4"
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
-	scratchOut := filepath.Join(scratchDir, "out.mp4")
-	if err := os.WriteFile(scratchOut, []byte("encoded bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	held, ok, err := tryLockMediaRelPathFile(mediaDir, encRel)
-	if err != nil || !ok {
-		t.Fatalf("holding the lock: ok=%v err=%v", ok, err)
-	}
-	defer func() { _ = held.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	w := newH264Worker(pool, mediaDir, scratchDir, "")
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
-	if _, _, err := w.publishEncoded(ctx, encodePublishInput{
-		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
-	}); err == nil {
-		t.Fatal("publishEncoded succeeded while the lock was held")
-	}
-	assertNoEncodeTemp(t, filepath.Dir(finalPath))
-}
-
-// R4: 通常削除が deleting を記録して unlink する間、同じ rel_path の encode 公開は
-// filesystem lock を待つ。lock を外すと encode が先に active を戻し、削除がその
-// ファイルを unlink する順序になる。
-func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r4.m2ts", []string{"h264"}, []byte("original"))
-	const relPath = "20240101/r4_h264.mp4"
-	const previous = "previous encoded bytes"
-	const next = "new encoded bytes"
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.WriteFile(finalPath, []byte(previous), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	assetID := seedEncodedAsset(t, pool, recordingID, "h264", relPath)
-	scratchOut := filepath.Join(scratchDir, "r4.mp4")
-	if err := os.WriteFile(scratchOut, []byte(next), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
-
-	deletePaused := make(chan struct{})
-	releaseDelete := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseDelete) }) }
-	originalDeleteHook := beforeMediaAssetUnlink
-	originalEncodeLockHook := beforeEncodeLock
-	originalPublicationHook := beforeEncodeFilePublication
-	t.Cleanup(func() {
-		release()
-		beforeMediaAssetUnlink = originalDeleteHook
-		beforeEncodeLock = originalEncodeLockHook
-		beforeEncodeFilePublication = originalPublicationHook
-	})
-	beforeMediaAssetUnlink = func(path string) {
-		if path == relPath {
-			close(deletePaused)
-			<-releaseDelete
-		}
-	}
-	staged := make(chan struct{}, 1)
-	beforeEncodeLock = func(path string) {
-		if path == scratchOut {
-			staged <- struct{}{}
-		}
-	}
-	publicationReached := make(chan struct{}, 1)
-	beforeEncodeFilePublication = func(path string) error {
-		if path == scratchOut {
-			publicationReached <- struct{}{}
-		}
-		return nil
-	}
-
-	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
-	deleteDone := make(chan struct{})
-	go func() {
-		cleanup.deleteMediaAsset(ctx, store.MediaDeleteAsset{
-			ID: assetID, RecordingID: recordingID, RelPath: relPath,
-			SizeBytes: int64(len(previous)), Kind: "encoded",
-		}, "test")
-		close(deleteDone)
-	}()
-	select {
-	case <-deletePaused:
-	case <-time.After(5 * time.Second):
-		release()
-		<-deleteDone
-		t.Fatal("delete did not reach the unlink boundary")
+		t.Fatalf("publishEncoded = published %t, err %v; want committed publication", published, err)
 	}
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&state); err != nil {
-		release()
-		<-deleteDone
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, relPath).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
-	if state != "deleting" {
-		release()
-		<-deleteDone
-		t.Fatalf("asset state while deletion is paused = %q, want deleting", state)
-	}
-
-	worker := newH264Worker(pool, mediaDir, scratchDir, "")
-	encodeDone := make(chan error, 1)
-	go func() {
-		_, _, err := worker.publishEncoded(ctx, encodePublishInput{
-			recordingID: recordingID, profile: "h264", attempt: attempt,
-			relPath: relPath, finalPath: finalPath, scratchOut: scratchOut,
-			observed: encodePlan{observedGeneration: new(int64)},
-		})
-		encodeDone <- err
-	}()
-	select {
-	case <-staged:
-	case err := <-encodeDone:
-		release()
-		<-deleteDone
-		t.Fatalf("encode returned before staging completed: %v", err)
-	case <-time.After(5 * time.Second):
-		release()
-		<-deleteDone
-		t.Fatal("encode did not finish staging")
-	}
-	select {
-	case <-publicationReached:
-		t.Error("encode reached publication while normal deletion held the rel_path lock")
-	case <-time.After(2 * time.Second):
-	}
-
-	release()
-	select {
-	case <-deleteDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("delete did not finish after release")
-	}
-	if err := <-encodeDone; err != nil {
-		t.Fatalf("publishEncoded: %v", err)
-	}
-	got, err := os.ReadFile(finalPath)
-	if err != nil || string(got) != next {
-		t.Errorf("canonical after delete and encode = %q, err %v; want %q", got, err, next)
-	}
-	var finalState string
-	var size int64
-	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.id = $1 ORDER BY c.id DESC LIMIT 1`, assetID).Scan(&finalState, &size); err != nil {
-		t.Fatal(err)
-	}
-	if finalState != "active" || size != int64(len(next)) {
-		t.Errorf("asset after delete and encode = state %q, size %d; want active, %d", finalState, size, len(next))
-	}
-}
-
-// R5: A は fencing 後に DB セッションを失う。B が同じ canonical を公開できるのは
-// A の filesystem lock 解放後であり、A の遅い公開は B を上書きしない。
-// publish が成功した後の commit だけが失敗する経路である。
-func TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication(t *testing.T) {
-	runAttemptCannotOverwriteLaterPublication(t, true)
-}
-
-// R5 の別経路: A の publish 関数がエラーを返し、store が rollback する。
-func TestEncodeWorker_FailedPublishCallbackCannotOverwriteLaterPublication(t *testing.T) {
-	runAttemptCannotOverwriteLaterPublication(t, false)
-}
-
-// runAttemptCannotOverwriteLaterPublication は A の失敗のしかたを sessionLost で切り替える。
-// true なら A の DB セッションを落として commit を失敗させ、false なら publish 関数がエラーを返す。
-func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r5.m2ts", []string{"h264"}, []byte("original"))
-	const relPath = "20240101/r5_h264.mp4"
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	scratchA := filepath.Join(scratchDir, "r5-a.mp4")
-	scratchB := filepath.Join(scratchDir, "r5-b.mp4")
-	contentA := []byte("older attempt output with distinct size")
-	contentB := []byte("newer B output")
-	for path, content := range map[string][]byte{scratchA: contentA, scratchB: contentB} {
-		if err := os.WriteFile(path, content, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
-	worker := newH264Worker(pool, mediaDir, scratchDir, "")
-
-	aAtPublication := make(chan struct{})
-	bAtPublication := make(chan struct{}, 1)
-	releaseA := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseA) }) }
-	originalEncodeLockHook := beforeEncodeLock
-	originalCommitHook := beforeEncodeCommit
-	originalPublicationHook := beforeEncodeFilePublication
-	t.Cleanup(func() {
-		release()
-		beforeEncodeLock = originalEncodeLockHook
-		beforeEncodeCommit = originalCommitHook
-		beforeEncodeFilePublication = originalPublicationHook
-	})
-	if sessionLost {
-		beforeEncodeFilePublication = func(path string) error {
-			if path == scratchA {
-				testutil.TerminateOpenTransactions(t, pool)
-			}
-			return nil
-		}
-	}
-	stagedB := make(chan string, 1)
-	beforeEncodeLock = func(path string) {
-		if path == scratchB {
-			stagedB <- path
-		}
-	}
-	beforeEncodeCommit = func(path string) error {
-		switch path {
-		case scratchA:
-			close(aAtPublication)
-			<-releaseA
-			if sessionLost {
-				return nil
-			}
-			return errors.New("injected attempt A commit failure")
-		case scratchB:
-			bAtPublication <- struct{}{}
-		}
-		return nil
-	}
-	type publishResult struct {
-		published bool
-		err       error
-	}
-	start := func(scratch string) <-chan publishResult {
-		done := make(chan publishResult, 1)
-		go func() {
-			_, published, err := worker.publishEncoded(ctx, encodePublishInput{
-				recordingID: recordingID, profile: "h264", attempt: attempt,
-				relPath: relPath, finalPath: finalPath, scratchOut: scratch,
-			})
-			done <- publishResult{published: published, err: err}
-		}()
-		return done
-	}
-	doneA := start(scratchA)
-	select {
-	case <-aAtPublication:
-	case resultA := <-doneA:
-		release()
-		t.Fatalf("attempt A returned before the publication gate: published %v, err %v", resultA.published, resultA.err)
-	case <-time.After(5 * time.Second):
-		release()
-		t.Fatal("attempt A did not reach the publication gate")
-	}
-	doneB := start(scratchB)
-	select {
-	case path := <-stagedB:
-		if path != scratchB {
-			release()
-			t.Fatalf("staged hook path = %q, want B scratch %q", path, scratchB)
-		}
-	case <-time.After(5 * time.Second):
-		release()
-		t.Fatal("attempt B did not finish staging")
-	}
-	select {
-	case <-bAtPublication:
-		t.Error("attempt B reached rename while attempt A still held the rel_path lock")
-	case <-time.After(2 * time.Second):
-	}
-
-	release()
-	resultA := <-doneA
-	if resultA.err == nil || resultA.published {
-		t.Errorf("attempt A = published %v, err %v; want disconnected transaction failure", resultA.published, resultA.err)
-	}
-	resultB := <-doneB
-	if resultB.err != nil || !resultB.published {
-		t.Fatalf("attempt B = published %v, err %v; want successful publication", resultB.published, resultB.err)
-	}
-	got, err := os.ReadFile(finalPath)
-	if err != nil || !bytes.Equal(got, contentB) {
-		t.Errorf("canonical after retries = %q, err %v; want B output %q", got, err, contentB)
-	}
-	var state string
-	var size int64
-	if err := pool.QueryRow(ctx, `SELECT c.state, a.size_bytes FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
-		WHERE a.recording_id = $1 AND kind = 'encoded' AND profile = 'h264'`, recordingID).Scan(&state, &size); err != nil {
-		t.Fatal(err)
-	}
-	if state != "active" || size != int64(len(contentB)) {
-		t.Errorf("encoded row after retries = state %q, size %d; want active, %d", state, size, len(contentB))
+	if state != "active" {
+		t.Fatalf("copy state after commit = %q, want active", state)
 	}
 }
 
@@ -1212,7 +906,6 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 		profile:      "cut",
 		attempt:      attempt,
 		relPath:      finalRel,
-		finalPath:    filepath.Join(mediaDir, filepath.FromSlash(finalRel)),
 		scratchOut:   scratchOut,
 		observed:     observed,
 		cut:          cut,

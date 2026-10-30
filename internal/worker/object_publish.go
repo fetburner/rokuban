@@ -20,13 +20,14 @@ type objectCompanion struct {
 	ContentType string
 }
 
-// publishGeneratedObject は S3 の置き場への公開を、予約・PUT・公開の順に進める。
+// publishGeneratedObject は派生物の置き場への公開を、予約・Put・DB 公開の順に進める。
 //
 //  1. pending のコピー行を commit する（pendingPrepared なら呼び出し側が済ませている）。
-//  2. 宣言サイズどおりに読み切った全体の SHA-256 を照合しながら PUT する。
+//  2. 宣言サイズどおりに読み切った全体の SHA-256 を照合しながら Put する。
 //  3. commit が公開の tx で pending を active にし、SHA-256 を論理行へ書く。
 //
-// commit は PUT の後に呼ぶ。公開に至らなかった pending と key は、削除 reconcile が猶予後に回収する。
+// guard は Put と DB commit の直前に呼び、メディア置き場のマウント状態を再確認する。
+// commit は Put の後に呼ぶ。公開に至らなかった pending と key は、削除 reconcile が猶予後に回収する。
 func publishGeneratedObject(
 	ctx context.Context,
 	objects objstore.Store,
@@ -34,13 +35,14 @@ func publishGeneratedObject(
 	pending store.PendingMediaAssetCopy,
 	scratchPath, contentType string,
 	pendingPrepared bool,
+	guard func(operation string) error,
 	commit func(size int64, sha256 [sha256.Size]byte) (bool, error),
 	companions ...objectCompanion,
 ) (int64, bool, error) {
 	if objects == nil || publisher == nil {
 		return 0, false, fmt.Errorf("object store and derived media publisher are required")
 	}
-	size, checksum, err := hashObjectFile(scratchPath)
+	size, checksum, err := hashObjectFile(ctx, scratchPath)
 	if err != nil {
 		return 0, false, fmt.Errorf("hashing generated object %q: %w", pending.RelPath, err)
 	}
@@ -50,15 +52,30 @@ func publishGeneratedObject(
 			return 0, false, fmt.Errorf("recording pending object copy: %w", err)
 		}
 	}
+	if guard != nil {
+		if err := guard("putting generated object"); err != nil {
+			return 0, false, err
+		}
+	}
 	if err := uploadObjectFile(ctx, objects, pending.RelPath, scratchPath, size, checksum, contentType); err != nil {
 		return 0, false, err
 	}
 	for _, companion := range companions {
-		companionSize, companionChecksum, err := hashObjectFile(companion.Path)
+		companionSize, companionChecksum, err := hashObjectFile(ctx, companion.Path)
 		if err != nil {
 			return size, false, fmt.Errorf("hashing companion object %q: %w", companion.Key, err)
 		}
+		if guard != nil {
+			if err := guard("putting generated companion object"); err != nil {
+				return size, false, err
+			}
+		}
 		if err := uploadObjectFile(ctx, objects, companion.Key, companion.Path, companionSize, companionChecksum, companion.ContentType); err != nil {
+			return size, false, err
+		}
+	}
+	if guard != nil {
+		if err := guard("committing generated object"); err != nil {
 			return size, false, err
 		}
 	}
@@ -66,7 +83,7 @@ func publishGeneratedObject(
 	return size, published, err
 }
 
-func hashObjectFile(path string) (int64, [sha256.Size]byte, error) {
+func hashObjectFile(ctx context.Context, path string) (int64, [sha256.Size]byte, error) {
 	var checksum [sha256.Size]byte
 	info, err := os.Stat(path)
 	if err != nil {
@@ -80,7 +97,7 @@ func hashObjectFile(path string) (int64, [sha256.Size]byte, error) {
 		return 0, checksum, fmt.Errorf("opening generated object: %w", err)
 	}
 	hash := sha256.New()
-	n, err := io.Copy(hash, f)
+	n, err := copyWithContext(ctx, hash, f)
 	closeErr := f.Close()
 	if err != nil {
 		return 0, checksum, fmt.Errorf("reading generated object: %w", err)
@@ -93,6 +110,22 @@ func hashObjectFile(path string) (int64, [sha256.Size]byte, error) {
 	}
 	copy(checksum[:], hash.Sum(nil))
 	return info.Size(), checksum, nil
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, contextReader{ctx: ctx, r: src})
 }
 
 func uploadObjectFile(ctx context.Context, objects objstore.Store, key, path string, size int64, checksum [sha256.Size]byte, contentType string) error {

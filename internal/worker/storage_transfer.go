@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -96,9 +97,11 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 
 // StorageTransferWorker copies one logical asset between mounted FS stores.
 type StorageTransferWorker struct {
-	Storage store.StorageTransfer
-	Config  config.StorageConfig
-	Roots   map[string]string
+	Storage      store.StorageTransfer
+	Config       config.StorageConfig
+	Roots        map[string]string
+	ObjectStores map[string]objstore.Store
+	ScratchDir   string
 }
 
 // Work verifies the policy token and mounted destination before reserving one copy operation.
@@ -171,7 +174,7 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	}
 	log := slog.With("media_asset_id", transfer.MediaAssetID, "source_store", transfer.SourceStore, "target_store", args.Store)
 	sourceRoot := w.Roots[transfer.SourceStore]
-	if sourceRoot == "" {
+	if transfer.Kind == store.AssetKindOriginal && sourceRoot == "" {
 		return jobq.Snooze(storageTransferLockSnooze)
 	}
 	lease, acquired, err := w.Storage.AcquireTransferSourceBandwidth(ctx, transfer.SourceStore)
@@ -188,6 +191,9 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 			retErr = errors.Join(retErr, fmt.Errorf("releasing transfer source bandwidth lock: %w", err))
 		}
 	}()
+	if transfer.Kind != store.AssetKindOriginal {
+		return w.copyDerivedAsset(ctx, transfer, args, rules, targetRoot, log)
+	}
 	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
 		return err
 	}
@@ -268,6 +274,193 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("syncing transfer destination directory: %w", err))
 	}
 	return w.completeTransfer(ctx, transfer, args, rules, digest, sourcePath, targetPath, tempPath, true, log)
+}
+
+// copyDerivedAsset transfers derived media through the object-store API. Temporary bytes live only in scratch;
+// canonical keys are published once with Store.Put and become visible when CompleteMediaAssetTransfer commits.
+func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetRoot string, log *slog.Logger) error {
+	sourceStore := w.ObjectStores[transfer.SourceStore]
+	targetStore := w.ObjectStores[args.Store]
+	if sourceStore == nil || targetStore == nil {
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived transfer object stores are not configured for %q -> %q", transfer.SourceStore, args.Store))
+	}
+	if sourceRoot := w.Roots[transfer.SourceStore]; sourceRoot != "" {
+		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading derived storage transfer source"); err != nil {
+			return err
+		}
+	}
+	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing derived storage transfer destination"); err != nil {
+		return err
+	}
+	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "storage-transfer", fmt.Sprintf("derived-%d-%d-", transfer.MediaAssetID, transfer.CopyID))
+	if err != nil {
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("creating derived transfer scratch: %w", err))
+	}
+	defer func() { _ = os.RemoveAll(scratchDir) }()
+
+	assetPath, digest, size, err := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
+	if err != nil {
+		if errors.Is(err, errTransferSourceMismatch) {
+			return w.handleTransferMismatch(ctx, transfer, log, "", "", "derived source differs from logical asset metadata")
+		}
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", err))
+	}
+	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
+		return err
+	}
+	if err := putTransferredObject(ctx, targetStore, transfer.RelPath, assetPath, size, digest, objectContentType(transfer.RelPath)); err != nil {
+		metrics.RecordObjectStoreError("put", err)
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
+	}
+
+	var subtitleKey string
+	if transfer.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(transfer.RelPath) {
+		sourceSubtitleKey, err := mediapath.SubtitleSibling(transfer.SourceRelPath)
+		if err != nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("building source subtitle object key: %w", err))
+		}
+		subtitleKey, err = mediapath.SubtitleSibling(transfer.RelPath)
+		if err != nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("building destination subtitle object key: %w", err))
+		}
+		subtitlePath, subtitleDigest, subtitleSize, subtitleErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, sourceSubtitleKey, scratchDir, -1, nil)
+		if errors.Is(subtitleErr, objstore.ErrNotFound) {
+			if err := targetStore.Delete(ctx, subtitleKey); err != nil {
+				return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("removing absent transferred subtitle: %w", err))
+			}
+		} else if subtitleErr != nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading transferred subtitle: %w", subtitleErr))
+		} else if err := putTransferredObject(ctx, targetStore, subtitleKey, subtitlePath, subtitleSize, subtitleDigest, "text/vtt; charset=utf-8"); err != nil {
+			metrics.RecordObjectStoreError("put", err)
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing transferred subtitle: %w", err))
+		}
+	}
+
+	if err := requireMediaStoreMarker(targetRoot, args.Store, "committing derived storage transfer"); err != nil {
+		return err
+	}
+	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
+	if err != nil {
+		return fmt.Errorf("committing derived storage transfer: %w", err)
+	}
+	if !active {
+		if err := targetStore.Delete(ctx, transfer.RelPath); err != nil {
+			return fmt.Errorf("removing uncommitted derived transfer object: %w", err)
+		}
+		if subtitleKey != "" {
+			if err := targetStore.Delete(ctx, subtitleKey); err != nil {
+				return fmt.Errorf("removing uncommitted transferred subtitle: %w", err)
+			}
+		}
+		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
+			return err
+		}
+		if rejection != "" {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived transfer completion rejected: %s", rejection))
+		}
+		return nil
+	}
+	metrics.StorageTransferLastSuccess.Set(float64(time.Now().Unix()))
+	log.Info("storage transfer: derived copy active", "bytes", size)
+	return nil
+}
+
+func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, objects objstore.Store, sourceStoreName, key, scratchDir string, expectedSize int64, expectedSHA []byte) (string, []byte, int64, error) {
+	reader, ok := objects.(objstore.Reader)
+	if !ok {
+		return "", nil, 0, fmt.Errorf("object store %q does not support reads", sourceStoreName)
+	}
+	source, err := reader.Get(ctx, key)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	path, err := os.CreateTemp(scratchDir, "object-*")
+	if err != nil {
+		_ = source.Close()
+		return "", nil, 0, fmt.Errorf("creating scratch object: %w", err)
+	}
+	name := path.Name()
+	hasher := sha256.New()
+	limited, err := w.transferSourceReader(ctx, sourceStoreName, source)
+	if err != nil {
+		_ = source.Close()
+		_ = path.Close()
+		_ = os.Remove(name)
+		return "", nil, 0, err
+	}
+	count, copyErr := io.CopyBuffer(io.MultiWriter(path, hasher), limited, make([]byte, 64*1024))
+	closeSourceErr := source.Close()
+	closeFileErr := path.Close()
+	if copyErr != nil {
+		_ = os.Remove(name)
+		return "", nil, count, fmt.Errorf("copying object to scratch: %w", copyErr)
+	}
+	if closeSourceErr != nil {
+		_ = os.Remove(name)
+		return "", nil, count, fmt.Errorf("closing source object: %w", closeSourceErr)
+	}
+	if closeFileErr != nil {
+		_ = os.Remove(name)
+		return "", nil, count, fmt.Errorf("closing scratch object: %w", closeFileErr)
+	}
+	digest := hasher.Sum(nil)
+	if expectedSize >= 0 && count != expectedSize {
+		_ = os.Remove(name)
+		return "", nil, count, fmt.Errorf("source object size is %d, want %d: %w", count, expectedSize, errTransferSourceMismatch)
+	}
+	if len(expectedSHA) != 0 && !bytes.Equal(digest, expectedSHA) {
+		_ = os.Remove(name)
+		return "", nil, count, fmt.Errorf("source object SHA-256 differs from logical asset: %w", errTransferSourceMismatch)
+	}
+	return name, digest, count, nil
+}
+
+func putTransferredObject(ctx context.Context, objects objstore.Store, key, path string, size int64, digest []byte, contentType string) error {
+	var checksum [sha256.Size]byte
+	if len(digest) != len(checksum) {
+		return fmt.Errorf("invalid SHA-256 length %d", len(digest))
+	}
+	copy(checksum[:], digest)
+	if _, err := objects.Head(ctx, key); err == nil {
+		actual, actualSize, err := hashStoredObject(ctx, objects, key)
+		if err != nil {
+			return err
+		}
+		if actualSize != size || !bytes.Equal(actual, digest) {
+			return fmt.Errorf("existing destination object differs from transfer source: %w", objstore.ErrAlreadyExists)
+		}
+		return nil
+	} else if !errors.Is(err, objstore.ErrNotFound) {
+		return err
+	}
+	if err := uploadObjectFile(ctx, objects, key, path, size, checksum, contentType); err != nil {
+		if errors.Is(err, objstore.ErrAlreadyExists) {
+			actual, actualSize, readErr := hashStoredObject(ctx, objects, key)
+			if readErr == nil && actualSize == size && bytes.Equal(actual, digest) {
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func hashStoredObject(ctx context.Context, objects objstore.Store, key string) ([]byte, int64, error) {
+	reader, ok := objects.(objstore.Reader)
+	if !ok {
+		return nil, 0, fmt.Errorf("object store does not support reads")
+	}
+	object, err := reader.Get(ctx, key)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = object.Close() }()
+	hasher := sha256.New()
+	n, err := copyWithContext(ctx, hasher, object)
+	if err != nil {
+		return nil, n, err
+	}
+	return hasher.Sum(nil), n, nil
 }
 
 // transferTempPath は、1 つの宛先コピーの転送が使う temp のパスを返す。
@@ -742,7 +935,18 @@ func removeAbsentTransferSubtitle(targetRoot, targetStore, targetPath string) er
 }
 
 func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger, sourcePath, tempPath, reason string) error {
-	sourceSHA, sourceSize, err := w.hashTransferSource(ctx, sourcePath, transfer.SourceStore)
+	var sourceSHA []byte
+	var sourceSize int64
+	var err error
+	if transfer.Kind == store.AssetKindOriginal {
+		sourceSHA, sourceSize, err = w.hashTransferSource(ctx, sourcePath, transfer.SourceStore)
+	} else {
+		objects := w.ObjectStores[transfer.SourceStore]
+		if objects == nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived source object store %q is not configured", transfer.SourceStore))
+		}
+		sourceSHA, sourceSize, err = hashStoredObject(ctx, objects, transfer.SourceRelPath)
+	}
 	if err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("rechecking transfer source after %s: %w", reason, err))
 	}
@@ -788,31 +992,34 @@ func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, tran
 	return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived source mismatch without a present original: %s", reason))
 }
 
-// unlinkRetiredDerivedSource は deleting にした破損コピーのファイルを消し、deleted に確定する。
-// 呼び出し元が転送元の rel_path の flock を持っている間に呼ぶ。unlink の前に落ちた場合は、
-// 削除 reconcile がどの腕にも該当しない deleting 行として active に戻す。
+// unlinkRetiredDerivedSource は破損した派生物コピーを置き場の API で消し、deleted に確定する。
 func (w *StorageTransferWorker) unlinkRetiredDerivedSource(ctx context.Context, transfer store.MediaAssetTransfer) error {
 	sourceRoot := w.Roots[transfer.SourceStore]
-	path, err := mediapath.Resolve(sourceRoot, transfer.SourceRelPath)
-	if err != nil {
-		return fmt.Errorf("resolving corrupt derived source: %w", err)
+	objects := w.ObjectStores[transfer.SourceStore]
+	if objects == nil {
+		return fmt.Errorf("derived source object store %q is not configured", transfer.SourceStore)
 	}
-	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "unlinking corrupt derived source"); err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("removing corrupt derived source: %w", err)
-	}
-	if transfer.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(transfer.SourceRelPath) {
-		if err := removeEncodedSubtitleSidecar(sourceRoot, transfer.SourceStore, transfer.SourceRelPath, "unlinking corrupt derived source subtitle sidecar"); err != nil {
+	if sourceRoot != "" {
+		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "deleting corrupt derived source"); err != nil {
 			return err
 		}
 	}
-	if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("syncing directory after corrupt derived source removal: %w", err)
+	if err := objects.Delete(ctx, transfer.SourceRelPath); err != nil {
+		return fmt.Errorf("deleting corrupt derived source object: %w", err)
 	}
-	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "marking corrupt derived source deleted"); err != nil {
-		return err
+	if transfer.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(transfer.SourceRelPath) {
+		sidecar, err := mediapath.SubtitleSibling(transfer.SourceRelPath)
+		if err != nil {
+			return fmt.Errorf("building corrupt derived source subtitle key: %w", err)
+		}
+		if err := objects.Delete(ctx, sidecar); err != nil {
+			return fmt.Errorf("deleting corrupt derived source subtitle object: %w", err)
+		}
+	}
+	if sourceRoot != "" {
+		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "marking corrupt derived source deleted"); err != nil {
+			return err
+		}
 	}
 	if _, err := w.Storage.MarkMediaAssetCopyDeleted(ctx, store.MediaAssetCopyDeleteCandidate{
 		CopyID: transfer.SourceCopyID, MediaAssetID: transfer.MediaAssetID, Store: transfer.SourceStore,

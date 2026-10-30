@@ -51,15 +51,13 @@ const (
 // poster をタイルより先にキューへ送れる。両パスで同じ候補 query を使うことで、
 // ごみ箱と `missing_media_assets` の除外条件を揃える。
 //
-// ストレージ契約: ジョブ固有 scratch に ffmpeg 出力 → 同じディレクトリの staged file
-// へ fsync → rel_path lock と DB transaction の下で DB 行予約 → rename + 親 dir fsync
-// → commit（docs/storage/contract.md §3）。
+// ストレージ契約: 原本を読み、ffmpeg 出力は scratch に作る。objstore.Store.Put が派生物を
+// 永続化してから、DB transaction が active copy を公開する（docs/storage/contract.md §3）。
 //
 // 失敗したら scratch を捨ててやり直す。部分成果はコミットしない ---
 // 行の存在 = タイルが全部そろっている（不変条件 10）。
 type SeekTilesWorker struct {
 	Media           store.MediaReconcile
-	Publisher       store.MediaPublish
 	Objects         objstore.Store
 	ObjectPublisher store.DerivedMediaPublisher
 	MediaDir        string
@@ -190,27 +188,20 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 
 	var size int64
 	var published bool
-	if w.Objects != nil {
-		pending := store.PendingMediaAssetCopy{
-			RecordingID: recordingID, Kind: "seek_tiles", RelPath: relPath,
-			DerivedGeneration: generation,
-		}
-		size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, sheetPath, objectContentType(relPath), false,
-			func(size int64, sum [sha256.Size]byte) (bool, error) {
-				return w.ObjectPublisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
-					RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
-					DerivedGeneration: generation, SHA256: sum[:], PendingCopy: true,
-				}, func() error { return nil })
-			})
-	} else {
-		size, published, err = publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, relPath, sheetPath,
-			func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
-				return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
-					RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
-					SHA256: contentSHA256, DerivedGeneration: generation,
-				}, publish)
-			})
+	pending := store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindSeekTiles, RelPath: relPath,
+		DerivedGeneration: generation,
 	}
+	size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, sheetPath, objectContentType(relPath), false,
+		func(operation string) error {
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
+		},
+		func(size int64, sum [sha256.Size]byte) (bool, error) {
+			return w.ObjectPublisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
+				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+				DerivedGeneration: generation, SHA256: sum[:], PendingCopy: true,
+			}, func() error { return nil })
+		})
 	if err != nil {
 		return fmt.Errorf("publishing seek tiles: %w", err)
 	}
@@ -242,30 +233,13 @@ func seekTilesRelPath(recordingID, generation int64) string {
 func (w *SeekTilesWorker) nextUnusedSeekTilesRelPath(ctx context.Context, recordingID, generation int64) (string, int64, error) {
 	for {
 		relPath := seekTilesRelPath(recordingID, generation)
-		if w.Objects != nil {
-			if _, err := mediapath.Resolve(w.MediaDir, relPath); err != nil {
-				return "", 0, err
-			}
-			_, err := w.Objects.Head(ctx, relPath)
-			if errors.Is(err, objstore.ErrNotFound) {
-				return relPath, generation, nil
-			}
-			if err != nil {
-				metrics.RecordObjectStoreError("head", err)
-				return "", 0, err
-			}
-		} else {
-			fullPath, err := mediapath.Resolve(w.MediaDir, relPath)
-			if err != nil {
-				return "", 0, err
-			}
-			_, err = os.Lstat(fullPath)
-			if errors.Is(err, os.ErrNotExist) {
-				return relPath, generation, nil
-			}
-			if err != nil {
-				return "", 0, err
-			}
+		_, err := w.Objects.Head(ctx, relPath)
+		if errors.Is(err, objstore.ErrNotFound) {
+			return relPath, generation, nil
+		}
+		if err != nil {
+			metrics.RecordObjectStoreError("head", err)
+			return "", 0, err
 		}
 		if generation == int64(^uint64(0)>>1) {
 			return "", 0, fmt.Errorf("seek tile generation overflow")

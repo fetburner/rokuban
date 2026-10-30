@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func (e objectEnv) publishThumbnail(
 	pending := store.PendingMediaAssetCopy{
 		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key, DerivedGeneration: generation,
 	}
-	_, published, err := publishGeneratedObject(context.Background(), e.objects, e.media, pending, scratch, "image/jpeg", false,
+	_, published, err := publishGeneratedObject(context.Background(), e.objects, e.media, pending, scratch, "image/jpeg", false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return e.media.PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
 				RecordingID: recordingID, RelPath: key, SizeBytes: size, SeekMs: 1000, InputAssetID: originalID,
@@ -230,7 +231,7 @@ func TestObjectPublishWritesSHA256InTheCommitTransaction(t *testing.T) {
 	tilesPath := t.TempDir() + "/tiles.jpg"
 	writeFile(t, tilesPath, tiles)
 	_, published, err := publishGeneratedObject(ctx, env.objects, env.media,
-		store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindSeekTiles, RelPath: tilesKey}, tilesPath, "image/jpeg", false,
+		store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindSeekTiles, RelPath: tilesKey}, tilesPath, "image/jpeg", false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return env.media.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
 				RecordingID: recordingID, RelPath: tilesKey, SizeBytes: size, SHA256: sum[:], PendingCopy: true,
@@ -246,7 +247,7 @@ func TestObjectPublishWritesSHA256InTheCommitTransaction(t *testing.T) {
 	writeFile(t, encodedPath, encoded)
 	_, published, err = publishGeneratedObject(ctx, env.objects, env.media,
 		store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindEncoded, Profile: &profile, RelPath: encodedKey, ReserveNewGeneration: true},
-		encodedPath, "video/mp4", false,
+		encodedPath, "video/mp4", false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return env.media.PublishEncoded(ctx, store.EncodedPublishInput{
 				RecordingID: recordingID, Profile: profile, Attempt: 1, RelPath: encodedKey, SizeBytes: size,
@@ -398,6 +399,133 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 		if env.objectExists(t, key) || env.copyState(t, key) != "deleted" {
 			t.Fatalf("aged pending %q: object exists %t, state %q; want removed and deleted", key, env.objectExists(t, key), env.copyState(t, key))
 		}
+	}
+}
+
+// 共有 FS の派生物も Store.Put 後に公開が失敗した pending key を、通常の FS reconcile が
+// ブレーカーに数えたうえで Store.Delete 経由で回収する。
+func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	objects := testFSObjectStore(mediaDir)
+	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, dbtest.StoreName)
+	keys := make([]string, 0, 2)
+	for range 2 {
+		recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+		key := thumbnailRelPath(recordingID, 0)
+		scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
+		writeFile(t, scratch, []byte("uploaded before publication failed"))
+		_, published, err := publishGeneratedObject(ctx, objects, media,
+			store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key},
+			scratch, "image/jpeg", false, nil,
+			func(int64, [sha256.Size]byte) (bool, error) { return false, errors.New("injected DB publication failure") },
+		)
+		if err == nil || published {
+			t.Fatalf("publication result = (%t, %v), want failed after Put", published, err)
+		}
+		if _, err := objects.Head(ctx, key); err != nil {
+			t.Fatalf("Head failed object %q: %v", key, err)
+		}
+		keys = append(keys, key)
+	}
+	for _, key := range keys {
+		if _, err := pool.Exec(ctx,
+			`UPDATE media_asset_copies SET created_at = now() - interval '48 hours' WHERE store = $1 AND rel_path = $2`,
+			dbtest.StoreName, key); err != nil {
+			t.Fatalf("aging pending copy %q: %v", key, err)
+		}
+	}
+	originalRelPath := "original/pending-transfer.ts"
+	originalPath := filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))
+	if err := os.MkdirAll(filepath.Dir(originalPath), 0o755); err != nil {
+		t.Fatalf("creating original directory: %v", err)
+	}
+	if err := os.WriteFile(originalPath, []byte("original remains file-backed"), 0o644); err != nil {
+		t.Fatalf("writing pending original: %v", err)
+	}
+	originalRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	originalAssetID := dbtest.MediaAsset(t, pool, originalRecordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath, p.SizeBytes = originalRelPath, int64(len("original remains file-backed"))
+	})
+	if _, err := pool.Exec(ctx,
+		`UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE media_asset_id = $1 AND store = $2`,
+		originalAssetID, dbtest.StoreName); err != nil {
+		t.Fatalf("aging pending original copy: %v", err)
+	}
+
+	worker := &DeleteReconcileWorker{
+		MediaDelete: media, MediaPendingReclaim: media,
+		Storage: media, RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName),
+		Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName,
+		TrashRetention: 24 * time.Hour, OrphanMTimeGrace: 24 * time.Hour, OrphanAge: 24 * time.Hour,
+		MissingAssetAge: 24 * time.Hour, MaxDeletesPerPass: 1,
+	}
+	if err := worker.workFilesystem(ctx, worker.settings()); err != nil {
+		t.Fatalf("delete reconcile with breaker limit: %v", err)
+	}
+	var breakerCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM circuit_breakers WHERE name = $1 AND scope = $2`, breaker.DeleteReconcile, dbtest.StoreName,
+	).Scan(&breakerCount); err != nil {
+		t.Fatalf("checking filesystem delete breaker: %v", err)
+	}
+	if breakerCount != 1 {
+		t.Fatalf("filesystem delete breaker rows = %d, want 1 for two pending copies over the limit", breakerCount)
+	}
+	for _, key := range keys {
+		if _, err := objects.Head(ctx, key); err != nil {
+			t.Fatalf("pending object %q was deleted while breaker was latched: %v", key, err)
+		}
+		var state string
+		if err := pool.QueryRow(ctx,
+			`SELECT state FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, key,
+		).Scan(&state); err != nil {
+			t.Fatalf("reading pending copy state %q: %v", key, err)
+		}
+		if state != "pending" {
+			t.Fatalf("pending copy %q state = %q, want pending while breaker is latched", key, state)
+		}
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM circuit_breakers WHERE name = $1 AND scope = $2`, breaker.DeleteReconcile, dbtest.StoreName); err != nil {
+		t.Fatalf("resuming filesystem delete breaker: %v", err)
+	}
+	worker.MaxDeletesPerPass = 100
+	if err := worker.workFilesystem(ctx, worker.settings()); err != nil {
+		t.Fatalf("delete reconcile after resuming breaker: %v", err)
+	}
+	for _, key := range keys {
+		if _, err := objects.Head(ctx, key); !errors.Is(err, objstore.ErrNotFound) {
+			t.Errorf("Head after pending reclaim for %q = %v, want ErrNotFound", key, err)
+		}
+		var state string
+		if err := pool.QueryRow(ctx,
+			`SELECT state FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, key,
+		).Scan(&state); err != nil {
+			t.Fatalf("reading reclaimed copy state %q: %v", key, err)
+		}
+		if state != "deleted" {
+			t.Errorf("reclaimed copy %q state = %q, want deleted", key, state)
+		}
+	}
+	if _, err := os.Stat(originalPath); err != nil {
+		t.Errorf("pending original was changed by derived reclaim: %v", err)
+	}
+	var originalState string
+	if err := pool.QueryRow(ctx,
+		`SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, originalAssetID, dbtest.StoreName,
+	).Scan(&originalState); err != nil {
+		t.Fatalf("reading original copy state: %v", err)
+	}
+	if originalState != "pending" {
+		t.Errorf("original copy state = %q, want pending", originalState)
 	}
 }
 

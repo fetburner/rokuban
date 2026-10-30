@@ -106,7 +106,7 @@ func activatePendingCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64,
 	return nil
 }
 
-// ListAgedPendingMediaAssetCopies は、before より前に予約された pending のコピーを返す。
+// ListAgedPendingMediaAssetCopies は、before より前に予約された pending の派生物コピーを返す。
 func (s *Media) ListAgedPendingMediaAssetCopies(ctx context.Context, before time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListAgedPendingMediaAssetCopies(ctx, sqlcgen.ListAgedPendingMediaAssetCopiesParams{
 		StoreName: s.storeName, CreatedBefore: before, RowLimit: limit,

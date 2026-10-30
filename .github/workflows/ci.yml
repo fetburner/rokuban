@@ -564,6 +564,8 @@ jobs:
           exit 1
       - name: Run S3 API conformance tests
         run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
+      - name: Run shared object store contract against MinIO
+        run: go test -tags s3conformance ./internal/objstore/s3store -run '^TestStoreContract$' -count=1 -timeout 5m -v
       - name: Run S3 worker publication and recovery tests
         run: go test -tags s3conformance ./internal/worker -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
       - name: Stop MinIO service

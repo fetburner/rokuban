@@ -37,9 +37,9 @@ const (
 // ThumbnailWorker は原本または利用可能なエンコード版から代表フレームを JPEG 抽出し、
 // media_assets（kind = 'thumbnail'）としてコミットする。
 //
-// ストレージ契約: ジョブ固有 scratch に ffmpeg 出力 → 同じディレクトリの staged file
-// へ fsync → rel_path lock と DB transaction の下で DB 行予約 → rename + 親 dir fsync
-// → commit（docs/storage/contract.md §3）。
+// ストレージ契約: 原本または encoded を入力にし、ffmpeg 出力を scratch に作る。
+// objstore.Store.Put が派生物を永続化してから、DB transaction が active copy を公開する
+// （docs/storage/contract.md §3）。
 //
 // site 照合ガード（issue #139）は不要と判断: EncodeWorker と同じ理由
 // （ThumbnailJobArgs は recording_id のみで site を持たず、原本読み取りは
@@ -48,7 +48,6 @@ const (
 type ThumbnailWorker struct {
 	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media            store.MediaReconcile
-	Publisher        store.MediaPublish
 	Objects          objstore.Store
 	ObjectPublisher  store.DerivedMediaPublisher
 	MediaDir         string
@@ -67,6 +66,7 @@ type thumbnailWorkPlan struct {
 	inputID      int64
 	inputRelPath string
 	inputStore   string
+	inputDerived bool
 	inputSeek    time.Duration
 	seekMs       int64
 	relPath      string
@@ -107,7 +107,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 	}
 	defer func() { _ = os.RemoveAll(scratchDir) }()
 	scratchPath := filepath.Join(scratchDir, "thumbnail.jpg")
-	inputPath, err := w.resolveThumbnailInput(ctx, plan.inputRelPath, plan.inputStore, scratchDir)
+	inputPath, err := w.resolveThumbnailInput(ctx, plan.inputRelPath, plan.inputStore, plan.inputDerived, scratchDir)
 	if err != nil {
 		return fmt.Errorf("resolving thumbnail input: %w", err)
 	}
@@ -133,30 +133,22 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 	}
 	var size int64
 	var published bool
-	if w.Objects != nil {
-		pending := store.PendingMediaAssetCopy{
-			RecordingID: recordingID, Kind: "thumbnail", RelPath: plan.relPath,
-			DerivedGeneration: plan.generation,
-		}
-		size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, scratchPath, objectContentType(plan.relPath), false,
-			func(size int64, sum [sha256.Size]byte) (bool, error) {
-				return w.ObjectPublisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
-					RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
-					SeekMs: plan.seekMs, InputAssetID: plan.inputID, InputStore: plan.inputStore,
-					DerivedGeneration: plan.generation, Expected: expected,
-					SHA256: sum[:], PendingCopy: true,
-				}, func() error { return nil })
-			})
-	} else {
-		size, published, err = publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, plan.relPath, scratchPath,
-			func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
-				return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
-					RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
-					SHA256: contentSHA256, SeekMs: plan.seekMs, InputAssetID: plan.inputID,
-					DerivedGeneration: plan.generation, Expected: expected,
-				}, publish)
-			})
+	pending := store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: plan.relPath,
+		DerivedGeneration: plan.generation,
 	}
+	size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, scratchPath, objectContentType(plan.relPath), false,
+		func(operation string) error {
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
+		},
+		func(size int64, sum [sha256.Size]byte) (bool, error) {
+			return w.ObjectPublisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+				RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
+				SeekMs: plan.seekMs, InputAssetID: plan.inputID, InputStore: plan.inputStore,
+				DerivedGeneration: plan.generation, Expected: expected,
+				SHA256: sum[:], PendingCopy: true,
+			}, func() error { return nil })
+		})
 	if err != nil {
 		return fmt.Errorf("publishing thumbnail: %w", err)
 	}
@@ -280,6 +272,7 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 	}
 	return thumbnailWorkPlan{
 		inputID: plan.Source.MediaAssetID, inputRelPath: plan.Source.RelPath, inputStore: plan.Source.Store,
+		inputDerived: plan.Source.MediaAssetID != state.OriginalMediaAssetID,
 		inputSeek: time.Duration(plan.InputSeekMs) * time.Millisecond,
 		seekMs:    plan.RecordedSeek, relPath: relPath, generation: generation,
 		expected: expected,
@@ -287,9 +280,9 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 }
 
 // resolveThumbnailInput はサムネイルの入力を ffmpeg が読める scratch 上のパスにする。
-// FS の置き場の入力は media_dir 上のパスをそのまま返し、S3 の置き場の encoded は scratch へ取得する。
-func (w *ThumbnailWorker) resolveThumbnailInput(ctx context.Context, relPath, storeName, scratchDir string) (string, error) {
-	if w.Objects == nil || storeName == w.MediaStoreName {
+// 原本はファイル I/O で読み、encoded 派生物は置き場の Reader から scratch へ取得する。
+func (w *ThumbnailWorker) resolveThumbnailInput(ctx context.Context, relPath, storeName string, derived bool, scratchDir string) (string, error) {
+	if !derived {
 		return mediapath.Resolve(w.MediaDir, relPath)
 	}
 	if w.DerivedStoreName == "" || storeName != w.DerivedStoreName {
@@ -337,30 +330,13 @@ func thumbnailRelPath(recordingID, generation int64) string {
 func (w *ThumbnailWorker) nextUnusedThumbnailRelPath(ctx context.Context, recordingID, generation int64) (string, int64, error) {
 	for {
 		candidate := thumbnailRelPath(recordingID, generation)
-		if w.Objects != nil {
-			if _, err := mediapath.Resolve(w.MediaDir, candidate); err != nil {
-				return "", 0, err
-			}
-			_, err := w.Objects.Head(ctx, candidate)
-			if errors.Is(err, objstore.ErrNotFound) {
-				return candidate, generation, nil
-			}
-			if err != nil {
-				metrics.RecordObjectStoreError("head", err)
-				return "", 0, err
-			}
-		} else {
-			path, err := mediapath.Resolve(w.MediaDir, candidate)
-			if err != nil {
-				return "", 0, err
-			}
-			_, err = os.Lstat(path)
-			if errors.Is(err, os.ErrNotExist) {
-				return candidate, generation, nil
-			}
-			if err != nil {
-				return "", 0, err
-			}
+		_, err := w.Objects.Head(ctx, candidate)
+		if errors.Is(err, objstore.ErrNotFound) {
+			return candidate, generation, nil
+		}
+		if err != nil {
+			metrics.RecordObjectStoreError("head", err)
+			return "", 0, err
 		}
 		if generation == int64(^uint64(0)>>1) {
 			return "", 0, fmt.Errorf("thumbnail generation is exhausted")
@@ -428,7 +404,7 @@ func (w *ThumbnailWorker) commandOutput(ctx context.Context, name string, args .
 }
 
 // copyScratchFileFsync は scratch 上の src を scratch 上の dst へコピーし、dst を fsync する。
-// 公開アセットは stageMediaFile で同じディレクトリへ置き、MediaPublish の callback で rename する。
+// 派生物の公開は objstore.Store へ Put し、DB の pending → active を公開点にする。
 func copyScratchFileFsync(src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {

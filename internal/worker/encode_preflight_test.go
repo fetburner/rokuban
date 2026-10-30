@@ -101,13 +101,15 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			job := tt.seed(t, pool, recordingID)
 
 			w := &EncodeWorker{
-				Publisher:  pgstoretest.Media(pool),
-				Progress:   pgstoretest.Media(pool),
-				Attempts:   pgstoretest.Media(pool),
-				MediaDir:   mediaDir,
-				ScratchDir: scratchDir,
-				FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
-				Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{
+				Publisher:       pgstoretest.Media(pool),
+				Progress:        pgstoretest.Media(pool),
+				Attempts:        pgstoretest.Media(pool),
+				MediaDir:        mediaDir,
+				Objects:         testFSObjectStore(mediaDir),
+				ObjectPublisher: pgstoretest.Media(pool),
+				ScratchDir:      scratchDir,
+				FFmpeg:          filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
+				Profiles:        config.EncodeConfig{Profiles: []config.EncodeProfile{
 					cutFFmpegProfile(),
 					{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 				}},

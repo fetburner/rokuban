@@ -67,25 +67,14 @@ func TestIngestWorkerWithholdsWhenStoreMarkerDoesNotMatch(t *testing.T) {
 	}
 }
 
-func TestGeneratedMediaPublishDoesNotStageWhenStoreMarkerIsMissing(t *testing.T) {
+func TestGeneratedObjectPublishDoesNotWriteWhenStoreMarkerIsMissing(t *testing.T) {
 	mediaDir := t.TempDir()
-	scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
-	if err := os.WriteFile(scratch, []byte("image"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	called := false
-	_, _, err := publishGeneratedMediaAsset(context.Background(), mediaDir, "tokyo", "thumbnails/1.jpg", scratch,
-		func(int64, []byte, func() error) (bool, error) {
-			called = true
-			return false, nil
-		})
+	worker := &EncodeWorker{MediaDir: mediaDir, MediaStoreName: "tokyo"}
+	_, _, err := worker.publishEncoded(context.Background(), encodePublishInput{})
 	if err == nil {
-		t.Fatal("publishGeneratedMediaAsset() succeeded without a store marker")
+		t.Fatal("publishEncoded() succeeded without a store marker")
 	}
-	if called {
-		t.Fatal("commit callback ran without a store marker")
-	}
-	// mkdir も temp の作成も行わない（置き場の目印が無い root には何も作らない）。
+	// fsstore.Put へ達する前に止まり、派生物ディレクトリも作らない。
 	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails")); !os.IsNotExist(err) {
 		t.Fatalf("generated output directory exists after marker rejection: stat error = %v", err)
 	}
@@ -722,44 +711,34 @@ func TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk(t *testing.T) {
 	}
 }
 
-type erroringEncodedPublisher struct {
-	store.MediaPublish
-	calls int
+type markerGuardPublisher struct {
+	store.DerivedMediaPublisher
 }
 
-func (p *erroringEncodedPublisher) PublishEncoded(context.Context, store.EncodedPublishInput, func() error) (bool, error) {
-	p.calls++
-	return false, errors.New("publisher reached")
-}
-
-// 本体の stage の後に目印が消えたら、字幕の temp も rel_path の lock file も作らない。
-func TestPublishEncodedCreatesNoSubtitleTempOrLockWhenMarkerDisappearsAfterBodyStage(t *testing.T) {
+// hash の後に目印が消えたら、オブジェクト置き場へ Put する前に検出する。
+func TestPublishEncodedRechecksStoreMarkerImmediatelyBeforePut(t *testing.T) {
 	for _, state := range []string{"missing", "different store"} {
 		t.Run(state, func(t *testing.T) {
 			mediaDir := t.TempDir()
 			if err := mediapath.WriteStoreMarker(mediaDir, "tokyo"); err != nil {
 				t.Fatal(err)
 			}
-			scratch := t.TempDir()
-			body := filepath.Join(scratch, "out.mp4")
-			subtitle := filepath.Join(scratch, "out.vtt")
-			for _, p := range []string{body, subtitle} {
-				if err := os.WriteFile(p, []byte("data"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+			scratch := filepath.Join(t.TempDir(), "out.mp4")
+			if err := os.WriteFile(scratch, []byte("data"), 0o600); err != nil {
+				t.Fatal(err)
 			}
 			relPath := "sites/tokyo/out.mp4"
-			finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-			// 照合が効けば publisher に届く前に返る。
-			publisher := &erroringEncodedPublisher{}
-			w := &EncodeWorker{MediaDir: mediaDir, MediaStoreName: "tokyo", Publisher: publisher}
-			previous := afterEncodeBodyStaged
-			afterEncodeBodyStaged = func(string) { mismatchStoreMarker(t, mediaDir, state) }
-			t.Cleanup(func() { afterEncodeBodyStaged = previous })
+			w := &EncodeWorker{
+				Objects: testFSObjectStore(mediaDir), ObjectPublisher: &markerGuardPublisher{},
+				MediaDir: mediaDir, MediaStoreName: "tokyo",
+			}
+			previous := beforeEncodeObjectPut
+			beforeEncodeObjectPut = func(string) { mismatchStoreMarker(t, mediaDir, state) }
+			t.Cleanup(func() { beforeEncodeObjectPut = previous })
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 			_, published, err := w.publishEncoded(context.Background(), encodePublishInput{
-				relPath: relPath, finalPath: finalPath, scratchOut: body, subtitleOut: subtitle, withSubtitles: true,
+				relPath: relPath, scratchOut: scratch,
 			})
 			if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) || published {
 				t.Fatalf("publishEncoded() = published:%t err:%v, want marker mismatch", published, err)
@@ -767,18 +746,8 @@ func TestPublishEncodedCreatesNoSubtitleTempOrLockWhenMarkerDisappearsAfterBodyS
 			if got := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo")); got != metricBefore+1 {
 				t.Errorf("store marker metric = %v, want %v", got, metricBefore+1)
 			}
-			// 本体の temp は discard で消える。残るのは字幕の temp と lock file のどちらも無い状態。
-			if entries, err := os.ReadDir(filepath.Dir(finalPath)); err != nil || len(entries) != 0 {
-				t.Errorf("entries beside the canonical path = %v (err %v), want none", entries, err)
-			}
-			rootEntries, err := os.ReadDir(mediaDir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, e := range rootEntries {
-				if strings.HasPrefix(e.Name(), mediapath.MediaRelPathLockFilePrefix) {
-					t.Errorf("lock file %q was created after the marker disappeared", e.Name())
-				}
+			if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(relPath))); !os.IsNotExist(err) {
+				t.Errorf("object exists after marker rejection (stat error = %v)", err)
 			}
 		})
 	}
