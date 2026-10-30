@@ -240,7 +240,7 @@ ON / OFF は再生速度と同じく端末ごとに localStorage へ持つ（既
 
 検出中の空の層は、「CM 無し」とは扱わず、「まだ分からない」として扱う。それを基にした下書きは、検出 commit 後に「CM 無し」で引き取られてしまうため、検出中には出さない。
 
-cut だけで凍結した録画の後から `live.enabled` を無効にすると、原本 HLS が使えず「チャプターの確認待ち」から進まない。`until_encoded` なら原本は残る。`live.enabled` を有効に戻すか、`POST /api/recordings/{id}/encode-profiles` で cut でないプロファイルを追加すると回復できる。
+cut だけで凍結した録画の後から `recording_hls.enabled` を無効にすると、録画 HLS が使えず「チャプターの確認待ち」から進まない。`until_encoded` なら原本は残る。`recording_hls.enabled` を有効に戻すか、`POST /api/recordings/{id}/encode-profiles` で cut でないプロファイルを追加すると回復できる。
 
 <details><summary>根拠</summary>
 

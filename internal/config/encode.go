@@ -228,10 +228,10 @@ type EncodeProfile struct {
 	// Cut は確認済みチャプターの cut=true 区間を除いたカット版を作る。
 	//
 	// 切る対象（どの区間か）は録画側の事実でチャプターが持ち、この出力に
-	// 切り取りを適用するかは出力の性質でプロファイルが持つ。live.enabled が false
-	// の構成では cut プロファイルを選ぶとき cut でないプロファイルを 1 つ以上含める
-	// こと（ValidateCutSelection）。原本 HLS が使えず確認の再生に encode が要るため。
-	// live.enabled が true なら原本 HLS で確認できるので cut だけでも選べる。
+	// 切り取りを適用するかは出力の性質でプロファイルが持つ。recording_hls.enabled が
+	// false の構成では cut プロファイルを選ぶとき cut でないプロファイルを 1 つ以上含める
+	// こと（ValidateCutSelection）。録画 HLS が使えず確認の再生に encode が要るため。
+	// recording_hls.enabled が true なら録画 HLS で確認できるので cut だけでも選べる。
 	Cut bool `yaml:"cut"`
 
 	// Height はスケール先の高さ。0 または省略ならスケールしない。
@@ -312,17 +312,18 @@ func (c EncodeConfig) CutProfileSet() map[string]struct{} {
 	return set
 }
 
-// ValidateCutSelection は、live が無効な構成で「cut のプロファイルを選ぶなら
-// cut でないプロファイルを 1 つ以上含む」ことを検査する。原本 HLS が無いと
-// 確認に再生が要り、再生に encode が要り、encode に確認が要る循環になるため。
-// live が有効なら原本 HLS で確認できるので cut だけの選択も許す。
+// ValidateCutSelection は、録画 HLS が無効な構成で「cut のプロファイルを選ぶなら
+// cut でないプロファイルを 1 つ以上含む」ことを検査する。録画 HLS が無いと
+// 確認に再生が要り、再生に encode が要り、encode に確認が要る循環になるため
+// （チャプターの確認は録画 HLS の再生でだけできる）。
+// 録画 HLS が有効なら録画 HLS で確認できるので cut だけの選択も許す。
 // ルール検証・override 検証・ingest の凍結・POST /api/recordings/{id}/encode-profiles
 // の 4 経路がこの同じ判定を使う。
 //
 // cut が空の集合なら常に nil（cut プロファイルが 1 つも定義されていない構成では
-// この規則は何も主張しない）。names が空でも nil。live が有効なら常に nil。
-func ValidateCutSelection(names []string, cut map[string]struct{}, liveEnabled bool) error {
-	if liveEnabled || len(cut) == 0 {
+// この規則は何も主張しない）。names が空でも nil。録画 HLS が有効なら常に nil。
+func ValidateCutSelection(names []string, cut map[string]struct{}, recordingHLSEnabled bool) error {
+	if recordingHLSEnabled || len(cut) == 0 {
 		return nil
 	}
 	sawCut := false

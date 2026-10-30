@@ -828,7 +828,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
 		CMDetect:                 cfg.CMDetect,
-		LiveEnabled:              cfg.Live.Enabled,
+		RecordingHLSEnabled:      cfg.RecordingHLS.Enabled,
 		EpgRetentionGrace:        cfg.Epg.RetentionGrace,
 		RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 		RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,

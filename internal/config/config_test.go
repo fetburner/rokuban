@@ -2480,16 +2480,16 @@ func TestLoad_EncodeProfileCut(t *testing.T) {
 func TestValidateCutSelection(t *testing.T) {
 	cut := map[string]struct{}{"cut": {}}
 	cases := []struct {
-		name        string
-		names       []string
-		cut         map[string]struct{}
-		liveEnabled bool
-		want        bool
+		name                string
+		names               []string
+		cut                 map[string]struct{}
+		recordingHLSEnabled bool
+		want                bool
 	}{
-		{"cut only is rejected without live", []string{"cut"}, cut, false, true},
-		{"cut only is accepted with live", []string{"cut"}, cut, true, false},
-		{"two cut profiles only are rejected without live", []string{"cut", "cut2"}, map[string]struct{}{"cut": {}, "cut2": {}}, false, true},
-		{"two cut profiles only are accepted with live", []string{"cut", "cut2"}, map[string]struct{}{"cut": {}, "cut2": {}}, true, false},
+		{"cut only is rejected without recording hls", []string{"cut"}, cut, false, true},
+		{"cut only is accepted with recording hls", []string{"cut"}, cut, true, false},
+		{"two cut profiles only are rejected without recording hls", []string{"cut", "cut2"}, map[string]struct{}{"cut": {}, "cut2": {}}, false, true},
+		{"two cut profiles only are accepted with recording hls", []string{"cut", "cut2"}, map[string]struct{}{"cut": {}, "cut2": {}}, true, false},
 		{"cut plus a normal profile is accepted", []string{"cut", "h264"}, cut, false, false},
 		{"normal profile first is accepted", []string{"h264", "cut"}, cut, false, false},
 		{"normal only is accepted", []string{"h264"}, cut, false, false},
@@ -2500,9 +2500,9 @@ func TestValidateCutSelection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateCutSelection(tc.names, tc.cut, tc.liveEnabled)
+			err := ValidateCutSelection(tc.names, tc.cut, tc.recordingHLSEnabled)
 			if (err != nil) != tc.want {
-				t.Errorf("ValidateCutSelection(%v, liveEnabled=%t) error = %v, want error %v", tc.names, tc.liveEnabled, err, tc.want)
+				t.Errorf("ValidateCutSelection(%v, recordingHLSEnabled=%t) error = %v, want error %v", tc.names, tc.recordingHLSEnabled, err, tc.want)
 			}
 		})
 	}

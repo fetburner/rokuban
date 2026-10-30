@@ -137,7 +137,7 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 }
 
 // validateEncodeProfiles は encodeProfiles の各名前が config 定義に存在すること、
-// および live 無効時の cut 選択規則を
+// および録画 HLS 無効時の cut 選択規則を
 // 検査する。ルール保存・予約 overrides・事後追加 API の 3 経路がここを通る
 // （4 経路目は ingest の凍結で、同じ config.ValidateCutSelection を直接呼ぶ）。
 //
@@ -147,7 +147,7 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 //
 // cut の規則も同じ規約で、h.cutProfiles が nil なら検査しない。cut プロファイルが
 // 1 つも定義されていない構成では config.ValidateCutSelection 自体が何も主張しない。
-// h.capabilities.Live は config.live.enabled そのもの。
+// h.recordingPlayback.enabled は config.recording_hls.enabled そのもの。
 func (h *Server) validateEncodeProfiles(names []string) error {
 	if err := h.validateEncodeProfileNames(names); err != nil {
 		return err
@@ -160,7 +160,7 @@ func (h *Server) validateCutSelection(names []string) error {
 	if h.cutProfiles == nil {
 		return nil
 	}
-	return config.ValidateCutSelection(names, h.cutProfiles, h.capabilities.Live)
+	return config.ValidateCutSelection(names, h.cutProfiles, h.recordingPlayback.enabled)
 }
 
 // validateEncodeProfileNames は名前だけの検査（空名・未知名）。cut の選択規則は見ない。

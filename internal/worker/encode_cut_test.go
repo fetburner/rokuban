@@ -1088,14 +1088,14 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	fake := newFullTransferFake(t, "rec-policy-cut-only-live", makeTSData(20), "test/policy-cut-only-live.m2ts")
 	mc := mirakc.NewClient(fake.URL(), nil)
 	w := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		StallTimeout:  5 * time.Second,
-		CutProfiles:   map[string]struct{}{"cut": {}},
-		LiveEnabled:   true,
-		Precheck:      pgstoretest.Media(pool),
+		Publisher:           pgstoretest.Media(pool),
+		MirakcClients:       singleSiteClients("", mc),
+		MediaDir:            t.TempDir(),
+		RecordTarget:        pgstoretest.Recordings(pool),
+		StallTimeout:        5 * time.Second,
+		CutProfiles:         map[string]struct{}{"cut": {}},
+		RecordingHLSEnabled: true,
+		Precheck:            pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
