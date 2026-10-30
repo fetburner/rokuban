@@ -202,14 +202,15 @@ func TestSegmentTransformTruncatedInputDoesNotPublishSilentAudioWithRealFFmpeg(t
 	}
 }
 
-// 変換の進み（currentNumber）は、入力の長さによらず映像の進みだけで数える。音声は映像より先に進む
-// （長さが確定した入力では apad の無音で、伸びる入力でも負荷で x264 が遅れて）。全 rendition で数えると、
-// 映像が要求に届く前に先読み済みと判断して変換を止めてしまう。
+// 変換の進み（currentNumber）は、入力の長さによらず映像の進みだけで数える。音声が映像より先行すると
+// （長さが確定した入力では apad の無音で。伸びる入力でも CPU 負荷下で 1 本の先行を観測した）、全 rendition で
+// 数えた場合、映像が要求に届く前に先読み済みと判断して変換を止めてしまう。このテストが見るのは
+// currentNumber の値だけである。止めた変換が追い出される形は、負荷下の
+// TestSegmentTransformCachedRequestResumesPrefetchPausedTransformWithRealFFmpeg でだけ再現した。
 // 作業ディレクトリでは、映像は番号 3 まで出し終えて 4 を書いている。音声は 5 まで出し終えて 6 を書いている。
-// 実 ffmpeg で起きた形は TestSegmentTransformCachedRequestResumesPrefetchPausedTransformWithRealFFmpeg が
-// CPU 負荷下で落ちたときのもの（音声 4 まで、映像 3 まで）。
 //
-// 壊し方: updateCurrentNumber の `entries["video"]` を全 rendition の走査に戻す（伸びる入力が 6 になる）。
+// 壊し方: updateCurrentNumber の `entries["video"]` を全 rendition の走査に戻す（両方のケースが 6 になる）。
+// 壊し方: 同じ関数の Glob を全 rendition の走査に戻す（音声の .tmp で 6 になる）。
 func TestSegmentTransformCurrentNumberFollowsOnlyTheVideo(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

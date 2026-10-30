@@ -107,10 +107,9 @@ type SegmentTransformInput struct {
 	//     ただし音声と字幕を完成とみなすのは、同じ変換の映像が ENDLIST 付きで最後の番号に届いたときだけ。
 	//   - 音声と字幕は、同じ変換の映像が出し終えた最後の番号（videoLast）までしか公開しない。
 	//     入力が途中で切れると、音声は映像の無い区間まで apad の無音で進むためである。
-	//   - 変換の進み（updateCurrentNumber）は映像だけで数える。音声の先行を先読み済みと取り違えて、
-	//     映像が要求に届く前に変換を止めないためである。
 	// 未確定のとき（伸びる temp）は ENDLIST を根拠に最後扱いしない（入力が途中で EOF 扱いになっても
-	// ffmpeg は終了コード 0 で ENDLIST を書くため）。進みは全 rendition で数える。
+	// ffmpeg は終了コード 0 で ENDLIST を書くため）。
+	// 変換の進み（updateCurrentNumber）は、どちらの場合も映像だけで数える。
 	VideoDurationPTS int64
 	AudioStreamCount int
 	// HasSubtitles は captions 設定が有効な入力に WebVTT rendition があることを表す。
@@ -840,10 +839,11 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 
 func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries map[string][]int64) {
 	highest := task.startNumber
-	// 映像の進みだけを数える。音声は映像より先に進む。長さが確定した入力では apad で映像の終端より先まで
-	// 無音で進み、伸びる入力でも負荷が高いと x264 が遅れて音声が先行する。音声の進みで「先読み済み」と
-	// 判断して止めると、要求の番号の映像が公開されないまま止まり、その要求が別の ffmpeg を起動して
-	// 止めた変換を追い出す（TestSegmentTransformCurrentNumberFollowsOnlyTheVideo）。
+	// 映像の進みだけを数える。長さが確定した入力では、音声が apad で映像の終端より先まで無音で進む。
+	// 伸びる入力でも、CPU 負荷下で音声が映像より 1 本先行した状態を観測した（原因は未検証）。
+	// 音声の進みで「先読み済み」と判断して止めると、要求の番号の映像が公開されないまま止まる。その要求は
+	// findTaskLocked の下限で止めた変換を候補から外し、別の ffmpeg を起動して止めた変換を追い出す
+	// （負荷下の TestSegmentTransformCachedRequestResumesPrefetchPausedTransformWithRealFFmpeg で再現）。
 	variant := segmentVariantForRendition["video"]
 	prefix := task.profile.Name + "."
 	profileName := task.profile.Name
