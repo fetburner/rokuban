@@ -185,10 +185,12 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 		Progress:  pgstoretest.Media(pool),
 		Attempts:  pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: t.TempDir(),
-		FFmpeg:     ffmpegPath,
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      t.TempDir(),
+		FFmpeg:          ffmpegPath,
 		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 			Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
@@ -242,13 +244,15 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Progress:   pgstoretest.Media(pool),
-		Attempts:   pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: t.TempDir(),
-		FFmpeg:     ffmpegPath,
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      t.TempDir(),
+		FFmpeg:          ffmpegPath,
 		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 			Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},

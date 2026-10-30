@@ -252,6 +252,7 @@ FROM media_asset_copies copy
 JOIN media_assets asset ON asset.id = copy.media_asset_id
 WHERE copy.store = $1
   AND copy.state = 'pending'
+  AND asset.kind <> 'original'
   AND copy.created_at < $2::timestamptz
 ORDER BY copy.id
 LIMIT $3
@@ -273,7 +274,7 @@ type ListAgedPendingMediaAssetCopiesRow struct {
 	Generation   int64
 }
 
-// 公開されないまま猶予を過ぎた pending。予約の時刻で数える。
+// 公開されないまま猶予を過ぎた派生物 pending。予約の時刻で数える。
 func (q *Queries) ListAgedPendingMediaAssetCopies(ctx context.Context, arg ListAgedPendingMediaAssetCopiesParams) ([]ListAgedPendingMediaAssetCopiesRow, error) {
 	rows, err := q.db.Query(ctx, listAgedPendingMediaAssetCopies, arg.StoreName, arg.CreatedBefore, arg.RowLimit)
 	if err != nil {

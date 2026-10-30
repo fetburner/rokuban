@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -24,7 +25,7 @@ func placementDeleteWorker(pool *pgxpool.Pool, cfg config.StorageConfig, roots m
 	return &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 		RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: roots[storeName], MediaStoreName: storeName, TransferOverlap: time.Nanosecond,
+		MediaDir: roots[storeName], StorageObjects: map[string]objstore.Store{storeName: testFSObjectStore(roots[storeName])}, MediaStoreName: storeName, TransferOverlap: time.Nanosecond,
 	}
 }
 
@@ -183,7 +184,7 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		transfer := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots}
+		transfer := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		deleters := []*DeleteReconcileWorker{
 			placementDeleteWorker(pool, cfg, roots, "test-store"), placementDeleteWorker(pool, cfg, roots, "archive"),
 		}

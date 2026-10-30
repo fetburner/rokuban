@@ -91,8 +91,22 @@ func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.Pendi
 	return nil
 }
 
+// HasLiveMediaAssetCopy はこの置き場に未削除の rel_path があるかを返す。
+func (s *Media) HasLiveMediaAssetCopy(ctx context.Context, relPath string) (bool, error) {
+	_, err := sqlcgen.New(s.pool).LockMediaAssetCopyByPhysicalPath(ctx, sqlcgen.LockMediaAssetCopyByPhysicalPathParams{
+		Store: s.storeName, RelPath: relPath,
+	})
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return false, fmt.Errorf("checking live media asset copy %q: %w", relPath, mapDatabaseError(err))
+}
+
 // activatePendingCopy は commit の tx で pending を active にする。
-// 行が回収されていれば ErrStalePublishPlan を返す。PUT した key は回収側が消す。
+// 行が回収されていれば ErrStalePublishPlan を返し、worker が未所有 key を片付ける。
 func activatePendingCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64, storeName, relPath string, generation int64) error {
 	updated, err := q.ActivatePendingMediaAssetCopy(ctx, sqlcgen.ActivatePendingMediaAssetCopyParams{
 		MediaAssetID: assetID, Store: storeName, RelPath: relPath, Generation: generation,
@@ -101,12 +115,47 @@ func activatePendingCopy(ctx context.Context, q *sqlcgen.Queries, assetID int64,
 		return mapDatabaseError(err)
 	}
 	if updated != 1 {
-		return fmt.Errorf("pending copy %q of asset %d generation %d is gone: %w", relPath, assetID, generation, store.ErrStalePublishPlan)
+		missingErr := pendingMediaAssetCopyMissingIfAbsent(ctx, q, storeName, true, relPath)
+		if errors.Is(missingErr, store.ErrPendingMediaAssetCopyMissing) {
+			return fmt.Errorf("activating pending copy %q of asset %d generation %d: %w", relPath, assetID, generation,
+				errors.Join(store.ErrStalePublishPlan, missingErr))
+		}
+		if missingErr != nil {
+			return fmt.Errorf("activating pending copy %q of asset %d generation %d: %w", relPath, assetID, generation, missingErr)
+		}
+		return fmt.Errorf("pending copy %q of asset %d generation %d is no longer pending: %w", relPath, assetID, generation, store.ErrStalePublishPlan)
 	}
 	return nil
 }
 
-// ListAgedPendingMediaAssetCopies は、before より前に予約された pending のコピーを返す。
+func pendingMediaAssetCopyMissingIfAbsent(ctx context.Context, q *sqlcgen.Queries, storeName string, pending bool, relPath string) error {
+	if !pending {
+		return nil
+	}
+	_, err := q.LockMediaAssetCopyByPhysicalPath(ctx, sqlcgen.LockMediaAssetCopyByPhysicalPathParams{
+		Store: storeName, RelPath: relPath,
+	})
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("pending copy %q has no live row: %w", relPath, store.ErrPendingMediaAssetCopyMissing)
+	}
+	return fmt.Errorf("checking pending copy %q after skipped publish: %w", relPath, mapDatabaseError(err))
+}
+
+func stalePublishPlanAfterPendingCopyCheck(ctx context.Context, q *sqlcgen.Queries, storeName string, pending bool, relPath string) error {
+	err := pendingMediaAssetCopyMissingIfAbsent(ctx, q, storeName, pending, relPath)
+	if errors.Is(err, store.ErrPendingMediaAssetCopyMissing) {
+		return errors.Join(store.ErrStalePublishPlan, err)
+	}
+	if err != nil {
+		return err
+	}
+	return store.ErrStalePublishPlan
+}
+
+// ListAgedPendingMediaAssetCopies は、before より前に予約された pending の派生物コピーを返す。
 func (s *Media) ListAgedPendingMediaAssetCopies(ctx context.Context, before time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListAgedPendingMediaAssetCopies(ctx, sqlcgen.ListAgedPendingMediaAssetCopiesParams{
 		StoreName: s.storeName, CreatedBefore: before, RowLimit: limit,

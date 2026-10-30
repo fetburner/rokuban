@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,13 +18,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -482,13 +488,15 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	thumbnail := mk(fmt.Sprintf("thumbnail/%d-abc", recordingID))
 
 	w := &EncodeWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Progress:   pgstoretest.Media(pool),
-		Attempts:   pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     ffmpegPath,
+		Publisher:       pgstoretest.Media(pool),
+		Progress:        pgstoretest.Media(pool),
+		Attempts:        pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          ffmpegPath,
 		Profiles: config.EncodeConfig{FFmpeg: ffmpegPath, Profiles: []config.EncodeProfile{{
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
@@ -531,10 +539,12 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 		Progress:  pgstoretest.Media(pool),
 		Attempts:  pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     ffmpegPath,
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          ffmpegPath,
 		Profiles: config.EncodeConfig{
 			FFmpeg: ffmpegPath,
 			Profiles: []config.EncodeProfile{{
@@ -642,10 +652,12 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 		Progress:  pgstoretest.Media(pool),
 		Attempts:  pgstoretest.Media(pool),
 
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     ffmpegPath,
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		ScratchDir:      scratchDir,
+		FFmpeg:          ffmpegPath,
 		Profiles: config.EncodeConfig{
 			FFmpeg: ffmpegPath,
 			Profiles: []config.EncodeProfile{{
@@ -722,10 +734,12 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 		Progress:  pgstoretest.Media(pool),
 		Attempts:  pgstoretest.Media(pool),
 
-		Media:    pgstoretest.Media(pool),
-		MediaDir: mediaDir,
-		Profiles: config.EncodeConfig{}, // "missing" プロファイルは未定義 → 失敗する
-		Webhook:  client,
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Profiles:        config.EncodeConfig{}, // "missing" プロファイルは未定義 → 失敗する
+		Webhook:         client,
 	}
 
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
@@ -813,8 +827,10 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 		Progress:  pgstoretest.Media(pool),
 		Attempts:  pgstoretest.Media(pool),
 
-		Media:    pgstoretest.Media(pool),
-		MediaDir: mediaDir,
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
 		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
@@ -977,5 +993,119 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 		profile: profile, inputPath: input, scratchOut: output, subtitleOut: subtitleOut, withSubtitles: withSubtitles,
 	}, func(time.Duration) {}, slog.Default()); err != nil {
 		t.Fatalf("encoding subtitle fixture: %v", err)
+	}
+}
+
+func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
+	ffmpeg, ffmpegErr := exec.LookPath("ffmpeg")
+	ffprobe, ffprobeErr := exec.LookPath("ffprobe")
+	if ffmpegErr != nil || ffprobeErr != nil {
+		t.Skipf("ffmpeg/ffprobe not in PATH: %v %v", ffmpegErr, ffprobeErr)
+	}
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	fixturePath := filepath.Join(t.TempDir(), "fixture.ts")
+	createArgs := []string{
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=160x90:rate=25:duration=2",
+		"-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=2",
+		"-t", "2", "-c:v", "mpeg2video", "-c:a", "mp2", "-f", "mpegts", fixturePath,
+	}
+	if out, err := exec.Command(ffmpeg, createArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("creating real encode fixture: %v: %s", err, out)
+	}
+	original, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	const originalRelPath = "20261030/real-encode.ts"
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, originalRelPath, []string{"h264"}, original)
+	encodeWorker := newH264Worker(pool, mediaDir, scratchDir, ffmpeg)
+	encodeWorker.FFprobe = ffprobe
+	encodeWorker.Profiles = config.EncodeConfig{FFmpeg: ffmpeg, Profiles: []config.EncodeProfile{{
+		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Preset: "ultrafast",
+	}}}
+	if err := runWorkerViaJobQFake(context.Background(), encodeWorker, EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}); err != nil {
+		t.Fatalf("real encode Work: %v", err)
+	}
+	encoded, err := pgstoretest.Media(pool).GetEncodedMediaAssetForServing(context.Background(), recordingID, "h264")
+	if err != nil {
+		t.Fatalf("loading active encoded asset: %v", err)
+	}
+	objects := testFSObjectStore(mediaDir)
+	encodedObject, err := objects.Head(context.Background(), encoded.RelPath)
+	if err != nil {
+		t.Fatalf("Head real encoded object %q: %v", encoded.RelPath, err)
+	}
+	if encodedObject.Size == 0 || encodedObject.Size != encoded.SizeBytes {
+		t.Fatalf("encoded object size = %d, active asset size = %d; want matching non-empty output", encodedObject.Size, encoded.SizeBytes)
+	}
+	encodedBytes, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(encoded.RelPath)))
+	if err != nil {
+		t.Fatalf("reading real encoded object: %v", err)
+	}
+	if len(encodedBytes) < 8 || string(encodedBytes[4:8]) != "ftyp" {
+		t.Fatalf("real encoded object has no MP4 ftyp header: %x", encodedBytes[:min(len(encodedBytes), 12)])
+	}
+
+	thumbnailWorker := &ThumbnailWorker{
+		Media: pgstoretest.Media(pool), Objects: objects, ObjectPublisher: pgstoretest.Media(pool),
+		MediaDir: mediaDir, ScratchDir: t.TempDir(), FFmpeg: ffmpeg, FFprobe: ffprobe,
+	}
+	if err := runWorkerViaJobQFake(context.Background(), thumbnailWorker, ThumbnailJobArgs{RecordingID: recordingID}); err != nil {
+		t.Fatalf("real thumbnail Work: %v", err)
+	}
+	thumbnail, err := pgstoretest.Media(pool).GetThumbnailMediaAssetForServing(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("loading active thumbnail asset: %v", err)
+	}
+	thumbnailObject, err := objects.Head(context.Background(), thumbnail.RelPath)
+	if err != nil {
+		t.Fatalf("Head real thumbnail object %q: %v", thumbnail.RelPath, err)
+	}
+	if thumbnailObject.Size == 0 || thumbnailObject.Size != thumbnail.SizeBytes {
+		t.Fatalf("thumbnail object size = %d, active asset size = %d; want matching non-empty output", thumbnailObject.Size, thumbnail.SizeBytes)
+	}
+	thumbnailBytes, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(thumbnail.RelPath)))
+	if err != nil {
+		t.Fatalf("reading real thumbnail object: %v", err)
+	}
+	if len(thumbnailBytes) < 4 || !bytes.Equal(thumbnailBytes[:2], []byte{0xff, 0xd8}) {
+		t.Fatalf("real thumbnail is not a JPEG: %x", thumbnailBytes[:min(len(thumbnailBytes), 8)])
+	}
+
+	router := chi.NewRouter()
+	streamer.New(pgstoretest.Media(pool), streamer.Config{
+		MediaDir: mediaDir, ObjectStores: map[string]objstore.Store{dbtest.StoreName: objects},
+	}).Mount(router)
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+	if err != nil {
+		t.Fatalf("building encoded range request: %v", err)
+	}
+	request.Header.Set("Range", "bytes=0-9")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("requesting a range from the real encoded object: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	rangeBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("reading encoded range response: %v", err)
+	}
+	if response.StatusCode != http.StatusPartialContent {
+		t.Fatalf("encoded Range status = %d, want 206", response.StatusCode)
+	}
+	if got, want := response.Header.Get("Content-Range"), fmt.Sprintf("bytes 0-9/%d", len(encodedBytes)); got != want {
+		t.Errorf("encoded Content-Range = %q, want %q", got, want)
+	}
+	if !bytes.Equal(rangeBody, encodedBytes[:10]) {
+		t.Errorf("encoded Range body = %x, want %x", rangeBody, encodedBytes[:10])
 	}
 }

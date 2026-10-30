@@ -1,8 +1,8 @@
-// object_delete.go は、派生物の置き場が S3 のときの削除 reconcile を担当する。
+// object_delete.go は、派生物の置き場を objstore.Store 経由で削除 reconcile する。
 //
-// FS の置き場と同じ削除の述語（ごみ箱・外した版・旧世代）を、S3 の置き場に束ねた
+// FS の置き場と同じ削除の述語（ごみ箱・外した版・旧世代）を、派生物の置き場に束ねた
 // store.MediaDelete で引く。旧世代は公開の tx では触らず、overlap（storage.transfer.overlap）の後に
-// ここが active → deleting → key の削除 → deleted の順で消す。署名付き URL で旧世代を再生中の視聴者が
+// ここが active → deleting → key の削除 → deleted の順で消す。旧世代を再生中の視聴者が
 // overlap の間は途中で 404 にならないようにするためである。
 //
 // 削除ブレーカーの範囲（scope）は派生物の置き場の名前で、FS の置き場のブレーカーとは件数を合算しない。
@@ -25,7 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// objectDeleteCandidates は S3 の置き場の 1 パス分の新規削除対象。
+// objectDeleteCandidates は派生物の置き場の 1 パス分の新規削除対象。
 // DB に無い key は報告だけで削除しないので含めない。
 type objectDeleteCandidates struct {
 	trash          []store.MediaDeleteAsset
@@ -38,13 +38,13 @@ func (c objectDeleteCandidates) total() int {
 	return len(c.trash) + len(c.removedEncoded) + len(c.oldGeneration) + len(c.agedPending)
 }
 
-// objectStorePass は S3 の置き場 1 つ分の削除 reconcile を 1 パス実行する。
+// objectStorePass は独立した派生物の置き場 1 つ分の削除 reconcile を 1 パス実行する。
 // DerivedObjects を設定していないときは何もしない。
 func (w *DeleteReconcileWorker) objectStorePass(
 	ctx context.Context, trashCutoff, overlapCutoff time.Time,
 	orphanMTimeGrace, orphanAge time.Duration, maxPerPass int,
 ) error {
-	if w.DerivedObjects == nil && w.DerivedMediaDelete == nil {
+	if w.DerivedMediaDelete == nil && w.DerivedPendingReclaim == nil && w.DerivedStorage == nil {
 		return nil
 	}
 	if w.DerivedObjects == nil || w.DerivedMediaDelete == nil || w.DerivedPendingReclaim == nil || w.DerivedStorage == nil ||
@@ -209,14 +209,22 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Conte
 	return nil
 }
 
-// deleteObjectCopy は 1 コピーを active → deleting → key の削除 → deleted の順で消す。
-// 各段階の失敗はログに残すだけで、行を deleting のまま次パスへ持ち越す。
-// FS の deleteMediaAsset と違い、S3 の key には rel_path の flock も置き場の目印もない。
+// deleteObjectCopy は派生物のコピーを object API 経由で削除する。
 func (w *DeleteReconcileWorker) deleteObjectCopy(ctx context.Context, t store.MediaDeleteAsset, source string) {
+	w.deleteObjectCopyWithStore(ctx, w.DerivedObjects, w.DerivedMediaDelete, t, source, w.DerivedObjectStoreName, nil)
+}
+
+// deleteObjectCopyWithStore は 1 コピーを active → deleting → key の削除 → deleted の順で消す。
+// 各段階の失敗はログに残すだけで、行を deleting のまま次パスへ持ち越す。
+func (w *DeleteReconcileWorker) deleteObjectCopyWithStore(ctx context.Context, objects objstore.Store, copies store.MediaDelete, t store.MediaDeleteAsset, source, storeName string, guard func(string) error) {
 	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath,
-		"source", source, "store", w.DerivedObjectStoreName)
+		"source", source, "store", storeName)
+	if copies == nil || objects == nil {
+		log.Error("delete_reconcile: derived object store or media copy store is not configured")
+		return
+	}
 	if source != "pending" {
-		marked, err := w.DerivedMediaDelete.MarkDeleting(ctx, t.ID, "active")
+		marked, err := copies.MarkDeleting(ctx, t.ID, "active")
 		if err != nil {
 			log.Error("delete_reconcile: marking object copy deleting", "err", err)
 			return
@@ -225,11 +233,24 @@ func (w *DeleteReconcileWorker) deleteObjectCopy(ctx context.Context, t store.Me
 			return
 		}
 	}
-	if err := w.deleteObjectKey(ctx, t.RelPath, t.Kind); err != nil {
+	beforeMediaAssetUnlink(t.RelPath)
+	if guard != nil {
+		if err := guard("unlinking derived media asset"); err != nil {
+			log.Warn("delete_reconcile: withholding derived object deletion because the store marker did not match", "err", err)
+			return
+		}
+	}
+	if err := deleteObjectKey(ctx, objects, t.RelPath, t.Kind); err != nil {
 		log.Error("delete_reconcile: deleting object", "err", err)
 		return
 	}
-	if err := w.DerivedMediaDelete.MarkDeleted(ctx, t.ID); err != nil {
+	if guard != nil {
+		if err := guard("marking derived media asset deleted"); err != nil {
+			log.Warn("delete_reconcile: withholding deleted state because the store marker did not match", "err", err)
+			return
+		}
+	}
+	if err := copies.MarkDeleted(ctx, t.ID); err != nil {
 		log.Error("delete_reconcile: marking object copy deleted", "err", err)
 		return
 	}
@@ -246,7 +267,7 @@ func (w *DeleteReconcileWorker) reclaimPendingObjectCopy(ctx context.Context, t 
 	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath,
 		"source", "pending_reclaim", "store", w.DerivedObjectStoreName)
 	reclaimed, err := w.DerivedPendingReclaim.ReclaimPendingMediaAssetCopy(ctx, t.ID, before, func() error {
-		return w.deleteObjectKey(ctx, t.RelPath, t.Kind)
+		return deletePendingObjectKey(ctx, w.DerivedObjects, t.RelPath, t.Kind)
 	})
 	if err != nil {
 		log.Error("delete_reconcile: reclaiming pending object copy", "err", err)
@@ -259,20 +280,40 @@ func (w *DeleteReconcileWorker) reclaimPendingObjectCopy(ctx context.Context, t 
 }
 
 // deleteObjectKey は key と、encoded に隣接する字幕の sidecar を消す。object の削除は冪等である。
-func (w *DeleteReconcileWorker) deleteObjectKey(ctx context.Context, key, kind string) error {
-	if err := w.DerivedObjects.Delete(ctx, key); err != nil {
+func deleteObjectKey(ctx context.Context, objects objstore.Store, key, kind string) error {
+	if err := objects.Delete(ctx, key); err != nil {
 		metrics.RecordObjectStoreError("delete", err)
 		return fmt.Errorf("deleting derived object %q: %w", key, err)
 	}
 	if kind == store.AssetKindEncoded && canHaveSubtitleSidecar(key) {
 		sidecar, err := mediapath.SubtitleSibling(key)
 		if err != nil {
-			return fmt.Errorf("building subtitle object key for %q: %w", key, err)
+			slog.Warn("delete_reconcile: building subtitle sidecar key; continuing without removing it", "key", key, "err", err)
+			return nil
 		}
-		if err := w.DerivedObjects.Delete(ctx, sidecar); err != nil {
+		if err := objects.Delete(ctx, sidecar); err != nil {
 			metrics.RecordObjectStoreError("delete", err)
-			return fmt.Errorf("deleting subtitle object %q: %w", sidecar, err)
+			slog.Warn("delete_reconcile: deleting subtitle sidecar; continuing", "key", sidecar, "err", err)
 		}
+	}
+	return nil
+}
+
+// deletePendingObjectKey は公開されていない encoded copy の subtitle を先に消し、失敗時には本体を残す。
+func deletePendingObjectKey(ctx context.Context, objects objstore.Store, key, kind string) error {
+	if kind == store.AssetKindEncoded && canHaveSubtitleSidecar(key) {
+		sidecar, err := mediapath.SubtitleSibling(key)
+		if err != nil {
+			return fmt.Errorf("building pending subtitle object key for %q: %w", key, err)
+		}
+		if err := objects.Delete(ctx, sidecar); err != nil {
+			metrics.RecordObjectStoreError("delete", err)
+			return fmt.Errorf("deleting pending subtitle object %q: %w", sidecar, err)
+		}
+	}
+	if err := objects.Delete(ctx, key); err != nil {
+		metrics.RecordObjectStoreError("delete", err)
+		return fmt.Errorf("deleting pending derived object %q: %w", key, err)
 	}
 	return nil
 }

@@ -226,6 +226,39 @@ ON CONFLICT (copy_id) DO UPDATE SET
     last_error = EXCLUDED.last_error,
     updated_at = now();
 
+-- Record ownership only while the destination copy is still pending. The caller
+-- holds the same row locks as obsolete-copy reclaim so a deleted reservation
+-- cannot acquire ownership after it has been retired.
+-- name: MarkMediaAssetTransferObjectOwned :execrows
+INSERT INTO media_asset_transfer_objects (copy_id, rel_path)
+SELECT c.id, sqlc.arg('rel_path')
+FROM media_asset_copies c
+WHERE c.id = sqlc.arg('copy_id')
+  AND c.store = sqlc.arg('store_name')
+  AND c.state = 'pending'
+ON CONFLICT (copy_id, rel_path) DO NOTHING;
+
+-- name: ListMediaAssetTransferObjectsOwned :many
+SELECT o.rel_path
+FROM media_asset_transfer_objects o
+JOIN media_asset_copies c ON c.id = o.copy_id
+WHERE o.copy_id = sqlc.arg('copy_id')
+  AND c.store = sqlc.arg('store_name')
+  AND c.state = 'pending'
+ORDER BY o.rel_path;
+
+-- name: DeleteMediaAssetTransferObjectOwned :exec
+DELETE FROM media_asset_transfer_objects o
+USING media_asset_copies c
+WHERE o.copy_id = c.id
+  AND o.copy_id = sqlc.arg('copy_id')
+  AND c.store = sqlc.arg('store_name')
+  AND o.rel_path = sqlc.arg('rel_path');
+
+-- name: DeleteMediaAssetTransferObjectsForCopy :exec
+DELETE FROM media_asset_transfer_objects
+WHERE copy_id = sqlc.arg('copy_id');
+
 -- A damaged derived source is retired as a physical copy: active -> deleting
 -- here, then the transfer worker unlinks the file and marks it deleted. The
 -- logical row stays available for encode reconcile, which sees that its current
@@ -268,6 +301,9 @@ WITH discarded AS (
 ), cleared_missing AS (
     DELETE FROM missing_media_assets m USING discarded d
     WHERE m.media_asset_copy_id = d.id
+), cleared_transfer_objects AS (
+    DELETE FROM media_asset_transfer_objects o USING discarded d
+    WHERE o.copy_id = d.id
 )
 DELETE FROM media_asset_transfer_attempts t USING discarded d
 WHERE t.copy_id = d.id;

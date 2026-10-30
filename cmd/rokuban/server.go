@@ -28,6 +28,7 @@ import (
 	"github.com/fetburner/rokuban/internal/notifier"
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/store"
@@ -622,10 +623,19 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	var mounters api.Mounters
 	if slices.Contains(roles, "streamer") {
 		objectStores := make(map[string]objstore.Store)
-		if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok && derived.Kind == "s3" {
-			objects, err := s3store.NewReader(egCtx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+		if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok {
+			var objects objstore.Store
+			var err error
+			switch derived.Kind {
+			case "fs":
+				objects, err = fsstore.New(cfg.Storage.MediaDir)
+			case "s3":
+				objects, err = s3store.NewReader(egCtx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+			default:
+				err = fmt.Errorf("unsupported derived store kind %q", derived.Kind)
+			}
 			if err != nil {
-				return nil, fmt.Errorf("connecting derived S3 store %q: %w", cfg.Storage.Derived, err)
+				return nil, fmt.Errorf("creating derived object store %q: %w", cfg.Storage.Derived, err)
 			}
 			objectStores[cfg.Storage.Derived] = objects
 		}
@@ -737,19 +747,42 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	var derivedMediaDelete store.MediaDelete
 	var derivedStorage store.StorageObservation
 	var derivedPendingReclaim store.PendingCopyReclaim
-	// s3store.New は S3 に接続しない。S3 に繋がらない・資格情報が失効していても worker は起動し、
-	// S3 を使うジョブ（派生物の公開と削除）だけが失敗する。
-	if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok && derived.Kind == "s3" {
-		objects, err := s3store.New(ctx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+	if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok {
+		var objects objstore.Store
+		var err error
+		switch derived.Kind {
+		case "fs":
+			objects, err = fsstore.New(cfg.Storage.MediaDir)
+		case "s3":
+			// s3store.New は S3 に接続しない。資格情報の取得・確認は各操作で行う。
+			objects, err = s3store.New(ctx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+		default:
+			err = fmt.Errorf("unsupported derived store kind %q", derived.Kind)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("connecting derived S3 store %q: %w", cfg.Storage.Derived, err)
+			return nil, fmt.Errorf("creating derived object store %q: %w", cfg.Storage.Derived, err)
 		}
 		derivedObjects = objects
 		derivedMedia := pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
 		derivedPublisher = derivedMedia
-		derivedMediaDelete = derivedMedia
-		derivedStorage = derivedMedia
-		derivedPendingReclaim = derivedMedia
+		// FS derived assets share MediaStoreName and its existing delete/audit pass.
+		// A separate object-store pass is only needed for a distinct S3 store.
+		if cfg.Storage.Derived != cfg.Storage.MediaStoreName {
+			derivedMediaDelete = derivedMedia
+			derivedStorage = derivedMedia
+			derivedPendingReclaim = derivedMedia
+		}
+	}
+	storageObjects := make(map[string]objstore.Store)
+	for name, root := range configuredStorageRoots(cfg.Storage) {
+		objects, err := fsstore.New(root)
+		if err != nil {
+			return nil, fmt.Errorf("creating filesystem object store %q: %w", name, err)
+		}
+		storageObjects[name] = objects
+	}
+	if derivedObjects != nil {
+		storageObjects[cfg.Storage.Derived] = derivedObjects
 	}
 	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
@@ -810,12 +843,14 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		DerivedMediaPublish:      derivedPublisher,
 		DerivedObjects:           derivedObjects,
 		DerivedObjectStoreName:   cfg.Storage.Derived,
+		StorageObjects:           storageObjects,
 		DerivedMediaDelete:       derivedMediaDelete,
 		DerivedStorage:           derivedStorage,
 		DerivedPendingReclaim:    derivedPendingReclaim,
 		IngestPrecheck:           mediaStore,
 		EncodeProgress:           mediaStore,
 		MediaDelete:              mediaStore,
+		MediaPendingReclaim:      mediaStore,
 		StorageTransfer:          mediaStore,
 		StorageTransferPolicy:    cfg.Storage,
 		StorageRoots:             configuredStorageRoots(cfg.Storage),

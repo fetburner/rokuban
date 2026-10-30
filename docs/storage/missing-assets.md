@@ -8,6 +8,8 @@
 
 削除 reconcile パスが孤児回収と同じ 1 回のディレクトリ走査結果を使い、逆方向にも突き合わせる。その置き場の `media_asset_copies.state = 'active'` の行のうち、走査でファイルが観測されなかったものを `missing_media_assets` に記録する。パスと状態はコピー表から読み、録画 ID と種別は論理資産の `media_assets` から読む。
 
+原本は走査の結果で突き合わせる。派生物のコピーは走査を使わず、そのコピーの置き場の `Store.Head` で現存を確かめる。派生物の置き場を S3 に切り替えた後も、FS の置き場に残る旧いコピーは、この FS の置き場の Store で確かめる。
+
 この表は `orphan_files` の鏡像で、行の存在 = 直前のパスで実体を観測できなかったという主張を表す。記録の主キーは物理コピーの ID である。同じ論理資産に複数の世代や置き場があっても、観測できなかったコピーを個別に記録できる。記録は Warn ログと `rokuban_media_assets_missing{kind}` ゲージに出す。自動では一切消さない。孤児回収と同じ非対称で、手動削除・バックアップからの部分復元・FS の破損・別プロセスのトラブルのいずれでも「ファイルが無い」は起きるためである。
 
 `orphan_files` は `(store, rel_path)` で置き場ごとの観測を分ける。移行前の行は `store` が空で、`storage adopt <store-name>` が割り当てる。`store` が空の行が残る間、worker は起動を拒む。
@@ -47,3 +49,9 @@ worker は media root の `.rokuban-store` の内容を、`storage.stores` の F
 同型の穴が「走査が降りないディレクトリ」の側にもある。走査は symlink を辿らない。書き込み・読み出し側のパス解決は字句的である（`filepath.Join` + 接頭辞検証）。`media_dir` 配下のディレクトリ成分を symlink にして別ボリュームを合成する構成では、書けて読めるのに走査からは見えないサブツリーができる。その配下の資産が恒久的に誤報される（未検証。symlink を張った構成のテストは無い）。
 
 走査側で辿る形にはしていない。循環と、`media_dir` の外を指す symlink（`rel_path` が契約上の名前空間の外のファイルを指すことになる）の扱いを先に決める必要があり、この検出器の範囲を超えるからである。合成が必要ならディレクトリ成分の symlink でなくマウントを使う。
+
+<details><summary>根拠</summary>
+
+- 派生物の現存確認: `TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFilesystemStore`
+
+</details>

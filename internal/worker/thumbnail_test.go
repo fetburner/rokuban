@@ -154,7 +154,10 @@ func TestNextUnusedThumbnailRelPathAdvancesPastExistingFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mediaDir, "thumbnails", "12.g3.jpg"), tinyJPEG, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w := &ThumbnailWorker{MediaDir: mediaDir}
+	w := &ThumbnailWorker{
+		Objects:  testFSObjectStore(mediaDir),
+		MediaDir: mediaDir,
+	}
 	path, generation, err := w.nextUnusedThumbnailRelPath(context.Background(), 12, 3)
 	if err != nil {
 		t.Fatalf("nextUnusedThumbnailRelPath: %v", err)
@@ -232,13 +235,15 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	})
 
 	w := &ThumbnailWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     "ffmpeg",
-		FFprobe:    "ffprobe",
-		runCmd:     fakeThumbnailTools(t, 100.0),
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       scratchDir,
+		FFmpeg:           "ffmpeg",
+		FFprobe:          "ffprobe",
+		runCmd:           fakeThumbnailTools(t, 100.0),
 	}
 
 	job := ThumbnailJobArgs{RecordingID: recordingID}
@@ -316,10 +321,12 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       scratchDir,
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if containsArg(args, "format=duration") {
 				t.Fatal("chapter-aware reselection must not call ffprobe")
@@ -406,10 +413,12 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: t.TempDir(),
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       t.TempDir(),
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
 				gotInputSeek = args[i+1]
@@ -468,18 +477,25 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 		t.Fatalf("seeding CM ranges: %v", err)
 	}
 
-	var gotInputSeek, gotInputPath string
+	var gotInputSeek string
+	var gotInput []byte
 	w := &ThumbnailWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: t.TempDir(),
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       t.TempDir(),
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
 				gotInputSeek = args[i+1]
 			}
 			if i := indexOfArg(args, "-i"); i >= 0 && i+1 < len(args) {
-				gotInputPath = args[i+1]
+				var err error
+				gotInput, err = os.ReadFile(args[i+1])
+				if err != nil {
+					return nil, err
+				}
 			}
 			if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o644); err != nil {
 				return nil, err
@@ -494,9 +510,8 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 	if gotInputSeek != "89.993" {
 		t.Errorf("uncut encoded input -ss = %q, want 89.993 seconds", gotInputSeek)
 	}
-	wantInputPath := filepath.Join(mediaDir, filepath.FromSlash(encodedRelPath))
-	if gotInputPath != wantInputPath {
-		t.Errorf("ffmpeg input path = %q, want uncut encoded file %q", gotInputPath, wantInputPath)
+	if !bytes.Equal(gotInput, []byte("fake-mp4")) {
+		t.Errorf("ffmpeg input bytes = %q, want the uncut encoded object", gotInput)
 	}
 	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
 	if err != nil {
@@ -532,10 +547,11 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 
 	var ffmpegCalls int
 	w := &ThumbnailWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		ScratchDir:      scratchDir,
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if strings.Contains(name, "ffprobe") || (len(args) > 0 && containsArg(args, "format=duration")) {
 				return []byte("60.0\n"), nil
@@ -584,10 +600,11 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 
 	recordingID := dbtest.Recording(t, pool)
 	w := &ThumbnailWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   t.TempDir(),
-		ScratchDir: t.TempDir(),
+		Objects:         testFSObjectStore(t.TempDir()),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        t.TempDir(),
+		ScratchDir:      t.TempDir(),
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			t.Fatal("runCmd must not be called when original is missing")
 			return nil, nil
@@ -697,11 +714,12 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	}
 
 	w := &ThumbnailWorker{
-		Publisher:  pgstoretest.Media(pool),
-		Media:      pgstoretest.Media(pool),
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		runCmd:     fakeThumbnailTools(t, 100.0),
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		MediaDir:        mediaDir,
+		ScratchDir:      scratchDir,
+		runCmd:          fakeThumbnailTools(t, 100.0),
 	}
 
 	job := ThumbnailJobArgs{RecordingID: recordingID}
@@ -966,8 +984,9 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 	seed("candidate", "{[0,60000)}")
 
 	w := &ThumbnailWorker{
-		Publisher: pgstoretest.Media(pool),
-		Media:     pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		runCmd: func(context.Context, string, ...string) ([]byte, error) {
 			t.Error("non-candidate recording must not run ffmpeg/ffprobe")
 			return nil, fmt.Errorf("unexpected command")

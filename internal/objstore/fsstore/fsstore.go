@@ -137,6 +137,15 @@ func (s *Store) Open(_ context.Context, key string) (io.ReadSeekCloser, objstore
 	return f, objstore.Object{Key: key, Size: info.Size(), LastModified: info.ModTime()}, nil
 }
 
+// Get opens a completed object for sequential reads.
+func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	f, _, err := s.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
 // Delete removes a key and succeeds when it is already absent.
 func (s *Store) Delete(_ context.Context, key string) error {
 	path, err := mediapath.Resolve(s.root, key)
@@ -215,5 +224,6 @@ func (r *contextReader) Read(p []byte) (int, error) {
 }
 
 var _ objstore.Store = (*Store)(nil)
+var _ objstore.Reader = (*Store)(nil)
 var _ objstore.Local = (*Store)(nil)
 var _ objstore.SignedURL = (*Store)(nil)

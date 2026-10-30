@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,13 +38,69 @@ type objectEnv struct {
 	media   *pgstore.Media
 }
 
+type beforePutObjectStore struct {
+	objstore.Store
+	beforePut func(context.Context, string) error
+}
+
+func (s beforePutObjectStore) Put(ctx context.Context, key string, src io.Reader, size int64, checksum [32]byte, contentType string) error {
+	if s.beforePut != nil {
+		if err := s.beforePut(ctx, key); err != nil {
+			return err
+		}
+	}
+	return s.Store.Put(ctx, key, src, size, checksum, contentType)
+}
+
+type afterPutObjectStore struct {
+	objstore.Store
+	afterPut func(context.Context, string) error
+}
+
+func (s afterPutObjectStore) Put(ctx context.Context, key string, src io.Reader, size int64, checksum [32]byte, contentType string) error {
+	if err := s.Store.Put(ctx, key, src, size, checksum, contentType); err != nil {
+		return err
+	}
+	if s.afterPut != nil {
+		return s.afterPut(ctx, key)
+	}
+	return nil
+}
+
+type blockedDeleteObjectStore struct {
+	objstore.Store
+	key     string
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s blockedDeleteObjectStore) Delete(ctx context.Context, key string) error {
+	if key == s.key {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.Store.Delete(ctx, key)
+}
+
 func newObjectEnv(t *testing.T) objectEnv {
 	t.Helper()
-	objects, err := fsstore.New(t.TempDir())
+	return newObjectEnvWith(t, testFilesystemObjectStore(t, t.TempDir()))
+}
+
+func testFilesystemObjectStore(t *testing.T, root string) objstore.Store {
+	t.Helper()
+	objects, err := fsstore.New(root)
 	if err != nil {
-		t.Fatalf("creating object store: %v", err)
+		t.Fatalf("creating filesystem object store: %v", err)
 	}
-	return newObjectEnvWith(t, objects)
+	return objects
 }
 
 func newObjectEnvWith(t *testing.T, objects objstore.Store) objectEnv {
@@ -76,9 +134,10 @@ func (e objectEnv) publishThumbnail(
 	scratch := t.TempDir() + "/thumbnail.jpg"
 	writeFile(t, scratch, payload)
 	pending := store.PendingMediaAssetCopy{
-		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key, DerivedGeneration: generation,
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
+		DerivedGeneration: generation, ReserveNewGeneration: true,
 	}
-	_, published, err := publishGeneratedObject(context.Background(), e.objects, e.media, pending, scratch, "image/jpeg", false,
+	_, published, err := publishGeneratedObject(context.Background(), e.objects, e.media, pending, scratch, "image/jpeg", false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return e.media.PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
 				RecordingID: recordingID, RelPath: key, SizeBytes: size, SeekMs: 1000, InputAssetID: originalID,
@@ -230,7 +289,7 @@ func TestObjectPublishWritesSHA256InTheCommitTransaction(t *testing.T) {
 	tilesPath := t.TempDir() + "/tiles.jpg"
 	writeFile(t, tilesPath, tiles)
 	_, published, err := publishGeneratedObject(ctx, env.objects, env.media,
-		store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindSeekTiles, RelPath: tilesKey}, tilesPath, "image/jpeg", false,
+		store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindSeekTiles, RelPath: tilesKey}, tilesPath, "image/jpeg", false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return env.media.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
 				RecordingID: recordingID, RelPath: tilesKey, SizeBytes: size, SHA256: sum[:], PendingCopy: true,
@@ -246,7 +305,7 @@ func TestObjectPublishWritesSHA256InTheCommitTransaction(t *testing.T) {
 	writeFile(t, encodedPath, encoded)
 	_, published, err = publishGeneratedObject(ctx, env.objects, env.media,
 		store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindEncoded, Profile: &profile, RelPath: encodedKey, ReserveNewGeneration: true},
-		encodedPath, "video/mp4", false,
+		encodedPath, "video/mp4", false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return env.media.PublishEncoded(ctx, store.EncodedPublishInput{
 				RecordingID: recordingID, Profile: profile, Attempt: 1, RelPath: encodedKey, SizeBytes: size,
@@ -401,6 +460,209 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 	}
 }
 
+// 共有 FS の派生物も Store.Put 後に公開が失敗した pending key を、通常の FS reconcile が
+// ブレーカーに数えたうえで Store.Delete 経由で回収する。
+func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	objects := testFSObjectStore(mediaDir)
+	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, dbtest.StoreName)
+	keys := make([]string, 0, 2)
+	for range 2 {
+		recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+		key := thumbnailRelPath(recordingID, 0)
+		scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
+		writeFile(t, scratch, []byte("uploaded before publication failed"))
+		_, published, err := publishGeneratedObject(ctx, objects, media,
+			store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key},
+			scratch, "image/jpeg", false, nil,
+			func(int64, [sha256.Size]byte) (bool, error) {
+				return false, errors.New("injected DB publication failure")
+			},
+		)
+		if err == nil || published {
+			t.Fatalf("publication result = (%t, %v), want failed after Put", published, err)
+		}
+		if _, err := objects.Head(ctx, key); err != nil {
+			t.Fatalf("Head failed object %q: %v", key, err)
+		}
+		keys = append(keys, key)
+	}
+	for _, key := range keys {
+		if _, err := pool.Exec(ctx,
+			`UPDATE media_asset_copies SET created_at = now() - interval '48 hours' WHERE store = $1 AND rel_path = $2`,
+			dbtest.StoreName, key); err != nil {
+			t.Fatalf("aging pending copy %q: %v", key, err)
+		}
+	}
+	originalRelPath := "original/pending-transfer.ts"
+	originalPath := filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))
+	if err := os.MkdirAll(filepath.Dir(originalPath), 0o755); err != nil {
+		t.Fatalf("creating original directory: %v", err)
+	}
+	if err := os.WriteFile(originalPath, []byte("original remains file-backed"), 0o644); err != nil {
+		t.Fatalf("writing pending original: %v", err)
+	}
+	originalRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	originalAssetID := dbtest.MediaAsset(t, pool, originalRecordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath, p.SizeBytes = originalRelPath, int64(len("original remains file-backed"))
+	})
+	if _, err := pool.Exec(ctx,
+		`UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE media_asset_id = $1 AND store = $2`,
+		originalAssetID, dbtest.StoreName); err != nil {
+		t.Fatalf("aging pending original copy: %v", err)
+	}
+
+	worker := &DeleteReconcileWorker{
+		MediaDelete: media, MediaPendingReclaim: media,
+		Storage: media, RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName),
+		Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
+		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName,
+		TrashRetention: 24 * time.Hour, OrphanMTimeGrace: 24 * time.Hour, OrphanAge: 24 * time.Hour,
+		MissingAssetAge: 24 * time.Hour, MaxDeletesPerPass: 1,
+	}
+	if err := worker.workFilesystem(ctx, worker.settings()); err != nil {
+		t.Fatalf("delete reconcile with breaker limit: %v", err)
+	}
+	var breakerCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM circuit_breakers WHERE name = $1 AND scope = $2`, breaker.DeleteReconcile, dbtest.StoreName,
+	).Scan(&breakerCount); err != nil {
+		t.Fatalf("checking filesystem delete breaker: %v", err)
+	}
+	if breakerCount != 1 {
+		t.Fatalf("filesystem delete breaker rows = %d, want 1 for two pending copies over the limit", breakerCount)
+	}
+	for _, key := range keys {
+		if _, err := objects.Head(ctx, key); err != nil {
+			t.Fatalf("pending object %q was deleted while breaker was latched: %v", key, err)
+		}
+		var state string
+		if err := pool.QueryRow(ctx,
+			`SELECT state FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, key,
+		).Scan(&state); err != nil {
+			t.Fatalf("reading pending copy state %q: %v", key, err)
+		}
+		if state != "pending" {
+			t.Fatalf("pending copy %q state = %q, want pending while breaker is latched", key, state)
+		}
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM circuit_breakers WHERE name = $1 AND scope = $2`, breaker.DeleteReconcile, dbtest.StoreName); err != nil {
+		t.Fatalf("resuming filesystem delete breaker: %v", err)
+	}
+	worker.MaxDeletesPerPass = 100
+	if err := worker.workFilesystem(ctx, worker.settings()); err != nil {
+		t.Fatalf("delete reconcile after resuming breaker: %v", err)
+	}
+	for _, key := range keys {
+		if _, err := objects.Head(ctx, key); !errors.Is(err, objstore.ErrNotFound) {
+			t.Errorf("Head after pending reclaim for %q = %v, want ErrNotFound", key, err)
+		}
+		var state string
+		if err := pool.QueryRow(ctx,
+			`SELECT state FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, key,
+		).Scan(&state); err != nil {
+			t.Fatalf("reading reclaimed copy state %q: %v", key, err)
+		}
+		if state != "deleted" {
+			t.Errorf("reclaimed copy %q state = %q, want deleted", key, state)
+		}
+	}
+	if _, err := os.Stat(originalPath); err != nil {
+		t.Errorf("pending original was changed by derived reclaim: %v", err)
+	}
+	var originalState string
+	if err := pool.QueryRow(ctx,
+		`SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, originalAssetID, dbtest.StoreName,
+	).Scan(&originalState); err != nil {
+		t.Fatalf("reading original copy state: %v", err)
+	}
+	if originalState != "pending" {
+		t.Errorf("original copy state = %q, want pending", originalState)
+	}
+}
+
+func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	objects := testFilesystemObjectStore(t, mediaDir)
+	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, dbtest.StoreName)
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	relPath := "pending/sidecar-retry.mp4"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("pending encoded object"))
+	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subtitlePath := filepath.Join(mediaDir, filepath.FromSlash(subtitleRelPath))
+	if err := os.Remove(subtitlePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removing seeded subtitle: %v", err)
+	}
+	if err := os.MkdirAll(subtitlePath, 0o755); err != nil {
+		t.Fatalf("creating blocked subtitle directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("making subtitle deletion fail: %v", err)
+	}
+	copyID := transferTestCopyID(t, pool, assetID, dbtest.StoreName)
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE id = $1`, copyID); err != nil {
+		t.Fatalf("aging pending encoded copy: %v", err)
+	}
+	worker := &DeleteReconcileWorker{
+		MediaDelete: media, MediaPendingReclaim: media, Storage: media,
+		RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName), Breakers: pgstore.NewBreakers(pool),
+		MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
+		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName, OrphanAge: time.Hour,
+	}
+	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("DeleteReconcileWorker.Work with blocked subtitle: %v", err)
+	}
+	if _, err := objects.Head(ctx, relPath); err != nil {
+		t.Fatalf("main object was removed before subtitle cleanup succeeded: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" {
+		t.Fatalf("copy state after blocked subtitle cleanup = %q, want pending", state)
+	}
+
+	if err := os.RemoveAll(subtitlePath); err != nil {
+		t.Fatalf("removing blocked subtitle directory: %v", err)
+	}
+	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\ncaption\n"), 0o644); err != nil {
+		t.Fatalf("restoring subtitle object: %v", err)
+	}
+	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("retrying DeleteReconcileWorker.Work: %v", err)
+	}
+	if _, err := objects.Head(ctx, relPath); !errors.Is(err, objstore.ErrNotFound) {
+		t.Errorf("main object after successful retry = %v, want ErrNotFound", err)
+	}
+	if _, err := objects.Head(ctx, subtitleRelPath); !errors.Is(err, objstore.ErrNotFound) {
+		t.Errorf("subtitle object after successful retry = %v, want ErrNotFound", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "deleted" {
+		t.Errorf("copy state after successful retry = %q, want deleted", state)
+	}
+}
+
 // 回収は pending の行をロックしたまま key を消す。公開の tx が先に active にした行は消さない。
 func TestObjectPendingReclaimSkipsCopyPublishedFirst(t *testing.T) {
 	env := newObjectEnv(t)
@@ -452,11 +714,268 @@ func TestObjectPublishFailsWhenPendingCopyWasReclaimed(t *testing.T) {
 		RecordingID: recordingID, RelPath: key, SizeBytes: 1, SeekMs: 1000, InputAssetID: originalID,
 		PendingCopy: true,
 	}, func() error { return nil })
-	if published || !errors.Is(err, store.ErrStalePublishPlan) {
-		t.Fatalf("publishing a reclaimed pending copy = (%t, %v), want (false, ErrStalePublishPlan)", published, err)
+	if published || !errors.Is(err, store.ErrStalePublishPlan) || !errors.Is(err, store.ErrPendingMediaAssetCopyMissing) {
+		t.Fatalf("publishing a reclaimed pending copy = (%t, %v), want stale-plan and missing-copy errors", published, err)
 	}
 	if got := env.copyState(t, key); got != "deleted" {
 		t.Fatalf("reclaimed copy state = %q, want deleted", got)
+	}
+}
+
+// A live Put that finishes after pending reclaim must not leave its canonical key unowned.
+func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T) {
+	for _, markTrashed := range []bool{false, true} {
+		name := "activation_detects_missing_copy"
+		if markTrashed {
+			name = "early_skip_detects_missing_copy"
+		}
+		t.Run(name, func(t *testing.T) {
+			env := newObjectEnv(t)
+			ctx := context.Background()
+			recordingID := dbtest.Recording(t, env.pool)
+			originalID := dbtest.MediaAsset(t, env.pool, recordingID)
+			key := thumbnailRelPath(recordingID, 0)
+			pending := store.PendingMediaAssetCopy{
+				RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
+			}
+			if err := env.media.PreparePendingMediaAssetCopy(ctx, pending); err != nil {
+				t.Fatalf("reserving pending copy: %v", err)
+			}
+			var copyID int64
+			if err := env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID); err != nil {
+				t.Fatalf("loading copy: %v", err)
+			}
+			if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID); err != nil {
+				t.Fatalf("aging the copy: %v", err)
+			}
+			scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
+			writeFile(t, scratch, []byte("thumbnail"))
+			reclaimed := false
+			objects := beforePutObjectStore{
+				Store: env.objects,
+				beforePut: func(putCtx context.Context, putKey string) error {
+					if putKey != key {
+						return fmt.Errorf("unexpected Put key %q", putKey)
+					}
+					var err error
+					reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
+						return env.objects.Delete(putCtx, key)
+					})
+					if err != nil || !markTrashed {
+						return err
+					}
+					_, err = env.pool.Exec(putCtx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, recordingID)
+					return err
+				},
+			}
+			_, published, err := publishGeneratedObject(ctx, objects, env.media, pending, scratch, "image/jpeg", true, nil,
+				func(size int64, sum [sha256.Size]byte) (bool, error) {
+					return env.media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+						RecordingID: recordingID, RelPath: key, SizeBytes: size, SeekMs: 1000, InputAssetID: originalID,
+						SHA256: sum[:], PendingCopy: true,
+					}, func() error { return nil })
+				})
+			if !reclaimed {
+				t.Fatal("pending copy was not reclaimed before Put")
+			}
+			if published {
+				t.Fatal("published after pending reclaim")
+			}
+			if markTrashed {
+				if err != nil {
+					t.Fatalf("publishing after a trashed recording skip = %v, want successful skip", err)
+				}
+			} else if !errors.Is(err, store.ErrStalePublishPlan) || !errors.Is(err, store.ErrPendingMediaAssetCopyMissing) {
+				t.Fatalf("publishing after pending reclaim = %v, want stale-plan and missing-copy errors", err)
+			}
+			if env.objectExists(t, key) {
+				t.Fatal("object written after pending reclaim remains without a live copy")
+			}
+			if got := env.copyState(t, key); got != "deleted" {
+				t.Fatalf("reclaimed copy state = %q, want deleted", got)
+			}
+		})
+	}
+}
+
+// A failed companion Put still cleans a main key whose pending row was reclaimed during Put.
+func TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim(t *testing.T) {
+	env := newObjectEnv(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, env.pool)
+	key := thumbnailRelPath(recordingID, 0)
+	companionKey := "subtitles/reclaimed.vtt"
+	pending := store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
+	}
+	mainScratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
+	companionScratch := filepath.Join(t.TempDir(), "subtitle.vtt")
+	writeFile(t, mainScratch, []byte("thumbnail"))
+	writeFile(t, companionScratch, []byte("subtitle"))
+	companionErr := errors.New("injected companion Put failure")
+	reclaimed := false
+	objects := beforePutObjectStore{
+		Store: env.objects,
+		beforePut: func(putCtx context.Context, putKey string) error {
+			switch putKey {
+			case key:
+				var copyID int64
+				if err := env.pool.QueryRow(putCtx,
+					`SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2 AND state = 'pending'`, objectStoreName, key,
+				).Scan(&copyID); err != nil {
+					return fmt.Errorf("loading pending copy before Put: %w", err)
+				}
+				var err error
+				reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now().Add(time.Second), func() error { return nil })
+				return err
+			case companionKey:
+				return companionErr
+			default:
+				return fmt.Errorf("unexpected Put key %q", putKey)
+			}
+		},
+	}
+	commitCalled := false
+	_, published, err := publishGeneratedObject(ctx, objects, env.media, pending, mainScratch, "image/jpeg", false, nil,
+		func(int64, [sha256.Size]byte) (bool, error) {
+			commitCalled = true
+			return false, nil
+		}, objectCompanion{Key: companionKey, Path: companionScratch, ContentType: "text/vtt"})
+	if !reclaimed {
+		t.Fatal("pending copy was not reclaimed during the main Put")
+	}
+	if published || !errors.Is(err, companionErr) || commitCalled {
+		t.Fatalf("publish after companion failure = (published %t, err %v, commit called %t), want companion error without commit", published, err, commitCalled)
+	}
+	if env.objectExists(t, key) {
+		t.Fatal("main object written after pending reclaim remains without a live copy")
+	}
+}
+
+// A late cleanup delete must not remove a thumbnail generation published after reclaim.
+func TestObjectPublishCleanupDoesNotDeleteNewerThumbnailGeneration(t *testing.T) {
+	env := newObjectEnv(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, env.pool)
+	originalID := dbtest.MediaAsset(t, env.pool, recordingID)
+	oldKey := env.publishThumbnail(t, recordingID, originalID, 0, nil, []byte("generation zero"))
+	current, err := env.media.GetThumbnailMediaAssetForServing(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading current thumbnail: %v", err)
+	}
+	seekMs := int64(1000)
+	expected := &store.ThumbnailObservation{
+		ID: current.ID, RelPath: current.RelPath, SeekMs: &seekMs, DerivedGeneration: 0,
+	}
+
+	keyA := thumbnailRelPath(recordingID, 1)
+	pendingA := store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: keyA,
+		DerivedGeneration: 1, ReserveNewGeneration: true,
+	}
+	scratchA := filepath.Join(t.TempDir(), "thumbnail-a.jpg")
+	writeFile(t, scratchA, []byte("replacement A"))
+	cleanupStarted := make(chan struct{}, 1)
+	releaseCleanup := make(chan struct{})
+	var reclaimed bool
+	var releaseOnce sync.Once
+	releaseDelete := func() { releaseOnce.Do(func() { close(releaseCleanup) }) }
+	defer releaseDelete()
+	objectsA := afterPutObjectStore{
+		Store: blockedDeleteObjectStore{
+			Store: env.objects, key: keyA, started: cleanupStarted, release: releaseCleanup,
+		},
+		afterPut: func(putCtx context.Context, putKey string) error {
+			if putKey != keyA {
+				return nil
+			}
+			var copyID int64
+			if err := env.pool.QueryRow(putCtx,
+				`SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2 AND state = 'pending'`, objectStoreName, keyA,
+			).Scan(&copyID); err != nil {
+				return fmt.Errorf("loading pending replacement before reclaim: %w", err)
+			}
+			var err error
+			reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now().Add(time.Second), func() error {
+				return env.objects.Delete(putCtx, keyA)
+			})
+			return err
+		},
+	}
+	type publishResult struct {
+		published bool
+		err       error
+	}
+	aDone := make(chan publishResult, 1)
+	go func() {
+		_, published, err := publishGeneratedObject(ctx, objectsA, env.media, pendingA, scratchA, "image/jpeg", false, nil,
+			func(size int64, sum [sha256.Size]byte) (bool, error) {
+				return env.media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+					RecordingID: recordingID, RelPath: keyA, SizeBytes: size, SeekMs: 2000,
+					InputAssetID: originalID, InputStore: dbtest.StoreName, DerivedGeneration: 1,
+					Expected: expected, SHA256: sum[:], PendingCopy: true,
+				}, func() error { return nil })
+			})
+		aDone <- publishResult{published: published, err: err}
+	}()
+	select {
+	case <-cleanupStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("replacement A cleanup did not reach its delayed Delete")
+	}
+	if !reclaimed {
+		t.Fatal("replacement A pending copy was not reclaimed after its Put")
+	}
+	if env.objectExists(t, keyA) {
+		t.Fatal("pending reclaim did not remove replacement A before cleanup")
+	}
+
+	maxGeneration, found, err := env.media.GetDerivedMediaAssetGeneration(ctx, recordingID, "thumbnail")
+	if err != nil || !found {
+		t.Fatalf("loading thumbnail generation watermark = (%d, %t, %v), want an existing asset", maxGeneration, found, err)
+	}
+	generation := maxGeneration + 1
+	if generation != 2 {
+		t.Fatalf("next thumbnail generation = %d, want 2 after reclaiming generation 1", generation)
+	}
+	keyB := thumbnailRelPath(recordingID, generation)
+	scratchB := filepath.Join(t.TempDir(), "thumbnail-b.jpg")
+	writeFile(t, scratchB, []byte("replacement B"))
+	_, published, err := publishGeneratedObject(ctx, env.objects, env.media, store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: keyB,
+		DerivedGeneration: generation, ReserveNewGeneration: true,
+	}, scratchB, "image/jpeg", false, nil, func(size int64, sum [sha256.Size]byte) (bool, error) {
+		return env.media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+			RecordingID: recordingID, RelPath: keyB, SizeBytes: size, SeekMs: 3000,
+			InputAssetID: originalID, InputStore: dbtest.StoreName, DerivedGeneration: generation,
+			Expected: expected, SHA256: sum[:], PendingCopy: true,
+		}, func() error { return nil })
+	})
+	if err != nil || !published {
+		t.Fatalf("publishing replacement B at generation %d = (%t, %v), want published", generation, published, err)
+	}
+
+	releaseDelete()
+	select {
+	case result := <-aDone:
+		if result.published || !errors.Is(result.err, store.ErrPendingMediaAssetCopyMissing) {
+			t.Fatalf("replacement A publish = (%t, %v), want a reclaimed pending copy", result.published, result.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("replacement A cleanup did not finish after releasing Delete")
+	}
+	if !env.objectExists(t, keyB) {
+		t.Fatal("late cleanup of replacement A removed replacement B's active object")
+	}
+	active, err := env.media.GetThumbnailMediaAssetForServing(ctx, recordingID)
+	if err != nil || active.RelPath != keyB {
+		t.Fatalf("active thumbnail = (%+v, %v), want replacement B at %q", active, err, keyB)
+	}
+	if got := env.copyState(t, keyB); got != "active" {
+		t.Fatalf("replacement B copy state = %q, want active", got)
+	}
+	if !env.objectExists(t, oldKey) {
+		t.Fatal("expected original generation zero object to remain available")
 	}
 }
 

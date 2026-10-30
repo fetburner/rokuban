@@ -133,19 +133,21 @@ type Deps struct {
 	LabelRuleReevaluation store.LabelRuleReevaluation
 	MediaReconcile        store.MediaReconcile
 	MediaPublish          store.MediaPublish
-	// DerivedMediaPublish と DerivedObjects は、派生物の置き場が S3 のときだけ設定する。
-	// DerivedMediaPublish は S3 の置き場に束ねた store で、encode・サムネイル・シークタイルが使う。
+	// DerivedMediaPublish と DerivedObjects は派生物の置き場に束ねた契約。
 	DerivedMediaPublish    store.DerivedMediaPublisher
 	DerivedObjects         objstore.Store
 	DerivedObjectStoreName string
-	// DerivedMediaDelete・DerivedPendingReclaim・DerivedStorage は、同じ S3 の置き場に束ねた
+	// DerivedMediaDelete・DerivedPendingReclaim・DerivedStorage は、独立した派生物置き場の
 	// 削除 reconcile 用の store。
 	DerivedMediaDelete    store.MediaDelete
 	DerivedPendingReclaim store.PendingCopyReclaim
 	DerivedStorage        store.StorageObservation
+	StorageObjects        map[string]objstore.Store
 	IngestPrecheck        store.IngestPrecheck
 	EncodeProgress        store.EncodeProgressReporter
 	MediaDelete           store.MediaDelete
+	// MediaPendingReclaim は共有 FS にある派生物 pending copy の aged reclaim 用。
+	MediaPendingReclaim   store.PendingCopyReclaim
 	StorageTransfer       store.StorageTransfer
 	StorageTransferPolicy config.StorageConfig
 	StorageRoots          map[string]string
@@ -301,7 +303,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
 		Media:            deps.MediaReconcile,
-		Publisher:        deps.MediaPublish,
 		ObjectPublisher:  deps.DerivedMediaPublish,
 		Objects:          deps.DerivedObjects,
 		MediaDir:         deps.MediaDir,
@@ -313,7 +314,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &SeekTilesWorker{
 		Media:           deps.MediaReconcile,
-		Publisher:       deps.MediaPublish,
 		ObjectPublisher: deps.DerivedMediaPublish,
 		Objects:         deps.DerivedObjects,
 		MediaDir:        deps.MediaDir,
@@ -353,9 +353,11 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Config:   deps.StorageTransferPolicy,
 	})
 	riveradapter.Register(workers, &StorageTransferWorker{
-		Storage: deps.StorageTransfer,
-		Config:  deps.StorageTransferPolicy,
-		Roots:   deps.StorageRoots,
+		Storage:      deps.StorageTransfer,
+		Config:       deps.StorageTransferPolicy,
+		Roots:        deps.StorageRoots,
+		ObjectStores: deps.StorageObjects,
+		ScratchDir:   deps.ScratchDir,
 	})
 	riveradapter.Register(workers, &StorageSyncWorker{
 		Storage:    deps.StorageObservation,
@@ -371,6 +373,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
 	return &DeleteReconcileWorker{
 		MediaDelete:            deps.MediaDelete,
+		MediaPendingReclaim:    deps.MediaPendingReclaim,
 		StorageTransfer:        deps.StorageTransfer,
 		StorageTransferPolicy:  deps.StorageTransferPolicy,
 		RecordingPurge:         deps.RecordingPurge,
@@ -383,6 +386,7 @@ func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
 		DerivedMediaDelete:     deps.DerivedMediaDelete,
 		DerivedPendingReclaim:  deps.DerivedPendingReclaim,
 		DerivedStorage:         deps.DerivedStorage,
+		StorageObjects:         deps.StorageObjects,
 		TransferOverlap:        deps.TransferOverlap,
 		TrashRetention:         deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,

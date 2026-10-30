@@ -121,92 +121,7 @@ func assertMediaAssetSHA256(t *testing.T, pool *pgxpool.Pool, recordingID int64,
 	}
 }
 
-// assertWorkerPublishesUnderRelPathLock は worker（run）を rel_path lock を保持したまま
-// 走らせ、lock 中は canonical が既存バイトのまま・active 行が無く、解放後に
-// want とそのサイズが公開されることを検証する。
-func assertWorkerPublishesUnderRelPathLock(
-	t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64,
-	kind, relPath string, hasPrior bool, run func() error, want []byte,
-) {
-	t.Helper()
-	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	prior := []byte("previous orphan bytes")
-	if hasPrior {
-		if err := os.WriteFile(canonicalPath, prior, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	lock, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	locked := true
-	defer func() {
-		if locked {
-			_ = lock.Close()
-		}
-	}()
-	done := make(chan error, 1)
-	go func() { done <- run() }()
-
-	deadline := time.After(10 * time.Second)
-	for len(stagedFiles(t, filepath.Dir(canonicalPath))) == 0 {
-		select {
-		case err := <-done:
-			got, _ := os.ReadFile(canonicalPath)
-			t.Fatalf("worker returned (err=%v) while rel_path lock was held; canonical = %q", err, got)
-		case <-deadline:
-			t.Fatal("worker did not stage while waiting for rel_path lock")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	got, err := os.ReadFile(canonicalPath)
-	if hasPrior {
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(got, prior) {
-			t.Fatalf("canonical bytes changed while rel_path lock held: got %q, want %q", got, prior)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canonical file appeared while rel_path lock held: bytes %q, err %v", got, err)
-	}
-	if _, ok := activeAssetSize(t, pool, recordingID, kind); ok {
-		t.Fatalf("active %s row visible while rel_path lock held", kind)
-	}
-
-	if err := lock.Close(); err != nil {
-		t.Fatal(err)
-	}
-	locked = false
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("worker: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("worker did not finish after rel_path lock was released")
-	}
-	got, err = os.ReadFile(canonicalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("canonical bytes = %q, want published %q", got, want)
-	}
-	if size, ok := activeAssetSize(t, pool, recordingID, kind); !ok || size != int64(len(want)) {
-		t.Fatalf("active %s size = %d (found=%v), want %d", kind, size, ok, len(want))
-	}
-	assertMediaAssetSHA256(t, pool, recordingID, kind, "", want)
-	if left := stagedFiles(t, filepath.Dir(canonicalPath)); len(left) != 0 {
-		t.Errorf("staged files remain: %v", left)
-	}
-}
-
-func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
+func TestThumbnailWorkerPublishesThroughObjectStore(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
@@ -219,14 +134,21 @@ UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_
 		t.Fatalf("seeding deleted thumbnail copy: %v", err)
 	}
 	w := &ThumbnailWorker{
-		Publisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
 	relPath := thumbnailRelPath(id, 1)
-	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "thumbnail", relPath, false,
-		func() error {
-			return runWorkerViaJobQFake(context.Background(), w,
-				ThumbnailJobArgs{RecordingID: id})
-		}, tinyJPEG)
+	if err := runWorkerViaJobQFake(context.Background(), w, ThumbnailJobArgs{RecordingID: id}); err != nil {
+		t.Fatalf("ThumbnailWorker.Work: %v", err)
+	}
+	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if got, err := os.ReadFile(canonicalPath); err != nil || !bytes.Equal(got, tinyJPEG) {
+		t.Fatalf("published thumbnail = (%q, %v), want %q", got, err, tinyJPEG)
+	}
+	if size, ok := activeAssetSize(t, pool, id, "thumbnail"); !ok || size != int64(len(tinyJPEG)) {
+		t.Fatalf("active thumbnail size = %d (found=%v), want %d", size, ok, len(tinyJPEG))
+	}
+	assertMediaAssetSHA256(t, pool, id, "thumbnail", "", tinyJPEG)
 	var assetID int64
 	if err := pool.QueryRow(context.Background(), `SELECT a.id FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.recording_id = $1 AND a.kind = 'thumbnail' AND c.state = 'active'`, id).Scan(&assetID); err != nil {
 		t.Fatalf("reading active thumbnail id: %v", err)
@@ -244,8 +166,9 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	release := make(chan struct{})
 	results := make(chan error, 2)
 	w := &ThumbnailWorker{
-		Publisher: pgstoretest.Media(pool),
-		Media:     pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if strings.Contains(name, "ffprobe") || containsArg(args, "format=duration") {
 				return []byte("100\n"), nil
@@ -308,28 +231,55 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	}
 }
 
-func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
+func TestSeekTilesWorkerPublishesThroughObjectStore(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
 	cmd := &countingRunCmd{duration: "100"}
-	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
-	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "seek_tiles", seekTilesRelPath(id, 0), false,
-		func() error { return runSeekTilesJob(t, w, id) }, tinyJPEG)
+	w := &SeekTilesWorker{
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	if err := runSeekTilesJob(t, w, id); err != nil {
+		t.Fatalf("SeekTilesWorker.Work: %v", err)
+	}
+	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(seekTilesRelPath(id, 0)))
+	if got, err := os.ReadFile(canonicalPath); err != nil || !bytes.Equal(got, tinyJPEG) {
+		t.Fatalf("published seek tiles = (%q, %v), want %q", got, err, tinyJPEG)
+	}
+	if size, ok := activeAssetSize(t, pool, id, "seek_tiles"); !ok || size != int64(len(tinyJPEG)) {
+		t.Fatalf("active seek_tiles size = %d (found=%v), want %d", size, ok, len(tinyJPEG))
+	}
+	assertMediaAssetSHA256(t, pool, id, "seek_tiles", "", tinyJPEG)
 }
 
 func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scratch string) (int64, bool, error) {
 	// 呼び出し時点の active original を入力として計画した初回生成を模す。
+	ctx := context.Background()
+	objects := testFSObjectStore(mediaDir)
+	publisher := pgstoretest.Media(pool)
 	var inputID int64
-	if orig, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
+	if orig, err := publisher.GetActiveOriginalMediaAsset(ctx, id); err == nil {
 		inputID = orig.ID
 	}
-	relPath := thumbnailRelPath(id, 0)
-	return publishGeneratedMediaAsset(context.Background(), mediaDir, "", relPath, scratch,
-		func(size int64, contentSHA256 []byte, publish func() error) (bool, error) {
-			return pgstoretest.Media(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
-				RecordingID: id, RelPath: relPath, SizeBytes: size, SHA256: contentSHA256, InputAssetID: inputID,
-			}, publish)
+	generation, found, err := publisher.GetDerivedMediaAssetGeneration(ctx, id, store.AssetKindThumbnail)
+	if err != nil {
+		return 0, false, err
+	}
+	if found {
+		generation++
+	}
+	pathPicker := ThumbnailWorker{Objects: objects}
+	relPath, generation, err := pathPicker.nextUnusedThumbnailRelPath(ctx, id, generation)
+	if err != nil {
+		return 0, false, err
+	}
+	return publishGeneratedObject(ctx, objects, publisher,
+		store.PendingMediaAssetCopy{RecordingID: id, Kind: store.AssetKindThumbnail, RelPath: relPath, DerivedGeneration: generation},
+		scratch, objectContentType(relPath), false, nil,
+		func(size int64, sum [sha256.Size]byte) (bool, error) {
+			return publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+				RecordingID: id, RelPath: relPath, SizeBytes: size, SHA256: sum[:], InputAssetID: inputID, PendingCopy: true,
+			}, func() error { return nil })
 		})
 }
 
@@ -383,6 +333,18 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	if got, _ := os.ReadFile(canonicalPath); !bytes.Equal(got, prior) {
 		t.Errorf("canonical bytes = %q, want %q", got, prior)
 	}
+	pendingPath := filepath.Join(mediaDir, filepath.FromSlash(thumbnailRelPath(id, 1)))
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Errorf("unpublished pending generation is missing: %v", err)
+	}
+	var pendingState string
+	if err := pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
+		dbtest.StoreName, thumbnailRelPath(id, 1)).Scan(&pendingState); err != nil {
+		t.Fatalf("reading skipped generation state: %v", err)
+	}
+	if pendingState != "pending" {
+		t.Errorf("skipped generation state = %q, want pending", pendingState)
+	}
 	if s, ok := activeAssetSize(t, pool, id, "thumbnail"); !ok || s != int64(len(prior)) {
 		t.Errorf("active size = %d (found=%v), want %d", s, ok, len(prior))
 	}
@@ -391,7 +353,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	}
 }
 
-// ffmpeg 実行中に原本が active でなくなった場合は、新しい active 派生行も canonical も作らない。
+// ffmpeg 実行中に原本が active でなくなった場合は新しい active 派生行を作らず、Put 済み key は pending に残す。
 func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -405,12 +367,21 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 	if published {
 		t.Fatal("published = true, want false")
 	}
-	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(thumbnailRelPath(id, 0)))
-	if _, err := os.Stat(canonicalPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("canonical exists after skipped publish: %v", err)
+	key := thumbnailRelPath(id, 0)
+	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(key))
+	if _, err := os.Stat(canonicalPath); err != nil {
+		t.Errorf("unpublished pending object is missing: %v", err)
 	}
 	if _, ok := activeAssetSize(t, pool, id, "thumbnail"); ok {
 		t.Error("active thumbnail row created for deleted recording")
+	}
+	var pendingState string
+	if err := pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
+		dbtest.StoreName, key).Scan(&pendingState); err != nil {
+		t.Fatalf("reading skipped thumbnail state: %v", err)
+	}
+	if pendingState != "pending" {
+		t.Errorf("skipped thumbnail state = %q, want pending", pendingState)
 	}
 	if left := stagedFiles(t, filepath.Dir(canonicalPath)); len(left) != 0 {
 		t.Errorf("staged files remain: %v", left)

@@ -85,7 +85,7 @@ LIMIT sqlc.arg('row_limit');
 -- 無い行」を作ってしまう。この SELECT + Go 側の stat + 分岐は、その窓を
 -- revert 経路自身に持ち込まないための構成。
 -- name: ListUnqualifiedDeletingAssets :many
-SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id, physical_copy.rel_path
+SELECT physical_copy.id AS copy_id, a.id AS media_asset_id, a.recording_id, physical_copy.rel_path, a.kind
 FROM media_assets a
 JOIN media_asset_copies physical_copy
   ON physical_copy.media_asset_id = a.id

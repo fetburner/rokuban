@@ -114,7 +114,7 @@ WHERE media_asset_id = sqlc.arg('media_asset_id')
   AND generation = sqlc.arg('generation')
   AND state = 'pending';
 
--- 公開されないまま猶予を過ぎた pending。予約の時刻で数える。
+-- 公開されないまま猶予を過ぎた派生物 pending。予約の時刻で数える。
 -- name: ListAgedPendingMediaAssetCopies :many
 SELECT copy.id AS copy_id, asset.id AS media_asset_id, asset.recording_id,
        copy.rel_path, asset.size_bytes, asset.kind, copy.generation
@@ -122,6 +122,7 @@ FROM media_asset_copies copy
 JOIN media_assets asset ON asset.id = copy.media_asset_id
 WHERE copy.store = sqlc.arg('store_name')
   AND copy.state = 'pending'
+  AND asset.kind <> 'original'
   AND copy.created_at < sqlc.arg('created_before')::timestamptz
 ORDER BY copy.id
 LIMIT sqlc.arg('row_limit');

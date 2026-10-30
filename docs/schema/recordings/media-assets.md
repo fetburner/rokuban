@@ -67,6 +67,23 @@ CREATE TABLE missing_media_assets (
 
 `missing_media_assets` の行は、走査が観測できなかった物理コピーの ID を主キーに持つ。コピーのパス・置き場・論理資産はコピー表から引く。同じ論理資産に複数の世代や置き場があっても、観測できなかったコピーを個別に記録でき、コピーが削除されると観測も cascade で消える。
 
+### media_asset_transfer_objects — 転送が作成したキー
+
+転送中に新しく作った派生物だけを安全に回収できるよう、作成者の記録を持つ。
+
+```sql
+CREATE TABLE media_asset_transfer_objects (
+    copy_id    bigint NOT NULL REFERENCES media_asset_copies (id) ON DELETE CASCADE,
+    rel_path   text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (copy_id, rel_path)
+);
+```
+
+行は、`pending` な派生物のコピーの転送が新規作成したキーの所有記録である。転送が `active` になったとき、または `pending` のコピーを回収したときに消す。行の無いキーは転送の所有物とみなさず、回収時も消さない。
+
+未解決: `Store.Put` の成功後、所有記録を commit する前にプロセスが止まると、そのキーは未記録のまま残り、回収されない。内容だけを見て他の書き手のキーと区別することはしない。
+
 書き手は論理資産とコピー行を同じ tx で作り、列を消す migration はコピーの無い論理資産が残っていれば止まる。`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
 `storage adopt <store-name>` はコピー行を作らない。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移し、論理カウンターは全コピーの最大世代と比べて大きい方に引き上げる。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。

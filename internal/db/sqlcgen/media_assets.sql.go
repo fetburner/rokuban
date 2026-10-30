@@ -171,11 +171,16 @@ func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, arg GetAct
 }
 
 const getDerivedMediaAssetGeneration = `-- name: GetDerivedMediaAssetGeneration :one
-SELECT COALESCE(derived_generation, 0)::bigint AS derived_generation
-FROM media_assets
-WHERE recording_id = $1
-  AND kind = $2
-  AND profile IS NULL
+SELECT GREATEST(
+    COALESCE(asset.derived_generation, 0),
+    COALESCE(MAX(copy.generation), -1)
+)::bigint AS derived_generation
+FROM media_assets asset
+LEFT JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE asset.recording_id = $1
+  AND asset.kind = $2
+  AND asset.profile IS NULL
+GROUP BY asset.id
 `
 
 type GetDerivedMediaAssetGenerationParams struct {
@@ -183,7 +188,8 @@ type GetDerivedMediaAssetGenerationParams struct {
 	Kind        string
 }
 
-// GetDerivedMediaAssetGeneration returns the current counter, including tombstones.
+// GetDerivedMediaAssetGeneration returns the highest assigned generation, including
+// reclaimed copy tombstones. Thumbnail and seek tile keys are never reused.
 // Only kinds without a profile (thumbnail, seek_tiles) have a single row.
 func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDerivedMediaAssetGenerationParams) (int64, error) {
 	row := q.db.QueryRow(ctx, getDerivedMediaAssetGeneration, arg.RecordingID, arg.Kind)

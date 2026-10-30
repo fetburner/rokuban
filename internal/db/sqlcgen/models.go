@@ -229,6 +229,13 @@ type MediaAssetTransferAttempt struct {
 	UpdatedAt    time.Time
 }
 
+// Ownership evidence for destination object keys created by an in-flight media asset transfer.
+type MediaAssetTransferObject struct {
+	CopyID    int64
+	RelPath   string
+	CreatedAt time.Time
+}
+
 type MediaAssetTsScan struct {
 	MediaAssetID     int64
 	ScannedSizeBytes int64

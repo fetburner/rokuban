@@ -24,6 +24,7 @@ type MediaDeleteRevertCandidate struct {
 	MediaAssetID int64
 	RecordingID  int64
 	RelPath      string
+	Kind         string
 }
 
 // MediaDelete は削除 reconcile がメディアアセットの削除状態を読み書きする契約である。
@@ -53,9 +54,9 @@ type MediaDelete interface {
 }
 
 // PendingCopyReclaim は、公開されないまま猶予を過ぎた pending のコピー行の回収を担う契約である。
-// pending は一度も現行のコピーになっていないので、deleting を経由せず、行をロックしたまま S3 の key を消す。
+// pending は一度も現行のコピーになっていないので、deleting を経由せず、行をロックしたまま key を消す。
 type PendingCopyReclaim interface {
-	// ListAgedPendingMediaAssetCopies は、before より前に予約された pending のコピーを返す。
+	// ListAgedPendingMediaAssetCopies は、before より前に予約された pending の派生物コピーを返す。
 	ListAgedPendingMediaAssetCopies(ctx context.Context, before time.Time, limit int32) ([]MediaDeleteAsset, error)
 	// ReclaimPendingMediaAssetCopy は pending の行をロックし、まだ before より前の pending なら
 	// deleteObject を呼び、成功したら deleted にする。公開が先に active にしていれば何もせず false を返す。

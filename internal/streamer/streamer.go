@@ -48,8 +48,7 @@ type Config struct {
 	// store があれば /stores/<名前>/ を挟んで相対パスを連結した URI を返す。
 	AccelLocation string
 
-	// ObjectStores は S3 派生物など、署名付き URL を発行できる置き場。
-	// API ロールからは渡さず、streamer ロールだけがオブジェクトストレージへ接続する。
+	// ObjectStores は派生物の置き場。API ロールからは渡さず、streamer ロールだけが接続する。
 	ObjectStores map[string]objstore.Store
 
 	// SignedURLExpiry は S3 へ 302 するときの URL の寿命。0 なら 24 時間。
@@ -107,6 +106,8 @@ type serveAsset struct {
 	relPath   string
 	store     string
 	sizeBytes int64
+	// derived は原本以外のアセットを置き場のインターフェース経由で配信する。
+	derived bool
 	// sidecar は WebVTT 字幕サイドカーかどうか。サイドカーは encoded 行の
 	// 隣接ファイルであり、独立した media_assets 行（size_bytes・存在の保証）を
 	// 持たない --- 字幕を使っていない全 encoded 再生で発生する既定状態なので、
@@ -157,6 +158,7 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		asset.relPath = subPath
 		asset.contentType = "text/vtt; charset=utf-8"
 		asset.sidecar = true
+		asset.derived = true
 	}
 
 	s.serveAsset(w, r, id, asset)
@@ -188,6 +190,7 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 		relPath:     row.RelPath,
 		store:       row.Store,
 		sizeBytes:   row.SizeBytes,
+		derived:     true,
 		contentType: thumbnailContentType,
 	})
 }
@@ -219,6 +222,7 @@ func (s *Streamer) RecordingSeekTiles(w http.ResponseWriter, r *http.Request) {
 		relPath:     row.RelPath,
 		store:       row.Store,
 		sizeBytes:   row.SizeBytes,
+		derived:     true,
 		contentType: thumbnailContentType,
 	})
 }
@@ -233,16 +237,31 @@ func parseRecordingID(r *http.Request) (int64, error) {
 // rel_path は ingest/encode/thumbnail 時に検証済みだが、配信側でも独立に検証する。
 // DB に不正な行が入った場合に任意ファイルを読み出させないため。
 func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset) {
+	if asset.derived {
+		objects, ok := s.cfg.ObjectStores[asset.store]
+		if !ok {
+			slog.Error("streamer: derived object store is not configured", "recording_id", recordingID, "store", asset.store)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if local, ok := objects.(objstore.Local); ok {
+			s.serveLocalObjectAsset(w, r, recordingID, asset, local)
+			return
+		}
+		if _, ok := objects.(objstore.SignedURL); ok {
+			s.serveSignedAsset(w, r, recordingID, asset, objects)
+			return
+		}
+		slog.Error("streamer: derived object store cannot serve objects", "recording_id", recordingID, "store", asset.store)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	path, err := mediapath.Resolve(s.cfg.MediaDir, asset.relPath)
 	if err != nil {
 		slog.Error("streamer: rejecting rel_path outside the media directory",
 			"recording_id", recordingID, "rel_path", asset.relPath, "err", err)
 		http.NotFound(w, r)
-		return
-	}
-
-	if objects, ok := s.cfg.ObjectStores[asset.store]; ok {
-		s.serveSignedAsset(w, r, recordingID, asset, objects)
 		return
 	}
 
@@ -311,25 +330,60 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 	http.ServeContent(w, r, "", info.ModTime(), f)
 }
 
+func (s *Streamer) serveLocalObjectAsset(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset, local objstore.Local) {
+	f, object, err := local.Open(r.Context(), asset.relPath)
+	if err != nil {
+		if errors.Is(err, objstore.ErrNotFound) {
+			if !asset.sidecar {
+				slog.Warn("streamer: media asset row exists but the derived object is missing",
+					"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath)
+			}
+			http.NotFound(w, r)
+			return
+		}
+		metrics.RecordObjectStoreError("open", err)
+		slog.Error("streamer: opening derived object", "recording_id", recordingID, "store", asset.store,
+			"rel_path", asset.relPath, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	if !asset.sidecar && object.Size != asset.sizeBytes {
+		slog.Warn("streamer: derived object size differs from the committed size",
+			"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath,
+			"committed", asset.sizeBytes, "actual", object.Size)
+	}
+	if s.cfg.AccelLocation != "" {
+		// Local が設定済みでも Store API で key の存在とサイズを確認してから、
+		// original と同じく nginx へ転送する。FS の Range は nginx が処理する。
+		w.Header().Set("Content-Type", asset.contentType)
+		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.store, asset.relPath))
+		return
+	}
+	w.Header().Set("Content-Type", asset.contentType)
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	http.ServeContent(w, r, "", object.LastModified, f)
+}
+
 func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset, objects objstore.Store) {
 	object, err := objects.Head(r.Context(), asset.relPath)
 	if err != nil {
 		if errors.Is(err, objstore.ErrNotFound) {
 			if !asset.sidecar {
-				slog.Warn("streamer: media asset row exists but the S3 object is missing",
+				slog.Warn("streamer: media asset row exists but the derived object is missing",
 					"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath)
 			}
 			http.NotFound(w, r)
 			return
 		}
 		metrics.RecordObjectStoreError("head", err)
-		slog.Error("streamer: checking S3 object", "recording_id", recordingID, "store", asset.store,
+		slog.Error("streamer: checking derived object", "recording_id", recordingID, "store", asset.store,
 			"rel_path", asset.relPath, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if !asset.sidecar && object.Size != asset.sizeBytes {
-		slog.Warn("streamer: S3 object size differs from the committed size",
+		slog.Warn("streamer: derived object size differs from the committed size",
 			"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath,
 			"committed", asset.sizeBytes, "actual", object.Size)
 	}
@@ -346,7 +400,7 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 	target, err := signer.Presign(r.Context(), asset.relPath, r.Method, expires, asset.contentType, "")
 	if err != nil {
 		metrics.RecordObjectStoreError("presign", err)
-		slog.Error("streamer: creating signed S3 URL", "recording_id", recordingID, "store", asset.store,
+		slog.Error("streamer: creating signed object URL", "recording_id", recordingID, "store", asset.store,
 			"rel_path", asset.relPath, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -379,6 +433,7 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 		relPath:     row.RelPath,
 		store:       row.Store,
 		sizeBytes:   row.SizeBytes,
+		derived:     true,
 		contentType: contentTypeForPath(row.RelPath),
 	}, nil
 }

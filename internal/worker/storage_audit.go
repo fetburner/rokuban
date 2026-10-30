@@ -31,6 +31,8 @@ import (
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // reconcileDeleteObservations は孤児と欠損アセットを同じディスク走査結果で観測する。
@@ -223,7 +225,25 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 	}
 	candidates := make(map[int64]struct{})
 	for _, a := range active {
-		if _, ok := seenOnDisk[a.RelPath]; ok {
+		present := false
+		if a.Kind != store.AssetKindOriginal {
+			// 派生物は、そのコピーの置き場の objstore で現存を確かめる。置き場が S3 に切り替わった後も、
+			// この FS の置き場に残る旧いコピーはこの FS の置き場の Store で見る。
+			objects, objErr := w.objectsFor(w.MediaStoreName)
+			if objErr != nil {
+				return false, fmt.Errorf("auditing active media asset copy %d: %w", a.ID, objErr)
+			}
+			_, headErr := objects.Head(ctx, a.RelPath)
+			if headErr == nil {
+				present = true
+			} else if !errors.Is(headErr, objstore.ErrNotFound) {
+				metrics.RecordObjectStoreError("head", headErr)
+				return false, fmt.Errorf("checking derived media asset copy %d: %w", a.ID, headErr)
+			}
+		} else {
+			_, present = seenOnDisk[a.RelPath]
+		}
+		if present {
 			continue
 		}
 		candidates[a.ID] = struct{}{}

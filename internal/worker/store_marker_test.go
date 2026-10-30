@@ -67,25 +67,14 @@ func TestIngestWorkerWithholdsWhenStoreMarkerDoesNotMatch(t *testing.T) {
 	}
 }
 
-func TestGeneratedMediaPublishDoesNotStageWhenStoreMarkerIsMissing(t *testing.T) {
+func TestGeneratedObjectPublishDoesNotWriteWhenStoreMarkerIsMissing(t *testing.T) {
 	mediaDir := t.TempDir()
-	scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
-	if err := os.WriteFile(scratch, []byte("image"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	called := false
-	_, _, err := publishGeneratedMediaAsset(context.Background(), mediaDir, "tokyo", "thumbnails/1.jpg", scratch,
-		func(int64, []byte, func() error) (bool, error) {
-			called = true
-			return false, nil
-		})
+	worker := &EncodeWorker{MediaDir: mediaDir, MediaStoreName: "tokyo"}
+	_, _, err := worker.publishEncoded(context.Background(), encodePublishInput{})
 	if err == nil {
-		t.Fatal("publishGeneratedMediaAsset() succeeded without a store marker")
+		t.Fatal("publishEncoded() succeeded without a store marker")
 	}
-	if called {
-		t.Fatal("commit callback ran without a store marker")
-	}
-	// mkdir も temp の作成も行わない（置き場の目印が無い root には何も作らない）。
+	// fsstore.Put へ達する前に止まり、派生物ディレクトリも作らない。
 	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails")); !os.IsNotExist(err) {
 		t.Fatalf("generated output directory exists after marker rejection: stat error = %v", err)
 	}
@@ -291,7 +280,7 @@ func TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears(t *testing.T) {
 				t.Fatal(err)
 			}
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetUnlink
 			beforeMediaAssetUnlink = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetUnlink = previous })
@@ -330,7 +319,7 @@ func TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears(t *testing.T) 
 				t.Fatal(err)
 			}
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetMarkDeleted
 			beforeMediaAssetMarkDeleted = func(int64) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetMarkDeleted = previous })
@@ -363,7 +352,7 @@ func TestStoreMarkerMismatchWithholdsMissingAssetAndOrphanActions(t *testing.T) 
 				activeAssets: []store.ActiveMediaAsset{{ID: 17, RelPath: "sites/tokyo/missing.ts"}},
 				agedOrphans:  []string{filepath.ToSlash(relPath)},
 			}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 			// 実体無しの記録（walk の結果 → DB）。
 			if _, err := worker.reconcileMissingAssets(context.Background(), nil); err == nil {
@@ -421,7 +410,7 @@ func TestMissingAssetRecordRechecksStoreMarkerImmediatelyBeforeWrite(t *testing.
 				activeAssets: []store.ActiveMediaAsset{{ID: 18, RelPath: "sites/tokyo/missing.ts"}},
 				onListActive: func() { mismatchStoreMarker(t, mediaDir, state) },
 			}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 			if _, err := worker.reconcileMissingAssets(context.Background(), nil); err == nil {
 				t.Fatal("reconcileMissingAssets() succeeded after the marker changed")
@@ -456,7 +445,7 @@ func TestOrphanUnlinkRechecksStoreMarkerImmediatelyBeforeRemoval(t *testing.T) {
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			previous := beforeOrphanFileUnlink
 			beforeOrphanFileUnlink = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeOrphanFileUnlink = previous })
@@ -488,7 +477,7 @@ func TestDeleteMediaAssetWithholdsMarkDeletedAfterErrNotExistWhenMarkerDisappear
 			}
 			// ファイルは最初から無い。unlink は ErrNotExist になる。
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetMarkDeleted
 			beforeMediaAssetMarkDeleted = func(int64) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetMarkDeleted = previous })
@@ -533,14 +522,14 @@ func TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat(t *t
 					}
 				}
 				mediaDelete := &markerTestMediaDelete{}
-				worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+				worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 				previous := afterDeletingAssetStat
 				afterDeletingAssetStat = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 				t.Cleanup(func() { afterDeletingAssetStat = previous })
 				metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 				worker.resolveUnqualifiedDeletingAsset(context.Background(),
-					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath}, time.Now(), time.Time{}, nil, "")
+					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath, Kind: store.AssetKindOriginal}, time.Now(), time.Time{}, nil, "")
 
 				if mediaDelete.markDeletedCalls != 0 || mediaDelete.revertCalls != 0 {
 					t.Errorf("DB calls = MarkDeleted:%d RevertToActive:%d, want 0:0", mediaDelete.markDeletedCalls, mediaDelete.revertCalls)
@@ -573,7 +562,7 @@ func TestOrphanAbsentAfterUnlinkWithholdsRecordWhenMarkerDisappears(t *testing.T
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			// 再確認の後に別の誰かがファイルを消す。unlink は ErrNotExist になる。
 			previousBefore := beforeOrphanFileUnlink
 			beforeOrphanFileUnlink = func(string) {
@@ -706,7 +695,7 @@ func TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk(t *testing.T) {
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{onListKnown: func() { mismatchStoreMarker(t, mediaDir, state) }}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 			if _, err := worker.reconcileOrphanCandidates(context.Background(), time.Second); err == nil {
@@ -722,44 +711,38 @@ func TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk(t *testing.T) {
 	}
 }
 
-type erroringEncodedPublisher struct {
-	store.MediaPublish
-	calls int
+type markerGuardPublisher struct {
+	store.DerivedMediaPublisher
 }
 
-func (p *erroringEncodedPublisher) PublishEncoded(context.Context, store.EncodedPublishInput, func() error) (bool, error) {
-	p.calls++
-	return false, errors.New("publisher reached")
+func (*markerGuardPublisher) PreparePendingMediaAssetCopy(context.Context, store.PendingMediaAssetCopy) error {
+	return nil
 }
 
-// 本体の stage の後に目印が消えたら、字幕の temp も rel_path の lock file も作らない。
-func TestPublishEncodedCreatesNoSubtitleTempOrLockWhenMarkerDisappearsAfterBodyStage(t *testing.T) {
+// hash の後に目印が消えたら、オブジェクト置き場へ Put する前に検出する。
+func TestPublishEncodedRechecksStoreMarkerImmediatelyBeforePut(t *testing.T) {
 	for _, state := range []string{"missing", "different store"} {
 		t.Run(state, func(t *testing.T) {
 			mediaDir := t.TempDir()
 			if err := mediapath.WriteStoreMarker(mediaDir, "tokyo"); err != nil {
 				t.Fatal(err)
 			}
-			scratch := t.TempDir()
-			body := filepath.Join(scratch, "out.mp4")
-			subtitle := filepath.Join(scratch, "out.vtt")
-			for _, p := range []string{body, subtitle} {
-				if err := os.WriteFile(p, []byte("data"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+			scratch := filepath.Join(t.TempDir(), "out.mp4")
+			if err := os.WriteFile(scratch, []byte("data"), 0o600); err != nil {
+				t.Fatal(err)
 			}
 			relPath := "sites/tokyo/out.mp4"
-			finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-			// 照合が効けば publisher に届く前に返る。
-			publisher := &erroringEncodedPublisher{}
-			w := &EncodeWorker{MediaDir: mediaDir, MediaStoreName: "tokyo", Publisher: publisher}
-			previous := afterEncodeBodyStaged
-			afterEncodeBodyStaged = func(string) { mismatchStoreMarker(t, mediaDir, state) }
-			t.Cleanup(func() { afterEncodeBodyStaged = previous })
+			w := &EncodeWorker{
+				Objects: testFSObjectStore(mediaDir), ObjectPublisher: &markerGuardPublisher{},
+				MediaDir: mediaDir, MediaStoreName: "tokyo",
+			}
+			previous := beforeEncodeObjectPut
+			beforeEncodeObjectPut = func(string) { mismatchStoreMarker(t, mediaDir, state) }
+			t.Cleanup(func() { beforeEncodeObjectPut = previous })
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 			_, published, err := w.publishEncoded(context.Background(), encodePublishInput{
-				relPath: relPath, finalPath: finalPath, scratchOut: body, subtitleOut: subtitle, withSubtitles: true,
+				relPath: relPath, scratchOut: scratch,
 			})
 			if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) || published {
 				t.Fatalf("publishEncoded() = published:%t err:%v, want marker mismatch", published, err)
@@ -767,18 +750,8 @@ func TestPublishEncodedCreatesNoSubtitleTempOrLockWhenMarkerDisappearsAfterBodyS
 			if got := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo")); got != metricBefore+1 {
 				t.Errorf("store marker metric = %v, want %v", got, metricBefore+1)
 			}
-			// 本体の temp は discard で消える。残るのは字幕の temp と lock file のどちらも無い状態。
-			if entries, err := os.ReadDir(filepath.Dir(finalPath)); err != nil || len(entries) != 0 {
-				t.Errorf("entries beside the canonical path = %v (err %v), want none", entries, err)
-			}
-			rootEntries, err := os.ReadDir(mediaDir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, e := range rootEntries {
-				if strings.HasPrefix(e.Name(), mediapath.MediaRelPathLockFilePrefix) {
-					t.Errorf("lock file %q was created after the marker disappeared", e.Name())
-				}
+			if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(relPath))); !os.IsNotExist(err) {
+				t.Errorf("object exists after marker rejection (stat error = %v)", err)
 			}
 		})
 	}

@@ -156,6 +156,11 @@ func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.M
 	if err != nil {
 		return false, "", fmt.Errorf("activating media asset %d copy in %q: %w", transfer.MediaAssetID, targetStore, mapDatabaseError(err))
 	}
+	if outcome == "activated" || outcome == "already_active" {
+		if err := sqlcgen.New(tx).DeleteMediaAssetTransferObjectsForCopy(ctx, transfer.CopyID); err != nil {
+			return false, "", fmt.Errorf("clearing transfer object ownership for copy %d: %w", transfer.CopyID, mapDatabaseError(err))
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, "", fmt.Errorf("committing media asset transfer: %w", mapDatabaseError(err))
 	}
@@ -168,6 +173,66 @@ func (s *Media) RecordMediaAssetTransferFailure(ctx context.Context, copyID int6
 		CopyID: copyID, LastError: message,
 	}); err != nil {
 		return fmt.Errorf("recording transfer failure for media asset copy %d: %w", copyID, err)
+	}
+	return nil
+}
+
+// MarkMediaAssetTransferObjectOwned は、pending copy のために作成した object key を記録する。
+func (s *Media) MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning transfer object ownership record: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	_, err = q.LockPendingMediaAssetTransferCopy(ctx, sqlcgen.LockPendingMediaAssetTransferCopyParams{
+		CopyID: copyID, StoreName: storeName,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("locking pending transfer copy %d to record object ownership: %w", copyID, mapDatabaseError(err))
+	}
+	if _, err := q.MarkMediaAssetTransferObjectOwned(ctx, sqlcgen.MarkMediaAssetTransferObjectOwnedParams{
+		CopyID: copyID, StoreName: storeName, RelPath: relPath,
+	}); err != nil {
+		return false, fmt.Errorf("recording ownership of transfer object %q: %w", relPath, mapDatabaseError(err))
+	}
+	owned, err := q.ListMediaAssetTransferObjectsOwned(ctx, sqlcgen.ListMediaAssetTransferObjectsOwnedParams{
+		CopyID: copyID, StoreName: storeName,
+	})
+	if err != nil {
+		return false, fmt.Errorf("checking ownership of transfer object %q: %w", relPath, mapDatabaseError(err))
+	}
+	for _, ownedPath := range owned {
+		if ownedPath == relPath {
+			if err := tx.Commit(ctx); err != nil {
+				return false, fmt.Errorf("committing transfer object ownership record: %w", mapDatabaseError(err))
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ListMediaAssetTransferObjectsOwned は pending copy のために作成した key を返す。
+func (s *Media) ListMediaAssetTransferObjectsOwned(ctx context.Context, copyID int64, storeName string) ([]string, error) {
+	paths, err := sqlcgen.New(s.pool).ListMediaAssetTransferObjectsOwned(ctx, sqlcgen.ListMediaAssetTransferObjectsOwnedParams{
+		CopyID: copyID, StoreName: storeName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing owned transfer object keys for copy %d: %w", copyID, err)
+	}
+	return paths, nil
+}
+
+// DeleteMediaAssetTransferObjectOwned は、削除済み key の ownership 記録を消す。
+func (s *Media) DeleteMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) error {
+	if err := sqlcgen.New(s.pool).DeleteMediaAssetTransferObjectOwned(ctx, sqlcgen.DeleteMediaAssetTransferObjectOwnedParams{
+		CopyID: copyID, StoreName: storeName, RelPath: relPath,
+	}); err != nil {
+		return fmt.Errorf("clearing ownership of transfer object %q: %w", relPath, err)
 	}
 	return nil
 }
@@ -241,7 +306,7 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	originalRules []byte,
 	fsStores []string,
 	derivedStore string,
-	deleteFile func() error,
+	deleteFile func(ownedRelPaths []string) error,
 ) (bool, error) {
 	if deleteFile == nil {
 		return false, errors.New("reclaiming obsolete pending transfer copy: deleter is nil")
@@ -270,7 +335,13 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	if !obsolete {
 		return false, nil
 	}
-	if err := deleteFile(); err != nil {
+	ownedRelPaths, err := q.ListMediaAssetTransferObjectsOwned(ctx, sqlcgen.ListMediaAssetTransferObjectsOwnedParams{
+		CopyID: candidate.CopyID, StoreName: s.storeName,
+	})
+	if err != nil {
+		return false, fmt.Errorf("listing owned objects for pending transfer copy %d: %w", candidate.CopyID, mapDatabaseError(err))
+	}
+	if err := deleteFile(ownedRelPaths); err != nil {
 		return false, fmt.Errorf("deleting pending transfer copy %d files: %w", candidate.CopyID, err)
 	}
 	updated, err := q.MarkObsoletePendingMediaAssetTransferCopyDeleted(ctx, sqlcgen.MarkObsoletePendingMediaAssetTransferCopyDeletedParams{
@@ -285,6 +356,9 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	}
 	if err := q.DeleteMediaAssetTransferAttemptsForCopy(ctx, candidate.CopyID); err != nil {
 		return false, fmt.Errorf("clearing obsolete transfer attempts for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
+	}
+	if err := q.DeleteMediaAssetTransferObjectsForCopy(ctx, candidate.CopyID); err != nil {
+		return false, fmt.Errorf("clearing obsolete transfer object ownership for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing obsolete pending transfer copy reclaim: %w", mapDatabaseError(err))

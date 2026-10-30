@@ -78,8 +78,11 @@ const (
 // 違う worker が拾うと範囲が拾った側の置き場になる。設定が FS 置き場を 1 つに限っている間は起きない。未解決: 置き場ごとのキュー。
 type DeleteReconcileWorker struct {
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
-	Storage               store.StorageObservation
-	MediaDelete           store.MediaDelete
+	Storage     store.StorageObservation
+	MediaDelete store.MediaDelete
+	// MediaPendingReclaim は MediaStoreName と DerivedObjectStoreName が同じ FS の
+	// pending 派生物を回収する。S3 の独立 pass は DerivedPendingReclaim を使う。
+	MediaPendingReclaim   store.PendingCopyReclaim
 	StorageTransfer       store.StorageTransfer
 	StorageTransferPolicy config.StorageConfig
 	RecordingPurge        store.RecordingPurge
@@ -87,7 +90,7 @@ type DeleteReconcileWorker struct {
 	MediaDir              string
 	MediaStoreName        string
 
-	// 派生物の置き場が S3 のときだけ設定する（object_delete.go）。DerivedObjectStoreName は
+	// 派生物の置き場が original と別スコープのときに設定する（object_delete.go）。DerivedObjectStoreName は
 	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
 	// DerivedMediaDelete と DerivedStorage は、その置き場に束ねた store を渡す。
 	DerivedObjects         objstore.Store
@@ -95,6 +98,10 @@ type DeleteReconcileWorker struct {
 	DerivedMediaDelete     store.MediaDelete
 	DerivedPendingReclaim  store.PendingCopyReclaim
 	DerivedStorage         store.StorageObservation
+	// StorageObjects は置き場の名前ごとの objstore.Store。派生物のコピーは、そのコピーの置き場の
+	// Store で消す・確かめる。派生物の置き場を S3 に切り替えた後も、FS の置き場に残る旧いコピーは
+	// その FS の置き場の Store を通る。
+	StorageObjects map[string]objstore.Store
 
 	TrashRetention    time.Duration
 	TransferOverlap   time.Duration
@@ -108,8 +115,8 @@ type DeleteReconcileWorker struct {
 }
 
 // Work は 1 パス分の削除 reconcile を実行する。
-// S3 の置き場を先に処理する。FS の置き場の末尾で押す完全削除の確定が、同じパスで消した S3 のコピーを
-// 反映できるようにするためである。S3 の失敗は FS の置き場の削除を止めず、パスの末尾で返す。
+// 独立した派生物の置き場を先に処理する。FS の置き場の末尾で押す完全削除の確定が、同じパスで消した
+// 派生コピーを反映できるようにするためである。置き場の失敗は FS の置き場の削除を止めず、末尾で返す。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
 	cfg := w.settings()
 	objectErr := w.workObjectStore(ctx, cfg)
@@ -153,7 +160,7 @@ func (w *DeleteReconcileWorker) settings() deleteSettings {
 	return s
 }
 
-// workObjectStore は S3 の置き場の削除 reconcile を、FS の置き場と同じ設定値で実行する。
+// workObjectStore は独立した派生物置き場の削除 reconcile を、FS の置き場と同じ設定値で実行する。
 func (w *DeleteReconcileWorker) workObjectStore(ctx context.Context, cfg deleteSettings) error {
 	return w.objectStorePass(ctx, time.Now().Add(-cfg.trashRetention), time.Now().Add(-cfg.transferOverlap),
 		cfg.orphanMTimeGrace, cfg.orphanAge, cfg.maxPerPass)
@@ -248,6 +255,16 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	if err != nil {
 		return err
 	}
+	if w.DerivedObjectStoreName != "" && w.DerivedObjectStoreName == w.MediaStoreName {
+		if w.DerivedObjects == nil || w.MediaPendingReclaim == nil {
+			return errors.New("shared filesystem derived-object store and pending-copy reclaimer are required")
+		}
+		candidates.pendingBefore = time.Now().Add(-orphanAge)
+		candidates.agedPendingDerived, err = w.MediaPendingReclaim.ListAgedPendingMediaAssetCopies(ctx, candidates.pendingBefore, deleteReconcileRowLimit)
+		if err != nil {
+			return fmt.Errorf("listing aged pending filesystem derived copies: %w", err)
+		}
+	}
 	candidates.obsoletePendingTransfer = obsoletePendingTransferCandidates
 	if w.StorageTransfer != nil && placementEnabled {
 		candidates.placementArm = placementArm{rules: placementRules, derived: placementDerived, overlapCutoff: overlapCutoff}
@@ -337,4 +354,13 @@ func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, purg
 				"type", webhook.EventRecordingDeleted, "recording_id", r.ID, "err", err)
 		}
 	}
+}
+
+// objectsFor は置き場 name の objstore.Store を返す。
+func (w *DeleteReconcileWorker) objectsFor(name string) (objstore.Store, error) {
+	objects, ok := w.StorageObjects[name]
+	if !ok || objects == nil {
+		return nil, fmt.Errorf("object store %q is not configured", name)
+	}
+	return objects, nil
 }

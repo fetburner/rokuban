@@ -29,12 +29,14 @@ type deleteCandidateSet struct {
 	placement               []store.MediaAssetCopyDeleteCandidate
 	placementArm            placementArm
 	obsoletePendingTransfer []store.MediaAssetCopyDeleteCandidate
+	agedPendingDerived      []store.MediaDeleteAsset
+	pendingBefore           time.Time
 	agedOrphans             []string
 }
 
 func (c deleteCandidateSet) total() int {
 	seen := make(map[int64]struct{})
-	for _, rows := range [][]store.MediaDeleteAsset{c.trash, c.untilEncoded, c.removedEncoded, c.oldGeneration} {
+	for _, rows := range [][]store.MediaDeleteAsset{c.trash, c.untilEncoded, c.removedEncoded, c.oldGeneration, c.agedPendingDerived} {
 		for _, row := range rows {
 			if row.ID > 0 {
 				seen[row.ID] = struct{}{}

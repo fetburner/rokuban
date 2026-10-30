@@ -541,7 +541,8 @@ func (s *Media) ListEncodedMeaningEvidence(ctx context.Context) ([]store.Encoded
 	return out, nil
 }
 
-// GetDerivedMediaAssetGeneration は派生アセットの現在世代を返す。
+// GetDerivedMediaAssetGeneration は派生アセットの最大割当済み世代を返す。
+// 回収済みコピーの世代も含め、thumbnail と seek_tiles のキーを再利用しない。
 func (s *Media) GetDerivedMediaAssetGeneration(ctx context.Context, recordingID int64, kind string) (int64, bool, error) {
 	generation, err := sqlcgen.New(s.pool).GetDerivedMediaAssetGeneration(ctx, sqlcgen.GetDerivedMediaAssetGenerationParams{
 		RecordingID: recordingID, Kind: kind,

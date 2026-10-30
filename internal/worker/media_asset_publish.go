@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -10,9 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-
-	"github.com/fetburner/rokuban/internal/fsink"
-	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
 // newWorkerScratchDir は指定されたキーに乱数接尾辞を付けた scratch directory を作る。
@@ -166,105 +162,4 @@ func newDomainScratchDir(scratchRoot, kind, key string) (string, error) {
 		return "", fmt.Errorf("creating %s scratch directory: %w", kind, err)
 	}
 	return jobDir, nil
-}
-
-// stagedMediaFile は media ディレクトリへ置く前の一時ファイル。finalPath と同じ
-// ディレクトリに置くので rename は同一 FS 内で完結する（scratch からの rename は
-// `EXDEV` になる。docs/storage/contract.md §3 ルール 2）。
-type stagedMediaFile struct {
-	tempPath  string
-	finalPath string
-	size      int64
-	sha256    []byte
-}
-
-// stageMediaFile は src（scratch）を finalPath と同じディレクトリの一時ファイルへ
-// ストリームコピー + fsync し、コピーした内容の SHA-256 を得る。名前は予約接頭辞 prefix を付け、拡張子は付けない
-// （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
-// プロセス死で rel_path lock が残っても、次の lock 取得時の GC が回収する。
-//
-// 置き場の目印は呼び出し側が CreateTemp の前に 1 回照合する。
-func stageMediaFile(ctx context.Context, src, finalPath, prefix string) (stagedMediaFile, error) {
-	dir := filepath.Dir(finalPath)
-	// CreateTemp は 0600 で作る。公開後のファイルは canonical なので、コピー元の
-	// streamCopyFile と同じ 0644 に揃える（別 UID の streamer が読む構成がある）。
-	temp, err := os.CreateTemp(dir, prefix+"*")
-	if err != nil {
-		return stagedMediaFile{}, fmt.Errorf("creating staged output in media dir: %w", err)
-	}
-	tempPath := temp.Name()
-	_ = temp.Close()
-	discardTemp := func() {
-		if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			slog.Warn("media asset publisher: removing incomplete staged file", "path", tempPath, "err", err)
-		}
-	}
-	if err := os.Chmod(tempPath, 0o644); err != nil {
-		discardTemp()
-		return stagedMediaFile{}, fmt.Errorf("chmod staged output: %w", err)
-	}
-	size, digest, err := streamCopyFile(ctx, src, tempPath)
-	if err != nil {
-		discardTemp()
-		return stagedMediaFile{}, fmt.Errorf("staging output in media dir: %w", err)
-	}
-	return stagedMediaFile{tempPath: tempPath, finalPath: finalPath, size: size, sha256: digest}, nil
-}
-
-// publish は staged 出力を canonical へ rename で公開し、親ディレクトリを fsync する。
-func (s stagedMediaFile) publish() error {
-	if err := os.Rename(s.tempPath, s.finalPath); err != nil {
-		return fmt.Errorf("publishing staged output to canonical path: %w", err)
-	}
-	if err := fsink.SyncParentDir(s.finalPath); err != nil {
-		return fmt.Errorf("syncing canonical parent directory: %w", err)
-	}
-	return nil
-}
-
-// discard は未公開の temp を消す。rename 済みなら temp は無いので何もしない。
-func (s stagedMediaFile) discard() {
-	if s.tempPath != "" {
-		_ = os.Remove(s.tempPath)
-	}
-}
-
-// publishGeneratedMediaAsset は完成した thumbnail / seek tiles を ingest・encode と同じ rel_path の手順で公開する。
-// scratchPath を media_dir の同じディレクトリへ stage し、rel_path のファイルロックを取ってから、
-// commit に size・SHA-256・ファイル公開関数 publish を渡す。commit は store の公開メソッドを呼ぶ。
-// store が検査を通せば publish を commit 前に 1 回呼ぶ。公開しないと決めたら呼ばず、published は false になる。
-// ファイルロックは commit が返るまで保持する。公開しなかったとき size は 0 を返す。
-func publishGeneratedMediaAsset(
-	ctx context.Context,
-	mediaDir, mediaStoreName, relPath, scratchPath string,
-	commit func(size int64, sha256 []byte, publish func() error) (bool, error),
-) (size int64, published bool, err error) {
-	if err := requireMediaStoreMarker(mediaDir, mediaStoreName, "publishing generated media asset"); err != nil {
-		return 0, false, err
-	}
-	finalPath, err := mediapath.Resolve(mediaDir, relPath)
-	if err != nil {
-		return 0, false, fmt.Errorf("resolving generated media asset: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		return 0, false, fmt.Errorf("creating media asset directory: %w", err)
-	}
-	staged, err := stageMediaFile(ctx, scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
-	if err != nil {
-		return 0, false, fmt.Errorf("staging generated media asset: %w", err)
-	}
-	defer staged.discard()
-	if err := requireMediaStoreMarker(mediaDir, mediaStoreName, "locking generated media asset"); err != nil {
-		return 0, false, err
-	}
-	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
-	if err != nil {
-		return 0, false, fmt.Errorf("locking generated media asset: %w", err)
-	}
-	defer func() { _ = fileLock.Close() }()
-	published, err = commit(staged.size, staged.sha256, staged.publish)
-	if err != nil || !published {
-		return 0, false, err
-	}
-	return staged.size, true, nil
 }

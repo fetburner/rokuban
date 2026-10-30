@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -174,7 +175,7 @@ func newStoreScopedDeleteWorker(pool *pgxpool.Pool, storeName, root string) *Del
 	media := pgstore.NewMedia(pool, storeName, "")
 	return &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, RecordingPurge: pgstore.NewRecordings(pool, storeName),
-		Breakers: pgstoretest.Breakers(pool), MediaDir: root, MediaStoreName: storeName,
+		Breakers: pgstoretest.Breakers(pool), MediaDir: root, StorageObjects: map[string]objstore.Store{storeName: testFSObjectStore(root)}, MediaStoreName: storeName,
 	}
 }
 

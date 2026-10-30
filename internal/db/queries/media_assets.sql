@@ -93,14 +93,20 @@ WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'encoded'
   AND a.profile = sqlc.arg('profile');
 
--- GetDerivedMediaAssetGeneration returns the current counter, including tombstones.
+-- GetDerivedMediaAssetGeneration returns the highest assigned generation, including
+-- reclaimed copy tombstones. Thumbnail and seek tile keys are never reused.
 -- Only kinds without a profile (thumbnail, seek_tiles) have a single row.
 -- name: GetDerivedMediaAssetGeneration :one
-SELECT COALESCE(derived_generation, 0)::bigint AS derived_generation
-FROM media_assets
-WHERE recording_id = sqlc.arg('recording_id')
-  AND kind = sqlc.arg('kind')
-  AND profile IS NULL;
+SELECT GREATEST(
+    COALESCE(asset.derived_generation, 0),
+    COALESCE(MAX(copy.generation), -1)
+)::bigint AS derived_generation
+FROM media_assets asset
+LEFT JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE asset.recording_id = sqlc.arg('recording_id')
+  AND asset.kind = sqlc.arg('kind')
+  AND asset.profile IS NULL
+GROUP BY asset.id;
 
 -- 凍結した区間の差し替え（DELETE → InsertMediaAssetCuts の順に同一 tx で呼ぶ）。
 -- name: DeleteMediaAssetCuts :exec

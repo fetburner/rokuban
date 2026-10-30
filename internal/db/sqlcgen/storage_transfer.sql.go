@@ -223,6 +223,36 @@ func (q *Queries) DeleteMediaAssetTransferAttemptsForCopy(ctx context.Context, c
 	return err
 }
 
+const deleteMediaAssetTransferObjectOwned = `-- name: DeleteMediaAssetTransferObjectOwned :exec
+DELETE FROM media_asset_transfer_objects o
+USING media_asset_copies c
+WHERE o.copy_id = c.id
+  AND o.copy_id = $1
+  AND c.store = $2
+  AND o.rel_path = $3
+`
+
+type DeleteMediaAssetTransferObjectOwnedParams struct {
+	CopyID    int64
+	StoreName string
+	RelPath   string
+}
+
+func (q *Queries) DeleteMediaAssetTransferObjectOwned(ctx context.Context, arg DeleteMediaAssetTransferObjectOwnedParams) error {
+	_, err := q.db.Exec(ctx, deleteMediaAssetTransferObjectOwned, arg.CopyID, arg.StoreName, arg.RelPath)
+	return err
+}
+
+const deleteMediaAssetTransferObjectsForCopy = `-- name: DeleteMediaAssetTransferObjectsForCopy :exec
+DELETE FROM media_asset_transfer_objects
+WHERE copy_id = $1
+`
+
+func (q *Queries) DeleteMediaAssetTransferObjectsForCopy(ctx context.Context, copyID int64) error {
+	_, err := q.db.Exec(ctx, deleteMediaAssetTransferObjectsForCopy, copyID)
+	return err
+}
+
 const discardPendingMediaAssetCopy = `-- name: DiscardPendingMediaAssetCopy :exec
 WITH discarded AS (
     UPDATE media_asset_copies c
@@ -233,6 +263,9 @@ WITH discarded AS (
 ), cleared_missing AS (
     DELETE FROM missing_media_assets m USING discarded d
     WHERE m.media_asset_copy_id = d.id
+), cleared_transfer_objects AS (
+    DELETE FROM media_asset_transfer_objects o USING discarded d
+    WHERE o.copy_id = d.id
 )
 DELETE FROM media_asset_transfer_attempts t USING discarded d
 WHERE t.copy_id = d.id
@@ -457,6 +490,41 @@ func (q *Queries) ListMediaAssetTransferCandidates(ctx context.Context, arg List
 	return items, nil
 }
 
+const listMediaAssetTransferObjectsOwned = `-- name: ListMediaAssetTransferObjectsOwned :many
+SELECT o.rel_path
+FROM media_asset_transfer_objects o
+JOIN media_asset_copies c ON c.id = o.copy_id
+WHERE o.copy_id = $1
+  AND c.store = $2
+  AND c.state = 'pending'
+ORDER BY o.rel_path
+`
+
+type ListMediaAssetTransferObjectsOwnedParams struct {
+	CopyID    int64
+	StoreName string
+}
+
+func (q *Queries) ListMediaAssetTransferObjectsOwned(ctx context.Context, arg ListMediaAssetTransferObjectsOwnedParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listMediaAssetTransferObjectsOwned, arg.CopyID, arg.StoreName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var rel_path string
+		if err := rows.Scan(&rel_path); err != nil {
+			return nil, err
+		}
+		items = append(items, rel_path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listObsoletePendingMediaAssetTransferCopies = `-- name: ListObsoletePendingMediaAssetTransferCopies :many
 SELECT c.id AS copy_id, a.id AS media_asset_id, c.store, c.rel_path,
        c.state, a.size_bytes, a.kind, c.generation
@@ -656,6 +724,33 @@ func (q *Queries) MarkMediaAssetCopyDeleting(ctx context.Context, arg MarkMediaA
 	var rel_path string
 	err := row.Scan(&rel_path)
 	return rel_path, err
+}
+
+const markMediaAssetTransferObjectOwned = `-- name: MarkMediaAssetTransferObjectOwned :execrows
+INSERT INTO media_asset_transfer_objects (copy_id, rel_path)
+SELECT c.id, $1
+FROM media_asset_copies c
+WHERE c.id = $2
+  AND c.store = $3
+  AND c.state = 'pending'
+ON CONFLICT (copy_id, rel_path) DO NOTHING
+`
+
+type MarkMediaAssetTransferObjectOwnedParams struct {
+	RelPath   string
+	CopyID    int64
+	StoreName string
+}
+
+// Record ownership only while the destination copy is still pending. The caller
+// holds the same row locks as obsolete-copy reclaim so a deleted reservation
+// cannot acquire ownership after it has been retired.
+func (q *Queries) MarkMediaAssetTransferObjectOwned(ctx context.Context, arg MarkMediaAssetTransferObjectOwnedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markMediaAssetTransferObjectOwned, arg.RelPath, arg.CopyID, arg.StoreName)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markObsoletePendingMediaAssetTransferCopyDeleted = `-- name: MarkObsoletePendingMediaAssetTransferCopyDeleted :execrows

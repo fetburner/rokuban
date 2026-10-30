@@ -232,8 +232,8 @@ type MediaReconcile interface {
 	ListMissingThumbnailRecordings(ctx context.Context, page MediaReconcilePage) ([]int64, error)
 	// ListThumbnailReselectCandidates は既存サムネイルの再選択候補を返す。
 	ListThumbnailReselectCandidates(ctx context.Context, page MediaReconcilePage) ([]ThumbnailReselectCandidate, error)
-	// GetDerivedMediaAssetGeneration は派生アセットの現在世代を返す。
-	// その kind の行が無ければ found=false を返す。
+	// GetDerivedMediaAssetGeneration は派生アセットの最大割当済み世代を返す。
+	// 回収済みコピーの世代も含む。kind の行が無ければ found=false を返す。
 	GetDerivedMediaAssetGeneration(ctx context.Context, recordingID int64, kind string) (generation int64, found bool, err error)
 	// ListMissingSeekTilesRecordings はシークタイルが無い録画をページ単位で返す。
 	ListMissingSeekTilesRecordings(ctx context.Context, page MediaReconcilePage) ([]int64, error)
