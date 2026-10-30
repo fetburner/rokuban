@@ -22,6 +22,8 @@ export type RecordingTimeline = {
   recordingEndAtMs: number | null
   recordedDurationMs: number | null
   recordingHeadSeconds: number | null
+  /** 番組の予定尺（秒）。ライブ画面の録画軸の右端。 */
+  plannedSeconds: number
   recordedSeconds: number
   programRecordingOffsetSeconds: number | null
   recordedAfterProgramStartPercent: number | null
@@ -54,6 +56,10 @@ export function recordingTimeline(
   const recordingHeadSeconds = recordingFileStartAtMs !== null && Number.isFinite(programmeStartMs)
     ? Math.max(0, (recordingFileStartAtMs - programmeStartMs) / 1000)
     : null
+  // ライブ画面は現在の EPG 幅（端数そのまま）、録画詳細は snapshot の durationMs（切り上げ）。
+  const plannedSeconds = options.programmeEndAt === undefined
+    ? Math.max(0, Math.ceil(recording.durationMs / 1000))
+    : Math.max(1, (programmeEndMs - programmeStartMs) / 1000)
   const recordedThroughMs = options.nowMs ?? recordingEndAtMs ?? undefined
   const recordedSeconds = recordingFileStartAtMs !== null && recordedThroughMs !== undefined && Number.isFinite(recordedThroughMs)
     ? Math.max(0, (recordedThroughMs - recordingFileStartAtMs) / 1000)
@@ -82,13 +88,14 @@ export function recordingTimeline(
     recordingEndAtMs,
     recordedDurationMs,
     recordingHeadSeconds,
+    plannedSeconds,
     recordedSeconds,
     programRecordingOffsetSeconds: validProgramOffsetSeconds,
     recordedAfterProgramStartPercent,
   }
 }
 
-/** recordingPlaybackDurationMs returns the actual range available in recording playback. */
+/** recordingPlaybackDurationMs は録画再生で実際に使える範囲（ミリ秒）を返す。 */
 export function recordingPlaybackDurationMs(
   recording: RecordingTimelineSource,
   nowMs = Date.now(),

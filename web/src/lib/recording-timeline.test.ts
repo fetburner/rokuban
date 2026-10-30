@@ -60,6 +60,7 @@ describe('recordingTimeline', () => {
     const timeline = recordingTimeline(recording(), { nowMs: nowAt45Minutes })
 
     expect(timeline.programmeEndAt).toBe('2026-10-02T11:00:00.000Z')
+    expect(timeline.plannedSeconds).toBe(3600)
     expect(timeline.recordedSeconds).toBe(2700)
     expect(timeline.recordedDurationMs).toBeNull()
   })

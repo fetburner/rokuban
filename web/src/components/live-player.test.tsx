@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 
 import { LivePlayer } from '@/components/live-player'
+import type { LiveRecordingSource } from '@/lib/playback-timeline'
 import { livePlaylistURL } from '@/lib/live'
 
 const mockHls = vi.hoisted(() => ({
@@ -91,7 +92,9 @@ describe('LivePlayer playback routes', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(url, expect.any(Object)))
     await waitFor(() => expect(mockHls.instances[0]?.loadSource).toHaveBeenCalledWith(url))
     expect(mockHls.args[0]).toEqual([{ startPosition: 18 }])
-    expect(screen.getByTestId('recording-hls-source-label')).toHaveTextContent('録画 HLS')
+    // 録画詳細（onReturnLive なし）は再生元の表示を出さない。
+    expect(screen.queryByText('● 録画 HLS')).not.toBeInTheDocument()
+    expect(screen.queryByText('● 録画から再生中')).not.toBeInTheDocument()
   })
 
   it('profile URL changes reload the selected recording HLS generation URL', async () => {
@@ -234,21 +237,101 @@ describe('LivePlayer playback routes', () => {
     await waitFor(() => expect(play).toHaveBeenCalledOnce())
     expect(paused).toBe(false)
   })
+})
 
-  it('offers a return-to-live action only when the caller supplies it', async () => {
+describe('LivePlayer / ライブ画面の録画軸', () => {
+  // 録画ファイルの先頭は番組開始の 20 分後（head 1200 秒）。録画済みは 25 分で、先端は番組開始から 45 分。
+  // 軸は番組の予定 60 分（0〜3600 秒）。
+  const liveRecording: LiveRecordingSource = { recordingHeadSeconds: 1200, plannedSeconds: 3600, recordedSeconds: 1500 }
+  const url = '/api/media/stores/media/recordings/42/hls/v3/hd/master.m3u8'
+  const rect600 = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) })
+
+  async function renderLiveRecording(
+    extra: { startSeconds?: number; onReturnLive?: () => void } = {},
+  ) {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okPlaylist()))
-    const props = {
-      mode: 'recording-hls' as const,
-      site: 'default',
-      recordingId: 42,
-      recordingDurationMs: 60_000,
-      recordingHlsUrl: '/api/media/stores/media/recordings/42/hls/v3/hd/master.m3u8',
-      recordingHlsStartSeconds: 0,
-      onReturnLive: vi.fn(),
-    }
+    render(
+      <LivePlayer
+        mode="recording-hls"
+        site="default"
+        recordingId={42}
+        recordingDurationMs={1_500_000}
+        recordingHlsUrl={url}
+        recordingHlsStartSeconds={extra.startSeconds ?? 0}
+        liveRecording={liveRecording}
+        onReturnLive={extra.onReturnLive}
+      />,
+    )
+    await waitFor(() => expect(mockHls.instances[0]?.loadSource).toHaveBeenCalledWith(url))
+    const video = document.querySelector('video')!
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: rect600 })
+    return { video, slider }
+  }
 
-    render(<LivePlayer {...props} />)
+  const seekable = (video: HTMLVideoElement, end: number) => {
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => end }, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+  }
+  const dragTo = (slider: HTMLElement, clientX: number) => {
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX, clientY: 12 })
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX, clientY: 12 })
+  }
 
-    expect(screen.getByTestId('recording-hls-return-live')).toHaveTextContent('ライブへ戻る')
+  it('録画範囲の外にホバーすると「まだ録画されていません」を添える（先頭より前・先端より後ろ）', async () => {
+    const { slider } = await renderLiveRecording()
+
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'mouse', clientX: 60, clientY: 12 })
+    expect(screen.getByTestId('live-recording-hover-label')).toHaveTextContent('6:00 · まだ録画されていません')
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'mouse', clientX: 300, clientY: 12 })
+    expect(screen.getByTestId('live-recording-hover-label').textContent).toBe('30:00')
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'mouse', clientX: 500, clientY: 12 })
+    expect(screen.getByTestId('live-recording-hover-label')).toHaveTextContent('50:00 · まだ録画されていません')
+  })
+
+  it('軸上の位置は録画先頭の位置に media の秒を足したもの', async () => {
+    const { video, slider } = await renderLiveRecording({ startSeconds: 18 })
+    fireEvent.canPlay(video)
+    await waitFor(() => expect(slider).toHaveAttribute('aria-valuenow', '1218'))
+
+    Object.defineProperty(video, 'currentTime', { value: 30, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+    expect(slider).toHaveAttribute('aria-valuenow', '1230')
+  })
+
+  it('軸上の秒を録画先頭からの秒へ直してシークする（先頭より前は 0、先端より後ろは先端の 1 秒前、再生リストの終端でも丸める）', async () => {
+    const { video, slider } = await renderLiveRecording()
+    seekable(video, 1500)
+
+    dragTo(slider, 300) // 軸 1800 秒 = 録画先頭から 600 秒
+    expect(video.currentTime).toBe(600)
+    expect(slider).toHaveAttribute('aria-valuenow', '1800')
+
+    dragTo(slider, 60) // 軸 360 秒は録画先頭より前
+    expect(video.currentTime).toBe(0)
+    expect(slider).toHaveAttribute('aria-valuenow', '1200')
+
+    dragTo(slider, 590) // 軸 3540 秒は先端（2700 秒）より後ろ。先端の 1 秒前 = 録画先頭から 1499 秒
+    expect(video.currentTime).toBe(1499)
+
+    seekable(video, 200)
+    dragTo(slider, 300) // 再生リストが 200 秒までしか無いときはそこまで
+    expect(video.currentTime).toBe(200)
+  })
+
+  it('ライブ位置の印を押すと onReturnLive を呼ぶ。印の title にライブ位置の時刻を出す', async () => {
+    const onReturnLive = vi.fn()
+    await renderLiveRecording({ onReturnLive })
+
+    const edge = screen.getByRole('button', { name: 'ライブへ戻る' })
+    expect(edge).toHaveAttribute('title', 'ライブ 45:00（押すとライブへ戻る）')
+    fireEvent.click(edge)
+    expect(onReturnLive).toHaveBeenCalledOnce()
+  })
+
+  it('「録画から再生中」はライブ画面（onReturnLive あり）だけに出す', async () => {
+    await renderLiveRecording({ onReturnLive: () => {} })
+    expect(screen.getByTestId('live-recording-source-label')).toHaveTextContent('● 録画から再生中')
+    expect(screen.queryByText('● 録画 HLS')).not.toBeInTheDocument()
   })
 })

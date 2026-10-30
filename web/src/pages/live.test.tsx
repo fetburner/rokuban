@@ -1186,8 +1186,14 @@ describe('LivePage / 録画時間軸', () => {
     await waitFor(() => expect(pageHlsMockState.instances).toContainEqual(
       expect.objectContaining({ options: { startPosition: 300 }, sources: [masterUrl] }),
     ))
-    expect(screen.getByTestId('recording-hls-source-label')).toBeInTheDocument()
-    expect(screen.getByTestId('recording-hls-return-live')).toBeInTheDocument()
+    expect(screen.getByTestId('live-recording-source-label')).toHaveTextContent('● 録画から再生中')
+    // 軸は番組基準のまま（右端は番組の予定 60 分）。録画の長さではない。
+    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '3600')
+
+    // 軸のライブ位置の印を押すとライブへ戻る。別のボタンは置かない。
+    await user.click(screen.getByRole('button', { name: 'ライブへ戻る' }))
+    await waitFor(() => expect(screen.queryByTestId('live-recording-source-label')).not.toBeInTheDocument())
+    expect(screen.getByTestId('live-source-label')).toBeInTheDocument()
   })
 
   it('410 後に録画詳細を再取得し、新しい世代と実際の録画済み尺を使う', async () => {
@@ -1239,13 +1245,71 @@ describe('LivePage / 録画時間軸', () => {
 
     await waitFor(() => expect(recordingHlsRequests).toEqual([masterV1, masterV2]))
     const slider = await screen.findByRole('slider', { name: 'シークバー' })
-    const availableSeconds = Number(slider.getAttribute('aria-valuemax'))
-    expect(availableSeconds).toBeGreaterThanOrEqual(30 * 60)
-    expect(availableSeconds).toBeLessThan(60 * 60)
+    // 録画済みの尺は軸のライブ位置（番組開始から約 30 分）に出る。軸の右端は番組の予定 60 分のまま。
+    expect(slider).toHaveAttribute('aria-valuemax', '3600')
+    expect(screen.getByRole('button', { name: 'ライブへ戻る' }).getAttribute('title'))
+      .toMatch(/^ライブ 30:0\d（押すとライブへ戻る）$/)
     expect(pageHlsMockState.instances.slice(initialInstanceCount)).toContainEqual(
       expect.objectContaining({ sources: [masterV2] }),
     )
-    expect(screen.getByTestId('recording-hls-source-label')).toBeInTheDocument()
+    expect(screen.getByTestId('live-recording-source-label')).toBeInTheDocument()
+  })
+
+  // 410 の後の再取得で hlsPlayback が空のとき、待つのは世代の作り直し（録画中）だけ。
+  // 失敗した録画で待ち続けると、エラーも再試行も出ないまま止まる。
+  describe.each([
+    ['録画中の世代切替は待つ（エラーを出さない）', { status: 'recording' as const }, false],
+    ['失敗した録画は待たずにエラーを出す', { status: 'failed' as const }, true],
+  ])('410 後に hlsPlayback が空: %s', (_label, emptyOverrides, showsError) => {
+    it(showsError ? 'エラーと再読み込みを出す' : 'エラーを出さず、プレイヤーを保つ', async () => {
+      const user = userEvent.setup()
+      const now = Date.now()
+      const startAt = new Date(now - 30 * 60_000).toISOString()
+      const endAt = new Date(now + 30 * 60_000).toISOString()
+      const masterV1 = '/api/media/stores/media/recordings/501/hls/v1/hd/master.m3u8'
+      const airing = program({ serviceId: 10, startAt, endAt, durationMs: 60 * 60_000, recordingId: 501 })
+      const withHls = recording({
+        startAt,
+        durationMs: 60 * 60_000,
+        status: 'recording',
+        startedAt: startAt,
+        hlsPlayback: [{ profile: 'hd', masterUrl: masterV1 }],
+      })
+      let currentRecording = withHls
+      let recordingFetches = 0
+      let fetchesAtExpiry = -1
+      stubFetch({
+        services: [service({ serviceId: 10, name: 'チャンネル A' })],
+        programsByServiceId: { 10: [airing] },
+        recording: () => {
+          recordingFetches += 1
+          return currentRecording
+        },
+        recordingHlsResponse: (path) => {
+          if (path !== masterV1) return new Response('not found', { status: 404 })
+          // 410 を返すと同時に、世代が無い状態（hlsPlayback が空）へ切り替える。
+          currentRecording = { ...withHls, ...emptyOverrides, hlsPlayback: [] }
+          fetchesAtExpiry = recordingFetches
+          return new Response('generation expired', { status: 410 })
+        },
+      })
+      renderLive('/live?service=100010')
+
+      await startLivePlayback(user)
+      await screen.findByText(/接続できません/)
+      await user.click(await screen.findByRole('button', { name: '最初から' }))
+      await waitFor(() => expect(fetchesAtExpiry).toBeGreaterThanOrEqual(0))
+      // 410 の後の REST 再取得が起きたことを待ってから判定する（待たないと空虚に通る）。
+      await waitFor(() => expect(recordingFetches).toBeGreaterThan(fetchesAtExpiry))
+
+      if (showsError) {
+        expect(await screen.findByRole('button', { name: '再読み込み' })).toBeInTheDocument()
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+        expect(screen.getByTestId('live-recording-source-label')).toBeInTheDocument()
+      }
+    })
   })
 })
 

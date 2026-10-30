@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { fixedPlaybackTimeline, liveProgramPlaybackTimeline } from '@/lib/playback-timeline'
+import { fixedPlaybackTimeline, liveProgramPlaybackTimeline, liveRecordingPlaybackTimeline } from '@/lib/playback-timeline'
 
 describe('playback timeline descriptions', () => {
   it('describes a fixed playback range', () => {
@@ -11,6 +11,32 @@ describe('playback timeline descriptions', () => {
       canSeek: true,
       extended: false,
     })
+  })
+
+  it('録画ファイルの先頭を基準に、ライブ位置を録画済み終端の 1 秒前に置く', () => {
+    const timeline = liveRecordingPlaybackTimeline({
+      recordingHeadSeconds: 180,
+      plannedSeconds: 3600,
+      recordedSeconds: 2520,
+    }, 3000)
+
+    expect(timeline).toEqual({
+      kind: 'live-recording',
+      minSeconds: 0,
+      maxSeconds: 3600,
+      canSeek: true,
+      headSeconds: 180,
+      recordedEndSeconds: 2700,
+      plannedEndSeconds: 3600,
+      liveEdgeSeconds: 2699,
+      hoverSeconds: 3000,
+      hoverLabel: 'まだ録画されていません',
+      extended: false,
+    })
+    expect(liveRecordingPlaybackTimeline({ recordingHeadSeconds: 180, plannedSeconds: 3600, recordedSeconds: 2520 }, 1000).hoverLabel)
+      .toBeNull()
+    expect(liveRecordingPlaybackTimeline({ recordingHeadSeconds: null, plannedSeconds: 60, recordedSeconds: 90 }, null))
+      .toMatchObject({ headSeconds: 0, maxSeconds: 90, extended: true, hoverLabel: null })
   })
 
   it('describes the live program axis, recording range, and live edge from the programme clock', () => {

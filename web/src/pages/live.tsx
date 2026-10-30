@@ -41,6 +41,7 @@ import {
 } from '@/lib/live'
 import { recordingPlaybackDurationMs, recordingTimeline } from '@/lib/recording-timeline'
 import { recordingDetailQueryKey } from '@/lib/recording-detail-cache'
+import { isRecordingHlsGenerationGap } from '@/lib/recording-playback-source'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, formatTimeRange, isAiring } from '@/lib/format'
@@ -513,6 +514,9 @@ export function LivePage() {
           recording: Recording
           profile: string
           startSeconds: number
+          /** 録画を始めたときの番組の時刻。番組が替わっても軸は始めた番組のまま保つ。 */
+          programmeStartAt: string
+          programmeEndAt: string
         }
       }
   >({ source: 'live' })
@@ -566,6 +570,8 @@ export function LivePage() {
         recording: selectedRecording,
         profile: selectedHls.profile,
         startSeconds,
+        programmeStartAt: nowPlaying.startAt,
+        programmeEndAt: nowPlaying.endAt,
       },
     })
   }
@@ -624,8 +630,13 @@ export function LivePage() {
       // 世代を作り直している間は hlsPlayback が一時的に空になる。以前の URL は
       // プレイヤーから外さず、次の recordings SSE で新世代が届くまで位置と再生意図を
       // LivePlayer に保持させる（ここで false を返すと error teardown が media を 0 秒へ戻す）。
-      if (latest.hlsPlayback.length === 0) return true
-      return false
+      // 失敗・キャンセルなどで空なら次の世代は来ないので、false を返してエラーを表示する。
+      return isRecordingHlsGenerationGap({
+        status: latest.status,
+        ingestState: latest.ingest?.state,
+        hasHlsPlayback: latest.hlsPlayback.length > 0,
+        isTrashed: latest.deletedAt != null,
+      })
     } catch {
       return false
     }
@@ -637,6 +648,11 @@ export function LivePage() {
         site: playback.target.site,
         recordingId: playback.target.recordingId,
         recordingDurationMs: recordingPlaybackDurationMs(playbackRecording, nowMs),
+        liveRecording: recordingTimeline(playbackRecording, {
+          nowMs,
+          programmeStartAt: playback.target.programmeStartAt,
+          programmeEndAt: playback.target.programmeEndAt,
+        }),
         recordingHlsUrl: selectedPlaybackHls.masterUrl,
         recordingHlsStartSeconds: playback.target.startSeconds,
         onRecordingPlaybackError,

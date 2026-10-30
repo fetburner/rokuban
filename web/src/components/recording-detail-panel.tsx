@@ -53,7 +53,11 @@ import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useNow } from '@/lib/use-now'
 import { PLAYBACK_POSITION_MINIMUM_MS, recordingFileURL } from '@/lib/playback-position'
 import { recordingDetailQueryKey, seedRecordingDetail } from '@/lib/recording-detail-cache'
-import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
+import {
+  isRecordingHlsGenerationGap,
+  selectRecordingPlaybackSource,
+  type RecordingPlaybackSource,
+} from '@/lib/recording-playback-source'
 import { type LiveAudioChoice, validLiveProfile } from '@/lib/live'
 import { recordingPlaybackDurationMs, recordingTimeline } from '@/lib/recording-timeline'
 import { ruleDisambiguator } from '@/lib/rule-label'
@@ -369,7 +373,8 @@ export function RecordingDetail({
     // 世代を替える間の空の hlsPlayback では、encoded や none へ逸れない（上の lastRecordingHls）。
     const selected = selectRecordingPlaybackSource({
       ...selection,
-      hasHlsPlayback: selection.hasHlsPlayback || current.source === 'recording-hls',
+      hasHlsPlayback: selection.hasHlsPlayback ||
+        (current.source === 'recording-hls' && isRecordingHlsGenerationGap(selection)),
     })
     if (selected !== current.source) {
       if (selected === 'none') return false
@@ -466,11 +471,10 @@ export function RecordingDetail({
   // recordings SSE を送る（`TestRecordingIngestProgressNotify`）。
   // 空の間は最後の URL を持ち続ける。持たずに LivePlayer を外すと、次の世代で作り直したときに
   // 位置がセッション開始へ戻る（recording-detail.test.tsx の「世代の切り替え中」）。
-  const recordingHlsPlayback = recording.hlsPlayback.length > 0 ||
-    (recording.status !== 'recording' && recording.status !== 'finished') ||
-    lastRecordingHls.recordingId !== recording.id
-    ? recording.hlsPlayback
-    : lastRecordingHls.entries
+  const recordingHlsPlayback = lastRecordingHls.recordingId === recording.id &&
+    isRecordingHlsGenerationGap(playbackSelection)
+    ? lastRecordingHls.entries
+    : recording.hlsPlayback
   const recordingHlsProfileOptions = recordingHlsPlayback.map(({ profile }) => ({ name: profile }))
   const explicitRecordingHlsProfile = validLiveProfile(recordingHlsProfileOptions, recordingProfile)
   const selectedRecordingHls = recordingHlsPlayback.find(

@@ -58,9 +58,11 @@ import {
 import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { usePlaybackLeave } from '@/lib/use-playback-leave'
+import { formatPlaybackTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { playbackStrategy, recordingDurationSeconds } from '@/lib/playback-mode'
 import type { PlaybackErrorMessages, PlaybackMode } from '@/lib/playback-mode'
+import type { LiveRecordingSource } from '@/lib/playback-timeline'
 
 const hlsSubtitleTracks = (video: HTMLVideoElement) =>
   Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
@@ -282,7 +284,16 @@ type RecordingHLSProps = {
   recordingHlsStartSeconds: number
   /** 録画中は視聴済み操作を出さない。 */
   showWatched?: boolean
-  /** 生放送の最初から視聴中に、ライブ配信へ戻る操作を出す。 */
+  /**
+   * ライブ画面が録画 HLS を再生しているときだけ渡す。軸が番組基準（左端が番組開始）になり、
+   * 軸上の位置は録画ファイル先頭の位置（headSeconds）に media の秒を足したものになる。
+   */
+  liveRecording?: LiveRecordingSource
+  /**
+   * ライブ画面から録画 HLS へ切り替えているときに、ライブへ戻る操作を出す。渡すと軸の
+   * ライブ位置の印が「ライブへ戻る」になり、操作バーに「● 録画から再生中」を出す。
+   * 録画詳細は渡さないので、どちらも出ない。
+   */
   onReturnLive?: () => void
 }
 
@@ -303,6 +314,7 @@ type LivePlayerProps =
       onLiveProgramSeek?: (programSeconds: number) => void
       onStartOver?: () => void
       onReturnLive?: never
+      liveRecording?: never
       liveDiagnostics?: string
       liveNotice?: string
       recordingId?: never
@@ -506,7 +518,15 @@ export function LivePlayer(props: LivePlayerProps) {
   const playbackHoverSeconds = hasCurrentPlaybackAxisState ? playbackAxisState.hoverSeconds : null
   const playbackAxis = strategy.axis(playbackHoverSeconds)
   const liveTimelineBar = playbackAxis?.kind === 'live-program' ? playbackAxis : undefined
-  const initialAxisPositionSeconds = initialRecordingPositionSeconds
+  const liveRecordingAxis = playbackAxis?.kind === 'live-recording' ? playbackAxis : undefined
+  // 軸上の位置は録画ファイル先頭の位置（番組開始から何秒後か）に media の秒を足したもの。
+  // 録画詳細の軸は録画ファイル先頭が 0 なので 0 になる。
+  const axisHeadSeconds = liveRecordingAxis?.headSeconds ?? 0
+  const axisHeadSecondsRef = useRef(axisHeadSeconds)
+  useEffect(() => {
+    axisHeadSecondsRef.current = axisHeadSeconds
+  }, [axisHeadSeconds])
+  const initialAxisPositionSeconds = axisHeadSeconds + initialRecordingPositionSeconds
   const playbackAxisForRender: PlaybackAxisState = hasCurrentPlaybackAxisState
     ? playbackAxisState
     : {
@@ -624,10 +644,10 @@ export function LivePlayer(props: LivePlayerProps) {
       ? (seconds) => {
           const video = videoRef.current
           if (!video) return
-          commitRecordingSeek(video.currentTime + seconds)
+          commitRecordingSeek(axisHeadSeconds + video.currentTime + seconds)
         }
       : undefined,
-    onSeekToFraction: isRecordingHLS && recordingDuration > 0
+    onSeekToFraction: isRecordingHLS && !liveRecordingAxis && recordingDuration > 0
       ? (fraction) => {
           seekRecording(recordingDuration * fraction)
           return true
@@ -794,7 +814,7 @@ export function LivePlayer(props: LivePlayerProps) {
         currentHandoff?.recordingId === recordingId &&
         currentHandoff.sourceURL === recordingHlsUrl
       ) return currentHandoff.result
-      const recordingHlsPositionApplied = !isRecordingHLS || recordingResumePending.current === null
+      const recordingHlsPositionApplied = recordingResumePending.current === null
       const position = playedRef.current && media
         ? (recordingHlsPositionApplied ? media.currentTime : undefined)
         : undefined
@@ -852,7 +872,7 @@ export function LivePlayer(props: LivePlayerProps) {
         recordingResumePending.current = null
         if (isRecordingHLS) {
           // cancelled を見たあとなので、state の identity はこの effect のもの。
-          const positionSeconds = startAt
+          const positionSeconds = axisHeadSecondsRef.current + startAt
           setPlaybackAxisState((current) => ({ ...current, positionSeconds }))
         }
       }
@@ -930,7 +950,7 @@ export function LivePlayer(props: LivePlayerProps) {
         if (cancelled || handedOff) return
         // 世代付き録画 HLS は、親が次の世代の URL を渡すとこの effect が読み直す。再生の意図を
         // 残し、利用者の操作なしで再生を続ける（`recording-detail.test.tsx` の「エラー表示に落ちた後でも」）。
-        resumePlaybackPendingRef.current = false
+        if (!isRecordingHLS) resumePlaybackPendingRef.current = false
         if (isRecordingHLS) setMediaPlaying(false)
         setError(probe.error)
         setLoading(false)
@@ -1175,7 +1195,7 @@ export function LivePlayer(props: LivePlayerProps) {
   const currentAxisSeconds = liveTimelineBar?.liveEdgeSeconds ??
     playbackAxisForRender.previewSeconds ?? playbackAxisForRender.positionSeconds
   const recordingPlayedFraction = recordingDuration > 0
-    ? Math.max(0, Math.min(1, playbackAxisForRender.positionSeconds / recordingDuration))
+    ? Math.max(0, Math.min(1, (playbackAxisForRender.positionSeconds - axisHeadSeconds) / recordingDuration))
     : 0
   // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
   const playbackDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? playbackAxis?.maxSeconds ?? 0
@@ -1185,7 +1205,7 @@ export function LivePlayer(props: LivePlayerProps) {
     if (isRecordingHLS && recordingResumePending.current !== null) return
     const seconds = video.currentTime
     if (isRecordingHLS) previousRecordingSecondsRef.current = seconds
-    updatePlaybackAxisState({ positionSeconds: seconds })
+    updatePlaybackAxisState({ positionSeconds: axisHeadSeconds + seconds })
     onRecordingPositionChange?.(video.currentTime)
   }
   const isSelectableLiveProgramPoint = (seconds: number | null): seconds is number => {
@@ -1198,7 +1218,7 @@ export function LivePlayer(props: LivePlayerProps) {
     updatePlaybackAxisState({ hoverSeconds: null })
     onLiveProgramSeek?.(seconds)
   }
-  /** seekRecording は録画先頭からの秒を HLS の seekable 範囲へ丸めて移る。 */
+  /** seekRecording は軸上の秒を録画先頭からの秒へ直し、HLS の seekable 範囲へ丸めて移る。 */
   const seekRecording = (seconds: number) => {
     const video = videoRef.current
     const playlistEndSeconds = video ? mediaSeekableEndSeconds(video) : undefined
@@ -1210,7 +1230,7 @@ export function LivePlayer(props: LivePlayerProps) {
     if (!video) return
     video.currentTime = target
     recordingResumePending.current = null
-    updatePlaybackAxisState({ positionSeconds: target })
+    updatePlaybackAxisState({ positionSeconds: axisHeadSeconds + target })
   }
   /** commitRecordingSeek はシークバー・キー操作の確定。位置のプレビューを消してから移る。 */
   const commitRecordingSeek = (seconds: number) => {
@@ -1459,25 +1479,11 @@ export function LivePlayer(props: LivePlayerProps) {
         </span>
       )}
     </>
-  ) : (
-    <>
-      <span data-testid="recording-hls-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-xs font-medium text-white">
-        ● 録画 HLS
-      </span>
-      {onReturnLive && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          data-testid="recording-hls-return-live"
-          onClick={onReturnLive}
-          className="shrink-0 text-white hover:bg-white/15 hover:text-white"
-        >
-          ライブへ戻る
-        </Button>
-      )}
-    </>
-  )
+  ) : onReturnLive ? (
+    <span data-testid="live-recording-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-xs font-medium text-white">
+      ● 録画から再生中
+    </span>
+  ) : undefined
   const playbackControls = (
     <RecordingPlaybackControls
       recordingId={recordingId}
@@ -1486,6 +1492,10 @@ export function LivePlayer(props: LivePlayerProps) {
       timeline={playbackAxis}
       className={className}
       liveNotice={isLive ? liveNotice : undefined}
+      liveEdgeAction={liveRecordingAxis && onReturnLive ? {
+        label: 'ライブへ戻る',
+        title: `ライブ ${formatPlaybackTime(liveRecordingAxis.recordedEndSeconds, false)}（押すとライブへ戻る）`,
+      } : undefined}
       toolbarSlot={toolbarSlot}
       showCenterControls={!isLive}
       mobileActionsPlacement={isLive ? 'row' : 'overlay'}
@@ -1538,6 +1548,7 @@ export function LivePlayer(props: LivePlayerProps) {
           commitRecordingSeek(seconds)
         }
       }}
+      onLiveEdgeSeek={liveRecordingAxis ? onReturnLive ?? (() => commitRecordingSeek(liveRecordingAxis.liveEdgeSeconds)) : undefined}
       deferKeyboardSeek
       onSeekPreview={(seconds) => {
         if (isLive) {

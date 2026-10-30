@@ -1,5 +1,6 @@
 import { formatPlaybackTime, formatTime } from '@/lib/format'
 import { liveProgramAxis, programRecordingAccess } from '@/lib/live'
+import type { RecordingTimeline } from '@/lib/recording-timeline'
 
 type PlaybackTimelineBase = {
   minSeconds: number
@@ -17,6 +18,20 @@ type FixedPlaybackTimeline = PlaybackTimelineBase & {
   canSeek: true
 }
 
+/**
+ * LiveRecordingPlaybackTimeline はライブ画面が録画 HLS を再生しているときの番組軸の記述。
+ * 軸は番組開始を左端にし、録画ファイルの先頭（headSeconds）から録画済みの先端までを再生できる。
+ */
+type LiveRecordingPlaybackTimeline = PlaybackTimelineBase & {
+  kind: 'live-recording'
+  headSeconds: number
+  recordedEndSeconds: number
+  plannedEndSeconds: number
+  liveEdgeSeconds: number
+  hoverSeconds: number | null
+  hoverLabel: string | null
+}
+
 /** LiveProgramPlaybackTimeline は番組予定を起点にしたライブ用の時間軸記述。 */
 type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   kind: 'live-program'
@@ -32,8 +47,8 @@ type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   endClock: string
 }
 
-/** PlaybackTimeline は共有操作バーが描く固定尺・ライブの時間軸記述。 */
-export type PlaybackTimeline = FixedPlaybackTimeline | LiveProgramPlaybackTimeline
+/** PlaybackTimeline は共有操作バーが描く固定尺・ライブ番組・ライブ画面の録画の時間軸記述。 */
+export type PlaybackTimeline = FixedPlaybackTimeline | LiveRecordingPlaybackTimeline | LiveProgramPlaybackTimeline
 
 /** fixedPlaybackTimeline は録画尺の固定軸を操作バー向けの記述にする。 */
 export function fixedPlaybackTimeline(durationSeconds: number): FixedPlaybackTimeline {
@@ -44,6 +59,42 @@ export function fixedPlaybackTimeline(durationSeconds: number): FixedPlaybackTim
     maxSeconds,
     canSeek: true,
     extended: false,
+  }
+}
+
+/** LiveRecordingSource は録画軸が読む RecordingTimeline の欄。 */
+export type LiveRecordingSource = Pick<RecordingTimeline, 'recordingHeadSeconds' | 'plannedSeconds' | 'recordedSeconds'>
+
+/**
+ * liveRecordingPlaybackTimeline は録画ファイル先頭を基準に、ライブ画面の録画軸の記述を作る。
+ * ライブ位置は録画済みの先端の 1 秒前に置く。
+ */
+export function liveRecordingPlaybackTimeline(
+  source: LiveRecordingSource,
+  hoverSeconds: number | null,
+): LiveRecordingPlaybackTimeline {
+  const headSeconds = source.recordingHeadSeconds ?? 0
+  const recordedEndSeconds = headSeconds + source.recordedSeconds
+  const plannedEndSeconds = source.plannedSeconds
+  const maxSeconds = Math.max(1, plannedEndSeconds, recordedEndSeconds)
+  const liveEdgeSeconds = Math.max(0, recordedEndSeconds - 1)
+
+  return {
+    kind: 'live-recording',
+    minSeconds: 0,
+    maxSeconds,
+    canSeek: true,
+    hoverSeconds,
+    hoverLabel: hoverSeconds === null
+      ? null
+      : hoverSeconds > recordedEndSeconds || hoverSeconds < headSeconds
+        ? 'まだ録画されていません'
+        : null,
+    extended: recordedEndSeconds > plannedEndSeconds,
+    headSeconds,
+    recordedEndSeconds,
+    plannedEndSeconds,
+    liveEdgeSeconds,
   }
 }
 
