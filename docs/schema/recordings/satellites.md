@@ -208,6 +208,8 @@ CREATE TABLE recording_ingest_progress (
 
 `temp_generation` は `ingest_temp_generation_seq` から採番する。世代が要るのは、作り直した temp は前と違うバイト列でありうるので、前の temp から作ったセグメントを同じ再生 URL で配らないためである。世代が変わるのは「この試行で temp を作った」ときと「進捗行が無い」ときの 2 つだけで、replay や SHA-256 待ちをまたいでも同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
 
+進捗行の出入りと `temp_generation` の変化は `recordings` トピックへ通知し、`written_bytes` の更新では通知しない。
+
 転送していない（temp を持っていない）ことを表す行は作らない。行が消えるのは次の場合だけである。
 
 - 原本のメディアアセットを INSERT するトランザクション（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）
