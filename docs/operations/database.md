@@ -86,7 +86,7 @@ ingest が `epg.retention_grace` を跨ぐと、既定値で凍結される。�
 | ロール | budget |
 |---|---|
 | api | 10 |
-| worker | 床 8 |
+| worker | 床 9 |
 | watcher | 3 |
 | notifier | 3 |
 | streamer | 4 |
@@ -99,29 +99,32 @@ ingest が `epg.retention_grace` を跨ぐと、既定値で凍結される。�
 - 唯一のプールの上限: `MaxConns`
 - ロール budget の合算と worker の下限: `internal/db.roleConnBudget`
 - 束縛サイトごとの追加 budget: `internal/db.perSiteConnBudget`
+- マウントした FS 置き場ごとの追加 budget: `internal/db.perStoreConnBudget`
 - watcher の advisory lock 専用接続: `role.RunSingleton`
 
 </details>
 
 #### worker の budget
 
-worker の budget は、床 8 の固定値で、実測に基づく値ではない。
+worker の budget は、床 9 の固定値で、実測に基づく値ではない。
 
-内訳は River の LISTEN 1 本と、ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリである。
+内訳は River の LISTEN 1 本、マウントした FS 置き場 1 つぶんの転送 advisory lock 1 本、ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリである。転送 lock は pool から借りた接続を転送の間ずっと専有する。2 つ目以降の FS 置き場は、置き場ごとに 1 本を budget に上乗せする。
 
-**どのジョブも Work の間に接続を保持し続けないので、`ingest.concurrency` や束縛サイト数では増えない。**
+**転送以外の job は Work の間に接続を保持し続けない。転送のキューはマウントした FS 置き場ごとに 1 本なので、`ingest.concurrency` や束縛サイト数では増えない。**
 
 #### 接続数の fail-fast
 
 接続数を明示指定するときは、専有される接続の数から下限を求め、足りなければ起動時に失敗させる。
 
-数える対象は「解放が別の接続取得に依存する専有」である。内訳は watcher の advisory lock（1 サイトあたり 1 本）と、worker / notifier の LISTEN である。合計に余地 1 本を足した値が、`db.max_conns` の下限になる。
+数える対象は「解放が別の接続取得に依存する専有」である。内訳は watcher の advisory lock（1 サイトあたり 1 本）、worker の転送 lock（マウントした FS 置き場ごとに 1 本）、worker / notifier の LISTEN である。合計に余地 1 本を足した値が、`db.max_conns` の下限になる。
 
-lock をプール外の接続で張る案は採らない。`db.max_conns` がプロセスの接続上限だという契約を破るためである。
+lock をプール外の接続で張る案は採らない。`db.max_conns` がプロセスの接続上限だという契約を破るためである。転送 lock は pool から借りた接続のまま保持し、unlock に失敗した接続だけを `Hijack` して閉じる。失敗した接続を pool に戻すと、lock を持ったまま他の処理に配られるためである。
 
 <details><summary>根拠</summary>
 
 - 下限の計算: `internal/db.minRequiredConns`
+- 転送 lock の専有数: `TestMinRequiredConns`
+- unlock に失敗した接続を pool に戻さない: `TestTransferBandwidthLeaseHijacksOnUnlockFailure`
 
 </details>
 

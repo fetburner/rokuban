@@ -169,6 +169,28 @@ func TestIsIngestTempFile(t *testing.T) {
 	}
 }
 
+func TestIsStorageTransferTempAndCheckpointFiles(t *testing.T) {
+	for _, tc := range []struct {
+		path           string
+		wantTemp       bool
+		wantCheckpoint bool
+	}{
+		{path: "sites/default/.rokuban-transfer-12-34", wantTemp: true},
+		{path: ".rokuban-transfer-12-34.checkpoint", wantCheckpoint: true},
+		{path: ".rokuban-transfer-12-34.checkpoint.tmp-random", wantCheckpoint: true},
+		{path: ".rokuban-transfer-not-a-checkpoint.txt", wantTemp: true},
+		{path: ".rokuban-transfer-12-34.checkpoint.tmp-random.extra"},
+		{path: "sites/default/program.ts"},
+	} {
+		if got := IsStorageTransferTempFile(tc.path); got != tc.wantTemp {
+			t.Errorf("IsStorageTransferTempFile(%q) = %v, want %v", tc.path, got, tc.wantTemp)
+		}
+		if got := IsStorageTransferCheckpointFile(tc.path); got != tc.wantCheckpoint {
+			t.Errorf("IsStorageTransferCheckpointFile(%q) = %v, want %v", tc.path, got, tc.wantCheckpoint)
+		}
+	}
+}
+
 func TestIsGeneratedAssetTempFile(t *testing.T) {
 	tests := []struct {
 		path string

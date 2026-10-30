@@ -599,6 +599,37 @@ var (
 		Help: "Total media-store operations withheld because the configured store marker could not be verified.",
 	}, []string{"store"})
 
+	// StorageTransferWaitingAssets and StorageTransferWaitingBytes report the current
+	// desired-minus-observed transfer backlog from the database.
+	StorageTransferWaitingAssets = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_storage_transfer_waiting_assets",
+		Help: "Number of logical media assets that still need a desired-store copy.",
+	})
+	StorageTransferWaitingBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_storage_transfer_waiting_bytes",
+		Help: "Bytes represented by logical media assets that still need a desired-store copy.",
+	})
+	StorageTransferExhaustedAssets = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_storage_transfer_exhausted_assets",
+		Help: "Number of desired-store copies that stopped retrying after the transfer attempt limit.",
+	})
+	StorageTransferLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_storage_transfer_last_success_timestamp_seconds",
+		Help: "Unix time of the last successful media asset transfer.",
+	})
+	StorageTransferPolicyMismatches = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_storage_transfer_policy_mismatch_total",
+		Help: "Total storage transfer jobs discarded because their policy fingerprint differs from the worker configuration.",
+	})
+	StorageTransferCorruptSourcesRetired = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_storage_transfer_corrupt_sources_retired_total",
+		Help: "Total damaged derived source copies that a transfer worker retired so encode reconcile can recreate them.",
+	})
+	StorageTransferMountMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_storage_transfer_mount_mismatch_total",
+		Help: "Total transfer jobs withheld because the target root is not mounted or its store marker does not match.",
+	}, []string{"store"})
+
 	// StorageSyncLastSuccess は最後に**全 root を観測できた**パスの時刻（UNIX 秒）。
 	// 1 root でも失敗したパスでは進めない（部分成功を「成功」に数えない。
 	// internal/worker/storage.go の StorageSyncWorker.Work 参照）。
@@ -850,6 +881,13 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 
 		StorageSyncLastSuccess,
 		StoreMarkerMismatch,
+		StorageTransferWaitingAssets,
+		StorageTransferWaitingBytes,
+		StorageTransferExhaustedAssets,
+		StorageTransferLastSuccess,
+		StorageTransferPolicyMismatches,
+		StorageTransferCorruptSourcesRetired,
+		StorageTransferMountMismatches,
 		StorageRootLastSuccess,
 		StorageRootTotalBytes,
 		StorageRootUsedBytes,

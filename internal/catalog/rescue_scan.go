@@ -72,6 +72,9 @@ func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDi
 		if mediapath.IsIngestTempFile(entry.Name()) {
 			return nil
 		}
+		if mediapath.IsStorageTransferTempFile(entry.Name()) || mediapath.IsStorageTransferCheckpointFile(entry.Name()) {
+			return nil
+		}
 		if mediapath.IsMediaRelPathLockFile(entry.Name()) {
 			return nil
 		}
@@ -209,7 +212,8 @@ func SiteRelPath(site, relPath string) (string, error) {
 	if base == "." || base == ".." {
 		return "", fmt.Errorf("rel_path %q does not name a file", relPath)
 	}
-	if mediapath.IsIngestTempFile(base) || mediapath.IsMediaRelPathLockFile(base) ||
+	if mediapath.IsIngestTempFile(base) || mediapath.IsStorageTransferTempFile(base) ||
+		mediapath.IsStorageTransferCheckpointFile(base) || mediapath.IsMediaRelPathLockFile(base) ||
 		mediapath.IsEncodeTempFile(base) || mediapath.IsGeneratedAssetTempFile(base) {
 		return "", fmt.Errorf("rel_path %q uses reserved storage filename %q", relPath, base)
 	}

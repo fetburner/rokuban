@@ -168,7 +168,7 @@ func TestNewPool(t *testing.T) {
 	// 指してしまって CI でも落ちた。
 	cfg := dbConfigFromURL(t, dbURL)
 
-	pool, err := NewPool(ctx, cfg, nil, 0)
+	pool, err := NewPool(ctx, cfg, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestNewPoolRejectsUnsupportedLocale(t *testing.T) {
 
 	assertLocaleError("MigrateUp", MigrateUp(ctx, dbURL))
 
-	pool, err := NewPool(ctx, dbConfigFromURL(t, dbURL), nil, 0)
+	pool, err := NewPool(ctx, dbConfigFromURL(t, dbURL), nil, 0, 0)
 	if pool != nil {
 		pool.Close() // 誤って成功しても cleanup の DROP を妨げない
 	}
@@ -258,7 +258,7 @@ func TestNewPoolRejectsUnmigratedDatabase(t *testing.T) {
 	baseURL := testDatabaseURL(t)
 	dbURL := createScratchDatabase(t, baseURL, "empty", "TEMPLATE template0")
 
-	pool, err := NewPool(context.Background(), dbConfigFromURL(t, dbURL), nil, 0)
+	pool, err := NewPool(context.Background(), dbConfigFromURL(t, dbURL), nil, 0, 0)
 	if pool != nil {
 		pool.Close()
 	}
@@ -281,7 +281,7 @@ func TestNewPool_ConnectionFailure(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := NewPool(ctx, cfg, nil, 0)
+	_, err := NewPool(ctx, cfg, nil, 0, 0)
 	if err == nil {
 		t.Fatal("expected connection error, got nil")
 	}
@@ -305,7 +305,7 @@ func TestNewPool_APIStatementTimeout_Enforced(t *testing.T) {
 	cfg.APIStatementTimeout = 200 * time.Millisecond
 
 	t.Run("api role: statement_timeout aborts a slow query", func(t *testing.T) {
-		pool, err := NewPool(ctx, cfg, []string{"api"}, 0)
+		pool, err := NewPool(ctx, cfg, []string{"api"}, 0, 0)
 		if err != nil {
 			t.Fatalf("NewPool: %v", err)
 		}
@@ -321,7 +321,7 @@ func TestNewPool_APIStatementTimeout_Enforced(t *testing.T) {
 	})
 
 	t.Run("no api role: the same slow query is not aborted", func(t *testing.T) {
-		pool, err := NewPool(ctx, cfg, []string{"worker"}, 0)
+		pool, err := NewPool(ctx, cfg, []string{"worker"}, 0, 0)
 		if err != nil {
 			t.Fatalf("NewPool: %v", err)
 		}

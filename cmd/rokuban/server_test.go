@@ -695,6 +695,10 @@ func writeOnceModeConfig(t *testing.T, extra ...string) string {
 // writeWorkerTestConfig は worker ロールのテスト用 config を書く（実 DB を指す）。
 // mirakcURL を差し替えられるので、mirakc に触るジョブを実際に完走させられる。
 func writeWorkerTestConfig(t *testing.T, mirakcURL string, extra ...string) string {
+	return writeWorkerTestConfigAtMediaDir(t, mirakcURL, t.TempDir(), extra...)
+}
+
+func writeWorkerTestConfigAtMediaDir(t *testing.T, mirakcURL, mediaDir string, extra ...string) string {
 	t.Helper()
 	dbCfg := testutil.DatabaseConfig(t)
 	user := dbCfg.User
@@ -723,7 +727,7 @@ storage:
   media_dir: %q
 worker:
   periodic_jobs: false
-%s`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mirakcURL, t.TempDir(),
+%s`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mirakcURL, mediaDir,
 		strings.Join(extra, "\n")))
 }
 
@@ -1744,7 +1748,8 @@ worker:
 `, maxConns, mediaDir)
 }
 
-// db.max_conns の下限は引くキューに依らず、worker ロールなら LISTEN 1 本 + 余地 1 本の 2 である。
+// db.max_conns の下限は引くキューに依らず、worker ロールなら LISTEN 1 本 + マウントした FS 置き場
+// ごとの転送 lock 1 本 + 余地 1 本で、この config（置き場 1 つ）では 3 である。
 // 下限の検査が DB に触る前に走ることを確かめる。
 func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
 	t.Run("max_conns=1 is too small and fails before touching the DB", func(t *testing.T) {
@@ -1758,8 +1763,16 @@ func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
 		}
 	})
 
-	t.Run("max_conns=2 passes the check and fails at the unreachable DB", func(t *testing.T) {
+	t.Run("max_conns=2 is too small for LISTEN, the transfer lock of the mounted store, and the room", func(t *testing.T) {
 		path := writeServerTestConfig(t, poolSizingTestConfig(2, t.TempDir()))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
+		if err == nil || !strings.Contains(err.Error(), "at least 3 connections") {
+			t.Errorf("err = %v, want the db.max_conns fail-fast naming a floor of 3", err)
+		}
+	})
+
+	t.Run("max_conns=3 passes the check and fails at the unreachable DB", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(3, t.TempDir()))
 		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
 		if err == nil {
 			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
@@ -1777,11 +1790,20 @@ func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
 func TestServerCmd_WorkerPassesDerivedStoreToUntilEncodedDelete(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
+	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Site = "home" })
 	seed := func(kind string, profile *string, relPath string) int64 {
-		return dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 			p.Kind, p.Profile, p.RelPath = kind, profile, relPath
 		})
+		fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatalf("creating %s fixture directory: %v", kind, err)
+		}
+		if err := os.WriteFile(fullPath, []byte("fixture"), 0o644); err != nil {
+			t.Fatalf("writing %s fixture: %v", kind, err)
+		}
+		return assetID
 	}
 	profile := "h264"
 	originalID := seed("original", nil, "sites/home/derived-wiring.m2ts")
@@ -1803,7 +1825,24 @@ VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatalf("enqueueing delete-reconcile: %v", err)
 	}
 
-	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing worker media store marker: %v", err)
+	}
+	path := writeWorkerTestConfigAtMediaDir(t, "http://127.0.0.1:1", mediaDir)
+	loadedConfig, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("loading worker config: %v", err)
+	}
+	if loadedConfig.Storage.Derived != dbtest.StoreName {
+		t.Fatalf("storage.derived = %q, want %q", loadedConfig.Storage.Derived, dbtest.StoreName)
+	}
+	var candidateCount int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals($1)`, loadedConfig.Storage.Derived).Scan(&candidateCount); err != nil {
+		t.Fatalf("querying until_encoded candidates: %v", err)
+	}
+	if candidateCount != 1 {
+		t.Fatalf("until_encoded candidate count for storage.derived %q = %d, want 1", loadedConfig.Storage.Derived, candidateCount)
+	}
 	if _, err := runServerCmdBounded(t, 30*time.Second, path,
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=2s"); err != nil {
 		t.Fatalf("worker once run: %v", err)

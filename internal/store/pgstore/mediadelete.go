@@ -13,10 +13,10 @@ import (
 )
 
 // ListPendingDeleteAssets は削除条件を満たす deleting コピーを返す。
-func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
+func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
 		GraceCutoff: graceCutoff, OverlapCutoff: overlapCutoff, StoreName: s.storeName,
-		DesiredStore: mediaStoreNameArg(s.derivedStore), RowLimit: limit,
+		DesiredStore: mediaStoreNameArg(s.derivedStore), OriginalRules: originalRules, DerivedStore: derivedStore, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending media asset deletes: %w", err)
@@ -27,10 +27,10 @@ func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overla
 }
 
 // ListUnqualifiedDeletingAssets は現在どの削除条件も満たさない deleting コピーを返す。
-func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
+func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
 	rows, err := sqlcgen.New(s.pool).ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
 		GraceCutoff: graceCutoff, OverlapCutoff: overlapCutoff, StoreName: s.storeName,
-		DesiredStore: mediaStoreNameArg(s.derivedStore), RowLimit: limit,
+		DesiredStore: mediaStoreNameArg(s.derivedStore), OriginalRules: originalRules, DerivedStore: derivedStore, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing unqualified deleting media asset copies: %w", err)
@@ -185,13 +185,20 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, media
 
 // MarkDeleted は deleting コピーを deleted にし、全コピーの削除後に encoded 削除要求を消す。
 func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
+	return s.markCopyDeleted(ctx, copyID, s.storeName)
+}
+
+// markCopyDeleted は storeName の置き場にある copyID の deleting コピーを deleted にする。
+// 束縛された置き場と違う置き場のコピーも、行をコピー自身の置き場でロックして確定できる。
+// 実体無しの記録と転送の試行行は、コピーが deleted になるのと同じ tx で消す。
+func (s *Media) markCopyDeleted(ctx context.Context, copyID int64, storeName string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning media asset copy delete completion: %w", err)
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	copy, err := lockMediaAssetCopy(ctx, q, copyID, s.storeName)
+	copy, err := lockMediaAssetCopy(ctx, q, copyID, storeName)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil
@@ -203,7 +210,7 @@ func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
 			return fmt.Errorf("media asset copy %d has state %q, want deleting or deleted", copyID, copy.State)
 		}
 		updated, err := q.MarkMediaAssetCopyDeleted(ctx, sqlcgen.MarkMediaAssetCopyDeletedParams{
-			CopyID: copyID, StoreName: s.storeName,
+			CopyID: copyID, StoreName: storeName,
 		})
 		if err != nil {
 			return fmt.Errorf("marking media asset copy %d deleted: %w", copyID, mapDatabaseError(err))
@@ -211,6 +218,12 @@ func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
 		if updated != 1 {
 			return fmt.Errorf("marking media asset copy %d deleted updated %d rows, want one", copyID, updated)
 		}
+	}
+	if err := q.DeleteMissingMediaAsset(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing missing observation for deleted copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if err := q.DeleteMediaAssetTransferAttemptsForCopy(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing transfer attempts for deleted copy %d: %w", copyID, mapDatabaseError(err))
 	}
 	if err := q.ClearDeletedEncodedAssetRemovalRequest(ctx, copyID); err != nil {
 		return fmt.Errorf("clearing completed encoded asset removal request for copy %d: %w", copyID, mapDatabaseError(err))
@@ -222,7 +235,7 @@ func (s *Media) MarkDeleted(ctx context.Context, copyID int64) error {
 }
 
 // RevertToActive は削除条件から外れた deleting コピーを active に戻す。
-func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time) (bool, error) {
+func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("beginning media asset copy restore transition: %w", err)
@@ -242,6 +255,7 @@ func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, o
 	updated, err := q.RevertMediaAssetCopyToActive(ctx, sqlcgen.RevertMediaAssetCopyToActiveParams{
 		CopyID: copyID, GraceCutoff: graceCutoff, OverlapCutoff: overlapCutoff,
 		StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.derivedStore),
+		OriginalRules: originalRules, DerivedStore: derivedStore,
 	})
 	if err != nil {
 		return false, fmt.Errorf("reverting media asset copy %d to active: %w", copyID, mapDatabaseError(err))

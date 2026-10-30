@@ -2,7 +2,7 @@
 
 ## 削除述語の性能測定（§7 の一部）
 
-until_encoded の削除可否について、置き場の条件の無い view と、置き場の条件を足した関数の計画と時間を測った。
+until_encoded の削除可否について、置き場条件を加える前の view と、置き場条件を含む現行の関数の計画と時間を測った。
 
 下記の測定は、`media_assets.rel_path` / `state` を読む引数なしの `until_encoded_deletable_originals` view を使った履歴資料である。この列と view は現行スキーマから削除されているため、測定用 SQL は現行の DB では実行できない。数値は現行スキーマで再測定していない。
 

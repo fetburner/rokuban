@@ -35,7 +35,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 		{name: "api alone", cfg: testDBConfig(), roles: []string{"api"}, want: 10},
 		{
 			name: "worker alone", cfg: testDBConfig(), roles: []string{"worker"},
-			want: 8,
+			want: 9,
 		},
 		{name: "watcher alone", cfg: testDBConfig(), roles: []string{"watcher"}, want: 3},
 		{name: "notifier alone", cfg: testDBConfig(), roles: []string{"notifier"}, want: 3},
@@ -44,8 +44,8 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			name:  "all roles (monolith --all)",
 			cfg:   testDBConfig(),
 			roles: []string{"api", "worker", "watcher", "streamer", "notifier"},
-			// 10 + 8(worker) + 3 + 4 + 3
-			want: 28,
+			// 10 + 9(worker) + 3 + 4 + 3
+			want: 29,
 		},
 		{
 			name:  "unknown role only falls back to the minimum (never 0)",
@@ -65,7 +65,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			name:  "duplicate role names across a larger set are not double-counted",
 			cfg:   testDBConfig(),
 			roles: []string{"api", "worker", "worker", "api", "watcher"},
-			want:  21, // 10(api) + 8(worker) + 3(watcher), each counted once
+			want:  22, // 10(api) + 9(worker) + 3(watcher), each counted once
 		},
 		{
 			name: "explicit db.max_conns overrides role-derived sizing",
@@ -81,7 +81,32 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			poolCfg, err := buildPoolConfig(tc.cfg, tc.roles, 1)
+			poolCfg, err := buildPoolConfig(tc.cfg, tc.roles, 1, 0)
+			if err != nil {
+				t.Fatalf("buildPoolConfig: %v", err)
+			}
+			if poolCfg.MaxConns != tc.want {
+				t.Errorf("MaxConns = %d, want %d", poolCfg.MaxConns, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildPoolConfig_MaxConnsFromRoles_MultiStore は、マウントした FS 置き場の数が worker の予算だけに効くことを固定する。
+func TestBuildPoolConfig_MaxConnsFromRoles_MultiStore(t *testing.T) {
+	cases := []struct {
+		name      string
+		roles     []string
+		numStores int
+		want      int32
+	}{
+		{name: "worker, 1 store: the floor already holds one transfer lock", roles: []string{"worker"}, numStores: 1, want: 9},
+		{name: "worker, 2 stores: +1 per extra store", roles: []string{"worker"}, numStores: 2, want: 10},
+		{name: "api, 2 stores: unaffected", roles: []string{"api"}, numStores: 2, want: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			poolCfg, err := buildPoolConfig(testDBConfig(), tc.roles, 1, tc.numStores)
 			if err != nil {
 				t.Fatalf("buildPoolConfig: %v", err)
 			}
@@ -111,13 +136,13 @@ func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 			name:     "worker, 2 sites: the budget term does not grow with site count",
 			roles:    []string{"worker"},
 			numSites: 2,
-			want:     8,
+			want:     9,
 		},
 		{
 			name:     "watcher+worker, 2 sites: only watcher gets the per-site addition",
 			roles:    []string{"watcher", "worker"},
 			numSites: 2,
-			want:     12, // 3+1(watcher) + 8(worker)
+			want:     13, // 3+1(watcher) + 9(worker)
 		},
 		{name: "api alone, 2 sites: unaffected (not a site-scoped role)", roles: []string{"api"}, numSites: 2, want: 10},
 		{name: "watcher, 1 site: no addition (baseline)", roles: []string{"watcher"}, numSites: 1, want: 3},
@@ -125,7 +150,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			poolCfg, err := buildPoolConfig(testDBConfig(), tc.roles, tc.numSites)
+			poolCfg, err := buildPoolConfig(testDBConfig(), tc.roles, tc.numSites, 0)
 			if err != nil {
 				t.Fatalf("buildPoolConfig: %v", err)
 			}
@@ -145,7 +170,7 @@ func TestBuildPoolConfig_NoRoles_UsesPgxDefault(t *testing.T) {
 		t.Fatalf("baseline ParseConfig: %v", err)
 	}
 
-	poolCfg, err := buildPoolConfig(testDBConfig(), nil, 0)
+	poolCfg, err := buildPoolConfig(testDBConfig(), nil, 0, 0)
 	if err != nil {
 		t.Fatalf("buildPoolConfig: %v", err)
 	}
@@ -212,7 +237,7 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testDBConfig()
 			cfg.MaxConns = tc.maxConns
-			_, err := buildPoolConfig(cfg, tc.roles, 1)
+			_, err := buildPoolConfig(cfg, tc.roles, 1, 0)
 			if tc.wantErr && err == nil {
 				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v): expected error, got nil",
 					tc.maxConns, tc.roles)
@@ -232,12 +257,16 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 // 起動時に弾くことになる。
 func TestMinRequiredConns(t *testing.T) {
 	cases := []struct {
-		name     string
-		roles    []string
-		numSites int
-		want     int32
+		name      string
+		roles     []string
+		numSites  int
+		numStores int
+		want      int32
 	}{
 		{name: "api alone: only the room for other work", roles: []string{"api"}, want: 1},
+		{name: "worker, 1 fs store: LISTEN + one transfer lock + the room", roles: []string{"worker"}, numStores: 1, want: 3},
+		{name: "worker, 2 fs stores: one transfer lock per mounted store", roles: []string{"worker"}, numStores: 2, want: 4},
+		{name: "api, 2 fs stores: no transfer lock without the worker role", roles: []string{"api"}, numStores: 2, want: 1},
 		{name: "worker alone: LISTEN + the room", roles: []string{"worker"}, want: 2},
 		{name: "worker+watcher+notifier: three dedicated conns each add the room", roles: []string{"worker", "watcher", "notifier"}, want: 4},
 		{name: "watcher, 2 sites: one advisory lock per site", roles: []string{"watcher"}, numSites: 2, want: 3},
@@ -245,7 +274,7 @@ func TestMinRequiredConns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := minRequiredConns(tc.roles, tc.numSites); got != tc.want {
+			if got := minRequiredConns(tc.roles, tc.numSites, tc.numStores); got != tc.want {
 				t.Errorf("minRequiredConns(%v, %d) = %d, want %d",
 					tc.roles, tc.numSites, got, tc.want)
 			}
@@ -299,7 +328,7 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall_MultiSite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testDBConfig()
 			cfg.MaxConns = tc.maxConns
-			_, err := buildPoolConfig(cfg, tc.roles, tc.numSites)
+			_, err := buildPoolConfig(cfg, tc.roles, tc.numSites, 0)
 			if tc.wantErr && err == nil {
 				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v, numSites=%d): expected error, got nil",
 					tc.maxConns, tc.roles, tc.numSites)
@@ -314,7 +343,7 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall_MultiSite(t *testing.T) {
 
 func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	t.Run("api role: unset uses the built-in default", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"}, 1)
+		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"}, 1, 0)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -328,7 +357,7 @@ func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	t.Run("api role: explicit value is honored", func(t *testing.T) {
 		cfg := testDBConfig()
 		cfg.APIStatementTimeout = 5 * time.Second
-		poolCfg, err := buildPoolConfig(cfg, []string{"api"}, 1)
+		poolCfg, err := buildPoolConfig(cfg, []string{"api"}, 1, 0)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -339,7 +368,7 @@ func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	})
 
 	t.Run("no api role: statement_timeout is not set", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"worker"}, 1)
+		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"worker"}, 1, 0)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}

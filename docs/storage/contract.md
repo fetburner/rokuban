@@ -84,6 +84,10 @@ ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取�
 
 canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
 
+### FS 置き場間の転送
+
+転送 worker の再開、公開、配置削除、破損時の扱いは [FS 置き場間の転送](transfer.md) に従う。
+
 ### rel_path lock file の寿命
 
 パスごとの lock file は、通常終了のときに削除してから解放するので、何度処理しても残らない。異常終了で残った lock file は、次の lock 取得時の掃除が回収する。

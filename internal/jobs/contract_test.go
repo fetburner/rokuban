@@ -42,6 +42,8 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		{"delete_reconcile", DeleteReconcileArgs{}, "delete_reconcile", CleanupQueue, "cleanup", 10 * time.Minute, 1, true, 1},
 		{"catalog_export", CatalogExportArgs{Keep: 3}, "catalog_export", CleanupQueue, "cleanup", 5 * time.Minute, 1, true, 1},
 		{"storage_sync", StorageSyncArgs{}, "storage_sync", StorageQueue, "storage", time.Minute, 1, true, 1},
+		{"storage_transfer_reconcile", StorageTransferReconcileArgs{}, "storage_transfer_reconcile", StorageQueue, "storage", 5 * time.Minute, 1, true, 1},
+		{"storage_transfer", StorageTransferArgs{MediaAssetID: 9, Store: "tokyo", PolicyFingerprint: "abc"}, "storage_transfer", TransferQueue, "transfer_tokyo", 12 * time.Hour, 1, true, 1},
 	}
 
 	for _, tt := range tests {

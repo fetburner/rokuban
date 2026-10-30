@@ -29,9 +29,10 @@ type MediaDeleteRevertCandidate struct {
 // MediaDelete は削除 reconcile がメディアアセットの削除状態を読み書きする契約である。
 type MediaDelete interface {
 	// ListPendingDeleteAssets は、削除条件を満たす deleting アセットを返す。
-	ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, limit int32) ([]MediaDeleteAsset, error)
+	// originalRules と derivedStore は、desired の置き場から外れた配置の腕が使う（転送が無ければ空の規則でよい）。
+	ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string, limit int32) ([]MediaDeleteAsset, error)
 	// ListUnqualifiedDeletingAssets は、現在どの削除条件も満たさない deleting アセットを返す。
-	ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, limit int32) ([]MediaDeleteRevertCandidate, error)
+	ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string, limit int32) ([]MediaDeleteRevertCandidate, error)
 	// ListOldGenerationMediaAssetCopiesToDelete は overlap を過ぎた旧世代コピーを返す。
 	ListOldGenerationMediaAssetCopiesToDelete(ctx context.Context, overlapCutoff time.Time, limit int32) ([]MediaDeleteAsset, error)
 	// ListTrashAssetsToDelete は、ごみ箱の猶予を過ぎたか即時削除を要求されたアセットを返す。
@@ -48,7 +49,7 @@ type MediaDelete interface {
 	// MarkDeleted は deleting アセットを deleted にし、外した encoded の削除要求も同時に消す。
 	MarkDeleted(ctx context.Context, copyID int64) error
 	// RevertToActive は削除条件を再確認し、該当しなくなった deleting アセットを active に戻す。
-	RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time) (bool, error)
+	RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string) (bool, error)
 }
 
 // PendingCopyReclaim は、公開されないまま猶予を過ぎた pending のコピー行の回収を担う契約である。

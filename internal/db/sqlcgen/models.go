@@ -221,6 +221,14 @@ type MediaAssetThumbnailSeek struct {
 	SeekMs       int64
 }
 
+// Failure observations for one destination media asset copy; successful transfers clear the row.
+type MediaAssetTransferAttempt struct {
+	CopyID       int64
+	AttemptCount int32
+	LastError    string
+	UpdatedAt    time.Time
+}
+
 type MediaAssetTsScan struct {
 	MediaAssetID     int64
 	ScannedSizeBytes int64

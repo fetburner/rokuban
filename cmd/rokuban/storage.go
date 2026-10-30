@@ -66,7 +66,7 @@ store が空の観測行と取り込み進捗行をこの置き場へ割り当�
 					return err
 				}
 			}
-			pool, err := db.NewPool(cmd.Context(), cfg.DB, nil, 0)
+			pool, err := db.NewPool(cmd.Context(), cfg.DB, nil, 0, 0)
 			if err != nil {
 				return err
 			}

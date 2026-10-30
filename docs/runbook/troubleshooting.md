@@ -108,6 +108,28 @@ worker のログに、`canonical_conflict=true` と `rel_path` を付けた Erro
 
 再投入は要らない。ingest ジョブは再試行で戻る。再試行が尽きて捨てられても、5 分ごとの record_sweep が、mirakc に残った finished の record から ingest を投入し直す。
 
+### ストレージ転送が上限に達した
+
+転送の失敗が上限に達すると、その宛先への自動再投入が止まる。原因を確認して直してから、試行記録を消す。
+
+対象は、Prometheus の `rokuban_storage_transfer_exhausted_assets` と、worker ログの `storage transfer: copy attempt failed` で見つける。ゲージが 0 以外なら、次の query で試行表を見る。マウントの不一致が増えているときは、worker の root と `.rokuban-store` の値を先に直す。
+
+```sh
+docker compose exec postgres psql -U rokuban -d rokuban -c \
+  "SELECT c.media_asset_id, c.id AS copy_id, c.store, c.generation, t.attempt_count, t.last_error FROM media_asset_transfer_attempts t JOIN media_asset_copies c ON c.id = t.copy_id ORDER BY t.updated_at DESC LIMIT 20"
+```
+
+転送元のファイル、宛先の空き容量、root の目印を確認し、原因を解消する。`last_error` が宛先の不一致（宛先に、大きさか SHA-256 の合わない完成ファイルがある）なら、宛先のファイルを確かめて退かしてから、試行記録を消す。確かめる対象は、宛先のファイルが転送元と同じ内容か、誰が置いたかである。
+
+退かした後、対象行の `copy_id` を指定して試行記録を消す。現在の世代で pending の宛先だけを選び、削除結果が 1 行であることを確認する。
+
+```sh
+docker compose exec postgres psql -U rokuban -d rokuban -c \
+  "DELETE FROM media_asset_transfer_attempts t USING media_asset_copies c, media_assets a WHERE t.copy_id = c.id AND c.media_asset_id = a.id AND c.id = 12345 AND c.state = 'pending' AND c.generation = COALESCE(a.derived_generation, 0) RETURNING t.copy_id, t.attempt_count"
+```
+
+次の転送 reconcile が、同じ desired の置き場への job を投入する。失敗が続くときは、試行記録を消す前に、新しい `last_error` を調べる。
+
 ### エンコードが失敗している（理由を知りたい）
 
 エンコードの失敗の理由と最後に試した時刻は API に出さないので、運用者は DB を直接見る。一覧・詳細のバッジは「エンコード失敗」までしか言わない。

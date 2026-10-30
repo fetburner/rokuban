@@ -146,6 +146,9 @@ type Deps struct {
 	IngestPrecheck        store.IngestPrecheck
 	EncodeProgress        store.EncodeProgressReporter
 	MediaDelete           store.MediaDelete
+	StorageTransfer       store.StorageTransfer
+	StorageTransferPolicy config.StorageConfig
+	StorageRoots          map[string]string
 	TSScan                store.TSScan
 	EncodeAttempts        store.EncodeAttempts
 	StorageObservation    store.StorageObservation
@@ -344,6 +347,16 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
 	riveradapter.Register(workers, newDeleteReconcileWorker(deps))
+	riveradapter.Register(workers, &StorageTransferReconcileWorker{
+		Enqueuer: deps.Enqueuer,
+		Storage:  deps.StorageTransfer,
+		Config:   deps.StorageTransferPolicy,
+	})
+	riveradapter.Register(workers, &StorageTransferWorker{
+		Storage: deps.StorageTransfer,
+		Config:  deps.StorageTransferPolicy,
+		Roots:   deps.StorageRoots,
+	})
 	riveradapter.Register(workers, &StorageSyncWorker{
 		Storage:    deps.StorageObservation,
 		MediaDir:   deps.MediaDir,
@@ -358,6 +371,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
 	return &DeleteReconcileWorker{
 		MediaDelete:            deps.MediaDelete,
+		StorageTransfer:        deps.StorageTransfer,
+		StorageTransferPolicy:  deps.StorageTransferPolicy,
 		RecordingPurge:         deps.RecordingPurge,
 		Breakers:               deps.Breakers,
 		Storage:                deps.StorageObservation,

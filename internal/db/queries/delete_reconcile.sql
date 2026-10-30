@@ -4,13 +4,15 @@
 -- 削除プロトコルは冪等: コピーの active → deleting → deleted。deleting のまま
 -- プロセスが落ちても ListMediaAssetsPendingDelete が次パスで拾い直す。
 --
--- 「このアセットは消してよいか」の 3 つの腕（ごみ箱の猶予超過 or 今すぐ
--- purge / until_encoded の派生物完備 / ユーザーが外したエンコード版）は、
--- いずれもスキーマ側の名前付き述語を参照する。until_encoded 腕は
--- set-returning 関数 `until_encoded_deletable_originals(desired_store)`、
+-- 「このアセットは消してよいか」の腕（ごみ箱の猶予超過 or 今すぐ
+-- purge / until_encoded の派生物完備 / ユーザーが外したエンコード版 / 旧世代 /
+-- desired の置き場から外れた配置）は、いずれもスキーマ側の名前付き述語を参照する。
+-- until_encoded 腕は set-returning 関数 `until_encoded_deletable_originals(desired_store)`、
 -- ごみ箱腕は set-returning 関数 `trash_deletable_recordings(grace_cutoff)`、
--- 外した版の腕は view `removed_encoded_assets`。この 3 つが唯一の定義であり、
--- 以下の入口・拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
+-- 外した版の腕は view `removed_encoded_assets`、旧世代の腕は view
+-- `old_generation_media_asset_copies`、配置の腕は関数 `media_asset_copy_prunable`。
+-- これが唯一の定義であり、以下の拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
+-- 配置の腕の入口（active → deleting の候補）は storage_transfer.sql にある。
 
 -- 前パスで deleting にマークしたまま unlink できずに終わった行を拾い直す。
 --
@@ -59,6 +61,10 @@ WHERE (
       WHERE old_copy.id = physical_copy.id
         AND old_copy.generation_started_at <= sqlc.arg('overlap_cutoff')::timestamptz
     )
+    OR media_asset_copy_prunable(
+      physical_copy.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+      sqlc.arg('overlap_cutoff')::timestamptz
+    )
   )
 ORDER BY a.id
 LIMIT sqlc.arg('row_limit');
@@ -101,6 +107,10 @@ WHERE NOT EXISTS (
     FROM old_generation_media_asset_copies AS old_copy
     WHERE old_copy.id = physical_copy.id
       AND old_copy.generation_started_at <= sqlc.arg('overlap_cutoff')::timestamptz
+  )
+  AND NOT media_asset_copy_prunable(
+    physical_copy.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+    sqlc.arg('overlap_cutoff')::timestamptz
   )
 ORDER BY a.id
 LIMIT sqlc.arg('row_limit');
@@ -147,6 +157,10 @@ WHERE copy.id = sqlc.arg('copy_id')
       FROM old_generation_media_asset_copies AS old_copy
       WHERE old_copy.id = copy.id
         AND old_copy.generation_started_at <= sqlc.arg('overlap_cutoff')::timestamptz
+  )
+  AND NOT media_asset_copy_prunable(
+      copy.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+      sqlc.arg('overlap_cutoff')::timestamptz
   );
 
 -- ごみ箱の猶予超過、または「今すぐ完全削除」の要求（recording_purge_requests
