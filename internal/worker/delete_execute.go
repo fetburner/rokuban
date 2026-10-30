@@ -301,7 +301,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 				if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer copy"); err != nil {
 					return err
 				}
-			return w.deleteObjectKey(ctx, candidate.RelPath, candidate.Kind)
+				return w.deleteObjectKey(ctx, candidate.RelPath, candidate.Kind)
 			},
 		)
 		if err != nil {

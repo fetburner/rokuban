@@ -375,27 +375,13 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 			continue
 		}
 		if kind == orphanCleanupStaging && mediapath.IsGeneratedAssetTempFile(filepath.Base(relPath)) {
-			if w.DerivedObjects == nil {
-				return nil, fmt.Errorf("derived object store is not configured while checking generated staging key %q", relPath)
+			eligible, err := w.isAgedGeneratedAssetStagingOrphan(ctx, relPath, mtimeCutoff)
+			if err != nil {
+				return nil, err
 			}
-			object, headErr := w.DerivedObjects.Head(ctx, relPath)
-			if errors.Is(headErr, objstore.ErrNotFound) {
-				if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing vanished generated staging key"); err != nil {
-					return nil, err
-				}
-				if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
-					return nil, fmt.Errorf("clearing vanished generated staging key %q: %w", relPath, err)
-				}
-				continue
+			if eligible {
+				verified = append(verified, relPath)
 			}
-			if headErr != nil {
-				metrics.RecordObjectStoreError("head", headErr)
-				return nil, fmt.Errorf("checking generated staging key %q: %w", relPath, headErr)
-			}
-			if object.LastModified.After(mtimeCutoff) {
-				continue
-			}
-			verified = append(verified, relPath)
 			continue
 		}
 		path, err := mediapath.Resolve(w.MediaDir, relPath)
@@ -425,6 +411,27 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		verified = append(verified, relPath)
 	}
 	return verified, nil
+}
+
+func (w *DeleteReconcileWorker) isAgedGeneratedAssetStagingOrphan(ctx context.Context, relPath string, mtimeCutoff time.Time) (bool, error) {
+	if w.DerivedObjects == nil {
+		return false, fmt.Errorf("derived object store is not configured while checking generated staging key %q", relPath)
+	}
+	object, err := w.DerivedObjects.Head(ctx, relPath)
+	if errors.Is(err, objstore.ErrNotFound) {
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing vanished generated staging key"); err != nil {
+			return false, err
+		}
+		if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
+			return false, fmt.Errorf("clearing vanished generated staging key %q: %w", relPath, err)
+		}
+		return false, nil
+	}
+	if err != nil {
+		metrics.RecordObjectStoreError("head", err)
+		return false, fmt.Errorf("checking generated staging key %q: %w", relPath, err)
+	}
+	return !object.LastModified.After(mtimeCutoff), nil
 }
 
 // reportAgedOrphanFiles はエイジング済みの canonical 孤児を Warn とゲージで報告する。

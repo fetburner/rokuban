@@ -121,91 +121,6 @@ func assertMediaAssetSHA256(t *testing.T, pool *pgxpool.Pool, recordingID int64,
 	}
 }
 
-// assertWorkerPublishesUnderRelPathLock は worker（run）を rel_path lock を保持したまま
-// 走らせ、lock 中は canonical が既存バイトのまま・active 行が無く、解放後に
-// want とそのサイズが公開されることを検証する。
-func assertWorkerPublishesUnderRelPathLock(
-	t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64,
-	kind, relPath string, hasPrior bool, run func() error, want []byte,
-) {
-	t.Helper()
-	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	prior := []byte("previous orphan bytes")
-	if hasPrior {
-		if err := os.WriteFile(canonicalPath, prior, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	lock, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	locked := true
-	defer func() {
-		if locked {
-			_ = lock.Close()
-		}
-	}()
-	done := make(chan error, 1)
-	go func() { done <- run() }()
-
-	deadline := time.After(10 * time.Second)
-	for len(stagedFiles(t, filepath.Dir(canonicalPath))) == 0 {
-		select {
-		case err := <-done:
-			got, _ := os.ReadFile(canonicalPath)
-			t.Fatalf("worker returned (err=%v) while rel_path lock was held; canonical = %q", err, got)
-		case <-deadline:
-			t.Fatal("worker did not stage while waiting for rel_path lock")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	got, err := os.ReadFile(canonicalPath)
-	if hasPrior {
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(got, prior) {
-			t.Fatalf("canonical bytes changed while rel_path lock held: got %q, want %q", got, prior)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canonical file appeared while rel_path lock held: bytes %q, err %v", got, err)
-	}
-	if _, ok := activeAssetSize(t, pool, recordingID, kind); ok {
-		t.Fatalf("active %s row visible while rel_path lock held", kind)
-	}
-
-	if err := lock.Close(); err != nil {
-		t.Fatal(err)
-	}
-	locked = false
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("worker: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("worker did not finish after rel_path lock was released")
-	}
-	got, err = os.ReadFile(canonicalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("canonical bytes = %q, want published %q", got, want)
-	}
-	if size, ok := activeAssetSize(t, pool, recordingID, kind); !ok || size != int64(len(want)) {
-		t.Fatalf("active %s size = %d (found=%v), want %d", kind, size, ok, len(want))
-	}
-	assertMediaAssetSHA256(t, pool, recordingID, kind, "", want)
-	if left := stagedFiles(t, filepath.Dir(canonicalPath)); len(left) != 0 {
-		t.Errorf("staged files remain: %v", left)
-	}
-}
-
 func TestThumbnailWorkerPublishesThroughObjectStore(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -219,7 +134,7 @@ UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_
 		t.Fatalf("seeding deleted thumbnail copy: %v", err)
 	}
 	w := &ThumbnailWorker{
-		Objects: testFSObjectStore(mediaDir),
+		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
 	relPath := thumbnailRelPath(id, 1)
@@ -251,9 +166,9 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	release := make(chan struct{})
 	results := make(chan error, 2)
 	w := &ThumbnailWorker{
-		Objects: testFSObjectStore(mediaDir),
+		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool),
-		Media:     pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
+		Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if strings.Contains(name, "ffprobe") || containsArg(args, "format=duration") {
 				return []byte("100\n"), nil
@@ -322,8 +237,8 @@ func TestSeekTilesWorkerPublishesThroughObjectStore(t *testing.T) {
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
 	cmd := &countingRunCmd{duration: "100"}
 	w := &SeekTilesWorker{
-		Objects: testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool),Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, id); err != nil {
 		t.Fatalf("SeekTilesWorker.Work: %v", err)
 	}

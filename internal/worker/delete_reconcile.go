@@ -78,8 +78,8 @@ const (
 // 違う worker が拾うと範囲が拾った側の置き場になる。設定が FS 置き場を 1 つに限っている間は起きない。未解決: 置き場ごとのキュー。
 type DeleteReconcileWorker struct {
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
-	Storage               store.StorageObservation
-	MediaDelete           store.MediaDelete
+	Storage     store.StorageObservation
+	MediaDelete store.MediaDelete
 	// MediaPendingReclaim は MediaStoreName と DerivedObjectStoreName が同じ FS の
 	// pending 派生物を回収する。S3 の独立 pass は DerivedPendingReclaim を使う。
 	MediaPendingReclaim   store.PendingCopyReclaim

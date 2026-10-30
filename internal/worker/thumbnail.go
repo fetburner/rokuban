@@ -271,11 +271,15 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail replacement path: %w", err)
 	}
 	return thumbnailWorkPlan{
-		inputID: plan.Source.MediaAssetID, inputRelPath: plan.Source.RelPath, inputStore: plan.Source.Store,
+		inputID:      plan.Source.MediaAssetID,
+		inputRelPath: plan.Source.RelPath,
+		inputStore:   plan.Source.Store,
 		inputDerived: plan.Source.MediaAssetID != state.OriginalMediaAssetID,
-		inputSeek: time.Duration(plan.InputSeekMs) * time.Millisecond,
-		seekMs:    plan.RecordedSeek, relPath: relPath, generation: generation,
-		expected: expected,
+		inputSeek:    time.Duration(plan.InputSeekMs) * time.Millisecond,
+		seekMs:       plan.RecordedSeek,
+		relPath:      relPath,
+		generation:   generation,
+		expected:     expected,
 	}, true, nil
 }
 
