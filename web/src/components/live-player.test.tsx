@@ -182,6 +182,59 @@ describe('LivePlayer playback routes', () => {
     expect(paused).toBe(false)
   })
 
+  it('coalesces concurrent 410 errors before the parent accepts a generation change', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okPlaylist())
+    vi.stubGlobal('fetch', fetchMock)
+    const first = '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8'
+    const second = '/api/media/stores/media/recordings/42/hls/v2/hd/master.m3u8'
+    let currentTime = 0
+    let paused = true
+    let resolveRecovery: ((handled: boolean) => void) | undefined
+    const play = vi.fn().mockImplementation(() => {
+      paused = false
+      return Promise.resolve()
+    })
+    const onRecordingPlaybackError = vi.fn((_positionSeconds: number | undefined, _wasPlaying: boolean) =>
+      new Promise<boolean>((resolve) => { resolveRecovery = resolve }),
+    )
+    const props = {
+      mode: 'recording-hls' as const,
+      site: 'default',
+      recordingId: 42,
+      recordingDurationMs: 60_000,
+      onRecordingPlaybackError,
+    }
+    const { rerender } = render(<LivePlayer {...props} recordingHlsUrl={first} recordingHlsStartSeconds={0} />)
+    const video = screen.getByLabelText('録画映像') as HTMLVideoElement
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (value: number) => { currentTime = value },
+    })
+    Object.defineProperty(video, 'paused', { configurable: true, get: () => paused })
+    Object.defineProperty(video, 'play', { configurable: true, value: play })
+    await waitFor(() => expect(mockHls.instances[0]?.loadSource).toHaveBeenCalledWith(first))
+
+    fireEvent(video, new Event('canplay'))
+    currentTime = 9.8
+    paused = false
+    fireEvent.playing(video)
+    const onError = mockHls.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')?.[1] as
+      (event: string, data: { fatal: boolean; response: { code: number } }) => void
+    onError('hlsError', { fatal: true, response: { code: 410 } })
+    onError('hlsError', { fatal: true, response: { code: 410 } })
+
+    expect(onRecordingPlaybackError).toHaveBeenCalledTimes(1)
+    expect(onRecordingPlaybackError).toHaveBeenCalledWith(9.8, true, true)
+    resolveRecovery!(true)
+    rerender(<LivePlayer {...props} recordingHlsUrl={second} recordingHlsStartSeconds={9.8} />)
+    await waitFor(() => expect(mockHls.instances[1]?.loadSource).toHaveBeenCalledWith(second))
+    expect(mockHls.args[1]).toEqual([{ startPosition: 9.8 }])
+    fireEvent(video, new Event('canplay'))
+    await waitFor(() => expect(play).toHaveBeenCalledOnce())
+    expect(paused).toBe(false)
+  })
+
   it('offers a return-to-live action only when the caller supplies it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okPlaylist()))
     const props = {

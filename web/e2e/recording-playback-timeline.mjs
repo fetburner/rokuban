@@ -158,6 +158,7 @@ const liveRecoveryRecording = (generation, startAt = liveProgramStartAt) => ({
   hlsPlayback: ['hd', 'sd'].map((profile) => ({ profile, masterUrl: apiHlsPath(generation, profile) })),
 })
 const liveRecoveryV1 = liveRecoveryRecording(1)
+const liveRecoveryEmpty = { ...liveRecoveryV1, hlsPlayback: [] }
 const liveRecoveryV2 = liveRecoveryRecording(2)
 const encodedRecording = {
   ...recording,
@@ -174,6 +175,7 @@ await validateFixturesOrExit([
   ['live page service', ListServicesResponseItem, liveService],
   ['live page program', ListProgramsResponseItem, liveProgram],
   ['live page recording API HLS v1', ListRecordingsResponseItem, liveRecoveryV1],
+  ['live page recording API HLS during generation gap', ListRecordingsResponseItem, liveRecoveryEmpty],
   ['live page recording API HLS v2', ListRecordingsResponseItem, liveRecoveryV2],
 ], ng)
 await verifyBundleMatchesOrExit(URL_BASE, ng)
@@ -912,11 +914,42 @@ async function runLiveRecordingApiHlsRecoveryCheck() {
 
   const nextMaster = page.waitForResponse((response) => new URL(response.url()).pathname === apiHlsPath(2, 'hd'), { timeout: 30000 })
     .then(() => true).catch(() => false)
-  activeRecording = makeRecording(2)
+  recordingHlsGap = {
+    armed: false,
+    empty: { ...makeRecording(1), hlsPlayback: [] },
+    next: () => makeRecording(2),
+  }
+  const emptyDetails = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return response.request().method() === 'GET' && responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 }).then((response) => response.json()).catch(() => null)
   expiredRecordingHlsGeneration = 1
   const expiredAt = Date.now()
+  const emptyRecording = await emptyDetails
+  if (emptyRecording?.hlsPlayback?.length !== 0) {
+    ng.push(`410 後の録画詳細 API が一時的な空 hlsPlayback を返さない (${JSON.stringify(emptyRecording?.hlsPlayback)})`)
+    liveGenerationRecovery = false
+    await page.close()
+    return
+  }
+  const emptyHandoffSettled = await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video && video.paused && video.currentTime <= 0.1 &&
+      !document.body.innerText.includes('録画 HLS の再生中にエラーが発生しました')
+  }, undefined, { timeout: 5000 }).then(() => true).catch(() => false)
+  if (!emptyHandoffSettled) {
+    const state = await page.locator('video').evaluate((video) => ({ currentTime: video.currentTime, paused: video.paused }))
+    ng.push(`空の世代を受け入れた後、v1 の再生位置を保持した待機状態にならない (${JSON.stringify(state)})`)
+    liveGenerationRecovery = false
+    await page.close()
+    return
+  }
+  await page.evaluate(() => window.__sendRecordingEvent('recordings'))
   const v2Loaded = await nextMaster
   log(`  410 から v2 master 要求まで=${((Date.now() - expiredAt) / 1000).toFixed(1)}s / 詳細 API 応答=${JSON.stringify(recordingHlsApiResponses)}`)
+  if (recordingHlsApiResponses.indexOf('empty') < 0 || recordingHlsApiResponses.indexOf('v2') < recordingHlsApiResponses.indexOf('empty')) {
+    ng.push(`ライブ画面の録画詳細 API が empty → v2 の順に返らない (${JSON.stringify(recordingHlsApiResponses)})`)
+  }
   if (recordingHls410Requests.length < 1) {
     ng.push(`ライブ画面の録画 HLS v1 が 410 にならない (${JSON.stringify(recordingHls410Requests)})`)
   }
@@ -942,8 +975,19 @@ async function runLiveRecordingApiHlsRecoveryCheck() {
   }, undefined, { timeout: 10000 }).then((handle) => handle.jsonValue()).catch(() => null)
   log(`  v1 停止位置=${stopSeconds.toFixed(2)}s / v2 の再開位置=${typeof resumedAt === 'number' ? resumedAt.toFixed(2) : resumedAt}s`)
   if (typeof resumedAt !== 'number' || Math.abs(resumedAt - stopSeconds) > 1) {
-    const current = await page.locator('video').evaluate((video) => ({ currentTime: video.currentTime, paused: video.paused }))
-    ng.push(`ライブ画面の v2 が v1 停止位置（±1 秒）から再生中でない (stop=${stopSeconds}, resumed=${resumedAt}, current=${JSON.stringify(current)})`)
+    const current = await page.locator('video').evaluate((video) => ({
+      currentTime: video.currentTime,
+      paused: video.paused,
+      seeking: video.seeking,
+      readyState: video.readyState,
+      currentSrc: video.currentSrc,
+    }))
+    const recoveryState = await page.evaluate(() => ({
+      fatalError: document.body.innerText.includes('録画 HLS の再生中にエラーが発生しました'),
+      lastPlayingSeconds: window.__lastPlayingSeconds ?? null,
+      seekedPositions: window.__recordingHlsSeekedPositions,
+    }))
+    ng.push(`ライブ画面の v2 が v1 停止位置（±1 秒）から再生中でない (stop=${stopSeconds}, resumed=${resumedAt}, current=${JSON.stringify(current)}, recovery=${JSON.stringify(recoveryState)}, requests=${JSON.stringify(recordingHlsRequests)})`)
     liveGenerationRecovery = false
     await page.close()
     return
@@ -955,6 +999,7 @@ async function runLiveRecordingApiHlsRecoveryCheck() {
   if (!playbackContinued) ng.push('ライブ画面の録画 HLS が v2 で再開位置から再生を続けない')
 
   expiredRecordingHlsGeneration = null
+  recordingHlsGap = null
   liveGenerationRecovery = false
   await page.evaluate(() => localStorage.clear())
   await page.close()

@@ -621,6 +621,10 @@ export function LivePage() {
       if (fallbackRecording !== requestedPlayback.target.recording) {
         updatePlayback({ ...requestedPlayback, target: { ...requestedPlayback.target, recording: fallbackRecording } })
       }
+      // 世代を作り直している間は hlsPlayback が一時的に空になる。以前の URL は
+      // プレイヤーから外さず、次の recordings SSE で新世代が届くまで位置と再生意図を
+      // LivePlayer に保持させる（ここで false を返すと error teardown が media を 0 秒へ戻す）。
+      if (latest.hlsPlayback.length === 0) return true
       return false
     } catch {
       return false

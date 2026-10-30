@@ -248,7 +248,8 @@ type RecordingPlaybackProps = {
   onRecordingPositionChange?: (seconds: number) => void
   /**
    * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
-   * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
+   * 「明示の位置」として渡さない）。true なら親が切替を引き受けた（世代の一時 gap を
+   * 含む。エラー表示に落ちず、次の URL まで位置と再生意図を保持する）。
    */
   onRecordingPlaybackError?: (
     recordingPositionSeconds: number | undefined,
@@ -566,6 +567,13 @@ export function LivePlayer(props: LivePlayerProps) {
     positionSeconds: number | undefined
     wasPlaying: boolean
   } | null>(null)
+  // `live-player.test.tsx` sends overlapping 410s for one source. Share that handoff so a stale
+  // sibling response cannot clear the accepted recovery snapshot or start another REST refresh.
+  const recordingHandoffRef = useRef<{
+    recordingId: number | undefined
+    sourceURL: string | undefined
+    result: Promise<boolean>
+  } | null>(null)
   // 持ち越した位置へまだ戻し終えていない間は位置を保存しない。ソースの張り直し中に
   // 位置 0 の `timeupdate` が届いて保存位置を上書きするのを防ぐ。
   const recordingResumePending = useRef<number | null>(null)
@@ -766,8 +774,9 @@ export function LivePlayer(props: LivePlayerProps) {
       : livePlaylistURL(site, networkId, serviceId, playbackProfile)
 
     /**
-     * handOffError は録画再生のエラーを親に渡し、親が再生元を選び直したら true を返す
-     * （このプレイヤーはエラー表示に落ちない）。一度も再生していないセッションのエラーは
+     * handOffError は録画再生のエラーを親へ渡す。親が再生元を選び直すか、一時的な
+     * 世代 gap を引き受けて次の URL を待つ場合は true を返す（このプレイヤーは
+     * エラー表示に落ちず、受け渡し前の位置と再生意図を保持する）。一度も再生していないセッションのエラーは
      * 位置を渡さない --- 0 秒を「明示の位置」にすると、親が持つ保存位置・先頭からの意図を上書きする。
      * 要求した開始位置が適用中の間も currentTime は位置として使わない。seek 失敗で
      * 誤った秒を作り直しへ渡さない（`recording-playback-timeline.mjs`）。
@@ -780,6 +789,11 @@ export function LivePlayer(props: LivePlayerProps) {
       allowSameSourceRetry = true,
     ): boolean | Promise<boolean> => {
       if (!isRecordingHLS) return false
+      const currentHandoff = recordingHandoffRef.current
+      if (
+        currentHandoff?.recordingId === recordingId &&
+        currentHandoff.sourceURL === recordingHlsUrl
+      ) return currentHandoff.result
       const recordingHlsPositionApplied = !isRecordingHLS || recordingResumePending.current === null
       const position = playedRef.current && media
         ? (recordingHlsPositionApplied ? media.currentTime : undefined)
@@ -794,12 +808,21 @@ export function LivePlayer(props: LivePlayerProps) {
         return handled
       }
       const handedOff = onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
-      return typeof handedOff === 'boolean'
-        ? clearUnclaimedRecovery(handedOff)
-        : handedOff.then(clearUnclaimedRecovery, (error) => {
-          clearUnclaimedRecovery(false)
-          throw error
-        })
+      if (typeof handedOff === 'boolean') {
+        const handled = clearUnclaimedRecovery(handedOff)
+        recordingHandoffRef.current = {
+          recordingId,
+          sourceURL: recordingHlsUrl,
+          result: Promise.resolve(handled),
+        }
+        return handled
+      }
+      const result = handedOff.then(clearUnclaimedRecovery, (error) => {
+        clearUnclaimedRecovery(false)
+        throw error
+      })
+      recordingHandoffRef.current = { recordingId, sourceURL: recordingHlsUrl, result }
+      return result
     }
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
@@ -1114,6 +1137,7 @@ export function LivePlayer(props: LivePlayerProps) {
           : null
         if (recoveryMatchesRecording) pendingRecordingHLSRecoveryRef.current = null
       }
+      recordingHandoffRef.current = null
       // メディアイベントのリスナと stall タイマーを外す。
       //
       // **実際に効いている防御は `failed()` の `cancelled` チェックの方である。**
