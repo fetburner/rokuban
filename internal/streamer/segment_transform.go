@@ -840,39 +840,27 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 
 func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries map[string][]int64) {
 	highest := task.startNumber
-	// 長さが確定した入力では、音声が apad で映像の終端より先まで無音で進む。入力が途中で切れたとき、
-	// その先行で「先読み済み」と判断して変換を止めてしまわないよう、映像の進みだけを数える。
-	finite := task.input.VideoDurationPTS > 0
-	for rendition, variant := range segmentVariantForRendition {
-		if finite && rendition != "video" {
-			continue
-		}
-		prefix := task.profile.Name + "."
-		if m.cfg.Captions {
-			prefix = ""
-		}
-		pattern := filepath.Join(task.workDir, "segments", prefix+variant+"_seg*.ts*")
-		matches, _ := filepath.Glob(pattern)
-		for _, match := range matches {
-			base := filepath.Base(match)
-			profileName := task.profile.Name
-			if m.cfg.Captions {
-				profileName = ""
-			}
-			number, ok := parseOutputSegmentNumber(base, profileName, variant)
-			if ok && number > highest {
-				highest = number
-			}
+	// 映像の進みだけを数える。音声は映像より先に進む。長さが確定した入力では apad で映像の終端より先まで
+	// 無音で進み、伸びる入力でも負荷が高いと x264 が遅れて音声が先行する。音声の進みで「先読み済み」と
+	// 判断して止めると、要求の番号の映像が公開されないまま止まり、その要求が別の ffmpeg を起動して
+	// 止めた変換を追い出す（TestSegmentTransformCurrentNumberFollowsOnlyTheVideo）。
+	variant := segmentVariantForRendition["video"]
+	prefix := task.profile.Name + "."
+	profileName := task.profile.Name
+	if m.cfg.Captions {
+		prefix = ""
+		profileName = ""
+	}
+	matches, _ := filepath.Glob(filepath.Join(task.workDir, "segments", prefix+variant+"_seg*.ts*"))
+	for _, match := range matches {
+		number, ok := parseOutputSegmentNumber(filepath.Base(match), profileName, variant)
+		if ok && number > highest {
+			highest = number
 		}
 	}
-	for rendition, numbers := range entries {
-		if finite && rendition != "video" {
-			continue
-		}
-		for _, number := range numbers {
-			if number+1 > highest {
-				highest = number + 1
-			}
+	for _, number := range entries["video"] {
+		if number+1 > highest {
+			highest = number + 1
 		}
 	}
 	m.mu.Lock()

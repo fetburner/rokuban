@@ -202,14 +202,15 @@ func TestSegmentTransformTruncatedInputDoesNotPublishSilentAudioWithRealFFmpeg(t
 	}
 }
 
-// 長さが確定した入力では、変換の進み（currentNumber）を映像の進みだけで数える。音声は apad で
-// 映像より先まで無音で進むので、全 rendition で数えると、映像が要求に届く前に先読み済みと判断して
-// 変換を止めてしまう。伸びる入力では apad を足さないので、今までどおり全 rendition を数える。
+// 変換の進み（currentNumber）は、入力の長さによらず映像の進みだけで数える。音声は映像より先に進む
+// （長さが確定した入力では apad の無音で、伸びる入力でも負荷で x264 が遅れて）。全 rendition で数えると、
+// 映像が要求に届く前に先読み済みと判断して変換を止めてしまう。
 // 作業ディレクトリでは、映像は番号 3 まで出し終えて 4 を書いている。音声は 5 まで出し終えて 6 を書いている。
+// 実 ffmpeg で起きた形は TestSegmentTransformCachedRequestResumesPrefetchPausedTransformWithRealFFmpeg が
+// CPU 負荷下で落ちたときのもの（音声 4 まで、映像 3 まで）。
 //
-// 壊し方: updateCurrentNumber の `finite := task.input.VideoDurationPTS > 0` を `false` にする。
-// 壊し方: 同じ式を `true` にする（伸びる入力でも音声の進みを数えない）。
-func TestSegmentTransformCurrentNumberFollowsOnlyTheVideoForKnownLength(t *testing.T) {
+// 壊し方: updateCurrentNumber の `entries["video"]` を全 rendition の走査に戻す（伸びる入力が 6 になる）。
+func TestSegmentTransformCurrentNumberFollowsOnlyTheVideo(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		kind     store.RecordingHLSInputKind
@@ -217,7 +218,7 @@ func TestSegmentTransformCurrentNumberFollowsOnlyTheVideoForKnownLength(t *testi
 		want     int64
 	}{
 		{name: "長さが確定した入力は映像の最後の次", kind: store.RecordingHLSInputOriginal, duration: 20 * mpegTSTimestampClock, want: 4},
-		{name: "伸びる入力は全 rendition の最後の次", kind: store.RecordingHLSInputTemp, duration: 0, want: 6},
+		{name: "伸びる入力も映像の最後の次", kind: store.RecordingHLSInputTemp, duration: 0, want: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager := newBareSegmentManager(t, 1<<20)
