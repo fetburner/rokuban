@@ -135,7 +135,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 	var published bool
 	pending := store.PendingMediaAssetCopy{
 		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: plan.relPath,
-		DerivedGeneration: plan.generation,
+		DerivedGeneration: plan.generation, ReserveNewGeneration: true,
 	}
 	size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, scratchPath, objectContentType(plan.relPath), false,
 		func(operation string) error {
@@ -265,7 +265,17 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		SeekMs:            state.SeekMs,
 		DerivedGeneration: state.ThumbnailGeneration,
 	}
-	generation := state.ThumbnailGeneration + 1
+	generation, found, err := w.Media.GetDerivedMediaAssetGeneration(ctx, state.RecordingID, "thumbnail")
+	if err != nil {
+		return thumbnailWorkPlan{}, false, fmt.Errorf("loading thumbnail generation for replacement: %w", err)
+	}
+	if !found {
+		return thumbnailWorkPlan{}, false, fmt.Errorf("loading thumbnail generation for replacement: media asset is missing")
+	}
+	if generation < state.ThumbnailGeneration {
+		generation = state.ThumbnailGeneration
+	}
+	generation++
 	relPath, generation, err := w.nextUnusedThumbnailRelPath(ctx, state.RecordingID, generation)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("choosing thumbnail replacement path: %w", err)

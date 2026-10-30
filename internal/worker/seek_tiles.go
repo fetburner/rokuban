@@ -190,7 +190,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	var published bool
 	pending := store.PendingMediaAssetCopy{
 		RecordingID: recordingID, Kind: store.AssetKindSeekTiles, RelPath: relPath,
-		DerivedGeneration: generation,
+		DerivedGeneration: generation, ReserveNewGeneration: true,
 	}
 	size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, sheetPath, objectContentType(relPath), false,
 		func(operation string) error {

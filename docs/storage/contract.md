@@ -223,6 +223,8 @@ thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にし
 
 生成後は pending copy を準備し、`Store.Put` で canonical key を一度だけ作る。active な派生行と原本の生存を再確認してから DB transaction を commit する。
 
+thumbnail と seek tiles の次世代は、論理行と削除済みを含む copy 履歴の大きい方から採る。古い key の cleanup が遅れて完了しても、再公開した object を消さないためである。
+
 先行 job がすでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
 
 FS store 内の staging file は予約 prefix 付きで `List` から隠し、mtime 猶予と aging の後に回収する。S3 store の multipart upload は Put の中で完了または abort する。canonical を直接書き換えないため、処理中に配信側が途中の画像を観測しない。
@@ -253,7 +255,7 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
-- 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は `derived_generation` から進める
+- 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は回収済みコピーを含む最大割当済み世代から進める
 - 新しいキーへ `Store.Put` し、1 つの tx で論理サイズ・`derived_generation`・新しい物理コピー行と `media_asset_thumbnail_seeks` を active にする。旧コピー行は保持し、旧キーは overlap 後に削除 reconcile が回収する
 - 公開した worker は旧コピーをその場で削除しない。commit 直後に落ちても、定期の削除 reconcile が旧世代を見つけ、`Store.Delete` と DB の deleting/deleted 状態遷移で削除を再開する
 

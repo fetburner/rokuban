@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,6 +50,43 @@ func (s beforePutObjectStore) Put(ctx context.Context, key string, src io.Reader
 		}
 	}
 	return s.Store.Put(ctx, key, src, size, checksum, contentType)
+}
+
+type afterPutObjectStore struct {
+	objstore.Store
+	afterPut func(context.Context, string) error
+}
+
+func (s afterPutObjectStore) Put(ctx context.Context, key string, src io.Reader, size int64, checksum [32]byte, contentType string) error {
+	if err := s.Store.Put(ctx, key, src, size, checksum, contentType); err != nil {
+		return err
+	}
+	if s.afterPut != nil {
+		return s.afterPut(ctx, key)
+	}
+	return nil
+}
+
+type blockedDeleteObjectStore struct {
+	objstore.Store
+	key     string
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s blockedDeleteObjectStore) Delete(ctx context.Context, key string) error {
+	if key == s.key {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.Store.Delete(ctx, key)
 }
 
 func newObjectEnv(t *testing.T) objectEnv {
@@ -96,7 +134,8 @@ func (e objectEnv) publishThumbnail(
 	scratch := t.TempDir() + "/thumbnail.jpg"
 	writeFile(t, scratch, payload)
 	pending := store.PendingMediaAssetCopy{
-		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key, DerivedGeneration: generation,
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
+		DerivedGeneration: generation, ReserveNewGeneration: true,
 	}
 	_, published, err := publishGeneratedObject(context.Background(), e.objects, e.media, pending, scratch, "image/jpeg", false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
@@ -810,6 +849,133 @@ func TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim(t *testing.
 	}
 	if env.objectExists(t, key) {
 		t.Fatal("main object written after pending reclaim remains without a live copy")
+	}
+}
+
+// A late cleanup delete must not remove a thumbnail generation published after reclaim.
+func TestObjectPublishCleanupDoesNotDeleteNewerThumbnailGeneration(t *testing.T) {
+	env := newObjectEnv(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, env.pool)
+	originalID := dbtest.MediaAsset(t, env.pool, recordingID)
+	oldKey := env.publishThumbnail(t, recordingID, originalID, 0, nil, []byte("generation zero"))
+	current, err := env.media.GetThumbnailMediaAssetForServing(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading current thumbnail: %v", err)
+	}
+	seekMs := int64(1000)
+	expected := &store.ThumbnailObservation{
+		ID: current.ID, RelPath: current.RelPath, SeekMs: &seekMs, DerivedGeneration: 0,
+	}
+
+	keyA := thumbnailRelPath(recordingID, 1)
+	pendingA := store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: keyA,
+		DerivedGeneration: 1, ReserveNewGeneration: true,
+	}
+	scratchA := filepath.Join(t.TempDir(), "thumbnail-a.jpg")
+	writeFile(t, scratchA, []byte("replacement A"))
+	cleanupStarted := make(chan struct{}, 1)
+	releaseCleanup := make(chan struct{})
+	var reclaimed bool
+	var releaseOnce sync.Once
+	releaseDelete := func() { releaseOnce.Do(func() { close(releaseCleanup) }) }
+	defer releaseDelete()
+	objectsA := afterPutObjectStore{
+		Store: blockedDeleteObjectStore{
+			Store: env.objects, key: keyA, started: cleanupStarted, release: releaseCleanup,
+		},
+		afterPut: func(putCtx context.Context, putKey string) error {
+			if putKey != keyA {
+				return nil
+			}
+			var copyID int64
+			if err := env.pool.QueryRow(putCtx,
+				`SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2 AND state = 'pending'`, objectStoreName, keyA,
+			).Scan(&copyID); err != nil {
+				return fmt.Errorf("loading pending replacement before reclaim: %w", err)
+			}
+			var err error
+			reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now().Add(time.Second), func() error {
+				return env.objects.Delete(putCtx, keyA)
+			})
+			return err
+		},
+	}
+	type publishResult struct {
+		published bool
+		err       error
+	}
+	aDone := make(chan publishResult, 1)
+	go func() {
+		_, published, err := publishGeneratedObject(ctx, objectsA, env.media, pendingA, scratchA, "image/jpeg", false, nil,
+			func(size int64, sum [sha256.Size]byte) (bool, error) {
+				return env.media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+					RecordingID: recordingID, RelPath: keyA, SizeBytes: size, SeekMs: 2000,
+					InputAssetID: originalID, InputStore: dbtest.StoreName, DerivedGeneration: 1,
+					Expected: expected, SHA256: sum[:], PendingCopy: true,
+				}, func() error { return nil })
+			})
+		aDone <- publishResult{published: published, err: err}
+	}()
+	select {
+	case <-cleanupStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("replacement A cleanup did not reach its delayed Delete")
+	}
+	if !reclaimed {
+		t.Fatal("replacement A pending copy was not reclaimed after its Put")
+	}
+	if env.objectExists(t, keyA) {
+		t.Fatal("pending reclaim did not remove replacement A before cleanup")
+	}
+
+	maxGeneration, found, err := env.media.GetDerivedMediaAssetGeneration(ctx, recordingID, "thumbnail")
+	if err != nil || !found {
+		t.Fatalf("loading thumbnail generation watermark = (%d, %t, %v), want an existing asset", maxGeneration, found, err)
+	}
+	generation := maxGeneration + 1
+	if generation != 2 {
+		t.Fatalf("next thumbnail generation = %d, want 2 after reclaiming generation 1", generation)
+	}
+	keyB := thumbnailRelPath(recordingID, generation)
+	scratchB := filepath.Join(t.TempDir(), "thumbnail-b.jpg")
+	writeFile(t, scratchB, []byte("replacement B"))
+	_, published, err := publishGeneratedObject(ctx, env.objects, env.media, store.PendingMediaAssetCopy{
+		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: keyB,
+		DerivedGeneration: generation, ReserveNewGeneration: true,
+	}, scratchB, "image/jpeg", false, nil, func(size int64, sum [sha256.Size]byte) (bool, error) {
+		return env.media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+			RecordingID: recordingID, RelPath: keyB, SizeBytes: size, SeekMs: 3000,
+			InputAssetID: originalID, InputStore: dbtest.StoreName, DerivedGeneration: generation,
+			Expected: expected, SHA256: sum[:], PendingCopy: true,
+		}, func() error { return nil })
+	})
+	if err != nil || !published {
+		t.Fatalf("publishing replacement B at generation %d = (%t, %v), want published", generation, published, err)
+	}
+
+	releaseDelete()
+	select {
+	case result := <-aDone:
+		if result.published || !errors.Is(result.err, store.ErrPendingMediaAssetCopyMissing) {
+			t.Fatalf("replacement A publish = (%t, %v), want a reclaimed pending copy", result.published, result.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("replacement A cleanup did not finish after releasing Delete")
+	}
+	if !env.objectExists(t, keyB) {
+		t.Fatal("late cleanup of replacement A removed replacement B's active object")
+	}
+	active, err := env.media.GetThumbnailMediaAssetForServing(ctx, recordingID)
+	if err != nil || active.RelPath != keyB {
+		t.Fatalf("active thumbnail = (%+v, %v), want replacement B at %q", active, err, keyB)
+	}
+	if got := env.copyState(t, keyB); got != "active" {
+		t.Fatalf("replacement B copy state = %q, want active", got)
+	}
+	if !env.objectExists(t, oldKey) {
+		t.Fatal("expected original generation zero object to remain available")
 	}
 }
 
