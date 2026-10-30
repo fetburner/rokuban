@@ -13,7 +13,7 @@
       "heading": "採用スタック",
       "question": "フロントの採用スタックは何か。",
       "points": [
-        "Vite + React + TypeScript を中心に、TanStack・orval・Tailwind + shadcn/ui を重ねる",
+        "動画は video 要素で表示し、すべての HLS は hls.js で再生する。フォントは英数字と和文の 2 書体",
         "動画再生はネイティブ video と hls.js、フォントは英数字と和文の 2 書体"
       ]
     },

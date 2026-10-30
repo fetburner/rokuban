@@ -12,18 +12,13 @@ E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
 
 `/live` のページ URL は他画面と同じ `?service=<Service.id>`（合成 id）である。スクリプトは起動時に `GET /api/sites/{site}/services` から対応する `Service.id` を引く（`resolveServiceId`）--- 合成規則をスクリプト側に複製しない。セグメント/ プレイリスト/離脱ヒントの URL には従来どおり SI の `serviceId` がそのまま載る（issue #217。streamer 側の資源同定は変えていない）。
 
-したがって env の投入例（DB の `network_id` / `service_id` 列）も変わらない。`GET /api/capabilities` も `page.route` で `{live: true}` に差し替えるので、サーバー側の `live.enabled` は false（既定）のままでよい。差し替えないと画面が「無効です」になって①〜⑦が全滅する（issue #209）。①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の直後に `clickPlay` でボタンを押す手順が入っている（issue #234 M7-1。下記⓪参照）。
+したがって env の投入例（DB の `network_id` / `service_id` 列）も変わらない。`GET /api/capabilities` も `page.route` で `{live: true}` に差し替えるので、サーバー側の `live.enabled` は false（既定）のままでよい。差し替えないと画面が「無効です」になって①〜⑥が全滅する（issue #209）。①〜⑥は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の直後に `clickPlay` でボタンを押す手順が入っている（issue #234 M7-1。下記⓪参照）。
 
 **⓪ 選択と視聴開始の分離（issue #234 M7-1）は ffmpeg フィクスチャに依存せず、bundled Chromium だけで常に測れる**。チャンネルを開いた直後にプレイリスト/ セグメント要求が飛ばないこと、「再生」ボタンを押した後に初めて飛ぶことを `page.route` の要求ログで観測する。「タップだけでは要求が飛ばない」ことは jsdom では判定できないため、ここが唯一の判定手段になる。たとえば `fetch` を丸ごとモックする Vitest のテストは mock 自体を呼ぶかどうかしか見られず、`<video src>` への直接代入のように `fetch` を経由しない実ブラウザの資源取得は原理的に検出できない。
 
 この判定を足す前の実装（チャンネルをタップした瞬間に probe する版）で実際に落ちることを確認済み（詳細は issue #234 の実装 PR #259 の変異リスト）。
 
-**この判定手段（①〜⑦）が実際に本番相当の回帰を 2 件発見した。**
-
-1. `supportsNativeHls` が実 Chrome の `canPlayType` の戻り値 `'maybe'` を誤ってネイティブ対応と判定し、Chrome がサイレントに再生できなくなる
-2. **その修正（`'probably'` のみを対応と見なす）がどの実ブラウザでも false になり、Safari までが hls.js 経路に落ちる**。この回帰は①〜⑤（Chromium 系だけ）では検出できず、**e2e 緑のまま通った**。つまり「実ブラウザで測っている」ことは「問題が出る側のブラウザで測っている」ことを意味しない。⑥（WebKit）を足して初めて機械判定できるようになった
-
-詳細は [docs/runbook/live.md](../../../docs/runbook/live.md)（実機確認の判定項目と回帰の記録）。
+HLS の再生方式は `Hls.isSupported()` で判定する。`canPlayType()` が HLS MIME に `maybe` を返しても m3u8 URL を video 要素へ渡さない。WebKit の判定も hls.js / MSE の再生経路を通す。
 
 **⑨〜⑪ は画質まわりである**（画質の切替が #869、停滞時の自動降格が #871）。⑨ は一覧が遅れて届いてもプレイリストを取り直さないことを見る。切替で `<video>` を作り直さないこと（音量とミュートが保たれること）も見る。切替で離脱ヒントを送らないことも見る。⑩ は切替を跨いで字幕の表示状態が保たれることを見る。⑪ は実再生させてから配信を止め、**1 段下がり、復旧後にそのまま再生が続く**ことを両方向で見る（復旧は配信側が実際にセグメントを配ったことでも確かめる）。
 

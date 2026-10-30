@@ -5,7 +5,6 @@ import { playbackStrategy } from '@/lib/playback-mode'
 import {
   chaseLeaveURL,
   chasePlaylistURL,
-  claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
   formatLiveDiagnostics,
@@ -16,7 +15,6 @@ import {
   createStallTracker,
   nextLowerProfile,
   nextProgressWatch,
-  nextRecordingHlsRecovery,
   observeStall,
   originalVODLeaveURL,
   originalVODPlaylistURL,
@@ -34,7 +32,6 @@ import {
   nextProgramRefreshMs,
   sendPlaybackLeaveHint,
   stalledForMs,
-  supportsNativeHls,
   validLiveAudio,
   validLiveProfile,
 } from '@/lib/live'
@@ -157,34 +154,6 @@ describe('originalVODSessionOriginSeconds', () => {
   })
 })
 
-/**
- * measuredCanPlayType は Playwright の各エンジンで**実測した** `canPlayType` の
- * 戻り値（`web/e2e/live.mjs` の⑥が実ブラウザ上で同じ値を突き合わせ続ける）。
- *
- * **実ブラウザが実際に返す値だけでテストする。** レビュー #190 の 1 回目の修正は
- * `canPlayType('application/vnd.apple.mpegurl') === 'probably'` を要求していたが、
- * codecs 無しでこの値を返す実ブラウザは 1 つも無い（3 エンジンとも `'maybe'`）ので、
- * 「`'probably'` なら true」というテストは**どのブラウザでも起こらない入力**に
- * ついての主張であり、ネイティブ分岐が全ブラウザで到達不能になったことを
- * 通してしまった。ここでは表そのものを入力にする。
- */
-const measuredCanPlayType: Record<string, Record<string, string>> = {
-  // WebKit 605.1.15（UA は Version/26.5 Safari/605.1.15）
-  webkit: { 'application/vnd.apple.mpegurl': 'maybe', 'video/mp2t': 'maybe' },
-  // Playwright 同梱 Chromium 151
-  chromium: { 'application/vnd.apple.mpegurl': 'maybe', 'video/mp2t': '' },
-  // channel: 'chrome' の実 Google Chrome 151
-  chrome: { 'application/vnd.apple.mpegurl': 'maybe', 'video/mp2t': '' },
-  // Firefox 153
-  firefox: { 'application/vnd.apple.mpegurl': '', 'video/mp2t': '' },
-  // jsdom（`HTMLMediaElement.canPlayType` 未実装。常に空文字）
-  jsdom: {},
-}
-
-function canPlayTypeOf(engine: string): (type: string) => string {
-  return (type) => measuredCanPlayType[engine]?.[type] ?? ''
-}
-
 describe('liveLeaveURL', () => {
   it('プレイリストと同じ (site, networkId, serviceId) の固定深さで、セッション ID を持たない', () => {
     // 期待値はリテラル（実装の式と比較すると何も主張しない）。
@@ -242,39 +211,6 @@ describe('sendPlaybackLeaveHint', () => {
     expect(() => sendPlaybackLeaveHint('/api/sites/default/networks/1/services/2/live/leave')).not.toThrow()
     // 未処理の rejection にもしない（catch が付いていること）
     await new Promise((resolve) => setTimeout(resolve, 0))
-  })
-})
-
-describe('supportsNativeHls', () => {
-  it('WebKit だけが true（セグメントの video/mp2t を demux できるのは WebKit だけ）', () => {
-    expect(supportsNativeHls(canPlayTypeOf('webkit'))).toBe(true)
-  })
-
-  it.each(['chromium', 'chrome', 'firefox', 'jsdom'])(
-    '%s は false（true にすると video.src に m3u8 を直接渡され、沈黙して再生できない）',
-    (engine) => {
-      expect(supportsNativeHls(canPlayTypeOf(engine))).toBe(false)
-    },
-  )
-
-  it('プレイリストの MIME だけでは Chrome と区別できない（実測値。判定に使わない根拠）', () => {
-    const playlistOnly = (engine: string) =>
-      canPlayTypeOf(engine)('application/vnd.apple.mpegurl')
-    expect(playlistOnly('webkit')).toBe(playlistOnly('chrome'))
-    expect(playlistOnly('webkit')).toBe(playlistOnly('chromium'))
-  })
-})
-
-describe('claimsHlsPlaylistSupport', () => {
-  it.each(['webkit', 'chromium', 'chrome'])(
-    '%s は true（この弱い問いだけでネイティブ分岐を選んではならない）',
-    (engine) => {
-      expect(claimsHlsPlaylistSupport(canPlayTypeOf(engine))).toBe(true)
-    },
-  )
-
-  it.each(['firefox', 'jsdom'])('%s は false', (engine) => {
-    expect(claimsHlsPlaylistSupport(canPlayTypeOf(engine))).toBe(false)
   })
 })
 
@@ -622,13 +558,13 @@ describe('probeLivePlaylist', () => {
 
 describe('formatLiveDiagnostics', () => {
   it('hls 経路は「放送から」と「先読み」の両方を出す', () => {
-    expect(formatLiveDiagnostics({ source: 'hls', latencySec: 3, bufferSec: 5 })).toBe(
+    expect(formatLiveDiagnostics({ latencySec: 3, bufferSec: 5 })).toBe(
       '放送から約3秒 / 先読み5秒',
     )
   })
 
   it('null は欠損表示（—）', () => {
-    expect(formatLiveDiagnostics({ source: 'hls', latencySec: null, bufferSec: null })).toBe(
+    expect(formatLiveDiagnostics({ latencySec: null, bufferSec: null })).toBe(
       '放送から— / 先読み—',
     )
   })
@@ -638,30 +574,18 @@ describe('formatLiveDiagnostics', () => {
   // （readHlsDiagnostics）の正規化をすり抜けた場合の保険として NaN も欠損に
   // 丸める --- 画面に「NaN」という文字列を出さないための直接の保証
   it('NaN も欠損として扱う（NaN を描かない）', () => {
-    const label = formatLiveDiagnostics({ source: 'hls', latencySec: NaN, bufferSec: NaN })
+    const label = formatLiveDiagnostics({ latencySec: NaN, bufferSec: NaN })
     expect(label).toBe('放送から— / 先読み—')
     expect(label).not.toMatch(/\bNaN\b/)
   })
 
   it('数値は四捨五入する', () => {
-    expect(formatLiveDiagnostics({ source: 'hls', latencySec: 3.4, bufferSec: 5.6 })).toBe(
+    expect(formatLiveDiagnostics({ latencySec: 3.4, bufferSec: 5.6 })).toBe(
       '放送から約3秒 / 先読み6秒',
     )
   })
 
-  // ネイティブ HLS はライブ同期点を持たないので latency を取得できない
-  // （測れないものを出さない。issue #476 の含むもの 2）
-  it('native 経路は「先読み」だけを出す（「放送から」自体を出さない）', () => {
-    const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: 5 })
-    expect(label).toBe('先読み5秒')
-    expect(label).not.toContain('放送から')
-  })
 
-  it('欠損 + native でも NaN を描かない', () => {
-    const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: null })
-    expect(label).toBe('先読み—')
-    expect(label).not.toMatch(/\bNaN\b/)
-  })
 })
 
 describe('live auto downgrade', () => {
@@ -801,33 +725,5 @@ describe('validLiveAudio / liveAudioTrackIndex（issue #870）', () => {
     expect(liveAudioTrackIndex(undefined)).toBe(0)
     expect(liveAudioTrackIndex('main')).toBe(1)
     expect(liveAudioTrackIndex('sub')).toBe(2)
-  })
-})
-
-describe('nextRecordingHlsRecovery', () => {
-  const at = (atSeconds: number, elapsedMs = 5000, userPaused = false) => ({ elapsedMs, atSeconds, userPaused })
-
-  it('4999 ms では立て直さず、5000 ms で立て直す', () => {
-    expect(nextRecordingHlsRecovery(null, at(52, 4999)).recover).toBe(false)
-    expect(nextRecordingHlsRecovery(null, at(52, 5000))).toEqual({ recover: true, next: { count: 1, atSeconds: 52 } })
-  })
-
-  it('同じ位置（±0.5 秒）では 2 回まで立て直し、3 回目は立て直さない', () => {
-    const first = nextRecordingHlsRecovery(null, at(52))
-    const second = nextRecordingHlsRecovery(first.next, at(52.5))
-    expect(second).toEqual({ recover: true, next: { count: 2, atSeconds: 52 } })
-    expect(nextRecordingHlsRecovery(second.next, at(52)).recover).toBe(false)
-    expect(nextRecordingHlsRecovery(second.next, at(51.5)).recover).toBe(false)
-  })
-
-  it('0.6 秒以上違う位置では 1 に戻って立て直す（上限に達した後でも）', () => {
-    const exhausted = { count: 2, atSeconds: 52 }
-    expect(nextRecordingHlsRecovery(exhausted, at(52.6))).toEqual({ recover: true, next: { count: 1, atSeconds: 52.6 } })
-    expect(nextRecordingHlsRecovery({ count: 1, atSeconds: 52 }, at(0))).toEqual({ recover: true, next: { count: 1, atSeconds: 0 } })
-  })
-
-  it('利用者の一時停止の意図があれば立て直さず、回数も変えない', () => {
-    const prev = { count: 1, atSeconds: 52 }
-    expect(nextRecordingHlsRecovery(prev, at(52, 5000, true))).toEqual({ recover: false, next: prev })
   })
 })

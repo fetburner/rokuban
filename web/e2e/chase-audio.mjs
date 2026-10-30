@@ -3,7 +3,7 @@
 // Chromium は WebAudio で標準 / 主 / 副の左右周波数を測る。各トラックを 15 秒
 // 聴いてから戻り、EVENT playlist に PDT が無くても再生が止まらないことを見る。
 // さらに同じ rendition 形式での範囲内 seek、offset セッションへの張り直し、保存位置
-// からの開始を測る。WebKit は native HLS の audioTracks と再生継続を測る。
+// からの開始を測る。Playwright WebKit は同じ hls.js 音声切替を診断する。
 // streamer がこの形を出すことは TestBuildChaseFFmpegArgs_RealFFmpegAudioRenditions
 // で実 ffmpeg を使って固定する。
 //
@@ -250,57 +250,6 @@ async function checkChromiumAudio(page, masterRequests) {
   }
 }
 
-async function checkWebKitAudio(page, masterRequests) {
-  log('\n=== WebKit: native HLS の audioTracks を切り替えて再生が続く ===')
-  await page.locator('video').waitFor({ timeout: 20_000 })
-  await page.locator('video').evaluate(async (video) => {
-    const wasMuted = video.muted
-    if (video.paused) video.muted = true
-    await video.play()
-    if (!wasMuted) video.muted = false
-  })
-  const tracks = await waitForProbe(async () => {
-    const count = await page.locator('video').evaluate((video) => video.audioTracks?.length ?? 0)
-    return count === 3 ? count : null
-  }, 20_000)
-  if (tracks === null) {
-    ng.push('追っかけ native HLS の video.audioTracks が 3 本にならない')
-    return
-  }
-
-  const before = masterRequests.length
-  for (const [choice, index, label] of [
-    ['main', 1, '主音声'],
-    ['sub', 2, '副音声'],
-    [undefined, 0, '標準'],
-    ['main', 1, '主音声へ戻る'],
-  ]) {
-    const start = await page.locator('video').evaluate((video) => video.currentTime)
-    const switchStartedAt = Date.now()
-    await selectChaseAudio(page, choice)
-    const enabled = await waitForProbe(async () => {
-      const state = await page.locator('video').evaluate((video) =>
-        Array.from(video.audioTracks).map((track) => track.enabled),
-      )
-      return JSON.stringify(state) === JSON.stringify([0, 1, 2].map((n) => n === index)) ? state : null
-    }, 10_000)
-    const switchedTo = await page.locator('video').evaluate((video) => video.currentTime)
-    const switchElapsedSeconds = (Date.now() - switchStartedAt) / 1000
-    if (enabled !== null && Math.abs(switchedTo - (start + switchElapsedSeconds)) > 5) {
-      ng.push(`追っかけ ${label}: 音声切替で再生位置が連続しない（${start.toFixed(1)}→${switchedTo.toFixed(1)} 秒、切替 ${switchElapsedSeconds.toFixed(1)} 秒）`)
-    }
-    await page.waitForTimeout(DWELL_MS)
-    const currentTime = await page.locator('video').evaluate((video) => video.currentTime)
-    if (enabled === null) {
-      ng.push(`追っかけ ${label}: native audioTracks の選択が反映されない`)
-    } else if (currentTime - start < DWELL_MS / 2000) {
-      ng.push(`追っかけ ${label}: 選択後に再生が止まる（${start}→${currentTime} 秒）`)
-    } else {
-      log(`  OK: ${label} → audioTracks=${JSON.stringify(enabled)}、${DWELL_MS}ms 再生を維持`)
-    }
-  }
-  if (masterRequests.length !== before) ng.push('追っかけ音声の切替で master playlist を取り直した')
-}
 
 async function seekTo(page, seconds) {
   const slider = page.getByTestId('seek-scrub')
@@ -430,9 +379,8 @@ await page.route((url) => /\/chase(?:\/offset\/\d+)?\/hd\.[0-3]\.m3u8$/.test(url
   const renditionIndex = Number(renditionMatch?.[1])
   const source = renditions[renditionIndex]
   const entries = offset === undefined ? source.entries : source.entries.slice(Math.floor(offset / 2))
-  // Native HLS starts near the EVENT edge. Grow this window with playback, then stop at
-  // 158 seconds so WebKit can finish the 4 × 15 second checks while the 160 second seek
-  // still has to create an offset session.
+  // Grow the EVENT window during the 4 × 15 second WebKit audio checks, then stop at
+  // 158 seconds so the 160 second seek still has to create an offset session.
   const baseCount = BASE_PLAYLIST_INITIAL_SEGMENTS + Math.floor((Date.now() - baseStartedAt) / 1000)
   const count = offset === undefined ? Math.min(entries.length, BASE_PLAYLIST_MAX_SEGMENTS, baseCount) : entries.length
   const body = renderEventPlaylist(source, entries, count)
@@ -461,7 +409,7 @@ try {
   }, undefined, { timeout: 30_000 })
 
   if (engine === 'chromium') await checkChromiumAudio(page, masterRequests)
-  else if (engine === 'webkit') await checkWebKitAudio(page, masterRequests)
+  else if (engine === 'webkit') await checkChromiumAudio(page, masterRequests)
   else ng.push(`未対応のブラウザ: ${engine}`)
 
   log('\n=== 音声 rendition 形式でのセッション内 seek ===')
@@ -512,19 +460,8 @@ try {
       const video = document.querySelector('video')
       return video !== null && video.readyState >= 1 && video.videoWidth > 0
     }, undefined, { timeout: 30_000 }).catch(() => ng.push('保存位置の offset rendition が読み込まれない'))
-    if (engine === 'chromium') {
-      await startPlaybackWithAnalyser(page, [880, 880])
-      log('  OK: 保存位置 145s から始まり、副音声が選ばれる')
-    } else {
-      const tracks = await waitForProbe(async () => {
-        const state = await page.locator('video').evaluate((video) =>
-          Array.from(video.audioTracks ?? []).map((track) => track.enabled),
-        )
-        return JSON.stringify(state) === '[false,false,true]' ? state : null
-      }, 15_000)
-      if (tracks === null) ng.push('保存位置開始時に WebKit が副音声を選択しない')
-      else log('  OK: 保存位置 145s から始まり、副音声の track が選ばれる')
-    }
+    await startPlaybackWithAnalyser(page, [880, 880])
+    log('  OK: 保存位置 145s から始まり、副音声が再生される')
   }
 } catch (err) {
   ng.push(`追っかけ音声 e2e の実行中に失敗: ${err}`)

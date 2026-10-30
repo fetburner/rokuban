@@ -17,9 +17,8 @@
 //   ① Chromium（hls.js）: 主 → 副 → 標準 → 主 と選び、WebAudio で左右の周波数が
 //      期待値（主 440/440・副 880/880・標準 440/880）に届くこと、再生が止まらない
 //      こと、プレイリストを取り直さないこと（切替はトラックの選択だけ）
-//   ② WebKit（ネイティブ HLS）: 副を選ぶと video.audioTracks の 3 本目が有効になり、
-//      副のレンディションを取りに行くこと。WebKit はネイティブ HLS の音を WebAudio に
-//      流さないので、鳴っている音そのものは測れない
+//   ② Playwright WebKit（hls.js）: 副を選んだ後、hls.js が副の音声セグメントを
+//      取りに行くこと。Playwright WebKit の WebAudio 出力解析は判定に使わない
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -131,39 +130,38 @@ try {
     await browser.close()
   }
 
-  log('\n=== ② WebKit（ネイティブ HLS）: 副を選ぶと 3 本目のトラックが有効になり、副を取りに行く ===')
+  log('\n=== ② Playwright WebKit（hls.js）: 副音声レンディションを要求する ===')
   {
     let browser
     try {
       browser = await launchBrowser('webkit')
     } catch (err) {
-      skipped.push(`② WebKit を起動できない（pnpm exec playwright install webkit）: ${err}`)
+      skipped.push(`② Playwright WebKit を起動できない（pnpm exec playwright install webkit）: ${err}`)
     }
     if (browser) {
       const page = await openLivePage(browser)
-      // 副のレンディションは var_stream_map の 4 本目（v:0 / 標準 / 主 / 副）
-      const subFetches = countRequests(page, new RegExp(`/live/${PROFILE}\\.3\\.m3u8`))
+      const segmentRequests = []
+      page.on('request', (request) => {
+        const pathname = new URL(request.url()).pathname
+        if (pathname.includes('/segments/')) segmentRequests.push(pathname)
+      })
       await page.getByRole('button', { name: /再生/ }).click()
       await waitForVisibleVideo(page)
-      await page.evaluate(() => document.querySelector('video').play().catch(() => {}))
-      const tracks = await waitForNativeTracks(page, 15_000)
-      if (tracks === null) {
-        ng.push('② video.audioTracks が 3 本にならない（ネイティブ経路が代替音声を読んでいない）')
+      await page.waitForFunction(() => (document.querySelector('video')?.currentTime ?? 0) > 0, undefined, { timeout: 15_000 })
+      await selectLiveAudio(page, 'sub')
+      const requested = await page
+        .waitForRequest(
+          (request) => /\/segments\/hd\.3_seg\d+\.ts$/.test(new URL(request.url()).pathname),
+          { timeout: 12_000 },
+        )
+        .catch((error) => ({ error }))
+      if ('error' in requested) {
+        ng.push(
+          `② 副音声を選んで 12 秒以内に副音声セグメントを要求しない: ${requested.error} ` +
+            `(observed: ${JSON.stringify(segmentRequests.slice(-8))})`,
+        )
       } else {
-        await selectLiveAudio(page, 'sub')
-        let lastEnabled = []
-        const enabled = await waitFor(async () => {
-          lastEnabled = await page.evaluate(() =>
-            Array.from(document.querySelector('video').audioTracks).map((t) => t.enabled),
-          )
-          return JSON.stringify(lastEnabled) === JSON.stringify([false, false, true]) ? lastEnabled : null
-        }, 10_000)
-        const fetched = await waitFor(async () => (subFetches.count > 0 ? subFetches.count : null), 10_000)
-        if (enabled === null) {
-          ng.push(`② 副を選んでも audioTracks の 3 本目だけが有効にならない（10 秒後 ${JSON.stringify(lastEnabled)}）`)
-        }
-        else if (fetched === null) ng.push(`② 副を選んでも ${PROFILE}.3.m3u8 を取りに行かない`)
-        else log(`  OK: audioTracks.enabled = [false,false,true]、${PROFILE}.3.m3u8 を ${fetched} 回取得`)
+        log(`  OK: 副音声を選ぶと hls.js が副音声セグメントを要求する（${new URL(requested.url()).pathname}）`)
       }
       await browser.close()
     }
@@ -288,26 +286,13 @@ async function waitForChannels(page, wantL, wantR, timeoutMs) {
   return { ok: false, last, startTime: first.t, stalled: last.t - first.t < timeoutMs / 2000 }
 }
 
-async function waitForNativeTracks(page, timeoutMs) {
-  return waitFor(async () => {
-    const n = await page.evaluate(() => document.querySelector('video').audioTracks?.length ?? 0)
-    return n === 3 ? n : null
-  }, timeoutMs)
-}
-
-async function waitFor(probe, timeoutMs) {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const v = await probe()
-    if (v !== null) return v
-    await new Promise((r) => setTimeout(r, 200))
-  }
-  return null
-}
-
 async function waitForFile(file, timeoutMs) {
-  const ok = await waitFor(async () => (existsSync(file) ? true : null), timeoutMs)
-  if (ok === null) throw new Error(`${file} が ${timeoutMs} ms 以内に現れない（ffmpeg の出力を確認する）`)
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    if (existsSync(file)) return
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  if (!existsSync(file)) throw new Error(`${file} が ${timeoutMs} ms 以内に現れない（ffmpeg の出力を確認する）`)
 }
 
 // ensureStereoInput は L = 440Hz / R = 880Hz のステレオ AAC + 映像の TS を作る（キャッシュ）。

@@ -105,7 +105,7 @@ jsdom はレイアウトも実再生も測れないので、判定を fetch の�
 
 1 層目は、fetch をモックして、probe の成否・エラー分類ごとの表示・再読み込み・チャンネル切替時の再実行・in-flight の fetch の中断を確認する。中断時は `AbortController.abort()` が呼ばれることも見る。
 
-2 層目は、hls.js をフェイクに差し替え、ネイティブ HLS 非対応の環境で通る hls.js 経路の呼び出しを見る。動的 import 後の `loadSource` / `attachMedia`、fatal エラー後の `destroy`、切替や破棄で古いインスタンスの `destroy` を確認する。この層が無いと、Chrome / Firefox が実際に使う経路は単体テストで一度も検証されない。層を足す前は、ネイティブ判定を常に true にしても後始末を削除してもテストが通った。現在はどちらの変異も待機のタイムアウトで落ちる。
+2 層目は、hls.js をフェイクに差し替え、`canPlayType` が HLS を再生可能と返しても hls.js 経路を選ぶこと、`Hls.isSupported()` が偽なら非対応案内を出すことを見る。動的 import 後の `loadSource` / `attachMedia`、fatal エラー後の `destroy`、切替や破棄で古いインスタンスの `destroy` も確認する。これらの変異は `waitFor` のタイムアウトや案内表示の不一致で落ちる。
 
 3 層目は、URL 組み立て・エラー分類・初期チャンネル選択・時間窓・probe の中断伝播を純関数として確認する。
 
@@ -114,8 +114,8 @@ jsdom はレイアウトも実再生も測れないので、判定を fetch の�
 <details><summary>根拠</summary>
 
 - fetch の probe・エラー・再読み込み・切替・中断: `components/live-player.test.tsx`
-- hls.js 経路の配線: `components/live-player.test.tsx`、`vi.mock('hls.js', ...)`、`supportsNativeHls`
-- 変異検出: `supportsNativeHls` を `true` に固定する、cleanup を削除する、の両方が `waitFor` で落ちる
+- hls.js 経路の配線と選択: `components/live-player.test.tsx`、`vi.mock('hls.js', ...)`、`canPlayType` が `maybe` を返す判定
+- 非対応案内と cleanup: `Hls.isSupported()` を偽にする、cleanup を削除する変異で確認する
 - 純関数の URL・分類・初期選択・時間窓・中断伝播: `lib/live.test.ts`、`probeLivePlaylist`
 - 切替後に旧サービスへ出ないセグメント要求: `serviceId`
 - 実ブラウザ + 実バイナリの画質切替と旧 service の要求ログ: `web/e2e/live.mjs` ⑨、`web/e2e/live.mjs`、[verification.md](verification.md)「実機確認について」

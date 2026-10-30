@@ -1280,7 +1280,7 @@ async function runRecordingApiHlsCheck() {
     }))
     log(`  中間シーク frame ${marker.frame}: x=${x} 目標=${seconds.toFixed(4)}s / currentTime=${observed.currentTime.toFixed(4)}s / 表示=${observed.slot} (期待 ${marker.markerSlot})`)
     if (!landed) {
-      // 診断: 同じ位置へ再 seek して表示が直るか（WebKit の native HLS の既知の問題と同じ現象かの見分け）。
+      // 診断: 同じ位置へ再 seek して表示が直るかを確認する。
       const again = await page.locator('video').evaluate(async (video) => {
         const t = video.currentTime
         video.pause()
@@ -1861,7 +1861,7 @@ if (mp4Ready) {
   const mp4Observed = await captureExpectedMarkers(mp4Page, 0, markerTimes, '非カット MP4')
   compareMarkers('非カット MP4', mp4Observed, markerTimes, 0)
   // playback mediaTime の全判定を終えてから、UI 経由のシークを別の周回で行う。
-  // WebKit の native HLS では、このシークを再生判定の間に挟むと後続が timeout した。
+  // 追加のシークは再生判定が終わった後に行い、後続の待機条件に影響させない。
   await seekThroughChapterCards(mp4Page)
   await alignBoundariesToPausedFrames(mp4Page)
 } else {

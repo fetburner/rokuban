@@ -114,6 +114,8 @@ active な encoded がある完了録画は、MP4 の progressive 再生と Rang
 
 encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を、controls の無い `<video>` の src に渡す。映像の下端には自前の再生操作バーを重ねる。encoded MP4 の経路では HLS / hls.js を使わない。原本だけが残る完了録画は、streamer の一時 HLS 経路（`/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8`）で再生する。原本自体は MPEG-2 TS のまま読み、変換したファイルは保存しない。原本 HLS の詳細は [api/media.md](../../api/media.md)「録画原本のブラウザ再生」にある。
 
+追っかけ・原本 HLS・世代付き録画 HLS はすべて hls.js で再生する。ブラウザの `canPlayType()` が示すネイティブ HLS 対応では経路を分けない。
+
 `hlsPlayback` がある録画の追っかけと原本 HLS は、API が返す master URL をそのまま HLS の入力にし、録画中から commit 後まで同じ URL で再生を続ける。`hlsPlayback` が空の録画だけ上記の従来経路を使う。URL の置き場の名前（store）と世代はサーバーしか知らないので、フロントは URL を組み立てない。
 
 ### 世代付き録画 HLS の時間軸と復旧
@@ -124,7 +126,7 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 
 録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。録画の終了後は、commit 前も含めて、`startedAt` から `endedAt` までの時間を使い、取れなければ予定尺を使う。
 
-hls.js の経路は、現在の世代の HLS 応答が 410 になったことを直接見て、詳細 API を取り直す。ネイティブ HLS の経路は、再生中に `currentTime` が `liveStallTimeoutMs` のあいだ進まなければ止まったとみなし、詳細 API を取り直す。Playwright WebKit は再生中の 410 を `error` にせず、バッファの終わりで `waiting` の直後に進まない `playing` を出して、その後は何も出さない。そのため `stalled` / `waiting` で張るタイマーだけでは止まりに気付かない。止まりは計器と同じ 1 秒の刻みで見て、別のタイマーは作らない。
+世代付き録画 HLS の応答が 410 になったら、詳細 API を取り直して最新世代へ移る。停滞の自動降格はライブだけに適用し、録画 HLS の世代更新は HTTP 410 で判定する。
 
 どちらの経路でも、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。
 
@@ -135,12 +137,12 @@ hls.js の経路は、現在の世代の HLS 応答が 410 になったことを
 - 再生元の選択: `recording-playback-source.test.ts`
 - 410 後の位置保持: `recording-detail.test.tsx`
 - 世代を替える間の空の `hlsPlayback`（プレイヤーを外さない、追っかけへ逸れない、エラー表示の後も次の世代で続ける、失敗・キャンセル・ごみ箱では出さない）: `recording-detail.test.tsx` の「世代の切り替え中」
-- ネイティブ経路の 1 秒刻みの停止検知と、その範囲が世代付き録画 HLS だけであること: `live-player.test.tsx` の「世代付き録画 HLS のネイティブ経路の停止検知」
+- 世代付き録画 HLS の 410 による再取得: `live-player.test.tsx` の「世代付き録画 HLS」
 - アプリの `seekTarget` による playlist 末尾への丸め: `playback-mode.test.ts`
 - 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
 - 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸: `recording-playback-timeline.mjs`
 - v1 → 空 → v2 の切り替えで、止まる直前の位置（±1 秒）から続けること: `recording-playback-timeline.mjs` の「世代の切り替え」
-- 上の 2 つの判定は Chrome と Playwright WebKit（`E2E_BROWSER=webkit`）で通る。Safari 実機は未測定。WebKit では 410 の後もバッファの終わりまで再生し、そこから 1 秒刻みの検知が拾う
+- 録画 HLS の世代切替は、Chrome と Playwright WebKit（`E2E_BROWSER=webkit`）の hls.js 経路で判定する。Safari / iPhone は確認対象にしない
 
 </details>
 
@@ -194,27 +196,6 @@ DB の実尺に基づくシークバーでは、末尾付近の offset が映像
 
 </details>
 
-### 原本 HLS の開始位置の再表明
-
-開始位置は、offset 0 や続きから位置が無い場合も明示し、再生可能になった時点でもう一度設定する。WebKit の native HLS は、明示しないと ENDLIST の無い playlist のライブ端近くから始めるためである。
-
-canplay 後に再生すると、受け付けた位置もライブ端へ動く。これは自動再開、操作バーの ▶、映像クリック、一時停止中の範囲外 seek 後の ▶ で起きる。再生開始の経路ごとに分けず、セッションを張った後の最初の playing でもう一度明示する。利用者がシークしたら再表明を解除する。再生中に張り直したときは再生を続ける。
-
-手動 ▶ の経路では初回 play() の拒否を模擬し、テストから位置を戻さず測る。fixture は 6 segment の EVENT playlist から始まり、待機中は 1 秒ごとに 1 segment 伸びる。測定は Playwright WebKit 26.5 の `currentTime` で、押下前は 0 / 1 / 3 秒待った。
-
-| 操作 | 再表明あり | 再表明なし |
-|---|---:|---:|
-| 押下 1 秒後（待ち 0 / 1 / 3 秒） | 0.64 / 0.73 / 0.65 秒 | 3.64 / 3.75 / 3.65 秒 |
-| 映像クリックの 1.5 秒後 | 1.26 秒 | 4.30 秒 |
-| 一時停止中に範囲外 seek 後、offset 31 から ▶ | 1.68 秒 | 17.15 秒でライブ端へ飛ぶ |
-
-<details><summary>根拠</summary>
-
-- ライブ端への丸めに対する再表明: `web/e2e/recording-original-vod.mjs` ⑤-a・⑤-d・⑤-manual・⑤-route
-- 原本 HLS の再開位置と ENDLIST のない先端の確認: `web/e2e/recording-original-vod.mjs`
-
-</details>
-
 ### 続きから再生の開始
 
 続きから再生は「始まる前のシーク」として扱い、保存位置を秒に切り下げた offset のセッションで始める。1 秒未満の端数は開始位置に渡す。
@@ -235,7 +216,7 @@ offset 0 のまま保存位置を渡すと、位置が変換済みの端より�
 
 終端の 90% 到達で視聴済みにするのは、変換が終わって終端が確定した後だけである。
 
-信号は、hls.js では level details が `live === false` になることと `ended` イベントである。ネイティブ HLS は ENDLIST を直接見られず、`ended` だけを信号にする。
+信号は、hls.js の level details が `live === false` になることと `ended` イベントである。
 
 <details><summary>根拠</summary>
 
@@ -317,13 +298,13 @@ live.enabled が無効でブラウザ再生できる encoded も無い場合は�
 
 全画面は、映像と操作バーを含む枠を持つ再生グループの要素に要求する（理由は [detail.md](detail.md) §次のエピソードとシリーズ）。ページの全画面キーも同じ経路を通る。
 
-ページの全画面キーは `F` である。要素全画面を持たない iPhone Safari では `video.webkitEnterFullscreen()` に落ちる。その場合は Safari のネイティブ全画面 UI となり、タイルプレビューは出ない。iPhone Safari 実機での再生・全画面確認は未実施であり、Playwright WebKit の結果を実機確認の代わりにしない。未解決: 実機確認は別の issue で追跡する。
+ページの全画面キーは `F` である。要素全画面を持たない iPhone Safari では `video.webkitEnterFullscreen()` に落ちる。その場合は Safari の全画面 UI となり、タイルプレビューは出ない。
 
 ### 字幕と操作バーの重なり
 
-操作バーを表示して字幕が重なるときは、字幕の行を操作バーの上へ引き上げる。native HLS が字幕 cue を JavaScript に公開しない WebKit では、この引き上げは何もしない。
+操作バーを表示して字幕が重なるときは、字幕の行を操作バーの上へ引き上げる。
 
-JavaScript が読める WebVTT cue の行を、プレイヤー高さと下端の帯（時刻・シークバー）の高さから計算して上げる。スマホの暗い幕は枠全体に敷くので、幕の高さは数えない。WebKit はブラウザ既定の字幕位置を画素差分で観測するだけで、実装の検証にはならない。測定は `web/e2e/subtitles.mjs` と `web/e2e/recording-original-vod.mjs` にある。
+JavaScript が読める WebVTT cue の行を、プレイヤー高さと下端の帯（時刻・シークバー）の高さから計算して上げる。スマホの暗い幕は枠全体に敷くので、幕の高さは数えない。Playwright WebKit も hls.js 経路で cue と表示位置を確認する。測定は `web/e2e/subtitles.mjs` と `web/e2e/recording-original-vod.mjs` にある。
 
 ### ページのキー操作
 
@@ -382,7 +363,7 @@ JavaScript が読める WebVTT cue の行を、プレイヤー高さと下端の
 
 ライブ視聴のページは一つのプレイヤーのままライブと追っかけを切り替え、詳細画面はプレイヤーを作り直す。どちらも開始意図を渡す形で扱い、親に offset の張り直しを頼むコールバックは無くす。これで、追っかけと原本 HLS のセッション外シーク、保存位置からの開始、張り直し後の再生意図を同じ規則にまとめる。
 
-セッション起点の写像・時間軸の範囲と印・シーク先の丸め・離脱 URL は、`lib/playback-mode.ts` の `playbackStrategy` が一つの switch で作る strategy にまとめる。プレイリスト失敗の分類と方式ごとの見出し・案内文も、同じ strategy が持つ。シーク先の丸めは録画再生の strategy だけが持つ。ライブの strategy にも持たせると、`mode === 'live'` の分岐が名前を変えて残るだけになる。原本 HLS の起点はフレーム格子へ写し、追っかけは整数秒を使う。追っかけの時間軸は伸びるライブ端まで、原本 HLS は固定した録画尺までである。native HLS と hls.js の選択はこれらの計算を変えないので、計算の入力にしない。
+セッション起点の写像・時間軸の範囲と印・シーク先の丸め・離脱 URL は、`lib/playback-mode.ts` の `playbackStrategy` が一つの switch で作る strategy にまとめる。プレイリスト失敗の分類と方式ごとの見出し・案内文も、同じ strategy が持つ。シーク先の丸めは録画再生の strategy だけが持つ。ライブの strategy にも持たせると、`mode === 'live'` の分岐が名前を変えて残るだけになる。原本 HLS の起点はフレーム格子へ写し、追っかけは整数秒を使う。追っかけの時間軸は伸びるライブ端まで、原本 HLS は固定した録画尺までである。
 
 strategy と時間軸は state に置かず、props・セッション・操作 state から毎レンダー組み立てる。ライブと追っかけは同じ `LivePlayer` のインスタンスのまま切り替わるため、導出値を保持すると前のモードの値が残る。表示位置・プレビュー・ホバーはモードとセッションの組が変わると初期値へ戻す。戻さないと、ライブと追っかけを往復したときに前の位置が戻る。
 
@@ -408,16 +389,14 @@ playlist URL・シーク確定・エラー文言は `LivePlayer` に残す。シ
 |---|---|---|---|---|
 | F の全画面対象 | 共有の再生グループ | 同左 | 同左 | 同左 |
 | ショートカットを無視する要素 | 共通のセレクタ | 同左 | 同左 | 同左 |
-| 字幕 cue を操作バーの上へ移す | ○ | ○（WebKit の native HLS は ×） | 同左 | 同左 |
+| 字幕 cue を操作バーの上へ移す | ○ | ○ | 同左 | 同左 |
 | 字幕として扱うトラックの判定 | 再生元ごとに決める | 同左 | 同左 | 同左 |
 | 視聴済みを保存する | ○ | ○ | × | × |
 | 再生速度を選べる | ○ | ○ | ○ | × |
 
-ページショートカットを無視する要素は、入力欄・選択欄・リンク・ボタン・編集可能領域・`[role="slider"]` である。`<video>` は除外しない。追っかけでは尺が伸び続けるため、0〜9 の割合シークと視聴済み判定は行わない。追っかけの速度設定は録画再生と共有するが、録画中の WebKit は EVENT playlist を 1 倍に固定し、完了後に保存速度へ戻す。
+ページショートカットを無視する要素は、入力欄・選択欄・リンク・ボタン・編集可能領域・`[role="slider"]` である。`<video>` は除外しない。追っかけでは尺が伸び続けるため、0〜9 の割合シークと視聴済み判定は行わない。追っかけの速度設定は録画再生と共有する。
 
-字幕として扱うトラックの判定は、再生元ごとに行い、共通化しない。HLS 字幕 track は Chromium と WebKit の両方で `kind="subtitles"` と実測した。Chromium は HLS cue の負の `line` と、表示画素の下端が操作バーの上端より上にあることを測る。WebKit の native HLS は track を公開するが cue を JavaScript に公開しないため、`cue.line` を書き換える引き上げは機能しない。字幕の表示前後のスクリーンショット差分はブラウザ既定の配置の観測であり、実装の検証ではない。そのため NG の判定にはしない。字幕の位置と全画面対象は jsdom では測れないため、実ブラウザで判定する。
-
-未解決: WebKit の native HLS では字幕 cue を操作バーの上へ上げられない。上の表で WebKit の native HLS だけ × なのはこのためである。ファイル再生の字幕は `<track>` の WebVTT で、WebKit でも `cue.line` が負になることを `web/e2e/subtitles.mjs` ① で測った。
+字幕として扱うトラックの判定は、再生元ごとに行い、共通化しない。字幕の位置と全画面対象は jsdom では測れないため、実ブラウザで判定する。
 
 <details><summary>根拠</summary>
 
@@ -481,9 +460,8 @@ localStorage を続ける案は採らない。端末をまたぐ「続きから�
 | 経路 | HLS offset 0 | HLS offset 10 | 非カット MP4 |
 | --- | ---: | ---: | ---: |
 | Playwright Chromium + hls.js | 0.00ms / +6.69ms | 0.00ms / +6.69ms | 0.00ms / +6.69ms |
-| WebKit native HLS | 0.00ms / +6.69ms | 0.00ms / +6.69ms | 0.00ms / +6.69ms |
 
-この fixture では両ブラウザの目印フレームすべてが 1ms 以内で一致した。この判定はソフトウェア libx264 の合成 fixture に限り、実録画やハードウェアエンコーダーは未測定である。未解決: 実録画（GR/BS）での同一シーン比較は未測定。
+この fixture では Chromium + hls.js の目印フレームすべてが 1ms 以内で一致した。この判定はソフトウェア libx264 の合成 fixture に限り、実録画やハードウェアエンコーダーは未測定である。未解決: 実録画（GR/BS）での同一シーン比較は未測定。
 
 <details><summary>根拠</summary>
 

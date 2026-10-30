@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LivePlayer as LivePlayerComponent } from '@/components/live-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
 import { liveStallTimeoutMs, originalVODSessionOriginSeconds } from '@/lib/live'
-import type { LiveDiagnostics, StallHandling } from '@/lib/live'
+import type { StallHandling } from '@/lib/live'
 import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-position'
 
 type LiveProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'live' }>
@@ -153,8 +153,7 @@ function choosePlaybackOption(label: '画質' | '音声', option: RegExp) {
 }
 
 /**
- * hls.js 経路（Safari 以外のネイティブ HLS 非対応ブラウザ）の内部呼び出しを
- * jsdom で検査するためのフェイク。jsdom には MediaSource が無く、実 hls.js の
+ * hls.js の内部呼び出しを jsdom で検査するためのフェイク。jsdom には MediaSource が無く、実 hls.js の
  * `Hls.isSupported()` は常に false を返すため、実物を動的 import すると
  * 「HLS 非対応」に落ちてしまい `attachMedia` 以降が一度も走らない。
  *
@@ -169,10 +168,8 @@ function choosePlaybackOption(label: '画質' | '音声', option: RegExp) {
 const hlsMockState = vi.hoisted(() => ({
   instances: [] as FakeHls[],
   constructorArgs: [] as unknown[][],
-  // supported はフェイクの `Hls.isSupported()` の戻り値。false にすると
-  // 「MSE も ManagedMediaSource も無いブラウザ」（iOS 17.1 未満の iPhone Safari）を
-  // 模擬できる。実 hls.js は jsdom でも常に false を返すが、それだと hls.js 経路
-  // 自体が一度も走らないので既定は true にしておく
+  // supported はフェイクの `Hls.isSupported()` の戻り値。既定は true にし、
+  // false の場合は非対応表示になることを個別に確かめる。
   supported: true,
 }))
 
@@ -257,13 +254,7 @@ const BUNDLED_MASTER =
   '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nplaylist_0.m3u8\n' +
   '#EXT-X-STREAM-INF:BANDWIDTH=800000\nplaylist_1.m3u8\n'
 
-/**
- * jsdom は `HTMLMediaElement.canPlayType` を実装していない（常に `''`）ため、
- * ネイティブ HLS 対応（Safari）を明示的に模擬するにはテスト側から差し替える必要がある。
- * 差し替えのタイミングは「effect が `probeLivePlaylist` の `await` に入った後・
- * 継続処理で読むより前」でなければならない --- コンポーネントは probe 成功後に
- * `canPlayType` を読むので、fetch を deferred にして制御する。
- */
+/** deferredFetch は probe の完了を制御し、読み込み後の HLS 配線を検査できるようにする。 */
 function deferredFetch() {
   let resolve!: (response: Response) => void
   const promise = new Promise<Response>((r) => {
@@ -418,911 +409,23 @@ describe('LivePlayer の状態遷移', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
   })
 
-  it('WebKit（Safari 相当）の実測値なら video.src に直接プレイリスト URL を渡し、hls.js を import しない', async () => {
+  it('canPlayType が playlist と segment の両方に maybe を返しても hls.js を使う', async () => {
     const { resolve } = deferredFetch()
     render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
     const video = document.querySelector('video')!
-    // probe が解決する前に canPlayType を差し替える。**値は WebKit の実測値**
-    // （lib/live.ts の supportsNativeHls の表）。`'probably'` を返す実ブラウザは
-    // 無いので、そこで模擬すると実在しない状況をテストすることになる
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-
-    resolve(new Response('', { status: 200 }))
-
-    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
-    expect(video.src).toContain('/api/sites/default/networks/0/services/1024/live/playlist.m3u8')
-    expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
-    // ネイティブ分岐では hls.js を import すらしない（約 520 KB を読ませない）
-    expect(hlsMockState.instances).toHaveLength(0)
-  })
-
-  it('Chrome の実測値では hls.js 経路に入る（video.src に m3u8 を渡さない）', async () => {
-    const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-
-    const video = document.querySelector('video')!
-    // Chrome / Chromium はプレイリストの MIME に WebKit と同じ 'maybe' を返すが、
-    // セグメント（video/mp2t）は空文字。ここが両者を分ける唯一の点
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' ? 'maybe' : '',
-    )
-
+    const canPlayType = vi.spyOn(video, 'canPlayType').mockReturnValue('maybe')
     resolve(new Response('', { status: 200 }))
 
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/networks/0/services/1024/live/playlist.m3u8',
+    )
     expect(video.src).toBe('')
-  })
-
-  /**
-   * ネイティブ HLS 経路（WebKit 相当）まで進めて `<video>` を返す。
-   *
-   * **probe は 200 で通る。壊れているのはメディア層だけ**という状況を作るための
-   * 足場（`web/e2e/live.mjs` ⑦が実 WebKit で見ているのと同じ状況）。
-   */
-  async function renderNativePath(
-    options: {
-      onDiagnostics?: (diagnostics: LiveDiagnostics | null) => void
-      onStalled?: () => StallHandling
-      /** probe が返す本文。既定は variant playlist（master ではない）。 */
-      body?: string
-    } = {},
-  ) {
-    const { resolve } = deferredFetch()
-    render(
-      <LivePlayer
-        site="default"
-        networkId={0}
-        serviceId={1024}
-        onDiagnostics={options.onDiagnostics}
-        onStalled={options.onStalled}
-      />,
-    )
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response(options.body ?? '', { status: 200 }))
-    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
-    // jsdom の `paused` は既定 true（再生が始まらないため）。ここで測りたいのは
-    // **再生中に配信が途絶えた**ときの挙動なので、明示的に「再生中」にしておく。
-    // 一時停止中の挙動は専用のテストが `true` に差し替えて確かめる
-    Object.defineProperty(video, 'paused', { value: false, configurable: true })
-    return video
-  }
-
-  describe('ネイティブ経路のメディア失敗（probe は 200 だが再生できない）', () => {
-    // ここが無いと、ネイティブ経路の失敗は**永久に止まった黒いプレイヤー**に
-    // なる（文言も読み込み表示も再読み込みボタンも出ない。レビュー #190 の
-    // 3 回目の指摘で WebKit で実測された症状）。聴くイベントの選択は同じ実測に
-    // 基づく: セグメント 404 は `error`、セグメントが応答しない / プレイリストの
-    // 中身が壊れている場合は `error` が出ず `stalled` だけが出る
-
-    it('error イベントでエラー表示と再読み込みボタンを出す', async () => {
-      const video = await renderNativePath()
-
-      await act(async () => {
-        video.dispatchEvent(new Event('error'))
-      })
-
-      expect(await screen.findByText(/映像データを読み込めません/)).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
-    })
-
-    it('原本 VOD の error は録画映像の文言を出す', async () => {
-      const { resolve } = deferredFetch()
-      render(
-        <LivePlayer
-          mode="original-vod"
-          site="default"
-          recordingId={42}
-          recordingDurationMs={60_000}
-        />,
-      )
-      const video = document.querySelector('video')!
-      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-        type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-      )
-      resolve(new Response('', { status: 200 }))
-      await waitFor(() => expect(video.src).toContain('original-vod/playlist.m3u8'))
-
-      await act(async () => video.dispatchEvent(new Event('error')))
-
-      expect(await screen.findByText('録画映像を再生できませんでした（映像データを読み込めません）')).toBeInTheDocument()
-      expect(screen.queryByText(/ライブ映像を再生できませんでした/)).not.toBeInTheDocument()
-    })
-
-    it('stalled のまま猶予が過ぎるとエラー表示を出す（error が出ない壊れ方）', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-      })
-      // 猶予の間はまだエラーにしない（ライブは正常時にも一時的に止まる）
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-
-      await act(async () => {
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
-    })
-
-    /**
-     * 世代付き録画 HLS のネイティブ経路は、`stalled` / `waiting` が来なくても 1 秒の刻みで止まりを拾う。
-     * WebKit は再生中の 410 を `<video>` に伝えないので、これが無いと親の再取得に乗らない。
-     */
-    describe('世代付き録画 HLS のネイティブ経路の停止検知', () => {
-      async function renderNativeRecordingPath(
-        mode: 'recording-hls' | 'original-vod',
-        media: { paused: boolean; currentTime: number },
-      ) {
-        const { resolve } = deferredFetch()
-        const onRecordingPlaybackError = vi.fn(() => false)
-        render(mode === 'recording-hls'
-          ? <LivePlayer mode="recording-hls" recordingId={42} onRecordingPlaybackError={onRecordingPlaybackError} />
-          : <LivePlayer mode="original-vod" recordingId={42} recordingDurationMs={60_000} onRecordingPlaybackError={onRecordingPlaybackError} />)
-        const video = document.querySelector('video')!
-        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-        )
-        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
-        Object.defineProperty(video, 'currentTime', {
-          get: () => media.currentTime,
-          set: (value: number) => { media.currentTime = value },
-          configurable: true,
-        })
-        resolve(new Response('', { status: 200 }))
-        await waitFor(() => expect(video.getAttribute('src')).not.toBeNull())
-        return { video, onRecordingPlaybackError }
-      }
-
-      it('再生中に currentTime が猶予のあいだ進まなければ、stalled が来なくても親へ渡してエラーにする', async () => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 7 }
-        const { video, onRecordingPlaybackError } = await renderNativeRecordingPath('recording-hls', media)
-        await act(async () => {
-          video.dispatchEvent(new Event('playing'))
-          vi.advanceTimersByTime(liveStallTimeoutMs - 1000)
-        })
-        expect(onRecordingPlaybackError).not.toHaveBeenCalled()
-
-        await act(async () => {
-          vi.advanceTimersByTime(2000)
-        })
-        expect(onRecordingPlaybackError).toHaveBeenCalledTimes(1)
-        expect(screen.getByText('録画映像が届いていません（映像データが途絶えました）')).toBeInTheDocument()
-      })
-
-      it('currentTime が進んでいる間・一時停止中・再生が始まる前は止まりと見なさない', async () => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 7 }
-        const { video, onRecordingPlaybackError } = await renderNativeRecordingPath('recording-hls', media)
-        // 再生が始まる前（playing 前）は数えない。
-        await act(async () => {
-          vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-        })
-        await act(async () => {
-          video.dispatchEvent(new Event('playing'))
-        })
-        for (let i = 0; i < 30; i += 1) {
-          await act(async () => {
-            media.currentTime += 1
-            vi.advanceTimersByTime(1000)
-          })
-        }
-        media.paused = true
-        await act(async () => {
-          vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-        })
-        expect(onRecordingPlaybackError).not.toHaveBeenCalled()
-        expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-      })
-
-      it('世代付き録画 HLS 以外のネイティブ経路は、刻みでは止まりを判定しない', async () => {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const media = { paused: false, currentTime: 7 }
-        const { video, onRecordingPlaybackError } = await renderNativeRecordingPath('original-vod', media)
-        await act(async () => {
-          video.dispatchEvent(new Event('playing'))
-          vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-        })
-        expect(onRecordingPlaybackError).not.toHaveBeenCalled()
-        expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-      })
-    })
-
-    /**
-     * 世代付き録画 HLS のネイティブ経路は、`waiting` から 5 秒進まなければ、画質切替と同じ張り直しを
-     * 同じ画質のまま起こす。実 Safari の判定は `recording-hls-stall-recovery.mjs`。
-     * ここで写すのは、実 Safari が `pause` を自分で出すことと、`load()` が位置を 0 に戻すこと。
-     */
-    describe('世代付き録画 HLS の停滞復旧', () => {
-      const URL_V1 = '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8'
-
-      async function renderRecoveryPath(mode: 'recording-hls' | 'chase' | 'live' = 'recording-hls') {
-        vi.useFakeTimers({ shouldAdvanceTime: true })
-        const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
-          Promise.resolve(init?.method && init.method !== 'GET' ? new Response(null, { status: 204 }) : new Response('', { status: 200 })),
-        )
-        vi.stubGlobal('fetch', fetchMock)
-        const { rerender } = render(
-          mode === 'recording-hls'
-            ? <LivePlayer mode="recording-hls" recordingId={42} recordingHlsUrl={URL_V1} profile="hd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />
-            : mode === 'chase'
-              ? <LivePlayer mode="chase" recordingId={42} />
-              : <LivePlayer />,
-        )
-        const video = document.querySelector('video')!
-        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-        )
-        const media = { paused: true, currentTime: 0 }
-        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
-        Object.defineProperty(video, 'currentTime', {
-          get: () => media.currentTime,
-          set: (value: number) => { media.currentTime = value },
-          configurable: true,
-        })
-        // 実ブラウザの load() は位置を 0 に戻す（pause は発火しない。main の注記）。
-        const load = vi.spyOn(video, 'load').mockImplementation(() => {
-          media.currentTime = 0
-          media.paused = true
-        })
-        const play = vi.spyOn(video, 'play').mockImplementation(() => {
-          media.paused = false
-          return Promise.resolve()
-        })
-        const pause = vi.spyOn(video, 'pause').mockImplementation(() => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-        await waitFor(() => expect(video.getAttribute('src')).not.toBeNull())
-        return { video, media, load, play, pause, fetchMock, rerender }
-      }
-
-      /** 再生を始めて 52 秒へシークし、そこで止まった状態にする。 */
-      async function stallAt52(path: Awaited<ReturnType<typeof renderRecoveryPath>>) {
-        const { video, media } = path
-        await act(async () => {
-          fireEvent.loadedMetadata(video)
-          fireEvent.canPlay(video)
-          media.paused = false
-          fireEvent.play(video)
-          video.dispatchEvent(new Event('playing'))
-          media.currentTime = 52
-          video.dispatchEvent(new Event('waiting'))
-        })
-      }
-      const advance = (ms: number) => act(async () => { vi.advanceTimersByTime(ms) })
-      const probeCount = (path: Awaited<ReturnType<typeof renderRecoveryPath>>) =>
-        path.fetchMock.mock.calls.filter(([url]) => String(url) === URL_V1).length
-      const positionWrites = (path: Awaited<ReturnType<typeof renderRecoveryPath>>) =>
-        path.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/playback-position')).length
-
-      it('5 秒進まなければ同じ video で同じ URL を張り直し、位置へ戻して再生し、続きからの位置は書かない', async () => {
-        const path = await renderRecoveryPath()
-        const { video, media } = path
-        await stallAt52(path)
-        const writesBefore = positionWrites(path)
-        expect(probeCount(path)).toBe(1)
-
-        await advance(4999)
-        expect(probeCount(path)).toBe(1)
-        await advance(1)
-        await waitFor(() => expect(probeCount(path)).toBe(2))
-        await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
-        expect(document.querySelector('video')).toBe(video)
-        expect(path.load).toHaveBeenCalled()
-        expect(media.currentTime).toBe(0)
-
-        await act(async () => { fireEvent.loadedMetadata(video) })
-        expect(media.currentTime).toBe(52)
-        expect(path.play).not.toHaveBeenCalled()
-        await act(async () => { fireEvent.canPlay(video) })
-        expect(path.play).toHaveBeenCalledTimes(1)
-        expect(positionWrites(path)).toBe(writesBefore)
-      })
-
-      it('Safari 自身の pause（製品の pause() 無し）の後でも張り直し、続きから再生する', async () => {
-        const path = await renderRecoveryPath()
-        const { video, media } = path
-        await stallAt52(path)
-        await act(async () => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-        await advance(5000)
-        await waitFor(() => expect(probeCount(path)).toBe(2))
-        await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
-        await act(async () => { fireEvent.loadedMetadata(video) })
-        await act(async () => { fireEvent.canPlay(video) })
-        expect(path.pause).not.toHaveBeenCalled()
-        expect(path.play).toHaveBeenCalledTimes(1)
-      })
-
-      it('操作バーで一時停止した後は、5 秒たっても張り直さない（再生すると戻る）', async () => {
-        const path = await renderRecoveryPath()
-        await stallAt52(path)
-        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一時停止' })) })
-        expect(path.pause).toHaveBeenCalledTimes(1)
-        await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
-        await advance(6000)
-        expect(probeCount(path)).toBe(1)
-
-        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '再生' })) })
-        await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
-        await advance(5000)
-        await waitFor(() => expect(probeCount(path)).toBe(2))
-      })
-
-      it('mediaSession の pause の後は 5 秒たっても張り直さず、play で戻る', async () => {
-        const handlers: Record<string, (() => void) | null> = {}
-        Object.defineProperty(navigator, 'mediaSession', {
-          configurable: true,
-          value: { setActionHandler: (name: string, handler: (() => void) | null) => { handlers[name] = handler } },
-        })
-        try {
-          const path = await renderRecoveryPath()
-          expect(handlers.pause).toBeTypeOf('function')
-          await stallAt52(path)
-          await act(async () => { handlers.pause!() })
-          expect(path.pause).toHaveBeenCalledTimes(1)
-          await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
-          await advance(6000)
-          expect(probeCount(path)).toBe(1)
-
-          await act(async () => { handlers.play!() })
-          await act(async () => { path.video.dispatchEvent(new Event('waiting')) })
-          await advance(5000)
-          await waitFor(() => expect(probeCount(path)).toBe(2))
-          cleanup()
-          expect(handlers.pause).toBeNull()
-          expect(handlers.play).toBeNull()
-        } finally {
-          delete (navigator as unknown as Record<string, unknown>).mediaSession
-        }
-      })
-
-      it('同じ位置の 3 回目は張り直さず、既存の 12 秒の失敗に落ちる', async () => {
-        const path = await renderRecoveryPath()
-        await stallAt52(path)
-        for (const expected of [2, 3]) {
-          await advance(5000)
-          await waitFor(() => expect(probeCount(path)).toBe(expected))
-          await waitFor(() => expect(path.video.getAttribute('src')).toBe(URL_V1))
-          await act(async () => { fireEvent.loadedMetadata(path.video) })
-          await act(async () => {
-            path.media.currentTime = 52
-            path.video.dispatchEvent(new Event('waiting'))
-          })
-        }
-        await advance(5000)
-        expect(probeCount(path)).toBe(3)
-        await advance(liveStallTimeoutMs)
-        expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-      })
-
-      it('違う位置で止まれば 1 から数え直して張り直す', async () => {
-        const path = await renderRecoveryPath()
-        await stallAt52(path)
-        // 52 秒で 2 回（上限）→ 80 秒で止まれば 1 に戻って張り直し、80 秒の 2 回目も張り直す。
-        let probes = 1
-        for (const nextStall of [52, 80, 80, undefined]) {
-          await advance(5000)
-          probes += 1
-          await waitFor(() => expect(probeCount(path)).toBe(probes))
-          await waitFor(() => expect(path.video.getAttribute('src')).toBe(URL_V1))
-          await act(async () => { fireEvent.loadedMetadata(path.video); fireEvent.canPlay(path.video) })
-          if (nextStall === undefined) break
-          await act(async () => {
-            path.media.currentTime = nextStall
-            path.video.dispatchEvent(new Event('waiting'))
-          })
-        }
-        expect(probes).toBe(5)
-      })
-
-      it('画質切替を挟んでも回数が持ち越される', async () => {
-        const path = await renderRecoveryPath()
-        await stallAt52(path)
-        await advance(5000)
-        await waitFor(() => expect(probeCount(path)).toBe(2))
-        await act(async () => { fireEvent.loadedMetadata(path.video) })
-        path.rerender(
-          <LivePlayer mode="recording-hls" recordingId={42} recordingHlsUrl={URL_V1.replace('/hd/', '/sd/')} profile="sd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />,
-        )
-        await waitFor(() => expect(path.video.getAttribute('src')).toContain('/sd/'))
-        await act(async () => { fireEvent.loadedMetadata(path.video) })
-        await act(async () => {
-          path.media.currentTime = 52
-          path.video.dispatchEvent(new Event('waiting'))
-        })
-        await advance(5000)
-        const sdProbes = () => path.fetchMock.mock.calls.filter(([url]) => String(url).includes('/sd/')).length
-        await waitFor(() => expect(sdProbes()).toBe(2))
-        await act(async () => { fireEvent.loadedMetadata(path.video) })
-        await act(async () => {
-          path.media.currentTime = 52
-          path.video.dispatchEvent(new Event('waiting'))
-        })
-        await advance(5000)
-        expect(sdProbes()).toBe(2)
-      })
-
-      it('読み直し後に metadata 前の stalled と 52 秒の waiting が交互に来ても 2 回で止まる', async () => {
-        const path = await renderRecoveryPath()
-        const { video, media } = path
-        await stallAt52(path)
-        for (let i = 0; i < 6; i += 1) {
-          await advance(5000)
-          await act(async () => { await Promise.resolve() })
-          await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
-          if (i % 2 === 0) {
-            // metadata が来ないまま stalled（currentTime は load() 後の 0）
-            await act(async () => { video.dispatchEvent(new Event('stalled')) })
-          } else {
-            await act(async () => { fireEvent.loadedMetadata(video); fireEvent.canPlay(video) })
-            await act(async () => { media.paused = false; video.dispatchEvent(new Event('waiting')) })
-          }
-        }
-        expect(probeCount(path)).toBeLessThanOrEqual(3)
-      })
-
-      it('5 秒の待ちの途中で別の録画へ替わると、前の録画の張り直しは起きない', async () => {
-        const path = await renderRecoveryPath()
-        await stallAt52(path)
-        await advance(3000)
-        path.rerender(<LivePlayer mode="recording-hls" recordingId={43} recordingHlsUrl="/api/media/stores/media/recordings/43/hls/v1/hd/master.m3u8" profile="hd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />)
-        await waitFor(() => expect(path.video.getAttribute('src')).toContain('/recordings/43/'))
-        const loads = path.load.mock.calls.length
-        // 古いタイマーが位置の比較で偶然止まらないよう、止まった位置へ戻しておく。
-        path.media.currentTime = 52
-        await advance(6000)
-        expect(path.load.mock.calls.length).toBe(loads)
-        expect(probeCount(path)).toBe(1)
-      })
-
-      it('張り直しの後に元の位置へ戻すシークが 5 秒終わらなければ、もう一度張り直す', async () => {
-        const path = await renderRecoveryPath()
-        const { video } = path
-        await stallAt52(path)
-        await advance(5000)
-        await waitFor(() => expect(probeCount(path)).toBe(2))
-        await waitFor(() => expect(video.getAttribute('src')).toBe(URL_V1))
-        // 戻すシークが始まったまま終わらない（paused のまま。waiting / stalled は出ない）。
-        await act(async () => {
-          fireEvent.loadedMetadata(video)
-          video.dispatchEvent(new Event('seeking'))
-          fireEvent.canPlay(video)
-        })
-        await advance(4999)
-        expect(probeCount(path)).toBe(2)
-        await advance(1)
-        await waitFor(() => expect(probeCount(path)).toBe(3))
-      })
-
-      it('製品を通らない一時停止（PiP など）の後の stalled では張り直さない', async () => {
-        const path = await renderRecoveryPath()
-        const { video, media } = path
-        await act(async () => {
-          fireEvent.loadedMetadata(video)
-          fireEvent.canPlay(video)
-          media.paused = false
-          fireEvent.play(video)
-          video.dispatchEvent(new Event('playing'))
-          media.currentTime = 30
-          video.dispatchEvent(new Event('timeupdate'))
-        })
-        await act(async () => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-        await advance(2000)
-        await act(async () => { video.dispatchEvent(new Event('stalled')) })
-        await advance(6000)
-        expect(probeCount(path)).toBe(1)
-        expect(path.play).not.toHaveBeenCalled()
-      })
-
-      it('再生を始める前の stalled では張り直さない（自動再生しない開き方）', async () => {
-        const path = await renderRecoveryPath()
-        const { video } = path
-        await act(async () => {
-          fireEvent.loadedMetadata(video)
-          video.dispatchEvent(new Event('stalled'))
-        })
-        await advance(6000)
-        expect(probeCount(path)).toBe(1)
-        expect(path.play).not.toHaveBeenCalled()
-      })
-
-      it('止まっている間に別の位置へシークすると、新しい位置で 5 秒数えて張り直す', async () => {
-        const path = await renderRecoveryPath()
-        vi.setTimerTickMode('manual')
-        const { video, media } = path
-        await stallAt52(path)
-        // Safari は止まっている最中に自分で pause を出す（製品の pause() 無し）。
-        await act(async () => {
-          media.paused = true
-          video.dispatchEvent(new Event('pause'))
-        })
-        await advance(2000)
-        await act(async () => {
-          Object.defineProperty(video, 'seeking', { get: () => true, configurable: true })
-          media.currentTime = 300
-          video.dispatchEvent(new Event('seeking'))
-          video.dispatchEvent(new Event('timeupdate'))
-          video.dispatchEvent(new Event('waiting'))
-        })
-        await advance(4999)
-        expect(probeCount(path)).toBe(1)
-        await advance(1)
-        expect(probeCount(path)).toBe(2)
-      })
-
-      it('録画を替えると、前の録画での一時停止の意図を持ち越さない', async () => {
-        const path = await renderRecoveryPath()
-        await stallAt52(path)
-        await act(async () => { fireEvent.click(screen.getByRole('button', { name: '一時停止' })) })
-        const url43 = '/api/media/stores/media/recordings/43/hls/v1/hd/master.m3u8'
-        path.rerender(<LivePlayer mode="recording-hls" recordingId={43} recordingHlsUrl={url43} profile="hd" availableProfiles={[{ name: 'hd' }, { name: 'sd' }]} />)
-        await waitFor(() => expect(path.video.getAttribute('src')).toBe(url43))
-        await act(async () => {
-          fireEvent.loadedMetadata(path.video)
-          fireEvent.canPlay(path.video)
-          path.media.paused = false
-          path.video.dispatchEvent(new Event('playing'))
-          path.media.currentTime = 52
-          path.video.dispatchEvent(new Event('waiting'))
-        })
-        await advance(5000)
-        await waitFor(() => expect(path.fetchMock.mock.calls.filter(([url]) => String(url) === url43).length).toBe(2))
-      })
-
-      it.each(['live', 'chase'] as const)('%s のネイティブ経路は waiting から 6 秒たっても張り直さない', async (mode) => {
-        const path = await renderRecoveryPath(mode)
-        await stallAt52(path)
-        await advance(6000)
-        expect(path.load).not.toHaveBeenCalled()
-        expect(path.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('.m3u8') || String(url).includes('playlist')).length).toBe(1)
-      })
-    })
-
-    it('原本 VOD の stalled は録画映像の文言を出し、ライブ映像とは出さない', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const { resolve } = deferredFetch()
-      render(
-        <LivePlayer
-          mode="original-vod"
-          site="default"
-          recordingId={42}
-          recordingDurationMs={60_000}
-        />,
-      )
-      const video = document.querySelector('video')!
-      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-        type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-      )
-      resolve(new Response('', { status: 200 }))
-      await waitFor(() => expect(video.src).toContain('original-vod/playlist.m3u8'))
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-      })
-      await act(async () => {
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(screen.getByText('録画映像が届いていません（映像データが途絶えました）')).toBeInTheDocument()
-      expect(screen.queryByText(/ライブ映像/)).not.toBeInTheDocument()
-    })
-
-    it('currentTime が止まった timeupdate は停滞の猶予を解除しない（WebKit の buffer 枯渇）', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-      Object.defineProperty(video, 'currentTime', { value: 7.6, writable: true, configurable: true })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('playing'))
-        video.dispatchEvent(new Event('timeupdate'))
-        video.dispatchEvent(new Event('stalled'))
-        // stalled で監視を始めた後、残ったバッファを消費して waiting が出る。
-        // その後の終端 timeupdate を stalled 時点からの差分で回復扱いしてはならない。
-        video.currentTime = 7.852
-        video.dispatchEvent(new Event('waiting'))
-        video.dispatchEvent(new Event('timeupdate'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
-    })
-
-    it('timeupdate で再生位置が進めば停滞の猶予を解除する', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-      Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('playing'))
-        video.dispatchEvent(new Event('waiting'))
-        vi.advanceTimersByTime(liveStallTimeoutMs / 2)
-        video.currentTime = 5.25
-        video.dispatchEvent(new Event('timeupdate'))
-        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-      })
-
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
-    })
-
-    it('閾値未満の timeupdate が続いても進行量を累積して停滞の猶予を解除する', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-      Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('playing'))
-        video.dispatchEvent(new Event('waiting'))
-        video.currentTime = 5.03
-        video.dispatchEvent(new Event('timeupdate'))
-        vi.advanceTimersByTime(liveStallTimeoutMs / 2)
-        video.currentTime = 5.06
-        video.dispatchEvent(new Event('timeupdate'))
-        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-      })
-
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
-    })
-
-    it('一時停止中の stalled はエラーにしない（WebKit は pause した瞬間に stalled を出す）', async () => {
-      // WebKit は一時停止するとフェッチを止めるため `stalled` を出すが、配信は
-      // 正常なまま。解除イベント（playing / canplay / timeupdate）も来ないので、
-      // paused を見ないと猶予が必ず満了してエラー画面が出る --- しかも <video> が
-      // invisible になり、ユーザーが一時停止した映像そのものが隠れる。
-      // レビュー #190 の 4 回目の指摘（WebKit で実測）
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-
-      await act(async () => {
-        // 一度は再生が始まっている。**ここが要る** --- 抑止したいのは「再生して
-        // いたユーザーが自分で止めた」場合だけで、再生前の停止は抑止しない
-        video.dispatchEvent(new Event('playing'))
-        Object.defineProperty(video, 'paused', { value: true, configurable: true })
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-      })
-
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
-    })
-
-    it('再生前（まだ一度も再生していない）の stalled は猶予が過ぎたらエラーにする', async () => {
-      // `<video>` に autoPlay は無いので、読み込み直後は常に paused === true。
-      // 抑止条件を `paused` だけにすると**ここが塞がる** --- プレイリストは 200 だが
-      // セグメントが無応答のとき、実 WebKit で届くイベントは
-      // loadstart → progress → `paused=true` の stalled だけで、20 秒待っても
-      // error も waiting も来ない。つまり猶予が一度も張られず永久に黒いままになる。
-      // これは `web/e2e/live.mjs` ⑦（無応答側）が見ている条件そのもの ---
-      // ⑦は play() を呼ばないため、この退行は e2e でも NG になる。
-      // レビュー #190 の 5 回目の指摘（実 WebKit で測定）
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-      Object.defineProperty(video, 'paused', { value: true, configurable: true })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
-    })
-
-    it('再生中に一時停止されると猶予が満了してもエラーにしない（猶予中に pause した場合）', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-
-      await act(async () => {
-        // 再生中に stall（ここでタイマーが張られる）
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs / 2)
-        // 猶予の途中でユーザーが一時停止した
-        Object.defineProperty(video, 'paused', { value: true, configurable: true })
-        video.dispatchEvent(new Event('pause'))
-        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-      })
-
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-    })
-
-    it('再開後に配信が復帰していなければ再びエラーになる（一時停止で猶予を捨てた後の張り直し）', async () => {
-      // 上 2 つの抑止が「以後ずっと検出しない」に化けていないことを見る。
-      // ブラウザ側が再開時に `waiting` を再送することは実 WebKit で測った
-      // （stall 中に pause@6.05s → play@12.05s → waiting@12.05s）
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-
-      await act(async () => {
-        video.dispatchEvent(new Event('playing'))
-        video.dispatchEvent(new Event('stalled'))
-        Object.defineProperty(video, 'paused', { value: true, configurable: true })
-        video.dispatchEvent(new Event('pause'))
-        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-      })
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-
-      await act(async () => {
-        // ユーザーが再開した。配信は死んだままなので再び waiting が来る
-        Object.defineProperty(video, 'paused', { value: false, configurable: true })
-        video.dispatchEvent(new Event('play'))
-        video.dispatchEvent(new Event('waiting'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-    })
-
-    it('猶予中に playing が来れば回復と見なしてエラーにしない（逆向き）', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const video = await renderNativePath()
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs / 2)
-        video.dispatchEvent(new Event('playing'))
-        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-      })
-
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
-    })
+    expect(canPlayType).not.toHaveBeenCalled()
   })
 
   describe('停滞したときの画質の自動降格（issue #871）', () => {
-    /**
-     * ネイティブ経路: 猶予が満了したときに**まず降格を試す**。
-     *
-     * 変異: `onStalledRef.current?.() === true` の分岐を外す（常に `failed()` へ
-     * 落とす）と、このテストの「エラーが出ない」が落ちる。
-     */
-    it('ネイティブ経路: 猶予が満了したら呼び出し側に降格を試させ、引き取られたらエラーにしない', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onStalled = vi.fn(() => true)
-      const video = await renderNativePath({ onStalled })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(onStalled).toHaveBeenCalledTimes(1)
-      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
-    })
-
-    /**
-     * ネイティブ経路: **段が尽きたときは現行と同一の挙動**（新しい文言・新しい
-     * 経路を作らない）。`false` は「呼び出し側が下げられなかった」の意味である。
-     */
-    it('ネイティブ経路: 引き取られなければ従来どおりエラー表示にする（段が尽きたとき）', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onStalled = vi.fn(() => false)
-      const video = await renderNativePath({ onStalled })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(onStalled).toHaveBeenCalledTimes(1)
-      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
-    })
-
-    /**
-     * ネイティブ経路の `'wait'`（一覧がまだ届いていない）は**現行どおりの
-     * エラー文言に落ちる**。
-     *
-     * **ここで `return` してはいけない。** このタイマーは `stalled` / `waiting`
-     * でしか張り直せず、実 WebKit の無応答の配信ではそのイベントが再発火しない
-     * （実測: loadstart → progress → `stalled` のあと 20 秒待っても来ない）。
-     * `return` すると**その再生では降格もエラー表示も起きず黒いまま何も出ない**。
-     * hls.js 経路は 1 秒ごとの刻みがあるので `'wait'` で待ち続けられる（そちらは
-     * 別のテストが見る）。
-     */
-    it('ネイティブ経路: 一覧が未着（wait）なら現行どおりエラーに落ちる', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onStalled = vi.fn(() => 'wait' as const)
-      const video = await renderNativePath({ onStalled })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(onStalled).toHaveBeenCalledTimes(1)
-      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-    })
-
-    /**
-     * **降格のあと `canplay` が来ない（降格先も死んでいる）とき、停滞の検出を
-     * 止めない。**
-     *
-     * 切替の cleanup が `load()` で要素を paused にするので、「利用者が自分で
-     * 一時停止した」の抑止をそのまま効かせると、**降格もエラー表示も起きず
-     * 黒いまま永久に何も出ない**（`startedOnceRef` を effect を跨いで持つように
-     * したことと、`canplay` で再開するようにしたことが組み合わせて作る穴）。
-     *
-     * 変異: 抑止の条件から `!isResumePending()` を外すと、このテストが落ちる
-     * （`stalled` が無視されて `onStalled` が 2 回目に呼ばれない）。
-     */
-    it('ネイティブ経路: 降格のあと再開できなくても、停滞の検出を続ける', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onStalled = vi.fn(() => true)
-      const { resolve } = deferredFetch()
-      const { rerender } = render(
-        <LivePlayer site="default" networkId={0} serviceId={1024} onStalled={onStalled} />,
-      )
-      const video = document.querySelector('video')!
-      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-        type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-      )
-      resolve(new Response('', { status: 200 }))
-      await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
-      // 再生中にする（`preserved.playing` に載せる）
-      await act(async () => {
-        video.dispatchEvent(new Event('playing'))
-        Object.defineProperty(video, 'paused', { value: false, configurable: true })
-      })
-
-      // 画質の切替（= 降格と同じ形）。cleanup が `paused` を読み、新しい effect が
-      // `canplay` を待つ状態になる
-      rerender(<LivePlayer site="default" networkId={0} serviceId={1024} profile="sd" onStalled={onStalled} />)
-      await waitFor(() => expect(video.src).toContain('profile=sd'))
-      // load() が paused に戻した状態（`canplay` は来ない = 降格先も死んでいる）
-      Object.defineProperty(video, 'paused', { value: true, configurable: true })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      // **ここが要点**: paused でも「利用者が止めた」とは見なさない
-      expect(onStalled).toHaveBeenCalledTimes(1)
-    })
-
-    /**
-     * **全プロファイルを束ねた master（`live.captions: true`）では降格を試さない。**
-     * そのとき streamer は `?profile=` に関わらず同じ master を返すので、下げても
-     * 何も変わらないのに「下げました」と表示することになる。
-     *
-     * 変異: `canDowngrade` の `!probe.bundlesProfiles` を外すと、このテストの
-     * 「呼ばれない」が落ちる。
-     */
-    it('ネイティブ経路: 全プロファイルを束ねた master では降格を試さず、従来どおりエラーにする', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onStalled = vi.fn(() => true)
-      const video = await renderNativePath({
-        onStalled,
-        body: BUNDLED_MASTER,
-      })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('stalled'))
-        vi.advanceTimersByTime(liveStallTimeoutMs)
-      })
-
-      expect(onStalled).not.toHaveBeenCalled()
-      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-    })
-
     /**
      * hls.js 経路まで進めて `<video>` を返す（フェイクの hls.js は既定で
      * `isSupported() === true`、jsdom の `canPlayType` は `''` なので、
@@ -1560,72 +663,6 @@ describe('LivePlayer の状態遷移', () => {
     })
   })
 
-  it('ネイティブHLSでも明示した追っかけ開始位置から再生する', async () => {
-    const { resolve } = deferredFetch()
-    render(
-      <LivePlayer
-        mode="chase"
-        site="default"
-        recordingId={10}
-        offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
-      />,
-    )
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response('', { status: 200 }))
-
-    await waitFor(() => expect(video.src).toContain('/chase/offset/30/playlist.m3u8'))
-    Object.defineProperty(video, 'currentTime', { value: 7, writable: true, configurable: true })
-    fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(0)
-
-    Object.defineProperty(video, 'currentTime', { value: 7, writable: true, configurable: true })
-    fireEvent.canPlay(video)
-    expect(video.currentTime).toBe(0)
-  })
-
-  it('ネイティブHLSでも画質の切替で位置を持ち越し、canplay で最新端への飛びを戻す', async () => {
-    // WebKit は EVENT playlist を付けるとき、loadedmetadata で受け付けた位置を
-    // 捨てて最新端を選ぶことがある。canplay での再表明が無いとここで落ちる。
-    const { resolve } = deferredFetch()
-    const { rerender } = render(
-      <LivePlayer
-        mode="chase"
-        site="default"
-        recordingId={83}
-        profile="live-720p"
-      />,
-    )
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response('', { status: 200 }))
-    await waitFor(() => expect(video.src).toContain('profile=live-720p'))
-    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-    fireEvent.loadedMetadata(video)
-    fireEvent.canPlay(video)
-    video.currentTime = 12
-
-    rerender(
-      <LivePlayer
-        mode="chase"
-        site="default"
-        recordingId={83}
-        profile="live-480p"
-      />,
-    )
-    await waitFor(() => expect(video.src).toContain('profile=live-480p'))
-    video.currentTime = 0
-    fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(12)
-    video.currentTime = 95
-    fireEvent.canPlay(video)
-    expect(video.currentTime).toBe(12)
-  })
-
   it('serviceId が変わると新しい URL で probe をやり直す', async () => {
     const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
@@ -1690,12 +727,10 @@ describe('LivePlayer の状態遷移', () => {
     expect(signals[1]?.aborted).toBe(false)
   })
 
-  describe('hls.js 経路（ネイティブ HLS 非対応。Chrome / Firefox 相当）', () => {
+  describe('hls.js 経路', () => {
     it('probe 成功後に動的 import → loadSource / attachMedia が呼ばれる', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-      // jsdom の canPlayType は既定で '' を返すため、supportsNativeHls が false
-      // になり hls.js 経路に入る（明示的な差し替えは不要）
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const hls = hlsMockState.instances[0]!
@@ -1867,7 +902,7 @@ describe('LivePlayer の状態遷移', () => {
       expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBeNull()
     })
 
-    it('原本 VOD の ended で保存位置を消す（ネイティブ経路も同じイベント）', async () => {
+    it('原本 VOD の ended で保存位置を消す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       render(<LivePlayer mode="original-vod" site="default" recordingId={45} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -2001,8 +1036,7 @@ describe('LivePlayer の状態遷移', () => {
     it('画質を切り替えても追っかけの再生位置を持ち越す（offset 付き）', async () => {
       // offset 付きで見るのは、**復元 effect が profile で立ち直る変異が
       // 決定的に落ちる**ようにするためである。offset 付きの追っかけは先頭が
-      // 「録画の 30 秒」なので、復元がやり直されると `onCanPlay` の 0 秒への
-      // 再表明（`explicitStartSeekPending`）が走って位置が巻き戻る。
+      // 「録画の 30 秒」なので、復元がやり直されると開始位置へ巻き戻る。
       //
       // 録画 id は他のテストと共有しない（id を借りると保存位置が残っていて
       // 偽陽性で通る）。
@@ -2020,8 +1054,7 @@ describe('LivePlayer の状態遷移', () => {
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-      // 初回の読み込みで 1 度は canplay が来る（その 1 回で 0 秒への再表明は
-      // 使い切られる）。以降は画質の切替で復元が立ち直ったときだけ再び走る。
+      // 初回の読み込みで canplay を受け取り、開始位置の適用を完了させる。
       // 実ブラウザと同じく loadedmetadata が先に来る（来ていない読み込みの位置は
       // 持ち越さない）。
       fireEvent.loadedMetadata(video)
@@ -2455,49 +1488,25 @@ describe('LivePlayer の状態遷移', () => {
       expect(hls.destroy).toHaveBeenCalledTimes(1)
     })
 
-    it('Hls.isSupported() が false でも m3u8 に支持があれば video.src へ渡す（MSE の無い iPhone Safari 相当）', async () => {
-      // iOS 17.1 未満の iPhone Safari は `window.MediaSource` を持たない
-      // （ManagedMediaSource も無い）ので `Hls.isSupported()` が false になる。
-      // ここで「非対応」と断じると、**ネイティブなら完璧に再生できる端末**に
-      // エラーを出すことになる（レビュー #190 の 2 回目の指摘）。
-      // canPlayType は m3u8 にだけ支持を表明する形にして、rung 1（ネイティブ）を
-      // 通り抜けて rung 3（最後の砦）に落ちる経路を作る
+    it('Hls.isSupported() が false なら canPlayType の戻り値に関わらず非対応を表示する', async () => {
       hlsMockState.supported = false
       const { resolve } = deferredFetch()
       render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       const video = document.querySelector('video')!
-      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-        type === 'application/vnd.apple.mpegurl' ? 'maybe' : '',
-      )
-
+      const canPlayType = vi.spyOn(video, 'canPlayType').mockReturnValue('maybe')
       resolve(new Response('', { status: 200 }))
-
-      await waitFor(() =>
-        expect(video.src).toContain('/api/sites/default/networks/0/services/1024/live/playlist.m3u8'),
-      )
-      expect(
-        screen.queryByText('このブラウザはライブ視聴（HLS）に対応していません'),
-      ).not.toBeInTheDocument()
-      expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument()
-    })
-
-    it('Hls.isSupported() が false で m3u8 にも支持が無ければ非対応を表示する', async () => {
-      hlsMockState.supported = false
-      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      // jsdom の canPlayType は既定で '' を返す（= どの MIME にも支持が無い）
-      render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
 
       expect(
         await screen.findByText('このブラウザはライブ視聴（HLS）に対応していません'),
       ).toBeInTheDocument()
-      expect(document.querySelector('video')!.src).toBe('')
+      expect(video.src).toBe('')
+      expect(canPlayType).not.toHaveBeenCalled()
+      expect(hlsMockState.instances).toHaveLength(0)
     })
 
-    it('hls.js 経路では stalled を拾わない（MSE のバッファ制御で正常時にも出るため）', async () => {
-      // ネイティブ経路のメディア監視を hls.js 経路にも張ると、正常な再生中の
-      // バッファ待ちを「途絶えた」と誤検知する。**張らないこと**を固定する
-      // （変異: `watchNativeMedia(video)` を hls.js 分岐にも足すとこのテストが落ちる）
+    it('hls.js 経路では stalled を失敗扱いしない（MSE のバッファ制御で正常時にも出るため）', async () => {
+      // MSE の正常なバッファ待ちを「途絶えた」と誤検知しないことを固定する。
       vi.useFakeTimers({ shouldAdvanceTime: true })
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
@@ -2546,7 +1555,7 @@ describe('LivePlayer の状態遷移', () => {
       )
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(onDiagnostics).toHaveBeenCalledWith({ source: 'hls', latencySec: null, bufferSec: null })
+      expect(onDiagnostics).toHaveBeenCalledWith({ latencySec: null, bufferSec: null })
     })
 
     /**
@@ -2604,7 +1613,6 @@ describe('LivePlayer の状態遷移', () => {
       })
 
       expect(onDiagnostics).toHaveBeenLastCalledWith({
-        source: 'hls',
         latencySec: 3.4,
         bufferSec: 5.6,
       })
@@ -2632,7 +1640,7 @@ describe('LivePlayer の状態遷移', () => {
       await act(async () => {
         vi.advanceTimersByTime(1000)
       })
-      expect(onDiagnostics).toHaveBeenLastCalledWith({ source: 'hls', latencySec: 3, bufferSec: 5 })
+      expect(onDiagnostics).toHaveBeenLastCalledWith({ latencySec: 3, bufferSec: 5 })
 
       const errorCall = hls.on.mock.calls.find(([event]) => event === 'hlsError')
       const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
@@ -2663,7 +1671,7 @@ describe('LivePlayer の状態遷移', () => {
      *
      * 変異: `stop` から `onDiagnosticsRef.current?.(null)` を削除すると
      * このテストが実際に落ちることを確認済み（最後の呼び出しが
-     * `{ source: 'hls', latencySec: 3, bufferSec: 5 }` のままになる）。
+     * `{ latencySec: 3, bufferSec: 5 }` のままになる）。
      */
     it('fatal エラーで hls を破棄すると計器を null で報告する（凍ったまま残さない）', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -2680,7 +1688,7 @@ describe('LivePlayer の状態遷移', () => {
       await act(async () => {
         vi.advanceTimersByTime(1000)
       })
-      expect(onDiagnostics).toHaveBeenLastCalledWith({ source: 'hls', latencySec: 3, bufferSec: 5 })
+      expect(onDiagnostics).toHaveBeenLastCalledWith({ latencySec: 3, bufferSec: 5 })
 
       const errorCall = hls.on.mock.calls.find(([event]) => event === 'hlsError')
       const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
@@ -2691,87 +1699,8 @@ describe('LivePlayer の状態遷移', () => {
       expect(onDiagnostics).toHaveBeenLastCalledWith(null)
     })
 
-    it('ネイティブ経路では latencySec が常に null（latency は取得できない）', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onDiagnostics = vi.fn()
-      const video = await renderNativePath({ onDiagnostics })
-      Object.defineProperty(video, 'buffered', {
-        value: { length: 1, end: () => 10 },
-        configurable: true,
-      })
-      video.currentTime = 4
-
-      await act(async () => {
-        vi.advanceTimersByTime(1000)
-      })
-
-      expect(onDiagnostics).toHaveBeenLastCalledWith({
-        source: 'native',
-        latencySec: null,
-        bufferSec: 6,
-      })
-    })
-
-    /**
-     * ネイティブ経路の `failed()` も同じ回帰を持つ（レビュー指摘）。
-     * 変異: `stop` から `onDiagnosticsRef.current?.(null)` を削除すると
-     * このテストが実際に落ちることを確認済み。
-     */
-    it('ネイティブ経路のメディア失敗（error）に落ちると計器を null で報告する（凍ったまま残さない）', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onDiagnostics = vi.fn()
-      const video = await renderNativePath({ onDiagnostics })
-      Object.defineProperty(video, 'buffered', {
-        value: { length: 1, end: () => 8 },
-        configurable: true,
-      })
-      video.currentTime = 0
-      await act(async () => {
-        vi.advanceTimersByTime(1000)
-      })
-      expect(onDiagnostics).toHaveBeenLastCalledWith({
-        source: 'native',
-        latencySec: null,
-        bufferSec: 8,
-      })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('error'))
-      })
-      expect(await screen.findByText(/映像データを読み込めません/)).toBeInTheDocument()
-
-      expect(onDiagnostics).toHaveBeenLastCalledWith(null)
-    })
-
-    it('ネイティブ経路のメディア失敗（error）に落ちると計器のポーリングが止まる', async () => {
-      // nit: watchNativeMedia の failed() からも stopDiagnostics を呼ぶ
-      // （issue #476 レビュー指摘）。呼ばなくてもリークはしないが、エラー中も
-      // 毎秒報告し続ける理由が無い --- 変異: failed() の stopDiagnostics()
-      // 呼び出しを削除するとこのテストが実際に落ちることを確認済み
-      vi.useFakeTimers({ shouldAdvanceTime: true })
-      const onDiagnostics = vi.fn()
-      const video = await renderNativePath({ onDiagnostics })
-
-      await act(async () => {
-        video.dispatchEvent(new Event('error'))
-      })
-      expect(await screen.findByText(/映像データを読み込めません/)).toBeInTheDocument()
-
-      onDiagnostics.mockClear()
-      await act(async () => {
-        vi.advanceTimersByTime(5000)
-      })
-      expect(onDiagnostics).not.toHaveBeenCalled()
-    })
   })
 
-  /**
-   * 離脱ヒント（issue #191）。**送ったかどうかは `navigator.sendBeacon` の
-   * 呼び出しで見る** --- jsdom は `sendBeacon` を実装していないので、テスト側で
-   * 差し替えたものが呼ばれれば「実ブラウザで beacon 経路に入る」配線の確認になる
-   * （実 beacon が本当にサーバーへ届くことは jsdom では測れない。`web/e2e/live.mjs`
-   * ⑧が実ブラウザで見る）。
-   */
   describe('離脱ヒント（issue #191）', () => {
     /** playing は probe が通ってプレイヤーが立ち上がるまで待つ（空虚な成功を防ぐ）。 */
     async function waitForPlaying() {
@@ -2890,36 +1819,7 @@ describe('LivePlayer の状態遷移', () => {
     })
   })
 
-  it('明示開始の追っかけは retry 後も開始位置を再表明する（playing で 0 に戻す）', async () => {
-    hlsMockState.supported = false
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    render(
-      <LivePlayer
-        mode="chase"
-        site="default"
-        recordingId={81}
-        offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
-      />,
-    )
-    const video = document.querySelector('video')!
-    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
-    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-    fireEvent.loadedMetadata(video)
-    fireEvent.canPlay(video)
 
-    fireEvent.error(video)
-    fireEvent.click(await screen.findByRole('button', { name: '再読み込み' }))
-    await waitFor(() => expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument())
-    fireEvent.loadedMetadata(video)
-    fireEvent.canPlay(video)
-    video.currentTime = 9
-    fireEvent.playing(video)
-
-    expect(video.currentTime).toBe(0)
-  })
 })
 
 describe('LivePlayer のキー操作', () => {
@@ -3079,113 +1979,6 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
     expect(play).toHaveBeenCalledTimes(calls)
   })
 
-  /** ネイティブ経路（Safari 相当）でも同じく `canplay` で再開する。 */
-  it('ネイティブ経路でも canplay で再生を再開する', async () => {
-    const { resolve } = deferredFetch()
-    const { rerender } = render(
-      <LivePlayer site="default" networkId={0} serviceId={1024} profile="hd" />,
-    )
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response('', { status: 200 }))
-    await waitFor(() => expect(video.src).toContain('profile=hd'))
-
-    Object.defineProperty(video, 'paused', { value: false, configurable: true })
-    video.dispatchEvent(new Event('playing'))
-    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
-
-    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} profile="sd" />)
-    await waitFor(() => expect(video.src).toContain('profile=sd'))
-
-    fireEvent(video, new Event('canplay'))
-
-    expect(play).toHaveBeenCalledTimes(1)
-  })
-
-  /**
-   * **再読み込み（エラー表示のボタン）でも同じく再開する。** 持ち越しは cleanup の
-   * 時点の `paused` を読むだけで、切替の理由（自動降格 / 手動の画質選択 / 再読み込み）を
-   * 区別しない。ネイティブ経路の停滞は `waiting` のまま `paused=false` なので、
-   * 利用者がボタンを押したら再生に戻る --- 押し直しを 2 回求めない。
-   * **hls.js 経路では起きない**（fatal エラーで `hls.destroy()` が `load()` を呼び
-   * `paused=true` にするので、cleanup が読む時点で再生中ではない）。
-   */
-  it('ネイティブ経路: エラー後の再読み込みでも canplay で再生を再開する', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response('', { status: 200 }))
-    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
-    Object.defineProperty(video, 'paused', { value: false, configurable: true })
-    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
-
-    await act(async () => {
-      video.dispatchEvent(new Event('playing'))
-      video.dispatchEvent(new Event('stalled'))
-      vi.advanceTimersByTime(liveStallTimeoutMs)
-    })
-    fireEvent.click(await screen.findByRole('button', { name: '再読み込み' }))
-    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
-    expect(play).not.toHaveBeenCalled()
-
-    fireEvent(video, new Event('canplay'))
-
-    expect(play).toHaveBeenCalledTimes(1)
-  })
-
-  /**
-   * **「一度でも再生が始まったか」は切替を跨いで持つ**（`startedOnceRef`）ので、
-   * 利用者が一時停止したまま画質を切り替えた先の `stalled` はエラーにしない
-   * （一時停止中の抑止と同じ扱い）。**再生を押した後の `waiting` では出す** ---
-   * 抑止が「以後ずっと検出しない」に化けていないことを同じテストで見る。
-   *
-   * 変異: effect の先頭で `startedOnceRef.current = false` に戻すと、前半の
-   * 「エラーにしない」が落ちる。
-   */
-  it('ネイティブ経路: 一時停止中に切り替えた先の stalled ではエラーにせず、再生後の waiting で出す', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-    const { resolve } = deferredFetch()
-    const { rerender } = render(
-      <LivePlayer site="default" networkId={0} serviceId={1024} profile="hd" />,
-    )
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response('', { status: 200 }))
-    await waitFor(() => expect(video.src).toContain('profile=hd'))
-    video.dispatchEvent(new Event('playing'))
-    // 利用者が一時停止してから画質を切り替える
-    Object.defineProperty(video, 'paused', { value: true, configurable: true })
-    video.dispatchEvent(new Event('pause'))
-
-    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} profile="sd" />)
-    await waitFor(() => expect(video.src).toContain('profile=sd'))
-    await act(async () => {
-      video.dispatchEvent(new Event('stalled'))
-      vi.advanceTimersByTime(liveStallTimeoutMs * 2)
-    })
-    expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
-
-    await act(async () => {
-      Object.defineProperty(video, 'paused', { value: false, configurable: true })
-      video.dispatchEvent(new Event('play'))
-      video.dispatchEvent(new Event('waiting'))
-      vi.advanceTimersByTime(liveStallTimeoutMs)
-    })
-    expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
-  })
-
-  /**
-   * 逆向き: **初回のマウントでは `canplay` でも再生しない。** 「再生」ボタンで
-   * マウントしただけで再生を始めると、同意の分離（issue #234）が壊れる。
-   */
   it('初回のマウントでは canplay でも再生しない', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
     render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
@@ -3270,50 +2063,20 @@ describe('LivePlayer / 音声（issue #870）', () => {
     expect(hls.audioTrack).toBe(0)
   })
 
-  it('ネイティブ（WebKit）: トラックが出来たら選択を適用し、切替で src を差し替えない', async () => {
-    const { resolve } = deferredFetch()
-    const { rerender } = render(
-      <LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />,
-    )
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    // jsdom の <video> は audioTracks を持たない。WebKit と同じく後から作られる形にする
-    const list: Array<{ enabled: boolean }> = []
-    const tracks = Object.assign(list, {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })
-    Object.defineProperty(video, 'audioTracks', { value: tracks, configurable: true })
-
-    resolve(new Response('', { status: 200 }))
-    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
-    const src = video.src
-
-    // トラックが 1 本ずつ届く（addtrack）。揃った時点で副だけが有効になる
-    const onAddTrack = tracks.addEventListener.mock.calls.find(([type]) => type === 'addtrack')![1]
-    list.push({ enabled: true }, { enabled: false }, { enabled: false })
-    act(() => onAddTrack())
-    expect(list.map((t) => t.enabled)).toEqual([false, false, true])
-
-    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} audio="main" />)
-    expect(list.map((t) => t.enabled)).toEqual([false, true, false])
-    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-    expect(list.map((t) => t.enabled)).toEqual([true, false, false])
-    expect(video.src).toBe(src)
-  })
 })
 
+/**
+ * 追っかけ共通シークバー（issue #1015）。
+ */
 describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () => {
+  const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
+
   const chaseTimeline = {
     chaseHeadOffsetSeconds: 0,
     plannedSeconds: 60,
     recordedSeconds: 20,
   }
-
-  const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
-    fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
 
   it('live から同じ chase に戻ると軸位置とキーシークを先頭から始める', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
@@ -3793,7 +2556,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
   const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
 
-  it('native EVENT playlist の duration が Infinity でも既知の録画尺で数字キーをシークする', async () => {
+  it('EVENT playlist の duration が Infinity でも既知の録画尺で数字キーをシークする', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     render(<LivePlayer mode="original-vod" site="default" recordingId={409} recordingDurationMs={30_000} />)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -3812,7 +2575,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     )
   })
 
-  it('native EVENT playlist で → キーは現在位置の 10 秒先の offset へ張り直す', async () => {
+  it('EVENT playlist で → キーは現在位置の 10 秒先の offset へ張り直す', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     render(<LivePlayer mode="original-vod" site="default" recordingId={409} recordingDurationMs={30_000} />)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -4160,23 +2923,6 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
 
     fireEvent.canPlay(video)
     expect(play).toHaveBeenCalledOnce()
-  })
-
-  it('原本 VOD（ネイティブ HLS）: 先頭・続きから位置なしでも canplay で 0 を明示し直す', async () => {
-    // WebKit は ENDLIST の無い EVENT playlist をライブ端の近くから始める（e2e ⑤-a で 17.4 秒）。
-    const { resolve } = deferredFetch()
-    render(<LivePlayer mode="original-vod" site="default" recordingId={425} recordingDurationMs={60_000} />)
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-    resolve(new Response(PROFILE_MASTER, { status: 200 }))
-    await waitFor(() => expect(video.getAttribute('src')).toContain('/original-vod/playlist.m3u8'))
-    fireEvent.loadedMetadata(video)
-    video.currentTime = 15.2
-    fireEvent.canPlay(video)
-    expect(video.currentTime).toBe(0)
   })
 
   it('原本 VOD: 前後チャプターのボタンで境界へ飛ぶ', async () => {
@@ -4666,6 +3412,25 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     const settings = screen.getByRole('menu', { name: '再生設定' })
     expect(within(settings).getByRole('menuitem', { name: '画質' })).toHaveAccessibleDescription('hd（720p）')
     expect(within(settings).getByRole('menuitem', { name: '音声' })).toHaveAccessibleDescription('標準')
+  })
+})
+
+describe('LivePlayer / 再生前のエラー（再生元の選び直し）', () => {
+  // 押した ▶（autoPlay）の意図は、始まる前のエラーでも親へ渡す（選び直した先で再生を続ける）。
+  // 止めたまま移ったセッションのエラーは「再生していた」にしない。位置はどちらも作らない。
+  it.each([
+    [true, true],
+    [false, false],
+  ])('autoPlay=%s のセッションが再生前に 404 なら wasPlaying=%s・位置 undefined で親へ渡す', async (autoPlay, expected) => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('gone\n', { status: 404 }))))
+    const onError = vi.fn(() => true)
+    render(
+      <LivePlayer mode="chase" site="default" recordingId={7} autoPlay={autoPlay} onRecordingPlaybackError={onError} />,
+    )
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+    expect(onError).toHaveBeenCalledWith(undefined, expected, true)
+    // 親が選び直したのでエラー表示に落ちない。
+    expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
   })
 })
 

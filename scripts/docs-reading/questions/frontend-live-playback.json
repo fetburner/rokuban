@@ -5,24 +5,24 @@
       "heading": "ブラウザ再生能力、probe、エラー分類",
       "question": "ライブ視聴の再生経路はどう選び、再生前とメディア層の失敗はどう検知して分類するか。",
       "points": [
-        "ネイティブ HLS、hls.js、最後の望みとしてネイティブの 3 段で、実際に確かめた能力で選ぶ",
-        "再生前にプレイリストを 1 回取得して HTTP 層の成否を見て、メディア層の失敗は video のイベントで拾う"
+        "Hls.isSupported() が真なら hls.js、偽なら非対応案内を表示する",
+        "再生前の probe で HTTP 層を分類し、再生中は hls.js の fatal error と currentTime の停滞を扱う"
       ]
     },
     {
-      "heading": "1 段目でセグメントの MIME まで問う理由",
-      "question": "ネイティブ HLS の判定でセグメントの MIME まで問うのはなぜか。",
+      "heading": "canPlayType() の戻り値で経路を分けない理由",
+      "question": "HLS MIME の canPlayType() だけで再生経路を決めないのはなぜか。",
       "points": [
-        "プレイリストの MIME への戻り値では Safari と Chrome を区別できないため",
-        "セグメントを demux できるのは WebKit だけである"
+        "MIME の申告だけでは配信する MPEG-TS セグメントを再生できることまで分からない",
+        "経路は Hls.isSupported() だけで決める"
       ]
     },
     {
       "heading": "メディア層の失敗の拾い方",
       "question": "プレイリストが取れた後のメディア層の失敗はどう拾い、拾わないと何が起きるか。",
       "points": [
-        "ネイティブ経路で動画要素のイベントを聴いて拾う",
-        "聴かないと文言も再読み込みボタンも出ない、永久に止まった黒いプレイヤーになる"
+        "hls.js の Hls.Events.ERROR で fatal な失敗を拾い、インスタンスを破棄してエラーを表示する",
+        "MSE の stalled / waiting は正常時にも出るので、停止は currentTime の観測で判定する"
       ]
     },
     {
@@ -45,8 +45,8 @@
       "heading": "メディア失敗の判定手段",
       "question": "メディア失敗の判定は何で確かめ、実ブラウザで確かめられていないものは何か。",
       "points": [
-        "ネイティブ経路のメディア失敗のテストと実 WebKit の e2e で確かめる",
-        "一時停止の抑止そのものは実ブラウザで機械判定できていない"
+        "hls.js の経路を単体テストと実 Chrome / Playwright WebKit の E2E で確かめる",
+        "Playwright WebKit は iPhone Safari の実機確認に置き換わらない"
       ]
     },
     {

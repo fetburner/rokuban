@@ -56,8 +56,7 @@ export function validLiveAudio(requested: unknown): LiveAudioChoice | undefined 
  * **音声グループ内の並び順（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約である**
  * （`internal/streamer/hls_args.go` の `audioRenditionEntries`）。トラック名（master の
  * `NAME`）は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれるので使えない。
- * hls.js の `audioTracks` も WebKit の `video.audioTracks` も master の順に並ぶ
- * （Playwright の Chromium / WebKit で実測）。
+ * hls.js の `audioTracks` は master の音声グループの順に並ぶ。
  */
 export function liveAudioTrackIndex(choice: LiveAudioChoice | undefined): number {
   return choice === 'main' ? 1 : choice === 'sub' ? 2 : 0
@@ -119,56 +118,10 @@ export function readSubtitleVisibility(
  * liveStallTimeoutMs は「映像が進んでいない」と見なすまでの猶予（ミリ秒。
  * 停滞時の自動降格。issue #871。テストから参照するので export する）。
  *
- * **ネイティブ HLS 経路の `stalled` / `waiting` の猶予と、hls.js 経路の
- * 「`currentTime` が進まない」の猶予で同じ値を使う。** どちらも同じ事象
- * （この回線でこのプロファイルのセグメントが間に合っていない）を別の信号で
- * 見ているだけなので、別々の値を置くと片方だけ調整されて食い違う。
- *
- * 12 秒にしたのは、WebKit が `stalled` を出すのがデータ途絶から 3 秒後
- * （HTML 仕様の「3 秒以上データが来ない」規定。実測でも 3.6 秒）で、
- * streamer 側のセグメント長が 2 秒（`internal/streamer/hls_args.go` の
- * `-hls_time 2`）だから --- 正常なら 3 セグメント以上落ちないと到達しない。
+ * 12 秒は、2 秒単位のセグメントが連続して遅れたと判断するまで余裕を持たせる。
+ * hls.js が再生位置を進めるかを計器と同じ 1 秒の刻みで観測する。
  */
 export const liveStallTimeoutMs = 12_000
-
-/** 世代付き録画 HLS を読み直すまでの停滞時間（ミリ秒）。 */
-export const recordingHlsRecoveryTimeoutMs = 5_000
-
-/** 同じ位置で世代付き録画 HLS を読み直す上限回数。 */
-export const recordingHlsRecoveryLimit = 2
-
-/** 「同じ位置」とみなす幅（秒）。 */
-export const recordingHlsRecoveryToleranceSeconds = 0.5
-
-/** RecordingHlsRecovery は、直前の読み直しの回数とその位置である。 */
-export type RecordingHlsRecovery = { count: number; atSeconds: number }
-
-/**
- * nextRecordingHlsRecovery は、`waiting` / `stalled` から `elapsedMs` 経った時点で
- * 世代付き録画 HLS を読み直すかを決める（ネイティブ HLS 専用）。
- *
- * 回数は位置で数える。`atSeconds` が前回と `recordingHlsRecoveryToleranceSeconds` 以内なら
- * 回数を足し、`recordingHlsRecoveryLimit` に達していたら読み直さない。違う位置なら
- * 1 から数え直す（読み直しの後に 0 秒から元の位置へ戻すシークを「進んだ」と数えると
- * 立て直しが止まらなくなるため、`timeupdate` で 0 に戻す処理は持たない）。
- * `userPaused` は利用者の操作による一時停止だけを表す。`media.paused` は渡さない
- * （実 Safari は止まっている最中に自分で `pause` を出した。Safari 27.0.1。`currentTime` を
- * 直接代入したシークで 3 回中 3 回、実ポインタでシークする `recording-hls-stall-recovery.mjs`
- * でも観測）。
- */
-export function nextRecordingHlsRecovery(
-  prev: RecordingHlsRecovery | null,
-  sample: { elapsedMs: number; atSeconds: number; userPaused: boolean },
-): { recover: boolean; next: RecordingHlsRecovery | null } {
-  if (sample.userPaused || sample.elapsedMs < recordingHlsRecoveryTimeoutMs || !Number.isFinite(sample.atSeconds)) {
-    return { recover: false, next: prev }
-  }
-  if (prev !== null && Math.abs(sample.atSeconds - prev.atSeconds) <= recordingHlsRecoveryToleranceSeconds) {
-    if (prev.count >= recordingHlsRecoveryLimit) return { recover: false, next: prev }
-    return { recover: true, next: { count: prev.count + 1, atSeconds: prev.atSeconds } }
-  }
-  return { recover: true, next: { count: 1, atSeconds: sample.atSeconds } }
-}
 
 /**
  * ProgressWatch は「映像が進んでいるか」の観測状態（issue #871）。
@@ -327,7 +280,7 @@ export function nextLowerProfile(
  * `Playlist` ハンドラは `?profile=` に関わらず全プロファイルの variant を並べた
  * master（`playlist.m3u8`）を返すので（`internal/streamer/live.go` の `Playlist`）、降格は
  * **何も下げないのに「下げました」と表示する**ことになる。その master の中では
- * hls.js / ネイティブが自前で variant を選ぶ。
+ * hls.js が自前で variant を選ぶ。
  *
  * **master かどうかでは判定できない。** captions 無効時も、`Playlist` は音声
  * レンディションを載せるためにプロファイルごとの master（`<profile>.m3u8`）を返す。
@@ -441,71 +394,6 @@ export function sendPlaybackLeaveHint(url: string): void {
   void fetch(url, { method: 'POST', keepalive: true }).catch(() => {
     // 離脱時の失敗はユーザーに見せる意味がない（見せる画面がもう無い）
   })
-}
-
-/**
- * livePlaylistMimeType は streamer がプレイリストに付ける Content-Type
- * （`internal/streamer/live.go` の `writeHLSPlaylist`）。
- */
-const livePlaylistMimeType = 'application/vnd.apple.mpegurl'
-
-/**
- * liveSegmentMimeType は streamer がセグメントに付ける Content-Type
- * （`internal/streamer/live.go` の `Segment`。ffmpeg の HLS マルチプレクサが吐く MPEG-2 TS）。
- */
-const liveSegmentMimeType = 'video/mp2t'
-
-/**
- * supportsNativeHls は `<video>` が **streamer が実際に配るもの**をネイティブに
- * 再生できるかを判定する。プレイリストの MIME とセグメントの MIME の両方を問う。
- *
- * **プレイリストの MIME だけでは Safari と Chrome を区別できない。** Playwright の
- * 3 エンジンで実測した値（`web/e2e/live.mjs` の⑥が同じことを実ブラウザで固定する）:
- *
- * | canPlayType の引数 | WebKit 605.1.15 | Chromium 151 | Chrome 151 | Firefox 153 |
- * |---|---|---|---|---|
- * | `application/vnd.apple.mpegurl` | `maybe` | `maybe` | `maybe` | `''` |
- * | `application/x-mpegURL` | `maybe` | `maybe` | `maybe` | `''` |
- * | 上記 + `; codecs="avc1.42E01E,mp4a.40.2"` | `probably` | `probably` | `probably` | `''` |
- * | **`video/mp2t`** | **`maybe`** | **`''`** | **`''`** | **`''`** |
- *
- * つまり m3u8 の MIME に対する戻り値を決めているのは **codecs パラメータの有無で
- * あってエンジンの違いではない**（HTML 仕様は「codecs を許す type について、それが
- * 無いなら `probably` を返すべきでない」と定めており、3 エンジンともそれに従って
- * いるだけ）。`'probably'` のみを対応と見なす形（レビュー #190 の 1 回目の修正）は
- * **どの実ブラウザでも false を返し、ネイティブ分岐が一度も成立しない**。逆に
- * `'maybe'` も対応と見なす形（初版）は Chrome を誤ってネイティブ分岐へ送る。
- * m3u8 の MIME をどう読んでも、この 2 つのどちらかにしかならない。
- *
- * **見分けているのはセグメントの container である。** Chromium / Firefox の
- * `<video>` は MPEG-2 TS を demux できない（hls.js が TS を fMP4 へ remux してから
- * MSE に載せるのはこのため）が、WebKit はできる。streamer が配るセグメントは
- * `video/mp2t` そのものなので、この問いは「このブラウザは我々が配るものを
- * そのまま再生できるか」という能力そのものへの問いになっている --- エンジンの
- * 同定でも、m3u8 という拡張子への態度でもない。
- *
- * `canPlayType` を注入で受け取るのは、実際の `HTMLVideoElement.canPlayType` は
- * jsdom で常に `''` を返す（未実装）ため、テストから振る舞いを差し替えられるように
- * するため。
- */
-export function supportsNativeHls(canPlayType: (type: string) => string): boolean {
-  return canPlayType(livePlaylistMimeType) !== '' && canPlayType(liveSegmentMimeType) !== ''
-}
-
-/**
- * claimsHlsPlaylistSupport は `<video>` が HLS プレイリストの MIME に何らかの
- * 支持を表明するかだけを見る（`supportsNativeHls` より弱い問い）。
- *
- * **これ単独をネイティブ分岐の条件にしてはならない**（Chrome も真になる。上記の表）。
- * 使ってよいのは `Hls.isSupported()` が false と分かった後の**最後の砦**としてだけ
- * である --- MSE も ManagedMediaSource も無いブラウザは hls.js では絶対に再生
- * できないので、そこで `<video>` に直接渡して駄目でも失うものが無い。逆に
- * `supportsNativeHls` が（例えば iOS の `video/mp2t` に対する戻り値が macOS と
- * 違って）取りこぼした場合に、ネイティブで完璧に再生できる端末へ
- * 「このブラウザは HLS に対応していません」と表示してしまう事故を防ぐ。
- */
-export function claimsHlsPlaylistSupport(canPlayType: (type: string) => string): boolean {
-  return canPlayType(livePlaylistMimeType) !== ''
 }
 
 /**
@@ -710,17 +598,8 @@ export function classifyLiveLoadError(result: LiveLoadErrorInput): LiveLoadError
   return { kind: 'other', status: result.status, message: result.body.trim() }
 }
 
-/**
- * LiveDiagnostics は再生経路から読み取った遅延・バッファの計器値（issue #476）。
- *
- * `latencySec` は hls.js 経由（`source: 'hls'`）でのみ埋まる。ネイティブ HLS
- * （Safari）はライブ同期点（`liveSyncPosition`）を持たないため、hls.js の
- * `latency` に相当する値を取得できない --- `source: 'native'` のときは
- * 呼び出し側（`components/live-player.tsx`）が常に `null` を渡す
- * （「測れないものを出さない」。`docs/frontend/live.md` §フロントエンド実装）。
- */
+/** LiveDiagnostics は hls.js から読み取った遅延・バッファの計器値（issue #476）。 */
 export type LiveDiagnostics = {
-  source: 'hls' | 'native'
   latencySec: number | null
   bufferSec: number | null
 }
@@ -732,8 +611,8 @@ const liveDiagnosticsMissingLabel = '—'
  * missingOr は欠損値（`null` / `NaN`）なら `liveDiagnosticsMissingLabel` を、
  * そうでなければ `format` の結果を返す。
  *
- * 呼び出し側（`components/live-player.tsx` の `readHlsDiagnostics` /
- * `readNativeDiagnostics`）が既に欠損を `null` に正規化して渡す前提だが、
+ * 呼び出し側（`components/live-player.tsx` の `readHlsDiagnostics`）が
+ * 既に欠損を `null` に正規化して渡す前提だが、
  * `NaN` もここで弾く --- `hls.latency` はライブ同期点が決まる前は `NaN` では
  * なく `0` を返す（`LatencyController.get latency()` が `this._latency || 0`。
  * `node_modules/hls.js` 1.7.1 で確認済み）ため呼び出し側が `0` を欠損として
@@ -744,16 +623,9 @@ function missingOr(value: number | null, format: (n: number) => string): string 
 }
 
 /**
- * formatLiveDiagnostics は計器 1 行ぶんの表示文字列。
- *
- * ネイティブ経路（`source: 'native'`）は「先読み」だけを返す ---
- * 「放送から」を欠損表示（`—`）で出すことすらしない。measured でない値の
- * プレースホルダを置くこと自体が「そのうち測れる」という誤った期待を作るため
- * （issue #476 の含むもの 2「測れないものを出さない」）。
- */
+/** formatLiveDiagnostics は計器 1 行ぶんの表示文字列。 */
 export function formatLiveDiagnostics(diagnostics: LiveDiagnostics): string {
   const buffer = `先読み${missingOr(diagnostics.bufferSec, (n) => `${Math.round(n)}秒`)}`
-  if (diagnostics.source === 'native') return buffer
   const latency = `放送から${missingOr(diagnostics.latencySec, (n) => `約${Math.round(n)}秒`)}`
   return `${latency} / ${buffer}`
 }
@@ -772,12 +644,10 @@ export type LivePlaylistProbeResult =
  * probeLivePlaylist はプレイリスト URL への GET を 1 回行い、実際に再生を試す前に
  * 到達可能性とステータスを確認する。
  *
- * ネイティブ `<video>` も hls.js も、読み込み失敗時に HTTP ステータスや本文を取り出す
- * 手段を持たない（`<video>` の `error` イベントは status を運ばない。hls.js の
- * エラーイベントも本文までは持たない）。両方の再生経路で同じエラー表示を出すため、
- * 実際の再生前に `fetch` で 1 回取得し、成功したときだけ `<video>` / hls.js に URL を
- * 渡す。この GET 自体もセグメント要求と同じ経路（`internal/streamer` のアプリ配信）を
- * 通るので、idle GC の last-access 更新にも自然に乗る。
+ * hls.js のエラーイベントは HTTP ステータスや本文を持たない。再生前に `fetch` で
+ * 1 回取得し、失敗理由を分類してから hls.js に URL を渡す。この GET 自体も
+ * セグメント要求と同じ経路（`internal/streamer` のアプリ配信）を通るので、idle GC の
+ * last-access 更新にも自然に乗る。
  *
  * **成功時は本文も読む**（issue #871）。読むのは全プロファイルを束ねた master かどうかの
  * 判定だけで（`bundlesProfiles`）、そのために要求を増やしはしない（同じ 1 回の GET の本文を
@@ -809,8 +679,8 @@ export async function probeLivePlaylist(
   }
   if (response.ok) {
     // 本文が読めなくても成功として扱う（既定 = 束ねていない）。読めない理由が
-    // 転送中の切断なら、メディア層の失敗として `watchNativeMedia` /
-    // hls.js の ERROR が拾う --- ここで probe を失敗にすると、両経路に共通の
+    // 転送中の切断なら、メディア層の失敗として hls.js の ERROR が拾う ---
+    // ここで probe を失敗にすると、共通の
     // エラー表示が「本文が読めなかった」という別の原因を語ることになる
     const body = await response.text().catch(() => '')
     return { ok: true, bundlesProfiles: bundlesProfiles(body) }

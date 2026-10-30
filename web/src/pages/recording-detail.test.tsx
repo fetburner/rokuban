@@ -25,12 +25,72 @@ import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
 import { assertNoDuplicateAlertText } from '@/test/duplicate-alerts'
 
+type RecordingHlsError = {
+  fatal: boolean
+  response?: { code?: number }
+}
+type RecordingHlsInstance = {
+  media?: HTMLMediaElement
+  emit(event: string, data: RecordingHlsError): void
+}
+
+const recordingHlsMockState = vi.hoisted(() => ({ instances: [] as RecordingHlsInstance[] }))
+
+vi.mock('hls.js', () => {
+  class FakeHls {
+    static Events = {
+      ERROR: 'hlsError',
+      MANIFEST_PARSED: 'hlsManifestParsed',
+      AUDIO_TRACKS_UPDATED: 'hlsAudioTracksUpdated',
+      LEVEL_LOADED: 'hlsLevelLoaded',
+    }
+    static isSupported = () => true
+    private listeners = new Map<string, Array<(event: string, data: RecordingHlsError) => void>>()
+    on = vi.fn((event: string, listener: (event: string, data: RecordingHlsError) => void) => {
+      this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener])
+    })
+    loadSource = vi.fn((url: string) => {
+      this.source = url
+      if (this.media) this.media.dataset.hlsSource = url
+    })
+    attachMedia = vi.fn((media: HTMLMediaElement) => {
+      this.media = media
+      if (this.source) media.dataset.hlsSource = this.source
+    })
+    destroy = vi.fn()
+    subtitleDisplay = true
+    audioTrack = 0
+    audioTracks: unknown[] = []
+    latency = 0
+    mainForwardBufferInfo: { len: number } | null = null
+    private source?: string
+    private media?: HTMLMediaElement
+
+    emit(event: string, data: RecordingHlsError) {
+      for (const listener of this.listeners.get(event) ?? []) listener(event, data)
+    }
+
+    constructor() {
+      recordingHlsMockState.instances.push(this as unknown as RecordingHlsInstance)
+    }
+  }
+
+  return { default: FakeHls }
+})
+
+function emitRecordingHlsError(media: HTMLVideoElement): void {
+  const instance = [...recordingHlsMockState.instances].reverse().find((hls) => hls.media === media)
+  if (!instance) throw new Error('video に接続した hls.js instance がありません')
+  instance.emit('hlsError', { fatal: true })
+}
+
 afterEach(() => {
   try {
     assertNoDuplicateAlertText()
   } finally {
     cleanup()
     vi.restoreAllMocks()
+    recordingHlsMockState.instances.length = 0
   }
 })
 
@@ -1032,7 +1092,7 @@ describe('RecordingDetailPage', () => {
       expect(document.fullscreenElement).toBe(fullscreenContainer)
       expect(fullscreenContainer.querySelector('[data-testid="recording-player-frame"]')).not.toBeNull()
 
-      await waitFor(() => expect(nextVideo.getAttribute('src')).toContain('/original-vod/playlist.m3u8'))
+      await waitFor(() => expect(nextVideo.getAttribute('data-hls-source')).toContain('/original-vod/playlist.m3u8'))
       fireEvent.canPlay(nextVideo)
       await waitFor(() => expect(playSpy).toHaveBeenCalled())
       expect(screen.getByRole('button', { name: '全画面を終了' })).toBeInTheDocument()
@@ -3548,7 +3608,6 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
   }
 
   it('録画開始直後に hlsPlayback が現れたら、ポスターから v1 を再生する', async () => {
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
     const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
     const fake = createFakeServer({
       recording: sampleRecording({ ...RUNNING, ingest: { state: 'pending' }, hlsPlayback: [], encodedAssets: [] }),
@@ -3570,12 +3629,11 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     await waitFor(() => expect(screen.queryByTestId('recording-playback-preview-timeline')).not.toBeInTheDocument())
 
     await userEvent.setup().click(screen.getByTestId('recording-playback-start'))
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(url))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(url))
     expect(playlistPaths(fake.fetchMock, '/chase')).toEqual([])
   })
 
   it('#chase が source none で開いても、後から現れた v1 を自動再生する', async () => {
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
     const fake = createFakeServer({
@@ -3594,7 +3652,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       encodedAssets: [],
     }))
     await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(url))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(url))
     const video = document.querySelector('video')!
     fireEvent.canPlay(video)
     await waitFor(() => expect(play).toHaveBeenCalled())
@@ -3604,7 +3662,6 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
 
   it('次のエピソードへ自動再生で移った先が source none で始まり、後から v1 が現れると、操作なしで v1 の再生が始まる', async () => {
     const user = userEvent.setup()
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
     const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     const url = '/api/media/stores/media/recordings/4/hls/v1/hd/master.m3u8'
     const origin = sampleRecording({
@@ -3653,7 +3710,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       hlsPlayback: [{ profile: 'hd', masterUrl: url }],
     }))
     await queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(4) })
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(url))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(url))
     const video = document.querySelector('video')!
     fireEvent.canPlay(video)
     await waitFor(() => expect(play).toHaveBeenCalled())
@@ -3662,12 +3719,11 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
   })
 
   it('追っかけ再生中に hlsPlayback が現れても、再生元は追っかけのまま替わらない', async () => {
-    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
     const url = '/api/media/stores/media/recordings/3/hls/v1/hd/master.m3u8'
     const server = await startChase()
     expect(playlistPaths(server.fetchMock, '/chase').length).toBeGreaterThan(0)
     const video = document.querySelector('video')!
-    const before = video.getAttribute('src')
+    const before = video.getAttribute('data-hls-source')
 
     server.setRecording(sampleRecording({
       ...RUNNING,
@@ -3681,8 +3737,8 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     }))
 
     expect(document.querySelector('video')).toBe(video)
-    expect(video.getAttribute('src')).toBe(before)
-    expect(video.getAttribute('src')).not.toBe(url)
+    expect(video.getAttribute('data-hls-source')).toBe(before)
+    expect(video.getAttribute('data-hls-source')).not.toBe(url)
   })
 
   /** finishRecording は録画が終わった状態を取り直させる（追っかけのセッションはそのまま）。 */
@@ -3816,7 +3872,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       ingest: { state: 'committed' },
       encodedAssets: [],
     }))
-    fireEvent.error(document.querySelector('video')!)
+    emitRecordingHlsError(document.querySelector('video')!)
 
     await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod').length).toBeGreaterThan(0))
     const detailRequestsAfterError = fake.fetchMock.mock.calls.filter(([input]) =>
@@ -3853,9 +3909,9 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       resumePositionMs: 12_500,
     })
     fake.setRecording(latest)
-    fireEvent.error(document.querySelector('video')!)
+    emitRecordingHlsError(document.querySelector('video')!)
 
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain(urlFor(1)))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toContain(urlFor(1)))
     const hlsVideo = document.querySelector('video')!
     let currentTime = 0
     Object.defineProperty(hlsVideo, 'currentTime', {
@@ -3925,7 +3981,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       const fake = createFakeServer({ recording: v1, liveProfiles: LIVE_PROFILES })
       const rendered = renderAt('/recordings/3')
       await user.click(await screen.findByTestId('recording-playback-start'))
-      await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(urlFor(1)))
+      await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(urlFor(1)))
       const video = document.querySelector('video')!
       const media = controllableVideo(video)
       fireEvent.loadedMetadata(video)
@@ -3952,7 +4008,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       }))
 
       expect(document.querySelector('video')).toBe(server.video)
-      expect(server.video.getAttribute('src')).toBe(urlFor(1))
+      expect(server.video.getAttribute('data-hls-source')).toBe(urlFor(1))
       expect(otherSourceRequests(server.fetchMock)).toEqual([])
     })
 
@@ -3964,11 +4020,11 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
         data: { hlsPlayback: [] },
       }))
       expect(document.querySelector('video')).toBe(server.video)
-      expect(server.video.getAttribute('src')).toBe(urlFor(1))
+      expect(server.video.getAttribute('data-hls-source')).toBe(urlFor(1))
 
       server.setRecording(v2)
       await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-      await waitFor(() => expect(server.video.getAttribute('src')).toBe(urlFor(2)))
+      await waitFor(() => expect(server.video.getAttribute('data-hls-source')).toBe(urlFor(2)))
       expect(document.querySelector('video')).toBe(server.video)
       fireEvent.loadedMetadata(server.video)
       expect(server.media.currentTime).toBe(40)
@@ -3981,15 +4037,15 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     it('空の間のエラーでも追っかけ・原本 HLS へ逸れず、次のエラーで v2 を最後の位置から再生する', async () => {
       const server = await playV1()
       server.setRecording(empty)
-      fireEvent.error(server.video)
+      emitRecordingHlsError(server.video)
       await waitFor(() => expect(document.querySelector('video')).not.toBe(server.video))
       const retried = document.querySelector('video')!
-      await waitFor(() => expect(retried.getAttribute('src')).toBe(urlFor(1)))
+      await waitFor(() => expect(retried.getAttribute('data-hls-source')).toBe(urlFor(1)))
       expect(otherSourceRequests(server.fetchMock)).toEqual([])
 
       server.setRecording(v2)
-      fireEvent.error(retried)
-      await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toBe(urlFor(2)))
+      emitRecordingHlsError(retried)
+      await waitFor(() => expect(document.querySelector('video')?.getAttribute('data-hls-source')).toBe(urlFor(2)))
       const resumed = document.querySelector('video')!
       const media = controllableVideo(resumed)
       fireEvent.loadedMetadata(resumed)
@@ -4003,14 +4059,14 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       server.setRecording(empty)
       // 作り直した 2 回とも v1 の master が 410 になり、3 回目で作り直しの上限に当たる。
       server.failRecordingHLS(2)
-      fireEvent.error(server.video)
+      emitRecordingHlsError(server.video)
       expect(await screen.findByRole('button', { name: '再読み込み' })).toBeInTheDocument()
       const failed = document.querySelector('video')!
       expect(otherSourceRequests(server.fetchMock)).toEqual([])
 
       server.setRecording(v2)
       await server.queryClient.invalidateQueries({ queryKey: recordingDetailQueryKey(3) })
-      await waitFor(() => expect(failed.getAttribute('src')).toBe(urlFor(2)))
+      await waitFor(() => expect(failed.getAttribute('data-hls-source')).toBe(urlFor(2)))
       await waitFor(() => expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument())
       const media = controllableVideo(failed)
       fireEvent.loadedMetadata(failed)
@@ -4176,7 +4232,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     await waitFor(() => expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1))
     const playbackGroup = screen.getByTestId('recording-playback-group')
     deferDetailRefresh = true
-    fireEvent.error(document.querySelector('video')!)
+    emitRecordingHlsError(document.querySelector('video')!)
     await waitFor(() => expect(detailRefreshStarted).toBe(true))
 
     await act(async () => {

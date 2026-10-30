@@ -150,7 +150,6 @@ type RecordingPlaybackControlsProps = {
   muted: boolean
   volume: number
   playbackRate: number
-  playbackRateLocked?: boolean
   subtitlesEnabled: boolean
   skipEnabled: boolean
   pictureInPicture: boolean
@@ -240,7 +239,6 @@ export function RecordingPlaybackControls({
   muted,
   volume,
   playbackRate,
-  playbackRateLocked = false,
   subtitlesEnabled,
   skipEnabled,
   pictureInPicture,
@@ -665,9 +663,8 @@ export function RecordingPlaybackControls({
                 variant="ghost"
                 data-testid="chapter-edit-playback-rate"
                 aria-label={`再生速度 ${playbackRate}x。次の速度に切り替え`}
-                title={playbackRateLocked ? '変換中は再生速度を変更できません' : '押すたびに再生速度が切り替わります'}
+                title="押すたびに再生速度が切り替わります"
                 className="h-8 shrink-0 rounded-full border border-white/25 px-1.5 font-mono text-xs text-white hover:bg-white/15 hover:text-white md:h-9 md:px-2.5"
-                disabled={playbackRateLocked}
                 onClick={() => {
                   onRateChange(PLAYBACK_RATES.find((rate) => rate > playbackRate) ?? PLAYBACK_RATES[0]!)
                 }}
@@ -1262,7 +1259,6 @@ export function RecordingPlaybackControls({
             canChangePlaybackRate={canChangePlaybackRate}
             settingsLabel={settingsLabel}
             playbackRate={playbackRate}
-            playbackRateLocked={playbackRateLocked}
             subtitlesEnabled={subtitlesEnabled}
             skipEnabled={skipEnabled}
             showSkip={hasChapters}
@@ -1431,7 +1427,6 @@ type PlaybackSettingsMenuProps = {
   canChangePlaybackRate: boolean
   settingsLabel: string
   playbackRate: number
-  playbackRateLocked: boolean
   subtitlesEnabled: boolean
   skipEnabled: boolean
   showSkip: boolean
@@ -1467,7 +1462,6 @@ function PlaybackSettingsMenu({
   canChangePlaybackRate,
   settingsLabel,
   playbackRate,
-  playbackRateLocked,
   subtitlesEnabled,
   skipEnabled,
   showSkip,
@@ -1558,25 +1552,22 @@ function PlaybackSettingsMenu({
     icon: ReactNode,
     label: string,
     current: string,
-    disabled = false,
   ) => (
     <button
       type="button"
       role="menuitem"
-      aria-disabled={disabled || undefined}
       aria-label={label}
       aria-describedby={`${id}-${key}-value`}
       data-submenu={key}
       data-menu-focus={returnRow === key ? 'true' : undefined}
-      title={disabled ? '変換中のネイティブ HLS は 1 倍で再生します' : undefined}
-      className={cn(row, disabled && 'cursor-not-allowed opacity-70')}
-      onClick={() => !disabled && enter(key)}
+      className={row}
+      onClick={() => enter(key)}
     >
       {icon}
       <span className="flex-1">{label}</span>
       <span id={`${id}-${key}-value`} className={value}>
         {current}
-        {!disabled && <ChevronRight className="size-4" aria-hidden />}
+        <ChevronRight className="size-4" aria-hidden />
       </span>
     </button>
   )
@@ -1645,8 +1636,7 @@ function PlaybackSettingsMenu({
     'speed',
     <Gauge className={icon} aria-hidden />,
     '再生速度',
-    playbackRateLocked ? `${rateLabel(playbackRate)}（変換中は固定）` : rateLabel(playbackRate),
-    playbackRateLocked,
+    rateLabel(playbackRate),
   )
   const subtitlesRow = switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)
   const skipRow = showSkip && switchRow(
