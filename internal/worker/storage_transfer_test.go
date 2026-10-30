@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -279,6 +280,78 @@ func TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync(t *testing.T) {
 				t.Fatalf("destination copy state = %q, want active", state)
 			}
 		})
+	}
+}
+
+func TestStorageTransferWorkerPreservesSubtitleAfterConcurrentActivation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	recordingID := dbtest.Recording(t, pool)
+	profile := "web"
+	relPath := "sites/default/transfer/concurrent-captions.mp4"
+	video := []byte("encoded-video")
+	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, video)
+	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(roots["test-store"], filepath.FromSlash(relPath))
+	sourceSubtitle := filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath))
+	if err := os.WriteFile(sourceSubtitle, []byte("WEBVTT\n\nsource captions\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgA := transferTestConfig("archive", "archive", "test-store")
+	cfgB := transferTestConfig("archive", "archive", "test-store")
+	cfgB.Stores["archive"] = config.StoreConfig{Kind: "fs", InternalURL: "http://archive-v2.internal:8080"}
+	fingerprintA, err := cfgA.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprintB, err := cfgB.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fingerprintA == fingerprintB {
+		t.Fatal("rollout configs have the same policy fingerprint")
+	}
+	rulesB := mustOriginalRules(t, cfgB)
+	media := pgstore.NewMedia(pool, "test-store", "")
+	transferB, ok, err := media.PrepareMediaAssetTransfer(
+		context.Background(), assetID, "archive", rulesB, cfgB.FSStoreNames(), cfgB.Derived, storageTransferAttemptLimit,
+	)
+	if err != nil || !ok {
+		t.Fatalf("preparing delayed transfer = (%+v, %t, %v)", transferB, ok, err)
+	}
+
+	workerA := StorageTransferWorker{Storage: media, Config: cfgA, Roots: roots}
+	if err := workerA.Work(context.Background(), jobs.StorageTransferArgs{
+		MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprintA,
+	}); err != nil {
+		t.Fatalf("first rollout transfer: %v", err)
+	}
+	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
+	targetSubtitle := filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath))
+	workerB := StorageTransferWorker{Storage: media, Config: cfgB, Roots: roots}
+	digest := sha256.Sum256(video)
+	if err := workerB.completeTransfer(
+		context.Background(), transferB,
+		jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprintB},
+		rulesB, digest[:], sourcePath, targetPath, "", false, slog.Default(),
+	); err != nil {
+		t.Fatalf("delayed rollout completion: %v", err)
+	}
+
+	gotSubtitle, err := os.ReadFile(targetSubtitle)
+	if err != nil || string(gotSubtitle) != "WEBVTT\n\nsource captions\n" {
+		t.Fatalf("active destination subtitle = %q, %v; want preserved captions", gotSubtitle, err)
+	}
+	var state string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transferB.CopyID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" {
+		t.Fatalf("destination state after stale completion = %q, want active", state)
 	}
 }
 
@@ -1148,6 +1221,143 @@ func TestStorageTransferPendingReclaimRechecksAfterRecordingRestore(t *testing.T
 	}
 	if state != "pending" {
 		t.Fatalf("pending copy after restore = %q, want pending", state)
+	}
+}
+
+func prepareUntilEncodedPendingOriginal(t *testing.T, pool *pgxpool.Pool, roots map[string]string, recordingID int64) (int64, store.MediaAssetTransfer, config.StorageConfig, int64) {
+	t.Helper()
+	originalRelPath := "sites/default/retention/pending-original.ts"
+	originalID := seedOriginalAsset(t, pool, roots["test-store"], recordingID, originalRelPath, []byte("source-original"))
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	media := pgstore.NewMedia(pool, "archive", "")
+	transfer, ok, err := media.PrepareMediaAssetTransfer(
+		context.Background(), originalID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit,
+	)
+	if err != nil || !ok {
+		t.Fatalf("preparing pending original transfer = (%+v, %t, %v)", transfer, ok, err)
+	}
+
+	profile := "web"
+	addDerived := func(kind, relPath string, profile *string, content []byte) int64 {
+		t.Helper()
+		assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, kind, profile, relPath, content)
+		archivePath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(archivePath, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		transferTestAddCopy(t, pool, assetID, "archive", relPath)
+		return assetID
+	}
+	addDerived(store.AssetKindEncoded, "sites/default/retention/encoded.mp4", &profile, []byte("encoded"))
+	addDerived(store.AssetKindThumbnail, "sites/default/retention/thumbnail.jpg", nil, []byte("thumbnail"))
+	seekTilesID := addDerived(store.AssetKindSeekTiles, "sites/default/retention/tiles.jpg", nil, []byte("tiles"))
+	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+	var eligible bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1)`, originalID).Scan(&eligible); err != nil {
+		t.Fatalf("checking desired-store until_encoded eligibility: %v", err)
+	}
+	if !eligible {
+		t.Fatal("until_encoded fixture does not qualify for original deletion")
+	}
+	return originalID, transfer, cfg, transferTestCopyID(t, pool, seekTilesID, "archive")
+}
+
+func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	recordingID := dbtest.Recording(t, pool)
+	originalID, transfer, cfg, _ := prepareUntilEncodedPendingOriginal(t, pool, roots, recordingID)
+	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("source-original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newWorker := func(storeName string) *DeleteReconcileWorker {
+		media := pgstore.NewMedia(pool, storeName, cfg.Derived)
+		return &DeleteReconcileWorker{
+			MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
+			RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
+			MediaDir: roots[storeName], MediaStoreName: storeName, TrashRetention: time.Hour,
+		}
+	}
+	if err := newWorker("test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("deleting source original after until_encoded: %v", err)
+	}
+	if fileExists(filepath.Join(roots["test-store"], filepath.FromSlash(transfer.RelPath))) {
+		t.Fatal("until_encoded source original remains after deletion reconcile")
+	}
+	var sourceState string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, originalID).Scan(&sourceState); err != nil {
+		t.Fatal(err)
+	}
+	if sourceState != "deleted" {
+		t.Fatalf("until_encoded source copy state = %q, want deleted", sourceState)
+	}
+	if !fileExists(targetPath) {
+		t.Fatal("fixture destination should remain before its pending reservation is reclaimed")
+	}
+	if err := newWorker("archive").Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("reclaiming until_encoded pending destination: %v", err)
+	}
+	if fileExists(targetPath) {
+		t.Fatal("pending destination remains after until_encoded made its transfer obsolete")
+	}
+	var targetState string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&targetState); err != nil {
+		t.Fatal(err)
+	}
+	if targetState != "deleted" {
+		t.Fatalf("until_encoded pending copy state = %q, want deleted", targetState)
+	}
+}
+
+func TestStorageTransferPendingReclaimRechecksUntilEncodedEligibility(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	recordingID := dbtest.Recording(t, pool)
+	_, transfer, cfg, seekTilesCopyID := prepareUntilEncodedPendingOriginal(t, pool, roots, recordingID)
+	media := pgstore.NewMedia(pool, "archive", "")
+	candidates, err := media.ListObsoletePendingMediaAssetTransferCopies(
+		context.Background(), mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10,
+	)
+	if err != nil || len(candidates) != 1 || candidates[0].CopyID != transfer.CopyID {
+		t.Fatalf("until_encoded obsolete candidates = %+v, %v; want pending original copy %d", candidates, err, transfer.CopyID)
+	}
+	if _, err := pool.Exec(context.Background(), `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, seekTilesCopyID); err != nil {
+		t.Fatalf("making until_encoded eligibility false: %v", err)
+	}
+	var eligible bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1)`, transfer.MediaAssetID).Scan(&eligible); err != nil {
+		t.Fatal(err)
+	}
+	if eligible {
+		t.Fatal("fixture still qualifies for until_encoded after desired seek tiles were marked missing")
+	}
+	called := false
+	reclaimed, err := media.ReclaimObsoletePendingMediaAssetTransferCopy(
+		context.Background(), candidates[0], mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived,
+		func() error { called = true; return nil },
+	)
+	if err != nil {
+		t.Fatalf("rechecking pending original retention: %v", err)
+	}
+	if reclaimed || called {
+		t.Fatalf("reclaim after until_encoded eligibility changed = (reclaimed %t, delete called %t), want no-op", reclaimed, called)
+	}
+	var state string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" {
+		t.Fatalf("pending copy after retention recheck = %q, want pending", state)
 	}
 }
 

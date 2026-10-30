@@ -225,6 +225,13 @@ WITH observed AS (
 SELECT CASE
          WHEN EXISTS (SELECT 1 FROM activated) THEN 'activated'::text
          WHEN EXISTS (
+             SELECT 1 FROM media_asset_copies active_copy
+             WHERE active_copy.id = sqlc.arg('copy_id')
+               AND active_copy.media_asset_id = sqlc.arg('media_asset_id')
+               AND active_copy.store = sqlc.arg('target_store')
+               AND active_copy.state = 'active'
+         ) THEN 'already_active'::text
+         WHEN EXISTS (
              SELECT 1 FROM media_assets current_asset
              WHERE current_asset.id = sqlc.arg('media_asset_id')
                AND current_asset.sha256 IS NOT NULL
@@ -325,7 +332,7 @@ WHERE c.id = sqlc.arg('copy_id')
 FOR UPDATE OF r, a, c;
 
 -- Re-evaluate after the row locks have been acquired so a concurrent restore,
--- generation advance, or placement change cannot be hidden by the candidate read.
+-- generation advance, placement change, or retention change cannot be hidden by the candidate read.
 -- name: IsPendingMediaAssetTransferCopyObsolete :one
 SELECT storage_transfer_pending_copy_obsolete(
     sqlc.arg('copy_id'),

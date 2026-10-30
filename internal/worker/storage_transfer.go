@@ -510,11 +510,11 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 		}
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("synchronizing encoded subtitle sidecar: %w", err))
 	}
-	activated, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
+	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
 	if err != nil {
 		return err
 	}
-	if !activated {
+	if !active {
 		if rejection == "sha_mismatch" {
 			if createdCanonical {
 				if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing transfer rejected by a newer SHA-256 observation"); err != nil {

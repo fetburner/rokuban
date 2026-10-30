@@ -159,7 +159,7 @@ func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.M
 	if err := tx.Commit(ctx); err != nil {
 		return false, "", fmt.Errorf("committing media asset transfer: %w", mapDatabaseError(err))
 	}
-	return outcome == "activated", outcome, nil
+	return outcome == "activated" || outcome == "already_active", outcome, nil
 }
 
 // RecordMediaAssetTransferFailure は転送失敗を宛先ごとに記録する。

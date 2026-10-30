@@ -91,12 +91,19 @@ AS $$
             OR copy.generation <> COALESCE(asset.derived_generation, 0)
             OR placement.desired_store IS DISTINCT FROM copy.store
             OR NOT (placement.desired_store = ANY(p_fs_stores))
+            OR (
+                asset.kind = 'original'
+                AND EXISTS (
+                    SELECT 1 FROM until_encoded_deletable_originals(p_derived_store) u
+                    WHERE u.asset_id = asset.id
+                )
+            )
         )
     )
 $$;
 
 COMMENT ON FUNCTION storage_transfer_pending_copy_obsolete(bigint, jsonb, text[], text) IS
-    'Returns true only for a pending transfer copy whose recording, generation, or desired FS placement has made the reservation obsolete.';
+    'Returns true only for a pending transfer copy whose recording, generation, desired placement, or until_encoded retention has made the reservation obsolete.';
 
 CREATE FUNCTION storage_transfer_attempt_count(p_media_asset_id bigint, p_desired_store text)
 RETURNS integer

@@ -56,8 +56,9 @@ type StorageTransfer interface {
 	AcquireTransferSourceBandwidth(ctx context.Context, sourceStore string) (lease TransferBandwidthLease, acquired bool, err error)
 	// PrepareMediaAssetTransfer は行をロックし、現在も desired な宛先コピーを pending にする。
 	PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, originalRules []byte, fsStores []string, derivedStore string, attemptLimit int32) (MediaAssetTransfer, bool, error)
-	// CompleteMediaAssetTransfer は SHA-256 を観測し、現在も desired な pending コピーを active にする。
-	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore, derivedStore string, originalRules, sha256 []byte) (activated bool, rejection string, err error)
+	// CompleteMediaAssetTransfer は SHA-256 を観測し、destination copy が active になったかを返す。
+	// 同じ copy を別 worker が先に active にした場合も active=true を返す。
+	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore, derivedStore string, originalRules, sha256 []byte) (active bool, rejection string, err error)
 	// RecordMediaAssetTransferFailure は転送失敗を記録する。
 	RecordMediaAssetTransferFailure(ctx context.Context, copyID int64, message string) error
 	// MarkMediaAssetCopyCorrupt は破損が確認されたコピーを deleted にする。

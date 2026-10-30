@@ -10,13 +10,13 @@
 
 コピーの完了時に期待サイズと SHA-256 を照合する。SHA-256 が未計測なら、完了時に `media_assets.sha256` へ一度だけ書く。既存 destination は size と SHA-256 が一致するときだけ採用する。既知 SHA が不一致のときは source を帯域制限の下で読み直し、destination temp の破損と source の破損を区別する。異なるファイルを rename や link で上書きしない。
 
-temp の fsync と Close、canonical への no-overwrite link、親 directory の fsync を行う。その後に DB transaction で destination copy を active にする。DB commit が公開点である。commit 前に失敗した canonical は自動削除しない。再試行時は canonical を再照合して採用を試みる。
+temp の fsync と Close、canonical への no-overwrite link、親 directory の fsync を行う。その後に DB transaction で destination copy を active にする。DB commit が公開点である。commit 前に失敗した canonical は自動削除しない。再試行時は canonical を再照合して採用を試みる。同じ pending row の別 worker が先に active にした場合は、その copy を完了済みとして扱い、公開済み canonical や sidecar を失敗時の cleanup で消さない。
 
 encoded の隣接 `.vtt` は media asset と同じ rel_path lock の下で destination に同期してから copy を active にする。source に sidecar が無ければ destination に残った古い sidecar を消す。旧 placement の削除も encoded 本体と sidecar を同じパスロックの下で消す。字幕は独立した `media_assets` 行ではないため、動画のコピー状態を commit する前に sidecar を揃える。
 
 失敗理由は destination copy ごとの試行表に記録し、上限 10 回で再投入を止める。desired store または generation が変わると古い試行記録を消す。元の SHA と合わない原本は report-only で、source を残す。派生コピーが破損した場合は、実体のある原本コピーが同じ録画に残るときだけ破損コピーを退役させる。encode / thumbnail reconcile が再生成する。原本が無ければコピーを残して報告し、再試行回数を記録する。
 
-trash・generation・desired placement の変更で不要になった pending copy は delete reconcile が回収する。
+trash・generation・desired placement の変更、または `until_encoded` の保持条件成立で不要になった pending copy は delete reconcile が回収する。
 
 candidate の列挙後に rel_path lock を取る。recording・asset・copy を lock した transaction で obsolete 条件を再評価する。
 
@@ -30,8 +30,11 @@ candidate の列挙後に rel_path lock を取る。recording・asset・copy を
 
 - 再開、hash、no-overwrite 公開、復旧後の採用: `TestStorageTransferWorkerCopiesAndAdopts`
 - 転送時の sidecar 同期: `TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync`
+- 先行 worker が active にした copy の sidecar 保持: `TestStorageTransferWorkerPreservesSubtitleAfterConcurrentActivation`
 - placement 削除時の sidecar 削除: `TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar`
 - pending copy 退役後の recording purge: `TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge`
+- `until_encoded` で不要になった pending 原本コピーの退役: `TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded`
+- `until_encoded` 条件のロック後再判定: `TestStorageTransferPendingReclaimRechecksUntilEncodedEligibility`
 - 削除時の logical row lock と policy 再判定: `TestStorageTransferDeletionSerializesPolicySwitches`
 
 </details>

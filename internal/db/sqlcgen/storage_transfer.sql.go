@@ -61,33 +61,33 @@ func (q *Queries) ClearObsoleteMediaAssetTransferAttempts(ctx context.Context, a
 const completeMediaAssetTransfer = `-- name: CompleteMediaAssetTransfer :one
 WITH observed AS (
     UPDATE media_assets a
-    SET sha256 = COALESCE(a.sha256, $2::bytea)
+    SET sha256 = COALESCE(a.sha256, $4::bytea)
     FROM recordings r
-    WHERE a.id = $1
+    WHERE a.id = $2
       AND a.recording_id = r.id
       AND r.deleted_at IS NULL
-      AND COALESCE(a.derived_generation, 0) = $3
+      AND COALESCE(a.derived_generation, 0) = $5
       AND desired_media_store(
           a.kind,
-          $4::jsonb,
-          $5::text,
+          $6::jsonb,
+          $7::text,
           r.site,
           (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-      ) = $6
-      AND a.size_bytes = $7
-      AND (a.sha256 IS NULL OR a.sha256 = $2::bytea)
+      ) = $3
+      AND a.size_bytes = $8
+      AND (a.sha256 IS NULL OR a.sha256 = $4::bytea)
       AND EXISTS (
           SELECT 1 FROM media_asset_copies c
-          WHERE c.id = $8
+          WHERE c.id = $1
             AND c.media_asset_id = a.id
-            AND c.store = $6
+            AND c.store = $3
             AND c.generation = COALESCE(a.derived_generation, 0)
             AND c.state = 'pending'
       )
       AND NOT (
           a.kind = 'original'
           AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals($5) u
+              SELECT 1 FROM until_encoded_deletable_originals($7) u
               WHERE u.asset_id = a.id
           )
       )
@@ -96,10 +96,10 @@ WITH observed AS (
     UPDATE media_asset_copies c
     SET state = 'active', created_at = now(), deleted_at = NULL
     FROM observed o, media_assets a
-    WHERE c.id = $8
+    WHERE c.id = $1
       AND c.media_asset_id = o.id
       AND a.id = o.id
-      AND c.store = $6
+      AND c.store = $3
       AND c.generation = COALESCE(a.derived_generation, 0)
       AND c.state = 'pending'
     RETURNING c.id
@@ -115,36 +115,43 @@ WITH observed AS (
 SELECT CASE
          WHEN EXISTS (SELECT 1 FROM activated) THEN 'activated'::text
          WHEN EXISTS (
+             SELECT 1 FROM media_asset_copies active_copy
+             WHERE active_copy.id = $1
+               AND active_copy.media_asset_id = $2
+               AND active_copy.store = $3
+               AND active_copy.state = 'active'
+         ) THEN 'already_active'::text
+         WHEN EXISTS (
              SELECT 1 FROM media_assets current_asset
-             WHERE current_asset.id = $1
+             WHERE current_asset.id = $2
                AND current_asset.sha256 IS NOT NULL
-               AND current_asset.sha256 <> $2::bytea
+               AND current_asset.sha256 <> $4::bytea
          ) THEN 'sha_mismatch'::text
          ELSE 'stale'::text
        END AS outcome
 `
 
 type CompleteMediaAssetTransferParams struct {
+	CopyID        int64
 	MediaAssetID  int64
+	TargetStore   string
 	Sha256        []byte
 	Generation    *int64
 	OriginalRules json.RawMessage
 	DerivedStore  string
-	TargetStore   string
 	SizeBytes     int64
-	CopyID        int64
 }
 
 func (q *Queries) CompleteMediaAssetTransfer(ctx context.Context, arg CompleteMediaAssetTransferParams) (string, error) {
 	row := q.db.QueryRow(ctx, completeMediaAssetTransfer,
+		arg.CopyID,
 		arg.MediaAssetID,
+		arg.TargetStore,
 		arg.Sha256,
 		arg.Generation,
 		arg.OriginalRules,
 		arg.DerivedStore,
-		arg.TargetStore,
 		arg.SizeBytes,
-		arg.CopyID,
 	)
 	var outcome string
 	err := row.Scan(&outcome)
@@ -319,7 +326,7 @@ type IsPendingMediaAssetTransferCopyObsoleteParams struct {
 }
 
 // Re-evaluate after the row locks have been acquired so a concurrent restore,
-// generation advance, or placement change cannot be hidden by the candidate read.
+// generation advance, placement change, or retention change cannot be hidden by the candidate read.
 func (q *Queries) IsPendingMediaAssetTransferCopyObsolete(ctx context.Context, arg IsPendingMediaAssetTransferCopyObsoleteParams) (bool, error) {
 	row := q.db.QueryRow(ctx, isPendingMediaAssetTransferCopyObsolete,
 		arg.CopyID,
