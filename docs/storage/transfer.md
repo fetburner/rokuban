@@ -22,6 +22,8 @@ candidate の列挙後に rel_path lock を取る。recording・asset・copy を
 
 canonical と transfer temp の inode が一致するときだけ canonical を消す。canonical を所有できない場合は canonical と sidecar を残す。
 
+sidecar は canonical を回収する前に消す。削除に失敗した場合は canonical と pending row を残し、同じ inode の temp による所有確認を保って次回に再開する。
+
 pending row とその transfer temp、checkpoint は退役させる。今も desired な pending copy は残し、失敗回数と checkpoint からの再開を保つ。sidecar は canonical を回収した場合だけ消す。
 
 最後の obsolete copy が退役すると recording purge が完了する。
@@ -36,6 +38,7 @@ pending row とその transfer temp、checkpoint は退役させる。今も des
 - placement 削除時の sidecar 削除: `TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar`
 - pending copy 退役後の recording purge: `TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge`
 - pre-existing destination collision の保持: `TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferReclaim`
+- sidecar cleanup 失敗後の pending reclaim 再開: `TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails`
 - `until_encoded` で不要になった pending 原本コピーの退役: `TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded`
 - `until_encoded` 条件のロック後再判定: `TestStorageTransferPendingReclaimRechecksUntilEncodedEligibility`
 - 削除時の logical row lock と policy 再判定: `TestStorageTransferDeletionSerializesPolicySwitches`
