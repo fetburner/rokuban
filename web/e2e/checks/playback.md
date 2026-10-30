@@ -216,6 +216,8 @@ Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・
 
 負例は 2 つある。`event/shrink` は、240 行の playlist を commit の応答で 182 行に縮める。commit の後に載せ済みの行が縮んだ実録画の不具合を再現する。`event/extinf-change` は、commit の応答で先頭の行の EXTINF を変える。どちらも通常の判定と同じ手順で回し、期待する名前が 1 つでも出れば期待どおりとする。
 
+Chrome 156.0.8078.76 / hls.js 1.7.3 / ffmpeg 9.0.2 では、`event/growing` を既定の間隔で 10 回続けて回して 10 回とも通り、負例 2 つが期待した名前で落ちた。
+
 ```sh
 E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change corepack pnpm e2e:recording-segmented-vod
 ```
