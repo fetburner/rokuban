@@ -23,7 +23,7 @@ ffmpeg / ffprobe / Go と Chromium / WebKit を使うローカル判定である
 
 境界の選択だけを回すなら `E2E_TIMELINE_BOUNDARY_SEEK_ONLY=1` を使う。 ±1 フレームの判定は rVFC の `mediaTime` で行い、ログの `SRC` 行に捕捉経路（`rvfc` / `paint`）を出す。補助経路（seeked 後の二重 rAF）は `mediaTime` を読めないので NaN を返し、時刻の判定は NG になる。
 
-素の `currentTime` 代入でも同じことが起きるかは、`E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS=1` で測る。製品のボタンを通さず、編集モードの同じページで代入だけを行う。診断だけを回すなら `E2E_TIMELINE_RAW_SEEK_ONLY=1` を使う。hls.js 経路では未測定である。
+一時停止中の seek の後に映像が前のフレームのまま残るかは、素の `currentTime` 代入でも `E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS=1` で測れる。製品のボタンを通さず、編集モードの同じページで代入だけを行う。診断だけを回すなら `E2E_TIMELINE_RAW_SEEK_ONLY=1` を使う。hls.js 経路では未測定である。
 
 実録画でも測るときは、`E2E_TIMELINE_REAL_HLS_URL` に localhost の HLS playlist を渡す。非 loopback の URL はスクリプトが拒否する。目印が無いので、連続再生で得たフレームの画素 fingerprint と、境界を選んだ後に表示されたフレームの fingerprint を比べる。画像や動画は保存しない。境界は `E2E_TIMELINE_REAL_HLS_BOUNDARY_SECONDS`（既定 1 秒）で選ぶ。
 
@@ -41,7 +41,6 @@ E2E_URL=http://127.0.0.1:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 \
 - 「境界まで」の停止後のシークし直しを外す（`finishPlayAround` の境界変換シークを無効化する）。
   - Chrome は MP4 と原本 HLS offset 0 / 10 の 3 か所で落ちる。
   - 例は「非カット MP4: 「境界まで」が境界のコマで止まらない (目印 frame 181 slot=2 が映らない)」。このとき `t=6.872716` で slot=-1 だった。
-  - WebKit も同じ 3 か所で落ちる。MP4 は `t=6.955454` で slot=-1 だった。
 
 ### ボトムタブの高さと本文の下パディング（`programs-bottom-nav.mjs`）
 
@@ -72,7 +71,7 @@ CDP の `Emulation.setSafeAreaInsetsOverride` で `env(safe-area-inset-*)` に�
 - 844×390（左右 59・下 21）: 横向き iPhone。`md` 以上なのでサイドバー配置になり、サイドバー左端が 59、本文・ヘッダー右端が 785（844-59）、ボトムタブは非表示
 - 700×390（左右 47）: `md` 未満の横向き。本文・ヘッダーが 47..653、ボトムタブの `ul` も 47..653
 
-override が効かなかった場合（CDP メソッドの欠落など）は、無視して通さず ng を積む。Safari / iPhone は確認対象にしない。
+override が効かなかった場合（CDP メソッドの欠落など）は、無視して通さず ng を積む。未検証: 実機の Safari が返す inset の実値と、回転時の再計算。横向き iPhone での確認は実機で行う。
 
 ```sh
 pnpm build && pnpm preview --host 127.0.0.1 --port 4173 --strictPort &
