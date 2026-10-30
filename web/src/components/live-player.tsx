@@ -580,15 +580,18 @@ export function LivePlayer(props: LivePlayerProps) {
   // 録画時間を持ち越して再開する。録画 ID が変わった場合は持ち越さない。
   const lastRecordingHLSPositionRef = useRef<number | null>(null)
   const lastRecordingHLSInputsRef = useRef<string | null>(null)
-  // A generation-changing error can pause/reset the media element when hls.js is destroyed.
-  // Save the error-time snapshot before handing control to the caller; effect cleanup consumes it.
+  // 世代が替わるエラーでは、hls.js を破棄した映像が一時停止・先頭へ戻ることがある。
+  // 親へ渡す前にエラー時点の位置と再生状態を控え、effect の cleanup がそれを消費する。
   const pendingRecordingHLSRecoveryRef = useRef<{
     recordingId: number | undefined
     positionSeconds: number | undefined
     wasPlaying: boolean
   } | null>(null)
-  // `live-player.test.tsx` sends overlapping 410s for one source. Share that handoff so a stale
-  // sibling response cannot clear the accepted recovery snapshot or start another REST refresh.
+  // 同じ再生元（同じ URL）のエラー受け渡しは 1 回に共有する。エラーを親へ渡す経路は 2 つある
+  // （probe の失敗と hls.js の ERROR イベント）。ERROR イベントは 410 の応答ごと（`expiredRecordingHls`）と
+  // fatal のそれぞれで届くので、1 つの再生元で重なりうる。実ブラウザで重なる頻度は未検証。
+  // 重なりを模したテストは `live-player.test.tsx` の「coalesces concurrent 410 errors」。
+  // 共有しないと、遅れて届いた片方が受理済みの復旧用スナップショットを消し、REST の再取得をもう 1 回始める。
   const recordingHandoffRef = useRef<{
     recordingId: number | undefined
     sourceURL: string | undefined

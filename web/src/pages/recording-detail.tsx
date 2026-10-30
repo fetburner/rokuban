@@ -95,11 +95,11 @@ export function RecordingDetailPage() {
     if (navigationBlocker.status === 'blocked') navigationBlocker.proceed()
   }
 
-  // 録画 HLS の画質は `?recordingProfile=` に持つ。**既定は URL に
+  // 録画 HLS の画質は `?liveProfile=` に持つ（`live.profiles` の名前）。**既定は URL に
   // 書き戻さない** --- 明示的に選んだ値だけを載せる。`replace` にするのは、切替のたびに
   // ブラウザ履歴が積み上がらないようにするためである。
-  const selectRecordingProfile = (name: string) => {
-    void navigate({ search: { ...search, recordingProfile: name }, replace: true })
+  const selectLiveProfile = (name: string) => {
+    void navigate({ search: { ...search, liveProfile: name }, replace: true })
   }
 
   // 録画 HLS の音声は `/live` と同じ `?audio=main|sub` に置き、標準は URL から省く。
@@ -214,7 +214,7 @@ export function RecordingDetailPage() {
             // 全画面が解除される。録画ごとの state は RecordingDetail が id の変化で自分で戻す。
             recording={recording}
             trash={trash}
-            recordingProfile={search.recordingProfile}
+            liveProfile={search.liveProfile}
             audio={search.audio}
             onSelectAudio={selectAudio}
             startAtBeginning={search.fromBeginning}
@@ -225,7 +225,7 @@ export function RecordingDetailPage() {
             }}
             chapterEditorCommandsRef={chapterEditorCommandsRef}
             onChapterEditorStatusChange={onChapterEditorStatusChange}
-            onSelectRecordingProfile={selectRecordingProfile}
+            onSelectLiveProfile={selectLiveProfile}
             onNavigateToRecording={(nextId) =>
               void navigate({
                 to: '/recordings/$id',

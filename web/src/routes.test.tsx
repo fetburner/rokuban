@@ -496,17 +496,17 @@ describe('routeTree', () => {
 
     it('録画詳細の画質と audio search を検証する', async () => {
       for (const [query, expectedProfile, expectedAudio] of [
-        ['?recordingProfile=hd&audio=main', 'hd', 'main'],
-        ['?recordingProfile=sd&audio=sub', 'sd', 'sub'],
-        ['?recordingProfile=&audio=both', undefined, undefined],
+        ['?liveProfile=hd&audio=main', 'hd', 'main'],
+        ['?liveProfile=sd&audio=sub', 'sd', 'sub'],
+        ['?liveProfile=&audio=both', undefined, undefined],
       ] as const) {
         const router = createRouter({
           routeTree,
           history: createMemoryHistory({ initialEntries: [`/recordings/12${query}`] }),
         })
         await router.load()
-        const search = router.state.matches.at(-1)!.search as { recordingProfile?: unknown; audio?: unknown }
-        expect(search.recordingProfile).toBe(expectedProfile)
+        const search = router.state.matches.at(-1)!.search as { liveProfile?: unknown; audio?: unknown }
+        expect(search.liveProfile).toBe(expectedProfile)
         expect(search.audio).toBe(expectedAudio)
       }
     })

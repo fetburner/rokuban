@@ -315,9 +315,23 @@ const recordingsRoute = createRoute({
 
 /** RecordingDetailSearch は `/recordings/$id` のクエリパラメータ。 */
 export type RecordingDetailSearch = {
-  /** 録画 HLS の画質。省略時・未知の名前は既定プロファイルに落ちる。 */
-  recordingProfile?: string
-  /** 録画 HLS の音声。`main` / `sub` を保持し、標準は省略する。 */
+  /**
+   * 録画 HLS の画質（`live.profiles` の名前）。省略時・未知の名前のときは既定
+   * （サーバー側の先頭プロファイル）に落ちる。
+   *
+   * **`profile` という名前にしない。** この画面には `encode.profiles`（完了後の
+   * VOD）と `live.profiles`（録画 HLS）の 2 軸が同居し、素の `profile` では
+   * どちらを読むのかが決まらない。`liveProfile` は設定キー（`live.profiles`）と
+   * 一覧 API（`GET /api/live-profiles`）の名前に一致する。
+   *
+   * **値域の検査はここでは書けない**（`?site=` と同じ分担）。選べる名前の一覧は
+   * 実行時に `GET /api/live-profiles` から来るので、ここでできるのは「非空の
+   * 文字列か」までである。実在の判定は一覧を読める
+   * `components/recording-detail-panel.tsx` が `validLiveProfile`（`lib/live.ts`）
+   * で行う。
+   */
+  liveProfile?: string
+  /** 録画 HLS の音声。`main` / `sub` を保持し、標準は省略する（`/live` と同じ `?audio=`）。 */
   audio?: LiveAudioChoice
   /** ホームの「最初から」導線。再生位置を復元せず録画の先頭から始める。 */
   fromBeginning?: boolean
@@ -335,12 +349,12 @@ const recordingDetailRoute = createRoute({
   // 録画 HLS の画質。**落とすときは `undefined` を明示代入する**
   // （`parseRecordingsSearch` / `/live` と同じ形。issue #194）。TanStack Router は
   // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }` の
-  // 順に合成するので、キーを省略すると生の値（`/recordings/1?recordingProfile=` なら
+  // 順に合成するので、キーを省略すると生の値（`/recordings/1?liveProfile=` なら
   // 空文字）がそのまま残り、`RecordingDetailSearch` の型が実行時に嘘になる。
   validateSearch: (search: Record<string, unknown>): RecordingDetailSearch => ({
-    recordingProfile:
-      typeof search.recordingProfile === 'string' && search.recordingProfile !== ''
-        ? search.recordingProfile
+    liveProfile:
+      typeof search.liveProfile === 'string' && search.liveProfile !== ''
+        ? search.liveProfile
         : undefined,
     audio: validLiveAudio(search.audio),
     fromBeginning: search.fromBeginning === true || search.fromBeginning === 'true' ? true : undefined,

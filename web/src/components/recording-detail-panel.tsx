@@ -156,14 +156,14 @@ type PlaybackState = {
 export function RecordingDetail({
   recording,
   trash,
-  recordingProfile,
+  liveProfile,
   audio,
   startAtBeginning = false,
   chapterEditing = false,
   onEnterChapterEditing,
   chapterEditorCommandsRef,
   onChapterEditorStatusChange,
-  onSelectRecordingProfile,
+  onSelectLiveProfile,
   onSelectAudio,
   onNavigateToRecording,
 }: {
@@ -175,9 +175,9 @@ export function RecordingDetail({
   onEnterChapterEditing?: () => void
   chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
   onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
-  /** 録画 HLS の画質（`?recordingProfile=`）。未検証の生の値。 */
-  recordingProfile?: string
-  onSelectRecordingProfile: (name: string) => void
+  /** 録画 HLS の画質（`?liveProfile=`）。未検証の生の値。 */
+  liveProfile?: string
+  onSelectLiveProfile: (name: string) => void
   /** 録画 HLS の音声（`?audio=`。省略時は標準）。 */
   audio?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
@@ -476,7 +476,7 @@ export function RecordingDetail({
     ? lastRecordingHls.entries
     : recording.hlsPlayback
   const recordingHlsProfileOptions = recordingHlsPlayback.map(({ profile }) => ({ name: profile }))
-  const explicitRecordingHlsProfile = validLiveProfile(recordingHlsProfileOptions, recordingProfile)
+  const explicitRecordingHlsProfile = validLiveProfile(recordingHlsProfileOptions, liveProfile)
   const selectedRecordingHls = recordingHlsPlayback.find(
     ({ profile }) => profile === explicitRecordingHlsProfile,
   ) ?? recordingHlsPlayback[0]
@@ -742,7 +742,7 @@ export function RecordingDetail({
               profile={explicitRecordingHlsProfile}
               audio={audio}
               availableProfiles={recordingHlsProfileOptions}
-              onProfileChange={onSelectRecordingProfile}
+              onProfileChange={onSelectLiveProfile}
               onAudioChange={onSelectAudio}
               onRecordingPositionChange={reportRecordingPosition}
               onRecordingPlaybackError={(seconds, playing, allowSameSourceRetry) =>

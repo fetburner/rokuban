@@ -767,7 +767,7 @@ export function LivePage() {
               top: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
             }}
           >
-            {/* oxlint-disable-next-line react/refs -- LivePlayer calls this recovery callback after a media error, not during render. */}
+            {/* oxlint-disable-next-line react/refs -- LivePlayer はこの復旧コールバックをレンダー中ではなく、メディアエラーの後に呼ぶ。 */}
             {isPlaying && livePlayerModeProps !== null ? (
               <LivePlayer
                 {...livePlayerModeProps}
