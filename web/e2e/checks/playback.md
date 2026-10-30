@@ -211,12 +211,10 @@ Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・
 1. 再生位置が進み、同じ media playlist をプレーヤーが 2 回以上要求し、ENDLIST の前に行が増えたことを待つ。待たずに判定すると、取得が始まる前に「止まらない」「行が変わらない」が通ってしまう
 2. プレーヤーが要求した playlist の応答だけを記録し、判定のための要求は足さない。前回の応答の各行の URI・EXTINF・PROGRAM-DATE-TIME が、次の応答の同じ位置にあることを確かめる。行が減れば `[playlist-shrink]`、既出の行が変われば `[playlist-mutated]` にする
 3. 上の 6 つの判定を、ENDLIST が配られる前に終える。先に配られたか、最初の応答にすでに付いていたら `[event-growth]` にする
-4. 遠距離シークの行き先は、先読みの外で、まだ要求しておらず、後ろに 2 行が載っているセグメントの先頭から選ぶ。載っている範囲の端を選ぶと、まだ作られていない続きを hls.js が待って止まる。先読みの端より手前を選ぶと `[seek-buffered]` にする
-5. ENDLIST を含む応答をプレーヤーが取った後、`video.duration` がその playlist の総尺に届くのを待つ。終端の 3 セグメント手前へシークし、再生が着地から 5 秒以上進んで `video.ended` になることを確かめる。外れたら `[ended]` にする
+4. 遠距離シークの行き先は、先読みの外で、まだ要求しておらず、後ろに 2 行が載っているセグメントの先頭から選ぶ
+5. ENDLIST を含む応答をプレーヤーが取った後、`video.duration` がその playlist の総尺に届くのを待つ。終端の 3 セグメント手前へシークし、再生が着地から終端までの大半（3 セグメント - 1 秒）進んで `video.ended` になることを確かめる。外れたら `[ended]` にする
 
 負例は 2 つある。`event/shrink` は、240 行の playlist を commit の応答で 182 行に縮める。commit の後に載せ済みの行が縮んだ実録画の不具合を再現する。`event/extinf-change` は、commit の応答で先頭の行の EXTINF を変える。どちらも通常の判定と同じ手順で回し、期待する名前が 1 つでも出れば期待どおりとする。
-
-Chrome 156.0.8078.76 / hls.js 1.7.3 / ffmpeg 9.0.2 では、`event/growing` が通り、負例 2 つが期待した名前で落ちた。
 
 ```sh
 E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change corepack pnpm e2e:recording-segmented-vod
@@ -230,7 +228,7 @@ URL は `E2E_MASTER_URL` で渡す。
 
 録画中の master を渡すと、「録画中の EVENT playlist」と同じ手順で、伸びている間から ENDLIST の後まで判定を回す。最初に取った media playlist に ENDLIST があれば、完成した録画として今までどおり判定する。`E2E_EVENT_ENDLIST_TIMEOUT_MS`（既定 90 秒）は、シーク先が載るまでと ENDLIST が付くまでの待ちの上限である。
 
-録画中の URL は、録画開始から 1 分以上経ったものに向ける。録画終了の 2 分以上前に始める。ENDLIST が付くまでに、遠距離シークの行き先が載る時間を残すためである。
+録画中の URL は、録画開始から 1 分以上経ったものに向ける。遠距離シークの行き先（先読みの外で、後ろに 2 行）がすでに載っているためである。録画終了の 2 分以上前に始める。6 つの判定を ENDLIST の前に終えるためで、先に付くと `[event-growth]` になる。
 
 ```sh
 E2E_MASTER_URL=http://localhost:40773/<録画の master.m3u8> \
@@ -240,7 +238,7 @@ E2E_EVENT_ENDLIST_TIMEOUT_MS=180000 corepack pnpm e2e:recording-segmented-vod
 
 - `E2E_SEGMENT_SECONDS` はセグメント長で、既定は 2 である。判定を始める位置を決める
 - `E2E_BOUNDARY_SECONDS` は、古い実行のセグメントから新しい実行のセグメントへ切り替わる秒で、既定は 12 である。ffmpeg を起動し直した位置（内蔵では 10 秒）ではない
-- `E2E_FAR_SEEK_SECONDS` は遠距離シークの秒で、既定は 52 である。完成した録画では、アプリの master の BANDWIDTH から先読みの目安を `maxBufferSize × 8 / BANDWIDTH` 秒（`maxBufferLength` が大きければそちら）と見積もり、その外を選ぶ。録画中の録画では、この秒と先読みの端の遅い方を下限にして、playlist に載っていて未要求のセグメントを選ぶ。先読みの内側を選ぶと `[seek-buffered]` で分かる
+- `E2E_FAR_SEEK_SECONDS` は遠距離シークの秒で、既定は 52 である。完成した録画では、アプリの master の BANDWIDTH から先読みの目安を `maxBufferSize × 8 / BANDWIDTH` 秒（`maxBufferLength` が大きければそちら）と見積もり、その外を選ぶ。録画中の録画では、この秒と先読みの端の遅い方を下限にして、playlist に載っていて未要求のセグメントを選ぶ。完成した録画で先読みの内側を選ぶと `[seek-buffered]` で分かる
 - ハーネスのページとメディアは同一オリジンでなければならない。オリジンが違うと、hls.js の XHR が CORS で止まり、`createMediaElementSource` が無音になる。そのためローカルのサーバーが、`E2E_MASTER_URL` のオリジンへ同じパスで中継する
 
 アプリの実装の受け入れでは、フィクスチャが作る `source.ts` を録画として登録し、その録画の master を `E2E_MASTER_URL` に渡す。`source.ts` は `<os.tmpdir()>/rokuban-e2e-recording-segmented-v3/generated/source.ts` にある。境界の秒は、アプリが新しい ffmpeg の出力へ切り替わる位置に合わせる。

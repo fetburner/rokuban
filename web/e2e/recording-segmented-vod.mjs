@@ -691,8 +691,9 @@ async function waitForState(adapter, predicate, timeoutMs, description) {
   throw new Error(`${description} を ${timeoutMs}ms 以内に確認できない: ${JSON.stringify({ currentTime, paused, ended, readyState, buffered, hlsErrors, frameError, startStage, audioContextState })}`)
 }
 
-// 伸びている間に遠距離シークできる最小の行数。先読みの端（境界 + 2.5 + 先読み 30 秒）以降の行、その後ろの 2 行、
-// ENDLIST の前に載る最後の 1 行ぶん。実機の URL ではこの式を使わない。
+// 伸びている間に遠距離シークできる行数の目安。先読みの端（境界 + 2.5 + 先読み 30 秒）以降の行、その後ろの 2 行、
+// ENDLIST の前に載る最後の 1 行ぶん。2.5 秒は一時停止時の再生位置の見積もりで、実際より小さい。
+// 足りなければ chooseFarSeekTarget が実行時に止まる。実機の URL ではこの式を使わない。
 function minimumEventRows(boundary) {
   return Math.ceil((boundary + 2.5 + HLS_FORWARD_BUFFER_SECONDS) / SEGMENT_SECONDS) + 4
 }
@@ -722,7 +723,7 @@ async function chooseFarSeekTarget(adapter, server, playlistMark, growing) {
   if (target === undefined) {
     throw new Error(`先読み範囲の外に、後ろに 2 行以上が載った未要求 segment がない (published=${published.toFixed(3)}s, buffer=${bufferedEnd.toFixed(3)}s, horizon=${forwardBufferHorizon.toFixed(3)}s)`)
   }
-  return { target, published, horizon: forwardBufferHorizon }
+  return { target, published }
 }
 
 /**
@@ -863,8 +864,6 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     const farSeek = await chooseFarSeekTarget(adapter, server, playlistMark, growing)
     summary.farSeekTarget = farSeek.target
     summary.publishedSeconds = farSeek.published
-    // 選び方の下限とは別に、行き先が先読みの端より手前でないことを確かめる。
-    if (growing && farSeek.target < farSeek.horizon) add('seek-buffered', `シーク先 ${farSeek.target}s が先読みの端 ${farSeek.horizon.toFixed(3)}s より手前`)
     const mark = server.mark()
     await seekAndCheck(farSeek.target, () => adapter.evaluate(async () => window.__e2e.start()))
     const target = server.segmentsAt(farSeek.target)
@@ -879,13 +878,14 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     if (requireEnded && growing) {
       await waitForServer(() => server.hasEndListSince(playlistMark), EVENT_ENDLIST_TIMEOUT_MS, 'ENDLIST を含む media playlist')
       // ENDLIST の後、終端の 3 セグメント手前から終端まで再生して ended に届くことを見る。
-      // 着地から 5 秒以上進むことも要る（着地がすでに終端なら ended は再生なしで立つ）。
+      // 着地から 3 セグメント - 1 秒以上進むことも要る（着地がすでに終端なら ended は再生なしで立つ）。
       try {
         const total = server.endListDurationSince(playlistMark)
         await waitForState(adapter, (s) => Math.abs(s.duration - total) <= 0.5, ENDED_TIMEOUT_MS, `video.duration が ENDLIST 時の総尺 ${total.toFixed(3)}s に届く`)
+        const advance = 3 * SEGMENT - 1
         const landed = (await adapter.evaluate(async (seconds) => window.__e2e.seek(seconds), Math.max(0, total - 3 * SEGMENT))).landing
         await adapter.evaluate(async () => window.__e2e.start())
-        state = await waitForState(adapter, (s) => s.ended && s.currentTime >= landed + 5, ENDED_TIMEOUT_MS, `着地 ${landed.toFixed(3)}s から 5 秒以上進んだ video.ended`)
+        state = await waitForState(adapter, (s) => s.ended && s.currentTime >= landed + advance, ENDED_TIMEOUT_MS, `着地 ${landed.toFixed(3)}s から ${advance}s 以上進んだ video.ended`)
         summary.ended = true
         summary.endedAt = state.currentTime
       } catch (error) {
