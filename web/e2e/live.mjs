@@ -1045,13 +1045,32 @@ async function runIssue1022Acceptance(engine = 'chromium') {
       ).length
       if (!leaveRequest || liveLeaveAfter <= liveLeaveBefore) ng.push('#1022 live から録画 HLS への切替時に POST 離脱ヒントを送らない')
       if (new URL(page.url()).pathname !== routeBefore || routeBefore !== '/live') ng.push('#1022 最初からが /live ページ内の切替ではない')
-      await page.getByTestId('recording-hls-source-label').waitFor({ timeout: 10000 }).catch(() => {
-        ng.push('#1022 最初からで録画 HLS の再生元表示へ切り替わらない')
+      await page.getByTestId('live-recording-source-label').waitFor({ timeout: 10000 }).catch(() => {
+        ng.push('#1022 最初からで「録画から再生中」の表示へ切り替わらない')
       })
-      const returnLive = page.getByTestId('recording-hls-return-live')
+      // ライブへ戻る操作は軸の先端の印 1 つだけ。別のボタンは置かない。
+      const returnLive = page.getByTestId('live-recording-live-edge')
       if (await returnLive.count() === 0) {
-        ng.push('#1022 録画 HLS からライブへ戻る操作が無い')
+        ng.push('#1022 録画 HLS の軸にライブへ戻る印が無い')
       } else {
+        if ((await returnLive.getAttribute('aria-label')) !== 'ライブへ戻る' || !/^ライブ .*押すとライブへ戻る/.test((await returnLive.getAttribute('title')) ?? '')) {
+          ng.push(`#1022 録画 HLS の軸の印の名前が「ライブへ戻る」でない (${await returnLive.getAttribute('aria-label')} / ${await returnLive.getAttribute('title')})`)
+        }
+        if (await page.getByRole('button', { name: 'ライブへ戻る' }).count() !== 1) {
+          ng.push('#1022 「ライブへ戻る」が軸の印のほかにもある')
+        }
+        // 「ライブ」の印は「録画から再生中」に替わる。
+        const controls = page.getByTestId('player-controls')
+        if (await controls.getByText('● ライブ', { exact: true }).count() > 0) ng.push('#1022 録画 HLS の再生中に「ライブ」の印が残る')
+        // 軸は番組基準。録画が始まる前（左 3%）と先端より後ろ（右 97%）は「まだ録画されていません」。
+        const recordedAxis = page.getByTestId('live-recording-timeline-track')
+        const axisBox = await recordedAxis.boundingBox()
+        if (!axisBox) ng.push('#1022 録画 HLS の番組基準の軸が取得できない')
+        else {
+          await page.mouse.move(axisBox.x + axisBox.width * 0.97, axisBox.y + axisBox.height / 2)
+          const unrecorded = await page.getByTestId('live-recording-hover-label').textContent({ timeout: 3000 }).catch(() => null)
+          if (!unrecorded?.includes('まだ録画されていません')) ng.push(`#1022 先端より後ろにホバーしても「まだ録画されていません」が出ない (${unrecorded})`)
+        }
         const livePlaylistBefore = requestLog.filter((request) =>
           request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
         ).length
@@ -1063,9 +1082,21 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         const livePlaylistAfter = requestLog.filter((request) =>
           request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
         ).length
-        if (!freshLivePlaylist || livePlaylistAfter <= livePlaylistBefore) ng.push('#1022 録画 HLS から新しい live playlist 要求で戻らない')
+        if (!freshLivePlaylist || livePlaylistAfter <= livePlaylistBefore) ng.push('#1022 録画 HLS の軸の印から新しい live playlist 要求で戻らない')
         if (!(await page.getByTestId('live-source-label').isVisible().catch(() => false))) {
           ng.push('#1022 録画 HLS からライブ再生へ戻っても UI がライブ表示にならない')
+        }
+        if (await page.getByTestId('player-controls').getByText('録画から再生中').count() > 0) ng.push('#1022 ライブへ戻った後も「録画から再生中」が残る')
+
+        // ライブ軸の過去位置（25%）を押すと録画 HLS の master URL を要求する。
+        const timelineBox = await timeline.boundingBox()
+        if (!timelineBox) ng.push('#1022 再生位置指定用のライブ軸が取得できない')
+        else {
+          const pickedMasterWaiter = page.waitForRequest((request) =>
+            request.url().includes(recordingHlsPath(501)) && request.url().endsWith('/master.m3u8'),
+          { timeout: 10000 }).catch(() => null)
+          await timeline.click({ position: { x: timelineBox.width * 0.25, y: timelineBox.height / 2 } })
+          if (!(await pickedMasterWaiter)) ng.push('#1022 番組軸の過去位置から録画 HLS の master URL を要求しない')
         }
       }
     }
@@ -1138,8 +1169,18 @@ async function runIssue1022Acceptance(engine = 'chromium') {
       { timeout: 10000 }).catch(() => null)
       await lateStartOver.click()
       if (!(await lateMasterWaiter)) ng.push('#1022 遅れて始まった録画の最初からが録画 HLS の master URL を要求しない')
-      if (!(await page.getByTestId('recording-hls-source-label').isVisible().catch(() => false))) {
+      if (!(await page.getByTestId('live-recording-source-label').isVisible().catch(() => false))) {
         ng.push('#1022 遅れて始まった録画の最初からで録画 HLS に切り替わらない')
+      }
+      // 録画 HLS の再生中は番組基準の録画軸になり、ライブ軸は無い。軸の印でライブへ戻ると下の検証が続く。
+      const liveAfterLateStartWaiter = page.waitForRequest((request) =>
+        request.url().includes('/networks/1/services/9002/live/playlist.m3u8'),
+      { timeout: 10000 }).catch(() => null)
+      const lateEdge = page.getByTestId('live-recording-live-edge')
+      if (await lateEdge.count() === 0) ng.push('#1022 遅い録画の録画軸にライブへ戻る印が無い')
+      else {
+        await lateEdge.click()
+        if (!(await liveAfterLateStartWaiter)) ng.push('#1022 遅い録画の開始後にライブへ戻らない')
       }
     }
     const lateBox = lateTimelineVisible ? await lateTimeline.boundingBox() : null
