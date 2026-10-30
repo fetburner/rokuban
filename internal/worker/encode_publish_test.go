@@ -441,6 +441,39 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	}
 	reached, release := pauseBeforeEncodeObjectPublication(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	reclaimedBeforePut := false
+	if rowState == "active" {
+		w.Objects = beforePutObjectStore{
+			Store: w.Objects,
+			beforePut: func(putCtx context.Context, key string) error {
+				if key != g2 {
+					return fmt.Errorf("unexpected Put key %q", key)
+				}
+				var copyID int64
+				if err := pool.QueryRow(putCtx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2 AND state = 'pending'`, dbtest.StoreName, g2).Scan(&copyID); err != nil {
+					return fmt.Errorf("loading pending copy before Put: %w", err)
+				}
+				if _, err := pool.Exec(putCtx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID); err != nil {
+					return fmt.Errorf("aging pending copy before Put: %w", err)
+				}
+				var err error
+				reclaimedBeforePut, err = pgstoretest.Media(pool).ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
+					err := os.Remove(abs(g2))
+					if errors.Is(err, os.ErrNotExist) {
+						return nil
+					}
+					return err
+				})
+				if err != nil {
+					return fmt.Errorf("reclaiming pending copy before Put: %w", err)
+				}
+				if !reclaimedBeforePut {
+					return fmt.Errorf("pending copy %q was not reclaimed before Put", g2)
+				}
+				return nil
+			},
+		}
+	}
 	type result struct {
 		published bool
 		err       error
@@ -455,6 +488,9 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 		res <- result{published, err}
 	}()
 	waitReached(t, reached, never)
+	if rowState == "active" && !reclaimedBeforePut {
+		t.Fatal("pending copy was not reclaimed before Put")
+	}
 
 	// 別の実行が g3 へ進めた状態（区間も X と違う）。
 	if err := os.WriteFile(abs(g3), []byte("g3 output"), 0o644); err != nil {
@@ -490,12 +526,8 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if _, err := os.Stat(abs(g3)); err != nil {
 		t.Errorf("g3 file is missing: %v", err)
 	}
-	if rowState == "active" {
-		if _, err := os.Stat(abs(g2)); err != nil {
-			t.Errorf("g2 pending object is missing after stale plan (err=%v)", err)
-		}
-	} else if _, err := os.Stat(abs(g2)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("g2 object after inactive-row skip err = %v, want os.ErrNotExist", err)
+	if _, err := os.Stat(abs(g2)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("g2 object after stale or inactive-row skip err = %v, want os.ErrNotExist", err)
 	}
 	if rowState == "active" && currentCopyRelPath(t, pool, assetID) != g3 {
 		t.Errorf("active copy path = %q, want newer path %q", currentCopyRelPath(t, pool, assetID), g3)
