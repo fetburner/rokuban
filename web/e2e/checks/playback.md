@@ -210,11 +210,13 @@ Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・
 
 1. 再生位置が進み、同じ media playlist をプレーヤーが 2 回以上要求し、ENDLIST の前に行が増えたことを待つ。待たずに判定すると、取得が始まる前に「止まらない」「行が変わらない」が通ってしまう
 2. プレーヤーが要求した playlist の応答だけを記録し、判定のための要求は足さない。前回の応答の各行の URI・EXTINF・PROGRAM-DATE-TIME が、次の応答の同じ位置にあることを確かめる。行が減れば `[playlist-shrink]`、既出の行が変われば `[playlist-mutated]` にする
-3. 上の 6 つの判定を、ENDLIST が配られる前に終える。先に配られたら `[event-growth]` にする
-4. 遠距離シークの行き先は、先読みの外で、まだ要求しておらず、後ろに 2 行が載っているセグメントの先頭から選ぶ。載っている範囲の端を選ぶと、まだ作られていない続きを hls.js が待って止まる
+3. 上の 6 つの判定を、ENDLIST が配られる前に終える。先に配られたか、最初の応答にすでに付いていたら `[event-growth]` にする
+4. 遠距離シークの行き先は、先読みの外で、まだ要求しておらず、後ろに 2 行が載っているセグメントの先頭から選ぶ。載っている範囲の端を選ぶと、まだ作られていない続きを hls.js が待って止まる。先読みの端より手前を選ぶと `[seek-buffered]` にする
 5. ENDLIST を含む応答をプレーヤーが取った後、`video.duration` がその playlist の総尺に届くのを待つ。終端の 3 セグメント手前へシークし、再生が着地から 5 秒以上進んで `video.ended` になることを確かめる。外れたら `[ended]` にする
 
 負例は 2 つある。`event/shrink` は、240 行の playlist を commit の応答で 182 行に縮める。commit の後に載せ済みの行が縮んだ実録画の不具合を再現する。`event/extinf-change` は、commit の応答で先頭の行の EXTINF を変える。どちらも通常の判定と同じ手順で回し、期待する名前が 1 つでも出れば期待どおりとする。
+
+Chrome 156.0.8078.76 / hls.js 1.7.3 / ffmpeg 9.0.2 では、`event/growing` が通り、負例 2 つが期待した名前で落ちた。
 
 ```sh
 E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change corepack pnpm e2e:recording-segmented-vod
