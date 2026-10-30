@@ -122,7 +122,7 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 
 録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。録画の終了後は、commit 前も含めて、`startedAt` から `endedAt` までの時間を使い、取れなければ予定尺を使う。
 
-録画 HLS は hls.js で再生する。世代付き録画 HLS の応答が 410 になったら、詳細 API を取り直して最新世代へ移る。停滞の自動降格はライブだけに適用し、録画 HLS の世代更新は HTTP 410 で判定する。
+世代付き録画 HLS の応答が 410 になったら、詳細 API を取り直して最新世代へ移る。停滞の自動降格はライブだけに適用し、録画 HLS の世代更新は HTTP 410 で判定する。
 
 どちらの経路でも、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。
 
@@ -138,7 +138,7 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 - 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
 - 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸: `recording-playback-timeline.mjs`
 - v1 → 空 → v2 の切り替えで、止まる直前の位置（±1 秒）から続けること: `recording-playback-timeline.mjs` の「世代の切り替え」
-- 録画 HLS の世代切替判定は Chrome と Playwright WebKit（`E2E_BROWSER=webkit`）で hls.js 経路を確認する。Safari 実機は未測定
+- 録画 HLS の世代切替は、Chrome と Playwright WebKit（`E2E_BROWSER=webkit`）の hls.js 経路で判定する。Safari / iPhone は確認対象にしない
 
 </details>
 
@@ -294,7 +294,7 @@ live.enabled が無効でブラウザ再生できる encoded も無い場合は�
 
 全画面は、映像と操作バーを含む枠を持つ再生グループの要素に要求する（理由は [detail.md](detail.md) §次のエピソードとシリーズ）。ページの全画面キーも同じ経路を通る。
 
-ページの全画面キーは `F` である。要素全画面を持たない iPhone Safari では `video.webkitEnterFullscreen()` に落ちる。その場合は Safari の全画面 UI となり、タイルプレビューは出ない。iPhone Safari 実機での確認は未実施である。
+ページの全画面キーは `F` である。要素全画面を持たない iPhone Safari では `video.webkitEnterFullscreen()` に落ちる。その場合は Safari の全画面 UI となり、タイルプレビューは出ない。
 
 ### 字幕と操作バーの重なり
 
@@ -392,7 +392,7 @@ playlist URL・シーク確定・エラー文言は `LivePlayer` に残す。シ
 
 ページショートカットを無視する要素は、入力欄・選択欄・リンク・ボタン・編集可能領域・`[role="slider"]` である。`<video>` は除外しない。追っかけでは尺が伸び続けるため、0〜9 の割合シークと視聴済み判定は行わない。追っかけの速度設定は録画再生と共有する。
 
-字幕として扱うトラックの判定は、再生元ごとに行い、共通化しない。字幕の位置と全画面対象は jsdom では測れないため、実ブラウザで判定する。Playwright WebKit の HLS 再生は hls.js 経路で確認する。
+字幕として扱うトラックの判定は、再生元ごとに行い、共通化しない。字幕の位置と全画面対象は jsdom では測れないため、実ブラウザで判定する。
 
 <details><summary>根拠</summary>
 

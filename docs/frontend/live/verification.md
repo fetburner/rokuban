@@ -2,11 +2,11 @@
 
 ### 実機確認について
 
-実機ブラウザでの再生は、利用環境で手順に沿って確かめる。
+Safari / iPhone は確認対象にしない。動く根拠は、Chrome と同じ hls.js 経路を通ることである。Playwright WebKit は hls.js 経路の診断に使う。
 
-Playwright WebKit は診断用に hls.js 経路を確認する。iPhone Safari を含む iOS 実機での再生は未確認である。`Hls.isSupported()` が偽の環境ではプレイリスト URL を video 要素へ渡さず、HLS 非対応の案内を表示する。
+`Hls.isSupported()` が偽の環境ではプレイリスト URL を video 要素へ渡さず、HLS 非対応の案内を表示する。
 
-実機のブラウザで再生できるかは、[runbook.md](../../runbook.md)（ライブ視聴の節）の確認手順で判定する。Playwright WebKit の結果を iPhone Safari の確認に置き換えない。
+hls.js 経路の確認手順は、[runbook/live.md](../../runbook/live.md) §「再生の入口と経路の判定（⓪〜⑥）」にある。
 
 <details><summary>根拠</summary>
 

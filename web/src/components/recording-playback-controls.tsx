@@ -1552,25 +1552,22 @@ function PlaybackSettingsMenu({
     icon: ReactNode,
     label: string,
     current: string,
-    disabled = false,
   ) => (
     <button
       type="button"
       role="menuitem"
-      aria-disabled={disabled || undefined}
       aria-label={label}
       aria-describedby={`${id}-${key}-value`}
       data-submenu={key}
       data-menu-focus={returnRow === key ? 'true' : undefined}
-      title={disabled ? 'この操作は現在使えません' : undefined}
-      className={cn(row, disabled && 'cursor-not-allowed opacity-70')}
-      onClick={() => !disabled && enter(key)}
+      className={row}
+      onClick={() => enter(key)}
     >
       {icon}
       <span className="flex-1">{label}</span>
       <span id={`${id}-${key}-value`} className={value}>
         {current}
-        {!disabled && <ChevronRight className="size-4" aria-hidden />}
+        <ChevronRight className="size-4" aria-hidden />
       </span>
     </button>
   )
@@ -1640,7 +1637,7 @@ function PlaybackSettingsMenu({
     <Gauge className={icon} aria-hidden />,
     '再生速度',
     rateLabel(playbackRate),
-    )
+  )
   const subtitlesRow = switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)
   const skipRow = showSkip && switchRow(
     <Activity className={icon} aria-hidden />,

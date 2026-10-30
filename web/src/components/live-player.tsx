@@ -1132,120 +1132,118 @@ export function LivePlayer(props: LivePlayerProps) {
         setLoading(false)
         return
       }
-      {
-        // master playlist の EXT-X-MEDIA subtitles rendition を**既定で表示**する
-        // （issue #430）。subtitleDisplay は HlsConfig ではなく Hls インスタンスの
-        // プロパティである。
-        //
-        // **これは「トグルを出す」設定ではない。** 字幕の入切は Chrome
-        // ネイティブコントロールの `⋮` → 「Captions」で、textTrack が 1 本でも
-        // あれば rokuban が何もしなくても現れる（実測: 実 Chromium で `⋮` を
-        // 開いて "Captions / Off" の項目を確認）。この行が決めるのは既定の
-        // 状態だけで、true なら `TextTrack.mode === "showing"` で始まる（実測:
-        // 実 mirakc のライブで確認）。
-        //
-        // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆で、それが正しい。**
-        // あちらは `default` 属性を持たないので `mode === "disabled"` で始まり、
-        // ユーザーが `⋮` から入れるまで `.vtt` を fetch すらしない（実測）。
-        // VOD で `default` を付けると、**字幕サイドカーを持たないプロファイルでも
-        // 再生ごとに必ず 1 本 404 が出る** --- クライアントはサイドカーの有無を
-        // 知る手段を持たないので（`docs/api/media.md` の案 (b) の帰結）、
-        // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
-        // 実際に map できたときだけ rendition が master に載るので、この問題が無い
-        // --- 既定 ON にできるのはライブ側だけ、という非対称である。
-        // hls.js otherwise chooses the live edge for an EVENT playlist. Chase
-        // playback must begin at the first segment of the selected session;
-        // the streamer has already applied any recording-relative offset.
-        const hls = new Hls(
-          isRecordingPlayback ? { startPosition: startAt ?? 0 } : undefined,
-        ) as unknown as HlsLike
-        hls.subtitleDisplay = true
-        // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
-        // 読むと字幕トラックの選択を既定に戻す** --- `SubtitleTrackController` の
-        // `onManifestLoading` が `tracks = []` / `trackId = -1` /
-        // `selectDefaultTrack = true` にする（`node_modules/hls.js` 1.7.1 で確認済み）。
-        // そのため素朴に作り直すと、ネイティブコントロールの `⋮` → Captions で
-        // 「切り」にした字幕が「入」に戻る。
-        //
-        // **`MANIFEST_PARSED` の時点では既定トラックはまだ選ばれていない**
-        // （同コントローラの `onManifestParsed` は `tracks` を代入するだけで、
-        // 既定トラックの選択はその後の level 更新経路の `setSubtitleTrack` →
-        // `toggleTrackModes`。だから `subtitleDisplay` セッターの
-        // `if (this.trackId > -1) this.toggleTrackModes()` はここでは発火しない）。
-        // それでもここで `_subtitleDisplay` を書くのは、**後の選択のときに
-        // `toggleTrackModes` がその値を読む**ためである。
-        // **この経路が効くことは実ブラウザで実測済みである。** 利用者が字幕を切ってから
-        // 画質を切り替えると `mode` は `hidden` のまま（= 再表示されない）。
-        // この 1 行を外すと `showing` に戻ることを `web/e2e/live.mjs` の ⑩ が
-        // 実 Chromium で捕まえる。
-        if (preserved?.subtitles != null) {
-          const visible = preserved.subtitles
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            if (!cancelled) hls.subtitleDisplay = visible
-          })
-        }
-        // 音声の選択を揃える（issue #870）。この effect は画質の切替・再読み込みの
-        // たびに hls.js を作り直し、新しいインスタンスは master の既定（標準）から
-        // 始まるので、トラック一覧が届いたら選択を適用する。前に聴いたトラックへ
-        // 戻る切替は、ライブの playlist に EXT-X-PROGRAM-DATE-TIME が無いと止まる
-        // （streamer の hlsFlags。`web/e2e/live-audio.mjs` の ①）。
-        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-          if (!cancelled) applyHlsAudioTrack(hls, liveAudioTrackIndex(audioRef.current))
+      // master playlist の EXT-X-MEDIA subtitles rendition を**既定で表示**する
+      // （issue #430）。subtitleDisplay は HlsConfig ではなく Hls インスタンスの
+      // プロパティである。
+      //
+      // **これは「トグルを出す」設定ではない。** 字幕の入切は Chrome
+      // ネイティブコントロールの `⋮` → 「Captions」で、textTrack が 1 本でも
+      // あれば rokuban が何もしなくても現れる（実測: 実 Chromium で `⋮` を
+      // 開いて "Captions / Off" の項目を確認）。この行が決めるのは既定の
+      // 状態だけで、true なら `TextTrack.mode === "showing"` で始まる（実測:
+      // 実 mirakc のライブで確認）。
+      //
+      // **VOD 側（recording-player.tsx の `<track>`）とは既定が逆で、それが正しい。**
+      // あちらは `default` 属性を持たないので `mode === "disabled"` で始まり、
+      // ユーザーが `⋮` から入れるまで `.vtt` を fetch すらしない（実測）。
+      // VOD で `default` を付けると、**字幕サイドカーを持たないプロファイルでも
+      // 再生ごとに必ず 1 本 404 が出る** --- クライアントはサイドカーの有無を
+      // 知る手段を持たないので（`docs/api/media.md` の案 (b) の帰結）、
+      // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
+      // 実際に map できたときだけ rendition が master に載るので、この問題が無い
+      // --- 既定 ON にできるのはライブ側だけ、という非対称である。
+      // hls.js otherwise chooses the live edge for an EVENT playlist. Chase
+      // playback must begin at the first segment of the selected session;
+      // the streamer has already applied any recording-relative offset.
+      const hls = new Hls(
+        isRecordingPlayback ? { startPosition: startAt ?? 0 } : undefined,
+      ) as unknown as HlsLike
+      hls.subtitleDisplay = true
+      // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
+      // 読むと字幕トラックの選択を既定に戻す** --- `SubtitleTrackController` の
+      // `onManifestLoading` が `tracks = []` / `trackId = -1` /
+      // `selectDefaultTrack = true` にする（`node_modules/hls.js` 1.7.1 で確認済み）。
+      // そのため素朴に作り直すと、ネイティブコントロールの `⋮` → Captions で
+      // 「切り」にした字幕が「入」に戻る。
+      //
+      // **`MANIFEST_PARSED` の時点では既定トラックはまだ選ばれていない**
+      // （同コントローラの `onManifestParsed` は `tracks` を代入するだけで、
+      // 既定トラックの選択はその後の level 更新経路の `setSubtitleTrack` →
+      // `toggleTrackModes`。だから `subtitleDisplay` セッターの
+      // `if (this.trackId > -1) this.toggleTrackModes()` はここでは発火しない）。
+      // それでもここで `_subtitleDisplay` を書くのは、**後の選択のときに
+      // `toggleTrackModes` がその値を読む**ためである。
+      // **この経路が効くことは実ブラウザで実測済みである。** 利用者が字幕を切ってから
+      // 画質を切り替えると `mode` は `hidden` のまま（= 再表示されない）。
+      // この 1 行を外すと `showing` に戻ることを `web/e2e/live.mjs` の ⑩ が
+      // 実 Chromium で捕まえる。
+      if (preserved?.subtitles != null) {
+        const visible = preserved.subtitles
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (!cancelled) hls.subtitleDisplay = visible
         })
-        hlsRef.current = hls
-        // 停滞の観測（issue #871）は**計器と同じ 1 秒の刻みに相乗りする**。
-        // hls.js 経路では `stalled` / `waiting` を失敗判定に使えない
-        // （MSE は正常時にも `waiting` を何度も出す）ので、`currentTime` が
-        // 進んだかを計器と同じ 1 秒の刻みで見る。
-        // **MSE でも観測できる唯一の信号がこれである** --- hls.js の
-        // 非 fatal `bufferStalledError` は使わない（正常時にも出るうえ、
-        // 頻度を測っていない）。
-        let tracker = createStallTracker()
-        const stopDiagnostics = watchLiveDiagnostics(
-          () => readHlsDiagnostics(hls),
-          () => {
-            if (!canDowngrade || !observeMediaStall(tracker, video, Date.now(), resumePending)) return
-            // 下げられたら、この effect ごと張り直されて計測も 0 に戻る。
-            // 下げられない（段が尽きた / 明示選択）ときは**何もしない** ---
-            // 現行の hls.js 経路は停滞を失敗として扱っていないので、ここで
-            // エラーを新設すると**プロファイルが 1 件しかないデプロイの挙動まで
-            // 変わる**（`docs/frontend/live.md` §フロントエンド実装）。
-            // 一覧がまだ届いていないときだけ `wait` で観測を初期化し、一覧到着後の
-            // 次の刻みで再判定できるようにする。
-            if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
-          },
-        )
-        if (isOriginalPlayback) {
-          hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
-            if (data.details?.live === false) originalVODFinalized.current = true
-          })
-        }
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          const expiredRecordingHls = isRecordingHLS && data.response?.code === 410
-          if ((!data.fatal && !expiredRecordingHls) || cancelled) return
-          const finishFatalError = (handled: boolean) => {
-            if (cancelled) return
-            positionReportBlockedRef.current = true
-            hls.destroy()
-            hlsRef.current = null
-            stopDiagnostics()
-            if (handled) return
-            // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
-            // 裏でセグメント要求が続く（= idle GC も効かない。レビュー #190 の
-            // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
-            setError({
-              kind: 'other',
-              status: 0,
-              message: strategy.errorMessages.fatalTitle,
-            })
-          }
-          const handedOff = handOffError(video)
-          if (typeof handedOff === 'boolean') finishFatalError(handedOff)
-          else void handedOff.then(finishFatalError, () => finishFatalError(false))
-        })
-        hls.loadSource(url)
-        hls.attachMedia(video)
       }
+      // 音声の選択を揃える（issue #870）。この effect は画質の切替・再読み込みの
+      // たびに hls.js を作り直し、新しいインスタンスは master の既定（標準）から
+      // 始まるので、トラック一覧が届いたら選択を適用する。前に聴いたトラックへ
+      // 戻る切替は、ライブの playlist に EXT-X-PROGRAM-DATE-TIME が無いと止まる
+      // （streamer の hlsFlags。`web/e2e/live-audio.mjs` の ①）。
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+        if (!cancelled) applyHlsAudioTrack(hls, liveAudioTrackIndex(audioRef.current))
+      })
+      hlsRef.current = hls
+      // 停滞の観測（issue #871）は**計器と同じ 1 秒の刻みに相乗りする**。
+      // hls.js 経路では `stalled` / `waiting` を失敗判定に使えない
+      // （MSE は正常時にも `waiting` を何度も出す）ので、`currentTime` が
+      // 進んだかを計器と同じ 1 秒の刻みで見る。
+      // **MSE でも観測できる唯一の信号がこれである** --- hls.js の
+      // 非 fatal `bufferStalledError` は使わない（正常時にも出るうえ、
+      // 頻度を測っていない）。
+      let tracker = createStallTracker()
+      const stopDiagnostics = watchLiveDiagnostics(
+        () => readHlsDiagnostics(hls),
+        () => {
+          if (!canDowngrade || !observeMediaStall(tracker, video, Date.now(), resumePending)) return
+          // 下げられたら、この effect ごと張り直されて計測も 0 に戻る。
+          // 下げられない（段が尽きた / 明示選択）ときは**何もしない** ---
+          // 現行の hls.js 経路は停滞を失敗として扱っていないので、ここで
+          // エラーを新設すると**プロファイルが 1 件しかないデプロイの挙動まで
+          // 変わる**（`docs/frontend/live.md` §フロントエンド実装）。
+          // 一覧がまだ届いていないときだけ `wait` で観測を初期化し、一覧到着後の
+          // 次の刻みで再判定できるようにする。
+          if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
+        },
+      )
+      if (isOriginalPlayback) {
+        hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+          if (data.details?.live === false) originalVODFinalized.current = true
+        })
+      }
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        const expiredRecordingHls = isRecordingHLS && data.response?.code === 410
+        if ((!data.fatal && !expiredRecordingHls) || cancelled) return
+        const finishFatalError = (handled: boolean) => {
+          if (cancelled) return
+          positionReportBlockedRef.current = true
+          hls.destroy()
+          hlsRef.current = null
+          stopDiagnostics()
+          if (handled) return
+          // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
+          // 裏でセグメント要求が続く（= idle GC も効かない。レビュー #190 の
+          // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
+          setError({
+            kind: 'other',
+            status: 0,
+            message: strategy.errorMessages.fatalTitle,
+          })
+        }
+        const handedOff = handOffError(video)
+        if (typeof handedOff === 'boolean') finishFatalError(handedOff)
+        else void handedOff.then(finishFatalError, () => finishFatalError(false))
+      })
+      hls.loadSource(url)
+      hls.attachMedia(video)
       setLoading(false)
     }
 

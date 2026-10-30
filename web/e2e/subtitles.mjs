@@ -260,9 +260,7 @@ log('\n=== ② ライブ: HLS 字幕 track・キー操作・cue 位置 ===')
     } else {
       log(`  HLS 字幕 tracks: ${JSON.stringify(result.tracks)}`)
       const cueLine = result.tracks.find((track) => track.cueCount > 0)?.cueLine
-      if (result.tracks.every((track) => track.cueCount === 0) && engine === 'webkit') {
-        log('  WebKit の hls.js 再生では subtitle cue の位置を測定する')
-      } else if (typeof cueLine !== 'number' || cueLine >= 0) {
+      if (typeof cueLine !== 'number' || cueLine >= 0) {
         ng.push(`② ライブ: HLS 字幕 cue が操作バーの上へ移動していない (${JSON.stringify(result.tracks)})`)
       }
 

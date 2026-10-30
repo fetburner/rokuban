@@ -215,7 +215,7 @@ corepack pnpm e2e:recording-segmented-vod
 
 #### ブラウザごとの違い
 
-Chrome と Playwright WebKit は、どちらも `Hls.isSupported()` が真なら hls.js で再生する。WebKit は診断用であり、実 Safari / iPhone Safari の確認には置き換えない。ブラウザごとの測定差は、この E2E を hls.js 経路で実行してから記録する。
+Chrome と Playwright WebKit は、どちらも `Hls.isSupported()` が真なら hls.js で再生する。WebKit は hls.js 経路の診断用で、Safari / iPhone は確認対象にしない。ブラウザごとの測定差は、この E2E を hls.js 経路で実行してから記録する。
 
 
 ### S3 の署名付き URL への 302（`s3-302.mjs`）
