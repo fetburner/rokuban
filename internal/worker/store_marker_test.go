@@ -352,7 +352,7 @@ func TestStoreMarkerMismatchWithholdsMissingAssetAndOrphanActions(t *testing.T) 
 				activeAssets: []store.ActiveMediaAsset{{ID: 17, RelPath: "sites/tokyo/missing.ts"}},
 				agedOrphans:  []string{filepath.ToSlash(relPath)},
 			}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 			// 実体無しの記録（walk の結果 → DB）。
 			if _, err := worker.reconcileMissingAssets(context.Background(), nil); err == nil {
@@ -410,7 +410,7 @@ func TestMissingAssetRecordRechecksStoreMarkerImmediatelyBeforeWrite(t *testing.
 				activeAssets: []store.ActiveMediaAsset{{ID: 18, RelPath: "sites/tokyo/missing.ts"}},
 				onListActive: func() { mismatchStoreMarker(t, mediaDir, state) },
 			}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 			if _, err := worker.reconcileMissingAssets(context.Background(), nil); err == nil {
 				t.Fatal("reconcileMissingAssets() succeeded after the marker changed")
@@ -445,7 +445,7 @@ func TestOrphanUnlinkRechecksStoreMarkerImmediatelyBeforeRemoval(t *testing.T) {
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			previous := beforeOrphanFileUnlink
 			beforeOrphanFileUnlink = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeOrphanFileUnlink = previous })
@@ -562,7 +562,7 @@ func TestOrphanAbsentAfterUnlinkWithholdsRecordWhenMarkerDisappears(t *testing.T
 				t.Fatal(err)
 			}
 			storage := &markerTestStorageObservation{}
-			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{Storage: storage, MediaDir: mediaDir, MediaStoreName: "tokyo", DerivedObjects: testFSObjectStore(mediaDir)}
 			// 再確認の後に別の誰かがファイルを消す。unlink は ErrNotExist になる。
 			previousBefore := beforeOrphanFileUnlink
 			beforeOrphanFileUnlink = func(string) {
@@ -713,6 +713,10 @@ func TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk(t *testing.T) {
 
 type markerGuardPublisher struct {
 	store.DerivedMediaPublisher
+}
+
+func (*markerGuardPublisher) PreparePendingMediaAssetCopy(context.Context, store.PendingMediaAssetCopy) error {
+	return nil
 }
 
 // hash の後に目印が消えたら、オブジェクト置き場へ Put する前に検出する。

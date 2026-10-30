@@ -349,6 +349,13 @@ func TestStorageTransferWorkerKeepsEncodedSubtitleSidecarInSync(t *testing.T) {
 			if state != "active" {
 				t.Fatalf("destination copy state = %q, want active", state)
 			}
+			var ownedObjects int
+			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_objects WHERE copy_id = (SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive')`, assetID).Scan(&ownedObjects); err != nil {
+				t.Fatal(err)
+			}
+			if ownedObjects != 0 {
+				t.Errorf("transfer ownership rows after activating destination = %d, want none", ownedObjects)
+			}
 		})
 	}
 }
@@ -454,10 +461,12 @@ func TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar(t *testin
 	}
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "test-store", "")
+	objects := transferTestObjectStores(t, roots)
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 		RecordingPurge: pgstore.NewRecordings(pool, "test-store"), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: roots["test-store"], MediaStoreName: "test-store", TransferOverlap: time.Hour,
+		DerivedObjects: objects["archive"],
 	}
 	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
@@ -493,24 +502,20 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	if err := media.RecordMediaAssetTransferFailure(context.Background(), transfer.CopyID, "destination interrupted"); err != nil {
 		t.Fatalf("recording failed transfer attempt: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(roots["archive"], filepath.FromSlash(relPath))), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	transferTemp := filepath.Join(roots["archive"], filepath.Dir(filepath.FromSlash(relPath)), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, assetID, transfer.CopyID))
-	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-	if err := os.WriteFile(filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath)), []byte("abandoned captions"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(transferTemp, video, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(transferTemp, targetPath); err != nil {
-		t.Fatalf("linking published destination to transfer temp: %v", err)
-	}
-	hasher := sha256.New()
-	_, _ = hasher.Write(video)
-	if err := fsink.WriteCheckpoint(transferTemp, int64(len(video)), hasher, nil); err != nil {
-		t.Fatalf("writing abandoned transfer checkpoint: %v", err)
+	objects := transferTestObjectStores(t, roots)
+	for _, object := range []struct {
+		key         string
+		content     []byte
+		contentType string
+	}{{relPath, video, "video/mp4"}, {subtitleRelPath, []byte("abandoned captions"), "text/vtt; charset=utf-8"}} {
+		sum := sha256.Sum256(object.content)
+		if err := objects["archive"].Put(context.Background(), object.key, bytes.NewReader(object.content), int64(len(object.content)), sum, object.contentType); err != nil {
+			t.Fatalf("putting owned pending transfer object %q: %v", object.key, err)
+		}
+		owned, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", object.key)
+		if err != nil || !owned {
+			t.Fatalf("recording ownership of pending transfer object %q = (%t, %v)", object.key, owned, err)
+		}
 	}
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
 		t.Fatal(err)
@@ -523,6 +528,9 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: roots["archive"], MediaStoreName: "archive", TrashRetention: time.Hour,
 		OrphanAge: time.Hour, OrphanMTimeGrace: time.Minute,
+		MediaPendingReclaim: media,
+		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
+		DerivedMediaDelete: media, DerivedPendingReclaim: media, DerivedStorage: media,
 	}
 	deletedBefore := promtestutil.ToFloat64(metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim"))
 	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
@@ -534,8 +542,6 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	for _, path := range []string{
 		filepath.Join(roots["archive"], filepath.FromSlash(relPath)),
 		filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath)),
-		transferTemp,
-		fsink.CheckpointPath(transferTemp),
 	} {
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("reclaimed pending path %q stat error = %v, want not-exist", path, err)
@@ -595,7 +601,8 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	if err != nil {
 		t.Fatal(err)
 	}
-	transferWorker := StorageTransferWorker{Storage: media, Config: transferConfig, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+	objects := transferTestObjectStores(t, roots)
+	transferWorker := StorageTransferWorker{Storage: media, Config: transferConfig, Roots: roots, ObjectStores: objects, ScratchDir: t.TempDir()}
 	if err := transferWorker.Work(context.Background(), jobs.StorageTransferArgs{
 		MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
 	}); err != nil {
@@ -614,6 +621,8 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 		MediaDelete: deleteMedia, Storage: deleteMedia, StorageTransfer: deleteMedia, StorageTransferPolicy: deleteConfig,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: roots["archive"], MediaStoreName: "archive",
+		MediaPendingReclaim: deleteMedia,
+		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
 	}
 	if err := deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
@@ -630,6 +639,13 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	}
 	if copyState != "deleted" {
 		t.Errorf("obsolete pending copy state = %q, want deleted", copyState)
+	}
+	var ownedObjects int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_objects WHERE copy_id = (SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive')`, assetID).Scan(&ownedObjects); err != nil {
+		t.Fatal(err)
+	}
+	if ownedObjects != 0 {
+		t.Errorf("pending transfer ownership rows after reclaim = %d, want none", ownedObjects)
 	}
 }
 
@@ -649,16 +665,14 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	if err != nil || !ok {
 		t.Fatalf("preparing pending transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
+	objects := transferTestObjectStores(t, roots)
 	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		t.Fatal(err)
+	if err := uploadObjectFile(context.Background(), objects["archive"], relPath, filepath.Join(roots["test-store"], filepath.FromSlash(relPath)), int64(len(video)), sha256.Sum256(video), objectContentType(relPath)); err != nil {
+		t.Fatalf("putting pending derived destination: %v", err)
 	}
-	tempPath := filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, transfer.MediaAssetID, transfer.CopyID))
-	if err := os.WriteFile(tempPath, video, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(tempPath, targetPath); err != nil {
-		t.Fatalf("linking published destination to transfer temp: %v", err)
+	owned, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", relPath)
+	if err != nil || !owned {
+		t.Fatalf("recording pending destination ownership = (%t, %v), want owned", owned, err)
 	}
 	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
 	if err != nil {
@@ -668,17 +682,26 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	if err := os.Mkdir(subtitlePath, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("making subtitle removal fail: %v", err)
+	}
+	owned, err = media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", subtitleRelPath)
+	if err != nil || !owned {
+		t.Fatalf("recording pending subtitle ownership = (%t, %v), want owned", owned, err)
+	}
 	deleteConfig := transferTestConfig("test-store", "archive", "test-store")
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: deleteConfig,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: roots["archive"], MediaStoreName: "archive",
+		MediaPendingReclaim: media,
+		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
 	}
 	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work with unremovable subtitle: %v", err)
 	}
-	if !fileExists(targetPath) || !fileExists(tempPath) {
-		t.Fatal("canonical or transfer temp was removed before subtitle cleanup succeeded")
+	if !fileExists(targetPath) {
+		t.Fatal("canonical object was removed before subtitle cleanup succeeded")
 	}
 	var copyState string
 	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState); err != nil {
@@ -688,7 +711,7 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 		t.Fatalf("pending copy state after interrupted reclaim = %q, want pending", copyState)
 	}
 
-	if err := os.Remove(subtitlePath); err != nil {
+	if err := os.RemoveAll(subtitlePath); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\ncaption\n"), 0o644); err != nil {
@@ -697,8 +720,8 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("retrying DeleteReconcileWorker.Work: %v", err)
 	}
-	if fileExists(targetPath) || fileExists(tempPath) || fileExists(subtitlePath) {
-		t.Fatal("canonical, temp, or subtitle remains after pending reclaim retry")
+	if fileExists(targetPath) || fileExists(subtitlePath) {
+		t.Fatal("canonical or subtitle remains after pending reclaim retry")
 	}
 	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState); err != nil {
 		t.Fatal(err)
@@ -1481,7 +1504,7 @@ func TestStorageTransferPendingReclaimRechecksAfterRecordingRestore(t *testing.T
 	called := false
 	reclaimed, err := media.ReclaimObsoletePendingMediaAssetTransferCopy(
 		context.Background(), candidates[0], mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived,
-		func() error { called = true; return nil },
+		func([]string) error { called = true; return nil },
 	)
 	if err != nil {
 		t.Fatalf("reclaiming a restored pending copy: %v", err)
@@ -1557,13 +1580,21 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 		t.Fatalf("linking published pending destination to transfer temp: %v", err)
 	}
 
+	objects := transferTestObjectStores(t, roots)
+	derivedMedia := pgstore.NewMedia(pool, "archive", cfg.Derived)
 	newWorker := func(storeName string) *DeleteReconcileWorker {
 		media := pgstore.NewMedia(pool, storeName, cfg.Derived)
-		return &DeleteReconcileWorker{
+		worker := &DeleteReconcileWorker{
 			MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 			RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
 			MediaDir: roots[storeName], MediaStoreName: storeName, TrashRetention: time.Hour,
+			DerivedObjects: objects["archive"], DerivedObjectStoreName: "archive",
+			DerivedMediaDelete: derivedMedia, DerivedPendingReclaim: derivedMedia, DerivedStorage: derivedMedia,
 		}
+		if storeName == "archive" {
+			worker.MediaPendingReclaim = media
+		}
+		return worker
 	}
 	if err := newWorker("test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("deleting source original after until_encoded: %v", err)
@@ -1622,7 +1653,7 @@ SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE 
 	called := false
 	reclaimed, err := media.ReclaimObsoletePendingMediaAssetTransferCopy(
 		context.Background(), candidates[0], mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived,
-		func() error { called = true; return nil },
+		func([]string) error { called = true; return nil },
 	)
 	if err != nil {
 		t.Fatalf("rechecking pending original retention: %v", err)

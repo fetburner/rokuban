@@ -242,6 +242,15 @@ func TestEncodeWorker_ExistingObjectKeyIsNotOverwritten(t *testing.T) {
 	if activeCount != 0 {
 		t.Errorf("active encoded copies = %d, want none after conflicting Put", activeCount)
 	}
+	var pendingCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets a
+		JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'pending'`, recordingID).Scan(&pendingCount); err != nil {
+		t.Fatal(err)
+	}
+	if pendingCount != 0 {
+		t.Errorf("pending encoded copies = %d, want none after rejecting a pre-existing object key", pendingCount)
+	}
 }
 
 // T2: B の古い attempt が Put した後に A が新しい世代を active にし、B が DB 公開へ
@@ -305,8 +314,8 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 }
 
 // 別の録画・プロファイルが同じ rel_path を導くことがある（`r_a` + `b` と `r` + `a_b`）。
-// 削除済みでない別行がそのパスを持つなら、2 つ目の公開は rename の前に Upsert で拒まれる。
-// 通常の Work の経路は、この拒否を失敗した試行として記録する。
+// 既存 object key は pending reservation の前に拒み、通常の Work の経路はこの拒否を
+// 失敗した試行として記録する。
 func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -366,11 +375,11 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if attemptError == nil {
-		t.Fatal("candidate attempt error is NULL, want the rel_path reservation failure")
+		t.Fatal("candidate attempt error is NULL, want the existing object key failure")
 	}
-	if !strings.Contains(*attemptError, "recording encoded media asset copy: upserting media asset copy") ||
-		!strings.Contains(*attemptError, "affected 0 rows: conflict") {
-		t.Errorf("candidate attempt error = %s, want the rel_path reservation failure", *attemptError)
+	if !strings.Contains(*attemptError, "already occupied") ||
+		!strings.Contains(*attemptError, "object key already exists") {
+		t.Errorf("candidate attempt error = %s, want the existing object key failure", *attemptError)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
@@ -636,8 +645,16 @@ func TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain(t *testing.T) {
 	if _, published, err := sc.w.publishEncoded(ctx, sc.in); err != nil || published {
 		t.Fatalf("publish = %v, err %v; want a skip for the overwritten request", published, err)
 	}
-	if _, err := os.Stat(sc.finalPath); !os.IsNotExist(err) {
-		t.Errorf("output stat err = %v, want file absent", err)
+	if _, err := os.Stat(sc.finalPath); err != nil {
+		t.Errorf("pending output stat err = %v, want the unexposed Put result", err)
+	}
+	var pendingState string
+	if err := pool.QueryRow(ctx, `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
+		dbtest.StoreName, sc.finalRel).Scan(&pendingState); err != nil {
+		t.Fatalf("reading skipped output state: %v", err)
+	}
+	if pendingState != "pending" {
+		t.Errorf("skipped output state = %q, want pending", pendingState)
 	}
 	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: sc.recordingID,

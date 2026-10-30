@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,7 +39,7 @@ func publishGeneratedObject(
 	guard func(operation string) error,
 	commit func(size int64, sha256 [sha256.Size]byte) (bool, error),
 	companions ...objectCompanion,
-) (int64, bool, error) {
+) (size int64, published bool, retErr error) {
 	if objects == nil || publisher == nil {
 		return 0, false, fmt.Errorf("object store and derived media publisher are required")
 	}
@@ -47,8 +48,19 @@ func publishGeneratedObject(
 		return 0, false, fmt.Errorf("hashing generated object %q: %w", pending.RelPath, err)
 	}
 	pending.SizeBytes = size
+	if err := requireGeneratedObjectKeyAvailable(ctx, objects, pending.RelPath); err != nil {
+		return 0, false, err
+	}
+	for _, companion := range companions {
+		if err := requireGeneratedObjectKeyAvailable(ctx, objects, companion.Key); err != nil {
+			return 0, false, err
+		}
+	}
 	if !pendingPrepared {
 		if err := publisher.PreparePendingMediaAssetCopy(ctx, pending); err != nil {
+			if errors.Is(err, store.ErrGenerationAdvanced) {
+				return 0, false, nil
+			}
 			return 0, false, fmt.Errorf("recording pending object copy: %w", err)
 		}
 	}
@@ -58,6 +70,11 @@ func publishGeneratedObject(
 		}
 	}
 	if err := uploadObjectFile(ctx, objects, pending.RelPath, scratchPath, size, checksum, contentType); err != nil {
+		if errors.Is(err, objstore.ErrAlreadyExists) {
+			// Another publisher won the no-replace race for this reserved key. Its
+			// pending row owns the bytes and will either activate or reclaim them.
+			return 0, false, nil
+		}
 		return 0, false, err
 	}
 	for _, companion := range companions {
@@ -79,8 +96,26 @@ func publishGeneratedObject(
 			return size, false, err
 		}
 	}
-	published, err := commit(size, checksum)
-	return size, published, err
+	published, err = commit(size, checksum)
+	if err != nil {
+		return size, false, err
+	}
+	if !published {
+		return 0, false, nil
+	}
+	return size, published, nil
+}
+
+func requireGeneratedObjectKeyAvailable(ctx context.Context, objects objstore.Store, key string) error {
+	_, err := objects.Head(ctx, key)
+	if err == nil {
+		return fmt.Errorf("generated object key %q is already occupied: %w", key, objstore.ErrAlreadyExists)
+	}
+	if errors.Is(err, objstore.ErrNotFound) {
+		return nil
+	}
+	metrics.RecordObjectStoreError("head", err)
+	return fmt.Errorf("checking generated object key %q: %w", key, err)
 }
 
 func hashObjectFile(ctx context.Context, path string) (int64, [sha256.Size]byte, error) {

@@ -145,7 +145,7 @@ func (w *DeleteReconcileWorker) reclaimPendingFilesystemDerivedCopy(ctx context.
 		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming pending derived object"); err != nil {
 			return err
 		}
-		if err := w.deleteObjectKey(ctx, copy.RelPath, copy.Kind); err != nil {
+		if err := w.deletePendingObjectKey(ctx, copy.RelPath, copy.Kind); err != nil {
 			return err
 		}
 		return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking pending derived object deleted")
@@ -172,8 +172,8 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		log.Warn("delete_reconcile: withholding placement deletion because the store marker did not match", "err", err)
 		return
 	}
-	if candidate.Kind != store.AssetKindOriginal {
-		if w.DerivedObjects == nil || candidate.Store != w.DerivedObjectStoreName {
+	if candidate.Kind != store.AssetKindOriginal && candidate.Store == w.DerivedObjectStoreName {
+		if w.DerivedObjects == nil {
 			log.Error("delete_reconcile: derived placement object store is not configured", "derived_store", w.DerivedObjectStoreName)
 			return
 		}
@@ -285,33 +285,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 		return
 	}
 	if candidate.Kind != store.AssetKindOriginal {
-		if w.DerivedObjects == nil || candidate.Store != w.DerivedObjectStoreName {
-			log.Error("delete_reconcile: derived transfer object store is not configured", "derived_store", w.DerivedObjectStoreName)
-			return
-		}
-		rules, err := w.StorageTransferPolicy.OriginalRulesJSON()
-		if err != nil {
-			log.Error("delete_reconcile: encoding current transfer policy for derived pending reclaim", "err", err)
-			return
-		}
-		fsStores := w.StorageTransferPolicy.FSStoreNames()
-		reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
-			ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
-			func() error {
-				if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer copy"); err != nil {
-					return err
-				}
-				return w.deleteObjectKey(ctx, candidate.RelPath, candidate.Kind)
-			},
-		)
-		if err != nil {
-			log.Error("delete_reconcile: reclaiming obsolete pending derived transfer copy", "err", err)
-			return
-		}
-		if reclaimed {
-			metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim").Inc()
-			log.Info("delete_reconcile: reclaimed obsolete pending derived transfer copy")
-		}
+		w.reclaimObsoletePendingDerivedTransferCopy(ctx, candidate, log)
 		return
 	}
 	path, err := mediapath.Resolve(w.MediaDir, candidate.RelPath)
@@ -340,7 +314,10 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 	subtitleTempPath := transferSubtitleTempPath(path, candidate.MediaAssetID, candidate.CopyID)
 	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
 		ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
-		func() error {
+		func(ownedRelPaths []string) error {
+			if len(ownedRelPaths) != 0 {
+				return fmt.Errorf("original transfer copy %d has derived-object ownership records", candidate.CopyID)
+			}
 			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending transfer copy"); err != nil {
 				return err
 			}
@@ -384,6 +361,41 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 	if reclaimed {
 		metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim").Inc()
 		log.Info("delete_reconcile: reclaimed obsolete pending transfer copy")
+	}
+}
+
+func (w *DeleteReconcileWorker) reclaimObsoletePendingDerivedTransferCopy(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate, log *slog.Logger) {
+	if w.DerivedObjects == nil || candidate.Store != w.DerivedObjectStoreName {
+		log.Error("delete_reconcile: derived transfer object store is not configured", "derived_store", w.DerivedObjectStoreName)
+		return
+	}
+	rules, err := w.StorageTransferPolicy.OriginalRulesJSON()
+	if err != nil {
+		log.Error("delete_reconcile: encoding current transfer policy for derived pending reclaim", "err", err)
+		return
+	}
+	fsStores := w.StorageTransferPolicy.FSStoreNames()
+	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
+		ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
+		func(ownedRelPaths []string) error {
+			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer copy"); err != nil {
+				return err
+			}
+			if err := deleteOwnedTransferObjects(ctx, w.DerivedObjects, candidate.RelPath, candidate.Kind, ownedRelPaths, func() error {
+				return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer object")
+			}); err != nil {
+				return err
+			}
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking obsolete pending derived transfer copy deleted")
+		},
+	)
+	if err != nil {
+		log.Error("delete_reconcile: reclaiming obsolete pending derived transfer copy", "err", err)
+		return
+	}
+	if reclaimed {
+		metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim").Inc()
+		log.Info("delete_reconcile: reclaimed obsolete pending derived transfer copy")
 	}
 }
 
@@ -468,7 +480,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", err)
 		return
 	}
-	if t.Kind != store.AssetKindOriginal {
+	if t.Kind != store.AssetKindOriginal && w.MediaStoreName != "" && w.MediaStoreName == w.DerivedObjectStoreName {
 		if w.DerivedObjects == nil {
 			log.Error("delete_reconcile: derived object store is not configured")
 			return
@@ -800,6 +812,10 @@ func (w *DeleteReconcileWorker) deleteGeneratedAssetStagingOrphan(key string, mt
 		return
 	}
 	afterOrphanFileUnlink(key)
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming generated staging key removal"); err != nil {
+		log.Warn("delete_reconcile: withholding staging orphan record removal because media store marker did not match", "err", err)
+		return
+	}
 	w.clearOrphanFileRecord(key, object.Size, true, log)
 }
 

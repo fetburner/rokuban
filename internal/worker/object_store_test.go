@@ -39,11 +39,16 @@ type objectEnv struct {
 
 func newObjectEnv(t *testing.T) objectEnv {
 	t.Helper()
-	objects, err := fsstore.New(t.TempDir())
+	return newObjectEnvWith(t, testFilesystemObjectStore(t, t.TempDir()))
+}
+
+func testFilesystemObjectStore(t *testing.T, root string) objstore.Store {
+	t.Helper()
+	objects, err := fsstore.New(root)
 	if err != nil {
-		t.Fatalf("creating object store: %v", err)
+		t.Fatalf("creating filesystem object store: %v", err)
 	}
-	return newObjectEnvWith(t, objects)
+	return objects
 }
 
 func newObjectEnvWith(t *testing.T, objects objstore.Store) objectEnv {
@@ -528,6 +533,80 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 	}
 	if originalState != "pending" {
 		t.Errorf("original copy state = %q, want pending", originalState)
+	}
+}
+
+func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	objects := testFilesystemObjectStore(t, mediaDir)
+	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, dbtest.StoreName)
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	relPath := "pending/sidecar-retry.mp4"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("pending encoded object"))
+	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subtitlePath := filepath.Join(mediaDir, filepath.FromSlash(subtitleRelPath))
+	if err := os.Remove(subtitlePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removing seeded subtitle: %v", err)
+	}
+	if err := os.MkdirAll(subtitlePath, 0o755); err != nil {
+		t.Fatalf("creating blocked subtitle directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("making subtitle deletion fail: %v", err)
+	}
+	copyID := transferTestCopyID(t, pool, assetID, dbtest.StoreName)
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE id = $1`, copyID); err != nil {
+		t.Fatalf("aging pending encoded copy: %v", err)
+	}
+	worker := &DeleteReconcileWorker{
+		MediaDelete: media, MediaPendingReclaim: media, Storage: media,
+		RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName), Breakers: pgstore.NewBreakers(pool),
+		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName, OrphanAge: time.Hour,
+	}
+	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("DeleteReconcileWorker.Work with blocked subtitle: %v", err)
+	}
+	if _, err := objects.Head(ctx, relPath); err != nil {
+		t.Fatalf("main object was removed before subtitle cleanup succeeded: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" {
+		t.Fatalf("copy state after blocked subtitle cleanup = %q, want pending", state)
+	}
+
+	if err := os.RemoveAll(subtitlePath); err != nil {
+		t.Fatalf("removing blocked subtitle directory: %v", err)
+	}
+	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\ncaption\n"), 0o644); err != nil {
+		t.Fatalf("restoring subtitle object: %v", err)
+	}
+	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("retrying DeleteReconcileWorker.Work: %v", err)
+	}
+	if _, err := objects.Head(ctx, relPath); !errors.Is(err, objstore.ErrNotFound) {
+		t.Errorf("main object after successful retry = %v, want ErrNotFound", err)
+	}
+	if _, err := objects.Head(ctx, subtitleRelPath); !errors.Is(err, objstore.ErrNotFound) {
+		t.Errorf("subtitle object after successful retry = %v, want ErrNotFound", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "deleted" {
+		t.Errorf("copy state after successful retry = %q, want deleted", state)
 	}
 }
 

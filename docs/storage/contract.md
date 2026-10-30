@@ -155,6 +155,7 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - ctx cancellation に従わない古い ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる。
 - 公開は **事前計画 → `Store.Put` → DB transaction で attempt token と論理状態を再確認し、pending を active にする**。削除済みでない別行が同じ `(store, rel_path)` を持てば DB の一意制約が拒み、既存キーは上書きされない。canonical file の filesystem lock は派生物の Put / commit には使わない。
 - Store 実装が内部に残した staging file や multipart upload は、その実装の責任で非公開のまま扱う。公開済みだが DB commit されなかったキーは `pending` 行を基準に reconcile が削除する。通常削除も派生物では `Store.Delete` を使い、original の file unlink と混同しない。
+- encoded の pending copy を回収するときは字幕 sidecar を先に削除する。失敗したら本体と pending 行を残して、次の reconcile で再試行する。
 - `fsstore` は `.rokuban-encode-` / `.rokuban-media-asset-` staging key を List に返さない。内部 staging file は FS orphan cleanup が回収する。S3 multipart upload は成功前に List に現れず、Put 失敗時に abort する。DB に active row が無い canonical object は自動削除せず、pending reconcile が回収する。
 
 <details><summary>根拠</summary>
@@ -168,6 +169,7 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - 新しい scratch directory の作成が gate を待つ: `TestNewEncodeScratchDirWaitsForScratchCreationGate`
 - 原本 file の unlink と ingest publish を直列化する filesystem lock: `deleteMediaAsset`
 - staged file の walk と削除: `walkMediaFiles`、`deleteOrphanFile`
+- encoded pending の字幕削除失敗時に本体と行を残す: `TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds`
 
 </details>
 

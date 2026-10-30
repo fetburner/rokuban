@@ -225,6 +225,18 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	if w.ObjectPublisher == nil {
 		return errors.New("derived media publisher is required")
 	}
+	if w.Objects == nil {
+		return errors.New("derived object store is required")
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "checking encoded object key"); err != nil {
+		return err
+	}
+	if err := requireGeneratedObjectKeyAvailable(ctx, w.Objects, relPath); err != nil {
+		return err
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reserving encoded object copy"); err != nil {
+		return err
+	}
 	if err := w.ObjectPublisher.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
 		RecordingID: args.RecordingID, Kind: store.AssetKindEncoded, Profile: &profileName,
 		RelPath: relPath, DerivedGeneration: generation, ReserveNewGeneration: true,
@@ -692,7 +704,7 @@ var (
 	// beforeEncodeObjectPut は hash 後、派生物を置き場へ送る直前のマウント目印検査前に呼ぶ。
 	// テストでその間に目印が変わる状況を再現する。
 	beforeEncodeObjectPut = func(string) {}
-	// beforeEncodeObjectActivation は DB の fencing と計画判定の後、active commit の前に呼ぶ。
+	// beforeEncodeObjectActivation は Store.Put の後、公開 transaction を開始する前に呼ぶ。
 	beforeEncodeObjectActivation = func(string) error { return nil }
 	// beforeEncodeCommit は active row を更新する tx.Commit の直前に呼ぶ。
 	// エラーを返すと commit せずに失敗させる。
@@ -775,10 +787,10 @@ func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublis
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			input.SizeBytes = size
 			input.SHA256 = sum[:]
+			if err := beforeEncodeObjectActivation(in.scratchOut); err != nil {
+				return false, fmt.Errorf("preparing encoded object publication: %w", err)
+			}
 			return w.ObjectPublisher.PublishEncoded(ctx, input, func() error {
-				if err := beforeEncodeObjectActivation(in.scratchOut); err != nil {
-					return fmt.Errorf("preparing encoded object publication: %w", err)
-				}
 				return beforeEncodeCommit(in.scratchOut)
 			})
 		}, companions...,

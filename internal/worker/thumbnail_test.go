@@ -235,14 +235,15 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	})
 
 	w := &ThumbnailWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool),
-		Media:           pgstoretest.Media(pool),
-		MediaDir:        mediaDir,
-		ScratchDir:      scratchDir,
-		FFmpeg:          "ffmpeg",
-		FFprobe:         "ffprobe",
-		runCmd:          fakeThumbnailTools(t, 100.0),
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       scratchDir,
+		FFmpeg:           "ffmpeg",
+		FFprobe:          "ffprobe",
+		runCmd:           fakeThumbnailTools(t, 100.0),
 	}
 
 	job := ThumbnailJobArgs{RecordingID: recordingID}
@@ -320,11 +321,12 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool),
-		Media:           pgstoretest.Media(pool),
-		MediaDir:        mediaDir,
-		ScratchDir:      scratchDir,
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       scratchDir,
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if containsArg(args, "format=duration") {
 				t.Fatal("chapter-aware reselection must not call ffprobe")
@@ -411,11 +413,12 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool),
-		Media:           pgstoretest.Media(pool),
-		MediaDir:        mediaDir,
-		ScratchDir:      t.TempDir(),
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       t.TempDir(),
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
 				gotInputSeek = args[i+1]
@@ -474,19 +477,25 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 		t.Fatalf("seeding CM ranges: %v", err)
 	}
 
-	var gotInputSeek, gotInputPath string
+	var gotInputSeek string
+	var gotInput []byte
 	w := &ThumbnailWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool),
-		Media:           pgstoretest.Media(pool),
-		MediaDir:        mediaDir,
-		ScratchDir:      t.TempDir(),
+		Objects:          testFSObjectStore(mediaDir),
+		ObjectPublisher:  pgstoretest.Media(pool),
+		Media:            pgstoretest.Media(pool),
+		DerivedStoreName: dbtest.StoreName,
+		MediaDir:         mediaDir,
+		ScratchDir:       t.TempDir(),
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
 				gotInputSeek = args[i+1]
 			}
 			if i := indexOfArg(args, "-i"); i >= 0 && i+1 < len(args) {
-				gotInputPath = args[i+1]
+				var err error
+				gotInput, err = os.ReadFile(args[i+1])
+				if err != nil {
+					return nil, err
+				}
 			}
 			if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o644); err != nil {
 				return nil, err
@@ -501,9 +510,8 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 	if gotInputSeek != "89.993" {
 		t.Errorf("uncut encoded input -ss = %q, want 89.993 seconds", gotInputSeek)
 	}
-	wantInputPath := filepath.Join(mediaDir, filepath.FromSlash(encodedRelPath))
-	if gotInputPath != wantInputPath {
-		t.Errorf("ffmpeg input path = %q, want uncut encoded file %q", gotInputPath, wantInputPath)
+	if !bytes.Equal(gotInput, []byte("fake-mp4")) {
+		t.Errorf("ffmpeg input bytes = %q, want the uncut encoded object", gotInput)
 	}
 	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
 	if err != nil {

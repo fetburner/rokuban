@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -550,7 +551,17 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
-	w := &worker.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, MediaStoreName: dbtest.StoreName}
+	derivedObjects, err := fsstore.New(mediaDir)
+	if err != nil {
+		t.Fatalf("creating derived object store: %v", err)
+	}
+	w := &worker.DeleteReconcileWorker{
+		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
+		RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool),
+		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		DerivedObjects: derivedObjects, DerivedObjectStoreName: dbtest.StoreName,
+		MediaPendingReclaim: pgstoretest.Media(pool),
+	}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}

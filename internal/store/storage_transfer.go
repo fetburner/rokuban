@@ -65,6 +65,12 @@ type StorageTransfer interface {
 	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore, derivedStore string, originalRules, sha256 []byte) (active bool, rejection string, err error)
 	// RecordMediaAssetTransferFailure は転送失敗を記録する。
 	RecordMediaAssetTransferFailure(ctx context.Context, copyID int64, message string) error
+	// MarkMediaAssetTransferObjectOwned は、pending 転送が新規作成した destination key を記録する。
+	MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (pending bool, err error)
+	// ListMediaAssetTransferObjectsOwned は、pending 転送が新規作成した destination key を返す。
+	ListMediaAssetTransferObjectsOwned(ctx context.Context, copyID int64, storeName string) ([]string, error)
+	// DeleteMediaAssetTransferObjectOwned は、pending 転送が不要になった owned key の記録を消す。
+	DeleteMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) error
 	// MarkMediaAssetCopyCorrupt は、破損が確認された派生コピーを deleting にする。
 	// 録画の行、派生の論理行の順にロックし、同じ録画に active・実体ありの原本コピーがあるときだけ遷移させる。
 	// unlink と deleted への確定は呼び出し側が行う。
@@ -74,7 +80,7 @@ type StorageTransfer interface {
 	// ListObsoletePendingMediaAssetTransferCopies は trash・generation・placement により不要になった pending コピーを返す。
 	ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
 	// ReclaimObsoletePendingMediaAssetTransferCopy は path lock の下で pending の obsolete 条件を再評価し、物理削除して deleted にする。
-	ReclaimObsoletePendingMediaAssetTransferCopy(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, originalRules []byte, fsStores []string, derivedStore string, deleteFile func() error) (reclaimed bool, err error)
+	ReclaimObsoletePendingMediaAssetTransferCopy(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, originalRules []byte, fsStores []string, derivedStore string, deleteFile func(ownedRelPaths []string) error) (reclaimed bool, err error)
 	// ListMediaAssetCopiesToDelete は、現行 policy の desired copy を確認できる active の stale copy を返す。
 	ListMediaAssetCopiesToDelete(ctx context.Context, originalRules []byte, derivedStore string, overlapCutoff time.Time, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
 	// GetMediaAssetCopyForDeletion はジョブ引数の copy ID から現在のパスを返す。

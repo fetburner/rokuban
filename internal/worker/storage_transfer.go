@@ -297,6 +297,14 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("creating derived transfer scratch: %w", err))
 	}
 	defer func() { _ = os.RemoveAll(scratchDir) }()
+	ownedRelPaths, err := w.Storage.ListMediaAssetTransferObjectsOwned(ctx, transfer.CopyID, args.Store)
+	if err != nil {
+		return fmt.Errorf("listing owned derived transfer objects: %w", err)
+	}
+	owned := make(map[string]struct{}, len(ownedRelPaths))
+	for _, relPath := range ownedRelPaths {
+		owned[relPath] = struct{}{}
+	}
 
 	assetPath, digest, size, err := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
 	if err != nil {
@@ -308,32 +316,35 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
 		return err
 	}
-	if err := putTransferredObject(ctx, targetStore, transfer.RelPath, assetPath, size, digest, objectContentType(transfer.RelPath)); err != nil {
+	_, mainOwned := owned[transfer.RelPath]
+	mainCreated, err := putTransferredObject(ctx, targetStore, transfer.RelPath, assetPath, size, digest, objectContentType(transfer.RelPath), mainOwned, false)
+	if err != nil {
 		metrics.RecordObjectStoreError("put", err)
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
 	}
-
-	var subtitleKey string
-	if transfer.Kind == store.AssetKindEncoded && canHaveSubtitleSidecar(transfer.RelPath) {
-		sourceSubtitleKey, err := mediapath.SubtitleSibling(transfer.SourceRelPath)
+	if mainCreated {
+		pending, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, transfer.RelPath)
 		if err != nil {
-			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("building source subtitle object key: %w", err))
+			cleanupErr := targetStore.Delete(ctx, transfer.RelPath)
+			return w.recordTransferFailure(ctx, transfer, log, errors.Join(
+				fmt.Errorf("recording ownership of derived transfer destination: %w", err), cleanupErr,
+			))
 		}
-		subtitleKey, err = mediapath.SubtitleSibling(transfer.RelPath)
-		if err != nil {
-			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("building destination subtitle object key: %w", err))
-		}
-		subtitlePath, subtitleDigest, subtitleSize, subtitleErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, sourceSubtitleKey, scratchDir, -1, nil)
-		if errors.Is(subtitleErr, objstore.ErrNotFound) {
-			if err := targetStore.Delete(ctx, subtitleKey); err != nil {
-				return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("removing absent transferred subtitle: %w", err))
+		if !pending {
+			if err := targetStore.Delete(ctx, transfer.RelPath); err != nil {
+				return fmt.Errorf("removing destination created after transfer was retired: %w", err)
 			}
-		} else if subtitleErr != nil {
-			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading transferred subtitle: %w", subtitleErr))
-		} else if err := putTransferredObject(ctx, targetStore, subtitleKey, subtitlePath, subtitleSize, subtitleDigest, "text/vtt; charset=utf-8"); err != nil {
-			metrics.RecordObjectStoreError("put", err)
-			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing transferred subtitle: %w", err))
+			return nil
 		}
+		owned[transfer.RelPath] = struct{}{}
+	}
+
+	continueTransfer, err := w.syncDerivedTransferSubtitle(ctx, transfer, args, sourceStore, targetStore, scratchDir, owned, log)
+	if err != nil {
+		return err
+	}
+	if !continueTransfer {
+		return nil
 	}
 
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "committing derived storage transfer"); err != nil {
@@ -344,13 +355,8 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		return fmt.Errorf("committing derived storage transfer: %w", err)
 	}
 	if !active {
-		if err := targetStore.Delete(ctx, transfer.RelPath); err != nil {
-			return fmt.Errorf("removing uncommitted derived transfer object: %w", err)
-		}
-		if subtitleKey != "" {
-			if err := targetStore.Delete(ctx, subtitleKey); err != nil {
-				return fmt.Errorf("removing uncommitted transferred subtitle: %w", err)
-			}
+		if err := deleteOwnedTransferObjects(ctx, targetStore, transfer.RelPath, transfer.Kind, ownedRelPathsFromSet(owned), nil); err != nil {
+			return fmt.Errorf("removing uncommitted derived transfer objects: %w", err)
 		}
 		if err := w.Storage.DiscardPendingMediaAssetCopy(ctx, transfer.CopyID); err != nil {
 			return err
@@ -363,6 +369,68 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	metrics.StorageTransferLastSuccess.Set(float64(time.Now().Unix()))
 	log.Info("storage transfer: derived copy active", "bytes", size)
 	return nil
+}
+
+func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
+	ctx context.Context,
+	transfer store.MediaAssetTransfer,
+	args jobs.StorageTransferArgs,
+	sourceStore, targetStore objstore.Store,
+	scratchDir string,
+	owned map[string]struct{},
+	log *slog.Logger,
+) (bool, error) {
+	if transfer.Kind != store.AssetKindEncoded || !canHaveSubtitleSidecar(transfer.RelPath) {
+		return true, nil
+	}
+	sourceSubtitleKey, err := mediapath.SubtitleSibling(transfer.SourceRelPath)
+	if err != nil {
+		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("building source subtitle object key: %w", err))
+	}
+	subtitleKey, err := mediapath.SubtitleSibling(transfer.RelPath)
+	if err != nil {
+		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("building destination subtitle object key: %w", err))
+	}
+	subtitlePath, subtitleDigest, subtitleSize, subtitleErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, sourceSubtitleKey, scratchDir, -1, nil)
+	if errors.Is(subtitleErr, objstore.ErrNotFound) {
+		if err := targetStore.Delete(ctx, subtitleKey); err != nil {
+			return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("removing absent transferred subtitle: %w", err))
+		}
+		if _, subtitleOwned := owned[subtitleKey]; subtitleOwned {
+			if err := w.Storage.DeleteMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, subtitleKey); err != nil {
+				return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("clearing absent transferred subtitle ownership: %w", err))
+			}
+			delete(owned, subtitleKey)
+		}
+		return true, nil
+	}
+	if subtitleErr != nil {
+		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading transferred subtitle: %w", subtitleErr))
+	}
+	_, subtitleOwned := owned[subtitleKey]
+	subtitleCreated, err := putTransferredObject(ctx, targetStore, subtitleKey, subtitlePath, subtitleSize, subtitleDigest, "text/vtt; charset=utf-8", subtitleOwned, true)
+	if err != nil {
+		metrics.RecordObjectStoreError("put", err)
+		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing transferred subtitle: %w", err))
+	}
+	if !subtitleCreated {
+		return true, nil
+	}
+	pending, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, subtitleKey)
+	if err != nil {
+		cleanupErr := targetStore.Delete(ctx, subtitleKey)
+		return false, w.recordTransferFailure(ctx, transfer, log, errors.Join(
+			fmt.Errorf("recording ownership of transferred subtitle: %w", err), cleanupErr,
+		))
+	}
+	if !pending {
+		if err := targetStore.Delete(ctx, subtitleKey); err != nil {
+			return false, fmt.Errorf("removing subtitle created after transfer was retired: %w", err)
+		}
+		return false, nil
+	}
+	owned[subtitleKey] = struct{}{}
+	return true, nil
 }
 
 func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, objects objstore.Store, sourceStoreName, key, scratchDir string, expectedSize int64, expectedSHA []byte) (string, []byte, int64, error) {
@@ -415,32 +483,83 @@ func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, obje
 	return name, digest, count, nil
 }
 
-func putTransferredObject(ctx context.Context, objects objstore.Store, key, path string, size int64, digest []byte, contentType string) error {
+func putTransferredObject(ctx context.Context, objects objstore.Store, key, path string, size int64, digest []byte, contentType string, alreadyOwned, replaceStale bool) (created bool, err error) {
 	var checksum [sha256.Size]byte
 	if len(digest) != len(checksum) {
-		return fmt.Errorf("invalid SHA-256 length %d", len(digest))
+		return false, fmt.Errorf("invalid SHA-256 length %d", len(digest))
 	}
 	copy(checksum[:], digest)
-	if _, err := objects.Head(ctx, key); err == nil {
+	if _, headErr := objects.Head(ctx, key); headErr == nil {
 		actual, actualSize, err := hashStoredObject(ctx, objects, key)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if actualSize != size || !bytes.Equal(actual, digest) {
-			return fmt.Errorf("existing destination object differs from transfer source: %w", objstore.ErrAlreadyExists)
+		if actualSize == size && bytes.Equal(actual, digest) {
+			return false, nil
 		}
-		return nil
-	} else if !errors.Is(err, objstore.ErrNotFound) {
-		return err
+		if !replaceStale || alreadyOwned {
+			ownership := "pre-existing"
+			if alreadyOwned {
+				ownership = "owned"
+			}
+			return false, fmt.Errorf("%s destination object differs from transfer source: %w", ownership, objstore.ErrAlreadyExists)
+		}
+		if err := objects.Delete(ctx, key); err != nil {
+			return false, fmt.Errorf("removing stale subtitle object %q: %w", key, err)
+		}
+	} else if !errors.Is(headErr, objstore.ErrNotFound) {
+		return false, headErr
 	}
 	if err := uploadObjectFile(ctx, objects, key, path, size, checksum, contentType); err != nil {
-		if errors.Is(err, objstore.ErrAlreadyExists) {
-			actual, actualSize, readErr := hashStoredObject(ctx, objects, key)
-			if readErr == nil && actualSize == size && bytes.Equal(actual, digest) {
-				return nil
+		return false, err
+	}
+	return true, nil
+}
+
+func ownedRelPathsFromSet(owned map[string]struct{}) []string {
+	paths := make([]string, 0, len(owned))
+	for path := range owned {
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func deleteOwnedTransferObjects(ctx context.Context, objects objstore.Store, relPath, kind string, ownedRelPaths []string, beforeDelete func() error) error {
+	allowed := map[string]struct{}{relPath: {}}
+	sidecar := ""
+	if kind == store.AssetKindEncoded && canHaveSubtitleSidecar(relPath) {
+		var err error
+		sidecar, err = mediapath.SubtitleSibling(relPath)
+		if err != nil {
+			return fmt.Errorf("building owned subtitle key: %w", err)
+		}
+		allowed[sidecar] = struct{}{}
+	}
+	owned := make(map[string]struct{}, len(ownedRelPaths))
+	for _, key := range ownedRelPaths {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unexpected owned transfer key %q", key)
+		}
+		owned[key] = struct{}{}
+	}
+	keys := make([]string, 0, 2)
+	if sidecar != "" {
+		if _, ok := owned[sidecar]; ok {
+			keys = append(keys, sidecar)
+		}
+	}
+	if _, ok := owned[relPath]; ok {
+		keys = append(keys, relPath)
+	}
+	for _, key := range keys {
+		if beforeDelete != nil {
+			if err := beforeDelete(); err != nil {
+				return err
 			}
 		}
-		return err
+		if err := objects.Delete(ctx, key); err != nil {
+			return fmt.Errorf("deleting owned transfer object %q: %w", key, err)
+		}
 	}
 	return nil
 }

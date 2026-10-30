@@ -254,17 +254,30 @@ func TestSeekTilesWorkerPublishesThroughObjectStore(t *testing.T) {
 
 func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scratch string) (int64, bool, error) {
 	// 呼び出し時点の active original を入力として計画した初回生成を模す。
+	ctx := context.Background()
+	objects := testFSObjectStore(mediaDir)
+	publisher := pgstoretest.Media(pool)
 	var inputID int64
-	if orig, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
+	if orig, err := publisher.GetActiveOriginalMediaAsset(ctx, id); err == nil {
 		inputID = orig.ID
 	}
-	relPath := thumbnailRelPath(id, 0)
-	publisher := pgstoretest.Media(pool)
-	return publishGeneratedObject(context.Background(), testFSObjectStore(mediaDir), publisher,
-		store.PendingMediaAssetCopy{RecordingID: id, Kind: store.AssetKindThumbnail, RelPath: relPath},
+	generation, found, err := publisher.GetDerivedMediaAssetGeneration(ctx, id, store.AssetKindThumbnail)
+	if err != nil {
+		return 0, false, err
+	}
+	if found {
+		generation++
+	}
+	pathPicker := ThumbnailWorker{Objects: objects}
+	relPath, generation, err := pathPicker.nextUnusedThumbnailRelPath(ctx, id, generation)
+	if err != nil {
+		return 0, false, err
+	}
+	return publishGeneratedObject(ctx, objects, publisher,
+		store.PendingMediaAssetCopy{RecordingID: id, Kind: store.AssetKindThumbnail, RelPath: relPath, DerivedGeneration: generation},
 		scratch, objectContentType(relPath), false, nil,
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
-			return publisher.PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
+			return publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 				RecordingID: id, RelPath: relPath, SizeBytes: size, SHA256: sum[:], InputAssetID: inputID, PendingCopy: true,
 			}, func() error { return nil })
 		})
@@ -320,6 +333,18 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	if got, _ := os.ReadFile(canonicalPath); !bytes.Equal(got, prior) {
 		t.Errorf("canonical bytes = %q, want %q", got, prior)
 	}
+	pendingPath := filepath.Join(mediaDir, filepath.FromSlash(thumbnailRelPath(id, 1)))
+	if _, err := os.Stat(pendingPath); err != nil {
+		t.Errorf("unpublished pending generation is missing: %v", err)
+	}
+	var pendingState string
+	if err := pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
+		dbtest.StoreName, thumbnailRelPath(id, 1)).Scan(&pendingState); err != nil {
+		t.Fatalf("reading skipped generation state: %v", err)
+	}
+	if pendingState != "pending" {
+		t.Errorf("skipped generation state = %q, want pending", pendingState)
+	}
 	if s, ok := activeAssetSize(t, pool, id, "thumbnail"); !ok || s != int64(len(prior)) {
 		t.Errorf("active size = %d (found=%v), want %d", s, ok, len(prior))
 	}
@@ -328,7 +353,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	}
 }
 
-// ffmpeg 実行中に原本が active でなくなった場合は、新しい active 派生行も canonical も作らない。
+// ffmpeg 実行中に原本が active でなくなった場合は新しい active 派生行を作らず、Put 済み key は pending に残す。
 func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -342,12 +367,21 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 	if published {
 		t.Fatal("published = true, want false")
 	}
-	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(thumbnailRelPath(id, 0)))
-	if _, err := os.Stat(canonicalPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("canonical exists after skipped publish: %v", err)
+	key := thumbnailRelPath(id, 0)
+	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(key))
+	if _, err := os.Stat(canonicalPath); err != nil {
+		t.Errorf("unpublished pending object is missing: %v", err)
 	}
 	if _, ok := activeAssetSize(t, pool, id, "thumbnail"); ok {
 		t.Error("active thumbnail row created for deleted recording")
+	}
+	var pendingState string
+	if err := pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
+		dbtest.StoreName, key).Scan(&pendingState); err != nil {
+		t.Fatalf("reading skipped thumbnail state: %v", err)
+	}
+	if pendingState != "pending" {
+		t.Errorf("skipped thumbnail state = %q, want pending", pendingState)
 	}
 	if left := stagedFiles(t, filepath.Dir(canonicalPath)); len(left) != 0 {
 		t.Errorf("staged files remain: %v", left)
