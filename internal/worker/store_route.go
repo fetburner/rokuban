@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -68,6 +69,19 @@ func newStoreRoute[T queueStoreArgs](kind string, stores map[string]*Deps, build
 	}
 }
 
+// chooseIngestStore は規則で ingest の置き場を選ぶ。規則の符号化と評価の失敗はそのまま返す。
+func chooseIngestStore(ctx context.Context, deps *Deps, site string) (string, error) {
+	rules, err := deps.StorageTransferPolicy.OriginalRulesJSON()
+	if err != nil {
+		return "", fmt.Errorf("encoding the original store rules: %w", err)
+	}
+	name, err := deps.IngestStores.DesiredOriginalStoreAtIngest(ctx, rules, deps.StorageTransferPolicy.Derived, site)
+	if err != nil {
+		return "", fmt.Errorf("evaluating the original store rules: %w", err)
+	}
+	return name, nil
+}
+
 // newIngestRoute は ingest を、マウントした置き場のうち規則に合う置き場のワーカーへ振り分ける。
 //
 // 書き込み先は、置き場の規則を年齢 0 で評価して一致した置き場のうち、このプロセスがマウントして
@@ -91,13 +105,12 @@ func newIngestRoute(deps *Deps, build func(*Deps) jobq.Worker[jobs.IngestJobArgs
 				return "", fmt.Errorf("no store is mounted")
 			}
 			if deps.IngestStores != nil && len(deps.StorageTransferPolicy.Originals) > 0 {
-				rules, err := deps.StorageTransferPolicy.OriginalRulesJSON()
+				// 置き場の選択の失敗で ingest を止めない。転送が後で埋めるので、先頭のマウント済みの置き場に書く。
+				name, err := chooseIngestStore(ctx, deps, args.Site)
 				if err != nil {
-					return "", fmt.Errorf("encoding the original store rules: %w", err)
-				}
-				name, err := deps.IngestStores.DesiredOriginalStoreAtIngest(ctx, rules, deps.StorageTransferPolicy.Derived, args.Site)
-				if err != nil {
-					return "", err
+					slog.Error("ingest: choosing the original store failed; writing to the first mounted store",
+						"site", args.Site, "store", mounted[0], "error", err)
+					return mounted[0], nil
 				}
 				if _, ok := workers[name]; ok {
 					return name, nil
