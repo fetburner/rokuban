@@ -219,7 +219,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
 	analysisStore := pgstoretest.Analysis(pool)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: analysisStore, CMDetectionStore: analysisStore, CMDetectEnabled: true, Enqueuer: enqueuer}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: analysisStore, CMDetectionStore: analysisStore, CMDetectEnabled: true, Enqueuer: enqueuer, OriginalLocator: pgstoretest.Media(pool)}))
 	defer srv.Close()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -272,6 +272,10 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	calls := enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind())
 	if len(calls) != 1 {
 		t.Fatalf("cm_detect enqueue count = %d, want 1", len(calls))
+	}
+	// 投入側が原本のコピーのある置き場のキューを選ぶ。
+	if detectArgs, ok := calls[0].Args.(jobs.CMDetectJobArgs); !ok || detectArgs.Store != "test-store" {
+		t.Fatalf("cm_detect hint args = %#v, want Store literal %q", calls[0].Args, "test-store")
 	}
 	detectArgs, ok := calls[0].Args.(jobs.CMDetectJobArgs)
 	if !ok {
@@ -434,7 +438,7 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 // 一覧は教えた枠と候補の無い待ち状態を返す（このテストは River 無し）。
 func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool), OriginalLocator: pgstoretest.Media(pool)}))
 	defer srv.Close()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -543,6 +547,10 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	if logo.FrameRecordingId != id {
 		t.Errorf("frameRecordingId = %d, want the recording with an original (%d)", logo.FrameRecordingId, id)
 	}
+	// コマの URL は、その録画の原本のコピーがある置き場の URL で、API が返す（クライアントは組み立てない）。
+	if want := fmt.Sprintf("/api/media/stores/test-store/recordings/%d/frame", id); logo.FrameUrl == nil || *logo.FrameUrl != want {
+		t.Errorf("frameUrl = %v, want literal-shaped %q", logo.FrameUrl, want)
+	}
 
 	// DELETE で自動に戻る。枠が消え、コマを取り寄せる録画も消える（原本が無い局）。
 	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/area", nil)
@@ -570,8 +578,8 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	if logos[0].LogoArea != nil {
 		t.Errorf("logoArea = %#v, want none after DELETE", logos[0].LogoArea)
 	}
-	if logos[0].FrameRecordingId != 0 {
-		t.Errorf("frameRecordingId = %d, want 0 when no original is left", logos[0].FrameRecordingId)
+	if logos[0].FrameRecordingId != 0 || logos[0].FrameUrl != nil {
+		t.Errorf("frameRecordingId/frameUrl = %d/%v, want 0/nil when no original is left", logos[0].FrameRecordingId, logos[0].FrameUrl)
 	}
 }
 
@@ -748,7 +756,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool), Enqueuer: enqueuer, CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool), Enqueuer: enqueuer, CMDetectEnabled: true, OriginalLocator: pgstoretest.Media(pool)}))
 	defer srv.Close()
 
 	queued := func(want int) {
@@ -801,6 +809,9 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	candidateArgs, ok := candidateCalls[0].Args.(jobs.CMLogoCandidateJobArgs)
 	if !ok {
 		t.Fatalf("candidate args = %T, want jobs.CMLogoCandidateJobArgs", candidateCalls[0].Args)
+	}
+	if candidateArgs.Store != "test-store" {
+		t.Errorf("candidate job store = %q, want literal %q", candidateArgs.Store, "test-store")
 	}
 	if candidateArgs.RecordingID != id || candidateArgs.RecordingDurationMs != 45*60*1000 {
 		t.Errorf("candidate job args = %#v, want recording %d and 2700000ms", candidateArgs, id)

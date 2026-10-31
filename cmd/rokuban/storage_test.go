@@ -63,34 +63,6 @@ storage:
 	}
 }
 
-func TestStorageAdoptRejectsNameDifferentFromConfig(t *testing.T) {
-	mediaDir := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.yml")
-	config := `db:
-  host: localhost
-  user: postgres
-  password: postgres
-  database: postgres
-storage:
-  media_dir: ` + mediaDir + `
-` + storagePolicyYAML("tokyo") + `mirakcs:
-  - site: tokyo
-    url: http://mirakc
-`
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", "osaka"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "does not match the fs store in storage.stores") {
-		t.Fatalf("storage adopt wrong name error = %v, want config mismatch", err)
-	}
-	if _, err := os.Stat(filepath.Join(mediaDir, mediapath.StoreMarkerFileName)); !os.IsNotExist(err) {
-		t.Fatalf("marker exists after rejected adoption: stat err = %v", err)
-	}
-}
-
 func TestStorageAdoptRejectsUnknownAndNonFSStoreName(t *testing.T) {
 	mediaDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.yml")
