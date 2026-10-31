@@ -47,9 +47,10 @@ func TestListCircuitBreakers_ReturnsStoreScopes(t *testing.T) {
 	byStore := make(map[string]circuitBreakerResp, 2)
 	var siteBreaker *circuitBreakerResp
 	for i := range got {
-		if got[i].Name == "delete_reconcile" {
+		switch got[i].Name {
+		case "delete_reconcile":
 			byStore[got[i].Store] = got[i]
-		} else if got[i].Name == "ruler_deletes" {
+		case "ruler_deletes":
 			siteBreaker = &got[i]
 		}
 	}

@@ -18,7 +18,7 @@ import (
 func TestRecordingMediaURLsUseTheStoreHoldingTheOriginal(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		RecordingQuery:    pgstore.NewRecordings(pool, ""), // api は置き場に束ねない
+		RecordingQuery: pgstore.NewRecordings(pool, ""), // api は置き場に束ねない
 	}))
 	defer srv.Close()
 

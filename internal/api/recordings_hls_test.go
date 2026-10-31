@@ -21,7 +21,7 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 			srv := httptest.NewServer(NewRouter(RouterConfig{
 				RecordingQuery:      pgstoretest.Recordings(pool),
 				RecordingHLSEnabled: enabled,
-				LiveProfiles: []LiveProfileSummary{{Name: "sd"}, {Name: "hd"}},
+				LiveProfiles:        []LiveProfileSummary{{Name: "sd"}, {Name: "hd"}},
 			}))
 			defer srv.Close()
 			for _, tc := range []struct {
