@@ -248,23 +248,10 @@ metadata:
     rokuban.fetburner.net/queue: encode
 spec:
   pollingInterval: 30
-  # **`encode` キューには 2 種類のジョブが載る。** 実エンコード（`encode`）と
-  # `encode_reconcile`（全件のバックストップと録画単位の即時パス）である
-  # （internal/jobs の各 InsertOpts）。明示的な作り直し要求は DB に保存し、
-  # reconcile が通常の encode を投入する。
-  #
-  # **`1` にすると reconcile が実エンコードの裏で待たされる。** 1 件消化モード
-  # では 1 Job = 1 アイテムなので、数時間のエンコードが走っている間、KEDA は
-  # `maxReplicaCount - 実行中 = 0` と数えて新しい Job を起こさない ---
-  # ヒントを落とした録画を拾うための経路が、まさにその「時間のかかる
-  # エンコード」に塞がれる。レベルトリガーなので取りこぼしはしない（エンコードが
-  # 終われば次のパスが拾う）が、遅れはエンコードの長さぶんになる。
-  #
-  # **2 にしてある。** 代償は「実エンコードが 2 本同時に走りうる」こと ---
-  # CPU を 1 本に抑えたいなら 1 に落とし、上の遅れを受け入れること
-  # （`encode.concurrency` は 1 プロセス内の MaxWorkers なので、1 件消化モードでは
-  # 常に 1 であり、クラスタ全体の本数を決めるのはこちらである）。
-  maxReplicaCount: 2
+  # encode キューには長時間の実エンコードだけを載せる。短時間の encode_reconcile は
+  # ffmpeg を使わず、cleanup キューから独立して動くため、実エンコードを同時に 1 本に
+  # 抑えても reconcile が待たされない。
+  maxReplicaCount: 1
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   scalingStrategy:
@@ -285,9 +272,8 @@ spec:
         # **drain と対で引き上げる。** 10s + `--soft-stop-timeout` 1h + 10s を
         # 包む（docs/operations.md §5）。片方だけ上げても短い側が先に効く。
         # 猶予の外に出すと SIGKILL が先に来て、実行中のジョブの行が一時的に
-        # `running` のまま残る。encode は次の `encode_reconcile` が job-id lock の
-        # 解放を確認して旧行を終端化し、代替ジョブを投入するが、猶予はその遅延を
-        # 避けるためにも十分に取る。
+        # `running` のまま残る。encode は締切の後に JobRescuer が再試行するので、
+        # 猶予はその遅延を避けるためにも十分に取る。
         terminationGracePeriodSeconds: 3660
         securityContext:
           runAsNonRoot: true
@@ -581,9 +567,10 @@ metadata:
     rokuban.fetburner.net/queue: cleanup
 spec:
   pollingInterval: 30
-  # delete_reconcile と catalog_export はそれぞれ UniqueOpts で自分自身の重複を
-  # 防ぐので、「両方が同時に 1 本ずつ走れる」ぶんだけあればよい
-  # （cmd/rokuban/workerspec.go の cleanup キューの並列数と同じ根拠）。
+  # delete_reconcile / catalog_export / label_rule_reconcile と encode / CM reconcile を受ける。
+  # いずれも短時間・site 非依存で ffmpeg / JLSE を要しない。同時実行は 2 本（cmd/rokuban/workerspec.go
+  # の cleanup キューと同じ上限）。reconcile の最悪の待ちは cleanup で最長の締切（delete_reconcile の
+  # 10 分）にとどまり、長時間ジョブの数時間より桁で短い。
   maxReplicaCount: 2
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -605,6 +592,8 @@ spec:
         # 10s + 60s + 10s を包む。1 パスの削除件数はサーキットブレーカー
         # （`cleanup.max_deletes_per_pass`）で上限があるので、猶予は
         # 「アーカイブの walk が終わるまで」の側で決まる（**未測定**）。
+        # 5 分締切の reconcile より短いが、中断されても次の定期投入が再試行になるので、
+        # `delete_reconcile`（10 分）と同じ扱いで許容する。
         terminationGracePeriodSeconds: 90
         securityContext:
           runAsNonRoot: true
@@ -619,8 +608,8 @@ spec:
             type: RuntimeDefault
         containers:
           - name: worker
-            # cleanup（delete_reconcile / catalog_export）はファイルシステムを
-            # 要求するが ffmpeg は要求しない（`jobs.RequiresEncodeTools` は
+            # cleanup（delete_reconcile / catalog_export / encode・CM 検出の reconcile）は
+            # ファイルシステムを要求するが ffmpeg は要求しない（`jobs.RequiresEncodeTools` は
             # encode / thumbnail だけ）。
             image: ghcr.io/fetburner/rokuban:latest
             args:
