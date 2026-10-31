@@ -1196,9 +1196,14 @@ func buildSegmentTransformArgs(
 	// エンコーダの time base が既定（frame rate の逆数）だと、T からの時刻が 1 フレーム単位に丸められ、
 	// 丸めの向きが起動位置で変わる。90 kHz にすると丸めが無くなる。passthrough が無いと、ffmpeg は
 	// 90 kHz の固定フレームレートとしてフレームを複製した。
+	// -output_ts_offset に負の時刻を渡すと、出力の先頭 PTS が 0 付近へずらされ、負の trim で起動した変換だけ
+	// 格子から原点の分ずれた（TestSegmentTransformRealFFmpegKeepsGridAcrossEarlyPTSWrap）。
+	// 出力の PTS は 2^33 を法として格子に合えばよいので、offset だけを 2^33 を法として非負に正規化する。
+	outputOffsetPTS := ((trimPTS % recordingHLSPTSModulus) + recordingHLSPTSModulus) % recordingHLSPTSModulus
+	outputOffsetSeconds := strconv.FormatFloat(float64(outputOffsetPTS)/float64(mpegTSTimestampClock), 'f', 9, 64)
 	args = append(args[:outputFormat], append([]string{
 		"-enc_time_base:v", "1/90000", "-fps_mode:v", "passthrough",
-		"-muxpreload", "0", "-muxdelay", "0", "-output_ts_offset", trimSeconds,
+		"-muxpreload", "0", "-muxdelay", "0", "-output_ts_offset", outputOffsetSeconds,
 	}, args[outputFormat:]...)...)
 	return args, nil
 }
