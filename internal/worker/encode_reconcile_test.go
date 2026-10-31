@@ -448,6 +448,38 @@ func TestEncodeReconcile_LostSnapshotIsRebuiltAndWarnsAgain(t *testing.T) {
 	}
 }
 
+// clockTransfers は DB の時計を固定値にし、保存に渡された countedAt を記録する。
+type clockTransfers struct {
+	store.StorageTransfer
+	clock    time.Time
+	recorded time.Time
+}
+
+func (c *clockTransfers) DatabaseClock(context.Context) (time.Time, error) { return c.clock, nil }
+
+func (c *clockTransfers) RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (map[string]store.TransferBacklogWrite, error) {
+	c.recorded = countedAt
+	return c.StorageTransfer.RecordTransferBacklog(ctx, counts, countedAt)
+}
+
+// 保存する countedAt は、プロセスの時計ではなく DB の時計から取った値になる。
+func TestEncodeReconcile_CountedAtComesFromTheDatabaseClock(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	clock := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	transfers := &clockTransfers{StorageTransfer: pgstoretest.Media(pool), clock: clock}
+	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: transfers, StoragePolicy: policy}
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	if !transfers.recorded.Equal(clock) {
+		t.Fatalf("recorded countedAt = %v, want the database clock %v", transfers.recorded, clock)
+	}
+}
+
 // 止まり始めたときと解けたときだけ Warn / Info を出す。止まっている間は毎パス同じ Warn を出さない。
 // パスごとに新しい worker を作る（ScaledJob の --once はパスごとにプロセスが新しくなる）。
 func TestEncodeReconcile_BacklogLogsOnlyOnTransitions(t *testing.T) {

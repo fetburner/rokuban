@@ -530,3 +530,12 @@ func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int
 	}
 	return written, nil
 }
+
+// DatabaseClock は DB の時計の現在時刻（clock_timestamp()）を返す。
+func (s *Media) DatabaseClock(ctx context.Context) (time.Time, error) {
+	now, err := sqlcgen.New(s.pool).DatabaseClockNow(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading database clock: %w", err)
+	}
+	return now, nil
+}

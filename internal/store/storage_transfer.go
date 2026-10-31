@@ -75,6 +75,9 @@ type TransferBacklogReader interface {
 // StorageTransfer は desired state と物理コピーの reconcile を永続化する契約である。
 type StorageTransfer interface {
 	TransferBacklogReader
+	// DatabaseClock は DB の時計の現在時刻を返す。RecordTransferBacklog の countedAt の出所は、
+	// プロセスごとに違う時計ではなく、この 1 つにする。
+	DatabaseClock(ctx context.Context) (time.Time, error)
 	// RecordTransferBacklog は、上限付きの置き場ごとの件数 counts を、数え始めた時刻 countedAt で 1 つのトランザクションに保存する。
 	// 保存済みの時刻より新しい置き場だけを書く。返り値は counts の置き場ごとに、書き込み後に DB に残っている件数と、
 	// 自分が書いたか、書いたなら書き換える前の状態を持つ。古い件数は捨てて、残っている新しい件数を返す。

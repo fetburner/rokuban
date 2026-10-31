@@ -17,7 +17,7 @@ const transferBacklogQueryTimeout = 5 * time.Second
 // TransferBacklogCollector は、encode reconcile が保存した置き場ごとの転送待ちの件数を scrape ごとに
 // DB から読み直し、次の 2 本を出す。
 //
-//   - rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}: 数え始めた時刻。件数の鮮度
+//   - rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}: 数え始めた時刻（DB の時計）。件数の鮮度
 //   - rokuban_storage_transfer_backlog_assets{store}: 直近に数えた転送待ちの論理資産数
 //   - rokuban_encode_backpressure{store}: 件数が上限に達していれば 1、そうでなければ 0
 //
@@ -42,7 +42,7 @@ func NewTransferBacklogCollector(reader store.TransferBacklogReader, limits map[
 		limits: limits,
 		countedAt: prometheus.NewDesc(
 			"rokuban_storage_transfer_backlog_counted_timestamp_seconds",
-			"Unix time when encode reconcile started the last count of the transfer backlog for the store. Read this first: when it is far older than the full-pass period, the backlog and backpressure gauges are stale.",
+			"Unix time (database clock) when encode reconcile started the last count of the transfer backlog for the store. Read this first: when it is far older than the full-pass period, the backlog and backpressure gauges are stale.",
 			[]string{"store"}, nil,
 		),
 		backlog: prometheus.NewDesc(

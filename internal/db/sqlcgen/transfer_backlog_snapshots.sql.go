@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+const databaseClockNow = `-- name: DatabaseClockNow :one
+SELECT clock_timestamp()::timestamptz AS now
+`
+
+// counted_at の出所を DB の時計 1 つにするために読む。clock_timestamp() は文の実行時点の時刻で、
+// now()（トランザクション開始時刻）と違い、数え始める直前という意味に合う。
+func (q *Queries) DatabaseClockNow(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, databaseClockNow)
+	var now time.Time
+	err := row.Scan(&now)
+	return now, err
+}
+
 const deleteTransferBacklogSnapshotsExcept = `-- name: DeleteTransferBacklogSnapshotsExcept :exec
 DELETE FROM transfer_backlog_snapshots
 WHERE NOT (store = ANY($1::text[]))

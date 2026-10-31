@@ -21,3 +21,8 @@ WHERE transfer_backlog_snapshots.counted_at < EXCLUDED.counted_at;
 -- name: DeleteTransferBacklogSnapshotsExcept :exec
 DELETE FROM transfer_backlog_snapshots
 WHERE NOT (store = ANY($1::text[]));
+
+-- name: DatabaseClockNow :one
+-- counted_at の出所を DB の時計 1 つにするために読む。clock_timestamp() は文の実行時点の時刻で、
+-- now()（トランザクション開始時刻）と違い、数え始める直前という意味に合う。
+SELECT clock_timestamp()::timestamptz AS now;

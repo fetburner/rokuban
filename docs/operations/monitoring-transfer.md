@@ -12,7 +12,7 @@ FS 置き場間の転送の進み具合と、失敗の止まり方を、次の�
 | `rokuban_storage_transfer_corrupt_sources_retired_total` | Counter | 壊れた派生コピーを、転送 worker が転送元から退役させた回数 |
 | `rokuban_storage_transfer_mount_mismatch_total{store}` | Counter | root が未設定、または目印が一致せず転送の開始を見送った回数 |
 | `rokuban_encode_backpressure{store}` | Gauge（DB） | 直近に数えた転送待ちが `storage.transfer.backlog_limit` に達し、その置き場の原本を読む encode の投入を止めているとき 1 |
-| `rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}` | Gauge（DB） | 上の件数の、数え始めた時刻。件数の鮮度 |
+| `rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}` | Gauge（DB） | 上の件数の、数え始めた時刻（DB の時計）。件数の鮮度 |
 | `rokuban_storage_transfer_backlog_assets{store}` | Gauge（DB） | `storage.transfer.backlog_limit` を設定した転送元の置き場ごとに、直近に数えた転送待ちの論理資産数。複数の置き場にコピーがある資産は置き場ごとに数える |
 | `rokuban_transfer_backlog_scrape_errors_total` | Counter（DB） | 保存した件数を scrape で読めなかった回数 |
 
@@ -30,7 +30,7 @@ FS 置き場間の転送の進み具合と、失敗の止まり方を、次の�
 
 見る順は、鮮度、件数、止まっているか、の順である。
 
-`rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}` が数え始めた時刻である。`time() - この値` が全件パスの周期（15 分）を大きく超えたら、件数と背圧のゲージは古い。encode reconcile が止まっていると、最後の件数を出し続けるためである。
+`rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}` が、DB の時計で数え始めた時刻である。`time() - この値` が全件パスの周期（15 分）を大きく超えたら、件数と背圧のゲージは古い。encode reconcile が止まっていると、最後の件数を出し続けるためである。
 
 `storage.transfer.backlog_limit` と比べて、上限までの余裕を `rokuban_storage_transfer_backlog_assets{store}` で見る。`rokuban_encode_backpressure{store}` は、同じ件数が上限に達したかを 0 か 1 で出す。止まっているかは、保存した件数と設定の上限から導く。上限を持たない置き場と、まだ数えていない置き場は系列を出さない。
 
@@ -67,6 +67,7 @@ Warn は置き場が止まり始めたときに 1 回、Info は解けたとき�
 - 解けた次のパスでゲージが 0 に戻ること: `TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass`
 - パスごとにプロセスが新しくなっても Warn / Info が変化のときだけ出ること: `TestEncodeReconcile_BacklogLogsOnlyOnTransitions`
 - 並行する保存で変化を見るのが 1 つだけであること: `TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
+- 数え始めた時刻を DB の時計から取ること: `TestEncodeReconcile_CountedAtComesFromTheDatabaseClock`
 - 古い時刻の件数が新しい件数を上書きしないこと: `TestRecordTransferBacklog_StaleCountDoesNotOverwrite`
 - 古い件数が捨てられたとき、残った新しい件数で止めること: `TestEncodeReconcile_StaleCountDecidesByTheSavedCount`
 

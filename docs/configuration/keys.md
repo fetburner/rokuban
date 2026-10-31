@@ -111,6 +111,8 @@
 
 `storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。件数が上限に達すると、encode reconcile はその置き場の原本を読む encode（キュー `encode_{store}`）を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
 
+集計は資産数に比例して重い（media_assets 2 万行で約 2.1 秒、6 万行で約 6.6 秒。[監視](../operations/monitoring-transfer.md)）。
+
 `storage.transfer` は規則の指紋に含めない。帯域・転送待ちの上限・overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
 `storage.originals` の参照先は FS 置き場に限る。FS 置き場は何個でも定義でき、規則ごとに別の置き場を指せる。`storage.derived` は、FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
@@ -143,10 +145,6 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 転送元をマウントしているときは、`internal_url` に新しいコピーがあってもローカルを読む。
 
 `internal_url` からの読みの途中で本体が切れたら、転送ワーカーは切れた位置から Range 付きで残りを要求し直す。読み進めないまま張り直すのが 3 回続いたら諦める。その後は転送ジョブの次の試行が、書いた checkpoint から再開する。
-
-#### 転送待ちの集計
-
-件数の集計は資産数に比例して重い（計測: media_assets 2 万行で中央値約 2.1 秒、6 万行で約 6.6 秒）ので、件数が要るパスだけで数える（[監視](../operations/monitoring-transfer.md)）。
 
 <details><summary>根拠</summary>
 

@@ -335,7 +335,7 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 	if len(limited) == 0 {
 		// 上限の無い構成の targeted pass は DB に触らない。残った行の掃除は全件パスの先頭だけで行う。
 		if refresh {
-			if _, err := w.Transfers.RecordTransferBacklog(ctx, nil, time.Now()); err != nil {
+			if _, err := w.Transfers.RecordTransferBacklog(ctx, nil, time.Time{}); err != nil {
 				return nil, fmt.Errorf("clearing transfer backlog snapshots: %w", err)
 			}
 		}
@@ -358,7 +358,12 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 		return nil, fmt.Errorf("building original rules: %w", err)
 	}
 	// 数え始めた時刻を保存する。並行する別のパスの、より新しい件数を古い件数で戻さないため。
-	countedAt := time.Now()
+	// 出所は DB の時計に 1 つにする（Pod ごとの時計のずれが比較に入らないように）。clock_timestamp() を選ぶのは、
+	// now() がトランザクション開始時刻なのに対し、これが読んだ時点の時刻で「数え始める直前」に合うため。
+	countedAt, err := w.Transfers.DatabaseClock(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading database clock: %w", err)
+	}
 	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, w.StoragePolicy.FSStoreNames(), limited, w.StoragePolicy.Derived, storageTransferAttemptLimit)
 	if err != nil {
 		return nil, fmt.Errorf("counting transfer backlog by source store: %w", err)

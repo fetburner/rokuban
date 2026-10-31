@@ -3,7 +3,7 @@
 -- transfer_backlog_snapshots は、storage.transfer.backlog_limit を設定した置き場ごとに、
 -- encode reconcile が直近に数えた転送待ちの論理資産数と、数えた時刻を持つ。
 --
--- counted_at は、数え始めた時刻（保存した時刻ではない）。呼び出し側が渡し、保存済みより新しいときだけ
+-- counted_at は、数え始めた時刻（保存した時刻ではない）。DB の時計から取った値を呼び出し側が渡し、保存済みより新しいときだけ
 -- 書き換える。並行するパスで、先に数えた古い件数が後から保存されて新しい件数を戻すのを防ぐ。
 -- 読み手は、件数の古さを見る collector（rokuban_storage_transfer_backlog_counted_timestamp_seconds）。
 --
