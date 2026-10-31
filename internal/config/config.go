@@ -364,6 +364,9 @@ func loadFromString(raw string) (*Config, error) {
 	if err := cfg.Storage.validate(cfg.Mirakcs, cfg.Cleanup.MissingAssetAge); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
+	if errs := validateInternalURLHosts(cfg.Server.AllowedHosts, cfg.Storage.Stores); len(errs) > 0 {
+		return nil, fmt.Errorf("validating config: %s", strings.Join(errs, "; "))
+	}
 
 	// 0 / 未設定は既定 1 に寄せてからプロファイル定義を検査する。
 	// concurrency の 0 を「既定」として許すのは ingest と同じ慣習で、

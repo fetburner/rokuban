@@ -498,3 +498,38 @@ func TestStoragePolicyOverlapDefault(t *testing.T) {
 		t.Fatalf("explicit overlap: %v", err)
 	}
 }
+
+// TestLoadRejectsInternalURLHostOutsideAllowedHosts は、server.allowed_hosts が空でないとき、
+// internal_url のホストが一覧に無い構成を起動時に拒むことを固定する。拒まないと、転送の worker が
+// streamer の Host 検証で 400 を受け、転送が必ず失敗する（kind の 2 置き場 e2e 判定 6.3 で実測）。
+func TestLoadRejectsInternalURLHostOutsideAllowedHosts(t *testing.T) {
+	cases := []struct {
+		name        string
+		server      string
+		internalURL string
+		wantError   string
+	}{
+		{"host not listed", "server:\n  allowed_hosts: [rokuban.local]\n", "", `storage.stores.main.internal_url host "store-main.internal" is not in server.allowed_hosts`},
+		{"allowed host with different case and trailing dot", "server:\n  allowed_hosts: [rokuban.local, STORE-MAIN.internal.]\n", "", ""},
+		{"URL host with different case, trailing dot and a port", "server:\n  allowed_hosts: [rokuban.local, store-main.internal]\n", "http://Store-Main.Internal.:8080", ""},
+		{"empty allowed_hosts disables the check", "server:\n  allowed_hosts: []\n", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := validStoragePolicy
+			if tc.internalURL != "" {
+				policy = strings.Replace(policy, "internal_url: http://store-main.internal:8080", "internal_url: "+tc.internalURL, 1)
+			}
+			_, err := loadStoragePolicy(t, tc.server+policy)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("Load = %v, want success", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("Load error = %v, want it to contain %q", err, tc.wantError)
+			}
+		})
+	}
+}

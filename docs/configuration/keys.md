@@ -133,6 +133,8 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 
 `internal_url` が指すのは、その置き場をマウントした streamer のベース URL である。転送ワーカーは `<internal_url>/api/media/stores/<置き場>/recordings/<id>/file` へ Range 付きで要求する。応答が `X-Accel-Redirect` で本体を前段に任せる streamer を指すと、転送は失敗する。原本を直接返す streamer を指す。
 
+`server.allowed_hosts` が空でないとき、`internal_url` のホストはその一覧に含める。streamer の Host 検証は転送の要求にもかかるので、一覧に無いホストは 400 になる。この構成は起動時に拒否する。
+
 `internal_url` の無い置き場は、マウントしているときだけ転送元になる。
 
 転送元をマウントしているときは、`internal_url` に新しいコピーがあってもローカルを読む。
@@ -143,6 +145,7 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 - 起動エラーの組み合わせ: `TestValidateStoreBinding`（`cmd/rokuban/stores_test.go`）
 - 根の重なりの拒否: `TestStoreRootsRejectsNestedAndIdenticalRoots`
 - 応答に X-Accel-Redirect が付いた場合の拒否: `TestStorageTransferWorkerRejectsAccelRedirectAnswer`
+- `internal_url` のホストが `server.allowed_hosts` に無い構成の拒否: `TestLoadRejectsInternalURLHostOutsideAllowedHosts`
 - マウントした置き場のローカル優先: `TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy`
 - 下限の周期は `config.DeleteReconcileInterval`、指紋は `StorageConfig.PolicyFingerprint` が持つ。
 

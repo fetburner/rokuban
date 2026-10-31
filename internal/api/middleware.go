@@ -10,6 +10,8 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+
+	"github.com/fetburner/rokuban/internal/config"
 )
 
 const maxJSONBodyBytes int64 = 1 << 20
@@ -239,31 +241,8 @@ func AllowedHosts(allowedHosts []string, trustForwardedHost bool) func(http.Hand
 	}
 }
 
-// normalizeHost は Host allowlist の比較に使う正規化を行う。ASCII 範囲だけの
-// 小文字化と、末尾ドット 1 個の除去だけを行う。
-//
-// Unicode の case folding（`strings.ToLower`）は使わない。fail-open になり
-// うるためで、たとえば `strings.ToLower("K")`（ケルビン記号）は `"k"`
-// を返すので、非 ASCII の `Host` が `allowed_hosts` の ASCII ホスト名に
-// 一致してしまう。ホスト名の case-insensitive は ASCII の範囲の規則
-// （RFC 4343）なので、正規化も ASCII に限る。
-//
-// 末尾ドットは DNS 上 `rokuban.local.` と `rokuban.local` が同じ名前で
-// あることに対応する（絶対 FQDN 表記の利用者や、一部プロキシがそのまま
-// `Host` に載せてくる）。落とすのは 1 個だけで、`..` のような不正な形は
-// 正規化しない（DNS 名として無効なので通す理由が無い）。
-func normalizeHost(host string) string {
-	if n := len(host); n >= 2 && host[n-1] == '.' {
-		host = host[:n-1]
-	}
-	b := []byte(host)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + ('a' - 'A')
-		}
-	}
-	return string(b)
-}
+// normalizeHost は config.NormalizeHost に委ねる。internal_url の検証と同じ正規化を使うため。
+func normalizeHost(host string) string { return config.NormalizeHost(host) }
 
 // forwardedHost は `X-Forwarded-Host` ヘッダーから Host allowlist 検証に
 // 使う値を取り出す。ヘッダーが無ければ ("", false) を返す。
