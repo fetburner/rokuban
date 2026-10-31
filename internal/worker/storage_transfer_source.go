@@ -79,8 +79,17 @@ func newRemoteTransferSource(internalURL, sourceStore string, recordingID int64)
 // precheck は、リモートのサイズを読む前には知らないので -1 を返す。サイズは読み終えた後に照合する。
 func (s remoteTransferSource) precheck() (int64, error) { return -1, nil }
 
-// open は offset > 0 のとき Range: bytes=offset- を付けて読む。応答は checkRemoteTransferResponse で検査する。
+// open は offset から末尾までを読む reader を返す。本体が途中で切れたら、切れた位置から張り直す。
 func (s remoteTransferSource) open(ctx context.Context, offset int64) (io.ReadCloser, error) {
+	body, err := s.openOnce(ctx, offset)
+	if err != nil {
+		return nil, err
+	}
+	return &resumingRemoteReader{ctx: ctx, source: s, body: body, offset: offset}, nil
+}
+
+// openOnce は offset > 0 のとき Range: bytes=offset- を付けて 1 回だけ要求する。応答は checkRemoteTransferResponse で検査する。
+func (s remoteTransferSource) openOnce(ctx context.Context, offset int64) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building transfer source request: %w", err)
@@ -97,6 +106,77 @@ func (s remoteTransferSource) open(ctx context.Context, offset int64) (io.ReadCl
 		return nil, err
 	}
 	return resp.Body, nil
+}
+
+// remoteTransferMaxReconnects は、読み進めないまま張り直す回数の上限。読み進めた後の切断は数えない。
+const remoteTransferMaxReconnects = 3
+
+// remoteTransferReconnectDelay は張り直す前に待つ時間。テストで 0 にできるように var にしてある。
+var remoteTransferReconnectDelay = time.Second
+
+// resumingRemoteReader は、内部 URL の原本の本体が途中で切れたとき、切れた位置から Range で読み直す reader。
+// 切断は body の Read のエラー（net/http では多くの場合 io.ErrUnexpectedEOF）で検出する。
+// 張り直した後に 1 バイトでも進めば回数をリセットするので、長い原本が何度切れても転送は続く。
+type resumingRemoteReader struct {
+	ctx        context.Context
+	source     remoteTransferSource
+	body       io.ReadCloser
+	offset     int64 // 原本の先頭からの、次に読む位置
+	noProgress int   // 読み進めないまま張り直した回数
+}
+
+// Read は現在の body から読む。切断なら張り直してから続きを読む。io.EOF はそのまま返す。
+// 張り直しに失敗し上限に達したら、その原因を包んだエラーを返す。
+func (r *resumingRemoteReader) Read(p []byte) (int, error) {
+	for {
+		n, err := r.body.Read(p)
+		r.offset += int64(n)
+		if n > 0 {
+			r.noProgress = 0
+		}
+		if err == nil || err == io.EOF {
+			return n, err
+		}
+		if r.ctx.Err() != nil {
+			return n, err
+		}
+		if rerr := r.reconnect(err); rerr != nil {
+			return n, rerr
+		}
+		if n > 0 {
+			return n, nil
+		}
+	}
+}
+
+// reconnect は切れた body を閉じ、待ってから r.offset から開き直す。
+// 開き直しの失敗も読み進めない試行として数え、上限に達したら cause を包んで返す。
+func (r *resumingRemoteReader) reconnect(cause error) error {
+	_ = r.body.Close()
+	for {
+		if r.noProgress >= remoteTransferMaxReconnects {
+			return fmt.Errorf("reading original from internal_url of store %q after %d reconnects: %w", r.source.sourceStore, r.noProgress, cause)
+		}
+		r.noProgress++
+		timer := time.NewTimer(remoteTransferReconnectDelay)
+		select {
+		case <-r.ctx.Done():
+			timer.Stop()
+			return r.ctx.Err()
+		case <-timer.C:
+		}
+		body, err := r.source.openOnce(r.ctx, r.offset)
+		if err == nil {
+			r.body = body
+			return nil
+		}
+		cause = err
+	}
+}
+
+// Close は現在の body を閉じる。
+func (r *resumingRemoteReader) Close() error {
+	return r.body.Close()
 }
 
 // checkRemoteTransferResponse は、Range の要求に対する応答が offset からの原本として使えるかを検査する。

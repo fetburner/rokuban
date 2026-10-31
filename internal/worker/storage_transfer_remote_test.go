@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -470,5 +471,95 @@ VALUES ($1, 'local-src', 'sites/default/transfer/source.ts', 0, 'active', now() 
 	}
 	if n := len(streamer.seenRanges()); n != 0 {
 		t.Fatalf("internal_url received %d requests, want 0: the newer remote-only copy was chosen over the mounted copy", n)
+	}
+}
+
+// 本体が途中で切れても、切れた位置から Range で張り直して原本を最後まで読み切る。
+func TestResumingRemoteReaderContinuesAfterDisconnect(t *testing.T) {
+	prevDelay := remoteTransferReconnectDelay
+	remoteTransferReconnectDelay = 0
+	t.Cleanup(func() { remoteTransferReconnectDelay = prevDelay })
+
+	content := make([]byte, 64<<10)
+	for i := range content {
+		content[i] = byte(i * 7)
+	}
+	var mu sync.Mutex
+	var ranges []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ranges = append(ranges, r.Header.Get("Range"))
+		first := len(ranges) == 1
+		mu.Unlock()
+		if !first {
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(content))
+			return
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(content)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content[:10000])
+		w.(http.Flusher).Flush()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+
+	body, err := newRemoteTransferSource(srv.URL, "edge", 42).open(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = body.Close() }()
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("ReadAll after disconnect: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("read %d bytes, want the %d original bytes", len(got), len(content))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ranges) != 2 || ranges[0] != "" || ranges[1] != "bytes=10000-" {
+		t.Fatalf("Range headers = %q, want [\"\" \"bytes=10000-\"]", ranges)
+	}
+}
+
+// 読み進めないまま切れ続けると、初回 + 張り直し 3 回の 4 回で諦めてエラーを返す。
+func TestResumingRemoteReaderGivesUpAfterReconnectLimit(t *testing.T) {
+	prevDelay := remoteTransferReconnectDelay
+	remoteTransferReconnectDelay = 0
+	t.Cleanup(func() { remoteTransferReconnectDelay = prevDelay })
+
+	var mu sync.Mutex
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"))
+		_ = conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+
+	body, err := newRemoteTransferSource(srv.URL, "edge", 42).open(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = body.Close() }()
+	if _, err := io.ReadAll(body); err == nil {
+		t.Fatal("ReadAll returned nil error after the reconnect limit")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 4 {
+		t.Fatalf("server saw %d requests, want 4 (1 original + 3 reconnects)", requests)
 	}
 }
