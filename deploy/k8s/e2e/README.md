@@ -43,7 +43,6 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 - **判定 2 が測るのは出荷される schedule ではない。** base の epg-sync は実運用の 10 分間隔だが、判定 2.3 は 180 秒以内の自然発火を要求するので、`overlays/e2e` が毎分に patch している。**出荷値のほうは別の判定で固定している** --- 判定だけを見ていると、「判定が緑になるから」で base が毎分になったことに気付けない
 - **ライブ視聴の streamer（`site/live-streamer.yaml`）は見ていない。** 判定 1.4 が Ready を見ている `component=streamer` は録画配信のほうである
 - **レプリカ数と `resources.requests` は出荷値ではない。** `overlays/e2e` が 1 ノードの kind に収まるように削っている。notifier / streamer は 1 で、requests は worker 10m / 常駐 25m。**削らないと判定が `Insufficient cpu` で止まる**（実測）。ScaledJob は滞留 1 件ごとに Job を起こすので、CronJob が毎分投入する構成では Pod が十数個並ぶ。出荷値は base 側にある
-- **`encode` の同時実行上限は 1 本**。`encode_reconcile` は `cleanup` キューに分けたため、長い encode の枠を余分に用意する必要がない。e2e も base と同じ上限を使い、判定 3 は 1 件のエンコードが中断・再配送される流れを追う。
 - **RWX は検証していない**。media の PVC は base では `ReadWriteMany` である。`overlays/e2e` は kind の既定 StorageClass（rancher.io/local-path）に合わせて、`ReadWriteOnce` に落としている。判定が緑でも「RWX が使えた」証拠にはならない（同じノード上のディレクトリを複数の Pod が開いているだけ）
 
 **網羅を判定に入れる代わりに、`go test ./deploy/k8s/` が形で見ている**（`deploy/k8s/workloads_test.go`）。クラスタを立てずに機械判定できるのは次の 3 つ。

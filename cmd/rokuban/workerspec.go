@@ -59,8 +59,8 @@ func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
 		queue(jobs.ThumbnailQueue, cfg.Encode.ThumbnailConcurrency),
 		queue(jobs.CMDetectQueue, 1),
 		// cleanup は短時間・site 非依存で ffmpeg / JLSE を要しないジョブを受ける。
-		// 長時間ジョブとキューを分け、削除・カタログ・分類・encode/CM reconcile の
-		// ファイル I/O と DB 処理は同時に 2 本までに抑える（ScaledJob も 2 本）。
+		// 同時実行は 2 本（ScaledJob も 2 本）。reconcile の最悪の待ちは cleanup で最長の
+		// 締切（delete_reconcile の 10 分）にとどまり、長時間ジョブの数時間より桁で短い。
 		queue(jobs.CleanupQueue, 2),
 		// UniqueOpts{ByArgs} が重複実行を防ぐので 1 本で足りる。
 		queue(jobs.StorageQueue, 1),

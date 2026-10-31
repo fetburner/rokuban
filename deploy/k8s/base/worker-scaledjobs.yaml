@@ -272,9 +272,8 @@ spec:
         # **drain と対で引き上げる。** 10s + `--soft-stop-timeout` 1h + 10s を
         # 包む（docs/operations.md §5）。片方だけ上げても短い側が先に効く。
         # 猶予の外に出すと SIGKILL が先に来て、実行中のジョブの行が一時的に
-        # `running` のまま残る。encode は次の `encode_reconcile` が job-id lock の
-        # 解放を確認して旧行を終端化し、代替ジョブを投入するが、猶予はその遅延を
-        # 避けるためにも十分に取る。
+        # `running` のまま残る。encode は締切の後に JobRescuer が再試行するので、
+        # 猶予はその遅延を避けるためにも十分に取る。
         terminationGracePeriodSeconds: 3660
         securityContext:
           runAsNonRoot: true
@@ -569,8 +568,9 @@ metadata:
 spec:
   pollingInterval: 30
   # delete_reconcile / catalog_export / label_rule_reconcile と encode / CM reconcile を受ける。
-  # いずれも短時間・site 非依存で ffmpeg / JLSE を要しない。archive I/O と DB 処理を抑えるため、
-  # 同時実行は 2 本までにする（cmd/rokuban/workerspec.go の cleanup キューと同じ上限）。
+  # いずれも短時間・site 非依存で ffmpeg / JLSE を要しない。同時実行は 2 本（cmd/rokuban/workerspec.go
+  # の cleanup キューと同じ上限）。reconcile の最悪の待ちは cleanup で最長の締切（delete_reconcile の
+  # 10 分）にとどまり、長時間ジョブの数時間より桁で短い。
   maxReplicaCount: 2
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -592,6 +592,8 @@ spec:
         # 10s + 60s + 10s を包む。1 パスの削除件数はサーキットブレーカー
         # （`cleanup.max_deletes_per_pass`）で上限があるので、猶予は
         # 「アーカイブの walk が終わるまで」の側で決まる（**未測定**）。
+        # 5 分締切の reconcile より短いが、中断されても次の定期投入が再試行になるので、
+        # `delete_reconcile`（10 分）と同じ扱いで許容する。
         terminationGracePeriodSeconds: 90
         securityContext:
           runAsNonRoot: true
@@ -606,8 +608,8 @@ spec:
             type: RuntimeDefault
         containers:
           - name: worker
-            # cleanup（delete_reconcile / catalog_export）はファイルシステムを
-            # 要求するが ffmpeg は要求しない（`jobs.RequiresEncodeTools` は
+            # cleanup（delete_reconcile / catalog_export / encode・CM 検出の reconcile）は
+            # ファイルシステムを要求するが ffmpeg は要求しない（`jobs.RequiresEncodeTools` は
             # encode / thumbnail だけ）。
             image: ghcr.io/fetburner/rokuban:latest
             args:

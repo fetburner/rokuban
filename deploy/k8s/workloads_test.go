@@ -274,6 +274,8 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 
 // encode は CPU を占有する長時間ジョブだけを扱い、同時実行を 1 本に抑える。
 // reconcile は cleanup キューに分離したので、encode のために余分な Pod を許す必要はない。
+// e2e の判定 3 は active な Job の 1 つ目を追うので、ここを 2 にすると 2 本目の短い Job を
+// 追いかけて TODO になる。
 func TestEncodeScaledJobLimitsConcurrentEncodes(t *testing.T) {
 	for _, w := range scaledJobs(t) {
 		if w.name() != "rokuban-worker-encode" {
