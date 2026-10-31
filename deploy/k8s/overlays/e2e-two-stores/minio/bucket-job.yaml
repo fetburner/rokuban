@@ -1,0 +1,85 @@
+# 派生物の bucket（rokuban-derived）を作る Job。MinIO は起動時に bucket を作らない。
+#
+# bucket の作成は curl の SigV4（`--aws-sigv4`）で行う。mc（minio/mc）のイメージは Docker Hub に無い
+# （`minio/mc` は 404。`curlimages/curl` も使わない）。代わりに製品のイメージ（debian trixie の
+# curl 8.x。`--aws-sigv4` は 7.75 以降）を使い、kustomize の images（overlay の kustomization）が
+# `ghcr.io/fetburner/rokuban` を `rokuban:e2e` に置き換える。
+#
+# 409 BucketAlreadyOwnedByYou は成功として扱う（Job の再試行で二度目の PUT になるため）。
+# 資格情報は rokuban-secrets の AWS_* を env で渡す（curl の --user が SigV4 の鍵になる）。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bucket-create
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: minio-bucket
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: minio-bucket
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bucket
+          image: ghcr.io/fetburner/rokuban:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              url="http://minio:9000/rokuban-derived"
+              out=/tmp/bucket-response
+              # MinIO が起動するまで接続を再試行する（--retry-all-errors は 7.71 以降）。
+              code="$(curl -sS -o "$out" -w '%{http_code}' --retry 30 --retry-all-errors --retry-delay 2 \
+                --aws-sigv4 'aws:amz:us-east-1:s3' --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+                -X PUT "$url")"
+              case "$code" in
+                200) echo "bucket created" ;;
+                409)
+                  if grep -q BucketAlreadyOwnedByYou "$out"; then
+                    echo "bucket already owned"
+                  else
+                    cat "$out"; exit 1
+                  fi ;;
+                *) echo "PUT $url returned $code"; cat "$out"; exit 1 ;;
+              esac
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: rokuban-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rokuban-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # overlays/e2e-two-stores/kustomization.yaml の Job 向けの patch（cpu の値を書き換える）が
+          # 当たるので、requests を持たせておく。無いと kustomize build が「replace の当て先が無い」で落ちる。
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

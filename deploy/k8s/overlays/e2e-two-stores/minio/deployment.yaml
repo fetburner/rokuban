@@ -1,0 +1,86 @@
+# 判定 6 の派生物の置き場（S3 互換）。**製品のマニフェストではない**（overlays/e2e-two-stores 限り）。
+#
+# 派生物は S3 か FS のどちらでもよい。ここは S3 の経路（objstore の s3store）を判定するために
+# MinIO を立てる。イメージは lib/cluster.sh の build_minio_image が .github/actions/build-minio
+# と同じ commit から作って kind に載せる（公式イメージは公開されていない）。
+#
+# 資格情報は rokuban-secrets の AWS_* を MinIO のルートに渡す。製品の Pod も同じ secret を
+# envFrom で読むので、資格情報の出どころは 1 つのまま。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: minio
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban-e2e
+      app.kubernetes.io/component: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: minio
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: minio
+          image: minio:e2e
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rokuban-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rokuban-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            # 既定の HOME は読み取り専用なので、MinIO の設定の書き出し先を emptyDir に向ける。
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: s3
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            periodSeconds: 2
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -29,14 +29,24 @@ storage:
   stores:
     tokyo: { kind: fs, root: /mnt/stores/tokyo }
     takamatsu: { kind: fs, root: /mnt/stores/takamatsu }
-  # sitea の原本は tokyo、siteb の原本は takamatsu へ。1 つの site の録画を 2 つの
-  # 置き場に振り分ける規則（older_than）はこの判定の対象ではない。
+    # 派生物の置き場（S3 互換の MinIO。overlays/e2e-two-stores/minio）。資格情報は
+    # rokuban-secrets の AWS_*（環境変数）から読む。**2 つの FS 置き場がある構成では、
+    # 派生物は S3 にする**（FS にすると、派生物を書く worker が全部その置き場をマウントする必要がある）。
+    s3: { kind: s3, endpoint: http://minio:9000, bucket: rokuban-derived, region: us-east-1 }
+  # sitea の録画のうち 2 日を過ぎたものは takamatsu へ（判定 6.3 の転送を起こす）。
+  # それ以外の sitea は tokyo、siteb は takamatsu。先頭から評価して最初に一致した規則を使う。
   originals:
     - match: { site: siteb }
       store: takamatsu
+    - match: { site: sitea, older_than: 2d }
+      store: takamatsu
     - store: tokyo
-  # 派生物は tokyo。central streamer が tokyo をマウントして配る。
-  derived: tokyo
+  # 派生物は S3（上の s3）。central streamer は派生物の置き場を S3 から読む。
+  derived: s3
+  # 旧世代の削除の猶予。下限は cleanup.missing_asset_age + 2 × 削除 reconcile の周期（15 分）より長いこと
+  # （internal/config/storage.go の validateTransfer）。判定 6.7 が待つ時間はここで決まる。
+  transfer:
+    overlap: 32m
 
 recording_hls:
   enabled: true
@@ -57,6 +67,10 @@ live:
       segment_seconds: 2
       playlist_size: 6
 
+cleanup:
+  # 実体無しの猶予を 1 分にする。transfer.overlap の下限（この値 + 30 分）を縮めるため。
+  missing_asset_age: 1m
+
 encode:
   ffmpeg: ffmpeg
   ffprobe: ffprobe
@@ -70,6 +84,14 @@ encode:
       height: 720
       crf: 18
       preset: veryslow
+    # 判定 6.2 の encode が待つ時間を短くするための速い版（原本は 20 秒の合成映像）。
+    - name: e2e-fast
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: 240
+      crf: 28
+      preset: ultrafast
 
 worker:
   periodic_jobs: false

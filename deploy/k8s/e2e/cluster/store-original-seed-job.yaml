@@ -1,0 +1,79 @@
+# 判定 6 の足場。**製品のマニフェストではない。**
+#
+# 置き場の PVC に「原本」を 1 つ書く使い捨て Job。録画の取り込み（ingest）は通らない
+# （mirakcmock が録画の実体を配らないため。checks/06-two-stores.sh の 6.8 を参照）。
+# ここで書いたファイルを、encode / 転送 / 削除 / 配信が実物として扱う。
+#
+# プレースホルダは判定側が sed で埋める（checks/06-two-stores.sh の seed_original）:
+#   __JOB__       Job 名（周回ごとに別。Job の spec は immutable なので消してから作る）
+#   __PVC__       書く置き場の PVC 名（`rokuban-media-<置き場>`）
+#   __ROOT__      その置き場の root（overlays/e2e-two-stores/config.yml の root と同じ値）
+#   __REL_PATH__  root からの相対パス
+#   __KIND__      `mpeg`（ffmpeg で作る MPEG-TS。encode に渡せる）か `text`（base64 の乱数。
+#                 転送と配信の中身の照合に使う。encode はしない）
+#
+# 標準出力に `SIZE=<n>` と `SHA256=<hex>` を出す。呼び出し側は `kubectl logs` で読む
+# （ツールボックスからは PVC の中が見えないため、書いた側に言わせる）。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB__
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: store-seed
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: store-seed
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        # PVC には copy-up が無いので fsGroup で所有権を与える（deploy/k8s/store/media-pvc.yaml）。
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: seed
+          # ENTRYPOINT は rokuban なので上書きする。ffmpeg と sh があるイメージ（Dockerfile.full）を使う。
+          image: __FULL_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              root="__ROOT__"
+              out="$root/__REL_PATH__"
+              # 目印が無い PVC に書くと、置き場の取り違えを見逃す（adopt が書く目印の有無で確かめる）。
+              test -e "$root/.rokuban-store"
+              mkdir -p "$(dirname "$out")"
+              rm -f "$out"
+              if [ "__KIND__" = mpeg ]; then
+                # 20 秒の合成映像。encode の e2e-fast が数十秒で終わる長さにしてある。
+                ffmpeg -nostdin -loglevel error -y \
+                  -f lavfi -i "testsrc2=size=320x240:rate=25" \
+                  -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+                  -t 20 -c:v mpeg2video -b:v 800k -c:a aac -f mpegts "$out"
+              else
+                # 1 MiB の乱数を base64 にする。改行を消すので、配信の応答を文字列として照合できる。
+                head -c 1048576 /dev/urandom | base64 | tr -d '\n' > "$out"
+              fi
+              printf 'SIZE=%s\n' "$(wc -c < "$out" | tr -d '[:space:]')"
+              printf 'SHA256=%s\n' "$(sha256sum "$out" | cut -d' ' -f1)"
+          volumeMounts:
+            - name: media
+              mountPath: __ROOT__
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: __PVC__
