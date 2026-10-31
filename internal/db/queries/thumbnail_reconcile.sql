@@ -7,7 +7,7 @@
 -- name: ListMissingThumbnailRecordings :many
 SELECT o.recording_id
 FROM media_assets o
-JOIN LATERAL active_media_asset_copies(o.id, sqlc.arg('original_store')::text) original_copy ON true
+JOIN LATERAL active_media_asset_copies(o.id, sqlc.narg('original_store')::text) original_copy ON true
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
   AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
@@ -69,7 +69,7 @@ WITH planning AS (
     LEFT JOIN LATERAL (
         SELECT a.id, copy.rel_path, copy.store
         FROM media_assets a
-        JOIN LATERAL active_media_asset_copies(a.id, sqlc.arg('original_store')::text) copy ON true
+        JOIN LATERAL active_media_asset_copies(a.id, sqlc.narg('original_store')::text) copy ON true
         WHERE a.recording_id = r.id
           AND a.kind = 'original'
           AND NOT EXISTS (
@@ -132,7 +132,7 @@ LIMIT sqlc.arg('row_limit');
 -- name: ListMissingSeekTilesRecordings :many
 SELECT o.recording_id
 FROM media_assets o
-JOIN LATERAL active_media_asset_copies(o.id, sqlc.arg('original_store')::text) original_copy ON true
+JOIN LATERAL active_media_asset_copies(o.id, sqlc.narg('original_store')::text) original_copy ON true
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
   AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
