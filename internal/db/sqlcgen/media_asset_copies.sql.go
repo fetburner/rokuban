@@ -430,26 +430,6 @@ func (q *Queries) MarkPendingMediaAssetCopyDeleted(ctx context.Context, arg Mark
 	return result.RowsAffected(), nil
 }
 
-const reconcileDerivedGenerationFromCopyPaths = `-- name: ReconcileDerivedGenerationFromCopyPaths :exec
-UPDATE media_assets AS asset
-SET derived_generation = GREATEST(
-    COALESCE(asset.derived_generation, 0),
-    COALESCE((
-        SELECT max(copy.generation)
-        FROM media_asset_copies copy
-        WHERE copy.media_asset_id = asset.id
-    ), 0)
-)
-WHERE asset.kind <> 'original'
-`
-
-// A path's generation belongs to its physical copy. Include deleted copies because their
-// generation remains part of the allocator's history.
-func (q *Queries) ReconcileDerivedGenerationFromCopyPaths(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, reconcileDerivedGenerationFromCopyPaths)
-	return err
-}
-
 const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
 UPDATE media_asset_copies
 SET state = $1,
