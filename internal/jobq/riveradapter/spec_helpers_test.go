@@ -33,13 +33,13 @@ func siteQueue(logical string, maxWorkers int, sites ...string) jobq.QueueSpec {
 	return jobq.QueueSpec{Logical: logical, Physical: physical, MaxWorkers: maxWorkers}
 }
 
-// storeQueue は置き場で修飾するキューを stores へ展開した仕様。
-func storeQueue(logical string, maxWorkers int, stores ...string) jobq.QueueSpec {
+// storeQueue は置き場で修飾するキューを stores へ展開した仕様（並列数は 1）。
+func storeQueue(logical string, stores ...string) jobq.QueueSpec {
 	physical := make([]string, 0, len(stores))
 	for _, name := range stores {
 		physical = append(physical, jobs.PhysicalStoreQueueName(logical, name))
 	}
-	return jobq.QueueSpec{Logical: logical, Physical: physical, MaxWorkers: maxWorkers}
+	return jobq.QueueSpec{Logical: logical, Physical: physical, MaxWorkers: 1}
 }
 
 // siteSpec は site 単位の 4 キューと site 非依存のキューを並べた仕様（定期ジョブは空）。
@@ -51,11 +51,11 @@ func siteSpec(ingestWorkers int, sites ...string) jobq.WorkerSpec {
 		plainQueue(jobs.RulerQueue, 1),
 		siteQueue(jobs.ReconcilerQueue, 1, sites...),
 		siteQueue(jobs.RecordSweepQueue, 1, sites...),
-		storeQueue(jobs.EncodeQueue, 1, "test-store"),
-		storeQueue(jobs.ThumbnailQueue, 1, "test-store"),
+		storeQueue(jobs.EncodeQueue, "test-store"),
+		storeQueue(jobs.ThumbnailQueue, "test-store"),
 		plainQueue(jobs.CleanupQueue, 2),
-		storeQueue(jobs.OriginalQueue, 1, "test-store"),
-		storeQueue(jobs.TSScanQueue, 1, "test-store"),
+		storeQueue(jobs.OriginalQueue, "test-store"),
+		storeQueue(jobs.TSScanQueue, "test-store"),
 	}}
 }
 

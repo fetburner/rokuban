@@ -241,6 +241,7 @@ func (deps *Deps) perStore() map[string]*Deps {
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
+	registerStoreRoutedWorkers(workers, deps)
 	riveradapter.Register(workers, newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
 		return &IngestWorker{
 			storageProbed:       d.IngestStorageProbed,
@@ -256,23 +257,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 			CMDetect:            d.CMDetect,
 			CutProfiles:         d.Encode.CutProfileSet(),
 			RecordingHLSEnabled: d.RecordingHLSEnabled,
-		}
-	}))
-	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps.perStore(), func(d *Deps) jobq.Worker[jobs.EncodeJobArgs] {
-		return &EncodeWorker{
-			Media:           d.MediaReconcile,
-			Attempts:        d.EncodeAttempts,
-			Publisher:       d.MediaPublish,
-			ObjectPublisher: d.DerivedMediaPublish,
-			Objects:         d.DerivedObjects,
-			Progress:        d.EncodeProgress,
-			MediaDir:        d.MediaDir,
-			MediaStoreName:  d.MediaStoreName,
-			ScratchDir:      d.ScratchDir,
-			FFmpeg:          d.Encode.FFmpeg,
-			FFprobe:         d.Encode.FFprobe,
-			Profiles:        d.Encode,
-			Webhook:         d.Webhook,
 		}
 	}))
 	riveradapter.Register(workers, &EncodeReconcileWorker{
@@ -320,6 +304,52 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LoopMarkers:        deps.LoopMarkers,
 		Webhook:            deps.Webhook,
 	})
+	riveradapter.Register(workers, &ThumbnailReconcileWorker{
+		Enqueuer: deps.Enqueuer,
+		Media:    deps.MediaReconcile,
+	})
+	riveradapter.Register(workers, &CMDetectReconcileWorker{
+		Enqueuer:       deps.Enqueuer,
+		Locator:        deps.OriginalLocator,
+		DetectionStore: deps.CMDetectionStore,
+		RecoveryGrace:  deps.RecoveryGrace,
+	})
+	riveradapter.Register(workers, &StorageTransferReconcileWorker{
+		Enqueuer: deps.Enqueuer,
+		Storage:  deps.StorageTransfer,
+		Config:   deps.StorageTransferPolicy,
+	})
+	riveradapter.Register(workers, &StorageTransferWorker{
+		Storage:      deps.StorageTransfer,
+		Config:       deps.StorageTransferPolicy,
+		Roots:        deps.StorageRoots,
+		ObjectStores: deps.StorageObjects,
+		ScratchDir:   deps.ScratchDir,
+	})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan, Locator: deps.OriginalLocator})
+	return workers
+}
+
+// registerStoreRoutedWorkers は、原本のある置き場に束ねて動くワーカーを登録する。ジョブの置き場を
+// マウントしていないプロセスでは、どれもファイルに触れる前に失敗する（newStoreRoute）。
+func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
+	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps.perStore(), func(d *Deps) jobq.Worker[jobs.EncodeJobArgs] {
+		return &EncodeWorker{
+			Media:           d.MediaReconcile,
+			Attempts:        d.EncodeAttempts,
+			Publisher:       d.MediaPublish,
+			ObjectPublisher: d.DerivedMediaPublish,
+			Objects:         d.DerivedObjects,
+			Progress:        d.EncodeProgress,
+			MediaDir:        d.MediaDir,
+			MediaStoreName:  d.MediaStoreName,
+			ScratchDir:      d.ScratchDir,
+			FFmpeg:          d.Encode.FFmpeg,
+			FFprobe:         d.Encode.FFprobe,
+			Profiles:        d.Encode,
+			Webhook:         d.Webhook,
+		}
+	}))
 	riveradapter.Register[jobs.CatalogExportArgs](workers, newStoreRoute("catalog_export", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CatalogExportArgs] {
 		return &CatalogExportWorker{
 			Store:          d.Catalog,
@@ -352,10 +382,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 			FFprobe:         d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register(workers, &ThumbnailReconcileWorker{
-		Enqueuer: deps.Enqueuer,
-		Media:    deps.MediaReconcile,
-	})
 	riveradapter.Register[jobs.CMDetectJobArgs](workers, newStoreRoute("cm_detect", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CMDetectJobArgs] {
 		return &CMDetectWorker{
 			Enqueuer:       d.Enqueuer,
@@ -376,27 +402,9 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 			FFprobe:    d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register(workers, &CMDetectReconcileWorker{
-		Enqueuer:       deps.Enqueuer,
-		Locator:        deps.OriginalLocator,
-		DetectionStore: deps.CMDetectionStore,
-		RecoveryGrace:  deps.RecoveryGrace,
-	})
 	riveradapter.Register[jobs.DeleteReconcileArgs](workers, newStoreRoute("delete_reconcile", deps.perStore(), func(d *Deps) jobq.Worker[jobs.DeleteReconcileArgs] {
 		return newDeleteReconcileWorker(d)
 	}))
-	riveradapter.Register(workers, &StorageTransferReconcileWorker{
-		Enqueuer: deps.Enqueuer,
-		Storage:  deps.StorageTransfer,
-		Config:   deps.StorageTransferPolicy,
-	})
-	riveradapter.Register(workers, &StorageTransferWorker{
-		Storage:      deps.StorageTransfer,
-		Config:       deps.StorageTransferPolicy,
-		Roots:        deps.StorageRoots,
-		ObjectStores: deps.StorageObjects,
-		ScratchDir:   deps.ScratchDir,
-	})
 	riveradapter.Register[jobs.StorageSyncArgs](workers, newStoreRoute("storage_sync", deps.perStore(), func(d *Deps) jobq.Worker[jobs.StorageSyncArgs] {
 		return &StorageSyncWorker{
 			Storage:    d.StorageObservation,
@@ -407,8 +415,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps.perStore(), func(d *Deps) jobq.Worker[tsscan.ScanArgs] {
 		return &tsscan.ScanWorker{Media: d.TSScan, MediaDir: d.MediaDir}
 	}))
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan, Locator: deps.OriginalLocator})
-	return workers
 }
 
 // newDeleteReconcileWorker は削除 reconcile worker を Deps から組み立てる。

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // storeFlagName は `server` サブコマンドのプロセスが置き場をマウントするフラグ名。
@@ -167,4 +169,54 @@ func resolveCommandStore(cmd *cobra.Command, storage config.StorageConfig) (name
 		return "", "", fmt.Errorf("--%s: %w", commandStoreFlagName, err)
 	}
 	return name, roots[name], nil
+}
+
+// resolveMountedStores は `--stores` を解決して検査し、マウントする FS 置き場の名前（`--stores` の順）と
+// root を返す。置き場をマウントするのは worker と streamer だけ。api・notifier・watcher は置き場を
+// 持たないので、FS 置き場が複数あっても `--stores` を要求しない（効かない `--stores` の指定は
+// validateStoreBinding が拒む）。
+func resolveMountedStores(cmd *cobra.Command, cfg *config.Config, roles, queues []string, once bool) ([]string, map[string]string, error) {
+	var mounted []string
+	if slices.Contains(roles, "worker") || slices.Contains(roles, "streamer") {
+		var err error
+		mounted, err = resolveStoreBinding(cmd, cfg.Storage)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := validateStoreBinding(roles, cmd.Flags().Changed(storeFlagName), cfg.Storage, mounted, queues, once); err != nil {
+		return nil, nil, err
+	}
+	roots, err := cfg.Storage.StoreRoots(mounted)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--%s: %w", storeFlagName, err)
+	}
+	return mounted, roots, nil
+}
+
+// probeIngestStorageAtStartup は、ingest を引く worker について、マウントした全ての置き場の root で
+// ingest の FS 契約を起動時に 1 回確かめ、確かめたかを返す。
+//
+// ingest は各置き場の root の強い FS 契約（file fsync / Close / 同一 FS の atomic rename /
+// 親 directory fsync）に依存するので、実際の操作列を 1 回通す。ingest を購読しない中央 worker は
+// 置き場を書かないので probe の対象外。パス文字列から FS の種類は判定しない。
+// 目印を確認できないときは probe を保留して false を返し、IngestWorker が最初の ingest で
+// 目印を照合した後に probe する。
+func probeIngestStorageAtStartup(roles, queues []string, roots map[string]string) (bool, error) {
+	markersVerified := verifyStoreMarkersAtStartup(roles, roots)
+	pullsIngest := slices.Contains(roles, "worker") && (len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue))
+	if !pullsIngest {
+		return false, nil
+	}
+	if !markersVerified {
+		slog.Warn("deferring ingest storage probe until the media store markers can be verified",
+			"stores", sortedKeys(roots))
+		return false, nil
+	}
+	for _, name := range sortedKeys(roots) {
+		if err := worker.ProbeIngestStorage(roots[name]); err != nil {
+			return false, fmt.Errorf("validating ingest storage of store %q: %w", name, err)
+		}
+	}
+	return true, nil
 }

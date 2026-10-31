@@ -134,10 +134,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		TransferOverlap:       cfg.Storage.Transfer.Overlap,
 		Cleanup:               config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	scoped, err := newStoreScopedDeps(ctx, pool, cfg, base, "test-store", roots["test-store"], nil)
-	if err != nil {
-		t.Fatalf("newStoreScopedDeps: %v", err)
-	}
+	scoped := newStoreScopedDeps(pool, cfg, base, "test-store", roots["test-store"], nil)
 	registry := worker.NewWorkers(&worker.Deps{PerStore: map[string]*worker.Deps{"test-store": scoped}})
 	if err := registry.Work(ctx, jobs.DeleteReconcileArgs{Store: "test-store"}); err != nil {
 		t.Fatalf("delete reconcile for test-store: %v", err)
@@ -178,7 +175,6 @@ func TestWorkerWithoutMountsRefusesStorelessJobs(t *testing.T) {
 // DerivedMediaDelete が載り、このテストが落ちる。
 func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
 	derivedObjects, err := fsstore.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -198,10 +194,7 @@ func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
 				Stores:  map[string]config.StoreConfig{"takamatsu": {Kind: "fs"}, "derived": tc.derived},
 				Derived: "derived",
 			}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
-			scoped, err := newStoreScopedDeps(ctx, pool, cfg, base, "takamatsu", t.TempDir(), derivedObjects)
-			if err != nil {
-				t.Fatalf("newStoreScopedDeps: %v", err)
-			}
+			scoped := newStoreScopedDeps(pool, cfg, base, "takamatsu", t.TempDir(), derivedObjects)
 			if got := scoped.DerivedMediaDelete != nil; got != tc.wantPass {
 				t.Errorf("separate derived delete pass configured = %v, want %v", got, tc.wantPass)
 			}

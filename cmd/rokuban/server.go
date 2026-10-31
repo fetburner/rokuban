@@ -345,42 +345,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
-	// 置き場をマウントするのは worker と streamer だけ。api・notifier・watcher は置き場を持たないので、
-	// FS 置き場が複数あっても `--stores` を要求しない（効かない `--stores` の指定は validateStoreBinding が拒む）。
-	var mounted []string
-	if slices.Contains(roles, "worker") || slices.Contains(roles, "streamer") {
-		mounted, err = resolveStoreBinding(cmd, cfg.Storage)
-		if err != nil {
-			return err
-		}
-	}
-	if err := validateStoreBinding(roles, cmd.Flags().Changed(storeFlagName), cfg.Storage, mounted, queues, onceGate != nil); err != nil {
+	mounted, roots, err := resolveMountedStores(cmd, cfg, roles, queues, onceGate != nil)
+	if err != nil {
 		return err
 	}
-	roots, err := cfg.Storage.StoreRoots(mounted)
+	ingestStorageProbed, err := probeIngestStorageAtStartup(roles, queues, roots)
 	if err != nil {
-		return fmt.Errorf("--%s: %w", storeFlagName, err)
-	}
-	storeMarkerVerified := verifyStoreMarkersAtStartup(roles, roots)
-	// 目印を確認できず probe を保留したときは false のまま渡し、IngestWorker が最初の
-	// ingest で目印を照合した後に probe する。
-	ingestStorageProbed := false
-	if storeMarkerVerified && slices.Contains(roles, "worker") &&
-		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
-		// ingest は各置き場の root の強い FS 契約（file fsync / Close / 同一 FS の
-		// atomic rename / 親 directory fsync）に依存する。起動時にマウントした全ての置き場で
-		// 実際の操作列を 1 回通す。ingest を購読しない中央 worker は置き場を書かないので
-		// probe の対象外。パス文字列から FS の種類は判定しない。
-		for _, name := range sortedKeys(roots) {
-			if err := worker.ProbeIngestStorage(roots[name]); err != nil {
-				return fmt.Errorf("validating ingest storage of store %q: %w", name, err)
-			}
-		}
-		ingestStorageProbed = true
-	} else if !storeMarkerVerified && slices.Contains(roles, "worker") &&
-		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
-		slog.Warn("deferring ingest storage probe until the media store markers can be verified",
-			"stores", sortedKeys(roots))
+		return err
 	}
 
 	workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, onceGate, softStopTimeout)
@@ -888,10 +859,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	}
 	base.PerStore = make(map[string]*worker.Deps, len(roots))
 	for _, name := range sortedKeys(roots) {
-		scoped, err := newStoreScopedDeps(ctx, pool, cfg, base, name, roots[name], derivedObjects)
-		if err != nil {
-			return nil, err
-		}
+		scoped := newStoreScopedDeps(pool, cfg, base, name, roots[name], derivedObjects)
 		base.PerStore[name] = scoped
 	}
 	workers := worker.NewWorkers(base)
@@ -929,7 +897,7 @@ func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounte
 // newStoreScopedDeps は、置き場 name に束ねた worker.Deps を base から作る。
 // 置き場で修飾するキューのワーカーと ingest がこの Deps を使う。置き場に束ねた store・root・名前だけを
 // 差し替え、それ以外は base と同じ値を持つ。
-func newStoreScopedDeps(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, base *worker.Deps, name, root string, derivedObjects objstore.Store) (*worker.Deps, error) {
+func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, base *worker.Deps, name, root string, derivedObjects objstore.Store) *worker.Deps {
 	scoped := *base
 	scoped.PerStore = nil
 	mediaStore := pgstore.NewMediaWithStores(pool, name, name, cfg.Storage.Derived)
@@ -971,7 +939,7 @@ func newStoreScopedDeps(ctx context.Context, pool *pgxpool.Pool, cfg *config.Con
 			scoped.DerivedPendingReclaim = derivedMedia
 		}
 	}
-	return &scoped, nil
+	return &scoped
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。
