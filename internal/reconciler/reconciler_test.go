@@ -887,9 +887,10 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("creating reservation: %v", err)
 	}
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site:      "default",
 		ProgramID: 200000500011234,
+		Action:    "skip",
 	}); err != nil {
 		t.Fatalf("recording skip intent: %v", err)
 	}
@@ -1865,9 +1866,10 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019202, "detachedスキップ", startAt)
 	setReservationDetached(t, ctx, pool, res.ProgramID)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site:      "default",
 		ProgramID: res.ProgramID,
+		Action:    "skip",
 	}); err != nil {
 		t.Fatalf("recording skip intent: %v", err)
 	}
@@ -2812,9 +2814,10 @@ func TestReconciler_NoStartDelayForSkippedReservation(t *testing.T) {
 
 	startAt := time.Now().Add(-10 * time.Minute)
 	createReservation(t, ctx, q, 100000500030006, "skip開始遅延", startAt)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site:      "default",
 		ProgramID: 100000500030006,
+		Action:    "skip",
 	}); err != nil {
 		t.Fatalf("recording skip intent: %v", err)
 	}

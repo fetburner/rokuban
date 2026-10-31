@@ -48,35 +48,6 @@ func (q *Queries) GetProgramIntent(ctx context.Context, arg GetProgramIntentPara
 	return i, err
 }
 
-const skipProgram = `-- name: SkipProgram :one
-INSERT INTO program_intents (
-    site, program_id, action
-) VALUES ($1, $2, 'skip')
-ON CONFLICT (site, program_id) DO UPDATE SET
-    action     = 'skip',
-    updated_at = now()
-RETURNING site, program_id, action, created_at, updated_at
-`
-
-type SkipProgramParams struct {
-	Site      string
-	ProgramID int64
-}
-
-// 取消（intent{skip}）は action だけを倒す。overrides は別表なので触らない。
-func (q *Queries) SkipProgram(ctx context.Context, arg SkipProgramParams) (ProgramIntent, error) {
-	row := q.db.QueryRow(ctx, skipProgram, arg.Site, arg.ProgramID)
-	var i ProgramIntent
-	err := row.Scan(
-		&i.Site,
-		&i.ProgramID,
-		&i.Action,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const upsertProgramIntent = `-- name: UpsertProgramIntent :one
 
 INSERT INTO program_intents (
