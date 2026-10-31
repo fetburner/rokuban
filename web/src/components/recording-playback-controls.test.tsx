@@ -235,6 +235,7 @@ describe('共有シークバーのポインタ操作', () => {
     const onScrubPreview = vi.fn()
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,
+      seekTilesUrl: '/api/media/recordings/92/seek-tiles?fixture=1',
       seekTilesEnabled: true,
       onTimelineHoverChange,
       onScrubPreview,
@@ -260,6 +261,7 @@ describe('共有シークバーのポインタ操作', () => {
     const onScrubPreview = vi.fn()
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,
+      seekTilesUrl: '/api/media/recordings/92/seek-tiles?fixture=1',
       seekTilesEnabled: true,
       onTimelineHoverChange,
       onScrubPreview,
@@ -341,6 +343,7 @@ describe('共有シークバーのポインタ操作', () => {
   it('空の変換表（tileTimeAtSeconds が null）ではタイルを問い合わせない', () => {
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,
+      seekTilesUrl: '/api/media/recordings/92/seek-tiles?fixture=1',
       seekTilesEnabled: true,
       tileTimeAtSeconds: () => null,
     })} />)
@@ -355,6 +358,7 @@ describe('共有シークバーのポインタ操作', () => {
   it('タイルはマウスホバー時だけ要求し、ラベルと座標変換を共有部品で保つ', () => {
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,
+      seekTilesUrl: '/api/media/recordings/92/seek-tiles?fixture=1',
       seekTilesEnabled: true,
       tileTimeAtSeconds: (seconds) => seconds + 70,
     })} />)
@@ -366,7 +370,7 @@ describe('共有シークバーのポインタ操作', () => {
 
     fireEvent.pointerMove(seekbar, { pointerType: 'mouse', clientX: 20 })
     const image = screen.getByTestId('seek-tiles-image')
-    expect(image).toHaveAttribute('src', '/api/media/recordings/92/seek-tiles')
+    expect(image).toHaveAttribute('src', '/api/media/recordings/92/seek-tiles?fixture=1')
     fireEvent.load(image!)
 
     expect(screen.getByTestId('seek-tile-label')).toHaveTextContent('0:20')
@@ -379,6 +383,7 @@ describe('共有シークバーのポインタ操作', () => {
     const onSeekPreview = vi.fn()
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,
+      seekTilesUrl: '/api/media/recordings/92/seek-tiles?fixture=1',
       seekTilesEnabled: true,
       deferKeyboardSeek: true,
       onSeekPreview,
@@ -399,6 +404,7 @@ describe('共有シークバーのポインタ操作', () => {
   it('編集画面の先読みは時間軸の尺が未確定でも行う', () => {
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,
+      seekTilesUrl: '/api/media/recordings/92/seek-tiles?fixture=1',
       timeline: fixedPlaybackTimeline(0),
       durationSeconds: 0,
       seekTilesEnabled: true,
@@ -407,7 +413,7 @@ describe('共有シークバーのポインタ操作', () => {
 
     expect(screen.getByTestId('seek-tiles-image')).toHaveAttribute(
       'src',
-      '/api/media/recordings/92/seek-tiles',
+      '/api/media/recordings/92/seek-tiles?fixture=1',
     )
   })
 })

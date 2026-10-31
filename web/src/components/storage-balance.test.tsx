@@ -1,6 +1,7 @@
 import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { recordingMedia } from '@/test/recording-media'
 
 import {
   useGetStorage,
@@ -40,6 +41,7 @@ function iso(offsetMs: number): string {
 
 function mediaRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
   return {
+    store: 'takamatsu',
     root: 'media',
     path: '/media',
     totalBytes: 1_000_000_000_000,
@@ -52,6 +54,7 @@ function mediaRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
 
 function scratchRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
   return {
+    store: 'takamatsu',
     root: 'scratch',
     path: '/scratch',
     totalBytes: 500_000_000_000,
@@ -79,6 +82,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? 1, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-08-01T00:00:00Z',
     sizeBytes: 900_000_000, // 900MB / 30分

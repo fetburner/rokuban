@@ -1,9 +1,7 @@
-# アーカイブ（`storage.media_dir`）の PVC。
+# 置き場 1 つぶんの PVC（置き場の root にマウントされる）。置き場を増やすとこの PVC も 1 本増える。
 #
-# **アーカイブは単一である**（2 階層のうち下段。docs/storage.md §5）。録画バッファは
-# サイトごとのエッジにあるが、アーカイブは 1 つで、site 非依存の役（streamer /
-# encode / thumbnail / cleanup / storage）と site 束縛の ingest が同じものを見る。
-# したがって PVC も 1 本で、**複数 Pod が同時にマウントする** ---
+# **置き場 1 つにつき PVC は 1 本で、複数 Pod が同時にマウントする**
+# （その置き場の worker / ingest / streamer。docs/storage.md §5）---
 # `ReadWriteMany` が要る。
 #
 # **RWX を満たす CSI の同定はここではしない**（storageClassName を書いていないので
@@ -25,6 +23,7 @@ metadata:
   labels:
     app.kubernetes.io/name: rokuban
     app.kubernetes.io/component: media
+    rokuban.fetburner.net/store-scoped: "true"
 spec:
   accessModes:
     - ReadWriteMany

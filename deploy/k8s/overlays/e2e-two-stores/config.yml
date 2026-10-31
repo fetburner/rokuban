@@ -1,0 +1,80 @@
+# 置き場 2 つの受け入れ判定（deploy/k8s/e2e/checks/06-two-stores.sh）の config。
+# `overlays/e2e/config.yml` と同じ 2 サイトに、FS 置き場を 2 つ足してある。
+# キーの網羅は config.example.yml が権威。ここに書くのは e2e との差分の理由だけ。
+
+server:
+  listen: ":40773"
+  allowed_hosts: [rokuban.local]
+
+db:
+  host: postgres
+  port: 5432
+  user: rokuban
+  database: rokuban
+  sslmode: disable
+  password: >-
+    ${POSTGRES_PASSWORD}
+
+mirakcs:
+  - site: sitea
+    url: http://mirakc-sitea:40772
+  - site: siteb
+    url: http://mirakc-siteb:40772
+
+storage:
+  scratch_dir: /var/tmp/rokuban
+  # **root は置き場ごとに別にする。** 2 つの置き場をマウントするプロセス（ingest）は
+  # `storage.media_dir` 1 つには頼れず、同じ root の 2 置き場は起動時に拒まれる。
+  # PVC のマウント先は `stores/<置き場>/kustomization.yaml` の patch と揃える。
+  stores:
+    tokyo: { kind: fs, root: /mnt/stores/tokyo }
+    takamatsu: { kind: fs, root: /mnt/stores/takamatsu }
+  # sitea の原本は tokyo、siteb の原本は takamatsu へ。1 つの site の録画を 2 つの
+  # 置き場に振り分ける規則（older_than）はこの判定の対象ではない。
+  originals:
+    - match: { site: siteb }
+      store: takamatsu
+    - store: tokyo
+  # 派生物は tokyo。central streamer が tokyo をマウントして配る。
+  derived: tokyo
+
+recording_hls:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-recording-hls
+
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  max_sessions: 4
+  idle_timeout: 30s
+  tuner_priority: 1
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      preset: veryfast
+      segment_seconds: 2
+      playlist_size: 6
+
+encode:
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+  concurrency: 1
+  thumbnail_concurrency: 1
+  profiles:
+    - name: e2e-slow
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      crf: 18
+      preset: veryslow
+
+worker:
+  periodic_jobs: false
+  rescue_stuck_jobs_after: 1m
+
+log:
+  level: info
+  format: json

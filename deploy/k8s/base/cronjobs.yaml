@@ -27,72 +27,10 @@
 # **site 束縛のジョブ（`epg-sync` / `tuner-sync` / `ruler-pass` /
 # `reconcile-pass` / `record-sweep`）はここに無い。** サイト 1 組ぶんとして
 # `deploy/k8s/site/` にある。
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: rokuban-enqueue-catalog-export
-  labels:
-    app.kubernetes.io/name: rokuban
-    app.kubernetes.io/component: enqueue
-spec:
-  # in-process の既定は 24 時間（cmd/rokuban/workerspec.go の newWorkerSpec）。
-  # 時刻を固定するのは、災害復旧用のエクスポートを負荷の低い時間帯に寄せるため。
-  schedule: "0 4 * * *"
-  # **1 日 1 回なので、取りこぼしを翌日まで待たない幅を取る。** 未設定にすると
-  # k8s は「直近 100 回ぶんの見逃し」を数えて、それを超えると
-  # `too many missed start times` で**恒久的に発火しなくなる**。
-  startingDeadlineSeconds: 3600
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      backoffLimit: 2
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: rokuban
-            app.kubernetes.io/component: enqueue
-        spec:
-          restartPolicy: Never
-          enableServiceLinks: false
-          automountServiceAccountToken: false
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 65534
-            runAsGroup: 65534
-            seccompProfile:
-              type: RuntimeDefault
-          containers:
-            - name: enqueue
-              # `enqueue` は insert-only の River クライアントで 1 件投入して
-              # 終わるだけ（ワーカー群を登録しない）ので、ffmpeg もファイル
-              # システムも要らない。
-              image: ghcr.io/fetburner/rokuban:latest
-              args: ["enqueue", "catalog-export", "--config", "/etc/rokuban/config.yml"]
-              envFrom:
-                - secretRef:
-                    name: rokuban-secrets
-              volumeMounts:
-                - name: config
-                  mountPath: /etc/rokuban
-                  readOnly: true
-              securityContext:
-                allowPrivilegeEscalation: false
-                readOnlyRootFilesystem: true
-                capabilities:
-                  drop: ["ALL"]
-              resources:
-                requests:
-                  cpu: 20m
-                  memory: 32Mi
-                limits:
-                  memory: 128Mi
-          volumes:
-            - name: config
-              configMap:
-                name: rokuban-config
+#
+# **置き場束縛のジョブ（`catalog-export` / `delete-reconcile` / `storage-sync`）は
+# ここに無い。** 置き場 1 つぶんとして `deploy/k8s/store/` にある。
+
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -340,69 +278,6 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: rokuban-enqueue-delete-reconcile
-  labels:
-    app.kubernetes.io/name: rokuban
-    app.kubernetes.io/component: enqueue
-spec:
-  # in-process の既定は 15 分（cmd/rokuban/workerspec.go の newWorkerSpec）。
-  #
-  # **これが無い構成では、ごみ箱・孤児回収のパスが一度も走らない。**
-  # `worker.periodic_jobs: false` の下では投入経路が CronJob しかないので、
-  # ディスクが黙って埋まる形で壊れる。
-  schedule: "*/15 * * * *"
-  startingDeadlineSeconds: 600
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      backoffLimit: 2
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: rokuban
-            app.kubernetes.io/component: enqueue
-        spec:
-          restartPolicy: Never
-          enableServiceLinks: false
-          automountServiceAccountToken: false
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 65534
-            runAsGroup: 65534
-            seccompProfile:
-              type: RuntimeDefault
-          containers:
-            - name: enqueue
-              image: ghcr.io/fetburner/rokuban:latest
-              args: ["enqueue", "delete-reconcile", "--config", "/etc/rokuban/config.yml"]
-              envFrom:
-                - secretRef:
-                    name: rokuban-secrets
-              volumeMounts:
-                - name: config
-                  mountPath: /etc/rokuban
-                  readOnly: true
-              securityContext:
-                allowPrivilegeEscalation: false
-                readOnlyRootFilesystem: true
-                capabilities:
-                  drop: ["ALL"]
-              resources:
-                requests:
-                  cpu: 20m
-                  memory: 32Mi
-                limits:
-                  memory: 128Mi
-          volumes:
-            - name: config
-              configMap:
-                name: rokuban-config
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
   name: rokuban-enqueue-encode-reconcile
   labels:
     app.kubernetes.io/name: rokuban
@@ -437,65 +312,6 @@ spec:
             - name: enqueue
               image: ghcr.io/fetburner/rokuban:latest
               args: ["enqueue", "encode-reconcile", "--config", "/etc/rokuban/config.yml"]
-              envFrom:
-                - secretRef:
-                    name: rokuban-secrets
-              volumeMounts:
-                - name: config
-                  mountPath: /etc/rokuban
-                  readOnly: true
-              securityContext:
-                allowPrivilegeEscalation: false
-                readOnlyRootFilesystem: true
-                capabilities:
-                  drop: ["ALL"]
-              resources:
-                requests:
-                  cpu: 20m
-                  memory: 32Mi
-                limits:
-                  memory: 128Mi
-          volumes:
-            - name: config
-              configMap:
-                name: rokuban-config
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: rokuban-enqueue-storage-sync
-  labels:
-    app.kubernetes.io/name: rokuban
-    app.kubernetes.io/component: enqueue
-spec:
-  # in-process の既定は 5 分（cmd/rokuban/workerspec.go の newWorkerSpec）。
-  schedule: "*/5 * * * *"
-  startingDeadlineSeconds: 240
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      backoffLimit: 2
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: rokuban
-            app.kubernetes.io/component: enqueue
-        spec:
-          restartPolicy: Never
-          enableServiceLinks: false
-          automountServiceAccountToken: false
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 65534
-            runAsGroup: 65534
-            seccompProfile:
-              type: RuntimeDefault
-          containers:
-            - name: enqueue
-              image: ghcr.io/fetburner/rokuban:latest
-              args: ["enqueue", "storage-sync", "--config", "/etc/rokuban/config.yml"]
               envFrom:
                 - secretRef:
                     name: rokuban-secrets

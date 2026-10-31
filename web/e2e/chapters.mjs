@@ -36,6 +36,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -68,7 +69,7 @@ const recording = {
   durationMs: 120_000,
   status: 'finished',
   keepOriginal: 'always',
-  hlsPlayback: [], cmDetection: { state: 'detected' },
+  media: recordingMedia(1, ['h264', 'h265']), hlsPlayback: [], cmDetection: { state: 'detected' },
   sizeBytes: 500_000_000,
   // 画質の下の階層でサイズ付きの選択肢を見るため 2 つ置く（同じ動画を配る）。
   encodedAssets: [

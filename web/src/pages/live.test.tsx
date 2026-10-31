@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LiveProfileSummary, ProgramListItem, Recording, Reservation, Service, Tuner } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { ToastProvider } from '@/components/toaster'
 import { recordingDetailQueryKey } from '@/lib/recording-detail-cache'
 import { liveStallTimeoutMs } from '@/lib/live'
@@ -92,6 +93,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     status: 'recording',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? 501, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-10-02T10:00:00.000Z',
     ...overrides,

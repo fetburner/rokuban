@@ -104,6 +104,9 @@ func TestListRecordingShelves_GroupsByEffectiveSeries(t *testing.T) {
 	if shelves[0].RepresentativeId != newest {
 		t.Errorf("representative = %d, want %d (newest program_start_at)", shelves[0].RepresentativeId, newest)
 	}
+	if want := fmt.Sprintf("/api/media/recordings/%d/thumbnail", newest); shelves[0].ThumbnailUrl != want {
+		t.Errorf("shelf thumbnailUrl = %q, want %q (the representative's thumbnail)", shelves[0].ThumbnailUrl, want)
+	}
 	if !shelves[0].LatestStartAt.Equal(base) {
 		t.Errorf("latest start = %s, want %s", shelves[0].LatestStartAt, base)
 	}

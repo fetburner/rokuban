@@ -1,3 +1,15 @@
+# 置き場 1 つぶんの配信 streamer（世代付き録画 HLS と原本の file / frame）。
+#
+# **1 プロセスは 1 つの置き場だけを配る。** 録画 HLS は複数の置き場をマウントした
+# プロセスを起動時に拒む（cmd/rokuban/server.go）ので、置き場を増やすと
+# この Deployment と Service が 1 組増える。Ingress は
+# `/api/media/stores/<置き場>` の Prefix で置き場ごとの Service へ送る
+# （`overlays/*` が行を足す）。原本の `file` / `frame` も同じ Prefix の下にあるので
+# 同じ Pod が答える。派生物（thumbnail / seek-tiles / encoded）は置き場を
+# 持たない `/api/media/recordings` で、central streamer が答える。
+#
+# **argv の 6 番目（index 5）が置き場名。** 置き場 overlay の patch が差し替える。
+#
 # 世代付き録画 HLS を配信する専用 streamer。
 # 録画ごとの変換状態とセグメントキャッシュはプロセス内にあるため replicas は 1。
 # 増やすときは録画 id で consistent hash する Ingress/controller が必要になる。
@@ -8,6 +20,7 @@ metadata:
   labels:
     app.kubernetes.io/name: rokuban
     app.kubernetes.io/component: recording-hls
+    rokuban.fetburner.net/store-scoped: "true"
 spec:
   replicas: 1
   selector:
@@ -38,7 +51,7 @@ spec:
       containers:
         - name: recording-hls
           image: ghcr.io/fetburner/rokuban-full:latest
-          args: ["server", "--roles", "streamer", "--sites=", "--config", "/etc/rokuban/config.yml"]
+          args: ["server", "--roles", "streamer", "--sites=", "--stores", "main", "--config", "/etc/rokuban/config.yml"]
           ports:
             - name: http
               containerPort: 40773
@@ -103,6 +116,7 @@ metadata:
   labels:
     app.kubernetes.io/name: rokuban
     app.kubernetes.io/component: recording-hls
+    rokuban.fetburner.net/store-scoped: "true"
 spec:
   type: ClusterIP
   selector:

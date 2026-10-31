@@ -3,10 +3,12 @@ kind: Kustomization
 
 # 配布形式は素の kustomize（Helm chart は持たない）。理由は deploy/k8s/README.md。
 #
-# **ここに置くのは「中央 1 式」＝ site に依存しないものだけである。**
+# **ここに置くのは「中央 1 式」＝ site にも置き場にも依存しないものだけである。**
 # site 束縛のワークロード（watcher / `ingest` `epg` `reconciler` `watcher` の
 # ScaledJob / site 束縛ジョブの CronJob）は `deploy/k8s/site/` にサイト 1 組ぶんと
-# して置いてあり、overlay がサイトの数だけ生やす。
+# して、置き場束縛のワークロード（PVC / 録画配信 / 置き場で修飾するキューの
+# ScaledJob / 置き場束縛ジョブの CronJob）は `deploy/k8s/store/` に置き場 1 組ぶんと
+# して置いてあり、overlay がサイトと置き場の数だけ生やす。
 #
 # **base に site 名が一度も出てこないことに意味がある。** 単一サイト構成の
 # overlay は `../../base` と `../../site` を並べるだけで済み（`overlays/kind`）、
@@ -23,9 +25,7 @@ resources:
   - pdb.yaml
   - notifier.yaml
   - streamer.yaml
-  - recording-hls.yaml
   - ingress.yaml
-  - media-pvc.yaml
   - worker-scaledjobs.yaml
   - cronjobs.yaml
 

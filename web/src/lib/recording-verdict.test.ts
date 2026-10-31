@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Recording } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { recordingVerdict } from '@/lib/recording-verdict'
 
 const base: Recording = {
@@ -19,6 +20,7 @@ const base: Recording = {
   status: 'finished',
   keepOriginal: 'always',
   hlsPlayback: [],
+  media: recordingMedia(42),
   cmDetection: { state: 'disabled' },
   createdAt: '2026-01-01T12:30:00Z',
 }

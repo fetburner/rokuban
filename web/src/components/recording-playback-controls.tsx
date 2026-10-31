@@ -49,7 +49,6 @@ import { cn } from '@/lib/utils'
 import {
   seekTileBackgroundSize,
   seekTilePlacement,
-  seekTilesURL,
 } from '@/lib/seek-tiles'
 
 export type TilePreview = {
@@ -75,6 +74,8 @@ const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
 type RecordingPlaybackControlsProps = {
   recordingId?: number
+  /** `Recording.media.seekTilesUrl`。 */
+  seekTilesUrl?: string
   profile: string
   encodedAssets: EncodedAsset[]
   timeline?: PlaybackTimeline
@@ -185,6 +186,7 @@ type RecordingPlaybackControlsProps = {
  */
 export function RecordingPlaybackControls({
   recordingId,
+  seekTilesUrl,
   profile,
   encodedAssets,
   timeline,
@@ -567,10 +569,10 @@ export function RecordingPlaybackControls({
       onPointerMove={chapterEditing ? undefined : onControlsActivity}
       onKeyDown={chapterEditing ? undefined : onShellKeyDown}
     >
-      {tilesRequested && recordingId !== undefined && (
+      {tilesRequested && recordingId !== undefined && seekTilesUrl !== undefined && (
         <img
           data-testid="seek-tiles-image"
-          src={seekTilesURL(recordingId)}
+          src={seekTilesUrl}
           alt=""
           className="pointer-events-none absolute left-0 top-0 size-px opacity-0"
           onLoad={() => {
@@ -914,7 +916,7 @@ export function RecordingPlaybackControls({
                       <div
                         className="h-full w-full bg-no-repeat"
                         style={{
-                          backgroundImage: `url(${seekTilesURL(recordingId ?? 0)})`,
+                          backgroundImage: `url(${seekTilesUrl ?? ''})`,
                           backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
                           backgroundSize: seekTileBackgroundSize(tilePreview.width),
                         }}

@@ -1,0 +1,122 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 置き場 tokyo ぶんの Pod セット。**`deploy/k8s/store` を 1 回生やして置き場名と
+# マウント先を差し替えるだけ**で、ワークロードの定義はここに 1 行も書かない
+# （`overlays/e2e/sites/` と同じ形）。
+#
+# **patch の path は `deploy/k8s/store` の argv と volumeMounts の位置を指している。**
+# 並べ替えると黙って別の値を書き換える --- `deploy/k8s/workloads_test.go` の
+# TestStorePatchesTargetTheStoreName が、「その path に今 `main` / `/mnt/media` が
+# 居ること」を固定している。
+#
+# PVC は `rokuban-media-tokyo`、マウント先は `/mnt/stores/tokyo`（config.yml の
+# `storage.stores.tokyo.root` と同じ値。**違うと worker は別の root を開く**）。
+
+resources:
+  - ../../../../store
+
+nameSuffix: -tokyo
+
+labels:
+  - pairs:
+      rokuban.fetburner.net/store: tokyo
+    # selector にもテンプレートにも入れる。落とすと置き場が 2 つの構成で 2 つの
+    # recording-hls Deployment の selector と Pod ラベルが 1 バイトも違わなくなる
+    # （理由の全文は overlays/e2e/sites/sitea/kustomization.yaml）。
+    includeSelectors: true
+    includeTemplates: true
+
+patches:
+  # 配信 streamer（argv の index 5 が置き場名）。
+  - target:
+      kind: Deployment
+      labelSelector: rokuban.fetburner.net/store-scoped=true
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args/5
+        value: tokyo
+      - op: replace
+        path: /spec/template/spec/containers/0/volumeMounts/1/mountPath
+        value: /mnt/stores/tokyo
+  # 置き場束縛の CronJob（argv の index 3 が置き場名）。
+  - target:
+      kind: CronJob
+      labelSelector: rokuban.fetburner.net/store-scoped=true
+    patch: |-
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/args/3
+        value: tokyo
+  # `storage adopt`（argv の index 2 が置き場名）。
+  - target:
+      kind: Job
+      labelSelector: rokuban.fetburner.net/store-scoped=true
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args/2
+        value: tokyo
+      - op: replace
+        path: /spec/template/spec/containers/0/volumeMounts/1/mountPath
+        value: /mnt/stores/tokyo
+  # ScaledJob は argv（index 8）とマウント先に加えて**トリガのクエリ**も置き場で
+  # 修飾する。忘れると、この置き場のスケーラが `<queue>_main` という誰も使わない
+  # キューを見続けて永久にスケールしない。
+  - target:
+      kind: ScaledJob
+      labelSelector: rokuban.fetburner.net/store-scoped=true
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/args/8
+        value: tokyo
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/volumeMounts/1/mountPath
+        value: /mnt/stores/tokyo
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-transfer
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'transfer_tokyo' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-encode
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'encode_tokyo' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-thumbnail
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'thumbnail_tokyo' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-cm-detect
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'cm_detect_tokyo' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ts-scan
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'ts_scan_tokyo' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-original
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'original_tokyo' AND state IN ('available','retryable')
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-storage
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/query
+        value: SELECT count(*) FROM river_job WHERE queue = 'storage_tokyo' AND state IN ('available','retryable')

@@ -3864,7 +3864,7 @@ components:
 
     RecordingShelf:
       type: object
-      required: [title, count, playableCount, unwatchedCount, latestStartAt, representativeId]
+      required: [title, count, playableCount, unwatchedCount, latestStartAt, representativeId, thumbnailUrl]
       properties:
         value:
           type: string
@@ -3894,6 +3894,9 @@ components:
           type: integer
           format: int64
           description: 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
+        thumbnailUrl:
+          type: string
+          description: 代表の録画のサムネイルの URL（`Recording.media.thumbnailUrl` と同じ形）。クライアントは組み立てない。
 
     RuleInput:
       type: object

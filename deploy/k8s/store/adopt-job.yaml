@@ -1,0 +1,75 @@
+# 置き場の目印を書き、既存の行をその置き場へ割り当てる Job（`rokuban storage adopt`）。
+# 置き場 1 つにつき 1 本。PVC の root に目印を書くので読み書きで挿す。
+#
+# **`migrate up` はここに無い。** 以前は 1 つの Job の initContainer に `migrate up`、
+# 本体に adopt を置いて順序を保っていたが、置き場が 2 つになると adopt が 2 本になり、
+# それぞれが `migrate up` を持つと同じ DB に並行してマイグレーションをかける形になる
+# （`db.MigrateUp` が並行実行に耐えるかは未検証）。マイグレーションは
+# `deploy/k8s/base/migrate-job.yaml` の 1 本だけにしたので、**順序は Job の再試行が担う**:
+# マイグレーションが終わるまで adopt は失敗して Pod が作り直される。
+# **この再試行の間隔と回数でマイグレーション完了まで足りるかは未測定**
+# （`backoffLimit` を 6 にしてあるのは余裕を見た値で、測定した値ではない）。
+#
+# **argv の 3 番目（index 2）が置き場名。** media は `volumeMounts` の index 1。
+# Job の spec は immutable なので、再 apply の前に delete が要る（deploy/k8s/README.md）。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rokuban-storage-adopt
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: storage-adopt
+    rokuban.fetburner.net/store-scoped: "true"
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: storage-adopt
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        # adopt が PVC の root に目印を書くため。
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: adopt
+          image: ghcr.io/fetburner/rokuban:latest
+          args: ["storage", "adopt", "main", "--config", "/etc/rokuban/config.yml"]
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+            - name: media
+              mountPath: /mnt/media
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rokuban-config
+        - name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media

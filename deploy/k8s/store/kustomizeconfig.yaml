@@ -1,0 +1,12 @@
+# kustomize に「ScaledJob の中の PVC 参照」を教える。
+#
+# **これが無いと `nameSuffix` で PVC の名前を変えても、ScaledJob の Pod テンプレートの
+# `claimName` は元の名前のまま残る**（CRD の中身は kustomize にとって不透明）。
+# 症状は「apply は成功、Job の Pod が永久に Pending（persistentvolumeclaim not found）」で、
+# `kustomize build` も kubeconform も通る。
+nameReference:
+  - kind: PersistentVolumeClaim
+    version: v1
+    fieldSpecs:
+      - path: spec/jobTargetRef/template/spec/volumes/persistentVolumeClaim/claimName
+        kind: ScaledJob

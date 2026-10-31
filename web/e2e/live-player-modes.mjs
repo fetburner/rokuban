@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
-import { finish, launchBrowser, log, validateFixturesOrExit, verifyBundleMatchesOrExit } from './lib.mjs'
+import { finish, launchBrowser, log, validateFixturesOrExit, verifyBundleMatchesOrExit, recordingMedia } from './lib.mjs'
 
 const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = 'default'
@@ -38,7 +38,7 @@ const hlsRecording = {
   durationMs: 60 * 60_000,
   status: 'recording',
   keepOriginal: 'always',
-  hlsPlayback: [{ profile: 'hd', masterUrl: recordingMasterUrl }],
+  media: recordingMedia(RECORDING_ID, []), hlsPlayback: [{ profile: 'hd', masterUrl: recordingMasterUrl }],
   cmDetection: { state: 'disabled' },
   startedAt: recordingStartedAt,
   createdAt: '2026-01-01T12:00:00Z',

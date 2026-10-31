@@ -345,9 +345,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
-	mounted, err := resolveStoreBinding(cmd, cfg.Storage)
-	if err != nil {
-		return err
+	// 置き場をマウントするのは worker と streamer だけ。api・notifier・watcher は置き場を持たないので、
+	// FS 置き場が複数あっても `--stores` を要求しない（効かない `--stores` の指定は validateStoreBinding が拒む）。
+	var mounted []string
+	if slices.Contains(roles, "worker") || slices.Contains(roles, "streamer") {
+		mounted, err = resolveStoreBinding(cmd, cfg.Storage)
+		if err != nil {
+			return err
+		}
 	}
 	if err := validateStoreBinding(roles, cmd.Flags().Changed(storeFlagName), mounted, queues, onceGate != nil); err != nil {
 		return err

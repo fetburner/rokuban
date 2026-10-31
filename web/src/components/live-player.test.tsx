@@ -86,6 +86,7 @@ describe('LivePlayer playback routes', () => {
         recordingDurationMs={60_000}
         recordingHlsUrl={url}
         recordingHlsStartSeconds={18}
+        recordingSeekTilesUrl="/api/media/recordings/42/seek-tiles?fixture=1"
       />,
     )
 
@@ -106,6 +107,7 @@ describe('LivePlayer playback routes', () => {
       recordingId: 42,
       recordingDurationMs: 60_000,
       recordingHlsStartSeconds: 0,
+      recordingSeekTilesUrl: '/api/media/recordings/42/seek-tiles?fixture=1',
     }
     const first = '/api/media/stores/media/recordings/42/hls/v3/hd/master.m3u8'
     const second = '/api/media/stores/media/recordings/42/hls/v3/sd/master.m3u8'
@@ -148,6 +150,7 @@ describe('LivePlayer playback routes', () => {
           recordingDurationMs={60_000}
           recordingHlsUrl={source}
           recordingHlsStartSeconds={startSeconds}
+          recordingSeekTilesUrl="/api/media/recordings/42/seek-tiles?fixture=1"
           onRecordingPlaybackError={onRecordingPlaybackError}
         />
       )
@@ -205,6 +208,7 @@ describe('LivePlayer playback routes', () => {
       site: 'default',
       recordingId: 42,
       recordingDurationMs: 60_000,
+      recordingSeekTilesUrl: '/api/media/recordings/42/seek-tiles?fixture=1',
       onRecordingPlaybackError,
     }
     const { rerender } = render(<LivePlayer {...props} recordingHlsUrl={first} recordingHlsStartSeconds={0} />)
@@ -258,6 +262,7 @@ describe('LivePlayer / ライブ画面の録画軸', () => {
         recordingDurationMs={1_500_000}
         recordingHlsUrl={url}
         recordingHlsStartSeconds={extra.startSeconds ?? 0}
+        recordingSeekTilesUrl="/api/media/recordings/42/seek-tiles?fixture=1"
         liveRecording={liveRecording}
         onReturnLive={extra.onReturnLive}
       />,

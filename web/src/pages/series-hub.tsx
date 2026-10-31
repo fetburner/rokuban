@@ -242,7 +242,7 @@ export function SeriesHubPage() {
             {latestRecording !== undefined && (
               // 400px 幅では 144px の画像と 12px の間隔の隣に 212px 残り、現在に近い高さで identity の
               // 文字を読める。sm 以上は 192px 幅にし、高さを従来の 112px に近づける。
-              <RecordingThumbnail key={latestRecording.id} recordingId={latestRecording.id} className="w-36 sm:w-48" />
+              <RecordingThumbnail key={latestRecording.id} src={latestRecording.media.thumbnailUrl} className="w-36 sm:w-48" />
             )}
             <div className="min-w-0">
               {effectiveSeries !== undefined && (

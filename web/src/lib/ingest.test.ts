@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Recording } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { hasLiveIngestProgress, ingestDisplay, ingestStaleAfterMs } from '@/lib/ingest'
 
 const now = Date.parse('2026-01-01T12:00:00Z')
@@ -22,6 +23,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? 1, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-01-01T10:30:00Z',
     ...overrides,

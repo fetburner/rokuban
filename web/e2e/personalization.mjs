@@ -22,6 +22,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -31,6 +32,7 @@ const recordings = Array.from({ length: 6 }, (_, i) => {
   const id = i + 1
   return {
     id,
+    media: recordingMedia(id, ['h264']),
     site: 'default',
     source: 'manual',
     serviceName: 'ＯＨＫ',

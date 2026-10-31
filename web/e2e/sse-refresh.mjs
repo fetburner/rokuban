@@ -28,6 +28,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
@@ -93,7 +94,7 @@ const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
   startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
   durationMs: 1_800_000,
   status: 'finished',
-  keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' },
+  keepOriginal: 'always', media: recordingMedia(i + 1, []), hlsPlayback: [], cmDetection: { state: 'disabled' },
   createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
 }))
 // observedAt は実行時刻から 1 分前にする。`page.clock.install()` は実時刻を初期値に
@@ -101,6 +102,7 @@ const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
 // 必ず超え、「観測が古い可能性」の表示を測ることになる。判定はリクエスト数だけなので
 // 合否は変わらないが、正常な観測が載っている画面を測る。
 const storageItem = {
+  store: 'takamatsu',
   root: 'media',
   path: '/data/media',
   totalBytes: 1_000_000_000_000,

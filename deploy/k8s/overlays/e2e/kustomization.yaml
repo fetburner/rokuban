@@ -19,6 +19,7 @@ kind: Kustomization
 
 resources:
   - ../../base
+  - ../../store
   - sites/sitea
   - sites/siteb
 
@@ -173,14 +174,15 @@ patches:
         path: /spec/resources/requests/storage
         value: 2Gi
 
-  # 2 サイトぶんのライブ経路。site overlay の nameSuffix 後の
-  # Service 名を明示する。メソッド・クエリ・ヘッダー・正規表現には依存しない。
+  # 2 サイトぶんのライブ経路と、置き場 `main` の配信経路。site overlay の nameSuffix 後の
+  # Service 名を明示する（置き場は 1 つで suffix 無し）。メソッド・クエリ・ヘッダー・
+  # 正規表現には依存しない。
   - target:
       kind: Ingress
       name: rokuban-ingress
     patch: |-
       - op: add
-        path: /spec/rules/0/http/paths/3
+        path: /spec/rules/0/http/paths/-
         value:
           path: /api/sites/sitea/networks
           pathType: Prefix
@@ -190,7 +192,7 @@ patches:
               port:
                 name: http
       - op: add
-        path: /spec/rules/0/http/paths/4
+        path: /spec/rules/0/http/paths/-
         value:
           path: /api/sites/siteb/networks
           pathType: Prefix
@@ -199,3 +201,33 @@ patches:
               name: rokuban-live-streamer-siteb
               port:
                 name: http
+      - op: add
+        path: /spec/rules/0/http/paths/-
+        value:
+          path: /api/media/stores/main
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-recording-hls
+              port:
+                name: http
+  # central streamer が派生物の置き場 `main` をマウントする（overlays/kind と同じ）。
+  - target:
+      kind: Deployment
+      name: rokuban-streamer
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args/5
+        value: --stores=main
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: media
+          mountPath: /mnt/media
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media

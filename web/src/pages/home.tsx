@@ -29,7 +29,6 @@ import {
   formatPlaybackTime,
   formatTime,
 } from '@/lib/format'
-import { recordingThumbnailURL } from '@/lib/recording-media'
 import { useNow } from '@/lib/use-now'
 import {
   readHomeModePreference,
@@ -49,7 +48,7 @@ import {
 } from '@/lib/home-timeline'
 import { buildWarnings, type WarningItem } from '@/lib/home-warnings'
 import { programTitle } from '@/lib/program-labels'
-import { playbackResumeSeconds, recordingFileURL } from '@/lib/playback-position'
+import { playbackResumeSeconds } from '@/lib/playback-position'
 import {
   estimateAverageBitrate,
   estimateStorageForecast,
@@ -956,8 +955,11 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
         resumePosition,
         resumeAsset.cut === true ? resumeAsset.keepRanges : undefined,
       )
-  const resumeVideo = resumeAsset !== undefined && resumeSeconds !== null
-    ? { src: recordingFileURL(recording.id, resumeAsset.profile), targetSeconds: resumeSeconds }
+  const resumeSrc = resumeAsset === undefined
+    ? undefined
+    : recording.media.encoded.find((m) => m.profile === resumeAsset.profile)?.url
+  const resumeVideo = resumeSrc !== undefined && resumeSeconds !== null
+    ? { src: resumeSrc, targetSeconds: resumeSeconds }
     : undefined
 
   return (
@@ -1158,7 +1160,7 @@ function HomeThumbnail({
       {!failed ? (
         <img
           data-testid={hero ? 'home-hero-thumbnail-image' : undefined}
-          src={recordingThumbnailURL(recording.id)}
+          src={recording.media.thumbnailUrl}
           alt=""
           loading={hero ? 'eager' : 'lazy'}
           className="size-full object-cover"

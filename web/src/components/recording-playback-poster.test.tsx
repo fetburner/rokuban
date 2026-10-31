@@ -9,7 +9,7 @@ describe('RecordingPlaybackPoster', () => {
     const onStartFromBeginning = vi.fn()
     render(
       <RecordingPlaybackPoster
-        recordingId={1}
+        thumbnailUrl="/api/media/recordings/1/thumbnail?fixture=1"
         resumeSeconds={720}
         onStart={onStart}
         onStartFromBeginning={onStartFromBeginning}
@@ -25,7 +25,7 @@ describe('RecordingPlaybackPoster', () => {
   it('保存位置が無ければ「再生」だけで、同じ操作を 2 つ並べない', () => {
     render(
       <RecordingPlaybackPoster
-        recordingId={1}
+        thumbnailUrl="/api/media/recordings/1/thumbnail?fixture=1"
         onStart={() => {}}
         onStartFromBeginning={() => {}}
       />,
@@ -37,10 +37,10 @@ describe('RecordingPlaybackPoster', () => {
 
   it('サムネイルが取れなければ壊れた画像を残さない', () => {
     const { container } = render(
-      <RecordingPlaybackPoster recordingId={1} onStart={() => {}} />,
+      <RecordingPlaybackPoster thumbnailUrl="/api/media/recordings/1/thumbnail?fixture=1" onStart={() => {}} />,
     )
     const image = container.querySelector('img')!
-    expect(image).toHaveAttribute('src', '/api/media/recordings/1/thumbnail')
+    expect(image).toHaveAttribute('src', '/api/media/recordings/1/thumbnail?fixture=1')
     fireEvent.error(image)
     expect(container.querySelector('img')).toBeNull()
   })
@@ -49,7 +49,7 @@ describe('RecordingPlaybackPoster', () => {
     const onToggle = vi.fn()
     render(
       <RecordingPlaybackPoster
-        recordingId={1}
+        thumbnailUrl="/api/media/recordings/1/thumbnail?fixture=1"
         onStart={() => {}}
         watched={{ value: false, pending: false, onToggle }}
       />,

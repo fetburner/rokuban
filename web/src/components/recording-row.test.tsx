@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Recording } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { RecordingRow } from '@/components/recording-row'
 import { renderInRouter } from '@/test/router'
 
@@ -55,6 +56,7 @@ const recording: Recording = {
   status: 'finished',
   keepOriginal: 'always',
   hlsPlayback: [],
+  media: recordingMedia(42),
   cmDetection: { state: 'disabled' },
   createdAt: '2026-01-01T12:30:00Z',
 }
@@ -139,7 +141,7 @@ describe('RecordingRow', () => {
 
     await screen.findByText('共有する録画')
     const img = container.querySelector('img')
-    expect(img).toHaveAttribute('src', '/api/media/recordings/42/thumbnail')
+    expect(img).toHaveAttribute('src', '/api/media/recordings/42/thumbnail?fixture=1')
     fireEvent.error(img!)
     expect(container.querySelector('img')).toBeNull()
   })

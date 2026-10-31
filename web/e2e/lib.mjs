@@ -121,6 +121,29 @@ export async function validateFixturesOrExit(pairs, ng) {
 }
 
 /**
+ * recordingMedia は `Recording.media` のフィクスチャを作る（サーバーが返す URL の形）。
+ * 原本・コマは置き場 `takamatsu` の URL、サムネイル・シークタイル・encoded は置き場を含まない URL。
+ * `profiles` は `encodedAssets` と同じ順のプロファイル名。
+ */
+export function recordingMedia(id, profiles = [], { original = true } = {}) {
+  return {
+    ...(original
+      ? {
+          originalUrl: `/api/media/stores/takamatsu/recordings/${id}/file`,
+          frameUrl: `/api/media/stores/takamatsu/recordings/${id}/frame`,
+        }
+      : {}),
+    thumbnailUrl: `/api/media/recordings/${id}/thumbnail`,
+    seekTilesUrl: `/api/media/recordings/${id}/seek-tiles`,
+    encoded: profiles.map((profile) => ({
+      profile,
+      url: `/api/media/recordings/${id}/file?profile=${encodeURIComponent(profile)}`,
+      subtitlesUrl: `/api/media/recordings/${id}/file?profile=${encodeURIComponent(profile)}&track=subtitles`,
+    })),
+  }
+}
+
+/**
  * sseKeepAlive は `/api/events` への SSE 接続を張ったまま通知を 1 通も送らず、
  * `retry: 86400000`（1 日）で「つなぎ直さずに諦めさせる」。`chip-overflow.mjs` /
  * `sse-refresh.mjs` の `openStubbed` がそれぞれ持っていた同一のフルフィルを

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { LabelRule, ProgramSearchMatch, Recording, Rule } from '@/api/generated'
 import { formatDateTime } from '@/lib/format'
 import { SeriesHubPage } from '@/pages/series-hub'
+import { recordingMedia } from '@/test/recording-media'
 import { renderInRouter } from '@/test/router'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -32,6 +33,7 @@ function recording(over: Partial<Recording> & { id: number }): Recording {
     source: 'manual',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(over.id),
     createdAt: '2026-09-01T12:00:00Z',
     cmDetection: { state: 'disabled' },
     ingest: { state: 'committed' },
@@ -175,6 +177,18 @@ describe('SeriesHubPage', () => {
     expect(
       within(upcoming).getByText((_, el) => el?.textContent === 'アニメ　作品X　第3話'),
     ).toBeInTheDocument()
+  })
+
+  it('見出しのサムネイルは録画の media.thumbnailUrl をそのまま使う', async () => {
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', sizeBytes: 100 })
+    stubApi(origin, [], [origin])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    const info = await screen.findByRole('region', { name: 'シリーズ情報' })
+    expect(info.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/5/thumbnail?fixture=1')
   })
 
   it('シリーズの録画を共有 RecordingRow で並べ、行から詳細へ辿れる', async () => {

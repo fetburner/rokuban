@@ -31,7 +31,7 @@ require_tools() {
 # サイト名なので、「まだ実装されていない」と同じ見た目になる）。**環境の
 # 不備は判定を 1 つも記録せずに落とす。**
 validate_site_names() {
-  local config="${E2E_ROOT}/deploy/k8s/overlays/e2e/config.yml" site
+  local config="${E2E_ROOT}/deploy/k8s/overlays/${E2E_OVERLAY}/config.yml" site
   for site in "$E2E_SITE_A" "$E2E_SITE_B"; do
     if ! grep -qE "^[[:space:]]*-[[:space:]]*site:[[:space:]]*${site}[[:space:]]*$" "$config"; then
       printf 'site %s is not declared in %s (mirakcs:)\n' "$site" "$config" >&2
@@ -205,7 +205,7 @@ deploy_scaffold() {
 
   # ツールボックス用の素の ConfigMap。製品側はハッシュ名なので名前を固定できない。
   k create configmap e2e-toolbox-config \
-    --from-file=config.yml="$E2E_ROOT/deploy/k8s/overlays/e2e/config.yml" \
+    --from-file=config.yml="$E2E_ROOT/deploy/k8s/overlays/${E2E_OVERLAY}/config.yml" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
 
   # **apply_template を通す**（素の `k apply -f` にしない）。足場のイメージ名も
@@ -265,7 +265,7 @@ preflight_environment() {
   # overlay が当たっていることの確認。api は base に居るので必ずある。
   plan "0.3"
   if k get deployment rokuban-api >/dev/null 2>&1; then
-    pass "0.3" "製品のマニフェスト（overlays/e2e）が当たっている"
+    pass "0.3" "製品のマニフェスト（overlays/${E2E_OVERLAY}）が当たっている"
   else
     fail "0.3" "rokuban-api が無い --- overlay が当たっていないので、すべての判定が「未実装」に見える"
     return 1
@@ -311,12 +311,21 @@ preflight_no_fixtures() {
 # apply が「field is immutable」で落ちるが、**そのとき Deployment の apply は
 # 成功する**（未マイグレートの DB に新しい api が乗る）。deploy/k8s/README.md。
 deploy_rokuban() {
-  log_step "applying deploy/k8s/overlays/e2e"
+  log_step "applying deploy/k8s/overlays/${E2E_OVERLAY}"
   k delete job rokuban-migrate --ignore-not-found >/dev/null
-  kustomize build "$E2E_ROOT/deploy/k8s/overlays/e2e" | kall apply -f - >/dev/null || return 1
+  # **置き場ごとの `storage adopt` Job も同じ理由で先に消す**（deploy/k8s/store/adopt-job.yaml）。
+  k delete job -l app.kubernetes.io/component=storage-adopt --ignore-not-found >/dev/null
+  kustomize build "$E2E_ROOT/deploy/k8s/overlays/${E2E_OVERLAY}" | kall apply -f - >/dev/null || return 1
   # **マイグレーションの失敗はここで止める**（preflight 0.4 でも見るが、
   # 240 秒待たせてから判定の赤として出すより早い）。
   k wait --for=condition=complete job/rokuban-migrate --timeout=300s || return 1
+  # adopt は置き場の PVC に目印を書く。**マイグレーションとは別の Job** なので、
+  # マイグレーションが終わるまで失敗して作り直される（Job の再試行が順序を担う）。
+  # 目印が無いと worker は FS 操作をすべて見送るので、ここで完了を待つ。
+  local adopt
+  for adopt in $(k get jobs -l app.kubernetes.io/component=storage-adopt -o name); do
+    k wait --for=condition=complete "$adopt" --timeout=300s || return 1
+  done
   # **イメージを焼き直したなら api も作り直す。** 製品側の Pod テンプレートは
   # ハーネスが触れない（base の管轄）ので、build-id の annotation を挿す手が
   # 使えない。タグ固定 + IfNotPresent なので、これが無いとクラスタを使い回す

@@ -355,6 +355,11 @@ export interface CMLogoState {
   lastFailureStage?: string | null;
   /** Recording with an active original for frame selection, or 0. */
   frameRecordingId: number;
+  /**
+     * `frameRecordingId` の原本のコマの切り出し URL（`/api/media/stores/{store}/recordings/{id}/frame`）。
+     * クライアントが `?at=<ms>` を足す。`frameRecordingId` が 0 のときは省略する。
+     */
+  frameUrl?: string;
   logoArea?: CMLogoArea;
   candidate?: CMLogoCandidate;
 }
@@ -530,6 +535,31 @@ export type Program = ProgramListItem & {
   video?: VideoInfo;
   audios?: AudioInfo[];
 };
+
+export interface RecordingEncodedMedia {
+  profile: string;
+  url: string;
+  /** encoded に隣接する WebVTT サイドカーの URL。字幕が無い番組では 404 になる。 */
+  subtitlesUrl: string;
+}
+
+/**
+ * 録画のバイナリ配信の URL（ルート相対）。クライアントは URL を自分で組み立てず、この値をそのまま使う。
+ * 置き場は、active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。
+ * 原本・コマは置き場ごとの URL（`/api/media/stores/{store}/recordings/{id}/...`）で、
+ * 派生物（サムネイル・シークタイル・encoded）は置き場を含まない URL
+ * （`/api/media/recordings/{id}/...`）。ファイルの存在は検査しない。
+ */
+export interface RecordingMedia {
+  /** 原本のファイル URL。active な原本のコピーが無ければ省略する。 */
+  originalUrl?: string;
+  /** コマの切り出し URL。クライアントが `?at=<ms>` を足す。active な原本のコピーが無ければ省略する。 */
+  frameUrl?: string;
+  thumbnailUrl: string;
+  seekTilesUrl: string;
+  /** 再生できる encoded のプロファイルごとの URL（`encodedAssets` と同じ順）。 */
+  encoded: RecordingEncodedMedia[];
+}
 
 export interface RecordingHLSPlayback {
   profile: string;
@@ -866,10 +896,11 @@ export interface IngestProgress {
 }
 
 export interface Recording {
+  media: RecordingMedia;
   /**
      * 世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。
      * masterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。
-     * store は storage.media_store_name。gen は active な原本の ingest_generation
+     * store は録画 HLS が読む入力（active な原本のコピー、無ければ ingest temp）がある置き場。gen は active な原本の ingest_generation
      * （NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。
      * recording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が
      * ともに無いなら空配列。ファイルの存在は検査しない。
@@ -1382,6 +1413,8 @@ export interface RecordingShelf {
   latestStartAt: string;
   /** 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。 */
   representativeId: number;
+  /** 代表の録画のサムネイルの URL（`Recording.media.thumbnailUrl` と同じ形）。クライアントは組み立てない。 */
+  thumbnailUrl: string;
 }
 
 export type RuleInputChannelTypesItem = typeof RuleInputChannelTypesItem[keyof typeof RuleInputChannelTypesItem];
@@ -1712,6 +1745,11 @@ export const StorageRootRoot = {
  * 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
  */
 export interface StorageRoot {
+  /**
+     * 観測した置き場の名前（`storage.stores` のキー）。置き場ごとの worker がそれぞれの
+     * root と scratch を観測するので、置き場が複数あれば置き場ごとに行が並ぶ。
+     */
+  store: string;
   /** config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。 */
   root: StorageRootRoot;
   /**
@@ -9244,8 +9282,8 @@ export const getGetStorageUrl = () => {
 }
 
 /**
- * `storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の
- * 容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
+ * 置き場ごとの root（`storage.stores.<name>.root`、無ければ `storage.media_dir`）と
+ * `storage.scratch_dir`（ローカルスクラッチ）の容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
  * （不変条件 1）ので、ファイルシステムを持つ worker が定期的に statfs 相当で
  * 観測して DB に射影し、ここはその射影を読むだけ。
  *

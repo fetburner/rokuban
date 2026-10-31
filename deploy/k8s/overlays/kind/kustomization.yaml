@@ -13,12 +13,15 @@ kind: Kustomization
 #
 # **単一サイト構成の site ワークロードは patch を 1 つも書かない。** `../../site`
 # は site 名 `default`（base/config.yml の `mirakcs:` 1 要素目と同じ名前）で
-# 書いてあるので、そのまま噛み合う。Ingress のライブ経路だけは、共通 Ingress
-# に具体的な Service を追加するためここで patch する。
+# 書いてあるので、そのまま噛み合う。**置き場も同じ** --- `../../store` は置き場名 `main`
+# （base/config.yml の `storage.stores` の唯一の要素）で書いてあるので patch が要らない。
+# Ingress のライブ経路と置き場の経路だけは、共通 Ingress に具体的な Service を追加する
+# ためここで patch する。
 
 resources:
   - ../../base
   - ../../site
+  - ../../store
 
 images:
   - name: ghcr.io/fetburner/rokuban
@@ -49,15 +52,16 @@ secretGenerator:
       - POSTGRES_CONNECTION_STRING=postgresql://rokuban:kindtest@postgres.default.svc.cluster.local:5432/rokuban?sslmode=disable
 
 patches:
-  # `/api/sites/<site>/networks` は site 名を
-  # 具体化しないと標準 Ingress で backend を一意に決められない。単一サイト
-  # overlay の Service 名は suffix 無しの `rokuban-live-streamer` である。
+  # `/api/sites/<site>/networks` は site 名を具体化しないと標準 Ingress で backend を
+  # 一意に決められない。単一サイト overlay の Service 名は suffix 無しの
+  # `rokuban-live-streamer` である。`/api/media/stores/<置き場>` も同じで、
+  # 単一置き場 overlay の Service 名は suffix 無しの `rokuban-recording-hls`。
   - target:
       kind: Ingress
       name: rokuban-ingress
     patch: |-
       - op: add
-        path: /spec/rules/0/http/paths/3
+        path: /spec/rules/0/http/paths/-
         value:
           path: /api/sites/default/networks
           pathType: Prefix
@@ -66,3 +70,34 @@ patches:
               name: rokuban-live-streamer
               port:
                 name: http
+      - op: add
+        path: /spec/rules/0/http/paths/-
+        value:
+          path: /api/media/stores/main
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-recording-hls
+              port:
+                name: http
+  # central streamer は派生物（`storage.derived` = `main`、FS）を配るので、その置き場を
+  # マウントする。base は置き場を持たない（`--stores=`）。argv の index 5 が `--stores`。
+  - target:
+      kind: Deployment
+      name: rokuban-streamer
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args/5
+        value: --stores=main
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: media
+          mountPath: /mnt/media
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media

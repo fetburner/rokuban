@@ -1222,10 +1222,21 @@ export const ListRecordingsQueryParams = zod.object({
 })
 
 export const ListRecordingsResponseItem = zod.object({
+  "media": zod.object({
+  "originalUrl": zod.string().optional().describe('原本のファイル URL。active な原本のコピーが無ければ省略する。'),
+  "frameUrl": zod.string().optional().describe('コマの切り出し URL。クライアントが `?at=<ms>` を足す。active な原本のコピーが無ければ省略する。\n'),
+  "thumbnailUrl": zod.string(),
+  "seekTilesUrl": zod.string(),
+  "encoded": zod.array(zod.object({
+  "profile": zod.string(),
+  "url": zod.string(),
+  "subtitlesUrl": zod.string().describe('encoded に隣接する WebVTT サイドカーの URL。字幕が無い番組では 404 になる。')
+})).describe('再生できる encoded のプロファイルごとの URL（`encodedAssets` と同じ順）。')
+}).describe('録画のバイナリ配信の URL（ルート相対）。クライアントは URL を自分で組み立てず、この値をそのまま使う。\n置き場は、active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。\n原本・コマは置き場ごとの URL（`/api/media/stores/{store}/recordings/{id}/...`）で、\n派生物（サムネイル・シークタイル・encoded）は置き場を含まない URL\n（`/api/media/recordings/{id}/...`）。ファイルの存在は検査しない。\n'),
   "hlsPlayback": zod.array(zod.object({
   "profile": zod.string(),
   "masterUrl": zod.string().describe('世代付き録画 HLS のルート相対 URL。')
-})).describe('世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は storage.media_store_name。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無いなら空配列。ファイルの存在は検査しない。\n'),
+})).describe('世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は録画 HLS が読む入力（active な原本のコピー、無ければ ingest temp）がある置き場。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無いなら空配列。ファイルの存在は検査しない。\n'),
   "id": zod.int(),
   "site": zod.string().describe('この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`\nそのまま。`GET /api/recordings` は全サイトの録画を返すため\n（issue #184 M4-12）、クライアントはこの値で区別する。\n'),
   "ruleId": zod.int().optional(),
@@ -1368,7 +1379,8 @@ export const ListRecordingShelvesResponseItem = zod.object({
   "playableCount": zod.int().describe('この棚のうち、再生できる録画の件数。'),
   "unwatchedCount": zod.int().describe('未視聴の放送イベント数。生きている再生可能な録画を (networkId, serviceId, startAt) で束ね、同じイベントは一つに数える。\nごみ箱・supersede 済み・purge 済みの tombstone を含む録画に視聴済み印があれば除外する。\n'),
   "latestStartAt": zod.iso.datetime({"offset":true}).describe('シリーズ内で最も新しい録画の番組開始時刻。常に UTC。'),
-  "representativeId": zod.int().describe('代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。')
+  "representativeId": zod.int().describe('代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。'),
+  "thumbnailUrl": zod.string().describe('代表の録画のサムネイルの URL（`Recording.media.thumbnailUrl` と同じ形）。クライアントは組み立てない。')
 })
 export const ListRecordingShelvesResponse = zod.array(ListRecordingShelvesResponseItem)
 
@@ -1382,10 +1394,21 @@ export const ListRecordingShelvesResponse = zod.array(ListRecordingShelvesRespon
  * @summary List recordings to resume
  */
 export const ListContinueWatchingResponseItem = zod.object({
+  "media": zod.object({
+  "originalUrl": zod.string().optional().describe('原本のファイル URL。active な原本のコピーが無ければ省略する。'),
+  "frameUrl": zod.string().optional().describe('コマの切り出し URL。クライアントが `?at=<ms>` を足す。active な原本のコピーが無ければ省略する。\n'),
+  "thumbnailUrl": zod.string(),
+  "seekTilesUrl": zod.string(),
+  "encoded": zod.array(zod.object({
+  "profile": zod.string(),
+  "url": zod.string(),
+  "subtitlesUrl": zod.string().describe('encoded に隣接する WebVTT サイドカーの URL。字幕が無い番組では 404 になる。')
+})).describe('再生できる encoded のプロファイルごとの URL（`encodedAssets` と同じ順）。')
+}).describe('録画のバイナリ配信の URL（ルート相対）。クライアントは URL を自分で組み立てず、この値をそのまま使う。\n置き場は、active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。\n原本・コマは置き場ごとの URL（`/api/media/stores/{store}/recordings/{id}/...`）で、\n派生物（サムネイル・シークタイル・encoded）は置き場を含まない URL\n（`/api/media/recordings/{id}/...`）。ファイルの存在は検査しない。\n'),
   "hlsPlayback": zod.array(zod.object({
   "profile": zod.string(),
   "masterUrl": zod.string().describe('世代付き録画 HLS のルート相対 URL。')
-})).describe('世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は storage.media_store_name。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無いなら空配列。ファイルの存在は検査しない。\n'),
+})).describe('世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は録画 HLS が読む入力（active な原本のコピー、無ければ ingest temp）がある置き場。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無いなら空配列。ファイルの存在は検査しない。\n'),
   "id": zod.int(),
   "site": zod.string().describe('この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`\nそのまま。`GET /api/recordings` は全サイトの録画を返すため\n（issue #184 M4-12）、クライアントはこの値で区別する。\n'),
   "ruleId": zod.int().optional(),
@@ -1480,10 +1503,21 @@ export const GetRecordingParams = zod.object({
 })
 
 export const GetRecordingResponse = zod.object({
+  "media": zod.object({
+  "originalUrl": zod.string().optional().describe('原本のファイル URL。active な原本のコピーが無ければ省略する。'),
+  "frameUrl": zod.string().optional().describe('コマの切り出し URL。クライアントが `?at=<ms>` を足す。active な原本のコピーが無ければ省略する。\n'),
+  "thumbnailUrl": zod.string(),
+  "seekTilesUrl": zod.string(),
+  "encoded": zod.array(zod.object({
+  "profile": zod.string(),
+  "url": zod.string(),
+  "subtitlesUrl": zod.string().describe('encoded に隣接する WebVTT サイドカーの URL。字幕が無い番組では 404 になる。')
+})).describe('再生できる encoded のプロファイルごとの URL（`encodedAssets` と同じ順）。')
+}).describe('録画のバイナリ配信の URL（ルート相対）。クライアントは URL を自分で組み立てず、この値をそのまま使う。\n置き場は、active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。\n原本・コマは置き場ごとの URL（`/api/media/stores/{store}/recordings/{id}/...`）で、\n派生物（サムネイル・シークタイル・encoded）は置き場を含まない URL\n（`/api/media/recordings/{id}/...`）。ファイルの存在は検査しない。\n'),
   "hlsPlayback": zod.array(zod.object({
   "profile": zod.string(),
   "masterUrl": zod.string().describe('世代付き録画 HLS のルート相対 URL。')
-})).describe('世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は storage.media_store_name。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無いなら空配列。ファイルの存在は検査しない。\n'),
+})).describe('世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は録画 HLS が読む入力（active な原本のコピー、無ければ ingest temp）がある置き場。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無いなら空配列。ファイルの存在は検査しない。\n'),
   "id": zod.int(),
   "site": zod.string().describe('この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`\nそのまま。`GET /api/recordings` は全サイトの録画を返すため\n（issue #184 M4-12）、クライアントはこの値で区別する。\n'),
   "ruleId": zod.int().optional(),
@@ -1968,6 +2002,7 @@ export const ListCMLogosResponseItem = zod.object({
   "previewPng": zod.string().optional(),
   "lastFailureStage": zod.string().nullish().describe('The stage of the most recent failure that still needs attention, if known.'),
   "frameRecordingId": zod.int().describe('Recording with an active original for frame selection, or 0.'),
+  "frameUrl": zod.string().optional().describe('`frameRecordingId` の原本のコマの切り出し URL（`/api/media/stores/{store}/recordings/{id}/frame`）。\nクライアントが `?at=<ms>` を足す。`frameRecordingId` が 0 のときは省略する。\n'),
   "logoArea": zod.object({
   "x": zod.int().min(listCMLogosResponseLogoAreaXMin),
   "y": zod.int().min(listCMLogosResponseLogoAreaYMin),
@@ -2253,8 +2288,8 @@ export const GetEncodeQueueResponse = zod.object({
 
 
 /**
- * `storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の
- * 容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
+ * 置き場ごとの root（`storage.stores.<name>.root`、無ければ `storage.media_dir`）と
+ * `storage.scratch_dir`（ローカルスクラッチ）の容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
  * （不変条件 1）ので、ファイルシステムを持つ worker が定期的に statfs 相当で
  * 観測して DB に射影し、ここはその射影を読むだけ。
  *
@@ -2270,6 +2305,7 @@ export const GetEncodeQueueResponse = zod.object({
  * @summary Get observed storage usage
  */
 export const GetStorageResponseItem = zod.object({
+  "store": zod.string().describe('観測した置き場の名前（`storage.stores` のキー）。置き場ごとの worker がそれぞれの\nroot と scratch を観測するので、置き場が複数あれば置き場ごとに行が並ぶ。\n'),
   "root": zod.enum(['media', 'scratch']).describe('config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。\n'),
   "path": zod.string().describe('観測対象の絶対パス（config の値そのもの）。他のフィールドと同じく\n`observedAt` 時点のスナップショット --- config の path を変更した\n直後に statfs が失敗すると、次の成功する観測まで**古い path のまま**\n残る（バイト数も同様に古い値のまま）。現在の設定を保証しない。\n'),
   "totalBytes": zod.int().describe('ファイルシステム全体の容量（`observedAt` 時点のスナップショット。\n`path` の説明を参照）。\n'),

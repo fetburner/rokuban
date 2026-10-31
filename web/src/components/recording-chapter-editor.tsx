@@ -34,7 +34,7 @@ type RecordingChapterEditorProps = {
   detectionPending: boolean
   /** どの層を編集しているか。 */
   source: RecordingChaptersSource
-  recordingId: number
+  seekTilesUrl: string
   currentSeconds: number
   /** 最後に表示されたフレームの mediaTime（秒）。取れなければ null（currentTime の floor に fallback）。 */
   getDisplayedFrameSeconds?: () => number | null
@@ -77,7 +77,7 @@ function ChapterDraftEditor({
   spans,
   version,
   source,
-  recordingId,
+  seekTilesUrl,
   currentSeconds,
   getDisplayedFrameSeconds = noDisplayedFrame,
   isPlaying,
@@ -323,7 +323,7 @@ function ChapterDraftEditor({
     <>
       <div className="min-w-0 md:col-span-2 md:row-start-2">
         <RecordingChapterFilmstrip
-          recordingId={recordingId}
+          seekTilesUrl={seekTilesUrl}
           durationSeconds={durationSeconds}
           currentSeconds={currentSeconds}
           getDisplayedFrameSeconds={getDisplayedFrameSeconds}

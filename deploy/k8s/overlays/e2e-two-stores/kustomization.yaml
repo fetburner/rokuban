@@ -1,0 +1,233 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 置き場 2 つの受け入れ判定（deploy/k8s/e2e/checks/06-two-stores.sh）が立てる構成。
+#
+# **`overlays/e2e`（2 サイト・置き場 1 つ）との違いは置き場が 2 つあることだけ**
+# である。サイトは e2e と同じ `sitea` / `siteb` を使い回す（mirakc のモックが
+# 足場に既にある）。置き場の差分は「`storage.stores` に 2 要素（config.yml）+ 置き場ごとの
+# Pod セット（`stores/tokyo` / `stores/takamatsu`）」で、ワークロードの定義は
+# `deploy/k8s/store` に 1 つしかない。
+#
+# **名前空間は e2e と分ける**（`rokuban-e2e-stores`）。同じ名前空間に両方を当てると、
+# PVC `rokuban-media`（e2e）と `rokuban-media-tokyo`（ここ）が並び、判定 6 が
+# 余計なワークロードを見てしまう。ハーネスは `E2E_OVERLAY=e2e-two-stores`
+# `E2E_NAMESPACE=rokuban-e2e-stores` で回す（deploy/k8s/e2e/README.md）。
+#
+# **Secret はここでも出荷しない**（ハーネスが `kubectl create secret` で供給する。
+# 理由は overlays/e2e/kustomization.yaml）。
+#
+# **1 ノードに収めるための patch（requests / RWO / レプリカ数）は e2e と同じ理由**
+# （overlays/e2e/kustomization.yaml の同名の節）で、出荷値ではない。
+
+resources:
+  - ../../base
+  - stores/tokyo
+  - stores/takamatsu
+  - ../e2e/sites/sitea
+  - ../e2e/sites/siteb
+
+namespace: rokuban-e2e-stores
+
+images:
+  - name: ghcr.io/fetburner/rokuban
+    newName: rokuban
+    newTag: e2e
+  - name: ghcr.io/fetburner/rokuban-full
+    newName: rokuban-full
+    newTag: e2e
+
+configMapGenerator:
+  - name: rokuban-config
+    behavior: replace
+    files:
+      - config.yml
+
+patches:
+  # ---- 置き場を使う中央・サイトのプロセスへ、マウントする置き場を教える ----
+  #
+  # central streamer は派生物（`storage.derived` = tokyo）を配るので tokyo をマウントする。
+  # base は置き場を持たない（`--stores=`、argv の index 5）。
+  - target:
+      kind: Deployment
+      name: rokuban-streamer
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args/5
+        value: --stores=tokyo
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: media
+          mountPath: /mnt/stores/tokyo
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media-tokyo
+  # ingest は site 束縛で、原本の置き場は規則（config.yml の `storage.originals`）が
+  # 録画ごとに決める。どちらの置き場にも書けるよう**両方をマウントする**
+  # （argv の `--stores` の値は index 11、media は volumeMounts / volumes の index 1）。
+  # site ごとの ScaledJob に同じ patch を当てる。
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest-sitea
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/args/11
+        value: tokyo,takamatsu
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/volumeMounts/1/mountPath
+        value: /mnt/stores/tokyo
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/volumes/1/persistentVolumeClaim/claimName
+        value: rokuban-media-tokyo
+      - op: add
+        path: /spec/jobTargetRef/template/spec/containers/0/volumeMounts/-
+        value:
+          name: media-takamatsu
+          mountPath: /mnt/stores/takamatsu
+      - op: add
+        path: /spec/jobTargetRef/template/spec/volumes/-
+        value:
+          name: media-takamatsu
+          persistentVolumeClaim:
+            claimName: rokuban-media-takamatsu
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest-siteb
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/args/11
+        value: tokyo,takamatsu
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/volumeMounts/1/mountPath
+        value: /mnt/stores/tokyo
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/volumes/1/persistentVolumeClaim/claimName
+        value: rokuban-media-tokyo
+      - op: add
+        path: /spec/jobTargetRef/template/spec/containers/0/volumeMounts/-
+        value:
+          name: media-takamatsu
+          mountPath: /mnt/stores/takamatsu
+      - op: add
+        path: /spec/jobTargetRef/template/spec/volumes/-
+        value:
+          name: media-takamatsu
+          persistentVolumeClaim:
+            claimName: rokuban-media-takamatsu
+
+  # ---- Ingress ----------------------------------------------------------
+  #
+  # サイトごとのライブ経路と、置き場ごとの配信経路（`/api/media/stores/<置き場>`）。
+  # 後者は置き場の Service（`stores/<置き場>` の nameSuffix 後の名前）へ送る。
+  - target:
+      kind: Ingress
+      name: rokuban-ingress
+    patch: |-
+      - op: add
+        path: /spec/rules/0/http/paths/-
+        value:
+          path: /api/sites/sitea/networks
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-live-streamer-sitea
+              port:
+                name: http
+      - op: add
+        path: /spec/rules/0/http/paths/-
+        value:
+          path: /api/sites/siteb/networks
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-live-streamer-siteb
+              port:
+                name: http
+      - op: add
+        path: /spec/rules/0/http/paths/-
+        value:
+          path: /api/media/stores/tokyo
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-recording-hls-tokyo
+              port:
+                name: http
+      - op: add
+        path: /spec/rules/0/http/paths/-
+        value:
+          path: /api/media/stores/takamatsu
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-recording-hls-takamatsu
+              port:
+                name: http
+
+  # ---- 判定を待たせない / 1 ノードに収める（overlays/e2e と同じ理由）----
+  - target:
+      kind: ScaledJob
+    patch: |-
+      - op: replace
+        path: /spec/pollingInterval
+        value: 10
+  - target:
+      kind: Deployment
+      name: rokuban-notifier
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      name: rokuban-streamer
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      labelSelector: rokuban.fetburner.net/store-scoped=true
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 128Mi
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 25m
+  - target:
+      kind: Job
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 25m
+  - target:
+      kind: CronJob
+    patch: |-
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/resources/requests/cpu
+        value: 10m
+  - target:
+      kind: ScaledJob
+    patch: |-
+      - op: replace
+        path: /spec/jobTargetRef/template/spec/containers/0/resources/requests/cpu
+        value: 10m
+  # kind の既定 StorageClass は RWX を満たさない（overlays/e2e と同じ。RWX は検証していない）。
+  - target:
+      kind: PersistentVolumeClaim
+    patch: |-
+      - op: replace
+        path: /spec/accessModes
+        value: ["ReadWriteOnce"]
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 2Gi

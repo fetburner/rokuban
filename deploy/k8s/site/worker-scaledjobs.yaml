@@ -85,6 +85,8 @@ spec:
               - default
               - --soft-stop-timeout
               - 30m
+              - --stores
+              - main
               - --config
               - /etc/rokuban/config.yml
             env:
@@ -184,6 +186,7 @@ spec:
               - default
               - --soft-stop-timeout
               - 5s
+              - --stores=
               - --config
               - /etc/rokuban/config.yml
             env:
@@ -272,6 +275,7 @@ spec:
               - default
               - --soft-stop-timeout
               - 5s
+              - --stores=
               - --config
               - /etc/rokuban/config.yml
             env:
@@ -364,6 +368,7 @@ spec:
               - default
               - --soft-stop-timeout
               - 5s
+              - --stores=
               - --config
               - /etc/rokuban/config.yml
             env:

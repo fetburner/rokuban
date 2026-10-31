@@ -3,6 +3,7 @@ import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/rea
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { recordingMedia } from '@/test/recording-media'
 
 import {
   getGetEncodeQueueQueryKey,
@@ -110,6 +111,7 @@ function sampleRecording(overrides: Partial<Recording> = {}): Recording {
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? 3, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-01-01T12:30:00Z',
     ...overrides,
@@ -433,6 +435,47 @@ function setMediaProps(video: HTMLVideoElement, props: { currentTime?: number; d
 describe('RecordingDetailPage', () => {
   // 受け入れ基準: /recordings/{id} で録画単体が開き、再生・操作が機能する
   // （issue #232。issue #311 で一覧のインライン展開を廃止したため、ここが唯一の着地先）。
+  it('原本とエンコード版のリンクは API が返した URL をそのまま使う', async () => {
+    createFakeServer({
+      recording: sampleRecording({ encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 }),
+    })
+
+    renderAt('/recordings/3')
+
+    const original = await screen.findByRole('link', { name: 'ダウンロード / VLC' })
+    expect(original).toHaveAttribute('href', '/api/media/stores/takamatsu/recordings/3/file')
+    expect(screen.getByRole('link', { name: 'ダウンロード' })).toHaveAttribute(
+      'href',
+      '/api/media/recordings/3/file?profile=web&fixture=1',
+    )
+  })
+
+  it('エンコード版が無い録画は、原本の URL を VLC 用リンクに使う', async () => {
+    createFakeServer({ recording: sampleRecording({ sizeBytes: 1_000_000 }) })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('link', { name: 'VLC 等で開く' })).toHaveAttribute(
+      'href',
+      '/api/media/stores/takamatsu/recordings/3/file',
+    )
+  })
+
+  it('原本の URL が無い録画は原本のダウンロードを出さない', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+        sizeBytes: 1_000_000,
+        media: recordingMedia(3, [{ profile: 'web' }], { original: false }),
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByText('原本 TS')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'ダウンロード / VLC' })).not.toBeInTheDocument()
+  })
+
   it('通常の録画は再生・版と値札を出し、管理操作はページ見出しのメニューに置く', async () => {
     createFakeServer({
       recording: sampleRecording({ encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 }),
@@ -445,7 +488,7 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByText('完了')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '録画状態を記録タブで見る' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).toBeInTheDocument()
-    expect(document.querySelector('img[src="/api/media/recordings/3/thumbnail"]')).not.toBeInTheDocument()
+    expect(document.querySelector('img[src="/api/media/recordings/3/thumbnail?fixture=1"]')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'ダウンロード / VLC' })).toBeInTheDocument()
     expect(screen.getByText('976.6 KB')).toBeInTheDocument()
     await openRecordingMenu()
@@ -838,6 +881,7 @@ describe('RecordingDetailPage', () => {
     await waitFor(() => expect(shelf.querySelector('a[href="/recordings/4"]')).not.toBeNull())
     const nextLink = shelf.querySelector<HTMLAnchorElement>('a[href="/recordings/4"]')
     expect(nextLink).not.toBeNull()
+    expect(nextLink!.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/4/thumbnail?fixture=1')
     await user.click(nextLink!)
     expect(await screen.findByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
   })
@@ -2250,7 +2294,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     expect(card).toHaveTextContent('作品X 第4話')
     expect(card).toHaveTextContent(formatTime('2026-01-08T12:00:00Z'))
     expect(within(card).getByTestId('end-card-countdown-ring')).toBeInTheDocument()
-    expect(card.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/4/thumbnail')
+    expect(card.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/4/thumbnail?fixture=1')
   })
 
   // 次の回へ移ってもページ（プレイヤーの枠）は作り直さない（全画面を保つため）。録画ごとの状態は
@@ -2290,11 +2334,11 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     await user.click(screen.getByRole('menuitem', { name: '画質' }))
     const cut = screen.getAllByRole('menuitemradio').find((item) => item.textContent?.includes('h264-cut'))
     await user.click(cut!)
-    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264-cut')
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264-cut&fixture=1')
 
     await user.click(screen.getByTestId('next-episode-link'))
     expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
-    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/4/file?profile=h264-720p')
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/4/file?profile=h264-720p&fixture=1')
     await selectDetailTab('版')
     const playing = within(screen.getByRole('list', { name: '録画の版' }))
       .getAllByTestId('recording-version-row')
@@ -2306,7 +2350,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     // 「戻る」で前の回へ戻っても、プレイヤーだけが前の選択（カット版）に戻らない。
     act(() => router.history.back())
     expect(await screen.findByRole('heading', { name: '作品X 第3話' })).toBeInTheDocument()
-    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264-720p')
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264-720p&fixture=1')
     await selectDetailTab('版')
     expect(
       within(screen.getByRole('list', { name: '録画の版' }))
@@ -2728,11 +2772,11 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     renderAt('/recordings/3')
     await selectDetailTab('版')
     await user.click(await screen.findByRole('button', { name: 'hdを再生' }))
-    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=hd'))
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=hd&fixture=1'))
 
     await user.click(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' })).toBeDisabled())
-    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=cut-only')
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=cut-only&fixture=1')
   })
 
   it('原本がない古いカット版には作り直し操作を出さない', async () => {
@@ -3182,10 +3226,10 @@ describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
     })
     renderAt('/recordings/3')
 
-    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264'))
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264&fixture=1'))
     const dialog = await openRemoveDialog(user, 'h264')
     await user.click(within(dialog).getByRole('button', { name: '削除する' }))
-    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h265'))
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h265&fixture=1'))
   })
 
   it('最後のエンコード版を消すと、HLS URL が無い場合は browser player を外す', async () => {
@@ -3199,7 +3243,7 @@ describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
     })
     renderAt('/recordings/3')
 
-    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264'))
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264&fixture=1'))
     const dialog = await openRemoveDialog(user, 'h264')
     await user.click(within(dialog).getByRole('button', { name: '削除する' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'h264のその他の操作' })).not.toBeInTheDocument())

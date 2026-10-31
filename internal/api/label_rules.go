@@ -145,6 +145,7 @@ func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShel
 			UnwatchedCount:   int(row.UnwatchedCount),
 			LatestStartAt:    row.LatestStartAt.UTC(),
 			RepresentativeId: row.RepresentativeID,
+			ThumbnailUrl:     fmt.Sprintf("/api/media/recordings/%d/thumbnail", row.RepresentativeID),
 		})
 	}
 	return ListRecordingShelves200JSONResponse(out), nil

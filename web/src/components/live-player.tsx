@@ -282,6 +282,8 @@ type RecordingHLSProps = {
   recordingHlsUrl: string
   /** 初回再生位置。profile 切替後は現在の currentTime を優先する。 */
   recordingHlsStartSeconds: number
+  /** `Recording.media.seekTilesUrl`。シークタイルの URL をここから組み立てない。 */
+  recordingSeekTilesUrl: string
   /** 録画中は視聴済み操作を出さない。 */
   showWatched?: boolean
   /**
@@ -320,6 +322,7 @@ type LivePlayerProps =
       recordingId?: never
       recordingHlsUrl?: never
       recordingHlsStartSeconds?: never
+      recordingSeekTilesUrl?: never
       recordingDurationMs?: never
       onRecordingPositionChange?: never
       onRecordingPlaybackError?: never
@@ -434,6 +437,7 @@ export function LivePlayer(props: LivePlayerProps) {
     onWatched,
     recordingHlsUrl,
     recordingHlsStartSeconds,
+    recordingSeekTilesUrl,
     showWatched: recordingHlsShowWatched,
   } = props
   const isRecordingHLS = mode === 'recording-hls'
@@ -1490,6 +1494,7 @@ export function LivePlayer(props: LivePlayerProps) {
   const playbackControls = (
     <RecordingPlaybackControls
       recordingId={recordingId}
+      seekTilesUrl={recordingSeekTilesUrl}
       profile={menuProfile}
       encodedAssets={[]}
       timeline={playbackAxis}
@@ -1622,7 +1627,7 @@ export function LivePlayer(props: LivePlayerProps) {
             version={chapterVersion}
             detectionPending={false}
             source={chapterSource}
-            recordingId={recordingId}
+            seekTilesUrl={recordingSeekTilesUrl ?? ''}
             currentSeconds={currentAxisSeconds}
             getDisplayedFrameSeconds={getDisplayedFrameSeconds}
             isPlaying={frame.mediaPlaying}

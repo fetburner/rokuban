@@ -24,7 +24,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
+import { launchBrowser, log, verifyBundleMatchesOrExit, recordingMedia } from './lib.mjs'
 
 const BASE_URL = process.env.E2E_URL ?? 'http://localhost:40773'
 const SITE = process.env.E2E_LIVE_SITE ?? 'default'
@@ -827,7 +827,7 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         body: JSON.stringify({
           id: 501, site: 'default', startAt: new Date(programAStart).toISOString(),
           startedAt: recordingStartedAt, durationMs: 45 * 60_000, status: 'recording',
-          hlsPlayback: [{ profile: 'hd', masterUrl: `${recordingHlsPath(501)}master.m3u8` }],
+          media: recordingMedia(501), hlsPlayback: [{ profile: 'hd', masterUrl: `${recordingHlsPath(501)}master.m3u8` }],
         }),
       }),
     )
@@ -1140,7 +1140,7 @@ async function runIssue1022Acceptance(engine = 'chromium') {
           id: 502, site: 'default', startAt: new Date(programAStart).toISOString(),
           startedAt: new Date(programAStart + 5 * 60_000).toISOString(),
           durationMs: 45 * 60_000, status: 'recording',
-          hlsPlayback: [{ profile: 'hd', masterUrl: `${recordingHlsPath(502)}master.m3u8` }],
+          media: recordingMedia(502), hlsPlayback: [{ profile: 'hd', masterUrl: `${recordingHlsPath(502)}master.m3u8` }],
         }),
       }),
     )

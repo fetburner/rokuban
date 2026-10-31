@@ -212,14 +212,3 @@ export function effectivePlaybackRate(
   return requestedRate
 }
 
-/** recordingFileURL は streamer のバイナリ配信 URL を組み立てる（OpenAPI 外）。 */
-export function recordingFileURL(recordingId: number, profile?: string): string {
-  const base = `/api/media/recordings/${recordingId}/file`
-  if (!profile) return base
-  return `${base}?profile=${encodeURIComponent(profile)}`
-}
-
-/** recordingSubtitleURL は encoded アセット隣の WebVTT サイドカー URL を組み立てる。 */
-export function recordingSubtitleURL(recordingId: number, profile: string): string {
-  return `${recordingFileURL(recordingId, profile)}&track=subtitles`
-}

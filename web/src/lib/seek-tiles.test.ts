@@ -6,7 +6,6 @@ import {
   SEEK_TILES_DISPLAY_WIDTH,
   seekTileBackgroundSize,
   seekTilePlacement,
-  seekTilesURL,
 } from './seek-tiles'
 
 // 形（列数・1 枚の大きさ・間隔）は internal/worker/seek_tiles.go と手で揃える
@@ -18,10 +17,6 @@ describe('seek tiles geometry', () => {
     expect(SEEK_TILES_DISPLAY_HEIGHT).toBe(180)
     expect(seekTileBackgroundSize(320)).toBe('3200px auto')
     expect(seekTileBackgroundSize(144)).toBe('1440px auto')
-  })
-
-  it('seekTilesURL は配信 URL を組み立てる', () => {
-    expect(seekTilesURL(42)).toBe('/api/media/recordings/42/seek-tiles')
   })
 })
 

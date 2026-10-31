@@ -1,0 +1,61 @@
+# 判定 6 の足場。**製品のマニフェストではない。**
+#
+# 置き場の PVC の上に、その置き場だけが持つ印の入ったファイルを 1 つ書く使い捨て Job。
+# 判定 6.4 が「置き場 X の配信 Pod は X の原本だけを返し、Y の Pod は返さない」を
+# 見るために、ファイルの中身を置き場ごとに変える。
+#
+# プレースホルダは判定側が sed で埋める（`checks/06-two-stores.sh`）:
+#   __JOB__       Job 名（置き場ごとに別。Job の spec は immutable なので周回の頭で消す）
+#   __PVC__       書く置き場の PVC 名（`rokuban-media-<置き場>`）
+#   __ROOT__      その置き場の root（overlays/e2e-two-stores/config.yml の root と同じ値）
+#   __REL_PATH__  root からの相対パス
+#   __PAYLOAD__   書く中身（文字種は判定側が絞る）
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB__
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: store-seed
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: store-seed
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        # PVC には copy-up が無いので fsGroup で所有権を与える（deploy/k8s/store/media-pvc.yaml）。
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: seed
+          # ENTRYPOINT は rokuban なので上書きする。sh があるイメージ（Dockerfile.full）を使う。
+          image: __FULL_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              out="__ROOT__/__REL_PATH__"
+              mkdir -p "$(dirname "$out")"
+              printf '%s' "__PAYLOAD__" > "$out"
+              echo "SIZE=$(wc -c < "$out")"
+          volumeMounts:
+            - name: media
+              mountPath: __ROOT__
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: __PVC__

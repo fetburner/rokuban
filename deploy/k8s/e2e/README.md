@@ -11,7 +11,20 @@
 ./deploy/k8s/e2e/run.sh --faults             # worker kill / rescuer / PostgreSQL 接続断後の収束を判定する
 E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部だけ
 ./deploy/k8s/e2e/run.sh --down               # クラスタを消す
+# 判定 6（置き場 2 つ）。判定 1〜5 とは別の overlay・名前空間で、同じ kind クラスタに立てる。
+E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh
 ```
+
+**判定 6（`checks/06-two-stores.sh`）は書いただけで、実行していない。** 置き場 2 つ（tokyo / takamatsu）の overlay で、次の 5 つを見る。
+
+- 置き場束縛キューの ScaledJob が置き場ごとに別の Job を起こし、その Job の Pod テンプレートが正しい PVC・root・`--stores` を持つこと（6.1〜6.3）
+- ingest が両方の置き場を挿すこと（6.4）
+- 置き場ごとの配信 Service が、自分の置き場の原本だけを返すこと（6.5）
+- 置き場束縛の CronJob が、置き場ごとに 1 本あること（6.6）
+
+**入れるのは `e2e_probe` で、実物の worker には未登録の kind である。** そのため見られるのは「正しい Pod が起きた」までで、実際の転送・エンコード・削除の中身は見ない。
+
+Ingress controller は kind に無いので、6.5 は Ingress の行き先の Service を直接叩く。行と Service 名の対応は `deploy/k8s/stores_test.go` にある。
 
 `--faults` は通常の 5 項目と別に走る。同じ使い捨て kind + KEDA クラスタを使う。**PostgreSQL・worker・media volume・mirakc mock を含む実デプロイの状態遷移を測る。** Compose の smoke test はコンテナ起動と catalog 書き込みを検査する目的のままにする。故障後の収束はこの kind suite で判定する。役割分割のキュー、DB 接続、永続 volume をまとめて扱えるためである。
 
@@ -245,7 +258,9 @@ lib/cluster.sh         kind / イメージ / KEDA / 足場の用意
 cluster/scaffold.yaml  postgres / mirakc モック / ツールボックス
 cluster/media-check-job.yaml
                        media volume に公開済み asset があるか検査する one-shot Pod
-checks/0*.sh           判定 1〜5
+checks/0*.sh           判定 1〜6（6 は E2E_OVERLAY=e2e-two-stores のときだけ走り、1〜5 はそのとき走らない）
+cluster/store-seed-job.yaml
+                       判定 6.5 が置き場の PVC に原本を書く one-shot Job
 lib/selftest.sh        lib の純粋な部分のユニットテスト（クラスタ不要。CI で回す）
 fixtures/              オラクル自己検査用の身代わり（製品ではない）
                        製品と同じ役ラベルを名乗るので、残っていると判定が

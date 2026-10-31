@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, CircuitBreaker, EncodeQueueSummary, Recording, Reservation, StorageRoot } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { HOME_MODE_STORAGE_KEY } from '@/lib/home-mode'
 import { HomePage } from '@/pages/home'
 import { renderInRouter } from '@/test/router'
@@ -67,6 +68,7 @@ function recording(id: number, title: string, status: Recording['status'], overr
     status,
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? id, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: iso(-HOUR),
     ...overrides,
@@ -427,7 +429,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     renderHome('/?mode=watch')
 
     const video = await screen.findByTestId('home-hero-resume-video')
-    expect(video).toHaveAttribute('src', '/api/media/recordings/41/file?profile=h264')
+    expect(video).toHaveAttribute('src', '/api/media/recordings/41/file?profile=h264&fixture=1')
     expect(video).toHaveProperty('muted', true)
     expect(video).toHaveProperty('playsInline', true)
     expect(video).toHaveAttribute('preload', 'metadata')
@@ -467,7 +469,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     renderHome('/?mode=watch')
 
     const video = await screen.findByTestId('home-hero-resume-video')
-    expect(video).toHaveAttribute('src', '/api/media/recordings/43/file?profile=cut')
+    expect(video).toHaveAttribute('src', '/api/media/recordings/43/file?profile=cut&fixture=1')
     let seekTarget = 0
     Object.defineProperty(video, 'duration', { configurable: true, value: 3600 })
     Object.defineProperty(video, 'readyState', { configurable: true, value: HTMLMediaElement.HAVE_METADATA })

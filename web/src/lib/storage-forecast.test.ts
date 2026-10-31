@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Recording, StorageRoot } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import {
   estimateAverageBitrate,
   estimateStorageForecast,
@@ -29,6 +30,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? 1, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-08-01T00:00:00Z',
     sizeBytes: 900_000_000,
@@ -161,6 +163,7 @@ describe('isObservationStale', () => {
 
 describe('findMediaRoot', () => {
   const scratch: StorageRoot = {
+    store: 'takamatsu',
     root: 'scratch',
     path: '/scratch',
     totalBytes: 1,
@@ -169,6 +172,7 @@ describe('findMediaRoot', () => {
     observedAt: '2026-08-13T00:00:00Z',
   }
   const media: StorageRoot = {
+    store: 'takamatsu',
     root: 'media',
     path: '/media',
     totalBytes: 2,

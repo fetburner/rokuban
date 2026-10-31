@@ -1,8 +1,9 @@
 # 単一ホスト名の共通入口。
 #
-# site 名を持つライブ経路は base に書かない。base は site 非依存であり、具体的な
-# site の Service は deploy/k8s/site を overlay で生やすためである。overlays/kind
-# と overlays/e2e が、この Ingress に site ごとの Prefix を追加する。
+# site 名を持つライブ経路と、置き場名を持つ `/api/media/stores/<置き場>` は base に
+# 書かない。base は site にも置き場にも依存せず、具体的な Service は
+# deploy/k8s/site と deploy/k8s/store を overlay で生やすためである。overlays/* が、
+# この Ingress に site ごと・置き場ごとの Prefix を追加する。
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -31,14 +32,6 @@ spec:
             backend:
               service:
                 name: rokuban-streamer
-                port:
-                  name: http
-          # 世代付き録画 HLS は置き場名を固定深さに持ち、専用 Deployment へ送る。
-          - path: /api/media/stores/main
-            pathType: Prefix
-            backend:
-              service:
-                name: rokuban-recording-hls
                 port:
                   name: http
           # api は JSON API と SPA の両方を同じ Service から配る。

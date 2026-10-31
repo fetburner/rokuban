@@ -3,28 +3,46 @@
 素の kustomize。Helm chart は持たない（判断の根拠は [docs/operations/k8s.md](../../docs/operations/k8s.md) §マニフェストの配布形式）。
 
 ```
-base/            中央（site 非依存）1 式:
+base/            中央（site・置き場に非依存）1 式:
                  config.yml（configMapGenerator の入力）/ migration Job /
-                 api・notifier・中央 streamer(録画配信) の Deployment + Service + PDB /
-                 共通 Ingress（events / VOD / API + SPA）/
-                 media の PVC / site 非依存キューの KEDA ScaledJob /
-                 site 非依存ジョブの CronJob
+                 api・notifier・中央 streamer(派生物の配信) の Deployment + Service + PDB /
+                 共通 Ingress（events / 派生物 / API + SPA）/
+                 DB だけを触るキュー（ruler・cleanup）の KEDA ScaledJob /
+                 site にも置き場にも束縛しないジョブの CronJob
 site/            **サイト 1 組ぶん**: watcher / ライブ streamer の Deployment + Service /
                  site 束縛キュー（ingest・epg・reconciler・watcher）の ScaledJob /
                  site 束縛ジョブの CronJob
-overlays/kind/   kind での動作確認用（base + site 1 組 + image の差し替え）
-overlays/e2e/    受け入れ判定ハーネス用（base + site 2 組）
+store/           **置き場 1 組ぶん**: PVC / `storage adopt` Job /
+                 配信 streamer（録画 HLS と原本の file・frame。1 プロセス 1 置き場）の Deployment + Service /
+                 置き場束縛キュー（transfer・encode・thumbnail・cm_detect・ts_scan・original・storage）の ScaledJob /
+                 置き場束縛ジョブ（catalog-export・delete-reconcile・storage-sync）の CronJob
+overlays/kind/   kind での動作確認用（base + site 1 組 + store 1 組 + image の差し替え）
+overlays/e2e/    受け入れ判定ハーネス用（base + site 2 組 + store 1 組）
+overlays/e2e-two-stores/
+                 判定 6 用（base + site 2 組 + store 2 組。tokyo / takamatsu）
 schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 ```
 
 **base は複数サイトを知らない。** レジストリは常に 1 要素で、どの Pod も site に束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。サイトを増やす差分は「`mirakcs:` に 1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例）。この形はテストで固定する。
+
+**置き場も同じ形である。** `store/` は置き場名 `main`（`base/config.yml` の `storage.stores` の唯一の要素）で書いてあり、単一置き場の overlay は patch が要らない。
+
+置き場を増やす差分は 2 つである。1 つは、`storage.stores` に root 付きで 1 要素を足すこと。もう 1 つは、`store/` を 1 組生やすことで、nameSuffix と、argv の置き場名・マウント先・トリガのクエリを差し替える patch を書く。実例は `overlays/e2e-two-stores/stores/` にある。
+
+**ingest と central streamer だけは、置き場を overlay の patch で足す。** ingest は規則が選びうる全置き場を、central streamer は派生物の置き場を足す。
+
+FS 置き場が 2 つ以上になると、`server` ロールの worker と streamer は `--stores` を明示しなければ起動しない。base は置き場を持たない役に `--stores=`（明示的な空）を渡している。
 
 `site/` は site 名 `default` で書いてある。`base/config.yml` の `mirakcs:` も 1 要素目の site を `default` にしてあるので、**単一サイトの site ワークロードは patch を 1 つも書かない**。入口のライブ経路だけは Ingress に具体的な Service を足すため overlay の patch が要る。
 
 **入口の構成**:
 
 - `base/ingress.yaml` は単一ホスト `rokuban.local` の共通入口。 `/api/events` は notifier、`/api/media/recordings` は中央 streamer、`/` は api（SPA 含む）へ送る
-- `overlays/kind` は `default` のライブ Prefix を、`overlays/e2e` は `sitea` / `siteb` のライブ Prefix を同じ Ingress に追加する。site 名を具体化しない live の catch-all は書かない
+- ingress の行は overlay ごとに足す。
+  - `overlays/kind` は `default` のライブ Prefix と `/api/media/stores/main` を足す。
+  - `overlays/e2e` は `sitea` / `siteb` のライブ Prefix と `/api/media/stores/main` を足す。
+  - `overlays/e2e-two-stores` は 2 サイトのライブ Prefix と、置き場ごとの `/api/media/stores/<置き場>`（置き場ごとの配信 Service へ）を足す。
+  - site 名を具体化しない live の catch-all は書かない
 - **sticky（session affinity）は使わない。** VOD は round-robin、ライブは URL の `(site, networkId, serviceId)` を鍵にした前段の consistent hash を使う
 - 単体で base / site を apply する手順でも API / VOD / SSE は使える。ライブを含む入口までまとめて apply する場合は `overlays/kind` などの overlay を使う
 - **Prometheus の Operator 連携**（ServiceMonitor / PodMonitor）。常駐の Pod には `prometheus.io/scrape` の annotation を付けてあるが、**ScaledJob が起こす Job の Pod は数秒で消えるので scrape が間に合わない**。ジョブ側の観測は `river_job` を読む滞留メトリクス（どのロールの `/metrics` にも出る）で行う（docs/operations.md §1）
@@ -59,8 +77,10 @@ kubectl create secret generic rokuban-secrets \
 
 # 2. マイグレーション → 中央 → サイトの順で通す（入口までまとめる場合は overlay を使う）
 kubectl delete job rokuban-migrate --ignore-not-found
+kubectl delete job -l app.kubernetes.io/component=storage-adopt --ignore-not-found
 kustomize build base | kubectl apply -f -
 kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s
+kustomize build store | kubectl apply -f -  # 単一置き場（置き場名 main）。adopt Job は migrate が終わるまで再試行する
 kustomize build site | kubectl apply -f -   # 単一サイト（site 名 default）
 kubectl rollout status deployment/rokuban-api
 ```
@@ -114,7 +134,8 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 **argv とキュー名の噛み合わせは `workloads_test.go` が見る。** 見ているものは次のとおり。
 
 - `--queues` とトリガのクエリが同じ物理キュー名を指していること
-- site 束縛キューの ScaledJob が `site/` に居ること
+- site 束縛キューの ScaledJob が `site/` に、置き場束縛キューの ScaledJob が `store/` に居ること。`stores_test.go` は、置き場が 2 つの overlay で、置き場ごとの ScaledJob・CronJob・配信 Deployment・Ingress 行を見る
+- base が置き場を知らないこと（PVC・`--stores`・`storage adopt` を持たない）
 - ffmpeg を要る役だけが `Dockerfile.full` のイメージを指していること
 - `rokuban enqueue` の全ジョブに CronJob があること
 - overlay の JSON6902 patch が実際に site 名の位置を指していること

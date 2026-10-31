@@ -1,8 +1,21 @@
+import type { ComponentProps } from 'react'
 import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { RecordingPlayer } from '@/components/recording-player'
+import { RecordingPlayer as RecordingPlayerBase } from '@/components/recording-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
+import { recordingMedia } from '@/test/recording-media'
+
+/**
+ * RecordingPlayer は API の `Recording.media` を `encodedAssets` と同じ順で組み立てて渡す。
+ * URL は fixture 専用の形（`recordingMedia`）なので、コンポーネントが自前で組み立てると各 URL の
+ * 検証が落ちる。
+ */
+function RecordingPlayer(
+  props: Omit<ComponentProps<typeof RecordingPlayerBase>, 'media'> & { media?: ComponentProps<typeof RecordingPlayerBase>['media'] },
+) {
+  return <RecordingPlayerBase media={recordingMedia(props.recordingId, props.encodedAssets)} {...props} />
+}
 
 afterEach(() => {
   vi.useRealTimers()
@@ -86,7 +99,7 @@ describe('RecordingPlayer の字幕サイドカー', () => {
     const track = container.querySelector('track')
     expect(track).not.toBeNull()
     expect(track?.kind).toBe('subtitles')
-    expect(track?.src).toContain('/api/media/recordings/7/file?profile=h264&track=subtitles')
+    expect(track?.src).toBe('http://localhost:3000/api/media/recordings/7/file?profile=h264&track=subtitles&fixture=1')
   })
 })
 
@@ -930,7 +943,7 @@ describe('RecordingPlayer のシークプレビュー', () => {
 
     fireEvent.pointerMove(withSeekbarWidth(getByTestId('seek-scrub')), { pointerType: 'mouse', clientX: 100 })
     const probe = container.querySelector('img[src*="/seek-tiles"]')
-    expect(probe?.getAttribute('src')).toBe('/api/media/recordings/92/seek-tiles')
+    expect(probe?.getAttribute('src')).toBe('/api/media/recordings/92/seek-tiles?fixture=1')
   })
 
   it('pointercancel はドラッグ開始位置へ戻し、キャンセル座標へシークしない', () => {
@@ -996,7 +1009,7 @@ describe('RecordingPlayer のシークプレビュー', () => {
     fireEvent.pointerMove(withSeekbarWidth(getByTestId('seek-scrub')), { pointerType: 'mouse', clientX: 100 })
 
     expect(container.querySelector('img[src*="/seek-tiles"]')?.getAttribute('src')).toBe(
-      '/api/media/recordings/93/seek-tiles',
+      '/api/media/recordings/93/seek-tiles?fixture=1',
     )
   })
 

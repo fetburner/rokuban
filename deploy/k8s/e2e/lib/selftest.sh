@@ -322,6 +322,50 @@ check "fail_from: 記録済みの後続は上書きしない" "1" "$(awk -F'\t' 
 check "fail_from: 未記録の後続を FAIL にする" "FAIL" "$(awk -F'\t' '$2=="9.4" && $1!="PLAN" {print $1}' "$selftest_results")"
 check "fail_from: 指定 id より前は触らない" "0" "$(awk -F'\t' '$2=="9.1" && $1!="PLAN"' "$selftest_results" | wc -l | tr -d ' ')"
 
+# ---- jobs_pod_facts / cronjobs_enqueueing_store（判定 6）------------------------
+
+# Job の Pod テンプレートから、置き場の取り違えを見分ける事実を引けること。
+# **PVC 以外のボリューム（config / scratch）を数えない**ことと、`--stores a,b` を
+# そのまま返すことを固定する（判定 6.4 の「両方の置き場」はこの形で照合する）。
+# 直前のセクションが `k` を失敗する版に差し替えているので、フィクスチャを返す版へ戻す。
+k() { printf '%s\n' "$*" >>"$K_ARGS_LOG"; printf '%s' "$K_FIXTURE"; }
+
+jobs_json() {
+  python3 -c '
+import json, sys
+items = []
+for spec in sys.argv[1:]:
+    name, args, claims = spec.split("|")
+    vols = [{"name": "config", "configMap": {"name": "c"}}, {"name": "scratch", "emptyDir": {}}]
+    mounts = [{"name": "config", "mountPath": "/etc/rokuban"}, {"name": "scratch", "mountPath": "/var/tmp/rokuban"}]
+    for i, claim in enumerate(c for c in claims.split(",") if c):
+        path, pvc = claim.split("@")
+        vols.append({"name": f"media{i}", "persistentVolumeClaim": {"claimName": pvc}})
+        mounts.append({"name": f"media{i}", "mountPath": path})
+    items.append({"metadata": {"name": name}, "spec": {"template": {"spec": {
+        "containers": [{"args": args.split(";"), "volumeMounts": mounts}], "volumes": vols}}}})
+print(json.dumps({"items": items}))
+' "$@"
+}
+
+K_FIXTURE="$(jobs_json "j1|server;--once;--queues;encode;--stores;tokyo|/mnt/stores/tokyo@rokuban-media-tokyo")"
+check "Job の Pod テンプレートから argv と PVC を引く" \
+  "j1	encode	tokyo	rokuban-media-tokyo	/mnt/stores/tokyo" "$(jobs_pod_facts sj)"
+
+K_FIXTURE="$(jobs_json "j2|server;--queues=ingest;--stores=tokyo,takamatsu|/mnt/stores/tokyo@rokuban-media-tokyo,/mnt/stores/takamatsu@rokuban-media-takamatsu")"
+check "複数の置き場は昇順で返し、PVC 以外のボリュームを数えない" \
+  "j2	ingest	tokyo,takamatsu	rokuban-media-takamatsu,rokuban-media-tokyo	/mnt/stores/takamatsu,/mnt/stores/tokyo" "$(jobs_pod_facts sj)"
+
+K_FIXTURE="$(cronjob_json "cron-c-tokyo=enqueue,catalog-export,--store,tokyo" "cron-c-tokyo2=enqueue,catalog-export,--store,tokyo2" "cron-d=enqueue,delete-reconcile,--store,tokyo")"
+check "CronJob は置き場を argv の要素単位で厳密照合する（tokyo が tokyo2 を拾わない）" \
+  "cron-c-tokyo" "$(cronjobs_enqueueing_store catalog-export tokyo)"
+check "別のジョブ名の CronJob を拾わない" "cron-d" "$(cronjobs_enqueueing_store delete-reconcile tokyo)"
+check "置き場が違えば 0 件" "" "$(cronjobs_enqueueing_store catalog-export takamatsu)"
+
+# 判定 6 のキュー一覧が internal/jobs の置き場束縛キューと同じ集合であることは
+# deploy/k8s/stores_test.go の TestE2EStoreQueuesMatchJobs が見る（ここは Go を呼ばない）。
+check "E2E_STORE_QUEUES は 7 本" "7" "$(printf '%s' "$E2E_STORE_QUEUES" | wc -w | tr -d ' ')"
+
 rm -f "$selftest_results" "$K_ARGS_LOG"
 
 if [ "$failures" -gt 0 ]; then

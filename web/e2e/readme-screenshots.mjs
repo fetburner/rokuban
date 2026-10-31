@@ -34,6 +34,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
@@ -288,6 +289,7 @@ const onAir = {
   encodedAssets: [],
 }
 const recordings = [onAir, ...dragonEpisodes, ...others]
+for (const r of [hero, ...recordings]) r.media = recordingMedia(r.id, (r.encodedAssets ?? []).map((a) => a.profile))
 const continueWatching = [hero, ...others]
 const liveProfiles = [{ name: '720p', height: 720 }]
 const upcoming = [{
@@ -410,7 +412,7 @@ async function handler({ path: p, url, json, route }) {
   if (p === '/api/encode-profiles') return json([{ name: 'h264-720p', container: 'mp4' }])
   if (p === '/api/encode-queue') return json({ queued: 0, running: 0, awaitingReview: 0 })
   if (p === '/api/storage') {
-    return json([{ root: 'media', path: '/media', totalBytes: 4e12, usedBytes: 1.3e12, availableBytes: 2.7e12, observedAt: iso(nowMs) }])
+    return json([{ store: 'takamatsu', root: 'media', path: '/media', totalBytes: 4e12, usedBytes: 1.3e12, availableBytes: 2.7e12, observedAt: iso(nowMs) }])
   }
   if (p === '/api/reservations') return json(reservations)
   if (p === '/api/recordings/continue-watching') return json(continueWatching)

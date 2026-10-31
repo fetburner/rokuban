@@ -663,6 +663,7 @@ export function LivePage() {
         }),
         recordingHlsUrl: selectedPlaybackHls.masterUrl,
         recordingHlsStartSeconds: playback.target.startSeconds,
+        recordingSeekTilesUrl: playbackRecording.media.seekTilesUrl,
         onRecordingPlaybackError,
         onReturnLive: () => updatePlayback({ source: 'live' }),
       }

@@ -5,7 +5,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react'
 import type { CapacityOverage, RecordingShelf, Reservation } from '@/api/generated'
 import { ReservationContextMenu } from '@/components/reservation-context-menu'
 import { RecordingThumbnail } from '@/components/recording-thumbnail'
-import { ReservationOrigin, ReservationVerdictBadge } from '@/components/reservation-row-parts'
+import { ReservationOrigin,ReservationVerdictBadge } from '@/components/reservation-row-parts'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import { reservationGroupCapacityAt, type ReservationGroup } from '@/lib/reservation-groups'
@@ -186,7 +186,7 @@ function DesktopShelfBox({ series, shelf }: { series: string; shelf?: RecordingS
     <ShelfLink series={series} shelf={shelf} className="hidden lg:flex">
       <RecordingThumbnail
         key={shelf.representativeId}
-        recordingId={shelf.representativeId}
+        src={shelf.thumbnailUrl}
         className="w-20"
       />
       <span className="min-w-0">

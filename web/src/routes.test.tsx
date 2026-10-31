@@ -4,6 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Recording, Reservation } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { ToastProvider } from '@/components/toaster'
 import { SearchPage } from '@/pages/search'
 import { routeTree } from '@/routes'
@@ -66,6 +67,7 @@ function stubDetailFetch() {
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(1),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-01-01T00:30:00Z',
   }

@@ -728,6 +728,9 @@ jobs:
           kustomize build deploy/k8s/site > /tmp/site.yaml
           kustomize build deploy/k8s/overlays/kind > /tmp/overlay-kind.yaml
           kustomize build deploy/k8s/overlays/e2e > /tmp/overlay-e2e.yaml
+          # 置き場ごとの層も単体で組み、2 つの置き場を持つ overlay も組む。
+          kustomize build deploy/k8s/store > /tmp/store.yaml
+          kustomize build deploy/k8s/overlays/e2e-two-stores > /tmp/overlay-e2e-two-stores.yaml
       # **スキーマの版も固定する。** 既定は master なので、リポジトリ側の変更ゼロで
       # 上流 k8s のリリースだけで検査内容が動く。値は docs/runbook/k8s.md で
       # 実機確認した版のマイナー（実機は v1.36.1。スキーマはマイナー単位で公開
@@ -748,7 +751,7 @@ jobs:
           kubeconform -strict -summary -kubernetes-version 1.36.0 \
             -schema-location default \
             -schema-location 'deploy/k8s/schemas/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            /tmp/base.yaml /tmp/site.yaml /tmp/overlay-kind.yaml /tmp/overlay-e2e.yaml \
+            /tmp/base.yaml /tmp/site.yaml /tmp/store.yaml /tmp/overlay-kind.yaml /tmp/overlay-e2e.yaml /tmp/overlay-e2e-two-stores.yaml \
             deploy/k8s/e2e/cluster/*.yaml \
             deploy/k8s/e2e/fixtures/*.yaml
       # ハーネスの純粋な部分（対象の探索と watch ログの読み取り）はクラスタを

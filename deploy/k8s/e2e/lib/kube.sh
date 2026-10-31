@@ -297,6 +297,75 @@ for item in doc.get("items", []):
   printf '%s' "$matches"
 }
 
+# jobs_pod_facts <scaledjob>
+#
+# KEDA が起こした Job の Pod テンプレートから、置き場の取り違えを見分ける事実を
+# **1 Job 1 行**で返す（タブ区切り）:
+#
+#   Job 名 / `--queues` の値 / `--stores` の値 / PVC の claimName（昇順・カンマ区切り）/
+#   その PVC を挿した mountPath（昇順・カンマ区切り）
+#
+# **Pod が実際に起動した後の値ではなく、Job の Pod テンプレートを読む。** Job を起こすのは
+# KEDA で、テンプレートは ScaledJob の `jobTargetRef` の写しなので、「この ScaledJob が
+# 起こした Job は、どの置き場の PVC を挿し、どのキューをどの置き場で引く argv か」が分かる。
+# 読めなかったときは何も返さず 1 を返す（呼び出し側は「0 件」と区別すること）。
+jobs_pod_facts() {
+  local json
+  json="$(k get jobs -l "scaledjob.keda.sh/name=$1" -o json 2>/dev/null)" || return 1
+  [ -n "$json" ] || return 1
+  printf '%s' "$json" | python3 -c '
+import json, sys
+
+def flag(argv, name):
+    for i, a in enumerate(argv):
+        if a == "--" + name and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--" + name + "="):
+            return a.split("=", 1)[1]
+    return ""
+
+for item in json.load(sys.stdin).get("items", []):
+    spec = item["spec"]["template"]["spec"]
+    c = spec["containers"][0]
+    argv = c.get("command", []) + c.get("args", [])
+    pvc_volumes = {
+        v["name"]: v["persistentVolumeClaim"]["claimName"]
+        for v in spec.get("volumes", []) if "persistentVolumeClaim" in v
+    }
+    claims = sorted(pvc_volumes.values())
+    mounts = sorted(m["mountPath"] for m in c.get("volumeMounts", []) if m["name"] in pvc_volumes)
+    print("\t".join([item["metadata"]["name"], flag(argv, "queues"), flag(argv, "stores"),
+                     ",".join(claims), ",".join(mounts)]))
+'
+}
+
+# cronjobs_enqueueing_store <job_name> <store>
+#
+# `rokuban enqueue <job_name> --store <store>` を打つ CronJob を argv の**要素単位**で引く
+# （cronjob_enqueueing の `--site` 版。置き場名の接頭辞が重なっても取り違えない）。
+# 一致した名前をスペース区切りで返す（0 件なら空）。
+cronjobs_enqueueing_store() {
+  local job="$1" store="$2" json
+  json="$(k get cronjobs -o json 2>/dev/null)" || return 1
+  [ -n "$json" ] || return 1
+  printf '%s' "$json" | python3 -c '
+import json, sys
+job, store = sys.argv[1], sys.argv[2]
+names = []
+for item in json.load(sys.stdin).get("items", []):
+    spec = item["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    for c in spec.get("containers", []):
+        argv = c.get("command", []) + c.get("args", [])
+        if "enqueue" not in argv or job not in argv:
+            continue
+        if any((a == "--store" and i + 1 < len(argv) and argv[i + 1] == store) or a == f"--store={store}"
+               for i, a in enumerate(argv)):
+            names.append(item["metadata"]["name"])
+            break
+print(" ".join(names))
+' "$job" "$store"
+}
+
 # jobs_owned_by_scaledjob <scaledjob> --- KEDA が起こした Job の名前一覧。
 #
 # KEDA は起こした Job に `scaledjob.keda.sh/name` ラベルを付ける。

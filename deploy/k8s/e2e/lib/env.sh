@@ -37,6 +37,21 @@ E2E_FULL_IMAGE="${E2E_FULL_IMAGE:-rokuban-full:e2e}"
 E2E_SITE_A="sitea"
 E2E_SITE_B="siteb"
 
+# 製品のマニフェストの overlay。既定は `e2e`（2 サイト・置き場 1 つ。判定 1〜5）。
+# 判定 6（置き場 2 つ）は `E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores`
+# で回す（deploy/k8s/e2e/README.md）。**overlay ごとに名前空間を分ける**: 同じ名前空間に
+# 両方を当てると PVC と Pod セットが並び、判定が余計なワークロードを見る。
+E2E_OVERLAY="${E2E_OVERLAY:-e2e}"
+
+# 判定 6 の置き場。`overlays/e2e-two-stores/config.yml` の `storage.stores` と同じ名前で、
+# PVC は `rokuban-media-<置き場>`、root は `/mnt/stores/<置き場>`。**環境変数で上書きさせない**
+# （サイト名と同じ理由。config.yml と食い違うと判定 6 は「対象が無い」に化ける）。
+E2E_STORE_A="tokyo"
+E2E_STORE_B="takamatsu"
+# 置き場で修飾するキュー（`internal/jobs` の置き場束縛キュー）。**リテラルで書く**。
+# `deploy/k8s/stores_test.go` の TestE2EStoreQueuesMatchJobs が `internal/jobs` と一致を固定している。
+E2E_STORE_QUEUES="cm_detect encode original storage thumbnail transfer ts_scan"
+
 # ツールボックスは Deployment（scaffold.yaml の理由）。exec の宛先。
 E2E_TOOLBOX="deploy/e2e-toolbox"
 

@@ -2163,6 +2163,9 @@ type RecordingShelf struct {
 	// RepresentativeId 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
 	RepresentativeId int64 `json:"representativeId"`
 
+	// ThumbnailUrl 代表の録画のサムネイルの URL（`Recording.media.thumbnailUrl` と同じ形）。クライアントは組み立てない。
+	ThumbnailUrl string `json:"thumbnailUrl"`
+
 	// Title 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。
 	Title string `json:"title"`
 

@@ -11,6 +11,8 @@ export type ShelfRow = {
   latestStartAt: string
   /** 代表の録画の id。番組ハブの起点に使う。 */
   representativeId: number
+  /** 代表の録画のサムネイル URL（API が返す値）。 */
+  thumbnailUrl: string
 }
 
 /**
@@ -31,6 +33,7 @@ export function buildShelfRows(shelves: readonly RecordingShelf[]): ShelfRow[] {
         playableCount: shelf.playableCount,
         latestStartAt: shelf.latestStartAt,
         representativeId: shelf.representativeId,
+        thumbnailUrl: shelf.thumbnailUrl,
       },
     ]
   })
