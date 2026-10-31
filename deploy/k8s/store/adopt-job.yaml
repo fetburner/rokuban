@@ -6,7 +6,7 @@
 # それぞれが `migrate up` を持つと同じ DB に並行してマイグレーションをかける形になる
 # （`db.MigrateUp` が並行実行に耐えるかは未検証）。マイグレーションは
 # `deploy/k8s/base/migrate-job.yaml` の 1 本だけにしたので、**順序は Job の再試行が担う**:
-# マイグレーションが終わるまで adopt は失敗して Pod が作り直される。
+# マイグレーションが終わるまで adopt は失敗して Pod が作り直される（schema が埋め込みの最新 migration になるまで再試行する。`db.CheckMigrationsCurrent`）。
 # **再試行の窓**: 失敗 Pod の再作成は指数バックオフ（10s から倍々、上限 6 分）。
 # `backoffLimit: 6` の 7 回目の試行は開始から 630 秒後（0,10,30,70,150,310,630）。
 # `activeDeadlineSeconds` はその時刻より十分長くなければならない。短いと 7 回目の

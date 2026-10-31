@@ -73,6 +73,11 @@ store が空の観測行と取り込み進捗行をこの置き場へ割り当�
 				return err
 			}
 			defer pool.Close()
+			// スキーマが埋め込みの最新 migration でなければ、目印も行も触らずに失敗する。
+			// Job はこの失敗で再試行され、マイグレーションの完了を待つ。
+			if err := db.CheckMigrationsCurrent(cmd.Context(), cfg.DB.DSN()); err != nil {
+				return fmt.Errorf("storage adopt: %w", err)
+			}
 			media := pgstore.NewMedia(pool, name, "") // 照合だけで削除の判定はしない
 			if !markerExists {
 				has, err := media.HasStoreCopies(cmd.Context())
