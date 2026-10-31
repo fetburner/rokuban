@@ -1200,6 +1200,11 @@ func (r *transferRateReader) Read(p []byte) (int, error) {
 	}
 	r.bytesRead += int64(n)
 	wantElapsed := time.Duration(float64(r.bytesRead) / float64(r.bytesPerSecond) * float64(time.Second))
+	// 読みが予定より 1 秒以上遅れたら（切断から張り直しまでの無応答など）、予定を現在に合わせ直す。
+	// 合わせないと、止まっていた間に貯まった分を、再開後に回線速度で読んでしまう。
+	if lag := time.Since(r.started.Add(wantElapsed)); lag > time.Second {
+		r.started = r.started.Add(lag)
+	}
 	if wait := time.Until(r.started.Add(wantElapsed)); wait > 0 {
 		timer := time.NewTimer(wait)
 		defer timer.Stop()

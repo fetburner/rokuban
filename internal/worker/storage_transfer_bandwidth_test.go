@@ -59,3 +59,45 @@ func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
 		})
 	}
 }
+
+// stallingReader は 1 回目の Read の後、2 回目の Read の前に stall だけ止まり、以降は chunk バイトずつ返す。
+// 止まりが明けた時刻を resumed に残す。
+type stallingReader struct {
+	src     io.Reader
+	chunk   int
+	stall   time.Duration
+	reads   int
+	resumed time.Time
+}
+
+func (s *stallingReader) Read(p []byte) (int, error) {
+	s.reads++
+	if s.reads == 2 {
+		time.Sleep(s.stall)
+		s.resumed = time.Now()
+	}
+	if len(p) > s.chunk {
+		p = p[:s.chunk]
+	}
+	return s.src.Read(p)
+}
+
+// TestTransferSourceReaderDoesNotCatchUpAfterStall は、読みの途中で止まった後も帯域の上限が効くことを固定する。
+// 切断から張り直しまでの無応答を経過時間に数えると、再開後に貯まった分を回線速度で読んでしまう。
+func TestTransferSourceReaderDoesNotCatchUpAfterStall(t *testing.T) {
+	w := &StorageTransferWorker{Config: config.StorageConfig{Transfer: config.StorageTransferConfig{
+		Bandwidth: map[string]string{"edge": "8KBps"},
+	}}}
+	src := &stallingReader{src: bytes.NewReader(make([]byte, 4100)), chunk: 400, stall: 1200 * time.Millisecond}
+	reader, err := w.transferSourceReader(context.Background(), "edge", src)
+	if err != nil {
+		t.Fatalf("transferSourceReader: %v", err)
+	}
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		t.Fatalf("copying through transferSourceReader: %v", err)
+	}
+	// 止まりが明けた後の 4000 バイトのうち、最初の 400 バイトは直ちに返ってよい。残り 3600 バイトは 8KBps で約 450ms かかる。
+	if after := time.Since(src.resumed); after < 350*time.Millisecond {
+		t.Fatalf("reading after the stall took %v, want at least 350ms under the 8KBps limit", after)
+	}
+}
