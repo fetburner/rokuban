@@ -162,7 +162,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh
 ```
 
-**判定 6 はまだ kind 上で一度も実行していない。** 書いただけの状態であり、初回の実行で確かめる前提は [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) に並べてある。判定の一覧と所要時間も同じ README が持つ。
+判定 6 は kind で全項目が PASS した（2026-10-31）。判定の一覧・所要時間・実行の前提は [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) が持つ。
 
 ### 終了コード
 
