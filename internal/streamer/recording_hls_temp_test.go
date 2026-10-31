@@ -18,12 +18,16 @@ func recordingHLSVideoPlaylistPath() string {
 	return recordingHLSRequestPath("main", 42, 7, "video/index.m3u8")
 }
 
-// 録画中の playlist は、観測した映像に全体が収まる (n+1)·D ≤ 長さ のセグメントだけを、全て D 秒で載せる。
+// 録画中の playlist は、次のフレームが始まったセグメントだけを、全て D 秒で載せる。
+// 判定は (n+1)·D ≤ 最後のフレームの開始時刻 で、長さ（最後のフレームの終わり）ではない。
+// 長さで判定すると、最後のフレームが境目 k·D をまたいだとき、録画中に D 秒で載せた k−1 番の EXTINF が
+// 完了後に端数の分だけ伸びる。
 // 長さが縮んで観測されても、載せた行は減らない。
+// recordingHLSTailPackets(end) は 1 フレーム（0.04 秒）の末尾を end に置くので、開始時刻は end − 0.04 秒。
 //
-// 壊し方: buildRecordingHLSTempPlaylist の `videoDurationPTS/segmentPTS - 1` を
-// `(videoDurationPTS+segmentPTS-1)/segmentPTS - 1`（切り上げ）にする。
-// 壊し方: observeInput の `duration > timing.videoDurationPTS` を無条件の代入にする。
+// 壊し方: buildRecordingHLSTempPlaylist の `videoLastFramePTS/segmentPTS - 1` を
+// `videoDurationPTS/segmentPTS - 1`（長さで判定）にする。
+// 壊し方: observeInput の `max(timing.videoLastFramePTS, lastFrame)` を `lastFrame` にする。
 func TestRecordingHLSTempPlaylistListsOnlyObservedVideo(t *testing.T) {
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	h.useTemp()
@@ -35,12 +39,13 @@ func TestRecordingHLSTempPlaylistListsOnlyObservedVideo(t *testing.T) {
 	}{
 		{"映像がまだ無い", 10, 0},
 		{"1 本目の途中", 11.9, 0},
-		{"1 本目がちょうど収まる", 12, 1},
+		{"1 本目の最後のフレームが終わる（次のフレームは未着）", 12, 0},
+		{"1 本目の次のフレームが始まる", 12.04, 1},
 		{"2 本目の途中", 13.9, 1},
-		{"2 本目がちょうど収まる", 14, 2},
+		{"2 本目の次のフレームが始まる", 14.04, 2},
 		{"5 本目の手前", 19.99, 4},
 		{"観測が縮んでも載せた行は減らない", 15, 4},
-		{"5 本目がちょうど収まる", 20, 5},
+		{"5 本目の次のフレームが始まる", 20.04, 5},
 	}
 	var previous []string
 	for _, step := range steps {
@@ -135,7 +140,7 @@ func TestRecordingHLSEndlistOnlyFromTheOriginal(t *testing.T) {
 // 壊し方: RecordingHLS.request の DB エラーの分岐で cacheKey.kind が temp のとき timing.videoDurationPTS を 0 にする。
 func TestRecordingHLSDatabaseOutageKeepsEndlistAndPublishedRows(t *testing.T) {
 	t.Run("temp の行を減らさない", func(t *testing.T) {
-		h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20)})
+		h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20.04)})
 		h.useTemp()
 		before := h.get(t, recordingHLSVideoPlaylistPath())
 		beforeRows, _ := playlistRows(before.Body.String())
@@ -225,7 +230,7 @@ func TestRecordingHLSTempWithoutVideoPacketInTheWindowKeepsPreviousValue(t *test
 	if got := rowsNow("映像が無い"); got != 0 {
 		t.Fatalf("rows without any video packet = %d, want 0", got)
 	}
-	h.setTail(t, recordingHLSTailPackets(16))
+	h.setTail(t, recordingHLSTailPackets(16.04))
 	h.growTemp(t)
 	if got := rowsNow("映像が届く"); got != 3 {
 		t.Fatalf("rows after video arrives = %d, want 3", got)
@@ -249,8 +254,10 @@ func TestRecordingHLSTempPlaylistAcrossPTSWrap(t *testing.T) {
 	h.useTemp()
 	response := h.get(t, recordingHLSVideoPlaylistPath())
 	rows, endlist := playlistRows(response.Body.String())
-	if response.Code != http.StatusOK || endlist || len(rows) != 4 {
-		t.Fatalf("playlist across the PTS wrap = %d, %d rows, want 4: %s", response.Code, len(rows), response.Body.String())
+	// 末尾のフレームは 6〜8 秒の格子の中に始まる（8 秒ちょうどには始まらない）。その格子の行は、
+	// 次のフレームが来るまで載せないので、temp は 3 本。原本は最後の格子を足して 4 本になる。
+	if response.Code != http.StatusOK || endlist || len(rows) != 3 {
+		t.Fatalf("playlist across the PTS wrap = %d, %d rows, want 3: %s", response.Code, len(rows), response.Body.String())
 	}
 	h.useOriginal()
 	response = h.get(t, recordingHLSVideoPlaylistPath())
@@ -268,22 +275,23 @@ func TestRecordingHLSVideoDurationFromPackets(t *testing.T) {
 		output string
 		origin int64
 		want   int64
+		last   int64
 		none   bool
 	}{
-		{name: "最大の pts + duration から原点を引く", output: "pts=100000|duration=3000|\npts=106000|duration=3000|\npts=103000|duration=3000|\n", origin: 90000, want: 19000},
-		{name: "duration が N/A なら隣り合う pts の差の最小値を使う", output: "pts=100000|duration=N/A|\npts=106000|duration=N/A|\npts=103000|duration=N/A|\n", origin: 90000, want: 19000},
-		{name: "パケットが 1 つで duration も無ければ 0", output: "pts=100000|duration=N/A|\n", origin: 90000, want: 10000},
-		{name: "pts の無いパケットは読み飛ばす", output: "pts=N/A|duration=3000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000},
-		{name: "巻き戻りの後ろだけの窓", output: "pts=450000|duration=3600|\n", origin: nearWrap, want: 3*second + 450000 + 3600},
-		{name: "窓が巻き戻りをまたぐ", output: fmt.Sprintf("pts=%d|duration=3600|\npts=90000|duration=3600|\n", recordingHLSPTSModulus-3600), origin: nearWrap, want: 3*second + 90000 + 3600},
+		{name: "最大の pts + duration から原点を引く", output: "pts=100000|duration=3000|\npts=106000|duration=3000|\npts=103000|duration=3000|\n", origin: 90000, want: 19000, last: 16000},
+		{name: "duration が N/A なら隣り合う pts の差の最小値を使う", output: "pts=100000|duration=N/A|\npts=106000|duration=N/A|\npts=103000|duration=N/A|\n", origin: 90000, want: 19000, last: 16000},
+		{name: "パケットが 1 つで duration も無ければ 0", output: "pts=100000|duration=N/A|\n", origin: 90000, want: 10000, last: 10000},
+		{name: "pts の無いパケットは読み飛ばす", output: "pts=N/A|duration=3000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000, last: 10000},
+		{name: "巻き戻りの後ろだけの窓", output: "pts=450000|duration=3600|\n", origin: nearWrap, want: 3*second + 450000 + 3600, last: 3*second + 450000},
+		{name: "窓が巻き戻りをまたぐ", output: fmt.Sprintf("pts=%d|duration=3600|\npts=90000|duration=3600|\n", recordingHLSPTSModulus-3600), origin: nearWrap, want: 3*second + 90000 + 3600, last: 3*second + 90000},
 		{name: "原点より少し前の pts（並べ替え）は負として扱う", output: "pts=89000|duration=1000|\n", origin: 90000, want: 0, none: true},
-		{name: "原点より少し前の pts があっても最大は後ろ", output: "pts=89000|duration=1000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000},
+		{name: "原点より少し前の pts があっても最大は後ろ", output: "pts=89000|duration=1000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000, last: 10000},
 		{name: "映像パケットが無い", output: "", origin: 90000, none: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := recordingHLSVideoDurationFromPackets(tc.output, tc.origin)
-			if ok == tc.none || (ok && got != tc.want) {
-				t.Fatalf("duration = (%d, %v), want (%d, found %v)", got, ok, tc.want, !tc.none)
+			got, last, ok := recordingHLSVideoDurationFromPackets(tc.output, tc.origin)
+			if ok == tc.none || (ok && (got != tc.want || last != tc.last)) {
+				t.Fatalf("(duration, last frame) = (%d, %d, %v), want (%d, %d, found %v)", got, last, ok, tc.want, tc.last, !tc.none)
 			}
 		})
 	}
@@ -367,5 +375,42 @@ func TestRecordingHLSTempFollowsAndOriginalHasKnownEnd(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 29.97 fps の 10 秒の録画（長さ 10.010 秒、最後のフレームは 9.976 秒に始まる）。
+// 完了した playlist の最後は 4 番で、EXTINF は長さの残りの 2.010 秒。録画中の playlist の行は、
+// 完了後の先頭と完全に一致する（commit で既出の行が変わると RFC 8216 §6.2.1 に反する）。
+//
+// 壊し方: finalSegmentNumber を ⌈長さ/D⌉−1 にする（完了後の最後が 5 番になり、録画中と合わなくなる）。
+// 壊し方: buildRecordingHLSTempPlaylist の判定を `videoDurationPTS` にする（録画中に 4 番が載る）。
+func TestRecordingHLSFinalRowFollowsLastFrameStart(t *testing.T) {
+	metadata := recordingHLSMetadata{
+		startedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		timing:    recordingHLSTiming{videoDurationPTS: 900900, videoLastFramePTS: 897840},
+	}
+	profile := LiveProfile{Name: "hd", SegmentSeconds: 2}
+	tempBody, err := buildRecordingHLSTempPlaylist(metadata, profile, "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalBody, err := buildRecordingHLSRenditionPlaylist(metadata, profile, "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tempRows, tempEnd := playlistRows(string(tempBody))
+	rows, endlist := playlistRows(string(finalBody))
+	want := []string{
+		"#EXTINF:2.000, 0.ts", "#EXTINF:2.000, 1.ts", "#EXTINF:2.000, 2.ts", "#EXTINF:2.000, 3.ts",
+		"#EXTINF:2.010, 4.ts",
+	}
+	if tempEnd || !endlist {
+		t.Fatalf("temp ENDLIST = %v, final ENDLIST = %v, want false and true", tempEnd, endlist)
+	}
+	if strings.Join(rows, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("final rows = %q, want %q", rows, want)
+	}
+	if strings.Join(tempRows, "\n") != strings.Join(want[:4], "\n") {
+		t.Fatalf("temp rows = %q, want the first 4 final rows %q", tempRows, want[:4])
 	}
 }

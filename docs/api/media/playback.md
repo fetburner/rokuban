@@ -32,7 +32,7 @@ playlist は、ffmpeg の出力を待たずにアプリが EVENT 型で組み立
 
 各セグメントには `recordings.started_at + n × D` の `#EXT-X-PROGRAM-DATE-TIME` を付ける。`D` は profile の `live.profiles[].segment_seconds` である。
 
-映像の長さは、temp でも原本でも同じ関数で測る。定義は「末尾の映像パケットの最大の pts + duration − 原点」で、2^33 を法として取る。PTS は約 26.5 時間で巻き戻る。原点は先頭の映像パケットの PTS である。format 全体の duration は音声など最長のストリームに引かれるので使わない。ffprobe の stream duration は、FFmpeg の文書に無い推定が入るので使わない。
+映像の長さと最後のフレームの開始時刻は、temp でも原本でも同じ関数で測る。長さの定義は「末尾の映像パケットの最大の pts + duration − 原点」で、最後のフレームの開始時刻は「最大の pts − 原点」である。どちらも 2^33 を法として取る。PTS は約 26.5 時間で巻き戻る。原点は先頭の映像パケットの PTS である。format 全体の duration は音声など最長のストリームに引かれるので使わない。ffprobe の stream duration は、FFmpeg の文書に無い推定が入るので使わない。
 
 末尾の測り方は次のとおりである。
 
@@ -41,11 +41,13 @@ playlist は、ffmpeg の出力を待たずにアプリが EVENT 型で組み立
 - 窓だけを渡した ffprobe は `duration` を `N/A` で返すことがある（実 ffprobe の 64 KiB の窓で測定）。そのときは、重複を除いた pts の隣り合う差の最小の正の値（フレーム間隔）を `duration` とする
 - 最大の 2 つの pts の差は使わない。B フレームがあると、I/P フレームの直後で切れた窓で 3 フレームぶんになり、長さが縮む（29.97 fps、`-bf 2`、64 KiB の窓で測定）
 
-録画中は、観測した映像の長さに全体が収まるセグメントだけを載せる。セグメント n は `(n+1) × D ≤ 観測した長さ` のときに載り、載せる行はすべて D 秒の EXTINF である。壁時計からは決めない。壁時計で決めると、録画が終わった後に ingest が長引いたとき、原本に無いセグメントを載せ続ける。実録画では 240 行の playlist が commit の後に 182 行へ縮み、載せ済みの番号が 416 になった。EVENT は載せた行を変更・削除できない（RFC 8216 §6.2.1）。
+録画中も完了後も、行の有無は最後のフレームの開始時刻で決める。始まるフレームが 1 枚も無い格子の行は、変換が作れないからである。
+
+録画中は、次のフレームが始まったセグメントだけを載せる。セグメント n は `(n+1) × D ≤ 最後のフレームの開始時刻` のときに載り、載せる行はすべて D 秒の EXTINF である。長さで決めると、最後のフレームが境目 `k × D` をまたいだとき、録画中に D 秒で載せた k−1 番の EXTINF が、完了後に端数の分だけ伸びる。壁時計からは決めない。壁時計で決めると、録画が終わった後に ingest が長引いたとき、原本に無いセグメントを載せ続ける。実録画では 240 行の playlist が commit の後に 182 行へ縮み、載せ済みの番号が 416 になった。EVENT は載せた行を変更・削除できない（RFC 8216 §6.2.1）。
 
 観測は、録画・世代・入力の種類ごとに 1 本にまとめる。temp のサイズが前回と同じなら前の値を使い、メモリ上では最大値を保つ。観測が前回より小さくても、載せた行は減らない。
 
-録画が終わって ingest が commit したら、原本の長さで最後の短いセグメントと `#EXT-X-ENDLIST` を足す。temp は追記だけで原本と同じバイト列であり、長さも同じ関数で測るので、録画中に載せた行と EXTINF は commit の後も変わらない。載せた行が commit の前後で変わらないためには、`duration` が `N/A` のときの補完も単調である必要がある。
+録画が終わって ingest が commit したら、原本で最後の番号を決めて `#EXT-X-ENDLIST` を足す。最後の番号は、最後のフレームの開始時刻が属するセグメントである。その行の EXTINF は長さの残りで、D より最大で 1 フレームの長さ未満だけ長くなりうる。RFC 8216 §4.3.3.1 は整数に丸めた EXTINF が TARGETDURATION 以下であることを求めるので、フレーム間隔が 0.5 秒未満なら満たす。EXTINF の合計は長さに一致する。temp は追記だけで原本と同じバイト列であり、最後のフレームの開始時刻も同じ関数で測る。開始時刻は録画が進むほど大きくなるだけなので、録画中に載せた n 番の後ろには完了後も n+1 番以降が続く。そのため、録画中に載せた行と EXTINF は commit の後も変わらない。
 
 ENDLIST を付けるのは、原本の行が DB にあるときだけである。ffmpeg の終了、入力のエラー、record の状態が未知であることは、終端の根拠にしない。
 
@@ -91,7 +93,9 @@ temp を読む変換の引数と、入力の種類を変換の組に含める理
 
 <details><summary>根拠</summary>
 
-- 載せる行が `(n+1) × D ≤ 観測した長さ` で、全て D 秒、縮まない: `TestRecordingHLSTempPlaylistListsOnlyObservedVideo`
+- 載せる行が `(n+1) × D ≤ 最後のフレームの開始時刻` で、全て D 秒、縮まない: `TestRecordingHLSTempPlaylistListsOnlyObservedVideo`
+- 完了後の最後の行は最後のフレームの開始時刻が属するセグメントで、録画中の行はその先頭と一致する: `TestRecordingHLSFinalRowFollowsLastFrameStart`
+- 格子の境目をまたぐ最後のフレームでも、全 rendition の最後の 2 本が取れる: `TestSegmentTransformFinalFrameCrossingBoundaryServesLastSegments`
 - 録画終了後に ingest が長引いても、行と EXTINF が commit の後も変わらない: `TestRecordingHLSCommitKeepsPublishedRowsWhenIngestOutlastsRecording`
 - ENDLIST は原本からだけ付く: `TestRecordingHLSEndlistOnlyFromTheOriginal`
 - DB に問い合わせられない間も ENDLIST と載せた行を保つ: `TestRecordingHLSDatabaseOutageKeepsEndlistAndPublishedRows`

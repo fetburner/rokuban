@@ -502,7 +502,7 @@ func TestSegmentTransformCachesWebVTTSegments(t *testing.T) {
 	task := &segmentTransformTask{
 		group:         segmentTransformGroup{recordingID: "7", generation: "3", profile: "test"},
 		profile:       LiveProfile{Name: "test", SegmentSeconds: 2},
-		input:         SegmentTransformInput{HasSubtitles: true, VideoDurationPTS: 4 * mpegTSTimestampClock},
+		input:         SegmentTransformInput{HasSubtitles: true, VideoDurationPTS: 4 * mpegTSTimestampClock, VideoLastFramePTS: 4*mpegTSTimestampClock - 1},
 		requestStart:  0,
 		startNumber:   0,
 		currentNumber: 0,
@@ -1507,7 +1507,7 @@ func TestSegmentTransformNormalEOFPublishesFinalShortSegment(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	input := testSegmentInput(inputPath, originPTS)
-	input.VideoDurationPTS = videoDurationPTS(t, ffprobe, inputPath)
+	input.VideoDurationPTS, input.VideoLastFramePTS = videoSpanPTS(t, ffprobe, inputPath)
 	file, err := manager.Get(ctx, key, input)
 	if err != nil {
 		t.Fatal(err)
@@ -1692,7 +1692,7 @@ func TestSegmentTransformEndlistMakesOnlyTheRecordingsLastSegmentFinal(t *testin
 			task := &segmentTransformTask{
 				group:   segmentTransformGroup{"recording", "generation", "test", 0},
 				profile: LiveProfile{Name: "test", SegmentSeconds: 2},
-				input:   SegmentTransformInput{VideoDurationPTS: tc.durationPTS},
+				input:   SegmentTransformInput{VideoDurationPTS: tc.durationPTS, VideoLastFramePTS: tc.durationPTS - 1},
 				workDir: workDir, requestStart: 2, startNumber: 1, currentNumber: 1, maxRequested: 2,
 			}
 			if err := manager.scanTransform(task, true); err != nil {
@@ -1710,19 +1710,82 @@ func TestSegmentTransformEndlistMakesOnlyTheRecordingsLastSegmentFinal(t *testin
 }
 
 func TestFinalSegmentNumber(t *testing.T) {
+	// 単位は 90 kHz tick。10.010 秒は 900900、9.976 秒は 897840（29.97 fps の最後のフレームが
+	// 2 秒の格子の 4 番に始まる例）。
 	for _, tc := range []struct {
-		durationPTS int64
-		seconds     int
-		want        int64
+		name                   string
+		durationPTS, lastFrame int64
+		seconds                int
+		want                   int64
 	}{
-		{0, 2, -1},
-		{10 * mpegTSTimestampClock, 2, 4},
-		{10*mpegTSTimestampClock + 1, 2, 5},
-		{mpegTSTimestampClock, 2, 0},
+		{"長さが未確定", 0, 0, 2, -1},
+		{"最後のフレームが長さの外", 900900, 900900, 2, -1},
+		{"最後のフレームが格子の境目に始まる", 10 * mpegTSTimestampClock, 10 * mpegTSTimestampClock, 2, -1},
+		{"境目の直前に始まり、境目を越えて終わる（29.97 fps）", 900900, 897840, 2, 4},
+		{"境目の 1 tick 手前に始まり、境目の後ろで終わる", 10*mpegTSTimestampClock + 1, 10*mpegTSTimestampClock - 1, 2, 4},
+		{"境目ちょうどに始まるフレームがある", 10*mpegTSTimestampClock + 1, 10 * mpegTSTimestampClock, 2, 5},
+		{"1 フレームだけ、原点に始まる", mpegTSTimestampClock, 0, 2, 0},
 	} {
-		if got := finalSegmentNumber(tc.durationPTS, tc.seconds); got != tc.want {
-			t.Errorf("finalSegmentNumber(%d, %d) = %d, want %d", tc.durationPTS, tc.seconds, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := finalSegmentNumber(tc.durationPTS, tc.lastFrame, tc.seconds); got != tc.want {
+				t.Errorf("finalSegmentNumber(%d, %d, %d) = %d, want %d", tc.durationPTS, tc.lastFrame, tc.seconds, got, tc.want)
+			}
+		})
+	}
+}
+
+// 最後のフレームが格子の境目をまたいで終わる録画（29.97 fps）でも、playlist の最後の 2 本が全 rendition で
+// 取れる。10 秒の入力は最後のフレームが 9.976 秒に始まり 10.010 秒に終わる。格子の 5 番（10 秒〜）には
+// 始まるフレームが無いので、5 番は載せず、4 番を最後にする。9 秒の入力は 4 番の中に収まる。
+//
+// 壊し方: finalSegmentNumber を ⌈長さ/D⌉−1 にする（10 秒の入力で最後が 5 番になり、変換が作れない）。
+func TestSegmentTransformFinalFrameCrossingBoundaryServesLastSegments(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	ffprobe := lookPathFFprobe(t)
+	for _, tc := range []struct {
+		seconds  int
+		finalRow string
+	}{
+		{9, "#EXTINF:1.009, 4.ts"},
+		{10, "#EXTINF:2.010, 4.ts"},
+	} {
+		seconds := tc.seconds
+		t.Run(fmt.Sprintf("%d seconds", seconds), func(t *testing.T) {
+			inputPath := filepath.Join(t.TempDir(), "ntsc.ts")
+			write2997TestTS(t, ffmpeg, inputPath, seconds)
+			originPTS := firstPacketPTS(t, ffprobe, inputPath)
+			input := testSegmentInput(inputPath, originPTS)
+			input.VideoDurationPTS, input.VideoLastFramePTS = videoSpanPTS(t, ffprobe, inputPath)
+			final := finalSegmentNumber(input.VideoDurationPTS, input.VideoLastFramePTS, 2)
+			if final != 4 {
+				t.Errorf("final segment = %d for %d seconds at 29.97 fps, want 4", final, seconds)
+			}
+			// 製品の測り方で測った値から、完了した playlist を組む。載せる最後の行が、下で取る番号と一致する。
+			body, err := buildRecordingHLSRenditionPlaylist(recordingHLSMetadata{
+				startedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+				timing:    recordingHLSTiming{videoDurationPTS: input.VideoDurationPTS, videoLastFramePTS: input.VideoLastFramePTS},
+			}, LiveProfile{Name: "test", SegmentSeconds: 2}, "video")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rows, _ := playlistRows(string(body)); len(rows) != 5 || rows[len(rows)-1] != tc.finalRow {
+				t.Errorf("playlist rows = %q, want 5 rows ending with %q", rows, tc.finalRow)
+			}
+			manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20)
+			defer closeSegmentManager(t, manager)
+			for _, rendition := range segmentRenditions {
+				for number := final - 1; number <= final; number++ {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					file, err := manager.Get(ctx, SegmentKey{"recording", "generation-1", "test", rendition, number}, input)
+					cancel()
+					if err != nil {
+						t.Errorf("%s segment %d: %v", rendition, number, err)
+						continue
+					}
+					_ = file.Close()
+				}
+			}
+		})
 	}
 }
 
@@ -1738,7 +1801,7 @@ func TestSegmentTransformGetBeyondRecordingEndFailsWithoutStartingFFmpeg(t *test
 	defer closeSegmentManager(t, manager)
 	input := SegmentTransformInput{
 		OpenFile:         func(context.Context) (*os.File, error) { return nil, errors.New("must not open") },
-		VideoDurationPTS: 10 * mpegTSTimestampClock,
+		VideoDurationPTS: 10 * mpegTSTimestampClock, VideoLastFramePTS: 10*mpegTSTimestampClock - 1,
 		AudioStreamCount: 1,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -1764,6 +1827,7 @@ func TestSegmentTransformEOFNotAtKnownLastSegmentIsNotCachedWithRealFFmpeg(t *te
 			defer closeSegmentManager(t, manager)
 			input := testSegmentInput(inputPath, originPTS)
 			input.VideoDurationPTS = durationPTS
+			input.VideoLastFramePTS = durationPTS - 1
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			// 実ファイルは 10 秒なので、ffmpeg は番号 4 の短い末尾を ENDLIST 付き・終了コード 0 で書く。
@@ -1975,14 +2039,15 @@ func taskForRecording(t *testing.T, manager *SegmentManager, recordingID string)
 	return nil
 }
 
-// videoDurationPTS は、製品が長さの定義に使う関数（末尾の映像パケットの最大の pts + duration − 原点）で測る。
-func videoDurationPTS(t *testing.T, ffprobe, path string) int64 {
+// videoSpanPTS は、製品が長さと最後のフレームの開始時刻に使う関数で測る。
+// 長さは末尾の映像パケットの最大の pts + duration − 原点、最後のフレームの開始時刻は最大の pts − 原点。
+func videoSpanPTS(t *testing.T, ffprobe, path string) (durationPTS, lastFramePTS int64) {
 	t.Helper()
-	duration, err := measureTestFile(t, ffprobe, path)
+	duration, last, err := measureTestFileSpan(t, ffprobe, path)
 	if err != nil {
 		t.Fatalf("measuring video duration of %s: %v", path, err)
 	}
-	return duration
+	return duration, last
 }
 
 func TestSegmentTransformStopAtCachedPositionKeepsTransformsStillProducingAWaitedSegment(t *testing.T) {

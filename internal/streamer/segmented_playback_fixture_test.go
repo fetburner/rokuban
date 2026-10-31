@@ -72,8 +72,8 @@ func TestWriteSegmentedPlaybackFixture(t *testing.T) {
 	// 製品の原本と同じく、長さが確定した入力にする（音声に apad,atrim=end が付く）。
 	input := SegmentTransformInput{
 		Kind: store.RecordingHLSInputOriginal, OriginPTS: originPTS, AudioStreamCount: 1,
-		VideoDurationPTS: videoDurationPTS(t, ffprobe, sourcePath),
 	}
+	input.VideoDurationPTS, input.VideoLastFramePTS = videoSpanPTS(t, ffprobe, sourcePath)
 
 	runs := map[string]segmentedFixtureRun{}
 	runFormat := func(name string, startNumber int64, mutate func(args []string) []string, fmp4 bool) {
