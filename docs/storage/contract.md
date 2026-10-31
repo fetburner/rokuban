@@ -250,7 +250,7 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きているコピーの `(store, rel_path)` 部分一意索引とも衝突するからである。
 
-- 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時にコピー世代と論理カウンターへ読み込む
+- 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時にコピーの世代へ読み込む
 - 新しいキーへ `Store.Put` し、1 つの tx で論理サイズ・`derived_generation`・`media_asset_cuts` と新しい物理コピー行を active にする。コピー行の世代は後から書き換えない。旧世代は同じ置き場に残り、削除 reconcile が overlap 後に回収する
 - 置き換え時に旧コピー行を書き換えない。書き換えると、旧キーの所在と世代を削除 reconcile が追えなくなる。公開した worker は旧キーを消さないので、commit が失敗しても旧キーと旧行は残る
 

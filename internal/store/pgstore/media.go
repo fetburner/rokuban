@@ -64,7 +64,8 @@ func mediaStoreNameArg(storeName string) *string {
 	return &storeName
 }
 
-// AdoptUnassignedStoreRows は置き場が空の観測行・進捗行をこの置き場へ割り当てる（TestAdoptUnassignedStoreRows）。コピー行は作らない。
+// AdoptUnassignedStoreRows は置き場が空の観測行・進捗行をこの置き場へ割り当てる
+// （TestAdoptUnassignedStoreRows）。コピー行は作らない。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)

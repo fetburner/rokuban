@@ -98,7 +98,7 @@ CREATE TABLE media_asset_transfer_objects (
 
 コピーの `generation` は、移行が既存のコピーのパスから読んで埋める（original と印の無いパスは 0）。論理カウンターは移行では触らない。旧版の in-place 登録は世代の印付きのパスでもカウンターを 0 にしたので、移行の直後はコピーの世代がカウンターを上回り、現行にも旧世代にも入らない資産がありうる。
 
-旧版からの更新では、最初の段階の `storage adopt` がそのカウンターを引き上げる。その後にコピー必須化版へ進む手順は [runbook/setup.md](../../runbook/setup.md) にある。現在の `storage adopt` は空の `store` を割り当てるだけで、世代を再照合しない。
+旧版からの更新では、最初の段階の `storage adopt` がそのカウンターを引き上げる。その後に列を消す migration を含む版へ進む手順は [runbook/setup.md](../../runbook/setup.md) にある。いまの `storage adopt` は世代を再照合しない。adopt はデプロイのたびに走る。全コピーの最大世代へ引き上げると、一度も現行にならなかった `pending` や回収済みの `deleted` の世代まで数えてしまい、現行のコピーが配信から見えなくなる。
 
 uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
 
@@ -129,7 +129,8 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 複製しない列: コピーの `rel_path` と論理資産の `kind`
 - 走査時の状態: `media_asset_copies.state = 'active'`
 - 移行時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations`
-- adopt の起動前検査と世代不変: `TestAdoptUnassignedStoreRows` / `TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent`
+- worker 起動時のコピー必須検査と adopt の割り当て: `TestAdoptUnassignedStoreRows`
+- adopt が派生世代を変えないこと: `TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent`
 - 列削除の拒否: `TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets`
 - 巻き戻しの代表コピー: `TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy`
 - 巻き戻しの拒否: `TestDropMediaAssetCopyColumnsDownRefusesUnrepresentableState`

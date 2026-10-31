@@ -163,6 +163,10 @@ func TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent(t *testing.T) {
 	}
 	var fixtures []fixture
 	for _, kind := range []string{"thumbnail", "encoded"} {
+		ext := ".jpg"
+		if kind == "encoded" {
+			ext = ".mp4"
+		}
 		for _, copyState := range []string{"pending", "deleted"} {
 			recordingID := dbtest.Recording(t, pool)
 			profile := (*string)(nil)
@@ -172,14 +176,14 @@ func TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent(t *testing.T) {
 			assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 				p.Kind = kind
 				p.Profile = profile
-				p.RelPath = fmt.Sprintf("sites/default/adopt-%s-%s-%d.g0", kind, copyState, recordingID)
+				p.RelPath = fmt.Sprintf("sites/default/adopt-%s-%s-%d.g0%s", kind, copyState, recordingID, ext)
 			})
 			if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
 				t.Fatalf("assigning %s generation-zero copy to tokyo: %v", kind, err)
 			}
 
 			var pendingCopyID int64
-			relPath := fmt.Sprintf("sites/default/adopt-%s-%s-%d.g1", kind, copyState, recordingID)
+			relPath := fmt.Sprintf("sites/default/adopt-%s-%s-%d.g1%s", kind, copyState, recordingID, ext)
 			if err := pool.QueryRow(ctx, `
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
 VALUES ($1, 'tokyo', $2, 1, 'pending')
