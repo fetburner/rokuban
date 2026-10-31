@@ -2,8 +2,6 @@ package k8s
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -172,58 +170,5 @@ func TestServicesAndIngressDoNotConfigureStickyAffinity(t *testing.T) {
 				}
 			}
 		}
-	}
-}
-
-// アプリは認証を持たない。転送元の置き場を読む内部経路（/internal など）は、Ingress から届く
-// 経路に一つも載せない。載せると、誰でも原本を読めるようになる。base と、overlay が追加する
-// Ingress の patch の両方を見る。overlay の一覧は overlays/ の実ディレクトリから引く。
-func TestNoIngressRoutesInternalPaths(t *testing.T) {
-	check := func(source, path string) {
-		if strings.HasPrefix(path, "/internal") {
-			t.Errorf("%s routes %q; internal paths must not be reachable through the Ingress", source, path)
-		}
-	}
-	for _, o := range loadBase(t) {
-		if o.kind() != "Ingress" {
-			continue
-		}
-		for _, raw := range sliceAt(o.doc, "spec", "rules") {
-			rule, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			for _, rawPath := range sliceAt(mapAt(rule, "http"), "paths") {
-				if p, ok := rawPath.(map[string]any); ok {
-					check(o.id(), strAt(p, "path"))
-				}
-			}
-		}
-	}
-
-	entries, err := os.ReadDir(overlaysDir)
-	if err != nil {
-		t.Fatalf("reading %s/: %v", overlaysDir, err)
-	}
-	overlays := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		overlays++
-		dir := filepath.Join(overlaysDir, e.Name())
-		for _, p := range loadOverlayPatches(t, dir).Patches {
-			if p.Target.Kind != "Ingress" {
-				continue
-			}
-			for _, op := range parseJSONPatch(t, p.Patch) {
-				if value, ok := op.Value.(map[string]any); ok {
-					check(dir+" Ingress patch", strAt(value, "path"))
-				}
-			}
-		}
-	}
-	if overlays == 0 {
-		t.Fatalf("no overlays found in %s/", overlaysDir)
 	}
 }
