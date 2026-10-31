@@ -704,26 +704,10 @@ worker:
 		strings.Join(extra, "\n")))
 }
 
-func TestServerRecordingQueryShowsS3EncodedCopyAfterOriginalRemoval(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool)
-	originalID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-		p.RelPath = "server-s3-query/original.ts"
-	})
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
-		t.Fatalf("removing the original copy: %v", err)
-	}
-	profile := "h264"
-	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-		p.Kind = "encoded"
-		p.Profile = &profile
-		p.RelPath = "server-s3-query/encoded.mp4"
-	})
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
-		t.Fatalf("placing encoded copy in S3 derived store: %v", err)
-	}
-
+// newFSAndS3APIServer は、FS の原本置き場 test-store と S3 の派生物置き場 s3-derived を持つ
+// 設定で api ロールの HTTP サーバーを起動する。
+func newFSAndS3APIServer(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *httptest.Server {
+	t.Helper()
 	dbCfg := testutil.DatabaseConfig(t)
 	user := dbCfg.User
 	if user == "" {
@@ -770,6 +754,30 @@ storage:
 	}
 	httpServer := httptest.NewServer(server.Handler)
 	t.Cleanup(httpServer.Close)
+	return httpServer
+}
+
+func TestServerRecordingQueryShowsS3EncodedCopyAfterOriginalRemoval(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	originalID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "server-s3-query/original.ts"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
+		t.Fatalf("removing the original copy: %v", err)
+	}
+	profile := "h264"
+	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "server-s3-query/encoded.mp4"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
+		t.Fatalf("placing encoded copy in S3 derived store: %v", err)
+	}
+
+	httpServer := newFSAndS3APIServer(t, ctx, pool)
 
 	response, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", httpServer.URL, recordingID))
 	if err != nil {
@@ -789,6 +797,34 @@ storage:
 	}
 	if len(got.EncodedAssets) != 1 || got.EncodedAssets[0].Profile != profile {
 		t.Fatalf("recording encoded assets = %+v, want S3 profile %q after original removal", got.EncodedAssets, profile)
+	}
+}
+
+// TestServerStoreBreakerResumeAcceptsS3Store は、FS と S3 の置き場を持つ設定で S3 置き場の
+// delete_reconcile を /api/stores/{store}/breakers/{name}/resume で再開できることを確かめる。
+// RouterConfig.StorageStoreNames に FS の置き場名だけを渡すと、この呼び出しは 400 になる。
+func TestServerStoreBreakerResumeAcceptsS3Store(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO circuit_breakers (scope, name, pending, threshold, detail) VALUES ('s3-derived', 'delete_reconcile', 10, 20, '{}'::jsonb)`); err != nil {
+		t.Fatalf("inserting tripped breaker: %v", err)
+	}
+	httpServer := newFSAndS3APIServer(t, ctx, pool)
+
+	response, err := http.Post(httpServer.URL+"/api/stores/s3-derived/breakers/delete_reconcile/resume", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("resume status = %d, want 204", response.StatusCode)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE scope = 's3-derived' AND name = 'delete_reconcile'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("tripped row still exists after resume: count = %d", n)
 	}
 }
 

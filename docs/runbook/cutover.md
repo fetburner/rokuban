@@ -126,8 +126,8 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
    ```sh
    # ruler_deletes / reconcile_total_loss（site は GET /api/breakers の値）
    curl -X POST http://localhost:40773/api/sites/<site>/breakers/ruler_deletes/resume
-   # delete_reconcile（置き場の範囲。置き場は api の設定の FS 置き場で決まる）
-   curl -X POST http://localhost:40773/api/breakers/delete_reconcile/resume
+   # delete_reconcile（置き場の範囲。store は GET /api/breakers の値）
+   curl -X POST http://localhost:40773/api/stores/<store>/breakers/delete_reconcile/resume
    ```
 
 `reconcile_total_loss` は、「desired が空なのに自分の schedule がある」という形で発動する。件数は発動条件にならない。発動したら、DB 接続と予約の中身を先に疑う。

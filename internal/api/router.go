@@ -4,7 +4,6 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
-	"slices"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -145,11 +144,9 @@ type RouterConfig struct {
 	// OriginalLocator は録画の原本のコピーがある置き場を引く契約。nil なら置き場ごとの URL を省略し、
 	// CM 検出のヒントを積まない。
 	OriginalLocator store.OriginalLocator
-	// StoreNames は storage.stores の FS 置き場の名前。置き場ごとの削除ブレーカーの再開が引く範囲になる。
-	StoreNames []string
-	// DerivedStoreName は storage.derived の置き場の名前。FS 置き場の範囲に含まれないときだけ、
-	// 削除ブレーカーの再開がこの置き場の範囲の行も引く。
-	DerivedStoreName string
+	// StorageStoreNames は config.storage.stores に定義された置き場名。
+	// 置き場の範囲のブレーカーの再開先を検証する。種類は問わない。
+	StorageStoreNames []string
 
 	// CMDetectEnabled は config.cm_detect.enabled。GET /api/capabilities の cmDetect に出し、
 	// false のとき encode-policy の cmDetect=true と検出の再試行を 409 にする。
@@ -214,9 +211,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	handler.originalLocator = cfg.OriginalLocator
-	handler.breakerScopes = append([]string(nil), cfg.StoreNames...)
-	if cfg.DerivedStoreName != "" && !slices.Contains(cfg.StoreNames, cfg.DerivedStoreName) {
-		handler.breakerScopes = append(handler.breakerScopes, cfg.DerivedStoreName)
+	handler.storageStores = make(map[string]struct{}, len(cfg.StorageStoreNames))
+	for _, name := range cfg.StorageStoreNames {
+		handler.storageStores[name] = struct{}{}
 	}
 	handler.recordingPlayback = recordingPlaybackConfig{enabled: cfg.RecordingHLSEnabled, profiles: cfg.LiveProfiles}
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

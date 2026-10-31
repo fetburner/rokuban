@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/store"
@@ -64,14 +62,18 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 		// 通す。クライアント側は元々このずれを見越したフォールバックを持つ
 		// （web/src/lib/breaker.ts の describeBreakerName / describeBreakerReason
 		// —— 未知の値は識別子そのもの表示 / 理由は空文字）。
-		// API の site は site の範囲だけに使う。置き場の範囲を漏らすと、
-		// クライアントが置き場名を site の再開 URL に入れてしまう。
+		// site と store はブレーカーの範囲に対応する方だけを埋める。
+		// 一覧の consumer がそれぞれの値で再開先を決める。
 		site := ""
+		store := ""
 		if breaker.ScopeKindFor(r.Name) == breaker.ScopeSite {
 			site = r.Scope
+		} else if breaker.ScopeKindFor(r.Name) == breaker.ScopeStore {
+			store = r.Scope
 		}
 		result = append(result, CircuitBreaker{
 			Site:      site,
+			Store:     store,
 			Name:      CircuitBreakerName(r.Name),
 			TrippedAt: r.TrippedAt,
 			Pending:   r.Pending,
@@ -99,14 +101,8 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // site にも束縛されないので、レジストリに無い site が来た場合だけ 400 にする
 // （issue #184 M4-12。レジストリの全 site をこのプロセスから操作できる）。
 //
-// 置き場の範囲の名前（delete_reconcile）を knownSite より先に検査する。
-// この名前はこのエンドポイントの資源ではなく取り違え
-// （ResumeSitelessCircuitBreaker が受ける。issue #450）で、運用者が最も
-// 打ちがちな旧コマンド `POST /api/sites/default/breakers/delete_reconcile/resume`
-// は `default` がレジストリに無いことが多く、knownSite を先に見ると
-// 「unknown site」としか返らず新ルートへ気付けない。先に見れば site の
-// 正誤に関わらず新ルートを案内できる。理由と経緯は
-// internal/worker/delete_reconcile.go の DeleteReconcileWorker doc コメント参照。
+// 置き場の範囲の名前（delete_reconcile）はこのエンドポイントの資源ではない。
+// site の検証より先に範囲を判定し、置き場を指定する再開ルートを案内する。
 //
 // 範囲の分類を緩めて DELETE をそのまま実行すると `scope = req.Site AND name =
 // 'delete_reconcile'` は常に 0 行になり、正しい 400 の代わりに紛らわしい
@@ -114,7 +110,7 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBreakerRequestObject) (ResumeCircuitBreakerResponseObject, error) {
 	if breaker.ScopeKindFor(req.Name) == breaker.ScopeStore {
 		return ResumeCircuitBreaker400JSONResponse{
-			Error: fmt.Sprintf("circuit breaker %q is not site-scoped; use POST /api/breakers/%s/resume instead", req.Name, req.Name),
+			Error: fmt.Sprintf("circuit breaker %q is not site-scoped; use POST /api/stores/{store}/breakers/%s/resume instead", req.Name, req.Name),
 		}, nil
 	}
 	if !h.knownSite(req.Site) {
@@ -134,62 +130,30 @@ func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBrea
 	return ResumeCircuitBreaker204Response{}, nil
 }
 
-// ResumeSitelessCircuitBreaker は site のパス指定を使わないサーキットブレーカーの手動再開
-// (POST /api/breakers/{name}/resume)。置き場の範囲の名前（delete_reconcile）を受ける。
-// 範囲が置き場なのは、削除 reconcile のブレーカーが worker の担当する FS 置き場に
-// 従属するため（DeleteReconcileWorker の doc コメント参照）。
+// ResumeStoreCircuitBreaker は置き場の範囲のサーキットブレーカーを手動で再開する
+// (POST /api/stores/{store}/breakers/{name}/resume)。
 //
-// site の範囲の名前（ruler_deletes / reconcile_total_loss）と未知の名前は 400 にする。
-// ResumeCircuitBreaker と対称に、分類を緩めて DELETE をそのまま実行すると
-// 範囲が空文字列で name が `ruler_deletes` の行を探すことになり（常に 0 行）、
-// 正しい 400 の代わりに紛らわしい 404 を返してしまう。
-//
-// site をレジストリと照合する必要はない（不変条件 1）。再開する行の範囲は、
-// api の設定の FS 置き場の名前（breakerStoreScope）で決まる。api は FS 置き場が
-// 無い設定でも起動できるので、その場合は置き場を決められず 400 にする。
-func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSitelessCircuitBreakerRequestObject) (ResumeSitelessCircuitBreakerResponseObject, error) {
+// 再開対象はパスの store と name で一意に指定する。store の検証は
+// config.storage.stores の名前だけで行い、不変条件 1 に従って置き場の実体には触れない。
+func (h *Server) ResumeStoreCircuitBreaker(ctx context.Context, req ResumeStoreCircuitBreakerRequestObject) (ResumeStoreCircuitBreakerResponseObject, error) {
 	if !knownCircuitBreakerNames[req.Name] {
-		return ResumeSitelessCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
+		return ResumeStoreCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
 	}
 	if breaker.ScopeKindFor(req.Name) != breaker.ScopeStore {
-		return ResumeSitelessCircuitBreaker400JSONResponse{
+		return ResumeStoreCircuitBreaker400JSONResponse{
 			Error: fmt.Sprintf("circuit breaker %q is site-scoped; use POST /api/sites/{site}/breakers/%s/resume instead", req.Name, req.Name),
 		}, nil
 	}
-	if len(h.breakerScopes) == 0 {
-		return ResumeSitelessCircuitBreaker400JSONResponse{
-			Error: fmt.Sprintf("circuit breaker %q is store-scoped, but the api config has no FS store to resolve it", req.Name),
-		}, nil
+	if _, ok := h.storageStores[req.Store]; !ok {
+		return ResumeStoreCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown storage store %q", req.Store)}, nil
 	}
 
-	// 発動中の範囲が 2 つ以上あると、どの置き場の行を消すかを決められない。置き場を指定する再開が
-	// 入るまでは、何も消さずに 409 を返し、発動中の範囲の名前を並べる。
-	rows, err := h.breakerAdmin.List(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing circuit breakers: %w", err)
-	}
-	var tripped []string
-	for _, r := range rows {
-		if r.Name == req.Name && slices.Contains(h.breakerScopes, r.Scope) {
-			tripped = append(tripped, r.Scope)
-		}
-	}
-	slices.Sort(tripped)
-	switch len(tripped) {
-	case 0:
-		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
-	case 1:
-	default:
-		return ResumeSitelessCircuitBreaker409JSONResponse{Error: fmt.Sprintf(
-			"circuit breaker %q is tripped in more than one store (%s); resuming a single store is not available yet, so nothing was resumed",
-			req.Name, strings.Join(tripped, ", "))}, nil
-	}
-	err = h.breakerAdmin.Resume(ctx, tripped[0], req.Name)
+	err := h.breakerAdmin.Resume(ctx, req.Store, req.Name)
 	if errors.Is(err, store.ErrNotFound) {
-		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
+		return ResumeStoreCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped in store %q", req.Name, req.Store)}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("resuming circuit breaker %q: %w", req.Name, err)
+		return nil, fmt.Errorf("resuming circuit breaker %q in store %q: %w", req.Name, req.Store, err)
 	}
-	return ResumeSitelessCircuitBreaker204Response{}, nil
+	return ResumeStoreCircuitBreaker204Response{}, nil
 }

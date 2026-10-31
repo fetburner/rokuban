@@ -251,11 +251,11 @@ URL の形は `/reservations/$site/$programId` である。
 
 対象の形は `/api/sites/{site}/...` である。例は `POST /api/sites/{site}/breakers/{name}/resume` と `GET /api/sites/{site}/programs/{programId}/reservation` である。
 
-ブレーカー再開はさらに一段複雑である。行が運ぶ `site` は、置き場の範囲の `delete_reconcile` では空文字列になる。その場合は、行から始まる操作でも、site を含まない `POST /api/breakers/{name}/resume` を呼ぶ。
+ブレーカー再開で、クライアントはブレーカー名から範囲を分類し直さない。行の `store` が空でなければ `POST /api/stores/{store}/breakers/{name}/resume` を呼ぶ。空なら `POST /api/sites/{site}/breakers/{name}/resume` を呼ぶ。置き場の範囲の `delete_reconcile` は `store` に置き場名が入る。
 
 <details><summary>根拠</summary>
 
-- site 無しの判定: `components/circuit-breaker-banner.tsx` の `isSiteless`
+- 置き場別の再開: `components/circuit-breaker-banner.tsx` の `isStoreScoped`
 
 </details>
 
