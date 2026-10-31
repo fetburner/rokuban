@@ -137,7 +137,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	if got := assetState(t, pool, f.h264ID); got != "deleted" {
+	if got := singleCopyState(t, pool, f.h264ID); got != "deleted" {
 		t.Errorf("h264 state = %q, want deleted", got)
 	}
 	if fileExists(f.h264Path) {
@@ -146,13 +146,13 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 	if removalRequestExists(t, pool, f.recordingID, "h264") {
 		t.Error("removal request still exists after the version was deleted")
 	}
-	if got := assetState(t, pool, f.h265ID); got != "active" {
+	if got := singleCopyState(t, pool, f.h265ID); got != "active" {
 		t.Errorf("h265 state = %q, want active", got)
 	}
 	if !fileExists(f.h265Path) {
 		t.Error("h265 file was removed, want kept")
 	}
-	if got := assetState(t, pool, f.originalID); got != "active" {
+	if got := singleCopyState(t, pool, f.originalID); got != "active" {
 		t.Errorf("original state = %q, want active", got)
 	}
 
@@ -206,13 +206,13 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	if got := assetState(t, pool, readded.h264ID); got != "active" {
+	if got := singleCopyState(t, pool, readded.h264ID); got != "active" {
 		t.Errorf("re-added h264 state = %q, want active", got)
 	}
 	if !fileExists(readded.h264Path) {
 		t.Error("re-added h264 file was removed, want kept")
 	}
-	if got := assetState(t, pool, stuck.h264ID); got != "deleted" {
+	if got := singleCopyState(t, pool, stuck.h264ID); got != "deleted" {
 		t.Errorf("stuck h264 state = %q, want deleted", got)
 	}
 	if fileExists(stuck.h264Path) {
@@ -249,7 +249,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 	}
 
 	for _, id := range []int64{trashAsset, a.h264ID, b.h264ID} {
-		if got := assetState(t, pool, id); got != "active" {
+		if got := singleCopyState(t, pool, id); got != "active" {
 			t.Errorf("asset %d state = %q, want active (breaker should have withheld deletes)", id, got)
 		}
 	}

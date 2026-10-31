@@ -121,7 +121,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 		t.Fatalf("Work(): %v", err)
 	}
 
-	if got := assetState(t, pool, assetID); got != "deleted" {
+	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("filesystem derived copy state = %q, want deleted", got)
 	}
 	_, deletes := recorder.calls()
@@ -172,7 +172,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	if err := w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName); err != nil {
 		t.Fatalf("restoreUnqualifiedDeletingAssets: %v", err)
 	}
-	if got := assetState(t, pool, assetID); got != "active" {
+	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("state after revert = %q, want active", got)
 	}
 	if heads, _ := recorder.calls(); !contains(heads, relPath) {
@@ -189,7 +189,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	if err := w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName); err != nil {
 		t.Fatalf("restoreUnqualifiedDeletingAssets (absent): %v", err)
 	}
-	if got := assetState(t, pool, assetID); got != "deleted" {
+	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("state after revert with the key absent = %q, want deleted", got)
 	}
 }

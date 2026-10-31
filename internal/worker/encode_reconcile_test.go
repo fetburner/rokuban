@@ -760,7 +760,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	if err := runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
 	}
-	if got := assetState(t, pool, originalID); got != "active" {
+	if got := singleCopyState(t, pool, originalID); got != "active" {
 		t.Errorf("original state after delete reconcile = %q, want active "+
 			"(a config typo/rename must not make this original deletable; it must stay until the profile is re-encoded or restored)", got)
 	}
