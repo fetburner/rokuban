@@ -164,6 +164,9 @@ type Deps struct {
 	// 空なら置き場で修飾したワーカーは登録されず、その kind のジョブは置き場の不一致で失敗する。
 	// このトップレベルの store は置き場に束ねず、DB だけを触る reconcile が使う。
 	PerStore map[string]*Deps
+	// MountedStores はマウントした FS 置き場の名前を `--stores` の順で持つ。ingest が規則で
+	// 選べなかったときに書く先頭の置き場を決める（名前順ではない。内容は PerStore と同じ集合）。
+	MountedStores []string
 	// OriginalLocator は reconcile が読み取りジョブを積む置き場の選択に使う。置き場に束ねない。
 	OriginalLocator store.OriginalLocator
 	// IngestStores は ingest が書き込む置き場を規則から選ぶ契約。

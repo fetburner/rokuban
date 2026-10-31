@@ -9641,10 +9641,15 @@ export type resumeSitelessCircuitBreakerResponse404 = {
   status: 404
 }
 
+export type resumeSitelessCircuitBreakerResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
 export type resumeSitelessCircuitBreakerResponseSuccess = (resumeSitelessCircuitBreakerResponse204) & {
   headers: Headers;
 };
-export type resumeSitelessCircuitBreakerResponseError = (resumeSitelessCircuitBreakerResponse400 | resumeSitelessCircuitBreakerResponse404) & {
+export type resumeSitelessCircuitBreakerResponseError = (resumeSitelessCircuitBreakerResponse400 | resumeSitelessCircuitBreakerResponse404 | resumeSitelessCircuitBreakerResponse409) & {
   headers: Headers;
 };
 
@@ -9661,6 +9666,9 @@ export const getResumeSitelessCircuitBreakerUrl = (name: string,) => {
 /**
  * site を持たないブレーカー専用の再開エンドポイント
  * （今のところ `delete_reconcile` のみ）。
+ * 発動中の置き場が 1 つだけならその置き場を再開する。2 つ以上なら
+ * 何も再開せず 409 を返す（どの置き場かを決められないため。置き場を
+ * 指定する再開はまだ無い）。
  * 理由と経緯は `internal/worker/delete_reconcile.go` の
  * `DeleteReconcileWorker` doc コメント参照（issue #450）。
  *

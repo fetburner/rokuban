@@ -448,7 +448,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var workerAdapter *riveradapter.Adapter
 	if slices.Contains(roles, "worker") {
-		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, bound, roots, workerCfg, pool, webhookClient, ingestStorageProbed)
+		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, bound, mounted, roots, workerCfg, pool, webhookClient, ingestStorageProbed)
 		if err != nil {
 			return err
 		}
@@ -779,7 +779,7 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
-func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
+func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, mounted []string, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
 	// 置き場に束ねない store。DB だけを触る reconcile と、置き場をまたぐ転送が使う。
 	// until_encoded の原本の削除判定は storage.derived を使う。
 	mediaStore := pgstore.NewMediaWithStores(pool, "", "", cfg.Storage.Derived)
@@ -864,6 +864,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		StorageTransfer:          mediaStore,
 		StorageTransferPolicy:    cfg.Storage,
 		StorageRoots:             roots,
+		MountedStores:            mounted,
 		TSScan:                   mediaStore,
 		EncodeAttempts:           mediaStore,
 		StorageObservation:       mediaStore,
@@ -961,8 +962,10 @@ func newStoreScopedDeps(ctx context.Context, pool *pgxpool.Pool, cfg *config.Con
 		derivedMedia := pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, name, cfg.Storage.Derived)
 		scoped.DerivedMediaPublish = derivedMedia
 		// この置き場が派生物の置き場と同じ FS なら、既存の削除・監査の経路を共有する。
-		// 別の置き場（S3、または他の FS）は、独立した 1 パスで扱う。
-		if cfg.Storage.Derived != name {
+		// 別の S3 の派生物の置き場は、独立した 1 パスで扱う。FS の派生物の置き場を別の置き場の
+		// worker が mount しているときは、その FS 全体を objstore のパスで掃かないよう、このパスを作らない
+		// （派生物の FS は置き場ごとのマーカー照合の経路を通らない）。
+		if cfg.Storage.Derived != name && cfg.Storage.Stores[cfg.Storage.Derived].Kind == "s3" {
 			scoped.DerivedMediaDelete = derivedMedia
 			scoped.DerivedStorage = derivedMedia
 			scoped.DerivedPendingReclaim = derivedMedia

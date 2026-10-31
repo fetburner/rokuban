@@ -94,7 +94,7 @@ func (w ingestRecorder) Work(context.Context, jobs.IngestJobArgs) error {
 	return nil
 }
 
-// ingest は、規則に合う置き場がマウント済みならそこへ、そうでなければ名前順で先頭のマウント済みの置き場へ書く。
+// ingest は、規則に合う置き場がマウント済みならそこへ、そうでなければ --stores の順で先頭のマウント済みの置き場へ書く。
 func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 	policy := config.StorageConfig{
 		Stores:    map[string]config.StoreConfig{"tokyo": {Kind: "fs"}, "takamatsu": {Kind: "fs"}, "nagoya": {Kind: "fs"}},
@@ -108,7 +108,7 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 		want    string
 	}{
 		{"rule store is mounted", "takamatsu", []string{"tokyo", "takamatsu"}, "takamatsu"},
-		{"rule store is not mounted, first mounted store by name", "nagoya", []string{"tokyo", "takamatsu"}, "takamatsu"},
+		{"rule store is not mounted, first mounted store in --stores order", "nagoya", []string{"tokyo", "takamatsu"}, "tokyo"},
 		{"rule evaluates to nothing", "", []string{"tokyo"}, "tokyo"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,7 +117,7 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 			for _, name := range tc.mounted {
 				perStore[name] = &Deps{MediaStoreName: name}
 			}
-			deps := &Deps{PerStore: perStore, IngestStores: fixedStoreChooser{tc.chosen}, StorageTransferPolicy: policy}
+			deps := &Deps{PerStore: perStore, MountedStores: tc.mounted, IngestStores: fixedStoreChooser{tc.chosen}, StorageTransferPolicy: policy}
 			route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
 				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 			})
@@ -161,7 +161,8 @@ func (failingStoreChooser) DesiredOriginalStoreAtIngest(context.Context, []byte,
 	return "", errors.New("rules query failed")
 }
 
-// 規則の評価が失敗しても ingest は止まらず、先頭のマウント済みの置き場へ書く。
+// 規則の評価が失敗しても ingest は止まらず、`--stores` の順で先頭のマウント済みの置き場へ書く。
+// 名前順では takamatsu が先頭になるので、順序を名前順に戻すとこのテストが落ちる。
 func TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail(t *testing.T) {
 	policy := config.StorageConfig{
 		Stores:    map[string]config.StoreConfig{"tokyo": {Kind: "fs"}, "takamatsu": {Kind: "fs"}, "nagoya": {Kind: "fs"}},
@@ -170,14 +171,14 @@ func TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail(t *testing.T
 	}
 	var calls []string
 	perStore := map[string]*Deps{"tokyo": {MediaStoreName: "tokyo"}, "takamatsu": {MediaStoreName: "takamatsu"}}
-	deps := &Deps{PerStore: perStore, IngestStores: failingStoreChooser{}, StorageTransferPolicy: policy}
+	deps := &Deps{PerStore: perStore, MountedStores: []string{"tokyo", "takamatsu"}, IngestStores: failingStoreChooser{}, StorageTransferPolicy: policy}
 	route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
 		return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 	})
 	if err := route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}); err != nil {
 		t.Fatalf("Work = %v, want ingest to proceed past a failed store choice", err)
 	}
-	if got, want := strings.Join(calls, ","), "takamatsu"; got != want {
-		t.Fatalf("ingest wrote to %s, want literal %s (the first mounted store)", got, want)
+	if got, want := strings.Join(calls, ","), "tokyo"; got != want {
+		t.Fatalf("ingest wrote to %s, want literal %s (the first mounted store in --stores order)", got, want)
 	}
 }
