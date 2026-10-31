@@ -125,6 +125,8 @@ temp を読む変換の引数と、入力の種類を変換の組に含める理
 
 変換は、セグメント `n` の映像・音声 PTS を、原本の先頭映像 PTS を原点とする `origin + n × D` の格子に揃える。ffmpeg を別の位置から起動し直すたびに起点が変わると、同じ番号でも境界がずれる。要求が今の変換から離れると、変換は要求の位置から起動し直される。そのため入力には `-copyts -seek_timestamp 1 -noaccurate_seek` と原点からの `-ss` を使い、2 秒の pre-roll の後で trim と PTS filter を適用する。
 
+出力の PTS は 2^33 を法として格子に合えばよいので、`-output_ts_offset` だけを 2^33 を法として非負にし、入力側の `-ss`・trim は ffprobe が返した原点の表し方のまま使う。原点が負の入力で負の offset を渡すと、出力の先頭 PTS が 0 付近へずらされ、負の trim で起動した変換だけ格子から原点の分ずれた。
+
 2 秒の pre-roll は、合成 GOP での測定をもとにした既定値である。実録画の全 GOP 長での trim 精度は未検証である。
 
 同時に動かせる変換の数は `recording_hls.max_concurrent` までである。上限に達した状態で新しい変換が要るセグメントを要求すると、その要求が空きを待つ。待機中の要求を持たない変換のうち、最後に要求された時刻が最も古いものを止め、それが終わるまで待つ。待機中の要求を持つ変換しか残らなければ、どれかが終わるまで待つ。`recording_hls.wait_timeout` を超えた要求は 503 と `Retry-After` を返す。
@@ -143,5 +145,7 @@ temp を読む変換の引数と、入力の種類を変換の組に含める理
 <details><summary>根拠</summary>
 
 - PTS 格子と pre-roll: `TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid`
+- 原点が負の入力の格子: `TestSegmentTransformRealFFmpegKeepsGridAcrossEarlyPTSWrap`
+- 出力の offset の非負化: `TestBuildSegmentTransformArgsNormalizesNegativeOutputOffset`
 
 </details>

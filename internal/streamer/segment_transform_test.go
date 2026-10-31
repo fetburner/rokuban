@@ -69,6 +69,117 @@ func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *
 	}
 }
 
+// TestBuildSegmentTransformArgsNormalizesNegativeOutputOffset は、原点が負の入力で -output_ts_offset だけが
+// 2^33 を法として非負になり、入力側の trim は負のまま残ることを確かめる。
+//
+// 壊し方: buildSegmentTransformArgs の -output_ts_offset の正規化を外す（trimSeconds をそのまま渡す）。
+func TestBuildSegmentTransformArgsNormalizesNegativeOutputOffset(t *testing.T) {
+	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
+	args, err := buildSegmentTransformArgs(
+		LiveConfig{FFmpeg: "ffmpeg", Profiles: []LiveProfile{profile}},
+		profile,
+		// 原点は 3 秒前（負）。2^33 tick = 95443.717688889 秒なので、95440.717688889 秒を期待する。
+		SegmentTransformInput{Path: "/dev/fd/3", OriginPTS: -3 * 90000, AudioStreamCount: 1},
+		0,
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertArgPair(t, args, "-output_ts_offset", "95440.717688889")
+	assertArgPair(t, args, "-filter:a:0", "atrim=start=-3.000000000,asetpts=PTS--3.000000000/TB")
+}
+
+// TestSegmentTransformRealFFmpegKeepsGridAcrossEarlyPTSWrap は、録画の開始から 10・50・70・100 秒で
+// PTS が 2^33 を超える入力で、どの起動位置からでも各番号の先頭 PTS が格子 (原点 + n·2 秒) から 1 フレーム以内に
+// 揃うことを確かめる。原点が負になる入力で、負の trim から起動した変換の先頭 PTS が格子からずれた。
+//
+// 壊し方: buildSegmentTransformArgs の -output_ts_offset の正規化を外す。10 秒と 50 秒の入力が落ちる。
+func TestSegmentTransformRealFFmpegKeepsGridAcrossEarlyPTSWrap(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	ffprobe := lookPathFFprobe(t)
+	const (
+		modulus   = int64(1) << 33
+		clock     = int64(90_000)
+		frameTick = int64(3600) // 25 fps の 1 フレーム
+	)
+	for _, wrapAt := range []int{10, 50, 70, 100} {
+		t.Run(fmt.Sprintf("wrap at %d s", wrapAt), func(t *testing.T) {
+			inputPath := filepath.Join(t.TempDir(), "wrap.ts")
+			writeWrapAtTestTS(t, ffmpeg, inputPath, wrapAt, wrapAt+10)
+			originPTS := firstPacketPTS(t, ffprobe, inputPath)
+			input := testSegmentInput(inputPath, originPTS)
+			// 2 秒のセグメントで、番号 w の先頭から PTS が 2^33 を超える。
+			w := int64(wrapAt / 2)
+			checkGrid := func(t *testing.T, manager *SegmentManager, number int64) {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				file, err := manager.Get(ctx, SegmentKey{"recording", "generation-1", "test", "video", number}, input)
+				if err != nil {
+					t.Fatalf("segment %d: %v", number, err)
+				}
+				got := firstPacketPTS(t, ffprobe, file.Name())
+				_ = file.Close()
+				want := originPTS + number*2*clock
+				// 2^33 を法とした差を [-2^32, 2^32) に収める。
+				delta := (got - want) % modulus
+				if delta < -modulus/2 {
+					delta += modulus
+				} else if delta >= modulus/2 {
+					delta -= modulus
+				}
+				if delta < -frameTick || delta > frameTick {
+					t.Errorf("segment %d first video PTS = %d, want %d mod 2^33 ± one frame (off by %d ticks)", number, got, want, delta)
+				}
+			}
+			t.Run("連続", func(t *testing.T) {
+				manager := newRealSegmentManagerPrefetch(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20, 5)
+				defer closeSegmentManager(t, manager)
+				for number := int64(0); number <= w+2; number++ {
+					checkGrid(t, manager, number)
+				}
+			})
+			t.Run("巻き戻り前から起動", func(t *testing.T) {
+				for number := w - 1; number <= w+2; number++ {
+					manager := newRealSegmentManagerPrefetch(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20, 5)
+					checkGrid(t, manager, w-2)
+					checkGrid(t, manager, number)
+					closeSegmentManager(t, manager)
+				}
+			})
+			t.Run("巻き戻り後から起動", func(t *testing.T) {
+				for number := w + 1; number <= w+2; number++ {
+					manager := newRealSegmentManagerPrefetch(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20, 5)
+					checkGrid(t, manager, w+1)
+					checkGrid(t, manager, number)
+					closeSegmentManager(t, manager)
+				}
+			})
+		})
+	}
+}
+
+// writeWrapAtTestTS は、録画の開始（先頭パケット）から wrapAt 秒後に PTS が 2^33 tick を超える TS を書く。
+func writeWrapAtTestTS(t *testing.T, ffmpeg, path string, wrapAt, seconds int) {
+	t.Helper()
+	offset := strconv.FormatFloat(float64(int64(1)<<33)/90000-float64(wrapAt), 'f', 6, 64)
+	video := fmt.Sprintf("testsrc2=size=160x90:rate=25:duration=%d", seconds)
+	audio := fmt.Sprintf("sine=frequency=440:sample_rate=48000:duration=%d", seconds)
+	cmd := exec.Command(ffmpeg, "-v", "error", "-y",
+		"-itsoffset", offset, "-f", "lavfi", "-i", video,
+		"-itsoffset", offset, "-f", "lavfi", "-i", audio,
+		"-itsoffset", offset, "-f", "lavfi", "-i", audio,
+		"-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0",
+		"-c:v", "mpeg2video", "-q:v", "3", "-g", "50", "-bf", "0", "-sc_threshold", "0",
+		"-c:a", "mp2", "-b:a", "128k",
+		"-mpegts_copyts", "1", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts",
+		path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generating wrap-at-%d TS: %v\n%s", wrapAt, err, out)
+	}
+}
+
 func TestSegmentTransformDoesNotJoinTempAndOriginalInputs(t *testing.T) {
 	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
 	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
