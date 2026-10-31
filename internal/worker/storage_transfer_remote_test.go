@@ -20,9 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -196,23 +194,9 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("preparing checkpointed remote transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
-	tempPath := filepath.Join(f.roots["archive"], filepath.Dir(filepath.FromSlash(transfer.RelPath)),
-		fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, f.assetID, transfer.CopyID))
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	prefixSize := len(content) / 3
 	prefix := content[:prefixSize]
-	if err := os.WriteFile(tempPath, prefix, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	hasher := sha256.New()
-	if _, err := hasher.Write(prefix); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsink.WriteCheckpoint(tempPath, int64(prefixSize), hasher, nil); err != nil {
-		t.Fatal(err)
-	}
+	saveTransferProgressForTest(t, f.storageMedia, transfer, f.roots["archive"], prefix)
 
 	worker := f.worker(t)
 	if err := worker.Work(context.Background(), f.args()); err != nil {
@@ -263,20 +247,8 @@ func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 			}
-			tempPath := filepath.Join(f.roots["archive"], filepath.Dir(filepath.FromSlash(transfer.RelPath)),
-				fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, f.assetID, transfer.CopyID))
-			if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-				t.Fatal(err)
-			}
 			prefix := content[:len(content)/2]
-			if err := os.WriteFile(tempPath, prefix, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			hasher := sha256.New()
-			_, _ = hasher.Write(prefix)
-			if err := fsink.WriteCheckpoint(tempPath, int64(len(prefix)), hasher, nil); err != nil {
-				t.Fatal(err)
-			}
+			saveTransferProgressForTest(t, f.storageMedia, transfer, f.roots["archive"], prefix)
 
 			worker := f.worker(t)
 			if err := worker.Work(context.Background(), f.args()); err != nil {

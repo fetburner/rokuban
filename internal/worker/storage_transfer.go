@@ -14,6 +14,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -221,7 +223,32 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 		}
 	}
 
-	if handled, err := w.adoptExistingDestination(ctx, transfer, args, rules, targetPath, src, log); handled {
+	owner := uuid.New()
+	progress, acquired, err := w.Storage.AcquireMediaAssetTransferProgress(ctx, transfer.CopyID, owner, storageTransferLeaseTTL())
+	if err != nil {
+		return fmt.Errorf("acquiring transfer progress: %w", err)
+	}
+	if !acquired {
+		return jobq.Snooze(storageTransferLockSnooze)
+	}
+	return w.copyOriginalSlice(ctx, transfer, args, rules, src, targetRoot, targetPath, owner, progress, log)
+}
+
+// copyOriginalSlice は原本を 1 slice ぶん転送する。slice の期限か親 ctx の終わりで止まったら進捗を保存して snooze し、
+// 次の Work が続きから再開する。失敗で抜けるときは lease を切り、次の試行が世代を上げるようにする。
+func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, src transferSource, targetRoot, targetPath string, owner uuid.UUID, progress store.TransferProgress, log *slog.Logger) (retErr error) {
+	saved := false
+	defer func() {
+		if saved {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := w.Storage.ReleaseMediaAssetTransferProgress(releaseCtx, transfer.CopyID, owner); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("releasing transfer progress: %w", err))
+		}
+	}()
+	if handled, err := w.adoptExistingDestination(ctx, transfer, args, rules, targetPath, progress.PrevGeneration, src, log); handled {
 		return err
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "creating transfer destination directory"); err != nil {
@@ -230,46 +257,172 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("creating transfer destination directory: %w", err))
 	}
-	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID)
-	tempLock, created, err := fsink.LockTempFile(tempPath)
+	sourceSize, err := src.precheck()
 	if err != nil {
-		if fsink.TempLockBusy(err) {
+		return w.recordTransferFailure(ctx, transfer, log, err)
+	}
+	if sourceSize >= 0 && sourceSize != transfer.SizeBytes {
+		return w.handleTransferMismatch(ctx, transfer, log, src, "", fmt.Sprintf("source size %d differs from logical asset size %d", sourceSize, transfer.SizeBytes))
+	}
+	slice, err := w.openTransferSlice(ctx, transfer, owner, progress, targetPath)
+	if err != nil {
+		if errors.Is(err, store.ErrTransferLeaseLost) {
+			log.Info("storage transfer: progress lease lost before writing; another attempt owns the transfer")
 			return nil
 		}
-		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("locking transfer temp: %w", err))
+		return w.recordTransferFailure(ctx, transfer, log, err)
 	}
-	defer func() { _ = tempLock.Close() }()
-	if created {
-		if err := os.Chmod(tempPath, 0o644); err != nil {
-			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("setting transfer temp mode: %w", err))
+	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
+	defer cancelSlice()
+	written, copyErr := w.copyTransferSlice(sliceCtx, src, transfer.SourceStore, slice, transfer.SizeBytes)
+	// 全部書き終えたあとで期限が来た場合（帯域制限の待ちが最後の読みと同時に終わる）も、書いた分はすべてハッシュ済みなので完了として扱う。
+	if copyErr != nil && written != transfer.SizeBytes {
+		if sliceCtx.Err() == nil {
+			_ = slice.file.Close()
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("copying transfer source: %w", copyErr))
 		}
+		// slice の期限か親 ctx の終わりで止まった。書いた分を保存して次の Work に譲る。
+		return w.pauseOriginalSlice(transfer, owner, slice, written, log, &saved)
 	}
-	digest, size, paused, copyErr := w.copyToTransferTemp(ctx, src, tempPath, tempLock, transfer.SourceStore, args.Store, transfer.SizeBytes, len(transfer.SHA256) > 0)
-	if paused {
-		return nil
+	if err := slice.file.Sync(); err != nil {
+		_ = slice.file.Close()
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("syncing transfer temp: %w", err))
 	}
-	if errors.Is(copyErr, errTransferSourceMismatch) {
-		return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, "transfer temp prefix differs from source")
+	if err := slice.file.Close(); err != nil {
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("closing transfer temp: %w", err))
 	}
-	if copyErr != nil {
-		return w.recordTransferFailure(ctx, transfer, log, copyErr)
-	}
-	if size != transfer.SizeBytes {
-		return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, fmt.Sprintf("source size %d differs from logical asset size %d", size, transfer.SizeBytes))
+	digest := slice.hasher.Sum(nil)
+	if written != transfer.SizeBytes {
+		return w.handleTransferMismatch(ctx, transfer, log, src, slice.path, fmt.Sprintf("source size %d differs from logical asset size %d", written, transfer.SizeBytes))
 	}
 	if len(transfer.SHA256) > 0 && !bytes.Equal(digest, transfer.SHA256) {
-		return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, "transfer SHA-256 differs from logical asset")
+		return w.handleTransferMismatch(ctx, transfer, log, src, slice.path, "transfer SHA-256 differs from logical asset")
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing storage transfer"); err != nil {
 		return err
 	}
-	if err := fsink.PublishLink(tempPath, targetPath); err != nil {
+	if err := fsink.PublishLink(slice.path, targetPath); err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if err := fsink.SyncParentDir(targetPath); err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("syncing transfer destination directory: %w", err))
 	}
-	return w.completeTransfer(ctx, transfer, args, rules, digest, src, targetPath, tempPath, true, log)
+	return w.completeTransfer(ctx, transfer, args, rules, digest, src, targetPath, slice.path, true, log)
+}
+
+// transferSlice は、1 回の slice が書く temp と、その続きから書き始める位置である。
+type transferSlice struct {
+	file       *os.File
+	path       string
+	generation int64
+	offset     int64
+	hasher     hash.Hash
+}
+
+// openTransferSlice は、進捗が指す世代の temp を開き、書き始める位置と SHA-256 の状態を用意する。
+// きれいな引き継ぎで temp の長さと状態が保存と一致すれば、同じ世代の続きから書く。
+// それ以外（temp が無い、長さが違う、状態が戻らない）は世代を上げて先頭から書く。
+func (w *StorageTransferWorker) openTransferSlice(ctx context.Context, transfer store.MediaAssetTransfer, owner uuid.UUID, progress store.TransferProgress, targetPath string) (transferSlice, error) {
+	if progress.Resumed {
+		path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
+		if slice, ok, err := resumeTransferTemp(path, progress); err != nil {
+			return transferSlice{}, err
+		} else if ok {
+			slice.generation = progress.Generation
+			return slice, nil
+		}
+		generation, err := w.Storage.ResetMediaAssetTransferProgress(ctx, transfer.CopyID, owner)
+		if err != nil {
+			return transferSlice{}, fmt.Errorf("starting a new transfer generation: %w", err)
+		}
+		progress.Generation = generation
+	}
+	path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
+	if progress.PrevGeneration > 0 && progress.PrevGeneration != progress.Generation {
+		// 前の世代の temp は、この試行が引き継がないので消す。前の世代の書き手は lease を失っていて、
+		// 書いても今の世代のファイルには影響しない。rel_path lock の下で行うので、他の転送と競合しない。
+		superseded := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevGeneration)
+		if err := os.Remove(superseded); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return transferSlice{}, fmt.Errorf("removing superseded transfer temp: %w", err)
+		}
+	}
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return transferSlice{}, fmt.Errorf("creating transfer temp: %w", err)
+	}
+	return transferSlice{file: file, path: path, generation: progress.Generation, hasher: sha256.New()}, nil
+}
+
+// resumeTransferTemp は保存された状態から temp を開く。使えないときは ok=false を返し、呼び出し側が世代を上げる。
+func resumeTransferTemp(path string, progress store.TransferProgress) (transferSlice, bool, error) {
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return transferSlice{}, false, nil
+	}
+	if err != nil {
+		return transferSlice{}, false, fmt.Errorf("opening transfer temp for resume: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return transferSlice{}, false, fmt.Errorf("stating transfer temp for resume: %w", err)
+	}
+	hasher := sha256.New()
+	if info.Size() != progress.Offset || fsink.RestoreHash(hasher, progress.HashState) != nil {
+		_ = file.Close()
+		return transferSlice{}, false, nil
+	}
+	if _, err := file.Seek(progress.Offset, io.SeekStart); err != nil {
+		_ = file.Close()
+		return transferSlice{}, false, fmt.Errorf("seeking transfer temp to resume offset: %w", err)
+	}
+	return transferSlice{file: file, path: path, offset: progress.Offset, hasher: hasher}, true, nil
+}
+
+// copyTransferSlice は転送元を slice.offset から expectedSize まで temp に書き、書き終えた総バイト数を返す。
+func (w *StorageTransferWorker) copyTransferSlice(ctx context.Context, src transferSource, sourceStore string, slice transferSlice, expectedSize int64) (int64, error) {
+	if slice.offset > expectedSize {
+		return slice.offset, fmt.Errorf("transfer temp is longer than the logical asset: offset %d, size %d", slice.offset, expectedSize)
+	}
+	if slice.offset == expectedSize {
+		return slice.offset, nil
+	}
+	reader, err := src.open(ctx, slice.offset)
+	if err != nil {
+		return slice.offset, fmt.Errorf("opening transfer source: %w", err)
+	}
+	defer func() { _ = reader.Close() }()
+	sourceReader, err := w.transferSourceReader(ctx, sourceStore, reader)
+	if err != nil {
+		return slice.offset, err
+	}
+	count, err := io.CopyBuffer(fsink.NewHashingWriter(slice.file, slice.hasher), io.LimitReader(sourceReader, expectedSize-slice.offset), make([]byte, 128*1024))
+	return slice.offset + count, err
+}
+
+// pauseOriginalSlice は slice の終わりの状態を保存し、次の Work に譲る。保存で lease を失っていたら、他の試行が持っているので何もしない。
+func (w *StorageTransferWorker) pauseOriginalSlice(transfer store.MediaAssetTransfer, owner uuid.UUID, slice transferSlice, written int64, log *slog.Logger, saved *bool) error {
+	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	saveErr := fsink.SaveCheckpoint(slice.file, written, slice.hasher, func(c fsink.Checkpoint) error {
+		if err := w.Storage.SaveMediaAssetTransferProgress(saveCtx, transfer.CopyID, owner, slice.generation, c.Offset, c.HashState); err != nil {
+			return err
+		}
+		*saved = true
+		return nil
+	})
+	if closeErr := slice.file.Close(); closeErr != nil && saveErr == nil {
+		log.Warn("storage transfer: closing paused transfer temp failed", "err", closeErr)
+	}
+	if saveErr != nil {
+		if errors.Is(saveErr, store.ErrTransferLeaseLost) {
+			log.Info("storage transfer: progress lease lost during slice; another attempt owns the transfer", "generation", slice.generation)
+			return nil
+		}
+		return fmt.Errorf("saving transfer slice: %w", saveErr)
+	}
+	log.Info("storage transfer: slice paused", "offset", written, "generation", slice.generation)
+	return jobq.Snooze(0)
 }
 
 // copyDerivedAsset transfers derived media through the object-store API. Temporary bytes live only in scratch;
@@ -677,12 +830,23 @@ func hashStoredObject(ctx context.Context, objects objstore.Store, key string) (
 	return hasher.Sum(nil), n, nil
 }
 
-// transferTempPath は、1 つの宛先コピーの転送が使う temp のパスを返す。
-func transferTempPath(targetPath string, mediaAssetID, copyID int64) string {
-	return filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, mediaAssetID, copyID))
+// transferTempPath は、1 つの宛先コピーの、世代 generation の転送 temp のパスを返す。
+// 世代を名前に入れるので、古い書き手と新しい書き手が同じファイルに書くことはない。
+func transferTempPath(targetPath string, mediaAssetID, copyID, generation int64) string {
+	return filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d-g%d", mediapath.StorageTransferTempFilePrefix, mediaAssetID, copyID, generation))
 }
 
-func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath string, src transferSource, log *slog.Logger) (bool, error) {
+// storageTransferSlice は原本の転送を 1 回の Work で続ける時間の上限である。
+// 上限に達したら進捗を保存して snooze し、次の Work が続きから再開する（ingest の slice と同じ形）。
+var storageTransferSlice = 4 * time.Minute
+
+// storageTransferLeaseTTL は slice の lease の期限である。slice の終わりの保存と片付けに余裕を持たせる。
+func storageTransferLeaseTTL() time.Duration {
+	return storageTransferSlice + 2*time.Minute
+}
+
+// adoptExistingDestination は宛先が既にあるとき、採用するか失敗にするかを決める。prevGeneration は前の試行の世代で、0 なら temp は無かった。
+func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath string, prevGeneration int64, src transferSource, log *slog.Logger) (bool, error) {
 	_, statErr := os.Lstat(targetPath)
 	if errors.Is(statErr, os.ErrNotExist) {
 		return false, nil
@@ -690,16 +854,18 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 	if statErr != nil {
 		return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("stating transfer destination: %w", statErr))
 	}
-	// link 済み・commit 前に落ちた転送は、宛先と temp が同じ inode を指す。その temp と checkpoint は
+	// link 済み・commit 前に落ちた転送は、宛先と前の世代の temp が同じ inode を指す。その temp は
 	// 採用と同時に片付ける。他人の宛先を採用するときは temp に触れない。
 	ownedTempPath := ""
-	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID)
-	owned, err := pendingTransferDestinationOwnedByTemp(targetPath, tempPath)
-	if err != nil {
-		return true, w.recordTransferFailure(ctx, transfer, log, err)
-	}
-	if owned {
-		ownedTempPath = tempPath
+	if prevGeneration > 0 {
+		tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, prevGeneration)
+		owned, err := pendingTransferDestinationOwnedByTemp(targetPath, tempPath)
+		if err != nil {
+			return true, w.recordTransferFailure(ctx, transfer, log, err)
+		}
+		if owned {
+			ownedTempPath = tempPath
+		}
 	}
 	destinationSHA, size, err := hashTransferFile(ctx, targetPath)
 	if err != nil {
@@ -730,185 +896,6 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 		}
 	}
 	return true, w.handleTransferMismatch(ctx, transfer, log, src, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes))
-}
-
-func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, src transferSource, tempPath string, tempLock *os.File, sourceStore, targetStore string, expectedSize int64, sourceSHAKnown bool) ([]byte, int64, bool, error) {
-	sourceSize, err := src.precheck()
-	if err != nil {
-		return nil, 0, false, err
-	}
-	if sourceSize >= 0 && sourceSize != expectedSize {
-		return nil, sourceSize, false, errTransferSourceMismatch
-	}
-	if err := resetOversizedTransferTemp(tempPath, tempLock, expectedSize); err != nil {
-		return nil, 0, false, err
-	}
-	paused, err := verifyCheckpointedTransferTemp(ctx, tempPath, tempLock)
-	if paused || err != nil {
-		return nil, 0, paused, err
-	}
-	hasher := sha256.New()
-	offset, replayComplete, err := replayTransferTemp(ctx, tempPath, tempLock, w.Roots[targetStore], targetStore, hasher)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, 0, true, nil //nolint:nilerr // Shutdown cancellation pauses the transfer instead of recording a failure.
-		}
-		return nil, 0, false, fmt.Errorf("replaying transfer temp: %w", err)
-	}
-	if !replayComplete || offset > expectedSize {
-		return nil, offset, false, fmt.Errorf("invalid transfer checkpoint offset %d for source size %d", offset, expectedSize)
-	}
-	// SHA-256 が既知なら、残りだけを offset から開く（先頭の読み直しが無い）。未知なら先頭から開いて接頭辞を照合する。
-	openAt := offset
-	if !sourceSHAKnown {
-		openAt = 0
-	}
-	reader, err := src.open(ctx, openAt)
-	if err != nil {
-		return nil, offset, false, fmt.Errorf("opening transfer source: %w", err)
-	}
-	defer func() { _ = reader.Close() }()
-	sourceReader, err := w.transferSourceReader(ctx, sourceStore, reader)
-	if err != nil {
-		return nil, offset, false, err
-	}
-	paused, err = verifyTransferSourcePrefix(ctx, sourceReader, offset, sourceSHAKnown, hasher)
-	if paused || err != nil {
-		return nil, offset, paused, err
-	}
-	written, paused, err := w.copyTransferSourceRemainder(ctx, sourceReader, tempPath, tempLock, targetStore, offset, expectedSize, hasher)
-	if paused || err != nil {
-		return nil, written, paused, err
-	}
-	if written != expectedSize {
-		return hasher.Sum(nil), written, false, nil
-	}
-	if err := writeFinalTransferCheckpoint(tempPath, targetStore, written, hasher, w.Roots); err != nil {
-		return nil, written, false, err
-	}
-	return hasher.Sum(nil), written, false, nil
-}
-
-func resetOversizedTransferTemp(tempPath string, tempLock *os.File, expectedSize int64) error {
-	tempInfo, err := tempLock.Stat()
-	if err != nil {
-		return fmt.Errorf("stating transfer temp: %w", err)
-	}
-	if tempInfo.Size() > expectedSize {
-		if err := fsink.RemoveCheckpoint(tempPath); err != nil {
-			return fmt.Errorf("removing checkpoint for oversized transfer temp: %w", err)
-		}
-		if err := tempLock.Truncate(0); err != nil {
-			return fmt.Errorf("truncating oversized transfer temp: %w", err)
-		}
-	}
-	if _, err := tempLock.Stat(); err != nil {
-		return fmt.Errorf("stating transfer temp after size check: %w", err)
-	}
-	return nil
-}
-
-func verifyCheckpointedTransferTemp(ctx context.Context, tempPath string, tempLock *os.File) (bool, error) {
-	tempInfo, err := tempLock.Stat()
-	if err != nil {
-		return false, fmt.Errorf("stating transfer temp after size check: %w", err)
-	}
-	checkpointHasher := sha256.New()
-	checkpointOffset, checkpointed := fsink.RestoreCheckpoint(tempPath, tempInfo.Size(), checkpointHasher)
-	if !checkpointed || checkpointOffset == 0 {
-		return false, nil
-	}
-	tempPrefixHasher := sha256.New()
-	tempPrefixReader := io.NewSectionReader(tempLock, 0, checkpointOffset)
-	verifiedPrefixBytes, prefixErr := io.CopyN(tempPrefixHasher, &storageTransferContextReader{ctx: ctx, reader: tempPrefixReader}, checkpointOffset)
-	if ctx.Err() != nil {
-		return true, nil //nolint:nilerr // Shutdown cancellation pauses the transfer instead of recording a failure.
-	}
-	if prefixErr != nil {
-		return false, fmt.Errorf("verifying checkpointed transfer temp prefix: %w", prefixErr)
-	}
-	if verifiedPrefixBytes != checkpointOffset {
-		return false, fmt.Errorf("verifying checkpointed transfer temp prefix: read=%d expected=%d", verifiedPrefixBytes, checkpointOffset)
-	}
-	if bytes.Equal(tempPrefixHasher.Sum(nil), checkpointHasher.Sum(nil)) {
-		return false, nil
-	}
-	if err := fsink.RemoveCheckpoint(tempPath); err != nil {
-		return false, fmt.Errorf("removing checkpoint for damaged transfer temp: %w", err)
-	}
-	if err := tempLock.Truncate(0); err != nil {
-		return false, fmt.Errorf("truncating damaged transfer temp: %w", err)
-	}
-	return false, nil
-}
-
-func replayTransferTemp(ctx context.Context, tempPath string, tempLock *os.File, targetRoot, targetStore string, hasher hash.Hash) (int64, bool, error) {
-	return fsink.ReplayTempFileWithCheckpoint(ctx, tempPath, tempLock, hasher, func() error {
-		return requireMediaStoreMarker(targetRoot, targetStore, "saving transfer checkpoint")
-	})
-}
-
-func verifyTransferSourcePrefix(ctx context.Context, sourceReader io.Reader, offset int64, sourceSHAKnown bool, tempHasher hash.Hash) (bool, error) {
-	if offset == 0 {
-		return false, nil
-	}
-	if sourceSHAKnown {
-		// 呼び出し側が offset から開いているので、ここでは読まない。
-		return false, nil
-	}
-	sourcePrefixHasher := sha256.New()
-	_, err := io.CopyN(sourcePrefixHasher, sourceReader, offset)
-	if err != nil {
-		if ctx.Err() != nil {
-			return true, nil //nolint:nilerr // Shutdown cancellation pauses the transfer instead of recording a failure.
-		}
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return false, errTransferSourceMismatch
-		}
-		return false, fmt.Errorf("hashing current transfer source prefix: %w", err)
-	}
-	if !bytes.Equal(sourcePrefixHasher.Sum(nil), tempHasher.Sum(nil)) {
-		return false, errTransferSourceMismatch
-	}
-	return false, nil
-}
-
-func (w *StorageTransferWorker) copyTransferSourceRemainder(ctx context.Context, sourceReader io.Reader, tempPath string, tempLock *os.File, targetStore string, offset, expectedSize int64, hasher hash.Hash) (int64, bool, error) {
-	writer, err := fsink.OpenFileFromLock(tempLock)
-	if err != nil {
-		return offset, false, fmt.Errorf("duplicating transfer temp descriptor: %w", err)
-	}
-	count, copyErr := io.CopyBuffer(fsink.NewHashingWriter(writer, hasher), io.LimitReader(sourceReader, expectedSize-offset), make([]byte, 128*1024))
-	closeErr := writer.Close()
-	written := offset + count
-	if copyErr != nil {
-		if ctx.Err() != nil {
-			if err := fsink.PersistCheckpoint(tempPath, tempLock, written, hasher, func() error {
-				return requireMediaStoreMarker(w.Roots[targetStore], targetStore, "persisting transfer checkpoint")
-			}); err != nil {
-				return written, false, fmt.Errorf("persisting interrupted transfer: %w", err)
-			}
-			return written, true, nil
-		}
-		return written, false, fmt.Errorf("copying transfer source: %w", copyErr)
-	}
-	if closeErr != nil {
-		return written, false, fmt.Errorf("closing transfer temp writer: %w", closeErr)
-	}
-	if err := tempLock.Sync(); err != nil {
-		return written, false, fmt.Errorf("syncing transfer temp: %w", err)
-	}
-	return written, false, nil
-}
-
-func writeFinalTransferCheckpoint(tempPath, targetStore string, written int64, hasher hash.Hash, roots map[string]string) error {
-	if err := requireMediaStoreMarker(roots[targetStore], targetStore, "writing transfer checkpoint"); err != nil {
-		return err
-	}
-	if err := fsink.WriteCheckpoint(tempPath, written, hasher, nil); err != nil {
-		return fmt.Errorf("writing final transfer checkpoint: %w", err)
-	}
-	return nil
 }
 
 func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, src transferSource, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {

@@ -315,7 +315,17 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 	}
 	beforeMediaAssetUnlink(candidate.RelPath)
 	fsStores := w.StorageTransferPolicy.FSStoreNames()
-	tempPath := transferTempPath(path, candidate.MediaAssetID, candidate.CopyID)
+	// 転送の書き手は rel_path lock の下でだけ temp に書くので、ここで読む世代は、この回収が消す temp と一致する。
+	// 進捗の行が無ければ、この回収が消す temp は無い。
+	tempPath := ""
+	generation, hasProgress, err := w.StorageTransfer.GetMediaAssetTransferProgressGeneration(ctx, candidate.CopyID)
+	if err != nil {
+		log.Error("delete_reconcile: reading transfer progress before pending reclaim", "err", err)
+		return
+	}
+	if hasProgress {
+		tempPath = transferTempPath(path, candidate.MediaAssetID, candidate.CopyID, generation)
+	}
 	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
 		ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
 		func(ownedRelPaths []string) error {
@@ -325,9 +335,12 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending transfer copy"); err != nil {
 				return err
 			}
-			owned, err := pendingTransferDestinationOwnedByTemp(path, tempPath)
-			if err != nil {
-				return fmt.Errorf("checking pending transfer destination ownership: %w", err)
+			owned := false
+			if tempPath != "" {
+				owned, err = pendingTransferDestinationOwnedByTemp(path, tempPath)
+				if err != nil {
+					return fmt.Errorf("checking pending transfer destination ownership: %w", err)
+				}
 			}
 			if owned {
 				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -338,8 +351,10 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("stating pending transfer destination: %w", err)
 			}
-			if err := removeTransferTempUnderPathLock(tempPath); err != nil {
-				return fmt.Errorf("removing pending transfer temp and checkpoint: %w", err)
+			if tempPath != "" {
+				if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("removing pending transfer temp: %w", err)
+				}
 			}
 			if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("syncing pending transfer directory: %w", err)
@@ -417,17 +432,6 @@ func pendingTransferDestinationOwnedByTemp(path, tempPath string) (bool, error) 
 		return false, nil
 	}
 	return os.SameFile(destinationInfo, tempInfo), nil
-}
-
-func removeTransferTempUnderPathLock(path string) error {
-	tempLock, err := fsink.LockExistingTempFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("locking transfer temp before removal: %w", err)
-	}
-	if tempLock != nil {
-		defer func() { _ = tempLock.Close() }()
-	}
-	return fsink.RemoveTemp(path)
 }
 
 // deleteMediaAsset は 1 コピーを冪等な 3 段階（active → deleting → unlink →
