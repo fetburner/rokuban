@@ -1183,8 +1183,8 @@ func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 		t.Errorf("Kind() = %q, want encode_reconcile", kind)
 	}
 	spec := EncodeReconcileArgs{}.Spec()
-	if spec.Queue != "encode" {
-		t.Errorf("Spec().Queue = %q, want encode", spec.Queue)
+	if spec.Queue != "cleanup" {
+		t.Errorf("Spec().Queue = %q, want cleanup", spec.Queue)
 	}
 	if !spec.Coalesce {
 		t.Error("Spec().Coalesce should be true")

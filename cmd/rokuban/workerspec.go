@@ -58,9 +58,9 @@ func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
 		queue(jobs.EncodeQueue, cfg.Encode.Concurrency),
 		queue(jobs.ThumbnailQueue, cfg.Encode.ThumbnailConcurrency),
 		queue(jobs.CMDetectQueue, 1),
-		// delete_reconcile と catalog_export はそれぞれ UniqueOpts{ByArgs} で自分自身の
-		// 重複実行を防ぐので、「両方が同時に 1 本ずつ走れる」ぶんだけ確保すれば足り、
-		// それ以上に増やす理由がない（label_rule_reconcile も同じキュー）。
+		// cleanup は短時間・site 非依存で ffmpeg / JLSE を要しないジョブを受ける。
+		// 長時間ジョブとキューを分け、削除・カタログ・分類・encode/CM reconcile の
+		// ファイル I/O と DB 処理は同時に 2 本までに抑える（ScaledJob も 2 本）。
 		queue(jobs.CleanupQueue, 2),
 		// UniqueOpts{ByArgs} が重複実行を防ぐので 1 本で足りる。
 		queue(jobs.StorageQueue, 1),

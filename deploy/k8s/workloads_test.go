@@ -272,6 +272,25 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 	}
 }
 
+// encode は CPU を占有する長時間ジョブだけを扱い、同時実行を 1 本に抑える。
+// reconcile は cleanup キューに分離したので、encode のために余分な Pod を許す必要はない。
+func TestEncodeScaledJobLimitsConcurrentEncodes(t *testing.T) {
+	for _, w := range scaledJobs(t) {
+		if w.name() != "rokuban-worker-encode" {
+			continue
+		}
+		got, err := strconv.Atoi(fmt.Sprint(mapAt(w.doc, "spec")["maxReplicaCount"]))
+		if err != nil {
+			t.Fatalf("%s maxReplicaCount: %v", w.id(), err)
+		}
+		if got != 1 {
+			t.Errorf("%s maxReplicaCount = %d, want literal 1", w.id(), got)
+		}
+		return
+	}
+	t.Fatal("rokuban-worker-encode ScaledJob missing")
+}
+
 // TestNotifierRunsResidentRescuerClient fixes the long-lived client's host and
 // subscription. River requires a queue to start; ruler is site-independent and
 // DB-only, so notifier can host the full worker registry without site access.

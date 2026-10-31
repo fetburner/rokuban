@@ -119,6 +119,7 @@ ScaledJob はキュー単位に作り、切る軸は寿命と site 束縛の 2 �
 - 長時間ジョブと短いジョブを混ぜない（`encode` は完了まで実行し、`ingest` は有限の Work slice ごとに snooze して再開する。`ruler` / `reconciler` は短時間で終わる）。`terminationGracePeriodSeconds` が桁で違うので、混ぜると短い側に合わせて長いジョブが殺されるか、長い側に合わせて全体のスケールインが遅くなる
 - site 束縛キューと site 非依存キューを混ぜない。混ぜると中央のジョブがサイト側で起きる。結果、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）の ScaledJob だけサイト数ぶん複製する
 - スケーラが引くキュー名が site 修飾されていることを確かめる。共有キューを見ていると、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま終わってまた起きる
+- 短時間・site 非依存で ffmpeg / JLSE を要しない `encode_reconcile` と `cm_detect_reconcile` は `cleanup` に置く。長時間 encode / CM 検出が空くまで待つと、不足の補完と死んだジョブの回収が遅れる。`cleanup` の並列数は共有するファイル I/O を抑える範囲に保つ。
 
 #### 1 件消化モード
 

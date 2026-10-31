@@ -156,6 +156,8 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 
 worker が encode 中に死ぬと、次の試行が始まるまで試行行は実行中のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は実行中に数える。
 
+`encode_reconcile` は ffmpeg を使わないため `cleanup` キューに置き、長時間 encode と処理枠を分ける。これにより、encode キューが埋まっていても不足の補完と lock 解放後の回収を進められる。
+
 desired から外れた後も River に残るジョブは、待機列に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである。
 
 <details><summary>根拠</summary>
@@ -172,6 +174,7 @@ desired から外れた後も River に残るジョブは、待機列に数え�
 - 待機列と `encodeState` 絞り込みの一致: `TestListRecordingsEncodeStateMatchesQueueCounts`
 - 確認待ちの絞り込みと件数が録画単位の同じ述語を使う: `TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate`
 - 確認待ちのメトリクスが同じ述語を使う: `TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate`
+- encode queue が埋まっても reconcile が実行される: `TestEncodeReconcileRunsWhileEncodeQueueIsFull`
 
 </details>
 
@@ -400,6 +403,8 @@ CM 検出とロゴ候補解析は、録画の実尺から締切を決める。�
 
 実尺は `recordings.ended_at - started_at` である。どちらかが NULL（EPGStation 取り込み等）なら `program_duration_ms` を使う。scratch の識別に job ID / attempt は使わない。CM 検出は `(recording_id, attempt_count)`、ロゴ候補解析は `(recording_id, attempted_at)` を使う。rescue までの待ち時間は通常の規則に従い、`max(1h, Timeout())` になる。
 
+`cm_detect_reconcile` は JLSE を使わない短時間のパスなので `cleanup` に置く。CM 検出やロゴ候補解析が長時間実行中でも、照合パスはそのキューの空きを待たない。
+
 <details><summary>根拠</summary>
 
 - 実尺の元の列: `recordings.ended_at - started_at`（実体は `recordings` の `started_at` / `ended_at`）
@@ -408,6 +413,7 @@ CM 検出とロゴ候補解析は、録画の実尺から締切を決める。�
 - rescue までの待ち時間: `max(1h, Timeout())`
 - CM の実尺が `started_at` / `ended_at` から引かれること: `TestCMRecordingDurationQueriesUseStartedAndEndedAt`
 - 2 倍の実尺と 30 分の下限（CM 検出の締切式）: `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum`
+- CM reconcile のキュー: `TestJobArgsSpecAndPhysicalQueue`
 
 </details>
 
