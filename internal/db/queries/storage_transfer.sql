@@ -100,7 +100,9 @@ WITH asset AS MATERIALIZED (
       AND NOT EXISTS (
           SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source_copy.id
       )
-    ORDER BY source_copy.created_at DESC, source_copy.id
+    -- マウントした置き場の copy を、internal_url だけで届く copy より先に選ぶ（ローカルから読めるほうを優先）。
+    ORDER BY (source_copy.store = ANY(sqlc.arg('mounted_stores')::text[])) DESC,
+             source_copy.created_at DESC, source_copy.id
     LIMIT 1
 ), eligible AS MATERIALIZED (
     SELECT asset.*

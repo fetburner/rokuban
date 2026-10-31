@@ -191,7 +191,7 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 	content := []byte("resumed remote original: the checkpointed prefix is kept and only the suffix is requested")
 	f := newTransferTestRemoteFixture(t, content, true, nil)
 	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.Derived, storageTransferAttemptLimit)
+		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, storageTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing checkpointed remote transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -258,7 +258,7 @@ func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
 			content := []byte("range answers must start exactly where the checkpointed prefix ends")
 			f := newTransferTestRemoteFixture(t, content, true, tc.serve)
 			transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-				mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.Derived, storageTransferAttemptLimit)
+				mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, storageTransferAttemptLimit)
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 			}
@@ -358,7 +358,7 @@ func TestPrepareMediaAssetTransferReservesUnmountedSourceOnlyWithInternalURL(t *
 	f := newTransferTestRemoteFixture(t, content, true, nil)
 	reserve := func(cfg config.StorageConfig) (bool, error) {
 		_, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-			mustOriginalRules(t, cfg), []string{"archive"}, transferSourceStores(cfg, []string{"archive"}), cfg.Derived, storageTransferAttemptLimit)
+			mustOriginalRules(t, cfg), []string{"archive"}, transferSourceStores(cfg, []string{"archive"}), []string{"archive"}, cfg.Derived, storageTransferAttemptLimit)
 		return ok, err
 	}
 
@@ -388,7 +388,7 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 	reserve := func(fsStores, sourceStores []string) bool {
 		t.Helper()
 		_, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive",
-			mustOriginalRules(t, cfg), fsStores, sourceStores, cfg.Derived, storageTransferAttemptLimit)
+			mustOriginalRules(t, cfg), fsStores, sourceStores, fsStores, cfg.Derived, storageTransferAttemptLimit)
 		if err != nil {
 			t.Fatalf("preparing derived transfer: %v", err)
 		}
@@ -399,5 +399,76 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 	}
 	if !reserve([]string{"archive", "test-store"}, []string{"archive", "test-store"}) {
 		t.Fatal("derived copy was not reserved when its source store is mounted")
+	}
+}
+
+// SHA-256 が未知の原本で、宛先が既に在り、転送元がリモートなら、採用せず失敗を記録する。文言は運用者の対処を示す。
+func TestStorageTransferWorkerDoesNotAdoptUnverifiableRemoteDestination(t *testing.T) {
+	content := []byte("unverified destination with an old row that has no SHA-256")
+	f := newTransferTestRemoteFixture(t, content, false, nil)
+	destination := filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath))
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := bytes.Repeat([]byte("x"), len(content))
+	if err := os.WriteFile(destination, other, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.worker(t)
+	if err := worker.Work(context.Background(), f.args()); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	lastError, attempts := f.failureText(t)
+	for _, want := range []string{"no SHA-256", "mount a store", "remove"} {
+		if !strings.Contains(lastError, want) {
+			t.Fatalf("recorded failure = %q, want it to contain %q", lastError, want)
+		}
+	}
+	if attempts != 1 {
+		t.Fatalf("attempt count = %d, want 1", attempts)
+	}
+	if got, err := os.ReadFile(destination); err != nil || !bytes.Equal(got, other) {
+		t.Fatalf("existing destination was changed: %q, %v", got, err)
+	}
+}
+
+// 新しい copy が internal_url の置き場にしか無く、古い copy がマウントした置き場にあるとき、
+// 転送はマウントした copy から読み、internal_url へ要求を送らない。
+func TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "local-src", "archive")
+	content := []byte("older mounted copy is read locally while a newer remote-only copy exists")
+	recordingID := dbtest.Recording(t, pool)
+	// seedOriginalAsset の copy 行は dbtest.StoreName（test-store）に載る。それが新しい方（remote のみ）になる。
+	// マウントした local-src の古い copy 行を、1 時間前の created_at で足す。
+	assetID := seedOriginalAsset(t, pool, roots["local-src"], recordingID, "sites/default/transfer/source.ts", content)
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at)
+VALUES ($1, 'local-src', 'sites/default/transfer/source.ts', 0, 'active', now() - interval '1 hour')`, assetID); err != nil {
+		t.Fatalf("adding older mounted copy: %v", err)
+	}
+	srv, streamer := newTransferTestRemoteStreamer(t, recordingID, content, nil)
+
+	cfg := transferTestConfig("archive", "archive", "local-src", "test-store")
+	source := cfg.Stores["test-store"]
+	source.InternalURL = srv.URL
+	cfg.Stores["test-store"] = source
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := StorageTransferWorker{
+		Storage: pgstore.NewMedia(pool, "archive", ""), Config: cfg, Roots: roots,
+		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
+	}
+	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(roots["archive"], "sites/default/transfer/source.ts"))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("destination = %q, %v; want %q", got, err, content)
+	}
+	if n := len(streamer.seenRanges()); n != 0 {
+		t.Fatalf("internal_url received %d requests, want 0: the newer remote-only copy was chosen over the mounted copy", n)
 	}
 }

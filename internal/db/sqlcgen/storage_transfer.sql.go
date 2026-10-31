@@ -822,7 +822,9 @@ WITH asset AS MATERIALIZED (
       AND NOT EXISTS (
           SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source_copy.id
       )
-    ORDER BY source_copy.created_at DESC, source_copy.id
+    -- マウントした置き場の copy を、internal_url だけで届く copy より先に選ぶ（ローカルから読めるほうを優先）。
+    ORDER BY (source_copy.store = ANY($7::text[])) DESC,
+             source_copy.created_at DESC, source_copy.id
     LIMIT 1
 ), eligible AS MATERIALIZED (
     SELECT asset.id, asset.recording_id, asset.size_bytes, asset.kind, asset.sha256, asset.generation, asset.desired_store
@@ -833,7 +835,7 @@ WITH asset AS MATERIALIZED (
           $3, $1::jsonb,
           $5::text[], $2::text
       )
-      AND storage_transfer_attempt_count($3, $4) < $7
+      AND storage_transfer_attempt_count($3, $4) < $8
 ), upserted AS (
     INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
     SELECT asset.id, $4, source.rel_path, asset.generation, 'pending'
@@ -878,6 +880,7 @@ type PrepareMediaAssetTransferParams struct {
 	TargetStore   string
 	SourceStores  []string
 	FsStores      []string
+	MountedStores []string
 	AttemptLimit  interface{}
 }
 
@@ -906,6 +909,7 @@ func (q *Queries) PrepareMediaAssetTransfer(ctx context.Context, arg PrepareMedi
 		arg.TargetStore,
 		arg.SourceStores,
 		arg.FsStores,
+		arg.MountedStores,
 		arg.AttemptLimit,
 	)
 	var i PrepareMediaAssetTransferRow

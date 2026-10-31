@@ -107,7 +107,7 @@ func (l *transferBandwidthLease) Release(ctx context.Context) error {
 var _ store.TransferBandwidthLease = (*transferBandwidthLease)(nil)
 
 // PrepareMediaAssetTransfer は現在も必要なコピーだけを pending に予約して返す。
-func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (store.MediaAssetTransfer, bool, error) {
+func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, originalRules []byte, fsStores, sourceStores, mountedStores []string, derivedStore string, attemptLimit int32) (store.MediaAssetTransfer, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return store.MediaAssetTransfer{}, false, fmt.Errorf("beginning media asset transfer reservation: %w", err)
@@ -121,7 +121,7 @@ func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int6
 	}
 	row, err := q.PrepareMediaAssetTransfer(ctx, sqlcgen.PrepareMediaAssetTransferParams{
 		MediaAssetID: mediaAssetID, TargetStore: targetStore, OriginalRules: originalRules, FsStores: fsStores,
-		SourceStores: sourceStores, DerivedStore: derivedStore, AttemptLimit: attemptLimit,
+		SourceStores: sourceStores, MountedStores: mountedStores, DerivedStore: derivedStore, AttemptLimit: attemptLimit,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.MediaAssetTransfer{}, false, nil

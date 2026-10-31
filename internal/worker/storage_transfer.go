@@ -142,7 +142,7 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 	if err != nil {
 		return err
 	}
-	return w.copyAsset(ctx, args, rules, fsStores, transferSourceStores(w.Config, fsStores), targetRoot)
+	return w.copyAsset(ctx, args, rules, fsStores, transferSourceStores(w.Config, fsStores), fsStores, targetRoot)
 }
 
 func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, error) {
@@ -165,9 +165,9 @@ func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, e
 	return mounted, nil
 }
 
-func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte, fsStores, sourceStores []string, targetRoot string) (retErr error) {
+func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte, fsStores, sourceStores, mountedStores []string, targetRoot string) (retErr error) {
 	transfer, ok, err := w.Storage.PrepareMediaAssetTransfer(
-		ctx, args.MediaAssetID, args.Store, rules, fsStores, sourceStores, w.Config.Derived, storageTransferAttemptLimit,
+		ctx, args.MediaAssetID, args.Store, rules, fsStores, sourceStores, mountedStores, w.Config.Derived, storageTransferAttemptLimit,
 	)
 	if err != nil || !ok {
 		return err
@@ -712,8 +712,11 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 		// 論理資産の SHA-256 が未知でリモートの転送元なら、既存の宛先を照合できない。採用せず失敗として記録する。
 		// 通常の copy に進むと PublishLink が既存の宛先を拒むので、その経路にも落とさない。
 		if _, remote := src.(remoteTransferSource); remote {
-			return true, w.recordTransferFailure(ctx, transfer, log, errors.New(
-				"destination already exists, the source is remote, and the logical SHA-256 is unknown, so the destination cannot be verified"))
+			return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf(
+				"destination %q already exists in store %q, the source is remote, and the logical asset has no SHA-256 (an old row), "+
+					"so the destination cannot be verified and was not adopted; either mount a store holding a copy of this asset so the transfer "+
+					"reads it locally and records the SHA-256, or, after checking that the file is stale, remove %q from store %q and retry",
+				transfer.RelPath, args.Store, transfer.RelPath, args.Store))
 		}
 		sourceSHA, sourceSize, sourceErr := w.hashTransferSource(ctx, src, transfer.SourceStore)
 		if sourceErr != nil {
