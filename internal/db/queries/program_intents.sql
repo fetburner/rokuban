@@ -16,16 +16,6 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     updated_at = now()
 RETURNING *;
 
--- 取消（intent{skip}）は action だけを倒す。overrides は別表なので触らない。
--- name: SkipProgram :one
-INSERT INTO program_intents (
-    site, program_id, action
-) VALUES ($1, $2, 'skip')
-ON CONFLICT (site, program_id) DO UPDATE SET
-    action     = 'skip',
-    updated_at = now()
-RETURNING *;
-
 -- name: GetProgramIntent :one
 SELECT * FROM program_intents WHERE site = $1 AND program_id = $2;
 
