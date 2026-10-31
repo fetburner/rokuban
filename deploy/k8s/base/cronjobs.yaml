@@ -334,3 +334,63 @@ spec:
             - name: config
               configMap:
                 name: rokuban-config
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rokuban-enqueue-storage-transfer-reconcile
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: enqueue
+spec:
+  # in-process の既定は config.DeleteReconcileInterval（15 分）だが、転送は 5 分にする。
+  # 置き場の観測（storage-sync）と同じ間隔に揃えて、転送元の観測の直後に転送の投入が回るようにする。
+  schedule: "*/5 * * * *"
+  startingDeadlineSeconds: 600
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rokuban
+            app.kubernetes.io/component: enqueue
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: enqueue
+              image: ghcr.io/fetburner/rokuban:latest
+              args: ["enqueue", "storage-transfer-reconcile", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: config
+              configMap:
+                name: rokuban-config

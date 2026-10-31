@@ -384,7 +384,7 @@ func TestEnqueueJobs_ScopeClassification(t *testing.T) {
 		requiresSite, requiresStore bool
 		want                        string
 	}{
-		{"scope-less", false, false, "cm-detect-reconcile,encode-reconcile,label-rule-reconcile,thumbnail-reconcile,ts-scan-reconcile"},
+		{"scope-less", false, false, "cm-detect-reconcile,encode-reconcile,label-rule-reconcile,storage-transfer-reconcile,thumbnail-reconcile,ts-scan-reconcile"},
 		{"site-bound", true, false, "epg-sync,reconcile-pass,record-sweep,ruler-pass,tuner-sync"},
 		{"store-bound", false, true, "catalog-export,delete-reconcile,storage-sync"},
 	} {
