@@ -1833,3 +1833,55 @@ func TestStoreAdoptJobMountsItsStoreReadWrite(t *testing.T) {
 		t.Errorf("pod securityContext = %v, want fsGroup 65534 and fsGroupChangePolicy OnRootMismatch", sc)
 	}
 }
+
+// adopt Job の再試行窓。Job の失敗 Pod の再作成は指数バックオフ（10s から倍々、上限 360s）で、
+// n 回目の再試行は開始から累計 S(n) 秒後に作られる。activeDeadlineSeconds がそれより短いと、
+// backoffLimit は一度も効かずに Job が DeadlineExceeded で落ちる（adopt-job.yaml の冒頭）。
+// e2e ハーネスの adopt の待ち時間は、Job の期限以上であること（待ちが先に切れると判定が赤になる）。
+func TestStoreAdoptRetryWindowFitsItsDeadline(t *testing.T) {
+	var job object
+	for _, o := range loadStore(t) {
+		if o.id() == "Job/rokuban-storage-adopt" {
+			job = o
+		}
+	}
+	if job.kind() == "" {
+		t.Fatal("Job/rokuban-storage-adopt not found in store/")
+	}
+	spec := mapAt(job.doc, "spec")
+	limit, err := strconv.Atoi(fmt.Sprint(spec["backoffLimit"]))
+	if err != nil {
+		t.Fatalf("backoffLimit: %v", err)
+	}
+	deadline, err := strconv.Atoi(fmt.Sprint(spec["activeDeadlineSeconds"]))
+	if err != nil {
+		t.Fatalf("activeDeadlineSeconds: %v", err)
+	}
+
+	// 再試行 k 回目の作成時刻 = 直前までの失敗 Pod の遅延の和。遅延は 10s・倍々・上限 360s。
+	const base, ceiling = 10, 360
+	start := 0
+	delay := base
+	for k := 1; k <= limit; k++ {
+		start += delay
+		delay = min(delay*2, ceiling)
+	}
+	if deadline <= start {
+		t.Errorf("activeDeadlineSeconds = %d, want > %d (the start of retry %d of backoffLimit %d); "+
+			"the last retry would be cut by the deadline before it runs", deadline, start, limit, limit)
+	}
+
+	// e2e の adopt 待ち（cluster.sh）は Job の期限以上。
+	raw, err := os.ReadFile("e2e/lib/cluster.sh")
+	if err != nil {
+		t.Fatalf("reading e2e/lib/cluster.sh: %v", err)
+	}
+	m := regexp.MustCompile(`"\$adopt" --timeout=(\d+)s`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatal("e2e/lib/cluster.sh has no `k wait ... \"$adopt\" --timeout=Ns`")
+	}
+	wait, _ := strconv.Atoi(string(m[1]))
+	if wait < deadline {
+		t.Errorf("e2e adopt wait = %ds, want >= the Job's activeDeadlineSeconds %ds", wait, deadline)
+	}
+}
