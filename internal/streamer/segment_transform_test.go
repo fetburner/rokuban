@@ -1742,7 +1742,14 @@ func TestFinalSegmentNumber(t *testing.T) {
 func TestSegmentTransformFinalFrameCrossingBoundaryServesLastSegments(t *testing.T) {
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
-	for _, seconds := range []int{9, 10} {
+	for _, tc := range []struct {
+		seconds  int
+		finalRow string
+	}{
+		{9, "#EXTINF:1.009, 4.ts"},
+		{10, "#EXTINF:2.010, 4.ts"},
+	} {
+		seconds := tc.seconds
 		t.Run(fmt.Sprintf("%d seconds", seconds), func(t *testing.T) {
 			inputPath := filepath.Join(t.TempDir(), "ntsc.ts")
 			write2997TestTS(t, ffmpeg, inputPath, seconds)
@@ -1752,6 +1759,17 @@ func TestSegmentTransformFinalFrameCrossingBoundaryServesLastSegments(t *testing
 			final := finalSegmentNumber(input.VideoDurationPTS, input.VideoLastFramePTS, 2)
 			if final != 4 {
 				t.Errorf("final segment = %d for %d seconds at 29.97 fps, want 4", final, seconds)
+			}
+			// 製品の測り方で測った値から、完了した playlist を組む。載せる最後の行が、下で取る番号と一致する。
+			body, err := buildRecordingHLSRenditionPlaylist(recordingHLSMetadata{
+				startedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+				timing:    recordingHLSTiming{videoDurationPTS: input.VideoDurationPTS, videoLastFramePTS: input.VideoLastFramePTS},
+			}, LiveProfile{Name: "test", SegmentSeconds: 2}, "video")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rows, _ := playlistRows(string(body)); len(rows) != 5 || rows[len(rows)-1] != tc.finalRow {
+				t.Errorf("playlist rows = %q, want 5 rows ending with %q", rows, tc.finalRow)
 			}
 			manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20)
 			defer closeSegmentManager(t, manager)

@@ -20,13 +20,14 @@ func recordingHLSVideoPlaylistPath() string {
 
 // 録画中の playlist は、次のフレームが始まったセグメントだけを、全て D 秒で載せる。
 // 判定は (n+1)·D ≤ 最後のフレームの開始時刻 で、長さ（最後のフレームの終わり）ではない。
-// 長さで判定すると、録画が最後の格子の途中で終わったとき、完了後にその行が最後の行になり EXTINF が変わる。
+// 長さで判定すると、最後のフレームが境目 k·D をまたいだとき、録画中に D 秒で載せた k−1 番の EXTINF が
+// 完了後に端数の分だけ伸びる。
 // 長さが縮んで観測されても、載せた行は減らない。
 // recordingHLSTailPackets(end) は 1 フレーム（0.04 秒）の末尾を end に置くので、開始時刻は end − 0.04 秒。
 //
-// 壊し方: buildRecordingHLSTempPlaylist の `videoDurationPTS/segmentPTS - 1` を
-// `(videoDurationPTS+segmentPTS-1)/segmentPTS - 1`（切り上げ）にする。
-// 壊し方: observeInput の `duration > timing.videoDurationPTS` を無条件の代入にする。
+// 壊し方: buildRecordingHLSTempPlaylist の `videoLastFramePTS/segmentPTS - 1` を
+// `videoDurationPTS/segmentPTS - 1`（長さで判定）にする。
+// 壊し方: observeInput の `max(timing.videoLastFramePTS, lastFrame)` を `lastFrame` にする。
 func TestRecordingHLSTempPlaylistListsOnlyObservedVideo(t *testing.T) {
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	h.useTemp()
@@ -274,22 +275,23 @@ func TestRecordingHLSVideoDurationFromPackets(t *testing.T) {
 		output string
 		origin int64
 		want   int64
+		last   int64
 		none   bool
 	}{
-		{name: "最大の pts + duration から原点を引く", output: "pts=100000|duration=3000|\npts=106000|duration=3000|\npts=103000|duration=3000|\n", origin: 90000, want: 19000},
-		{name: "duration が N/A なら隣り合う pts の差の最小値を使う", output: "pts=100000|duration=N/A|\npts=106000|duration=N/A|\npts=103000|duration=N/A|\n", origin: 90000, want: 19000},
-		{name: "パケットが 1 つで duration も無ければ 0", output: "pts=100000|duration=N/A|\n", origin: 90000, want: 10000},
-		{name: "pts の無いパケットは読み飛ばす", output: "pts=N/A|duration=3000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000},
-		{name: "巻き戻りの後ろだけの窓", output: "pts=450000|duration=3600|\n", origin: nearWrap, want: 3*second + 450000 + 3600},
-		{name: "窓が巻き戻りをまたぐ", output: fmt.Sprintf("pts=%d|duration=3600|\npts=90000|duration=3600|\n", recordingHLSPTSModulus-3600), origin: nearWrap, want: 3*second + 90000 + 3600},
+		{name: "最大の pts + duration から原点を引く", output: "pts=100000|duration=3000|\npts=106000|duration=3000|\npts=103000|duration=3000|\n", origin: 90000, want: 19000, last: 16000},
+		{name: "duration が N/A なら隣り合う pts の差の最小値を使う", output: "pts=100000|duration=N/A|\npts=106000|duration=N/A|\npts=103000|duration=N/A|\n", origin: 90000, want: 19000, last: 16000},
+		{name: "パケットが 1 つで duration も無ければ 0", output: "pts=100000|duration=N/A|\n", origin: 90000, want: 10000, last: 10000},
+		{name: "pts の無いパケットは読み飛ばす", output: "pts=N/A|duration=3000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000, last: 10000},
+		{name: "巻き戻りの後ろだけの窓", output: "pts=450000|duration=3600|\n", origin: nearWrap, want: 3*second + 450000 + 3600, last: 3*second + 450000},
+		{name: "窓が巻き戻りをまたぐ", output: fmt.Sprintf("pts=%d|duration=3600|\npts=90000|duration=3600|\n", recordingHLSPTSModulus-3600), origin: nearWrap, want: 3*second + 90000 + 3600, last: 3*second + 90000},
 		{name: "原点より少し前の pts（並べ替え）は負として扱う", output: "pts=89000|duration=1000|\n", origin: 90000, want: 0, none: true},
-		{name: "原点より少し前の pts があっても最大は後ろ", output: "pts=89000|duration=1000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000},
+		{name: "原点より少し前の pts があっても最大は後ろ", output: "pts=89000|duration=1000|\npts=100000|duration=3000|\n", origin: 90000, want: 13000, last: 10000},
 		{name: "映像パケットが無い", output: "", origin: 90000, none: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, ok := recordingHLSVideoDurationFromPackets(tc.output, tc.origin)
-			if ok == tc.none || (ok && got != tc.want) {
-				t.Fatalf("duration = (%d, %v), want (%d, found %v)", got, ok, tc.want, !tc.none)
+			got, last, ok := recordingHLSVideoDurationFromPackets(tc.output, tc.origin)
+			if ok == tc.none || (ok && (got != tc.want || last != tc.last)) {
+				t.Fatalf("(duration, last frame) = (%d, %d, %v), want (%d, %d, found %v)", got, last, ok, tc.want, tc.last, !tc.none)
 			}
 		})
 	}

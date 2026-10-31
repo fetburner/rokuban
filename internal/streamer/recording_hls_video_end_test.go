@@ -261,17 +261,21 @@ func TestMeasureRecordingHLSVideoDurationDoesNotShrinkWithBFrames(t *testing.T) 
 		t.Fatal(err)
 	}
 	withRecordingHLSTailWindows(t, 64<<10)
-	var previous int64
+	var previous, previousLast int64
 	steps := 0
 	for size := int64(96 << 10); size <= info.Size(); size += 1500 {
-		got, _, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, size, origin)
+		got, last, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, size, origin)
 		if err != nil {
 			t.Fatalf("size %d: %v", size, err)
 		}
 		if got < previous {
 			t.Fatalf("size %d: duration %d ticks is shorter than %d ticks measured from a shorter prefix", size, got, previous)
 		}
-		previous = got
+		// 録画中の行は最後のフレームの開始時刻で決まるので、こちらも縮んではならない。
+		if last < previousLast {
+			t.Fatalf("size %d: last frame start %d ticks is earlier than %d ticks measured from a shorter prefix", size, last, previousLast)
+		}
+		previous, previousLast = got, last
 		steps++
 	}
 	if steps < 20 {
