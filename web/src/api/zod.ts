@@ -2346,7 +2346,8 @@ export const ListCircuitBreakersResponse = zod.array(ListCircuitBreakersResponse
 
 /**
  * 手動確認後の再開。発動中の行が表す資源のキーは `(site, name)` なので、
- * パスでその行を指定する。置き場の範囲を持つ名前には使えない。
+ * パスでその行を指定する。運用者の操作は「確認したので再開する」であり、
+ * 行の削除は実装詳細なので DELETE にはしない。置き場の範囲を持つ名前には使えない。
  * @summary Resume a site-scoped circuit breaker (manual acknowledgement)
  */
 export const ResumeCircuitBreakerParams = zod.object({
@@ -2359,7 +2360,7 @@ export const ResumeCircuitBreakerResponse = zod.void()
 
 /**
  * 手動確認後の再開。`store` と `name` で発動中の行を 1 件指定する。
- * store は `config.storage.stores` に定義された名前で検証し、置き場の実体は
+ * 行の削除は実装詳細なので DELETE にはしない。store は `config.storage.stores` に定義された名前で検証し、置き場の実体は
  * 参照しない。
  * @summary Resume a store-scoped circuit breaker (manual acknowledgement)
  */

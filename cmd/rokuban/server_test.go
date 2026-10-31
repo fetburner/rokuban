@@ -792,6 +792,79 @@ storage:
 	}
 }
 
+// TestServerStoreBreakerResumeAcceptsS3Store は、FS と S3 の置き場を持つ設定で S3 置き場の
+// delete_reconcile を /api/stores/{store}/breakers/{name}/resume で再開できることを確かめる。
+// RouterConfig.StorageStoreNames に FS の置き場名だけを渡すと、この呼び出しは 400 になる。
+func TestServerStoreBreakerResumeAcceptsS3Store(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO circuit_breakers (scope, name, pending, threshold, detail) VALUES ('s3-derived', 'delete_reconcile', 10, 20, '{}'::jsonb)`); err != nil {
+		t.Fatalf("inserting tripped breaker: %v", err)
+	}
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+	configPath := writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:0"
+  allowed_hosts: []
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakcs:
+  - site: default
+    url: http://127.0.0.1:1
+storage:
+  media_dir: %q
+  stores:
+    test-store:
+      kind: fs
+    s3-derived:
+      kind: s3
+      bucket: rokuban-derived
+  originals:
+    - store: test-store
+  derived: s3-derived
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("loading API configuration: %v", err)
+	}
+	var eg errgroup.Group
+	server, err := buildHTTPServer(ctx, cfg, []string{"api"}, nil, nil, pool, &eg, true)
+	if err != nil {
+		t.Fatalf("building API HTTP server: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler)
+	t.Cleanup(httpServer.Close)
+
+	response, err := http.Post(httpServer.URL+"/api/stores/s3-derived/breakers/delete_reconcile/resume", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST resume: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("resume status = %d, want 204", response.StatusCode)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM circuit_breakers WHERE scope = 's3-derived' AND name = 'delete_reconcile'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("tripped row still exists after resume: count = %d", n)
+	}
+}
+
 // S3 に繋がらず資格情報も無くても、worker は起動する。S3 を使うジョブは、ジョブが実行されたときに失敗する。
 // 起動時に S3 へ接続すると、ここでプロセスが落ちる。
 func TestServerCmd_WorkerStartsWithUnreachableS3AndNoCredentials(t *testing.T) {

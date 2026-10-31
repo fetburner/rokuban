@@ -174,9 +174,9 @@ stateDiagram-v2
 
 ###### 再開の API
 
-再開は、画面で確認したブレーカーの範囲を指定して行う。
+再開は、確認したブレーカーの範囲を指定して行う。
 
-site の範囲の行は `POST /api/sites/{site}/breakers/{name}/resume` で再開する。置き場の範囲の行は `POST /api/stores/{store}/breakers/{name}/resume` で再開する。どちらも発動中の行のキーをパスで指定する。
+site の範囲の行は `POST /api/sites/{site}/breakers/{name}/resume` で再開する。置き場の範囲の行は `POST /api/stores/{store}/breakers/{name}/resume` で再開する。どちらも発動中の行のキーをパスで指定する。パスは行の主キー `(scope, name)` に合わせた。`DELETE` は採らない。運用者から見た操作は「確認したので再開する」であり、「行を削除する」は実装詳細だからである。
 
 `GET /api/breakers` は site の範囲なら `site`、置き場の範囲なら `store` に範囲名を返し、もう一方は空文字列にする。置き場名は `config.storage.stores` の設定だけで検証し、API は置き場の実体を読まない。
 

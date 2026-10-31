@@ -3,8 +3,10 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
@@ -12,8 +14,8 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// TestListCircuitBreakers_ReturnsStoreScopes fixes the public identity of breaker rows:
-// rows in two stores remain distinguishable even when their name is the same.
+// TestListCircuitBreakers_ReturnsStoreScopes は、同名の行が 2 つの置き場にあっても
+// store で区別できること（行の公開上の同一性）を固定する。
 func TestListCircuitBreakers_ReturnsStoreScopes(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -72,8 +74,8 @@ func TestListCircuitBreakers_ReturnsStoreScopes(t *testing.T) {
 	}
 }
 
-// TestResumeStoreCircuitBreaker_OnlyDeletesRequestedStore proves the path's store
-// reaches the DELETE key. Replacing req.Store with the configured FS name makes this test fail.
+// TestResumeStoreCircuitBreaker_OnlyDeletesRequestedStore は、パスの store が DELETE の
+// キーまで届くことを示す。req.Store を設定上の FS 置き場名に差し替えるとこのテストは落ちる。
 func TestResumeStoreCircuitBreaker_OnlyDeletesRequestedStore(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -111,6 +113,7 @@ func TestResumeStoreCircuitBreaker_OnlyDeletesRequestedStore(t *testing.T) {
 	}
 }
 
+// TestResumeStoreCircuitBreaker_400WhenStoreIsNotConfigured は、設定に無い置き場名は 400 になる。
 func TestResumeStoreCircuitBreaker_400WhenStoreIsNotConfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := api.NewRouter(api.RouterConfig{
@@ -130,6 +133,7 @@ func TestResumeStoreCircuitBreaker_400WhenStoreIsNotConfigured(t *testing.T) {
 	}
 }
 
+// TestResumeStoreCircuitBreaker_400WhenNameIsNotStoreScoped は、site の範囲の名前を store 経路で再開しようとすると 400 になり、行は消えない。
 func TestResumeStoreCircuitBreaker_400WhenNameIsNotStoreScoped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -154,17 +158,21 @@ func TestResumeStoreCircuitBreaker_400WhenNameIsNotStoreScoped(t *testing.T) {
 	}
 }
 
+// TestResumeCircuitBreaker_400WhenNameIsStoreScoped は、置き場の範囲の名前を site 経路で
+// 再開しようとすると 400 になり、store 経路への案内が返ることを確かめる。
 func TestResumeCircuitBreaker_400WhenNameIsStoreScoped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool),
+		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: []string{"tokyo"},
 		StorageStoreNames: []string{"test-store"},
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "test-store", "delete_reconcile", 10, 20, `{"total":10}`)
 
+	// default は Sites に無い。site の検証より先に置き場の範囲を判定するので、
+	// 未登録の site でも store 経路への案内が返る。
 	resp, err := http.Post(srv.URL+"/api/sites/default/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -173,11 +181,19 @@ func TestResumeCircuitBreaker_400WhenNameIsStoreScoped(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("resume of a store-scoped breaker through the site route status = %d, want 400", resp.StatusCode)
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "/api/stores/") {
+		t.Errorf("response body = %s, want guidance to /api/stores/", body)
+	}
 	if !existsCircuitBreakerForSite(t, pool, ctx, "test-store", "delete_reconcile") {
 		t.Error("store-scoped breaker row was deleted through the site route")
 	}
 }
 
+// TestResumeStoreCircuitBreaker_400WhenNameIsUnknown は、未知のブレーカー名は 400 になる。
 func TestResumeStoreCircuitBreaker_400WhenNameIsUnknown(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := api.NewRouter(api.RouterConfig{
@@ -197,6 +213,7 @@ func TestResumeStoreCircuitBreaker_400WhenNameIsUnknown(t *testing.T) {
 	}
 }
 
+// TestResumeStoreCircuitBreaker_404WhenNotTripped は、発動していないブレーカーの再開は 404 になる。
 func TestResumeStoreCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := api.NewRouter(api.RouterConfig{
@@ -216,6 +233,7 @@ func TestResumeStoreCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	}
 }
 
+// TestResumeLegacySitelessCircuitBreakerRouteIsRemoved は、site を持たない旧経路 /api/breakers/{name}/resume は 404 になる。
 func TestResumeLegacySitelessCircuitBreakerRouteIsRemoved(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := api.NewRouter(api.RouterConfig{

@@ -15,17 +15,22 @@ const STORE = 's3main'
 const NAME = 'delete_reconcile'
 const expectedPath = `/api/stores/${STORE}/breakers/${NAME}/resume`
 const ng = []
-const breaker = {
+const makeBreaker = (store) => ({
   site: '',
-  store: STORE,
+  store,
   name: NAME,
   trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
   pending: 3,
   threshold: 20,
   detail: { total: 3, programs: [] },
-}
+})
+// FS と S3 が同名で同時に発動している状態。再開先は s3main の行だけ。
+const breakers = [makeBreaker('test-store'), makeBreaker(STORE)]
 
-await validateFixturesOrExit([['S3 store breaker', ListCircuitBreakersResponseItem, breaker]], ng)
+await validateFixturesOrExit(
+  breakers.map((b) => [`store breaker ${b.store}`, ListCircuitBreakersResponseItem, b]),
+  ng,
+)
 await verifyBundleMatchesOrExit(BASE, ng)
 
 const browser = await launchBrowser()
@@ -36,7 +41,7 @@ page.on('pageerror', (error) => {
 })
 
 let tripped = true
-let resumeURL
+const resumePosts = []
 await page.route('**/api/**', async (route) => {
   const url = new URL(route.request().url())
   if (url.pathname === '/api/events') return sseKeepAlive(route)
@@ -44,11 +49,11 @@ await page.route('**/api/**', async (route) => {
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(tripped ? [breaker] : []),
+      body: JSON.stringify(tripped ? breakers : []),
     })
   }
-  if (url.pathname === expectedPath && route.request().method() === 'POST') {
-    resumeURL = url.pathname
+  if (url.pathname.endsWith('/resume') && route.request().method() === 'POST') {
+    resumePosts.push(url.pathname)
     tripped = false
     return route.fulfill({ status: 204, body: '' })
   }
@@ -66,6 +71,7 @@ await page.route('**/api/**', async (route) => {
 
 try {
   await page.goto(BASE + '/recordings', { waitUntil: 'domcontentloaded' })
+  await page.getByText('置き場: test-store', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
   await page.getByText(`置き場: ${STORE}`, { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
 
   const row = page.getByRole('listitem').filter({ hasText: `置き場: ${STORE}` })
@@ -73,11 +79,11 @@ try {
   await page.getByRole('button', { name: '再開する' }).click()
   await page.getByText(/ごみ箱・エンコード原本・孤児ファイルの物理削除を再開しました/).waitFor({ state: 'visible', timeout: 10_000 })
 
-  if (resumeURL !== expectedPath) {
-    log(`NG  resume URL: ${resumeURL ?? '(no POST)'}（期待 ${expectedPath}）`)
+  if (resumePosts.length !== 1 || resumePosts[0] !== expectedPath) {
+    log(`NG  resume POST: ${JSON.stringify(resumePosts)}（期待 [${expectedPath}] のみ）`)
     ng.push('store-specific resume URL')
   } else {
-    log(`OK  resume URL: ${resumeURL}`)
+    log(`OK  resume POST: ${resumePosts[0]}`)
   }
 } catch (error) {
   log(`NG  S3 store breaker resume: ${error.message}`)

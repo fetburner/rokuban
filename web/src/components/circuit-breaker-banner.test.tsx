@@ -189,21 +189,25 @@ describe('CircuitBreakerBanner', () => {
       store: 's3main',
       name: 'delete_reconcile',
     }
-    const fetchMock = stubFetch({ list: [storeBreaker], resume: 'success' })
+    // FS と S3 が同名で同時に発動している状態。s3main の行だけが再開先になる。
+    const fsBreaker: CircuitBreaker = { ...storeBreaker, store: 'test-store' }
+    const fetchMock = stubFetch({ list: [fsBreaker, storeBreaker], resume: 'success' })
     const user = userEvent.setup()
     renderBanner()
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('置き場: s3main')).toBeInTheDocument()
+    expect(await screen.findByText('置き場: test-store')).toBeInTheDocument()
+    const s3Row = (await screen.findByText('置き場: s3main')).closest('li')!
 
-    await user.click(await screen.findByRole('button', { name: '再開' }))
+    await user.click(within(s3Row).getByRole('button', { name: '再開' }))
     await user.click(await screen.findByRole('button', { name: '再開する' }))
 
     await waitFor(() => {
-      const resumeCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/resume'))
-      expect(resumeCall).toBeDefined()
-      expect(String(resumeCall![0])).toBe('/api/stores/s3main/breakers/delete_reconcile/resume')
-      expect(resumeCall![1]).toMatchObject({ method: 'POST' })
+      const resumeCalls = fetchMock.mock.calls.filter(([u]) => String(u).includes('/resume'))
+      expect(resumeCalls.map(([u]) => String(u))).toEqual([
+        '/api/stores/s3main/breakers/delete_reconcile/resume',
+      ])
+      expect(resumeCalls[0][1]).toMatchObject({ method: 'POST' })
     })
 
     expect(await screen.findByText(/再開しました/)).toBeInTheDocument()
