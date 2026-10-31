@@ -12,7 +12,7 @@ kind: Kustomization
 # 多置き場構成の overlay は、このディレクトリを**置き場の数だけ** `resources` に入れ
 # （1 つの kustomization は同じ base を 2 回持てないので、置き場ごとに小さな中間
 # ディレクトリを作る）、`nameSuffix` と「置き場名・マウント先・トリガのクエリを差し替える
-# patch」を当てる。実例は `overlays/kind-two-stores/stores/`。
+# patch」を当てる。実例は `overlays/e2e-two-stores/stores/`。
 #
 # 含むもの: PVC / `storage adopt` Job / 配信 streamer（録画 HLS と原本の file / frame）/
 # 置き場で修飾する 7 キュー（`transfer` `encode` `thumbnail` `cm_detect` `ts_scan`

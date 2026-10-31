@@ -7,8 +7,12 @@
 # （`db.MigrateUp` が並行実行に耐えるかは未検証）。マイグレーションは
 # `deploy/k8s/base/migrate-job.yaml` の 1 本だけにしたので、**順序は Job の再試行が担う**:
 # マイグレーションが終わるまで adopt は失敗して Pod が作り直される。
-# **この再試行の間隔と回数でマイグレーション完了まで足りるかは未測定**
-# （`backoffLimit` を 6 にしてあるのは余裕を見た値で、測定した値ではない）。
+# **再試行の窓**: 失敗 Pod の再作成は指数バックオフ（10s から倍々、上限 6 分）。
+# `backoffLimit: 6` の 7 回目の試行は開始から 630 秒後（0,10,30,70,150,310,630）。
+# `activeDeadlineSeconds` はその時刻より十分長くなければならない。短いと 7 回目の
+# 試行の前に Job が DeadlineExceeded で落ち、`backoffLimit` は一度も効かない。
+# 1200 秒は 630 秒後の試行に adopt 本体の時間と、マイグレーションの所要時間の余裕を
+# 足した見積もりで、実測ではない。
 #
 # **argv の 3 番目（index 2）が置き場名。** media は `volumeMounts` の index 1。
 # Job の spec は immutable なので、再 apply の前に delete が要る（deploy/k8s/README.md）。
@@ -23,7 +27,7 @@ metadata:
 spec:
   backoffLimit: 6
   ttlSecondsAfterFinished: 3600
-  activeDeadlineSeconds: 600
+  activeDeadlineSeconds: 1200
   template:
     metadata:
       labels:

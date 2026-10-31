@@ -324,7 +324,8 @@ deploy_rokuban() {
   # 目印が無いと worker は FS 操作をすべて見送るので、ここで完了を待つ。
   local adopt
   for adopt in $(k get jobs -l app.kubernetes.io/component=storage-adopt -o name); do
-    k wait --for=condition=complete "$adopt" --timeout=300s || return 1
+    # Job の activeDeadlineSeconds（adopt-job.yaml）以上に待つ。短いと Job が失敗する前に判定が赤になる。
+    k wait --for=condition=complete "$adopt" --timeout=1200s || return 1
   done
   # **イメージを焼き直したなら api も作り直す。** 製品側の Pod テンプレートは
   # ハーネスが触れない（base の管轄）ので、build-id の annotation を挿す手が

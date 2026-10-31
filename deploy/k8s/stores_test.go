@@ -620,9 +620,24 @@ func TestTwoStoreOverlayIngestMountsEveryStore(t *testing.T) {
 		t.Fatalf("site/ ingest %s = %v (resolved=%v), want %q (the arguments were reordered)", storesValuePath, cur, ok, baseStoreName)
 	}
 
+	// 各置き場の PVC は置き場 overlay の描画結果から取る。ingest の claimName が
+	// これに無ければ、Pod は存在しない PVC を待って Pending になる。
+	var wantClaims []string
+	for _, name := range wantStores {
+		for _, o := range renderStoreOverlay(t, filepath.Join(overlayDir, "stores", name)) {
+			if o.kind() == "PersistentVolumeClaim" {
+				wantClaims = append(wantClaims, o.name())
+			}
+		}
+	}
+	slices.Sort(wantClaims)
+	if len(wantClaims) != len(wantStores) {
+		t.Fatalf("rendered PVCs for %v = %v, want one per store", wantStores, wantClaims)
+	}
+
 	k := loadOverlayPatches(t, overlayDir)
 	for _, site := range []string{"sitea", "siteb"} {
-		var mounts []string
+		var mounts, claims []string
 		var stores string
 		found := false
 		for _, p := range k.Patches {
@@ -639,6 +654,10 @@ func TestTwoStoreOverlayIngestMountsEveryStore(t *testing.T) {
 					mounts = append(mounts, fmt.Sprint(op.Value))
 				case strings.HasSuffix(op.Path, "/volumeMounts/-"):
 					mounts = append(mounts, strAt(v, "mountPath"))
+				case strings.HasSuffix(op.Path, "/volumes/1/persistentVolumeClaim/claimName"):
+					claims = append(claims, fmt.Sprint(op.Value))
+				case strings.HasSuffix(op.Path, "/volumes/-"):
+					claims = append(claims, strAt(v, "persistentVolumeClaim", "claimName"))
 				}
 			}
 		}
@@ -655,5 +674,53 @@ func TestTwoStoreOverlayIngestMountsEveryStore(t *testing.T) {
 		if !slices.Equal(mounts, wantMounts) {
 			t.Errorf("ingest-%s mounts %v, want the root of every store %v", site, mounts, wantMounts)
 		}
+		slices.Sort(claims)
+		if !slices.Equal(claims, wantClaims) {
+			t.Errorf("ingest-%s PVC claimNames %v, want the rendered store PVCs %v", site, claims, wantClaims)
+		}
+	}
+}
+
+// central streamer の `--stores=` は argv の index 5 にあり、overlay はその index を
+// replace して置き場名を入れる（overlays/kind・e2e・e2e-two-stores）。base の並びが
+// 変わると overlay は黙って別の引数を書き換えるので、base の index 5 が `--stores=` で
+// あることと、streamer の args patch が全部その index を指すことを固定する。
+func TestCentralStreamerStoresArgIsAtIndex5(t *testing.T) {
+	const streamer = "Deployment/rokuban-streamer"
+	const storesIdx = 5
+	args := argsOf(container(t, podSpecs(loadBase(t)), streamer, "streamer"))
+	if len(args) <= storesIdx || args[storesIdx] != "--stores=" {
+		t.Fatalf("base %s argv = %q, want \"--stores=\" at index %d (overlays replace that index)", streamer, args, storesIdx)
+	}
+
+	wantPath := fmt.Sprintf("/spec/template/spec/containers/0/args/%d", storesIdx)
+	matches, err := filepath.Glob(filepath.Join(overlaysDir, "*", "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("globbing overlays: %v", err)
+	}
+	patched := 0
+	for _, m := range matches {
+		dir := filepath.Dir(m)
+		for _, p := range loadOverlayPatches(t, dir).Patches {
+			if p.Target.Kind != "Deployment" || p.Target.Name != "rokuban-streamer" {
+				continue
+			}
+			for _, op := range parseJSONPatch(t, p.Patch) {
+				if !strings.Contains(op.Path, "/args/") {
+					continue
+				}
+				patched++
+				if op.Path != wantPath {
+					t.Errorf("%s: streamer args patch path %s, want %s (the index of --stores)", dir, op.Path, wantPath)
+				}
+				if !strings.HasPrefix(fmt.Sprint(op.Value), "--stores=") {
+					t.Errorf("%s: streamer args patch writes %q, want a --stores= value", dir, fmt.Sprint(op.Value))
+				}
+			}
+		}
+	}
+	// kind / e2e / e2e-two-stores の 3 つが patch する。0 件で緑になるのを防ぐ。
+	if patched < 3 {
+		t.Fatalf("found %d streamer args patches under %s/*, want at least 3 (kind, e2e, e2e-two-stores)", patched, overlaysDir)
 	}
 }
