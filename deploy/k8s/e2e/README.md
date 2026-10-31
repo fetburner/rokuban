@@ -18,7 +18,7 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 **判定 6（`checks/06-two-stores.sh`）は書いただけで、実行していない。** 置き場 2 つ（tokyo / takamatsu）の overlay で、派生物は MinIO の S3 に置く。実物の仕事を見る（probe は使わない）。
 
 - 6.1 / 6.6 置き場束縛キューの ScaledJob と CronJob が置き場ごとに 1 本ずつあること（静的）
-- 6.2 encode / thumbnail が原本のある置き場の Job で完了し、派生物の行が S3 にだけ載ること。手動の録画は予約を経由せず desired が空なので、判定は `POST /api/recordings/{id}/encode-profiles` で e2e-fast を desired に足してから encode を積む（desired が無いと encode は desired_profile_excluded で飛ばされる）
+- 6.2 encode / thumbnail が原本のある置き場の Job で完了し、派生物の行が S3 にだけ載ること。手動の録画は予約を経由しないので、desired が空である。desired が無いと、encode は desired_profile_excluded で飛ばされる。そこで判定は `POST /api/recordings/{id}/encode-profiles` で e2e-fast を desired に足してから encode を積む
 - 6.3 older_than の録画を転送 reconcile が takamatsu に載せ、takamatsu の Job が書いたコピーの SHA-256 が原本と一致すること。転送元の tokyo は転送の worker がマウントしないので、`internal_url`（tokyo の配信 streamer）から読む（overlay の config.yml）
 - 6.4 ingest の Job が両方の置き場を挿すこと（Pod テンプレート。取り込みの中身は 6.8）
 - 6.5 配信がコピーのある置き場の中身を返し、無い置き場は 404 を返すこと
