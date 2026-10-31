@@ -2,10 +2,9 @@
 // mirakc のモックである。実機の mirakc はチューナー資源を要求し、EPG が揃うまで
 // 数十分かかるため、CI にもローカルの kind にも載せられない。
 //
-// **実装するのは、いまハーネスの判定が通る経路だけ**である。rokuban は
-// これ以外にも `GET/DELETE /api/recording/records/{id}` や
-// `/api/services/{id}/stream` を叩くが（internal/mirakc/client.go）、判定が
-// そこを通っていないのでモックは 501 を返す。**足す契機は「rokuban が新しい
+// **実装するのは、いまハーネスの判定が通る経路だけ**である。録画の経路
+// （records.go: 注入・一覧・取得・stream の Range・DELETE）は判定 6.8 が通す。
+// `/api/services/{id}/stream` などそれ以外は通っていないので 501 を返す。**足す契機は「rokuban が新しい
 // API を使い始めたとき」ではなく「判定が通る経路が増えたとき」**（判定 3 が
 // 実物の encode / ingest を回し始めたら踏む）。未実装のパスを 404 ではなく
 // 501 にしてあるのは、「モックが実装していない」と「mirakc が持っていない」を
@@ -107,6 +106,9 @@ type mock struct {
 	mu        sync.Mutex
 	schedules map[int64]mirakc.Schedule
 
+	// records は注入された録画（判定 6.8）と /events の購読者。records.go が扱う。
+	records *recordStore
+
 	eventsOpen  atomic.Int64
 	eventsTotal atomic.Int64
 
@@ -122,6 +124,7 @@ func newMock(networkID, serviceCount, programsPerService int, programDuration ti
 		namePrefix:         namePrefix,
 		now:                time.Now,
 		schedules:          map[int64]mirakc.Schedule{},
+		records:            newRecordStore(),
 	}
 }
 
@@ -145,6 +148,11 @@ func (m *mock) routes() http.Handler {
 	mux.HandleFunc("GET /api/programs", m.listPrograms)
 	mux.HandleFunc("GET /api/tuners", m.listTuners)
 	mux.HandleFunc("GET /api/recording/records", m.listRecords)
+	mux.HandleFunc("GET /api/recording/records/{id}", m.getRecord)
+	mux.HandleFunc("DELETE /api/recording/records/{id}", m.deleteRecord)
+	// GET は HEAD も受ける（net/http の既定）。製品の HeadRecordStream がこれを使う。
+	mux.HandleFunc("GET /api/recording/records/{id}/stream", m.streamRecord)
+	mux.HandleFunc("POST /mock/records", m.postRecord)
 	mux.HandleFunc("GET /api/recording/schedules", m.listSchedules)
 	mux.HandleFunc("POST /api/recording/schedules", m.createSchedule)
 	mux.HandleFunc("GET /api/recording/schedules/{programId}", m.getSchedule)
@@ -198,9 +206,9 @@ func (m *mock) listTuners(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *mock) listRecords(w http.ResponseWriter, _ *http.Request) {
-	// 録画実行そのものはモックしない（判定 1 が見るのは「予約が mirakc に
-	// 届くこと」まで）。空配列を返す。
-	writeJSON(w, http.StatusOK, []mirakc.Record{})
+	// 録画の実行はモックしない（放送は流れない）。返すのは POST /mock/records で
+	// 注入された録画だけ。判定 1 は注入をしないので空配列のまま。
+	writeJSON(w, http.StatusOK, m.records.list())
 }
 
 func (m *mock) listSchedules(w http.ResponseWriter, _ *http.Request) {
@@ -287,7 +295,8 @@ func (m *mock) postReset(w http.ResponseWriter, _ *http.Request) {
 	m.schedules = map[int64]mirakc.Schedule{}
 	m.mu.Unlock()
 	m.hangTuners.Store(false)
-	slog.Info("reset", "clearedSchedules", n)
+	records := m.records.clear()
+	slog.Info("reset", "clearedSchedules", n, "clearedRecords", records)
 	writeJSON(w, http.StatusOK, m.statsSnapshot())
 }
 
@@ -324,6 +333,8 @@ func (m *mock) events(w http.ResponseWriter, r *http.Request) {
 	total := m.eventsTotal.Add(1)
 	defer func() { slog.Info("events unsubscribed", "open", m.eventsOpen.Add(-1)) }()
 	slog.Info("events subscribed", "open", open, "total", total, "remote", r.RemoteAddr)
+	frames := m.records.subscribe()
+	defer m.records.unsubscribe(frames)
 
 	// keepalive を送るのは、切断を検出するためではなく（それは Done で分かる）、
 	// 経路上のプロキシに idle で切られないようにするため。
@@ -335,6 +346,11 @@ func (m *mock) events(w http.ResponseWriter, r *http.Request) {
 			// 残り本数は defer の Add(-1) が返す値で出す（ここで引き算すると、
 			// 同時切断のときに嘘の数がログに出る）。
 			return
+		case frame := <-frames:
+			if _, err := fmt.Fprint(w, frame); err != nil {
+				return
+			}
+			flusher.Flush()
 		case <-ticker.C:
 			if _, err := fmt.Fprint(w, ":keepalive\n\n"); err != nil {
 				return

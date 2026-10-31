@@ -84,8 +84,13 @@ func TestTwoStoreOverlayDerivedIsS3OnTheMinIOService(t *testing.T) {
 		} `yaml:"spec"`
 	}
 	readYAMLFile(t, filepath.Join(overlayDir, "minio", "bucket-job.yaml"), &job)
-	if len(job.Spec.Template.Spec.Containers) != 1 || !slices.Contains(job.Spec.Template.Spec.Containers[0].Args, "local/"+derived.Bucket) {
-		t.Errorf("minio/bucket-job.yaml does not create bucket %q (containers = %+v)", derived.Bucket, job.Spec.Template.Spec.Containers)
+	// bucket の作成は curl の SigV4 PUT（script の中の URL）。URL の bucket 名が config と同じこと。
+	if len(job.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("minio/bucket-job.yaml has %d containers, want 1", len(job.Spec.Template.Spec.Containers))
+	}
+	script := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
+	if !strings.Contains(script, "http://minio:9000/"+derived.Bucket+"\"") {
+		t.Errorf("minio/bucket-job.yaml does not PUT bucket %q on the minio Service (script = %q)", derived.Bucket, script)
 	}
 
 	// MinIO のイメージ名は判定ハーネスが kind に載せる名前と同じ（lib/env.sh の E2E_MINIO_IMAGE）。

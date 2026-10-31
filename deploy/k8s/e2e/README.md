@@ -23,14 +23,14 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 - 6.4 ingest の Job が両方の置き場を挿すこと（Pod テンプレート。取り込みの中身は 6.8）
 - 6.5 配信がコピーのある置き場の中身を返し、無い置き場は 404 を返すこと
 - 6.7 overlap（32 分）を過ぎた tokyo の旧コピーが deleted になり PVC からファイルが消えること。**判定の時間の大半はここで、全体は 40 分前後かかる**
-- 6.8 **TODO**: ingest が録画を規則どおりの置き場へ書くこと。mirakcmock が録画の実体（records と stream）を配らないので測れない
+- 6.8 **ingest（実物）**: 注入した録画（mirakcmock の `POST /mock/records`。放送は流れない）を、製品の record-sweep → ingest の経路で取り込む。規則どおりの置き場の copy が注入した TS と SIZE・SHA-256 一致で載り、取り込みを書いた ingest の Job が両方の置き場を挿していること
 
-原本は `cluster/store-original-seed-job.yaml` が PVC に書く（録画の取り込みは通さない）。中身は `cluster/store-check-job.yaml` で覗く（目印 `.rokuban-store` が無ければ失敗させる）。
+6.2 / 6.3 / 6.5 / 6.7 の原本は `cluster/store-original-seed-job.yaml` が PVC に書く（録画の取り込みは通さない。取り込みは 6.8 だけ）。中身は `cluster/store-check-job.yaml` で覗く（目印 `.rokuban-store` が無ければ失敗させる）。
 
 **未実機の前提（初回の実行で確かめる）**
 - `rokuban enqueue storage-transfer-reconcile` が無い版では 6.3 が「enqueue に失敗」で赤くなる
 - MinIO は `.github/actions/build-minio` と同じ commit のソースから、`CGO_ENABLED=0 GOOS=linux` で作る（CI と同じバイナリかは未確認）
-- bucket 作成の `minio/mc` のタグ（`overlays/e2e-two-stores/minio/bucket-job.yaml`）が引けるかは未確認
+- bucket は製品のイメージの curl（SigV4）で作る（`overlays/e2e-two-stores/minio/bucket-job.yaml`）。`minio/mc` は Docker Hub に無いので使わない。debian trixie の curl が 7.75 以降であることは確認した（curl 8.x）。MinIO の SigV4 受理は未実機
 
 Ingress controller は kind に無いので、6.5 は Ingress の行き先の Service を直接叩く。行と Service 名の対応は `deploy/k8s/stores_test.go` にある。
 

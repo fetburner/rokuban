@@ -1,11 +1,12 @@
 # 派生物の bucket（rokuban-derived）を作る Job。MinIO は起動時に bucket を作らない。
 #
-# mc（minio/mc）はシェルを持たないイメージなので、alias の設定を initContainer に分け、
-# 設定の置き場（MC_CONFIG_DIR の emptyDir）を 2 つのコンテナで共有する。`$(VAR)` は
-# Kubernetes が env から展開する（シェルは使わない）。
+# bucket の作成は curl の SigV4（`--aws-sigv4`）で行う。mc（minio/mc）のイメージは Docker Hub に無い
+# （`minio/mc` は 404。`curlimages/curl` も使わない）。代わりに製品のイメージ（debian trixie の
+# curl 8.x。`--aws-sigv4` は 7.75 以降）を使い、kustomize の images（overlay の kustomization）が
+# `ghcr.io/fetburner/rokuban` を `rokuban:e2e` に置き換える。
 #
-# **未検証**: mc のタグ（下の image）は実機で引けるかを初回の実行で確かめること。
-# 引けなければ Job が ImagePullBackOff になり、派生物の書き込みが失敗して判定 6.2 が赤くなる。
+# 409 BucketAlreadyOwnedByYou は成功として扱う（Job の再試行で二度目の PUT になるため）。
+# 資格情報は rokuban-secrets の AWS_* を env で渡す（curl の --user が SigV4 の鍵になる）。
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -30,40 +31,41 @@ spec:
         runAsGroup: 65534
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-        - name: alias
-          image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+      containers:
+        - name: bucket
+          image: ghcr.io/fetburner/rokuban:latest
           imagePullPolicy: IfNotPresent
-          args: ["alias", "set", "local", "http://minio:9000", "$(MINIO_ROOT_USER)", "$(MINIO_ROOT_PASSWORD)"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              url="http://minio:9000/rokuban-derived"
+              out=/tmp/bucket-response
+              # MinIO が起動するまで接続を再試行する（--retry-all-errors は 7.71 以降）。
+              code="$(curl -sS -o "$out" -w '%{http_code}' --retry 30 --retry-all-errors --retry-delay 2 \
+                --aws-sigv4 'aws:amz:us-east-1:s3' --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+                -X PUT "$url")"
+              case "$code" in
+                200) echo "bucket created" ;;
+                409)
+                  if grep -q BucketAlreadyOwnedByYou "$out"; then
+                    echo "bucket already owned"
+                  else
+                    cat "$out"; exit 1
+                  fi ;;
+                *) echo "PUT $url returned $code"; cat "$out"; exit 1 ;;
+              esac
           env:
-            - name: MINIO_ROOT_USER
+            - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
                   name: rokuban-secrets
                   key: AWS_ACCESS_KEY_ID
-            - name: MINIO_ROOT_PASSWORD
+            - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: rokuban-secrets
                   key: AWS_SECRET_ACCESS_KEY
-            - name: MC_CONFIG_DIR
-              value: /mc
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: mc
-              mountPath: /mc
-      containers:
-        - name: bucket
-          image: minio/mc:RELEASE.2025-08-13T08-35-41Z
-          imagePullPolicy: IfNotPresent
-          args: ["mb", "--ignore-existing", "local/rokuban-derived"]
-          env:
-            - name: MC_CONFIG_DIR
-              value: /mc
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -76,8 +78,8 @@ spec:
               cpu: 25m
               memory: 32Mi
           volumeMounts:
-            - name: mc
-              mountPath: /mc
+            - name: tmp
+              mountPath: /tmp
       volumes:
-        - name: mc
+        - name: tmp
           emptyDir: {}

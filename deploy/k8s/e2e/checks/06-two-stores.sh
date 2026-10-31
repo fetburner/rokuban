@@ -20,11 +20,14 @@
 #   6.6  置き場束縛の CronJob（catalog-export / delete-reconcile / storage-sync）が置き場ごとに 1 本ある（静的）
 #   6.7  **削除（実物）**: 転送先のコピーができ overlap を過ぎると、tokyo の旧コピーが deleted になり、
 #        tokyo の PVC からファイルが消える。転送先のコピーと、別録画の tokyo のコピーは残る
-#   6.8  **TODO**: ingest が録画ごとに規則どおりの置き場へ原本を書くこと。mirakcmock が録画の
-#        実体（`/api/recording/records/{id}/stream`）と録画の一覧を配らないので、取り込みを通せない
+#   6.8  **ingest（実物）**: mirakcmock に注入した録画（POST /mock/records。放送は流れない）を、製品の
+#        watcher（record-sweep）→ ingest の経路で取り込む。規則どおりの置き場の copy が注入した TS と
+#        SIZE・SHA-256 一致で載り、取り込みを書いた ingest の Job が両方の置き場を挿していること
 #
 # **この判定が見ていないもの**（緑でも保証しない）:
-#   - ingest（6.8）。原本は seed Job が PVC に書く（録画の取り込みを通さない）。
+#   - 6.2 / 6.3 / 6.5 / 6.7 の原本は seed Job が PVC に書く（録画の取り込みは通さない。取り込みは 6.8 だけ）。
+#     6.8 の取り込みは「書いた Pod がどの録画を書いたか」を DB に持たないので、Job の成功と
+#     Pod テンプレートで見る（録画との対応は観測しない）。
 #   - Ingress controller を経由した経路。kind には controller が無いので、Ingress の行き先の
 #     Service（rokuban-recording-hls-<置き場>）を直接叩く（行と Service 名の対応は stores_test.go）。
 #   - 派生物の S3 の中身。派生物の行（copy の state = active）で見る。MinIO の中は覗かない。
@@ -33,8 +36,8 @@
 # 次が合わなければ、ここを直す。
 #   - storage-transfer-reconcile の CLI（`rokuban enqueue storage-transfer-reconcile`）が未マージなら、
 #     6.3 は「enqueue に失敗」で赤くなる
-#   - minio/mc のタグ（overlays/e2e-two-stores/minio/bucket-job.yaml）が引けないと、派生物の書き込みが
-#     失敗して 6.2 が赤くなる
+#   - bucket の SigV4 PUT（overlays/e2e-two-stores/minio/bucket-job.yaml）が MinIO に受理されないと、
+#     派生物の書き込みが失敗して 6.2 が赤くなる
 #   - 6.7 は overlap（32 分）の満了を待つので、判定全体で 40 分前後かかる
 set -uo pipefail
 
@@ -600,12 +603,135 @@ else
   fi
 fi
 
-# ---- 6.8 ingest（TODO）-------------------------------------------------------
+# ---- 6.8 ingest（実物）------------------------------------------------------
 #
-# 取り込み（mirakc の録画 → 規則の置き場への書き込み）はこのハーネスでは測れない。
-# mirakcmock は `/api/recording/records` に空を返し、`/api/recording/records/{id}/stream` は 501 を返す。
-# 録画が始まるかどうかも、予約の時刻を現在から作るため決まらない。**probe で代用しない**
-# （deploy/k8s/e2e/mirakcmock/main.go の冒頭が、モックに録画を足す契機を書いている）。
-todo "6.8" "ingest が録画ごとに規則どおりの置き場へ書くこと: mirakcmock が録画の実体（records と stream）を配らないので、取り込みを通せない"
+# site B の録画を 1 件注入する（mirakcmock の POST /mock/records。放送は流れないので、終わった録画を
+# 置く）。そこから製品の経路をそのまま回す:
+#   record-sweep（watcher の sweep ジョブ）→ ProcessRecord（録画行）→ ingest ジョブ → ingest の Job
+# 見るもの:
+#   - watcher が録画行を作り、record_sync の recording_id が立つ
+#   - 原本の copy 行が、規則（siteb → takamatsu）の置き場に active で載り、tokyo には無い
+#   - その copy の中身が注入した TS と SIZE・SHA-256 が一致（置き場の PVC を check Job で観測）。
+#     media_assets.sha256 の列も同じ値
+#   - ingest_siteb の ScaledJob が起こした、成功した Job が存在し、その Pod テンプレートが
+#     両方の置き場の PVC と root を挿している（取り込みを書いた Pod がその置き場を挿していた）
+#
+# 壊れ方と、それで失敗する場所:
+#   - 録画が取り込まれない（watcher が録画を Managed と見ない = タグの取り違え）→ recording_id が立たない
+#   - 規則を読まない（tokyo に書く）→ copy の置き場が takamatsu:active と違う
+#   - 中身が壊れる（途中で切れる・別の録画を書く）→ SIZE / SHA-256 が一致しない
+#   - Range の扱いが壊れる（取り込みの差分転送）→ 中身の SIZE / SHA-256 が一致しない
+#   - ingest の Pod が両方の置き場を挿していない → 下の Pod テンプレートの照合が失敗
+#   - 正の対照: 注入の後で、置き場の観測が注入した値そのものを返すこと（check Job 自体の検証）
+#
+# **限界**: 「書いた Pod がその置き場を挿していた」は、ingest の Job のテンプレートと Job の成功で見る。
+# Job と録画の対応は DB に無いので、1 つの Job がどの録画を書いたかは観測しない。
+ing_msg=""
+run_ingest_check() {
+  local dir="$1" ts size sha pid out rec_mirakc asset_id sj_ing ok facts row name queues stores_arg claims mounts
+  ts="${dir}/record.ts"
+  if ! docker run --rm --entrypoint ffmpeg -v "${dir}:/out" "$E2E_FULL_IMAGE" -nostdin -loglevel error -y \
+      -f lavfi -i "testsrc2=size=320x240:rate=25" \
+      -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+      -t 15 -c:v mpeg2video -b:v 800k -c:a aac -f mpegts /out/record.ts >/dev/null 2>&1 || [ ! -s "$ts" ]; then
+    ing_msg="録画の TS を ffmpeg で作れない（${E2E_FULL_IMAGE} の docker run）"
+    return 1
+  fi
+  size="$(wc -c < "$ts" | tr -d '[:space:]')"
+  sha="$(python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$ts")"
+
+  pid="$(tb_curl "http://mirakc-${E2E_SITE_B}:40772/api/programs" 2>/dev/null |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)"
+  case "$pid" in ''|*[!0-9]*) ing_msg="siteb の番組を mirakc モックから取れない（'${pid}'）"; return 1 ;; esac
+
+  if ! out="$(k exec -i "$E2E_TOOLBOX" -- curl -sS -f -X POST --data-binary @- \
+      "http://mirakc-${E2E_SITE_B}:40772/mock/records?programId=${pid}" < "$ts" 2>&1)"; then
+    ing_msg="録画の注入（POST /mock/records）が失敗: ${out}"
+    return 1
+  fi
+  rec_mirakc="$(printf '%s' "$out" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)"
+  case "$rec_mirakc" in ''|*[!A-Za-z0-9-]*) ing_msg="注入の応答から録画 id を読めない（'${out}'）"; return 1 ;; esac
+
+  # watcher の sweep（level-triggered の真実）を促す。SSE の保存イベントで先に取り込まれても、同じ録画
+  # 行に合流するので害は無い。
+  if ! tb_rokuban enqueue record-sweep --site "$E2E_SITE_B" >/dev/null 2>&1; then
+    log_step "record-sweep の投入に失敗（SSE の保存イベントに任せる）"
+  fi
+
+  # 1. 録画行（record_sync の recording_id）
+  linked() { [ -n "$(psql_scalar "SELECT coalesce(recording_id::text, '') FROM record_sync WHERE site = '${E2E_SITE_B}' AND record_id = '${rec_mirakc}'")" ]; }
+  if ! retry_until 600 "record_sync of ${rec_mirakc} to get a recording" linked; then
+    ing_msg="録画 ${rec_mirakc} に録画行ができない（watcher が取り込み対象と見ない: record_sync=$(psql_scalar "SELECT count(*) FROM record_sync WHERE record_id = '${rec_mirakc}'")）"
+    return 1
+  fi
+  ing_rec="$(psql_scalar "SELECT recording_id FROM record_sync WHERE site = '${E2E_SITE_B}' AND record_id = '${rec_mirakc}'")"
+
+  # 2. 原本の copy 行（規則が選んだ置き場に active）。
+  asset_id=""
+  copy_ready() {
+    asset_id="$(psql_scalar "SELECT id FROM media_assets WHERE recording_id = ${ing_rec} AND kind = 'original'")"
+    [ -n "$asset_id" ] && [ -n "$(psql_scalar "SELECT 1 FROM media_asset_copies WHERE media_asset_id = ${asset_id} AND state = 'active' LIMIT 1")" ]
+  }
+  if ! retry_until 900 "original copy of recording ${ing_rec} to be active" copy_ready; then
+    ing_msg="録画 ${ing_rec} の原本の copy が active にならない（media_assets=${asset_id:-なし}）"
+    return 1
+  fi
+  copies="$(psql_q "SELECT store || ':' || state FROM media_asset_copies WHERE media_asset_id = ${asset_id} ORDER BY store" | paste -sd, -)"
+  if [ "$copies" != "${E2E_STORE_B}:active" ]; then
+    ing_msg="原本の copy が規則（${E2E_SITE_B} → ${E2E_STORE_B}）の置き場に無い: '${copies}'"
+    return 1
+  fi
+  if [ "$(psql_scalar "SELECT encode(sha256, 'hex') FROM media_assets WHERE id = ${asset_id}")" != "$sha" ]; then
+    ing_msg="media_assets.sha256 が注入した TS の SHA-256 と違う"
+    return 1
+  fi
+
+  # 3. 中身（置き場の PVC を check Job で観測。正の対照は同じ観測手段の 6.3 が済ませている）。
+  rel="$(copy_rel "$asset_id" "$E2E_STORE_B")"
+  got="$(store_file_state "$E2E_STORE_B" "$rel")" || got=""
+  if [ "$got" != "PRESENT SIZE=${size} SHA256=${sha}" ]; then
+    ing_msg="取り込んだ原本の中身が注入した TS と一致しない（'${got}'。期待 SIZE=${size} SHA256=${sha}）"
+    return 1
+  fi
+
+  # 4. 取り込みを書いた ingest の Job が両方の置き場を挿している。
+  sj_ing="$(scaledjob_for_queue "ingest_${E2E_SITE_B}")"
+  if [ -z "$sj_ing" ] || discovery_is_unusable "$sj_ing"; then
+    ing_msg="ingest_${E2E_SITE_B} の ScaledJob を一意に引けない（'${sj_ing}'）"
+    return 1
+  fi
+  ok="$(k get jobs -l "scaledjob.keda.sh/name=${sj_ing}" -o jsonpath='{.items[?(@.status.succeeded>=1)].metadata.name}' 2>/dev/null)"
+  if [ -z "$ok" ]; then
+    ing_msg="ingest の Job（${sj_ing}）が成功していない"
+    return 1
+  fi
+  facts="$(jobs_pod_facts "$sj_ing")" || facts=""
+  bad=""
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    IFS=$'\t' read -r name queues stores_arg claims mounts <<<"$row"
+    [ "$claims" = "$want_claims" ] || bad="${bad} ${name}:PVC=${claims}"
+    [ "$mounts" = "$want_mounts" ] || bad="${bad} ${name}:mount=${mounts}"
+  done <<<"$facts"
+  if [ -n "$bad" ]; then
+    ing_msg="ingest の Job が両方の置き場を挿していない:${bad}"
+    return 1
+  fi
+
+  ing_msg="録画 ${rec_mirakc}（recording ${ing_rec}）の原本は規則どおり ${E2E_STORE_B} に active で載り、中身が注入した TS と一致（SIZE=${size}, SHA-256 一致）。取り込みは ${ok} が書いた"
+  return 0
+}
+
+ing_dir="$(mktemp -d)" || ing_dir=""
+if [ -z "$ing_dir" ]; then
+  fail "6.8" "一時ディレクトリを作れない（録画の TS を置けない）"
+else
+  if run_ingest_check "$ing_dir"; then
+    pass "6.8" "$ing_msg"
+  else
+    fail "6.8" "ingest が録画を規則どおりの置き場へ取り込まない: ${ing_msg}"
+  fi
+  rm -rf "$ing_dir"
+fi
 
 exit 0
