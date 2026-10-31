@@ -519,7 +519,8 @@ export function RecordingPlayer({
   if (profiles.length === 0) return null
 
   const selectedMedia = media.encoded.find((m) => m.profile === selectedProfile)
-  const src = selectedMedia?.url ?? ''
+  // 空文字の src は、ページ自身の URL を再要求しうるので、取れないときは属性ごと省く。
+  const src = selectedMedia?.url
   const updatePlayedFraction = (video: HTMLVideoElement) => {
     const known = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0
     setPlayed((previous) => ({

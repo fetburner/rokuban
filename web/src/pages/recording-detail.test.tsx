@@ -472,8 +472,28 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3')
 
-    expect(await screen.findByText('原本 TS')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'ダウンロード / VLC' })).not.toBeInTheDocument()
+    // 原本の行が描かれてから否定を見る（行が無いだけの空虚な成功を避ける）。
+    const originalRow = await screen.findByTestId('recording-original-row')
+    expect(within(originalRow).getByText('原本 TS')).toBeInTheDocument()
+    // `<a href={undefined}>` はリンクの role を持たないので、role で探すと分岐を外しても通ってしまう。
+    // ダウンロードの文言そのものが行の中に無いことを見る。
+    expect(within(originalRow).queryByText(/ダウンロード/)).not.toBeInTheDocument()
+    expect(within(originalRow).queryAllByRole('link')).toHaveLength(0)
+  })
+
+  it('原本の URL も再生元も無い録画は VLC 等で開く導線を出さず、再生できないと案内する', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        media: recordingMedia(3, [], { original: false }),
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
+    expect(await screen.findByText('再生可能なファイルがありません。')).toBeInTheDocument()
+    expect(screen.queryByText('VLC 等で開く')).not.toBeInTheDocument()
   })
 
   it('通常の録画は再生・版と値札を出し、管理操作はページ見出しのメニューに置く', async () => {

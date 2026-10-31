@@ -5,7 +5,7 @@ import { recordingMedia } from '@/test/recording-media'
 import {
   estimateAverageBitrate,
   estimateStorageForecast,
-  findMediaRoot,
+  findMediaRoots,
   isObservationStale,
   recentBitrateSamples,
   upcomingReservationSchedule,
@@ -161,7 +161,7 @@ describe('isObservationStale', () => {
   })
 })
 
-describe('findMediaRoot', () => {
+describe('findMediaRoots', () => {
   const scratch: StorageRoot = {
     store: 'takamatsu',
     root: 'scratch',
@@ -180,14 +180,16 @@ describe('findMediaRoot', () => {
     availableBytes: 2,
     observedAt: '2026-08-13T00:00:00Z',
   }
+  const otherMedia: StorageRoot = { ...media, store: 'tokyo', path: '/tokyo-media', availableBytes: 3 }
 
-  it('media root を見つける', () => {
-    expect(findMediaRoot([scratch, media])).toEqual(media)
+  it('media root を置き場ごとに返す（先頭だけに切り詰めない）', () => {
+    expect(findMediaRoots([scratch, media])).toEqual([media])
+    expect(findMediaRoots([media, scratch, otherMedia])).toEqual([media, otherMedia])
   })
 
-  it('media root が無ければ undefined（観測なしで黙る）', () => {
-    expect(findMediaRoot([scratch])).toBeUndefined()
-    expect(findMediaRoot([])).toBeUndefined()
+  it('media root が無ければ空配列（観測なしで黙る）', () => {
+    expect(findMediaRoots([scratch])).toEqual([])
+    expect(findMediaRoots([])).toEqual([])
   })
 })
 

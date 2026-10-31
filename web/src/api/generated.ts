@@ -355,11 +355,6 @@ export interface CMLogoState {
   lastFailureStage?: string | null;
   /** Recording with an active original for frame selection, or 0. */
   frameRecordingId: number;
-  /**
-     * `frameRecordingId` の原本のコマの切り出し URL（`/api/media/stores/{store}/recordings/{id}/frame`）。
-     * クライアントが `?at=<ms>` を足す。`frameRecordingId` が 0 のときは省略する。
-     */
-  frameUrl?: string;
   logoArea?: CMLogoArea;
   candidate?: CMLogoCandidate;
 }
@@ -983,7 +978,7 @@ export interface Recording {
   sizeBytes?: number;
   /**
      * 再生可能な encoded 派生物（media_assets の active のみ）。
-     * ブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。
+     * ブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。
      * desired（encodeProfiles）ではなく observed。空配列は省略可。
      */
   encodedAssets?: EncodedAsset[];
@@ -1743,6 +1738,7 @@ export const StorageRootRoot = {
 /**
  * 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の
  * 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
+ * 置き場（`store`）ごとに root の数だけ行が並ぶ。同じ `store` と `root` の組は 1 行だけ。
  */
 export interface StorageRoot {
   /**

@@ -595,6 +595,39 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     watchHome.unmount()
   })
 
+  // 置き場が 2 つのとき、先頭の置き場だけを描く（旧 `find` の挙動）と 2 つ目の残量が消える。
+  // 見込み（今後 7 日・満杯まで）は置き場を 1 つに決められないので出さない。
+  it('管理側の容量は置き場ごとに 1 行ずつ出し、置き場が複数なら見込みを出さない', async () => {
+    const observedAt = new Date().toISOString()
+    const storageRoot = (store: string, availableBytes: number): StorageRoot => ({
+      store,
+      root: 'media',
+      path: `/${store}`,
+      totalBytes: 1_000_000_000_000,
+      usedBytes: 1_000_000_000_000 - availableBytes,
+      availableBytes,
+      observedAt,
+    })
+    stubApi({
+      recording: [recording(1, '録画中', 'recording')],
+      storage: [storageRoot('takamatsu', 100_000_000), storageRoot('tokyo', 500_000_000_000)],
+      // 残量 100MB に対して 7 日分の予約は収まらない量（単一置き場なら満杯見込みが出る）
+      reservations: Array.from({ length: 7 }, (_, i) => reservation(10 + i, '予約', i * 24 * HOUR + HOUR)),
+      // 実測 3.6GB / 1 時間（平均ビットレートの標本になる）
+      finished: [recording(4, '完了', 'finished', { sizeBytes: 3_600_000_000 })],
+    })
+    renderHome('/?mode=ops')
+
+    const rows = await screen.findAllByTestId('home-ops-storage')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveTextContent('takamatsu')
+    expect(rows[0]).toHaveTextContent('残り')
+    expect(rows[1]).toHaveTextContent('tokyo')
+    expect(rows[1]).toHaveTextContent('残り')
+    expect(screen.queryByText(/満杯まで/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/今後 7 日の予約で/)).not.toBeInTheDocument()
+  })
+
   it('警告バッジは材料が未解決 / 0 件なら出ず、警告行数と一致する', async () => {
     // breakers だけ未解決。超過・失敗・ドロップで警告材料は既にあるので、
     // pending ガードが無ければ件数 > 0 のバッジが出てしまう。

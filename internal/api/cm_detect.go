@@ -70,11 +70,6 @@ func (h *Server) ListCMLogos(ctx context.Context, _ ListCMLogosRequestObject) (L
 			FrameRecordingId:  row.FrameRecordingID,
 			LearnedAt:         utcTimePtr(row.LearnedAt),
 		}
-		if row.FrameRecordingID != 0 {
-			if storeName, ok := h.originalStoreOf(ctx, row.FrameRecordingID); ok {
-				item.FrameUrl = storeMediaURL(&storeName, row.FrameRecordingID, "frame")
-			}
-		}
 		if row.LearnedCodedWidth != nil {
 			codedWidth := int(*row.LearnedCodedWidth)
 			item.CodedWidth = &codedWidth

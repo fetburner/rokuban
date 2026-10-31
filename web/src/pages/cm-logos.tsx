@@ -127,7 +127,10 @@ function useFrame(
     setFrame(null)
     setFailed(false)
     setLoading(true)
-    fetch(`${frameUrl}?at=${atMs}`)
+    // frameUrl に既存のクエリがあっても壊れないよう、URL API で `at` を足す。
+    const requestURL = new URL(frameUrl, window.location.origin)
+    requestURL.searchParams.set('at', String(atMs))
+    fetch(`${requestURL.pathname}${requestURL.search}`)
       .then(async (response) => {
         if (!response.ok) throw new Error(`status ${response.status}`)
         const blob = await response.blob()
@@ -318,8 +321,9 @@ function CMLogoFrameEditor({
   const frameRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const appliedFrameKey = useRef<string | null>(null)
+  // コマを取り寄せられるのは active な原本のコピーがある録画だけ（frameUrl はそのときだけ返る）。
   const candidates = useMemo(
-    () => recordings.filter((recording) => recording.sizeBytes !== undefined),
+    () => recordings.filter((recording) => recording.media.frameUrl !== undefined),
     [recordings],
   )
   const initialRecordingId =

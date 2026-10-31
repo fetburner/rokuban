@@ -1121,10 +1121,6 @@ type CMLogoState struct {
 	// FrameRecordingId Recording with an active original for frame selection, or 0.
 	FrameRecordingId int64 `json:"frameRecordingId"`
 
-	// FrameUrl `frameRecordingId` の原本のコマの切り出し URL（`/api/media/stores/{store}/recordings/{id}/frame`）。
-	// クライアントが `?at=<ms>` を足す。`frameRecordingId` が 0 のときは省略する。
-	FrameUrl *string `json:"frameUrl,omitempty"`
-
 	// LastFailureStage The stage of the most recent failure that still needs attention, if known.
 	LastFailureStage *string     `json:"lastFailureStage,omitempty"`
 	LearnedAt        *time.Time  `json:"learnedAt,omitempty"`
@@ -1981,7 +1977,7 @@ type Recording struct {
 	EncodeStatus *[]EncodeJobStatus `json:"encodeStatus,omitempty"`
 
 	// EncodedAssets 再生可能な encoded 派生物（media_assets の active のみ）。
-	// ブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。
+	// ブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。
 	// desired（encodeProfiles）ではなく observed。空配列は省略可。
 	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
 
@@ -2435,6 +2431,7 @@ type SetRecordingEncodePolicyInputKeepOriginal string
 
 // StorageRoot 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の
 // 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
+// 置き場（`store`）ごとに root の数だけ行が並ぶ。同じ `store` と `root` の組は 1 行だけ。
 type StorageRoot struct {
 	// AvailableBytes 非特権プロセスが実際に書き込める残量（statfs の Bavail）。
 	// 「残高」として UI に出すべき数字はこちら。`observedAt` 時点の
