@@ -34,7 +34,7 @@
 | `storage.originals` | —（`stores` / `derived` と一緒に書く） | 上から評価する原本の置き場の規則 |
 | `storage.derived` | —（`stores` / `originals` と一緒に書く） | 派生物の共通の置き場 |
 | `storage.transfer.bandwidth` | なし | 転送元の置き場ごとの帯域の上限 |
-| `storage.transfer.backlog_limit` | なし | 転送元の置き場ごとの転送待ちの上限。達したらその置き場への encode の投入を止める |
+| `storage.transfer.backlog_limit` | なし | 転送元の置き場ごとの転送待ちの上限。達したらその置き場の原本を読む encode の投入を止める |
 | `storage.transfer.overlap` | `48h` | 新しいコピーができてから旧コピーを消すまでの猶予 |
 | `storage.scratch_dir` | `/var/tmp/rokuban` | ローカルスクラッチ |
 | `storage.accel_location` | `""`（Go が直接配る） | X-Accel-Redirect の location |
@@ -109,7 +109,7 @@
 
 `storage.transfer.bandwidth` は転送元ごとの正の帯域値である。`bps` / `Bps` は 1 秒あたりの bit / byte、`Kbps` / `Mbps` / `Gbps` と `KBps` / `MBps` / `GBps` は 10 進、`KiBps` / `MiBps` / `GiBps` は 2 進で読む。たとえば `50Mbps` は毎秒 6.25 MB である。
 
-`storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。件数が上限に達すると、encode reconcile はその置き場への encode を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
+`storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。件数が上限に達すると、encode reconcile はその置き場の原本を読む encode（キュー `encode_{store}`）を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
 
 `storage.transfer` は規則の指紋に含めない。帯域・転送待ちの上限・overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
@@ -142,7 +142,7 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 
 転送元をマウントしているときは、`internal_url` に新しいコピーがあってもローカルを読む。
 
-`internal_url` からの読みの途中で本体が切れたら、転送ワーカーは切れた位置から Range 付きで残りを要求し直す。読み進めないまま張り直すのが 3 回続いたら諦める。その後は転送ジョブの次の試行が、積んだ checkpoint から再開する。
+`internal_url` からの読みの途中で本体が切れたら、転送ワーカーは切れた位置から Range 付きで残りを要求し直す。読み進めないまま張り直すのが 3 回続いたら諦める。その後は転送ジョブの次の試行が、書いた checkpoint から再開する。
 
 <details><summary>根拠</summary>
 

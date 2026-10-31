@@ -546,11 +546,11 @@ var (
 	}, []string{"profile"})
 
 	// EncodeBackpressure は、転送待ちが storage.transfer.backlog_limit に達したために
-	// encode reconcile が投入を止めている置き場を 1 で示す（置き場別）。
+	// encode reconcile が、その置き場の原本を読む encode の投入を止めていることを 1 で示す（置き場別）。
 	// 上限の無い置き場は系列を出さない。原本の ingest は止めない。
 	EncodeBackpressure = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_encode_backpressure",
-		Help: "1 while encode reconcile is not enqueuing encodes into the store because its transfer backlog reached storage.transfer.backlog_limit, else 0.",
+		Help: "1 while encode reconcile is not enqueuing encodes that read originals from the store because its transfer backlog reached storage.transfer.backlog_limit, else 0.",
 	}, []string{"store"})
 
 	// CutAwaitingReview は「`cut: true` のプロファイルを凍結しているのに、まだ

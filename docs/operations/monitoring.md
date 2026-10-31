@@ -202,11 +202,11 @@ FS 置き場間の転送の進み具合と、失敗の止まり方を、次の�
 | `rokuban_storage_transfer_policy_mismatch_total` | Counter | 設定変更後に、古い規則の指紋を持つため破棄した job 数 |
 | `rokuban_storage_transfer_corrupt_sources_retired_total` | Counter | 壊れた派生コピーを、転送 worker が転送元から退役させた回数 |
 | `rokuban_storage_transfer_mount_mismatch_total{store}` | Counter | root が未設定、または目印が一致せず転送の開始を見送った回数 |
-| `rokuban_encode_backpressure{store}` | Gauge | 転送待ちが `storage.transfer.backlog_limit` に達し、その置き場への encode の投入を止めているとき 1 |
-
-`rokuban_encode_backpressure{store}` が 1 のまま下がらないなら、転送待ちのゲージと、転送元の置き場の帯域の上限と網の状態を見る。
+| `rokuban_encode_backpressure{store}` | Gauge | 転送待ちが `storage.transfer.backlog_limit` に達し、その置き場の原本を読む encode の投入を止めているとき 1 |
 
 転送待ちの 2 つのゲージは、転送 reconcile が見た差分を表す。失敗が上限に達した宛先と、削除してよい until_encoded の原本は数えない。最後の成功が古いまま転送待ちが残るときは、worker とマウントを調べる。
+
+`rokuban_encode_backpressure{store}` が 1 のまま下がらないなら、転送待ちのゲージと、転送元の置き場の帯域の上限と網の状態を見る。
 
 `rokuban_storage_transfer_exhausted_assets` が 0 以外なら、対象の転送元、宛先、ログの失敗理由を確認し、原因を直してから runbook の手順で試行記録を消す。マウントの不一致は、マウントと `.rokuban-store` の値を確認する。
 

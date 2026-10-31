@@ -50,7 +50,7 @@ type OriginalStoreMatch struct {
 type StorageTransferConfig struct {
 	Bandwidth map[string]string `yaml:"bandwidth,omitempty" json:"bandwidth,omitempty"`
 	// BacklogLimit は、転送元の置き場ごとの転送待ち（その置き場にコピーがあり、desired の置き場に無い資産）の件数の上限。
-	// 上限に達した置き場へは encode reconcile が encode を投入しない（ingest は止めない）。未設定の置き場は無制限。
+	// 上限に達した置き場の原本を読む encode は、encode reconcile が投入しない（ingest は止めない）。未設定の置き場は無制限。
 	BacklogLimit map[string]int `yaml:"backlog_limit,omitempty" json:"backlog_limit,omitempty"`
 	Overlap      time.Duration  `yaml:"overlap" json:"overlap"`
 }
