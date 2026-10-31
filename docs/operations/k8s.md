@@ -25,15 +25,18 @@ ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読する�
 
 #### キュー名の修飾
 
-キューの絞り込みには、site で修飾しない論理名を書く。
+キューの絞り込みには、site にも置き場にも修飾しない論理名を書く。
 
-設定値と未知キューのエラーメッセージは論理名のままである。mirakc への到達性を要する site 単位のキュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）は、プロセスの束縛サイト名で修飾される。
+設定値と未知キューのエラーメッセージは論理名のままである。mirakc への到達性を要する site 単位のキュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）は、プロセスの束縛サイト名で修飾される。原本か置き場のファイルを読み書きするキューは、プロセスがマウントした置き場の名前で修飾される。そのキューは `encode` / `thumbnail` / `cm_detect` / `ts_scan` / `original` / `storage` / `transfer` である。
 
-実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）になる。それ以外の site 非依存キューは修飾されない。KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
+実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）か `<論理名>_<store>`（例: `encode_takamatsu`）になる。DB だけを触る reconcile（`cleanup`）と `ruler` などは修飾されない。KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
+
+置き場で修飾するキューのジョブは、ジョブを積む側が原本のコピーのある置き場を選んで積む。worker は実行時に、その置き場をマウントしているかを照合し、違えば失敗にして `rokuban_store_route_mismatch_total{kind,store}` を増やす。`--stores` は argv で渡し、明示的な空（`--stores=`）は置き場を持たない。置き場で修飾するキューを引くのに置き場が 0 件、ingest を引くのに FS 置き場が 0 件、`--once` で置き場で修飾した物理キューが 2 本以上になる、のどれも起動エラーである。
 
 <details><summary>根拠</summary>
 
 - site ごとのキュー修飾と中央プロセスの束縛判定: `internal/jobs/queue.go` の `siteBoundQueueNames` / `jobs.RequiresSiteBinding`
+- 置き場で修飾するかの判定は `storeBoundQueueNames` / `jobs.IsStoreBound` の 1 か所で、投入側（`PhysicalQueueFor`）・worker 仕様・`--stores` の検査が共有する
 
 </details>
 
@@ -47,10 +50,13 @@ ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読する�
 |---|---|---|---|
 | `reconciler` / `epg`（+`tuner_sync`）/ `watcher` | mirakc への到達性 | 自宅側 | 束縛（キュー名を `_<site>` で修飾） |
 | `ingest` | mirakc への到達性 + ファイルシステム | 自宅側 | 束縛（同上） |
-| `encode` / `thumbnail` / `cm_detect` / `cleanup` / `storage` | ファイルシステム | 自宅側 | 非依存（アーカイブ・スクラッチは単一） |
+| `encode` / `thumbnail` / `cm_detect` / `ts_scan` / `original` / `storage` / `transfer` | 置き場のファイルシステム | その置き場の側 | 非依存（置き場で修飾: `_<store>`） |
+| `cleanup` | DB のみ（reconcile の候補列挙と分類ルールの再評価） | どちらでも | 非依存・置き場にも非依存 |
 | `ruler` | DB のみ | どちらでも | 非依存（`args.Site` はクエリの絞り込み） |
 
-0 サイト束縛（中央プロセス、`server --sites=`）の worker は site 単位のキューを一切購読できない。中央プロセスでは `worker.queues` / `--queues` を site 非依存キューに絞る。ただし `cleanup` / `storage` は表の通りファイルシステムを要求する。「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで動かす必要がある。
+0 サイト束縛（中央プロセス、`server --sites=`）の worker は site 単位のキューを一切購読できない。中央プロセスでは `worker.queues` / `--queues` を site 非依存キューに絞る。ただし置き場で修飾するキューは表の通りその置き場のファイルシステムを要求する。「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。置き場で修飾するキューを引く Pod は、`--stores` の置き場の root と scratch_dir のマウントに到達できるノードで動かす。
+
+置き場で修飾する前に積まれたジョブは、修飾の無い名前のキューに残り、誰にも掴まれない。導入時に一度 `rokuban queues cancel-legacy` で取り消す。取り消した仕事は、レベルトリガーの reconcile が置き場のキューへ積み直す（[runbook](../runbook/troubleshooting.md) の「置き場で修飾する前のキューの残骸」）。River の一意性の鍵にキューが入っているので、同じ引数の新しいジョブが旧キューの残骸に合流することはない。
 
 #### PVC マウントの所有権
 

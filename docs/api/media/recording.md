@@ -17,11 +17,15 @@
 
 #### 実装
 
-録画ファイル・サムネイル・シークタイルは streamer ロールが Range 対応で配り、HEAD も登録する。OpenAPI には載せず、UI は URL を直接使う。
+録画のバイナリ配信は streamer ロールが Range 対応で配る。UI は録画 API が返す URL をそのまま使い、自分では組み立てない。
+
+HEAD も登録し、OpenAPI には載せない。URL は `Recording.media` に入っている。
+
+原本とコマは置き場の URL で、その置き場をマウントした streamer だけが配る。派生物（encoded・サムネイル・シークタイル）は置き場を含まない URL で、中央の FS なら streamer が配り、S3 なら 302 で署名付き URL へ送る。
 
 ```
-GET  /api/media/recordings/{id}/file              →  video/MP2T（原本、Range 対応）
-HEAD /api/media/recordings/{id}/file              →  ヘッダーのみ
+GET  /api/media/stores/{store}/recordings/{id}/file              →  video/MP2T（原本、Range 対応）
+HEAD /api/media/stores/{store}/recordings/{id}/file              →  ヘッダーのみ
 GET  /api/media/recordings/{id}/file?profile=h264 →  video/mp4 等（encoded、Range 対応）
 GET  /api/media/recordings/{id}/file?profile=h264&track=subtitles → text/vtt（字幕サイドカー）
 HEAD /api/media/recordings/{id}/file?profile=h264 →  ヘッダーのみ
@@ -35,7 +39,9 @@ HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 
 配信 URL は、応答の性質を表す固定接頭辞の下に置く。active な encoded のブラウザ再生は単一ファイルの Range で足り、原本だけが残る完了録画は一時 HLS、ライブ視聴は別経路である。
 
-録画配信は一覧・詳細 API と `/api/recordings/{id}` の部分木を共有する。`{id}` は要求時まで列挙できないので、その後ろで api と streamer が分かれる。そのため標準 Ingress の `Exact` / `Prefix` だけでは、単一ホスト名から一意に振り分けられない。分割可能な外向きの形として、固定接頭辞 `/api/media/recordings/{id}/...` に移設した。メソッド（`GET` / `HEAD`）とクエリは変えない。
+録画配信は一覧・詳細 API と `/api/recordings/{id}` の部分木を共有する。`{id}` は要求時まで列挙できないので、その後ろで api と streamer が分かれる。そのため標準 Ingress の `Exact` / `Prefix` だけでは、単一ホスト名から一意に振り分けられない。分割可能な外向きの形として、固定接頭辞に移設した。派生物は `/api/media/recordings/{id}/...`、原本は置き場ごとの `/api/media/stores/{store}/recordings/{id}/...` である。メソッド（`GET` / `HEAD`）とクエリは変えない。
+
+録画 API は、active な原本のコピーがある置き場（複数あれば置き場名順で先頭）を使って URL を返す。コピーが無ければ原本とコマの URL を省く。置き場の移動（転送と削除）で原本の置き場が変わると URL も変わるので、クライアントは URL を保存しない。
 
 active な encoded のブラウザ VOD は MP4 progressive + Range を使う。家庭 LAN のオンデマンド再生では、単一ファイルの Range が十分である。原本だけが残る完了録画は一時 HLS でブラウザ再生する（[playback.md](playback.md)「録画原本のブラウザ再生」）。ライブ視聴の HLS は別経路（[live-hls.md](live-hls.md)「ライブ視聴の HLS」）のままである。
 
@@ -69,7 +75,7 @@ SSE と同じ理由で、バイナリ配信に生成クライアントを使う�
 
 URL の世代は、active な原本の行があればその世代を使い、無ければ転送中の一時ファイルの世代を使う。録画の状態ではなく DB の行だけで決める。api ロールはファイルに触れず、コミットは DB の行だからである。録画中の世代は commit で原本の行へ持ち越すので、録画が終わっても URL は変わらない。バイト列の世代を URL に含めることで、再取り込み後の内容と以前のキャッシュを区別する。
 
-URL には site ではなく置き場の名前を入れる。規則しだいで 1 つの site の原本が複数の置き場に分かれるからである。ingress は Prefix `/api/media/stores/<名前>/` で録画 HLS を配る Pod を振り分ける。置き場が 1 つの今から最終形の URL で作るので、2 つ目の置き場を足すときも URL と ingress の形を変えずに済む。
+URL には site ではなく置き場の名前を入れる。規則しだいで 1 つの site の原本が複数の置き場に分かれるからである。置き場の名前は、録画 HLS が読む入力（active な原本のコピー、無ければ ingest temp）がある置き場である。ingress は Prefix `/api/media/stores/<名前>/` で、その置き場をマウントした Pod（録画 HLS と原本の配信）へ振り分ける。置き場が 1 つの時から最終形の URL で作るので、2 つ目の置き場を足すときも URL の形は変わらない。録画 HLS を配るプロセスは 1 つの置き場だけを読む。
 
 録画 HLS の profile は `live.profiles` をそのまま使う。`live.enabled` が false でも、録画 HLS を有効にしたときは `live.profiles` が必須で、名前は URL の path segment に使えるものだけを許す。
 
@@ -155,7 +161,7 @@ URL には site ではなく置き場の名前を入れる。規則しだいで 
 CM 検出のロゴ位置を教えるために、原本の指定時刻のコマを JPEG で返す。原本だけを使い、縮小や SAR の焼き込みはしない。
 
 ```
-GET /api/media/recordings/{id}/frame?at=<milliseconds> → image/jpeg
+GET /api/media/stores/{store}/recordings/{id}/frame?at=<milliseconds> → image/jpeg
 ```
 
 `X-Coded-Width` / `X-Coded-Height` は、`at` のコマで返す JPEG 自身の幅と高さを返す。途中で映像の幅と高さが変わり、渡した枠が録画の最初の映像ストリームと異なる場合、検出は失敗する。

@@ -675,7 +675,7 @@ const invalidMediaAssetRelPathQuery = `
 SELECT a.id, a.kind, c.rel_path
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
-WHERE c.store = $1
+WHERE ($1::text IS NULL OR c.store = $1::text)
   AND c.state <> 'deleted'
   AND a.kind IN ('original', 'encoded')
   AND c.rel_path !~ '^sites/[^/]+/'
@@ -684,9 +684,10 @@ LIMIT 1
 `
 
 // FindInvalidMediaAssetRelPath は予約されたサイト名空間の外にある原本または encoded を返す。
+// 置き場に束ねない Media は全置き場のコピーを検査する。
 func (s *Media) FindInvalidMediaAssetRelPath(ctx context.Context) (*store.MediaAssetRelPathViolation, error) {
 	var violation store.MediaAssetRelPathViolation
-	if err := s.pool.QueryRow(ctx, invalidMediaAssetRelPathQuery, s.storeName).Scan(&violation.ID, &violation.Kind, &violation.RelPath); err != nil {
+	if err := s.pool.QueryRow(ctx, invalidMediaAssetRelPathQuery, mediaStoreNameArg(s.storeName)).Scan(&violation.ID, &violation.Kind, &violation.RelPath); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}

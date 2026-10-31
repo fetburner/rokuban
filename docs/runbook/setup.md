@@ -142,7 +142,7 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 `adopt` は、目印の無い root に目印を新しく作る前に、DB にその置き場のコピー行があるかを確かめる。あれば、マウント漏れか別のボリュームなので、エラーにして目印を書かない。同名の目印が既にあれば成功する。
 
-`recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
+置き場の名前を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は `storage.stores` に定義した FS 置き場の名前だけを受け付け、既存の同名の目印は成功として扱う。2 つ目以降の置き場も、その置き場の root をマウントして同じ手順で `adopt <名前>` を実行する。
 
 置き場の名前は変えられない。名前を変えるときは、新しい置き場として導入し直す。
 

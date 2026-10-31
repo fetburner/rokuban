@@ -30,7 +30,7 @@
 | `db.api_statement_timeout` | `0`（= 30s） | api を含むプロセスの statement timeout |
 | `mirakcs` | —（必須。既定なし） | mirakc の `{site, url}` 配列 |
 | `storage.media_dir` | —（必須） | 原本の ingest 先 |
-| `storage.stores` | —（worker ロールと `recording_hls.enabled` で必須。置き場の規則を書くときも必須） | 名前付き置き場の定義 |
+| `storage.stores` | —（`recording_hls.enabled` と置き場の規則で必須） | 名前付き置き場の定義（FS は任意で `root`） |
 | `storage.originals` | —（`stores` / `derived` と一緒に書く） | 上から評価する原本の置き場の規則 |
 | `storage.derived` | —（`stores` / `originals` と一緒に書く） | 派生物の共通の置き場 |
 | `storage.transfer.bandwidth` | なし | 転送元の置き場ごとの帯域の上限 |
@@ -108,9 +108,13 @@
 
 `storage.transfer` は規則の指紋に含めない。帯域と overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
-`storage.originals` の参照先には FS 置き場を 1 つだけ指定できる。`storage.derived` は、その FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
+`storage.originals` の参照先は FS 置き場に限る。FS 置き場は何個でも定義でき、規則ごとに別の置き場を指せる。`storage.derived` は、FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
 
-未解決: 複数の FS 原本置き場は使えない。今の worker は原本を `storage.media_dir` の 1 つの root にしか書かず、別の置き場を指す規則は書き込みに効かないためである。複数の置き場の形は `config.example.yml` にコメントで示してあり、検証が拒否する。
+FS 置き場の root は `storage.stores.<名前>.root` で指定する。省略した置き場は `storage.media_dir` を root にするので、1 つの置き場だけのプロセスは `media_dir` のままでよい。1 つのプロセスが複数の置き場をマウントするときは、各置き場に別の `root` が要る（同じ root を指す 2 つの置き場は、目印と書き込みを取り違えるので起動時に拒否する）。`root` は規則の指紋に含めない。マウント先の違いで積み済みの転送ジョブを捨てさせないためである。
+
+どの置き場をマウントするかは config ではなく argv の `--stores` で渡す（`--sites` と同じ扱い）。`--stores` に `storage.stores` に無い名前や S3 置き場を渡すと起動エラーになる。
+
+次の 3 つも起動エラーにする。置き場で修飾するキューを引くのに置き場が 0 件の worker、FS 置き場が 0 件で ingest を引く worker、置き場で修飾するキューが 2 本以上になる `--once` である。
 
 <details><summary>根拠</summary>
 

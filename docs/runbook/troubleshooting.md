@@ -266,6 +266,27 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 「`default` は引き続き購読対象なので掃除不要」という判断は、`default` を含む `worker.queues` を書いている構成にしか当てはまらない。
 
+### 置き場で修飾する前のキューの残骸
+
+置き場で修飾する前に積まれた古いジョブは、導入後に誰にも掴まれないまま残る。導入時に 1 回だけ取り消し、仕事は reconcile に積み直させる。
+
+対象は 2 つある。1 つは、修飾の無い名前のキュー（`encode` / `thumbnail` / `cm_detect` / `ts_scan` / `storage`）に残ったジョブである。もう 1 つは、`cleanup` キューに残った `delete_reconcile` と `catalog_export` である。手順は次の通り。
+
+1. 新しい版の worker（置き場ごとの Pod の組）を起動する。取り消す前でも、新しい投入は旧キューの残骸と合流しない（River の一意性の鍵にキューが入っている）。
+2. `rokuban queues cancel-legacy` を実行する。River の公開 API で、未完了のジョブだけを取り消し、件数を出す。完了済みのジョブには触れず、何度実行しても安全である。
+3. 数分待つ。取り消した仕事は、レベルトリガーの reconcile（`cleanup` キューの定期パス）が、原本のコピーのある置き場のキューへ積み直す。`rokuban enqueue encode-reconcile` などで即時に積んでもよい。
+
+`delete_reconcile` と `catalog_export` は、導入後は置き場ごとの定期ジョブが `original_<store>` に積むので、手で積み直さない。
+
+取り消した後に `rokuban_store_route_mismatch_total` が増え続けるときは、ジョブの置き場をマウントしていない worker に届いている。`--stores` とキューの組み合わせを確かめる。
+
+<details><summary>根拠</summary>
+
+- 取り消し対象の定義: `cmd/rokuban/legacy_queues.go` の `legacyUnqualifiedQueues` / `legacyCleanupKinds`。`TestCancelLegacyQueuesAndNewJobsDoNotCoalesceWithTheLeftovers` が、旧キューの残骸が取り消され、同じ引数の新しい投入と合流しないことを固定する。
+- 取り消しは `river.Client` の `JobList` と `JobCancel` だけを使う（`riveradapter.Adapter.CancelQueued`）。
+
+</details>
+
 ### 番組リストが空
 
 番組リストが空のときは、まず mirakc の番組一覧が空でないかを確かめる。0 件なら mirakc 側の問題で、mirakc の EPG が復帰すれば次の同期で戻る。
