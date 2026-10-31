@@ -119,11 +119,20 @@ func TestValidateStoreBinding(t *testing.T) {
 		name     string
 		roles    []string
 		explicit bool
+		derived  string // storage.derived（空なら派生物の置き場を持たない構成）
 		mounted  []string
 		queues   []string
 		once     bool
 		wantErr  bool
 	}{
+		// storage.derived が FS 置き場のとき、encode / thumbnail（seek_tiles を含む）を引く worker はそれをマウントしている必要がある
+		{name: "derived fs not mounted with encode is rejected", roles: []string{"worker"}, explicit: true, derived: "takamatsu", mounted: one, queues: []string{"encode"}, wantErr: true},
+		{name: "derived fs not mounted with thumbnail (seek tiles) is rejected", roles: []string{"worker"}, explicit: true, derived: "takamatsu", mounted: one, queues: []string{"thumbnail"}, wantErr: true},
+		{name: "derived fs not mounted with all queues is rejected", roles: []string{"worker"}, explicit: true, derived: "takamatsu", mounted: one, wantErr: true},
+		{name: "derived s3 with encode is accepted", roles: []string{"worker"}, explicit: true, derived: "s3main", mounted: one, queues: []string{"encode"}},
+		{name: "derived fs mounted with encode is accepted", roles: []string{"worker"}, explicit: true, derived: "tokyo", mounted: one, queues: []string{"encode"}},
+		{name: "derived fs not mounted but worker pulls no derived writer is accepted", roles: []string{"worker"}, explicit: true, derived: "takamatsu", mounted: one, queues: []string{"ingest", "cm_detect", "ts_scan"}},
+		{name: "derived check does not apply to a streamer", roles: []string{"streamer"}, explicit: true, derived: "takamatsu", mounted: one},
 		// 効かない指定
 		{name: "explicit stores on api only is rejected", roles: []string{"api"}, explicit: true, mounted: one, wantErr: true},
 		{name: "explicit stores on watcher only is rejected", roles: []string{"watcher"}, explicit: true, mounted: one, wantErr: true},
@@ -154,7 +163,9 @@ func TestValidateStoreBinding(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateStoreBinding(tt.roles, tt.explicit, tt.mounted, tt.queues, tt.once)
+			storage := storageWithFSStores("tokyo", "takamatsu")
+			storage.Derived = tt.derived
+			err := validateStoreBinding(tt.roles, tt.explicit, storage, tt.mounted, tt.queues, tt.once)
 			if tt.wantErr && err == nil {
 				t.Fatal("validateStoreBinding() error = nil, want error")
 			}
