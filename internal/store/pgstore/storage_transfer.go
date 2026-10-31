@@ -458,3 +458,60 @@ func (s *Media) MarkMediaAssetCopyDeleted(ctx context.Context, candidate store.M
 	}
 	return true, nil
 }
+
+// ReadTransferBacklog は encode reconcile が直近に数えた置き場ごとの転送待ちの件数を返す。
+func (s *Media) ReadTransferBacklog(ctx context.Context) (map[string]int64, error) {
+	rows, err := sqlcgen.New(s.pool).ListTransferBacklogSnapshots(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading transfer backlog snapshots: %w", err)
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		counts[row.Store] = row.Assets
+	}
+	return counts, nil
+}
+
+// RecordTransferBacklog は置き場ごとの件数を保存し、書き換える前の件数を返す。
+// advisory lock で呼び出しを直列にするので、cleanup キューの並行する 2 つのパスのうち、
+// 状態を変えた書き込みを見るのは 1 つだけになる（TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce）。
+func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int64) (map[string]int64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transfer backlog transaction: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	if err := q.LockTransferBacklogSnapshots(ctx); err != nil {
+		return nil, fmt.Errorf("locking transfer backlog snapshots: %w", err)
+	}
+	rows, err := q.ListTransferBacklogSnapshots(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading previous transfer backlog snapshots: %w", err)
+	}
+	previous := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		previous[row.Store] = row.Assets
+	}
+	stores := make([]string, 0, len(counts))
+	for name := range counts {
+		stores = append(stores, name)
+	}
+	if err := q.DeleteTransferBacklogSnapshotsExcept(ctx, stores); err != nil {
+		return nil, fmt.Errorf("deleting transfer backlog snapshots of stores without a limit: %w", err)
+	}
+	for _, name := range stores {
+		if err := q.UpsertTransferBacklogSnapshot(ctx, sqlcgen.UpsertTransferBacklogSnapshotParams{Store: name, Assets: counts[name]}); err != nil {
+			return nil, fmt.Errorf("upserting transfer backlog snapshot for store %q: %w", name, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing transfer backlog snapshots: %w", err)
+	}
+	for name := range previous {
+		if _, ok := counts[name]; !ok {
+			delete(previous, name)
+		}
+	}
+	return previous, nil
+}

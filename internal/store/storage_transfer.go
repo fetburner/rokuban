@@ -46,8 +46,21 @@ type TransferBandwidthLease interface {
 	Release(ctx context.Context) error
 }
 
+// TransferBacklogReader は、encode reconcile が直近に数えた置き場ごとの転送待ちの件数を読む契約である。
+// 常駐プロセスの scrape と、毎回空から始まる worker の両方が使う。
+type TransferBacklogReader interface {
+	// ReadTransferBacklog は置き場ごとの直近の件数を返す。数えていない置き場は含まない。
+	ReadTransferBacklog(ctx context.Context) (map[string]int64, error)
+}
+
 // StorageTransfer は desired state と物理コピーの reconcile を永続化する契約である。
 type StorageTransfer interface {
+	TransferBacklogReader
+	// RecordTransferBacklog は、上限付きの置き場ごとの件数 counts を 1 つのトランザクションで保存し、
+	// 書き換える前の件数を返す。前の行が無い置き場は返り値に含めない。counts に無い置き場の行は消す。
+	// 並行する呼び出しは直列になるので、前の値は呼び出しごとに別の値になる。
+	// 呼び出し側は、前の値と今の値の比較で状態の変化を 1 度だけ検出できる。
+	RecordTransferBacklog(ctx context.Context, counts map[string]int64) (previous map[string]int64, err error)
 	// ListMediaAssetTransferCandidates は active で desired store にコピーが無い資産を返す。
 	ListMediaAssetTransferCandidates(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit, limit int32) ([]MediaAssetTransferCandidate, error)
 	// CountMediaAssetTransferCandidates は現在の転送待ちの件数とバイト数を返す。
