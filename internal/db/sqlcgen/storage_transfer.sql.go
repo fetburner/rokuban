@@ -137,6 +137,65 @@ func (q *Queries) CompleteMediaAssetTransfer(ctx context.Context, arg CompleteMe
 	return outcome, err
 }
 
+const countMediaAssetTransferBacklogBySourceStore = `-- name: CountMediaAssetTransferBacklogBySourceStore :many
+SELECT source.store::text AS store, count(DISTINCT a.id)::bigint AS asset_count
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+CROSS JOIN LATERAL active_media_asset_copies(a.id, NULL) source
+WHERE source.store = ANY($1::text[])
+  AND storage_transfer_candidate(
+      a.id, $2::jsonb, $3::text[], $4::text
+  )
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, $2::jsonb, $4::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+      )
+  ) < $5
+GROUP BY source.store
+`
+
+type CountMediaAssetTransferBacklogBySourceStoreParams struct {
+	SourceStores  []string
+	OriginalRules json.RawMessage
+	FsStores      []string
+	DerivedStore  string
+	AttemptLimit  int64
+}
+
+type CountMediaAssetTransferBacklogBySourceStoreRow struct {
+	Store      string
+	AssetCount int64
+}
+
+// 背圧の判定に使う。候補の判定は CountMediaAssetTransferCandidates と同じ名前付き述語。
+func (q *Queries) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, arg CountMediaAssetTransferBacklogBySourceStoreParams) ([]CountMediaAssetTransferBacklogBySourceStoreRow, error) {
+	rows, err := q.db.Query(ctx, countMediaAssetTransferBacklogBySourceStore,
+		arg.SourceStores,
+		arg.OriginalRules,
+		arg.FsStores,
+		arg.DerivedStore,
+		arg.AttemptLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountMediaAssetTransferBacklogBySourceStoreRow
+	for rows.Next() {
+		var i CountMediaAssetTransferBacklogBySourceStoreRow
+		if err := rows.Scan(&i.Store, &i.AssetCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countMediaAssetTransferCandidates = `-- name: CountMediaAssetTransferCandidates :one
 SELECT count(*)::bigint AS asset_count,
        COALESCE(sum(a.size_bytes), 0)::bigint AS byte_count

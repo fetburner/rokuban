@@ -545,6 +545,14 @@ var (
 		Help: "Recordings whose frozen encode profile no longer exists in encode.profiles, by profile name. Non-zero means a rename/removal left past recordings unencodable.",
 	}, []string{"profile"})
 
+	// EncodeBackpressure は、転送待ちが storage.transfer.backlog_limit に達したために
+	// encode reconcile が投入を止めている置き場を 1 で示す（置き場別）。
+	// 上限の無い置き場は系列を出さない。原本の ingest は止めない。
+	EncodeBackpressure = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_encode_backpressure",
+		Help: "1 while encode reconcile is not enqueuing encodes into the store because its transfer backlog reached storage.transfer.backlog_limit, else 0.",
+	}, []string{"store"})
+
 	// CutAwaitingReview は「`cut: true` のプロファイルを凍結しているのに、まだ
 	// チャプターを確認していない」録画数（プロファイル名別）。
 	//
@@ -878,6 +886,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		EncodeReconcileLastPass,
 		EncodeReconcileCandidates,
 		EncodeReconcileUnsatisfiable,
+		EncodeBackpressure,
 		CutAwaitingReview,
 		ThumbnailReconcileLastPass,
 		ThumbnailReconcileCandidates,

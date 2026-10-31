@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -106,6 +107,12 @@ type EncodeReconcileWorker struct {
 	// RowLimit は 1 パスで拾う候補の上限。0 なら encodeReconcileRowLimit。
 	// 上限に張り付いたときの挙動をテストから再現するために可変にしてある。
 	RowLimit int32
+
+	// Transfers は置き場ごとの転送待ちの件数を引く契約。nil なら背圧をかけない。
+	Transfers store.StorageTransfer
+	// StoragePolicy は storage.transfer.backlog_limit と、転送待ちを数える規則を持つ。
+	// backlog_limit の無い置き場には背圧をかけない。
+	StoragePolicy config.StorageConfig
 }
 
 // enqueueEncodeReconcile は指定録画の reconcile を投入する。
@@ -180,6 +187,10 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	if err != nil {
 		return fmt.Errorf("encode reconcile: %w", err)
 	}
+	blocked, err := w.backpressuredStores(ctx)
+	if err != nil {
+		return fmt.Errorf("encode reconcile: checking transfer backpressure: %w", err)
+	}
 	candidates = candidates[:0]
 	rebuildQueued, failed := 0, 0
 	cutSet := w.Profiles.CutProfileSet()
@@ -191,6 +202,10 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 			failed++
 			slog.Error("encode_reconcile: decoding requested keep ranges",
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", row.DecodeErr)
+			continue
+		}
+		// 転送待ちが上限に達した置き場には encode を積まない（背圧）。原本の ingest は止めない。
+		if blocked[originalStores[row.RecordingID]] {
 			continue
 		}
 		// 全区間カットの通常候補は投入しても observeEncodePlan が必ず失敗する。
@@ -269,6 +284,44 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 			"rebuild_requests", rebuildQueued, "failed", failed)
 	}
 	return nil
+}
+
+// backpressuredStores は、転送待ちが storage.transfer.backlog_limit に達していて encode を投入しない置き場を返す。
+// 上限を設定した置き場が無いとき、または Transfers が nil のときは、問い合わせずに nil を返す。
+// 置き場ごとの状態は EncodeBackpressure に出す。
+func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context) (map[string]bool, error) {
+	var limited []string
+	for name := range w.StoragePolicy.Transfer.BacklogLimit {
+		if w.StoragePolicy.TransferBacklogLimit(name) > 0 {
+			limited = append(limited, name)
+		}
+	}
+	if len(limited) == 0 || w.Transfers == nil {
+		return nil, nil
+	}
+	slices.Sort(limited)
+	rules, err := w.StoragePolicy.OriginalRulesJSON()
+	if err != nil {
+		return nil, fmt.Errorf("building original rules: %w", err)
+	}
+	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, w.StoragePolicy.FSStoreNames(), limited, w.StoragePolicy.Derived, storageTransferAttemptLimit)
+	if err != nil {
+		return nil, fmt.Errorf("counting transfer backlog by source store: %w", err)
+	}
+	blocked := make(map[string]bool)
+	for _, name := range limited {
+		limit := w.StoragePolicy.TransferBacklogLimit(name)
+		backlog := counts[name]
+		if backlog < int64(limit) {
+			metrics.EncodeBackpressure.WithLabelValues(name).Set(0)
+			continue
+		}
+		blocked[name] = true
+		metrics.EncodeBackpressure.WithLabelValues(name).Set(1)
+		slog.Warn("encode_reconcile: transfer backlog reached the limit; not enqueuing encodes into this store",
+			"store", name, "backlog", backlog, "limit", limit)
+	}
+	return blocked, nil
 }
 
 // reportUnsatisfiable は「凍結済みの desired が現在の encode.profiles に無い」

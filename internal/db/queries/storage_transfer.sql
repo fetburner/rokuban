@@ -36,6 +36,25 @@ WHERE storage_transfer_candidate(
       )
   ) < sqlc.arg('attempt_limit');
 
+-- 背圧の判定に使う。候補の判定は CountMediaAssetTransferCandidates と同じ名前付き述語。
+-- name: CountMediaAssetTransferBacklogBySourceStore :many
+SELECT source.store::text AS store, count(DISTINCT a.id)::bigint AS asset_count
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+CROSS JOIN LATERAL active_media_asset_copies(a.id, NULL) source
+WHERE source.store = ANY(sqlc.arg('source_stores')::text[])
+  AND storage_transfer_candidate(
+      a.id, sqlc.arg('original_rules')::jsonb, sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
+  )
+  AND storage_transfer_attempt_count(
+      a.id,
+      desired_media_store(
+          a.kind, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
+          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+      )
+  ) < sqlc.arg('attempt_limit')
+GROUP BY source.store;
+
 -- name: CountMediaAssetTransferExhausted :one
 SELECT count(*)::bigint
 FROM media_assets a

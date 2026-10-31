@@ -262,6 +262,9 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.MediaReconcile,
+		// 転送待ちが backlog_limit に達した置き場への encode 投入を止める（背圧）。
+		Transfers:     deps.StorageTransfer,
+		StoragePolicy: deps.StorageTransferPolicy,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
