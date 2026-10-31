@@ -220,10 +220,24 @@ store_file_state() {
 # `--stores <置き場>` を持つこと。加えて、成功した Job が 1 つ以上あること。
 # 1 つでも別の置き場を向いていれば失敗する（ScaledJob のテンプレートの取り違えを捕まえる）。
 store_job_evidence() {
-  local sj="$1" s="$2" ok facts row name queues stores_arg claims mounts bad=""
-  ok="$(k get jobs -l "scaledjob.keda.sh/name=${sj}" -o jsonpath='{.items[?(@.status.succeeded>=1)].metadata.name}' 2>/dev/null)"
+  local sj="$1" s="$2" listing states ok failed facts row name queues stores_arg claims mounts bad=""
+  # Job の状態は JSON を読んで数える。kubectl の jsonpath のフィルタ（[?(@.status.succeeded>=1)]）は、
+  # `Complete 1/1` の Job でも空を返すことを実機で確かめた（判定 6.2 の thumbnail）。
+  # 名前は `<ScaledJob>-<suffix>`。ラベル `scaledjob.keda.sh/name` で引く。
+  if ! listing="$(k get jobs -l "scaledjob.keda.sh/name=${sj}" -o json 2>/dev/null)"; then
+    printf '%s: Job の一覧を読めない' "$sj"
+    return 1
+  fi
+  states="$(printf '%s' "$listing" | python3 -c '
+import json, sys
+for i in json.load(sys.stdin).get("items", []):
+    st = i.get("status", {})
+    print("%s\t%d\t%d\t%d" % (i["metadata"]["name"], st.get("succeeded", 0) or 0, st.get("failed", 0) or 0, st.get("active", 0) or 0))
+')"
+  ok="$(printf '%s\n' "$states" | awk -F'\t' '$2 >= 1 {print $1}' | paste -sd' ' -)"
+  failed="$(printf '%s\n' "$states" | awk -F'\t' '$3 >= 1 {print $1}' | paste -sd' ' -)"
   if [ -z "$ok" ]; then
-    printf '%s: 成功した Job がない' "$sj"
+    printf '%s: 成功した Job がない（Job: %s。失敗 %s）' "$sj" "$(printf '%s' "$states" | awk -F'\t' '{printf "%s(s=%s,f=%s,a=%s) ", $1, $2, $3, $4}')" "${failed:-なし}"
     return 1
   fi
   if ! facts="$(jobs_pod_facts "$sj")"; then
@@ -407,7 +421,16 @@ if [ "$setup_enc_ok" != 1 ]; then
 else
   sj_enc="$(scaledjob_for_queue "encode_${E2E_STORE_A}")"
   sj_thumb="$(scaledjob_for_queue "thumbnail_${E2E_STORE_A}")"
-  if discovery_is_unusable "$sj_enc" || discovery_is_unusable "$sj_thumb" || [ -z "$sj_enc" ] || [ -z "$sj_thumb" ]; then
+  # encode の公開判定は desired（recording_encode_policy.encode_profiles）に入っているプロファイルだけを作る。
+  # 手動の録画は予約を経由しないので desired が空で、そのままだと PlanEncodedPublish が
+  # desired_profile_excluded で飛ばす（実機で確かめた）。製品の経路で desired を足す:
+  # POST /api/recordings/{id}/encode-profiles（追加専用。原本が active なら 204）。
+  desired_code="$(tb_curl -X POST -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
+    -d "{\"profiles\":[\"${E2E_FAST_PROFILE}\"]}" -o /dev/null -w '%{http_code}' \
+    "http://rokuban-api:40773/api/recordings/${rec_enc}/encode-profiles" 2>/dev/null)"
+  if [ "$desired_code" != "204" ]; then
+    fail "6.2" "encode の desired（${E2E_FAST_PROFILE}）を API で足せない（HTTP ${desired_code:-なし}）。encode は desired 外として飛ばされる"
+  elif discovery_is_unusable "$sj_enc" || discovery_is_unusable "$sj_thumb" || [ -z "$sj_enc" ] || [ -z "$sj_thumb" ]; then
     fail "6.2" "encode_${E2E_STORE_A} / thumbnail_${E2E_STORE_A} の ScaledJob を一意に引けない（enc='${sj_enc}' thumb='${sj_thumb}'）"
   else
     enc_jid="$(insert_river_job "encode_${E2E_STORE_A}" encode \
@@ -485,7 +508,17 @@ else
   fi
   copy_takamatsu_active() { [ "$(copy_state "$asset_old" "$E2E_STORE_B")" = "active" ]; }
   if [ -z "$problems" ] && ! retry_until 1200 "takamatsu copy of asset ${asset_old} to become active" copy_takamatsu_active; then
-    problems="${problems} takamatsu にコピーができない（tokyo=$(copy_state "$asset_old" "$E2E_STORE_A") takamatsu=$(copy_state "$asset_old" "$E2E_STORE_B") backlog=$(river_backlog "transfer_${E2E_STORE_B}")）"
+    # 転送ワーカーは転送元を「マウントした置き場」か「internal_url の置き場」からしか読めない。
+    # 滞留はあるのに転送先のコピー（pending を含む）が 1 件も予約されないなら、転送元が候補に無い
+    # （internal_url の未設定・到達不能）。その場合を名指しする。
+    xfer_backlog="$(river_backlog "transfer_${E2E_STORE_B}")"
+    xfer_state="$(copy_state "$asset_old" "$E2E_STORE_B")"
+    xfer_err="$(psql_q "SELECT left(coalesce(errors::text, ''), 300) FROM river_job WHERE queue = 'transfer_${E2E_STORE_B}' ORDER BY id DESC LIMIT 1" | head -1)"
+    if [ "$xfer_backlog" != "0" ] && [ -z "$xfer_state" ]; then
+      problems="${problems} 転送ジョブが ${xfer_backlog} 件滞留しているのに、転送先（${E2E_STORE_B}）のコピーが 1 件も予約されていない（転送元 ${E2E_STORE_A} を読めていない: internal_url か転送元の判定を確認）。最後のジョブのエラー: '${xfer_err}'"
+    else
+      problems="${problems} 転送先（${E2E_STORE_B}）のコピーが active にならない（tokyo=$(copy_state "$asset_old" "$E2E_STORE_A") ${E2E_STORE_B}='${xfer_state}' 滞留=${xfer_backlog}）。最後のジョブのエラー: '${xfer_err}'"
+    fi
   fi
   if [ -z "$problems" ]; then
     ev_xfer="$(store_job_evidence "$sj_xfer" "$E2E_STORE_B")" || problems="${problems} ${ev_xfer}"
@@ -628,13 +661,17 @@ fi
 # Job と録画の対応は DB に無いので、1 つの Job がどの録画を書いたかは観測しない。
 ing_msg=""
 run_ingest_check() {
-  local dir="$1" ts size sha pid out rec_mirakc asset_id sj_ing ok facts row name queues stores_arg claims mounts
+  local dir="$1" ts err size sha pid out rec_mirakc asset_id sj_ing ok facts row name queues stores_arg claims mounts bad=""
   ts="${dir}/record.ts"
-  if ! docker run --rm --entrypoint ffmpeg -v "${dir}:/out" "$E2E_FULL_IMAGE" -nostdin -loglevel error -y \
+  # **bind mount を使わない。** colima の VM は一時ディレクトリを共有しておらず、マウント先の
+  # ファイルが空のまま残る（実機で確かめた）。TS は標準出力に流し、ホストでファイルに受ける。
+  # stderr は失敗の理由として残す。
+  err="${dir}/ffmpeg.err"
+  if ! docker run --rm --entrypoint ffmpeg "$E2E_FULL_IMAGE" -nostdin -loglevel error \
       -f lavfi -i "testsrc2=size=320x240:rate=25" \
       -f lavfi -i "sine=frequency=440:sample_rate=48000" \
-      -t 15 -c:v mpeg2video -b:v 800k -c:a aac -f mpegts /out/record.ts >/dev/null 2>&1 || [ ! -s "$ts" ]; then
-    ing_msg="録画の TS を ffmpeg で作れない（${E2E_FULL_IMAGE} の docker run）"
+      -t 15 -c:v mpeg2video -b:v 800k -c:a aac -f mpegts - >"$ts" 2>"$err" || [ ! -s "$ts" ]; then
+    ing_msg="録画の TS を ffmpeg で作れない（${E2E_FULL_IMAGE}）: ffmpeg stderr='$(head -c 400 "$err" 2>/dev/null | tr '\n' ' ')' size=$(wc -c < "$ts" 2>/dev/null | tr -d '[:space:]')"
     return 1
   fi
   size="$(wc -c < "$ts" | tr -d '[:space:]')"

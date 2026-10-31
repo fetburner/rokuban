@@ -27,8 +27,13 @@ storage:
   # `storage.media_dir` 1 つには頼れず、同じ root の 2 置き場は起動時に拒まれる。
   # PVC のマウント先は `stores/<置き場>/kustomization.yaml` の patch と揃える。
   stores:
-    tokyo: { kind: fs, root: /mnt/stores/tokyo }
-    takamatsu: { kind: fs, root: /mnt/stores/takamatsu }
+    # internal_url は、このプロセスがマウントしていない置き場の原本を転送元として読むための URL。
+    # 転送の worker は transfer_<先> しか持たないので、転送元（もう一方の FS 置き場）はマウントされず、
+    # この URL の streamer（置き場ごとの配信 Service）から読む。Service は
+    # `/api/media/stores/<置き場>/recordings/<id>/file` を返す（deploy/k8s/store/recording-hls.yaml）。
+    # accel_location は既定で空なので、この streamer は X-Accel-Redirect を返さず中身を配る。
+    tokyo: { kind: fs, root: /mnt/stores/tokyo, internal_url: "http://rokuban-recording-hls-tokyo:40773" }
+    takamatsu: { kind: fs, root: /mnt/stores/takamatsu, internal_url: "http://rokuban-recording-hls-takamatsu:40773" }
     # 派生物の置き場（S3 互換の MinIO。overlays/e2e-two-stores/minio）。資格情報は
     # rokuban-secrets の AWS_*（環境変数）から読む。**2 つの FS 置き場がある構成では、
     # 派生物は S3 にする**（FS にすると、派生物を書く worker が全部その置き場をマウントする必要がある）。
