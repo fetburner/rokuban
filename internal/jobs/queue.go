@@ -97,9 +97,30 @@ func PhysicalQueueName(logical, boundSite string) string {
 	return qualifyQueueName(logical, boundSite)
 }
 
+// storeBoundQueueNames は置き場で修飾する論理キュー名。今は転送だけで、
+// encode などの置き場による振り分けは未実装（PhysicalQueueFor の storeBound を参照）。
+var storeBoundQueueNames = []string{TransferQueue}
+
 // PhysicalStoreQueueName は置き場単位の仕事を `{queue}_{store}` に振り分ける。
 func PhysicalStoreQueueName(logical, storeName string) string {
 	return logical + "_" + storeName
+}
+
+// PhysicalStoreQueueCount は queues を購読する worker が、置き場で修飾された
+// 物理キューを置き場 1 つにつき 1 本ずつ何本持つかを、置き場の数で掛ける前の
+// 論理キュー数として返す。空の queues は全キューを意味するので、置き場で修飾する
+// 論理キューの数をそのまま返す。
+func PhysicalStoreQueueCount(queues []string) int {
+	if len(queues) == 0 {
+		return len(storeBoundQueueNames)
+	}
+	n := 0
+	for _, logical := range storeBoundQueueNames {
+		if slices.Contains(queues, logical) {
+			n++
+		}
+	}
+	return n
 }
 
 // AllQueueNames はこのプロセスが知っている全キューの論理名をソートして返す。

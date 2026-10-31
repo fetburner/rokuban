@@ -241,6 +241,11 @@ func newServerCmd() *cobra.Command {
 	cmd.Flags().StringSlice(siteFlagName, nil,
 		"mirakc sites this process is bound to (comma-separated). "+
 			"Omit to bind to the registry's sole entry; pass an empty value to run unbound (central process)")
+	// --stores も同じ「起動形態」の軸（resolveStoreBinding）。どの FS 置き場を
+	// マウントするかで、worker が引く置き場の物理キューと StorageRoots が決まる。
+	cmd.Flags().StringSlice(storeFlagName, nil,
+		"fs stores this process mounts (comma-separated). Omit to mount the sole fs store; "+
+			"pass an empty value to mount none")
 	// --queues / --once も --sites と同じ「起動形態」の軸（resolveWorkerQueues /
 	// onceFlagName のコメント）。--queues は config の worker.queues と
 	// 排他で、両方指定は起動エラーになる。
@@ -328,6 +333,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
+	mounted, err := resolveStoreBinding(cmd, cfg.Storage)
+	if err != nil {
+		return err
+	}
+	if err := validateStoreBinding(roles, cmd.Flags().Changed(storeFlagName), mounted, queues, onceGate != nil); err != nil {
+		return err
+	}
 	// 目印を確認できず probe を保留したときは false のまま渡し、IngestWorker が最初の
 	// ingest で目印を照合した後に probe する。
 	ingestStorageProbed := false
@@ -347,12 +359,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			"store", cfg.Storage.MediaStoreName)
 	}
 
-	workerCfg := newWorkerClientConfig(cfg, bound, queues, onceGate, softStopTimeout)
+	workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, onceGate, softStopTimeout)
 
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()
 
-	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound), len(mountedFSStoreNames(cfg.Storage)))
+	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound), len(mounted))
 	if err != nil {
 		return err
 	}
@@ -412,7 +424,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var workerAdapter *riveradapter.Adapter
 	if slices.Contains(roles, "worker") {
-		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, bound, workerCfg, pool, webhookClient, ingestStorageProbed)
+		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, bound, mounted, workerCfg, pool, webhookClient, ingestStorageProbed)
 		if err != nil {
 			return err
 		}
@@ -714,11 +726,11 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 //
 // **pool に依存しない。** worker ロールが無いプロセスでは使われないが、
 // 組み立て自体は無害。
-func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *riveradapter.OnceGate, softStopTimeout time.Duration) riveradapter.Config {
+func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, mounted []string, queues []string, onceGate *riveradapter.OnceGate, softStopTimeout time.Duration) riveradapter.Config {
 	return riveradapter.Config{
 		// 何を購読し何を定期投入するかは製品の仕様（workerspec.go）。
 		// 以下は起動形態だけである。
-		Spec:                 newWorkerSpec(cfg, bound),
+		Spec:                 newWorkerSpec(cfg, bound, mounted),
 		SchedulePeriodicJobs: cfg.Worker.PeriodicJobs,
 		Queues:               queues,
 		Once:                 onceGate,
@@ -738,7 +750,7 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
-func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
+func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, mounted []string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
 	// until_encoded の原本の削除判定は storage.derived を使う（MediaStoreName は使わない）。
 	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
 	var derivedPublisher store.DerivedMediaPublisher
@@ -773,7 +785,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		}
 	}
 	storageObjects := make(map[string]objstore.Store)
-	for name, root := range configuredStorageRoots(cfg.Storage) {
+	for name, root := range configuredStorageRoots(cfg.Storage, mounted) {
 		objects, err := fsstore.New(root)
 		if err != nil {
 			return nil, fmt.Errorf("creating filesystem object store %q: %w", name, err)
@@ -852,7 +864,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		MediaPendingReclaim:      mediaStore,
 		StorageTransfer:          mediaStore,
 		StorageTransferPolicy:    cfg.Storage,
-		StorageRoots:             configuredStorageRoots(cfg.Storage),
+		StorageRoots:             configuredStorageRoots(cfg.Storage, mounted),
 		TSScan:                   mediaStore,
 		EncodeAttempts:           mediaStore,
 		StorageObservation:       mediaStore,
@@ -882,10 +894,13 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	return adapter, nil
 }
 
-// configuredStorageRoots は現在この process がマウントする FS 置き場と root を返す。
-// 複数 FS の実行時束縛は後続の置き場分割タスクで扱うため、ここでは既存の単一 media_dir を使う。
-func configuredStorageRoots(storage config.StorageConfig) map[string]string {
-	if storage.MediaStoreName == "" || storage.MediaDir == "" {
+// configuredStorageRoots は --stores でマウントした FS 置き場と root を返す。
+// マウントしていない置き場は root を持たないので、その置き場への転送は
+// StorageTransferWorker.Work が「マウントされていない」として拒み、メトリクスを出す。
+// FS 置き場は今のところ単一の media_dir だけなので、root は MediaStoreName の 1 つに限る
+// （validateSingleFSStore の制限が外れるまで）。
+func configuredStorageRoots(storage config.StorageConfig, mounted []string) map[string]string {
+	if storage.MediaStoreName == "" || storage.MediaDir == "" || !slices.Contains(mounted, storage.MediaStoreName) {
 		return nil
 	}
 	return map[string]string{storage.MediaStoreName: storage.MediaDir}

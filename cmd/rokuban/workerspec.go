@@ -20,22 +20,24 @@ import (
 //
 // この関数が cmd にあるのは、tsscan が internal/jobs を import しているので、
 // jobs 側に置くと tsscan.ReconcileArgs を並べられないからである（構成の根で組む）。
-func newWorkerSpec(cfg *config.Config, bound []config.MirakcSite) jobq.WorkerSpec {
+//
+// stores は --stores で解決したマウント済みの FS 置き場。置き場で修飾する物理キューは
+// この集合で展開する（config の名前ではなく、このプロセスが実際に持つ置き場で決める）。
+func newWorkerSpec(cfg *config.Config, bound []config.MirakcSite, stores []string) jobq.WorkerSpec {
 	sites := registryNames(bound)
 	return jobq.WorkerSpec{
-		Queues:       workerQueueSpecs(cfg, sites),
+		Queues:       workerQueueSpecs(cfg, sites, stores),
 		PeriodicJobs: workerPeriodicJobSpecs(cfg, sites),
 	}
 }
 
 // workerQueueSpecs は論理キューごとの並列数と、site ごとに展開した物理キューを返す。
 // 一覧は jobs.AllQueueNames と一致させる（TestNewWorkerSpec_QueuesMatchAllQueueNames）。
-func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
+func workerQueueSpecs(cfg *config.Config, sites, stores []string) []jobq.QueueSpec {
 	queue := func(logical string, maxWorkers int) jobq.QueueSpec {
 		return jobq.QueueSpec{Logical: logical, Physical: physicalQueueNames(logical, sites), MaxWorkers: maxWorkers}
 	}
 	storeQueue := func(logical string, maxWorkers int) jobq.QueueSpec {
-		stores := mountedFSStoreNames(cfg.Storage)
 		physical := make([]string, 0, len(stores))
 		for _, name := range stores {
 			physical = append(physical, jobs.PhysicalStoreQueueName(logical, name))
@@ -69,15 +71,6 @@ func workerQueueSpecs(cfg *config.Config, sites []string) []jobq.QueueSpec {
 		// ts_scan は原本全体を読み直すため、同時 I/O を 1 件に抑える。
 		queue(jobs.TSScanQueue, 1),
 	}
-}
-
-func mountedFSStoreNames(storage config.StorageConfig) []string {
-	name := storage.MediaStoreName
-	store, ok := storage.Stores[name]
-	if name == "" || !ok || store.Kind != "fs" {
-		return nil
-	}
-	return []string{name}
 }
 
 // physicalQueueNames は論理キューの物理名を、束縛 site ごとに展開して返す。
