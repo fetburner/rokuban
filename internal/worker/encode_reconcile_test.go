@@ -122,6 +122,59 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 	}
 }
 
+// 転送待ちが storage.transfer.backlog_limit に達した置き場へは encode を積まず、上限に届かなければ積む（背圧）。
+// 原本のコピーは edge にだけあり desired は central なので、この録画は edge の転送待ちになる。
+func TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = "backpressure/original.ts"
+		params.SizeBytes = 1
+	})
+	// dbtest.MediaAsset はコピーを test-store に作る。その原本のコピーを edge の置き場へ移す。
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("moving original copy to edge: %v", err)
+	}
+	seedEncodePolicy(t, pool, recordingID, []string{"h265"})
+
+	for _, tc := range []struct {
+		name     string
+		limit    int
+		wantJobs int
+		wantGate float64
+	}{
+		{name: "limit 1 stops the encode", limit: 1, wantJobs: 0, wantGate: 1},
+		{name: "limit 2 allows the encode", limit: 2, wantJobs: 1, wantGate: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := transferTestConfig("central", "edge", "central")
+			policy.Transfer.BacklogLimit = map[string]int{"edge": tc.limit}
+			w := &EncodeReconcileWorker{
+				Profiles:      encodeConfigWith("h265"),
+				Media:         pgstoretest.Media(pool),
+				Transfers:     pgstoretest.Media(pool),
+				StoragePolicy: policy,
+			}
+			enqueuer := runEncodeReconcilePass(t, w)
+			if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != tc.wantJobs {
+				t.Fatalf("encode jobs for recording %d = %d, want %d", recordingID, got, tc.wantJobs)
+			}
+			if tc.wantJobs == 1 {
+				if got := findEncodeJob(t, enqueuer, recordingID, "h265").Store; got != "edge" {
+					t.Fatalf("encode job store = %q, want edge", got)
+				}
+			}
+			if got := promtestutil.ToFloat64(metrics.EncodeBackpressure.WithLabelValues("edge")); got != tc.wantGate {
+				t.Fatalf("backpressure gauge for edge = %v, want %v", got, tc.wantGate)
+			}
+		})
+	}
+}
+
 func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

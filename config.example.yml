@@ -78,6 +78,7 @@ storage:
   # derived: s3main                  # 派生物は全 site 共通の置き場
   # transfer:
   #   bandwidth: { takamatsu: 50Mbps }   # 転送元の置き場ごとの上限
+  #   backlog_limit: { takamatsu: 20 }   # 転送待ちがこの件数に達したら、その置き場の原本を読む encode の投入を止める（ingest は止めない）
   #
   # 派生物の置き場には S3 API の置き場も指定できる。
   # stores:

@@ -40,6 +40,22 @@ func (s *Media) CountMediaAssetTransferCandidates(ctx context.Context, originalR
 	return row.AssetCount, row.ByteCount, nil
 }
 
+// CountMediaAssetTransferBacklogBySourceStore は、転送元の置き場ごとの転送待ちの件数を返す。
+// 判定は CountMediaAssetTransferCandidates と同じ SQL 述語を使う。
+func (s *Media) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (map[string]int64, error) {
+	rows, err := sqlcgen.New(s.pool).CountMediaAssetTransferBacklogBySourceStore(ctx, sqlcgen.CountMediaAssetTransferBacklogBySourceStoreParams{
+		SourceStores: sourceStores, OriginalRules: originalRules, FsStores: fsStores, DerivedStore: derivedStore, AttemptLimit: int64(attemptLimit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("counting media asset transfer backlog by source store: %w", err)
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		counts[row.Store] = row.AssetCount
+	}
+	return counts, nil
+}
+
 // CountMediaAssetTransferExhausted は失敗上限に達した転送候補を数える。
 func (s *Media) CountMediaAssetTransferExhausted(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit int32) (int64, error) {
 	count, err := sqlcgen.New(s.pool).CountMediaAssetTransferExhausted(ctx, sqlcgen.CountMediaAssetTransferExhaustedParams{

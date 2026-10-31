@@ -52,6 +52,9 @@ type StorageTransfer interface {
 	ListMediaAssetTransferCandidates(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit, limit int32) ([]MediaAssetTransferCandidate, error)
 	// CountMediaAssetTransferCandidates は現在の転送待ちの件数とバイト数を返す。
 	CountMediaAssetTransferCandidates(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit int32) (assetCount, byteCount int64, err error)
+	// CountMediaAssetTransferBacklogBySourceStore は、sourceStores のうち転送元のアクティブなコピーを持つ置き場ごとに、
+	// 転送待ちの論理資産の件数を返す。件数の無い置き場は含まない。
+	CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (map[string]int64, error)
 	// CountMediaAssetTransferExhausted は失敗上限に達して reconcile から外れている件数を返す。
 	CountMediaAssetTransferExhausted(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit int32) (int64, error)
 	// ClearObsoleteMediaAssetTransferAttempts は現在の desired / generation から外れた失敗行を消す。

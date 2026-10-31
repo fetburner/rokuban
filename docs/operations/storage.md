@@ -250,6 +250,18 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 </details>
 
+### エッジに置き場を持つ構成
+
+録画の原本と、エッジで作る派生物は、まずエッジの置き場に入る。中央の転送ワーカーが、エッジの置き場の内部 URL から HTTP の Range で読み、desired の置き場へ書く。派生物の置き場が S3 なら、エッジのワーカーが S3 へ直接書く。
+
+規則がエッジを置き場にしている間と、転送が終わるまでは、エッジのコピーが原本の唯一のコピーである。desired がエッジの原本は転送の候補にならないので、`rokuban_storage_transfer_waiting_assets` が 0 でも唯一のコピーのままである。その間にエッジのディスクを失うと、その原本は戻らない。エッジにしかコピーが無い資産の確かめ方は [エッジに置き場を持つ構成の導入](../runbook/edge-store.md) の注意にある。
+
+`internal_url` は VPN かクラスタ内の網だけに通す。Ingress には載せない。アプリは認証を持たないので、`internal_url` に届く者は原本を読める。Host 検証は転送の要求にも掛かる。`server.allowed_hosts` が空でないときは、`internal_url` のホストを含める（[HTTP API のデプロイ](../api/deployment.md) §X-Forwarded-Host の扱い）。
+
+`storage.transfer.bandwidth` が絞るのは転送の読みだけである。ジョブキューに帯域の制御が無いので、アプリ内の reader で絞る。ライブ視聴、HLS、エッジの encode が S3 へ直接書く PUT は対象に入らない。転送ワーカーが S3 へ書く Put は、転送の帯域の上限の下で流れる。回線全体を守るなら、網の層で絞る。
+
+転送が遅れて転送待ちが溜まると、その置き場の原本を読む encode が止まる。その上限は `storage.transfer.backlog_limit` で置き場ごとに決める（[設定キー](../configuration/keys.md)）。止まっているかは `rokuban_encode_backpressure{store}` で見る（[監視](monitoring.md)）。
+
 ### disaster recovery（catalog + rescue）
 
 rescue は、DB を失った後にだけ使う。live DB を catalog の内容で上書きするので、健全性の確認には使わない。

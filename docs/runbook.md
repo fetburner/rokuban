@@ -13,6 +13,7 @@ mirakc に繋いだ Rokuban の導入・切り替え、移行作業、障害対�
 | [runbook/managed-postgres.md](runbook/managed-postgres.md) | managed PostgreSQL で `btree_gist` の作成が通るかの確認手順 |
 | [runbook/testing.md](runbook/testing.md) | 開発時のテスト |
 | [runbook/cutover.md](runbook/cutover.md) | 主運用の切替。出口基準チェックリスト / エンコード・ごみ箱・ブレーカー・rescue 練習の手順 / 二重録画を避ける切替順 / ロールバック |
+| [runbook/edge-store.md](runbook/edge-store.md) | エッジに置き場を持つ構成の導入。`internal_url` の網の範囲、帯域と転送待ちの上限、転送が終わるまでの原本の所在 |
 | [runbook/import-epgstation.md](runbook/import-epgstation.md) | EPGStation からの移行（`rokuban import epgstation`）。ルール取り込みの手順とライブラリ JSON の書き出し方 |
 
 本文は `docs/runbook/` に分割してある。

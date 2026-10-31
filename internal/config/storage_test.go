@@ -28,6 +28,7 @@ storage:
   derived: main
   transfer:
     bandwidth: { main: 50Mbps }
+    backlog_limit: { main: 20 }
     overlap: 48h
 `
 
@@ -47,6 +48,12 @@ func TestLoadStoragePolicy(t *testing.T) {
 	}
 	if cfg.Storage.Stores["s3main"].Kind != "s3" || cfg.Storage.Derived != "main" {
 		t.Fatalf("stores/derived = %+v/%q", cfg.Storage.Stores, cfg.Storage.Derived)
+	}
+	if got := cfg.Storage.TransferBacklogLimit("main"); got != 20 {
+		t.Fatalf("TransferBacklogLimit(main) = %d, want 20", got)
+	}
+	if got := cfg.Storage.TransferBacklogLimit("s3main"); got != 0 {
+		t.Fatalf("TransferBacklogLimit(s3main) = %d, want 0 (unset is unlimited)", got)
 	}
 }
 
@@ -221,6 +228,21 @@ func TestStoragePolicyValidation(t *testing.T) {
 			name:      "store must exist",
 			policy:    strings.Replace(validStoragePolicy, "      store: main\n    - match: { site: default }", "      store: missing\n    - match: { site: default }", 1),
 			wantError: "references unknown store",
+		},
+		{
+			name:      "backlog_limit references unknown store",
+			policy:    strings.Replace(validStoragePolicy, "backlog_limit: { main: 20 }", "backlog_limit: { nope: 20 }", 1),
+			wantError: "storage.transfer.backlog_limit references unknown store",
+		},
+		{
+			name:      "backlog_limit store must be fs",
+			policy:    strings.Replace(validStoragePolicy, "backlog_limit: { main: 20 }", "backlog_limit: { s3main: 20 }", 1),
+			wantError: "storage.transfer.backlog_limit.s3main: store must be kind fs",
+		},
+		{
+			name:      "backlog_limit must be positive",
+			policy:    strings.Replace(validStoragePolicy, "backlog_limit: { main: 20 }", "backlog_limit: { main: 0 }", 1),
+			wantError: "storage.transfer.backlog_limit.main must be a positive integer",
 		},
 		{
 			name:      "overlap equals default lower bound",
@@ -403,12 +425,13 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	changedTransfer := newStorage()
 	changedTransfer.Transfer.Bandwidth = map[string]string{"main": "10Mbps"}
 	changedTransfer.Transfer.Overlap = 72 * time.Hour
+	changedTransfer.Transfer.BacklogLimit = map[string]int{"main": 5}
 	got, err := changedTransfer.PolicyFingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != want {
-		t.Fatalf("fingerprint changed after transfer.bandwidth/overlap changes: got %s want %s", got, want)
+		t.Fatalf("fingerprint changed after transfer.bandwidth/backlog_limit/overlap changes: got %s want %s", got, want)
 	}
 
 	changedNonPolicy := newStorage()
@@ -479,7 +502,7 @@ func TestStorageQueueNameBudget(t *testing.T) {
 }
 
 func TestStoragePolicyOverlapDefault(t *testing.T) {
-	policy := strings.Replace(validStoragePolicy, "  transfer:\n    bandwidth: { main: 50Mbps }\n    overlap: 48h\n", "", 1)
+	policy := strings.Replace(validStoragePolicy, "  transfer:\n    bandwidth: { main: 50Mbps }\n    backlog_limit: { main: 20 }\n    overlap: 48h\n", "", 1)
 	cfg, err := loadStoragePolicy(t, policy)
 	if err != nil {
 		t.Fatal(err)

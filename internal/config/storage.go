@@ -49,7 +49,10 @@ type OriginalStoreMatch struct {
 // StorageTransferConfig は置き場間転送の設定。
 type StorageTransferConfig struct {
 	Bandwidth map[string]string `yaml:"bandwidth,omitempty" json:"bandwidth,omitempty"`
-	Overlap   time.Duration     `yaml:"overlap" json:"overlap"`
+	// BacklogLimit は、転送元の置き場ごとの転送待ち（その置き場にコピーがあり、desired の置き場に無い資産）の件数の上限。
+	// 上限に達した置き場の原本を読む encode は、encode reconcile が投入しない（ingest は止めない）。未設定の置き場は無制限。
+	BacklogLimit map[string]int `yaml:"backlog_limit,omitempty" json:"backlog_limit,omitempty"`
+	Overlap      time.Duration  `yaml:"overlap" json:"overlap"`
 }
 
 // MaxStoreNameLen は置き場の名前の最大長。
@@ -75,7 +78,7 @@ const DeleteReconcileInterval = 15 * time.Minute
 // policyConfigured は storage の置き場規則が 1 つでも書かれているかを返す。
 func (c StorageConfig) policyConfigured() bool {
 	return len(c.Stores) != 0 || len(c.Originals) != 0 || c.Derived != "" ||
-		c.Transfer.Overlap != 0 || len(c.Transfer.Bandwidth) != 0
+		c.Transfer.Overlap != 0 || len(c.Transfer.Bandwidth) != 0 || len(c.Transfer.BacklogLimit) != 0
 }
 
 // applyPolicyDefaults は置き場規則を書いたときだけ transfer.overlap の既定値を入れる。
@@ -310,6 +313,22 @@ func (c StorageConfig) validateTransfer(missingAssetAge time.Duration) []string 
 			errs = append(errs, fmt.Sprintf("storage.transfer.bandwidth.%s: %v", store, err))
 		}
 	}
+	backlogStores := make([]string, 0, len(c.Transfer.BacklogLimit))
+	for store := range c.Transfer.BacklogLimit {
+		backlogStores = append(backlogStores, store)
+	}
+	sort.Strings(backlogStores)
+	for _, store := range backlogStores {
+		st, ok := c.Stores[store]
+		if !ok {
+			errs = append(errs, fmt.Sprintf("storage.transfer.backlog_limit references unknown store %q", store))
+		} else if st.Kind != "fs" {
+			errs = append(errs, fmt.Sprintf("storage.transfer.backlog_limit.%s: store must be kind fs", store))
+		}
+		if c.Transfer.BacklogLimit[store] <= 0 {
+			errs = append(errs, fmt.Sprintf("storage.transfer.backlog_limit.%s must be a positive integer", store))
+		}
+	}
 
 	if missingAssetAge <= 0 {
 		missingAssetAge = DefaultMissingAssetAge
@@ -413,6 +432,11 @@ func (c StorageConfig) TransferBandwidthBytesPerSecond(sourceStore string) (int6
 		return 0, nil
 	}
 	return parseTransferBandwidth(raw)
+}
+
+// TransferBacklogLimit は、指定した置き場の転送待ちの上限件数を返す。未設定なら 0 を返す（無制限）。
+func (c StorageConfig) TransferBacklogLimit(store string) int {
+	return c.Transfer.BacklogLimit[store]
 }
 
 func parseTransferBandwidth(raw string) (int64, error) {

@@ -81,6 +81,8 @@ flowchart TD
 
 この opt-in は `server.trust_forwarded_host` で切り替え、既定は false である。DNS rebinding の攻撃ページは Rokuban と同一オリジンとして扱われるため、任意のリクエストヘッダーを付けられる。前段にプロキシが存在しない直接露出構成（`--all` の既定構成）でこのヘッダーを無条件に信頼すると、Host allowlist（§認証 帰結3）を自己申告値ですり抜けられてしまう。信頼できるプロキシが必ず前段に居り、かつそのプロキシが外来の `X-Forwarded-Host` を上書きする構成でだけ有効にする。判断の詳細と設定キーは [configuration.md](../configuration.md) §server.allowed_hosts を参照。
 
+転送ワーカーが `internal_url` へ送る要求も、同じ Host allowlist を通る。例外は置かない。`server.allowed_hosts` が空でないときは、`internal_url` のホストを含める必要があり、含まない構成は起動時に拒否する。空のときは Host 検証自体が無効なので、この条件は掛からない。転送は Ingress が配るのと同じ原本の経路を読む。その経路（path）で Host 検証を免除すると、ブラウザからの同じ経路の要求も免除される。DNS rebinding の攻撃ページは、その経路で原本を読めてしまう。
+
 #### keep-alive のアイドル接続
 
 upstream keep-alive を有効にしているプロキシでは、プロキシ側のアイドルタイムアウトをサーバーの 120 秒以下に揃える。長く取ると、プロキシがまだ生きていると思っている接続をサーバー側が先に切る。
@@ -110,6 +112,7 @@ nginx を置かなくても全機能が動く、単一バイナリの自己完�
 <details><summary>根拠</summary>
 
 - Host allowlist の検証先: `internal/api.AllowedHosts`
+- `internal_url` のホストが `server.allowed_hosts` に無い構成の拒否: `TestLoadRejectsInternalURLHostOutsideAllowedHosts`
 - リクエスト単位のアクセスログ: `internal/api`
 - 絶対 URL の棚卸し対象: `internal/api` / `internal/streamer` / `internal/notifier` / `internal/webhook` / `web/src`
 - 出力先の無い解釈を作らない: 不変条件 10
