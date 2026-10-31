@@ -148,17 +148,7 @@ WHERE id = sqlc.arg('copy_id')
 
 -- A path's generation belongs to its physical copy. Include deleted copies because their
 -- generation remains part of the allocator's history.
--- name: ReconcileDerivedGenerationFromCopyPaths :exec
-UPDATE media_assets AS asset
-SET derived_generation = GREATEST(
-    COALESCE(asset.derived_generation, 0),
-    COALESCE((
-        SELECT max(copy.generation)
-        FROM media_asset_copies copy
-        WHERE copy.media_asset_id = asset.id
-    ), 0)
-)
-WHERE asset.kind <> 'original';
+
 
 
 -- name: StoreHasMediaAssetCopies :one

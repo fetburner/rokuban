@@ -86,7 +86,7 @@ CREATE TABLE media_asset_transfer_objects (
 
 書き手は論理資産とコピー行を同じ tx で作り、列を消す migration はコピーの無い論理資産が残っていれば止まる。`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
-`storage adopt <store-name>` はコピー行を作らない。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移し、論理カウンターは全コピーの最大世代と比べて大きい方に引き上げる。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+`storage adopt <store-name>` はコピー行を作らない。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移す。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
 
 旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)` と `storage_sync(root)` である。新しい複合キーと並存するので、同じ `rel_path` を 2 つの置き場の孤児として記録できず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
 
