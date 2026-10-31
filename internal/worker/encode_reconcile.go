@@ -189,8 +189,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	}
 	// 件数の集計は件数に比例して重いので、判断と表示に要るパスだけで数える（理由は backpressuredStores）。
 	limited := w.backlogLimitedStores()
-	needCount := recordingID == 0 && after == 0 || hasCandidateInStores(missing, originalStores, limited)
-	blocked, err := w.backpressuredStores(ctx, limited, needCount)
+	blocked, err := w.backpressuredStores(ctx, limited, needsBacklogCount(recordingID == 0 && after == 0, missing, originalStores, limited))
 	if err != nil {
 		return fmt.Errorf("encode reconcile: checking transfer backpressure: %w", err)
 	}
@@ -289,10 +288,11 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	return nil
 }
 
-// hasCandidateInStores は、投入候補のどれかの原本が stores のいずれかの置き場にあるかを返す。
-func hasCandidateInStores(missing []store.MissingEncodeProfile, originalStores map[int64]string, stores []string) bool {
-	return slices.ContainsFunc(missing, func(row store.MissingEncodeProfile) bool {
-		return slices.Contains(stores, originalStores[row.RecordingID])
+// needsBacklogCount は、このパスで転送待ちの件数を数えるかを返す。
+// 全件パスの先頭（firstFullPage）か、投入候補のどれかの原本が上限付きの置き場にあるときに数える。
+func needsBacklogCount(firstFullPage bool, missing []store.MissingEncodeProfile, originalStores map[int64]string, limited []string) bool {
+	return firstFullPage || slices.ContainsFunc(missing, func(row store.MissingEncodeProfile) bool {
+		return slices.Contains(limited, originalStores[row.RecordingID])
 	})
 }
 
