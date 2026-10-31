@@ -7171,10 +7171,11 @@ export const getAddRecordingEncodeProfilesUrl = (id: number,) => {
  * dedup）で書き、全置換にはしない --- 誤って他プロファイルの指定を消す事故を
  * 避けるため。
  *
- * 原本の現行コピーがどの置き場にも無い録画には 409 を返す。
+ * 原本の現行コピー（active かつ現行世代）がどの置き場にも無い録画には 409 を返す。
  * これは次のいずれかに当たる --- 本当に削除済み（`keep_original=until_encoded`
- * でエンコード完了後に原本削除 reconcile が消した等）、`state = 'deleting'`
- * （unlink 待ち。一覧では「原本あり」に見えるが事後追加は決定的に 409 になる）、
+ * でエンコード完了後に原本削除 reconcile が消した等）、原本のコピーが
+ * `state = 'deleting'`（unlink 待ち。一覧では「原本あり」に見えるが
+ * 事後追加は決定的に 409 になる）、
  * またはそもそも ingest が完了しておらず original 行自体が無い。
  * api 層で明示的に検査してサイレントな失敗にしない。
  *
@@ -7426,15 +7427,15 @@ export const getReencodeRecordingProfileUrl = (id: number,
  * 明示的な操作）。チャプターを直しても**自動では作り直さない** ---
  * 自動で作り直すと、ユーザーが確認していない区間が黙って本編から消える。
  *
- * 新しい世代のファイル（`…_{profile}.g{n+1}.{container}`）を置いてから、
- * 公開トランザクションで新しいコピー行と論理資産の `size_bytes`・
- * `derived_generation`、`media_asset_cuts.keep_ranges` を更新する。commit 後に
- * 削除 reconcile が旧世代のコピーを unlink する。URL は `?profile=` のままで
+ * 1 つのトランザクションの中で、論理資産の `size_bytes` と `derived_generation`
+ * を更新し、新しい世代のコピー行を足し、`media_asset_cuts.keep_ranges` を差し替える。
+ * 新しい世代のファイル（`…_{profile}.g{n+1}.{container}`）はその commit の直前に
+ * 置く。commit 後に削除 reconcile が旧世代のコピーを unlink する。URL は `?profile=` のままで
  * 世代を含めない（資源同定は変えない）ので、
  * **置き換えた瞬間に視聴中のクライアントの再生は壊れる**（受け入れ済み。
  * 再読み込みで直る）。
  *
- * 原本の現行コピー（active かつ現行世代）がどの置き場にも無い録画には 409 を返す
+ * 原本の現行コピーがどの置き場にも無い録画には 409 を返す
  * （カット版は原本から作り直すしかない。`POST
  * /api/recordings/{id}/encode-profiles` と同じ判定）。チャプターが未確認、
  * または全区間がカットで keep が空のときも 409 を返す。

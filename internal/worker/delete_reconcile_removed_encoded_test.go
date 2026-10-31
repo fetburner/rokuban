@@ -138,7 +138,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 	}
 
 	if got := singleCopyState(t, pool, f.h264ID); got != "deleted" {
-		t.Errorf("h264 state = %q, want deleted", got)
+		t.Errorf("h264 copy state = %q, want deleted", got)
 	}
 	if fileExists(f.h264Path) {
 		t.Error("h264 file still exists, want removed")
@@ -147,13 +147,13 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 		t.Error("removal request still exists after the version was deleted")
 	}
 	if got := singleCopyState(t, pool, f.h265ID); got != "active" {
-		t.Errorf("h265 state = %q, want active", got)
+		t.Errorf("h265 copy state = %q, want active", got)
 	}
 	if !fileExists(f.h265Path) {
 		t.Error("h265 file was removed, want kept")
 	}
 	if got := singleCopyState(t, pool, f.originalID); got != "active" {
-		t.Errorf("original state = %q, want active", got)
+		t.Errorf("original copy state = %q, want active", got)
 	}
 
 	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
@@ -207,13 +207,13 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	}
 
 	if got := singleCopyState(t, pool, readded.h264ID); got != "active" {
-		t.Errorf("re-added h264 state = %q, want active", got)
+		t.Errorf("re-added h264 copy state = %q, want active", got)
 	}
 	if !fileExists(readded.h264Path) {
 		t.Error("re-added h264 file was removed, want kept")
 	}
 	if got := singleCopyState(t, pool, stuck.h264ID); got != "deleted" {
-		t.Errorf("stuck h264 state = %q, want deleted", got)
+		t.Errorf("stuck h264 copy state = %q, want deleted", got)
 	}
 	if fileExists(stuck.h264Path) {
 		t.Error("stuck h264 file still exists, want removed")
@@ -250,7 +250,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 
 	for _, id := range []int64{trashAsset, a.h264ID, b.h264ID} {
 		if got := singleCopyState(t, pool, id); got != "active" {
-			t.Errorf("asset %d state = %q, want active (breaker should have withheld deletes)", id, got)
+			t.Errorf("asset %d copy state = %q, want active (breaker should have withheld deletes)", id, got)
 		}
 	}
 	cb, err := sqlcgen.New(pool).GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{

@@ -173,7 +173,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 		t.Fatalf("restoreUnqualifiedDeletingAssets: %v", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("state after revert = %q, want active", got)
+		t.Errorf("copy state after revert = %q, want active", got)
 	}
 	if heads, _ := recorder.calls(); !contains(heads, relPath) {
 		t.Errorf("revert-check Head calls = %v, want %q among them", heads, relPath)
@@ -190,7 +190,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 		t.Fatalf("restoreUnqualifiedDeletingAssets (absent): %v", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Errorf("state after revert with the key absent = %q, want deleted", got)
+		t.Errorf("copy state after revert with the key absent = %q, want deleted", got)
 	}
 }
 

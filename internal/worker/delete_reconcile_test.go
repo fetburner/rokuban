@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -185,17 +186,9 @@ func singleCopyState(t *testing.T, pool *pgxpool.Pool, id int64) string {
 	if err != nil {
 		t.Fatalf("querying media asset copy state: %v", err)
 	}
-	defer rows.Close()
-	var states []string
-	for rows.Next() {
-		var state string
-		if err := rows.Scan(&state); err != nil {
-			t.Fatalf("scanning media asset copy state: %v", err)
-		}
-		states = append(states, state)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterating media asset copy states: %v", err)
+	states, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collecting media asset copy states: %v", err)
 	}
 	if len(states) != 1 {
 		t.Fatalf("media asset %d has %d copies, want exactly one; inspect a specific copy or use hasCurrentCopy", id, len(states))
@@ -288,7 +281,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Errorf("asset state = %q, want deleted", got)
+		t.Errorf("asset copy state = %q, want deleted", got)
 	}
 	if fileExists(fullPath) {
 		t.Error("file still exists on disk, want removed")
@@ -469,7 +462,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 	}
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
-		t.Errorf("encoded asset state = %q, want deleted (sidecar failure must not block it)", got)
+		t.Errorf("encoded asset copy state = %q, want deleted (sidecar failure must not block it)", got)
 	}
 	if fileExists(filepath.Join(mediaDir, "sidecarfail", "retention_h264.mp4")) {
 		t.Error("encoded file still exists on disk, want removed despite sidecar delete failure")
@@ -513,7 +506,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 	}
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
-		t.Errorf("encoded asset state = %q, want deleted (extensionless rel_path must not block it)", got)
+		t.Errorf("encoded asset copy state = %q, want deleted (extensionless rel_path must not block it)", got)
 	}
 	if fileExists(filepath.Join(mediaDir, "noext", "retention_h264")) {
 		t.Error("encoded file still exists on disk, want removed despite extensionless rel_path")
@@ -548,7 +541,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("asset state = %q, want active (not yet past retention)", got)
+		t.Errorf("asset copy state = %q, want active (not yet past retention)", got)
 	}
 	if !fileExists(fullPath) {
 		t.Error("file was removed, want kept (within retention)")
@@ -597,7 +590,7 @@ func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Errorf("asset state = %q, want deleted (an immediate purge request should bypass retention even though deleted_at is recent)", got)
+		t.Errorf("asset copy state = %q, want deleted (an immediate purge request should bypass retention even though deleted_at is recent)", got)
 	}
 }
 
@@ -709,7 +702,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
-		t.Fatalf("asset state = %q, want deleting (unlink blocked)", got)
+		t.Fatalf("asset copy state = %q, want deleting (unlink blocked)", got)
 	}
 	if got := purgedAt(t, pool, recordingID); got != nil {
 		t.Errorf("purged_at = %v, want nil (an asset is still stuck in deleting)", got)
@@ -747,7 +740,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Fatalf("asset state = %q, want deleted", got)
+		t.Fatalf("asset copy state = %q, want deleted", got)
 	}
 	events := rec.received()
 	if len(events) != 1 {
@@ -805,7 +798,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 	}
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
-		t.Fatalf("encoded state = %q, want deleted", got)
+		t.Fatalf("encoded copy state = %q, want deleted", got)
 	}
 	events := rec.received()
 	if len(events) != 1 {
@@ -844,7 +837,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Fatalf("original state = %q, want deleted", got)
+		t.Fatalf("original copy state = %q, want deleted", got)
 	}
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("webhook fired for a live recording: %+v", events)
@@ -894,7 +887,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 		t.Fatalf("Work() error: %v", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
-		t.Fatalf("asset state = %q, want deleting", got)
+		t.Fatalf("asset copy state = %q, want deleting", got)
 	}
 
 	// ここでユーザーがごみ箱から復元する。
@@ -910,7 +903,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 		t.Fatalf("Work() second pass error: %v", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Fatalf("asset state after second pass = %q, want active (restored recordings must not be deleted, issue #105)", got)
+		t.Fatalf("asset copy state after second pass = %q, want active (restored recordings must not be deleted, issue #105)", got)
 	}
 	if !fileExists(assetPath) {
 		t.Error("file was removed after restore, want kept (issue #105)")
@@ -995,7 +988,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Fatalf("asset state = %q, want deleted (file already gone; reverting to active would create an active row with no file)", got)
+		t.Fatalf("asset copy state = %q, want deleted (file already gone; reverting to active would create an active row with no file)", got)
 	}
 }
 
@@ -1035,7 +1028,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 	}
 
 	if got := singleCopyState(t, pool, blockedID); got != "deleting" {
-		t.Fatalf("blocked asset state = %q, want deleting", got)
+		t.Fatalf("blocked asset copy state = %q, want deleting", got)
 	}
 	if events := rec.received(); len(events) != 0 {
 		t.Fatalf("fired while an asset was still not deleted: %+v", events)
@@ -1048,7 +1041,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 	}
 
 	if got := singleCopyState(t, pool, blockedID); got != "deleted" {
-		t.Fatalf("blocked asset state after second pass = %q, want deleted", got)
+		t.Fatalf("blocked asset copy state after second pass = %q, want deleted", got)
 	}
 	events := rec.received()
 	if len(events) != 1 {
@@ -1106,7 +1099,7 @@ func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 		t.Fatalf("Work() error: %v (webhook の失敗で削除パスを落としてはいけない)", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Errorf("asset state = %q, want deleted", got)
+		t.Errorf("asset copy state = %q, want deleted", got)
 	}
 }
 
@@ -1167,7 +1160,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Errorf("original state = %q, want deleted", got)
+		t.Errorf("original copy state = %q, want deleted", got)
 	}
 }
 
@@ -1201,7 +1194,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 				t.Fatalf("Work() error: %v", err)
 			}
 			if got := singleCopyState(t, pool, assetID); got != "active" {
-				t.Fatalf("original state = %q, want active (%s is deleted)", got, kind)
+				t.Fatalf("original copy state = %q, want active (%s is deleted)", got, kind)
 			}
 			if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
 				t.Errorf("original file was removed while its %s was deleted: %v", kind, err)
@@ -1236,7 +1229,7 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 		t.Fatalf("Work() error: %v", err)
 	}
 	if got := singleCopyState(t, pool, originalID); got != "active" {
-		t.Fatalf("original state with pending cut rebuild = %q, want active", got)
+		t.Fatalf("original copy state with pending cut rebuild = %q, want active", got)
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
 		t.Errorf("original file with pending rebuild request: %v", err)
@@ -1279,7 +1272,7 @@ func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) 
 		t.Fatalf("Work() error: %v", err)
 	}
 	if got := singleCopyState(t, pool, originalID); got != "deleted" {
-		t.Errorf("original state with satisfied rebuild = %q, want deleted", got)
+		t.Errorf("original copy state with satisfied rebuild = %q, want deleted", got)
 	}
 	var rows int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, recordingID).Scan(&rows); err != nil || rows != 1 {
@@ -1334,7 +1327,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 		t.Fatalf("Work() error: %v", err)
 	}
 	if got := singleCopyState(t, pool, originalID); got != "active" {
-		t.Fatalf("original state after concurrent rebuild request = %q, want active", got)
+		t.Fatalf("original copy state after concurrent rebuild request = %q, want active", got)
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
 		t.Errorf("original file after concurrent rebuild request: %v", err)
@@ -1390,7 +1383,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 		want    string
 	}{{missingScanID, "active"}, {staleScanID, "active"}, {currentScanID, "deleted"}} {
 		if got := singleCopyState(t, pool, tc.assetID); got != tc.want {
-			t.Errorf("asset %d state = %q, want %q", tc.assetID, got, tc.want)
+			t.Errorf("asset %d copy state = %q, want %q", tc.assetID, got, tc.want)
 		}
 	}
 }
@@ -1461,7 +1454,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("original state = %q, want active "+
+		t.Errorf("original copy state = %q, want active "+
 			"(encode_profiles is empty; must not be treated as \"all desired profiles present\")", got)
 	}
 }
@@ -1508,7 +1501,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("original state = %q, want active (encoded profile missing)", got)
+		t.Errorf("original copy state = %q, want active (encoded profile missing)", got)
 	}
 }
 
@@ -1531,7 +1524,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("original state = %q, want active (thumbnail missing)", got)
+		t.Errorf("original copy state = %q, want active (thumbnail missing)", got)
 	}
 }
 
@@ -1557,7 +1550,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("original state = %q, want active (seek_tiles missing)", got)
+		t.Errorf("original copy state = %q, want active (seek_tiles missing)", got)
 	}
 }
 
@@ -1609,13 +1602,13 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	}
 
 	if got := singleCopyState(t, pool, assetA); got != "active" {
-		t.Errorf("recording A original state = %q, want active (desired profile h264 not yet committed)", got)
+		t.Errorf("recording A original copy state = %q, want active (desired profile h264 not yet committed)", got)
 	}
 	if got := singleCopyState(t, pool, assetB); got != "deleted" {
-		t.Errorf("recording B original state = %q, want deleted (all desired derivatives committed)", got)
+		t.Errorf("recording B original copy state = %q, want deleted (all desired derivatives committed)", got)
 	}
 	if got := singleCopyState(t, pool, assetC); got != "deleted" {
-		t.Errorf("recording C original state = %q, want deleted (all desired derivatives committed)", got)
+		t.Errorf("recording C original copy state = %q, want deleted (all desired derivatives committed)", got)
 	}
 }
 
@@ -1665,7 +1658,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 		t.Fatalf("Work() error: %v", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
-		t.Fatalf("asset state = %q, want deleting (unlink blocked)", got)
+		t.Fatalf("asset copy state = %q, want deleting (unlink blocked)", got)
 	}
 
 	// 障害を取り除く。復元は起きていない —— 録画は生きたまま until_encoded
@@ -1685,7 +1678,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 		t.Fatalf("Work() second pass error: %v", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Fatalf("asset state after second pass = %q, want deleted (until_encoded deletion should resume via the breaker-exempt pending path, issue #105)", got)
+		t.Fatalf("asset copy state after second pass = %q, want deleted (until_encoded deletion should resume via the breaker-exempt pending path, issue #105)", got)
 	}
 	if fileExists(assetPath) {
 		t.Error("original file still exists after resumed deletion, want removed")
@@ -1749,7 +1742,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Fatalf("original state = %q, want active "+
+		t.Fatalf("original copy state = %q, want active "+
 			"(thumbnail no longer active; until_encoded predicate no longer qualifies this asset for deletion, issue #160)", got)
 	}
 	if !fileExists(assetPath) {
@@ -1796,7 +1789,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Fatalf("original state = %q, want active "+
+		t.Fatalf("original copy state = %q, want active "+
 			"(scan marker no longer matches the original size)", got)
 	}
 	if !fileExists(assetPath) {
@@ -1929,10 +1922,10 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	}
 
 	if got := singleCopyState(t, pool, legacyAssetID); got != "active" {
-		t.Errorf("legacy (unprefixed) asset state = %q, want active (must survive orphan sweep)", got)
+		t.Errorf("legacy (unprefixed) asset copy state = %q, want active (must survive orphan sweep)", got)
 	}
 	if got := singleCopyState(t, pool, prefixedAssetID); got != "active" {
-		t.Errorf("sites/-prefixed asset state = %q, want active (must survive orphan sweep)", got)
+		t.Errorf("sites/-prefixed asset copy state = %q, want active (must survive orphan sweep)", got)
 	}
 	if !fileExists(filepath.Join(mediaDir, "legacy", "original.m2ts")) {
 		t.Error("legacy (unprefixed) file was removed, want kept")
@@ -2002,7 +1995,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("registered asset state = %q, want active", got)
+		t.Errorf("registered asset copy state = %q, want active", got)
 	}
 	var missingCount int
 	if err := pool.QueryRow(context.Background(),
@@ -3075,7 +3068,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 
 	for _, id := range assetIDs {
 		if got := singleCopyState(t, pool, id); got != "active" {
-			t.Errorf("asset %d state = %q, want active (breaker should have withheld deletes)", id, got)
+			t.Errorf("asset %d copy state = %q, want active (breaker should have withheld deletes)", id, got)
 		}
 	}
 
@@ -3140,7 +3133,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Errorf("stuck asset state = %q, want deleted (should resume regardless of breaker)", got)
+		t.Errorf("stuck asset copy state = %q, want deleted (should resume regardless of breaker)", got)
 	}
 	if fileExists(full) {
 		t.Error("stuck asset file still exists, want removed")
@@ -3166,7 +3159,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("asset state = %q, want active (file is present, must not be touched)", got)
+		t.Errorf("asset copy state = %q, want active (file is present, must not be touched)", got)
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(),
@@ -3260,7 +3253,7 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("asset state = %q, want active (missing-file detection never deletes)", got)
+		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(),
@@ -3349,7 +3342,7 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("asset state = %q, want active (missing-file detection never deletes)", got)
+		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 1 {
 		t.Errorf("MediaAssetsMissing{kind=original} = %v, want 1 (aged out, must be reported)", got)
@@ -3406,7 +3399,7 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("asset state = %q, want active (missing-file detection never deletes)", got)
+		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 1 {
 		t.Errorf("MediaAssetsMissing{kind=original} = %v, want 1 (configured 1h age must be honored, not the 24h default)", got)
@@ -3511,7 +3504,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 	}
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
-		t.Errorf("asset state = %q, want active", got)
+		t.Errorf("asset copy state = %q, want active", got)
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(),
