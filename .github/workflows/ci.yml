@@ -165,6 +165,9 @@ jobs:
         run: pnpm e2e:reservations-series
         working-directory: web
       - if: ${{ !cancelled() }}
+        run: pnpm e2e:circuit-breaker-store
+        working-directory: web
+      - if: ${{ !cancelled() }}
         run: pnpm e2e:reservation-detail-layout
         working-directory: web
       - if: ${{ !cancelled() }}

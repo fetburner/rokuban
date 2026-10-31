@@ -5,7 +5,7 @@ import {
   getListCircuitBreakersQueryKey,
   useListCircuitBreakers,
   useResumeCircuitBreaker,
-  useResumeSitelessCircuitBreaker,
+  useResumeStoreCircuitBreaker,
   type CircuitBreaker,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
@@ -63,7 +63,7 @@ export function CircuitBreakerBanner() {
       </p>
       <ul className="divide-y divide-destructive/20">
         {breakers.map((breaker) => (
-          <BreakerRow key={`${breaker.site}:${breaker.name}`} breaker={breaker} />
+          <BreakerRow key={`${breaker.site}:${breaker.store}:${breaker.name}`} breaker={breaker} />
         ))}
       </ul>
     </div>
@@ -76,18 +76,17 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const resume = useResumeCircuitBreaker()
-  const resumeSiteless = useResumeSitelessCircuitBreaker()
+  const resumeStore = useResumeStoreCircuitBreaker()
 
   const label = describeBreakerName(breaker.name)
   const reason = describeBreakerReason(breaker.name)
   const total = breaker.detail.total
   const programs = breaker.detail.programs ?? []
   const isExcerpt = total > programs.length
-  // API の site が空文字列 = site の範囲以外のブレーカー（今のところ
-  // 置き場の範囲の delete_reconcile）。サーバー自身が返す値を権威として、
-  // クライアント側で名前を分類し直さず、行が運んできた site の有無だけを見る。
-  const isSiteless = breaker.site === ''
-  const isPending = isSiteless ? resumeSiteless.isPending : resume.isPending
+  // API が返す store を再開先の権威にする。クライアント側でブレーカー名から
+  // scope を分類し直さない。
+  const isStoreScoped = breaker.store !== ''
+  const isPending = isStoreScoped ? resumeStore.isPending : resume.isPending
 
   const handleConfirm = () => {
     // ダイアログは AlertDialogAction（AlertDialogPrimitive.Close ラップ）が
@@ -105,11 +104,11 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
         })
       },
     }
-    if (isSiteless) {
-      resumeSiteless.mutate({ name: breaker.name }, callbacks)
-    } else {
-      resume.mutate({ site: breaker.site, name: breaker.name }, callbacks)
+    if (isStoreScoped) {
+      resumeStore.mutate({ store: breaker.store, name: breaker.name }, callbacks)
+      return
     }
+    resume.mutate({ site: breaker.site, name: breaker.name }, callbacks)
   }
 
   return (
@@ -118,6 +117,7 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
         <div className="min-w-0">
           <p className="font-medium">{label}が停止中</p>
           {reason && <p className="text-xs text-destructive/80">{reason}</p>}
+          {isStoreScoped && <p className="text-xs text-destructive/80">置き場: {breaker.store}</p>}
           <p className="text-xs text-destructive/80">
             {formatDateTime(breaker.trippedAt)}から · 保留 {breaker.pending} 件
             {/* 全損シグネチャのブレーカーは件数の閾値を持たない（threshold は 0）。

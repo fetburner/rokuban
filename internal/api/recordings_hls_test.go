@@ -20,7 +20,7 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			srv := httptest.NewServer(NewRouter(RouterConfig{
 				RecordingQuery:      pgstoretest.Recordings(pool),
-				RecordingHLSEnabled: enabled, StoreNames: []string{dbtest.StoreName},
+				RecordingHLSEnabled: enabled,
 				LiveProfiles: []LiveProfileSummary{{Name: "sd"}, {Name: "hd"}},
 			}))
 			defer srv.Close()

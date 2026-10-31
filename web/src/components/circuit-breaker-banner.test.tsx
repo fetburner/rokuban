@@ -63,6 +63,7 @@ function stubFetch(opts: {
 
 const trippedBreaker: CircuitBreaker = {
   site: 'default',
+  store: '',
   name: 'ruler_deletes',
   trippedAt: '2026-07-25T10:00:00.000Z',
   pending: 3,
@@ -181,20 +182,19 @@ describe('CircuitBreakerBanner', () => {
     )
   })
 
-  it('site を持たないブレーカー（site が空文字列）の再開は site 無しのエンドポイントを叩く（issue #450）', async () => {
-    // 置き場の範囲の delete_reconcile は API の site が空文字列になる。
-    // クライアントは名前を再分類せず、行が運んできた site の有無だけで叩き先を選ぶ
-    // （circuit-breaker-banner.tsx の isSiteless 参照）。
-    const sitelessBreaker: CircuitBreaker = {
+  it('置き場の範囲のブレーカーは置き場名を表示し、その置き場の再開 URL を叩く', async () => {
+    const storeBreaker: CircuitBreaker = {
       ...trippedBreaker,
       site: '',
+      store: 's3main',
       name: 'delete_reconcile',
     }
-    const fetchMock = stubFetch({ list: [sitelessBreaker], resume: 'success' })
+    const fetchMock = stubFetch({ list: [storeBreaker], resume: 'success' })
     const user = userEvent.setup()
     renderBanner()
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('置き場: s3main')).toBeInTheDocument()
 
     await user.click(await screen.findByRole('button', { name: '再開' }))
     await user.click(await screen.findByRole('button', { name: '再開する' }))
@@ -202,9 +202,7 @@ describe('CircuitBreakerBanner', () => {
     await waitFor(() => {
       const resumeCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/resume'))
       expect(resumeCall).toBeDefined()
-      // site をパスに含まない新ルート（旧ルート /api/sites/{site}/breakers/...
-      // ではないこと）を叩く。
-      expect(String(resumeCall![0])).toBe('/api/breakers/delete_reconcile/resume')
+      expect(String(resumeCall![0])).toBe('/api/stores/s3main/breakers/delete_reconcile/resume')
       expect(resumeCall![1]).toMatchObject({ method: 'POST' })
     })
 

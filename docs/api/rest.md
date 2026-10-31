@@ -101,7 +101,7 @@ site の権威は設定の site レジストリである。site の一覧（`GET
 
 サーキットブレーカーの再開も、site をパスに含めるかの判定基準に従う。資源ごとの分類で決まり、種類名による分類は採らない。
 
-site の範囲の名前は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。置き場の範囲の名前は `POST /api/breakers/{name}/resume` に分ける。
+site の範囲の名前は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。置き場の範囲の名前は `POST /api/stores/{store}/breakers/{name}/resume` に分ける。`store` は `config.storage.stores` の名前で検証する。
 
 <details><summary>根拠</summary>
 

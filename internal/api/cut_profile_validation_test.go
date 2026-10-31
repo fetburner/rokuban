@@ -146,7 +146,6 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 		CutProfileNames:     []string{"cut"},
 		LiveEnabled:         false, // live.enabled=false でも録画 HLS があれば許す
 		RecordingHLSEnabled: true,
-		StoreNames:          []string{dbtest.StoreName},
 	}))
 	t.Cleanup(srv.Close)
 

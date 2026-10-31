@@ -23,7 +23,7 @@ func newBreakerRouter(pool *pgxpool.Pool) http.Handler {
 func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler {
 	return api.NewRouter(api.RouterConfig{
 		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: sites,
-		StoreNames: []string{"test-store"},
+		StorageStoreNames: []string{"test-store", "s3main"},
 	})
 }
 
@@ -84,6 +84,7 @@ func existsCircuitBreakerForSite(t *testing.T, pool *pgxpool.Pool, ctx context.C
 // circuitBreakerResp は GET /api/breakers のレスポンス要素から確認に要る部分だけを持つ。
 type circuitBreakerResp struct {
 	Site      string `json:"site"`
+	Store     string `json:"store"`
 	Name      string `json:"name"`
 	Pending   int    `json:"pending"`
 	Threshold int    `json:"threshold"`
@@ -360,7 +361,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			resumeURL := srv.URL + "/api/sites/default/breakers/" + name + "/resume"
 			if breaker.ScopeKindFor(name) == breaker.ScopeStore {
 				scope = "test-store"
-				resumeURL = srv.URL + "/api/breakers/" + name + "/resume"
+				resumeURL = srv.URL + "/api/stores/test-store/breakers/" + name + "/resume"
 			}
 			insertCircuitBreakerFixtureForSite(t, pool, ctx, scope, name, 7, 10, `{"total":7}`)
 

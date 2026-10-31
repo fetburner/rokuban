@@ -546,6 +546,11 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	recordingStore := pgstore.NewRecordings(pool, "")
 	// API は storage の配置先を知らない。active なコピーがある全置き場を検索する。
 	recordingQuery := pgstore.NewRecordings(pool, "")
+	storageStoreNames := make([]string, 0, len(cfg.Storage.Stores))
+	for name := range cfg.Storage.Stores {
+		storageStoreNames = append(storageStoreNames, name)
+	}
+	slices.Sort(storageStoreNames)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
@@ -602,8 +607,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		LiveProfiles:        liveProfileSummaries(cfg.Live.Profiles),
 		RecordingHLSEnabled: cfg.RecordingHLS.Enabled,
 		OriginalLocator:     mediaStore,
-		StoreNames:          cfg.Storage.FSStoreNames(),
-		DerivedStoreName:    cfg.Storage.Derived,
+		StorageStoreNames:   storageStoreNames,
 	}
 
 	if slices.Contains(roles, "api") {

@@ -174,17 +174,16 @@ stateDiagram-v2
 
 ###### 再開の API
 
-再開は、site の範囲のブレーカーなら site を含むパスへの POST で行う。置き場の範囲のブレーカーだけは別のパスにする。
+再開は、画面で確認したブレーカーの範囲を指定して行う。
 
-再開は `POST /api/sites/{site}/breakers/{name}/resume` である。資源の PK が `(scope, name)` で、site の範囲のブレーカーでは `scope` が site 名であることに合わせた。`DELETE /api/sites/{site}/breakers/{name}` は採らない。運用者から見た操作は「確認したので再開する」であり、「行を削除する」は実装詳細だからである。
+site の範囲の行は `POST /api/sites/{site}/breakers/{name}/resume` で再開する。置き場の範囲の行は `POST /api/stores/{store}/breakers/{name}/resume` で再開する。どちらも発動中の行のキーをパスで指定する。
 
-置き場の範囲のブレーカー（`delete_reconcile`）は `POST /api/breakers/{name}/resume` で再開する。API は `site` を空文字列で返す。再開する行の範囲は、api の設定の FS 置き場の名前（名前順）と、FS 置き場に含まれない派生物の置き場の名前である。派生物の置き場が S3 のときは、その置き場の名前が別の範囲になり、削除の件数も合算しない。同じ POST は、発動中の範囲が 1 つだけならその範囲を再開する。発動中の範囲が 2 つ以上あると 409 を返し、どの行も消さない。
-
-未解決: 一覧は行の範囲の置き場名を返さないので、どの置き場の行かは区別できない。置き場を指定した再開は別の作業で入る。FS 置き場が無い設定の api は置き場を決められず、400 を返す。理由は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照。
+`GET /api/breakers` は site の範囲なら `site`、置き場の範囲なら `store` に範囲名を返し、もう一方は空文字列にする。置き場名は `config.storage.stores` の設定だけで検証し、API は置き場の実体を読まない。
 
 <details><summary>根拠</summary>
 
-- 1 つだけ発動中のときの再開と、2 つ以上のときの 409: `TestResumeSitelessCircuitBreaker_ResumesDerivedStoreScope`
+- 同名の FS / S3 行を一覧で区別する: `TestListCircuitBreakers_ReturnsStoreScopes`
+- 指定した置き場の行だけを再開する: `TestResumeStoreCircuitBreaker_OnlyDeletesRequestedStore`
 
 </details>
 
