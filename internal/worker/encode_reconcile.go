@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -113,6 +114,11 @@ type EncodeReconcileWorker struct {
 	// StoragePolicy は storage.transfer.backlog_limit と、転送待ちを数える規則を持つ。
 	// backlog_limit の無い置き場には背圧をかけない。
 	StoragePolicy config.StorageConfig
+
+	// backpressureMu は backpressured を守る。Work は並行に走りうる。
+	backpressureMu sync.Mutex
+	// backpressured は直近に数えた置き場が止まっていたか。Warn / Info を状態が変わったときだけ出すために持つ。
+	backpressured map[string]bool
 }
 
 // enqueueEncodeReconcile は指定録画の reconcile を投入する。
@@ -187,7 +193,16 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	if err != nil {
 		return fmt.Errorf("encode reconcile: %w", err)
 	}
-	blocked, err := w.backpressuredStores(ctx)
+	// 件数の集計は件数に比例して重いので、判断と表示に要るパスだけで数える（理由は backpressuredStores）。
+	limited := w.backlogLimitedStores()
+	needCount := recordingID == 0 && after == 0
+	for _, row := range missing {
+		if slices.Contains(limited, originalStores[row.RecordingID]) {
+			needCount = true
+			break
+		}
+	}
+	blocked, err := w.backpressuredStores(ctx, limited, needCount)
 	if err != nil {
 		return fmt.Errorf("encode reconcile: checking transfer backpressure: %w", err)
 	}
@@ -286,20 +301,39 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	return nil
 }
 
-// backpressuredStores は、転送待ちが storage.transfer.backlog_limit に達していて encode を投入しない置き場を返す。
-// 上限を設定した置き場が無いとき、または Transfers が nil のときは、問い合わせずに nil を返す。
-// 置き場ごとの状態は EncodeBackpressure に出す。
-func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context) (map[string]bool, error) {
+// backlogLimitedStores は storage.transfer.backlog_limit を設定した置き場を名前順に返す。
+func (w *EncodeReconcileWorker) backlogLimitedStores() []string {
 	var limited []string
 	for name := range w.StoragePolicy.Transfer.BacklogLimit {
 		if w.StoragePolicy.TransferBacklogLimit(name) > 0 {
 			limited = append(limited, name)
 		}
 	}
+	slices.Sort(limited)
+	return limited
+}
+
+// backpressuredStores は、転送待ちが storage.transfer.backlog_limit に達していて encode を投入しない置き場を返す。
+//
+// 件数を数えるのは refresh のときだけ。呼び出し側は次のどれかで refresh を立てる:
+// 全件パスの先頭（ゲージの更新。全件パスは一定周期で走る）、候補の原本が上限付きの置き場にある
+// （止めるかどうかを今の件数で決める必要がある）、いずれかの置き場が止まっている（解けたことを
+// 次のパスで見せる）。どれでもないパスは問い合わせず nil を返す。集計 1 回は資産数に比例して重く
+// （計測: media_assets 2 万行で中央値約 2.1 秒、6 万行で約 6.5 秒）、ingest ごとの targeted pass と
+// 継続ページの全てで数えると、その分だけ DB を占有するためである。
+//
+// 数えたときは置き場ごとの件数を metrics.StorageTransferBacklogAssets に、止めているかを
+// metrics.EncodeBackpressure に出す。両方とも同じ件数から作るので、止める判断と表示は一致する。
+// Warn と Info は止まり始めた・解けたときだけ出す（止まっている間に毎パス同じ Warn を出さない）。
+//
+// Transfers が nil か、上限を設定した置き場が無いときは問い合わせずに nil を返す。
+func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited []string, refresh bool) (map[string]bool, error) {
 	if len(limited) == 0 || w.Transfers == nil {
 		return nil, nil
 	}
-	slices.Sort(limited)
+	if !refresh && !w.anyBackpressured() {
+		return nil, nil
+	}
 	rules, err := w.StoragePolicy.OriginalRulesJSON()
 	if err != nil {
 		return nil, fmt.Errorf("building original rules: %w", err)
@@ -308,20 +342,48 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context) (map[st
 	if err != nil {
 		return nil, fmt.Errorf("counting transfer backlog by source store: %w", err)
 	}
+
+	w.backpressureMu.Lock()
+	defer w.backpressureMu.Unlock()
+	if w.backpressured == nil {
+		w.backpressured = make(map[string]bool)
+	}
 	blocked := make(map[string]bool)
 	for _, name := range limited {
 		limit := w.StoragePolicy.TransferBacklogLimit(name)
 		backlog := counts[name]
-		if backlog < int64(limit) {
+		metrics.StorageTransferBacklogAssets.WithLabelValues(name).Set(float64(backlog))
+		stopped := backlog >= int64(limit)
+		if stopped {
+			blocked[name] = true
+			metrics.EncodeBackpressure.WithLabelValues(name).Set(1)
+		} else {
 			metrics.EncodeBackpressure.WithLabelValues(name).Set(0)
-			continue
 		}
-		blocked[name] = true
-		metrics.EncodeBackpressure.WithLabelValues(name).Set(1)
-		slog.Warn("encode_reconcile: transfer backlog reached the limit; not enqueuing encodes into this store",
-			"store", name, "backlog", backlog, "limit", limit)
+		if stopped != w.backpressured[name] {
+			if stopped {
+				slog.Warn("encode_reconcile: transfer backlog reached the limit; not enqueuing encodes into this store",
+					"store", name, "backlog", backlog, "limit", limit)
+			} else {
+				slog.Info("encode_reconcile: transfer backlog is below the limit; enqueuing encodes into this store again",
+					"store", name, "backlog", backlog, "limit", limit)
+			}
+		}
+		w.backpressured[name] = stopped
 	}
 	return blocked, nil
+}
+
+// anyBackpressured は直近に数えた置き場のどれかが止まっているかを返す。
+func (w *EncodeReconcileWorker) anyBackpressured() bool {
+	w.backpressureMu.Lock()
+	defer w.backpressureMu.Unlock()
+	for _, stopped := range w.backpressured {
+		if stopped {
+			return true
+		}
+	}
+	return false
 }
 
 // reportUnsatisfiable は「凍結済みの desired が現在の encode.profiles に無い」

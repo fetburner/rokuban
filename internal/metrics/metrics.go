@@ -553,6 +553,14 @@ var (
 		Help: "1 while encode reconcile is not enqueuing encodes that read originals from the store because its transfer backlog reached storage.transfer.backlog_limit, else 0.",
 	}, []string{"store"})
 
+	// StorageTransferBacklogAssets は、上限を設定した置き場ごとの転送待ちの論理資産数（転送元の置き場別）。
+	// 数えたパスでだけ更新する（全件パスの先頭、候補が上限付きの置き場にあるパス、止まっている間）。
+	// 置き場が複数のコピーを持つ資産は、その置き場ごとに数えるので合計は転送待ちの総数と一致しない。
+	StorageTransferBacklogAssets = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_storage_transfer_backlog_assets",
+		Help: "Logical media assets waiting for a desired-store copy, by source FS store, for stores with storage.transfer.backlog_limit. An asset with copies in several source stores counts once per store. Refreshed by encode reconcile passes that count the backlog.",
+	}, []string{"store"})
+
 	// CutAwaitingReview は「`cut: true` のプロファイルを凍結しているのに、まだ
 	// チャプターを確認していない」録画数（プロファイル名別）。
 	//
@@ -887,6 +895,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		EncodeReconcileCandidates,
 		EncodeReconcileUnsatisfiable,
 		EncodeBackpressure,
+		StorageTransferBacklogAssets,
 		CutAwaitingReview,
 		ThumbnailReconcileLastPass,
 		ThumbnailReconcileCandidates,

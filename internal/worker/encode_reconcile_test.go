@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -171,7 +172,153 @@ func TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore(t *testin
 			if got := promtestutil.ToFloat64(metrics.EncodeBackpressure.WithLabelValues("edge")); got != tc.wantGate {
 				t.Fatalf("backpressure gauge for edge = %v, want %v", got, tc.wantGate)
 			}
+			// 件数は上限の両側で同じ値（1）を出す。止める判断と表示が同じ件数を見ていることの確認。
+			if got := promtestutil.ToFloat64(metrics.StorageTransferBacklogAssets.WithLabelValues("edge")); got != 1 {
+				t.Fatalf("transfer backlog gauge for edge = %v, want 1", got)
+			}
 		})
+	}
+}
+
+// countingTransfers は転送待ちの集計が呼ばれた回数を数える。問い合わせを省いたパスを確かめるために使う。
+type countingTransfers struct {
+	store.StorageTransfer
+	calls int
+}
+
+func (c *countingTransfers) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (map[string]int64, error) {
+	c.calls++
+	return c.StorageTransfer.CountMediaAssetTransferBacklogBySourceStore(ctx, originalRules, fsStores, sourceStores, derivedStore, attemptLimit)
+}
+
+// seedEdgeOriginal は原本のコピーだけを edge に置いた録画を作る（desired は central なので edge の転送待ち）。
+func seedEdgeOriginal(t *testing.T, pool *pgxpool.Pool) (recordingID, assetID int64) {
+	t.Helper()
+	recordingID = dbtest.Recording(t, pool)
+	assetID = dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = "backlog/" + t.Name() + ".ts"
+		params.SizeBytes = 1
+	})
+	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("moving original copy to edge: %v", err)
+	}
+	seedEncodePolicy(t, pool, recordingID, []string{"h265"})
+	return recordingID, assetID
+}
+
+// 転送が済んで原本が central にだけ残った状態にする（転送待ちは 0 件になる）。
+func moveOriginalToCentral(t *testing.T, pool *pgxpool.Pool, assetID int64) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'central' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("moving original copy to central: %v", err)
+	}
+}
+
+// 止まっている置き場は、次の targeted pass で件数を数え直し、解けたらゲージと投入の両方に出る。
+// 止まっていない置き場の件数は全件パスの先頭でだけ更新される。
+func TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID, assetID := seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	w := &EncodeReconcileWorker{
+		Profiles:      encodeConfigWith("h265"),
+		Media:         pgstoretest.Media(pool),
+		Transfers:     pgstoretest.Media(pool),
+		StoragePolicy: policy,
+	}
+
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	if got := promtestutil.ToFloat64(metrics.EncodeBackpressure.WithLabelValues("edge")); got != 1 {
+		t.Fatalf("after full pass, backpressure gauge = %v, want 1", got)
+	}
+
+	moveOriginalToCentral(t, pool, assetID)
+	enqueuer := runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+	if got := promtestutil.ToFloat64(metrics.EncodeBackpressure.WithLabelValues("edge")); got != 0 {
+		t.Fatalf("after backlog cleared and targeted pass, backpressure gauge = %v, want 0", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageTransferBacklogAssets.WithLabelValues("edge")); got != 0 {
+		t.Fatalf("after backlog cleared and targeted pass, transfer backlog gauge = %v, want 0", got)
+	}
+	if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 1 {
+		t.Fatalf("encode jobs after release = %d, want 1", got)
+	}
+}
+
+// 候補の原本が上限の無い置き場にあり、止まっている置き場も無いパスは集計を問い合わせない。
+// 候補が上限付きの置き場にあるパスは、止めるかどうかを決めるために数える。
+func TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+
+	t.Run("original on an unlimited store is not counted", func(t *testing.T) {
+		recordingID, assetID := seedEdgeOriginal(t, pool)
+		moveOriginalToCentral(t, pool, assetID)
+		counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
+		enqueuer := runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+		if counting.calls != 0 {
+			t.Fatalf("backlog counts = %d, want 0", counting.calls)
+		}
+		if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 1 {
+			t.Fatalf("encode jobs = %d, want 1", got)
+		}
+	})
+
+	t.Run("original on a limited store is counted and stops the encode", func(t *testing.T) {
+		recordingID, _ := seedEdgeOriginal(t, pool)
+		counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
+		enqueuer := runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+		if counting.calls != 1 {
+			t.Fatalf("backlog counts = %d, want 1", counting.calls)
+		}
+		if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 0 {
+			t.Fatalf("encode jobs = %d, want 0", got)
+		}
+	})
+}
+
+// 止まり始めたときと解けたときだけ Warn / Info を出す。止まっている間は毎パス同じ Warn を出さない。
+func TestEncodeReconcile_BacklogLogsOnlyOnTransitions(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	_, assetID := seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: policy}
+	const stopMsg = `msg="encode_reconcile: transfer backlog reached the limit`
+	const resumeMsg = `msg="encode_reconcile: transfer backlog is below the limit`
+
+	for i := 0; i < 2; i++ {
+		runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	}
+	if got := strings.Count(logs.String(), stopMsg); got != 1 {
+		t.Fatalf("stop logs after two passes while blocked = %d, want 1\n%s", got, logs.String())
+	}
+
+	moveOriginalToCentral(t, pool, assetID)
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	if got := strings.Count(logs.String(), resumeMsg); got != 1 {
+		t.Fatalf("resume logs after release = %d, want 1\n%s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), stopMsg); got != 1 {
+		t.Fatalf("stop logs after release = %d, want still 1", got)
 	}
 }
 
