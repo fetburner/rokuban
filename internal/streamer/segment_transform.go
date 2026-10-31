@@ -111,18 +111,22 @@ type SegmentTransformInput struct {
 	// ffmpeg は終了コード 0 で ENDLIST を書くため）。
 	// 変換の進み（updateCurrentNumber）は、どちらの場合も映像だけで数える。
 	VideoDurationPTS int64
-	AudioStreamCount int
+	// VideoLastFramePTS は最後のフレームの開始時刻（原点からの 90 kHz tick）。VideoDurationPTS と同時に設定する。
+	// 最後のセグメント番号は、この値の属する格子で決まる。終端の格子に開始するフレームが無い短い行は作れないので載せない。
+	VideoLastFramePTS int64
+	AudioStreamCount  int
 	// HasSubtitles は captions 設定が有効な入力に WebVTT rendition があることを表す。
 	HasSubtitles bool
 }
 
-// finalSegmentNumber は、映像の長さ（tick）から最後のセグメント番号を返す。未確定は -1。
-func finalSegmentNumber(durationPTS int64, segmentSeconds int) int64 {
-	if durationPTS <= 0 || segmentSeconds < 1 {
+// finalSegmentNumber は、映像の長さと最後のフレームの開始時刻（tick）から最後のセグメント番号を返す。未確定は -1。
+// 最後のフレームの開始時刻が属する格子を最後とする。そこには必ずフレームが始まるので、変換は作れる。
+func finalSegmentNumber(durationPTS, lastFramePTS int64, segmentSeconds int) int64 {
+	if durationPTS <= 0 || lastFramePTS < 0 || lastFramePTS >= durationPTS || segmentSeconds < 1 {
 		return -1
 	}
 	segmentPTS := int64(segmentSeconds) * mpegTSTimestampClock
-	return (durationPTS+segmentPTS-1)/segmentPTS - 1
+	return lastFramePTS / segmentPTS
 }
 
 type segmentTransformTask struct {
@@ -310,7 +314,7 @@ func (m *SegmentManager) GetWithCacheStatus(ctx context.Context, key SegmentKey,
 	if !ok {
 		return nil, false, fmt.Errorf("unknown segment transform profile %q", key.Profile)
 	}
-	if final := finalSegmentNumber(input.VideoDurationPTS, profile.SegmentSeconds); final >= 0 && key.Number > final {
+	if final := finalSegmentNumber(input.VideoDurationPTS, input.VideoLastFramePTS, profile.SegmentSeconds); final >= 0 && key.Number > final {
 		return nil, false, fmt.Errorf("%w: segment %d, last segment %d", errSegmentBeyondEnd, key.Number, final)
 	}
 	for {
@@ -772,7 +776,7 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 	m.mu.Lock()
 	maxCacheNumber := task.maxRequested + int64(m.prefetchSegments)
 	m.mu.Unlock()
-	finalNumber := finalSegmentNumber(task.input.VideoDurationPTS, task.profile.SegmentSeconds)
+	finalNumber := finalSegmentNumber(task.input.VideoDurationPTS, task.input.VideoLastFramePTS, task.profile.SegmentSeconds)
 	videoLast := int64(-1)
 	if video := entries["video"]; len(video) > 0 {
 		videoLast = video[len(video)-1]

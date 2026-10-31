@@ -48,6 +48,13 @@ func withRecordingHLSTailWindows(t *testing.T, windows ...int64) {
 
 func measureTestFile(t *testing.T, ffprobe, path string) (int64, error) {
 	t.Helper()
+	duration, _, err := measureTestFileSpan(t, ffprobe, path)
+	return duration, err
+}
+
+// measureTestFileSpan は、製品の測り方で長さと最後のフレームの開始時刻を測る。
+func measureTestFileSpan(t *testing.T, ffprobe, path string) (int64, int64, error) {
+	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +179,7 @@ func TestMeasureRecordingHLSVideoDurationPipesOnlyTheTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	withRecordingHLSTailWindows(t, 4096)
-	if _, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, int64(len(content)), 0); err != nil {
+	if _, _, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, int64(len(content)), 0); err != nil {
 		t.Fatalf("measure: %v", err)
 	}
 	got, err := os.ReadFile(received)
@@ -205,7 +212,7 @@ func TestMeasureRecordingHLSVideoDurationWidensWhenTheWindowHasNoPacket(t *testi
 	}
 	defer func() { _ = file.Close() }()
 	withRecordingHLSTailWindows(t, 1024, 8192)
-	got, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, 16384, 0)
+	got, _, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, 16384, 0)
 	if err != nil || got != 93600 {
 		t.Fatalf("duration = (%d, %v), want (93600, nil) from the wider window", got, err)
 	}
@@ -228,7 +235,7 @@ func TestMeasureRecordingHLSVideoDurationStopsWithContext(t *testing.T) {
 	defer func() { _ = file.Close() }()
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := measureRecordingHLSVideoDuration(ctx, ffprobe, file, 5, 0); err == nil {
+	if _, _, err := measureRecordingHLSVideoDuration(ctx, ffprobe, file, 5, 0); err == nil {
 		t.Fatal("measure returned no error while ffprobe was still running")
 	}
 }
@@ -257,7 +264,7 @@ func TestMeasureRecordingHLSVideoDurationDoesNotShrinkWithBFrames(t *testing.T) 
 	var previous int64
 	steps := 0
 	for size := int64(96 << 10); size <= info.Size(); size += 1500 {
-		got, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, size, origin)
+		got, _, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, size, origin)
 		if err != nil {
 			t.Fatalf("size %d: %v", size, err)
 		}

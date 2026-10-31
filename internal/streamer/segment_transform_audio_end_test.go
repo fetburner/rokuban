@@ -36,6 +36,7 @@ func TestSegmentTransformAudioRenditionsEndAtTheVideoNumberWithRealFFmpeg(t *tes
 	input := testSegmentInput(path, originPTS)
 	input.Kind = store.RecordingHLSInputOriginal
 	input.VideoDurationPTS = duration
+	input.VideoLastFramePTS = duration - 1
 	audio := []string{"audio-standard", "audio-main", "audio-sub"}
 
 	for name, numbers := range map[string][]int64{
@@ -121,7 +122,7 @@ func TestSegmentTransformFinalIsDecidedPerRenditionOnlyForKnownLength(t *testing
 			group := segmentTransformGroup{"recording", "generation", "test", tc.kind}
 			task := &segmentTransformTask{
 				group: group, profile: LiveProfile{Name: "test", SegmentSeconds: 2},
-				input:   SegmentTransformInput{Kind: tc.kind, VideoDurationPTS: tc.duration},
+				input:   SegmentTransformInput{Kind: tc.kind, VideoDurationPTS: tc.duration, VideoLastFramePTS: tc.duration - 1},
 				workDir: workDir, requestStart: 2, startNumber: 2, currentNumber: 2, maxRequested: 4,
 			}
 			manager.tasks[group] = map[*segmentTransformTask]struct{}{task: {}}
@@ -149,7 +150,7 @@ func TestBuildSegmentTransformArgsTrimsAudioAtTheVideoEndOnlyForKnownLength(t *t
 	build := func(durationPTS int64, start int64) []string {
 		args, err := buildSegmentTransformArgs(
 			LiveConfig{FFmpeg: "ffmpeg", Profiles: []LiveProfile{profile}}, profile,
-			SegmentTransformInput{Path: "/dev/fd/3", OriginPTS: 900000, VideoDurationPTS: durationPTS, AudioStreamCount: 1},
+			SegmentTransformInput{Path: "/dev/fd/3", OriginPTS: 900000, VideoDurationPTS: durationPTS, VideoLastFramePTS: durationPTS - 1, AudioStreamCount: 1},
 			start, t.TempDir(),
 		)
 		if err != nil {
@@ -185,6 +186,7 @@ func TestSegmentTransformTruncatedInputDoesNotPublishSilentAudioWithRealFFmpeg(t
 	input := testSegmentInput(path, firstPacketPTS(t, ffprobe, path))
 	input.Kind = store.RecordingHLSInputOriginal
 	input.VideoDurationPTS = 20 * mpegTSTimestampClock
+	input.VideoLastFramePTS = 20*mpegTSTimestampClock - 1
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20)
 	defer closeSegmentManager(t, manager)
 	for _, rendition := range []string{"video", "audio-standard", "audio-main", "audio-sub"} {
@@ -241,7 +243,7 @@ func TestSegmentTransformCurrentNumberFollowsOnlyTheVideo(t *testing.T) {
 			group := segmentTransformGroup{"recording", "generation", "test", tc.kind}
 			task := &segmentTransformTask{
 				group: group, profile: LiveProfile{Name: "test", SegmentSeconds: 2},
-				input:   SegmentTransformInput{Kind: tc.kind, VideoDurationPTS: tc.duration},
+				input:   SegmentTransformInput{Kind: tc.kind, VideoDurationPTS: tc.duration, VideoLastFramePTS: tc.duration - 1},
 				workDir: workDir, requestStart: 2, startNumber: 2, currentNumber: 2, maxRequested: 2,
 			}
 			manager.tasks[group] = map[*segmentTransformTask]struct{}{task: {}}

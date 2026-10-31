@@ -32,12 +32,13 @@ var recordingHLSTailWindows = []int64{4 << 20, 32 << 20, 256 << 20}
 var errRecordingHLSNoVideoPacket = errors.New("recording HLS tail window has no video packet")
 
 // measureRecordingHLSVideoDuration は、ファイル末尾の映像パケットの最大の pts + duration から
-// 原点を引いた映像の長さ（90 kHz tick）を返す。temp と原本の両方がこの 1 つの定義を使う。
+// 原点を引いた映像の長さ（90 kHz tick）と、最大の pts から原点を引いた最後のフレームの開始時刻を返す。
+// temp と原本の両方がこの 1 つの定義を使う。
 //
 // 末尾の窓だけを ffprobe の標準入力に渡す。/dev/fd/N で fd を渡すと、Linux では通常ファイルを
 // 先頭から開き直すので、末尾だけを渡したことにならない。Go は TS を解釈しない。
 // stream の duration の推定には頼らない。
-func measureRecordingHLSVideoDuration(ctx context.Context, ffprobe string, file *os.File, size, originPTS int64) (int64, error) {
+func measureRecordingHLSVideoDuration(ctx context.Context, ffprobe string, file *os.File, size, originPTS int64) (durationPTS, lastFramePTS int64, err error) {
 	probeCtx, cancel := context.WithTimeout(ctx, recordingHLSProbeTimeout)
 	defer cancel()
 	ffprobe = ffargs.FFprobePath(ffprobe)
@@ -52,18 +53,18 @@ func measureRecordingHLSVideoDuration(ctx context.Context, ffprobe string, file 
 		output, err := cmd.Output()
 		if err != nil {
 			if probeCtx.Err() != nil {
-				return 0, probeCtx.Err()
+				return 0, 0, probeCtx.Err()
 			}
 			// 映像を含まない窓では、ffprobe がストリームを見つけられず失敗する。
 			// ファイル全体を渡しても失敗するなら、それは測定の失敗である。
 			lastErr = fmt.Errorf("probing the tail of recording HLS input: %w", err)
 			if offset == 0 {
-				return 0, lastErr
+				return 0, 0, lastErr
 			}
 			continue
 		}
-		if duration, ok := recordingHLSVideoDurationFromPackets(string(output), originPTS); ok {
-			return duration, nil
+		if duration, last, ok := recordingHLSVideoDurationFromPackets(string(output), originPTS); ok {
+			return duration, last, nil
 		}
 		lastErr = nil
 		if offset == 0 {
@@ -71,19 +72,20 @@ func measureRecordingHLSVideoDuration(ctx context.Context, ffprobe string, file 
 		}
 	}
 	if lastErr != nil {
-		return 0, fmt.Errorf("%w: %w", errRecordingHLSNoVideoPacket, lastErr)
+		return 0, 0, fmt.Errorf("%w: %w", errRecordingHLSNoVideoPacket, lastErr)
 	}
-	return 0, errRecordingHLSNoVideoPacket
+	return 0, 0, errRecordingHLSNoVideoPacket
 }
 
 // recordingHLSVideoDurationFromPackets は、ffprobe の compact 出力（1 行 1 パケットの
-// `pts=…|duration=…`）から、原点を 0 とした映像の末尾を返す。pts は 2^33 を法として原点からの
+// `pts=…|duration=…`）から、原点を 0 とした映像の末尾と、最後のフレームの開始時刻を返す。
+// 開始時刻は、録画の最後のセグメント番号を決めるのに使う。pts は 2^33 を法として原点からの
 // 差を取るので、窓が巻き戻りをまたいでも、巻き戻りの後ろだけの窓でも同じ長さになる。
 // pts の無いパケット（窓の先頭で欠けた PES など）は読み飛ばす。
 //
 // 窓だけを渡した ffprobe は duration を N/A で返すことがある（実測: 64 KiB の窓）。その場合は、
 // 重複を除いた pts の、隣り合う差の最小の正の値（フレーム間隔）を duration とする。
-func recordingHLSVideoDurationFromPackets(output string, originPTS int64) (int64, bool) {
+func recordingHLSVideoDurationFromPackets(output string, originPTS int64) (durationPTS, lastFramePTS int64, ok bool) {
 	type packet struct {
 		relative, duration int64
 		hasDuration        bool
@@ -116,7 +118,7 @@ func recordingHLSVideoDurationFromPackets(output string, originPTS int64) (int64
 		packets = append(packets, p)
 	}
 	if len(packets) == 0 {
-		return 0, false
+		return 0, 0, false
 	}
 	// 並べ替え（B フレーム）があると、最大の 2 つの差は 2〜3 フレームぶんになりうる。
 	// フレーム間隔は、重複を除いて並べた pts の、隣り合う差のうち最小の正の値とする。
@@ -132,12 +134,14 @@ func recordingHLSVideoDurationFromPackets(output string, originPTS int64) (int64
 		}
 	}
 	var end int64 = math.MinInt64
+	var last int64 = math.MinInt64
 	for _, p := range packets {
 		duration := p.duration
 		if !p.hasDuration {
 			duration = interval
 		}
 		end = max(end, p.relative+duration)
+		last = max(last, p.relative)
 	}
-	return end, end > 0
+	return end, last, end > 0
 }

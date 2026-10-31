@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -71,12 +70,14 @@ type recordingHLSKey struct {
 }
 
 // recordingHLSTiming は入力の先頭から決まる値と、観測した映像の長さを持つ。
-// videoDurationPTS は原本では確定した長さ、temp では観測した最大値（0 は未観測）である。
+// videoDurationPTS と videoLastFramePTS は原本では確定した値、temp では観測した最大値（0 は未観測）である。
+// videoLastFramePTS は最後のフレームの開始時刻で、最後のセグメント番号を決める。
 type recordingHLSTiming struct {
-	originPTS        int64
-	videoDurationPTS int64
-	audioStreamCount int
-	hasSubtitles     bool
+	originPTS         int64
+	videoDurationPTS  int64
+	videoLastFramePTS int64
+	audioStreamCount  int
+	hasSubtitles      bool
 }
 
 type recordingHLSMetadata struct {
@@ -294,6 +295,7 @@ func (h *RecordingHLS) Segment(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		input.VideoDurationPTS = request.metadata.timing.videoDurationPTS
+		input.VideoLastFramePTS = request.metadata.timing.videoLastFramePTS
 	}
 	if request.dbUnavailable {
 		input.OpenFile = func(context.Context) (*os.File, error) { return nil, errRecordingHLSDBUnavailable }
@@ -486,12 +488,11 @@ func (h *RecordingHLS) observeInput(ctx context.Context, key recordingHLSKey, ta
 			return recordingHLSMetadata{}, err
 		}
 	}
-	duration, err := measureRecordingHLSVideoDuration(ctx, h.cfg.FFprobe, file, info.Size(), timing.originPTS)
+	duration, lastFrame, err := measureRecordingHLSVideoDuration(ctx, h.cfg.FFprobe, file, info.Size(), timing.originPTS)
 	switch {
 	case err == nil:
-		if duration > timing.videoDurationPTS {
-			timing.videoDurationPTS = duration
-		}
+		timing.videoDurationPTS = max(timing.videoDurationPTS, duration)
+		timing.videoLastFramePTS = max(timing.videoLastFramePTS, lastFrame)
 	case key.kind == store.RecordingHLSInputTemp && errors.Is(err, errRecordingHLSNoVideoPacket):
 		// 末尾の窓を広げても映像パケットが無い。前回の値を使い、次のサイズ変化で測り直す。
 	case key.kind == store.RecordingHLSInputTemp:
@@ -739,21 +740,23 @@ func buildRecordingHLSRenditionPlaylist(metadata recordingHLSMetadata, profile L
 	if (!supportedSegmentRendition(rendition) || (rendition == "subtitles" && !metadata.hasSubtitles)) || profile.SegmentSeconds < 1 {
 		return nil, errors.New("invalid recording HLS rendition or segment duration")
 	}
-	last := finalSegmentNumber(metadata.timing.videoDurationPTS, profile.SegmentSeconds)
+	last := finalSegmentNumber(metadata.timing.videoDurationPTS, metadata.timing.videoLastFramePTS, profile.SegmentSeconds)
 	if last < 0 {
 		return nil, errors.New("recording HLS video duration is unavailable")
 	}
 	return buildRecordingHLSPlaylist(metadata, profile, rendition, last, true)
 }
 
-// buildRecordingHLSTempPlaylist は、観測した映像に全体が収まるセグメントだけを、全て D 秒で載せる。
-// 最後の短いセグメントと ENDLIST は載せない。原本へ切り替わる commit で足される。
+// buildRecordingHLSTempPlaylist は、次のフレームが始まったセグメントだけを、全て D 秒で載せる。
+// セグメント n は (n+1)·D ≤ 最後のフレームの開始時刻のときに載る。最後の番号は原本でも同じ判定で決まるので、
+// ここで載せた行は commit の後も非最後の D 秒行のままである。最後の短いセグメントと ENDLIST は載せない。
+// 原本へ切り替わる commit で足される。
 func buildRecordingHLSTempPlaylist(metadata recordingHLSMetadata, profile LiveProfile, rendition string) ([]byte, error) {
 	if (!supportedSegmentRendition(rendition) || (rendition == "subtitles" && !metadata.hasSubtitles)) || profile.SegmentSeconds < 1 {
 		return nil, errors.New("invalid recording HLS rendition or segment duration")
 	}
 	segmentPTS := int64(profile.SegmentSeconds) * mpegTSTimestampClock
-	last := metadata.timing.videoDurationPTS/segmentPTS - 1
+	last := metadata.timing.videoLastFramePTS/segmentPTS - 1
 	return buildRecordingHLSPlaylist(metadata, profile, rendition, last, false)
 }
 
@@ -764,8 +767,9 @@ func buildRecordingHLSPlaylist(metadata recordingHLSMetadata, profile LiveProfil
 	programDateTime := metadata.startedAt
 	for number := int64(0); number <= last; number++ {
 		segmentSeconds := float64(profile.SegmentSeconds)
-		if endlist {
-			segmentSeconds = math.Min(float64(profile.SegmentSeconds), remaining)
+		if endlist && number == last {
+			// 最後の行は最後のフレームの終わりまでの残り。D を最大 1 フレームほど超えうる。
+			segmentSeconds = remaining
 		}
 		if segmentSeconds <= 0 {
 			return nil, errors.New("recording HLS segment duration is not positive")
