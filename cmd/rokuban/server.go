@@ -942,6 +942,7 @@ func newStoreScopedDeps(ctx context.Context, pool *pgxpool.Pool, cfg *config.Con
 	scoped.EncodeProgress = mediaStore
 	scoped.MediaDelete = mediaStore
 	scoped.MediaPendingReclaim = mediaStore
+	scoped.StorageTransfer = mediaStore
 	scoped.TSScan = mediaStore
 	scoped.EncodeAttempts = mediaStore
 	scoped.StorageObservation = mediaStore

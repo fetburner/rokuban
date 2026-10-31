@@ -36,7 +36,7 @@ LIMIT $5
 `
 
 type ListMissingSeekTilesRecordingsParams struct {
-	OriginalStore    string
+	OriginalStore    *string
 	AfterRecordingID int64
 	RecordingID      *int64
 	DerivedStore     string
@@ -98,7 +98,7 @@ LIMIT $5
 `
 
 type ListMissingThumbnailRecordingsParams struct {
-	OriginalStore    string
+	OriginalStore    *string
 	AfterRecordingID int64
 	RecordingID      *int64
 	DerivedStore     string
@@ -231,7 +231,7 @@ LIMIT $2
 type ListThumbnailReselectCandidatesParams struct {
 	AfterRecordingID int64
 	RowLimit         int32
-	OriginalStore    string
+	OriginalStore    *string
 	DerivedStore     string
 	RecordingID      *int64
 }

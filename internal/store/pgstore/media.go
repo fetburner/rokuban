@@ -573,7 +573,7 @@ func (s *Media) ListMissingThumbnailRecordings(ctx context.Context, page store.M
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		OriginalStore:    s.originalStoreName(),
+		OriginalStore:    mediaStoreNameArg(s.originalStoreName()),
 		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {
@@ -588,7 +588,7 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		OriginalStore:    s.originalStoreName(),
+		OriginalStore:    mediaStoreNameArg(s.originalStoreName()),
 		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {
@@ -662,7 +662,7 @@ func (s *Media) ListMissingSeekTilesRecordings(ctx context.Context, page store.M
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		OriginalStore:    s.originalStoreName(),
+		OriginalStore:    mediaStoreNameArg(s.originalStoreName()),
 		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {

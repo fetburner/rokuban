@@ -161,7 +161,7 @@ type Deps struct {
 	MediaStoreName string
 	// PerStore は、マウントした FS 置き場ごとに束ねた Deps（置き場の名前から）。MediaDir・
 	// MediaStoreName と、置き場に束ねた store（MediaReconcile など）を置き場ごとに持つ。
-	// nil なら、この Deps 自身を MediaStoreName の唯一の置き場として扱う。
+	// 空なら置き場で修飾したワーカーは登録されず、その kind のジョブは置き場の不一致で失敗する。
 	// このトップレベルの store は置き場に束ねず、DB だけを触る reconcile が使う。
 	PerStore map[string]*Deps
 	// OriginalLocator は reconcile が読み取りジョブを積む置き場の選択に使う。置き場に束ねない。
@@ -226,12 +226,9 @@ type Deps struct {
 	Cleanup config.CleanupConfig
 }
 
-// perStore は置き場ごとの Deps を返す。PerStore が無ければ deps 自身を唯一の置き場とみなす。
+// perStore は置き場ごとの Deps を返す。空なら置き場で修飾したワーカーを 1 つも登録しない。
 func (deps *Deps) perStore() map[string]*Deps {
-	if len(deps.PerStore) > 0 {
-		return deps.PerStore
-	}
-	return map[string]*Deps{deps.MediaStoreName: deps}
+	return deps.PerStore
 }
 
 // NewWorkers は全 kind のワーカーを登録した jobq.Registry を返す。
