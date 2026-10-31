@@ -15,8 +15,10 @@
 #        takamatsu のキューに載せ、takamatsu の ScaledJob の Job（PVC takamatsu）が書いた
 #        コピーが active になり、SHA-256 が原本と一致する。転送の間は元の tokyo を消さない
 #   6.4  ingest の Job は両方の置き場を挿す（Pod テンプレート。ingest が録画を書くことは 6.8）
-#   6.5  **配信（実物）**: `/api/media/stores/<置き場>/recordings/<id>/file` が、コピーのある置き場で
-#        正しい中身を 200 で返し、無い置き場では 404 を返す
+#   6.5  **配信（実物・削除の前）**: `/api/media/stores/<置き場>/recordings/<id>/file` が、active な
+#        コピーのある置き場（overlap の内の OLD は両方）で正しい中身を 200 で返し、API の
+#        media.originalUrl が active な原本のコピーのある置き場を名指す。コピーの無い置き場は 404
+#        （`tokyo` の 404 は削除の後なので 6.7 が見る）
 #   6.6  置き場束縛の CronJob（catalog-export / delete-reconcile / storage-sync）が置き場ごとに 1 本ある（静的）
 #   6.7  **削除（実物）**: 転送先のコピーができ overlap を過ぎると、tokyo の旧コピーが deleted になり、
 #        tokyo の PVC からファイルが消える。転送先のコピーと、別録画の tokyo のコピーは残る
@@ -310,6 +312,13 @@ serve_status() {
     "http://rokuban-recording-hls-${1}:40773/api/media/stores/${1}/recordings/${2}/file" 2>/dev/null
 }
 
+# api_original_url <録画 id> → GET /api/recordings/<id> の media.originalUrl（無ければ空）。
+# 製品の API（openapi の RecordingMedia）を読む。URL は /api/media/stores/<置き場>/recordings/<id>/file の形。
+api_original_url() {
+  tb_curl -H 'Host: rokuban.local' "http://rokuban-api:40773/api/recordings/${1}" 2>/dev/null |
+    python3 -c 'import json, sys; print((json.load(sys.stdin).get("media") or {}).get("originalUrl", ""))' 2>/dev/null
+}
+
 # serve_body_sha <置き場> <録画 id> → 応答の本体の SHA-256（本体はパイプで渡す。bash の変数に載せない）
 serve_body_sha() {
   tb_curl -H 'Host: rokuban.local' \
@@ -382,6 +391,79 @@ if enc_seed="$(seed_original "$E2E_STORE_A" "$enc_rel" mpeg enc)"; then
   fi
 fi
 
+# ---- 6.3 転送（実物）---------------------------------------------------------
+#
+# 規則で desired が takamatsu になった OLD を、転送 reconcile が takamatsu のキューに載せる。
+# 見るもの:
+#   - takamatsu の ScaledJob が起こした Job（成功）が、takamatsu の PVC・root・`--stores takamatsu`
+#   - takamatsu に active のコピーができ、その中身の SHA-256 と SIZE が原本と一致
+#   - 転送の間（overlap の内）は tokyo のコピーが active のまま（転送の完了で元を消さない）
+#
+# 壊れ方と、それで失敗する場所:
+#   - desired の評価が違う（規則を読まない）→ takamatsu のコピーができない（タイムアウト）
+#   - 転送の書き先が tokyo → store_job_evidence が「別の置き場を向いた Job」で失敗
+#   - 中身が壊れる（コピーが途中で切れる・別の録画の中身）→ SHA-256 / SIZE が一致しない
+#   - 転送が元を先に消す → tokyo のコピーが active でなくなる
+#   - 正の対照: tokyo の原本の観測（store_file_state）が本物の SHA を返すこと。ここが壊れていれば
+#     後段の「中身が一致」は意味を持たない
+xfer_ok=0
+if [ "$setup_old_ok" != 1 ]; then
+  fail "6.3" "原本（OLD）の仕込みに失敗したので転送を測れない"
+else
+  problems=""
+  pos="$(store_file_state "$E2E_STORE_A" "$old_rel")" || pos=""
+  if [ "$pos" != "PRESENT SIZE=${old_size} SHA256=${old_sha}" ]; then
+    problems="${problems} 正の対照: tokyo の原本の観測が仕込んだ値と一致しない（'${pos}'）"
+  fi
+  sj_xfer="$(scaledjob_for_queue "transfer_${E2E_STORE_B}")"
+  if discovery_is_unusable "$sj_xfer" || [ -z "$sj_xfer" ]; then
+    problems="${problems} transfer_${E2E_STORE_B} の ScaledJob を一意に引けない（'${sj_xfer}'）"
+  fi
+  if ! tb_rokuban enqueue storage-transfer-reconcile >/dev/null 2>&1; then
+    problems="${problems} storage-transfer-reconcile を投入できない（CLI が無い版か）"
+  fi
+  copy_takamatsu_active() { [ "$(copy_state "$asset_old" "$E2E_STORE_B")" = "active" ]; }
+  if [ -z "$problems" ] && ! retry_until 1200 "takamatsu copy of asset ${asset_old} to become active" copy_takamatsu_active; then
+    # 転送ワーカーは転送元を「マウントした置き場」か「internal_url の置き場」からしか読めない。
+    # 滞留はあるのに転送先のコピー（pending を含む）が 1 件も予約されないなら、転送元が候補に無い
+    # （internal_url の未設定・到達不能）。その場合を名指しする。
+    xfer_backlog="$(river_backlog "transfer_${E2E_STORE_B}")"
+    xfer_state="$(copy_state "$asset_old" "$E2E_STORE_B")"
+    xfer_err="$(psql_q "SELECT left(coalesce(errors::text, ''), 300) FROM river_job WHERE queue = 'transfer_${E2E_STORE_B}' ORDER BY id DESC LIMIT 1" | head -1)"
+    # 転送の失敗理由は転送 Pod のログに出る（river のエラーには残らないことがある）。
+    # ワーカーの 'storage transfer: copy attempt failed' の最後の行を、転送 Job 全部のログから拾う。
+    xfer_log="$(for j in $(k get jobs -l "scaledjob.keda.sh/name=${sj_xfer}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        k logs "job/${j}" 2>/dev/null
+      done | grep 'copy attempt failed' | tail -1 | cut -c1-400)"
+    if [ "$xfer_backlog" != "0" ] && [ -z "$xfer_state" ]; then
+      problems="${problems} 転送ジョブが ${xfer_backlog} 件滞留しているのに、転送先（${E2E_STORE_B}）のコピーが 1 件も予約されていない（転送元 ${E2E_STORE_A} を読めていない: internal_url か転送元の判定を確認）。最後のジョブのエラー: '${xfer_err}'。転送 Pod の最後の失敗ログ: '${xfer_log:-なし}'"
+    else
+      problems="${problems} 転送先（${E2E_STORE_B}）のコピーが active にならない（tokyo=$(copy_state "$asset_old" "$E2E_STORE_A") ${E2E_STORE_B}='${xfer_state}' 滞留=${xfer_backlog}）。最後のジョブのエラー: '${xfer_err}'。転送 Pod の最後の失敗ログ: '${xfer_log:-なし}'"
+    fi
+  fi
+  if [ -z "$problems" ]; then
+    # コピーが active になっても、転送の Job は書き終えた直後にまだ active かもしれない（実機で、active の
+    # Job を一度見て FAIL にした）。Job が全部終わるまで待ってから、その Job の事実を見る。
+    wait_jobs_settled "$sj_xfer" 900 || problems="${problems} ${sj_xfer} の転送 Job が 900s で終わらない"
+    ev_xfer="$(store_job_evidence "$sj_xfer" "$E2E_STORE_B")" || problems="${problems} ${ev_xfer}"
+    new_rel="$(copy_rel "$asset_old" "$E2E_STORE_B")"
+    got="$(store_file_state "$E2E_STORE_B" "$new_rel")" || got=""
+    if [ "$got" != "PRESENT SIZE=${old_size} SHA256=${old_sha}" ]; then
+      problems="${problems} takamatsu のコピーの中身が原本と一致しない（'${got}'。期待 SIZE=${old_size} SHA256=${old_sha}）"
+    fi
+    src_state="$(copy_state "$asset_old" "$E2E_STORE_A")"
+    if [ "$src_state" != "active" ]; then
+      problems="${problems} overlap の内なのに tokyo のコピーが ${src_state} になった"
+    fi
+  fi
+  if [ -n "$problems" ]; then
+    fail "6.3" "転送が desired の置き場で動かない:${problems}"
+  else
+    xfer_ok=1
+    pass "6.3" "older_than の録画を転送 reconcile が takamatsu に載せ、takamatsu の Job（${ev_xfer}）がコピーを書き、中身が原本と一致（SIZE=${old_size}）。tokyo は overlap の内なので残る"
+  fi
+fi
+
 # ---- 6.4 ingest の Job は両方の置き場を挿す（Pod テンプレート）------------------
 #
 # 規則が選びうる置き場を全部マウントしていない ingest の Job は、その録画の取り込みだけが失敗する。
@@ -440,6 +522,56 @@ else
   pass "6.6" "catalog-export / delete-reconcile / storage-sync の CronJob が置き場ごとに 1 本ずつある"
 fi
 
+# ---- 6.5 配信（実物）---------------------------------------------------------
+#
+# Ingress の行き先（置き場ごとの Service）を直接叩き、API の media.originalUrl を読む。
+# **削除の前（転送の後・overlap の内）に見る。** この時点で OLD は両方の置き場に active なコピーがあるので、
+# tokyo が 200 を返すのは正しい。「tokyo が 404」は削除の後なので 6.7 が見る。見るもの:
+#   - OLD: takamatsu は 200 で中身の SHA-256 が原本と一致。tokyo も 200 でバイト数が原本と一致
+#   - OLD: GET /api/recordings/<id> の media.originalUrl が、active な原本のコピーのある置き場を名指す
+#   - ENC: tokyo は 200 でバイト数が原本と一致。takamatsu は 404（コピーが無い置き場）
+#
+# 壊れ方と、それで失敗する場所:
+#   - 配信が別の置き場の原本を返す（Service の取り違え）→ 期待の 200 / 404 が逆になって失敗
+#   - 配信が中身を読み違える（コピーの rel_path を取り違える）→ SHA-256 / バイト数が一致しない
+#   - 配信がコピーの無い置き場で 200 を返す（状態を見ない）→ 404 の期待で失敗
+#   - API の originalUrl が active なコピーの無い置き場を名指す → 下の store と copy_state の照合で失敗
+if [ "$setup_old_ok" != 1 ] && [ "$setup_enc_ok" != 1 ]; then
+  fail "6.5" "原本の仕込みに失敗したので配信を測れない"
+else
+  problems=""
+  if [ "$setup_old_ok" = 1 ]; then
+    o="$(serve_status "$E2E_STORE_B" "$rec_old")"
+    if [ "$o" != "200 ${old_size}" ]; then
+      problems="${problems} ${E2E_STORE_B} の録画 ${rec_old}: 期待 200 ${old_size}、実際 '${o}'"
+    elif [ "$(serve_body_sha "$E2E_STORE_B" "$rec_old")" != "$old_sha" ]; then
+      problems="${problems} ${E2E_STORE_B} の録画 ${rec_old}: 本体の SHA-256 が原本と違う"
+    fi
+    # overlap の内なので tokyo も active。両方が同じ中身を返す。
+    o="$(serve_status "$E2E_STORE_A" "$rec_old")"
+    [ "$o" = "200 ${old_size}" ] || problems="${problems} ${E2E_STORE_A}（overlap の内で active）の録画 ${rec_old}: 期待 200 ${old_size}、実際 '${o}'"
+    # API が名指す置き場は、active な原本のコピーを持つ置き場であること。
+    api_url="$(api_original_url "$rec_old")"
+    api_store="$(printf '%s' "$api_url" | sed -n 's#^/api/media/stores/\([^/]*\)/recordings/.*#\1#p')"
+    if [ -z "$api_store" ]; then
+      problems="${problems} GET /api/recordings/${rec_old} の media.originalUrl が置き場を名指さない（'${api_url}'）"
+    elif [ "$(copy_state "$asset_old" "$api_store")" != "active" ]; then
+      problems="${problems} media.originalUrl が名指す置き場 ${api_store} に active な原本のコピーが無い（'${api_url}'）"
+    fi
+  fi
+  if [ "$setup_enc_ok" = 1 ]; then
+    e="$(serve_status "$E2E_STORE_A" "$rec_enc")"
+    [ "$e" = "200 ${enc_size}" ] || problems="${problems} ${E2E_STORE_A} の録画 ${rec_enc}: 期待 200 ${enc_size}、実際 '${e}'"
+    e="$(serve_status "$E2E_STORE_B" "$rec_enc")"
+    [ "${e%% *}" = "404" ] || problems="${problems} ${E2E_STORE_B} はコピー無しで ${rec_enc} に ${e} を返した（期待 404）"
+  fi
+  if [ -n "$problems" ]; then
+    fail "6.5" "置き場ごとの配信が原本の置き場の中身を返さない（削除の前）:${problems}"
+  else
+    pass "6.5" "削除の前の配信: OLD は ${E2E_STORE_B} と ${E2E_STORE_A} の両方が 200 で中身が一致、API の originalUrl（${api_store:-なし}）は active なコピーの置き場。ENC は ${E2E_STORE_A} 200 + バイト数一致、${E2E_STORE_B} 404"
+  fi
+fi
+
 # ---- 6.2 encode / thumbnail（実物）------------------------------------------
 #
 # 原本のある置き場（tokyo）の「encode_tokyo」「thumbnail_tokyo」に 1 件ずつ積む。
@@ -496,11 +628,16 @@ else
     # active の Job を一度だけ見て FAIL にした）。上限は encode の長さに合わせて明示する。
     wait_jobs_settled "$sj_enc" 1800 || problems="${problems} ${sj_enc} の Job が 1800s で終わらない"
     wait_jobs_settled "$sj_thumb" 1200 || problems="${problems} ${sj_thumb} の Job が 1200s で終わらない"
-    # 派生物の集合は encode の後、thumbnail キューの seek_tiles で増える。期待の集合が揃うまで待つ。
+    # seek_tiles は定期の thumbnail_reconcile（cleanup キュー）だけが積む。周期の発火に頼ると、
+    # 同じ判定でも窓に入ったり入らなかったりする（実機で確かめた）。そこで判定から 1 回だけ投入する。
+    if ! tb_rokuban enqueue thumbnail-reconcile >/dev/null 2>&1; then
+      problems="${problems} thumbnail-reconcile を投入できない（seek_tiles を積めない）"
+    fi
+    # 派生物の集合が期待どおり揃うまで待つ（seek_tiles は reconcile の後に thumbnail キューへ積まれる）。
     derived_settled() { [ "$(derived_kinds "$rec_enc" "$E2E_DERIVED_STORE")" = "$E2E_EXPECTED_DERIVED" ]; }
-    retry_until 600 "derived set ${E2E_EXPECTED_DERIVED} on ${E2E_DERIVED_STORE}" derived_settled || true
-    # seek_tiles の Job は行の後に終わることがあるので、もう一度 settle を待つ。
-    wait_jobs_settled "$sj_thumb" 600 || problems="${problems} ${sj_thumb} の seek_tiles の Job が終わらない"
+    retry_until 900 "derived set ${E2E_EXPECTED_DERIVED} on ${E2E_DERIVED_STORE}" derived_settled || true
+    # 集合が揃ったあとも、seek_tiles の Job が active なら終わるまで待つ（途中の状態で判定しない）。
+    wait_jobs_settled "$sj_thumb" 900 || problems="${problems} ${sj_thumb} の seek_tiles の Job が終わらない"
     ev_enc="$(store_job_evidence "$sj_enc" "$E2E_STORE_A")" || problems="${problems} ${ev_enc}"
     ev_thumb="$(store_job_evidence "$sj_thumb" "$E2E_STORE_A")" || problems="${problems} ${ev_thumb}"
     derived="$(derived_kinds "$rec_enc" "$E2E_DERIVED_STORE")"
@@ -518,76 +655,6 @@ else
     else
       pass "6.2" "encode / thumbnail は原本の置き場（${E2E_STORE_A}）の Job が実行し（${ev_enc}; ${ev_thumb}）、派生物は ${E2E_DERIVED_STORE} に active で載る（${derived}）"
     fi
-  fi
-fi
-
-# ---- 6.3 転送（実物）---------------------------------------------------------
-#
-# 規則で desired が takamatsu になった OLD を、転送 reconcile が takamatsu のキューに載せる。
-# 見るもの:
-#   - takamatsu の ScaledJob が起こした Job（成功）が、takamatsu の PVC・root・`--stores takamatsu`
-#   - takamatsu に active のコピーができ、その中身の SHA-256 と SIZE が原本と一致
-#   - 転送の間（overlap の内）は tokyo のコピーが active のまま（転送の完了で元を消さない）
-#
-# 壊れ方と、それで失敗する場所:
-#   - desired の評価が違う（規則を読まない）→ takamatsu のコピーができない（タイムアウト）
-#   - 転送の書き先が tokyo → store_job_evidence が「別の置き場を向いた Job」で失敗
-#   - 中身が壊れる（コピーが途中で切れる・別の録画の中身）→ SHA-256 / SIZE が一致しない
-#   - 転送が元を先に消す → tokyo のコピーが active でなくなる
-#   - 正の対照: tokyo の原本の観測（store_file_state）が本物の SHA を返すこと。ここが壊れていれば
-#     後段の「中身が一致」は意味を持たない
-xfer_ok=0
-if [ "$setup_old_ok" != 1 ]; then
-  fail "6.3" "原本（OLD）の仕込みに失敗したので転送を測れない"
-else
-  problems=""
-  pos="$(store_file_state "$E2E_STORE_A" "$old_rel")" || pos=""
-  if [ "$pos" != "PRESENT SIZE=${old_size} SHA256=${old_sha}" ]; then
-    problems="${problems} 正の対照: tokyo の原本の観測が仕込んだ値と一致しない（'${pos}'）"
-  fi
-  sj_xfer="$(scaledjob_for_queue "transfer_${E2E_STORE_B}")"
-  if discovery_is_unusable "$sj_xfer" || [ -z "$sj_xfer" ]; then
-    problems="${problems} transfer_${E2E_STORE_B} の ScaledJob を一意に引けない（'${sj_xfer}'）"
-  fi
-  if ! tb_rokuban enqueue storage-transfer-reconcile >/dev/null 2>&1; then
-    problems="${problems} storage-transfer-reconcile を投入できない（CLI が無い版か）"
-  fi
-  copy_takamatsu_active() { [ "$(copy_state "$asset_old" "$E2E_STORE_B")" = "active" ]; }
-  if [ -z "$problems" ] && ! retry_until 1200 "takamatsu copy of asset ${asset_old} to become active" copy_takamatsu_active; then
-    # 転送ワーカーは転送元を「マウントした置き場」か「internal_url の置き場」からしか読めない。
-    # 滞留はあるのに転送先のコピー（pending を含む）が 1 件も予約されないなら、転送元が候補に無い
-    # （internal_url の未設定・到達不能）。その場合を名指しする。
-    xfer_backlog="$(river_backlog "transfer_${E2E_STORE_B}")"
-    xfer_state="$(copy_state "$asset_old" "$E2E_STORE_B")"
-    xfer_err="$(psql_q "SELECT left(coalesce(errors::text, ''), 300) FROM river_job WHERE queue = 'transfer_${E2E_STORE_B}' ORDER BY id DESC LIMIT 1" | head -1)"
-    # 転送の失敗理由は転送 Pod のログに出る（river のエラーには残らないことがある）。
-    # ワーカーの 'storage transfer: copy attempt failed' の最後の行を、転送 Job 全部のログから拾う。
-    xfer_log="$(for j in $(k get jobs -l "scaledjob.keda.sh/name=${sj_xfer}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-        k logs "job/${j}" 2>/dev/null
-      done | grep 'copy attempt failed' | tail -1 | cut -c1-400)"
-    if [ "$xfer_backlog" != "0" ] && [ -z "$xfer_state" ]; then
-      problems="${problems} 転送ジョブが ${xfer_backlog} 件滞留しているのに、転送先（${E2E_STORE_B}）のコピーが 1 件も予約されていない（転送元 ${E2E_STORE_A} を読めていない: internal_url か転送元の判定を確認）。最後のジョブのエラー: '${xfer_err}'。転送 Pod の最後の失敗ログ: '${xfer_log:-なし}'"
-    else
-      problems="${problems} 転送先（${E2E_STORE_B}）のコピーが active にならない（tokyo=$(copy_state "$asset_old" "$E2E_STORE_A") ${E2E_STORE_B}='${xfer_state}' 滞留=${xfer_backlog}）。最後のジョブのエラー: '${xfer_err}'。転送 Pod の最後の失敗ログ: '${xfer_log:-なし}'"
-    fi
-  fi
-  if [ -z "$problems" ]; then
-    ev_xfer="$(store_job_evidence "$sj_xfer" "$E2E_STORE_B")" || problems="${problems} ${ev_xfer}"
-    new_rel="$(copy_rel "$asset_old" "$E2E_STORE_B")"
-    got="$(store_file_state "$E2E_STORE_B" "$new_rel")" || got=""
-    if [ "$got" != "PRESENT SIZE=${old_size} SHA256=${old_sha}" ]; then
-      problems="${problems} takamatsu のコピーの中身が原本と一致しない（'${got}'。期待 SIZE=${old_size} SHA256=${old_sha}）"
-    fi
-    src_state="$(copy_state "$asset_old" "$E2E_STORE_A")"
-    if [ "$src_state" != "active" ]; then
-      problems="${problems} overlap の内なのに tokyo のコピーが ${src_state} になった"
-    fi
-  fi
-  if [ -n "$problems" ]; then
-    fail "6.3" "転送が desired の置き場で動かない:${problems}"
-  else
-    xfer_ok=1
-    pass "6.3" "older_than の録画を転送 reconcile が takamatsu に載せ、takamatsu の Job（${ev_xfer}）がコピーを書き、中身が原本と一致（SIZE=${old_size}）。tokyo は overlap の内なので残る"
   fi
 fi
 
@@ -632,6 +699,9 @@ else
     if [ "$gone" != "ABSENT" ]; then
       problems="${problems} tokyo の PVC に旧コピーが残っている（'${gone}'）"
     fi
+    # 削除の後、tokyo の配信は旧コピーを返さない（404）。削除の前は 200 だった（6.5）。
+    gone_serve="$(serve_status "$E2E_STORE_A" "$rec_old")"
+    [ "${gone_serve%% *}" = "404" ] || problems="${problems} 削除の後も tokyo が録画 ${rec_old} に ${gone_serve} を返す（期待 404）"
     kept="$(store_file_state "$E2E_STORE_B" "$(copy_rel "$asset_old" "$E2E_STORE_B")")" || kept=""
     if [ "$kept" != "PRESENT SIZE=${old_size} SHA256=${old_sha}" ]; then
       problems="${problems} 転送先（takamatsu）のコピーが残っていない、または中身が違う（'${kept}'）"
@@ -647,43 +717,6 @@ else
     fail "6.7" "旧コピーの削除が成立しない:${problems}"
   else
     pass "6.7" "overlap を過ぎた tokyo の旧コピーが deleted になり、PVC からファイルが消えた。takamatsu のコピーと別録画の tokyo のコピーは残った"
-  fi
-fi
-
-# ---- 6.5 配信（実物）---------------------------------------------------------
-#
-# Ingress の行き先（置き場ごとの Service）を直接叩く。見るもの:
-#   - OLD: takamatsu は 200 で中身の SHA-256 が原本と一致。tokyo は 404（旧コピーは deleted）
-#   - ENC: tokyo は 200 でバイト数が原本と一致。takamatsu は 404（コピーが無い置き場）
-#
-# 壊れ方と、それで失敗する場所:
-#   - 配信が別の置き場の原本を返す（Service の取り違え）→ 404 の側が 200 になって失敗
-#   - 配信が中身を読み違える（コピーの rel_path を取り違える）→ SHA-256 / バイト数が一致しない
-#   - 配信がコピーの無い置き場で 200 を返す（状態を見ない）→ 404 の期待で失敗
-if [ "$setup_old_ok" != 1 ] && [ "$setup_enc_ok" != 1 ]; then
-  fail "6.5" "原本の仕込みに失敗したので配信を測れない"
-else
-  problems=""
-  if [ "$setup_old_ok" = 1 ]; then
-    o="$(serve_status "$E2E_STORE_B" "$rec_old")"
-    if [ "$o" != "200 ${old_size}" ]; then
-      problems="${problems} ${E2E_STORE_B} の録画 ${rec_old}: 期待 200 ${old_size}、実際 '${o}'"
-    elif [ "$(serve_body_sha "$E2E_STORE_B" "$rec_old")" != "$old_sha" ]; then
-      problems="${problems} ${E2E_STORE_B} の録画 ${rec_old}: 本体の SHA-256 が原本と違う"
-    fi
-    o="$(serve_status "$E2E_STORE_A" "$rec_old")"
-    [ "${o%% *}" = "404" ] || problems="${problems} ${E2E_STORE_A} は旧コピー無しで ${rec_old} に ${o} を返した（期待 404）"
-  fi
-  if [ "$setup_enc_ok" = 1 ]; then
-    e="$(serve_status "$E2E_STORE_A" "$rec_enc")"
-    [ "$e" = "200 ${enc_size}" ] || problems="${problems} ${E2E_STORE_A} の録画 ${rec_enc}: 期待 200 ${enc_size}、実際 '${e}'"
-    e="$(serve_status "$E2E_STORE_B" "$rec_enc")"
-    [ "${e%% *}" = "404" ] || problems="${problems} ${E2E_STORE_B} はコピー無しで ${rec_enc} に ${e} を返した（期待 404）"
-  fi
-  if [ -n "$problems" ]; then
-    fail "6.5" "置き場ごとの配信が原本の置き場の中身を返さない:${problems}"
-  else
-    pass "6.5" "配信はコピーのある置き場の中身を返し（OLD: ${E2E_STORE_B} 200 + SHA-256 一致 / ENC: ${E2E_STORE_A} 200 + バイト数一致）、無い置き場は 404 を返す"
   fi
 fi
 
