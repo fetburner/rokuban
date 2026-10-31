@@ -547,10 +547,6 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	if logo.FrameRecordingId != id {
 		t.Errorf("frameRecordingId = %d, want the recording with an original (%d)", logo.FrameRecordingId, id)
 	}
-	// コマの URL は、その録画の原本のコピーがある置き場の URL で、API が返す（クライアントは組み立てない）。
-	if want := fmt.Sprintf("/api/media/stores/test-store/recordings/%d/frame", id); logo.FrameUrl == nil || *logo.FrameUrl != want {
-		t.Errorf("frameUrl = %v, want literal-shaped %q", logo.FrameUrl, want)
-	}
 
 	// DELETE で自動に戻る。枠が消え、コマを取り寄せる録画も消える（原本が無い局）。
 	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/area", nil)
@@ -578,8 +574,8 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	if logos[0].LogoArea != nil {
 		t.Errorf("logoArea = %#v, want none after DELETE", logos[0].LogoArea)
 	}
-	if logos[0].FrameRecordingId != 0 || logos[0].FrameUrl != nil {
-		t.Errorf("frameRecordingId/frameUrl = %d/%v, want 0/nil when no original is left", logos[0].FrameRecordingId, logos[0].FrameUrl)
+	if logos[0].FrameRecordingId != 0 {
+		t.Errorf("frameRecordingId = %d, want 0 when no original is left", logos[0].FrameRecordingId)
 	}
 }
 

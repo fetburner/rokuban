@@ -1278,7 +1278,7 @@ export const ListRecordingsResponseItem = zod.object({
   "endMs": zod.int()
 })).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
-})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
+})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
   "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),
@@ -1450,7 +1450,7 @@ export const ListContinueWatchingResponseItem = zod.object({
   "endMs": zod.int()
 })).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
-})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
+})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
   "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),
@@ -1559,7 +1559,7 @@ export const GetRecordingResponse = zod.object({
   "endMs": zod.int()
 })).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
-})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
+})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
   "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),
@@ -2002,7 +2002,6 @@ export const ListCMLogosResponseItem = zod.object({
   "previewPng": zod.string().optional(),
   "lastFailureStage": zod.string().nullish().describe('The stage of the most recent failure that still needs attention, if known.'),
   "frameRecordingId": zod.int().describe('Recording with an active original for frame selection, or 0.'),
-  "frameUrl": zod.string().optional().describe('`frameRecordingId` の原本のコマの切り出し URL（`/api/media/stores/{store}/recordings/{id}/frame`）。\nクライアントが `?at=<ms>` を足す。`frameRecordingId` が 0 のときは省略する。\n'),
   "logoArea": zod.object({
   "x": zod.int().min(listCMLogosResponseLogoAreaXMin),
   "y": zod.int().min(listCMLogosResponseLogoAreaYMin),
@@ -2312,7 +2311,7 @@ export const GetStorageResponseItem = zod.object({
   "usedBytes": zod.int().describe('root 予約領域を使用済み側に数えた使用量（total - free）。\n`observedAt` 時点のスナップショット。\n'),
   "availableBytes": zod.int().describe('非特権プロセスが実際に書き込める残量（statfs の Bavail）。\n「残高」として UI に出すべき数字はこちら。`observedAt` 時点の\nスナップショット。\n'),
   "observedAt": zod.iso.datetime({"offset":true}).describe('この行を最後に観測できた時刻。観測ループが止まっていても行は\n消えないため、この値の鮮度だけが異常の手がかりになる。\n')
-}).describe('1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の\n容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。\n')
+}).describe('1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の\n容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。\n置き場（`store`）ごとに root の数だけ行が並ぶ。同じ `store` と `root` の組は 1 行だけ。\n')
 export const GetStorageResponse = zod.array(GetStorageResponseItem)
 
 

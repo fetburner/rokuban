@@ -39,7 +39,6 @@ const logo = {
   // L-4 前の zod 契約でも検証できるように残す。L-4 後は未知フィールドとして無視される。
   lastError: longError,
   frameRecordingId: 7,
-  frameUrl: '/api/media/stores/takamatsu/recordings/7/frame',
 }
 
 // ブラウザが画像として認識できればよい 1x1 PNG。画像の画素数は coded size と分ける。
