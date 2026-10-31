@@ -983,3 +983,63 @@ VALUES ($1, 'always', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatalf("observation = %+v, want active at generation 1", got)
 	}
 }
+
+func TestDeletedCurrentGenerationCopyDoesNotExposeOldGenerationAsActiveOrPrunable(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	profile := "h264"
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = store.AssetKindEncoded
+		p.Profile = &profile
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("advancing logical generation: %v", err)
+	}
+	oldGenerationCreatedAt := time.Now().Add(-3 * time.Hour)
+	currentGenerationCreatedAt := time.Now().Add(-2 * time.Hour)
+	// Generation 0 is old after the logical asset advances to generation 1.
+	// dbtest.MediaAsset has already created its generation-zero copy.
+	if _, err := pool.Exec(ctx, `
+UPDATE media_asset_copies
+SET rel_path = 'encoded/h264.g0.old.mp4', created_at = $2
+WHERE media_asset_id = $1 AND generation = 0`, assetID, oldGenerationCreatedAt); err != nil {
+		t.Fatalf("aging old-generation copy: %v", err)
+	}
+	// Generation 1 is current even though the copy will become deleted.
+	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: "encoded/h264.g1.mp4", Generation: 1, State: "active",
+		CreatedAt: &currentGenerationCreatedAt,
+	}); err != nil {
+		t.Fatalf("seeding current-generation copy: %v", err)
+	}
+	currentCopyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
+	if _, err := sqlcgen.New(pool).SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
+		ID: currentCopyID, StoreName: dbtest.StoreName, ExpectedState: "active", State: "deleted",
+	}); err != nil {
+		t.Fatalf("deleting current-generation copy: %v", err)
+	}
+
+	media := NewMedia(pool, dbtest.StoreName, "")
+	state, err := media.GetEncodedPublishState(ctx, recordingID, profile, false, false)
+	if err != nil {
+		t.Fatalf("loading encoded publish state: %v", err)
+	}
+	if state.EncodedAsset == nil {
+		t.Fatal("encoded asset is missing from publish state")
+	}
+	if state.EncodedAsset.Active || state.EncodedAsset.DerivedGeneration != 1 {
+		t.Fatalf("encoded asset observation = %+v, want inactive at logical generation 1", state.EncodedAsset)
+	}
+
+	// The current generation has aged past the overlap cutoff, but its deleted
+	// copy cannot make the only remaining active copy eligible for deletion.
+	overlapCutoff := time.Now().Add(-time.Hour)
+	candidates, err := media.ListOldGenerationMediaAssetCopiesToDelete(ctx, overlapCutoff, 10)
+	if err != nil {
+		t.Fatalf("listing old-generation copies past overlap: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("old-generation deletion candidates = %+v, want none while the current copy is deleted", candidates)
+	}
+}
