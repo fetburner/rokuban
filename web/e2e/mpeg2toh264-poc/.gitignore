@@ -1,0 +1,6 @@
+dist/
+out/
+*.ts
+*.m2ts
+*.png
+build-cargo.log
