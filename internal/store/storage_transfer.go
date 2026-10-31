@@ -46,8 +46,44 @@ type TransferBandwidthLease interface {
 	Release(ctx context.Context) error
 }
 
+// TransferBacklogSnapshot は、ある置き場について encode reconcile が直近に保存した転送待ちの件数と、数え始めた時刻である。
+type TransferBacklogSnapshot struct {
+	Assets    int64
+	CountedAt time.Time
+}
+
+// TransferBacklogWrite は、RecordTransferBacklog の結果を置き場ごとに表す。
+type TransferBacklogWrite struct {
+	// Current は書き込み後に DB に残っている件数。自分の件数か、保存済みのより新しい件数のどちらか。
+	// 止めるかの判断は、ゲージと同じこの値で行う。
+	Current int64
+	// Applied は、この呼び出しの件数を書いたか。保存済みのほうが新しいときは false。
+	Applied bool
+	// HadPrevious は、Applied のとき、書き換える前の行があったか。
+	HadPrevious bool
+	// Previous は、HadPrevious のときの、書き換える前の件数。
+	Previous int64
+}
+
+// TransferBacklogReader は、encode reconcile が直近に数えた置き場ごとの転送待ちの件数を読む契約である。
+// 常駐プロセスの scrape と、毎回空から始まる worker の両方が使う。
+type TransferBacklogReader interface {
+	// ReadTransferBacklog は置き場ごとの直近の件数と時刻を返す。数えていない置き場は含まない。
+	ReadTransferBacklog(ctx context.Context) (map[string]TransferBacklogSnapshot, error)
+}
+
 // StorageTransfer は desired state と物理コピーの reconcile を永続化する契約である。
 type StorageTransfer interface {
+	TransferBacklogReader
+	// DatabaseClock は DB の時計の現在時刻を返す。RecordTransferBacklog の countedAt の出所は、
+	// プロセスごとに違う時計ではなく、この 1 つにする。
+	DatabaseClock(ctx context.Context) (time.Time, error)
+	// RecordTransferBacklog は、上限付きの置き場ごとの件数 counts を、数え始めた時刻 countedAt で 1 つのトランザクションに保存する。
+	// 保存済みの時刻より新しい置き場だけを書く。返り値は counts の置き場ごとに、書き込み後に DB に残っている件数と、
+	// 自分が書いたか、書いたなら書き換える前の状態を持つ。古い件数は捨てて、残っている新しい件数を返す。
+	// counts に無い置き場の行は消す。並行する呼び出しは直列になるので、前の状態は呼び出しごとに別の値になる。
+	// 呼び出し側は、前の状態と今の件数の比較で状態の変化を 1 度だけ検出できる。
+	RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (written map[string]TransferBacklogWrite, err error)
 	// ListMediaAssetTransferCandidates は active で desired store にコピーが無い資産を返す。
 	ListMediaAssetTransferCandidates(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit, limit int32) ([]MediaAssetTransferCandidate, error)
 	// CountMediaAssetTransferCandidates は現在の転送待ちの件数とバイト数を返す。

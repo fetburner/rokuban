@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -187,7 +188,9 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	if err != nil {
 		return fmt.Errorf("encode reconcile: %w", err)
 	}
-	blocked, err := w.backpressuredStores(ctx)
+	// 件数の集計は件数に比例して重いので、判断と表示に要るパスだけで数える（理由は backpressuredStores）。
+	limited := w.backlogLimitedStores()
+	blocked, err := w.backpressuredStores(ctx, limited, needsBacklogCount(recordingID == 0 && after == 0, missing, originalStores, limited))
 	if err != nil {
 		return fmt.Errorf("encode reconcile: checking transfer backpressure: %w", err)
 	}
@@ -286,40 +289,117 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	return nil
 }
 
-// backpressuredStores は、転送待ちが storage.transfer.backlog_limit に達していて encode を投入しない置き場を返す。
-// 上限を設定した置き場が無いとき、または Transfers が nil のときは、問い合わせずに nil を返す。
-// 置き場ごとの状態は EncodeBackpressure に出す。
-func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context) (map[string]bool, error) {
+// needsBacklogCount は、このパスで転送待ちの件数を数えるかを返す。
+// 全件パスの先頭（firstFullPage）か、投入候補のどれかの原本が上限付きの置き場にあるときに数える。
+func needsBacklogCount(firstFullPage bool, missing []store.MissingEncodeProfile, originalStores map[int64]string, limited []string) bool {
+	return firstFullPage || slices.ContainsFunc(missing, func(row store.MissingEncodeProfile) bool {
+		return slices.Contains(limited, originalStores[row.RecordingID])
+	})
+}
+
+// backlogLimitedStores は storage.transfer.backlog_limit を設定した置き場を名前順に返す。
+func (w *EncodeReconcileWorker) backlogLimitedStores() []string {
 	var limited []string
 	for name := range w.StoragePolicy.Transfer.BacklogLimit {
 		if w.StoragePolicy.TransferBacklogLimit(name) > 0 {
 			limited = append(limited, name)
 		}
 	}
-	if len(limited) == 0 || w.Transfers == nil {
+	slices.Sort(limited)
+	return limited
+}
+
+// backpressuredStores は、転送待ちが storage.transfer.backlog_limit に達していて encode を投入しない置き場を返す。
+//
+// 件数を数えるのは refresh のときと、止まっている置き場があるときだけ。呼び出し側は次のどれかで refresh を立てる:
+// 全件パスの先頭（ゲージの更新。全件パスは一定周期で走る）、候補の原本が上限付きの置き場にある
+// （止めるかどうかを今の件数で決める必要がある）。止まっている置き場があるかは、直近の件数を DB から読んで
+// 今の上限と比べて決める（解けたことを次のパスで見せる）。どちらでもないパスは数えず nil を返す。
+// 集計 1 回は資産数に比例して重く（計測: media_assets 2 万行で中央値約 2.1 秒、6 万行で約 6.6 秒）、
+// ingest ごとの targeted pass と継続ページの全てで数えると、その分だけ DB を占有するためである。
+//
+// 状態は DB の transfer_backlog_snapshots に置く。cleanup キューは ScaledJob の --once で 1 件ごとに
+// プロセスが終わるので、メモリに持つと毎回空から始まり、Warn が毎パス出て、止まっている間の数え直しも起きない。
+// 数えたときは、置き場ごとの件数を保存し、書き換える前の件数と今の件数から止まり始め・解けたときだけ
+// Warn / Info を出す。前の件数の読みと保存は 1 つのトランザクションで直列にしてあるので、並行する 2 パスでも
+// 変化を見るのは 1 つだけである。数え始めた時刻も保存し、保存済みより古い件数は捨てる。止める判断は
+// 書き込み後に DB に残った件数で行うので、捨てたときもゲージと同じ件数になる。捨てた置き場は Warn / Info を出さない。ゲージ（rokuban_storage_transfer_backlog_assets / rokuban_encode_backpressure）は、
+// 保存した件数を scrape のたびに metrics.TransferBacklogCollector が読んで出す。
+//
+// Transfers が nil のときは何もしない。上限を設定した置き場が無いときは、DB に触れない
+// （全件パスの先頭だけ、残っている行を消す）。
+func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited []string, refresh bool) (map[string]bool, error) {
+	if w.Transfers == nil {
 		return nil, nil
 	}
-	slices.Sort(limited)
+	if len(limited) == 0 {
+		// 上限の無い構成の targeted pass は DB に触らない。残った行の掃除は全件パスの先頭だけで行う。
+		if refresh {
+			if _, err := w.Transfers.RecordTransferBacklog(ctx, nil, time.Time{}); err != nil {
+				return nil, fmt.Errorf("clearing transfer backlog snapshots: %w", err)
+			}
+		}
+		return nil, nil
+	}
+	if !refresh {
+		saved, err := w.Transfers.ReadTransferBacklog(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("reading transfer backlog snapshots: %w", err)
+		}
+		if !slices.ContainsFunc(limited, func(name string) bool {
+			snap, ok := saved[name]
+			return ok && snap.Assets >= int64(w.StoragePolicy.TransferBacklogLimit(name))
+		}) {
+			return nil, nil
+		}
+	}
 	rules, err := w.StoragePolicy.OriginalRulesJSON()
 	if err != nil {
 		return nil, fmt.Errorf("building original rules: %w", err)
+	}
+	// 数え始めた時刻を保存する。並行する別のパスの、より新しい件数を古い件数で戻さないため。
+	// 出所は DB の時計に 1 つにする（Pod ごとの時計のずれが比較に入らないように）。clock_timestamp() を選ぶのは、
+	// now() がトランザクション開始時刻なのに対し、これが読んだ時点の時刻で「数え始める直前」に合うため。
+	countedAt, err := w.Transfers.DatabaseClock(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading database clock: %w", err)
 	}
 	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, w.StoragePolicy.FSStoreNames(), limited, w.StoragePolicy.Derived, storageTransferAttemptLimit)
 	if err != nil {
 		return nil, fmt.Errorf("counting transfer backlog by source store: %w", err)
 	}
+	// 件数の無い置き場は 0 件として保存する（行が無いと「数えていない」と区別できない）。
+	current := make(map[string]int64, len(limited))
+	for _, name := range limited {
+		current[name] = counts[name]
+	}
+	written, err := w.Transfers.RecordTransferBacklog(ctx, current, countedAt)
+	if err != nil {
+		return nil, fmt.Errorf("recording transfer backlog: %w", err)
+	}
 	blocked := make(map[string]bool)
 	for _, name := range limited {
 		limit := w.StoragePolicy.TransferBacklogLimit(name)
-		backlog := counts[name]
-		if backlog < int64(limit) {
-			metrics.EncodeBackpressure.WithLabelValues(name).Set(0)
+		write := written[name]
+		// 止める判断は、DB に残った件数で行う。保存済みのほうが新しいときは、ゲージと同じ新しい件数になる。
+		backlog := write.Current
+		stopped := backlog >= int64(limit)
+		if stopped {
+			blocked[name] = true
+		}
+		if !write.Applied {
+			// 状態の変化は、新しい件数を書いたパスが見る。
 			continue
 		}
-		blocked[name] = true
-		metrics.EncodeBackpressure.WithLabelValues(name).Set(1)
-		slog.Warn("encode_reconcile: transfer backlog reached the limit; not enqueuing encodes into this store",
-			"store", name, "backlog", backlog, "limit", limit)
+		wasStopped := write.HadPrevious && write.Previous >= int64(limit)
+		switch {
+		case stopped && !wasStopped:
+			slog.Warn("encode_reconcile: transfer backlog reached the limit; not enqueuing encodes into this store",
+				"store", name, "backlog", backlog, "limit", limit)
+		case !stopped && wasStopped:
+			slog.Info("encode_reconcile: transfer backlog is below the limit; enqueuing encodes into this store again",
+				"store", name, "backlog", backlog, "limit", limit)
+		}
 	}
 	return blocked, nil
 }

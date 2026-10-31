@@ -542,6 +542,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
+	metricCollectors = append(metricCollectors, newTransferBacklogCollector(pool, cfg.Storage))
 	tunerStore := pgstore.NewTuners(pool)
 	analysisStore := pgstore.NewAnalysis(pool, "")
 	recordingStore := pgstore.NewRecordings(pool, "")

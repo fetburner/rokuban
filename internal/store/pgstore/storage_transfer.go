@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 
@@ -457,4 +458,84 @@ func (s *Media) MarkMediaAssetCopyDeleted(ctx context.Context, candidate store.M
 		return false, err
 	}
 	return true, nil
+}
+
+// transferBacklogLockKey は transfer_backlog_snapshots の読み書きを直列にする advisory lock のキー。
+// internal/role の lockKey と同じ fnv64a を、"rokuban:" を前置した用途名に掛けて作る。
+// PostgreSQL の内部ハッシュ関数に頼らず、版をまたいで同じ値になる。
+var transferBacklogLockKey = func() int64 {
+	h := fnv.New64a()
+	h.Write([]byte("rokuban:transfer-backlog-snapshots"))
+	return int64(h.Sum64())
+}()
+
+// ReadTransferBacklog は encode reconcile が直近に数えた置き場ごとの転送待ちの件数と時刻を返す。
+func (s *Media) ReadTransferBacklog(ctx context.Context) (map[string]store.TransferBacklogSnapshot, error) {
+	rows, err := sqlcgen.New(s.pool).ListTransferBacklogSnapshots(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading transfer backlog snapshots: %w", err)
+	}
+	out := make(map[string]store.TransferBacklogSnapshot, len(rows))
+	for _, row := range rows {
+		out[row.Store] = store.TransferBacklogSnapshot{Assets: row.Assets, CountedAt: row.CountedAt}
+	}
+	return out, nil
+}
+
+// RecordTransferBacklog は置き場ごとの件数を、保存済みより新しい countedAt のときだけ保存する。
+// advisory lock で呼び出しを直列にするので、cleanup キューの並行する 2 つのパスのうち、
+// 状態を変えた書き込みを見るのは 1 つだけになる（TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce）。
+// 古い countedAt の書き込みは捨てる（TestRecordTransferBacklog_StaleCountDoesNotOverwrite）。
+func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (map[string]store.TransferBacklogWrite, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transfer backlog transaction: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	if err := q.LockTransferBacklogSnapshots(ctx, transferBacklogLockKey); err != nil {
+		return nil, fmt.Errorf("locking transfer backlog snapshots: %w", err)
+	}
+	rows, err := q.ListTransferBacklogSnapshots(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading previous transfer backlog snapshots: %w", err)
+	}
+	previous := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		previous[row.Store] = row.Assets
+	}
+	stores := make([]string, 0, len(counts))
+	for name := range counts {
+		stores = append(stores, name)
+	}
+	if err := q.DeleteTransferBacklogSnapshotsExcept(ctx, stores); err != nil {
+		return nil, fmt.Errorf("deleting transfer backlog snapshots of stores without a limit: %w", err)
+	}
+	written := make(map[string]store.TransferBacklogWrite, len(stores))
+	for _, name := range stores {
+		n, err := q.UpsertTransferBacklogSnapshot(ctx, sqlcgen.UpsertTransferBacklogSnapshotParams{Store: name, Assets: counts[name], CountedAt: countedAt})
+		if err != nil {
+			return nil, fmt.Errorf("upserting transfer backlog snapshot for store %q: %w", name, err)
+		}
+		before, had := previous[name]
+		if n == 0 {
+			// 保存済みのほうが新しい。残っている件数を返す（前の行が必ずある）。
+			written[name] = store.TransferBacklogWrite{Current: before}
+			continue
+		}
+		written[name] = store.TransferBacklogWrite{Current: counts[name], Applied: true, HadPrevious: had, Previous: before}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing transfer backlog snapshots: %w", err)
+	}
+	return written, nil
+}
+
+// DatabaseClock は DB の時計の現在時刻（clock_timestamp()）を返す。
+func (s *Media) DatabaseClock(ctx context.Context) (time.Time, error) {
+	now, err := sqlcgen.New(s.pool).DatabaseClockNow(ctx)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading database clock: %w", err)
+	}
+	return now, nil
 }

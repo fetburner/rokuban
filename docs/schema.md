@@ -14,7 +14,7 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 | §6 | 永続資産: `media_assets` / `media_asset_cuts` / `media_asset_thumbnail_seeks` | [schema/recordings/media-assets.md](schema/recordings/media-assets.md) |
 | §7 | observed: `record_sync` / `drop_stats` / `drop_positions` | [schema/record-sync.md](schema/record-sync.md) |
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
-| §9 §9.5 | 使い捨てキャッシュ: `epg_services` / `epg_programs` / `tuner_sync` | [schema/projections.md](schema/projections.md) |
+| §9 §9.5 §9.6 | 使い捨てキャッシュ: `epg_services` / `epg_programs` / `tuner_sync` / `transfer_backlog_snapshots` | [schema/projections.md](schema/projections.md) |
 | — | 永続資産: `rules` と条件の子テーブル 6 つ | [schema/rules.md](schema/rules.md) |
 | §10 | マイグレーションの権威の所在 | [schema/future.md](schema/future.md) |
 

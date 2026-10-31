@@ -554,6 +554,12 @@ type StorageSync struct {
 	Store string
 }
 
+type TransferBacklogSnapshot struct {
+	Store     string
+	Assets    int64
+	CountedAt time.Time
+}
+
 type TunerSync struct {
 	Site        string
 	TunerIndex  int32

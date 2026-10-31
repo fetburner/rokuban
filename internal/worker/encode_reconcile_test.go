@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -168,11 +171,381 @@ func TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore(t *testin
 					t.Fatalf("encode job store = %q, want edge", got)
 				}
 			}
-			if got := promtestutil.ToFloat64(metrics.EncodeBackpressure.WithLabelValues("edge")); got != tc.wantGate {
+			// 件数は上限の両側で同じ値（1）を出す。止める判断と表示が同じ件数を見ていることの確認。
+			gauges := scrapeBacklogGauges(t, pool, policy)
+			if got := gauges["rokuban_encode_backpressure"]; got != tc.wantGate {
 				t.Fatalf("backpressure gauge for edge = %v, want %v", got, tc.wantGate)
+			}
+			if got := gauges["rokuban_storage_transfer_backlog_assets"]; got != 1 {
+				t.Fatalf("transfer backlog gauge for edge = %v, want 1", got)
 			}
 		})
 	}
+}
+
+// countingTransfers は転送待ちの集計が呼ばれた回数を数える。問い合わせを省いたパスを確かめるために使う。
+type countingTransfers struct {
+	store.StorageTransfer
+	calls, reads, records int
+}
+
+func (c *countingTransfers) ReadTransferBacklog(ctx context.Context) (map[string]store.TransferBacklogSnapshot, error) {
+	c.reads++
+	return c.StorageTransfer.ReadTransferBacklog(ctx)
+}
+
+func (c *countingTransfers) RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (map[string]store.TransferBacklogWrite, error) {
+	c.records++
+	return c.StorageTransfer.RecordTransferBacklog(ctx, counts, countedAt)
+}
+
+func (c *countingTransfers) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (map[string]int64, error) {
+	c.calls++
+	return c.StorageTransfer.CountMediaAssetTransferBacklogBySourceStore(ctx, originalRules, fsStores, sourceStores, derivedStore, attemptLimit)
+}
+
+// seedEdgeOriginal は原本のコピーだけを edge に置いた録画を作る（desired は central なので edge の転送待ち）。
+func seedEdgeOriginal(t *testing.T, pool *pgxpool.Pool) (recordingID, assetID int64) {
+	t.Helper()
+	recordingID = dbtest.Recording(t, pool)
+	assetID = dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = "backlog/" + t.Name() + ".ts"
+		params.SizeBytes = 1
+	})
+	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("moving original copy to edge: %v", err)
+	}
+	seedEncodePolicy(t, pool, recordingID, []string{"h265"})
+	return recordingID, assetID
+}
+
+// 転送が済んで原本が central にだけ残った状態にする（転送待ちは 0 件になる）。
+func moveOriginalToCentral(t *testing.T, pool *pgxpool.Pool, assetID int64) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'central' WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("moving original copy to central: %v", err)
+	}
+}
+
+// scrapeBacklogGauges は、DB から取り直す collector を通して edge の 2 本のゲージを読む。
+// 系列が無い（まだ数えていない）ときは map に入らない。
+func scrapeBacklogGauges(t *testing.T, pool *pgxpool.Pool, policy config.StorageConfig) map[string]float64 {
+	t.Helper()
+	limits := make(map[string]int)
+	for name := range policy.Transfer.BacklogLimit {
+		limits[name] = policy.TransferBacklogLimit(name)
+	}
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(metrics.NewTransferBacklogCollector(pgstoretest.Media(pool), limits))
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gathering backlog gauges: %v", err)
+	}
+	out := make(map[string]float64)
+	for _, family := range families {
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "store" && label.GetValue() == "edge" {
+					out[family.GetName()] = metric.Gauge.GetValue()
+				}
+			}
+		}
+	}
+	return out
+}
+
+// 止まっている置き場は、次の targeted pass で件数を数え直し、解けたらゲージと投入の両方に出る。
+// パスごとに新しい worker を作る（ScaledJob の --once はパスごとにプロセスが新しくなる）。
+func TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID, assetID := seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	newWorker := func() *EncodeReconcileWorker {
+		return &EncodeReconcileWorker{
+			Profiles:      encodeConfigWith("h265"),
+			Media:         pgstoretest.Media(pool),
+			Transfers:     pgstoretest.Media(pool),
+			StoragePolicy: policy,
+		}
+	}
+
+	runEncodeReconcilePassArgs(t, newWorker(), EncodeReconcileArgs{})
+	gauges := scrapeBacklogGauges(t, pool, policy)
+	if gauges["rokuban_encode_backpressure"] != 1 || gauges["rokuban_storage_transfer_backlog_assets"] != 1 {
+		t.Fatalf("after full pass, gauges = %v, want backpressure 1 and backlog 1", gauges)
+	}
+
+	moveOriginalToCentral(t, pool, assetID)
+	enqueuer := runEncodeReconcilePassArgs(t, newWorker(), EncodeReconcileArgs{RecordingID: recordingID})
+	gauges = scrapeBacklogGauges(t, pool, policy)
+	if gauges["rokuban_encode_backpressure"] != 0 || gauges["rokuban_storage_transfer_backlog_assets"] != 0 {
+		t.Fatalf("after backlog cleared and targeted pass, gauges = %v, want backpressure 0 and backlog 0", gauges)
+	}
+	if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 1 {
+		t.Fatalf("encode jobs after release = %d, want 1", got)
+	}
+}
+
+// 設定から上限を外した置き場の行は、次のパスが消し、ゲージにも出ない。
+func TestEncodeReconcile_BacklogSnapshotDroppedWhenLimitRemoved(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	newWorker := func(p config.StorageConfig) *EncodeReconcileWorker {
+		return &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: p}
+	}
+	runEncodeReconcilePassArgs(t, newWorker(policy), EncodeReconcileArgs{})
+	if got, _ := pgstoretest.Media(pool).ReadTransferBacklog(t.Context()); got["edge"].Assets != 1 {
+		t.Fatalf("saved backlog = %v, want edge 1", got)
+	}
+
+	policy.Transfer.BacklogLimit = nil
+	runEncodeReconcilePassArgs(t, newWorker(policy), EncodeReconcileArgs{})
+	if got, _ := pgstoretest.Media(pool).ReadTransferBacklog(t.Context()); len(got) != 0 {
+		t.Fatalf("saved backlog after limit removed = %v, want none", got)
+	}
+}
+
+// 候補の原本が上限の無い置き場にあり、止まっている置き場も無いパスは集計を問い合わせない。
+// 候補が上限付きの置き場にあるパスは、止めるかどうかを決めるために数える。
+func TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+
+	t.Run("original on an unlimited store is not counted", func(t *testing.T) {
+		recordingID, assetID := seedEdgeOriginal(t, pool)
+		moveOriginalToCentral(t, pool, assetID)
+		counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
+		enqueuer := runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+		if counting.calls != 0 {
+			t.Fatalf("backlog counts = %d, want 0", counting.calls)
+		}
+		if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 1 {
+			t.Fatalf("encode jobs = %d, want 1", got)
+		}
+	})
+
+	t.Run("original on a limited store is counted and stops the encode", func(t *testing.T) {
+		recordingID, _ := seedEdgeOriginal(t, pool)
+		counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
+		enqueuer := runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+		if counting.calls != 1 {
+			t.Fatalf("backlog counts = %d, want 1", counting.calls)
+		}
+		if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 0 {
+			t.Fatalf("encode jobs = %d, want 0", got)
+		}
+	})
+}
+
+// 上限を設定していない構成の targeted pass は、DB の件数にも保存にも集計にも触らない。
+// 全件パスの先頭だけ、残った行の掃除のために保存を呼ぶ。
+func TestEncodeReconcile_NoLimitPassDoesNotTouchBacklogState(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID, _ := seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
+
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+	if counting.calls != 0 || counting.reads != 0 || counting.records != 0 {
+		t.Fatalf("targeted pass without limits: counts=%d reads=%d records=%d, want all 0", counting.calls, counting.reads, counting.records)
+	}
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	if counting.calls != 0 || counting.reads != 0 || counting.records != 1 {
+		t.Fatalf("full pass without limits: counts=%d reads=%d records=%d, want 0, 0, 1", counting.calls, counting.reads, counting.records)
+	}
+}
+
+// newerCountTransfers は、worker が数えて保存するまでの間に、別のパスがより新しい件数を保存した状況を作る。
+type newerCountTransfers struct {
+	store.StorageTransfer
+	newer map[string]int64
+}
+
+func (n *newerCountTransfers) RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (map[string]store.TransferBacklogWrite, error) {
+	if _, err := n.StorageTransfer.RecordTransferBacklog(ctx, n.newer, time.Now().Add(time.Minute)); err != nil {
+		return nil, err
+	}
+	return n.StorageTransfer.RecordTransferBacklog(ctx, counts, countedAt)
+}
+
+// 自分の件数が古くて捨てられたときは、DB に残った新しい件数で止める判断をし、Warn / Info は出さない。
+// 自分の数えた件数は 1（上限 2 の手前）だが、より新しい件数が 2（上限）なので、encode は投入しない。
+func TestEncodeReconcile_StaleCountDecidesByTheSavedCount(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	logs := captureSlog(t)
+	recordingID, _ := seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 2}
+	w := &EncodeReconcileWorker{
+		Profiles:      encodeConfigWith("h265"),
+		Media:         pgstoretest.Media(pool),
+		Transfers:     &newerCountTransfers{StorageTransfer: pgstoretest.Media(pool), newer: map[string]int64{"edge": 2}},
+		StoragePolicy: policy,
+	}
+	enqueuer := runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 0 {
+		t.Fatalf("encode jobs = %d, want 0 (the saved newer count stops the store)", got)
+	}
+	if gauges := scrapeBacklogGauges(t, pool, policy); gauges["rokuban_storage_transfer_backlog_assets"] != 2 || gauges["rokuban_encode_backpressure"] != 1 {
+		t.Fatalf("gauges = %v, want backlog 2 and backpressure 1", gauges)
+	}
+	// 新しい件数を書いたのは別のパスなので、この呼び出しは Warn も Info も出さない。
+	if strings.Contains(logs.String(), backlogStopMsg) || strings.Contains(logs.String(), backlogResumeMsg) {
+		t.Fatalf("stale pass logged a transition\n%s", logs.String())
+	}
+}
+
+// 保存した件数を失っても（導出表なので作り直せる）、次に数えたパスが作り直す。
+// 止まっていた置き場は Warn がもう 1 回出て、数えるまでその置き場の系列は出ない。
+func TestEncodeReconcile_LostSnapshotIsRebuiltAndWarnsAgain(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	logs := captureSlog(t)
+	seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	pass := func() {
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: policy}
+		runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	}
+	pass()
+	if _, err := pool.Exec(t.Context(), `DELETE FROM transfer_backlog_snapshots`); err != nil {
+		t.Fatalf("losing snapshots: %v", err)
+	}
+	if gauges := scrapeBacklogGauges(t, pool, policy); len(gauges) != 0 {
+		t.Fatalf("gauges after losing snapshots = %v, want none", gauges)
+	}
+	pass()
+	if got := strings.Count(logs.String(), backlogStopMsg); got != 2 {
+		t.Fatalf("stop logs after losing and rebuilding = %d, want 2\n%s", got, logs.String())
+	}
+	if gauges := scrapeBacklogGauges(t, pool, policy); gauges["rokuban_encode_backpressure"] != 1 {
+		t.Fatalf("gauges after rebuilding = %v, want backpressure 1", gauges)
+	}
+}
+
+// clockTransfers は DB の時計を固定値にし、保存に渡された countedAt を記録する。
+type clockTransfers struct {
+	store.StorageTransfer
+	clock    time.Time
+	recorded time.Time
+}
+
+func (c *clockTransfers) DatabaseClock(context.Context) (time.Time, error) { return c.clock, nil }
+
+func (c *clockTransfers) RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (map[string]store.TransferBacklogWrite, error) {
+	c.recorded = countedAt
+	return c.StorageTransfer.RecordTransferBacklog(ctx, counts, countedAt)
+}
+
+// 保存する countedAt は、プロセスの時計ではなく DB の時計から取った値になる。
+func TestEncodeReconcile_CountedAtComesFromTheDatabaseClock(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	clock := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	transfers := &clockTransfers{StorageTransfer: pgstoretest.Media(pool), clock: clock}
+	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: transfers, StoragePolicy: policy}
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	if !transfers.recorded.Equal(clock) {
+		t.Fatalf("recorded countedAt = %v, want the database clock %v", transfers.recorded, clock)
+	}
+}
+
+// 止まり始めたときと解けたときだけ Warn / Info を出す。止まっている間は毎パス同じ Warn を出さない。
+// パスごとに新しい worker を作る（ScaledJob の --once はパスごとにプロセスが新しくなる）。
+func TestEncodeReconcile_BacklogLogsOnlyOnTransitions(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	logs := captureSlog(t)
+	_, assetID := seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
+	pass := func() {
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: policy}
+		runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	}
+
+	pass()
+	pass()
+	if got := strings.Count(logs.String(), backlogStopMsg); got != 1 {
+		t.Fatalf("stop logs after two passes while blocked = %d, want 1\n%s", got, logs.String())
+	}
+
+	moveOriginalToCentral(t, pool, assetID)
+	pass()
+	if got := strings.Count(logs.String(), backlogResumeMsg); got != 1 {
+		t.Fatalf("resume logs after release = %d, want 1\n%s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), backlogStopMsg); got != 1 {
+		t.Fatalf("stop logs after release = %d, want still 1", got)
+	}
+	pass()
+	if got := strings.Count(logs.String(), backlogResumeMsg); got != 1 {
+		t.Fatalf("resume logs after a further pass = %d, want still 1", got)
+	}
+}
+
+const (
+	backlogStopMsg   = `msg="encode_reconcile: transfer backlog reached the limit`
+	backlogResumeMsg = `msg="encode_reconcile: transfer backlog is below the limit`
+)
+
+// captureSlog は slog の既定の出力をテストの間だけバッファへ向ける。
+func captureSlog(t *testing.T) *syncBuffer {
+	t.Helper()
+	logs := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return logs
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {

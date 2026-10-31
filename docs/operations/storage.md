@@ -260,7 +260,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 `storage.transfer.bandwidth` が絞るのは転送の読みだけである。ジョブキューに帯域の制御が無いので、アプリ内の reader で絞る。ライブ視聴、HLS、エッジの encode が S3 へ直接書く PUT は対象に入らない。転送ワーカーが S3 へ書く Put は、転送の帯域の上限の下で流れる。回線全体を守るなら、網の層で絞る。
 
-転送が遅れて転送待ちが溜まると、その置き場の原本を読む encode が止まる。その上限は `storage.transfer.backlog_limit` で置き場ごとに決める（[設定キー](../configuration/keys.md)）。止まっているかは `rokuban_encode_backpressure{store}` で見る（[監視](monitoring.md)）。
+転送が遅れて転送待ちが溜まると、その置き場の原本を読む encode が止まる。その上限は `storage.transfer.backlog_limit` で置き場ごとに決める（[設定キー](../configuration/keys.md)）。止まっているかは `rokuban_encode_backpressure{store}` で見る（[監視](monitoring-transfer.md)）。
 
 ### disaster recovery（catalog + rescue）
 

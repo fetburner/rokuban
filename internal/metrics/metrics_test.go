@@ -917,3 +917,40 @@ func gatherText(t *testing.T, c prometheus.Collector) string {
 	}
 	return sb.String()
 }
+
+// 転送待ちの 2 本のゲージは、保存した件数を scrape のたびに DB から読む。止まっているかは今の上限から導出し、
+// 上限の無い置き場と、まだ数えていない置き場は系列を出さない。
+func TestTransferBacklogCollector_ReadsSavedCounts(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	media := pgstoretest.Media(pool)
+	if _, err := media.RecordTransferBacklog(context.Background(), map[string]int64{"edge": 3, "other": 9}, time.Unix(1700000000, 0)); err != nil {
+		t.Fatalf("recording backlog: %v", err)
+	}
+	cases := []struct {
+		name        string
+		limit       int
+		wantStopped float64
+	}{
+		{name: "count reached the limit", limit: 3, wantStopped: 1},
+		{name: "count below the limit", limit: 4, wantStopped: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewTransferBacklogCollector(media, map[string]int{"edge": tc.limit, "uncounted": 1})
+			if got := labeledGaugeValue(t, c, "rokuban_storage_transfer_backlog_assets", map[string]string{"store": "edge"}); got != 3 {
+				t.Errorf("backlog = %v, want 3", got)
+			}
+			if got := labeledGaugeValue(t, c, "rokuban_storage_transfer_backlog_counted_timestamp_seconds", map[string]string{"store": "edge"}); got != 1700000000 {
+				t.Errorf("counted timestamp = %v, want 1700000000", got)
+			}
+			if got := labeledGaugeValue(t, c, "rokuban_encode_backpressure", map[string]string{"store": "edge"}); got != tc.wantStopped {
+				t.Errorf("backpressure = %v, want %v", got, tc.wantStopped)
+			}
+			for _, absent := range []string{"other", "uncounted"} {
+				if _, ok := labeledGaugeValueOk(t, c, "rokuban_storage_transfer_backlog_assets", map[string]string{"store": absent}); ok {
+					t.Errorf("store %q has a series, want none", absent)
+				}
+			}
+		})
+	}
+}
