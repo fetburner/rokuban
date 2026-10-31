@@ -232,7 +232,7 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	rules := mustOriginalRules(t, cfg)
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("PrepareMediaAssetTransfer = (%+v, %t, %v)", transfer, ok, err)
 	}

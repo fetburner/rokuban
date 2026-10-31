@@ -92,7 +92,9 @@ WITH asset AS MATERIALIZED (
     JOIN media_asset_copies source_copy ON source_copy.media_asset_id = asset.id
     JOIN media_assets source_asset ON source_asset.id = source_copy.media_asset_id
     WHERE source_copy.store <> sqlc.arg('target_store')
-      AND source_copy.store = ANY(sqlc.arg('fs_stores')::text[])
+      AND source_copy.store = ANY(sqlc.arg('source_stores')::text[])
+      -- 派生物の転送元は、この worker がマウントしている置き場に限る（HTTP で読む経路は原本だけ）。
+      AND (asset.kind = 'original' OR source_copy.store = ANY(sqlc.arg('fs_stores')::text[]))
       AND source_copy.state = 'active'
       AND source_copy.generation = COALESCE(source_asset.derived_generation, 0)
       AND NOT EXISTS (
@@ -107,7 +109,7 @@ WITH asset AS MATERIALIZED (
     WHERE asset.desired_store = sqlc.arg('target_store')
       AND storage_transfer_candidate(
           sqlc.arg('media_asset_id'), sqlc.arg('original_rules')::jsonb,
-          sqlc.arg('fs_stores')::text[], sqlc.arg('derived_store')::text
+          sqlc.arg('source_stores')::text[], sqlc.arg('derived_store')::text
       )
       AND storage_transfer_attempt_count(sqlc.arg('media_asset_id'), sqlc.arg('target_store')) < sqlc.arg('attempt_limit')
 ), upserted AS (

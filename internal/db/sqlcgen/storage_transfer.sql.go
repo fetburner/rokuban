@@ -815,6 +815,8 @@ WITH asset AS MATERIALIZED (
     JOIN media_assets source_asset ON source_asset.id = source_copy.media_asset_id
     WHERE source_copy.store <> $4
       AND source_copy.store = ANY($5::text[])
+      -- 派生物の転送元は、この worker がマウントしている置き場に限る（HTTP で読む経路は原本だけ）。
+      AND (asset.kind = 'original' OR source_copy.store = ANY($6::text[]))
       AND source_copy.state = 'active'
       AND source_copy.generation = COALESCE(source_asset.derived_generation, 0)
       AND NOT EXISTS (
@@ -831,7 +833,7 @@ WITH asset AS MATERIALIZED (
           $3, $1::jsonb,
           $5::text[], $2::text
       )
-      AND storage_transfer_attempt_count($3, $4) < $6
+      AND storage_transfer_attempt_count($3, $4) < $7
 ), upserted AS (
     INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
     SELECT asset.id, $4, source.rel_path, asset.generation, 'pending'
@@ -874,6 +876,7 @@ type PrepareMediaAssetTransferParams struct {
 	DerivedStore  string
 	MediaAssetID  int64
 	TargetStore   string
+	SourceStores  []string
 	FsStores      []string
 	AttemptLimit  interface{}
 }
@@ -901,6 +904,7 @@ func (q *Queries) PrepareMediaAssetTransfer(ctx context.Context, arg PrepareMedi
 		arg.DerivedStore,
 		arg.MediaAssetID,
 		arg.TargetStore,
+		arg.SourceStores,
 		arg.FsStores,
 		arg.AttemptLimit,
 	)
