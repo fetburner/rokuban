@@ -104,7 +104,7 @@ func prepareAdoptedTransferTemp(t *testing.T, media *pgstore.Media, cfg config.S
 	if owner == "" {
 		return ""
 	}
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
 	if err != nil || !ok {
 		t.Fatalf("preparing transfer whose destination is adopted = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -188,7 +188,7 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			}
 			media := pgstore.NewMedia(pool, "test-store", "")
 			if tc.resume {
-				transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10)
+				transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
 				if err != nil || !ok {
 					t.Fatalf("preparing checkpointed transfer = (%+v, %t, %v)", transfer, ok, err)
 				}
@@ -336,7 +336,7 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 			}
 			media := pgstore.NewMedia(pool, "test-store", "")
 			if tc.targetOwned {
-				transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+				transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
 				if err != nil || !ok {
 					t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 				}
@@ -442,7 +442,7 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	}
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "archive", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing abandoned copy = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -607,7 +607,7 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	transferConfig := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "archive", "")
 	transfer, ok, err := media.PrepareMediaAssetTransfer(
-		context.Background(), assetID, "archive", mustOriginalRules(t, transferConfig), transferConfig.FSStoreNames(), transferConfig.Derived, storageTransferAttemptLimit,
+		context.Background(), assetID, "archive", mustOriginalRules(t, transferConfig), transferConfig.FSStoreNames(), transferConfig.FSStoreNames(), transferConfig.FSStoreNames(), transferConfig.Derived, storageTransferAttemptLimit,
 	)
 	if err != nil || !ok {
 		t.Fatalf("preparing pending transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -689,7 +689,7 @@ func TestStorageTransferWorkerResumesKnownSHAPrefixWithoutReadingSourcePrefix(t 
 	}
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
 	if err != nil || !ok {
 		t.Fatalf("preparing checkpointed transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -904,7 +904,7 @@ VALUES ($1, 'archive', 'sites/default/transfer/source.ts', 0, 'deleting')`, asse
 	}
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	transfer, ok, err := pgstore.NewMedia(pool, "test-store", "").PrepareMediaAssetTransfer(
-		context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10,
+		context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10,
 	)
 	if err != nil || ok {
 		t.Fatalf("preparing while destination is deleting = (%+v, %t, %v), want no reservation", transfer, ok, err)
@@ -1305,7 +1305,7 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("attempted transfer"))
 	media := pgstore.NewMedia(pool, "test-store", "")
 	archiveConfig := transferTestConfig("archive", "archive", "test-store")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, archiveConfig), archiveConfig.FSStoreNames(), archiveConfig.Derived, storageTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, archiveConfig), archiveConfig.FSStoreNames(), archiveConfig.FSStoreNames(), archiveConfig.FSStoreNames(), archiveConfig.Derived, storageTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing failed transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -1407,7 +1407,7 @@ func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.
 			assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/pending.mp4", []byte("encoded"))
 			initialPolicy := transferTestConfig("archive", "archive", "test-store", "cold")
 			media := pgstore.NewMedia(pool, "archive", "")
-			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, initialPolicy), initialPolicy.FSStoreNames(), initialPolicy.Derived, storageTransferAttemptLimit)
+			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, initialPolicy), initialPolicy.FSStoreNames(), initialPolicy.FSStoreNames(), initialPolicy.FSStoreNames(), initialPolicy.Derived, storageTransferAttemptLimit)
 			if err != nil || !ok {
 				t.Fatalf("preparing pending copy = (%+v, %t, %v)", transfer, ok, err)
 			}
@@ -1434,7 +1434,7 @@ func TestStorageTransferPendingReclaimRechecksAfterRecordingRestore(t *testing.T
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/restored.mp4", []byte("encoded"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "archive", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing pending copy = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -1475,7 +1475,7 @@ func prepareUntilEncodedPendingOriginal(t *testing.T, pool *pgxpool.Pool, roots 
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "archive", "")
 	transfer, ok, err := media.PrepareMediaAssetTransfer(
-		context.Background(), originalID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit,
+		context.Background(), originalID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit,
 	)
 	if err != nil || !ok {
 		t.Fatalf("preparing pending original transfer = (%+v, %t, %v)", transfer, ok, err)

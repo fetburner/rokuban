@@ -142,7 +142,7 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 	if err != nil {
 		return err
 	}
-	return w.copyAsset(ctx, args, rules, fsStores, targetRoot)
+	return w.copyAsset(ctx, args, rules, fsStores, transferSourceStores(w.Config, fsStores), fsStores, targetRoot)
 }
 
 func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, error) {
@@ -165,18 +165,15 @@ func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, e
 	return mounted, nil
 }
 
-func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte, fsStores []string, targetRoot string) (retErr error) {
+func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte, fsStores, sourceStores, mountedStores []string, targetRoot string) (retErr error) {
 	transfer, ok, err := w.Storage.PrepareMediaAssetTransfer(
-		ctx, args.MediaAssetID, args.Store, rules, fsStores, w.Config.Derived, storageTransferAttemptLimit,
+		ctx, args.MediaAssetID, args.Store, rules, fsStores, sourceStores, mountedStores, w.Config.Derived, storageTransferAttemptLimit,
 	)
 	if err != nil || !ok {
 		return err
 	}
 	log := slog.With("media_asset_id", transfer.MediaAssetID, "source_store", transfer.SourceStore, "target_store", args.Store)
 	sourceRoot := w.Roots[transfer.SourceStore]
-	if transfer.Kind == store.AssetKindOriginal && sourceRoot == "" {
-		return jobq.Snooze(storageTransferLockSnooze)
-	}
 	lease, acquired, err := w.Storage.AcquireTransferSourceBandwidth(ctx, transfer.SourceStore)
 	if err != nil {
 		return fmt.Errorf("acquiring transfer source bandwidth lock: %w", err)
@@ -194,22 +191,19 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if transfer.Kind != store.AssetKindOriginal {
 		return w.copyDerivedAsset(ctx, transfer, args, rules, targetRoot, log)
 	}
-	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
+	src, err := w.originalTransferSource(transfer)
+	if err != nil {
 		return err
 	}
 	targetPath, err := mediapath.Resolve(targetRoot, transfer.RelPath)
 	if err != nil {
 		return fmt.Errorf("resolving transfer destination: %w", err)
 	}
-	var sourcePath string
-	if sourceRoot != "" {
-		sourcePath, err = mediapath.Resolve(sourceRoot, transfer.SourceRelPath)
-		if err != nil {
-			return fmt.Errorf("resolving transfer source: %w", err)
-		}
-	}
 	paths := []transferPathLock{{store: args.Store, root: targetRoot, relPath: transfer.RelPath}}
-	paths = append(paths, transferPathLock{store: transfer.SourceStore, root: sourceRoot, relPath: transfer.SourceRelPath})
+	// リモートの転送元には、ロックを取る先のローカル root が無い。ローカルの原本だけ rel_path lock を取る。
+	if sourceRoot != "" {
+		paths = append(paths, transferPathLock{store: transfer.SourceStore, root: sourceRoot, relPath: transfer.SourceRelPath})
+	}
 	locks, err := lockTransferPaths(ctx, paths)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -221,11 +215,13 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing storage transfer destination"); err != nil {
 		return err
 	}
-	if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
-		return err
+	if sourceRoot != "" {
+		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
+			return err
+		}
 	}
 
-	if handled, err := w.adoptExistingDestination(ctx, transfer, args, rules, targetPath, sourcePath, log); handled {
+	if handled, err := w.adoptExistingDestination(ctx, transfer, args, rules, targetPath, src, log); handled {
 		return err
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "creating transfer destination directory"); err != nil {
@@ -248,21 +244,21 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("setting transfer temp mode: %w", err))
 		}
 	}
-	digest, size, paused, copyErr := w.copyToTransferTemp(ctx, sourcePath, tempPath, tempLock, transfer.SourceStore, args.Store, transfer.SizeBytes, len(transfer.SHA256) > 0)
+	digest, size, paused, copyErr := w.copyToTransferTemp(ctx, src, tempPath, tempLock, transfer.SourceStore, args.Store, transfer.SizeBytes, len(transfer.SHA256) > 0)
 	if paused {
 		return nil
 	}
 	if errors.Is(copyErr, errTransferSourceMismatch) {
-		return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "transfer temp prefix differs from source")
+		return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, "transfer temp prefix differs from source")
 	}
 	if copyErr != nil {
 		return w.recordTransferFailure(ctx, transfer, log, copyErr)
 	}
 	if size != transfer.SizeBytes {
-		return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, fmt.Sprintf("source size %d differs from logical asset size %d", size, transfer.SizeBytes))
+		return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, fmt.Sprintf("source size %d differs from logical asset size %d", size, transfer.SizeBytes))
 	}
 	if len(transfer.SHA256) > 0 && !bytes.Equal(digest, transfer.SHA256) {
-		return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "transfer SHA-256 differs from logical asset")
+		return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, "transfer SHA-256 differs from logical asset")
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing storage transfer"); err != nil {
 		return err
@@ -273,7 +269,7 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if err := fsink.SyncParentDir(targetPath); err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("syncing transfer destination directory: %w", err))
 	}
-	return w.completeTransfer(ctx, transfer, args, rules, digest, sourcePath, targetPath, tempPath, true, log)
+	return w.completeTransfer(ctx, transfer, args, rules, digest, src, targetPath, tempPath, true, log)
 }
 
 // copyDerivedAsset transfers derived media through the object-store API. Temporary bytes live only in scratch;
@@ -338,7 +334,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		assetPath, stagedDigest, stagedSize, err := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
 		if err != nil {
 			if errors.Is(err, errTransferSourceMismatch) {
-				return w.handleTransferMismatch(ctx, transfer, log, "", "", "derived source differs from logical asset metadata")
+				return w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
 			}
 			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", err))
 		}
@@ -352,7 +348,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	mainCreated, err := putTransferredObject(ctx, targetStore, transfer.RelPath, openMain, size, digest, objectContentType(transfer.RelPath), mainOwned)
 	if err != nil {
 		if streamed != nil && streamed.sourceDiffers(size, err) {
-			return w.handleTransferMismatch(ctx, transfer, log, "", "", "derived source differs from logical asset metadata")
+			return w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
 		}
 		metrics.RecordObjectStoreError("put", err)
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
@@ -686,7 +682,7 @@ func transferTempPath(targetPath string, mediaAssetID, copyID int64) string {
 	return filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, mediaAssetID, copyID))
 }
 
-func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath, sourcePath string, log *slog.Logger) (bool, error) {
+func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath string, src transferSource, log *slog.Logger) (bool, error) {
 	_, statErr := os.Lstat(targetPath)
 	if errors.Is(statErr, os.ErrNotExist) {
 		return false, nil
@@ -710,37 +706,46 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 		return true, w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if size == transfer.SizeBytes && len(transfer.SHA256) > 0 && bytes.Equal(destinationSHA, transfer.SHA256) {
-		return true, w.completeTransfer(ctx, transfer, args, rules, destinationSHA, sourcePath, targetPath, ownedTempPath, false, log)
+		return true, w.completeTransfer(ctx, transfer, args, rules, destinationSHA, src, targetPath, ownedTempPath, false, log)
 	}
 	if size == transfer.SizeBytes && len(transfer.SHA256) == 0 {
-		sourceSHA, sourceSize, sourceErr := w.hashTransferSource(ctx, sourcePath, transfer.SourceStore)
+		// 論理資産の SHA-256 が未知でリモートの転送元なら、既存の宛先を照合できない。採用せず失敗として記録する。
+		// 通常の copy に進むと PublishLink が既存の宛先を拒むので、その経路にも落とさない。
+		if _, remote := src.(remoteTransferSource); remote {
+			return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf(
+				"destination %q already exists in store %q, the source is remote, and the logical asset has no SHA-256 (an old row), "+
+					"so the destination cannot be verified and was not adopted; either mount a store holding a copy of this asset so the transfer "+
+					"reads it locally and records the SHA-256, or, after checking that the file is stale, remove %q from store %q and retry",
+				transfer.RelPath, args.Store, transfer.RelPath, args.Store))
+		}
+		sourceSHA, sourceSize, sourceErr := w.hashTransferSource(ctx, src, transfer.SourceStore)
 		if sourceErr != nil {
 			return true, w.recordTransferFailure(ctx, transfer, log, sourceErr)
 		}
 		if sourceSize != transfer.SizeBytes {
-			return true, w.handleTransferMismatch(ctx, transfer, log, sourcePath, "", "source size differs from logical asset")
+			return true, w.handleTransferMismatch(ctx, transfer, log, src, "", "source size differs from logical asset")
 		}
 		if bytes.Equal(destinationSHA, sourceSHA) {
-			return true, w.completeTransfer(ctx, transfer, args, rules, sourceSHA, sourcePath, targetPath, ownedTempPath, false, log)
+			return true, w.completeTransfer(ctx, transfer, args, rules, sourceSHA, src, targetPath, ownedTempPath, false, log)
 		}
 	}
-	return true, w.handleTransferMismatch(ctx, transfer, log, sourcePath, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes))
+	return true, w.handleTransferMismatch(ctx, transfer, log, src, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes))
 }
 
-func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePath, tempPath string, tempLock *os.File, sourceStore, targetStore string, expectedSize int64, sourceSHAKnown bool) ([]byte, int64, bool, error) {
-	info, err := validateTransferSource(sourcePath, expectedSize)
+func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, src transferSource, tempPath string, tempLock *os.File, sourceStore, targetStore string, expectedSize int64, sourceSHAKnown bool) ([]byte, int64, bool, error) {
+	sourceSize, err := src.precheck()
 	if err != nil {
-		if errors.Is(err, errTransferSourceMismatch) {
-			return nil, info.Size(), false, err
-		}
 		return nil, 0, false, err
+	}
+	if sourceSize >= 0 && sourceSize != expectedSize {
+		return nil, sourceSize, false, errTransferSourceMismatch
 	}
 	if err := resetOversizedTransferTemp(tempPath, tempLock, expectedSize); err != nil {
 		return nil, 0, false, err
 	}
 	paused, err := verifyCheckpointedTransferTemp(ctx, tempPath, tempLock)
 	if paused || err != nil {
-		return nil, info.Size(), paused, err
+		return nil, 0, paused, err
 	}
 	hasher := sha256.New()
 	offset, replayComplete, err := replayTransferTemp(ctx, tempPath, tempLock, w.Roots[targetStore], targetStore, hasher)
@@ -753,16 +758,21 @@ func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePa
 	if !replayComplete || offset > expectedSize {
 		return nil, offset, false, fmt.Errorf("invalid transfer checkpoint offset %d for source size %d", offset, expectedSize)
 	}
-	source, err := os.Open(sourcePath)
+	// SHA-256 が既知なら、残りだけを offset から開く（先頭の読み直しが無い）。未知なら先頭から開いて接頭辞を照合する。
+	openAt := offset
+	if !sourceSHAKnown {
+		openAt = 0
+	}
+	reader, err := src.open(ctx, openAt)
 	if err != nil {
 		return nil, offset, false, fmt.Errorf("opening transfer source: %w", err)
 	}
-	defer func() { _ = source.Close() }()
-	sourceReader, err := w.transferSourceReader(ctx, sourceStore, source)
+	defer func() { _ = reader.Close() }()
+	sourceReader, err := w.transferSourceReader(ctx, sourceStore, reader)
 	if err != nil {
 		return nil, offset, false, err
 	}
-	paused, err = verifyTransferSourcePrefix(ctx, source, sourceReader, offset, sourceSHAKnown, hasher)
+	paused, err = verifyTransferSourcePrefix(ctx, sourceReader, offset, sourceSHAKnown, hasher)
 	if paused || err != nil {
 		return nil, offset, paused, err
 	}
@@ -777,20 +787,6 @@ func (w *StorageTransferWorker) copyToTransferTemp(ctx context.Context, sourcePa
 		return nil, written, false, err
 	}
 	return hasher.Sum(nil), written, false, nil
-}
-
-func validateTransferSource(sourcePath string, expectedSize int64) (os.FileInfo, error) {
-	info, err := os.Lstat(sourcePath)
-	if err != nil {
-		return nil, fmt.Errorf("stating transfer source: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("transfer source is not a regular file")
-	}
-	if info.Size() != expectedSize {
-		return info, errTransferSourceMismatch
-	}
-	return info, nil
 }
 
 func resetOversizedTransferTemp(tempPath string, tempLock *os.File, expectedSize int64) error {
@@ -852,14 +848,12 @@ func replayTransferTemp(ctx context.Context, tempPath string, tempLock *os.File,
 	})
 }
 
-func verifyTransferSourcePrefix(ctx context.Context, source *os.File, sourceReader io.Reader, offset int64, sourceSHAKnown bool, tempHasher hash.Hash) (bool, error) {
+func verifyTransferSourcePrefix(ctx context.Context, sourceReader io.Reader, offset int64, sourceSHAKnown bool, tempHasher hash.Hash) (bool, error) {
 	if offset == 0 {
 		return false, nil
 	}
 	if sourceSHAKnown {
-		if _, err := source.Seek(offset, io.SeekStart); err != nil {
-			return false, fmt.Errorf("seeking transfer source to checkpoint offset %d: %w", offset, err)
-		}
+		// 呼び出し側が offset から開いているので、ここでは読まない。
 		return false, nil
 	}
 	sourcePrefixHasher := sha256.New()
@@ -917,7 +911,7 @@ func writeFinalTransferCheckpoint(tempPath, targetStore string, written int64, h
 	return nil
 }
 
-func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, sourcePath, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
+func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, src transferSource, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
 	if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
 		return err
 	}
@@ -938,7 +932,7 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 					return fmt.Errorf("syncing transfer directory after SHA-256 rejection: %w", err)
 				}
 			}
-			return w.handleTransferMismatch(ctx, transfer, log, sourcePath, tempPath, "completion rejected a stale SHA-256")
+			return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, "completion rejected a stale SHA-256")
 		}
 		if createdCanonical {
 			if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing uncommitted transfer"); err != nil {
@@ -973,12 +967,12 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 	return nil
 }
 
-func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger, sourcePath, tempPath, reason string) error {
+func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger, src transferSource, tempPath, reason string) error {
 	var sourceSHA []byte
 	var sourceSize int64
 	var err error
 	if transfer.Kind == store.AssetKindOriginal {
-		sourceSHA, sourceSize, err = w.hashTransferSource(ctx, sourcePath, transfer.SourceStore)
+		sourceSHA, sourceSize, err = w.hashTransferSource(ctx, src, transfer.SourceStore)
 	} else {
 		objects := w.ObjectStores[transfer.SourceStore]
 		if objects == nil {
@@ -1153,34 +1147,28 @@ func (w *StorageTransferWorker) transferSourceReader(ctx context.Context, source
 	return reader, nil
 }
 
-func (w *StorageTransferWorker) hashTransferSource(ctx context.Context, path, sourceStore string) ([]byte, int64, error) {
-	info, err := os.Lstat(path)
+// hashTransferSource は転送元の全体を読んで SHA-256 とサイズを返す。ローカルはサイズが分かるので、読んでいる途中で変わったら失敗にする。
+func (w *StorageTransferWorker) hashTransferSource(ctx context.Context, src transferSource, sourceStore string) ([]byte, int64, error) {
+	knownSize, err := src.precheck()
 	if err != nil {
-		return nil, 0, fmt.Errorf("stating transfer source: %w", err)
+		return nil, 0, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, 0, errors.New("transfer source is not a regular file")
-	}
-	source, err := os.Open(path)
+	reader, err := src.open(ctx, 0)
 	if err != nil {
 		return nil, 0, fmt.Errorf("opening transfer source: %w", err)
 	}
-	reader, readerErr := w.transferSourceReader(ctx, sourceStore, source)
-	if readerErr != nil {
-		_ = source.Close()
-		return nil, 0, readerErr
+	defer func() { _ = reader.Close() }()
+	limited, err := w.transferSourceReader(ctx, sourceStore, reader)
+	if err != nil {
+		return nil, 0, err
 	}
 	hasher := sha256.New()
-	count, copyErr := io.Copy(hasher, reader)
-	closeErr := source.Close()
+	count, copyErr := io.Copy(hasher, limited)
 	if copyErr != nil {
 		return nil, count, fmt.Errorf("hashing transfer source: %w", copyErr)
 	}
-	if closeErr != nil {
-		return nil, count, fmt.Errorf("closing transfer source after hashing: %w", closeErr)
-	}
-	if count != info.Size() {
-		return nil, count, fmt.Errorf("transfer source changed while hashing: read=%d size=%d", count, info.Size())
+	if knownSize >= 0 && count != knownSize {
+		return nil, count, fmt.Errorf("transfer source changed while hashing: read=%d size=%d", count, knownSize)
 	}
 	return hasher.Sum(nil), count, nil
 }

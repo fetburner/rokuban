@@ -112,6 +112,12 @@ var enqueueJobs = map[string]enqueueJob{
 		RequiresSite: false,
 		NewArgs:      func(string) jobq.Args { return jobs.CMDetectReconcileArgs{} },
 	},
+	"storage-transfer-reconcile": {
+		// 置き場間の転送の投入は DB を読むだけの site 非依存パス。k8s（periodic_jobs: false）では
+		// この CronJob が唯一の投入口になる。載せないと、どの構成でも転送が一度も投入されない。
+		RequiresSite: false,
+		NewArgs:      func(string) jobq.Args { return jobs.StorageTransferReconcileArgs{} },
+	},
 	"storage-sync": {
 		// 置き場の root と scratch を statfs する置き場ごとの観測。delete_reconcile とは異なり
 		// 読み取り専用なので、手動 enqueue の対象から外す理由がない。

@@ -59,7 +59,9 @@ type StorageTransfer interface {
 	// AcquireTransferSourceBandwidth は転送元置き場ごとの advisory lock を取る。
 	AcquireTransferSourceBandwidth(ctx context.Context, sourceStore string) (lease TransferBandwidthLease, acquired bool, err error)
 	// PrepareMediaAssetTransfer は行をロックし、現在も desired な宛先コピーを pending にする。
-	PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, originalRules []byte, fsStores []string, derivedStore string, attemptLimit int32) (MediaAssetTransfer, bool, error)
+	// sourceStores は転送元にできる置き場（マウント済み ∪ internal_url を持つ置き場）、fsStores はマウント済みの FS 置き場。
+	// 派生物の転送元は fsStores に限る。mountedStores は、この worker がマウントしている置き場で、転送元の優先に使う。
+	PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, originalRules []byte, fsStores, sourceStores, mountedStores []string, derivedStore string, attemptLimit int32) (MediaAssetTransfer, bool, error)
 	// CompleteMediaAssetTransfer は SHA-256 を観測し、destination copy が active になったかを返す。
 	// 同じ copy を別 worker が先に active にした場合も active=true を返す。
 	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore, derivedStore string, originalRules, sha256 []byte) (active bool, rejection string, err error)
