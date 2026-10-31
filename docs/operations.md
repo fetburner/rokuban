@@ -10,6 +10,7 @@
 | §4 | ストレージ運用: 録画バッファのサイジング / アーカイブの速度要件 / disaster recovery（catalog + rescue） | [operations/storage.md](operations/storage.md) |
 | §5 | k8s 運用: ロールとキュー購読の関係 / キューの site 修飾と置き場所 / KEDA ScaledJob / CronJob による定期投入 / シングルトンロールのリーダー選出 / マニフェストの配布形式（kustomize）/ healthz と readyz | [operations/k8s.md](operations/k8s.md) |
 | §5 | streamer のスケール | [operations/k8s-streamer.md](operations/k8s-streamer.md) |
+| §1 | FS 置き場間の転送の監視: 転送待ちのゲージ / 背圧 / ログ / 対処 | [operations/monitoring-transfer.md](operations/monitoring-transfer.md) |
 
 読む順の目安は次の通り。
 

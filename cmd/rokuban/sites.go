@@ -198,6 +198,19 @@ func newConfiguredLoopPassCollectors(pool *pgxpool.Pool, registry []config.Mirak
 	return collectors
 }
 
+// newTransferBacklogCollector は storage.transfer.backlog_limit を設定した置き場の転送待ちを
+// 出す collector を作る。件数は DB から読むだけで、api を含むどのロールでも scrape できる
+// （設定だけを読み、mirakc にもファイルシステムにも触れない）。
+func newTransferBacklogCollector(pool *pgxpool.Pool, storage config.StorageConfig) prometheus.Collector {
+	limits := make(map[string]int)
+	for name := range storage.Transfer.BacklogLimit {
+		if limit := storage.TransferBacklogLimit(name); limit > 0 {
+			limits[name] = limit
+		}
+	}
+	return metrics.NewTransferBacklogCollector(pgstore.NewMediaWithStores(pool, "", "", ""), limits)
+}
+
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。
 // site 束縛ジョブを投入する `enqueue` の解決規則。
 //

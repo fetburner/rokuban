@@ -111,7 +111,9 @@
 
 `storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。件数が上限に達すると、encode reconcile はその置き場の原本を読む encode（キュー `encode_{store}`）を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
 
-件数の集計は資産数に比例して重いので、件数が要るパスだけで数える（[監視](../operations/monitoring-transfer.md)）。
+#### 転送待ちの集計
+
+件数の集計は資産数に比例して重い（計測: media_assets 2 万行で中央値約 2.1 秒、6 万行で約 6.6 秒）ので、件数が要るパスだけで数える（[監視](../operations/monitoring-transfer.md)）。
 
 `storage.transfer` は規則の指紋に含めない。帯域・転送待ちの上限・overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
@@ -162,6 +164,8 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 - 帯域の上限が転送元の置き場ごとに掛かり、上限の無い置き場は絞られないこと: `TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore`
 - 転送待ちが上限に達した置き場へ encode を積まないこと: `TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore`
 - 止まっている置き場の解除が次のパスで投入とゲージに出ること: `TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass`
+- 並行する 2 つ以上のパスでも Warn が 1 回であること: `TestEncodeReconcile_BacklogWarnOnceAcrossConcurrentPasses`
+- 上限を外した置き場の保存済みの件数が消えること: `TestEncodeReconcile_BacklogSnapshotDroppedWhenLimitRemoved`
 - 件数を数えないパスと数えるパスの区別: `TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount`
 - Warn / Info が状態の変化だけで出ること: `TestEncodeReconcile_BacklogLogsOnlyOnTransitions`
 
