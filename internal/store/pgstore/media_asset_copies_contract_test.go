@@ -993,27 +993,17 @@ func TestDeletedCurrentGenerationCopyDoesNotExposeOldGenerationAsActiveOrPrunabl
 		p.Kind = store.AssetKindEncoded
 		p.Profile = &profile
 	})
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID); err != nil {
-		t.Fatalf("advancing logical generation: %v", err)
-	}
-	oldGenerationCreatedAt := time.Now().Add(-3 * time.Hour)
-	currentGenerationCreatedAt := time.Now().Add(-2 * time.Hour)
-	// Generation 0 is old after the logical asset advances to generation 1.
-	// dbtest.MediaAsset has already created its generation-zero copy.
+	// dbtest.MediaAsset has already created the generation-zero copy. The helper
+	// advances the logical asset to generation 1 and adds its active copy.
+	currentCopyID := dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, "encoded/h264.g1.mp4", 1)
+	// Age both copies: generation 1 must be older than the overlap cutoff used
+	// below, and generation 0 must be older than generation 1.
 	if _, err := pool.Exec(ctx, `
 UPDATE media_asset_copies
-SET rel_path = 'encoded/h264.g0.old.mp4', created_at = $2
-WHERE media_asset_id = $1 AND generation = 0`, assetID, oldGenerationCreatedAt); err != nil {
-		t.Fatalf("aging old-generation copy: %v", err)
+SET created_at = CASE generation WHEN 0 THEN $2::timestamptz ELSE $3::timestamptz END
+WHERE media_asset_id = $1`, assetID, time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("aging copies: %v", err)
 	}
-	// Generation 1 is current even though the copy will become deleted.
-	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: "encoded/h264.g1.mp4", Generation: 1, State: "active",
-		CreatedAt: &currentGenerationCreatedAt,
-	}); err != nil {
-		t.Fatalf("seeding current-generation copy: %v", err)
-	}
-	currentCopyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
 	if _, err := sqlcgen.New(pool).SetMediaAssetCopyState(ctx, sqlcgen.SetMediaAssetCopyStateParams{
 		ID: currentCopyID, StoreName: dbtest.StoreName, ExpectedState: "active", State: "deleted",
 	}); err != nil {
