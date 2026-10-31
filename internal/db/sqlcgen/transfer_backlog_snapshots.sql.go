@@ -48,13 +48,13 @@ func (q *Queries) ListTransferBacklogSnapshots(ctx context.Context) ([]TransferB
 
 const lockTransferBacklogSnapshots = `-- name: LockTransferBacklogSnapshots :exec
 
-SELECT pg_advisory_xact_lock(hashtextextended('transfer_backlog_snapshots', 0))
+SELECT pg_advisory_xact_lock($1::bigint)
 `
 
 // 書き手は encode reconcile だけ。表の意味は migration のコメントにある。
 // 並行する 2 つのパスが「前の値」を同じ値として読まないよう、読み書きを直列にする。
-func (q *Queries) LockTransferBacklogSnapshots(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, lockTransferBacklogSnapshots)
+func (q *Queries) LockTransferBacklogSnapshots(ctx context.Context, lockKey int64) error {
+	_, err := q.db.Exec(ctx, lockTransferBacklogSnapshots, lockKey)
 	return err
 }
 

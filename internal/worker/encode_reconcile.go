@@ -322,8 +322,8 @@ func (w *EncodeReconcileWorker) backlogLimitedStores() []string {
 // プロセスが終わるので、メモリに持つと毎回空から始まり、Warn が毎パス出て、止まっている間の数え直しも起きない。
 // 数えたときは、置き場ごとの件数を保存し、書き換える前の件数と今の件数から止まり始め・解けたときだけ
 // Warn / Info を出す。前の件数の読みと保存は 1 つのトランザクションで直列にしてあるので、並行する 2 パスでも
-// 変化を見るのは 1 つだけである。数え始めた時刻も保存し、保存済みより古い件数は捨てる。捨てた置き場は
-// Warn / Info を出さない。ゲージ（rokuban_storage_transfer_backlog_assets / rokuban_encode_backpressure）は、
+// 変化を見るのは 1 つだけである。数え始めた時刻も保存し、保存済みより古い件数は捨てる。止める判断は
+// 書き込み後に DB に残った件数で行うので、捨てたときもゲージと同じ件数になる。捨てた置き場は Warn / Info を出さない。ゲージ（rokuban_storage_transfer_backlog_assets / rokuban_encode_backpressure）は、
 // 保存した件数を scrape のたびに metrics.TransferBacklogCollector が読んで出す。
 //
 // Transfers が nil のときは何もしない。上限を設定した置き場が無いときは、DB に触れない
@@ -375,14 +375,15 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 	blocked := make(map[string]bool)
 	for _, name := range limited {
 		limit := w.StoragePolicy.TransferBacklogLimit(name)
-		backlog := current[name]
+		write := written[name]
+		// 止める判断は、DB に残った件数で行う。保存済みのほうが新しいときは、ゲージと同じ新しい件数になる。
+		backlog := write.Current
 		stopped := backlog >= int64(limit)
 		if stopped {
 			blocked[name] = true
 		}
-		write, ok := written[name]
-		if !ok {
-			// 保存済みのほうが新しいので、この件数は捨てられた。状態の変化は新しい件数を書いたパスが見る。
+		if !write.Applied {
+			// 状態の変化は、新しい件数を書いたパスが見る。
 			continue
 		}
 		wasStopped := write.HadPrevious && write.Previous >= int64(limit)

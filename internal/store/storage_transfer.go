@@ -52,11 +52,16 @@ type TransferBacklogSnapshot struct {
 	CountedAt time.Time
 }
 
-// TransferBacklogWrite は、保存を行った置き場について、書き換える前の状態を表す。
+// TransferBacklogWrite は、RecordTransferBacklog の結果を置き場ごとに表す。
 type TransferBacklogWrite struct {
-	// HadPrevious は、書き換える前の行があったか。
+	// Current は書き込み後に DB に残っている件数。自分の件数か、保存済みのより新しい件数のどちらか。
+	// 止めるかの判断は、ゲージと同じこの値で行う。
+	Current int64
+	// Applied は、この呼び出しの件数を書いたか。保存済みのほうが新しいときは false。
+	Applied bool
+	// HadPrevious は、Applied のとき、書き換える前の行があったか。
 	HadPrevious bool
-	// Previous は、書き換える前の件数。HadPrevious が false のときは 0。
+	// Previous は、HadPrevious のときの、書き換える前の件数。
 	Previous int64
 }
 
@@ -71,7 +76,8 @@ type TransferBacklogReader interface {
 type StorageTransfer interface {
 	TransferBacklogReader
 	// RecordTransferBacklog は、上限付きの置き場ごとの件数 counts を、数え始めた時刻 countedAt で 1 つのトランザクションに保存する。
-	// 保存済みの時刻より新しい置き場だけを書き、書いた置き場について書き換える前の状態を返す（古い件数は捨てて、返り値に含めない）。
+	// 保存済みの時刻より新しい置き場だけを書く。返り値は counts の置き場ごとに、書き込み後に DB に残っている件数と、
+	// 自分が書いたか、書いたなら書き換える前の状態を持つ。古い件数は捨てて、残っている新しい件数を返す。
 	// counts に無い置き場の行は消す。並行する呼び出しは直列になるので、前の状態は呼び出しごとに別の値になる。
 	// 呼び出し側は、前の状態と今の件数の比較で状態の変化を 1 度だけ検出できる。
 	RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (written map[string]TransferBacklogWrite, err error)

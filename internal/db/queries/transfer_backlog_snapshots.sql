@@ -2,7 +2,7 @@
 
 -- name: LockTransferBacklogSnapshots :exec
 -- 並行する 2 つのパスが「前の値」を同じ値として読まないよう、読み書きを直列にする。
-SELECT pg_advisory_xact_lock(hashtextextended('transfer_backlog_snapshots', 0));
+SELECT pg_advisory_xact_lock(sqlc.arg('lock_key')::bigint);
 
 -- name: ListTransferBacklogSnapshots :many
 SELECT store, assets, counted_at

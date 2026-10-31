@@ -18,11 +18,11 @@ func TestRecordTransferBacklog_ReturnsPreviousAndDropsOthers(t *testing.T) {
 	ctx := t.Context()
 
 	w, err := m.RecordTransferBacklog(ctx, map[string]int64{"edge": 3, "gone": 1}, backlogBase)
-	if err != nil || len(w) != 2 || w["edge"].HadPrevious || w["gone"].HadPrevious {
+	if err != nil || len(w) != 2 || !w["edge"].Applied || w["edge"].HadPrevious || w["edge"].Current != 3 || w["gone"].HadPrevious {
 		t.Fatalf("first record = %v, %v; want two writes without previous", w, err)
 	}
 	w, err = m.RecordTransferBacklog(ctx, map[string]int64{"edge": 5}, backlogBase.Add(time.Second))
-	if err != nil || len(w) != 1 || !w["edge"].HadPrevious || w["edge"].Previous != 3 {
+	if err != nil || len(w) != 1 || !w["edge"].Applied || !w["edge"].HadPrevious || w["edge"].Previous != 3 || w["edge"].Current != 5 {
 		t.Fatalf("second record = %v, %v; want only edge with previous 3", w, err)
 	}
 	got, err := m.ReadTransferBacklog(ctx)
@@ -31,7 +31,7 @@ func TestRecordTransferBacklog_ReturnsPreviousAndDropsOthers(t *testing.T) {
 	}
 }
 
-// 古い counted_at の保存は、新しい件数を上書きせず、書いたとも返さない。
+// 古い counted_at の保存は、新しい件数を上書きせず、書いていないと返し、DB に残っている新しい件数を返す。
 func TestRecordTransferBacklog_StaleCountDoesNotOverwrite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	m := NewMediaWithStores(pool, "", "", "")
@@ -41,8 +41,8 @@ func TestRecordTransferBacklog_StaleCountDoesNotOverwrite(t *testing.T) {
 	}
 	for name, at := range map[string]time.Time{"older": backlogBase, "same time": backlogBase.Add(time.Minute)} {
 		w, err := m.RecordTransferBacklog(ctx, map[string]int64{"edge": 1}, at)
-		if err != nil || len(w) != 0 {
-			t.Fatalf("%s: write = %v, %v; want none", name, w, err)
+		if got := w["edge"]; err != nil || got.Applied || got.Current != 9 {
+			t.Fatalf("%s: write = %v, %v; want not applied with current 9", name, w, err)
 		}
 	}
 	got, _ := m.ReadTransferBacklog(ctx)
@@ -73,7 +73,7 @@ func TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce(t *testing.T) {
 					t.Errorf("RecordTransferBacklog: %v", err)
 					return
 				}
-				if write, ok := w["edge"]; ok && !write.HadPrevious {
+				if write := w["edge"]; write.Applied && !write.HadPrevious {
 					sawNoRow.Add(1)
 				}
 			}()
@@ -83,5 +83,14 @@ func TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce(t *testing.T) {
 		if got := sawNoRow.Load(); got != 1 {
 			t.Fatalf("round %d: writes that saw no previous row = %d, want 1", round, got)
 		}
+	}
+}
+
+// advisory lock のキーは固定の値にする。値は fnv64a("rokuban:transfer-backlog-snapshots") で、
+// 既存の watcher のリーダー選出（"rokuban:watcher:default" で 112608722860763934）や
+// ラベル規則の reconcile の lock（hashtextextended で別の値）と一致しない。
+func TestTransferBacklogLockKey_IsFixed(t *testing.T) {
+	if transferBacklogLockKey != -5313926783724820846 {
+		t.Fatalf("transferBacklogLockKey = %d, want -5313926783724820846", transferBacklogLockKey)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 
@@ -459,6 +460,15 @@ func (s *Media) MarkMediaAssetCopyDeleted(ctx context.Context, candidate store.M
 	return true, nil
 }
 
+// transferBacklogLockKey は transfer_backlog_snapshots の読み書きを直列にする advisory lock のキー。
+// internal/role の lockKey と同じ fnv64a を、"rokuban:" を前置した用途名に掛けて作る。
+// PostgreSQL の内部ハッシュ関数に頼らず、版をまたいで同じ値になる。
+var transferBacklogLockKey = func() int64 {
+	h := fnv.New64a()
+	h.Write([]byte("rokuban:transfer-backlog-snapshots"))
+	return int64(h.Sum64())
+}()
+
 // ReadTransferBacklog は encode reconcile が直近に数えた置き場ごとの転送待ちの件数と時刻を返す。
 func (s *Media) ReadTransferBacklog(ctx context.Context) (map[string]store.TransferBacklogSnapshot, error) {
 	rows, err := sqlcgen.New(s.pool).ListTransferBacklogSnapshots(ctx)
@@ -483,7 +493,7 @@ func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	if err := q.LockTransferBacklogSnapshots(ctx); err != nil {
+	if err := q.LockTransferBacklogSnapshots(ctx, transferBacklogLockKey); err != nil {
 		return nil, fmt.Errorf("locking transfer backlog snapshots: %w", err)
 	}
 	rows, err := q.ListTransferBacklogSnapshots(ctx)
@@ -507,11 +517,13 @@ func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int
 		if err != nil {
 			return nil, fmt.Errorf("upserting transfer backlog snapshot for store %q: %w", name, err)
 		}
+		before, had := previous[name]
 		if n == 0 {
+			// 保存済みのほうが新しい。残っている件数を返す（前の行が必ずある）。
+			written[name] = store.TransferBacklogWrite{Current: before}
 			continue
 		}
-		before, had := previous[name]
-		written[name] = store.TransferBacklogWrite{HadPrevious: had, Previous: before}
+		written[name] = store.TransferBacklogWrite{Current: counts[name], Applied: true, HadPrevious: had, Previous: before}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing transfer backlog snapshots: %w", err)

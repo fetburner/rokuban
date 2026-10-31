@@ -50,7 +50,7 @@ encode reconcile のプロセスは ScaledJob の `--once` で 1 件ごとに終
 
 Warn は置き場が止まり始めたときに 1 回、Info は解けたときに 1 回出す。止まっている間は毎パスでは出さない。前の状態は DB の件数から読むので、プロセスが毎回新しくなっても変わらない。
 
-並行する複数のパスは、前の件数の読みと保存を直列にするので、変化を見るのは 1 つだけである。より古い時刻に数えた件数は保存せず、その置き場の Warn / Info も出さない。
+並行する複数のパスは、前の件数の読みと保存を直列にするので、変化を見るのは 1 つだけである。より古い時刻に数えた件数は保存せず、その置き場の Warn / Info も出さない。encode を止める判断は、DB に残った新しい件数で行うので、ゲージと食い違わない。
 
 ## 対処
 
@@ -68,5 +68,6 @@ Warn は置き場が止まり始めたときに 1 回、Info は解けたとき�
 - パスごとにプロセスが新しくなっても Warn / Info が変化のときだけ出ること: `TestEncodeReconcile_BacklogLogsOnlyOnTransitions`
 - 並行する保存で変化を見るのが 1 つだけであること: `TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
 - 古い時刻の件数が新しい件数を上書きしないこと: `TestRecordTransferBacklog_StaleCountDoesNotOverwrite`
+- 古い件数が捨てられたとき、残った新しい件数で止めること: `TestEncodeReconcile_StaleCountDecidesByTheSavedCount`
 
 </details>
