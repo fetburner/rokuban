@@ -250,6 +250,18 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 </details>
 
+### エッジに置き場を持つ構成
+
+録画の原本と、エッジで作る派生物は、まずエッジの置き場に入る。中央の転送ワーカーが、エッジの置き場の内部 URL から HTTP の Range で読み、desired の置き場へ書く。派生物の置き場が S3 なら、エッジのワーカーが S3 へ直接書く。
+
+転送が終わるまで、エッジのコピーは原本の唯一のコピーである。転送の前にエッジのディスクを失うと、その原本は戻らない。
+
+`internal_url` は VPN かクラスタ内の網だけに通す。Ingress には載せない。アプリは認証を持たないので、`internal_url` に届く者は原本を読める。Host 検証は転送の要求にも掛かるので、`internal_url` のホストは `server.allowed_hosts` に含める（[HTTP API のデプロイ](../api/deployment.md) §X-Forwarded-Host の扱い）。
+
+`storage.transfer.bandwidth` が絞るのは転送の読みだけである。アプリ内の reader で絞る。ジョブキューに帯域の制御は無いからである。ライブ視聴、HLS、派生物の S3 への PUT は対象に入らない。回線全体を守るなら、網の層で絞る。
+
+転送が遅れて転送待ちが溜まると、エッジへの encode が止まる。その上限は `storage.transfer.backlog_limit` で置き場ごとに決める（[設定キー](../configuration/keys.md)）。止まっているかは `rokuban_encode_backpressure{store}` で見る（[監視](monitoring.md)）。
+
 ### disaster recovery（catalog + rescue）
 
 rescue は、DB を失った後にだけ使う。live DB を catalog の内容で上書きするので、健全性の確認には使わない。
