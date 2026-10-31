@@ -146,11 +146,6 @@ WHERE id = sqlc.arg('copy_id')
   AND store = sqlc.arg('store_name')
   AND state = 'pending';
 
--- A path's generation belongs to its physical copy. Include deleted copies because their
--- generation remains part of the allocator's history.
-
-
-
 -- name: StoreHasMediaAssetCopies :one
 SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = sqlc.arg('store'));
 

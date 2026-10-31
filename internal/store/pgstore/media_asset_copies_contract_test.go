@@ -78,18 +78,49 @@ func TestAdoptUnassignedStoreRows(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, syncedAssetID); err != nil {
 		t.Fatalf("assigning fixture copy to tokyo: %v", err)
 	}
-	derivedAssetID := dbtest.MediaAsset(t, pool, dbtest.Recording(t, pool), func(p *dbtest.MediaAssetParams) {
-		p.Kind = "encoded"
-		p.Profile = stringPointer("cut")
-	})
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 4 WHERE id = $1`, derivedAssetID); err != nil {
-		t.Fatalf("seeding migrated derived generation: %v", err)
+	type derivedGenerationFixture struct {
+		recordingID int64
+		assetID     int64
+		kind        string
+		copyState   string
 	}
-	// 物理コピーは世代 5 にあるが、論理資産の世代は 4 のまま。
-	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: derivedAssetID, Store: "tokyo", RelPath: "sites/default/advanced_cut.g5.mp4", Generation: 5, State: "active",
-	}); err != nil {
-		t.Fatalf("seeding advanced derived copy path: %v", err)
+	var derivedGenerationFixtures []derivedGenerationFixture
+	for _, kind := range []string{"thumbnail", "encoded"} {
+		for _, copyState := range []string{"pending", "deleted"} {
+			recordingID := dbtest.Recording(t, pool)
+			profile := (*string)(nil)
+			if kind == "encoded" {
+				profile = stringPointer("adopt-" + copyState)
+			}
+			assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+				p.Kind = kind
+				p.Profile = profile
+				p.RelPath = fmt.Sprintf("sites/default/adopt-%s-%s-%d.g0", kind, copyState, recordingID)
+			})
+			if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
+				t.Fatalf("assigning %s generation-zero copy to tokyo: %v", kind, err)
+			}
+
+			relPath := fmt.Sprintf("sites/default/adopt-%s-%s-%d.g1", kind, copyState, recordingID)
+			var pendingCopyID int64
+			if err := pool.QueryRow(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, 'tokyo', $2, 1, 'pending')
+RETURNING id`, assetID, relPath).Scan(&pendingCopyID); err != nil {
+				t.Fatalf("seeding %s generation-one pending copy: %v", kind, err)
+			}
+			if copyState == "deleted" {
+				rows, err := sqlcgen.New(pool).MarkPendingMediaAssetCopyDeleted(ctx, sqlcgen.MarkPendingMediaAssetCopyDeletedParams{
+					CopyID: pendingCopyID, StoreName: "tokyo",
+				})
+				if err != nil || rows != 1 {
+					t.Fatalf("marking %s generation-one copy deleted: rows %d, err %v", kind, rows, err)
+				}
+			}
+			derivedGenerationFixtures = append(derivedGenerationFixtures, derivedGenerationFixture{
+				recordingID: recordingID, assetID: assetID, kind: kind, copyState: copyState,
+			})
+		}
 	}
 
 	unassigned := NewMedia(pool, "", "")
@@ -163,12 +194,32 @@ func TestAdoptUnassignedStoreRows(t *testing.T) {
 		t.Fatalf("RequireAdoptedStoreRows after every asset has a copy: %v", err)
 	}
 
-	var generation int64
-	if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, derivedAssetID).Scan(&generation); err != nil {
-		t.Fatalf("reading adopted derived generation: %v", err)
-	}
-	if generation != 5 {
-		t.Fatalf("adopted derived_generation = %d, want 5 from the copy path", generation)
+	for _, fixture := range derivedGenerationFixtures {
+		var generation int64
+		if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, fixture.assetID).Scan(&generation); err != nil {
+			t.Fatalf("reading adopted %s/%s derived generation: %v", fixture.kind, fixture.copyState, err)
+		}
+		if generation != 0 {
+			t.Errorf("adopted %s/%s derived_generation = %d, want 0", fixture.kind, fixture.copyState, generation)
+		}
+
+		var currentCopyExists bool
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM active_media_asset_copies($1, 'tokyo') WHERE generation = 0
+)`, fixture.assetID).Scan(&currentCopyExists); err != nil {
+			t.Fatalf("checking current generation-zero %s/%s copy: %v", fixture.kind, fixture.copyState, err)
+		}
+		if !currentCopyExists {
+			t.Errorf("adopt hid current generation-zero %s/%s copy", fixture.kind, fixture.copyState)
+		}
+		if fixture.kind == "thumbnail" {
+			has, err := media.HasActiveThumbnailMediaAsset(ctx, fixture.recordingID)
+			if err != nil || !has {
+				t.Errorf("HasActiveThumbnailMediaAsset(%d) with a %s gen1 copy after adopt = (%v, %v), want (true, nil)",
+					fixture.recordingID, fixture.copyState, has, err)
+			}
+		}
 	}
 }
 
