@@ -211,6 +211,16 @@ type MediaAssetCopy struct {
 	Generation int64
 }
 
+type MediaAssetCopyTransferProgress struct {
+	CopyID         int64
+	LeaseOwner     pgtype.UUID
+	LeaseExpiresAt time.Time
+	Generation     int64
+	HandedOff      bool
+	OffsetBytes    int64
+	HashState      []byte
+}
+
 type MediaAssetCut struct {
 	MediaAssetID int64
 	KeepRanges   pgtype.Multirange[pgtype.Range[pgtype.Int8]]
