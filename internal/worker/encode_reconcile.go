@@ -189,13 +189,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	}
 	// 件数の集計は件数に比例して重いので、判断と表示に要るパスだけで数える（理由は backpressuredStores）。
 	limited := w.backlogLimitedStores()
-	needCount := recordingID == 0 && after == 0
-	for _, row := range missing {
-		if slices.Contains(limited, originalStores[row.RecordingID]) {
-			needCount = true
-			break
-		}
-	}
+	needCount := recordingID == 0 && after == 0 || hasCandidateInStores(missing, originalStores, limited)
 	blocked, err := w.backpressuredStores(ctx, limited, needCount)
 	if err != nil {
 		return fmt.Errorf("encode reconcile: checking transfer backpressure: %w", err)
@@ -293,6 +287,13 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 			"rebuild_requests", rebuildQueued, "failed", failed)
 	}
 	return nil
+}
+
+// hasCandidateInStores は、投入候補のどれかの原本が stores のいずれかの置き場にあるかを返す。
+func hasCandidateInStores(missing []store.MissingEncodeProfile, originalStores map[int64]string, stores []string) bool {
+	return slices.ContainsFunc(missing, func(row store.MissingEncodeProfile) bool {
+		return slices.Contains(stores, originalStores[row.RecordingID])
+	})
 }
 
 // backlogLimitedStores は storage.transfer.backlog_limit を設定した置き場を名前順に返す。
