@@ -35,7 +35,7 @@ const (
 	EncodeQueue = "encode"
 	// ThumbnailQueue はサムネイル / シークタイルジョブのキュー名。
 	ThumbnailQueue = "thumbnail"
-	// CMDetectQueue は CM 区間の検出・検出候補 reconcile 用キュー名。
+	// CMDetectQueue は CM 区間の検出・ロゴ候補解析用キュー名。
 	CMDetectQueue = "cm_detect"
 	// CleanupQueue は DB だけを触る reconcile（encode / thumbnail / CM 検出 / ts_scan / 転送の候補列挙と
 	// 分類ルール全件再評価）のキュー名。置き場にも site にも修飾しない。

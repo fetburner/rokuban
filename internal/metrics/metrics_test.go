@@ -438,7 +438,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 
 	const skippedProgramID int64 = 6800004
 	seedPresyncReservation(t, pool, skippedProgramID, time.Now().Add(time.Hour))
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{Site: testSite, ProgramID: skippedProgramID}); err != nil {
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{Site: testSite, ProgramID: skippedProgramID, Action: "skip"}); err != nil {
 		t.Fatalf("skipping reservation: %v", err)
 	}
 	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {

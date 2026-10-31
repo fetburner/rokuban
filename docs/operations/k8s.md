@@ -138,6 +138,9 @@ ScaledJob はキュー単位に作り、切る軸は寿命と site 束縛の 2 �
 - site 束縛キューと site 非依存キューを混ぜない。混ぜると中央のジョブがサイト側で起きる。
 - 複製される ScaledJob は、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）がサイト数ぶん。置き場で修飾するキューは置き場の数ぶんである。
 - スケーラが引くキュー名が site 修飾されていることを確かめる。共有キューを見ていると、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま終わってまた起きる
+- キューの置き場は次の 3 つで決める。寿命が短い、site 非依存、ffmpeg / JLSE のイメージを要らない。3 つを満たすので `encode_reconcile` と `cm_detect_reconcile` は `cleanup` に置く。
+- 長時間の encode / CM 検出の枠が空くまで reconcile が待つと、不足の補完が遅れる。CM 検出では、死んだジョブの回収も遅れる（回収を `cm_detect_reconcile` が担うため）。encode の死んだジョブは締切の後に JobRescuer が回収する。
+- `cleanup` の同時実行は 2 本である。reconcile の最悪の待ちは cleanup で最長の締切（`delete_reconcile` の 10 分）にとどまり、長時間ジョブの数時間より桁で短い。
 
 #### 1 件消化モード
 

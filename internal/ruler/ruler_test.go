@@ -366,8 +366,9 @@ func TestRunPass_SkipIntentPreventsReservation(t *testing.T) {
 	// program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, ctx, 2001, "映画スペシャル", start)
 	q := sqlcgen.New(pool)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 2001,
+		Action: "skip",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -405,8 +406,9 @@ func TestRunPass_SkipIntentWithOverrideSurvivesViaOverride(t *testing.T) {
 	// ruler が動く前に program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, ctx, 2011, "スキップと上書き併存", start)
 	q := sqlcgen.New(pool)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 2011,
+		Action: "skip",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -628,8 +630,9 @@ func TestRunPass_SkipIntentSnapshotFollowsDelayedProgramAndSurvivesGC(t *testing
 	insertProgram(t, pool, ctx, programID, "後ろ倒し番組", liveStart)
 
 	q := sqlcgen.New(pool)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: programID,
+		Action: "skip",
 	}); err != nil {
 		t.Fatalf("skipping program: %v", err)
 	}
@@ -690,7 +693,7 @@ func TestRunPass_ObservesProgramIDReuse(t *testing.T) {
 	newStart := time.Now().Add(8 * 24 * time.Hour).Truncate(time.Second)
 	insertProgram(t, pool, ctx, programID, "新番組", newStart)
 	q := sqlcgen.New(pool)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{Site: testSite, ProgramID: programID}); err != nil {
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{Site: testSite, ProgramID: programID, Action: "skip"}); err != nil {
 		t.Fatalf("creating skip intent: %v", err)
 	}
 
@@ -887,8 +890,9 @@ func TestRunPass_DeleteGuard_SkipIntentDoesNotBlockDelete(t *testing.T) {
 	insertReservationDirect(t, pool, ctx, programID, "取消済み", start)
 
 	q := sqlcgen.New(pool)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: programID,
+		Action: "skip",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2420,8 +2424,9 @@ func TestRunPass_LatchDoesNotWithholdSkipIntentDelete(t *testing.T) {
 
 	// ラッチ中にユーザーが「録るな」を書く。
 	q := sqlcgen.New(pool)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: skippedProgramID,
+		Action: "skip",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2973,7 +2978,7 @@ func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
 	// タイトルは変えない（ルールはまだマッチする）。ユーザーが直前でも明示的に
 	// 「これは録らない」と押す。
 	q := sqlcgen.New(pool)
-	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{Site: testSite, ProgramID: programID}); err != nil {
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{Site: testSite, ProgramID: programID, Action: "skip"}); err != nil {
 		t.Fatal(err)
 	}
 

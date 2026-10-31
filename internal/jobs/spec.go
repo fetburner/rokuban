@@ -12,7 +12,8 @@ import (
 // ingest / ruler / reconciler / record_sweep / epg_sync / encode_reconcile / catalog_export /
 // delete_reconcile の締切が既定より長いのは、DB の往復・mirakc への HTTP・ファイル I/O が
 // 件数に比例して積み上がり、1 分では足りなくなりうるからである。
-// ffmpeg を起動しないジョブ（reconcile 系）は encode のような長時間締切を要しない。
+// ffmpeg / JLSE を起動しない encode_reconcile と cm_detect_reconcile は短時間・site 非依存なので、
+// 長時間ジョブと処理枠を分ける cleanup キューに載せる。どちらも締切は 5 分である。
 const (
 	defaultJobTimeout = time.Minute
 	// ingest は転送を区切りごとに snooze して継続するので、締切は録画全体の長さや転送速度で
@@ -178,7 +179,8 @@ func (a CMDetectJobArgs) Spec() jobq.Spec {
 	return spec(CMDetectQueue, cmDetectionTimeout, 10, true, 1)
 }
 
-// Spec は CM 検出 reconcile の論理キュー、5 分締切、合流ヒントを返す。
+// Spec は CM 検出 reconcile の cleanup キュー、5 分締切、合流ヒントを返す。
+// 短時間・site 非依存で、JLSE を使わないため、長時間の cm_detect と同じキューを占有させない。
 // 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a CMDetectReconcileArgs) Spec() jobq.Spec {
 	return spec(CleanupQueue, fixedTimeout(cmDetectReconcileJobTimeout), 1, true, 1)
@@ -197,7 +199,8 @@ func (a LabelRuleReconcileArgs) Spec() jobq.Spec {
 	return spec(CleanupQueue, fixedTimeout(defaultJobTimeout), 1, false, 1)
 }
 
-// Spec は encode reconcile の論理キュー、5 分締切、合流ヒントを返す。
+// Spec は encode reconcile の cleanup キュー、5 分締切、合流ヒントを返す。
+// 短時間・site 非依存で、ffmpeg を使わないため、長時間の encode と同じキューを占有させない。
 // 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a EncodeReconcileArgs) Spec() jobq.Spec {
 	return spec(CleanupQueue, fixedTimeout(encodeReconcileJobTimeout), 1, true, 1)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/tsscan"
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -83,7 +85,7 @@ func TestNewWorkerSpec_Queues(t *testing.T) {
 		{Logical: "encode", Physical: []string{"encode_test-store"}, MaxWorkers: 2},
 		{Logical: "thumbnail", Physical: []string{"thumbnail_test-store"}, MaxWorkers: 3},
 		{Logical: "cm_detect", Physical: []string{"cm_detect_test-store"}, MaxWorkers: 1},
-		{Logical: "cleanup", Physical: []string{"cleanup"}, MaxWorkers: 4},
+		{Logical: "cleanup", Physical: []string{"cleanup"}, MaxWorkers: 2},
 		{Logical: "storage", Physical: []string{"storage_test-store"}, MaxWorkers: 1},
 		{Logical: "transfer", Physical: []string{"transfer_test-store"}, MaxWorkers: 1},
 		{Logical: "original", Physical: []string{"original_test-store"}, MaxWorkers: 2},
@@ -230,6 +232,9 @@ func TestNewWorkerSpec_CMDetectReconcileFollowsCMDetectEnabled(t *testing.T) {
 	has := func() bool {
 		for _, p := range newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames()).PeriodicJobs {
 			if p.Args.Kind() == "cm_detect_reconcile" {
+				if got := p.Args.Spec().Queue; got != "cleanup" {
+					t.Errorf("cm_detect_reconcile queue = %q, want literal cleanup", got)
+				}
 				if p.Interval != 15*time.Minute {
 					t.Errorf("cm_detect_reconcile interval = %s, want 15m", p.Interval)
 				}
@@ -245,6 +250,110 @@ func TestNewWorkerSpec_CMDetectReconcileFollowsCMDetectEnabled(t *testing.T) {
 	cfg.CMDetect.Enabled = true
 	if !has() {
 		t.Error("cm_detect_reconcile is missing with cm_detect.enabled=true")
+	}
+}
+
+type blockingEncodeQueueWorker struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (w blockingEncodeQueueWorker) Work(ctx context.Context, _ jobs.EncodeJobArgs) error {
+	select {
+	case w.started <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-w.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type signalEncodeReconcileWorker struct{ ran chan<- struct{} }
+
+func (w signalEncodeReconcileWorker) Work(context.Context, jobs.EncodeReconcileArgs) error {
+	w.ran <- struct{}{}
+	return nil
+}
+
+// 長時間 encode が monolith の encode 並列数を使い切っても、reconcile は別キューで実行できる。
+// Spec の encode_reconcile を encode に戻すと全 worker が塞がり、このテストは期限内に完了しない。
+func TestEncodeReconcileRunsWhileEncodeQueueIsFull(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	cfg := workerSpecTestConfig(t)
+	stores := cfg.Storage.FSStoreNames()
+	if len(stores) == 0 {
+		t.Fatal("test config has no fs store; encode is store-qualified")
+	}
+	store := stores[0]
+	var productSpec jobq.WorkerSpec
+	for _, queue := range newWorkerSpec(cfg, nil, []string{store}).Queues {
+		if queue.Logical == "encode" || queue.Logical == "cleanup" {
+			productSpec.Queues = append(productSpec.Queues, queue)
+		}
+	}
+	if len(productSpec.Queues) != 2 {
+		t.Fatalf("selected queue specs = %v, want encode and cleanup", productSpec.Queues)
+	}
+	encodeWorkers := 0
+	for _, queue := range productSpec.Queues {
+		if queue.Logical == "encode" {
+			encodeWorkers = queue.MaxWorkers
+		}
+	}
+	if encodeWorkers < 1 {
+		t.Fatalf("encode MaxWorkers = %d, want a positive configured concurrency", encodeWorkers)
+	}
+
+	started := make(chan struct{}, encodeWorkers)
+	release := make(chan struct{})
+	reconcileRan := make(chan struct{}, 1)
+	registry := jobq.NewRegistry()
+	riveradapter.Register(registry, blockingEncodeQueueWorker{started: started, release: release})
+	riveradapter.Register(registry, signalEncodeReconcileWorker{ran: reconcileRan})
+	adapter, err := riveradapter.NewAdapter(pool, registry, jobs.PhysicalQueueFor, riveradapter.Config{Spec: productSpec})
+	if err != nil {
+		t.Fatalf("creating adapter: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := adapter.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("starting adapter: %v", err)
+	}
+	defer func() {
+		close(release)
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stopCancel()
+		if err := adapter.Stop(stopCtx); err != nil {
+			t.Errorf("stopping adapter: %v", err)
+		}
+		cancel()
+	}()
+
+	for i := 0; i < encodeWorkers; i++ {
+		args := jobs.EncodeJobArgs{Store: store, RecordingID: int64(i + 1), Profile: "test", Timeout: time.Hour}
+		if _, err := adapter.Enqueue(ctx, args); err != nil {
+			t.Fatalf("enqueueing blocking encode %d: %v", i+1, err)
+		}
+	}
+	for i := 0; i < encodeWorkers; i++ {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of %d encode workers started", i, encodeWorkers)
+		}
+	}
+
+	if _, err := adapter.Enqueue(ctx, jobs.EncodeReconcileArgs{}); err != nil {
+		t.Fatalf("enqueueing encode reconcile: %v", err)
+	}
+	select {
+	case <-reconcileRan:
+	case <-time.After(10 * time.Second):
+		t.Fatal("encode_reconcile did not run while the encode queue was full")
 	}
 }
 

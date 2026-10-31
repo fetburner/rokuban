@@ -86,7 +86,7 @@ CREATE TABLE media_asset_transfer_objects (
 
 書き手は論理資産とコピー行を同じ tx で作り、列を消す migration はコピーの無い論理資産が残っていれば止まる。`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
 
-`storage adopt <store-name>` はコピー行を作らない。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移し、論理カウンターは全コピーの最大世代と比べて大きい方に引き上げる。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+`storage adopt <store-name>` はコピー行を作らない。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移す。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
 
 旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)` と `storage_sync(root)` である。新しい複合キーと並存するので、同じ `rel_path` を 2 つの置き場の孤児として記録できず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
 
@@ -96,7 +96,9 @@ CREATE TABLE media_asset_transfer_objects (
 
 `derived_generation` は派生物の次回採番に使う論理カウンターで、現行のコピーを決める値でもある。削除済みの行を再生成するときも進め、減らさない。派生物の公開は、世代が現行以上のときだけ論理行を更新する。同じ世代の再試行は通り、低い世代は 0 行になって公開が失敗する。低い世代を通して `derived_generation` が下がると、上の世代のコピーは `generation < derived_generation` の旧世代に入らないので削除されず、現行でもなくなるので配信から見えなくなる。配置先に現行世代のコピーが無いときも、カウンターは論理行から読み、書き手の置き場のコピーを根拠にしない。
 
-コピーの `generation` は、移行が既存のコピーのパスから読んで埋める（original と印の無いパスは 0）。論理カウンターは移行では触らない。旧版の in-place 登録は世代の印付きのパスでもカウンターを 0 にしたので、移行の直後はコピーの世代がカウンターを上回り、現行にも旧世代にも入らない資産がありうる。`storage adopt` がカウンターを引き上げて解消するので、移行の後は必ず adopt を通す。
+コピーの `generation` は、移行が既存のコピーのパスから読んで埋める（original と印の無いパスは 0）。論理カウンターは移行では触らない。旧版の in-place 登録は世代の印付きのパスでもカウンターを 0 にしたので、移行の直後はコピーの世代がカウンターを上回り、現行にも旧世代にも入らない資産がありうる。
+
+旧版からの更新では、最初の段階の `storage adopt` がそのカウンターを引き上げる。その後に列を消す migration を含む版へ進む手順は [runbook/setup.md](../../runbook/setup.md) にある。いまの `storage adopt` は世代を再照合しない。adopt はデプロイのたびに走る。全コピーの最大世代へ引き上げると、一度も現行にならなかった `pending` や回収済みの `deleted` の世代まで数えてしまい、現行のコピーが配信から見えなくなる。
 
 uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
 
@@ -128,6 +130,7 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 走査時の状態: `media_asset_copies.state = 'active'`
 - 移行時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations`
 - worker 起動時のコピー必須検査と adopt の割り当て: `TestAdoptUnassignedStoreRows`
+- adopt が派生世代を変えないこと: `TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent`
 - 列削除の拒否: `TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets`
 - 巻き戻しの代表コピー: `TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy`
 - 巻き戻しの拒否: `TestDropMediaAssetCopyColumnsDownRefusesUnrepresentableState`

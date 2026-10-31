@@ -163,6 +163,8 @@ spec:
   # cleanup は DB だけを触る reconcile（encode / thumbnail / cm_detect / ts_scan /
   # storage_transfer / label_rule）の置き場である。ジョブを積む側が置き場を選んで、
   # ファイルを触る仕事を `<queue>_<store>` のキューへ積み直す。
+  # 同時実行は 2 本（cmd/rokuban/workerspec.go の cleanup キューと同じ上限）。reconcile の
+  # 最悪の待ちは cleanup で最長の締切（reconcile の 5 分）にとどまり、長時間ジョブの数時間より桁で短い。
   maxReplicaCount: 2
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
