@@ -97,6 +97,7 @@ function reservation(id: number, title: string, startOffsetMs: number, overrides
 function breaker(name: CircuitBreaker['name'] = 'ruler_deletes'): CircuitBreaker {
   return {
     site: 'default',
+    store: '',
     name,
     trippedAt: iso(-HOUR),
     pending: 42,

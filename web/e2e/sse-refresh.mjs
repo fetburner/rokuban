@@ -74,6 +74,7 @@ const reservation = {
 // ようにする。
 const breaker = {
   site: 'tokyo',
+  store: '',
   name: 'ruler_deletes',
   trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
   pending: 3,

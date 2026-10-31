@@ -34,6 +34,7 @@ const ng = []
 const breakers = [
   {
     site: SITE,
+    store: '',
     name: 'ruler_deletes',
     trippedAt: iso(baseMs),
     pending: 1,

@@ -97,6 +97,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | README のスクリーンショット（`readme-screenshots.mjs`） | [checks/design.md](checks/design.md) |
 | フォントスケール（`font-scale.mjs`） | [checks/design.md](checks/design.md) |
 | SSE 抜きでの定期再取得・接続断バナー（`sse-refresh.mjs`） | [checks/reservations-search.md](checks/reservations-search.md) |
+| 置き場別ブレーカーの再開（`circuit-breaker-store.mjs`） | [checks/circuit-breakers.md](checks/circuit-breakers.md) |
 | 番組リストの操作列（`reserve-visibility.mjs`） | [checks/reservations-search.md](checks/reservations-search.md) |
 | 番組表グリッドの空間ナビゲーション（`grid-navigation.mjs`） | [checks/programs.md](checks/programs.md) |
 | 番組表グリッドの予約済み印（`grid-reserved.mjs`） | [checks/programs.md](checks/programs.md) |

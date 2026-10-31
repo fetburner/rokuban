@@ -32,9 +32,9 @@ type Server struct {
 	breakerAdmin      store.BreakerAdmin
 	// originalLocator は録画の原本のコピーがある置き場を引く。置き場ごとの URL と、置き場で修飾するキューの選択に使う。
 	originalLocator store.OriginalLocator
-	// breakerScopes は置き場の範囲の削除ブレーカーを再開するときに引く範囲の名前（FS 置き場と派生物の置き場）。
-	// 置き場を指定する再開（/api/stores/{store}/breakers/{name}/resume）は別の作業で入る。
-	breakerScopes      []string
+	// storageStores は config.storage.stores に定義された置き場名。
+	// api は設定だけで再開先を検証し、ファイルシステムやオブジェクトストアを調べない。
+	storageStores      map[string]struct{}
 	epgReader          store.EPGReader
 	programSearch      store.ProgramSearch
 	encodePolicy       store.EncodePolicy

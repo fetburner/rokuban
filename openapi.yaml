@@ -2233,19 +2233,13 @@ paths:
       summary: List tripped circuit breakers
       description: |
         大量削除サーキットブレーカー（docs/recording.md §3.2）の発動状態。
-        **行の存在 = 発動中**なので、発動していないブレーカーは結果に現れない
-        （すべて停止していなければ空配列）。
-
+        行の存在が発動中を表すため、発動していないブレーカーは結果に現れない。
         `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
-        手動確認の材料（`internal/breaker.Sample` と同じ形。最大 20 件）。
+        手動確認の材料になる。
 
-        site はパスに含めない。全サイトの発動を一望する用途のエンドポイントで、
-        レスポンスの各要素に site フィールドがある（issue #102）。ただし
-        site を持たない名前（`delete_reconcile`）の
-        行は、その資源自体が site を持たないため `site` が空文字列になる
-        （issue #450）。個別の再開は、site を持つ名前なら
-        `POST /api/sites/{site}/breakers/{name}/resume`、site を持たない名前
-        なら `POST /api/breakers/{name}/resume`。
+        site の範囲の行は `site` に site 名を、置き場の範囲の行は `store` に
+        置き場名を返す。該当しない方のフィールドは空文字列になる。置き場の
+        行を再開するときは `POST /api/stores/{store}/breakers/{name}/resume` を使う。
       responses:
         "200":
           description: OK
@@ -2263,36 +2257,22 @@ paths:
         in: path
         required: true
         description: |
-          site を持つブレーカー識別子（`ruler_deletes` /
-          `reconcile_total_loss`）。未知の値、および site を持たない名前
-          （`delete_reconcile`）は 400 --- 後者は
-          `POST /api/breakers/{name}/resume` を使う（issue #450）。
+          site の範囲を持つブレーカー識別子（`ruler_deletes` /
+          `reconcile_total_loss`）。未知の値、および置き場の範囲を持つ名前
+          （`delete_reconcile`）は 400。
         schema:
           type: string
     post:
       operationId: resumeCircuitBreaker
-      summary: Resume a tripped circuit breaker that has a site (manual acknowledgement)
+      summary: Resume a site-scoped circuit breaker (manual acknowledgement)
       description: |
-        手動確認後の再開。ブレーカーは人間が確認するまで止まり続けるラッチ
-        （docs/recording.md §3.2）なので、確認が済んだことをこの API で明示する。
-
-        `DELETE /api/sites/{site}/breakers/{name}` にしていないのは、運用者から
-        見た操作が「行を削除する」ではなく「**確認したので再開する**」であるため。
-        DB の行が消えるのは実装詳細（`internal/breaker` のラッチが行の存在で
-        表される、という設計の帰結）であり、URL に出す概念ではない。
-
-        site をパスに含めるのは、資源の PK が `(site, name)` であるため
-        （issue #102）。`GET /api/breakers` はサイト横断の一覧に価値があるので
-        グローバルのまま残すが、再開は行 1 件を特定する操作なので PK と
-        一致させる。
-
-        site を持たない名前（`delete_reconcile`）を渡すと 400 ---
-        `POST /api/breakers/{name}/resume` を使う（issue #450）。
+        手動確認後の再開。発動中の行が表す資源のキーは `(site, name)` なので、
+        パスでその行を指定する。置き場の範囲を持つ名前には使えない。
       responses:
         "204":
           description: Resumed
         "400":
-          description: Unknown site or breaker name, or a name that has no site
+          description: Unknown site or breaker name, or a store-scoped name
           content:
             application/json:
               schema:
@@ -2304,52 +2284,35 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /api/breakers/{name}/resume:
+  /api/stores/{store}/breakers/{name}/resume:
     parameters:
+      - $ref: "#/components/parameters/Store"
       - name: name
         in: path
         required: true
         description: |
-          site を持たないブレーカー識別子（今のところ
-          `delete_reconcile` のみ）。未知の値、および
-          site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）は 400 ---
-          後者は `POST /api/sites/{site}/breakers/{name}/resume` を使う。
+          置き場の範囲を持つブレーカー識別子（現在は `delete_reconcile`）。
+          未知の値、および site の範囲を持つ名前は 400。
         schema:
           type: string
     post:
-      operationId: resumeSitelessCircuitBreaker
-      summary: Resume a tripped circuit breaker that has no site (manual acknowledgement)
+      operationId: resumeStoreCircuitBreaker
+      summary: Resume a store-scoped circuit breaker (manual acknowledgement)
       description: |
-        site を持たないブレーカー専用の再開エンドポイント
-        （今のところ `delete_reconcile` のみ）。
-        発動中の置き場が 1 つだけならその置き場を再開する。2 つ以上なら
-        何も再開せず 409 を返す（どの置き場かを決められないため。置き場を
-        指定する再開はまだ無い）。
-        理由と経緯は `internal/worker/delete_reconcile.go` の
-        `DeleteReconcileWorker` doc コメント参照（issue #450）。
-
-        site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）を渡すと
-        400 --- `POST /api/sites/{site}/breakers/{name}/resume` を使う。
+        手動確認後の再開。`store` と `name` で発動中の行を 1 件指定する。
+        store は `config.storage.stores` に定義された名前で検証し、置き場の実体は
+        参照しない。
       responses:
         "204":
           description: Resumed
         "400":
-          description: Unknown breaker name, or a name that has a site
+          description: Unknown storage store or breaker name, or a site-scoped name
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Not tripped (nothing to resume)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: |
-            Tripped in two or more stores, so the request cannot say which one
-            to resume. Nothing is resumed. The body lists the tripped store
-            names. Resuming a single store is not available yet.
+          description: Not tripped in the requested store (nothing to resume)
           content:
             application/json:
               schema:
@@ -2372,6 +2335,15 @@ components:
         404、POST/PUT/PATCH/DELETE 系は 400（他の入力検証と同じ扱い。詳細は各
         エンドポイントの description・レスポンス定義を参照）。存在する site の
         一覧は `GET /api/sites` で取得できる。
+      schema:
+        type: string
+    Store:
+      name: store
+      in: path
+      required: true
+      description: |
+        置き場の名前。`config.storage.stores` のキー。`GET /api/breakers` の
+        `store` フィールドと一致する。
       schema:
         type: string
     ProgramId:
@@ -4196,6 +4168,7 @@ components:
         docs/recording.md §3.2）。
       required:
         - site
+        - store
         - name
         - trippedAt
         - pending
@@ -4205,11 +4178,15 @@ components:
         site:
           type: string
           description: |
-            この行が属する site。site を持たない名前
-            （`delete_reconcile`）は資源自体が site を持たないため空文字列
-            になる（issue #450）。その場合の再開は
-            `POST /api/breakers/{name}/resume`、それ以外は
-            `POST /api/sites/{site}/breakers/{name}/resume`。
+            この行が属する site。site を持つ名前
+            （`ruler_deletes` / `reconcile_total_loss`）のみ空でない。
+            site を持たない名前（`delete_reconcile`）は空文字列になる。
+        store:
+          type: string
+          description: |
+            この行が属する置き場の名前。site を持つ名前では空文字列、
+            site を持たない名前（`delete_reconcile`）では置き場名が入る。
+            `POST /api/stores/{store}/breakers/{name}/resume` の {store} に使う。
         name:
           type: string
           enum: [ruler_deletes, reconcile_total_loss, delete_reconcile]
