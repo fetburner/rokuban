@@ -85,18 +85,16 @@ func chooseIngestStore(ctx context.Context, deps *Deps, site string) (string, er
 // newIngestRoute は ingest を、マウントした置き場のうち規則に合う置き場のワーカーへ振り分ける。
 //
 // 書き込み先は、置き場の規則を年齢 0 で評価して一致した置き場のうち、このプロセスがマウントして
-// いるものである。無ければ、マウントしている置き場のうち名前順で先頭の置き場に書く。
+// いるものである。無ければ、マウントしている置き場のうち `--stores` の順で先頭の置き場に書く。
 // desired との差は転送が埋めるので、置き場を理由に ingest が止まる経路は作らない。
 // 規則の評価は SQL の関数が行い、ここには規則の写しを置かない。
 func newIngestRoute(deps *Deps, build func(*Deps) jobq.Worker[jobs.IngestJobArgs]) *storeRoute[jobs.IngestJobArgs] {
 	stores := deps.perStore()
 	workers := make(map[string]jobq.Worker[jobs.IngestJobArgs], len(stores))
-	mounted := make([]string, 0, len(stores))
 	for name, d := range stores {
 		workers[name] = build(d)
-		mounted = append(mounted, name)
 	}
-	sort.Strings(mounted)
+	mounted := deps.MountedStores
 	return &storeRoute[jobs.IngestJobArgs]{
 		kind:    "ingest",
 		workers: workers,

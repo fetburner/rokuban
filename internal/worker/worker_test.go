@@ -55,6 +55,7 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 
 	// 置き場を 1 つ束ねた構成として組む。PerStore を持たない Deps からは置き場のワーカーは登録されない。
 	registry := NewWorkers(&Deps{
+		MountedStores: []string{""},
 		PerStore: map[string]*Deps{"": {
 			MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(fake.URL(), nil)),
 			MediaPublish:       media,

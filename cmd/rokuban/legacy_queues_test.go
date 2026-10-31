@@ -5,6 +5,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -120,4 +121,85 @@ func TestCancelLegacyQueuesAndNewJobsDoNotCoalesceWithTheLeftovers(t *testing.T)
 	if got, want := out.String(), "cancelled 0 job(s) in the legacy unqualified queues\n"; got != want {
 		t.Fatalf("second run output = %q, want %q", got, want)
 	}
+}
+
+// blockingEncodeWorker は release が閉じられるまで Work を返さない。started に 1 度知らせる。
+// 旧キュー encode に載ったジョブを、取り消せない実行中の状態にしておくために使う。
+type blockingEncodeWorker struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingEncodeWorker) Work(context.Context, jobs.EncodeJobArgs) error {
+	select {
+	case w.started <- struct{}{}:
+	default:
+	}
+	<-w.release
+	return nil
+}
+
+// 実行中の旧キューのジョブが残っていると、cancel-legacy は取り消さず、再実行を促す行を出す。
+// 実行中が無ければその行は出ない。
+//
+// 変異確認: runCancelLegacyQueues の `if running > 0` を `if running >= 0` に変えると、
+// 実行中が無いケースで行が出て落ちる。`if running < 0` に変えると、実行中があるケースで行が消えて落ちる。
+func TestCancelLegacyQueuesReportsRunningJobsAndOmitsTheLineWithout(t *testing.T) {
+	const runningLine = "1 job(s) are still running and were not cancelled; run cancel-legacy again after they finish\n"
+	const cancelledLine = "cancelled 0 job(s) in the legacy unqualified queues\n"
+
+	t.Run("no running job", func(t *testing.T) {
+		pool := testutil.SetupDB(t)
+		var out bytes.Buffer
+		if err := runCancelLegacyQueues(context.Background(), pool, &out); err != nil {
+			t.Fatalf("runCancelLegacyQueues: %v", err)
+		}
+		if got, want := out.String(), cancelledLine; got != want {
+			t.Fatalf("output = %q, want %q (no running line without a running job)", got, want)
+		}
+	})
+
+	t.Run("one running job", func(t *testing.T) {
+		pool := testutil.SetupDB(t)
+		ctx := context.Background()
+
+		registry := jobq.NewRegistry()
+		worker := &blockingEncodeWorker{started: make(chan struct{}, 1), release: make(chan struct{})}
+		riveradapter.Register(registry, worker)
+		// 旧キュー encode を、修飾の無い名前のまま購読する（置き場で修飾する前の worker と同じ形）。
+		spec := jobq.WorkerSpec{Queues: []jobq.QueueSpec{{Logical: jobs.EncodeQueue, Physical: []string{jobs.EncodeQueue}, MaxWorkers: 1}}}
+		adapter, err := riveradapter.NewAdapter(pool, registry, legacyQueueFor, riveradapter.Config{Spec: spec})
+		if err != nil {
+			t.Fatalf("creating adapter: %v", err)
+		}
+		if err := adapter.Start(ctx); err != nil {
+			t.Fatalf("starting adapter: %v", err)
+		}
+		defer func() {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer stopCancel()
+			if err := adapter.Stop(stopCtx); err != nil {
+				t.Errorf("stopping adapter: %v", err)
+			}
+		}()
+		// Stop より後に実行されるので、worker を返して Stop が待てるようにする。
+		defer close(worker.release)
+
+		if _, err := adapter.Enqueue(ctx, jobs.EncodeJobArgs{RecordingID: 1, Profile: "h264"}); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		select {
+		case <-worker.started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the worker never started the legacy encode job")
+		}
+
+		var out bytes.Buffer
+		if err := runCancelLegacyQueues(ctx, pool, &out); err != nil {
+			t.Fatalf("runCancelLegacyQueues: %v", err)
+		}
+		if got, want := out.String(), cancelledLine+runningLine; got != want {
+			t.Fatalf("output = %q, want %q", got, want)
+		}
+	})
 }

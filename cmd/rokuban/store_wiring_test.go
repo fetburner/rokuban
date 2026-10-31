@@ -169,3 +169,42 @@ func TestWorkerWithoutMountsRefusesStorelessJobs(t *testing.T) {
 		t.Errorf("store route mismatch counter moved by %v, want 1", after-before)
 	}
 }
+
+// TestStoreScopedDerivedDeletePassOnlyForS3Derived は、置き場ごとの Deps に独立した派生物の削除パス
+// （DerivedMediaDelete）を載せるのが、派生物の置き場が S3 のときだけであることを確かめる。
+// FS の派生物を別の置き場の worker がマウントしているときは、その FS を objstore のパスで掃かない。
+//
+// 変異確認: newStoreScopedDeps の kind == "s3" の条件を外すと、FS 派生物のケースで
+// DerivedMediaDelete が載り、このテストが落ちる。
+func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	derivedObjects, err := fsstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &worker.Deps{}
+
+	for _, tc := range []struct {
+		name     string
+		derived  config.StoreConfig
+		wantPass bool
+	}{
+		{"FS derived store mounted by another store's worker", config.StoreConfig{Kind: "fs"}, false},
+		{"S3 derived store", config.StoreConfig{Kind: "s3"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Storage: config.StorageConfig{
+				Stores:  map[string]config.StoreConfig{"takamatsu": {Kind: "fs"}, "derived": tc.derived},
+				Derived: "derived",
+			}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
+			scoped, err := newStoreScopedDeps(ctx, pool, cfg, base, "takamatsu", t.TempDir(), derivedObjects)
+			if err != nil {
+				t.Fatalf("newStoreScopedDeps: %v", err)
+			}
+			if got := scoped.DerivedMediaDelete != nil; got != tc.wantPass {
+				t.Errorf("separate derived delete pass configured = %v, want %v", got, tc.wantPass)
+			}
+		})
+	}
+}

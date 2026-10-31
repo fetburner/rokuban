@@ -5720,6 +5720,20 @@ func (response ResumeSitelessCircuitBreaker404JSONResponse) VisitResumeSitelessC
 	return err
 }
 
+type ResumeSitelessCircuitBreaker409JSONResponse ErrorResponse
+
+func (response ResumeSitelessCircuitBreaker409JSONResponse) VisitResumeSitelessCircuitBreakerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetCapabilitiesRequestObject struct {
 }
 
