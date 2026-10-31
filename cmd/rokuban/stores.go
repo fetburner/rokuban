@@ -90,12 +90,14 @@ func storeNames(storage config.StorageConfig) []string {
 //   - worker と streamer のどちらも無いプロセスでの指定は起動エラー（効かないフラグを黙って無視しない）
 //   - worker が置き場で修飾するキューを引くのに、マウントが 0 件なら起動エラー（`--stores=` を含む）
 //   - worker が ingest を引くのに、FS 置き場を 1 つもマウントしていなければ起動エラー
+//   - worker が encode / thumbnail（seek_tiles を含む）を引くのに、storage.derived が FS 置き場で
+//     マウントしていなければ起動エラー。派生物はその置き場へ書くので、S3 にするか、マウントするかを選ばせる
 //   - worker が --once で、置き場で修飾した物理キューが 2 本以上になるなら起動エラー
 //     （1 件消化は 1 キューを前提にする）
 //
 // streamer と録画再生のロールは原本の配信のために --stores を取るが、マウントが 0 件でも起動を拒まない
 // （site に束縛したライブ専用の streamer が置き場を持たなくてよい）。
-func validateStoreBinding(roles []string, explicit bool, mounted []string, queues []string, once bool) error {
+func validateStoreBinding(roles []string, explicit bool, storage config.StorageConfig, mounted []string, queues []string, once bool) error {
 	isWorker := slices.Contains(roles, "worker")
 	isStreamer := slices.Contains(roles, "streamer")
 	if explicit && !isWorker && !isStreamer {
@@ -114,6 +116,14 @@ func validateStoreBinding(roles []string, explicit bool, mounted []string, queue
 		return fmt.Errorf("--%s: the worker pulls the ingest queue but no fs store is mounted; "+
 			"ingest writes to an fs store, so pass at least one fs store name to --%s",
 			storeFlagName, storeFlagName)
+	}
+	// encode と thumbnail（seek_tiles は thumbnail に載る）が派生物を書く。その集合は jobs が持つ。
+	// 派生物の FS 置き場をマウントしていないと、その仕事は実行時に置き場が無いと失敗するので、起動で止める。
+	if derived, ok := storage.Stores[storage.Derived]; ok && derived.Kind == "fs" &&
+		jobs.RequiresEncodeTools(queues) && !slices.Contains(mounted, storage.Derived) {
+		return fmt.Errorf("--%s: the worker pulls encode or thumbnail (which write derived media) but storage.derived %q is an fs store this process does not mount; "+
+			"use an s3 store for storage.derived, or mount %q with --%s",
+			storeFlagName, storage.Derived, storage.Derived, storeFlagName)
 	}
 	if once {
 		if n := jobs.StoreBoundQueueCount(queues) * len(mounted); n >= 2 {

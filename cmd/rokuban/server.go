@@ -354,7 +354,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	if err := validateStoreBinding(roles, cmd.Flags().Changed(storeFlagName), mounted, queues, onceGate != nil); err != nil {
+	if err := validateStoreBinding(roles, cmd.Flags().Changed(storeFlagName), cfg.Storage, mounted, queues, onceGate != nil); err != nil {
 		return err
 	}
 	roots, err := cfg.Storage.StoreRoots(mounted)

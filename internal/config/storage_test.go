@@ -110,6 +110,39 @@ func TestStoreRoots(t *testing.T) {
 	}
 }
 
+// 置き場の root が入れ子・同一になる構成は拒み、パスの区切りで比べる（/mnt/media2 は /mnt/media の外）。
+func TestStoreRootsRejectsNestedAndIdenticalRoots(t *testing.T) {
+	stores := map[string]StoreConfig{
+		"outer":   {Kind: "fs", Root: "/mnt/media"},
+		"nested":  {Kind: "fs", Root: "/mnt/media/takamatsu"},
+		"same":    {Kind: "fs", Root: "/mnt/media/"},
+		"sibling": {Kind: "fs", Root: "/mnt/media2"},
+		"other":   {Kind: "fs", Root: "/mnt/other"},
+	}
+	storage := StorageConfig{Stores: stores}
+	for _, tt := range []struct {
+		name    string
+		mounted []string
+		ok      bool
+	}{
+		{name: "nested root inside another is rejected", mounted: []string{"outer", "nested"}},
+		{name: "nested root listed first is rejected too", mounted: []string{"nested", "outer"}},
+		{name: "identical after clean is rejected", mounted: []string{"outer", "same"}},
+		{name: "sibling sharing a string prefix is accepted", mounted: []string{"outer", "sibling"}, ok: true},
+		{name: "unrelated roots are accepted", mounted: []string{"outer", "other"}, ok: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := storage.StoreRoots(tt.mounted)
+			if tt.ok && err != nil {
+				t.Fatalf("StoreRoots(%v) error = %v, want nil", tt.mounted, err)
+			}
+			if !tt.ok && err == nil {
+				t.Fatalf("StoreRoots(%v) error = nil, want error", tt.mounted)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsRemovedMediaStoreNameKey(t *testing.T) {
 	legacy := strings.Replace(minimalConfig, "media_dir: /mnt/media", "media_dir: /mnt/media\n  media_store_name: main", 1)
 	_, err := Load(writeConfig(t, legacy))

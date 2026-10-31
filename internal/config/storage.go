@@ -104,9 +104,10 @@ func (c StorageConfig) FSStoreNames() []string { return c.fsStoreNames() }
 // root は置き場の `root`、無ければ storage.media_dir である。
 // 2 つ以上の置き場が同じ root になる構成は、別の置き場の目印と書き込みを取り違えるので拒む
 // （media_dir だけに頼れるのは 1 つの置き場だけ）。
+// 一方の root が他方の下にある構成も拒む。下の置き場の監査が上の置き場のファイルを歩いてしまうため。
 func (c StorageConfig) StoreRoots(mounted []string) (map[string]string, error) {
 	roots := make(map[string]string, len(mounted))
-	owner := make(map[string]string, len(mounted))
+	var placed []placedRoot
 	for _, name := range mounted {
 		store, ok := c.Stores[name]
 		if !ok || store.Kind != "fs" {
@@ -120,13 +121,42 @@ func (c StorageConfig) StoreRoots(mounted []string) (map[string]string, error) {
 			return nil, fmt.Errorf("storage.stores.%s.root is required (storage.media_dir is not set)", name)
 		}
 		clean := filepath.Clean(root)
-		if other, dup := owner[clean]; dup {
-			return nil, fmt.Errorf("stores %q and %q share the root %q; mounting several fs stores in one process needs a distinct storage.stores.<name>.root for each", other, name, clean)
+		for _, other := range placed {
+			if other.clean == clean {
+				return nil, fmt.Errorf("stores %q and %q share the root %q; mounting several fs stores in one process needs a distinct storage.stores.<name>.root for each", other.name, name, clean)
+			}
+			inside, err := rootWithin(clean, other.clean)
+			if err != nil {
+				return nil, fmt.Errorf("comparing the roots of stores %q and %q: %w", other.name, name, err)
+			}
+			outside, err := rootWithin(other.clean, clean)
+			if err != nil {
+				return nil, fmt.Errorf("comparing the roots of stores %q and %q: %w", other.name, name, err)
+			}
+			if inside || outside {
+				return nil, fmt.Errorf("the root of store %q (%q) and the root of store %q (%q) nest; mounting one inside the other lets one store's audit walk the other's files", other.name, other.clean, name, clean)
+			}
 		}
-		owner[clean] = name
+		placed = append(placed, placedRoot{name: name, clean: clean})
 		roots[name] = root
 	}
 	return roots, nil
+}
+
+// placedRoot は StoreRoots が受け入れた置き場の root（Clean 済み）。
+type placedRoot struct {
+	name  string
+	clean string
+}
+
+// rootWithin は child が parent と同じか、parent の下にあるかを返す。
+// パスの区切りで比べるので、/mnt/media2 は /mnt/media の下ではない。
+func rootWithin(child, parent string) (bool, error) {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false, err
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
 }
 
 // allFSStoresHaveRoot は、FS 置き場が 1 つ以上あり、すべてが root を持つかを返す。
