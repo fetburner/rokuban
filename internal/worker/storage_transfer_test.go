@@ -997,8 +997,8 @@ func TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource(t *te
 	}); err != nil {
 		t.Fatalf("Work mismatch: %v", err)
 	}
-	if got := assetState(t, pool, assetID); got != "active" {
-		t.Fatalf("original state = %q, want active", got)
+	if !hasCurrentCopyInStore(t, pool, assetID, "test-store") {
+		t.Fatal("current original copy in the source store is missing after mismatch")
 	}
 	if got, err := os.ReadFile(filepath.Join(roots["test-store"], "sites/default/transfer/source.ts")); err != nil || !bytes.Equal(got, actual) {
 		t.Fatalf("source after mismatch = %q, %v; want %q", got, err, actual)

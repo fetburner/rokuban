@@ -345,8 +345,8 @@ func TestStorageTransferWorkerRemoteBytesDifferingFromLogicalSHAAreMismatch(t *t
 	if f.destinationExists() {
 		t.Fatal("mismatched remote bytes were published")
 	}
-	if state := assetState(t, f.pool, f.assetID); state != "active" {
-		t.Fatalf("original state = %q, want active (source preserved)", state)
+	if !hasCurrentCopyInStore(t, f.pool, f.assetID, "test-store") {
+		t.Fatal("current original copy in the source store is missing after mismatch")
 	}
 }
 
