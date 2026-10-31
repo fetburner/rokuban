@@ -52,7 +52,8 @@ storage:
   # FS の置き場は何個でも定義でき、originals の規則ごとに別の置き場を指せる
   # （docs/configuration/keys.md「置き場の規則」）。
   # 置き場の名前は英小文字・数字・- だけ。名前は置き場の root の .rokuban-store に書く名前になる。
-  # root を省略した FS の置き場は media_dir を root にする（1 つのプロセスがマウントできるのは 1 つまで）。
+  # root を省略した FS の置き場は media_dir を root にする。media_dir を root にする置き場は、
+  # 1 つのプロセスに 1 つまでしかマウントできない（2 つ目以降は root を明示する）。
   # どの置き場をマウントするかは argv の --stores で渡す。
   stores:
     main: { kind: fs }

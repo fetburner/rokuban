@@ -270,11 +270,11 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 置き場で修飾する前に積まれた古いジョブは、導入後に誰にも掴まれないまま残る。導入時に 1 回だけ取り消し、仕事は reconcile に積み直させる。
 
-対象は 2 つある。1 つは、修飾の無い名前のキュー（`encode` / `thumbnail` / `cm_detect` / `ts_scan` / `storage`）に残ったジョブである。もう 1 つは、`cleanup` キューに残った `delete_reconcile` と `catalog_export` である。手順は次の通り。
+対象は 2 つある。1 つは、置き場で修飾する前に修飾の無い名前で使っていたキューに残ったジョブである。そのキューの一覧は `cmd/rokuban/legacy_queues.go` の `legacyUnqualifiedQueues` が持つ。もう 1 つは、以前 `cleanup` キューに載っていて、いまは置き場の `original` キューに載る種類のジョブである。その種類は `legacyCleanupKinds` が持つ。手順は次の通り。
 
 1. 新しい版の worker（置き場ごとの Pod の組）を起動する。取り消す前でも、新しい投入は旧キューの残骸と合流しない（River の一意性の鍵にキューが入っている）。
-2. `rokuban queues cancel-legacy` を実行する。River の公開 API で、未完了のジョブだけを取り消し、件数を出す。完了済みのジョブには触れず、何度実行しても安全である。
-3. 数分待つ。取り消した仕事は、レベルトリガーの reconcile（`cleanup` キューの定期パス）が、原本のコピーのある置き場のキューへ積み直す。`rokuban enqueue encode-reconcile` などで即時に積んでもよい。
+2. `rokuban queues cancel-legacy` を実行する。River の公開 API で、未完了のジョブだけを取り消し、件数を出す。完了済みのジョブには触れず、何度実行しても安全である。実行中のジョブは取り消さず、残った件数を出す。残りは実行中のジョブが終わってから、もう一度実行する。
+3. 次の定期 reconcile を待つ。取り消した仕事は、レベルトリガーの reconcile が原本のコピーのある置き場のキューへ積み直す。定期 reconcile は、k8s では CronJob が、`worker.periodic_jobs: true` の構成では in-process の定期パスが投入する。待たずに積むなら、`rokuban enqueue encode-reconcile` のように対応する reconcile のジョブを `rokuban enqueue` で即時に投入する。ジョブ名は `rokuban enqueue --help` の一覧から選ぶ。
 
 `delete_reconcile` と `catalog_export` は、導入後は置き場ごとの定期ジョブが `original_<store>` に積むので、手で積み直さない。
 
@@ -284,6 +284,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 - 取り消し対象の定義: `cmd/rokuban/legacy_queues.go` の `legacyUnqualifiedQueues` / `legacyCleanupKinds`。`TestCancelLegacyQueuesAndNewJobsDoNotCoalesceWithTheLeftovers` が、旧キューの残骸が取り消され、同じ引数の新しい投入と合流しないことを固定する。
 - 取り消しは `river.Client` の `JobList` と `JobCancel` だけを使う（`riveradapter.Adapter.CancelQueued`）。
+- 実行中のジョブを残し、残りの件数を出す: `TestCancelLegacyQueuesReportsRunningJobsAndOmitsTheLineWithout`
 
 </details>
 

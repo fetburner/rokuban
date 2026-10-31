@@ -137,7 +137,7 @@ docker run --rm --name rokuban-nginx-check \
 
 ```sh
 curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/version"
-curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/media/recordings/$ID/file"
+curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/media/stores/$MEDIA_STORE_NAME/recordings/$ID/file"
 curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/events"
 curl -sk -o /dev/null -w '%{http_code}\n' "$URL/recordings/123"
 ```
@@ -170,10 +170,16 @@ curl -sS -H 'Host: rokuban.example.com' \
 
 日本語・空白・括弧を含む fixture で、認証付きの HEAD・Range 取得・X-Accel-Redirect の経路を順に確認する。
 
+原本の URL は録画 API の `media.originalUrl` から取る。原本は置き場ごとの URL でしか配らない。置き場の無い `/api/media/recordings/{id}/file` で原本を取ると 404 になる（この経路を直接見るテストは無いので、未検証）。
+
+```sh
+ORIGINAL=$(curl -sk -u "$AUTH" "$URL/api/recordings/$ID" | jq -r .media.originalUrl)
+```
+
 まず、認証付き HEAD が `200`、`Accept-Ranges: bytes` と正しい `Content-Length` を返すことを確認する。
 
 ```sh
-curl -skI -u "$AUTH" "$URL/api/media/recordings/$ID/file"
+curl -skI -u "$AUTH" "$URL$ORIGINAL"
 ```
 
 次に先頭 188 バイトだけを取得する。応答は `206`、`Content-Range: bytes 0-187/...`、本文 188 バイトになる。
@@ -181,7 +187,7 @@ curl -skI -u "$AUTH" "$URL/api/media/recordings/$ID/file"
 ```sh
 curl -sk -u "$AUTH" -D "$TMP/range.headers" \
   -H 'Range: bytes=0-187' -o "$TMP/range.body" \
-  "$URL/api/media/recordings/$ID/file"
+  "$URL$ORIGINAL"
 wc -c "$TMP/range.body"
 grep -E 'HTTP/|Accept-Ranges:|Content-Range:' "$TMP/range.headers"
 ```
@@ -191,7 +197,7 @@ grep -E 'HTTP/|Accept-Ranges:|Content-Range:' "$TMP/range.headers"
 ```sh
 curl -sS -H 'Host: rokuban.example.com' \
   -D "$TMP/app.headers" -o "$TMP/app.body" \
-  "http://127.0.0.1:40773/api/media/recordings/$ID/file"
+  "http://127.0.0.1:40773$ORIGINAL"
 grep -E 'HTTP/|Content-Type:|X-Accel-Redirect:' "$TMP/app.headers"
 wc -c "$TMP/app.body"
 ```
