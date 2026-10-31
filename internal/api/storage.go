@@ -19,6 +19,7 @@ func (h *Server) GetStorage(ctx context.Context, _ GetStorageRequestObject) (Get
 	result := make([]StorageRoot, 0, len(rows))
 	for _, r := range rows {
 		result = append(result, StorageRoot{
+			Store:          r.Store,
 			Root:           StorageRootRoot(r.Root),
 			Path:           r.Path,
 			TotalBytes:     r.TotalBytes,

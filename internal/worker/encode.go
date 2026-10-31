@@ -1162,7 +1162,10 @@ func parseFFmpegProgress(r io.Reader, log *slog.Logger, onProgress func(time.Dur
 	}
 }
 
-func newEncodeJobArgs(ctx context.Context, media store.MediaReconcile, recordingID int64, profile string, profiles config.EncodeConfig) (jobs.EncodeJobArgs, error) {
+func newEncodeJobArgs(ctx context.Context, media store.MediaReconcile, recordingID int64, storeName, profile string, profiles config.EncodeConfig) (jobs.EncodeJobArgs, error) {
+	if storeName == "" {
+		return jobs.EncodeJobArgs{}, errNoActiveOriginal
+	}
 	times, err := media.GetRecordingEncodeTimes(ctx, recordingID)
 	if err != nil {
 		return jobs.EncodeJobArgs{}, fmt.Errorf("loading recording times: %w", err)
@@ -1181,6 +1184,7 @@ func newEncodeJobArgs(ctx context.Context, media store.MediaReconcile, recording
 		rate = p.Rate
 	}
 	return jobs.EncodeJobArgs{
+		Store:       storeName,
 		RecordingID: recordingID,
 		Profile:     profile,
 		Timeout:     encodeJobTimeout(duration, rate),

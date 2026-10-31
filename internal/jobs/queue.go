@@ -37,14 +37,18 @@ const (
 	ThumbnailQueue = "thumbnail"
 	// CMDetectQueue は CM 区間の検出・検出候補 reconcile 用キュー名。
 	CMDetectQueue = "cm_detect"
-	// CleanupQueue は物理削除・カタログ出力・分類ルール全件再評価（site 非依存の DB ジョブ）のキュー名。
+	// CleanupQueue は DB だけを触る reconcile（encode / thumbnail / CM 検出 / ts_scan / 転送の候補列挙と
+	// 分類ルール全件再評価）のキュー名。置き場にも site にも修飾しない。
 	//
 	// 未解決: 既定（`worker.queues` 未指定 = 全キュー購読）のサイト束縛 worker は
 	// このキューも掴む。`worker.queues` を明示すれば除外できるが、単一サイト
 	// 構成でそれを外すと delete_reconcile が誰にも走らなくなるため、既定を変える
 	// かどうかは設計判断が必要で未実装。
 	CleanupQueue = "cleanup"
-	// StorageQueue はストレージ観測ジョブのキュー名。
+	// OriginalQueue は、置き場の FS を直接触る削除・走査（delete_reconcile）と catalog 出力の
+	// 論理キュー名。置き場で修飾する。
+	OriginalQueue = "original"
+	// StorageQueue はストレージ観測（storage_sync）の論理キュー名。置き場で修飾する。
 	StorageQueue = "storage"
 	// TransferQueue は desired store への物理コピー転送ジョブの論理キュー名。
 	TransferQueue = "transfer"
@@ -97,20 +101,37 @@ func PhysicalQueueName(logical, boundSite string) string {
 	return qualifyQueueName(logical, boundSite)
 }
 
-// storeBoundQueueNames は置き場で修飾する論理キュー名。今は転送だけで、
-// encode などの置き場による振り分けは未実装（PhysicalQueueFor の storeBound を参照）。
-var storeBoundQueueNames = []string{TransferQueue}
+// storeBoundQueueNames は、原本または置き場のファイルを読み書きするために置き場で修飾する
+// 論理キュー名。**置き場で修飾するかの判定の唯一の定義**で、PhysicalQueueFor（投入側）、
+// cmd/rokuban の worker 仕様（購読側）、`--stores` の起動時検査、`--once` の検査が
+// すべてここを参照する（分けると投入先と購読先、検査と実際の購読が食い違う）。
+//
+// DB だけを触る reconcile は含めない。それらは CleanupQueue に載り、ジョブを積む側が
+// 置き場を選んで、下の仕事を置き場のキューへ積む。
+var storeBoundQueueNames = []string{
+	TransferQueue,
+	EncodeQueue,
+	ThumbnailQueue,
+	CMDetectQueue,
+	TSScanQueue,
+	OriginalQueue,
+	StorageQueue,
+}
+
+// IsStoreBound は論理キューを置き場で修飾するかを返す。
+func IsStoreBound(logical string) bool {
+	return slices.Contains(storeBoundQueueNames, logical)
+}
 
 // PhysicalStoreQueueName は置き場単位の仕事を `{queue}_{store}` に振り分ける。
+// 置き場で修飾するかの判定はしない（呼び出し側が IsStoreBound で決める）。
 func PhysicalStoreQueueName(logical, storeName string) string {
 	return logical + "_" + storeName
 }
 
-// PhysicalStoreQueueCount は queues を購読する worker が、置き場で修飾された
-// 物理キューを置き場 1 つにつき 1 本ずつ何本持つかを、置き場の数で掛ける前の
-// 論理キュー数として返す。空の queues は全キューを意味するので、置き場で修飾する
-// 論理キューの数をそのまま返す。
-func PhysicalStoreQueueCount(queues []string) int {
+// StoreBoundQueueCount は queues を購読する worker が引く、置き場で修飾する論理キューの数を返す。
+// 空の queues は全キューを意味する。物理キューの数は、これにマウントした置き場の数を掛けた値になる。
+func StoreBoundQueueCount(queues []string) int {
 	if len(queues) == 0 {
 		return len(storeBoundQueueNames)
 	}
@@ -138,6 +159,7 @@ func AllQueueNames() []string {
 		ThumbnailQueue,
 		CMDetectQueue,
 		CleanupQueue,
+		OriginalQueue,
 		StorageQueue,
 		TransferQueue,
 		TSScanQueue,

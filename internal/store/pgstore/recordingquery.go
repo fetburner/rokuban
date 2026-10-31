@@ -42,6 +42,17 @@ var (
          WHERE a.recording_id = r.id AND ` + activePlaybackOriginalSQL(recordingStoreParam) + `),
         ip.temp_generation
     ) END AS hls_generation,
+    -- 録画 HLS が読む入力のある置き場。hls_generation と同じ入力（active な原本、無ければ ingest temp）を指す。
+    CASE WHEN ` + recordingPlaybackVisibleSQL + ` THEN COALESCE(
+        (SELECT c.store FROM media_assets a
+         JOIN LATERAL preferred_active_media_asset_copy(a.id, ` + recordingStoreParam + `::text) c ON true
+         WHERE a.recording_id = r.id AND a.kind = 'original'),
+        NULLIF(ip.temp_store, '')
+    ) END AS hls_store,
+    -- 原本・コマの URL に入れる置き場。active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。
+    (SELECT c.store FROM media_assets a
+     JOIN LATERAL preferred_active_media_asset_copy(a.id, ` + recordingStoreParam + `::text) c ON true
+     WHERE a.recording_id = r.id AND a.kind = 'original') AS original_store,
     -- 計測済みでも drop_stats 行が無ければ 0 を返す。未計測を 0 と混同しない判定は
     -- has_measured_drop_summary で行い、集計値の COALESCE を存在判定に使わない。
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
@@ -679,7 +690,7 @@ func scanRecordingQueryRow(row recordingRowScanner) (store.RecordingQueryRow, er
 		&fields.NetworkID, &fields.ServiceID, &fields.EventID, &fields.Title, &fields.Description,
 		&fields.ProgramStartAt, &fields.ProgramDurationMs, &fields.Status,
 		&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,
-		&fields.OriginalSizeBytes, &fields.HLSGeneration,
+		&fields.OriginalSizeBytes, &fields.HLSGeneration, &fields.HLSStore, &fields.OriginalStore,
 		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 		&fields.KeepOriginal,
 		&fields.EncodeProfiles,

@@ -22,7 +22,7 @@ func TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	detectionStore := pgstoretest.Analysis(pool)
 
-	firstWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
+	firstWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: detectionStore, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, firstWorker, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatalf("first reconcile pass: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate(t *testing.T) {
 
 	// --once starts a new worker for the next pass. The failed attempt removes the
 	// first recording from the view, so the next row is now at the head of the window.
-	secondWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
+	secondWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: detectionStore, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, secondWorker, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatalf("second reconcile pass with a fresh worker: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestCMDetectReconcileCandidateRowMovesPastFirstStation(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	detectionStore := pgstoretest.Analysis(pool)
 
-	firstWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
+	firstWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: detectionStore, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, firstWorker, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatalf("first reconcile pass: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestCMDetectReconcileCandidateRowMovesPastFirstStation(t *testing.T) {
 	// A running row is enough to remove the station from cm_logo_candidate_desired.
 	insertRunningCandidate(t, pool, firstID, firstAreaAt)
 
-	secondWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
+	secondWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: detectionStore, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, secondWorker, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatalf("second reconcile pass with a fresh worker: %v", err)
 	}

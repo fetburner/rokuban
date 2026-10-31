@@ -45,12 +45,19 @@ func TestLoadRecordingHLS(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.RecordingHLS.Enabled != tc.wantEnabled || cfg.Storage.MediaStoreName != tc.store {
-				t.Fatalf("recording_hls=%+v, store=%q", cfg.RecordingHLS, cfg.Storage.MediaStoreName)
+			if cfg.RecordingHLS.Enabled != tc.wantEnabled || len(cfg.Storage.FSStoreNames()) != btoi(tc.store != "") {
+				t.Fatalf("recording_hls=%+v, fs stores=%q", cfg.RecordingHLS, cfg.Storage.FSStoreNames())
 			}
 			if cfg.RecordingHLS.CacheBytes != 1610612736 || cfg.RecordingHLS.MaxConcurrent != 3 || cfg.RecordingHLS.WaitTimeout != 30*time.Second {
 				t.Errorf("recording HLS defaults = %+v", cfg.RecordingHLS)
 			}
 		})
 	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"slices"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -141,10 +142,13 @@ type RouterConfig struct {
 	// RecordingHLSEnabled は世代付き録画 HLS URL の公開を有効にする。cut だけの
 	// プロファイル選択を許すかにも使う（チャプターの確認は録画 HLS の再生でする）。
 	RecordingHLSEnabled bool
-	// MediaStoreName は原本と temp の置き場に対応するルートの名前。
-	MediaStoreName string
-	// DerivedStoreName は storage.derived の置き場の名前。S3 など FS 置き場と別のときだけ、
-	// 削除ブレーカーの再開が FS 置き場の次にこの置き場の範囲の行を引く。
+	// OriginalLocator は録画の原本のコピーがある置き場を引く契約。nil なら置き場ごとの URL を省略し、
+	// CM 検出のヒントを積まない。
+	OriginalLocator store.OriginalLocator
+	// StoreNames は storage.stores の FS 置き場の名前。置き場ごとの削除ブレーカーの再開が引く範囲になる。
+	StoreNames []string
+	// DerivedStoreName は storage.derived の置き場の名前。FS 置き場の範囲に含まれないときだけ、
+	// 削除ブレーカーの再開がこの置き場の範囲の行も引く。
 	DerivedStoreName string
 
 	// CMDetectEnabled は config.cm_detect.enabled。GET /api/capabilities の cmDetect に出し、
@@ -209,11 +213,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		cfg.EncodePolicyStore, cfg.Dedupe, cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
-	handler.breakerStoreScope = cfg.MediaStoreName
-	if cfg.DerivedStoreName != cfg.MediaStoreName {
-		handler.breakerDerivedScope = cfg.DerivedStoreName
+	handler.originalLocator = cfg.OriginalLocator
+	handler.breakerScopes = append([]string(nil), cfg.StoreNames...)
+	if cfg.DerivedStoreName != "" && !slices.Contains(cfg.StoreNames, cfg.DerivedStoreName) {
+		handler.breakerScopes = append(handler.breakerScopes, cfg.DerivedStoreName)
 	}
-	handler.recordingPlayback = recordingPlaybackConfig{enabled: cfg.RecordingHLSEnabled, store: cfg.MediaStoreName, profiles: cfg.LiveProfiles}
+	handler.recordingPlayback = recordingPlaybackConfig{enabled: cfg.RecordingHLSEnabled, profiles: cfg.LiveProfiles}
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: writeRequestError,
 	})

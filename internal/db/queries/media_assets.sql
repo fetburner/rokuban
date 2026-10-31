@@ -270,3 +270,12 @@ WHERE a.recording_id = $1
   AND a.kind = 'encoded'
   AND a.profile = $2
   AND r.deleted_at IS NULL;
+
+-- 原本を読むジョブを積む側が置き場のキューを選ぶための、録画ごとの active な原本のコピーの置き場。
+-- 候補の件数に比例して問い合わせないよう、ページ単位でまとめて引く。複数の置き場にあれば名前順で先頭。
+-- name: ListActiveOriginalStores :many
+SELECT a.recording_id, c.store
+FROM media_assets a
+JOIN LATERAL preferred_active_media_asset_copy(a.id, NULL::text) c ON true
+WHERE a.kind = 'original'
+  AND a.recording_id = ANY(sqlc.arg('recording_ids')::bigint[]);

@@ -298,7 +298,7 @@ func TestResumeSitelessCircuitBreaker_ResumesDerivedStoreScope(t *testing.T) {
 	ctx := context.Background()
 	router := api.NewRouter(api.RouterConfig{
 		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: []string{"tokyo"},
-		MediaStoreName: "test-store", DerivedStoreName: "s3main",
+		StoreNames: []string{"test-store"}, DerivedStoreName: "s3main",
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

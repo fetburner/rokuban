@@ -47,6 +47,9 @@ type RecordingRemovalState struct {
 type MediaServing interface {
 	// GetOriginalMediaAssetForServing は配信可能な原本を返す。無ければ ErrNotFound を返す。
 	GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
+	// GetOriginalMediaAssetForServingInStore は storeName の置き場にコピーがある配信可能な原本を返す。
+	// 置き場ごとの URL（/api/media/stores/{store}/recordings/{id}/file）が使う。無ければ ErrNotFound を返す。
+	GetOriginalMediaAssetForServingInStore(ctx context.Context, recordingID int64, storeName string) (MediaAsset, error)
 	// GetEncodedMediaAssetForServing は指定プロファイルの配信可能な encoded を返す。
 	GetEncodedMediaAssetForServing(ctx context.Context, recordingID int64, profile string) (MediaAsset, error)
 	// GetThumbnailMediaAssetForServing は配信可能なサムネイルを返す。
@@ -59,6 +62,25 @@ type MediaServing interface {
 	GetRecordingHLSTarget(ctx context.Context, recordingID int64) (RecordingHLSInputTarget, error)
 	// GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。
 	GetRecordingRemovalState(ctx context.Context, recordingID int64) (RecordingRemovalState, error)
+}
+
+// OriginalLocator は録画の active な原本のコピーがある置き場を返す。
+// 原本を読むジョブを積む側が、物理キュー `{queue}_{store}` の置き場を選ぶのに使う。
+// 実装は自分の束縛を無視して全置き場から選ぶ。
+type OriginalLocator interface {
+	// OriginalStore は録画の active な原本のコピーがある置き場を返す。
+	// 複数あれば置き場名順で先頭を返す。無ければ ErrNotFound を返す。
+	OriginalStore(ctx context.Context, recordingID int64) (string, error)
+	// OriginalStores は recordingIDs のうち active な原本のコピーがある録画の置き場を、1 回の問い合わせで返す。
+	// コピーが無い録画は結果に含めない。reconcile が候補の件数に比例して問い合わせないために使う。
+	OriginalStores(ctx context.Context, recordingIDs []int64) (map[int64]string, error)
+}
+
+// IngestStoreChooser は ingest が書き込む置き場を、置き場の規則から選ぶ。
+type IngestStoreChooser interface {
+	// DesiredOriginalStoreAtIngest は originalRules（config.StorageConfig.OriginalRulesJSON）を
+	// 放送終了を現在とみなして（年齢 0 で）評価した置き場を返す。一致する規則が無ければ空文字列を返す。
+	DesiredOriginalStoreAtIngest(ctx context.Context, originalRules []byte, derivedStore, site string) (string, error)
 }
 
 // MissingEncodeProfilesParams は未生成 encoded のページ条件を表す。
@@ -177,6 +199,8 @@ type RecordingNotifySubject struct {
 
 // MediaReconcile は worker のメディア処理入力、media_assets の reconcile と profile 検証の読み取り契約である。
 type MediaReconcile interface {
+	// OriginalLocator は reconcile が読み取りジョブを積む置き場を選ぶのに使う。
+	OriginalLocator
 	// GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
 	// 所有状態と区間は同じ時点の 1 回の読み取りで返す。
 	// 確認されていなければ owned=false、purged の録画なら ErrNotFound を返す。

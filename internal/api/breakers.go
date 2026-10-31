@@ -154,16 +154,20 @@ func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSit
 			Error: fmt.Sprintf("circuit breaker %q is site-scoped; use POST /api/sites/{site}/breakers/%s/resume instead", req.Name, req.Name),
 		}, nil
 	}
-	if h.breakerStoreScope == "" {
+	if len(h.breakerScopes) == 0 {
 		return ResumeSitelessCircuitBreaker400JSONResponse{
 			Error: fmt.Sprintf("circuit breaker %q is store-scoped, but the api config has no FS store to resolve it", req.Name),
 		}, nil
 	}
 
-	err := h.breakerAdmin.Resume(ctx, h.breakerStoreScope, req.Name)
-	if errors.Is(err, store.ErrNotFound) && h.breakerDerivedScope != "" {
-		// 派生物の置き場が S3 のときは、その置き場の範囲にも別の行がある。FS 置き場の行が無ければ次を引く。
-		err = h.breakerAdmin.Resume(ctx, h.breakerDerivedScope, req.Name)
+	// 置き場が複数あると、発動中の範囲はどの置き場かが決まらない。置き場を指定する再開が入るまでは、
+	// 範囲を名前順に引き、発動中の行がある最初の範囲を再開する（以前の「FS 置き場、次に派生物の置き場」と同じ形）。
+	err := store.ErrNotFound
+	for _, scope := range h.breakerScopes {
+		err = h.breakerAdmin.Resume(ctx, scope, req.Name)
+		if !errors.Is(err, store.ErrNotFound) {
+			break
+		}
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil

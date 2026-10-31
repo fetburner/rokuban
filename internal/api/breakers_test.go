@@ -23,7 +23,7 @@ func newBreakerRouter(pool *pgxpool.Pool) http.Handler {
 func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler {
 	return api.NewRouter(api.RouterConfig{
 		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: sites,
-		MediaStoreName: "test-store",
+		StoreNames: []string{"test-store"},
 	})
 }
 

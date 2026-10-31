@@ -39,9 +39,8 @@ func (c *RecordingHLSConfig) applyDefaults() {
 }
 
 func (c Config) validateRecordingHLS() error {
-	name := c.Storage.MediaStoreName
-	if name == "" && c.RecordingHLS.Enabled {
-		return fmt.Errorf("storage.stores must contain exactly one fs store when recording_hls.enabled is true")
+	if len(c.Storage.FSStoreNames()) == 0 && c.RecordingHLS.Enabled {
+		return fmt.Errorf("storage.stores must contain at least one fs store when recording_hls.enabled is true")
 	}
 	if c.RecordingHLS.MaxConcurrent < 1 {
 		return fmt.Errorf("recording_hls.max_concurrent must be >= 1, got %d", c.RecordingHLS.MaxConcurrent)

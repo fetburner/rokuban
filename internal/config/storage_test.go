@@ -42,9 +42,6 @@ func TestLoadStoragePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Storage.MediaStoreName; got != "main" {
-		t.Fatalf("single fs compatibility name = %q, want main", got)
-	}
 	if cfg.Storage.Originals[0].Match == nil || cfg.Storage.Originals[0].Match.Site != "default" || cfg.Storage.Originals[0].Match.OlderThan != "30d" {
 		t.Fatalf("originals[0].match = %+v, want site=default older_than=30d", cfg.Storage.Originals[0].Match)
 	}
@@ -53,23 +50,63 @@ func TestLoadStoragePolicy(t *testing.T) {
 	}
 }
 
-func TestSingleFSStoreCompatibilityName(t *testing.T) {
+// 2 つ以上の FS 置き場と、originals / derived が別の FS 置き場を指す構成は通る。
+func TestLoadStoragePolicyAcceptsSeveralFSStores(t *testing.T) {
 	policy := `
 storage:
-  media_dir: /mnt/media
   stores:
-    main:
-      kind: fs
+    tokyo:     { kind: fs, root: /mnt/tokyo }
+    takamatsu: { kind: fs, root: /mnt/takamatsu }
   originals:
-    - store: main
-  derived: main
+    - match: { site: default }
+      store: takamatsu
+    - store: tokyo
+  derived: tokyo
+  scratch_dir: /tmp/rokuban
 `
 	cfg, err := loadStoragePolicy(t, policy)
 	if err != nil {
+		t.Fatalf("loading a two-fs-store configuration: %v", err)
+	}
+	if got := cfg.Storage.FSStoreNames(); len(got) != 2 || got[0] != "takamatsu" || got[1] != "tokyo" {
+		t.Fatalf("FSStoreNames() = %v, want [takamatsu tokyo]", got)
+	}
+	// derived が originals と別の FS 置き場を指してもよい。
+	other := strings.Replace(policy, "derived: tokyo", "derived: takamatsu", 1)
+	if _, err := loadStoragePolicy(t, other); err != nil {
+		t.Fatalf("derived pointing at a different fs store than the last original rule: %v", err)
+	}
+}
+
+func TestStoreRoots(t *testing.T) {
+	storage := StorageConfig{
+		MediaDir: "/mnt/media",
+		Stores: map[string]StoreConfig{
+			"a":  {Kind: "fs", Root: "/mnt/a"},
+			"b":  {Kind: "fs", Root: "/mnt/b"},
+			"c":  {Kind: "fs"},
+			"d":  {Kind: "fs"},
+			"s3": {Kind: "s3", Bucket: "x"},
+		},
+	}
+	got, err := storage.StoreRoots([]string{"a", "b", "c"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Storage.MediaStoreName; got != "main" {
-		t.Fatalf("single fs compatibility name = %q, want main", got)
+	if got["a"] != "/mnt/a" || got["b"] != "/mnt/b" || got["c"] != "/mnt/media" || len(got) != 3 {
+		t.Fatalf("StoreRoots = %v, want a=/mnt/a b=/mnt/b c=/mnt/media", got)
+	}
+	for name, mounted := range map[string][]string{
+		"two stores fall back to the same media_dir": {"c", "d"},
+		"s3 cannot be mounted":                       {"s3"},
+		"unknown store":                              {"missing"},
+	} {
+		if _, err := storage.StoreRoots(mounted); err == nil {
+			t.Errorf("%s: StoreRoots(%v) succeeded, want error", name, mounted)
+		}
+	}
+	if _, err := (StorageConfig{Stores: map[string]StoreConfig{"c": {Kind: "fs"}}}).StoreRoots([]string{"c"}); err == nil {
+		t.Error("StoreRoots without root or media_dir succeeded, want error")
 	}
 }
 
@@ -163,14 +200,14 @@ func TestStoragePolicyValidation(t *testing.T) {
 			wantError: "overlap must be greater than",
 		},
 		{
-			name:      "second fs store is not supported yet",
-			policy:    strings.Replace(validStoragePolicy, "    s3main:\n", "    archive:\n      kind: fs\n    s3main:\n", 1),
-			wantError: "exactly one fs store",
+			name:      "no fs store",
+			policy:    strings.ReplaceAll(strings.Replace(validStoragePolicy, "    main:\n      kind: fs\n      internal_url: http://store-main.internal:8080\n", "", 1), "store: main", "store: s3main"),
+			wantError: "must reference an fs store",
 		},
 		{
-			name:      "no fs store is not supported",
-			policy:    strings.ReplaceAll(strings.Replace(validStoragePolicy, "    main:\n      kind: fs\n      internal_url: http://store-main.internal:8080\n", "", 1), "store: main", "store: s3main"),
-			wantError: "exactly one fs store",
+			name:      "root is only for fs stores",
+			policy:    strings.Replace(validStoragePolicy, "      bucket: rokuban-derived", "      bucket: rokuban-derived\n      root: /mnt/x", 1),
+			wantError: "root is only valid for kind fs",
 		},
 		{
 			name:      "invalid internal url scheme",
@@ -212,9 +249,6 @@ func TestStorageDerivedMayUseS3Store(t *testing.T) {
 	}
 	if cfg.Storage.Derived != "s3main" || cfg.Storage.Stores[cfg.Storage.Derived].Kind != "s3" {
 		t.Fatalf("derived store = %q (%+v), want s3main with kind s3", cfg.Storage.Derived, cfg.Storage.Stores[cfg.Storage.Derived])
-	}
-	if cfg.Storage.MediaStoreName != "main" {
-		t.Fatalf("original filesystem store = %q, want main", cfg.Storage.MediaStoreName)
 	}
 	if cfg.Storage.Stores[cfg.Storage.Derived].Region != "auto" {
 		t.Fatalf("S3 region = %q, want auto", cfg.Storage.Stores[cfg.Storage.Derived].Region)
@@ -299,10 +333,9 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 				Bandwidth: map[string]string{"main": "50Mbps"},
 				Overlap:   48 * time.Hour,
 			},
-			MediaDir:       "/mnt/media",
-			ScratchDir:     "/tmp/rokuban",
-			AccelLocation:  "/_media/",
-			MediaStoreName: "main",
+			MediaDir:      "/mnt/media",
+			ScratchDir:    "/tmp/rokuban",
+			AccelLocation: "/_media/",
 		}
 	}
 	base := newStorage()
@@ -349,7 +382,7 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	changedNonPolicy.MediaDir = "/mnt/other"
 	changedNonPolicy.ScratchDir = "/tmp/other"
 	changedNonPolicy.AccelLocation = "/private-media/"
-	changedNonPolicy.MediaStoreName = "other"
+	changedNonPolicy.Stores["main"] = StoreConfig{Kind: "fs", InternalURL: "http://main.internal:8080", Root: "/mnt/elsewhere"}
 	got, err = changedNonPolicy.PolicyFingerprint()
 	if err != nil {
 		t.Fatal(err)

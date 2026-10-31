@@ -8,6 +8,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
@@ -154,9 +155,20 @@ type Deps struct {
 	TSScan                store.TSScan
 	EncodeAttempts        store.EncodeAttempts
 	StorageObservation    store.StorageObservation
-	MediaDir              string
-	MediaStoreName        string
-	TransferOverlap       time.Duration
+	// MediaDir と MediaStoreName は、このワーカー群が束ねた 1 つの置き場の root と名前である。
+	// 置き場で修飾するキューのワーカー（PerStore）と ingest は、置き場ごとの Deps のこの値を使う。
+	MediaDir       string
+	MediaStoreName string
+	// PerStore は、マウントした FS 置き場ごとに束ねた Deps（置き場の名前から）。MediaDir・
+	// MediaStoreName と、置き場に束ねた store（MediaReconcile など）を置き場ごとに持つ。
+	// nil なら、この Deps 自身を MediaStoreName の唯一の置き場として扱う。
+	// このトップレベルの store は置き場に束ねず、DB だけを触る reconcile が使う。
+	PerStore map[string]*Deps
+	// OriginalLocator は reconcile が読み取りジョブを積む置き場の選択に使う。置き場に束ねない。
+	OriginalLocator store.OriginalLocator
+	// IngestStores は ingest が書き込む置き場を規則から選ぶ契約。
+	IngestStores    store.IngestStoreChooser
+	TransferOverlap time.Duration
 	// IngestStorageProbed は起動時に ProbeIngestStorage が成功したかを示す。
 	// false なら IngestWorker が最初の ingest で、目印を照合した後に probe する。
 	IngestStorageProbed bool
@@ -214,6 +226,14 @@ type Deps struct {
 	Cleanup config.CleanupConfig
 }
 
+// perStore は置き場ごとの Deps を返す。PerStore が無ければ deps 自身を唯一の置き場とみなす。
+func (deps *Deps) perStore() map[string]*Deps {
+	if len(deps.PerStore) > 0 {
+		return deps.PerStore
+	}
+	return map[string]*Deps{deps.MediaStoreName: deps}
+}
+
 // NewWorkers は全 kind のワーカーを登録した jobq.Registry を返す。
 // 購読キューは client 設定で絞るため、ここでは登録を減らさない。
 // k8s の常駐 client も `ruler` queue だけを購読しながら全 kind を登録する。
@@ -221,36 +241,40 @@ type Deps struct {
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
-	riveradapter.Register(workers, &IngestWorker{
-		storageProbed:       deps.IngestStorageProbed,
-		Enqueuer:            deps.Enqueuer,
-		MirakcClients:       deps.MirakcClients,
-		Publisher:           deps.MediaPublish,
-		Precheck:            deps.IngestPrecheck,
-		RecordTarget:        deps.IngestTarget,
-		CMDetectionStore:    deps.CMDetectionStore,
-		MediaDir:            deps.MediaDir,
-		MediaStoreName:      deps.MediaStoreName,
-		StallTimeout:        deps.IngestStallTimeout,
-		CMDetect:            deps.CMDetect,
-		CutProfiles:         deps.Encode.CutProfileSet(),
-		RecordingHLSEnabled: deps.RecordingHLSEnabled,
-	})
-	riveradapter.Register(workers, &EncodeWorker{
-		Media:           deps.MediaReconcile,
-		Attempts:        deps.EncodeAttempts,
-		Publisher:       deps.MediaPublish,
-		ObjectPublisher: deps.DerivedMediaPublish,
-		Objects:         deps.DerivedObjects,
-		Progress:        deps.EncodeProgress,
-		MediaDir:        deps.MediaDir,
-		MediaStoreName:  deps.MediaStoreName,
-		ScratchDir:      deps.ScratchDir,
-		FFmpeg:          deps.Encode.FFmpeg,
-		FFprobe:         deps.Encode.FFprobe,
-		Profiles:        deps.Encode,
-		Webhook:         deps.Webhook,
-	})
+	riveradapter.Register(workers, newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
+		return &IngestWorker{
+			storageProbed:       d.IngestStorageProbed,
+			Enqueuer:            d.Enqueuer,
+			MirakcClients:       d.MirakcClients,
+			Publisher:           d.MediaPublish,
+			Precheck:            d.IngestPrecheck,
+			RecordTarget:        d.IngestTarget,
+			CMDetectionStore:    d.CMDetectionStore,
+			MediaDir:            d.MediaDir,
+			MediaStoreName:      d.MediaStoreName,
+			StallTimeout:        d.IngestStallTimeout,
+			CMDetect:            d.CMDetect,
+			CutProfiles:         d.Encode.CutProfileSet(),
+			RecordingHLSEnabled: d.RecordingHLSEnabled,
+		}
+	}))
+	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps.perStore(), func(d *Deps) jobq.Worker[jobs.EncodeJobArgs] {
+		return &EncodeWorker{
+			Media:           d.MediaReconcile,
+			Attempts:        d.EncodeAttempts,
+			Publisher:       d.MediaPublish,
+			ObjectPublisher: d.DerivedMediaPublish,
+			Objects:         d.DerivedObjects,
+			Progress:        d.EncodeProgress,
+			MediaDir:        d.MediaDir,
+			MediaStoreName:  d.MediaStoreName,
+			ScratchDir:      d.ScratchDir,
+			FFmpeg:          d.Encode.FFmpeg,
+			FFprobe:         d.Encode.FFprobe,
+			Profiles:        d.Encode,
+			Webhook:         d.Webhook,
+		}
+	}))
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.MediaReconcile,
@@ -296,57 +320,71 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LoopMarkers:        deps.LoopMarkers,
 		Webhook:            deps.Webhook,
 	})
-	riveradapter.Register(workers, &CatalogExportWorker{
-		Store:          deps.Catalog,
-		MediaDir:       deps.MediaDir,
-		MediaStoreName: deps.MediaStoreName,
-	})
-	riveradapter.Register(workers, &ThumbnailWorker{
-		Media:            deps.MediaReconcile,
-		ObjectPublisher:  deps.DerivedMediaPublish,
-		Objects:          deps.DerivedObjects,
-		MediaDir:         deps.MediaDir,
-		MediaStoreName:   deps.MediaStoreName,
-		DerivedStoreName: deps.DerivedObjectStoreName,
-		ScratchDir:       deps.ScratchDir,
-		FFmpeg:           deps.Encode.FFmpeg,
-		FFprobe:          deps.Encode.FFprobe,
-	})
-	riveradapter.Register(workers, &SeekTilesWorker{
-		Media:           deps.MediaReconcile,
-		ObjectPublisher: deps.DerivedMediaPublish,
-		Objects:         deps.DerivedObjects,
-		MediaDir:        deps.MediaDir,
-		MediaStoreName:  deps.MediaStoreName,
-		ScratchDir:      deps.ScratchDir,
-		FFmpeg:          deps.Encode.FFmpeg,
-		FFprobe:         deps.Encode.FFprobe,
-	})
+	riveradapter.Register[jobs.CatalogExportArgs](workers, newStoreRoute("catalog_export", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CatalogExportArgs] {
+		return &CatalogExportWorker{
+			Store:          d.Catalog,
+			MediaDir:       d.MediaDir,
+			MediaStoreName: d.MediaStoreName,
+		}
+	}))
+	riveradapter.Register[jobs.ThumbnailJobArgs](workers, newStoreRoute("thumbnail", deps.perStore(), func(d *Deps) jobq.Worker[jobs.ThumbnailJobArgs] {
+		return &ThumbnailWorker{
+			Media:            d.MediaReconcile,
+			ObjectPublisher:  d.DerivedMediaPublish,
+			Objects:          d.DerivedObjects,
+			MediaDir:         d.MediaDir,
+			MediaStoreName:   d.MediaStoreName,
+			DerivedStoreName: d.DerivedObjectStoreName,
+			ScratchDir:       d.ScratchDir,
+			FFmpeg:           d.Encode.FFmpeg,
+			FFprobe:          d.Encode.FFprobe,
+		}
+	}))
+	riveradapter.Register[jobs.SeekTilesJobArgs](workers, newStoreRoute("seek_tiles", deps.perStore(), func(d *Deps) jobq.Worker[jobs.SeekTilesJobArgs] {
+		return &SeekTilesWorker{
+			Media:           d.MediaReconcile,
+			ObjectPublisher: d.DerivedMediaPublish,
+			Objects:         d.DerivedObjects,
+			MediaDir:        d.MediaDir,
+			MediaStoreName:  d.MediaStoreName,
+			ScratchDir:      d.ScratchDir,
+			FFmpeg:          d.Encode.FFmpeg,
+			FFprobe:         d.Encode.FFprobe,
+		}
+	}))
 	riveradapter.Register(workers, &ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.MediaReconcile,
 	})
-	riveradapter.Register(workers, &CMDetectWorker{
-		Enqueuer:       deps.Enqueuer,
-		DetectionStore: deps.CMDetectionStore,
-		MediaDir:       deps.MediaDir,
-		ScratchDir:     deps.ScratchDir,
-		CMDetect:       deps.CMDetect,
-		FFprobe:        deps.Encode.FFprobe,
-	})
-	riveradapter.Register(workers, &CMLogoCandidateWorker{
-		Store:      deps.CMStationStore,
-		MediaDir:   deps.MediaDir,
-		ScratchDir: deps.ScratchDir,
-		CMDetect:   deps.CMDetect,
-		FFprobe:    deps.Encode.FFprobe,
-	})
+	riveradapter.Register[jobs.CMDetectJobArgs](workers, newStoreRoute("cm_detect", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CMDetectJobArgs] {
+		return &CMDetectWorker{
+			Enqueuer:       d.Enqueuer,
+			DetectionStore: d.CMDetectionStore,
+			MediaDir:       d.MediaDir,
+			StoreName:      d.MediaStoreName,
+			ScratchDir:     d.ScratchDir,
+			CMDetect:       d.CMDetect,
+			FFprobe:        d.Encode.FFprobe,
+		}
+	}))
+	riveradapter.Register[jobs.CMLogoCandidateJobArgs](workers, newStoreRoute("cm_logo_candidate", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CMLogoCandidateJobArgs] {
+		return &CMLogoCandidateWorker{
+			Store:      d.CMStationStore,
+			MediaDir:   d.MediaDir,
+			ScratchDir: d.ScratchDir,
+			CMDetect:   d.CMDetect,
+			FFprobe:    d.Encode.FFprobe,
+		}
+	}))
 	riveradapter.Register(workers, &CMDetectReconcileWorker{
 		Enqueuer:       deps.Enqueuer,
+		Locator:        deps.OriginalLocator,
 		DetectionStore: deps.CMDetectionStore,
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
-	riveradapter.Register(workers, newDeleteReconcileWorker(deps))
+	riveradapter.Register[jobs.DeleteReconcileArgs](workers, newStoreRoute("delete_reconcile", deps.perStore(), func(d *Deps) jobq.Worker[jobs.DeleteReconcileArgs] {
+		return newDeleteReconcileWorker(d)
+	}))
 	riveradapter.Register(workers, &StorageTransferReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Storage:  deps.StorageTransfer,
@@ -359,13 +397,17 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		ObjectStores: deps.StorageObjects,
 		ScratchDir:   deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &StorageSyncWorker{
-		Storage:    deps.StorageObservation,
-		MediaDir:   deps.MediaDir,
-		ScratchDir: deps.ScratchDir,
-	})
-	riveradapter.Register(workers, &tsscan.ScanWorker{Media: deps.TSScan, MediaDir: deps.MediaDir})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan})
+	riveradapter.Register[jobs.StorageSyncArgs](workers, newStoreRoute("storage_sync", deps.perStore(), func(d *Deps) jobq.Worker[jobs.StorageSyncArgs] {
+		return &StorageSyncWorker{
+			Storage:    d.StorageObservation,
+			MediaDir:   d.MediaDir,
+			ScratchDir: d.ScratchDir,
+		}
+	}))
+	riveradapter.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps.perStore(), func(d *Deps) jobq.Worker[tsscan.ScanArgs] {
+		return &tsscan.ScanWorker{Media: d.TSScan, MediaDir: d.MediaDir}
+	}))
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan, Locator: deps.OriginalLocator})
 	return workers
 }
 

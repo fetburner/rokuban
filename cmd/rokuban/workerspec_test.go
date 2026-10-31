@@ -9,6 +9,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -79,13 +80,14 @@ func TestNewWorkerSpec_Queues(t *testing.T) {
 		{Logical: "ruler", Physical: []string{"ruler"}, MaxWorkers: 1},
 		{Logical: "reconciler", Physical: []string{"reconciler_tokyo", "reconciler_takamatsu"}, MaxWorkers: 1},
 		{Logical: "watcher", Physical: []string{"watcher_tokyo", "watcher_takamatsu"}, MaxWorkers: 1},
-		{Logical: "encode", Physical: []string{"encode"}, MaxWorkers: 2},
-		{Logical: "thumbnail", Physical: []string{"thumbnail"}, MaxWorkers: 3},
-		{Logical: "cm_detect", Physical: []string{"cm_detect"}, MaxWorkers: 1},
-		{Logical: "cleanup", Physical: []string{"cleanup"}, MaxWorkers: 2},
-		{Logical: "storage", Physical: []string{"storage"}, MaxWorkers: 1},
+		{Logical: "encode", Physical: []string{"encode_test-store"}, MaxWorkers: 2},
+		{Logical: "thumbnail", Physical: []string{"thumbnail_test-store"}, MaxWorkers: 3},
+		{Logical: "cm_detect", Physical: []string{"cm_detect_test-store"}, MaxWorkers: 1},
+		{Logical: "cleanup", Physical: []string{"cleanup"}, MaxWorkers: 4},
+		{Logical: "storage", Physical: []string{"storage_test-store"}, MaxWorkers: 1},
 		{Logical: "transfer", Physical: []string{"transfer_test-store"}, MaxWorkers: 1},
-		{Logical: "ts_scan", Physical: []string{"ts_scan"}, MaxWorkers: 1},
+		{Logical: "original", Physical: []string{"original_test-store"}, MaxWorkers: 2},
+		{Logical: "ts_scan", Physical: []string{"ts_scan_test-store"}, MaxWorkers: 1},
 	}
 	if len(spec.Queues) != len(want) {
 		t.Fatalf("len(Queues) = %d, want %d: %+v", len(spec.Queues), len(want), spec.Queues)
@@ -125,52 +127,89 @@ func TestNewWorkerSpec_PeriodicJobs(t *testing.T) {
 		{"ruler_pass", "takamatsu", 10 * time.Minute, "ruler"},
 		{"reconcile_pass", "takamatsu", 30 * time.Second, "reconciler"},
 		{"record_sweep", "takamatsu", 5 * time.Minute, "watcher"},
-		{"catalog_export", "", 24 * time.Hour, "cleanup"},
-		{"delete_reconcile", "", 15 * time.Minute, "cleanup"},
-		{"label_rule_reconcile", "", 15 * time.Minute, "cleanup"},
-		{"encode_reconcile", "", 15 * time.Minute, "encode"},
-		{"thumbnail_reconcile", "", 15 * time.Minute, "thumbnail"},
-		{"ts_scan_reconcile", "", 15 * time.Minute, "ts_scan"},
+		{"catalog_export", "", 24 * time.Hour, "original"},
+		{"delete_reconcile", "", 15 * time.Minute, "original"},
 		{"storage_sync", "", 5 * time.Minute, "storage"},
-		{"storage_transfer_reconcile", "", 15 * time.Minute, "storage"},
+		{"label_rule_reconcile", "", 15 * time.Minute, "cleanup"},
+		{"encode_reconcile", "", 15 * time.Minute, "cleanup"},
+		{"thumbnail_reconcile", "", 15 * time.Minute, "cleanup"},
+		{"ts_scan_reconcile", "", 15 * time.Minute, "cleanup"},
+		{"storage_transfer_reconcile", "", 15 * time.Minute, "cleanup"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("periodic jobs =\n%v\nwant\n%v", got, want)
 	}
 }
 
-// transfer の物理キューは config の置き場の集合ではなく、--stores でマウントした置き場で決まる。
+// 置き場で修飾するキューの物理名は、config の置き場の集合ではなく、--stores でマウントした置き場で決まる。
 // 取り違えると、マウントしていない置き場のキューを購読して何も掴めない worker になる。
-func TestWorkerQueueSpecsQualifyTransferByMountedFSStore(t *testing.T) {
+// 期待値はリテラルで書く（実装の定数を使うと、どの論理キューが修飾されるかを何も固定しない）。
+func TestWorkerQueueSpecsQualifyByMountedFSStore(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.Storage.Stores = map[string]config.StoreConfig{
 		"tokyo":     {Kind: "fs"},
 		"takamatsu": {Kind: "fs"},
 		"s3main":    {Kind: "s3"},
 	}
-	cfg.Storage.MediaStoreName = "tokyo"
+	storeBound := []string{"transfer", "encode", "thumbnail", "cm_detect", "ts_scan", "original", "storage"}
 	tests := []struct {
 		name    string
 		mounted []string
-		want    []string
+		want    func(logical string) []string
 	}{
-		{name: "mounted tokyo", mounted: []string{"tokyo"}, want: []string{"transfer_tokyo"}},
-		{name: "mounted takamatsu", mounted: []string{"takamatsu"}, want: []string{"transfer_takamatsu"}},
-		{name: "mounts none", mounted: nil, want: []string{}},
+		{name: "mounted tokyo", mounted: []string{"tokyo"}, want: func(l string) []string { return []string{l + "_tokyo"} }},
+		{name: "mounted takamatsu", mounted: []string{"takamatsu"}, want: func(l string) []string { return []string{l + "_takamatsu"} }},
+		{name: "mounted both", mounted: []string{"tokyo", "takamatsu"}, want: func(l string) []string { return []string{l + "_tokyo", l + "_takamatsu"} }},
+		{name: "mounts none", mounted: nil, want: func(string) []string { return []string{} }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			seen := 0
 			for _, spec := range workerQueueSpecs(cfg, registryNames(cfg.Registry()), tt.mounted) {
-				if spec.Logical != "transfer" {
+				if !slices.Contains(storeBound, spec.Logical) {
 					continue
 				}
-				if !slices.Equal(spec.Physical, tt.want) {
-					t.Fatalf("transfer physical queues = %v, want literal %v", spec.Physical, tt.want)
+				seen++
+				if want := tt.want(spec.Logical); !slices.Equal(spec.Physical, want) {
+					t.Errorf("%s physical queues = %v, want literal %v", spec.Logical, spec.Physical, want)
 				}
-				return
 			}
-			t.Fatal("transfer queue spec missing")
+			if seen != len(storeBound) {
+				t.Fatalf("saw %d store-bound queue specs, want %d", seen, len(storeBound))
+			}
 		})
+	}
+}
+
+// 置き場で修飾するかの判定は jobs.IsStoreBound の 1 か所で、投入側の PhysicalQueueFor と購読側の worker 仕様が
+// 食い違わない。論理キューごとに、store を持つ Args の投入先が購読している物理キューに含まれることを確かめる。
+func TestStoreBoundJobsAreInsertedIntoSubscribedQueues(t *testing.T) {
+	cfg := workerSpecTestConfig(t)
+	cfg.CMDetect.Enabled = true
+	mounted := []string{"tokyo", "takamatsu"}
+	spec := newWorkerSpec(cfg, cfg.Registry(), mounted)
+	subscribed := map[string]bool{}
+	for _, q := range spec.Queues {
+		for _, physical := range q.Physical {
+			subscribed[physical] = true
+		}
+	}
+	for _, args := range []jobq.Args{
+		jobs.EncodeJobArgs{Store: "takamatsu"}, jobs.ThumbnailJobArgs{Store: "takamatsu"}, jobs.SeekTilesJobArgs{Store: "takamatsu"},
+		jobs.CMDetectJobArgs{Store: "takamatsu"}, jobs.CMLogoCandidateJobArgs{Store: "takamatsu"},
+		tsscan.ScanArgs{Store: "takamatsu"}, jobs.DeleteReconcileArgs{Store: "takamatsu"}, jobs.CatalogExportArgs{Store: "takamatsu"},
+		jobs.StorageSyncArgs{Store: "takamatsu"}, jobs.StorageTransferArgs{Store: "takamatsu"},
+	} {
+		got, err := jobs.PhysicalQueueFor(args)
+		if err != nil {
+			t.Fatalf("PhysicalQueueFor(%T): %v", args, err)
+		}
+		if want := args.Spec().Queue + "_takamatsu"; got != want {
+			t.Errorf("PhysicalQueueFor(%T) = %q, want literal-derived %q", args, got, want)
+		}
+		if !subscribed[got] {
+			t.Errorf("%T is inserted into %q, which the worker does not subscribe to", args, got)
+		}
 	}
 }
 
@@ -178,7 +217,7 @@ func TestWorkerPeriodicJobSpecs_MaxAttempts(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.CMDetect.Enabled = true
 
-	for _, periodic := range workerPeriodicJobSpecs(cfg, []string{"tokyo", "takamatsu"}) {
+	for _, periodic := range workerPeriodicJobSpecs(cfg, []string{"tokyo", "takamatsu"}, nil) {
 		if got := periodic.Args.Spec().MaxAttempts; got != 1 {
 			t.Errorf("%s MaxAttempts = %d, want literal 1", periodic.Args.Kind(), got)
 		}
@@ -237,6 +276,9 @@ func TestNewWorkerSpec_NoSites(t *testing.T) {
 	}
 	for _, q := range spec.Queues {
 		wantEmpty := slices.Contains([]string{"ingest", "epg", "reconciler", "watcher"}, q.Logical)
+		if slices.Contains([]string{"transfer", "encode", "thumbnail", "cm_detect", "ts_scan", "original", "storage"}, q.Logical) {
+			wantEmpty = false // 置き場で分けるキューは、0 サイトでもマウントした置き場の数だけある
+		}
 		if wantEmpty != (len(q.Physical) == 0) {
 			t.Errorf("queue %q Physical = %v, empty want %v", q.Logical, q.Physical, wantEmpty)
 		}

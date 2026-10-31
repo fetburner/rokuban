@@ -74,7 +74,7 @@ SELECT DISTINCT a.recording_id
 FROM media_assets a
 JOIN media_asset_copies c
   ON c.media_asset_id = a.id
- AND c.store = $1
+ AND ($1::text IS NULL OR c.store = $1)
  AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id > $2::bigint
@@ -94,7 +94,7 @@ LIMIT $3
 `
 
 type ListMissingTSScanRecordingsParams struct {
-	StoreName        string
+	StoreName        *string
 	AfterRecordingID int64
 	RowLimit         int32
 }

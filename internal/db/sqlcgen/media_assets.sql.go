@@ -611,6 +611,41 @@ func (q *Queries) IsActiveThumbnailInput(ctx context.Context, arg IsActiveThumbn
 	return exists, err
 }
 
+const listActiveOriginalStores = `-- name: ListActiveOriginalStores :many
+SELECT a.recording_id, c.store
+FROM media_assets a
+JOIN LATERAL preferred_active_media_asset_copy(a.id, NULL::text) c ON true
+WHERE a.kind = 'original'
+  AND a.recording_id = ANY($1::bigint[])
+`
+
+type ListActiveOriginalStoresRow struct {
+	RecordingID int64
+	Store       string
+}
+
+// 原本を読むジョブを積む側が置き場のキューを選ぶための、録画ごとの active な原本のコピーの置き場。
+// 候補の件数に比例して問い合わせないよう、ページ単位でまとめて引く。複数の置き場にあれば名前順で先頭。
+func (q *Queries) ListActiveOriginalStores(ctx context.Context, recordingIds []int64) ([]ListActiveOriginalStoresRow, error) {
+	rows, err := q.db.Query(ctx, listActiveOriginalStores, recordingIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveOriginalStoresRow
+	for rows.Next() {
+		var i ListActiveOriginalStoresRow
+		if err := rows.Scan(&i.RecordingID, &i.Store); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockActiveThumbnailMediaAsset = `-- name: LockActiveThumbnailMediaAsset :one
 SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a

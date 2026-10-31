@@ -77,27 +77,31 @@ type RecordingFilter struct {
 // RecordingQueryRow は録画読み取りが返す素の DB 事実と射影値を持つ。
 // API 固有の状態導出は、呼び出し側がこの行から行う。
 type RecordingQueryRow struct {
-	ID                       int64
-	Site                     string
-	RuleID                   *int64
-	Source                   string
-	ServiceName              string
-	ChannelType              string
-	Channel                  string
-	NetworkID                int32
-	ServiceID                int32
-	EventID                  int32
-	Title                    string
-	Description              *string
-	ProgramStartAt           time.Time
-	ProgramDurationMs        int64
-	Status                   string
-	StartedAt                *time.Time
-	EndedAt                  *time.Time
-	QualityEvents            json.RawMessage
-	DeletedAt                *time.Time
-	CreatedAt                time.Time
-	HLSGeneration            *int64
+	ID                int64
+	Site              string
+	RuleID            *int64
+	Source            string
+	ServiceName       string
+	ChannelType       string
+	Channel           string
+	NetworkID         int32
+	ServiceID         int32
+	EventID           int32
+	Title             string
+	Description       *string
+	ProgramStartAt    time.Time
+	ProgramDurationMs int64
+	Status            string
+	StartedAt         *time.Time
+	EndedAt           *time.Time
+	QualityEvents     json.RawMessage
+	DeletedAt         *time.Time
+	CreatedAt         time.Time
+	HLSGeneration     *int64
+	// HLSStore は録画 HLS が読む入力（active な原本のコピー、無ければ ingest temp）がある置き場。
+	HLSStore *string
+	// OriginalStore は active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。無ければ nil。
+	OriginalStore            *string
 	OriginalSizeBytes        *int64
 	DropPackets              int64
 	DropDrops                int64

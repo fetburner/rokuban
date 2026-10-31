@@ -90,6 +90,15 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 				return err
 			}
 
+			storeName, root := "", ""
+			if libraryPath != "" {
+				// ライブラリの取り込みだけが置き場のファイルを読む。
+				storeName, root, err = resolveCommandStore(cmd, cfg.Storage)
+				if err != nil {
+					return err
+				}
+			}
+
 			ctx := cmd.Context()
 			pool, err := db.NewPool(ctx, cfg.DB, nil, 0, 0)
 			if err != nil {
@@ -113,7 +122,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 				if err != nil {
 					return fmt.Errorf("reading --library-json: %w", err)
 				}
-				result, err := epgimport.ImportLibrary(ctx, pgstore.NewMedia(pool, cfg.Storage.MediaStoreName, "") /* import は削除の判定をしない */, cfg.Storage.MediaDir, cfg.Storage.MediaStoreName, site.Site, items)
+				result, err := epgimport.ImportLibrary(ctx, pgstore.NewMedia(pool, storeName, "") /* import は削除の判定をしない */, root, storeName, site.Site, items)
 				if err != nil {
 					return fmt.Errorf("importing library: %w", err)
 				}
@@ -124,6 +133,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 		},
 	}
 
+	addCommandStoreFlag(cmd)
 	cmd.Flags().Bool("rules", false, "EPGStation のルールを取り込む（--epgstation-url が必要）")
 	cmd.Flags().String("epgstation-url", "", "EPGStation の base URL（例: http://localhost:8888。--rules 用）")
 	cmd.Flags().String("library-json", "", "EPGStation のライブラリを表す JSON ファイルのパス（形は docs/runbook/import-epgstation.md 参照）")

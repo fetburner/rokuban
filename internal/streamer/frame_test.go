@@ -46,7 +46,7 @@ func newFrameFixture(t *testing.T, frame []byte) (*frameFixture, int64) {
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
 	f := &frameFixture{pool: pool}
-	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
+	s := New(pgstoretest.Media(pool), Config{MediaRoots: map[string]string{"test-store": mediaDir}, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		f.calls = append(f.calls, append([]string{filepath.Base(name)}, args...))
 		switch {
@@ -74,7 +74,7 @@ func fakeJPEG(w, h int) []byte {
 }
 
 func (f *frameFixture) url(id int64, query string) string {
-	return fmt.Sprintf("%s/api/media/recordings/%d/frame%s", f.srv.URL, id, query)
+	return fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/frame%s", f.srv.URL, id, query)
 }
 
 // 原本の指定位置のコマを、記録上の大きさ付きで返す。**encoded は使わない。**
@@ -137,7 +137,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	f := &frameFixture{pool: pool}
-	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
+	s := New(pgstoretest.Media(pool), Config{MediaRoots: map[string]string{"test-store": mediaDir}, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		f.calls = append(f.calls, append([]string{filepath.Base(name)}, args...))
 		return nil, fmt.Errorf("must not run %s", name)
@@ -213,7 +213,7 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	id := dbtest.Recording(t, pool)
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
-	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
+	s := New(pgstoretest.Media(pool), Config{MediaRoots: map[string]string{"test-store": mediaDir}, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("ffmpeg: exit status 1: Output file #0 does not contain any stream")
 	}
@@ -222,7 +222,7 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	res, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/frame?at=900000", srv.URL, id), nil)
+	res, _ := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/frame?at=900000", srv.URL, id), nil)
 	if res.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", res.StatusCode)
 	}
@@ -249,13 +249,13 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	}
 	id := dbtest.Recording(t, pool)
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, info.Size() })
-	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
+	s := New(pgstoretest.Media(pool), Config{MediaRoots: map[string]string{"test-store": mediaDir}, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	res, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/frame?at=1000", srv.URL, id), nil)
+	res, body := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/frame?at=1000", srv.URL, id), nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", res.StatusCode, body)
 	}
@@ -317,7 +317,7 @@ func testFrameFollowsChange(t *testing.T, baseOffset string) {
 	}
 	id := dbtest.Recording(t, pool)
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(joined)) })
-	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
+	s := New(pgstoretest.Media(pool), Config{MediaRoots: map[string]string{"test-store": mediaDir}, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)
 	srv := httptest.NewServer(r)
@@ -333,7 +333,7 @@ func testFrameFollowsChange(t *testing.T, baseOffset string) {
 		{"2100", "720x480", "32:27"},
 		{"3000", "720x480", "32:27"},
 	} {
-		res, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/frame?at=%s", srv.URL, id, tc.at), nil)
+		res, body := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/frame?at=%s", srv.URL, id, tc.at), nil)
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("at=%s: status = %d (body %q)", tc.at, res.StatusCode, body)
 		}

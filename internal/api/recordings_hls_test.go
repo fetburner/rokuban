@@ -20,7 +20,7 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			srv := httptest.NewServer(NewRouter(RouterConfig{
 				RecordingQuery:      pgstoretest.Recordings(pool),
-				RecordingHLSEnabled: enabled, MediaStoreName: dbtest.StoreName,
+				RecordingHLSEnabled: enabled, StoreNames: []string{dbtest.StoreName},
 				LiveProfiles: []LiveProfileSummary{{Name: "sd"}, {Name: "hd"}},
 			}))
 			defer srv.Close()
@@ -65,7 +65,7 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 					}
 					if tc.progress {
 						seedIngestProgress(t, pool, id, 123, nil, time.Now())
-						if _, err := pool.Exec(context.Background(), `UPDATE recording_ingest_progress SET temp_generation=91 WHERE recording_id=$1`, id); err != nil {
+						if _, err := pool.Exec(context.Background(), `UPDATE recording_ingest_progress SET temp_generation=91, temp_store='test-store' WHERE recording_id=$1`, id); err != nil {
 							t.Fatal(err)
 						}
 					}

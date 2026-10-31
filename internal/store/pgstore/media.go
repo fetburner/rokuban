@@ -148,6 +148,17 @@ func (s *Media) GetOriginalMediaAssetForServing(ctx context.Context, recordingID
 	return servingAsset(row), nil
 }
 
+// GetOriginalMediaAssetForServingInStore は storeName の置き場にコピーがある配信可能な原本を返す。
+func (s *Media) GetOriginalMediaAssetForServingInStore(ctx context.Context, recordingID int64, storeName string) (store.MediaAsset, error) {
+	row, err := sqlcgen.New(s.pool).GetOriginalMediaAssetForServing(ctx, sqlcgen.GetOriginalMediaAssetForServingParams{
+		RecordingID: recordingID, StoreName: &storeName,
+	})
+	if err != nil {
+		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading original media asset for recording %d in store %q", recordingID, storeName))
+	}
+	return servingAsset(row), nil
+}
+
 // GetEncodedMediaAssetForServing は指定プロファイルの配信可能な encoded を返す。
 func (s *Media) GetEncodedMediaAssetForServing(ctx context.Context, recordingID int64, profile string) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetEncodedMediaAssetForServing(ctx, sqlcgen.GetEncodedMediaAssetForServingParams{
@@ -192,6 +203,43 @@ func (s *Media) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original media asset for recording %d", recordingID))
 	}
 	return store.MediaAsset{ID: row.ID, Store: row.Store, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+}
+
+// OriginalStore は録画の active な原本のコピーがある置き場を、この Media の束縛によらず返す。
+func (s *Media) OriginalStore(ctx context.Context, recordingID int64) (string, error) {
+	row, err := sqlcgen.New(s.pool).GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
+	if err != nil {
+		return "", mediaQueryError(err, fmt.Sprintf("locating the active original of recording %d", recordingID))
+	}
+	return row.Store, nil
+}
+
+// OriginalStores は recordingIDs の active な原本のコピーの置き場を 1 回の問い合わせで返す。
+func (s *Media) OriginalStores(ctx context.Context, recordingIDs []int64) (map[int64]string, error) {
+	stores := make(map[int64]string, len(recordingIDs))
+	if len(recordingIDs) == 0 {
+		return stores, nil
+	}
+	rows, err := sqlcgen.New(s.pool).ListActiveOriginalStores(ctx, recordingIDs)
+	if err != nil {
+		return nil, fmt.Errorf("locating the active originals of %d recordings: %w", len(recordingIDs), err)
+	}
+	for _, row := range rows {
+		stores[row.RecordingID] = row.Store
+	}
+	return stores, nil
+}
+
+// DesiredOriginalStoreAtIngest は規則を年齢 0 で評価した原本の置き場を返す。評価は SQL 関数
+// desired_media_store に任せる。
+func (s *Media) DesiredOriginalStoreAtIngest(ctx context.Context, originalRules []byte, derivedStore, site string) (string, error) {
+	name, err := sqlcgen.New(s.pool).GetDesiredOriginalStoreAtIngest(ctx, sqlcgen.GetDesiredOriginalStoreAtIngestParams{
+		OriginalRules: originalRules, DerivedStore: derivedStore, RecordingSite: site,
+	})
+	if err != nil {
+		return "", fmt.Errorf("evaluating the original store rules for site %q: %w", site, err)
+	}
+	return name, nil
 }
 
 // GetRecordingEncodeTimes はエンコード締切の計算に使う録画時刻を返す。
@@ -739,6 +787,7 @@ func (s *Media) ListStorageSync(ctx context.Context) ([]store.StorageSync, error
 	out := make([]store.StorageSync, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, store.StorageSync{
+			Store:          row.Store,
 			Root:           row.Root,
 			Path:           row.Path,
 			TotalBytes:     row.TotalBytes,

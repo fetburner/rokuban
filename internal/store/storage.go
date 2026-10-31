@@ -7,6 +7,8 @@ import (
 
 // StorageSync はファイルシステムから観測したストレージ容量を表す。
 type StorageSync struct {
+	// Store は観測した置き場の名前（storage_sync.store）。
+	Store          string
 	Root           string
 	Path           string
 	TotalBytes     int64

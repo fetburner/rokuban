@@ -70,6 +70,8 @@ func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 type ReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Media    store.TSScan
+	// Locator は原本のコピーがある置き場を返し、スキャンを積む物理キューの置き場を決める。
+	Locator  store.OriginalLocator
 	RowLimit int32
 }
 
@@ -86,8 +88,18 @@ func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
 	if err != nil {
 		return fmt.Errorf("listing originals that need TS scans: %w", err)
 	}
+	stores, err := w.Locator.OriginalStores(ctx, rows)
+	if err != nil {
+		return fmt.Errorf("locating originals for TS scans: %w", err)
+	}
 	for _, recordingID := range rows {
-		if err := EnqueueScan(ctx, w.Enqueuer, recordingID); err != nil {
+		storeName, ok := stores[recordingID]
+		if !ok {
+			// コピーが消えた録画は、次のパスが引き直す。
+			slog.Error("ts_scan_reconcile: no active original copy to choose a store from", "recording_id", recordingID)
+			continue
+		}
+		if err := EnqueueScan(ctx, w.Enqueuer, recordingID, storeName); err != nil {
 			slog.Error("ts_scan_reconcile: failed to enqueue scan", "recording_id", recordingID, "err", err)
 		}
 	}

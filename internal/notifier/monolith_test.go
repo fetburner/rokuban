@@ -46,7 +46,7 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 		Ready:          pool.Ping,
 		RecordingQuery: pgstoretest.Recordings(pool),
 		Mounter: api.Mounters{
-			streamer.New(pgstoretest.Media(pool), streamer.Config{MediaDir: mediaDir}),
+			streamer.New(pgstoretest.Media(pool), streamer.Config{MediaRoots: map[string]string{"test-store": mediaDir}}),
 			hub,
 		},
 	})
@@ -69,7 +69,7 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 	}
 
 	// メディア配信: streamer の Mounter
-	fileResp, err := http.Get(fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID))
+	fileResp, err := http.Get(fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", srv.URL, recordingID))
 	if err != nil {
 		t.Fatalf("GET recording file: %v", err)
 	}

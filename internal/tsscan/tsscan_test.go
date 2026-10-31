@@ -15,7 +15,7 @@ func TestArgsSpec(t *testing.T) {
 		timeout     time.Duration
 		maxAttempts int
 	}{
-		{"scan", ScanArgs{RecordingID: 1}, "ts_scan", 6 * time.Hour, 0},
+		{"scan", ScanArgs{RecordingID: 1, Store: "tokyo"}, "ts_scan", 6 * time.Hour, 0},
 		{"reconcile", ReconcileArgs{AfterRecordingID: 10}, "ts_scan_reconcile", 5 * time.Minute, 1},
 	}
 
@@ -25,8 +25,10 @@ func TestArgsSpec(t *testing.T) {
 			if got := tt.args.Kind(); got != tt.kind {
 				t.Errorf("Kind() = %q, want %q", got, tt.kind)
 			}
-			if spec.Queue != "ts_scan" {
-				t.Errorf("Spec().Queue = %q, want literal ts_scan", spec.Queue)
+			// スキャン本体は置き場で修飾する ts_scan、候補を列挙するだけの reconcile は DB 専用の cleanup。
+			wantQueue := map[string]string{"scan": "ts_scan", "reconcile": "cleanup"}[tt.name]
+			if spec.Queue != wantQueue {
+				t.Errorf("Spec().Queue = %q, want literal %s", spec.Queue, wantQueue)
 			}
 			if got := spec.Timeout(tt.args); got != tt.timeout {
 				t.Errorf("Spec().Timeout(args) = %s, want literal %s", got, tt.timeout)

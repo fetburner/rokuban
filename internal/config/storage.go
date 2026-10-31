@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,7 +21,11 @@ import (
 
 // StoreConfig は 1 つの物理置き場の接続定義。
 type StoreConfig struct {
-	Kind        string `yaml:"kind" json:"kind"`
+	Kind string `yaml:"kind" json:"kind"`
+	// Root は kind fs の置き場の root ディレクトリ。省略した FS 置き場は storage.media_dir を使う。
+	// 1 つのプロセスが複数の FS 置き場をマウントするとき、各置き場の root は互いに別でなければならない
+	// （StorageConfig.StoreRoots が検査する）。マウント先の違いは規則の指紋に入れない（json:"-"）。
+	Root        string `yaml:"root,omitempty" json:"-"`
 	InternalURL string `yaml:"internal_url,omitempty" json:"internal_url,omitempty"`
 	Endpoint    string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
 	Region      string `yaml:"region,omitempty" json:"region,omitempty"`
@@ -95,14 +100,45 @@ func (c StorageConfig) fsStoreNames() []string {
 // FSStoreNames はファイルシステム置き場の名前を昇順で返す。
 func (c StorageConfig) FSStoreNames() []string { return c.fsStoreNames() }
 
-// setSingleFSStoreCompatibilityName は規則を、今の単一 media_dir の実装へ橋渡しする。
-// FS 置き場がちょうど 1 つのときだけその名前を MediaStoreName に入れる。
-// 複数の置き場を扱う worker は置き場ごとのルートを使うので、この値から desired の置き場を推測してはならない。
-func (c *StorageConfig) setSingleFSStoreCompatibilityName() {
-	c.MediaStoreName = ""
-	if names := c.fsStoreNames(); len(names) == 1 {
-		c.MediaStoreName = names[0]
+// StoreRoots は、マウントする FS 置き場の名前から root への対応を返す。
+// root は置き場の `root`、無ければ storage.media_dir である。
+// 2 つ以上の置き場が同じ root になる構成は、別の置き場の目印と書き込みを取り違えるので拒む
+// （media_dir だけに頼れるのは 1 つの置き場だけ）。
+func (c StorageConfig) StoreRoots(mounted []string) (map[string]string, error) {
+	roots := make(map[string]string, len(mounted))
+	owner := make(map[string]string, len(mounted))
+	for _, name := range mounted {
+		store, ok := c.Stores[name]
+		if !ok || store.Kind != "fs" {
+			return nil, fmt.Errorf("store %q is not an fs store defined in storage.stores", name)
+		}
+		root := store.Root
+		if root == "" {
+			root = c.MediaDir
+		}
+		if root == "" {
+			return nil, fmt.Errorf("storage.stores.%s.root is required (storage.media_dir is not set)", name)
+		}
+		clean := filepath.Clean(root)
+		if other, dup := owner[clean]; dup {
+			return nil, fmt.Errorf("stores %q and %q share the root %q; mounting several fs stores in one process needs a distinct storage.stores.<name>.root for each", other, name, clean)
+		}
+		owner[clean] = name
+		roots[name] = root
 	}
+	return roots, nil
+}
+
+// allFSStoresHaveRoot は、FS 置き場が 1 つ以上あり、すべてが root を持つかを返す。
+// そのとき storage.media_dir は既定の root として要らない。
+func (c StorageConfig) allFSStoresHaveRoot() bool {
+	names := c.fsStoreNames()
+	for _, name := range names {
+		if c.Stores[name].Root == "" {
+			return false
+		}
+	}
+	return len(names) > 0
 }
 
 // validate は置き場の定義と desired の置き場規則を検査する。
@@ -114,26 +150,9 @@ func (c StorageConfig) validate(sites []MirakcSite, missingAssetAge time.Duratio
 	errs := c.validatePolicyRequirements()
 	errs = append(errs, c.validateStoreDefinitions()...)
 	errs = append(errs, c.validatePolicyTargets(sites)...)
-	errs = append(errs, c.validateSingleFSStore()...)
 	errs = append(errs, c.validateTransfer(missingAssetAge)...)
 	if len(errs) != 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return nil
-}
-
-// validateSingleFSStore は原本用の FS 置き場を 1 つに制限する。
-func (c StorageConfig) validateSingleFSStore() []string {
-	const limit = "not supported yet: workers currently write only to a single fs store"
-	fsNames := c.fsStoreNames()
-	if len(fsNames) != 1 {
-		return []string{fmt.Sprintf("storage.stores must define exactly one fs store (%s)", limit)}
-	}
-	// originals の store は FS に限られる（validatePolicyTargets）。FS 置き場が 1 つなら、規則は全てそれを指す。
-	only := fsNames[0]
-	derived, exists := c.Stores[c.Derived]
-	if exists && derived.Kind == "fs" && c.Derived != only {
-		return []string{fmt.Sprintf("storage.derived %q must be the single fs store %q (%s)", c.Derived, only, limit)}
 	}
 	return nil
 }
@@ -173,6 +192,9 @@ func (c StorageConfig) validateStoreDefinitions() []string {
 				errs = append(errs, fmt.Sprintf("storage.stores.%s: endpoint, region, and bucket are only valid for kind s3", name))
 			}
 		case "s3":
+			if store.Root != "" {
+				errs = append(errs, fmt.Sprintf("storage.stores.%s.root is only valid for kind fs", name))
+			}
 			if store.Bucket == "" {
 				errs = append(errs, fmt.Sprintf("storage.stores.%s.bucket is required for kind s3", name))
 			}

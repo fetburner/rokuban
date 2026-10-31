@@ -105,7 +105,8 @@ func quoteDSNValue(v string) string {
 
 // StorageConfig はメディアファイルの保存先設定。
 //
-// MediaDir は ingest の強いファイルシステム契約（file fsync、Close のエラー報告、
+// MediaDir は、`root` を持たない FS 置き場の root（既定値）である。1 つのプロセスがマウントできるのは、
+// これに頼る置き場 1 つまで。ingest の強いファイルシステム契約（file fsync、Close のエラー報告、
 // 同一 FS 内の atomic rename、rename 後の親ディレクトリ fsync）を満たす root に
 // 限る。worker は ingest キューを購読するとき起動時に操作プローブを行うが、
 // パス文字列から FS の種類を推測しない。geesefs / s3fs / Mountpoint のような
@@ -120,12 +121,8 @@ type StorageConfig struct {
 	// Transfer は置き場間転送の上限と、旧コピーを消すまでの猶予。
 	Transfer StorageTransferConfig `yaml:"transfer"`
 
-	// MediaStoreName は現在の単一 media_dir 実装へ渡す互換値。
-	// Load は storage.stores に FS が 1 つだけある場合にその名前を設定する。
-	// desired の置き場を決める用途には使わない。
-	MediaStoreName string `yaml:"-"`
-	MediaDir       string `yaml:"media_dir"`
-	ScratchDir     string `yaml:"scratch_dir"`
+	MediaDir   string `yaml:"media_dir"`
+	ScratchDir string `yaml:"scratch_dir"`
 
 	// AccelLocation を設定すると録画ファイルの配信を X-Accel-Redirect で
 	// リバースプロキシに委ねる（認可判定はアプリ、バイト転送は nginx）。
@@ -280,13 +277,17 @@ func defaults() Config {
 // 検査は、それを知っている場所（validateMirakcRegistry）に置く。
 func (c Config) missingRequired() []string {
 	var missing []string
-	for _, k := range []struct{ path, value string }{
+	required := []struct{ path, value string }{
 		{"db.host", c.DB.Host},
 		{"db.user", c.DB.User},
 		{"db.password", c.DB.Password},
 		{"db.database", c.DB.Database},
-		{"storage.media_dir", c.Storage.MediaDir},
-	} {
+	}
+	// 全 FS 置き場が root を持つなら、media_dir は既定の root として要らない。
+	if !c.Storage.allFSStoresHaveRoot() {
+		required = append(required, struct{ path, value string }{"storage.media_dir", c.Storage.MediaDir})
+	}
+	for _, k := range required {
 		if k.value == "" {
 			missing = append(missing, k.path)
 		}
@@ -329,7 +330,6 @@ func loadFromString(raw string) (*Config, error) {
 		cfg.Ruler.RetractGrace = &d
 	}
 	cfg.Storage.applyPolicyDefaults()
-	cfg.Storage.setSingleFSStoreCompatibilityName()
 
 	if missing := cfg.missingRequired(); len(missing) > 0 {
 		return nil, &ValidationError{missing: missing}

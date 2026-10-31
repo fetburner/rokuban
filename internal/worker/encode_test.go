@@ -1080,7 +1080,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 
 	router := chi.NewRouter()
 	streamer.New(pgstoretest.Media(pool), streamer.Config{
-		MediaDir: mediaDir, ObjectStores: map[string]objstore.Store{dbtest.StoreName: objects},
+		MediaRoots: map[string]string{dbtest.StoreName: mediaDir}, ObjectStores: map[string]objstore.Store{dbtest.StoreName: objects},
 	}).Mount(router)
 	srv := httptest.NewServer(router)
 	defer srv.Close()

@@ -28,7 +28,7 @@ func newStorageAdoptCmd() *cobra.Command {
 		Use:   "adopt <store-name>",
 		Short: "置き場の目印を書き、既存行を割り当てる",
 		Args:  cobra.ExactArgs(1),
-		Long: `media_dir の root に .rokuban-store を作成し、置き場名を書き込む。
+		Long: `置き場の root（storage.stores.<name>.root、無ければ media_dir）に .rokuban-store を作成し、置き場名を書き込む。
 store が空の観測行と取り込み進捗行をこの置き場へ割り当て、既存コピーの
 パスから派生世代を補正する。コピー行は作らない。
 
@@ -44,9 +44,6 @@ store が空の観測行と取り込み進捗行をこの置き場へ割り当�
 			if !mediapath.ValidStoreName(name) {
 				return fmt.Errorf("invalid store name %q: use lowercase ASCII letters, digits, and hyphens", name)
 			}
-			if cfg.Storage.MediaStoreName != "" && cfg.Storage.MediaStoreName != name {
-				return fmt.Errorf("store name %q does not match the fs store in storage.stores %q", name, cfg.Storage.MediaStoreName)
-			}
 			store, ok := cfg.Storage.Stores[name]
 			if !ok {
 				return fmt.Errorf("store name %q is not configured in storage.stores", name)
@@ -54,7 +51,12 @@ store が空の観測行と取り込み進捗行をこの置き場へ割り当�
 			if store.Kind != "fs" {
 				return fmt.Errorf("storage adopt requires an fs store, but storage.stores.%s.kind is %q", name, store.Kind)
 			}
-			markerPath := filepath.Join(cfg.Storage.MediaDir, mediapath.StoreMarkerFileName)
+			roots, err := cfg.Storage.StoreRoots([]string{name})
+			if err != nil {
+				return err
+			}
+			root := roots[name]
+			markerPath := filepath.Join(root, mediapath.StoreMarkerFileName)
 			_, statErr := os.Lstat(markerPath)
 			markerExists := statErr == nil
 			if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
@@ -62,7 +64,7 @@ store が空の観測行と取り込み進捗行をこの置き場へ割り当�
 			}
 			if markerExists {
 				// 異なる名前の目印は DB に触れる前に拒む。
-				if err := mediapath.CheckStoreMarker(cfg.Storage.MediaDir, name); err != nil {
+				if err := mediapath.CheckStoreMarker(root, name); err != nil {
 					return err
 				}
 			}
@@ -80,7 +82,7 @@ store が空の観測行と取り込み進捗行をこの置き場へ割り当�
 				if has {
 					return fmt.Errorf("store %q already has media asset copies in the database but %s does not exist: the media root may not be mounted or may be a different volume; not writing a marker", name, markerPath)
 				}
-				if err := mediapath.WriteStoreMarker(cfg.Storage.MediaDir, name); err != nil {
+				if err := mediapath.WriteStoreMarker(root, name); err != nil {
 					return err
 				}
 			}

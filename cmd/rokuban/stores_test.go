@@ -18,8 +18,8 @@ func newStoresTestCmd(t *testing.T) *cobra.Command {
 }
 
 // storageWithFSStores は FS 置き場 tokyo / takamatsu と S3 置き場 s3main を持つ storage を返す。
-// 単一 FS の互換名（MediaStoreName）は設定しない（今の検証は 2 つ以上の FS を弾くので、
-// resolveStoreBinding の検査だけを見るときは config.Load を通さない）。
+// resolveStoreBinding の検査だけを見るので config.Load を通さない（2 つ以上の FS 置き場の構成が
+// config.Load を通ることは internal/config の TestLoadStoragePolicyAcceptsSeveralFSStores が固定している）。
 func storageWithFSStores(fs ...string) config.StorageConfig {
 	stores := map[string]config.StoreConfig{"s3main": {Kind: "s3", Bucket: "rokuban-derived"}}
 	for _, name := range fs {
@@ -141,12 +141,16 @@ func TestValidateStoreBinding(t *testing.T) {
 
 		// --once は物理キュー 1 本
 		{name: "once with transfer on two stores is rejected", roles: []string{"worker"}, explicit: true, mounted: two, queues: []string{"transfer"}, once: true, wantErr: true},
+		{name: "once with encode on two stores is rejected", roles: []string{"worker"}, explicit: true, mounted: two, queues: []string{"encode"}, once: true, wantErr: true},
+		{name: "once with original on two stores is rejected", roles: []string{"worker"}, explicit: true, mounted: two, queues: []string{"original"}, once: true, wantErr: true},
 		{name: "once with transfer on one store is accepted", roles: []string{"worker"}, explicit: true, mounted: one, queues: []string{"transfer"}, once: true},
 		{name: "once with ruler on two stores is accepted", roles: []string{"worker"}, explicit: true, mounted: two, queues: []string{"ruler"}, once: true},
+		{name: "once with cleanup (db only) on two stores is accepted", roles: []string{"worker"}, explicit: true, mounted: two, queues: []string{"cleanup"}, once: true},
 
-		// streamer は原本を FS から配信する
-		{name: "streamer without a mounted store is rejected", roles: []string{"streamer"}, explicit: true, wantErr: true},
-		{name: "streamer with a mounted store is accepted", roles: []string{"streamer"}, explicit: true, mounted: one},
+		// streamer と録画再生は原本の配信のために --stores を取るが、置き場が無くても起動は拒まない
+		// （site に束縛したライブ専用の streamer）。
+		{name: "streamer without a mounted store is accepted", roles: []string{"streamer"}, explicit: true},
+		{name: "streamer with two mounted stores is accepted", roles: []string{"streamer"}, explicit: true, mounted: two},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -31,7 +31,6 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/role"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
@@ -268,18 +267,32 @@ func newServerCmd() *cobra.Command {
 	return cmd
 }
 
-// verifyStoreMarkerAtStartup は worker ロールのとき置き場の目印を検証し、検証できたかを返す。
+// verifyStoreMarkersAtStartup は worker ロールのとき、マウントした各置き場の目印を検証し、
+// すべて検証できたかを返す。
 // 失敗は起動を止めず、ファイルシステムに依存する worker の操作を保留させる。
-func verifyStoreMarkerAtStartup(roles []string, cfg *config.Config) bool {
+func verifyStoreMarkersAtStartup(roles []string, roots map[string]string) bool {
 	if !slices.Contains(roles, "worker") {
 		return true
 	}
-	if err := worker.VerifyMediaStoreMarker(cfg.Storage.MediaDir, cfg.Storage.MediaStoreName); err != nil {
-		slog.Warn("media store marker could not be verified at startup; filesystem-dependent worker operations will be withheld",
-			"store", cfg.Storage.MediaStoreName, "err", err)
-		return false
+	ok := true
+	for _, name := range sortedKeys(roots) {
+		if err := worker.VerifyMediaStoreMarker(roots[name], name); err != nil {
+			slog.Warn("media store marker could not be verified at startup; filesystem-dependent worker operations will be withheld",
+				"store", name, "err", err)
+			ok = false
+		}
 	}
-	return true
+	return ok
+}
+
+// sortedKeys は map のキーを昇順で返す。
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // runServer は server サブコマンドの本体。
@@ -306,7 +319,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateRoleStorageConfig(roles, cfg); err != nil {
 		return err
 	}
-	storeMarkerVerified := verifyStoreMarkerAtStartup(roles, cfg)
 	warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
 	// 以降の判定（validateSiteBinding / RequiresEncodeTools / riveradapter.Config.Queues）は
@@ -340,23 +352,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateStoreBinding(roles, cmd.Flags().Changed(storeFlagName), mounted, queues, onceGate != nil); err != nil {
 		return err
 	}
+	roots, err := cfg.Storage.StoreRoots(mounted)
+	if err != nil {
+		return fmt.Errorf("--%s: %w", storeFlagName, err)
+	}
+	storeMarkerVerified := verifyStoreMarkersAtStartup(roles, roots)
 	// 目印を確認できず probe を保留したときは false のまま渡し、IngestWorker が最初の
 	// ingest で目印を照合した後に probe する。
 	ingestStorageProbed := false
 	if storeMarkerVerified && slices.Contains(roles, "worker") &&
 		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
-		// ingest は media_dir の強い FS 契約（file fsync / Close / 同一 FS の
-		// atomic rename / 親 directory fsync）に依存する。起動時に実際の操作列を
-		// 1 回通す。ingest を購読しない中央 worker は media_dir を書かないので
+		// ingest は各置き場の root の強い FS 契約（file fsync / Close / 同一 FS の
+		// atomic rename / 親 directory fsync）に依存する。起動時にマウントした全ての置き場で
+		// 実際の操作列を 1 回通す。ingest を購読しない中央 worker は置き場を書かないので
 		// probe の対象外。パス文字列から FS の種類は判定しない。
-		if err := worker.ProbeIngestStorage(cfg.Storage.MediaDir); err != nil {
-			return fmt.Errorf("validating ingest storage: %w", err)
+		for _, name := range sortedKeys(roots) {
+			if err := worker.ProbeIngestStorage(roots[name]); err != nil {
+				return fmt.Errorf("validating ingest storage of store %q: %w", name, err)
+			}
 		}
 		ingestStorageProbed = true
 	} else if !storeMarkerVerified && slices.Contains(roles, "worker") &&
 		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
-		slog.Warn("deferring ingest storage probe until the media store marker can be verified",
-			"store", cfg.Storage.MediaStoreName)
+		slog.Warn("deferring ingest storage probe until the media store markers can be verified",
+			"stores", sortedKeys(roots))
 	}
 
 	workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, onceGate, softStopTimeout)
@@ -372,8 +391,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// River の defer が先に実行される。
 	defer pool.Close()
 
-	// 起動時の検査だけに使い、削除の判定はしないので derived は渡さない。
-	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
+	// 起動時の検査だけに使う。置き場に束ねず、削除の判定もしない。
+	mediaStore := pgstore.NewMediaWithStores(pool, "", "", "")
 	if slices.Contains(roles, "worker") {
 		if err := mediaStore.RequireAdoptedStoreRows(ctx); err != nil {
 			return fmt.Errorf("validating media store assignment: %w", err)
@@ -400,7 +419,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	eg, egCtx := errgroup.WithContext(ctx)
 
-	srv, err := buildHTTPServer(egCtx, cfg, roles, bound, pool, eg, noRecordingHLS)
+	srv, err := buildHTTPServer(egCtx, cfg, roles, bound, roots, pool, eg, noRecordingHLS)
 	if err != nil {
 		return err
 	}
@@ -424,7 +443,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var workerAdapter *riveradapter.Adapter
 	if slices.Contains(roles, "worker") {
-		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, bound, mounted, workerCfg, pool, webhookClient, ingestStorageProbed)
+		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, bound, roots, workerCfg, pool, webhookClient, ingestStorageProbed)
 		if err != nil {
 			return err
 		}
@@ -457,7 +476,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}
-	superviseSingletons(egCtx, roles, bound, cfg.Storage.MediaStoreName, eg, pool, watcherEnqueuer, webhookClient)
+	superviseSingletons(egCtx, roles, bound, eg, pool, watcherEnqueuer, webhookClient)
 
 	eg.Go(func() error {
 		<-egCtx.Done()
@@ -469,21 +488,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	return err
 }
 
-// validateRoleStorageConfig は worker と streamer が起動前に要る storage 設定を検査する。
-// streamer は完了録画の原本と世代付き HLS を、storage.stores の FS 置き場のコピーから引く。
-// api は空でも起動でき、その場合は読み取りが全置き場の active コピーを対象にする。
+// validateRoleStorageConfig は worker が起動前に要る storage 設定を検査する。
+// 置き場のマウントに関する検査は validateStoreBinding が `--stores` から行う。
+// streamer と api は置き場を持たなくても起動できる（site に束縛したライブ専用の streamer や、
+// 読み取りが全置き場の active コピーを対象にする api）。
 func validateRoleStorageConfig(roles []string, cfg *config.Config) error {
-	if slices.Contains(roles, "streamer") && cfg.Storage.MediaStoreName == "" {
-		return fmt.Errorf("validating config: streamer role requires exactly one fs store in storage.stores")
-	}
-	if !slices.Contains(roles, "worker") {
-		return nil
-	}
-	if cfg.Storage.ScratchDir == "" {
+	if slices.Contains(roles, "worker") && cfg.Storage.ScratchDir == "" {
 		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
-	}
-	if cfg.Storage.MediaStoreName == "" {
-		return fmt.Errorf("validating config: worker role requires exactly one fs store in storage.stores")
 	}
 	return nil
 }
@@ -547,15 +558,16 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // 呼ばずに return する。登録済みの goroutine は誰にも回収されないまま、
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
-func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
-	// api ロールは削除の判定をしないので derived は渡さない。
-	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
+func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, roots map[string]string, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
+	// api と streamer は置き場に束ねない。置き場は URL（原本）か DB の行（派生物）が決める。
+	// 削除の判定はしないので derived は渡さない。
+	mediaStore := pgstore.NewMediaWithStores(pool, "", "", "")
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool, cfg.Storage.MediaStoreName)
-	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
+	analysisStore := pgstore.NewAnalysis(pool, "")
+	recordingStore := pgstore.NewRecordings(pool, "")
 	// API は storage の配置先を知らない。active なコピーがある全置き場を検索する。
 	recordingQuery := pgstore.NewRecordings(pool, "")
 	routerCfg := api.RouterConfig{
@@ -613,7 +625,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		// 無効でも profiles が書かれていれば返る（有効かどうかは capabilities）。
 		LiveProfiles:        liveProfileSummaries(cfg.Live.Profiles),
 		RecordingHLSEnabled: cfg.RecordingHLS.Enabled,
-		MediaStoreName:      cfg.Storage.MediaStoreName,
+		OriginalLocator:     mediaStore,
+		StoreNames:          cfg.Storage.FSStoreNames(),
 		DerivedStoreName:    cfg.Storage.Derived,
 	}
 
@@ -640,7 +653,10 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			var err error
 			switch derived.Kind {
 			case "fs":
-				objects, err = fsstore.New(cfg.Storage.MediaDir)
+				// 派生物の置き場が FS なら、この streamer がその置き場をマウントしているときだけ配れる。
+				if root, mounted := roots[cfg.Storage.Derived]; mounted {
+					objects, err = fsstore.New(root)
+				}
 			case "s3":
 				objects, err = s3store.NewReader(egCtx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
 			default:
@@ -649,10 +665,12 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			if err != nil {
 				return nil, fmt.Errorf("creating derived object store %q: %w", cfg.Storage.Derived, err)
 			}
-			objectStores[cfg.Storage.Derived] = objects
+			if objects != nil {
+				objectStores[cfg.Storage.Derived] = objects
+			}
 		}
 		mounters = append(mounters, streamer.New(mediaStore, streamer.Config{
-			MediaDir:      cfg.Storage.MediaDir,
+			MediaRoots:    roots,
 			AccelLocation: cfg.Storage.AccelLocation,
 			ObjectStores:  objectStores,
 			// コマの切り出し（/frame）は encode と同じ ffmpeg を使う。ライブを
@@ -674,8 +692,14 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。
 			eg.Go(func() error { return liveStreamers.Run(egCtx) })
 		}
-		if cfg.RecordingHLS.Enabled && !noRecordingHLS {
+		if cfg.RecordingHLS.Enabled && !noRecordingHLS && len(roots) > 1 {
+			// 録画 HLS は 1 つのプロセスで 1 つの置き場の入力だけを読む（置き場ごとの Pod の組）。
+			return nil, fmt.Errorf("recording HLS serves one store per process but %d stores are mounted (%s); "+
+				"mount a single store with --%s or pass --no-recording-hls", len(roots), strings.Join(sortedKeys(roots), ", "), storeFlagName)
+		}
+		if cfg.RecordingHLS.Enabled && !noRecordingHLS && len(roots) == 1 {
 			// 世代付き録画 HLS は streamer ロールの中で独立した manager を持つ。
+			hlsStore := sortedKeys(roots)[0]
 			// live.enabled=false でも live.profiles を利用するため、FFmpeg の MPEG-2
 			// decoder 検査と ffprobe の存在確認をこの経路でも行う。
 			liveTools := cfg.Live
@@ -683,9 +707,9 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			if err := liveTools.ValidateTools(); err != nil {
 				return nil, err
 			}
-			recordingHLS, err := streamer.NewRecordingHLS(mediaStore, streamer.RecordingHLSConfig{
-				StoreName:       cfg.Storage.MediaStoreName,
-				MediaDir:        cfg.Storage.MediaDir,
+			recordingHLS, err := streamer.NewRecordingHLS(pgstore.NewMediaWithStores(pool, hlsStore, hlsStore, ""), streamer.RecordingHLSConfig{
+				StoreName:       hlsStore,
+				MediaDir:        roots[hlsStore],
 				SegmentDir:      cfg.RecordingHLS.SegmentDir,
 				FFmpeg:          cfg.Live.FFmpeg,
 				FFprobe:         cfg.Live.FFprobe,
@@ -750,57 +774,29 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
-func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, mounted []string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
-	// until_encoded の原本の削除判定は storage.derived を使う（MediaStoreName は使わない）。
-	mediaStore := pgstore.NewMediaWithStores(pool, cfg.Storage.MediaStoreName, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
-	var derivedPublisher store.DerivedMediaPublisher
-	var derivedObjects objstore.Store
-	var derivedMediaDelete store.MediaDelete
-	var derivedStorage store.StorageObservation
-	var derivedPendingReclaim store.PendingCopyReclaim
-	if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok {
-		var objects objstore.Store
-		var err error
-		switch derived.Kind {
-		case "fs":
-			objects, err = fsstore.New(cfg.Storage.MediaDir)
-		case "s3":
-			// s3store.New は S3 に接続しない。資格情報の取得・確認は各操作で行う。
-			objects, err = s3store.New(ctx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
-		default:
-			err = fmt.Errorf("unsupported derived store kind %q", derived.Kind)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("creating derived object store %q: %w", cfg.Storage.Derived, err)
-		}
-		derivedObjects = objects
-		derivedMedia := pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, cfg.Storage.MediaStoreName, cfg.Storage.Derived)
-		derivedPublisher = derivedMedia
-		// FS derived assets share MediaStoreName and its existing delete/audit pass.
-		// A separate object-store pass is only needed for a distinct S3 store.
-		if cfg.Storage.Derived != cfg.Storage.MediaStoreName {
-			derivedMediaDelete = derivedMedia
-			derivedStorage = derivedMedia
-			derivedPendingReclaim = derivedMedia
-		}
-	}
+func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.MirakcSite, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
+	// 置き場に束ねない store。DB だけを触る reconcile と、置き場をまたぐ転送が使う。
+	// until_encoded の原本の削除判定は storage.derived を使う。
+	mediaStore := pgstore.NewMediaWithStores(pool, "", "", cfg.Storage.Derived)
 	storageObjects := make(map[string]objstore.Store)
-	for name, root := range configuredStorageRoots(cfg.Storage, mounted) {
-		objects, err := fsstore.New(root)
+	for _, name := range sortedKeys(roots) {
+		objects, err := fsstore.New(roots[name])
 		if err != nil {
 			return nil, fmt.Errorf("creating filesystem object store %q: %w", name, err)
 		}
 		storageObjects[name] = objects
 	}
+	derivedObjects, err := newDerivedObjects(ctx, cfg.Storage, storageObjects)
+	if err != nil {
+		return nil, err
+	}
 	if derivedObjects != nil {
 		storageObjects[cfg.Storage.Derived] = derivedObjects
 	}
-	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)
 	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
 	scheduleSyncStore := pgstore.NewScheduleSync(pool)
-	catalogStore := pgstore.NewCatalog(pool, registryNames(cfg.Registry()), cfg.Storage.MediaStoreName)
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
@@ -828,8 +824,10 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	}
 	deferred := &jobq.Deferred{}
 	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool, cfg.Storage.MediaStoreName)
-	workers := worker.NewWorkers(&worker.Deps{
+	analysisStore := pgstore.NewAnalysis(pool, "")
+	recordingStore := pgstore.NewRecordings(pool, "")
+	catalogStore := pgstore.NewCatalog(pool, registryNames(cfg.Registry()), "")
+	base := &worker.Deps{
 		Enqueuer:                 deferred,
 		EPGSync:                  pgstore.NewEPG(pool),
 		RulerInputBumper:         pgstore.NewReservations(pool),
@@ -851,25 +849,21 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
 		MediaReconcile:           mediaStore,
 		MediaPublish:             mediaStore,
-		DerivedMediaPublish:      derivedPublisher,
 		DerivedObjects:           derivedObjects,
 		DerivedObjectStoreName:   cfg.Storage.Derived,
 		StorageObjects:           storageObjects,
-		DerivedMediaDelete:       derivedMediaDelete,
-		DerivedStorage:           derivedStorage,
-		DerivedPendingReclaim:    derivedPendingReclaim,
 		IngestPrecheck:           mediaStore,
 		EncodeProgress:           mediaStore,
 		MediaDelete:              mediaStore,
 		MediaPendingReclaim:      mediaStore,
 		StorageTransfer:          mediaStore,
 		StorageTransferPolicy:    cfg.Storage,
-		StorageRoots:             configuredStorageRoots(cfg.Storage, mounted),
+		StorageRoots:             roots,
 		TSScan:                   mediaStore,
 		EncodeAttempts:           mediaStore,
 		StorageObservation:       mediaStore,
-		MediaDir:                 cfg.Storage.MediaDir,
-		MediaStoreName:           cfg.Storage.MediaStoreName,
+		OriginalLocator:          mediaStore,
+		IngestStores:             mediaStore,
 		TransferOverlap:          cfg.Storage.Transfer.Overlap,
 		IngestStorageProbed:      ingestStorageProbed,
 		ScratchDir:               cfg.Storage.ScratchDir,
@@ -885,7 +879,16 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		RecoveryGrace:            clientCfg.RecoveryGrace(),
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
-	})
+	}
+	base.PerStore = make(map[string]*worker.Deps, len(roots))
+	for _, name := range sortedKeys(roots) {
+		scoped, err := newStoreScopedDeps(ctx, pool, cfg, base, name, roots[name], derivedObjects)
+		if err != nil {
+			return nil, err
+		}
+		base.PerStore[name] = scoped
+	}
+	workers := worker.NewWorkers(base)
 	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, clientCfg)
 	if err != nil {
 		return nil, err
@@ -894,16 +897,72 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	return adapter, nil
 }
 
-// configuredStorageRoots は --stores でマウントした FS 置き場と root を返す。
-// マウントしていない置き場は root を持たないので、その置き場への転送は
-// StorageTransferWorker.Work が「マウントされていない」として拒み、メトリクスを出す。
-// FS 置き場は今のところ単一の media_dir だけなので、root は MediaStoreName の 1 つに限る
-// （validateSingleFSStore の制限が外れるまで）。
-func configuredStorageRoots(storage config.StorageConfig, mounted []string) map[string]string {
-	if storage.MediaStoreName == "" || storage.MediaDir == "" || !slices.Contains(mounted, storage.MediaStoreName) {
-		return nil
+// newDerivedObjects は storage.derived の置き場の objstore を作る。
+// S3 は接続せずに作る（資格情報の取得・確認は各操作で行う）。FS の置き場は、このプロセスが
+// マウントしているとき（mounted に root がある）だけ作り、していなければ nil を返す。
+// nil のとき派生物を書く仕事は、派生物の置き場が使えないと失敗する。
+func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounted map[string]objstore.Store) (objstore.Store, error) {
+	derived, ok := storage.Stores[storage.Derived]
+	if !ok {
+		return nil, nil
 	}
-	return map[string]string{storage.MediaStoreName: storage.MediaDir}
+	switch derived.Kind {
+	case "fs":
+		return mounted[storage.Derived], nil
+	case "s3":
+		objects, err := s3store.New(ctx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
+		if err != nil {
+			return nil, fmt.Errorf("creating derived object store %q: %w", storage.Derived, err)
+		}
+		return objects, nil
+	default:
+		return nil, fmt.Errorf("creating derived object store %q: unsupported kind %q", storage.Derived, derived.Kind)
+	}
+}
+
+// newStoreScopedDeps は、置き場 name に束ねた worker.Deps を base から作る。
+// 置き場で修飾するキューのワーカーと ingest がこの Deps を使う。置き場に束ねた store・root・名前だけを
+// 差し替え、それ以外は base と同じ値を持つ。
+func newStoreScopedDeps(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, base *worker.Deps, name, root string, derivedObjects objstore.Store) (*worker.Deps, error) {
+	scoped := *base
+	scoped.PerStore = nil
+	mediaStore := pgstore.NewMediaWithStores(pool, name, name, cfg.Storage.Derived)
+	analysisStore := pgstore.NewAnalysis(pool, name)
+	recordingStore := pgstore.NewRecordings(pool, name)
+	scoped.MediaDir = root
+	scoped.MediaStoreName = name
+	scoped.MediaReconcile = mediaStore
+	scoped.MediaPublish = mediaStore
+	scoped.IngestPrecheck = mediaStore
+	scoped.EncodeProgress = mediaStore
+	scoped.MediaDelete = mediaStore
+	scoped.MediaPendingReclaim = mediaStore
+	scoped.TSScan = mediaStore
+	scoped.EncodeAttempts = mediaStore
+	scoped.StorageObservation = mediaStore
+	scoped.CMStationStore = analysisStore
+	scoped.CMDetectionStore = analysisStore
+	scoped.IngestTarget = recordingStore
+	scoped.RecordingPurge = recordingStore
+	scoped.Catalog = pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name)
+	scoped.DerivedMediaPublish = nil
+	scoped.DerivedMediaDelete = nil
+	scoped.DerivedStorage = nil
+	scoped.DerivedPendingReclaim = nil
+	scoped.DerivedObjects = derivedObjects
+	scoped.DerivedObjectStoreName = cfg.Storage.Derived
+	if derivedObjects != nil {
+		derivedMedia := pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, name, cfg.Storage.Derived)
+		scoped.DerivedMediaPublish = derivedMedia
+		// この置き場が派生物の置き場と同じ FS なら、既存の削除・監査の経路を共有する。
+		// 別の置き場（S3、または他の FS）は、独立した 1 パスで扱う。
+		if cfg.Storage.Derived != name {
+			scoped.DerivedMediaDelete = derivedMedia
+			scoped.DerivedStorage = derivedMedia
+			scoped.DerivedPendingReclaim = derivedMedia
+		}
+	}
+	return &scoped, nil
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。
@@ -934,7 +993,7 @@ func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onc
 
 // superviseSingletons はシングルトンロールをサイトごとの監督 goroutine に登録する。
 // 各サイトに独立した mirakc クライアントと advisory lock を割り当てる。
-func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, mediaStoreName string, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
+func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
 	for _, roleName := range roles {
 		if !slices.Contains(singletonRoles, roleName) {
 			continue
@@ -943,7 +1002,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool, mediaStoreName), pgstore.NewReservations(pool), enqueuer, webhookClient)
+				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool, ""), pgstore.NewReservations(pool), enqueuer, webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

@@ -852,8 +852,8 @@ func TestThumbnailReconcileArgs_KindAndSpec(t *testing.T) {
 		t.Errorf("Kind() = %q, want thumbnail_reconcile", kind)
 	}
 	spec := ThumbnailReconcileArgs{}.Spec()
-	if spec.Queue != "thumbnail" {
-		t.Errorf("Spec().Queue = %q, want thumbnail", spec.Queue)
+	if spec.Queue != "cleanup" {
+		t.Errorf("Spec().Queue = %q, want cleanup (DB-only reconcile is not store-qualified)", spec.Queue)
 	}
 	if !spec.Coalesce {
 		t.Error("Spec().Coalesce should be true")

@@ -602,7 +602,7 @@ func cutRouterForRemoval(pool *pgxpool.Pool, live bool) http.Handler {
 		EncodeProfileNames:  []string{"h264", "cut", "cut2"},
 		CutProfileNames:     []string{"cut", "cut2"},
 		RecordingHLSEnabled: live,
-		MediaStoreName:      dbtest.StoreName,
+		StoreNames:          []string{dbtest.StoreName},
 	})
 }
 

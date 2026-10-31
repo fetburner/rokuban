@@ -123,9 +123,8 @@ mirakcs:
 		name      string
 		wantError string
 	}{
-		// FS 置き場が 1 つの間は、その名前との照合が先に落とす。
-		{name: "unknown", wantError: "does not match the fs store in storage.stores"},
-		{name: "s3main", wantError: "does not match the fs store in storage.stores"},
+		{name: "unknown", wantError: "is not configured in storage.stores"},
+		{name: "s3main", wantError: "storage adopt requires an fs store"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newRootCmd()
