@@ -67,6 +67,9 @@ type StorageObservation interface {
 	UpsertOrphanFile(ctx context.Context, relPath string) error
 	// DeleteOrphanFile は解消した孤児候補を消す。
 	DeleteOrphanFile(ctx context.Context, relPath string) error
+	// GetMediaAssetTransferProgressGeneration は、コピーの転送の進捗が今指す世代を返す。行が無ければ ok=false。
+	// 孤児の転送 temp が引き継がれないかを、世代で判定するために使う。
+	GetMediaAssetTransferProgressGeneration(ctx context.Context, copyID int64) (generation int64, ok bool, err error)
 	// ListAllOrphanFiles は記録中の孤児候補を返す。
 	ListAllOrphanFiles(ctx context.Context) ([]OrphanFile, error)
 	// ListAgedOrphanFiles は指定期間より前から記録されている孤児候補を返す。

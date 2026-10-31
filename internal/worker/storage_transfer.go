@@ -264,13 +264,16 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	if sourceSize >= 0 && sourceSize != transfer.SizeBytes {
 		return w.handleTransferMismatch(ctx, transfer, log, src, "", fmt.Sprintf("source size %d differs from logical asset size %d", sourceSize, transfer.SizeBytes))
 	}
-	slice, err := w.openTransferSlice(ctx, transfer, owner, progress, targetPath)
+	slice, mismatch, err := w.openTransferSlice(ctx, transfer, owner, progress, targetPath)
 	if err != nil {
 		if errors.Is(err, store.ErrTransferLeaseLost) {
 			log.Info("storage transfer: progress lease lost before writing; another attempt owns the transfer")
 			return nil
 		}
 		return w.recordTransferFailure(ctx, transfer, log, err)
+	}
+	if mismatch != "" {
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("saved transfer progress does not match its temp: %s", mismatch))
 	}
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
 	defer cancelSlice()
@@ -321,62 +324,71 @@ type transferSlice struct {
 
 // openTransferSlice は、進捗が指す世代の temp を開き、書き始める位置と SHA-256 の状態を用意する。
 // きれいな引き継ぎで temp の長さと状態が保存と一致すれば、同じ世代の続きから書く。
-// それ以外（temp が無い、長さが違う、状態が戻らない）は世代を上げて先頭から書く。
-func (w *StorageTransferWorker) openTransferSlice(ctx context.Context, transfer store.MediaAssetTransfer, owner uuid.UUID, progress store.TransferProgress, targetPath string) (transferSlice, error) {
+// 一致しないときは、世代を上げて今の試行を止め、理由を mismatch に返す。呼び出し側がそれを試行の失敗として数える。
+// 前の試行が保存していない（lease が切れただけの）ときは、ここでは何も数えず、世代を上げて先頭から書く。
+func (w *StorageTransferWorker) openTransferSlice(ctx context.Context, transfer store.MediaAssetTransfer, owner uuid.UUID, progress store.TransferProgress, targetPath string) (slice transferSlice, mismatch string, err error) {
 	if progress.Resumed {
 		path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
-		if slice, ok, err := resumeTransferTemp(path, progress); err != nil {
-			return transferSlice{}, err
-		} else if ok {
-			slice.generation = progress.Generation
-			return slice, nil
-		}
-		generation, err := w.Storage.ResetMediaAssetTransferProgress(ctx, transfer.CopyID, owner)
+		resumed, reason, err := resumeTransferTemp(path, progress)
 		if err != nil {
-			return transferSlice{}, fmt.Errorf("starting a new transfer generation: %w", err)
+			return transferSlice{}, "", err
 		}
-		progress.Generation = generation
+		if reason == "" {
+			resumed.generation = progress.Generation
+			return resumed, "", nil
+		}
+		// きれいな引き継ぎなのに続けられないのは、「fsync してから保存する」順序が破れたことを示す。
+		// 世代だけ上げておき、この試行は失敗として止める。次の試行は新しい世代から取り直す。
+		if _, err := w.Storage.ResetMediaAssetTransferProgress(ctx, transfer.CopyID, owner); err != nil {
+			return transferSlice{}, "", fmt.Errorf("starting a new transfer generation: %w", err)
+		}
+		return transferSlice{}, reason, nil
 	}
+	// 前の試行が保存せずに抜けた（lease が切れた）ときは、Acquire が世代を上げている。ここでは数えない。
 	path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
 	if progress.PrevGeneration > 0 && progress.PrevGeneration != progress.Generation {
 		// 前の世代の temp は、この試行が引き継がないので消す。前の世代の書き手は lease を失っていて、
 		// 書いても今の世代のファイルには影響しない。rel_path lock の下で行うので、他の転送と競合しない。
 		superseded := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevGeneration)
 		if err := os.Remove(superseded); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return transferSlice{}, fmt.Errorf("removing superseded transfer temp: %w", err)
+			return transferSlice{}, "", fmt.Errorf("removing superseded transfer temp: %w", err)
 		}
 	}
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
-		return transferSlice{}, fmt.Errorf("creating transfer temp: %w", err)
+		return transferSlice{}, "", fmt.Errorf("creating transfer temp: %w", err)
 	}
-	return transferSlice{file: file, path: path, generation: progress.Generation, hasher: sha256.New()}, nil
+	return transferSlice{file: file, path: path, generation: progress.Generation, hasher: sha256.New()}, "", nil
 }
 
-// resumeTransferTemp は保存された状態から temp を開く。使えないときは ok=false を返し、呼び出し側が世代を上げる。
-func resumeTransferTemp(path string, progress store.TransferProgress) (transferSlice, bool, error) {
+// resumeTransferTemp は保存された状態から temp を開く。続けられないときは、理由を空でない reason に返す（error は返さない）。
+func resumeTransferTemp(path string, progress store.TransferProgress) (transferSlice, string, error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
-		return transferSlice{}, false, nil
+		return transferSlice{}, fmt.Sprintf("transfer temp is missing; saved offset is %d", progress.Offset), nil
 	}
 	if err != nil {
-		return transferSlice{}, false, fmt.Errorf("opening transfer temp for resume: %w", err)
+		return transferSlice{}, "", fmt.Errorf("opening transfer temp for resume: %w", err)
 	}
 	info, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return transferSlice{}, false, fmt.Errorf("stating transfer temp for resume: %w", err)
+		return transferSlice{}, "", fmt.Errorf("stating transfer temp for resume: %w", err)
+	}
+	if info.Size() != progress.Offset {
+		_ = file.Close()
+		return transferSlice{}, fmt.Sprintf("transfer temp is %d bytes; saved offset is %d", info.Size(), progress.Offset), nil
 	}
 	hasher := sha256.New()
-	if info.Size() != progress.Offset || fsink.RestoreHash(hasher, progress.HashState) != nil {
+	if err := fsink.RestoreHash(hasher, progress.HashState); err != nil {
 		_ = file.Close()
-		return transferSlice{}, false, nil
+		return transferSlice{}, fmt.Sprintf("saved SHA-256 state cannot be restored: %v", err), nil
 	}
 	if _, err := file.Seek(progress.Offset, io.SeekStart); err != nil {
 		_ = file.Close()
-		return transferSlice{}, false, fmt.Errorf("seeking transfer temp to resume offset: %w", err)
+		return transferSlice{}, "", fmt.Errorf("seeking transfer temp to resume offset: %w", err)
 	}
-	return transferSlice{file: file, path: path, offset: progress.Offset, hasher: hasher}, true, nil
+	return transferSlice{file: file, path: path, offset: progress.Offset, hasher: hasher}, "", nil
 }
 
 // copyTransferSlice は転送元を slice.offset から expectedSize まで temp に書き、書き終えた総バイト数を返す。

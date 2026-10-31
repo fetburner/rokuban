@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -758,21 +759,31 @@ func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *tes
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("destination = %q, %v; want the source from its start %q", got, err, content)
 	}
+	var attempts int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1`, transfer.CopyID).Scan(&attempts); err != nil {
+		t.Fatalf("counting transfer attempts: %v", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("transfer attempts after a lease-expired previous slice = %d, want 0 (an expired lease is not a failure)", attempts)
+	}
 	if fileExists(tempPath) {
 		t.Fatalf("previous generation temp %q remains after the copy became active", tempPath)
 	}
 }
 
-// TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers は、保存された offset と temp の長さが一致しないとき、
-// 世代を上げて先頭から取り直すことを確かめる。短い temp は続きから書くと穴が空き、宛先の SHA-256 が合わなくなる。
+// TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers は、きれいな引き継ぎなのに保存された offset と temp が合わないとき、
+// その試行を失敗として 1 回数え、次の試行が新しい世代で先頭から取り直して完了することを確かめる。
+// 短い temp は続きから書くと穴が空き、宛先の SHA-256 が合わなくなる（SHA-256 が未知の資産では、長さの確認だけが防ぐ）。
 func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// truncateBy は保存のあとで temp を縮める量。負なら伸ばす。
-		truncateBy int
+		// shorten は保存のあとで temp を縮める量。extend は伸ばす量。remove は temp を消すこと。
+		shorten, extend int
+		remove          bool
 	}{
-		{name: "shorter temp than the saved offset", truncateBy: 3},
-		{name: "longer temp than the saved offset", truncateBy: -4},
+		{name: "shorter temp than the saved offset", shorten: 3},
+		{name: "longer temp than the saved offset", extend: 4},
+		{name: "missing temp for the saved offset", remove: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
@@ -787,16 +798,21 @@ func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
 			}
 			saved := content[:len(content)/2]
 			tempPath := saveTransferProgressForTest(t, media, transfer, roots["archive"], saved)
-			if tc.truncateBy > 0 {
-				if err := os.Truncate(tempPath, int64(len(saved)-tc.truncateBy)); err != nil {
+			switch {
+			case tc.remove:
+				if err := os.Remove(tempPath); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			case tc.shorten > 0:
+				if err := os.Truncate(tempPath, int64(len(saved)-tc.shorten)); err != nil {
+					t.Fatal(err)
+				}
+			default:
 				extra, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_APPEND, 0)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := extra.Write([]byte("junk")); err != nil {
+				if _, err := extra.Write(bytes.Repeat([]byte("j"), tc.extend)); err != nil {
 					t.Fatal(err)
 				}
 				if err := extra.Close(); err != nil {
@@ -808,12 +824,31 @@ func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
 				t.Fatal(err)
 			}
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-				t.Fatalf("Work with a temp whose length differs from the saved offset: %v", err)
+			args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
+			if err := worker.Work(context.Background(), args); err != nil {
+				t.Fatalf("first Work with an inconsistent saved transfer: %v", err)
 			}
-			got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)))
+			destination := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
+			if fileExists(destination) {
+				t.Fatal("destination was published from an inconsistent saved transfer")
+			}
+			var attempts int32
+			var lastError string
+			if err := pool.QueryRow(context.Background(), `
+SELECT a.attempt_count, a.last_error
+FROM media_asset_transfer_attempts a
+WHERE a.copy_id = $1`, transferTestCopyID(t, pool, assetID, "archive")).Scan(&attempts, &lastError); err != nil {
+				t.Fatalf("reading recorded transfer attempt: %v", err)
+			}
+			if attempts != 1 || !strings.Contains(lastError, "saved offset is") {
+				t.Fatalf("recorded attempt = (%d, %q), want one failure naming the saved offset", attempts, lastError)
+			}
+			if err := worker.Work(context.Background(), args); err != nil {
+				t.Fatalf("second Work after the failure: %v", err)
+			}
+			got, err := os.ReadFile(destination)
 			if err != nil || !bytes.Equal(got, content) {
-				t.Fatalf("destination = %q, %v; want %q", got, err, content)
+				t.Fatalf("destination after the restart = %q, %v; want %q", got, err, content)
 			}
 		})
 	}
@@ -1608,7 +1643,12 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tempPath := filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, transfer.MediaAssetID, transfer.CopyID))
+	// 実際の試行と同じく、進捗の行を作ってから世代の名前で temp を書く。回収は行の世代で temp を見つける。
+	progress, acquired, err := pgstore.NewMedia(pool, "archive", cfg.Derived).AcquireMediaAssetTransferProgress(context.Background(), transfer.CopyID, uuid.New(), time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquiring transfer progress = (%+v, %t, %v)", progress, acquired, err)
+	}
+	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
 	if err := os.WriteFile(tempPath, []byte("source-original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2033,5 +2073,80 @@ func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *t
 				t.Fatalf("mismatched source copy state = %q, want deleted (treated as a source mismatch)", sourceState)
 			}
 		})
+	}
+}
+
+// TestTransferTempOrphanCleanupFollowsProgressGeneration は、転送 temp の孤児回収が、コピーの進捗の世代で判定することを確かめる。
+// 進捗が世代 3 を指すとき、古い世代 1・2 の temp は（mtime が古ければ）消え、今の世代 3 の temp は残る。
+// 進捗の無い temp は、mtime の猶予の間は残り、猶予を過ぎたら消える。
+func TestTransferTempOrphanCleanupFollowsProgressGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	content := []byte("progress generation decides which transfer temp is still owned")
+	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	media := pgstore.NewMedia(pool, "test-store", "")
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
+	if err != nil || !ok {
+		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
+	}
+	// 世代を 3 まで進める。各試行は lease を切ってから次が取る（保存はしないので、次は世代を上げる）。
+	ctx := context.Background()
+	for want := int64(1); want <= 3; want++ {
+		owner := uuid.New()
+		progress, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, transfer.CopyID, owner, time.Minute)
+		if err != nil || !acquired || progress.Generation != want {
+			t.Fatalf("acquire #%d = (%+v, %t, %v), want generation %d", want, progress, acquired, err, want)
+		}
+		if err := media.ReleaseMediaAssetTransferProgress(ctx, transfer.CopyID, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const noProgressCopyID = 987654
+	type candidate struct {
+		relPath string
+		aged    bool
+		keep    bool
+	}
+	var candidates []candidate
+	for _, c := range []struct {
+		copyID int64
+		gen    int64
+		aged   bool
+		keep   bool
+	}{
+		{copyID: transfer.CopyID, gen: 1, aged: true, keep: false},
+		{copyID: transfer.CopyID, gen: 2, aged: true, keep: false},
+		{copyID: transfer.CopyID, gen: 3, aged: true, keep: true},
+		{copyID: noProgressCopyID, gen: 1, aged: true, keep: false},
+		{copyID: noProgressCopyID, gen: 2, aged: false, keep: true},
+	} {
+		relPath := filepath.ToSlash(filepath.Join(filepath.Dir(filepath.FromSlash(transfer.RelPath)),
+			fmt.Sprintf("%s%d-%d-g%d", mediapath.StorageTransferTempFilePrefix, assetID, c.copyID, c.gen)))
+		path := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("partial"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if c.aged {
+			old := time.Now().Add(-2 * time.Hour)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+		candidates = append(candidates, candidate{relPath: relPath, aged: c.aged, keep: c.keep})
+	}
+	worker := DeleteReconcileWorker{
+		Storage: media, MediaDir: roots["archive"], MediaStoreName: "archive",
+		StorageObjects: testStorageObjects(t, "archive", roots["archive"]),
+	}
+	for _, c := range candidates {
+		worker.deleteOrphanFile(c.relPath, time.Hour)
+		path := filepath.Join(roots["archive"], filepath.FromSlash(c.relPath))
+		if got := fileExists(path); got != c.keep {
+			t.Errorf("%s exists = %t after orphan cleanup, want %t (aged=%t)", c.relPath, got, c.keep, c.aged)
+		}
 	}
 }

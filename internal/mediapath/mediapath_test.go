@@ -244,3 +244,36 @@ func TestResolve_ReservesRootStoreMarkerOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestParseStorageTransferTempFile(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		in                           string
+		wantAsset, wantCopy, wantGen int64
+		wantOK                       bool
+	}{
+		{name: "generation form", in: "sites/x/.rokuban-transfer-12-34-g5", wantAsset: 12, wantCopy: 34, wantGen: 5, wantOK: true},
+		{name: "legacy form has generation zero", in: ".rokuban-transfer-12-34", wantAsset: 12, wantCopy: 34, wantGen: 0, wantOK: true},
+		{name: "sidecar is not a temp", in: ".rokuban-transfer-12-34-g5.checkpoint", wantOK: false},
+		{name: "legacy sidecar is not a temp", in: ".rokuban-transfer-12-34.checkpoint", wantOK: false},
+		{name: "generation without g prefix", in: ".rokuban-transfer-12-34-5", wantOK: false},
+		{name: "zero generation", in: ".rokuban-transfer-12-34-g0", wantOK: false},
+		{name: "signed generation", in: ".rokuban-transfer-12-34-g+5", wantOK: false},
+		{name: "non-numeric copy id", in: ".rokuban-transfer-12-x-g5", wantOK: false},
+		{name: "too many fields", in: ".rokuban-transfer-1-2-3-g4", wantOK: false},
+		{name: "not a transfer temp", in: "sites/x/.rokuban-ingest-abc.ts", wantOK: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asset, copyID, gen, ok := ParseStorageTransferTempFile(tc.in)
+			if ok != tc.wantOK {
+				t.Fatalf("ParseStorageTransferTempFile(%q) ok = %t, want %t", tc.in, ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if asset != tc.wantAsset || copyID != tc.wantCopy || gen != tc.wantGen {
+				t.Fatalf("ParseStorageTransferTempFile(%q) = (%d, %d, %d), want (%d, %d, %d)", tc.in, asset, copyID, gen, tc.wantAsset, tc.wantCopy, tc.wantGen)
+			}
+		})
+	}
+}

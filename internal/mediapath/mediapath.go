@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -186,6 +187,57 @@ func IsIngestTempFile(name string) bool {
 func IsStorageTransferTempFile(name string) bool {
 	base := filepath.Base(name)
 	return strings.HasPrefix(base, StorageTransferTempFilePrefix) && !strings.Contains(base, ".checkpoint")
+}
+
+// ParseStorageTransferTempFile は転送 temp の名前から、メディア資産 ID・コピー ID・世代を取り出す。
+// 世代の無い旧形式は generation 0 として ok を返す。転送 temp でない名前（sidecar を含む）と、
+// 数字が正でない名前は ok=false を返す。
+func ParseStorageTransferTempFile(name string) (mediaAssetID, copyID, generation int64, ok bool) {
+	base := filepath.Base(name)
+	if !IsStorageTransferTempFile(base) {
+		return 0, 0, 0, false
+	}
+	fields := strings.Split(strings.TrimPrefix(base, StorageTransferTempFilePrefix), "-")
+	switch len(fields) {
+	case 2:
+	case 3:
+		digits, found := strings.CutPrefix(fields[2], "g")
+		if !found {
+			return 0, 0, 0, false
+		}
+		generation, ok = parsePositiveDecimal(digits)
+		if !ok {
+			return 0, 0, 0, false
+		}
+	default:
+		return 0, 0, 0, false
+	}
+	mediaAssetID, ok = parsePositiveDecimal(fields[0])
+	if !ok {
+		return 0, 0, 0, false
+	}
+	copyID, ok = parsePositiveDecimal(fields[1])
+	if !ok {
+		return 0, 0, 0, false
+	}
+	return mediaAssetID, copyID, generation, true
+}
+
+// parsePositiveDecimal は 1 以上の 10 進数だけの文字列を数値にする。符号や空白は受け付けない。
+func parsePositiveDecimal(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
 }
 
 // IsStorageTransferCheckpointFile は転送 temp の checkpoint または atomic temp かを返す。
