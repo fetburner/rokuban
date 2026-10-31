@@ -67,6 +67,9 @@ sj_name_for() { printf 'rokuban-worker-%s-%s' "$(printf '%s' "$1" | tr '_' '-')"
 
 # 派生物の置き場（overlays/e2e-two-stores/config.yml の storage.derived と同じ名前）。
 E2E_DERIVED_STORE="s3"
+# 派生物の kind の集合（昇順）。encode（encoded）と thumbnail キュー（thumbnail と、その後の seek_tiles）が作る。
+# 置き場 s3 にだけ載り、FS の置き場には 1 件も載らないことを 6.2 が見る。
+E2E_EXPECTED_DERIVED="encoded,seek_tiles,thumbnail"
 # 判定 6.2 が使う速い encode プロファイル（同 config.yml の encode.profiles）。
 E2E_FAST_PROFILE="e2e-fast"
 # 判定 6.7 の待ち上限。overlap（config.yml の 32 分）+ 削除 reconcile の周期 + 余裕。
@@ -258,6 +261,42 @@ for i in json.load(sys.stdin).get("items", []):
   printf '%s 成功 Job=%s' "$sj" "$(printf '%s' "$ok" | tr ' ' ',')"
 }
 
+# wait_jobs_settled <ScaledJob 名> <秒> --- その ScaledJob が起こした Job が 1 件以上あり、全部が
+# succeeded か failed（active 無し）になるまで待つ。0 件の間も待つ（KEDA が起こすのを待つ）。
+wait_jobs_settled() {
+  local sj="$1" timeout="$2" deadline counts
+  deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    counts="$(k get jobs -l "scaledjob.keda.sh/name=${sj}" -o json 2>/dev/null | python3 -c '
+import json, sys
+items = json.load(sys.stdin).get("items", [])
+settled = 0
+for i in items:
+    st = i.get("status", {})
+    if (st.get("succeeded", 0) or 0) + (st.get("failed", 0) or 0) >= 1 and not (st.get("active", 0) or 0):
+        settled += 1
+print("%d %d" % (len(items), settled))
+' 2>/dev/null)"
+    local total=0 settled=0
+    read -r total settled <<<"${counts:-}" || true
+    if [ "${total:-0}" -ge 1 ] && [ "${total:-0}" = "${settled:-x}" ]; then
+      return 0
+    fi
+    sleep 5
+  done
+  log_step "${sj}: Job が settle しない（total/settled=${counts:-読めない}）"
+  return 1
+}
+
+# derived_kinds <録画 id> <派生物の置き場> → 派生物（original 以外）の kind を昇順・カンマ区切りで返す。
+# 行の active だけを見る。
+derived_kinds() {
+  psql_q "SELECT coalesce(string_agg(DISTINCT a.kind, ',' ORDER BY a.kind), '')
+      FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id
+      WHERE a.recording_id = $1 AND a.kind <> 'original'
+        AND c.store = '$2' AND c.state = 'active'" | head -1 | tr -d '[:space:]'
+}
+
 # copy_state <論理資産 id> <置き場> → コピーの state（無ければ空）
 copy_state() { psql_scalar "SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = '$2'"; }
 # copy_rel <論理資産 id> <置き場> → コピーの相対パス
@@ -415,7 +454,8 @@ fi
 #   - 派生物を FS に書く（storage.derived の取り違え）→ fs_derived_count が 0 でなくなる
 #   - S3 の資格情報 / endpoint が違う → worker が派生物の書き込みで失敗し、river job が discarded
 #   - encode が原本を見つけられない（copy の store が違う）→ river job が discarded
-#   - 派生物の行が作られない（公開を飛ばす）→ derived が 'encoded,thumbnail' にならない
+#   - 派生物の行が作られない（公開を飛ばす）→ derived が 'encoded,seek_tiles,thumbnail' にならない
+#   - Job を途中（active）で見る → 判定しない。全部が settle するまで待つ（wait_jobs_settled）
 if [ "$setup_enc_ok" != 1 ]; then
   fail "6.2" "原本（ENC）の仕込みに失敗したので encode / thumbnail を測れない"
 else
@@ -452,17 +492,23 @@ else
     if [ "$thumb_ok" != 1 ]; then
       problems="${problems} thumbnail(river ${thumb_jid}) が完了しない"
     fi
+    # Job は途中の状態（active）で判定しない。全部が succeeded か failed になるまで待つ（実機で、
+    # active の Job を一度だけ見て FAIL にした）。上限は encode の長さに合わせて明示する。
+    wait_jobs_settled "$sj_enc" 1800 || problems="${problems} ${sj_enc} の Job が 1800s で終わらない"
+    wait_jobs_settled "$sj_thumb" 1200 || problems="${problems} ${sj_thumb} の Job が 1200s で終わらない"
+    # 派生物の集合は encode の後、thumbnail キューの seek_tiles で増える。期待の集合が揃うまで待つ。
+    derived_settled() { [ "$(derived_kinds "$rec_enc" "$E2E_DERIVED_STORE")" = "$E2E_EXPECTED_DERIVED" ]; }
+    retry_until 600 "derived set ${E2E_EXPECTED_DERIVED} on ${E2E_DERIVED_STORE}" derived_settled || true
+    # seek_tiles の Job は行の後に終わることがあるので、もう一度 settle を待つ。
+    wait_jobs_settled "$sj_thumb" 600 || problems="${problems} ${sj_thumb} の seek_tiles の Job が終わらない"
     ev_enc="$(store_job_evidence "$sj_enc" "$E2E_STORE_A")" || problems="${problems} ${ev_enc}"
     ev_thumb="$(store_job_evidence "$sj_thumb" "$E2E_STORE_A")" || problems="${problems} ${ev_thumb}"
-    derived="$(psql_q "SELECT coalesce(string_agg(DISTINCT a.kind, ',' ORDER BY a.kind), '')
-        FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id
-        WHERE a.recording_id = ${rec_enc} AND a.kind <> 'original'
-          AND c.store = '${E2E_DERIVED_STORE}' AND c.state = 'active'" | head -1 | tr -d '[:space:]')"
+    derived="$(derived_kinds "$rec_enc" "$E2E_DERIVED_STORE")"
     fs_derived="$(psql_scalar "SELECT count(*) FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id
         WHERE a.recording_id = ${rec_enc} AND a.kind <> 'original'
           AND c.store IN ('${E2E_STORE_A}', '${E2E_STORE_B}')")"
-    if [ "$derived" != "encoded,thumbnail" ]; then
-      problems="${problems} 派生物（${E2E_DERIVED_STORE}）の行が 'encoded,thumbnail' でない（'${derived}'）"
+    if [ "$derived" != "$E2E_EXPECTED_DERIVED" ]; then
+      problems="${problems} 派生物（${E2E_DERIVED_STORE}）の行が '${E2E_EXPECTED_DERIVED}' でない（'${derived}'）"
     fi
     if [ "$fs_derived" != "0" ]; then
       problems="${problems} 派生物の行が FS の置き場に ${fs_derived} 件ある"
@@ -514,10 +560,15 @@ else
     xfer_backlog="$(river_backlog "transfer_${E2E_STORE_B}")"
     xfer_state="$(copy_state "$asset_old" "$E2E_STORE_B")"
     xfer_err="$(psql_q "SELECT left(coalesce(errors::text, ''), 300) FROM river_job WHERE queue = 'transfer_${E2E_STORE_B}' ORDER BY id DESC LIMIT 1" | head -1)"
+    # 転送の失敗理由は転送 Pod のログに出る（river のエラーには残らないことがある）。
+    # ワーカーの 'storage transfer: copy attempt failed' の最後の行を、転送 Job 全部のログから拾う。
+    xfer_log="$(for j in $(k get jobs -l "scaledjob.keda.sh/name=${sj_xfer}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        k logs "job/${j}" 2>/dev/null
+      done | grep 'copy attempt failed' | tail -1 | cut -c1-400)"
     if [ "$xfer_backlog" != "0" ] && [ -z "$xfer_state" ]; then
-      problems="${problems} 転送ジョブが ${xfer_backlog} 件滞留しているのに、転送先（${E2E_STORE_B}）のコピーが 1 件も予約されていない（転送元 ${E2E_STORE_A} を読めていない: internal_url か転送元の判定を確認）。最後のジョブのエラー: '${xfer_err}'"
+      problems="${problems} 転送ジョブが ${xfer_backlog} 件滞留しているのに、転送先（${E2E_STORE_B}）のコピーが 1 件も予約されていない（転送元 ${E2E_STORE_A} を読めていない: internal_url か転送元の判定を確認）。最後のジョブのエラー: '${xfer_err}'。転送 Pod の最後の失敗ログ: '${xfer_log:-なし}'"
     else
-      problems="${problems} 転送先（${E2E_STORE_B}）のコピーが active にならない（tokyo=$(copy_state "$asset_old" "$E2E_STORE_A") ${E2E_STORE_B}='${xfer_state}' 滞留=${xfer_backlog}）。最後のジョブのエラー: '${xfer_err}'"
+      problems="${problems} 転送先（${E2E_STORE_B}）のコピーが active にならない（tokyo=$(copy_state "$asset_old" "$E2E_STORE_A") ${E2E_STORE_B}='${xfer_state}' 滞留=${xfer_backlog}）。最後のジョブのエラー: '${xfer_err}'。転送 Pod の最後の失敗ログ: '${xfer_log:-なし}'"
     fi
   fi
   if [ -z "$problems" ]; then

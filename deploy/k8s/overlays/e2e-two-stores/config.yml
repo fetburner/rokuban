@@ -4,7 +4,9 @@
 
 server:
   listen: ":40773"
-  allowed_hosts: [rokuban.local]
+  # internal_url（置き場ごとの配信 streamer）の host も入れる。転送の worker が転送元を読むときの
+  # Host は internal_url の host になり、ここに無いと 400 invalid host で拒まれる（判定 6.3）。
+  allowed_hosts: [rokuban.local, rokuban-recording-hls-tokyo, rokuban-recording-hls-takamatsu]
 
 db:
   host: postgres
