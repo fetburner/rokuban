@@ -704,26 +704,10 @@ worker:
 		strings.Join(extra, "\n")))
 }
 
-func TestServerRecordingQueryShowsS3EncodedCopyAfterOriginalRemoval(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool)
-	originalID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-		p.RelPath = "server-s3-query/original.ts"
-	})
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
-		t.Fatalf("removing the original copy: %v", err)
-	}
-	profile := "h264"
-	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-		p.Kind = "encoded"
-		p.Profile = &profile
-		p.RelPath = "server-s3-query/encoded.mp4"
-	})
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
-		t.Fatalf("placing encoded copy in S3 derived store: %v", err)
-	}
-
+// newFSAndS3APIServer は、FS の原本置き場 test-store と S3 の派生物置き場 s3-derived を持つ
+// 設定で api ロールの HTTP サーバーを起動する。
+func newFSAndS3APIServer(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *httptest.Server {
+	t.Helper()
 	dbCfg := testutil.DatabaseConfig(t)
 	user := dbCfg.User
 	if user == "" {
@@ -770,6 +754,30 @@ storage:
 	}
 	httpServer := httptest.NewServer(server.Handler)
 	t.Cleanup(httpServer.Close)
+	return httpServer
+}
+
+func TestServerRecordingQueryShowsS3EncodedCopyAfterOriginalRemoval(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	originalID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "server-s3-query/original.ts"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
+		t.Fatalf("removing the original copy: %v", err)
+	}
+	profile := "h264"
+	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "server-s3-query/encoded.mp4"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
+		t.Fatalf("placing encoded copy in S3 derived store: %v", err)
+	}
+
+	httpServer := newFSAndS3APIServer(t, ctx, pool)
 
 	response, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", httpServer.URL, recordingID))
 	if err != nil {
@@ -801,52 +809,7 @@ func TestServerStoreBreakerResumeAcceptsS3Store(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO circuit_breakers (scope, name, pending, threshold, detail) VALUES ('s3-derived', 'delete_reconcile', 10, 20, '{}'::jsonb)`); err != nil {
 		t.Fatalf("inserting tripped breaker: %v", err)
 	}
-	dbCfg := testutil.DatabaseConfig(t)
-	user := dbCfg.User
-	if user == "" {
-		user = os.Getenv("USER")
-	}
-	password := dbCfg.Password
-	if password == "" {
-		password = "unused"
-	}
-	configPath := writeServerTestConfig(t, fmt.Sprintf(`
-server:
-  listen: "127.0.0.1:0"
-  allowed_hosts: []
-db:
-  host: %q
-  port: %d
-  user: %q
-  password: %q
-  database: %q
-  sslmode: %q
-mirakcs:
-  - site: default
-    url: http://127.0.0.1:1
-storage:
-  media_dir: %q
-  stores:
-    test-store:
-      kind: fs
-    s3-derived:
-      kind: s3
-      bucket: rokuban-derived
-  originals:
-    - store: test-store
-  derived: s3-derived
-`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, t.TempDir()))
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		t.Fatalf("loading API configuration: %v", err)
-	}
-	var eg errgroup.Group
-	server, err := buildHTTPServer(ctx, cfg, []string{"api"}, nil, nil, pool, &eg, true)
-	if err != nil {
-		t.Fatalf("building API HTTP server: %v", err)
-	}
-	httpServer := httptest.NewServer(server.Handler)
-	t.Cleanup(httpServer.Close)
+	httpServer := newFSAndS3APIServer(t, ctx, pool)
 
 	response, err := http.Post(httpServer.URL+"/api/stores/s3-derived/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {

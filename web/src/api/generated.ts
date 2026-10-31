@@ -9647,8 +9647,9 @@ export const getResumeStoreCircuitBreakerUrl = (store: string,
 
 /**
  * 手動確認後の再開。`store` と `name` で発動中の行を 1 件指定する。
- * 行の削除は実装詳細なので DELETE にはしない。store は `config.storage.stores` に定義された名前で検証し、置き場の実体は
- * 参照しない。
+ * 運用者の操作は「確認したので再開する」であり、行の削除は実装詳細なので
+ * DELETE にはしない。store は `config.storage.stores` に定義された名前で
+ * 検証し、置き場の実体は参照しない。
  * @summary Resume a store-scoped circuit breaker (manual acknowledgement)
  */
 export const resumeStoreCircuitBreaker = async (store: string,
