@@ -129,7 +129,7 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 複製しない列: コピーの `rel_path` と論理資産の `kind`
 - 走査時の状態: `media_asset_copies.state = 'active'`
 - 移行時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations`
-- worker 起動時のコピー必須検査と adopt の割り当て: `TestAdoptUnassignedStoreRows`
+- adopt の起動前検査と世代不変: `TestAdoptUnassignedStoreRows` / `TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent`
 - 列削除の拒否: `TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets`
 - 巻き戻しの代表コピー: `TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy`
 - 巻き戻しの拒否: `TestDropMediaAssetCopyColumnsDownRefusesUnrepresentableState`

@@ -78,50 +78,6 @@ func TestAdoptUnassignedStoreRows(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, syncedAssetID); err != nil {
 		t.Fatalf("assigning fixture copy to tokyo: %v", err)
 	}
-	type derivedGenerationFixture struct {
-		recordingID int64
-		assetID     int64
-		kind        string
-		copyState   string
-	}
-	var derivedGenerationFixtures []derivedGenerationFixture
-	for _, kind := range []string{"thumbnail", "encoded"} {
-		for _, copyState := range []string{"pending", "deleted"} {
-			recordingID := dbtest.Recording(t, pool)
-			profile := (*string)(nil)
-			if kind == "encoded" {
-				profile = stringPointer("adopt-" + copyState)
-			}
-			assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-				p.Kind = kind
-				p.Profile = profile
-				p.RelPath = fmt.Sprintf("sites/default/adopt-%s-%s-%d.g0", kind, copyState, recordingID)
-			})
-			if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
-				t.Fatalf("assigning %s generation-zero copy to tokyo: %v", kind, err)
-			}
-
-			relPath := fmt.Sprintf("sites/default/adopt-%s-%s-%d.g1", kind, copyState, recordingID)
-			var pendingCopyID int64
-			if err := pool.QueryRow(ctx, `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-VALUES ($1, 'tokyo', $2, 1, 'pending')
-RETURNING id`, assetID, relPath).Scan(&pendingCopyID); err != nil {
-				t.Fatalf("seeding %s generation-one pending copy: %v", kind, err)
-			}
-			if copyState == "deleted" {
-				rows, err := sqlcgen.New(pool).MarkPendingMediaAssetCopyDeleted(ctx, sqlcgen.MarkPendingMediaAssetCopyDeletedParams{
-					CopyID: pendingCopyID, StoreName: "tokyo",
-				})
-				if err != nil || rows != 1 {
-					t.Fatalf("marking %s generation-one copy deleted: rows %d, err %v", kind, rows, err)
-				}
-			}
-			derivedGenerationFixtures = append(derivedGenerationFixtures, derivedGenerationFixture{
-				recordingID: recordingID, assetID: assetID, kind: kind, copyState: copyState,
-			})
-		}
-	}
 
 	unassigned := NewMedia(pool, "", "")
 	if err := unassigned.UpsertIngestProgress(ctx, store.IngestProgress{
@@ -193,8 +149,59 @@ RETURNING id`, assetID, relPath).Scan(&pendingCopyID); err != nil {
 	if err := media.RequireAdoptedStoreRows(ctx); err != nil {
 		t.Fatalf("RequireAdoptedStoreRows after every asset has a copy: %v", err)
 	}
+}
 
-	for _, fixture := range derivedGenerationFixtures {
+func TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	media := NewMedia(pool, "tokyo", "")
+	type fixture struct {
+		recordingID int64
+		assetID     int64
+		kind        string
+		copyState   string
+	}
+	var fixtures []fixture
+	for _, kind := range []string{"thumbnail", "encoded"} {
+		for _, copyState := range []string{"pending", "deleted"} {
+			recordingID := dbtest.Recording(t, pool)
+			profile := (*string)(nil)
+			if kind == "encoded" {
+				profile = stringPointer("adopt-" + copyState)
+			}
+			assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+				p.Kind = kind
+				p.Profile = profile
+				p.RelPath = fmt.Sprintf("sites/default/adopt-%s-%s-%d.g0", kind, copyState, recordingID)
+			})
+			if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
+				t.Fatalf("assigning %s generation-zero copy to tokyo: %v", kind, err)
+			}
+
+			var pendingCopyID int64
+			relPath := fmt.Sprintf("sites/default/adopt-%s-%s-%d.g1", kind, copyState, recordingID)
+			if err := pool.QueryRow(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, 'tokyo', $2, 1, 'pending')
+RETURNING id`, assetID, relPath).Scan(&pendingCopyID); err != nil {
+				t.Fatalf("seeding %s generation-one pending copy: %v", kind, err)
+			}
+			if copyState == "deleted" {
+				rows, err := sqlcgen.New(pool).MarkPendingMediaAssetCopyDeleted(ctx, sqlcgen.MarkPendingMediaAssetCopyDeletedParams{
+					CopyID: pendingCopyID, StoreName: "tokyo",
+				})
+				if err != nil || rows != 1 {
+					t.Fatalf("marking %s generation-one copy deleted: rows %d, err %v", kind, rows, err)
+				}
+			}
+			fixtures = append(fixtures, fixture{recordingID: recordingID, assetID: assetID, kind: kind, copyState: copyState})
+		}
+	}
+	if err := media.AdoptUnassignedStoreRows(ctx); err != nil {
+		t.Fatalf("AdoptUnassignedStoreRows: %v", err)
+	}
+
+	for _, fixture := range fixtures {
 		var generation int64
 		if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, fixture.assetID).Scan(&generation); err != nil {
 			t.Fatalf("reading adopted %s/%s derived generation: %v", fixture.kind, fixture.copyState, err)
@@ -202,7 +209,6 @@ RETURNING id`, assetID, relPath).Scan(&pendingCopyID); err != nil {
 		if generation != 0 {
 			t.Errorf("adopted %s/%s derived_generation = %d, want 0", fixture.kind, fixture.copyState, generation)
 		}
-
 		var currentCopyExists bool
 		if err := pool.QueryRow(ctx, `
 SELECT EXISTS (
