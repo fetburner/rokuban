@@ -17,6 +17,7 @@ const transferBacklogQueryTimeout = 5 * time.Second
 // TransferBacklogCollector は、encode reconcile が保存した置き場ごとの転送待ちの件数を scrape ごとに
 // DB から読み直し、次の 2 本を出す。
 //
+//   - rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}: 数え始めた時刻。件数の鮮度
 //   - rokuban_storage_transfer_backlog_assets{store}: 直近に数えた転送待ちの論理資産数
 //   - rokuban_encode_backpressure{store}: 件数が上限に達していれば 1、そうでなければ 0
 //
@@ -28,6 +29,7 @@ type TransferBacklogCollector struct {
 	reader store.TransferBacklogReader
 	limits map[string]int
 
+	countedAt    *prometheus.Desc
 	backlog      *prometheus.Desc
 	backpressure *prometheus.Desc
 	errors       prometheus.Counter
@@ -38,6 +40,11 @@ func NewTransferBacklogCollector(reader store.TransferBacklogReader, limits map[
 	return &TransferBacklogCollector{
 		reader: reader,
 		limits: limits,
+		countedAt: prometheus.NewDesc(
+			"rokuban_storage_transfer_backlog_counted_timestamp_seconds",
+			"Unix time when encode reconcile started the last count of the transfer backlog for the store. Read this first: when it is far older than the full-pass period, the backlog and backpressure gauges are stale.",
+			[]string{"store"}, nil,
+		),
 		backlog: prometheus.NewDesc(
 			"rokuban_storage_transfer_backlog_assets",
 			"Logical media assets waiting for a desired-store copy, by source FS store, for stores with storage.transfer.backlog_limit, as last counted by encode reconcile. An asset with copies in several source stores counts once per store.",
@@ -57,6 +64,7 @@ func NewTransferBacklogCollector(reader store.TransferBacklogReader, limits map[
 
 // Describe は prometheus.Collector を満たす。
 func (c *TransferBacklogCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.countedAt
 	ch <- c.backlog
 	ch <- c.backpressure
 	c.errors.Describe(ch)
@@ -80,14 +88,16 @@ func (c *TransferBacklogCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		count, ok := saved[name]
+		snap, ok := saved[name]
 		if !ok {
 			continue
 		}
+		count := snap.Assets
 		stopped := 0.0
 		if count >= int64(c.limits[name]) {
 			stopped = 1
 		}
+		ch <- prometheus.MustNewConstMetric(c.countedAt, prometheus.GaugeValue, float64(snap.CountedAt.UnixNano())/float64(time.Second), name)
 		ch <- prometheus.MustNewConstMetric(c.backlog, prometheus.GaugeValue, float64(count), name)
 		ch <- prometheus.MustNewConstMetric(c.backpressure, prometheus.GaugeValue, stopped, name)
 	}

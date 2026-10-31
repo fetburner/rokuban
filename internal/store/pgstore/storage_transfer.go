@@ -459,23 +459,24 @@ func (s *Media) MarkMediaAssetCopyDeleted(ctx context.Context, candidate store.M
 	return true, nil
 }
 
-// ReadTransferBacklog は encode reconcile が直近に数えた置き場ごとの転送待ちの件数を返す。
-func (s *Media) ReadTransferBacklog(ctx context.Context) (map[string]int64, error) {
+// ReadTransferBacklog は encode reconcile が直近に数えた置き場ごとの転送待ちの件数と時刻を返す。
+func (s *Media) ReadTransferBacklog(ctx context.Context) (map[string]store.TransferBacklogSnapshot, error) {
 	rows, err := sqlcgen.New(s.pool).ListTransferBacklogSnapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading transfer backlog snapshots: %w", err)
 	}
-	counts := make(map[string]int64, len(rows))
+	out := make(map[string]store.TransferBacklogSnapshot, len(rows))
 	for _, row := range rows {
-		counts[row.Store] = row.Assets
+		out[row.Store] = store.TransferBacklogSnapshot{Assets: row.Assets, CountedAt: row.CountedAt}
 	}
-	return counts, nil
+	return out, nil
 }
 
-// RecordTransferBacklog は置き場ごとの件数を保存し、書き換える前の件数を返す。
+// RecordTransferBacklog は置き場ごとの件数を、保存済みより新しい countedAt のときだけ保存する。
 // advisory lock で呼び出しを直列にするので、cleanup キューの並行する 2 つのパスのうち、
 // 状態を変えた書き込みを見るのは 1 つだけになる（TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce）。
-func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int64) (map[string]int64, error) {
+// 古い countedAt の書き込みは捨てる（TestRecordTransferBacklog_StaleCountDoesNotOverwrite）。
+func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (map[string]store.TransferBacklogWrite, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transfer backlog transaction: %w", err)
@@ -500,18 +501,20 @@ func (s *Media) RecordTransferBacklog(ctx context.Context, counts map[string]int
 	if err := q.DeleteTransferBacklogSnapshotsExcept(ctx, stores); err != nil {
 		return nil, fmt.Errorf("deleting transfer backlog snapshots of stores without a limit: %w", err)
 	}
+	written := make(map[string]store.TransferBacklogWrite, len(stores))
 	for _, name := range stores {
-		if err := q.UpsertTransferBacklogSnapshot(ctx, sqlcgen.UpsertTransferBacklogSnapshotParams{Store: name, Assets: counts[name]}); err != nil {
+		n, err := q.UpsertTransferBacklogSnapshot(ctx, sqlcgen.UpsertTransferBacklogSnapshotParams{Store: name, Assets: counts[name], CountedAt: countedAt})
+		if err != nil {
 			return nil, fmt.Errorf("upserting transfer backlog snapshot for store %q: %w", name, err)
 		}
+		if n == 0 {
+			continue
+		}
+		before, had := previous[name]
+		written[name] = store.TransferBacklogWrite{HadPrevious: had, Previous: before}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing transfer backlog snapshots: %w", err)
 	}
-	for name := range previous {
-		if _, ok := counts[name]; !ok {
-			delete(previous, name)
-		}
-	}
-	return previous, nil
+	return written, nil
 }

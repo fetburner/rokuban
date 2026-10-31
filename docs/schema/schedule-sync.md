@@ -80,3 +80,20 @@ CREATE TABLE schedule_sync_snapshots (
 - 推測の対象にしない表: `reservations` / `record_sync` / `recordings`
 
 </details>
+
+### transfer_backlog_snapshots — 置き場ごとの転送待ちの件数
+
+上限付きの置き場ごとに、encode reconcile が直近に数えた転送待ちの件数と、数え始めた時刻を持つ導出表である。
+
+`storage.transfer.backlog_limit` を設定した置き場が対象である。ScaledJob の `--once` ではプロセスのメモリが毎回空から始まる。そこで、Warn / Info の変化の判定と、scrape で読むゲージの値を、プロセスをまたいで DB に置く。
+
+行は「上限付きの置き場として 1 回は数えた」を意味し、数えていない置き場の行は作らない。上限を外した置き場の行は、次に数えるパスが消す。書き手は encode reconcile だけで、全件パスが書き直せる寿命なので、不変条件 12 のとおり別表にした。
+
+止まっているかは列にしない。上限は設定の値で、設定を変えると同じ件数でも答えが変わるので、読む側が件数と今の上限から導く（不変条件 9）。時刻は呼び出し側が渡し、保存済みより新しいときだけ書く。並行するパスで、古い件数が新しい件数を戻さないためである。列の形は migration が権威である。
+
+<details><summary>根拠</summary>
+
+- 古い時刻の件数で上書きしないこと: `TestRecordTransferBacklog_StaleCountDoesNotOverwrite`
+- 並行する保存で変化を見るのが 1 つだけであること: `TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
+
+</details>

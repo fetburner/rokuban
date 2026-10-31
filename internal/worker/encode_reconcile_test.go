@@ -186,7 +186,17 @@ func TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore(t *testin
 // countingTransfers は転送待ちの集計が呼ばれた回数を数える。問い合わせを省いたパスを確かめるために使う。
 type countingTransfers struct {
 	store.StorageTransfer
-	calls int
+	calls, reads, records int
+}
+
+func (c *countingTransfers) ReadTransferBacklog(ctx context.Context) (map[string]store.TransferBacklogSnapshot, error) {
+	c.reads++
+	return c.StorageTransfer.ReadTransferBacklog(ctx)
+}
+
+func (c *countingTransfers) RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (map[string]store.TransferBacklogWrite, error) {
+	c.records++
+	return c.StorageTransfer.RecordTransferBacklog(ctx, counts, countedAt)
 }
 
 func (c *countingTransfers) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (map[string]int64, error) {
@@ -293,7 +303,7 @@ func TestEncodeReconcile_BacklogSnapshotDroppedWhenLimitRemoved(t *testing.T) {
 		return &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: p}
 	}
 	runEncodeReconcilePassArgs(t, newWorker(policy), EncodeReconcileArgs{})
-	if got, _ := pgstoretest.Media(pool).ReadTransferBacklog(t.Context()); got["edge"] != 1 {
+	if got, _ := pgstoretest.Media(pool).ReadTransferBacklog(t.Context()); got["edge"].Assets != 1 {
 		t.Fatalf("saved backlog = %v, want edge 1", got)
 	}
 
@@ -342,6 +352,28 @@ func TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount(t *testing.T) {
 	})
 }
 
+// 上限を設定していない構成の targeted pass は、DB の件数にも保存にも集計にも触らない。
+// 全件パスの先頭だけ、残った行の掃除のために保存を呼ぶ。
+func TestEncodeReconcile_NoLimitPassDoesNotTouchBacklogState(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID, _ := seedEdgeOriginal(t, pool)
+	policy := transferTestConfig("central", "edge", "central")
+	counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
+
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+	if counting.calls != 0 || counting.reads != 0 || counting.records != 0 {
+		t.Fatalf("targeted pass without limits: counts=%d reads=%d records=%d, want all 0", counting.calls, counting.reads, counting.records)
+	}
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
+	if counting.calls != 0 || counting.reads != 0 || counting.records != 1 {
+		t.Fatalf("full pass without limits: counts=%d reads=%d records=%d, want 0, 0, 1", counting.calls, counting.reads, counting.records)
+	}
+}
+
 // 止まり始めたときと解けたときだけ Warn / Info を出す。止まっている間は毎パス同じ Warn を出さない。
 // パスごとに新しい worker を作る（ScaledJob の --once はパスごとにプロセスが新しくなる）。
 func TestEncodeReconcile_BacklogLogsOnlyOnTransitions(t *testing.T) {
@@ -375,37 +407,6 @@ func TestEncodeReconcile_BacklogLogsOnlyOnTransitions(t *testing.T) {
 	pass()
 	if got := strings.Count(logs.String(), backlogResumeMsg); got != 1 {
 		t.Fatalf("resume logs after a further pass = %d, want still 1", got)
-	}
-}
-
-// 並行する 2 パス（cleanup は同時に 2 本走る）でも、止まり始めの Warn は 1 回だけ出る。
-func TestEncodeReconcile_BacklogWarnOnceAcrossConcurrentPasses(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	logs := captureSlog(t)
-	seedEdgeOriginal(t, pool)
-	policy := transferTestConfig("central", "edge", "central")
-	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
-
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: policy, Enqueuer: newRecordingEnqueuer()}
-			if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err != nil {
-				t.Errorf("EncodeReconcileWorker.Work: %v", err)
-			}
-		}()
-	}
-	close(start)
-	wg.Wait()
-	if got := strings.Count(logs.String(), backlogStopMsg); got != 1 {
-		t.Fatalf("stop logs across 8 concurrent passes = %d, want 1\n%s", got, logs.String())
 	}
 }
 

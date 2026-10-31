@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 )
 
 const deleteTransferBacklogSnapshotsExcept = `-- name: DeleteTransferBacklogSnapshotsExcept :exec
@@ -57,20 +58,26 @@ func (q *Queries) LockTransferBacklogSnapshots(ctx context.Context) error {
 	return err
 }
 
-const upsertTransferBacklogSnapshot = `-- name: UpsertTransferBacklogSnapshot :exec
+const upsertTransferBacklogSnapshot = `-- name: UpsertTransferBacklogSnapshot :execrows
 INSERT INTO transfer_backlog_snapshots (store, assets, counted_at)
-VALUES ($1, $2, now())
+VALUES ($1, $2, $3)
 ON CONFLICT (store) DO UPDATE SET
     assets = EXCLUDED.assets,
     counted_at = EXCLUDED.counted_at
+WHERE transfer_backlog_snapshots.counted_at < EXCLUDED.counted_at
 `
 
 type UpsertTransferBacklogSnapshotParams struct {
-	Store  string
-	Assets int64
+	Store     string
+	Assets    int64
+	CountedAt time.Time
 }
 
-func (q *Queries) UpsertTransferBacklogSnapshot(ctx context.Context, arg UpsertTransferBacklogSnapshotParams) error {
-	_, err := q.db.Exec(ctx, upsertTransferBacklogSnapshot, arg.Store, arg.Assets)
-	return err
+// counted_at が保存済みより新しいときだけ書く。影響行数 1 が「書いた」、0 が「古いので捨てた」。
+func (q *Queries) UpsertTransferBacklogSnapshot(ctx context.Context, arg UpsertTransferBacklogSnapshotParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertTransferBacklogSnapshot, arg.Store, arg.Assets, arg.CountedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

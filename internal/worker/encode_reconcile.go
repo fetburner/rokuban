@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -321,17 +322,22 @@ func (w *EncodeReconcileWorker) backlogLimitedStores() []string {
 // プロセスが終わるので、メモリに持つと毎回空から始まり、Warn が毎パス出て、止まっている間の数え直しも起きない。
 // 数えたときは、置き場ごとの件数を保存し、書き換える前の件数と今の件数から止まり始め・解けたときだけ
 // Warn / Info を出す。前の件数の読みと保存は 1 つのトランザクションで直列にしてあるので、並行する 2 パスでも
-// 変化を見るのは 1 つだけである。ゲージ（rokuban_storage_transfer_backlog_assets / rokuban_encode_backpressure）は、
+// 変化を見るのは 1 つだけである。数え始めた時刻も保存し、保存済みより古い件数は捨てる。捨てた置き場は
+// Warn / Info を出さない。ゲージ（rokuban_storage_transfer_backlog_assets / rokuban_encode_backpressure）は、
 // 保存した件数を scrape のたびに metrics.TransferBacklogCollector が読んで出す。
 //
-// Transfers が nil のときは何もしない。上限を設定した置き場が無いときは、残っている行だけを消す。
+// Transfers が nil のときは何もしない。上限を設定した置き場が無いときは、DB に触れない
+// （全件パスの先頭だけ、残っている行を消す）。
 func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited []string, refresh bool) (map[string]bool, error) {
 	if w.Transfers == nil {
 		return nil, nil
 	}
 	if len(limited) == 0 {
-		if _, err := w.Transfers.RecordTransferBacklog(ctx, nil); err != nil {
-			return nil, fmt.Errorf("clearing transfer backlog snapshots: %w", err)
+		// 上限の無い構成の targeted pass は DB に触らない。残った行の掃除は全件パスの先頭だけで行う。
+		if refresh {
+			if _, err := w.Transfers.RecordTransferBacklog(ctx, nil, time.Now()); err != nil {
+				return nil, fmt.Errorf("clearing transfer backlog snapshots: %w", err)
+			}
 		}
 		return nil, nil
 	}
@@ -341,8 +347,8 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 			return nil, fmt.Errorf("reading transfer backlog snapshots: %w", err)
 		}
 		if !slices.ContainsFunc(limited, func(name string) bool {
-			count, ok := saved[name]
-			return ok && count >= int64(w.StoragePolicy.TransferBacklogLimit(name))
+			snap, ok := saved[name]
+			return ok && snap.Assets >= int64(w.StoragePolicy.TransferBacklogLimit(name))
 		}) {
 			return nil, nil
 		}
@@ -351,6 +357,8 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 	if err != nil {
 		return nil, fmt.Errorf("building original rules: %w", err)
 	}
+	// 数え始めた時刻を保存する。並行する別のパスの、より新しい件数を古い件数で戻さないため。
+	countedAt := time.Now()
 	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, w.StoragePolicy.FSStoreNames(), limited, w.StoragePolicy.Derived, storageTransferAttemptLimit)
 	if err != nil {
 		return nil, fmt.Errorf("counting transfer backlog by source store: %w", err)
@@ -360,7 +368,7 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 	for _, name := range limited {
 		current[name] = counts[name]
 	}
-	previous, err := w.Transfers.RecordTransferBacklog(ctx, current)
+	written, err := w.Transfers.RecordTransferBacklog(ctx, current, countedAt)
 	if err != nil {
 		return nil, fmt.Errorf("recording transfer backlog: %w", err)
 	}
@@ -369,11 +377,15 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 		limit := w.StoragePolicy.TransferBacklogLimit(name)
 		backlog := current[name]
 		stopped := backlog >= int64(limit)
-		before, counted := previous[name]
-		wasStopped := counted && before >= int64(limit)
 		if stopped {
 			blocked[name] = true
 		}
+		write, ok := written[name]
+		if !ok {
+			// 保存済みのほうが新しいので、この件数は捨てられた。状態の変化は新しい件数を書いたパスが見る。
+			continue
+		}
+		wasStopped := write.HadPrevious && write.Previous >= int64(limit)
 		switch {
 		case stopped && !wasStopped:
 			slog.Warn("encode_reconcile: transfer backlog reached the limit; not enqueuing encodes into this store",

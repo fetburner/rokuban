@@ -923,7 +923,7 @@ func gatherText(t *testing.T, c prometheus.Collector) string {
 func TestTransferBacklogCollector_ReadsSavedCounts(t *testing.T) {
 	pool := rokutest.SetupDB(t)
 	media := pgstoretest.Media(pool)
-	if _, err := media.RecordTransferBacklog(context.Background(), map[string]int64{"edge": 3, "other": 9}); err != nil {
+	if _, err := media.RecordTransferBacklog(context.Background(), map[string]int64{"edge": 3, "other": 9}, time.Unix(1700000000, 0)); err != nil {
 		t.Fatalf("recording backlog: %v", err)
 	}
 	cases := []struct {
@@ -939,6 +939,9 @@ func TestTransferBacklogCollector_ReadsSavedCounts(t *testing.T) {
 			c := NewTransferBacklogCollector(media, map[string]int{"edge": tc.limit, "uncounted": 1})
 			if got := labeledGaugeValue(t, c, "rokuban_storage_transfer_backlog_assets", map[string]string{"store": "edge"}); got != 3 {
 				t.Errorf("backlog = %v, want 3", got)
+			}
+			if got := labeledGaugeValue(t, c, "rokuban_storage_transfer_backlog_counted_timestamp_seconds", map[string]string{"store": "edge"}); got != 1700000000 {
+				t.Errorf("counted timestamp = %v, want 1700000000", got)
 			}
 			if got := labeledGaugeValue(t, c, "rokuban_encode_backpressure", map[string]string{"store": "edge"}); got != tc.wantStopped {
 				t.Errorf("backpressure = %v, want %v", got, tc.wantStopped)

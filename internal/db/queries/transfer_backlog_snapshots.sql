@@ -9,12 +9,14 @@ SELECT store, assets, counted_at
 FROM transfer_backlog_snapshots
 ORDER BY store;
 
--- name: UpsertTransferBacklogSnapshot :exec
+-- counted_at が保存済みより新しいときだけ書く。影響行数 1 が「書いた」、0 が「古いので捨てた」。
+-- name: UpsertTransferBacklogSnapshot :execrows
 INSERT INTO transfer_backlog_snapshots (store, assets, counted_at)
-VALUES ($1, $2, now())
+VALUES ($1, $2, $3)
 ON CONFLICT (store) DO UPDATE SET
     assets = EXCLUDED.assets,
-    counted_at = EXCLUDED.counted_at;
+    counted_at = EXCLUDED.counted_at
+WHERE transfer_backlog_snapshots.counted_at < EXCLUDED.counted_at;
 
 -- name: DeleteTransferBacklogSnapshotsExcept :exec
 DELETE FROM transfer_backlog_snapshots
