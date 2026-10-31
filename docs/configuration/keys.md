@@ -114,7 +114,7 @@
 
 FS 置き場の root は `storage.stores.<名前>.root` で指定する。省略した置き場は `storage.media_dir` を root にするので、1 つの置き場だけのプロセスは `media_dir` のままでよい。省略した置き場は 1 つのプロセスに 1 つまでしかマウントできない。2 つ目以降の置き場には `root` を書く。`root` は規則の指紋に含めない。マウント先の違いで積み済みの転送ジョブを捨てさせないためである。
 
-同じ root を指す 2 つの置き場を 1 つのプロセスでマウントすると、目印と書き込みを取り違えるので起動時に拒否する。一方の root がもう一方の下にある置き場も拒否する。下の置き場の監査が上の置き場のファイルを歩いてしまうからである。
+同じ root を指す 2 つの置き場を 1 つのプロセスでマウントすると、目印と書き込みを取り違えるので起動時に拒否する。一方の root がもう一方の root の下にある組み合わせも拒否する。外側の置き場の監査が、内側の置き場のファイルまで歩いてしまうからである。
 
 どの置き場をマウントするかは config ではなく argv の `--stores` で渡す（`--sites` と同じ扱い）。`--stores` に `storage.stores` に無い名前や S3 置き場を渡すと起動エラーになる。
 
@@ -131,7 +131,7 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 
 `storage.stores.<名前>.internal_url` は、その置き場の原本を別のプロセスが転送元として読むための URL である。読むのは転送ワーカーで、転送元の置き場をそのプロセスがマウントしていないときに使う。
 
-`internal_url` が指すのは、その置き場をマウントした streamer のベース URL である。転送ワーカーは `<internal_url>/api/media/stores/<置き場>/recordings/<id>/file` へ Range 付きで要求する。そのため、原本を直接返す streamer を指す。
+`internal_url` が指すのは、その置き場をマウントした streamer のベース URL である。転送ワーカーは `<internal_url>/api/media/stores/<置き場>/recordings/<id>/file` へ Range 付きで要求する。応答が `X-Accel-Redirect` で本体を前段に任せる streamer を指すと、転送は失敗する。原本を直接返す streamer を指す。
 
 `internal_url` の無い置き場は、マウントしているときだけ転送元になる。
 

@@ -39,7 +39,7 @@ worker は実行時に、ジョブの置き場をマウントしているかを�
 
 `--stores` は argv で渡す。省略したときは、FS 置き場が 1 つだけならその 1 つをマウントし、2 つ以上なら起動エラーになる。明示的な空（`--stores=`）は置き場を持たない。
 
-起動時に拒む組み合わせ（置き場が 0 件の worker、派生物の FS 置き場を挿さない encode / thumbnail など）は、[configuration/keys.md](../configuration/keys.md#置き場の規則) にだけ書く。
+起動時に拒む組み合わせ（置き場が 0 件の worker、派生物の FS 置き場をマウントしない encode / thumbnail など）は、[configuration/keys.md](../configuration/keys.md#置き場の規則) にだけ書く。
 
 <details><summary>根拠</summary>
 
@@ -284,7 +284,7 @@ preemption 対策は上記の ScaledJob で十分である。高速化とは、�
 - `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
 - schedule は base に実運用の間隔を書く。受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。base の値が判定の都合で短くなるのを防ぐ。**したがって判定 2 が測るのは出荷される schedule でない**
 - 間隔は in-process の既定に合わせる（`worker.periodic_jobs: true` の monolith）。揃っていないと「docker-compose では 15 分で走るのに k8s では走らない」形になる。`reconcile-pass` だけは合わせられない。in-process の既定は 30 秒だが CronJob の分解能は 1 分である。レベルトリガーなので取りこぼしは次のパスが拾い、差は「予約が mirakc に届くまでの遅延の上限」にだけ効く
-- 転送の投入（`storage-transfer-reconcile`）も同じ CronJob から投入する。キューは `cleanup` で site にも置き場にも依らないので、base の CronJob として置いてある。
+- 転送の reconcile（`rokuban enqueue storage-transfer-reconcile`）も CronJob が積む。キューは `cleanup` で site にも置き場にも依らないので、base の CronJob として置いてある。
 - CronJob の一覧は `deploy/k8s/base/cronjobs.yaml` にある。site 束縛と置き場束縛のものは、それぞれ `deploy/k8s/site/` と `deploy/k8s/store/` にある。
 - `rokuban enqueue` にあるジョブは全部 CronJob にする。1 つ落とすと、その定期パスが一度も走らない構成が気づかないうちに立つ（`worker.periodic_jobs: false` では投入経路がここしかない）。網羅は CI で回る Go テストが固定する。
 
