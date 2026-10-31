@@ -11,7 +11,8 @@ require_tools() {
   # rsync は `--oracles` の変異イメージビルドが要求する。**先頭で見る** ---
   # run_oracles の中で見ると、クラスタ作成・イメージビルド・KEDA 導入を全部
   # 済ませた後に落ちる。
-  for cmd in kind kubectl kustomize docker go python3 rsync; do
+  # git は派生物の MinIO のソースを commit 指定で取るために要る（build_minio_image）。
+  for cmd in kind kubectl kustomize docker go python3 rsync git; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [ "${#missing[@]}" -gt 0 ]; then
@@ -104,8 +105,16 @@ build_images() {
   fi
   rm -rf "$ctx"
 
+  local images=("$E2E_IMAGE" "$E2E_FULL_IMAGE" "$E2E_MOCK_IMAGE")
+  # 派生物の S3 置き場（MinIO）は判定 6 の overlay でだけ要る。他の overlay で焼くと
+  # 数分の go build を無駄に払う。
+  if [ "$E2E_OVERLAY" = "e2e-two-stores" ]; then
+    build_minio_image || return 1
+    images+=("$E2E_MINIO_IMAGE")
+  fi
+
   log_step "loading images into kind"
-  kind load docker-image "$E2E_IMAGE" "$E2E_FULL_IMAGE" "$E2E_MOCK_IMAGE" \
+  kind load docker-image "${images[@]}" \
     --name "$E2E_CLUSTER" >/dev/null || return 1
 
   # 焼いた印。apply_template がテンプレートに差し込む。
@@ -125,6 +134,40 @@ build_images() {
   # 足場の側だけである）。
   E2E_BUILD_ID="${app_id}-${mock_id}"
   export E2E_BUILD_ID
+}
+
+# minio_pinned_commit は CI の MinIO と同じ commit を .github/actions/build-minio/action.yml
+# から読む。ここに版を書き写すと、CI と判定 6 がずれたときに気付けない。
+minio_pinned_commit() {
+  grep -oE 'ref: [0-9a-f]{40}' "$E2E_ROOT/.github/actions/build-minio/action.yml" | head -1 | awk '{print $2}'
+}
+
+# build_minio_image は派生物の置き場（S3 互換）の MinIO を作る。
+#
+# 手順は .github/actions/build-minio と同じ（同じ commit のソースを `go build -trimpath`）。
+# 違うのは 2 点だけ: ホストが darwin でもノードは linux なので GOOS=linux を付け、
+# scratch に載せるため CGO を切る。**CI と同じ結果になるかは未検証**（初回の実行で
+# 確かめる。CI が動いている版のビルドと違うなら、ここが原因の候補）。
+build_minio_image() {
+  local sha ctx
+  sha="$(minio_pinned_commit)"
+  if [ -z "$sha" ]; then
+    printf 'could not read the pinned MinIO commit from .github/actions/build-minio/action.yml\n' >&2
+    return 1
+  fi
+  ctx="$(mktemp -d)" || return 1
+  log_step "building ${E2E_MINIO_IMAGE} (MinIO ${sha})"
+  # 浅い取得で commit を直接引く（GitHub は到達可能な commit の SHA 指定を許す）。
+  if ! git init -q "$ctx/minio-src" ||
+     ! git -C "$ctx/minio-src" fetch -q --depth 1 https://github.com/minio/minio.git "$sha" ||
+     ! git -C "$ctx/minio-src" checkout -q FETCH_HEAD ||
+     ! (cd "$ctx/minio-src" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/minio" .) ||
+     ! cp "$E2E_DIR/minio/Dockerfile" "$ctx/Dockerfile" ||
+     ! docker build -t "$E2E_MINIO_IMAGE" "$ctx" >/dev/null; then
+    rm -rf "$ctx"
+    return 1
+  fi
+  rm -rf "$ctx"
 }
 
 # install_keda は KEDA を入れる。既に入っていれば版だけ確かめて飛ばす。
@@ -182,9 +225,13 @@ deploy_scaffold() {
   # `connectionFromEnv` で読むもの（deploy/k8s/base/secret.example.yaml）。
   # 出どころは E2E_PGPASSWORD の 1 つのまま。片方だけ回すと、症状は
   # 「api は動くがスケールしない」になる。
+  # AWS_* は派生物の S3 置き場（overlays/e2e-two-stores の `storage.stores.s3`）の資格情報。
+  # 製品の Pod は envFrom で読み、MinIO の Deployment は同じ値を MINIO_ROOT_* に渡す。
   k create secret generic rokuban-secrets \
     --from-literal=POSTGRES_PASSWORD="$E2E_PGPASSWORD" \
     --from-literal=POSTGRES_CONNECTION_STRING="$(e2e_postgres_connection_string)" \
+    --from-literal=AWS_ACCESS_KEY_ID="$E2E_S3_ACCESS_KEY" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="$E2E_S3_SECRET_KEY" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
   # KEDA の postgresql スケーラが読む接続文字列。
   #

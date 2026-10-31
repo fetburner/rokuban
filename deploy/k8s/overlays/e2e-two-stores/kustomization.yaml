@@ -24,6 +24,8 @@ resources:
   - ../../base
   - stores/tokyo
   - stores/takamatsu
+  # 派生物の置き場（S3 互換）。config.yml の `storage.stores.s3` が指す。
+  - minio
   - ../e2e/sites/sitea
   - ../e2e/sites/siteb
 

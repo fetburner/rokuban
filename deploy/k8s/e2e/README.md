@@ -15,14 +15,22 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh
 ```
 
-**判定 6（`checks/06-two-stores.sh`）は書いただけで、実行していない。** 置き場 2 つ（tokyo / takamatsu）の overlay で、次の 5 つを見る。
+**判定 6（`checks/06-two-stores.sh`）は書いただけで、実行していない。** 置き場 2 つ（tokyo / takamatsu）の overlay で、派生物は MinIO の S3 に置く。実物の仕事を見る（probe は使わない）。
 
-- 置き場束縛キューの ScaledJob が置き場ごとに別の Job を起こし、その Job の Pod テンプレートが正しい PVC・root・`--stores` を持つこと（6.1〜6.3）
-- ingest が両方の置き場を挿すこと（6.4）
-- 置き場ごとの配信 Service が、自分の置き場の原本だけを返すこと（6.5）
-- 置き場束縛の CronJob が、置き場ごとに 1 本あること（6.6）
+- 6.1 / 6.6 置き場束縛キューの ScaledJob と CronJob が置き場ごとに 1 本ずつあること（静的）
+- 6.2 encode / thumbnail が原本のある置き場の Job で完了し、派生物の行が S3 にだけ載ること
+- 6.3 older_than の録画を転送 reconcile が takamatsu に載せ、takamatsu の Job が書いたコピーの SHA-256 が原本と一致すること
+- 6.4 ingest の Job が両方の置き場を挿すこと（Pod テンプレート。取り込みの中身は 6.8）
+- 6.5 配信がコピーのある置き場の中身を返し、無い置き場は 404 を返すこと
+- 6.7 overlap（32 分）を過ぎた tokyo の旧コピーが deleted になり PVC からファイルが消えること。**判定の時間の大半はここで、全体は 40 分前後かかる**
+- 6.8 **TODO**: ingest が録画を規則どおりの置き場へ書くこと。mirakcmock が録画の実体（records と stream）を配らないので測れない
 
-**入れるのは `e2e_probe` で、実物の worker には未登録の kind である。** そのため見られるのは「正しい Pod が起きた」までで、実際の転送・エンコード・削除の中身は見ない。
+原本は `cluster/store-original-seed-job.yaml` が PVC に書く（録画の取り込みは通さない）。中身は `cluster/store-check-job.yaml` で覗く（目印 `.rokuban-store` が無ければ失敗させる）。
+
+**未実機の前提（初回の実行で確かめる）**
+- `rokuban enqueue storage-transfer-reconcile` が無い版では 6.3 が「enqueue に失敗」で赤くなる
+- MinIO は `.github/actions/build-minio` と同じ commit のソースから、`CGO_ENABLED=0 GOOS=linux` で作る（CI と同じバイナリかは未確認）
+- bucket 作成の `minio/mc` のタグ（`overlays/e2e-two-stores/minio/bucket-job.yaml`）が引けるかは未確認
 
 Ingress controller は kind に無いので、6.5 は Ingress の行き先の Service を直接叩く。行と Service 名の対応は `deploy/k8s/stores_test.go` にある。
 
@@ -259,14 +267,17 @@ cluster/scaffold.yaml  postgres / mirakc モック / ツールボックス
 cluster/media-check-job.yaml
                        media volume に公開済み asset があるか検査する one-shot Pod
 checks/0*.sh           判定 1〜6（6 は E2E_OVERLAY=e2e-two-stores のときだけ走り、1〜5 はそのとき走らない）
-cluster/store-seed-job.yaml
-                       判定 6.5 が置き場の PVC に原本を書く one-shot Job
+cluster/store-original-seed-job.yaml
+                       判定 6 が置き場の PVC に原本を書く one-shot Job（ffmpeg の MPEG-TS か乱数の text）
+cluster/store-check-job.yaml
+                       判定 6 が置き場の PVC の 1 ファイルを覗く one-shot Job（PRESENT の SIZE / SHA-256 か ABSENT）
 lib/selftest.sh        lib の純粋な部分のユニットテスト（クラスタ不要。CI で回す）
 fixtures/              オラクル自己検査用の身代わり（製品ではない）
                        製品と同じ役ラベルを名乗るので、残っていると判定が
                        これを製品と見なす。preflight が残骸を落とす
 mutants/               変異（イメージを焼き直す種類のもの）
 mirakcmock/            mirakc モック（Go。`go test ./deploy/k8s/e2e/...` が見る）
+minio/                 判定 6 の派生物の置き場（MinIO）の Dockerfile。バイナリは lib/cluster.sh が同じ commit から作る
 ```
 
 **このモックと `internal/mirakc/conformance/`（mirakc 実物への conformance テスト）は両方持つ。** ここが判定したいのは KEDA / ロール分割で、軽量・高速に何度も回したい。mirakc 実物を要求するとそれが重くなる。mirakc の実挙動そのものの契約は conformance 側の役目である。ここのモックはその判定結果に合わせて直す（[docs/runbook/testing.md](../../../docs/runbook/testing.md)）。

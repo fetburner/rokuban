@@ -1,0 +1,83 @@
+# 派生物の bucket（rokuban-derived）を作る Job。MinIO は起動時に bucket を作らない。
+#
+# mc（minio/mc）はシェルを持たないイメージなので、alias の設定を initContainer に分け、
+# 設定の置き場（MC_CONFIG_DIR の emptyDir）を 2 つのコンテナで共有する。`$(VAR)` は
+# Kubernetes が env から展開する（シェルは使わない）。
+#
+# **未検証**: mc のタグ（下の image）は実機で引けるかを初回の実行で確かめること。
+# 引けなければ Job が ImagePullBackOff になり、派生物の書き込みが失敗して判定 6.2 が赤くなる。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bucket-create
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: minio-bucket
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: minio-bucket
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: alias
+          image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+          imagePullPolicy: IfNotPresent
+          args: ["alias", "set", "local", "http://minio:9000", "$(MINIO_ROOT_USER)", "$(MINIO_ROOT_PASSWORD)"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rokuban-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rokuban-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: MC_CONFIG_DIR
+              value: /mc
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: mc
+              mountPath: /mc
+      containers:
+        - name: bucket
+          image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+          imagePullPolicy: IfNotPresent
+          args: ["mb", "--ignore-existing", "local/rokuban-derived"]
+          env:
+            - name: MC_CONFIG_DIR
+              value: /mc
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # overlays/e2e-two-stores/kustomization.yaml の Job 向けの patch（cpu の値を書き換える）が
+          # 当たるので、requests を持たせておく。無いと kustomize build が「replace の当て先が無い」で落ちる。
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+          volumeMounts:
+            - name: mc
+              mountPath: /mc
+      volumes:
+        - name: mc
+          emptyDir: {}

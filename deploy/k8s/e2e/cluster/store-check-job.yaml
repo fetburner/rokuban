@@ -1,0 +1,67 @@
+# 判定 6 の足場。**製品のマニフェストではない。**
+#
+# 置き場の PVC の 1 ファイルの有無と中身（サイズと SHA-256）を見る使い捨て Job。
+# 判定 6 の転送・削除・配信の照合に使う。ツールボックスは PVC を挿していないので、
+# 置き場の中を見るにはこの Job が要る。
+#
+# プレースホルダは判定側が sed で埋める（checks/06-two-stores.sh の store_file_state）:
+#   __JOB__       Job 名（呼び出しごとに一意）
+#   __PVC__       見る置き場の PVC 名
+#   __ROOT__      その置き場の root
+#   __REL_PATH__  root からの相対パス
+#
+# 出力は 2 通り。`PRESENT SIZE=<n> SHA256=<hex>`（ある）か `ABSENT`（無い）。
+# **目印（.rokuban-store）が無いときは失敗させる。** 目印が無いのに ABSENT を返すと、
+# 違う PVC を見ていても「消えた」と読めてしまう（削除の判定が偽りの緑になる）。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB__
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: store-check
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: store-check
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: check
+          image: __FULL_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              root="__ROOT__"
+              test -e "$root/.rokuban-store" || { echo "NOMARKER $root"; exit 1; }
+              f="$root/__REL_PATH__"
+              if [ -e "$f" ]; then
+                printf 'PRESENT SIZE=%s SHA256=%s\n' "$(wc -c < "$f" | tr -d '[:space:]')" "$(sha256sum "$f" | cut -d' ' -f1)"
+              else
+                echo ABSENT
+              fi
+          volumeMounts:
+            - name: media
+              mountPath: __ROOT__
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: __PVC__
