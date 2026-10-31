@@ -292,13 +292,13 @@ func TestEPGEndpoint_UnregisteredDefaultSiteStill404(t *testing.T) {
 }
 
 // 派生物の置き場が S3 のとき、その置き場の範囲の delete_reconcile も、site 無指定ルートで再開できる。
-// FS 置き場の行が無いときだけ、派生物の置き場の行を引く。
+// 発動中の範囲が 1 つだけなら、どの範囲の行でも再開する。2 つ以上なら 409 で、どの行も消さない。
 func TestResumeSitelessCircuitBreaker_ResumesDerivedStoreScope(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	router := api.NewRouter(api.RouterConfig{
 		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: []string{"tokyo"},
-		MediaStoreName: "test-store", DerivedStoreName: "s3main",
+		StoreNames: []string{"test-store"}, DerivedStoreName: "s3main",
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -333,17 +333,31 @@ VALUES ($1, 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`, scope); err 
 		}
 		return out
 	}
-	if got := resume(); got != http.StatusNoContent {
-		t.Fatalf("first resume status = %d, want 204", got)
+	// 2 つの範囲が発動中なら、どの置き場かを決められないので何も消さず 409。本文は発動中の範囲の名前を並べる。
+	resp409, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := remaining(); len(got) != 1 || got[0] != "s3main" {
-		t.Fatalf("scopes after the first resume = %v, want only [s3main]", got)
+	defer func() { _ = resp409.Body.Close() }()
+	body409, _ := io.ReadAll(resp409.Body)
+	if resp409.StatusCode != http.StatusConflict {
+		t.Fatalf("resume with two tripped stores status = %d, want 409 (body=%s)", resp409.StatusCode, body409)
+	}
+	if !strings.Contains(string(body409), "test-store") || !strings.Contains(string(body409), "s3main") {
+		t.Errorf("409 body = %s, want it to list both tripped scopes test-store and s3main", body409)
+	}
+	if got := remaining(); len(got) != 2 {
+		t.Fatalf("scopes after the 409 = %v, want both rows kept", got)
+	}
+	// 1 つだけになれば、その範囲（派生物の置き場の範囲も含む）を再開する。
+	if _, err := pool.Exec(ctx, `DELETE FROM circuit_breakers WHERE scope = 'test-store' AND name = 'delete_reconcile'`); err != nil {
+		t.Fatalf("clearing the test-store fixture: %v", err)
 	}
 	if got := resume(); got != http.StatusNoContent {
-		t.Fatalf("second resume status = %d, want 204 for the derived store scope", got)
+		t.Fatalf("resume with one tripped scope status = %d, want 204 for the derived store scope", got)
 	}
 	if got := remaining(); len(got) != 0 {
-		t.Fatalf("scopes after the second resume = %v, want none", got)
+		t.Fatalf("scopes after the resume = %v, want none", got)
 	}
 	if got := resume(); got != http.StatusNotFound {
 		t.Fatalf("third resume status = %d, want 404 when nothing is tripped", got)

@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, CircuitBreaker, EncodeQueueSummary, Recording, Reservation, StorageRoot } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { HOME_MODE_STORAGE_KEY } from '@/lib/home-mode'
 import { HomePage } from '@/pages/home'
 import { renderInRouter } from '@/test/router'
@@ -67,6 +68,7 @@ function recording(id: number, title: string, status: Recording['status'], overr
     status,
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? id, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: iso(-HOUR),
     ...overrides,
@@ -427,7 +429,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     renderHome('/?mode=watch')
 
     const video = await screen.findByTestId('home-hero-resume-video')
-    expect(video).toHaveAttribute('src', '/api/media/recordings/41/file?profile=h264')
+    expect(video).toHaveAttribute('src', '/api/media/recordings/41/file?profile=h264&fixture=1')
     expect(video).toHaveProperty('muted', true)
     expect(video).toHaveProperty('playsInline', true)
     expect(video).toHaveAttribute('preload', 'metadata')
@@ -467,7 +469,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     renderHome('/?mode=watch')
 
     const video = await screen.findByTestId('home-hero-resume-video')
-    expect(video).toHaveAttribute('src', '/api/media/recordings/43/file?profile=cut')
+    expect(video).toHaveAttribute('src', '/api/media/recordings/43/file?profile=cut&fixture=1')
     let seekTarget = 0
     Object.defineProperty(video, 'duration', { configurable: true, value: 3600 })
     Object.defineProperty(video, 'readyState', { configurable: true, value: HTMLMediaElement.HAVE_METADATA })
@@ -591,6 +593,39 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
       expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
     }
     watchHome.unmount()
+  })
+
+  // 置き場が 2 つのとき、先頭の置き場だけを描く（旧 `find` の挙動）と 2 つ目の残量が消える。
+  // 見込み（今後 7 日・満杯まで）は置き場を 1 つに決められないので出さない。
+  it('管理側の容量は置き場ごとに 1 行ずつ出し、置き場が複数なら見込みを出さない', async () => {
+    const observedAt = new Date().toISOString()
+    const storageRoot = (store: string, availableBytes: number): StorageRoot => ({
+      store,
+      root: 'media',
+      path: `/${store}`,
+      totalBytes: 1_000_000_000_000,
+      usedBytes: 1_000_000_000_000 - availableBytes,
+      availableBytes,
+      observedAt,
+    })
+    stubApi({
+      recording: [recording(1, '録画中', 'recording')],
+      storage: [storageRoot('takamatsu', 100_000_000), storageRoot('tokyo', 500_000_000_000)],
+      // 残量 100MB に対して 7 日分の予約は収まらない量（単一置き場なら満杯見込みが出る）
+      reservations: Array.from({ length: 7 }, (_, i) => reservation(10 + i, '予約', i * 24 * HOUR + HOUR)),
+      // 実測 3.6GB / 1 時間（平均ビットレートの標本になる）
+      finished: [recording(4, '完了', 'finished', { sizeBytes: 3_600_000_000 })],
+    })
+    renderHome('/?mode=ops')
+
+    const rows = await screen.findAllByTestId('home-ops-storage')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveTextContent('takamatsu')
+    expect(rows[0]).toHaveTextContent('残り')
+    expect(rows[1]).toHaveTextContent('tokyo')
+    expect(rows[1]).toHaveTextContent('残り')
+    expect(screen.queryByText(/満杯まで/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/今後 7 日の予約で/)).not.toBeInTheDocument()
   })
 
   it('警告バッジは材料が未解決 / 0 件なら出ず、警告行数と一致する', async () => {

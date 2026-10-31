@@ -30,7 +30,7 @@
 | `db.api_statement_timeout` | `0`（= 30s） | api を含むプロセスの statement timeout |
 | `mirakcs` | —（必須。既定なし） | mirakc の `{site, url}` 配列 |
 | `storage.media_dir` | —（必須） | 原本の ingest 先 |
-| `storage.stores` | —（worker ロールと `recording_hls.enabled` で必須。置き場の規則を書くときも必須） | 名前付き置き場の定義 |
+| `storage.stores` | —（必須になる条件は下記「置き場の規則」） | 名前付き置き場の定義（FS は任意で `root`） |
 | `storage.originals` | —（`stores` / `derived` と一緒に書く） | 上から評価する原本の置き場の規則 |
 | `storage.derived` | —（`stores` / `originals` と一緒に書く） | 派生物の共通の置き場 |
 | `storage.transfer.bandwidth` | なし | 転送元の置き場ごとの帯域の上限 |
@@ -98,6 +98,8 @@
 
 置き場の規則は、置き場の定義・原本の置き場の規則・派生物の置き場・転送の設定からなる。形はサンプル設定と検証が持つので、ここには判断だけを書く。
 
+`storage.stores` は、`recording_hls.enabled` を有効にしたとき、または `originals` / `derived` / `transfer` のどれかを書いたときに必須である。
+
 置き場の名前の長さは、River のキュー名 `{queue}_{store}` が 64 文字に収まる式で決まる。
 
 `storage.originals` は上から評価して最初に一致した規則を使う。時刻の条件を `older_than`（放送終了時刻からの経過時間）だけにするのは、`newer_than` や時刻の窓を許すと desired の置き場が行き来し、転送と削除が往復するからである。最後の規則を無条件にするのは、どの資産にも desired の置き場が決まるようにするためである。原本の置き場は `fsync` と atomic rename と hard link を信頼できる POSIX FS に限る（[ストレージ契約](../storage/contract.md) §1）。`storage.derived` は、全 site 共通の派生物の置き場を 1 つ選ぶ。派生物には FS と S3 API の置き場を使える。
@@ -108,13 +110,43 @@
 
 `storage.transfer` は規則の指紋に含めない。帯域と overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
 
-`storage.originals` の参照先には FS 置き場を 1 つだけ指定できる。`storage.derived` は、その FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
+`storage.originals` の参照先は FS 置き場に限る。FS 置き場は何個でも定義でき、規則ごとに別の置き場を指せる。`storage.derived` は、FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
 
-未解決: 複数の FS 原本置き場は使えない。今の worker は原本を `storage.media_dir` の 1 つの root にしか書かず、別の置き場を指す規則は書き込みに効かないためである。複数の置き場の形は `config.example.yml` にコメントで示してあり、検証が拒否する。
+FS 置き場の root は `storage.stores.<名前>.root` で指定する。省略した置き場は `storage.media_dir` を root にするので、1 つの置き場だけのプロセスは `media_dir` のままでよい。省略した置き場は 1 つのプロセスに 1 つまでしかマウントできない。2 つ目以降の置き場には `root` を書く。`root` は規則の指紋に含めない。マウント先の違いで積み済みの転送ジョブを捨てさせないためである。
+
+同じ root を指す 2 つの置き場を 1 つのプロセスでマウントすると、目印と書き込みを取り違えるので起動時に拒否する。一方の root がもう一方の root の下にある組み合わせも拒否する。外側の置き場の監査が、内側の置き場のファイルまで歩いてしまうからである。
+
+どの置き場をマウントするかは config ではなく argv の `--stores` で渡す（`--sites` と同じ扱い）。`--stores` に `storage.stores` に無い名前や S3 置き場を渡すと起動エラーになる。
+
+次の起動エラーもある。
+
+- 置き場で修飾するキューを引くのに置き場が 0 件の worker
+- FS 置き場が 0 件で ingest を引く worker
+- `storage.derived` が FS 置き場なのにマウントしていないまま、encode か thumbnail（seek_tiles を含む）を引く worker
+- 置き場で修飾するキューが 2 本以上になる `--once`
+
+派生物の FS 置き場を別の置き場と並べて使うときは、派生物を S3 置き場にするか、その置き場を `--stores` でマウントする。
+
+worker が ingest か置き場で修飾するキューを引くときは、FS 置き場を 1 つ以上マウントできなければならない。ruler など置き場を使わないキューだけを引く worker には、置き場が無くてもよい。
+
+`storage.stores.<名前>.internal_url` は、その置き場の原本を別のプロセスが転送元として読むための URL である。読むのは転送ワーカーで、転送元の置き場をそのプロセスがマウントしていないときに使う。
+
+`internal_url` が指すのは、その置き場をマウントした streamer のベース URL である。転送ワーカーは `<internal_url>/api/media/stores/<置き場>/recordings/<id>/file` へ Range 付きで要求する。応答が `X-Accel-Redirect` で本体を前段に任せる streamer を指すと、転送は失敗する。原本を直接返す streamer を指す。
+
+`server.allowed_hosts` が空でないとき、`internal_url` のホストはその一覧に含める。streamer の Host 検証は転送の要求にもかかるので、一覧に無いホストは 400 になる。この構成は起動時に拒否する。
+
+`internal_url` の無い置き場は、マウントしているときだけ転送元になる。
+
+転送元をマウントしているときは、`internal_url` に新しいコピーがあってもローカルを読む。
 
 <details><summary>根拠</summary>
 
 - 名前の上限の式は `config.MaxStoreNameLen` にあり、`TestStorageQueueNameBudget` が全キュー名から検査する。
+- 起動エラーの組み合わせ: `TestValidateStoreBinding`（`cmd/rokuban/stores_test.go`）
+- 根の重なりの拒否: `TestStoreRootsRejectsNestedAndIdenticalRoots`
+- 応答に X-Accel-Redirect が付いた場合の拒否: `TestStorageTransferWorkerRejectsAccelRedirectAnswer`
+- `internal_url` のホストが `server.allowed_hosts` に無い構成の拒否: `TestLoadRejectsInternalURLHostOutsideAllowedHosts`
+- マウントした置き場のローカル優先: `TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy`
 - 下限の周期は `config.DeleteReconcileInterval`、指紋は `StorageConfig.PolicyFingerprint` が持つ。
 
 </details>

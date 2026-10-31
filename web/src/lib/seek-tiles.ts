@@ -39,11 +39,6 @@ export function seekTileCell(seconds: number): { column: number; row: number } |
   return { column: index % SEEK_TILES_COLUMNS, row: Math.floor(index / SEEK_TILES_COLUMNS) }
 }
 
-/** seekTilesURL は streamer のタイル配信 URL を組み立てる（OpenAPI 外）。 */
-export function seekTilesURL(recordingId: number): string {
-  return `/api/media/recordings/${recordingId}/seek-tiles`
-}
-
 /** タイルの幅を帯の幅の何割までにするか。狭い窓で映像の大半を覆わないための上限。 */
 const MAX_BAND_FRACTION = 0.4
 

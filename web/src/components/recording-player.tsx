@@ -9,7 +9,7 @@ import {
   type RefObject,
 } from 'react'
 
-import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource } from '@/api/generated'
+import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource, RecordingMedia } from '@/api/generated'
 import {
   RecordingChapterEditor,
   type ChapterEditorCommands,
@@ -36,12 +36,9 @@ import {
   playbackResumeSeconds,
   persistPlaybackPosition,
   cutMsToOriginalMs,
-  recordingFileURL,
-  recordingSubtitleURL,
   saveChapterEditPlaybackRate,
   savePlaybackRate,
 } from '@/lib/playback-position'
-import { recordingThumbnailURL } from '@/lib/recording-media'
 import { formatDate, formatTime } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
@@ -56,6 +53,8 @@ const recordingSubtitleTracks = (video: HTMLVideoElement) =>
 
 type RecordingPlayerProps = {
   recordingId: number
+  /** `Recording.media`。再生・字幕・シークタイルの URL はここから取り、自前で組み立てない。 */
+  media: RecordingMedia
   resumePositionMs?: number
   /** 現在の位置を原本時間軸の秒で親へ伝える。 */
   onRecordingPositionChange?: (seconds: number) => void
@@ -84,7 +83,7 @@ type RecordingPlayerProps = {
   /** 開くときのプロファイル（版タブで選んだ版、選んでいなければ既定）。資産に無ければ先頭を使う。 */
   preferredProfile?: string
   /** 操作バーと終端カードに出す再生可能な次のエピソード。 */
-  nextEpisode?: { id: number; title: string; startAt: string }
+  nextEpisode?: { id: number; title: string; startAt: string; thumbnailUrl: string }
   /** バーの「次のエピソード」リンクを押したとき（移動先の詳細を先にキャッシュへ入れる）。 */
   onNextEpisodeNavigate?: () => void
   /** 番組時間枠より前後を録画した部分をシークバー内に示す割合。 */
@@ -147,6 +146,7 @@ type ChapterPlaybackMode = 'around' | 'to' | 'from'
  */
 export function RecordingPlayer({
   recordingId,
+  media,
   resumePositionMs,
   autoPlay = false,
   fullscreenContainerRef,
@@ -319,7 +319,7 @@ export function RecordingPlayer({
         <div className="flex w-full max-w-3xl items-center gap-3 sm:gap-6">
           <div className="relative aspect-video w-[34%] max-w-72 shrink-0 overflow-hidden rounded-md bg-white/10">
             <img
-              src={recordingThumbnailURL(nextEpisode.id)}
+              src={nextEpisode.thumbnailUrl}
               alt=""
               className="size-full object-cover"
               onError={(event) => event.currentTarget.remove()}
@@ -518,7 +518,9 @@ export function RecordingPlayer({
   // 再生できる版が無いときは呼び出し側（録画詳細）が空状態を出す。ここには来ない。
   if (profiles.length === 0) return null
 
-  const src = recordingFileURL(recordingId, selectedProfile)
+  const selectedMedia = media.encoded.find((m) => m.profile === selectedProfile)
+  // 空文字の src は、ページ自身の URL を再要求しうるので、取れないときは属性ごと省く。
+  const src = selectedMedia?.url
   const updatePlayedFraction = (video: HTMLVideoElement) => {
     const known = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0
     setPlayed((previous) => ({
@@ -612,6 +614,7 @@ export function RecordingPlayer({
   const playbackControls = (
       <RecordingPlaybackControls
         recordingId={recordingId}
+        seekTilesUrl={media.seekTilesUrl}
         profile={selectedProfile}
         encodedAssets={encodedAssets}
         timeline={fixedPlaybackTimeline(durationSeconds)}
@@ -785,7 +788,7 @@ export function RecordingPlayer({
               kind="subtitles"
               srcLang="ja"
               label="日本語"
-              src={recordingSubtitleURL(recordingId, selectedProfile)}
+              src={selectedMedia?.subtitlesUrl}
             />
           </video>
         )}
@@ -816,7 +819,7 @@ export function RecordingPlayer({
             version={chapterVersion}
             detectionPending={false}
             source={chapterSource}
-            recordingId={recordingId}
+            seekTilesUrl={media.seekTilesUrl}
             currentSeconds={currentSeconds}
             getDisplayedFrameSeconds={getDisplayedFrameSeconds}
             isPlaying={frame.mediaPlaying}

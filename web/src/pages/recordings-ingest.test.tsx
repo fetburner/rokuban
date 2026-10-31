@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Recording } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
 
@@ -42,6 +43,7 @@ function sampleRecording(overrides: Partial<Recording> = {}): Recording {
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? 3, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-01-01T12:30:00Z',
     ...overrides,

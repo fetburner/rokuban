@@ -3,6 +3,7 @@ import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/rea
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { recordingMedia } from '@/test/recording-media'
 
 import {
   useListRecordingDropStats,
@@ -158,6 +159,7 @@ const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
   status: 'finished',
   keepOriginal: 'always',
   hlsPlayback: [],
+  media: recordingMedia(overrides.id ?? 1, overrides.encodedAssets),
   cmDetection: { state: 'disabled' },
   createdAt: '2026-01-01T12:30:00Z',
   ...overrides,

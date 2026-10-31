@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CMLogoState, Recording } from '@/api/generated'
 import { CMLogoStationPage, CMLogosPage } from '@/pages/cm-logos'
+import { recordingMedia } from '@/test/recording-media'
 import { renderInRouter } from '@/test/router'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -65,6 +66,7 @@ const recording = {
   keepOriginal: 'always',
   cmDetection: { state: 'failed', stage: 'logo' },
   sizeBytes: 1000,
+  media: recordingMedia(7),
   createdAt: '2026-09-30T12:00:00Z',
 } as Recording
 
@@ -117,7 +119,7 @@ function stubApi(options: {
     if (url.pathname === '/api/recordings' && method === 'GET') {
       return Promise.resolve(jsonResponse(currentRecordings))
     }
-    if (url.pathname === '/api/media/recordings/7/frame' && method === 'GET') {
+    if (url.pathname === '/api/media/stores/takamatsu/recordings/7/frame' && method === 'GET') {
       requests.push({ method, url: url.pathname + url.search })
       return Promise.resolve(
         new Response(frameBytes, {
@@ -305,13 +307,13 @@ describe('CMLogoStationPage', () => {
 
     expect(await screen.findByText('テスト放送局')).toBeInTheDocument()
     await screen.findByTestId('cm-logo-frame-image')
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=300000')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/stores/takamatsu/recordings/7/frame?at=300000')
     const frameRequestsBeforeDrag = requests.filter((request) => request.url.includes('/frame')).length
     const slider = screen.getByTestId('cm-logo-time')
     fireEvent.input(slider, { target: { value: '100000' } })
     expect(requests.filter((request) => request.url.includes('/frame')).length).toBe(frameRequestsBeforeDrag)
     fireEvent.change(slider)
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=100000'))
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/stores/takamatsu/recordings/7/frame?at=100000'))
   })
 
   it('選んだ時刻は再生位置と同じ書式で、1 時間以上は時を付ける', async () => {
@@ -465,8 +467,64 @@ describe('CMLogoStationPage', () => {
       initialEntries: ['/cm-logos/32678/5168?recording=9'],
     })
     await screen.findByTestId('cm-logo-frame-image')
-    expect(requests.some((request) => request.url.startsWith('/api/media/recordings/7/frame'))).toBe(true)
+    expect(requests.some((request) => request.url.startsWith('/api/media/stores/takamatsu/recordings/7/frame?at='))).toBe(true)
     expect(requests.some((request) => request.url.includes('/recordings/9/'))).toBe(false)
+  })
+
+  // sizeBytes は残っていても（TS の実サイズは見える）、原本のコピーが無ければ frameUrl は返らない。
+  // その録画からはコマを取り寄せられないので、候補に入れてはならない。
+  it('sizeBytes があっても frameUrl の無い録画は候補にせず、原本のある録画のコマを使う', async () => {
+    const noActiveOriginal = {
+      ...recording,
+      id: 9,
+      sizeBytes: 1000,
+      media: recordingMedia(9, [], { original: false }),
+    } as Recording
+    const { requests } = stubApi({ recordings: [noActiveOriginal, recording] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=9'],
+    })
+
+    expect(await screen.findByTestId('cm-logo-frame-image')).toBeInTheDocument()
+    expect(requests.some((request) => request.url.startsWith('/api/media/stores/takamatsu/recordings/7/frame?at='))).toBe(true)
+    expect(requests.some((request) => request.url.includes('/recordings/9/'))).toBe(false)
+  })
+
+  it('sizeBytes はあるが frameUrl の無い録画しか無ければ、原本のない録画の案内を出す', async () => {
+    const noActiveOriginal = {
+      ...recording,
+      sizeBytes: 1000,
+      media: recordingMedia(7, [], { original: false }),
+    } as Recording
+    const { requests } = stubApi({ recordings: [noActiveOriginal] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+
+    // 局の録画取得が解決した後の画面（ListSkeleton ではない）で判定する。
+    expect(await screen.findByText('テスト放送局')).toBeInTheDocument()
+    expect(await screen.findByTestId('cm-logo-no-original')).toBeInTheDocument()
+    expect(screen.queryByTestId('cm-logo-frame-image')).not.toBeInTheDocument()
+    expect(requests.some((request) => request.url.includes('/frame?at='))).toBe(false)
+  })
+
+  // frameUrl は API が `?` 付きで返しうる。クエリを重ねると `?fixture=1?at=…` になり、
+  // コマの取得が 404 になる（URL API で `at` を足す）。
+  it('frameUrl に既存のクエリがあっても、at は & で足す', async () => {
+    const withQuery = {
+      ...recording,
+      media: { ...recordingMedia(7), frameUrl: '/api/media/stores/takamatsu/recordings/7/frame?fixture=1' },
+    } as Recording
+    stubApi({ recordings: [withQuery] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+
+    await screen.findByTestId('cm-logo-frame-image')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/stores/takamatsu/recordings/7/frame?fixture=1&at=300000')
   })
 
   it('候補が running の間は解析中と画面を離れても続くことを表示する', async () => {

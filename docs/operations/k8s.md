@@ -25,15 +25,28 @@ ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読する�
 
 #### キュー名の修飾
 
-キューの絞り込みには、site で修飾しない論理名を書く。
+キューの絞り込みには、site にも置き場にも修飾しない論理名を書く。
 
 設定値と未知キューのエラーメッセージは論理名のままである。mirakc への到達性を要する site 単位のキュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）は、プロセスの束縛サイト名で修飾される。
 
-実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）になる。それ以外の site 非依存キューは修飾されない。KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
+原本か置き場のファイルを読み書きするキューは、プロセスがマウントした置き場の名前で修飾される。どの論理キューがこれに当たるかの権威は `internal/jobs/queue.go` の `storeBoundQueueNames` であり、判定は `jobs.IsStoreBound` の 1 か所に集めてある。
+
+実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）か `<論理名>_<store>`（例: `encode_takamatsu`）になる。DB だけを触る reconcile（`cleanup`）と `ruler` などは修飾されない。KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
+
+置き場で修飾するキューのジョブは、ジョブを積む側が置き場を選んで積む。`transfer` 以外は原本のコピーのある置き場を選び、`transfer` は書き込み先の置き場を選ぶ（`StorageTransferArgs` の `QueueStore`）。
+
+worker は実行時に、ジョブの置き場をマウントしているかを照合する。マウントしていなければ、ファイルに触れる前に失敗にして `rokuban_store_route_mismatch_total{kind,store}` を増やす。
+
+`--stores` は argv で渡す。省略したときは、FS 置き場が 1 つだけならその 1 つをマウントし、2 つ以上なら起動エラーになる。明示的な空（`--stores=`）は置き場を持たない。
+
+起動時に拒む組み合わせ（置き場が 0 件の worker、派生物の FS 置き場をマウントしない encode / thumbnail など）は、[configuration/keys.md](../configuration/keys.md#置き場の規則) にだけ書く。
 
 <details><summary>根拠</summary>
 
 - site ごとのキュー修飾と中央プロセスの束縛判定: `internal/jobs/queue.go` の `siteBoundQueueNames` / `jobs.RequiresSiteBinding`
+- 置き場で修飾するかの判定は `storeBoundQueueNames` / `jobs.IsStoreBound` の 1 か所で、投入側（`PhysicalQueueFor`）・worker 仕様・`--stores` の検査が共有する
+- 照合の失敗と計数: `TestStoreRouteFailsAndCountsAJobForAnUnmountedStore`
+- `--stores` を省略したときの解決（FS 置き場が 2 つ以上なら起動エラー）: `TestResolveStoreBinding_UnspecifiedMultipleFSStores_IsError`
 
 </details>
 
@@ -47,10 +60,13 @@ ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読する�
 |---|---|---|---|
 | `reconciler` / `epg`（+`tuner_sync`）/ `watcher` | mirakc への到達性 | 自宅側 | 束縛（キュー名を `_<site>` で修飾） |
 | `ingest` | mirakc への到達性 + ファイルシステム | 自宅側 | 束縛（同上） |
-| `encode` / `thumbnail` / `cm_detect` / `cleanup` / `storage` | ファイルシステム | 自宅側 | 非依存（アーカイブ・スクラッチは単一） |
+| `encode` / `thumbnail` / `cm_detect` / `ts_scan` / `original` / `storage` / `transfer` | 置き場のファイルシステム | その置き場の側 | 非依存（置き場で修飾: `_<store>`） |
+| `cleanup` | DB のみ（reconcile の候補列挙と分類ルールの再評価） | どちらでも | 非依存・置き場にも非依存 |
 | `ruler` | DB のみ | どちらでも | 非依存（`args.Site` はクエリの絞り込み） |
 
-0 サイト束縛（中央プロセス、`server --sites=`）の worker は site 単位のキューを一切購読できない。中央プロセスでは `worker.queues` / `--queues` を site 非依存キューに絞る。ただし `cleanup` / `storage` は表の通りファイルシステムを要求する。「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで動かす必要がある。
+0 サイト束縛（中央プロセス、`server --sites=`）の worker は site 単位のキューを一切購読できない。中央プロセスでは `worker.queues` / `--queues` を site 非依存キューに絞る。ただし置き場で修飾するキューは表の通りその置き場のファイルシステムを要求する。「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。置き場で修飾するキューを引く Pod は、`--stores` の置き場の root と scratch_dir のマウントに到達できるノードで動かす。
+
+置き場で修飾する前に積まれたジョブは、修飾の無い名前のキューに残り、誰にも掴まれない。導入時に一度 `rokuban queues cancel-legacy` で取り消す。取り消した仕事は、レベルトリガーの reconcile が置き場のキューへ積み直す（[runbook](../runbook/troubleshooting.md) の「置き場で修飾する前のキューの残骸」）。River の一意性の鍵にキューが入っているので、同じ引数の新しいジョブが旧キューの残骸に合流することはない。
 
 #### PVC マウントの所有権
 
@@ -64,16 +80,18 @@ media をマウントする Pod には、securityContext で所有グループ�
 
 ### マニフェストの配布形式: 素の kustomize
 
-マニフェストは素の kustomize で配り、Helm chart は持たない。中央 1 式とサイト 1 組ぶんの 2 層に分け、サイトを足す差分は設定の 1 要素と Pod セット 1 組だけに保つ。
+マニフェストは素の kustomize で配り、Helm chart は持たない。中央 1 式、サイト 1 組ぶん、置き場 1 組ぶんの 3 層に分け、サイトや置き場を足す差分は設定の 1 要素と Pod セット 1 組だけに保つ。
 
 参照実装は `deploy/k8s/` に置く。**中身の索引はそちらの [README](../../deploy/k8s/README.md)** で、ここには判断だけを置く。分け方は次の 2 つである。
 
-- `base/` は中央（site 非依存）1 式。api / notifier / 録画配信 streamer / 世代付き録画 HLS / media の PVC / migration Job / ConfigMap が入る。site 非依存キューの ScaledJob と、site 非依存ジョブの CronJob もこちら
-- `site/` はサイト 1 組ぶん（watcher / site 束縛キューの ScaledJob / site 束縛ジョブの CronJob）。overlay がサイトの数だけ生やす
+- `base/` は中央（site・置き場に非依存）1 式。api / notifier / 中央 streamer / migration Job / ConfigMap / Ingress が入る。
+- `ruler`・`cleanup` の ScaledJob と、site・置き場に非依存のジョブの CronJob を base に置く。
+- `site/` はサイト 1 組ぶん（watcher / ライブ streamer / site 束縛キューの ScaledJob / site 束縛ジョブの CronJob）。overlay がサイトの数だけ生やす
+- `store/` は置き場 1 組ぶん（media の PVC / `storage adopt` Job / 録画 HLS と原本を配る streamer / 置き場束縛キューの ScaledJob / 置き場束縛ジョブの CronJob）。overlay が置き場の数だけ生やす
 
-base は複数サイトを知らない。レジストリは常に 1 要素、どの Pod も site に束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。サイトを増やす差分は「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つ。`site/` は site 名 `default`（`base/config.yml` の `mirakcs:` 1 要素目と同じ名前）で書いてあり、単一サイトの overlay はそのまま使える。
+base は複数サイトも複数置き場も知らない。レジストリは常に 1 要素、どの Pod も site に束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。サイトを増やす差分は「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つ。`site/` は site 名 `default`（`base/config.yml` の `mirakcs:` 1 要素目と同じ名前）で書いてあり、単一サイトの overlay はそのまま使える。
 
-世代付き録画 HLS は、原本をファイル配信する streamer とは別の Deployment に置き、置き場の Prefix で Service を選ぶ。replica 数、録画 id の hash、scratch の判断、streamer が `--no-recording-hls` を付ける理由は [streamer のスケール](k8s-streamer.md) にまとめる。
+世代付き録画 HLS と原本の配信は、置き場ごとの streamer（`store/` の 1 組）が担う。派生物を配る中央の streamer とは別の Deployment で、Service は置き場の Prefix で選ぶ。replica 数、録画 id の hash、scratch の判断、streamer が `--no-recording-hls` を付ける理由は [streamer のスケール](k8s-streamer.md) にまとめる。
 
 中央（site 非依存）の Pod には `--sites=`（明示的な空）を書く。省略しても単一サイト構成では動くが、レジストリに 2 サイト目を足した時点で起動しなくなる（束縛の暗黙の「全部」を許していない）。つまり気付くのが最も遅い形で止まるので、単一サイト構成のうちから明示する。
 
@@ -117,7 +135,8 @@ Secret のプレースホルダを `resources` に入れると、参照実装を
 ScaledJob はキュー単位に作り、切る軸は寿命と site 束縛の 2 つにする。ロール単位では作らない。
 
 - 長時間ジョブと短いジョブを混ぜない（`encode` は完了まで実行し、`ingest` は有限の Work slice ごとに snooze して再開する。`ruler` / `reconciler` は短時間で終わる）。`terminationGracePeriodSeconds` が桁で違うので、混ぜると短い側に合わせて長いジョブが殺されるか、長い側に合わせて全体のスケールインが遅くなる
-- site 束縛キューと site 非依存キューを混ぜない。混ぜると中央のジョブがサイト側で起きる。結果、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）の ScaledJob だけサイト数ぶん複製する
+- site 束縛キューと site 非依存キューを混ぜない。混ぜると中央のジョブがサイト側で起きる。
+- 複製される ScaledJob は、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）がサイト数ぶん。置き場で修飾するキューは置き場の数ぶんである。
 - スケーラが引くキュー名が site 修飾されていることを確かめる。共有キューを見ていると、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま終わってまた起きる
 - キューの置き場は次の 3 つで決める。寿命が短い、site 非依存、ffmpeg / JLSE のイメージを要らない。3 つを満たすので `encode_reconcile` と `cm_detect_reconcile` は `cleanup` に置く。
 - 長時間の encode / CM 検出の枠が空くまで reconcile が待つと、不足の補完が遅れる。CM 検出では、死んだジョブの回収も遅れる（回収を `cm_detect_reconcile` が担うため）。encode の死んだジョブは締切の後に JobRescuer が回収する。
@@ -268,6 +287,8 @@ preemption 対策は上記の ScaledJob で十分である。高速化とは、�
 - `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
 - schedule は base に実運用の間隔を書く。受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。base の値が判定の都合で短くなるのを防ぐ。**したがって判定 2 が測るのは出荷される schedule でない**
 - 間隔は in-process の既定に合わせる（`worker.periodic_jobs: true` の monolith）。揃っていないと「docker-compose では 15 分で走るのに k8s では走らない」形になる。`reconcile-pass` だけは合わせられない。in-process の既定は 30 秒だが CronJob の分解能は 1 分である。レベルトリガーなので取りこぼしは次のパスが拾い、差は「予約が mirakc に届くまでの遅延の上限」にだけ効く
+- 転送の reconcile（`rokuban enqueue storage-transfer-reconcile`）も CronJob が積む。キューは `cleanup` で site にも置き場にも依らないので、base の CronJob として置いてある。
+- CronJob の一覧は `deploy/k8s/base/cronjobs.yaml` にある。site 束縛と置き場束縛のものは、それぞれ `deploy/k8s/site/` と `deploy/k8s/store/` にある。
 - `rokuban enqueue` にあるジョブは全部 CronJob にする。1 つ落とすと、その定期パスが一度も走らない構成が気づかないうちに立つ（`worker.periodic_jobs: false` では投入経路がここしかない）。網羅は CI で回る Go テストが固定する。
 
 <details><summary>根拠</summary>

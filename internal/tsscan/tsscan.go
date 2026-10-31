@@ -14,7 +14,12 @@ import (
 // ScanArgs identifies an original recording to scan.
 type ScanArgs struct {
 	RecordingID int64 `json:"recording_id"`
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `ts_scan_{store}` を決める。
+	Store string `json:"store"`
 }
+
+// QueueStore returns the store whose queue runs this scan.
+func (a ScanArgs) QueueStore() string { return a.Store }
 
 // Kind returns the job kind for a single TS scan.
 func (ScanArgs) Kind() string { return "ts_scan" }
@@ -47,7 +52,7 @@ func (ReconcileArgs) Kind() string { return "ts_scan_reconcile" }
 // Failed passes are not retried; the next periodic enqueue retries them.
 func (ReconcileArgs) Spec() jobq.Spec {
 	return jobq.Spec{
-		Queue: jobs.TSScanQueue,
+		Queue: jobs.CleanupQueue,
 		Timeout: func(jobq.Args) time.Duration {
 			return 5 * time.Minute
 		},
@@ -64,11 +69,11 @@ var (
 
 // EnqueueScan inserts a best-effort hint for the committed original of recordingID.
 // The periodic reconcile pass remains the source of truth if this insert fails.
-func EnqueueScan(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) error {
+func EnqueueScan(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64, storeName string) error {
 	if enqueuer == nil {
 		return errors.New("TS scan enqueuer is nil")
 	}
-	if _, err := enqueuer.Enqueue(ctx, ScanArgs{RecordingID: recordingID}); err != nil {
+	if _, err := enqueuer.Enqueue(ctx, ScanArgs{RecordingID: recordingID, Store: storeName}); err != nil {
 		return fmt.Errorf("inserting TS scan for recording %d: %w", recordingID, err)
 	}
 	return nil

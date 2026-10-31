@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// base の入口は site 名を知らない共通 4 経路だけを持つ。具体的なライブ経路は
-// overlay が site ごとに追加するため、単一ホストの routing table が method / query /
-// header / regex に依存しないことをここで固定する。
+// base の入口は site 名にも置き場名にも依存しない共通 3 経路だけを持つ。具体的なライブ
+// 経路と置き場の経路は overlay が site ごと・置き場ごとに追加するため、単一ホストの
+// routing table が method / query / header / regex に依存しないことをここで固定する。
 func TestBaseIngressUsesOnlyFixedCommonRoutes(t *testing.T) {
 	var ingress object
 	for _, o := range loadBase(t) {
@@ -38,10 +38,9 @@ func TestBaseIngressUsesOnlyFixedCommonRoutes(t *testing.T) {
 		pathType string
 		service  string
 	}{
-		"/api/events":            {pathType: "Exact", service: "rokuban-notifier"},
-		"/api/media/recordings":  {pathType: "Prefix", service: "rokuban-streamer"},
-		"/api/media/stores/main": {pathType: "Prefix", service: "rokuban-recording-hls"},
-		"/":                      {pathType: "Prefix", service: "rokuban-api"},
+		"/api/events":           {pathType: "Exact", service: "rokuban-notifier"},
+		"/api/media/recordings": {pathType: "Prefix", service: "rokuban-streamer"},
+		"/":                     {pathType: "Prefix", service: "rokuban-api"},
 	}
 	paths := sliceAt(mapAt(rule, "http"), "paths")
 	if len(paths) != len(want) {
@@ -82,6 +81,7 @@ func TestIngressOverlaysAddConcreteLiveRoutes(t *testing.T) {
 			dir: "overlays/kind",
 			want: map[string]string{
 				"/api/sites/default/networks": "rokuban-live-streamer",
+				"/api/media/stores/main":      "rokuban-recording-hls",
 			},
 		},
 		{
@@ -89,6 +89,18 @@ func TestIngressOverlaysAddConcreteLiveRoutes(t *testing.T) {
 			want: map[string]string{
 				"/api/sites/sitea/networks": "rokuban-live-streamer-sitea",
 				"/api/sites/siteb/networks": "rokuban-live-streamer-siteb",
+				"/api/media/stores/main":    "rokuban-recording-hls",
+			},
+		},
+		{
+			// 置き場ごとの Prefix 行。Service 名は置き場 overlay の nameSuffix 後の名前で、
+			// TestStoreIngressRowsPointAtTheStoreService が rendered な名前と突き合わせる。
+			dir: "overlays/e2e-two-stores",
+			want: map[string]string{
+				"/api/sites/sitea/networks":   "rokuban-live-streamer-sitea",
+				"/api/sites/siteb/networks":   "rokuban-live-streamer-siteb",
+				"/api/media/stores/tokyo":     "rokuban-recording-hls-tokyo",
+				"/api/media/stores/takamatsu": "rokuban-recording-hls-takamatsu",
 			},
 		},
 	}

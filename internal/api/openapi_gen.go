@@ -1977,7 +1977,7 @@ type Recording struct {
 	EncodeStatus *[]EncodeJobStatus `json:"encodeStatus,omitempty"`
 
 	// EncodedAssets 再生可能な encoded 派生物（media_assets の active のみ）。
-	// ブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。
+	// ブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。
 	// desired（encodeProfiles）ではなく observed。空配列は省略可。
 	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
 
@@ -1987,7 +1987,7 @@ type Recording struct {
 
 	// HlsPlayback 世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。
 	// masterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。
-	// store は storage.media_store_name。gen は active な原本の ingest_generation
+	// store は録画 HLS が読む入力（active な原本のコピー、無ければ ingest temp）がある置き場。gen は active な原本の ingest_generation
 	// （NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。
 	// recording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が
 	// ともに無いなら空配列。ファイルの存在は検査しない。
@@ -2003,7 +2003,14 @@ type Recording struct {
 	// それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
 	// 原本を削除しない。
 	KeepOriginal RecordingKeepOriginal `json:"keepOriginal"`
-	NetworkId    int                   `json:"networkId"`
+
+	// Media 録画のバイナリ配信の URL（ルート相対）。クライアントは URL を自分で組み立てず、この値をそのまま使う。
+	// 置き場は、active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。
+	// 原本・コマは置き場ごとの URL（`/api/media/stores/{store}/recordings/{id}/...`）で、
+	// 派生物（サムネイル・シークタイル・encoded）は置き場を含まない URL
+	// （`/api/media/recordings/{id}/...`）。ファイルの存在は検査しない。
+	Media     RecordingMedia `json:"media"`
+	NetworkId int            `json:"networkId"`
 
 	// QualityEvents recording.failed / record-broken の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
@@ -2104,11 +2111,38 @@ type RecordingChapters struct {
 // 自動層は読まれない。`auto` は自動検出の結果。
 type RecordingChaptersSource string
 
+// RecordingEncodedMedia defines model for RecordingEncodedMedia.
+type RecordingEncodedMedia struct {
+	Profile string `json:"profile"`
+
+	// SubtitlesUrl encoded に隣接する WebVTT サイドカーの URL。字幕が無い番組では 404 になる。
+	SubtitlesUrl string `json:"subtitlesUrl"`
+	Url          string `json:"url"`
+}
+
 // RecordingHLSPlayback defines model for RecordingHLSPlayback.
 type RecordingHLSPlayback struct {
 	// MasterUrl 世代付き録画 HLS のルート相対 URL。
 	MasterUrl string `json:"masterUrl"`
 	Profile   string `json:"profile"`
+}
+
+// RecordingMedia 録画のバイナリ配信の URL（ルート相対）。クライアントは URL を自分で組み立てず、この値をそのまま使う。
+// 置き場は、active な原本のコピーがある置き場（複数あれば置き場名順で先頭）。
+// 原本・コマは置き場ごとの URL（`/api/media/stores/{store}/recordings/{id}/...`）で、
+// 派生物（サムネイル・シークタイル・encoded）は置き場を含まない URL
+// （`/api/media/recordings/{id}/...`）。ファイルの存在は検査しない。
+type RecordingMedia struct {
+	// Encoded 再生できる encoded のプロファイルごとの URL（`encodedAssets` と同じ順）。
+	Encoded []RecordingEncodedMedia `json:"encoded"`
+
+	// FrameUrl コマの切り出し URL。クライアントが `?at=<ms>` を足す。active な原本のコピーが無ければ省略する。
+	FrameUrl *string `json:"frameUrl,omitempty"`
+
+	// OriginalUrl 原本のファイル URL。active な原本のコピーが無ければ省略する。
+	OriginalUrl  *string `json:"originalUrl,omitempty"`
+	SeekTilesUrl string  `json:"seekTilesUrl"`
+	ThumbnailUrl string  `json:"thumbnailUrl"`
 }
 
 // RecordingShelf defines model for RecordingShelf.
@@ -2124,6 +2158,9 @@ type RecordingShelf struct {
 
 	// RepresentativeId 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
 	RepresentativeId int64 `json:"representativeId"`
+
+	// ThumbnailUrl 代表の録画のサムネイルの URL（`Recording.media.thumbnailUrl` と同じ形）。クライアントは組み立てない。
+	ThumbnailUrl string `json:"thumbnailUrl"`
 
 	// Title 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。
 	Title string `json:"title"`
@@ -2394,6 +2431,7 @@ type SetRecordingEncodePolicyInputKeepOriginal string
 
 // StorageRoot 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の
 // 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
+// 置き場（`store`）ごとに root の数だけ行が並ぶ。同じ `store` と `root` の組は 1 行だけ。
 type StorageRoot struct {
 	// AvailableBytes 非特権プロセスが実際に書き込める残量（statfs の Bavail）。
 	// 「残高」として UI に出すべき数字はこちら。`observedAt` 時点の
@@ -2412,6 +2450,10 @@ type StorageRoot struct {
 
 	// Root config キー（`storage.media_dir` / `storage.scratch_dir`）と 1:1。
 	Root StorageRootRoot `json:"root"`
+
+	// Store 観測した置き場の名前（`storage.stores` のキー）。置き場ごとの worker がそれぞれの
+	// root と scratch を観測するので、置き場が複数あれば置き場ごとに行が並ぶ。
+	Store string `json:"store"`
 
 	// TotalBytes ファイルシステム全体の容量（`observedAt` 時点のスナップショット。
 	// `path` の説明を参照）。
@@ -5674,6 +5716,20 @@ func (response ResumeSitelessCircuitBreaker404JSONResponse) VisitResumeSitelessC
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResumeSitelessCircuitBreaker409JSONResponse ErrorResponse
+
+func (response ResumeSitelessCircuitBreaker409JSONResponse) VisitResumeSitelessCircuitBreakerResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }

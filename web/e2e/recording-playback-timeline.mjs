@@ -22,6 +22,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
@@ -66,7 +67,7 @@ const recording = {
   durationMs: recordingSeconds * 1000,
   status: 'finished',
   keepOriginal: 'always',
-  hlsPlayback: [], cmDetection: { state: 'disabled' },
+  media: recordingMedia(RECORDING_ID, []), hlsPlayback: [], cmDetection: { state: 'disabled' },
   startedAt,
   endedAt,
   createdAt: '2026-10-03T00:00:00Z',
@@ -162,6 +163,7 @@ const liveRecoveryEmpty = { ...liveRecoveryV1, hlsPlayback: [] }
 const liveRecoveryV2 = liveRecoveryRecording(2)
 const encodedRecording = {
   ...recording,
+  media: recordingMedia(RECORDING_ID, [ENCODE_PROFILE]),
   encodedAssets: [{ profile: ENCODE_PROFILE, sizeBytes: 1_000_000 }],
 }
 
@@ -275,7 +277,8 @@ log(`  目印 HLS fixture の時刻 (録画 API HLS の基準): ${markerTimes.ma
 log(`  HLS fixture - 原本 PTS の差 (ms): ${markerTimes.map((item) => `${item.frame}:${((item.expectedSeconds - item.legacySeconds) * 1000).toFixed(3)}`).join(', ')}`)
 
 recording.encodedAssets = [{ profile: ENCODE_PROFILE, sizeBytes: statSync(encodedPath).size }]
-const liveRecording = { ...recording, encodedAssets: [] }
+recording.media = recordingMedia(RECORDING_ID, [ENCODE_PROFILE])
+const liveRecording = { ...recording, media: recordingMedia(RECORDING_ID, []), encodedAssets: [] }
 let activeRecording = liveRecording
 let chaptersForHls = false // 録画 HLS のページでも章を返す（再生位置との対応を確認する）
 await validateFixturesOrExit([

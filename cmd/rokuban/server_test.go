@@ -305,33 +305,6 @@ func TestServerCmd_WorkerRequiresScratchDir(t *testing.T) {
 	}
 }
 
-func TestServerCmd_StreamerRequiresSingleFSStore(t *testing.T) {
-	// writeServerTestConfig は stores を足すので、置き場の無い構成は直接書く。
-	path := filepath.Join(t.TempDir(), "config.yml")
-	if err := os.WriteFile(path, []byte(serverCmdTestConfig), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	err := runServerCmdForTest(t, path, "--roles", "streamer", "--sites", "tokyo")
-	if err == nil || !strings.Contains(err.Error(), "streamer role requires exactly one fs store in storage.stores") {
-		t.Fatalf("streamer startup error = %v, want the single fs store validation error", err)
-	}
-	if strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("streamer reached the database before rejecting a config without an fs store: %v", err)
-	}
-
-	err = runServerCmdForTest(t, path, "--roles", "api", "--sites", "tokyo")
-	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("api startup error = %v, want a config without an fs store to pass and reach the database", err)
-	}
-
-	named := writeServerTestConfig(t, serverCmdTestConfig)
-	err = runServerCmdForTest(t, named, "--roles", "streamer", "--sites", "tokyo")
-	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("streamer startup error = %v, want a single fs store to reach the database", err)
-	}
-}
-
 func TestServerCmd_IngestWorkerDefersStorageProbeWithoutStoreMarker(t *testing.T) {
 	mediaDir := filepath.Join(t.TempDir(), "missing-media")
 	configText := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: "+mediaDir, 1)
@@ -791,7 +764,7 @@ storage:
 		t.Fatalf("loading API configuration: %v", err)
 	}
 	var eg errgroup.Group
-	server, err := buildHTTPServer(ctx, cfg, []string{"api"}, nil, pool, &eg, true)
+	server, err := buildHTTPServer(ctx, cfg, []string{"api"}, nil, nil, pool, &eg, true)
 	if err != nil {
 		t.Fatalf("building API HTTP server: %v", err)
 	}
@@ -971,7 +944,7 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 	ctx := context.Background()
 	path := writeOnceModeConfig(t)
 
-	onceArgs := []string{"--roles", "worker", "--sites=", "--queues=cleanup", "--once"}
+	onceArgs := []string{"--roles", "worker", "--sites=", "--queues=original", "--once"}
 
 	t.Run("空キューなら idle timeout で終了する", func(t *testing.T) {
 		const idle = 2 * time.Second
@@ -991,7 +964,7 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 
 	t.Run("1 件あれば消化して終了する", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := runEnqueue(ctx, pool, "delete-reconcile", "", &out); err != nil {
+		if err := runEnqueue(ctx, pool, "delete-reconcile", dbtest.StoreName, &out); err != nil {
 			t.Fatalf("runEnqueue: %v", err)
 		}
 
@@ -1821,7 +1794,7 @@ VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
 	var enqueueOut bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &enqueueOut); err != nil {
+	if err := runEnqueue(ctx, pool, "delete-reconcile", dbtest.StoreName, &enqueueOut); err != nil {
 		t.Fatalf("enqueueing delete-reconcile: %v", err)
 	}
 
@@ -1844,7 +1817,7 @@ VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatalf("until_encoded candidate count for storage.derived %q = %d, want 1", loadedConfig.Storage.Derived, candidateCount)
 	}
 	if _, err := runServerCmdBounded(t, 30*time.Second, path,
-		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=2s"); err != nil {
+		"--roles", "worker", "--sites=", "--queues=original", "--once", "--once-idle-timeout=2s"); err != nil {
 		t.Fatalf("worker once run: %v", err)
 	}
 	var state string

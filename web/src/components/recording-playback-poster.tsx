@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { formatPlaybackTime } from '@/lib/format'
-import { recordingThumbnailURL } from '@/lib/recording-media'
 
 /**
  * RecordingPlaybackPoster は録画 HLSの再生前の面である。
@@ -12,13 +11,14 @@ import { recordingThumbnailURL } from '@/lib/recording-media'
  * 瞬間にページが跳ぶ。
  */
 export function RecordingPlaybackPoster({
-  recordingId,
+  thumbnailUrl,
   resumeSeconds,
   onStart,
   onStartFromBeginning,
   watched,
 }: {
-  recordingId: number
+  /** `Recording.media.thumbnailUrl`。 */
+  thumbnailUrl: string
   /** 再生前に時間軸を描く場合だけ指定する。 */
   /** 保存された再生位置（秒）。無い・先頭に近いときは「再生」だけを出す。 */
   resumeSeconds?: number
@@ -40,7 +40,7 @@ export function RecordingPlaybackPoster({
     >
       {!thumbnailFailed && (
         <img
-          src={recordingThumbnailURL(recordingId)}
+          src={thumbnailUrl}
           alt=""
           className="absolute inset-0 size-full object-cover opacity-60"
           onError={() => setThumbnailFailed(true)}

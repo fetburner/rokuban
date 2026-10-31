@@ -101,7 +101,7 @@ func run(ctx context.Context) error {
 		_ = json.NewEncoder(w).Encode(map[string]int64{"recordingId": recordingID})
 	})
 	streamer.New(media, streamer.Config{
-		MediaDir: os.TempDir(), ObjectStores: map[string]objstore.Store{storeName: objects},
+		ObjectStores:    map[string]objstore.Store{storeName: objects},
 		SignedURLExpiry: 24 * time.Hour,
 	}).Mount(router)
 	server := &http.Server{Addr: "127.0.0.1:4176", Handler: router, ReadHeaderTimeout: 5 * time.Second}

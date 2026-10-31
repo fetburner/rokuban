@@ -29,7 +29,6 @@ import {
   formatPlaybackTime,
   formatTime,
 } from '@/lib/format'
-import { recordingThumbnailURL } from '@/lib/recording-media'
 import { useNow } from '@/lib/use-now'
 import {
   readHomeModePreference,
@@ -49,11 +48,11 @@ import {
 } from '@/lib/home-timeline'
 import { buildWarnings, type WarningItem } from '@/lib/home-warnings'
 import { programTitle } from '@/lib/program-labels'
-import { playbackResumeSeconds, recordingFileURL } from '@/lib/playback-position'
+import { playbackResumeSeconds } from '@/lib/playback-position'
 import {
   estimateAverageBitrate,
   estimateStorageForecast,
-  findMediaRoot,
+  findMediaRoots,
   isObservationStale,
   forecastWindowDays,
   recentBitrateSamples,
@@ -392,12 +391,12 @@ export function HomePage() {
     reservationsQuery.isError ||
     overagesQuery.isError
   const storageRoots = unwrap(storageQuery.data)
-  const mediaRoot = storageRoots === undefined ? undefined : findMediaRoot(storageRoots)
+  const hasMediaRoot = storageRoots !== undefined && findMediaRoots(storageRoots).length > 0
   const hasVisibleOpsData =
     timelineEvents.length > 0 ||
     timelineRows.some((row) => row.overages.length > 0) ||
     (!warningsPending && warnings.length > 0) ||
-    mediaRoot !== undefined
+    hasMediaRoot
   const allOpsSettled =
     !timelinePending &&
     !warningsPending &&
@@ -886,9 +885,11 @@ function OpsStorageLine({
   encodeQueue: EncodeQueueSummary | undefined
   nowMs: number
 }) {
-  const media = roots === undefined ? undefined : findMediaRoot(roots)
-  if (media === undefined) return null
+  const mediaRoots = roots === undefined ? [] : findMediaRoots(roots)
+  if (mediaRoots.length === 0) return null
 
+  // 見込みは置き場が 1 つのときだけ出す（予約がどの置き場へ入るかは決まらない。storage-balance.tsx の規則 5）。
+  const singleStore = mediaRoots.length === 1
   const averageBitrate = finishedRecordings === undefined
     ? undefined
     : estimateAverageBitrate(recentBitrateSamples(finishedRecordings))
@@ -899,31 +900,45 @@ function OpsStorageLine({
         nowMs,
         nowMs + forecastWindowDays * 24 * 60 * 60 * 1000,
       )
-  const forecast = estimateStorageForecast({
-    availableBytes: media.availableBytes,
-    averageBitrate,
-    upcomingSchedule,
-    nowMs,
-  })
-  const projected = forecast.projectedConsumptionBytes
-  const stale = isObservationStale(media.observedAt, nowMs)
 
   return (
-    <section className="flex min-w-0 flex-wrap gap-x-4 gap-y-1 border-t border-border pt-2 text-xs text-muted-foreground" data-testid="home-ops-storage">
-      <span>残り <strong className="font-semibold text-foreground">{formatBytes(media.availableBytes)}</strong></span>
-      {forecast.hasEstimate && projected !== undefined && projected > 0 && (
-        <span>今後 7 日の予約で <strong className="font-semibold text-foreground">約 {formatBytes(projected)}</strong></span>
-      )}
-      {forecast.exceedsAvailable && forecast.fullAtMs !== undefined && (
-        <span>満杯まで <strong className="font-semibold text-foreground">約 {Math.max(1, Math.ceil((forecast.fullAtMs - nowMs) / (24 * 60 * 60 * 1000)))} 日</strong></span>
-      )}
-      {encodeQueue !== undefined && (
-        <span>エンコード待ち <strong className="font-semibold text-foreground">{encodeQueue.queued}</strong></span>
-      )}
-      <span className={cn(stale && 'text-warning')} title={stale ? '観測ループが止まっている可能性があります' : undefined}>
-        {stale ? '観測が古い' : `観測 ${formatDateTime(media.observedAt)}`}
-      </span>
-    </section>
+    <>
+      {mediaRoots.map((media, index) => {
+        const forecast = singleStore
+          ? estimateStorageForecast({
+              availableBytes: media.availableBytes,
+              averageBitrate,
+              upcomingSchedule,
+              nowMs,
+            })
+          : undefined
+        const projected = forecast?.projectedConsumptionBytes
+        const stale = isObservationStale(media.observedAt, nowMs)
+
+        return (
+          <section
+            key={media.store}
+            className="flex min-w-0 flex-wrap gap-x-4 gap-y-1 border-t border-border pt-2 text-xs text-muted-foreground"
+            data-testid="home-ops-storage"
+          >
+            {!singleStore && <span className="font-medium text-foreground">{media.store}</span>}
+            <span>残り <strong className="font-semibold text-foreground">{formatBytes(media.availableBytes)}</strong></span>
+            {forecast?.hasEstimate && projected !== undefined && projected > 0 && (
+              <span>今後 7 日の予約で <strong className="font-semibold text-foreground">約 {formatBytes(projected)}</strong></span>
+            )}
+            {forecast?.exceedsAvailable && forecast.fullAtMs !== undefined && (
+              <span>満杯まで <strong className="font-semibold text-foreground">約 {Math.max(1, Math.ceil((forecast.fullAtMs - nowMs) / (24 * 60 * 60 * 1000)))} 日</strong></span>
+            )}
+            {index === 0 && encodeQueue !== undefined && (
+              <span>エンコード待ち <strong className="font-semibold text-foreground">{encodeQueue.queued}</strong></span>
+            )}
+            <span className={cn(stale && 'text-warning')} title={stale ? '観測ループが止まっている可能性があります' : undefined}>
+              {stale ? '観測が古い' : `観測 ${formatDateTime(media.observedAt)}`}
+            </span>
+          </section>
+        )
+      })}
+    </>
   )
 }
 
@@ -956,8 +971,11 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
         resumePosition,
         resumeAsset.cut === true ? resumeAsset.keepRanges : undefined,
       )
-  const resumeVideo = resumeAsset !== undefined && resumeSeconds !== null
-    ? { src: recordingFileURL(recording.id, resumeAsset.profile), targetSeconds: resumeSeconds }
+  const resumeSrc = resumeAsset === undefined
+    ? undefined
+    : recording.media.encoded.find((m) => m.profile === resumeAsset.profile)?.url
+  const resumeVideo = resumeSrc !== undefined && resumeSeconds !== null
+    ? { src: resumeSrc, targetSeconds: resumeSeconds }
     : undefined
 
   return (
@@ -1158,7 +1176,7 @@ function HomeThumbnail({
       {!failed ? (
         <img
           data-testid={hero ? 'home-hero-thumbnail-image' : undefined}
-          src={recordingThumbnailURL(recording.id)}
+          src={recording.media.thumbnailUrl}
           alt=""
           loading={hero ? 'eager' : 'lazy'}
           className="size-full object-cover"

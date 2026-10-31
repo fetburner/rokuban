@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/store"
@@ -154,17 +156,35 @@ func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSit
 			Error: fmt.Sprintf("circuit breaker %q is site-scoped; use POST /api/sites/{site}/breakers/%s/resume instead", req.Name, req.Name),
 		}, nil
 	}
-	if h.breakerStoreScope == "" {
+	if len(h.breakerScopes) == 0 {
 		return ResumeSitelessCircuitBreaker400JSONResponse{
 			Error: fmt.Sprintf("circuit breaker %q is store-scoped, but the api config has no FS store to resolve it", req.Name),
 		}, nil
 	}
 
-	err := h.breakerAdmin.Resume(ctx, h.breakerStoreScope, req.Name)
-	if errors.Is(err, store.ErrNotFound) && h.breakerDerivedScope != "" {
-		// 派生物の置き場が S3 のときは、その置き場の範囲にも別の行がある。FS 置き場の行が無ければ次を引く。
-		err = h.breakerAdmin.Resume(ctx, h.breakerDerivedScope, req.Name)
+	// 発動中の範囲が 2 つ以上あると、どの置き場の行を消すかを決められない。置き場を指定する再開が
+	// 入るまでは、何も消さずに 409 を返し、発動中の範囲の名前を並べる。
+	rows, err := h.breakerAdmin.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing circuit breakers: %w", err)
 	}
+	var tripped []string
+	for _, r := range rows {
+		if r.Name == req.Name && slices.Contains(h.breakerScopes, r.Scope) {
+			tripped = append(tripped, r.Scope)
+		}
+	}
+	slices.Sort(tripped)
+	switch len(tripped) {
+	case 0:
+		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
+	case 1:
+	default:
+		return ResumeSitelessCircuitBreaker409JSONResponse{Error: fmt.Sprintf(
+			"circuit breaker %q is tripped in more than one store (%s); resuming a single store is not available yet, so nothing was resumed",
+			req.Name, strings.Join(tripped, ", "))}, nil
+	}
+	err = h.breakerAdmin.Resume(ctx, tripped[0], req.Name)
 	if errors.Is(err, store.ErrNotFound) {
 		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
 	}

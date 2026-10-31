@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Recording } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import { chooseHomeHero, homeNewArrivals, type HeroSource } from '@/lib/home-selection'
 
 function recording(
@@ -24,6 +25,7 @@ function recording(
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? id, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: startAt,
     sizeBytes: 100,

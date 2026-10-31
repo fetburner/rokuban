@@ -58,7 +58,7 @@ SELECT DISTINCT a.recording_id
 FROM media_assets a
 JOIN media_asset_copies c
   ON c.media_asset_id = a.id
- AND c.store = sqlc.arg('store_name')
+ AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
  AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id > sqlc.arg('after_recording_id')::bigint

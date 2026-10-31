@@ -46,12 +46,6 @@ import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { cn } from '@/lib/utils'
 
-/** frameURL は streamer のコマ切り出し URL を組み立てる（OpenAPI 外）。 */
-// oxlint-disable-next-line react/only-export-components -- URL の契約をテストで固定する
-export function frameURL(recordingId: number, atMs: number): string {
-  return `/api/media/recordings/${recordingId}/frame?at=${atMs}`
-}
-
 export type CMLogoBucket = 'attention' | 'pending' | 'healthy'
 
 /** cmLogoBucket は一覧の「見るべき順」を API の件数から決める。 */
@@ -108,9 +102,12 @@ type Frame = {
   sampleAspectRatio: number
 }
 
-/** useFrame は保存した時刻を確定したときだけ原本のコマを取り寄せる。 */
+/**
+ * useFrame は保存した時刻を確定したときだけ原本のコマを取り寄せる。
+ * `frameUrl` は API が返す `Recording.media.frameUrl`（`?at=<ms>` だけをここで足す）。
+ */
 function useFrame(
-  recordingId: number,
+  frameUrl: string | undefined,
   atMs: number | undefined,
 ): { frame: Frame | null; failed: boolean; loading: boolean } {
   const [frame, setFrame] = useState<Frame | null>(null)
@@ -118,7 +115,7 @@ function useFrame(
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (recordingId <= 0 || atMs === undefined) {
+    if (frameUrl === undefined || atMs === undefined) {
       // oxlint-disable-next-line react/set-state-in-effect -- コマ選択が無効になったとき前の取得状態を捨てる
       setFrame(null)
       setFailed(false)
@@ -130,7 +127,10 @@ function useFrame(
     setFrame(null)
     setFailed(false)
     setLoading(true)
-    fetch(frameURL(recordingId, atMs))
+    // frameUrl に既存のクエリがあっても壊れないよう、URL API で `at` を足す。
+    const requestURL = new URL(frameUrl, window.location.origin)
+    requestURL.searchParams.set('at', String(atMs))
+    fetch(`${requestURL.pathname}${requestURL.search}`)
       .then(async (response) => {
         if (!response.ok) throw new Error(`status ${response.status}`)
         const blob = await response.blob()
@@ -158,7 +158,7 @@ function useFrame(
       cancelled = true
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [recordingId, atMs])
+  }, [frameUrl, atMs])
 
   return { frame, failed, loading }
 }
@@ -321,8 +321,9 @@ function CMLogoFrameEditor({
   const frameRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const appliedFrameKey = useRef<string | null>(null)
+  // コマを取り寄せられるのは active な原本のコピーがある録画だけ（frameUrl はそのときだけ返る）。
   const candidates = useMemo(
-    () => recordings.filter((recording) => recording.sizeBytes !== undefined),
+    () => recordings.filter((recording) => recording.media.frameUrl !== undefined),
     [recordings],
   )
   const initialRecordingId =
@@ -347,7 +348,7 @@ function CMLogoFrameEditor({
   // 数値入力の入力中テキスト。blur / Enter で確定するまで枠へ反映しない。
   const [draft, setDraft] = useState<Partial<Record<keyof CodedRect, string>>>({})
   const box = useBoxSize(frameRef)
-  const { frame, failed, loading } = useFrame(recordingId, committedAtMs)
+  const { frame, failed, loading } = useFrame(selectedRecording?.media.frameUrl, committedAtMs)
   const saveArea = usePutCMLogoArea()
 
   useEffect(() => {
@@ -808,7 +809,7 @@ function CMLogoCandidatePanel({
   const [adopted, setAdopted] = useState(false)
   const candidateRecordingId = candidate?.state === 'ready' ? (candidate.recordingId ?? 0) : 0
   const candidateRecording = recordings.find((recording) => recording.id === candidateRecordingId)
-  const { frame: candidateFrame } = useFrame(candidateRecordingId, candidateRecordingId > 0 ? 0 : undefined)
+  const { frame: candidateFrame } = useFrame(candidateRecording?.media.frameUrl, 0)
   const sampleAspectRatio = candidateFrame?.sampleAspectRatio ?? 1
 
   useEffect(() => {

@@ -29,10 +29,13 @@ func (h *Server) RetryRecordingCMDetection(ctx context.Context, req RetryRecordi
 		return RetryRecordingCMDetection409JSONResponse{Error: "active original media asset required to retry CM detection"}, nil
 	}
 	if retry.Desired && h.enqueuer != nil {
-		if _, err := h.enqueuer.Enqueue(ctx, jobs.CMDetectJobArgs{
-			RecordingID: req.Id, RecordingDurationMs: retry.RecordingDurationMs,
-		}); err != nil {
-			slog.ErrorContext(ctx, "api: failed to enqueue CM detection retry hint", "recording_id", req.Id, "err", err)
+		// 置き場は原本のコピーがある置き場。引けなければヒントは積まず、reconcile が拾う。
+		if storeName, ok := h.originalStoreOf(ctx, req.Id); ok {
+			if _, err := h.enqueuer.Enqueue(ctx, jobs.CMDetectJobArgs{
+				Store: storeName, RecordingID: req.Id, RecordingDurationMs: retry.RecordingDurationMs,
+			}); err != nil {
+				slog.ErrorContext(ctx, "api: failed to enqueue CM detection retry hint", "recording_id", req.Id, "err", err)
+			}
 		}
 	}
 	return RetryRecordingCMDetection204Response{}, nil
@@ -226,7 +229,12 @@ func (h *Server) enqueueCMLogoCandidateHint(ctx context.Context, job store.CMLog
 	if h.enqueuer == nil {
 		return
 	}
+	storeName, ok := h.originalStoreOf(ctx, job.RecordingID)
+	if !ok {
+		return
+	}
 	args := jobs.CMLogoCandidateJobArgs{
+		Store:     storeName,
 		NetworkID: job.Station.NetworkID, ServiceID: job.Station.ServiceID,
 		RecordingID: job.RecordingID, RecordingDurationMs: job.RecordingDurationMs,
 		AreaUpdatedAt: job.AreaUpdatedAt,
@@ -245,4 +253,20 @@ func (h *Server) enqueueCMDetectReconcileHint(ctx context.Context) {
 	if _, err := h.enqueuer.Enqueue(ctx, jobs.CMDetectReconcileArgs{}); err != nil {
 		slog.ErrorContext(ctx, "api: failed to enqueue CM detection reconcile hint", "err", err)
 	}
+}
+
+// originalStoreOf は録画の active な原本のコピーがある置き場を返す。引けなければ false を返す
+// （URL を省略する、ヒントを積まない。真実は reconcile が引き直す）。
+func (h *Server) originalStoreOf(ctx context.Context, recordingID int64) (string, bool) {
+	if h.originalLocator == nil {
+		return "", false
+	}
+	storeName, err := h.originalLocator.OriginalStore(ctx, recordingID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			slog.WarnContext(ctx, "api: locating the original of a recording", "recording_id", recordingID, "err", err)
+		}
+		return "", false
+	}
+	return storeName, true
 }

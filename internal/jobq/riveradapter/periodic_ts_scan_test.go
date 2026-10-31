@@ -27,7 +27,7 @@ func (worker blockingTSScanReconcileWorker) Work(ctx context.Context, _ tsscan.R
 	}
 }
 
-func TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces(t *testing.T) {
+func TestTSScanReconcilePeriodicUsesCleanupQueueAndCoalesces(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	registry := jobq.NewRegistry()
 	started := make(chan struct{}, 1)
@@ -36,10 +36,10 @@ func TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces(t *testing.T) {
 
 	adapter, err := NewAdapter(pool, registry, testQueueFor, Config{
 		Spec: jobq.WorkerSpec{
-			Queues:       []jobq.QueueSpec{plainQueue(jobs.TSScanQueue, 1)},
+			Queues:       []jobq.QueueSpec{plainQueue(jobs.CleanupQueue, 1)},
 			PeriodicJobs: []jobq.PeriodicJobSpec{{Interval: oneHour, Args: tsscan.ReconcileArgs{}}},
 		},
-		Queues:               []string{jobs.TSScanQueue},
+		Queues:               []string{jobs.CleanupQueue},
 		SchedulePeriodicJobs: true,
 	})
 	if err != nil {
@@ -71,8 +71,9 @@ func TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("ts_scan_reconcile row count = %d, want 1", len(rows))
 	}
-	if rows[0].Queue != "ts_scan" {
-		t.Errorf("periodic ts_scan_reconcile queue = %q, want literal %q", rows[0].Queue, "ts_scan")
+	// 候補を列挙するだけの DB 専用ジョブは、置き場で修飾しない cleanup に載る。
+	if rows[0].Queue != "cleanup" {
+		t.Errorf("periodic ts_scan_reconcile queue = %q, want literal %q", rows[0].Queue, "cleanup")
 	}
 
 	inserted, err := adapter.Enqueue(context.Background(), tsscan.ReconcileArgs{})

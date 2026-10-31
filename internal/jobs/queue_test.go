@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +18,7 @@ func TestAllQueueNames(t *testing.T) {
 		"encode",
 		"epg",
 		"ingest",
+		"original",
 		"reconciler",
 		"ruler",
 		"storage",
@@ -43,6 +45,56 @@ func TestPhysicalStoreQueueNameAndValidation(t *testing.T) {
 	args.Store = "bad_store"
 	if _, err := PhysicalQueueFor(args); err == nil {
 		t.Fatal("PhysicalQueueFor(invalid store) succeeded, want error")
+	}
+}
+
+// 置き場で修飾する論理キューの集合をリテラルで固定する。DB だけを触る reconcile（cleanup）と、
+// site で修飾するキューは含まれない。投入側（PhysicalQueueFor）・worker 仕様・起動時検査・--once 検査は
+// この 1 つの集合を共有する。
+func TestStoreBoundQueueNames(t *testing.T) {
+	want := []string{"transfer", "encode", "thumbnail", "cm_detect", "ts_scan", "original", "storage"}
+	if !reflect.DeepEqual(storeBoundQueueNames, want) {
+		t.Errorf("storeBoundQueueNames = %v, want literal %v", storeBoundQueueNames, want)
+	}
+	for _, logical := range AllQueueNames() {
+		if got := IsStoreBound(logical); got != slices.Contains(want, logical) {
+			t.Errorf("IsStoreBound(%q) = %v", logical, got)
+		}
+	}
+	if got := StoreBoundQueueCount(nil); got != 7 {
+		t.Errorf("StoreBoundQueueCount(all) = %d, want 7", got)
+	}
+	if got := StoreBoundQueueCount([]string{"encode", "ruler", "cleanup", "ingest"}); got != 1 {
+		t.Errorf("StoreBoundQueueCount(encode, ruler, cleanup, ingest) = %d, want 1", got)
+	}
+}
+
+// 置き場で修飾する論理キューに載る Args は、すべて QueueStore を実装して置き場のキューに積まれる。
+// 実装し忘れると PhysicalQueueFor が投入前に拒む。
+func TestEveryStoreBoundArgsRoutesToItsStoreQueue(t *testing.T) {
+	for _, args := range []jobq.Args{
+		EncodeJobArgs{Store: "takamatsu"}, ThumbnailJobArgs{Store: "takamatsu"}, SeekTilesJobArgs{Store: "takamatsu"},
+		CMDetectJobArgs{Store: "takamatsu"}, CMLogoCandidateJobArgs{Store: "takamatsu"}, DeleteReconcileArgs{Store: "takamatsu"},
+		CatalogExportArgs{Store: "takamatsu"}, StorageSyncArgs{Store: "takamatsu"}, StorageTransferArgs{Store: "takamatsu"},
+	} {
+		got, err := PhysicalQueueFor(args)
+		if err != nil {
+			t.Fatalf("PhysicalQueueFor(%T): %v", args, err)
+		}
+		want := map[string]string{
+			"EncodeJobArgs": "encode_takamatsu", "ThumbnailJobArgs": "thumbnail_takamatsu", "SeekTilesJobArgs": "thumbnail_takamatsu",
+			"CMDetectJobArgs": "cm_detect_takamatsu", "CMLogoCandidateJobArgs": "cm_detect_takamatsu", "DeleteReconcileArgs": "original_takamatsu",
+			"CatalogExportArgs": "original_takamatsu", "StorageSyncArgs": "storage_takamatsu", "StorageTransferArgs": "transfer_takamatsu",
+		}[reflect.TypeOf(args).Name()]
+		if got != want {
+			t.Errorf("PhysicalQueueFor(%T) = %q, want %q", args, got, want)
+		}
+	}
+	// DB だけを触る reconcile は置き場で修飾しない。
+	for _, args := range []jobq.Args{EncodeReconcileArgs{}, ThumbnailReconcileArgs{}, CMDetectReconcileArgs{}, StorageTransferReconcileArgs{}, LabelRuleReconcileArgs{}} {
+		if got, err := PhysicalQueueFor(args); err != nil || got != "cleanup" {
+			t.Errorf("PhysicalQueueFor(%T) = %q, %v; want cleanup", args, got, err)
+		}
 	}
 }
 

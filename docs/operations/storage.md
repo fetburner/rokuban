@@ -24,7 +24,7 @@ ingest を引く worker は起動時に、実際の操作列が一度成功す�
 
 worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内の hard link、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
-worker は起動時と、ファイルシステム操作や DB への記録の前に、`.rokuban-store` を `storage.stores` の FS 置き場の名前と照合する（FS 置き場は今 1 つだけ。[置き場の規則](../configuration/keys.md#置き場の規則)）。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。worker ロールと streamer ロールは、`storage.stores` に FS 置き場がちょうど 1 つ無いと起動しない。
+worker は起動時と、ファイルシステム操作や DB への記録の前に、`.rokuban-store` を `storage.stores` の FS 置き場の名前と照合する（[置き場の規則](../configuration/keys.md#置き場の規則)）。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。worker は `--stores` でマウントした置き場ごとに、その置き場の root の目印を照合する。
 
 見送る操作は、ingest・encode・サムネイル・シークタイル・catalog の書き込みと、ファイルの削除・欠損の記録・孤児の回収である。
 

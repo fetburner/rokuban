@@ -71,6 +71,7 @@ function shelf(value: string | null, overrides: Partial<RecordingShelf> = {}): R
     unwatchedCount: 2,
     latestStartAt: at(1),
     representativeId: 71,
+    thumbnailUrl: '/api/media/recordings/71/thumbnail?fixture=1',
     ...overrides,
   }
 }
@@ -153,6 +154,15 @@ describe('予約一覧のシリーズ表示', () => {
     expect(await within(row).findByText('第1話')).toBeInTheDocument()
     expect(within(row).getByText('第2話')).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/recording-shelves'))).toBe(true)
+  })
+
+  it('棚のサムネイルは棚が返した thumbnailUrl をそのまま使う', async () => {
+    renderPage({ reservations: [reservation(1, '毎週ドラマ', '毎週ドラマ', 18)], shelves: [shelf('毎週ドラマ')] })
+
+    const row = await screen.findByTestId('reservation-series-row')
+    await waitFor(() =>
+      expect(row.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/71/thumbnail?fixture=1'),
+    )
   })
 
   it('棚の取得が未完了の間は「まだ録画なし」と空箱を出さない', async () => {
@@ -280,7 +290,7 @@ describe('予約一覧のシリーズ表示', () => {
   it('value=null の録画棚を series=null の予約へ突き合わせない', async () => {
     renderPage({
       reservations: [reservation(1, 'EPG から消えた番組', null, 18, { state: 'orphaned' })],
-      shelves: [shelf(null, { count: 99, unwatchedCount: 99, representativeId: 999 })],
+      shelves: [shelf(null, { count: 99, unwatchedCount: 99, representativeId: 999, thumbnailUrl: '/api/media/recordings/999/thumbnail?fixture=1' })],
     })
 
     const row = await screen.findByTestId('reservation-series-row')

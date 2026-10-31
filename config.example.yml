@@ -46,12 +46,15 @@ mirakcs:
   # - site: takamatsu
   #   url: http://mirakc-takamatsu:40772
 
-# ストレージ（media_dir は必須）
+# ストレージ（media_dir は、root を持たない FS の置き場の既定の root として必須）
 storage:
   # 置き場の規則。stores / originals / derived は一緒に書く。
-  # 今は FS の置き場を 1 つだけ定義でき、originals の全規則と derived はその置き場を指す
+  # FS の置き場は何個でも定義でき、originals の規則ごとに別の置き場を指せる
   # （docs/configuration/keys.md「置き場の規則」）。
-  # 置き場の名前は英小文字・数字・- だけ。名前は media_dir の root の .rokuban-store に書く名前になる。
+  # 置き場の名前は英小文字・数字・- だけ。名前は置き場の root の .rokuban-store に書く名前になる。
+  # root を省略した FS の置き場は media_dir を root にする。media_dir を root にする置き場は、
+  # 1 つのプロセスに 1 つまでしかマウントできない（2 つ目以降は root を明示する）。
+  # どの置き場をマウントするかは argv の --stores で渡す。
   stores:
     main: { kind: fs }
   originals:                         # 上から評価して最初に一致した規則を使う。最後は無条件
@@ -61,10 +64,10 @@ storage:
   #   overlap: 48h                   # 既定 48h。cleanup.missing_asset_age を延ばしたら、
   #                                  # 実体無しの猶予 + 削除 reconcile 2 回分より長い値を明示する
   #
-  # 次の形は複数の置き場に対応した後のもので、今は検証で拒否される（まだ使えない）。
+  # 複数の置き場の例。
   # stores:
-  #   tokyo: { kind: fs, internal_url: http://rokuban-store-tokyo.internal:8080 }
-  #   takamatsu: { kind: fs, internal_url: http://rokuban-store-takamatsu.internal:8080 }
+  #   tokyo: { kind: fs, root: /mnt/tokyo, internal_url: http://rokuban-store-tokyo.internal:8080 }
+  #   takamatsu: { kind: fs, root: /mnt/takamatsu, internal_url: http://rokuban-store-takamatsu.internal:8080 }
   #   s3main: { kind: s3, endpoint: https://s3.example.com, bucket: rokuban-derived }
   # originals:
   #   - match: { site: takamatsu, older_than: 30d }   # 放送終了から 30 日を過ぎた高松の原本は
@@ -76,8 +79,7 @@ storage:
   # transfer:
   #   bandwidth: { takamatsu: 50Mbps }   # 転送元の置き場ごとの上限
   #
-  # 派生物の置き場には S3 API の置き場も指定できる。原本の置き場は、S3 を使うかどうかに
-  # かかわらず、FS 置き場を 1 つだけ定義して参照する。
+  # 派生物の置き場には S3 API の置き場も指定できる。
   # stores:
   #   main: { kind: fs }
   #   s3main: { kind: s3, endpoint: https://s3.example.com, region: us-east-1, bucket: rokuban-derived }

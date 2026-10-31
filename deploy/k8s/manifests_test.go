@@ -38,6 +38,7 @@ import (
 const (
 	baseDir     = "base"
 	siteDir     = "site"
+	storeDir    = "store"
 	overlaysDir = "overlays"
 	// enqueueSourcePath は `rokuban enqueue` が受け付けるジョブの表。CronJob の
 	// 網羅を見る検査（TestCronJobsCoverEveryEnqueueJob）がここを読む。
@@ -53,6 +54,13 @@ const (
 	// **リテラルで書く**（internal/config の定数を参照すると、両方を同時に
 	// 変えたときに何も主張しなくなる）。
 	baseSiteName = "default"
+
+	// baseStoreName は `deploy/k8s/store` が名乗る置き場名。
+	//
+	// `base/config.yml` の `storage.stores` の唯一の要素がこの名前なので、
+	// 単一置き場構成の overlay は patch 無しで `deploy/k8s/store` をそのまま使える
+	// （`overlays/kind`）。**リテラルで書く**（baseSiteName と同じ理由）。
+	baseStoreName = "main"
 )
 
 // object は 1 つの k8s オブジェクト（YAML ドキュメント 1 つ）。
@@ -149,7 +157,13 @@ func loadSite(t *testing.T) []object {
 	return loadDir(t, siteDir)
 }
 
-// loadAll は base と site の両方を読む。
+// loadStore は置き場 1 組ぶん（`deploy/k8s/store`）を読む。
+func loadStore(t *testing.T) []object {
+	t.Helper()
+	return loadDir(t, storeDir)
+}
+
+// loadAll は base と site と store のすべてを読む。
 //
 // **「全 Pod に効く」検査はこちらを使う**（締め方・service links・参照解決）。
 // base だけを見ていると、site 束縛のワークロード（watcher / site 束縛キューの
@@ -158,7 +172,7 @@ func loadSite(t *testing.T) []object {
 // 対象の半分について復活する。
 func loadAll(t *testing.T) []object {
 	t.Helper()
-	return append(loadBase(t), loadSite(t)...)
+	return append(append(loadBase(t), loadSite(t)...), loadStore(t)...)
 }
 
 func loadDir(t *testing.T, dir string) []object {
@@ -1050,7 +1064,7 @@ func TestKustomizationCoversEveryFile(t *testing.T) {
 	// **site/ も同じ規律で見る。** site 束縛のワークロードを 1 ファイル
 	// 足して resources に書き忘れると、そのサイトは watcher も ingest も
 	// 持たないまま「apply は成功」する。
-	for _, dir := range []string{baseDir, siteDir} {
+	for _, dir := range []string{baseDir, siteDir, storeDir} {
 		t.Run(dir, func(t *testing.T) {
 			k := loadKustomizationIn(t, dir)
 
@@ -1759,52 +1773,115 @@ func strAt(v any, keys ...string) string {
 	return s
 }
 
-// migration Job は `migrate up`（initContainer）の後に `storage adopt main`（本体）を
-// 走らせ、adopt のコンテナにだけ media の PVC を読み書きで挿すこと。
+// base の migration Job が `migrate up` だけを走らせ、置き場の PVC を挿さないこと。
+// 置き場の目印と行の割り当て（`storage adopt`）は `deploy/k8s/store/adopt-job.yaml` が
+// 置き場ごとに持つ（TestStoreAdoptJobMountsItsStoreReadWrite）。
 //
-// 目印が無いと worker は FS 操作をすべて見送り、adopt が migrate より先に走ると DB 側で
-// 失敗する。initContainers と containers の別がその順序を保つ。
-func TestMigrateJobAdoptsStoreAfterMigrate(t *testing.T) {
+// base に PVC を挿すと、base 単体では存在しない PVC を参照する Job になり、
+// 置き場を増やしたときに「どの置き場の PVC か」が決まらない。
+func TestMigrateJobRunsOnlyMigrateWithoutMedia(t *testing.T) {
 	specs := podSpecs(loadBase(t))
 	spec := specs["Job/rokuban-migrate"]
 	if spec == nil {
 		t.Fatal("Job/rokuban-migrate not found")
 	}
-	var initNames, mainNames []string
-	for _, c := range sliceAt(spec, "initContainers") {
-		initNames = append(initNames, strAt(c.(map[string]any), "name"))
+	if got := len(sliceAt(spec, "initContainers")); got != 0 {
+		t.Errorf("migrate Job has %d initContainers, want 0", got)
 	}
+	var mainNames []string
 	for _, c := range sliceAt(spec, "containers") {
 		mainNames = append(mainNames, strAt(c.(map[string]any), "name"))
 	}
-	if strings.Join(initNames, ",") != "migrate" || strings.Join(mainNames, ",") != "adopt" {
-		t.Fatalf("initContainers = %v, containers = %v; want [migrate] then [adopt]", initNames, mainNames)
+	if strings.Join(mainNames, ",") != "migrate" {
+		t.Errorf("containers = %v, want [migrate] only (adopt belongs to each store)", mainNames)
 	}
-	adopt := container(t, specs, "Job/rokuban-migrate", "adopt")
+	for _, v := range sliceAt(spec, "volumes") {
+		if strAt(v.(map[string]any), "name") == "media" {
+			t.Errorf("migrate Job declares a media volume; base must not know any store's PVC")
+		}
+	}
+}
+
+// 置き場の `storage adopt` Job が、その置き場の PVC を root へ読み書きで挿すこと。
+//
+// 目印が無いと worker は FS 操作をすべて見送る。adopt は `migrate up` より先に走ると DB 側で
+// 失敗するので、Job の再試行がその順序を担う（adopt-job.yaml の冒頭に未測定の旨を書いてある）。
+func TestStoreAdoptJobMountsItsStoreReadWrite(t *testing.T) {
+	specs := podSpecs(loadStore(t))
+	spec := specs["Job/rokuban-storage-adopt"]
+	if spec == nil {
+		t.Fatal("Job/rokuban-storage-adopt not found in store/")
+	}
+	adopt := container(t, specs, "Job/rokuban-storage-adopt", "adopt")
 	var args []string
 	for _, a := range sliceAt(adopt, "args") {
 		args = append(args, fmt.Sprint(a))
 	}
-	if len(args) < 3 || strings.Join(args[:3], " ") != "storage adopt main" {
-		t.Errorf("adopt args = %q, want `storage adopt main` first", strings.Join(args, " "))
+	if len(args) < 3 || strings.Join(args[:3], " ") != "storage adopt "+baseStoreName {
+		t.Errorf("adopt args = %q, want `storage adopt %s` first", strings.Join(args, " "), baseStoreName)
 	}
-	var media map[string]any
-	for _, m := range sliceAt(adopt, "volumeMounts") {
-		if mm := m.(map[string]any); strAt(mm, "name") == "media" {
-			media = mm
-		}
+	mounts := sliceAt(adopt, "volumeMounts")
+	if len(mounts) < 2 {
+		t.Fatalf("adopt has %d volumeMounts, want media at index 1", len(mounts))
 	}
-	if media == nil || strAt(media, "mountPath") != "/mnt/media" || media["readOnly"] == true {
-		t.Errorf("adopt media mount = %v, want a read-write mount at /mnt/media", media)
+	media := mounts[1].(map[string]any)
+	if strAt(media, "name") != "media" || strAt(media, "mountPath") != "/mnt/media" || media["readOnly"] == true {
+		t.Errorf("adopt volumeMounts[1] = %v, want a read-write media mount at /mnt/media", media)
 	}
 	sc := mapAt(spec, "securityContext")
 	if fmt.Sprint(sc["fsGroup"]) != "65534" || strAt(sc, "fsGroupChangePolicy") != "OnRootMismatch" {
 		t.Errorf("pod securityContext = %v, want fsGroup 65534 and fsGroupChangePolicy OnRootMismatch", sc)
 	}
-	mig := container(t, specs, "Job/rokuban-migrate", "migrate")
-	for _, m := range sliceAt(mig, "volumeMounts") {
-		if strAt(m.(map[string]any), "name") == "media" {
-			t.Errorf("migrate container mounts media; only adopt should")
+}
+
+// adopt Job の再試行窓。Job の失敗 Pod の再作成は指数バックオフ（10s から倍々、上限 360s）で、
+// n 回目の再試行は開始から累計 S(n) 秒後に作られる。activeDeadlineSeconds がそれより短いと、
+// backoffLimit は一度も効かずに Job が DeadlineExceeded で落ちる（adopt-job.yaml の冒頭）。
+// e2e ハーネスの adopt の待ち時間は、Job の期限以上であること（待ちが先に切れると判定が赤になる）。
+func TestStoreAdoptRetryWindowFitsItsDeadline(t *testing.T) {
+	var job object
+	for _, o := range loadStore(t) {
+		if o.id() == "Job/rokuban-storage-adopt" {
+			job = o
 		}
+	}
+	if job.kind() == "" {
+		t.Fatal("Job/rokuban-storage-adopt not found in store/")
+	}
+	spec := mapAt(job.doc, "spec")
+	limit, err := strconv.Atoi(fmt.Sprint(spec["backoffLimit"]))
+	if err != nil {
+		t.Fatalf("backoffLimit: %v", err)
+	}
+	deadline, err := strconv.Atoi(fmt.Sprint(spec["activeDeadlineSeconds"]))
+	if err != nil {
+		t.Fatalf("activeDeadlineSeconds: %v", err)
+	}
+
+	// 再試行 k 回目の作成時刻 = 直前までの失敗 Pod の遅延の和。遅延は 10s・倍々・上限 360s。
+	const base, ceiling = 10, 360
+	start := 0
+	delay := base
+	for k := 1; k <= limit; k++ {
+		start += delay
+		delay = min(delay*2, ceiling)
+	}
+	if deadline <= start {
+		t.Errorf("activeDeadlineSeconds = %d, want > %d (the start of retry %d of backoffLimit %d); "+
+			"the last retry would be cut by the deadline before it runs", deadline, start, limit, limit)
+	}
+
+	// e2e の adopt 待ち（cluster.sh）は Job の期限以上。
+	raw, err := os.ReadFile("e2e/lib/cluster.sh")
+	if err != nil {
+		t.Fatalf("reading e2e/lib/cluster.sh: %v", err)
+	}
+	m := regexp.MustCompile(`"\$adopt" --timeout=(\d+)s`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatal("e2e/lib/cluster.sh has no `k wait ... \"$adopt\" --timeout=Ns`")
+	}
+	wait, _ := strconv.Atoi(string(m[1]))
+	if wait < deadline {
+		t.Errorf("e2e adopt wait = %ds, want >= the Job's activeDeadlineSeconds %ds", wait, deadline)
 	}
 }

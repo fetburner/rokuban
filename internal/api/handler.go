@@ -30,16 +30,18 @@ type Server struct {
 	ruleStore         store.Rules
 	labelRules        store.LabelRules
 	breakerAdmin      store.BreakerAdmin
-	breakerStoreScope string
-	// breakerDerivedScope は派生物の置き場が FS 置き場と別のときの、その置き場の名前。空なら無い。
-	breakerDerivedScope string
-	epgReader           store.EPGReader
-	programSearch       store.ProgramSearch
-	encodePolicy        store.EncodePolicy
-	dedupe              store.RulerDedupe
-	mediaReader         store.MediaReader
-	storageObservation  store.StorageObservation
-	enqueuer            jobq.Enqueuer
+	// originalLocator は録画の原本のコピーがある置き場を引く。置き場ごとの URL と、置き場で修飾するキューの選択に使う。
+	originalLocator store.OriginalLocator
+	// breakerScopes は置き場の範囲の削除ブレーカーを再開するときに引く範囲の名前（FS 置き場と派生物の置き場）。
+	// 置き場を指定する再開（/api/stores/{store}/breakers/{name}/resume）は別の作業で入る。
+	breakerScopes      []string
+	epgReader          store.EPGReader
+	programSearch      store.ProgramSearch
+	encodePolicy       store.EncodePolicy
+	dedupe             store.RulerDedupe
+	mediaReader        store.MediaReader
+	storageObservation store.StorageObservation
+	enqueuer           jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）

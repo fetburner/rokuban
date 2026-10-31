@@ -40,8 +40,6 @@ spec:
         runAsNonRoot: true
         runAsUser: 65534
         runAsGroup: 65534
-        # PVC には Docker の named volume の copy-up が無い。media を読む
-        # streamer も fsGroup で uid/gid 65534 の所有権を確実に受ける。
         fsGroup: 65534
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
@@ -51,7 +49,7 @@ spec:
           image: ghcr.io/fetburner/rokuban-full:latest
           # **argv の 5 番目（index 4）が site 名。** site overlay の patch は
           # watcher と同じ位置を差し替える。
-          args: ["server", "--roles", "streamer", "--sites", "default", "--no-recording-hls", "--config", "/etc/rokuban/config.yml"]
+          args: ["server", "--roles", "streamer", "--sites", "default", "--no-recording-hls", "--stores=", "--config", "/etc/rokuban/config.yml"]
           ports:
             - name: http
               containerPort: 40773
@@ -80,9 +78,6 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/rokuban
-              readOnly: true
-            - name: media
-              mountPath: /mnt/media
               readOnly: true
             # live.segment_dir は録画バッファと共有しない Pod 内 tmpfs。
             - name: live-segments
@@ -113,9 +108,6 @@ spec:
         - name: config
           configMap:
             name: rokuban-config
-        - name: media
-          persistentVolumeClaim:
-            claimName: rokuban-media
         - name: live-segments
           emptyDir:
             medium: Memory

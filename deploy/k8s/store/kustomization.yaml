@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# **置き場 1 つぶんの Pod セット。** `deploy/k8s/base`（中央 = 置き場非依存）と
+# 対になっていて、置き場を増やすことは「`storage.stores` に 1 要素足して、この 1 組を
+# もう 1 つ生やす」ことである（`deploy/k8s/site` が site に対してやっているのと同じ形）。
+#
+# **ここに書いてある置き場名は `main` である。** base/config.yml の
+# `storage.stores` の唯一の要素と同じ名前なので、**単一置き場構成の overlay は
+# patch を 1 つも書かずにこのまま使える**（`overlays/kind`）。
+#
+# 多置き場構成の overlay は、このディレクトリを**置き場の数だけ** `resources` に入れ
+# （1 つの kustomization は同じ base を 2 回持てないので、置き場ごとに小さな中間
+# ディレクトリを作る）、`nameSuffix` と「置き場名・マウント先・トリガのクエリを差し替える
+# patch」を当てる。実例は `overlays/e2e-two-stores/stores/`。
+#
+# 含むもの: PVC / `storage adopt` Job / 配信 streamer（録画 HLS と原本の file / frame）/
+# 置き場で修飾する 7 キュー（`transfer` `encode` `thumbnail` `cm_detect` `ts_scan`
+# `original` `storage`）の ScaledJob / 置き場束縛ジョブの CronJob。
+#
+# patch の当て先を固定するために、この 1 組のオブジェクトは全部
+# `rokuban.fetburner.net/store-scoped: "true"` を名乗る。**このラベルに置き場名を
+# 入れない**（site 側と同じ理由）。
+#
+# **argv の置き場の位置は 3 つのグループで揃えてある**（Deployment index 5 /
+# ScaledJob index 8 / CronJob index 3）。**media をマウントする位置も揃えてある**
+# （`volumeMounts` の index 1）。JSON6902 patch の path がその位置を指すので、並べ替えると
+# overlay が黙って別の値を書き換える --- `deploy/k8s/workloads_test.go` の
+# TestStorePatchesTargetTheStoreName が固定している。
+#
+# **PVC 名の参照は `configurations` で ScaledJob にも教える。** kustomize は CRD の
+# 中の `claimName` を知らないので、`nameSuffix` が PVC を `rokuban-media-<置き場>` に
+# 変えても ScaledJob の `claimName` は追随しない（kustomizeconfig.yaml）。
+
+configurations:
+  - kustomizeconfig.yaml
+
+resources:
+  - media-pvc.yaml
+  - adopt-job.yaml
+  - recording-hls.yaml
+  - worker-scaledjobs.yaml
+  - cronjobs.yaml

@@ -192,8 +192,8 @@ func TestTSScanArgsAndSiteBinding(t *testing.T) {
 	if got, want := reconcileArgs.Kind(), "ts_scan_reconcile"; got != want {
 		t.Errorf("ReconcileArgs.Kind() = %q, want %q", got, want)
 	}
-	if got := reconcileArgs.Spec().Queue; got != "ts_scan" {
-		t.Errorf("ReconcileArgs.Spec().Queue = %q, want %q", got, "ts_scan")
+	if got := reconcileArgs.Spec().Queue; got != "cleanup" {
+		t.Errorf("ReconcileArgs.Spec().Queue = %q, want %q", got, "cleanup")
 	}
 
 	if jobs.RequiresSiteBinding([]string{jobs.TSScanQueue}) {

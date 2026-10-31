@@ -11,7 +11,6 @@ import {
   persistPlaybackPosition,
   playbackPositionWrite,
   playbackResumeSeconds,
-  recordingFileURL,
   saveChapterEditPlaybackRate,
   savePlaybackRate,
 } from '@/lib/playback-position'
@@ -179,16 +178,5 @@ describe('再生速度は端末ごとに 1 つ', () => {
   it('録画再生では保存速度を使い、通常ライブでは 1 倍にする', () => {
     expect(effectivePlaybackRate(1.5, true)).toBe(1.5)
     expect(effectivePlaybackRate(1.5, false)).toBe(1)
-  })
-})
-
-describe('recordingFileURL', () => {
-  it('原本は query 無し', () => {
-    expect(recordingFileURL(3)).toBe('/api/media/recordings/3/file')
-  })
-
-  it('encoded は profile query を encode する', () => {
-    expect(recordingFileURL(3, 'h264')).toBe('/api/media/recordings/3/file?profile=h264')
-    expect(recordingFileURL(3, 'a b')).toBe('/api/media/recordings/3/file?profile=a%20b')
   })
 })

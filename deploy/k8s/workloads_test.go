@@ -12,6 +12,8 @@
 //   - `rokuban enqueue` にあるジョブの CronJob が無い（`worker.periodic_jobs:
 //     false` の下では、そのパスが一度も走らない構成が黙って出来上がる）
 //   - overlay の JSON6902 patch の path が、site 名ではない何かを指している
+//   - 置き場で修飾するキューの ScaledJob が、置き場ごとに無い・別の置き場のキューを数える・
+//     別の置き場の PVC をマウントする（`deploy/k8s/store` と置き場 overlay の patch）
 package k8s
 
 import (
@@ -92,7 +94,7 @@ type workload struct {
 func loadWorkloads(t *testing.T) []workload {
 	t.Helper()
 	var out []workload
-	for _, dir := range []string{baseDir, siteDir} {
+	for _, dir := range []string{baseDir, siteDir, storeDir} {
 		for _, o := range loadDir(t, dir) {
 			out = append(out, workload{object: o, dir: dir})
 		}
@@ -114,7 +116,9 @@ func soleContainer(t *testing.T, w workload) map[string]any {
 }
 
 // physicalQueue は ScaledJob が `--queues` で購読する論理キュー名を、実際に
-// River へ積まれる物理キュー名に直す（site 束縛キューは `_<site>` が付く）。
+// River へ積まれる物理キュー名に直す（site 束縛キューは `_<site>`、置き場束縛キューは
+// `_<置き場>` が付く）。置き場の名前は base / site / store の既定（baseSiteName /
+// baseStoreName）である。
 // `--queues` が無い場合は ok=false を返す（呼び出し元は
 // TestScaledJobsCoverEveryQueue が報告済みとして continue する）。
 func physicalQueue(t *testing.T, w workload) (string, bool) {
@@ -126,40 +130,10 @@ func physicalQueue(t *testing.T, w workload) (string, bool) {
 	if jobs.RequiresSiteBinding([]string{q}) {
 		return q + "_" + baseSiteName, true
 	}
-	if q == jobs.TransferQueue {
-		return jobs.PhysicalStoreQueueName(q, configuredFSStore(t)), true
+	if jobs.IsStoreBound(q) {
+		return q + "_" + baseStoreName, true
 	}
 	return q, true
-}
-
-// configuredFSStore は base ConfigMap の唯一の FS 置き場を返す。Kubernetes
-// ScaledJob の transfer trigger は store ごとの物理キュー名を直接監視する。
-func configuredFSStore(t *testing.T) string {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(baseDir, configFileName))
-	if err != nil {
-		t.Fatalf("reading %s/%s: %v", baseDir, configFileName, err)
-	}
-	var config struct {
-		Storage struct {
-			Stores map[string]struct {
-				Kind string `yaml:"kind"`
-			} `yaml:"stores"`
-		} `yaml:"storage"`
-	}
-	if err := yaml.Unmarshal(raw, &config); err != nil {
-		t.Fatalf("decoding %s/%s: %v", baseDir, configFileName, err)
-	}
-	var names []string
-	for name, store := range config.Storage.Stores {
-		if store.Kind == "fs" {
-			names = append(names, name)
-		}
-	}
-	if len(names) != 1 {
-		t.Fatalf("base config has %d FS stores, want one for the transfer ScaledJob: %v", len(names), names)
-	}
-	return names[0]
 }
 
 // --- ScaledJob --------------------------------------------------------------
@@ -178,8 +152,10 @@ func scaledJobs(t *testing.T) []workload {
 	return out
 }
 
-// 全キューにちょうど 1 本の ScaledJob があり、その置き場所（base / site）と
-// イメージが、そのキューの要求と一致すること。
+// 全キューにちょうど 1 本の ScaledJob があり、その置き場所（base / site / store）と
+// イメージが、そのキューの要求と一致すること。置き場束縛キューは置き場 1 組ぶん
+// （store/）に居て `--stores <置き場>` を持つ。置き場が 2 つの構成で置き場ごとに
+// 1 本ずつあることは TestTwoStoreOverlayHasAScaledJobPerStoreAndQueue が見る。
 //
 // **`internal/jobs` の側を権威にする。** キュー名の一覧をこのテストに書き写すと、
 // キューを 1 つ足した日にマニフェストとテストの**両方**が黙ったままになる。
@@ -229,7 +205,21 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 		// site 束縛キューはサイト 1 組ぶん（site/）に居て `--sites <site>` を持つ。
 		// site 非依存キューは中央（base/）に居て `--sites=`（明示的な空）を持つ。
 		site, hasSites := flagValue(args, "sites")
-		if jobs.RequiresSiteBinding([]string{q}) {
+		stores, hasStores := flagValue(args, "stores")
+		if jobs.IsStoreBound(q) {
+			if w.dir != storeDir {
+				t.Errorf("%s subscribes the store-bound queue %q but lives in %s/; "+
+					"store-bound queues must be replicated per store (%s/)", w.id(), q, w.dir, storeDir)
+			}
+			if !hasStores || stores != baseStoreName {
+				t.Errorf("%s subscribes %q but passes --stores=%q, want %q "+
+					"(the physical queue is <queue>_<store>; without a mounted store the process refuses to start)",
+					w.id(), q, stores, baseStoreName)
+			}
+			if !hasSites || site != "" {
+				t.Errorf("%s subscribes %q but passes --sites=%q, want an explicit empty value", w.id(), q, site)
+			}
+		} else if jobs.RequiresSiteBinding([]string{q}) {
 			if w.dir != siteDir {
 				t.Errorf("%s subscribes the site-bound queue %q but lives in %s/; "+
 					"site-bound queues must be replicated per site (%s/)", w.id(), q, w.dir, siteDir)
@@ -239,6 +229,16 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 					"(the physical queue is <queue>_<site>; without the binding the process refuses to start)",
 					w.id(), q, site, baseSiteName)
 			}
+			// ingest だけが原本を書くので置き場をマウントする。他の site 束縛キューは
+			// 置き場を触らないので、明示的な空にする（省略は FS 置き場が 2 つで起動しない）。
+			wantStores := ""
+			if q == jobs.IngestQueue {
+				wantStores = baseStoreName
+			}
+			if !hasStores || stores != wantStores {
+				t.Errorf("%s subscribes the site-bound queue %q but passes --stores=%q (present=%v), want %q",
+					w.id(), q, stores, hasStores, wantStores)
+			}
 		} else {
 			if w.dir != baseDir {
 				t.Errorf("%s subscribes the site-independent queue %q but lives in %s/; "+
@@ -247,6 +247,12 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 			if !hasSites || site != "" {
 				t.Errorf("%s subscribes %q but passes --sites=%q, want an explicit empty value "+
 					"(a central process must not bind to a site)", w.id(), q, site)
+			}
+			// 置き場を触らないキューは置き場をマウントしない。**明示的な空**で書く:
+			// 省略すると、FS 置き場が 2 つの構成で「--stores is required」で起動しない。
+			if !hasStores || stores != "" {
+				t.Errorf("%s subscribes the store-independent queue %q but passes --stores=%q (present=%v), "+
+					"want an explicit empty value", w.id(), q, stores, hasStores)
 			}
 		}
 
@@ -632,8 +638,9 @@ func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 
 // enqueueJobSpec は `rokuban enqueue` が受け付けるジョブ 1 件。
 type enqueueJobSpec struct {
-	Name         string
-	RequiresSite bool
+	Name          string
+	RequiresSite  bool
+	RequiresStore bool
 }
 
 // enqueueJobsFromSource は cmd/rokuban/enqueue.go の `enqueueJobs` を読む。
@@ -681,10 +688,19 @@ func enqueueJobsFromSource(t *testing.T) []enqueueJobSpec {
 				if !ok {
 					continue
 				}
-				if id, ok := fkv.Key.(*ast.Ident); ok && id.Name == "RequiresSite" {
-					if v, ok := fkv.Value.(*ast.Ident); ok {
-						spec.RequiresSite = v.Name == "true"
-					}
+				id, ok := fkv.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				v, isIdent := fkv.Value.(*ast.Ident)
+				if !isIdent {
+					continue
+				}
+				switch id.Name {
+				case "RequiresSite":
+					spec.RequiresSite = v.Name == "true"
+				case "RequiresStore":
+					spec.RequiresStore = v.Name == "true"
 				}
 			}
 		}
@@ -711,7 +727,8 @@ func cronJobs(t *testing.T) []workload {
 }
 
 // `rokuban enqueue` の全ジョブに CronJob があり、site 束縛のものだけが
-// `--site` を取ること。
+// `--site` を、置き場束縛のものだけが `--store` を取ること。置き場が 2 つの構成で
+// 置き場ごとに 1 本ずつあることは TestTwoStoreOverlayHasAScaledJobPerStoreAndQueue が見る。
 //
 // **これが無いと「そのパスが一度も走らない構成」が黙って出来上がる。**
 // `worker.periodic_jobs: false` で出荷しているので、投入経路は CronJob だけである。
@@ -738,14 +755,18 @@ func TestCronJobsCoverEveryEnqueueJob(t *testing.T) {
 		w := got[0]
 		args := argsOf(soleContainer(t, w))
 		site, hasSite := flagValue(args, "site")
+		storeName, hasStore := flagValue(args, "store")
 
 		wantDir := baseDir
-		if spec.RequiresSite {
+		switch {
+		case spec.RequiresSite:
 			wantDir = siteDir
+		case spec.RequiresStore:
+			wantDir = storeDir
 		}
 		if w.dir != wantDir {
-			t.Errorf("%s enqueues %q (RequiresSite=%v) but lives in %s/, want %s/",
-				w.id(), spec.Name, spec.RequiresSite, w.dir, wantDir)
+			t.Errorf("%s enqueues %q (RequiresSite=%v RequiresStore=%v) but lives in %s/, want %s/",
+				w.id(), spec.Name, spec.RequiresSite, spec.RequiresStore, w.dir, wantDir)
 		}
 		switch {
 		case spec.RequiresSite && (!hasSite || site != baseSiteName):
@@ -753,6 +774,14 @@ func TestCronJobsCoverEveryEnqueueJob(t *testing.T) {
 				"(a registry with two entries makes --site mandatory)", w.id(), spec.Name, site, baseSiteName)
 		case !spec.RequiresSite && hasSite:
 			t.Errorf("%s enqueues the site-independent job %q with --site; "+
+				"`rokuban enqueue` rejects that instead of ignoring it", w.id(), spec.Name)
+		}
+		switch {
+		case spec.RequiresStore && (!hasStore || storeName != baseStoreName):
+			t.Errorf("%s enqueues the store-bound job %q with --store=%q, want %q "+
+				"(two fs stores make --store mandatory)", w.id(), spec.Name, storeName, baseStoreName)
+		case !spec.RequiresStore && hasStore:
+			t.Errorf("%s enqueues the store-independent job %q with --store; "+
 				"`rokuban enqueue` rejects that instead of ignoring it", w.id(), spec.Name)
 		}
 	}
@@ -791,19 +820,20 @@ func TestCronJobArgsAreFlatElements(t *testing.T) {
 // （internal/worker の既定値を参照すると、両方を同時に変えたときに何も主張
 // しなくなる）。値の根拠は各 CronJob のコメント（in-process の既定間隔）。
 var productionSchedules = map[string]string{
-	"rokuban-enqueue-epg-sync":             "*/10 * * * *",
-	"rokuban-enqueue-tuner-sync":           "*/10 * * * *",
-	"rokuban-enqueue-ruler-pass":           "*/10 * * * *",
-	"rokuban-enqueue-reconcile-pass":       "* * * * *",
-	"rokuban-enqueue-record-sweep":         "*/5 * * * *",
-	"rokuban-enqueue-catalog-export":       "0 4 * * *",
-	"rokuban-enqueue-delete-reconcile":     "*/15 * * * *",
-	"rokuban-enqueue-label-rule-reconcile": "*/15 * * * *",
-	"rokuban-enqueue-encode-reconcile":     "*/15 * * * *",
-	"rokuban-enqueue-thumbnail-reconcile":  "*/15 * * * *",
-	"rokuban-enqueue-ts-scan-reconcile":    "*/15 * * * *",
-	"rokuban-enqueue-cm-detect-reconcile":  "*/15 * * * *",
-	"rokuban-enqueue-storage-sync":         "*/5 * * * *",
+	"rokuban-enqueue-epg-sync":                   "*/10 * * * *",
+	"rokuban-enqueue-tuner-sync":                 "*/10 * * * *",
+	"rokuban-enqueue-ruler-pass":                 "*/10 * * * *",
+	"rokuban-enqueue-reconcile-pass":             "* * * * *",
+	"rokuban-enqueue-record-sweep":               "*/5 * * * *",
+	"rokuban-enqueue-catalog-export":             "0 4 * * *",
+	"rokuban-enqueue-delete-reconcile":           "*/15 * * * *",
+	"rokuban-enqueue-label-rule-reconcile":       "*/15 * * * *",
+	"rokuban-enqueue-encode-reconcile":           "*/15 * * * *",
+	"rokuban-enqueue-thumbnail-reconcile":        "*/15 * * * *",
+	"rokuban-enqueue-ts-scan-reconcile":          "*/15 * * * *",
+	"rokuban-enqueue-cm-detect-reconcile":        "*/15 * * * *",
+	"rokuban-enqueue-storage-sync":               "*/5 * * * *",
+	"rokuban-enqueue-storage-transfer-reconcile": "*/5 * * * *",
 }
 
 // base / site の schedule が実運用の間隔であること。
@@ -1210,6 +1240,11 @@ func TestRecordingHLSWorkloadKeepsStatePodLocal(t *testing.T) {
 	if !slices.Contains(args, "--sites=") {
 		t.Errorf("%s args must be site independent: %v", deploymentID, args)
 	}
+	// 録画 HLS は 1 プロセス 1 置き場。置き場は 1 つだけ、`--stores <名前>` で渡す
+	// （カンマ区切りで 2 つ渡すと起動時に拒まれる）。
+	if got, ok := flagValue(args, "stores"); !ok || got != baseStoreName {
+		t.Errorf("%s --stores = %q (present=%v), want exactly %q", deploymentID, got, ok, baseStoreName)
+	}
 
 	spec := mapAt(podTemplate(deployment.object), "spec")
 	volumes := sliceAt(spec, "volumes")
@@ -1247,7 +1282,7 @@ func TestRecordingHLSWorkloadKeepsStatePodLocal(t *testing.T) {
 	}
 
 	var service *object
-	for _, o := range loadBase(t) {
+	for _, o := range loadStore(t) {
 		if o.id() == "Service/rokuban-recording-hls" {
 			service = &o
 			break
@@ -1311,25 +1346,31 @@ type nameReferenceConfig struct {
 // --- あちらは参照先を **generator の宣言名**で解決するので、ハッシュの付き方は
 // 見ていない。**kind に載せるまで分からない類そのもの**なので、形で押さえる。
 func TestCRDNameReferencesAreDeclared(t *testing.T) {
-	k := loadKustomization(t)
-	if len(k.Configurations) == 0 {
+	// base（ConfigMap / Secret）と store（PVC）が、それぞれ自分の参照を教える。
+	// **store の PVC 参照は store/ の configurations に置く**: 置き場 overlay が nameSuffix で
+	// PVC の名前を変えたとき、ScaledJob の claimName が追随するための宣言である。
+	if len(loadKustomization(t).Configurations) == 0 {
 		t.Fatal("base/kustomization.yaml has no configurations:; CRD name references would not follow the generator hash")
 	}
-
-	// 宣言されている (kind, path) の集合。
 	declared := map[string]bool{}
-	for _, path := range k.Configurations {
-		raw, err := os.ReadFile(filepath.Join(baseDir, path))
-		if err != nil {
-			t.Fatalf("reading %s (listed in configurations:): %v", path, err)
+	for _, dir := range []string{baseDir, storeDir} {
+		k := loadKustomizationIn(t, dir)
+		if dir == storeDir && len(k.Configurations) == 0 {
+			t.Fatal("store/kustomization.yaml has no configurations:; ScaledJob claimName would not follow the PVC nameSuffix")
 		}
-		var cfg nameReferenceConfig
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
-			t.Fatalf("decoding %s: %v", path, err)
-		}
-		for _, ref := range cfg.NameReference {
-			for _, fs := range ref.FieldSpecs {
-				declared[fs.Kind+" "+ref.Kind+" "+fs.Path] = true
+		for _, path := range k.Configurations {
+			raw, err := os.ReadFile(filepath.Join(dir, path))
+			if err != nil {
+				t.Fatalf("reading %s (listed in configurations:): %v", path, err)
+			}
+			var cfg nameReferenceConfig
+			if err := yaml.Unmarshal(raw, &cfg); err != nil {
+				t.Fatalf("decoding %s: %v", path, err)
+			}
+			for _, ref := range cfg.NameReference {
+				for _, fs := range ref.FieldSpecs {
+					declared[fs.Kind+" "+ref.Kind+" "+fs.Path] = true
+				}
 			}
 		}
 	}
@@ -1367,6 +1408,9 @@ func TestCRDNameReferencesAreDeclared(t *testing.T) {
 			}
 			if mapAt(vol, "secret") != nil {
 				want("Secret", "spec/volumes/secret/secretName")
+			}
+			if mapAt(vol, "persistentVolumeClaim") != nil {
+				want("PersistentVolumeClaim", "spec/volumes/persistentVolumeClaim/claimName")
 			}
 		}
 		for _, c := range containers(spec) {

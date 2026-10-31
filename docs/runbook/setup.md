@@ -142,9 +142,22 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 `adopt` は、目印の無い root に目印を新しく作る前に、DB にその置き場のコピー行があるかを確かめる。あれば、マウント漏れか別のボリュームなので、エラーにして目印を書かない。同名の目印が既にあれば成功する。
 
-`recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
+`adopt` は、スキーマが埋め込みの最新 migration でなければ、目印も行も触らずに失敗する（`db.CheckMigrationsCurrent`）。k8s の置き場ごとの adopt Job は、その失敗で再試行され、マイグレーションが終わるまで待つ（[deploy/k8s/store/adopt-job.yaml](../../deploy/k8s/store/adopt-job.yaml)）。
+
+旧版で `storage.media_store_name` に置き場の名前を設定していた構成（録画 HLS を有効にしていた構成）は、この照合を含む版のデプロイ直後から、`adopt` まで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。
+
+`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は `storage.stores` に定義した FS 置き場の名前だけを受け付ける。既存の同名の目印は成功として扱う。2 つ目以降の置き場も、その置き場の root をマウントして同じ手順で `adopt <名前>` を実行する。
+
+旧版から更新する構成では、既存のコピー行を持つ置き場を先に `adopt` し、完了を待ってから、ほかの置き場を `adopt` する。`adopt` は置き場が空の行（どの置き場にも属さない行）を自分の置き場へ割り当てる。並行に `adopt` したときに、その行がどの置き場に割り当てられるかは実行の順序で決まりうる。並行実行の結果は未検証である。
 
 置き場の名前は変えられない。名前を変えるときは、新しい置き場として導入し直す。
+
+<details><summary>根拠</summary>
+
+- 単独の adopt が空の行を割り当てる: `TestAdoptUnassignedStoreRows`（並行に adopt したときの割り当ては見ていない）
+- スキーマが最新でなければ adopt は失敗する: `TestStorageAdoptRequiresCurrentSchema`
+
+</details>
 
 ### 旧版からの更新
 

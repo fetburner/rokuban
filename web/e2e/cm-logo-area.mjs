@@ -17,6 +17,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -80,7 +81,7 @@ const recording7 = {
   keepOriginal: 'always',
   sizeBytes: 123456789,
   // L-4 後は生ログが録画の cmDetection.error に載る。現行の zod では未知フィールドとして無視される。
-  hlsPlayback: [], cmDetection: { state: 'failed', error: longError },
+  media: recordingMedia(7, []), hlsPlayback: [], cmDetection: { state: 'failed', error: longError },
   createdAt: '2026-01-01T00:00:00Z',
 }
 
@@ -115,7 +116,7 @@ async function apiHandler({ path, url, json, route }) {
   }
   if (path === '/api/recordings' && method === 'GET') return json([recording7, recording8])
   if (path === '/api/recordings/7' && method === 'GET') return json(recording7)
-  const frameMatch = path.match(/^\/api\/media\/recordings\/(\d+)\/frame$/)
+  const frameMatch = path.match(/^\/api\/media\/stores\/takamatsu\/recordings\/(\d+)\/frame$/)
   if (frameMatch && method === 'GET') {
     frameRequests.push(url.searchParams.get('at'))
     return route.fulfill({
@@ -472,7 +473,7 @@ await check('⑩', async () => {
   try {
     await installApiStubs(edgePage, apiHandler)
     // 後から登録した route が先に評価される。SVG はこのページにだけ返す。
-    await edgePage.route(/\/api\/media\/recordings\/(\d+)\/frame(\?.*)?$/, (route) => {
+    await edgePage.route(/\/api\/media\/stores\/takamatsu\/recordings\/(\d+)\/frame(\?.*)?$/, (route) => {
       if (route.request().method() !== 'GET') return route.fallback()
       const id = route.request().url().match(/recordings\/(\d+)\/frame/)[1]
       return route.fulfill({

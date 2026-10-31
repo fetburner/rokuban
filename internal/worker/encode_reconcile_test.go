@@ -1184,7 +1184,7 @@ func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 	}
 	spec := EncodeReconcileArgs{}.Spec()
 	if spec.Queue != "cleanup" {
-		t.Errorf("Spec().Queue = %q, want cleanup", spec.Queue)
+		t.Errorf("Spec().Queue = %q, want cleanup (DB-only reconcile is not store-qualified)", spec.Queue)
 	}
 	if !spec.Coalesce {
 		t.Error("Spec().Coalesce should be true")

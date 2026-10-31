@@ -2,6 +2,8 @@
 # ロール分割デプロイの受け入れ判定ハーネス（kind + KEDA）。
 #
 #   ./deploy/k8s/e2e/run.sh              5 項目を判定する
+#   E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh
+#                                        置き場 2 つの判定 6 だけを回す（1〜5 は走らない）
 #   ./deploy/k8s/e2e/run.sh --only 2,4   一部だけ
 #   ./deploy/k8s/e2e/run.sh --oracles    判定そのものを検査する（変異注入）
 #   ./deploy/k8s/e2e/run.sh --faults    worker kill / PostgreSQL outage からの収束を判定する
@@ -56,9 +58,9 @@ while [ $# -gt 0 ]; do
         exit 64
       fi
       only="$2"
-      # 1〜5 以外を黙って受けると、1 本も走らせずに「一部だけ緑」を返す。
-      if ! printf '%s' "$only" | grep -qE '^[1-5](,[1-5])*$'; then
-        printf -- '--only takes judgement numbers 1-5 (e.g. --only 2,4), got: %s\n' "$only" >&2
+      # 1〜6 以外を黙って受けると、1 本も走らせずに「一部だけ緑」を返す。
+      if ! printf '%s' "$only" | grep -qE '^[1-6](,[1-6])*$'; then
+        printf -- '--only takes judgement numbers 1-6 (e.g. --only 2,4), got: %s\n' "$only" >&2
         exit 64
       fi
       shift 2 ;;
@@ -67,7 +69,7 @@ while [ $# -gt 0 ]; do
     --oracles) mode="oracles"; shift ;;
     --faults) mode="faults"; shift ;;
     --down) mode="down"; shift ;;
-    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 64 ;;
   esac
 done
@@ -75,6 +77,26 @@ done
 if [ -n "$only" ] && [ "$mode" != "checks" ]; then
   printf -- '--only applies to the default acceptance checks, not --%s\n' "$mode" >&2
   exit 64
+fi
+
+if [ "$E2E_OVERLAY" != "e2e" ] && [ "$E2E_OVERLAY" != "e2e-two-stores" ]; then
+  printf 'E2E_OVERLAY must be e2e or e2e-two-stores, got: %s\n' "$E2E_OVERLAY" >&2
+  exit 64
+fi
+# オラクルと故障注入は 2 サイト・置き場 1 つの overlay（e2e）の足場に依存する。
+if [ "$E2E_OVERLAY" != "e2e" ] && [ "$mode" != "checks" ] && [ "$mode" != "down" ]; then
+  printf -- '--%s needs E2E_OVERLAY=e2e (got %s)\n' "$mode" "$E2E_OVERLAY" >&2
+  exit 64
+fi
+# overlay が `namespace:` を固定している（overlays/e2e-two-stores/kustomization.yaml）。
+# 食い違うと k はこの名前空間を見て、製品は別の名前空間に立つ。
+if [ "$E2E_OVERLAY" = "e2e-two-stores" ] && [ "$E2E_NAMESPACE" != "rokuban-e2e-stores" ]; then
+  printf 'E2E_OVERLAY=e2e-two-stores needs E2E_NAMESPACE=rokuban-e2e-stores, got: %s\n' "$E2E_NAMESPACE" >&2
+  exit 64
+fi
+if [ "$E2E_OVERLAY" = "e2e-two-stores" ]; then
+  E2E_SUMMARY_SUBJECT="置き場 2 つの判定 6 は"
+  export E2E_SUMMARY_SUBJECT
 fi
 
 require_tools || exit 70
@@ -145,6 +167,16 @@ for script in "$E2E_DIR_SELF"/checks/*.sh; do
   n="$(basename "$script" | cut -c1-2 | sed 's/^0//')"
   if [ -n "$only" ] && ! printf '%s' ",$only," | grep -q ",$n,"; then
     continue
+  fi
+  # **判定 6 は置き場 2 つの overlay でだけ走り、判定 1〜5 はそこでは走らない。**
+  # 判定 6 の overlay（e2e-two-stores）にはサイト B の滞留を作る足場などが揃っていないので、
+  # 1〜5 を回すと壊れていないものが「対象が無い」になる。逆に既定の overlay では判定 6 の
+  # 対象（置き場 2 つ）が無い。**TODO にせず走らせない**: TODO は exit 2 を返すので、
+  # 既定の `run.sh` が常に 2 を返すようになる。
+  if [ "$E2E_OVERLAY" = "e2e-two-stores" ]; then
+    [ "$n" = "6" ] || continue
+  else
+    [ "$n" != "6" ] || continue
   fi
   # **判定スクリプトの終了コードを見る。** 記録を残さずに死んだ場合は
   # plan と summary が拾うが、記録は残したうえで途中で死んだ場合はここでしか

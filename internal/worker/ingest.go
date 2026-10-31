@@ -950,13 +950,13 @@ func recordIngestMetrics(offset int64) {
 // すべて best-effort で、投入失敗はログに残して ingest の成否には影響させない。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
 	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
-	if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID); enqueueErr != nil {
+	if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 	}
 	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue thumbnail reconcile", "recording_id", recordingID, "err", enqueueErr)
 	}
-	if enqueueErr := tsscan.EnqueueScan(ctx, w.Enqueuer, recordingID); enqueueErr != nil {
+	if enqueueErr := tsscan.EnqueueScan(ctx, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue TS scan", "recording_id", recordingID, "err", enqueueErr)
 	}
 	if _, err := client.DeleteRecord(ctx, recordID, true); err != nil {

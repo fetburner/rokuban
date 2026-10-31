@@ -625,6 +625,12 @@ var (
 		Name: "rokuban_storage_transfer_corrupt_sources_retired_total",
 		Help: "Total damaged derived source copies that a transfer worker retired so encode reconcile can recreate them.",
 	})
+	// StoreRouteMismatches は、置き場で修飾したキューのジョブが、その置き場をマウントしていない
+	// worker に届いて失敗にした回数。キューの選択か `--stores` の構成が食い違うと増える。
+	StoreRouteMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_store_route_mismatch_total",
+		Help: "Total store-bound jobs failed because the worker does not mount the job's store.",
+	}, []string{"kind", "store"})
 	StorageTransferMountMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_storage_transfer_mount_mismatch_total",
 		Help: "Total transfer jobs withheld because the target root is not mounted or its store marker does not match.",
@@ -885,6 +891,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		StorageTransferPolicyMismatches,
 		StorageTransferCorruptSourcesRetired,
 		StorageTransferMountMismatches,
+		StoreRouteMismatches,
 		StorageRootLastSuccess,
 		StorageRootTotalBytes,
 		StorageRootUsedBytes,

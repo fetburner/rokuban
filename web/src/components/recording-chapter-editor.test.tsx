@@ -25,7 +25,7 @@ function renderEditor(
     version: 'v1',
     detectionPending: false,
     source: 'auto',
-    recordingId: 7,
+    seekTilesUrl: '/api/media/recordings/7/seek-tiles?fixture=1',
     currentSeconds: 0,
     isPlaying: false,
     durationSeconds: 120,

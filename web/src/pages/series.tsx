@@ -28,7 +28,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { formatDate } from '@/lib/format'
-import { recordingThumbnailURL } from '@/lib/recording-media'
 import {
   buildListRecordingShelvesParams,
   hasAnyRecordingsCondition,
@@ -340,7 +339,7 @@ function SeriesThumbnail({ row, view }: { row: ShelfRow; view: RecordingView }) 
         <span aria-hidden className="block size-full bg-muted" />
       ) : (
         <img
-          src={recordingThumbnailURL(row.representativeId)}
+          src={row.thumbnailUrl}
           alt=""
           loading="lazy"
           className="size-full object-cover"

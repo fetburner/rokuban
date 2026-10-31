@@ -35,7 +35,6 @@ import { RecordingPlaybackPoster } from '@/components/recording-playback-poster'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
 import { ThumbnailProgressLine } from '@/components/thumbnail-overlay'
-import { recordingThumbnailURL } from '@/lib/recording-media'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import {
@@ -51,7 +50,7 @@ import {
 import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useNow } from '@/lib/use-now'
-import { PLAYBACK_POSITION_MINIMUM_MS, recordingFileURL } from '@/lib/playback-position'
+import { PLAYBACK_POSITION_MINIMUM_MS } from '@/lib/playback-position'
 import { recordingDetailQueryKey, seedRecordingDetail } from '@/lib/recording-detail-cache'
 import {
   isRecordingHlsGenerationGap,
@@ -190,6 +189,8 @@ export function RecordingDetail({
   const [descriptionExpanded, setDescriptionExpanded] = useState(false)
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
+  // 原本の URL は API が返す。active な原本のコピーが無ければ省略される（このとき原本は再生・取得できない）。
+  const originalUrl = recording.media.originalUrl
   const hasNonCutEncoded = encodedAssets.some((asset) => asset.cut !== true)
   const playbackSelectionFor = (candidate: Recording, isTrashed = candidate.deletedAt != null) => {
     const candidateEncodedAssets = candidate.encodedAssets ?? []
@@ -697,7 +698,7 @@ export function RecordingDetail({
         >
           {showLiveSource && !playbackState.started && (
             <RecordingPlaybackPoster
-              recordingId={recording.id}
+              thumbnailUrl={recording.media.thumbnailUrl}
               resumeSeconds={recording.resumePositionMs === undefined ? undefined : recording.resumePositionMs / 1000}
               onStart={startPlayback}
               onStartFromBeginning={showRecordingHLS ? startPlaybackFromBeginning : undefined}
@@ -719,6 +720,7 @@ export function RecordingDetail({
               recordingId={recording.id}
               recordingHlsUrl={selectedRecordingHls.masterUrl}
               recordingHlsStartSeconds={recordingHlsStartSeconds}
+              recordingSeekTilesUrl={recording.media.seekTilesUrl}
               chapters={chapters?.spans}
               chapterSource={chapters?.source}
               chapterVersion={chapters?.version}
@@ -755,6 +757,7 @@ export function RecordingDetail({
             <RecordingPlayer
               key={`${playbackState.source}:${playbackState.generation}`}
               recordingId={recording.id}
+              media={recording.media}
               resumePositionMs={resumePositionMs}
               onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
               showWatched={recording.status === 'finished'}
@@ -764,7 +767,7 @@ export function RecordingDetail({
               deleteWatched={() => void updateWatched(false)}
               preferredProfile={activePlaybackProfile}
               fullscreenContainerRef={playbackFullscreenContainerRef}
-              nextEpisode={next ? { id: next.id, title: next.title, startAt: next.startAt } : undefined}
+              nextEpisode={next ? { id: next.id, title: next.title, startAt: next.startAt, thumbnailUrl: next.media.thumbnailUrl } : undefined}
               onNextEpisodeNavigate={next ? () => seedRecordingDetail(queryClient, next) : undefined}
               outsideProgramSegments={outsideProgramSegments}
               onNavigateToRecording={openRecording}
@@ -794,11 +797,11 @@ export function RecordingDetail({
 
           {playbackState.source === 'none' && (
             <div className="text-muted-foreground">
-              {hasOriginal ? (
+              {hasOriginal && originalUrl !== undefined ? (
                 <p>
                   ブラウザ再生用のエンコードがまだありません。原本は{' '}
                   <a
-                    href={recordingFileURL(recording.id)}
+                    href={originalUrl}
                     className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline"
                   >
                     VLC 等で開く
@@ -1019,7 +1022,7 @@ export function RecordingDetail({
                             再生
                           </Button>
                         )}
-                        <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
+                        <a href={recording.media.encoded.find((m) => m.profile === asset.profile)?.url} download className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
                         <EncodedVersionMenu recording={recording} asset={asset} />
                         </div>
                       </div>
@@ -1041,7 +1044,7 @@ export function RecordingDetail({
                             HLS で再生
                           </Button>
                         )}
-                        <a href={recordingFileURL(recording.id)} className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>
+                        {originalUrl !== undefined && <a href={originalUrl} className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>}
                       </div>
                     ) : recording.status === 'recording' ? (
                       <div role="listitem" data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
@@ -1197,7 +1200,7 @@ export function RecordingDetail({
                   >
                     <span className="relative aspect-video w-20 shrink-0 overflow-hidden rounded bg-muted">
                       <img
-                        src={recordingThumbnailURL(item.id)}
+                        src={item.media.thumbnailUrl}
                         alt=""
                         loading="lazy"
                         className="size-full object-cover"

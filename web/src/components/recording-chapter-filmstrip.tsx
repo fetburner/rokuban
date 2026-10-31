@@ -25,7 +25,6 @@ import {
   SEEK_TILES_INTERVAL_SECONDS,
   SEEK_TILES_WIDTH,
   seekTileCell,
-  seekTilesURL,
 } from '@/lib/seek-tiles'
 
 // 長押しの連続送り。押した瞬間に 1 回動かし、NUDGE_REPEAT_DELAY_MS 押し続けたら
@@ -38,7 +37,7 @@ const NUDGE_REPEAT_DELAY_MS = 450
 const NUDGE_REPEAT_INTERVAL_MS = 200
 
 type RecordingChapterFilmstripProps = {
-  recordingId: number
+  seekTilesUrl: string
   durationSeconds: number
   currentSeconds: number
   getDisplayedFrameSeconds: () => number | null
@@ -67,7 +66,7 @@ function rangeAround(center: number, length: number, duration: number, minLength
  * 情報が増えない（`minFilmstripRangeSeconds`）。
  */
 export function RecordingChapterFilmstrip({
-  recordingId,
+  seekTilesUrl,
   durationSeconds,
   currentSeconds,
   getDisplayedFrameSeconds,
@@ -364,7 +363,7 @@ export function RecordingChapterFilmstrip({
                 <div
                   className="size-full bg-no-repeat"
                   style={{
-                    backgroundImage: `url(${seekTilesURL(recordingId)})`,
+                    backgroundImage: `url(${seekTilesUrl})`,
                     backgroundSize: `${SEEK_TILES_COLUMNS * 100}% auto`,
                     backgroundPosition: `${-cell.column * 100}cqw ${-cell.row * (SEEK_TILES_HEIGHT / SEEK_TILES_WIDTH) * 100}cqw`,
                   }}

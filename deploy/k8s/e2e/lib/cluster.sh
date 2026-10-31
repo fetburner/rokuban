@@ -11,7 +11,8 @@ require_tools() {
   # rsync は `--oracles` の変異イメージビルドが要求する。**先頭で見る** ---
   # run_oracles の中で見ると、クラスタ作成・イメージビルド・KEDA 導入を全部
   # 済ませた後に落ちる。
-  for cmd in kind kubectl kustomize docker go python3 rsync; do
+  # git は派生物の MinIO のソースを commit 指定で取るために要る（build_minio_image）。
+  for cmd in kind kubectl kustomize docker go python3 rsync git; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [ "${#missing[@]}" -gt 0 ]; then
@@ -31,7 +32,7 @@ require_tools() {
 # サイト名なので、「まだ実装されていない」と同じ見た目になる）。**環境の
 # 不備は判定を 1 つも記録せずに落とす。**
 validate_site_names() {
-  local config="${E2E_ROOT}/deploy/k8s/overlays/e2e/config.yml" site
+  local config="${E2E_ROOT}/deploy/k8s/overlays/${E2E_OVERLAY}/config.yml" site
   for site in "$E2E_SITE_A" "$E2E_SITE_B"; do
     if ! grep -qE "^[[:space:]]*-[[:space:]]*site:[[:space:]]*${site}[[:space:]]*$" "$config"; then
       printf 'site %s is not declared in %s (mirakcs:)\n' "$site" "$config" >&2
@@ -104,8 +105,16 @@ build_images() {
   fi
   rm -rf "$ctx"
 
+  local images=("$E2E_IMAGE" "$E2E_FULL_IMAGE" "$E2E_MOCK_IMAGE")
+  # 派生物の S3 置き場（MinIO）は判定 6 の overlay でだけ要る。他の overlay で焼くと
+  # 数分の go build を無駄に払う。
+  if [ "$E2E_OVERLAY" = "e2e-two-stores" ]; then
+    build_minio_image || return 1
+    images+=("$E2E_MINIO_IMAGE")
+  fi
+
   log_step "loading images into kind"
-  kind load docker-image "$E2E_IMAGE" "$E2E_FULL_IMAGE" "$E2E_MOCK_IMAGE" \
+  kind load docker-image "${images[@]}" \
     --name "$E2E_CLUSTER" >/dev/null || return 1
 
   # 焼いた印。apply_template がテンプレートに差し込む。
@@ -125,6 +134,40 @@ build_images() {
   # 足場の側だけである）。
   E2E_BUILD_ID="${app_id}-${mock_id}"
   export E2E_BUILD_ID
+}
+
+# minio_pinned_commit は CI の MinIO と同じ commit を .github/actions/build-minio/action.yml
+# から読む。ここに版を書き写すと、CI と判定 6 がずれたときに気付けない。
+minio_pinned_commit() {
+  grep -oE 'ref: [0-9a-f]{40}' "$E2E_ROOT/.github/actions/build-minio/action.yml" | head -1 | awk '{print $2}'
+}
+
+# build_minio_image は派生物の置き場（S3 互換）の MinIO を作る。
+#
+# 手順は .github/actions/build-minio と同じ（同じ commit のソースを `go build -trimpath`）。
+# 違うのは 2 点だけ: ホストが darwin でもノードは linux なので GOOS=linux を付け、
+# scratch に載せるため CGO を切る。**CI と同じ結果になるかは未検証**（初回の実行で
+# 確かめる。CI が動いている版のビルドと違うなら、ここが原因の候補）。
+build_minio_image() {
+  local sha ctx
+  sha="$(minio_pinned_commit)"
+  if [ -z "$sha" ]; then
+    printf 'could not read the pinned MinIO commit from .github/actions/build-minio/action.yml\n' >&2
+    return 1
+  fi
+  ctx="$(mktemp -d)" || return 1
+  log_step "building ${E2E_MINIO_IMAGE} (MinIO ${sha})"
+  # 浅い取得で commit を直接引く（GitHub は到達可能な commit の SHA 指定を許す）。
+  if ! git init -q "$ctx/minio-src" ||
+     ! git -C "$ctx/minio-src" fetch -q --depth 1 https://github.com/minio/minio.git "$sha" ||
+     ! git -C "$ctx/minio-src" checkout -q FETCH_HEAD ||
+     ! (cd "$ctx/minio-src" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/minio" .) ||
+     ! cp "$E2E_DIR/minio/Dockerfile" "$ctx/Dockerfile" ||
+     ! docker build -t "$E2E_MINIO_IMAGE" "$ctx" >/dev/null; then
+    rm -rf "$ctx"
+    return 1
+  fi
+  rm -rf "$ctx"
 }
 
 # install_keda は KEDA を入れる。既に入っていれば版だけ確かめて飛ばす。
@@ -182,9 +225,13 @@ deploy_scaffold() {
   # `connectionFromEnv` で読むもの（deploy/k8s/base/secret.example.yaml）。
   # 出どころは E2E_PGPASSWORD の 1 つのまま。片方だけ回すと、症状は
   # 「api は動くがスケールしない」になる。
+  # AWS_* は派生物の S3 置き場（overlays/e2e-two-stores の `storage.stores.s3`）の資格情報。
+  # 製品の Pod は envFrom で読み、MinIO の Deployment は同じ値を MINIO_ROOT_* に渡す。
   k create secret generic rokuban-secrets \
     --from-literal=POSTGRES_PASSWORD="$E2E_PGPASSWORD" \
     --from-literal=POSTGRES_CONNECTION_STRING="$(e2e_postgres_connection_string)" \
+    --from-literal=AWS_ACCESS_KEY_ID="$E2E_S3_ACCESS_KEY" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="$E2E_S3_SECRET_KEY" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
   # KEDA の postgresql スケーラが読む接続文字列。
   #
@@ -205,7 +252,7 @@ deploy_scaffold() {
 
   # ツールボックス用の素の ConfigMap。製品側はハッシュ名なので名前を固定できない。
   k create configmap e2e-toolbox-config \
-    --from-file=config.yml="$E2E_ROOT/deploy/k8s/overlays/e2e/config.yml" \
+    --from-file=config.yml="$E2E_ROOT/deploy/k8s/overlays/${E2E_OVERLAY}/config.yml" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
 
   # **apply_template を通す**（素の `k apply -f` にしない）。足場のイメージ名も
@@ -265,7 +312,7 @@ preflight_environment() {
   # overlay が当たっていることの確認。api は base に居るので必ずある。
   plan "0.3"
   if k get deployment rokuban-api >/dev/null 2>&1; then
-    pass "0.3" "製品のマニフェスト（overlays/e2e）が当たっている"
+    pass "0.3" "製品のマニフェスト（overlays/${E2E_OVERLAY}）が当たっている"
   else
     fail "0.3" "rokuban-api が無い --- overlay が当たっていないので、すべての判定が「未実装」に見える"
     return 1
@@ -311,12 +358,22 @@ preflight_no_fixtures() {
 # apply が「field is immutable」で落ちるが、**そのとき Deployment の apply は
 # 成功する**（未マイグレートの DB に新しい api が乗る）。deploy/k8s/README.md。
 deploy_rokuban() {
-  log_step "applying deploy/k8s/overlays/e2e"
+  log_step "applying deploy/k8s/overlays/${E2E_OVERLAY}"
   k delete job rokuban-migrate --ignore-not-found >/dev/null
-  kustomize build "$E2E_ROOT/deploy/k8s/overlays/e2e" | kall apply -f - >/dev/null || return 1
+  # **置き場ごとの `storage adopt` Job も同じ理由で先に消す**（deploy/k8s/store/adopt-job.yaml）。
+  k delete job -l app.kubernetes.io/component=storage-adopt --ignore-not-found >/dev/null
+  kustomize build "$E2E_ROOT/deploy/k8s/overlays/${E2E_OVERLAY}" | kall apply -f - >/dev/null || return 1
   # **マイグレーションの失敗はここで止める**（preflight 0.4 でも見るが、
   # 240 秒待たせてから判定の赤として出すより早い）。
   k wait --for=condition=complete job/rokuban-migrate --timeout=300s || return 1
+  # adopt は置き場の PVC に目印を書く。**マイグレーションとは別の Job** なので、
+  # マイグレーションが終わるまで失敗して作り直される（Job の再試行が順序を担う）。
+  # 目印が無いと worker は FS 操作をすべて見送るので、ここで完了を待つ。
+  local adopt
+  for adopt in $(k get jobs -l app.kubernetes.io/component=storage-adopt -o name); do
+    # Job の activeDeadlineSeconds（adopt-job.yaml）以上に待つ。短いと Job が失敗する前に判定が赤になる。
+    k wait --for=condition=complete "$adopt" --timeout=1200s || return 1
+  done
   # **イメージを焼き直したなら api も作り直す。** 製品側の Pod テンプレートは
   # ハーネスが触れない（base の管轄）ので、build-id の annotation を挿す手が
   # 使えない。タグ固定 + IfNotPresent なので、これが無いとクラスタを使い回す

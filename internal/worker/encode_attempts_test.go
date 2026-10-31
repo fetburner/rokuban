@@ -467,7 +467,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "h264", Rate: 1.5}}}
-	args, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, "h264", profiles)
+	args, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	shortProfiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "h264", Rate: 4}}}
-	shortArgs, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, "h264", shortProfiles)
+	shortArgs, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", shortProfiles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 3 * 3600 * 1000 WHERE id = $1`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	fromProgram, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, "h264", profiles)
+	fromProgram, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $2 WHERE id = $1`, recordingID, startedAt); err != nil {
 		t.Fatal(err)
 	}
-	zeroLen, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, "h264", profiles)
+	zeroLen, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +522,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 0 WHERE id = $1`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	unknown, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, "h264", profiles)
+	unknown, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
 	if err != nil {
 		t.Fatal(err)
 	}

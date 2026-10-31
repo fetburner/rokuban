@@ -81,7 +81,12 @@ type EncodeJobArgs struct {
 	Profile          string          `json:"profile"`
 	Timeout          time.Duration   `json:"timeout,omitempty"`
 	RequestedCutKeep json.RawMessage `json:"requested_cut_keep,omitempty"`
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
 }
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a EncodeJobArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (EncodeJobArgs) Kind() string { return "encode" }
@@ -89,7 +94,12 @@ func (EncodeJobArgs) Kind() string { return "encode" }
 // ThumbnailJobArgs は thumbnail ジョブの引数。
 type ThumbnailJobArgs struct {
 	RecordingID int64 `json:"recording_id"`
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
 }
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a ThumbnailJobArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (ThumbnailJobArgs) Kind() string { return "thumbnail" }
@@ -98,7 +108,12 @@ func (ThumbnailJobArgs) Kind() string { return "thumbnail" }
 // 引数。
 type SeekTilesJobArgs struct {
 	RecordingID int64 `json:"recording_id"`
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
 }
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a SeekTilesJobArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (SeekTilesJobArgs) Kind() string { return "seek_tiles" }
@@ -124,7 +139,12 @@ func (ThumbnailReconcileArgs) Kind() string { return "thumbnail_reconcile" }
 type CMDetectJobArgs struct {
 	RecordingID         int64 `json:"recording_id"`
 	RecordingDurationMs int64 `json:"recording_duration_ms"`
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
 }
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a CMDetectJobArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (CMDetectJobArgs) Kind() string { return "cm_detect" }
@@ -144,7 +164,12 @@ type CMLogoCandidateJobArgs struct {
 	RecordingID         int64     `json:"recording_id"`
 	AreaUpdatedAt       time.Time `json:"area_updated_at"`
 	RecordingDurationMs int64     `json:"recording_duration_ms"`
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
 }
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a CMLogoCandidateJobArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (CMLogoCandidateJobArgs) Kind() string { return "cm_logo_candidate" }
@@ -167,7 +192,13 @@ type EncodeReconcileArgs struct {
 func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 
 // DeleteReconcileArgs は削除 reconcile ジョブの引数。
-type DeleteReconcileArgs struct{}
+type DeleteReconcileArgs struct {
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
+}
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a DeleteReconcileArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
@@ -177,7 +208,12 @@ func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
 // Keep が 0 以下なら catalog.DefaultKeep（7）を使う。
 type CatalogExportArgs struct {
 	Keep int `json:"keep,omitempty"`
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
 }
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a CatalogExportArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (CatalogExportArgs) Kind() string { return "catalog_export" }
@@ -186,7 +222,13 @@ func (CatalogExportArgs) Kind() string { return "catalog_export" }
 //
 // キューは専用の StorageQueue にする。CleanupQueue は「物理削除系ジョブ専用」と
 // 明記されているため、削除を一切しない観測ジョブをそこに混ぜない。
-type StorageSyncArgs struct{}
+type StorageSyncArgs struct {
+	// Store は原本のコピーがある置き場。投入側が選び、物理キュー `{queue}_{store}` を決める。
+	Store string `json:"store"`
+}
+
+// QueueStore は実行する置き場のキューの置き場を返す。
+func (a StorageSyncArgs) QueueStore() string { return a.Store }
 
 // Kind はジョブ種別名を返す。
 func (StorageSyncArgs) Kind() string { return "storage_sync" }
@@ -223,7 +265,7 @@ func PhysicalQueueFor(args jobq.Args) (string, error) {
 		return "", fmt.Errorf("jobs: args are nil")
 	}
 	logical := args.Spec().Queue
-	if logical == TransferQueue {
+	if IsStoreBound(logical) {
 		bound, ok := args.(storeBound)
 		if !ok {
 			return "", fmt.Errorf("jobs: %s queue args %T do not implement QueueStore", logical, args)

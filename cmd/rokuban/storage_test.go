@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -63,34 +65,6 @@ storage:
 	}
 }
 
-func TestStorageAdoptRejectsNameDifferentFromConfig(t *testing.T) {
-	mediaDir := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.yml")
-	config := `db:
-  host: localhost
-  user: postgres
-  password: postgres
-  database: postgres
-storage:
-  media_dir: ` + mediaDir + `
-` + storagePolicyYAML("tokyo") + `mirakcs:
-  - site: tokyo
-    url: http://mirakc
-`
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", "osaka"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "does not match the fs store in storage.stores") {
-		t.Fatalf("storage adopt wrong name error = %v, want config mismatch", err)
-	}
-	if _, err := os.Stat(filepath.Join(mediaDir, mediapath.StoreMarkerFileName)); !os.IsNotExist(err) {
-		t.Fatalf("marker exists after rejected adoption: stat err = %v", err)
-	}
-}
-
 func TestStorageAdoptRejectsUnknownAndNonFSStoreName(t *testing.T) {
 	mediaDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.yml")
@@ -123,9 +97,8 @@ mirakcs:
 		name      string
 		wantError string
 	}{
-		// FS 置き場が 1 つの間は、その名前との照合が先に落とす。
-		{name: "unknown", wantError: "does not match the fs store in storage.stores"},
-		{name: "s3main", wantError: "does not match the fs store in storage.stores"},
+		{name: "unknown", wantError: "is not configured in storage.stores"},
+		{name: "s3main", wantError: "storage adopt requires an fs store"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newRootCmd()
@@ -244,6 +217,114 @@ storage:
 		}
 		if err := adopt(t, dir); err != nil {
 			t.Fatalf("adopt with an existing same-name marker = %v, want success", err)
+		}
+	})
+}
+
+// storage adopt は、スキーマが埋め込みの最新 migration でなければ、目印も行も触らずに失敗する。
+// 1 つ戻した DB では、検査が無いと空の root に目印が書かれて成功してしまうので、目印の有無が
+// 検査の効きを示す。最新に上げると同じ操作が成功する。
+func TestStorageAdoptRequiresCurrentSchema(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused-under-trust-auth"
+	}
+	mediaDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.yml")
+	config := fmt.Sprintf(`db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+storage:
+  media_dir: `+mediaDir+`
+`+storagePolicyYAML("test-store")+`mirakcs:
+  - site: tokyo
+    url: http://mirakc
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adopt := func(t *testing.T) error {
+		t.Helper()
+		cmd := newRootCmd()
+		cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", "test-store"})
+		cmd.SetOut(&strings.Builder{})
+		return cmd.Execute()
+	}
+	markerPath := filepath.Join(mediaDir, mediapath.StoreMarkerFileName)
+	dbtest.MediaAsset(t, pool, dbtest.Recording(t, pool)) // 行の変化を見るための既存行
+	snapshot := func() string {
+		t.Helper()
+		var s string
+		if err := pool.QueryRow(context.Background(),
+			`SELECT coalesce(string_agg(row_to_json(c)::text, '|' ORDER BY id), '') FROM media_asset_copies c`).Scan(&s); err != nil {
+			t.Fatalf("snapshotting media_asset_copies: %v", err)
+		}
+		return s
+	}
+	before := snapshot()
+	if before == "" {
+		t.Fatal("media_asset_copies is empty; the no-row-change check would pass vacuously")
+	}
+
+	ctx := context.Background()
+	dsn := dbCfg.DSN()
+	if err := db.MigrateDown(ctx, dsn); err != nil {
+		t.Fatalf("migrating down one step: %v", err)
+	}
+	t.Cleanup(func() { _ = db.MigrateUp(ctx, dsn) }) // 後続テストのスキーマを戻す
+
+	t.Run("one migration behind", func(t *testing.T) {
+		err := adopt(t)
+		if err == nil || !strings.Contains(err.Error(), "run migrate up first") {
+			t.Fatalf("adopt one migration behind = %v, want the schema refusal", err)
+		}
+		if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
+			t.Fatalf("marker written despite the schema refusal: stat err = %v", statErr)
+		}
+		if after := snapshot(); after != before {
+			t.Fatalf("media_asset_copies changed despite the schema refusal:\nbefore: %s\nafter:  %s", before, after)
+		}
+	})
+
+	// 目印の無い root では、既存のコピー行による別の拒否が先に出うる。同名の目印があれば、
+	// 拒否はスキーマの検査だけの仕事になる（検査が無いと、この adopt は成功してしまう）。
+	t.Run("one migration behind with the same-name marker", func(t *testing.T) {
+		if err := mediapath.WriteStoreMarker(mediaDir, "test-store"); err != nil {
+			t.Fatal(err)
+		}
+		err := adopt(t)
+		if err == nil || !strings.Contains(err.Error(), "run migrate up first") {
+			t.Fatalf("adopt one migration behind with a marker = %v, want the schema refusal", err)
+		}
+		if after := snapshot(); after != before {
+			t.Fatalf("media_asset_copies changed despite the schema refusal:\nbefore: %s\nafter:  %s", before, after)
+		}
+	})
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.MigrateUp(ctx, dsn); err != nil {
+		t.Fatalf("migrating back up: %v", err)
+	}
+	t.Run("at the latest migration", func(t *testing.T) {
+		// 既存のコピー行があるので、目印の無い root は別の理由で拒まれる。同名の目印を先に置いて、
+		// スキーマの検査を通ったあとの成功だけを見る。
+		if err := mediapath.WriteStoreMarker(mediaDir, "test-store"); err != nil {
+			t.Fatal(err)
+		}
+		if err := adopt(t); err != nil {
+			t.Fatalf("adopt at the latest migration = %v, want success", err)
 		}
 	})
 }

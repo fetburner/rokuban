@@ -31,7 +31,11 @@ type enqueueJob struct {
 	// Args に site を渡す。false なら --site を受け付けず（渡されたらエラー）、
 	// site 無しで Args を組み立てる。
 	RequiresSite bool
-	NewArgs      func(site string) jobq.Args
+	// RequiresStore が true なら、置き場で修飾するキューのジョブで、`--store`（FS 置き場が 1 つだけなら省略可）の
+	// 置き場を Args に渡す。このとき NewArgs の引数は site ではなく置き場の名前である。
+	// RequiresSite と同時に true にはしない。
+	RequiresStore bool
+	NewArgs       func(scope string) jobq.Args
 }
 
 // enqueueJobs はユーザー向けジョブ名（ハイフン区切り）から River の JobArgs を
@@ -66,14 +70,14 @@ var enqueueJobs = map[string]enqueueJob{
 		NewArgs:      func(site string) jobq.Args { return jobs.RecordSweepArgs{Site: site} },
 	},
 	"catalog-export": {
-		RequiresSite: false,
-		NewArgs:      func(string) jobq.Args { return jobs.CatalogExportArgs{} },
+		// 置き場ごとに catalog を書く。置き場のキュー（original_{store}）に積む。
+		RequiresStore: true,
+		NewArgs:       func(store string) jobq.Args { return jobs.CatalogExportArgs{Store: store} },
 	},
 	"delete-reconcile": {
-		// 物理ストレージは単一の media_dir で site に従属しない
-		// （jobs.DeleteReconcileArgs のコメント。catalog-export と同じ位置づけ）。
-		RequiresSite: false,
-		NewArgs:      func(string) jobq.Args { return jobs.DeleteReconcileArgs{} },
+		// 物理処理と削除ブレーカーは置き場に従属する（site には従属しない）。
+		RequiresStore: true,
+		NewArgs:       func(store string) jobq.Args { return jobs.DeleteReconcileArgs{Store: store} },
 	},
 	"label-rule-reconcile": {
 		// 分類ルールの再評価は全録画を 1 回見る site 非依存の DB ジョブ。
@@ -108,12 +112,17 @@ var enqueueJobs = map[string]enqueueJob{
 		RequiresSite: false,
 		NewArgs:      func(string) jobq.Args { return jobs.CMDetectReconcileArgs{} },
 	},
-	"storage-sync": {
-		// catalog-export と同じ理由（アーカイブ/スクラッチが単一で Site を
-		// 持たない。issue #238 M7-5）。delete_reconcile とは異なり読み取り専用
-		// （statfs のみ）の観測なので、手動 enqueue の対象から外す理由がない。
+	"storage-transfer-reconcile": {
+		// 置き場間の転送の投入は DB を読むだけの site 非依存パス。k8s（periodic_jobs: false）では
+		// この CronJob が唯一の投入口になる。載せないと、どの構成でも転送が一度も投入されない。
 		RequiresSite: false,
-		NewArgs:      func(string) jobq.Args { return jobs.StorageSyncArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.StorageTransferReconcileArgs{} },
+	},
+	"storage-sync": {
+		// 置き場の root と scratch を statfs する置き場ごとの観測。delete_reconcile とは異なり
+		// 読み取り専用なので、手動 enqueue の対象から外す理由がない。
+		RequiresStore: true,
+		NewArgs:       func(store string) jobq.Args { return jobs.StorageSyncArgs{Store: store} },
 	},
 }
 
@@ -130,13 +139,15 @@ func newEnqueueCmd() *cobra.Command {
 		Long: fmt.Sprintf(`定期ジョブを 1 件投入して即終了する（k8s CronJob 用途 / 手動即時実行用）。
 
 site 束縛ジョブ（--site が要る）: %s
-site 非依存ジョブ（--site を付けない）: %s
+置き場ごとのジョブ（--store が要る。FS 置き場が 1 つだけなら省略できる）: %s
+site 非依存ジョブ（--site も --store も付けない）: %s
 
 UniqueOpts により、同じジョブが既に待機中（available/pending/retryable/running/
 scheduled）の場合は新規に投入されず合流する。その場合も終了コード 0 を返す
 （CronJob が失敗扱いにならないようにするため）。`,
-			strings.Join(sortedJobNamesBySite(true), ", "),
-			strings.Join(sortedJobNamesBySite(false), ", ")),
+			strings.Join(sortedJobNamesByScope(true, false), ", "),
+			strings.Join(sortedJobNamesByScope(false, true), ", "),
+			strings.Join(sortedJobNamesByScope(false, false), ", ")),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig(cmd)
@@ -145,7 +156,7 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 			}
 
 			job := args[0]
-			site, err := resolveEnqueueJobSite(cmd, job, cfg.Registry())
+			site, err := resolveEnqueueJobScope(cmd, job, cfg)
 			if err != nil {
 				return err
 			}
@@ -162,35 +173,44 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 		},
 	}
 
+	cmd.Flags().String(commandStoreFlagName, "", "対象の FS 置き場の名前（置き場ごとのジョブのみ。FS 置き場が 1 つだけなら省略できる）")
 	cmd.Flags().String("site", "", "対象サイト名（site 束縛ジョブのみ。省略時: レジストリが 1 要素ならその 1 つ、2 要素以上なら必須）")
 
 	return cmd
 }
 
-// resolveEnqueueJobSite はジョブ種別と `--site` フラグから、JobArgs に渡す site を決める。
+// resolveEnqueueJobScope はジョブ種別と `--site` / `--store` フラグから、NewArgs に渡す範囲
+// （site 束縛ジョブでは site、置き場ごとのジョブでは置き場の名前）を決める。
 //
-// site 非依存ジョブ（enqueueJob.RequiresSite == false）:
-//   - `--site` が指定されていればエラー（黙って無視しない。不変条件 10 の精神 /
+// 範囲を持たないジョブ（RequiresSite も RequiresStore も false）:
+//   - `--site` / `--store` が指定されていればエラー（黙って無視しない。不変条件 10 の精神 /
 //     issue #200）。Changed で判定するので `--site=` も拒否する
-//   - 未指定なら空文字列を返す（Args は site を使わない）
+//   - 未指定なら空文字列を返す（Args は範囲を使わない）
 //
-// site 束縛ジョブ:
-//   - resolveSiteFlag と同じ規則（未指定かつレジストリ 1 要素ならその 1 つ、
-//     2 要素以上なら必須）
-func resolveEnqueueJobSite(cmd *cobra.Command, job string, registry []config.MirakcSite) (string, error) {
+// site 束縛ジョブは resolveSiteFlag と同じ規則（未指定かつレジストリ 1 要素ならその 1 つ、
+// 2 要素以上なら必須）。置き場ごとのジョブは resolveCommandStore と同じ規則。
+// 他方のフラグを渡されたらエラーにする。
+func resolveEnqueueJobScope(cmd *cobra.Command, job string, cfg *config.Config) (string, error) {
 	spec, ok := enqueueJobs[job]
 	if !ok {
 		return "", fmt.Errorf("unknown job: %q (valid: %s)", job, strings.Join(sortedJobNames(), ", "))
 	}
 
-	if !spec.RequiresSite {
-		if cmd.Flags().Changed("site") {
-			return "", fmt.Errorf("job %q is site-independent and does not take --site", job)
-		}
+	if !spec.RequiresSite && cmd.Flags().Changed("site") {
+		return "", fmt.Errorf("job %q does not take --site", job)
+	}
+	if !spec.RequiresStore && cmd.Flags().Changed(commandStoreFlagName) {
+		return "", fmt.Errorf("job %q does not take --%s", job, commandStoreFlagName)
+	}
+	switch {
+	case spec.RequiresSite:
+		return resolveSiteFlag(cmd, cfg.Registry())
+	case spec.RequiresStore:
+		name, _, err := resolveCommandStore(cmd, cfg.Storage)
+		return name, err
+	default:
 		return "", nil
 	}
-
-	return resolveSiteFlag(cmd, registry)
 }
 
 // runEnqueue はジョブ名から Args を組み立てて jobq.Enqueuer で 1 件
@@ -218,7 +238,9 @@ func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job, site string, out i
 	}
 
 	suffix := ""
-	if site != "" {
+	if site != "" && spec.RequiresStore {
+		suffix = fmt.Sprintf(" for store %q", site)
+	} else if site != "" {
 		suffix = fmt.Sprintf(" for site %q", site)
 	}
 	if res.Coalesced {
@@ -238,12 +260,12 @@ func sortedJobNames() []string {
 	return names
 }
 
-// sortedJobNamesBySite は RequiresSite が want と一致するジョブ名をソートして返す
+// sortedJobNamesByScope は RequiresSite・RequiresStore が一致するジョブ名をソートして返す
 // （help 文言とテスト用）。
-func sortedJobNamesBySite(want bool) []string {
+func sortedJobNamesByScope(requiresSite, requiresStore bool) []string {
 	names := make([]string, 0, len(enqueueJobs))
 	for name, spec := range enqueueJobs {
-		if spec.RequiresSite == want {
+		if spec.RequiresSite == requiresSite && spec.RequiresStore == requiresStore {
 			names = append(names, name)
 		}
 	}

@@ -395,7 +395,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	hintRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(951)))
 	setRecordingDuration(hintRecording)
 	analysis := pgstoretest.Analysis(pool)
-	if err := EnqueueCMDetectionIfNeeded(ctx, analysis, enqueuer, hintRecording); err != nil {
+	if err := EnqueueCMDetectionIfNeeded(ctx, analysis, enqueuer, hintRecording, dbtest.StoreName); err != nil {
 		t.Fatal(err)
 	}
 	assertDuration := func(recordingID int64) {
@@ -414,7 +414,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 
 	reconcileRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(952)))
 	setRecordingDuration(reconcileRecording)
-	if err := runWorkerViaJobQFake(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: analysis}), jobs.CMDetectReconcileArgs{}); err != nil {
+	if err := runWorkerViaJobQFake(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: analysis}), jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
 	assertDuration(reconcileRecording)
@@ -473,7 +473,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 		t.Fatalf("idempotent SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
 	}
 
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstoretest.Analysis(pool)}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: pgstoretest.Analysis(pool)}
 	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	count := func() int {
 		return len(enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind()))
 	}
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstoretest.Analysis(pool)}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: pgstoretest.Analysis(pool)}
 	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}

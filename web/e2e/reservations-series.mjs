@@ -85,7 +85,7 @@ function fixtures(multipleSites) {
       playableCount: 10,
       unwatchedCount: 4,
       latestStartAt: iso(1, 20),
-      representativeId: 701,
+      representativeId: 701, thumbnailUrl: '/api/media/recordings/701/thumbnail',
     },
     {
       value: '視聴済みシリーズ',
@@ -94,7 +94,7 @@ function fixtures(multipleSites) {
       playableCount: 2,
       unwatchedCount: 0,
       latestStartAt: iso(1, 21),
-      representativeId: 702,
+      representativeId: 702, thumbnailUrl: '/api/media/recordings/702/thumbnail',
     },
     // null の棚は null series の予約と照合してはいけない。
     {
@@ -104,7 +104,7 @@ function fixtures(multipleSites) {
       playableCount: 99,
       unwatchedCount: 99,
       latestStartAt: iso(1, 22),
-      representativeId: 799,
+      representativeId: 799, thumbnailUrl: '/api/media/recordings/799/thumbnail',
     },
   ]
   const rules = [{

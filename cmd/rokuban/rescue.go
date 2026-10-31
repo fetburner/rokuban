@@ -36,6 +36,11 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 				return err
 			}
 
+			storeName, root, err := resolveCommandStore(cmd, cfg.Storage)
+			if err != nil {
+				return err
+			}
+
 			ctx := cmd.Context()
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
 			// （pgxpool の既定の MaxConns がそのまま使われる。issue #90）。
@@ -46,10 +51,10 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 			defer pool.Close()
 
 			siteNames := registryNames(cfg.Registry())
-			storeName := cfg.Storage.MediaStoreName
-			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames, storeName), pgstore.NewMedia(pool, storeName, "") /* rescue は削除の判定をしない */, cfg.Storage.MediaDir, storeName, siteNames, cmd.OutOrStdout())
+			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames, storeName), pgstore.NewMedia(pool, storeName, "") /* rescue は削除の判定をしない */, root, storeName, siteNames, cmd.OutOrStdout())
 		},
 	}
+	addCommandStoreFlag(cmd)
 	return cmd
 }
 

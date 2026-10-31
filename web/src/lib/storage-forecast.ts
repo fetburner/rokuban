@@ -355,7 +355,11 @@ function projectedFullAtMs(
   return last === undefined ? nowMs : last.startMs + last.durationMs
 }
 
-/** findMediaRoot は `GET /api/storage` の結果からアーカイブ root（`media`）を探す。 */
-export function findMediaRoot(roots: readonly StorageRoot[]): StorageRoot | undefined {
-  return roots.find((r) => r.root === 'media')
+/**
+ * findMediaRoots は `GET /api/storage` の結果からアーカイブ root（`media`）を置き場ごとに返す。
+ * 置き場が 1 つでも複数でも、置き場ごとに 1 行ずつ並ぶ（`find` で先頭だけ取ると、2 つ目以降の
+ * 置き場が画面から消える）。
+ */
+export function findMediaRoots(roots: readonly StorageRoot[]): StorageRoot[] {
+  return roots.filter((r) => r.root === 'media')
 }

@@ -39,6 +39,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -93,6 +94,9 @@ const inProgress = {
 }
 const trashed = { ...base, id: 5, title: '録画した番組', series: undefined, ruleId: undefined, source: 'manual', startAt: '2026-09-27T10:00:00.000Z', createdAt: '2026-09-27T10:05:00.000Z', deletedAt: '2026-10-02T10:40:00.000Z', encodedAssets: undefined }
 const trashedSeries = { ...base, id: 6, title: 'ごみ箱の回', startAt: '2026-09-26T10:00:00.000Z', createdAt: '2026-09-26T10:05:00.000Z', deletedAt: '2026-10-02T10:40:00.000Z' }
+for (const r of [ep1, ep2, ep10, originalOnly, inProgress, trashed, trashedSeries]) {
+  r.media = recordingMedia(r.id, (r.encodedAssets ?? []).map((a) => a.profile))
+}
 const all = [ep1, ep2, ep10, originalOnly, inProgress, trashed, trashedSeries]
 
 /** seriesEntries は画面に見えているシリーズ画面へのリンクと、その置き場を返す。 */
@@ -474,6 +478,7 @@ async function transitionsAlong(png) {
   log('\n=== ⑨ 次の回へ前の回の下書きと画質を持ち越さない ===')
   const withCut = (item) => ({
     ...item,
+    media: recordingMedia(item.id, ['h264-720p', 'h264-cut']),
     encodedAssets: [
       { profile: 'h264-720p', sizeBytes: 572_000_000 },
       { profile: 'h264-cut', sizeBytes: 450_000_000, cut: true, keepRanges: [{ startMs: 0, endMs: 120_000 }] },

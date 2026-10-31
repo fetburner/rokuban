@@ -132,18 +132,19 @@ func TestRunEnqueue_CatalogExport(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "catalog-export", "", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "catalog-export", "test-store", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
 		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
 	}
-	// site 非依存のログは "for site" を付けない（運用者が効いていると誤解しないため）。
-	if strings.Contains(out.String(), "for site") {
-		t.Errorf("output = %q, site-independent job must not mention site", out.String())
+	if !strings.Contains(out.String(), `for store "test-store"`) || strings.Contains(out.String(), "for site") {
+		t.Errorf("output = %q, want a store-scoped job to mention the store and not a site", out.String())
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "catalog-export", "")
+	if queue := requireEnqueuedJob(t, ctx, pool, "catalog-export", ""); queue != "original_test-store" {
+		t.Errorf("catalog_export queue = %q, want %q", queue, "original_test-store")
+	}
 }
 
 // encode-reconcile も投入できること（issue #163）。`worker.periodic_jobs: false`
@@ -203,8 +204,8 @@ func TestRunEnqueue_TSScanReconcile(t *testing.T) {
 	}
 
 	first := requireEnqueuedJob(t, ctx, pool, "ts-scan-reconcile", "")
-	if first != "ts_scan" {
-		t.Errorf("ts_scan_reconcile queue = %q, want literal %q", first, "ts_scan")
+	if first != "cleanup" {
+		t.Errorf("ts_scan_reconcile queue = %q, want literal %q", first, "cleanup")
 	}
 
 	var duplicate bytes.Buffer
@@ -241,17 +242,19 @@ func TestRunEnqueue_StorageSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "storage-sync", "", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "storage-sync", "test-store", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
 		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
 	}
 	if strings.Contains(out.String(), "for site") {
-		t.Errorf("output = %q, site-independent job must not mention site", out.String())
+		t.Errorf("output = %q, a store-scoped job must not mention site", out.String())
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "storage-sync", "")
+	if queue := requireEnqueuedJob(t, ctx, pool, "storage-sync", ""); queue != "storage_test-store" {
+		t.Errorf("storage_sync queue = %q, want %q", queue, "storage_test-store")
+	}
 }
 
 // delete-reconcile も投入できること。**`worker.periodic_jobs: false`
@@ -263,7 +266,7 @@ func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &out); err != nil {
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "test-store", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -274,11 +277,10 @@ func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 	}
 
 	queue := requireEnqueuedJob(t, ctx, pool, "delete-reconcile", "")
-	// cleanup キューに乗ること（DeleteReconcileArgs.Spec）。KEDA の
-	// スケーラはキュー名で引くので、ここがずれると CronJob が投入しても
-	// 誰も起きない。
-	if queue != "cleanup" {
-		t.Errorf("delete_reconcile queue = %q, want %q", queue, "cleanup")
+	// 置き場で修飾した original キューに乗ること（DeleteReconcileArgs.Spec と置き場）。KEDA の
+	// スケーラはキュー名で引くので、ここがずれると CronJob が投入しても誰も起きない。
+	if queue != "original_test-store" {
+		t.Errorf("delete_reconcile queue = %q, want %q", queue, "original_test-store")
 	}
 }
 
@@ -291,16 +293,18 @@ func TestRunEnqueue_DeleteReconcile_AlreadyPending_SkipsWithoutError(t *testing.
 	ctx := context.Background()
 
 	var first bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &first); err != nil {
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "test-store", &first); err != nil {
 		t.Fatalf("runEnqueue (1 回目): %v", err)
 	}
 
 	var second bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", "", &second); err != nil {
+	if err := runEnqueue(ctx, pool, "delete-reconcile", "test-store", &second); err != nil {
 		t.Fatalf("runEnqueue (2 回目) は合流して nil を返すこと: %v", err)
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "delete-reconcile", "")
+	if queue := requireEnqueuedJob(t, ctx, pool, "delete-reconcile", ""); queue != "original_test-store" {
+		t.Errorf("delete_reconcile queue = %q, want %q", queue, "original_test-store")
+	}
 }
 
 // 未知のジョブ名はエラーになること。
@@ -314,110 +318,81 @@ func TestRunEnqueue_UnknownJob(t *testing.T) {
 	}
 }
 
-func newEnqueueJobSiteTestCmd(t *testing.T) *cobra.Command {
+func newEnqueueJobScopeTestCmd(t *testing.T) *cobra.Command {
 	t.Helper()
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().String("site", "", "")
+	cmd.Flags().String("store", "", "")
 	return cmd
 }
 
-// resolveEnqueueJobSite が site 束縛 / site 非依存を正しく分岐すること（issue #200）。
-func TestResolveEnqueueJobSite(t *testing.T) {
-	multi := []config.MirakcSite{
-		{Site: "tokyo"},
-		{Site: "takamatsu"},
+// resolveEnqueueJobScope が site 束縛・置き場ごと・範囲なしのジョブを正しく分岐すること（issue #200）。
+func TestResolveEnqueueJobScope(t *testing.T) {
+	cfg := workerSpecTestConfig(t) // 2 サイト（tokyo, takamatsu）と FS 置き場 1 つ（test-store）
+	twoStores := *cfg
+	twoStores.Storage.Stores = map[string]config.StoreConfig{"tokyo": {Kind: "fs"}, "takamatsu": {Kind: "fs"}}
+
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		job     string
+		flags   map[string]string
+		want    string
+		wantErr string
+	}{
+		{name: "scope-less job without flags", cfg: cfg, job: "encode-reconcile", want: ""},
+		{name: "scope-less job rejects --site", cfg: cfg, job: "encode-reconcile", flags: map[string]string{"site": "tokyo"}, wantErr: "does not take --site"},
+		{name: "scope-less job rejects an empty --site= too", cfg: cfg, job: "encode-reconcile", flags: map[string]string{"site": ""}, wantErr: "does not take --site"},
+		{name: "scope-less job rejects --store", cfg: cfg, job: "encode-reconcile", flags: map[string]string{"store": "test-store"}, wantErr: "does not take --store"},
+		{name: "site-bound job needs --site under two sites", cfg: cfg, job: "ruler-pass", wantErr: "--site is required"},
+		{name: "site-bound job with --site", cfg: cfg, job: "epg-sync", flags: map[string]string{"site": "takamatsu"}, want: "takamatsu"},
+		{name: "site-bound job rejects --store", cfg: cfg, job: "epg-sync", flags: map[string]string{"site": "tokyo", "store": "test-store"}, wantErr: "does not take --store"},
+		{name: "store job defaults to the only fs store", cfg: cfg, job: "delete-reconcile", want: "test-store"},
+		{name: "store job rejects --site", cfg: cfg, job: "delete-reconcile", flags: map[string]string{"site": "tokyo"}, wantErr: "does not take --site"},
+		{name: "store job needs --store under two fs stores", cfg: &twoStores, job: "catalog-export", wantErr: "--store is required"},
+		{name: "store job with --store", cfg: &twoStores, job: "catalog-export", flags: map[string]string{"store": "takamatsu"}, want: "takamatsu"},
+		{name: "store job rejects an s3 or unknown store", cfg: &twoStores, job: "storage-sync", flags: map[string]string{"store": "nowhere"}, wantErr: "not an fs store"},
+		{name: "unknown job", cfg: cfg, job: "no-such-job", wantErr: "unknown job"},
 	}
-
-	t.Run("site-independent without --site succeeds with empty site even under multi-site registry", func(t *testing.T) {
-		cmd := newEnqueueJobSiteTestCmd(t)
-		site, err := resolveEnqueueJobSite(cmd, "catalog-export", multi)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if site != "" {
-			t.Errorf("site = %q, want empty for site-independent job", site)
-		}
-	})
-
-	t.Run("site-independent with --site is an error (not silently ignored)", func(t *testing.T) {
-		cmd := newEnqueueJobSiteTestCmd(t)
-		if err := cmd.Flags().Set("site", "tokyo"); err != nil {
-			t.Fatalf("Set: %v", err)
-		}
-		_, err := resolveEnqueueJobSite(cmd, "catalog-export", multi)
-		if err == nil {
-			t.Fatal("expected error when --site is passed to site-independent job, got nil")
-		}
-		if !strings.Contains(err.Error(), "site-independent") {
-			t.Errorf("error = %v, want to mention site-independent", err)
-		}
-	})
-
-	t.Run("site-independent with empty --site= is still an error (Changed)", func(t *testing.T) {
-		cmd := newEnqueueJobSiteTestCmd(t)
-		if err := cmd.Flags().Set("site", ""); err != nil {
-			t.Fatalf("Set: %v", err)
-		}
-		_, err := resolveEnqueueJobSite(cmd, "catalog-export", multi)
-		if err == nil {
-			t.Fatal("expected error when --site is explicitly set (even to empty), got nil")
-		}
-	})
-
-	t.Run("site-bound without --site under multi-site registry is an error", func(t *testing.T) {
-		cmd := newEnqueueJobSiteTestCmd(t)
-		_, err := resolveEnqueueJobSite(cmd, "ruler-pass", multi)
-		if err == nil {
-			t.Fatal("expected --site required error for site-bound job, got nil")
-		}
-		if !strings.Contains(err.Error(), "--site is required") {
-			t.Errorf("error = %v, want --site is required", err)
-		}
-	})
-
-	t.Run("site-bound with --site resolves", func(t *testing.T) {
-		cmd := newEnqueueJobSiteTestCmd(t)
-		if err := cmd.Flags().Set("site", "takamatsu"); err != nil {
-			t.Fatalf("Set: %v", err)
-		}
-		site, err := resolveEnqueueJobSite(cmd, "epg-sync", multi)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if site != "takamatsu" {
-			t.Errorf("site = %q, want takamatsu", site)
-		}
-	})
-
-	t.Run("unknown job is an error", func(t *testing.T) {
-		cmd := newEnqueueJobSiteTestCmd(t)
-		_, err := resolveEnqueueJobSite(cmd, "no-such-job", multi)
-		if err == nil {
-			t.Fatal("expected error for unknown job, got nil")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newEnqueueJobScopeTestCmd(t)
+			for k, v := range tt.flags {
+				if err := cmd.Flags().Set(k, v); err != nil {
+					t.Fatalf("Set(%s): %v", k, err)
+				}
+			}
+			got, err := resolveEnqueueJobScope(cmd, tt.job, tt.cfg)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("scope = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
 }
 
-// enqueueJobs の分類が一貫していること。RequiresSite の集合が「次にジョブを
-// 足す人がどちらかを更新し忘れる」経路にならないよう、現状の契約を固定する
-// （issue #200）。catalog-export と storage-sync（issue #238 M7-5）、
-// encode-reconcile（issue #163）、thumbnail-reconcile、cm-detect-reconcile、
-// delete-reconcile、label-rule-reconcile が site 非依存。
-func TestEnqueueJobs_SiteClassification(t *testing.T) {
-	independent := sortedJobNamesBySite(false)
-	wantIndependent := []string{"catalog-export", "cm-detect-reconcile", "delete-reconcile", "encode-reconcile", "label-rule-reconcile", "storage-sync", "thumbnail-reconcile", "ts-scan-reconcile"}
-	if strings.Join(independent, ",") != strings.Join(wantIndependent, ",") {
-		t.Errorf("site-independent jobs = %v, want %v", independent, wantIndependent)
+// enqueueJobs の分類が一貫していること。次にジョブを足す人が分類を書き忘れる経路にならないよう、
+// 現状の契約をリテラルで固定する（issue #200）。置き場ごとのジョブは、置き場で修飾するキューに載るもの。
+func TestEnqueueJobs_ScopeClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		requiresSite, requiresStore bool
+		want                        string
+	}{
+		{"scope-less", false, false, "cm-detect-reconcile,encode-reconcile,label-rule-reconcile,storage-transfer-reconcile,thumbnail-reconcile,ts-scan-reconcile"},
+		{"site-bound", true, false, "epg-sync,reconcile-pass,record-sweep,ruler-pass,tuner-sync"},
+		{"store-bound", false, true, "catalog-export,delete-reconcile,storage-sync"},
+	} {
+		if got := strings.Join(sortedJobNamesByScope(tc.requiresSite, tc.requiresStore), ","); got != tc.want {
+			t.Errorf("%s jobs = %s, want %s", tc.name, got, tc.want)
+		}
 	}
-
-	bound := sortedJobNamesBySite(true)
-	wantBound := []string{"epg-sync", "reconcile-pass", "record-sweep", "ruler-pass", "tuner-sync"}
-	if strings.Join(bound, ",") != strings.Join(wantBound, ",") {
-		t.Errorf("site-bound jobs = %v, want %v", bound, wantBound)
-	}
-
-	// 全ジョブがどちらかに属する（漏れなし）。
-	if got, want := len(bound)+len(independent), len(enqueueJobs); got != want {
-		t.Errorf("bound+independent = %d, enqueueJobs = %d", got, want)
+	if got := len(sortedJobNamesByScope(true, true)); got != 0 {
+		t.Errorf("%d jobs require both a site and a store, want none", got)
 	}
 }

@@ -102,7 +102,7 @@ func TestReconcileWorker_RecordsLastPass(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	metrics.TSScanReconcileLastPass.Set(0)
 	args := ReconcileArgs{}
-	if err := runWorkerViaJobQFake(context.Background(), (&ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: pgstoretest.Media(pool)}), args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), (&ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool)}), args); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
 	if got := promtestutil.ToFloat64(metrics.TSScanReconcileLastPass); got < float64(time.Now().Add(-time.Minute).Unix()) {
@@ -329,7 +329,7 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 	}
 
 	enqueuer := &recordingEnqueuer{}
-	w := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool)}
+	w := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool)}
 	args := ReconcileArgs{}
 	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
@@ -338,6 +338,10 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 	for _, queued := range enqueuer.args {
 		if args, ok := queued.(ScanArgs); ok {
 			got = append(got, args.RecordingID)
+			// 投入側が原本のコピーのある置き場を選ぶ。選び損ねると物理キューが誰も購読しない置き場になる。
+			if args.Store != "test-store" {
+				t.Errorf("scan for recording %d queued for store %q, want literal %q", args.RecordingID, args.Store, "test-store")
+			}
 		}
 	}
 	slices.Sort(got)
@@ -360,7 +364,7 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	seedOriginalAsset(t, pool, mediaDir, firstID, "ts-scan/window-first.m2ts", []byte("first"))
 	seedOriginalAsset(t, pool, mediaDir, secondID, "ts-scan/window-second.m2ts", []byte("second"))
 	enqueuer := &recordingEnqueuer{}
-	firstWorker := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), RowLimit: 1}
+	firstWorker := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool), RowLimit: 1}
 	ctx := context.Background()
 	if err := runWorkerViaJobQFake(ctx, firstWorker, ReconcileArgs{}); err != nil {
 		t.Fatalf("first reconcile pass: %v", err)
@@ -383,7 +387,7 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 
 	// KEDA starts a fresh --once process for each queue item. The next page must
 	// come from the continuation args, not state held by the previous worker.
-	secondWorker := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), RowLimit: 1}
+	secondWorker := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool), RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, secondWorker, ReconcileArgs{AfterRecordingID: continuationAfter}); err != nil {
 		t.Fatalf("second reconcile page: %v", err)
 	}
@@ -402,7 +406,7 @@ func TestTSScanReconcile_ShortPageDoesNotContinue(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 12914 })
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "ts-scan/short-page.m2ts", []byte("original"))
 	enqueuer := &recordingEnqueuer{}
-	w := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), RowLimit: 2}
+	w := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool), RowLimit: 2}
 	if err := runWorkerViaJobQFake(context.Background(), w, ReconcileArgs{}); err != nil {
 		t.Fatalf("short reconcile page: %v", err)
 	}

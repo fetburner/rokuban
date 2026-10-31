@@ -22,6 +22,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
@@ -63,7 +64,7 @@ const baseRecording = {
   durationMs: 22_000,
   status: 'finished',
   keepOriginal: 'always',
-  hlsPlayback: [], cmDetection: { state: 'disabled' },
+  media: recordingMedia(RECORDING_ID, [PROFILE]), hlsPlayback: [], cmDetection: { state: 'disabled' },
   startedAt,
   endedAt: new Date(now - 8_000).toISOString(),
   createdAt: new Date(now - 60_000).toISOString(),
@@ -133,6 +134,7 @@ function makeFixtures() {
 
 const cutRecording = {
   ...baseRecording,
+  media: recordingMedia(RECORDING_ID, [CUT_PROFILE]),
   encodedAssets: [{
     profile: CUT_PROFILE,
     sizeBytes: 1_000_000,
@@ -337,6 +339,7 @@ async function checkHero(label, recording, profile) {
 async function checkVideoErrorFallback() {
   activeRecording = {
     ...baseRecording,
+    media: recordingMedia(RECORDING_ID, [UNAVAILABLE_PROFILE]),
     encodedAssets: [{ profile: UNAVAILABLE_PROFILE, sizeBytes: 1_000 }],
   }
   await page.goto(`${URL_BASE}/?mode=watch`, { waitUntil: 'domcontentloaded' })

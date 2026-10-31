@@ -37,8 +37,9 @@ const thumbnailContentType = "image/jpeg"
 
 // Config は Streamer の設定。
 type Config struct {
-	// MediaDir はメディアストレージのルート。
-	MediaDir string
+	// MediaRoots はこのプロセスがマウントした FS 置き場の名前から root への対応。
+	// 原本は `/api/media/stores/{store}/recordings/{id}/...` で、マウントした置き場のものだけを配る。
+	MediaRoots map[string]string
 
 	// AccelLocation が空でなければ X-Accel-Redirect でバイト転送を
 	// リバースプロキシに委ねる（issue #1 の nginx コメント）。
@@ -77,11 +78,15 @@ func New(media store.MediaServing, cfg Config) *Streamer {
 
 // Mount はルーターに配信エンドポイントを登録する。
 func (s *Streamer) Mount(r chi.Router) {
-	const path = "/api/media/recordings/{id}/file"
-	r.Get(path, s.RecordingFile)
+	// 原本は置き場の URL で配る。encoded（?profile=）は派生物で、置き場の無い URL で配る。
+	const originalPath = "/api/media/stores/{store}/recordings/{id}/file"
+	r.Get(originalPath, s.RecordingFile)
 	// HEAD も登録する。VLC やブラウザはシーク前に HEAD で Content-Length と
 	// Accept-Ranges を取るため、405 を返すとシーク再生に失敗しうる。
 	// http.ServeContent は HEAD ならヘッダーだけを書くので実装は共通でよい。
+	r.Head(originalPath, s.RecordingFile)
+	const path = "/api/media/recordings/{id}/file"
+	r.Get(path, s.RecordingFile)
 	r.Head(path, s.RecordingFile)
 
 	// サムネイルは openapi に載せない（原本 /file と同じ理由。バイナリ配信で
@@ -98,7 +103,7 @@ func (s *Streamer) Mount(r chi.Router) {
 	// CM の枠を教えるための 1 コマ（原本からのみ。issue #886）。バイナリ配信なので
 	// openapi には載せない。HEAD は登録しない --- コマを作るために ffmpeg を
 	// 回すことになり、存在確認の手段としては高すぎる。
-	r.Get("/api/media/recordings/{id}/frame", s.RecordingFrame)
+	r.Get("/api/media/stores/{store}/recordings/{id}/frame", s.RecordingFrame)
 }
 
 // serveAsset は DB から解決した 1 アセットをディスクから（または X-Accel で）配信する。
@@ -257,7 +262,14 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 		return
 	}
 
-	path, err := mediapath.Resolve(s.cfg.MediaDir, asset.relPath)
+	root, mounted := s.cfg.MediaRoots[asset.store]
+	if !mounted {
+		slog.Warn("streamer: the original's store is not mounted on this process",
+			"recording_id", recordingID, "store", asset.store)
+		http.NotFound(w, r)
+		return
+	}
+	path, err := mediapath.Resolve(root, asset.relPath)
 	if err != nil {
 		slog.Error("streamer: rejecting rel_path outside the media directory",
 			"recording_id", recordingID, "rel_path", asset.relPath, "err", err)
@@ -413,7 +425,12 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 // lookupAsset は profile の有無で original / encoded を解決する。
 func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile string) (serveAsset, error) {
 	if profile == "" {
-		row, err := s.media.GetOriginalMediaAssetForServing(r.Context(), recordingID)
+		storeName := chi.URLParam(r, "store")
+		if _, mounted := s.cfg.MediaRoots[storeName]; !mounted {
+			// 置き場を持たない URL か、この Pod がマウントしていない置き場。配らない。
+			return serveAsset{}, store.ErrNotFound
+		}
+		row, err := s.media.GetOriginalMediaAssetForServingInStore(r.Context(), recordingID, storeName)
 		if err != nil {
 			return serveAsset{}, err
 		}

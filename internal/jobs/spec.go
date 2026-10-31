@@ -170,7 +170,7 @@ func (a SeekTilesJobArgs) Spec() jobq.Spec {
 // Spec は thumbnail reconcile の論理キュー、5 分締切、合流ヒントを返す。
 // 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a ThumbnailReconcileArgs) Spec() jobq.Spec {
-	return spec(ThumbnailQueue, fixedTimeout(thumbnailReconcileJobTimeout), 1, true, 1)
+	return spec(CleanupQueue, fixedTimeout(thumbnailReconcileJobTimeout), 1, true, 1)
 }
 
 // Spec は CM 検出の論理キュー、録画尺に応じた締切、10 回の adapter 試行上限、
@@ -209,13 +209,13 @@ func (a EncodeReconcileArgs) Spec() jobq.Spec {
 // Spec は delete reconcile の論理キュー、10 分締切、合流ヒントを返す。
 // 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a DeleteReconcileArgs) Spec() jobq.Spec {
-	return spec(CleanupQueue, fixedTimeout(deleteReconcileJobTimeout), 1, true, 1)
+	return spec(OriginalQueue, fixedTimeout(deleteReconcileJobTimeout), 1, true, 1)
 }
 
 // Spec は catalog export の論理キュー、5 分締切、合流ヒントを返す。
 // 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a CatalogExportArgs) Spec() jobq.Spec {
-	return spec(CleanupQueue, fixedTimeout(catalogExportJobTimeout), 1, true, 1)
+	return spec(OriginalQueue, fixedTimeout(catalogExportJobTimeout), 1, true, 1)
 }
 
 // Spec は storage sync の論理キュー、1 分締切、合流ヒントを返す。
@@ -226,7 +226,7 @@ func (a StorageSyncArgs) Spec() jobq.Spec {
 
 // Spec は転送 reconcile の読み取りと enqueue に与える締切を返す。
 func (a StorageTransferReconcileArgs) Spec() jobq.Spec {
-	return spec(StorageQueue, fixedTimeout(storageTransferReconcileJobTimeout), 1, true, 1)
+	return spec(CleanupQueue, fixedTimeout(storageTransferReconcileJobTimeout), 1, true, 1)
 }
 
 // Spec は 1 件の物理コピー転送の論理キューと締切を返す。

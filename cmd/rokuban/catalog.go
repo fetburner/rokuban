@@ -25,7 +25,7 @@ func newCatalogCmd() *cobra.Command {
 // 健全性確認に `rokuban rescue` を使うと live DB を catalog の内容で上書きして
 // しまうので、確認専用の入口をここに置く（docs/operations.md §3）。
 func newCatalogVerifyCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "catalog 世代の完成を検証する（DB には触らない）",
 		Long: `media_dir/catalog/ の各世代を完成判定に掛けて結果を出す
@@ -37,9 +37,19 @@ DB には一切触らない。完成世代が 1 つも無ければ非ゼロ終�
 			if err != nil {
 				return err
 			}
-			return runCatalogVerify(cfg.Storage.MediaDir, cmd.OutOrStdout())
+			// 検証は DB に触れず、ディレクトリだけを読む。置き場を設定していない構成では media_dir を読む。
+			root := cfg.Storage.MediaDir
+			if len(cfg.Storage.FSStoreNames()) > 0 {
+				_, root, err = resolveCommandStore(cmd, cfg.Storage)
+				if err != nil {
+					return err
+				}
+			}
+			return runCatalogVerify(root, cmd.OutOrStdout())
 		},
 	}
+	addCommandStoreFlag(cmd)
+	return cmd
 }
 
 // runCatalogVerify は catalog 検証の本体。cobra の RunE は配線に留める

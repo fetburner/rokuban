@@ -67,7 +67,7 @@ spec:
           # を登録しつつ DB 完結の共有 ruler queue だけを購読する。既存の ruler
           # ScaledJob は burst 容量として残し、両 client は River の job claim を
           # 共有する。periodic_jobs は false のままなので定期投入は CronJob が担う。
-          args: ["server", "--roles", "notifier,worker", "--queues", "ruler", "--sites=", "--config", "/etc/rokuban/config.yml"]
+          args: ["server", "--roles", "notifier,worker", "--queues", "ruler", "--sites=", "--stores=", "--config", "/etc/rokuban/config.yml"]
           ports:
             - name: http
               containerPort: 40773

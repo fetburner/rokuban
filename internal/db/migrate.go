@@ -37,6 +37,27 @@ func MigrateUp(ctx context.Context, dbURL string) error {
 	return nil
 }
 
+// CheckMigrationsCurrent は DB の適用済み最大バージョンが、このバイナリに埋め込まれた
+// 最新の migration と一致しなければエラーを返す。エラーには両方のバージョンを書く。
+//
+// 判定は goose の公開 API `Provider.GetVersions`（DB の最大バージョンと埋め込みの最新）による。
+// DB が一度もマイグレーションされていないと、この呼び出しは `goose_db_version` を作る
+// （`migrate up` が作るのと同じテーブル）。アプリの表は触らない。
+func CheckMigrationsCurrent(ctx context.Context, dbURL string) error {
+	var current, target int64
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		var err error
+		current, target, err = p.GetVersions(ctx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("reading migration versions: %w", err)
+	}
+	if current != target {
+		return fmt.Errorf("database schema is at migration %d, but this binary embeds migration %d; run migrate up first", current, target)
+	}
+	return nil
+}
+
 // MigrateDown はアプリ (goose) のマイグレーションを 1 ステップ戻す。
 // River スキーマは rivermigrate が独立にバージョン管理しているため触らない。
 func MigrateDown(ctx context.Context, dbURL string) error {

@@ -65,7 +65,7 @@ func testObjectStores(t *testing.T, root string) map[string]objstore.Store {
 
 func testStreamerConfig(t *testing.T, mediaDir string) Config {
 	t.Helper()
-	return Config{MediaDir: mediaDir, ObjectStores: testObjectStores(t, mediaDir)}
+	return Config{MediaRoots: map[string]string{"test-store": mediaDir}, ObjectStores: testObjectStores(t, mediaDir)}
 }
 
 // fixture は録画 1 本と原本ファイルを用意した配信サーバーを返す。
@@ -118,7 +118,7 @@ func newFixture(t *testing.T, relPath string, writeFile bool) *fixture {
 }
 
 func (f *fixture) url() string {
-	return fmt.Sprintf("%s/api/media/recordings/%d/file", f.srv.URL, f.recordingID)
+	return fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", f.srv.URL, f.recordingID)
 }
 
 func get(t *testing.T, url string, headers map[string]string) (*http.Response, []byte) {
@@ -296,14 +296,14 @@ func TestRecordingFile_NotFound(t *testing.T) {
 	f := newFixture(t, "recording.m2ts", true)
 
 	t.Run("存在しない録画 ID", func(t *testing.T) {
-		resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/9999/file", f.srv.URL), nil)
+		resp, _ := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/9999/file", f.srv.URL), nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", resp.StatusCode)
 		}
 	})
 
 	t.Run("数値でない ID", func(t *testing.T) {
-		resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/abc/file", f.srv.URL), nil)
+		resp, _ := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/abc/file", f.srv.URL), nil)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("status = %d, want 400", resp.StatusCode)
 		}
@@ -330,7 +330,7 @@ func TestRecordingFile_NoAsset(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -376,7 +376,7 @@ func TestRecordingFile_DeletedIsNotServed(t *testing.T) {
 			srv := httptest.NewServer(r)
 			defer srv.Close()
 
-			resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
+			resp, _ := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", srv.URL, recordingID), nil)
 			if resp.StatusCode != http.StatusNotFound {
 				t.Errorf("status = %d, want 404", resp.StatusCode)
 			}
@@ -405,7 +405,7 @@ func TestRecordingFile_RejectsPathTraversal(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, body := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -464,11 +464,11 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(content)) })
 
 	r := chi.NewRouter()
-	New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, ObjectStores: testObjectStores(t, mediaDir), AccelLocation: "/_media/"}).Mount(r)
+	New(pgstoretest.Media(pool), Config{MediaRoots: map[string]string{"test-store": mediaDir}, ObjectStores: testObjectStores(t, mediaDir), AccelLocation: "/_media/"}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, body := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -512,7 +512,7 @@ func TestRecordingFile_DerivedAccelRedirect(t *testing.T) {
 	})
 	r := chi.NewRouter()
 	New(pgstoretest.Media(pool), Config{
-		MediaDir: mediaDir, ObjectStores: objects, AccelLocation: "/_media/",
+		MediaRoots: map[string]string{"test-store": mediaDir}, ObjectStores: objects, AccelLocation: "/_media/",
 	}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
@@ -540,11 +540,11 @@ func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "../secret.txt", 10 })
 
 	r := chi.NewRouter()
-	New(pgstoretest.Media(pool), Config{MediaDir: t.TempDir(), AccelLocation: "/_media/"}).Mount(r)
+	New(pgstoretest.Media(pool), Config{MediaRoots: map[string]string{"test-store": t.TempDir()}, AccelLocation: "/_media/"}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -821,7 +821,7 @@ func TestRecordingFile_OriginalVsEncoded(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/stores/test-store/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("without profile status = %d, want 404 (no original)", resp.StatusCode)
 	}
@@ -857,7 +857,7 @@ func TestMount_CoexistsWithGeneratedRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/api/recordings",
 		fmt.Sprintf("/api/recordings/%d/drop-stats", recordingID),
-		fmt.Sprintf("/api/media/recordings/%d/file", recordingID),
+		fmt.Sprintf("/api/media/stores/test-store/recordings/%d/file", recordingID),
 	} {
 		resp, _ := get(t, srv.URL+path, nil)
 		if resp.StatusCode != http.StatusOK {

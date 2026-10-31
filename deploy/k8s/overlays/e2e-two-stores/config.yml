@@ -1,0 +1,109 @@
+# 置き場 2 つの受け入れ判定（deploy/k8s/e2e/checks/06-two-stores.sh）の config。
+# `overlays/e2e/config.yml` と同じ 2 サイトに、FS 置き場を 2 つ足してある。
+# キーの網羅は config.example.yml が権威。ここに書くのは e2e との差分の理由だけ。
+
+server:
+  listen: ":40773"
+  # internal_url（置き場ごとの配信 streamer）の host も入れる。転送の worker が転送元を読むときの
+  # Host は internal_url の host になり、ここに無いと 400 invalid host で拒まれる（判定 6.3）。
+  allowed_hosts: [rokuban.local, rokuban-recording-hls-tokyo, rokuban-recording-hls-takamatsu]
+
+db:
+  host: postgres
+  port: 5432
+  user: rokuban
+  database: rokuban
+  sslmode: disable
+  password: >-
+    ${POSTGRES_PASSWORD}
+
+mirakcs:
+  - site: sitea
+    url: http://mirakc-sitea:40772
+  - site: siteb
+    url: http://mirakc-siteb:40772
+
+storage:
+  scratch_dir: /var/tmp/rokuban
+  # **root は置き場ごとに別にする。** 2 つの置き場をマウントするプロセス（ingest）は
+  # `storage.media_dir` 1 つには頼れず、同じ root の 2 置き場は起動時に拒まれる。
+  # PVC のマウント先は `stores/<置き場>/kustomization.yaml` の patch と揃える。
+  stores:
+    # internal_url は、このプロセスがマウントしていない置き場の原本を転送元として読むための URL。
+    # 転送の worker は transfer_<先> しか持たないので、転送元（もう一方の FS 置き場）はマウントされず、
+    # この URL の streamer（置き場ごとの配信 Service）から読む。Service は
+    # `/api/media/stores/<置き場>/recordings/<id>/file` を返す（deploy/k8s/store/recording-hls.yaml）。
+    # accel_location は既定で空なので、この streamer は X-Accel-Redirect を返さず中身を配る。
+    tokyo: { kind: fs, root: /mnt/stores/tokyo, internal_url: "http://rokuban-recording-hls-tokyo:40773" }
+    takamatsu: { kind: fs, root: /mnt/stores/takamatsu, internal_url: "http://rokuban-recording-hls-takamatsu:40773" }
+    # 派生物の置き場（S3 互換の MinIO。overlays/e2e-two-stores/minio）。資格情報は
+    # rokuban-secrets の AWS_*（環境変数）から読む。**2 つの FS 置き場がある構成では、
+    # 派生物は S3 にする**（FS にすると、派生物を書く worker が全部その置き場をマウントする必要がある）。
+    s3: { kind: s3, endpoint: http://minio:9000, bucket: rokuban-derived, region: us-east-1 }
+  # sitea の録画のうち 2 日を過ぎたものは takamatsu へ（判定 6.3 の転送を起こす）。
+  # それ以外の sitea は tokyo、siteb は takamatsu。先頭から評価して最初に一致した規則を使う。
+  originals:
+    - match: { site: siteb }
+      store: takamatsu
+    - match: { site: sitea, older_than: 2d }
+      store: takamatsu
+    - store: tokyo
+  # 派生物は S3（上の s3）。central streamer は派生物の置き場を S3 から読む。
+  derived: s3
+  # 旧世代の削除の猶予。下限は cleanup.missing_asset_age + 2 × 削除 reconcile の周期（15 分）より長いこと
+  # （internal/config/storage.go の validateTransfer）。判定 6.7 が待つ時間はここで決まる。
+  transfer:
+    overlap: 32m
+
+recording_hls:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-recording-hls
+
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  max_sessions: 4
+  idle_timeout: 30s
+  tuner_priority: 1
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      preset: veryfast
+      segment_seconds: 2
+      playlist_size: 6
+
+cleanup:
+  # 実体無しの猶予を 1 分にする。transfer.overlap の下限（この値 + 30 分）を縮めるため。
+  missing_asset_age: 1m
+
+encode:
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+  concurrency: 1
+  thumbnail_concurrency: 1
+  profiles:
+    - name: e2e-slow
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      crf: 18
+      preset: veryslow
+    # 判定 6.2 の encode が待つ時間を短くするための速い版（原本は 20 秒の合成映像）。
+    - name: e2e-fast
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: 240
+      crf: 28
+      preset: ultrafast
+
+worker:
+  periodic_jobs: false
+  rescue_stuck_jobs_after: 1m
+
+log:
+  level: info
+  format: json

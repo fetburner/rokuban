@@ -37,6 +37,21 @@ E2E_FULL_IMAGE="${E2E_FULL_IMAGE:-rokuban-full:e2e}"
 E2E_SITE_A="sitea"
 E2E_SITE_B="siteb"
 
+# 製品のマニフェストの overlay。既定は `e2e`（2 サイト・置き場 1 つ。判定 1〜5）。
+# 判定 6（置き場 2 つ）は `E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores`
+# で回す（deploy/k8s/e2e/README.md）。**overlay ごとに名前空間を分ける**: 同じ名前空間に
+# 両方を当てると PVC と Pod セットが並び、判定が余計なワークロードを見る。
+E2E_OVERLAY="${E2E_OVERLAY:-e2e}"
+
+# 判定 6 の置き場。`overlays/e2e-two-stores/config.yml` の `storage.stores` と同じ名前で、
+# PVC は `rokuban-media-<置き場>`、root は `/mnt/stores/<置き場>`。**環境変数で上書きさせない**
+# （サイト名と同じ理由。config.yml と食い違うと判定 6 は「対象が無い」に化ける）。
+E2E_STORE_A="tokyo"
+E2E_STORE_B="takamatsu"
+# 置き場で修飾するキュー（`internal/jobs` の置き場束縛キュー）。**リテラルで書く**。
+# `deploy/k8s/stores_test.go` の TestE2EStoreQueuesMatchJobs が `internal/jobs` と一致を固定している。
+E2E_STORE_QUEUES="cm_detect encode original storage thumbnail transfer ts_scan"
+
 # ツールボックスは Deployment（scaffold.yaml の理由）。exec の宛先。
 E2E_TOOLBOX="deploy/e2e-toolbox"
 
@@ -70,3 +85,12 @@ E2E_ENCODE_TITLE="e2e encode probe"
 # リポジトリのルート（このファイルの 3 つ上）。
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 E2E_DIR="${E2E_ROOT}/deploy/k8s/e2e"
+
+# 判定 6 の派生物の置き場（S3 互換の MinIO）。overlays/e2e-two-stores の `storage.stores.s3`
+# と同じ名前・同じ資格情報を使う。資格情報は rokuban-secrets の AWS_* に入れ、MinIO の
+# ルートユーザーにもそれを渡す（出どころは 1 か所）。**実 AWS の資格情報ではない**。
+E2E_S3_ACCESS_KEY="rokuban"
+E2E_S3_SECRET_KEY="rokuban-e2e-secret"
+# MinIO のイメージ名。overlays/e2e-two-stores/minio/deployment.yaml の `image:` と一致させる
+# （deploy/k8s/stores_test.go が両者の一致を見る）。
+E2E_MINIO_IMAGE="minio:e2e"

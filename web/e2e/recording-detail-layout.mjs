@@ -23,6 +23,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -51,7 +52,7 @@ const recording = {
   durationMs: 1_800_000,
   status: 'finished',
   keepOriginal: 'always',
-  hlsPlayback: [], cmDetection: { state: 'detected', ranges: [] },
+  media: recordingMedia(1, ['h264-720p', 'h264-cut']), hlsPlayback: [], cmDetection: { state: 'detected', ranges: [] },
   sizeBytes: 3_200_000_000,
   encodedAssets: [
     { profile: 'h264-720p', sizeBytes: 572_000_000 },

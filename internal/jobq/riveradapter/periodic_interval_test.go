@@ -24,10 +24,10 @@ func TestPeriodicJobsRunOnStartAndEveryInterval(t *testing.T) {
 	Register(registry, nopWorker[jobs.DeleteReconcileArgs]{})
 	adapter, err := NewAdapter(pool, registry, testQueueFor, Config{
 		Spec: jobq.WorkerSpec{
-			Queues: []jobq.QueueSpec{plainQueue(jobs.CleanupQueue, 1)},
+			Queues: []jobq.QueueSpec{plainQueue(jobs.CleanupQueue, 1), storeQueue(jobs.OriginalQueue, "test-store")},
 			PeriodicJobs: []jobq.PeriodicJobSpec{
 				{Interval: 300 * time.Millisecond, Args: jobs.LabelRuleReconcileArgs{}},
-				{Interval: time.Hour, Args: jobs.DeleteReconcileArgs{}},
+				{Interval: time.Hour, Args: jobs.DeleteReconcileArgs{Store: "test-store"}},
 			},
 		},
 		SchedulePeriodicJobs: true,

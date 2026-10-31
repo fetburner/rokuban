@@ -12,7 +12,7 @@ streamer は録画配信とライブ視聴を担い、置き場所もスケー�
 | 世代付き録画 HLS | メディアストレージの隣 | 既定 1 | 単一 Pod（増やすときは録画 id の consistent hash） | `Dockerfile.full` |
 | ライブ視聴 | mirakc に到達できる場所（WAN 越しの pull を許す） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
 
-単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。録画配信は現行の `/api/media/recordings`、世代付き録画 HLS は `/api/media/stores/<store>` の Prefix で分ける。ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して streamer Service へ振り分け、既存の URL を維持する。
+単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。派生物の配信は `/api/media/recordings`、原本のファイルと世代付き録画 HLS は `/api/media/stores/<store>` の Prefix で分ける。ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して streamer Service へ振り分け、既存の URL を維持する。
 
 世代付き録画 HLS の変換とキャッシュはプロセス内にある。同じ録画の master・playlist・セグメントの要求は同じ `rokuban-recording-hls` Pod に届く必要があるため、Deployment は 1 replica にする。置き場を追加するときは、その置き場の Prefix と専用 Pod / Service の組を追加する。replica を増やすときは、固定深さの URL から録画 id を取り、前段の consistent hash で同じ録画を同じ Pod に送る。cookie や ClientIP affinity は使わない。
 
@@ -44,7 +44,7 @@ publisher は `runOnDemand` が子プロセスとして起動する rokuban の�
 
 録画配信は DB からアセットを解決し、標準ライブラリのファイル配信で返す。sticky を書くと、数 GB の Range 読みという最も分散させたい経路で分散されなくなる。X-Accel-Redirect でバイト転送を前段に委ねる構成とも噛み合わない。
 
-アーカイブは単一である（[§4](storage.md) / [docs/storage.md](../storage.md) §5 の 2 階層。録画バッファはサイトごとのエッジ、アーカイブは 1 つ）。したがって**複数サイト構成でも録画配信の Pod は site 非依存**で、どの Pod でもどの録画を配れる。録画 ID は代理キーなのでサイト間で曖昧にならず、URL に site を持つ必要もない。
+原本は置き場ごとに別の Pod が配る（原本は規則しだいで複数の置き場に分かれる。[§4](storage.md) / [docs/storage.md](../storage.md) §5 の 2 階層）。したがって**録画配信の Pod は site 非依存だが、置き場には束縛する**。原本とコマの URL に置き場の名前を持つので、ingress は `/api/media/stores/<store>/` の Prefix で、その置き場をマウントした Pod へ送る。派生物（encoded・サムネイル・シークタイル）は置き場を含まない URL で、どの streamer でも配れる。録画 ID は代理キーなのでサイト間で曖昧にならず、URL に site を持つ必要もない。
 
 再生中に Pod が落ちてもクライアントは Range で再接続して継続する。決めるべきは `terminationGracePeriodSeconds` を進行中の転送を打ち切らない長さにすることだけである。
 

@@ -7,7 +7,6 @@ import { DropBadges, EncodeStatusBadges, IngestBadge, RecordingVerdictBadge } fr
 import { useCopyLink } from '@/lib/use-copy-link'
 import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
-import { recordingThumbnailURL } from '@/lib/recording-media'
 import { programTitle } from '@/lib/program-labels'
 import { sourceLabels } from '@/lib/recording-search'
 import type { RecordingView } from '@/lib/recording-view'
@@ -149,7 +148,7 @@ export function RecordingRow({
         />
       )}
       {/*
-        サムネイルは OpenAPI 外の streamer 経路。URL は recordingThumbnailURL が組み立てる。
+        サムネイルは OpenAPI 外の streamer 経路。URL は API が返す `recording.media.thumbnailUrl`。
         未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
         ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
         §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
@@ -163,7 +162,7 @@ export function RecordingRow({
       >
         {!trash && !thumbFailed ? (
           <img
-            src={recordingThumbnailURL(recording.id)}
+            src={recording.media.thumbnailUrl}
             alt=""
             className="size-full object-cover"
             loading="lazy"

@@ -48,8 +48,8 @@ func periodicTestSpec(sites ...string) jobq.WorkerSpec {
 		)
 	}
 	spec.PeriodicJobs = append(spec.PeriodicJobs,
-		jobq.PeriodicJobSpec{Interval: oneHour, Args: jobs.CatalogExportArgs{}},
-		jobq.PeriodicJobSpec{Interval: oneHour, Args: jobs.DeleteReconcileArgs{}},
+		jobq.PeriodicJobSpec{Interval: oneHour, Args: jobs.CatalogExportArgs{Store: "test-store"}},
+		jobq.PeriodicJobSpec{Interval: oneHour, Args: jobs.DeleteReconcileArgs{Store: "test-store"}},
 		jobq.PeriodicJobSpec{Interval: oneHour, Args: jobs.EncodeReconcileArgs{}},
 		jobq.PeriodicJobSpec{Interval: oneHour, Args: tsscan.ReconcileArgs{}},
 	)
@@ -77,7 +77,7 @@ func TestWorkerBuildConfigRejectsInvalidSpec(t *testing.T) {
 // 定期ジョブの kind が registry で解決できなければ、SchedulePeriodicJobs の値に関わらず拒む。
 func TestWorkerBuildConfigRejectsPeriodicKindNotInRegistry(t *testing.T) {
 	spec := siteSpec(1, "tokyo")
-	spec.PeriodicJobs = []jobq.PeriodicJobSpec{{Interval: oneHour, Args: jobs.DeleteReconcileArgs{}}}
+	spec.PeriodicJobs = []jobq.PeriodicJobSpec{{Interval: oneHour, Args: jobs.DeleteReconcileArgs{Store: "test-store"}}}
 	for _, schedule := range []bool{true, false} {
 		_, err := buildRegistryConfig(configTestRegistry(), testQueueFor, Config{Spec: spec, SchedulePeriodicJobs: schedule})
 		if err == nil || !strings.Contains(err.Error(), `"delete_reconcile"`) {
@@ -145,7 +145,7 @@ func TestWorkerBuildConfigQueueConcurrencyFollowsSpec(t *testing.T) {
 	}
 	for queue, want := range map[string]int{
 		"ingest_tokyo": 4, "ingest_takamatsu": 4,
-		"encode": 1, "thumbnail": 1, "default": 100, "cleanup": 2, "extra": 7,
+		"encode_test-store": 1, "thumbnail_test-store": 1, "default": 100, "cleanup": 2, "extra": 7,
 	} {
 		if got := cfg.Queues[queue].MaxWorkers; got != want {
 			t.Errorf("queue %q MaxWorkers = %d, want %d", queue, got, want)
@@ -169,7 +169,7 @@ func TestWorkerBuildConfigSubscribesEveryPhysicalQueueInSpec(t *testing.T) {
 			t.Errorf("unexpected physical queue %q in River config", name)
 		}
 	}
-	if got, want := len(cfg.Queues), 8+6; got != want {
+	if got, want := len(cfg.Queues), 8+7; got != want {
 		t.Errorf("len(Queues) = %d, want %d", got, want)
 	}
 }

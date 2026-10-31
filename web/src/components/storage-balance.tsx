@@ -12,7 +12,7 @@ import { useNow } from '@/lib/use-now'
 import {
   estimateAverageBitrate,
   estimateStorageForecast,
-  findMediaRoot,
+  findMediaRoots,
   forecastWindowDays,
   isObservationStale,
   recentBitrateSamples,
@@ -26,7 +26,7 @@ function StorageRootCapacity({ root, nowMs }: { root: StorageRoot; nowMs: number
   return (
     <section className="rounded-md border border-border p-3">
       <h3 className="mb-2 text-sm font-medium text-foreground">
-        {root.root === 'media' ? 'アーカイブ' : 'スクラッチ'}
+        {`${root.root === 'media' ? 'アーカイブ' : 'スクラッチ'}（${root.store}）`}
       </h3>
       <dl className="grid grid-cols-3 gap-3 text-xs">
         <div>
@@ -78,6 +78,9 @@ function StorageRootCapacity({ root, nowMs }: { root: StorageRoot; nowMs: number
  *    以下なら見込みの行自体を描かない（ドロップ統計バッジの「0 のものは出さない」
  *    規律と同じ。`docs/frontend/recordings.md`「ドロップ統計はバッジ + PID 表」）
  * 4. **見込み消費が残量に収まる**ときは満杯見込み日を出さない（下界主義）
+ * 5. **置き場が複数あるときは見込みを出さない。** 予約がどの置き場へ入るかは
+ *    `GET /api/reservations` からは決まらないので、残量と消費を対応づけられない。
+ *    残高（「空き」）は置き場ごとに出す。
  */
 export function StorageBalance({ compact = false }: { compact?: boolean }) {
   const storageQuery = useGetStorage()
@@ -88,18 +91,22 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
   const reservationsQuery = useListReservations()
 
   const roots = unwrap(storageQuery.data)
-  const media = roots === undefined ? undefined : findMediaRoot(roots)
-  const scratch = roots?.find((root) => root.root === 'scratch')
+  const mediaRoots = roots === undefined ? [] : findMediaRoots(roots)
+  const scratchRoots = roots === undefined ? [] : roots.filter((root) => root.root === 'scratch')
 
   // 1 時間の観測しきい値を遅くとも 30 秒後に表示へ反映する。再取得結果が同じでも
   // 時計が進むため、ストレージ予測窓と古さの判定が止まらない。
-  const nowMs = useNow({ intervalMs: 30_000, active: media !== undefined })
+  const nowMs = useNow({ intervalMs: 30_000, active: mediaRoots.length > 0 })
 
   // 観測なしで黙る（罠「観測時刻が古いときの表示を決める」の前段 --- 行そのものが
   // 無いときは古さの判定すら成立しない）。
-  if (media === undefined) return null
+  if (mediaRoots.length === 0) return null
 
-  const stale = isObservationStale(media.observedAt, nowMs)
+  // 警告は置き場のどれかが古ければ出す。要約の観測時刻は最も古いものを出す。
+  const stale = mediaRoots.some((root) => isObservationStale(root.observedAt, nowMs))
+  const oldestObserved = mediaRoots.reduce((oldest, root) =>
+    new Date(root.observedAt).getTime() < new Date(oldest.observedAt).getTime() ? root : oldest,
+  )
 
   const recordings = unwrap(recordingsQuery.data)
   const reservations = unwrap(reservationsQuery.data)
@@ -109,6 +116,9 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
   // 同じ沈黙の経路）。
   const averageBitrate =
     recordings === undefined ? undefined : estimateAverageBitrate(recentBitrateSamples(recordings))
+
+  // 見込みは置き場が 1 つのときだけ算出する（ルール 5）。
+  const singleMedia = mediaRoots.length === 1 ? mediaRoots[0] : undefined
 
   const windowStartMs = nowMs
   const windowEndMs = nowMs + forecastWindowDays * 24 * 60 * 60 * 1000
@@ -123,12 +133,15 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
       ? undefined
       : upcomingReservationSchedule(reservations, windowStartMs, windowEndMs)
 
-  const forecast = estimateStorageForecast({
-    availableBytes: media.availableBytes,
-    averageBitrate,
-    upcomingSchedule,
-    nowMs,
-  })
+  const forecast =
+    singleMedia === undefined
+      ? undefined
+      : estimateStorageForecast({
+          availableBytes: singleMedia.availableBytes,
+          averageBitrate,
+          upcomingSchedule,
+          nowMs,
+        })
 
   // 通常時の見込みは compact なら常に展開側へ移す（満杯見込み・stale の観測は
   // 警告なので別枠のまま summary に残る。この変数を hasWarning に依存させると
@@ -137,6 +150,7 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
   const showForecastInSummary = !compact
   const showObservationInSummary = !compact || stale
   const forecastSummary =
+    forecast !== undefined &&
     forecast.hasEstimate &&
     forecast.projectedConsumptionBytes !== undefined &&
     forecast.projectedConsumptionBytes > 0 ? (
@@ -166,15 +180,18 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
           'pointer-coarse:min-h-11',
         )}
       >
-        <span>
-          空き <span className="font-medium text-foreground">{formatBytes(media.availableBytes)}</span>
-        </span>
+        {mediaRoots.map((root) => (
+          <span key={root.store}>
+            {mediaRoots.length > 1 ? `${root.store} ` : ''}空き{' '}
+            <span className="font-medium text-foreground">{formatBytes(root.availableBytes)}</span>
+          </span>
+        ))}
 
         {/* projectedConsumptionBytes > 0 を条件にする（0 のものは出さない。
             予約が正当に 0 件のときも「+0 B の見込み」を描かない）。 */}
         {showForecastInSummary && forecastSummary}
 
-        {forecast.exceedsAvailable && forecast.fullAtMs !== undefined && (
+        {forecast !== undefined && forecast.exceedsAvailable && forecast.fullAtMs !== undefined && (
           <span className="flex items-center gap-1 text-warning">
             <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
             満杯見込み: {formatDate(new Date(forecast.fullAtMs).toISOString())}頃
@@ -187,7 +204,7 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
             title={stale ? '観測ループが止まっている可能性があります' : undefined}
           >
             {stale && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
-            観測: {formatDateTime(media.observedAt)}
+            観測: {formatDateTime(oldestObserved.observedAt)}
             {stale && '（古い可能性）'}
           </span>
         )}
@@ -211,8 +228,12 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
         <div className="flex flex-wrap gap-x-3 gap-y-1 pb-2">{forecastSummary}</div>
       )}
       <div className={cn('grid gap-2 pb-3 sm:grid-cols-2', !compact && 'px-4')}>
-        <StorageRootCapacity root={media} nowMs={nowMs} />
-        {scratch !== undefined && <StorageRootCapacity root={scratch} nowMs={nowMs} />}
+        {mediaRoots.map((root) => (
+          <StorageRootCapacity key={`media:${root.store}`} root={root} nowMs={nowMs} />
+        ))}
+        {scratchRoots.map((root) => (
+          <StorageRootCapacity key={`scratch:${root.store}`} root={root} nowMs={nowMs} />
+        ))}
       </div>
     </details>
   )

@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 判定 6 の派生物の置き場（S3 互換）。overlays/e2e-two-stores/kustomization.yaml が 1 つだけ読む。
+resources:
+  - deployment.yaml
+  - service.yaml
+  - bucket-job.yaml

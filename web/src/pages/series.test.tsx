@@ -111,6 +111,7 @@ function shelf(
     unwatchedCount: 0,
     latestStartAt,
     representativeId,
+    thumbnailUrl: `/api/media/recordings/${representativeId}/thumbnail?fixture=1`,
   }
 }
 
@@ -161,6 +162,15 @@ describe('SeriesPage', () => {
       'href',
       '/recordings/11/series',
     )
+  })
+
+  it('サムネイルは棚が返した thumbnailUrl をそのまま使う', async () => {
+    stubApi(shelves)
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const content = await screen.findByTestId('page-content')
+    const link = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
+    expect(link.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/11/thumbnail?fixture=1')
   })
 
   it('既定は新着順で、件数順・名前順へ切り替えられる（先頭が 3 通りとも異なる）', async () => {

@@ -170,6 +170,17 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	// 昇順なので、ここで候補録画を一度だけ数える。RowLimit は profile 行数ではなく
 	// この録画数に適用され、window の再開位置も録画単位で進む。
 	candidates := make([]int64, 0, len(missing))
+	for _, row := range missing {
+		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
+			candidates = append(candidates, row.RecordingID)
+		}
+	}
+	// 投入先の置き場は、原本のコピーがある置き場。候補の件数に比例して問い合わせないよう、まとめて引く。
+	originalStores, err := originalStoresOf(ctx, w.Media, candidates)
+	if err != nil {
+		return fmt.Errorf("encode reconcile: %w", err)
+	}
+	candidates = candidates[:0]
 	rebuildQueued, failed := 0, 0
 	cutSet := w.Profiles.CutProfileSet()
 	for _, row := range missing {
@@ -199,7 +210,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 				}
 			}
 		}
-		args, err := newEncodeJobArgs(ctx, w.Media, row.RecordingID, row.Profile, w.Profiles)
+		args, err := newEncodeJobArgs(ctx, w.Media, row.RecordingID, originalStores[row.RecordingID], row.Profile, w.Profiles)
 		if err != nil {
 			failed++
 			slog.Error("encode_reconcile: building encode job args",

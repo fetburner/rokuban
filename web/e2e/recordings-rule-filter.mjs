@@ -26,6 +26,7 @@ import {
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -74,7 +75,7 @@ const recording = {
   status: 'finished',
   encodeProfiles: ['cut'],
   encodeStatus: [{ profile: 'cut', state: 'awaiting_review' }],
-  keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' },
+  keepOriginal: 'always', media: recordingMedia(1, []), hlsPlayback: [], cmDetection: { state: 'disabled' },
   createdAt: '2026-01-02T12:30:00Z',
 }
 const regularRecording = {
@@ -87,6 +88,7 @@ const regularRecording = {
 const encodeQueue = { queued: 0, running: 0, awaitingReview: 1 }
 const encodeStateRequests = []
 const storageRoot = {
+  store: 'takamatsu',
   root: 'media',
   path: '/media',
   totalBytes: 1_000_000_000_000,

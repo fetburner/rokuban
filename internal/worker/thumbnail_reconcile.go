@@ -58,6 +58,14 @@ type ThumbnailReconcileWorker struct {
 	RowLimit int32
 }
 
+// enqueueThumbnail は原本のコピーがある置き場（storeName。無ければ空）のキューへ thumbnail を積む。
+func (w *ThumbnailReconcileWorker) enqueueThumbnail(ctx context.Context, recordingID int64, storeName string) error {
+	if storeName == "" {
+		return errNoActiveOriginal
+	}
+	return enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: recordingID, Store: storeName})
+}
+
 // Work は thumbnail reconcile を全件または指定録画について実行する。
 //
 // missing thumbnail、thumbnail の再選択、seek_tiles は recording_id 単位で独立に
@@ -109,8 +117,12 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 	}
 
 	failed := 0
+	missingStores, err := originalStoresOf(ctx, w.Media, rows)
+	if err != nil {
+		return fmt.Errorf("thumbnail reconcile: %w", err)
+	}
 	for _, recordingID := range rows {
-		if err := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: recordingID}); err != nil {
+		if err := w.enqueueThumbnail(ctx, recordingID, missingStores[recordingID]); err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: failed to enqueue missing thumbnail",
 				"recording_id", recordingID, "err", err)
@@ -125,7 +137,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		if !thumbnailNeedsReselect(row.SeekMs, inputs, timeline) {
 			continue
 		}
-		if err := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: row.RecordingID}); err != nil {
+		if err := w.enqueueThumbnail(ctx, row.RecordingID, row.OriginalStore); err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: failed to enqueue reselection",
 				"recording_id", row.RecordingID, "err", err)
@@ -216,8 +228,19 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 		return 1, after, false, false
 	}
 
+	tileStores, err := originalStoresOf(ctx, w.Media, rows)
+	if err != nil {
+		slog.Error("thumbnail_reconcile: locating originals for seek tiles failed", "err", err)
+		return 1, after, false, false
+	}
 	for _, recordingID := range rows {
-		if err := enqueueJob(ctx, enqueuer, jobs.SeekTilesJobArgs{RecordingID: recordingID}); err != nil {
+		var err error
+		if storeName := tileStores[recordingID]; storeName == "" {
+			err = errNoActiveOriginal
+		} else {
+			err = enqueueJob(ctx, enqueuer, jobs.SeekTilesJobArgs{RecordingID: recordingID, Store: storeName})
+		}
+		if err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: failed to enqueue missing seek tiles",
 				"recording_id", recordingID, "err", err)

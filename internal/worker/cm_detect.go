@@ -76,8 +76,10 @@ type CMDetectWorker struct {
 	Enqueuer       jobq.Enqueuer
 	DetectionStore store.CMDetection
 	MediaDir       string
-	ScratchDir     string
-	CMDetect       config.CMDetectConfig
+	// StoreName は MediaDir の置き場。検出後に積むサムネイルの物理キューの置き場になる。
+	StoreName  string
+	ScratchDir string
+	CMDetect   config.CMDetectConfig
 	// FFprobe は原本の実尺を読む ffprobe のパス（空なら PATH の ffprobe）。
 	FFprobe string
 }
@@ -282,7 +284,7 @@ func (w *CMDetectWorker) detect(
 	if saved {
 		// CM ranges make an existing thumbnail eligible for reselection. This is only
 		// a hint; thumbnail_reconcile remains the durable backstop if enqueueing fails.
-		if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID}); enqueueErr != nil {
+		if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID, Store: w.StoreName}); enqueueErr != nil {
 			slog.Warn("cm_detect: failed to enqueue thumbnail reselection hint",
 				"recording_id", item.ID, "err", enqueueErr)
 		}

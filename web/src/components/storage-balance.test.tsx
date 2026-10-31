@@ -1,6 +1,7 @@
 import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { recordingMedia } from '@/test/recording-media'
 
 import {
   useGetStorage,
@@ -40,6 +41,7 @@ function iso(offsetMs: number): string {
 
 function mediaRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
   return {
+    store: 'takamatsu',
     root: 'media',
     path: '/media',
     totalBytes: 1_000_000_000_000,
@@ -52,6 +54,7 @@ function mediaRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
 
 function scratchRoot(overrides: Partial<StorageRoot> = {}): StorageRoot {
   return {
+    store: 'takamatsu',
     root: 'scratch',
     path: '/scratch',
     totalBytes: 500_000_000_000,
@@ -79,6 +82,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     status: 'finished',
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(overrides.id ?? 1, overrides.encodedAssets),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-08-01T00:00:00Z',
     sizeBytes: 900_000_000, // 900MB / 30分
@@ -210,8 +214,8 @@ describe('StorageBalance', () => {
     await user.click(summary)
 
     expect(details).toHaveAttribute('open')
-    expect(screen.getByText('アーカイブ')).toBeInTheDocument()
-    expect(screen.getByText('スクラッチ')).toBeInTheDocument()
+    expect(screen.getByText('アーカイブ（takamatsu）')).toBeInTheDocument()
+    expect(screen.getByText('スクラッチ（takamatsu）')).toBeInTheDocument()
     expect(screen.getByText('186.3 GB')).toBeInTheDocument()
   })
 
@@ -366,6 +370,57 @@ describe('StorageBalance', () => {
     await renderSettled('success success success')
 
     expect(screen.getByText(/満杯見込み/)).toBeInTheDocument()
+  })
+
+  // 置き場が 2 つ（takamatsu / tokyo）のとき、先頭の置き場だけを描く（旧 `find` の挙動）と
+  // 2 つ目の置き場の残高が画面から消える。ここでは両方の残高と、両方の詳細行を確認する。
+  it('置き場が複数あれば、残高と詳細を置き場ごとに出す', async () => {
+    const user = userEvent.setup()
+    mockApis({
+      storage: [
+        mediaRoot({ store: 'takamatsu', availableBytes: 931_000_000_000 }),
+        mediaRoot({ store: 'tokyo', availableBytes: 500_000_000_000 }),
+        scratchRoot({ store: 'takamatsu' }),
+        scratchRoot({ store: 'tokyo' }),
+      ],
+    })
+
+    await renderSettled('success success success')
+
+    const summary = screen.getByText('ストレージ詳細').closest('summary')
+    expect(summary).toHaveTextContent('takamatsu 空き 867.1 GB')
+    expect(summary).toHaveTextContent('tokyo 空き 465.7 GB')
+
+    await user.click(screen.getByText('ストレージ詳細'))
+
+    expect(screen.getByText('アーカイブ（takamatsu）')).toBeInTheDocument()
+    expect(screen.getByText('アーカイブ（tokyo）')).toBeInTheDocument()
+    expect(screen.getByText('スクラッチ（takamatsu）')).toBeInTheDocument()
+    expect(screen.getByText('スクラッチ（tokyo）')).toBeInTheDocument()
+  })
+
+  // 見込み消費は 1 つの置き場の残量に対してしか意味を持たない（予約の置き場は API から決まらない）。
+  // 残量が足りないほど大きな予約があっても、置き場が 2 つなら満杯見込みも +見込みも出さない。
+  it('置き場が複数あるときは満杯見込みを出さない（どの置き場に入るか決められないため）', async () => {
+    mockApis({
+      storage: [
+        mediaRoot({ store: 'takamatsu', availableBytes: 100_000_000 }),
+        mediaRoot({ store: 'tokyo', availableBytes: 100_000_000 }),
+      ],
+      recordings: [recording()],
+      reservations: Array.from({ length: 7 }, (_, i) =>
+        reservation({
+          programId: i + 1,
+          startAt: iso(i * 24 * 60 * 60 * 1000 + 1000),
+        }),
+      ),
+    })
+
+    await renderSettled('success success success')
+
+    expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/満杯見込み/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/の見込み/)).not.toBeInTheDocument()
   })
 
   it('観測が古い（1 時間超）ときは古い可能性を表示する', async () => {

@@ -74,6 +74,7 @@ import {
   log,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
+  recordingMedia,
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
@@ -195,6 +196,7 @@ const toastLayoutProgram = {
 const encodeQueue = { queued: 2, running: 1, awaitingReview: 1 }
 const storageRoots = [
   {
+    store: 'takamatsu',
     root: 'media',
     path: '/media',
     totalBytes: 1_000_000_000_000,
@@ -203,6 +205,7 @@ const storageRoots = [
     observedAt: iso(nowMs),
   },
   {
+    store: 'takamatsu',
     root: 'scratch',
     path: '/scratch',
     totalBytes: 500_000_000_000,
@@ -318,11 +321,11 @@ const expectedVisibleLabelTexts = ['BS-1', 'GR-1', 'CS-3', 'GR-2']
  * 「NHK高校講座」は分類ルール（下）が勝つ棚＝「手動」の札が付く側。
  */
 const seriesShelves = [
-  { value: 'NHK高校講座', title: 'NHK高校講座　日本史　第1回', count: 120, playableCount: 100, unwatchedCount: 20, latestStartAt: '2026-08-10T10:00:00Z', representativeId: 11 },
-  { value: 'ドラマ', title: 'ドラマ　夜のさざなみ　第3話', count: 40, playableCount: 38, unwatchedCount: 5, latestStartAt: '2026-08-11T13:00:00Z', representativeId: 12 },
-  { value: '作品X', title: 'アニメ　作品X　第2話', count: 12, playableCount: 0, unwatchedCount: 0, latestStartAt: '2026-08-12T12:30:00Z', representativeId: 13 },
-  { value: '単発', title: '単発の特番', count: 1, playableCount: 1, unwatchedCount: 1, latestStartAt: '2026-08-09T09:00:00Z', representativeId: 14 },
-  { title: '【特集】', count: 2, playableCount: 0, unwatchedCount: 2, latestStartAt: '2026-08-12T13:00:00Z', representativeId: 15 },
+  { value: 'NHK高校講座', title: 'NHK高校講座　日本史　第1回', count: 120, playableCount: 100, unwatchedCount: 20, latestStartAt: '2026-08-10T10:00:00Z', representativeId: 11, thumbnailUrl: '/api/media/recordings/11/thumbnail' },
+  { value: 'ドラマ', title: 'ドラマ　夜のさざなみ　第3話', count: 40, playableCount: 38, unwatchedCount: 5, latestStartAt: '2026-08-11T13:00:00Z', representativeId: 12, thumbnailUrl: '/api/media/recordings/12/thumbnail' },
+  { value: '作品X', title: 'アニメ　作品X　第2話', count: 12, playableCount: 0, unwatchedCount: 0, latestStartAt: '2026-08-12T12:30:00Z', representativeId: 13, thumbnailUrl: '/api/media/recordings/13/thumbnail' },
+  { value: '単発', title: '単発の特番', count: 1, playableCount: 1, unwatchedCount: 1, latestStartAt: '2026-08-09T09:00:00Z', representativeId: 14, thumbnailUrl: '/api/media/recordings/14/thumbnail' },
+  { title: '【特集】', count: 2, playableCount: 0, unwatchedCount: 2, latestStartAt: '2026-08-12T13:00:00Z', representativeId: 15, thumbnailUrl: '/api/media/recordings/15/thumbnail' },
 ]
 const seriesLabelRules = [
   { id: 1, key: 'series', keyword: '日本史', value: 'NHK高校講座 日本史', priority: 5, valueKey: 'NHK高校講座', createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z' },
@@ -331,15 +334,15 @@ const seriesLabelRules = [
 ]
 
 const recordings = [
-  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
+  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', media: recordingMedia(11, []), hlsPlayback: [], cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
   // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', description: '番組の内容を補う説明です。画面幅が 360px のときも本文を読みやすい文字サイズで折り返し、詳細欄が横にはみ出さないことを確認するための文章です。', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
-  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', description: '番組の内容を補う説明です。画面幅が 360px のときも本文を読みやすい文字サイズで折り返し、詳細欄が横にはみ出さないことを確認するための文章です。', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', media: recordingMedia(12, ['hevc-1080p']), hlsPlayback: [], cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', media: recordingMedia(13, []), hlsPlayback: [], cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
   // 原本・エンコード資産のない録画。結論の「準備中」バッジのコントラスト測定に使う。
-  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, sizeBytes: undefined, ingest: { state: 'pending' }, createdAt: iso(nowMs - 74 * HOUR) },
+  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', media: recordingMedia(14, []), hlsPlayback: [], cmDetection: { state: 'disabled' }, sizeBytes: undefined, ingest: { state: 'pending' }, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
 // `homeModeFixture` の警告一覧は、失敗録画・orphaned 予約・容量超過・ドロップの順。
@@ -501,7 +504,7 @@ const transferringRecording = {
   startAt: iso(nowMs - 10 * HOUR),
   durationMs: 1_800_000,
   status: 'finished',
-  keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' },
+  keepOriginal: 'always', media: recordingMedia(15, []), hlsPlayback: [], cmDetection: { state: 'disabled' },
   createdAt: iso(nowMs - 10 * HOUR),
   ingest: {
     state: 'transferring',

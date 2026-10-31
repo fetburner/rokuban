@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
@@ -49,7 +51,13 @@ func (s *Streamer) RecordingFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := s.media.GetOriginalMediaAssetForServing(r.Context(), id)
+	storeName := chi.URLParam(r, "store")
+	root, mounted := s.cfg.MediaRoots[storeName]
+	if !mounted {
+		http.NotFound(w, r)
+		return
+	}
+	row, err := s.media.GetOriginalMediaAssetForServingInStore(r.Context(), id, storeName)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
@@ -59,7 +67,7 @@ func (s *Streamer) RecordingFrame(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	path, err := mediapath.Resolve(s.cfg.MediaDir, row.RelPath)
+	path, err := mediapath.Resolve(root, row.RelPath)
 	if err != nil {
 		slog.Error("streamer: rejecting rel_path outside the media directory",
 			"recording_id", id, "rel_path", row.RelPath, "err", err)

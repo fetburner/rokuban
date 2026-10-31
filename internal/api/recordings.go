@@ -295,6 +295,7 @@ func recordingFromListFields(r store.RecordingQueryRow, includeDeletedAt bool, p
 		return Recording{}, err
 	}
 	rec.CmDetection = cmDetection
+	rec.Media = recordingMediaURLs(r, nil)
 	if includeDeletedAt {
 		rec.DeletedAt = utcTimePtr(r.DeletedAt)
 	}
@@ -374,6 +375,7 @@ func recordingFromListFields(r store.RecordingQueryRow, includeDeletedAt bool, p
 				assets[i].CutStale = &stale
 			}
 			rec.EncodedAssets = &assets
+			rec.Media = recordingMediaURLs(r, encodedProfileNames)
 		}
 	}
 	// 凍結された desired 一覧。空なら省略（omitempty）。UI が「追加済み」を

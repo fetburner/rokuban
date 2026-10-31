@@ -29,7 +29,7 @@ func (s *Media) ListMissingTSScanRecordings(ctx context.Context, afterRecordingI
 	rows, err := sqlcgen.New(s.pool).ListMissingTSScanRecordings(ctx, sqlcgen.ListMissingTSScanRecordingsParams{
 		AfterRecordingID: afterRecordingID,
 		RowLimit:         limit,
-		StoreName:        s.storeName,
+		StoreName:        mediaStoreNameArg(s.storeName),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing missing TS scan recordings: %w", err)

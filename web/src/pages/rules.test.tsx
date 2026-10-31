@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getListReservationsQueryKey, getListRulesQueryKey } from '@/api/generated'
+import { recordingMedia } from '@/test/recording-media'
 import type {
   CapacityOverage,
   EncodeProfileSummary,
@@ -81,6 +82,7 @@ function sampleRecording(
     status,
     keepOriginal: 'always',
     hlsPlayback: [],
+    media: recordingMedia(id),
     cmDetection: { state: 'disabled' },
     createdAt: '2026-09-01T00:00:00Z',
   }

@@ -62,8 +62,8 @@ func TestCatalogExportArgs_KindAndQueue(t *testing.T) {
 		t.Errorf("Kind = %q", args.Kind())
 	}
 	spec := args.Spec()
-	if spec.Queue != "cleanup" {
-		t.Errorf("Spec().Queue = %q, want %q", spec.Queue, "cleanup")
+	if spec.Queue != "original" {
+		t.Errorf("Spec().Queue = %q, want %q", spec.Queue, "original")
 	}
 	if !spec.Coalesce {
 		t.Error("Spec().Coalesce should be true")
