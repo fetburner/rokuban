@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -151,5 +152,32 @@ func TestEncodeReconcileQueuesForTheStoreHoldingTheOriginal(t *testing.T) {
 	queue, err := jobs.PhysicalQueueFor(got)
 	if err != nil || queue != "encode_takamatsu" {
 		t.Fatalf("PhysicalQueueFor = %q, %v; want encode_takamatsu", queue, err)
+	}
+}
+
+type failingStoreChooser struct{}
+
+func (failingStoreChooser) DesiredOriginalStoreAtIngest(context.Context, []byte, string, string) (string, error) {
+	return "", errors.New("rules query failed")
+}
+
+// 規則の評価が失敗しても ingest は止まらず、先頭のマウント済みの置き場へ書く。
+func TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail(t *testing.T) {
+	policy := config.StorageConfig{
+		Stores:    map[string]config.StoreConfig{"tokyo": {Kind: "fs"}, "takamatsu": {Kind: "fs"}, "nagoya": {Kind: "fs"}},
+		Originals: []config.OriginalStoreRule{{Store: "nagoya"}},
+		Derived:   "tokyo",
+	}
+	var calls []string
+	perStore := map[string]*Deps{"tokyo": {MediaStoreName: "tokyo"}, "takamatsu": {MediaStoreName: "takamatsu"}}
+	deps := &Deps{PerStore: perStore, IngestStores: failingStoreChooser{}, StorageTransferPolicy: policy}
+	route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
+		return ingestRecorder{store: d.MediaStoreName, calls: &calls}
+	})
+	if err := route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}); err != nil {
+		t.Fatalf("Work = %v, want ingest to proceed past a failed store choice", err)
+	}
+	if got, want := strings.Join(calls, ","), "takamatsu"; got != want {
+		t.Fatalf("ingest wrote to %s, want literal %s (the first mounted store)", got, want)
 	}
 }

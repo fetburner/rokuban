@@ -74,10 +74,13 @@ func runCancelLegacyQueues(ctx context.Context, pool *pgxpool.Pool, out io.Write
 	if err != nil {
 		return err
 	}
-	cancelled, err := adapter.CancelQueued(ctx, legacyQueueSelectors())
+	cancelled, running, err := adapter.CancelQueued(ctx, legacyQueueSelectors())
 	if err != nil {
 		return fmt.Errorf("cancelling legacy queue jobs: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "cancelled %d job(s) in the legacy unqualified queues\n", cancelled)
+	if running > 0 {
+		_, _ = fmt.Fprintf(out, "%d job(s) are still running and were not cancelled; run cancel-legacy again after they finish\n", running)
+	}
 	return nil
 }
