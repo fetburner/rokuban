@@ -19,7 +19,7 @@ JOIN media_assets a ON a.id = c.media_asset_id
 JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path = $1
   AND c.store = $2
-ORDER BY (c.state = 'deleted')::boolean DESC, a.id DESC
+ORDER BY (c.state <> 'deleted')::boolean DESC, a.id DESC
 LIMIT 1
 `
 
@@ -41,10 +41,11 @@ type GetInPlaceAssetByRelPathRow struct {
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
 // Bytes are already under storage.media_dir; these queries only publish DB rows.
 // media_asset_copies_store_rel_path_idx は state <> 'deleted' の部分索引なので、
-// tombstone を検出するこの lookup は意図的に述語を外す。deleted 行を見落とすと
-// 削除済み path を再利用でき、古い delete work が新しいファイルを unlink しうる。
-// 同じ path に過去の再利用による live 行もあれば tombstone を優先する。
-// そのため seq scan を許容する。表が大きくなったら tombstone lookup 用の非部分索引を検討する。
+// tombstone を検出するこの lookup は意図的に述語を外す。同じ path に過去の再利用による
+// live 行と tombstone が並ぶことがあるため、live 行を優先する（live なら従来どおり冪等に
+// 通す）。tombstone しか無いときだけ呼び出し側が拒否する。tombstone を優先すると、
+// 正常に登録済みのファイルが拒否される。そのため seq scan を許容する。
+// 表が大きくなったら tombstone lookup 用の非部分索引を検討する。
 func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAssetByRelPathParams) (GetInPlaceAssetByRelPathRow, error) {
 	row := q.db.QueryRow(ctx, getInPlaceAssetByRelPath, arg.RelPath, arg.StoreName)
 	var i GetInPlaceAssetByRelPathRow

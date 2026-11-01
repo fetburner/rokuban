@@ -357,16 +357,7 @@ func TestRegisterInPlaceRejectsTombstonedPathButAllowsRenamedPath(t *testing.T) 
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, first.AssetIDs[0], dbtest.StoreName); err != nil {
 		t.Fatalf("creating path tombstone: %v", err)
 	}
-	// Legacy path reuse can leave an active copy beside a tombstone. The
-	// tombstone still blocks registration because an old delete work may unlink it.
-	profile := "h264"
-	legacyRecordingID := dbtest.Recording(t, pool)
-	legacyAssetID := dbtest.MediaAsset(t, pool, legacyRecordingID, func(p *dbtest.MediaAssetParams) {
-		p.Kind = string(store.AssetKindEncoded)
-		p.Profile = &profile
-	})
-	dbtest.SetMediaAssetRelPath(t, pool, legacyAssetID, originalPath)
-
+	// 同じ path に生きた行が無いので、tombstone だけで拒否される。
 	_, err = media.RegisterInPlace(ctx, input)
 	if !errors.Is(err, store.ErrConflict) || !errors.Is(err, store.ErrInPlacePathTombstoned) {
 		t.Fatalf("RegisterInPlace over tombstoned path error = %v, want conflict and tombstone errors", err)

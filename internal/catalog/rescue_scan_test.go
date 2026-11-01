@@ -597,6 +597,55 @@ func TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
 
 // 既存の資産と両立しないファイル（ごみ箱の録画に属する）は ErrConflict で拒否される。
 // そのファイルだけを飛ばして件数に出し、後続のファイルは登録して走査を続ける。
+func TestRescueLatest_LiveAssetBesideTombstoneIsNotSkipped(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t)
+	dir := filepath.Join(mediaDir, "sites", "default", "archive")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relPath := "sites/default/archive/a.m2ts"
+	if err := os.WriteFile(filepath.Join(mediaDir, filepath.FromSlash(relPath)), []byte("bytes a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func() *RescueResult {
+		t.Helper()
+		res, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
+		if err != nil {
+			t.Fatalf("RescueLatest: %v", err)
+		}
+		return res
+	}
+	run()
+
+	// 過去の rel_path 再利用を模して、同じ path に tombstone を後から足す。
+	// tombstone の id を live 行より大きくして、id DESC だけでは tombstone が先に選ばれる配置にする。
+	tombstoneRecordingID := dbtest.Recording(t, pool)
+	tombstoneAssetID := dbtest.MediaAsset(t, pool, tombstoneRecordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "sites/default/archive/old.m2ts"
+		p.SizeBytes = 7
+	})
+	dbtest.SetMediaAssetState(t, pool, tombstoneAssetID, "deleted")
+	dbtest.SetMediaAssetRelPath(t, pool, tombstoneAssetID, relPath)
+	var assetsBefore int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assetsBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	res := run()
+	if res.SkippedTombstonedFiles != 0 || res.SkippedConflictingFiles != 0 {
+		t.Fatalf("rescan skipped tombstoned %d, conflicting %d files; want 0 and 0 when a live row exists at the path",
+			res.SkippedTombstonedFiles, res.SkippedConflictingFiles)
+	}
+	var assetsAfter int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assetsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if assetsAfter != assetsBefore {
+		t.Fatalf("media_assets rows = %d, want %d unchanged by an idempotent rescan", assetsAfter, assetsBefore)
+	}
+}
+
 func TestRescueLatest_ConflictSkipsOnlyThatFileAndContinues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := newTestMediaDir(t)
