@@ -33,14 +33,17 @@ type fakeAPI struct {
 	uploadPartErrs []error
 	// abortErrs は AbortMultipartUpload の応答を呼び出し順に返す。nil は成功。空なら成功する。
 	abortErrs []error
+	// listPartsErrs は ListParts の応答を呼び出し順に返す。nil は成功（残りがある）。空なら NoSuchUpload（Abort 済みで残りが無い）。
+	listPartsErrs []error
 	// parts は成功した UploadPart の内容を番号ごとに保存する。
-	parts         map[int32][]byte
-	headCalls     int
-	completeCalls int
-	abortCalls    int
-	putPartCalls  int
-	putCalls      int
-	mutationCalls int
+	parts          map[int32][]byte
+	headCalls      int
+	completeCalls  int
+	abortCalls     int
+	listPartsCalls int
+	putPartCalls   int
+	putCalls       int
+	mutationCalls  int
 }
 
 func (f *fakeAPI) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -125,6 +128,19 @@ func (f *fakeAPI) AbortMultipartUpload(context.Context, *s3.AbortMultipartUpload
 		return &s3.AbortMultipartUploadOutput{}, err
 	}
 	return &s3.AbortMultipartUploadOutput{}, nil
+}
+
+func (f *fakeAPI) ListParts(context.Context, *s3.ListPartsInput, ...func(*s3.Options)) (*s3.ListPartsOutput, error) {
+	f.listPartsCalls++
+	if len(f.listPartsErrs) > 0 {
+		err := f.listPartsErrs[0]
+		f.listPartsErrs = f.listPartsErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+		return &s3.ListPartsOutput{}, nil
+	}
+	return nil, &smithy.GenericAPIError{Code: "NoSuchUpload", Message: "gone", Fault: smithy.FaultClient}
 }
 
 type fakePresigner struct{}

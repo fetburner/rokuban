@@ -54,6 +54,7 @@ type api interface {
 	UploadPart(context.Context, *s3.UploadPartInput, ...func(*s3.Options)) (*s3.UploadPartOutput, error)
 	CompleteMultipartUpload(context.Context, *s3.CompleteMultipartUploadInput, ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error)
 	AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error)
+	ListParts(context.Context, *s3.ListPartsInput, ...func(*s3.Options)) (*s3.ListPartsOutput, error)
 }
 
 type presigner interface {
@@ -697,7 +698,9 @@ func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
 	}
 }
 
-// AbortUpload は UploadId を 1 回 Abort する。NoSuchUpload なら gone、成功なら送信中のパートが残りうるので gone は false。
+// AbortUpload は UploadId を 1 回 Abort し、ListParts で残りを確かめる。
+// Abort が成功しても送信中のパートが残りうるうえ、Abort 済みの UploadId を再度 Abort しても成功しうる（MinIO）。
+// そこで AWS のリファレンスが勧めるとおり、Abort の後の ListParts が NoSuchUpload を返したときだけ gone にする。
 func (s *Store) AbortUpload(ctx context.Context, raw []byte) (bool, error) {
 	st, err := decodeUploadState(raw)
 	if err != nil {
@@ -706,16 +709,22 @@ func (s *Store) AbortUpload(ctx context.Context, raw []byte) (bool, error) {
 	if st.UploadID == "" {
 		return true, nil
 	}
-	_, err = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
-		Bucket: aws.String(s.bucket), Key: aws.String(st.Key), UploadId: aws.String(st.UploadID),
+	bucket, uploadID := aws.String(s.bucket), aws.String(st.UploadID)
+	if _, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket: bucket, Key: aws.String(st.Key), UploadId: uploadID,
+	}); err != nil && !isNoSuchUpload(err) {
+		return false, withCredentialClass(fmt.Errorf("aborting S3 multipart upload for %q: %w", st.Key, err))
+	}
+	_, err = s.client.ListParts(ctx, &s3.ListPartsInput{
+		Bucket: bucket, Key: aws.String(st.Key), UploadId: uploadID,
 	})
 	switch {
-	case err == nil:
-		return false, nil
 	case isNoSuchUpload(err):
 		return true, nil
+	case err != nil:
+		return false, withCredentialClass(fmt.Errorf("listing parts of S3 multipart upload for %q: %w", st.Key, err))
 	default:
-		return false, withCredentialClass(fmt.Errorf("aborting S3 multipart upload for %q: %w", st.Key, err))
+		return false, nil
 	}
 }
 

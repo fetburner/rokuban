@@ -42,14 +42,15 @@ const (
 )
 
 const (
-	featureConditionalWrites = "conditional-writes"
-	featureMultipart         = "multipart-upload-and-abort"
-	featureMultipartResume   = "multipart-resume"
-	featureHeadChecksum      = "head-checksum-sha256"
-	featurePresignedRange    = "presigned-get-range"
+	featureConditionalWrites  = "conditional-writes"
+	featureMultipart          = "multipart-upload-and-abort"
+	featureMultipartAbortGone = "multipart-abort-gone"
+	featureMultipartResume    = "multipart-resume"
+	featureHeadChecksum       = "head-checksum-sha256"
+	featurePresignedRange     = "presigned-get-range"
 )
 
-var featureNames = []string{featureConditionalWrites, featureMultipart, featureMultipartResume, featureHeadChecksum, featurePresignedRange}
+var featureNames = []string{featureConditionalWrites, featureMultipart, featureMultipartAbortGone, featureMultipartResume, featureHeadChecksum, featurePresignedRange}
 
 type featureResult struct {
 	Feature string            `json:"feature"`
@@ -92,6 +93,7 @@ func TestS3Conformance(t *testing.T) {
 	}{
 		{featureConditionalWrites, func(t *testing.T) (featureResult, error) { return probeConditionalWrites(t, ctx, tg) }},
 		{featureMultipart, func(t *testing.T) (featureResult, error) { return probeMultipart(t, ctx, tg) }},
+		{featureMultipartAbortGone, func(t *testing.T) (featureResult, error) { return probeMultipartAbortGone(t, ctx, tg) }},
 		{featureMultipartResume, func(t *testing.T) (featureResult, error) { return probeMultipartResume(t, ctx, tg) }},
 		{featureHeadChecksum, func(t *testing.T) (featureResult, error) { return probeHeadChecksum(t, ctx, tg) }},
 		{featurePresignedRange, func(t *testing.T) (featureResult, error) { return probePresignedRange(t, ctx, tg) }},
@@ -543,6 +545,69 @@ func probeMultipartAbort(t *testing.T, ctx context.Context, tg target, uploadSta
 			"abort":               abortStatus,
 		},
 	}, nil
+}
+
+// probeMultipartAbortGone は、パートを 1 つ送ってから Abort が成功したあとの ListParts が NoSuchUpload を返すかを測る。
+// s3store の AbortUpload は、この応答を「残骸が無くなった」の証拠として gone にする。
+// 成功のまま一覧が返るサーバーでは、掃除待ちの行が消えずに溜まる。
+func probeMultipartAbortGone(t *testing.T, ctx context.Context, tg target) (featureResult, error) {
+	client, bucket := tg.client, tg.bucket
+	key := tg.prefix + "/multipart-abort-gone"
+	registerObjectCleanup(t, client, bucket, key)
+	unsupported := func(err error) (featureResult, error) {
+		return featureResult{Feature: featureMultipartAbortGone, Status: statusUnsupported, Note: err.Error()}, nil
+	}
+	upload, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: stringPointer(bucket),
+		Key:    stringPointer(key),
+	})
+	if err != nil {
+		if isUnsupportedFeature(err) {
+			return unsupported(err)
+		}
+		return featureResult{}, unexpectedS3Error("CreateMultipartUpload for abort-gone", err)
+	}
+	if upload.UploadId == nil {
+		return featureResult{}, errors.New("CreateMultipartUpload returned no upload ID")
+	}
+	uploadID := *upload.UploadId
+	if _, err := client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     stringPointer(bucket),
+		Key:        stringPointer(key),
+		UploadId:   stringPointer(uploadID),
+		PartNumber: int32Pointer(1),
+		Body:       bytes.NewReader(makeMultipartPart(6)),
+	}); err != nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		if isUnsupportedFeature(err) {
+			return unsupported(err)
+		}
+		return featureResult{}, unexpectedS3Error("UploadPart before abort-gone", err)
+	}
+	if _, err := client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   stringPointer(bucket),
+		Key:      stringPointer(key),
+		UploadId: stringPointer(uploadID),
+	}); err != nil {
+		if isUnsupportedFeature(err) {
+			return unsupported(err)
+		}
+		return featureResult{}, unexpectedS3Error("AbortMultipartUpload for abort-gone", err)
+	}
+	_, listErr := client.ListParts(ctx, &s3.ListPartsInput{
+		Bucket:   stringPointer(bucket),
+		Key:      stringPointer(key),
+		UploadId: stringPointer(uploadID),
+	})
+	switch {
+	case isNoSuchUpload(listErr):
+		return featureResult{Feature: featureMultipartAbortGone, Status: statusSupported}, nil
+	case listErr == nil:
+		return featureResult{Feature: featureMultipartAbortGone, Status: statusUnsupported,
+			Note: "ListParts after a successful abort still answered without NoSuchUpload"}, nil
+	default:
+		return featureResult{}, unexpectedS3Error("ListParts after abort", listErr)
+	}
 }
 
 // abortedStatus は abort 後の ListParts の結果から abort の対応を判定する。

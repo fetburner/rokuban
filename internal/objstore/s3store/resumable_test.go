@@ -169,22 +169,65 @@ func TestCompleteWithWrongDigestSendsNothing(t *testing.T) {
 	}
 }
 
-func TestAbortUploadReportsGoneOnlyWhenNoSuchUpload(t *testing.T) {
-	ctx := context.Background()
-	noSuchUpload := &smithy.GenericAPIError{Code: "NoSuchUpload", Message: "gone", Fault: smithy.FaultClient}
-	client := &fakeAPI{abortErrs: []error{nil, noSuchUpload}}
-	store := resumableStore(client)
-	state, err := store.StartUpload(ctx, "encoded/abort.mp4", 10, sha256.Sum256(make([]byte, 10)), "video/mp4")
+// abortTestState は AbortUpload に渡す、UploadId を持つ送信状態を作る。
+func abortTestState(t *testing.T, store *Store) []byte {
+	t.Helper()
+	state, err := store.StartUpload(context.Background(), "encoded/abort.mp4", 10, sha256.Sum256(make([]byte, 10)), "video/mp4")
 	if err != nil {
 		t.Fatalf("StartUpload: %v", err)
 	}
-	gone, err := store.AbortUpload(ctx, state)
-	if err != nil || gone {
-		t.Fatalf("first AbortUpload = (%v, %v), want (false, nil) for a successful abort", gone, err)
+	return state
+}
+
+// TestAbortUploadIsGoneOnlyWhenListPartsSaysNoSuchUpload は、Abort が成功を返し続けても、
+// Abort の後の ListParts が NoSuchUpload を返すまでは gone にならないことを確かめる（MinIO は Abort 済みの UploadId に成功を返す）。
+func TestAbortUploadIsGoneOnlyWhenListPartsSaysNoSuchUpload(t *testing.T) {
+	noSuchUpload := &smithy.GenericAPIError{Code: "NoSuchUpload", Message: "gone", Fault: smithy.FaultClient}
+	client := &fakeAPI{listPartsErrs: []error{nil, nil, noSuchUpload}}
+	store := resumableStore(client)
+	state := abortTestState(t, store)
+
+	for i, want := range []bool{false, false, true} {
+		gone, err := store.AbortUpload(context.Background(), state)
+		if err != nil || gone != want {
+			t.Fatalf("AbortUpload #%d = (%v, %v), want (%v, nil)", i+1, gone, err, want)
+		}
 	}
-	gone, err = store.AbortUpload(ctx, state)
-	if err != nil || !gone {
-		t.Fatalf("second AbortUpload = (%v, %v), want (true, nil) after NoSuchUpload", gone, err)
+	if client.abortCalls != 3 || client.listPartsCalls != 3 {
+		t.Fatalf("Abort calls = %d, ListParts calls = %d, want 3 and 3", client.abortCalls, client.listPartsCalls)
+	}
+}
+
+// TestAbortUploadWithRemainingPartsIsNotGone は、Abort が NoSuchUpload を返しても ListParts が成功すれば gone ではないことを確かめる。
+func TestAbortUploadWithRemainingPartsIsNotGone(t *testing.T) {
+	noSuchUpload := &smithy.GenericAPIError{Code: "NoSuchUpload", Message: "gone", Fault: smithy.FaultClient}
+	client := &fakeAPI{abortErrs: []error{noSuchUpload}, listPartsErrs: []error{nil}}
+	store := resumableStore(client)
+	gone, err := store.AbortUpload(context.Background(), abortTestState(t, store))
+	if err != nil || gone {
+		t.Fatalf("AbortUpload = (%v, %v), want (false, nil) when ListParts still succeeds", gone, err)
+	}
+}
+
+// TestAbortUploadReturnsListPartsErrorWithCredentialClass は、ListParts の失敗を gone と誤らず、資格情報の失敗として返すことを確かめる。
+func TestAbortUploadReturnsListPartsErrorWithCredentialClass(t *testing.T) {
+	expired := &smithy.GenericAPIError{Code: "ExpiredToken", Message: "expired", Fault: smithy.FaultClient}
+	client := &fakeAPI{listPartsErrs: []error{expired}}
+	store := resumableStore(client)
+	gone, err := store.AbortUpload(context.Background(), abortTestState(t, store))
+	if gone || !errors.Is(err, objstore.ErrCredentials) {
+		t.Fatalf("AbortUpload = (%v, %v), want (false, ErrCredentials) when ListParts fails", gone, err)
+	}
+}
+
+// TestAbortUploadSkipsListPartsWhenAbortFails は、Abort が NoSuchUpload 以外で失敗したら ListParts を呼ばずに返すことを確かめる。
+func TestAbortUploadSkipsListPartsWhenAbortFails(t *testing.T) {
+	denied := &smithy.GenericAPIError{Code: "AccessDenied", Message: "denied", Fault: smithy.FaultClient}
+	client := &fakeAPI{abortErrs: []error{denied}}
+	store := resumableStore(client)
+	gone, err := store.AbortUpload(context.Background(), abortTestState(t, store))
+	if gone || err == nil || client.listPartsCalls != 0 {
+		t.Fatalf("AbortUpload = (%v, %v) with %d ListParts calls, want (false, error) and no ListParts", gone, err, client.listPartsCalls)
 	}
 }
 
