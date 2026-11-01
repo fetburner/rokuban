@@ -11,11 +11,11 @@ Rokuban's own source code is covered by LICENSE.
 ffmpeg and Debian base-image packages are outside this file; their own
 distribution notices remain in the image supplied by their distributors.
 Component: Go standard library
-Version: go1.27.1
+Version: go1.27.3
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
-Source: https://go.dev/dl/go1.27.1.src.tar.gz
+Source: https://go.dev/dl/go1.27.3.src.tar.gz
 
 ----- LICENSE (license text) -----
 Copyright 2009 The Go Authors.
@@ -318,11 +318,11 @@ Copyright 2014-2015 Stripe, Inc.
 
 
 Component: github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream
-Version: v1.7.24
+Version: v1.7.25
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/@v/v1.7.24.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/@v/v1.7.25.zip
 
 ----- LICENSE.txt (license text) -----
 
@@ -2014,11 +2014,11 @@ Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/a
 
 
 Component: github.com/aws/aws-sdk-go-v2/service/internal/checksum
-Version: v1.11.8
+Version: v1.11.9
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/checksum/@v/v1.11.8.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/checksum/@v/v1.11.9.zip
 
 ----- LICENSE.txt (license text) -----
 
@@ -2438,11 +2438,11 @@ Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/p
 
 
 Component: github.com/aws/aws-sdk-go-v2/service/internal/s3shared
-Version: v1.20.7
+Version: v1.20.8
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/s3shared/@v/v1.20.7.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/s3shared/@v/v1.20.8.zip
 
 ----- LICENSE.txt (license text) -----
 
@@ -2650,11 +2650,11 @@ Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/s
 
 
 Component: github.com/aws/aws-sdk-go-v2/service/s3
-Version: v1.114.5
+Version: v1.114.6
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/s3/@v/v1.114.5.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/s3/@v/v1.114.6.zip
 
 ----- LICENSE.txt (license text) -----
 
@@ -4027,11 +4027,11 @@ SOFTWARE.
 
 
 Component: github.com/go-chi/chi/v5
-Version: v5.4.0
+Version: v5.5.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2015-present Peter Kieltyka (https://github.com/pkieltyka), Google Inc.
 License: MIT
-Source: https://proxy.golang.org/github.com/go-chi/chi/v5/@v/v5.4.0.zip
+Source: https://proxy.golang.org/github.com/go-chi/chi/v5/@v/v5.5.0.zip
 
 ----- LICENSE (license text) -----
 Copyright (c) 2015-present Peter Kieltyka (https://github.com/pkieltyka), Google Inc.
@@ -4221,11 +4221,11 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 Component: github.com/jackc/puddle/v2
-Version: v2.2.2
+Version: v2.2.3
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2018 Jack Christensen
 License: MIT
-Source: https://proxy.golang.org/github.com/jackc/puddle/v2/@v/v2.2.2.zip
+Source: https://proxy.golang.org/github.com/jackc/puddle/v2/@v/v2.2.3.zip
 
 ----- LICENSE (license text) -----
 Copyright (c) 2018 Jack Christensen
@@ -4328,11 +4328,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 Component: github.com/oapi-codegen/runtime
-Version: v1.7.0
+Version: v1.8.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/oapi-codegen/runtime/@v/v1.7.0.zip
+Source: https://proxy.golang.org/github.com/oapi-codegen/runtime/@v/v1.8.0.zip
 
 ----- LICENSE (license text) -----
                                  Apache License
@@ -4539,11 +4539,11 @@ Source: https://proxy.golang.org/github.com/oapi-codegen/runtime/@v/v1.7.0.zip
 
 
 Component: github.com/pressly/goose/v3
-Version: v3.28.0
+Version: v3.29.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Original work Copyright (c) 2012 Liam Staskawicz / Modified work Copyright (c) 2016 Vojtech Vitek / Modified work Copyright (c) 2021 Michael Fridman, Vojtech Vitek
 License: MIT
-Source: https://proxy.golang.org/github.com/pressly/goose/v3/@v/v3.28.0.zip
+Source: https://proxy.golang.org/github.com/pressly/goose/v3/@v/v3.29.0.zip
 
 ----- LICENSE (license text) -----
 MIT License
@@ -4571,11 +4571,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 Component: github.com/prometheus/client_golang
-Version: v1.24.1
+Version: v1.25.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2012-2015 The Prometheus Authors / Copyright 2013-2015 Blake Mizerany, Björn Rabenstein / Copyright 2010 The Go Authors
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/prometheus/client_golang/@v/v1.24.1.zip
+Source: https://proxy.golang.org/github.com/prometheus/client_golang/@v/v1.25.0.zip
 
 ----- LICENSE (license text) -----
                                  Apache License
@@ -5018,11 +5018,11 @@ SoundCloud Ltd. (http://soundcloud.com/).
 
 
 Component: github.com/prometheus/common
-Version: v0.71.0
+Version: v0.72.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2015 The Prometheus Authors
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/prometheus/common/@v/v0.71.0.zip
+Source: https://proxy.golang.org/github.com/prometheus/common/@v/v0.72.0.zip
 
 ----- LICENSE (license text) -----
                                  Apache License
@@ -5454,11 +5454,11 @@ SoundCloud Ltd. (http://soundcloud.com/).
 
 
 Component: github.com/riverqueue/river
-Version: v0.47.0
+Version: v0.50.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
-Source: https://proxy.golang.org/github.com/riverqueue/river/@v/v0.47.0.zip
+Source: https://proxy.golang.org/github.com/riverqueue/river/@v/v0.50.0.zip
 
 ----- LICENSE (license text) -----
 Mozilla Public License Version 2.0
@@ -5837,11 +5837,11 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 
 Component: github.com/riverqueue/river/riverdriver
-Version: v0.47.0
+Version: v0.50.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
-Source: https://proxy.golang.org/github.com/riverqueue/river/riverdriver/@v/v0.47.0.zip
+Source: https://proxy.golang.org/github.com/riverqueue/river/riverdriver/@v/v0.50.0.zip
 
 ----- LICENSE (license text) -----
 Mozilla Public License Version 2.0
@@ -6220,11 +6220,11 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 
 Component: github.com/riverqueue/river/riverdriver/riverpgxv5
-Version: v0.47.0
+Version: v0.50.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
-Source: https://proxy.golang.org/github.com/riverqueue/river/riverdriver/riverpgxv5/@v/v0.47.0.zip
+Source: https://proxy.golang.org/github.com/riverqueue/river/riverdriver/riverpgxv5/@v/v0.50.0.zip
 
 ----- LICENSE (license text) -----
 Mozilla Public License Version 2.0
@@ -6603,11 +6603,11 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 
 Component: github.com/riverqueue/river/rivershared
-Version: v0.47.0
+Version: v0.50.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
-Source: https://proxy.golang.org/github.com/riverqueue/river/rivershared/@v/v0.47.0.zip
+Source: https://proxy.golang.org/github.com/riverqueue/river/rivershared/@v/v0.50.0.zip
 
 ----- LICENSE (license text) -----
 Mozilla Public License Version 2.0
@@ -6986,11 +6986,11 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 
 Component: github.com/riverqueue/river/rivertype
-Version: v0.47.0
+Version: v0.50.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
-Source: https://proxy.golang.org/github.com/riverqueue/river/rivertype/@v/v0.47.0.zip
+Source: https://proxy.golang.org/github.com/riverqueue/river/rivertype/@v/v0.50.0.zip
 
 ----- LICENSE (license text) -----
 Mozilla Public License Version 2.0
@@ -7369,11 +7369,11 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 
 Component: github.com/sethvargo/go-retry
-Version: v0.4.0
+Version: v0.5.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/sethvargo/go-retry/@v/v0.4.0.zip
+Source: https://proxy.golang.org/github.com/sethvargo/go-retry/@v/v0.5.0.zip
 
 ----- LICENSE (license text) -----
 
@@ -7803,11 +7803,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 Component: github.com/tidwall/gjson
-Version: v1.19.0
+Version: v1.20.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2016 Josh Baker
 License: MIT
-Source: https://proxy.golang.org/github.com/tidwall/gjson/@v/v1.19.0.zip
+Source: https://proxy.golang.org/github.com/tidwall/gjson/@v/v1.20.0.zip
 
 ----- LICENSE (license text) -----
 The MIT License (MIT)
@@ -7952,11 +7952,11 @@ THE SOFTWARE.
 
 
 Component: golang.org/x/sync
-Version: v0.23.0
+Version: v0.24.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
-Source: https://proxy.golang.org/golang.org/x/sync/@v/v0.23.0.zip
+Source: https://proxy.golang.org/golang.org/x/sync/@v/v0.24.0.zip
 
 ----- LICENSE (license text) -----
 Copyright 2009 The Go Authors.
@@ -8012,11 +8012,11 @@ shall terminate as of the date such litigation is filed.
 
 
 Component: golang.org/x/sys
-Version: v0.48.0
+Version: v0.49.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
-Source: https://proxy.golang.org/golang.org/x/sys/@v/v0.48.0.zip
+Source: https://proxy.golang.org/golang.org/x/sys/@v/v0.49.0.zip
 
 ----- LICENSE (license text) -----
 Copyright 2009 The Go Authors.
@@ -8072,11 +8072,11 @@ shall terminate as of the date such litigation is filed.
 
 
 Component: golang.org/x/text
-Version: v0.41.0
+Version: v0.43.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
-Source: https://proxy.golang.org/golang.org/x/text/@v/v0.41.0.zip
+Source: https://proxy.golang.org/golang.org/x/text/@v/v0.43.0.zip
 
 ----- LICENSE (license text) -----
 Copyright 2009 The Go Authors.
