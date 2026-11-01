@@ -265,7 +265,7 @@ slice の終わりは temp の fsync と close の後に lease を照合して o
 <details><summary>根拠</summary>
 
 - lease と clean handoff: `recording_ingest_checkpoints`
-- 表示中の path と HLS の temp_generation: `recording_ingest_progress`
+- 表示中の path と HLS の `temp_generation`: `recording_ingest_progress`
 - writer lease / file name の writer 世代: `writer_generation`
 - 再開可能なバイト位置と SHA-256 state: `offset_bytes` / `hash_state`
 - clean handoff の所有権と再開 state: `TestIngestCheckpointCleanHandoffResumesAndFencesZombie`

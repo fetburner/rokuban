@@ -47,7 +47,7 @@ scratch directory 名は Worker の復旧単位から決める。encode は `(re
 
 CM detect と CM logo candidate はプロセス死の残骸を回収しない。CM 検出は死後の次の開始で `attempt_count` が進み同じ名前に戻らず、ロゴ候補は `MkdirTemp` だからである。中身は原本への symlink と小さいファイルだけなので、残っても実害は小さいとして許容する。
 
-ingest は同じ root・同じディレクトリの record 固有 temp へ書く。temp 名は `.rokuban-ingest-{site}-{record_id}-g{writer_generation}` である。writer 世代は DB lease で採番する。HLS の temp_generation は別に管理する。新 writer が以前の表示中の offset に追いつくまでは旧 path を指し、追いついた後は path だけを切り替える。temp_generation は維持する。
+ingest は同じ root・同じディレクトリの record 固有 temp へ書く。temp 名は `.rokuban-ingest-{site}-{record_id}-g{writer_generation}` である。writer 世代は DB lease で採番する。HLS の `temp_generation` は別に管理する。新 writer が以前の表示中の offset に追いつくまでは旧 path を指し、追いついた後は path だけを切り替える。`temp_generation` は維持する。
 
 予約 basename は、mirakc の contentPath には使わない。次の 4 つの prefix で始まる名前である。
 
