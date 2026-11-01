@@ -257,3 +257,45 @@ func PersistCheckpoint(tempPath string, temp File, offset int64, hasher hash.Has
 	}
 	return nil
 }
+
+// Checkpoint は、temp の先頭から書き終えた長さと、その長さまでの SHA-256 の状態の組である。
+type Checkpoint struct {
+	Offset    int64
+	HashState []byte
+}
+
+// SaveCheckpoint は f を fsync してから、hasher の状態を offset と組にして save に渡す。
+// fsync を先にするのは、save が記録した offset より後ろの内容が再開のあとで消えていないことを、先に保証するため。
+// save の失敗は %w で包んで返すので、呼び出し側は保存先の拒否（lease の喪失など）を errors.Is で判定できる。
+func SaveCheckpoint(f *os.File, offset int64, hasher hash.Hash, save func(Checkpoint) error) error {
+	if offset < 0 {
+		return fmt.Errorf("checkpoint offset must be non-negative, got %d", offset)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("syncing temp before saving checkpoint: %w", err)
+	}
+	marshaler, ok := hasher.(encoding.BinaryMarshaler)
+	if !ok {
+		return fmt.Errorf("hash %T cannot be marshaled", hasher)
+	}
+	state, err := marshaler.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("marshaling SHA-256 state: %w", err)
+	}
+	if err := save(Checkpoint{Offset: offset, HashState: state}); err != nil {
+		return fmt.Errorf("saving checkpoint: %w", err)
+	}
+	return nil
+}
+
+// RestoreHash は SaveCheckpoint が保存した状態を hasher に戻す。戻せなければ error を返し、hasher は使わないこと。
+func RestoreHash(hasher hash.Hash, state []byte) error {
+	unmarshaler, ok := hasher.(encoding.BinaryUnmarshaler)
+	if !ok {
+		return fmt.Errorf("hash %T cannot be unmarshaled", hasher)
+	}
+	if len(state) == 0 {
+		return fmt.Errorf("SHA-256 state is empty")
+	}
+	return unmarshaler.UnmarshalBinary(state)
+}

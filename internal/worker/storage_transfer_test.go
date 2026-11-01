@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -97,7 +99,8 @@ SET rel_path = EXCLUDED.rel_path, state = 'active', deleted_at = NULL, created_a
 	}
 }
 
-// prepareAdoptedTransferTemp は、宛先を採用する時点の転送 temp と checkpoint を作る。
+// prepareAdoptedTransferTemp は、宛先を採用する時点の転送 temp を作る。
+// 前の試行が世代 1 の temp を書いて lease を切った状態にする（次の試行は世代 2 を取り、前の世代の temp を見る）。
 // owner が "linked" なら宛先を temp への link にし、"foreign" なら別の inode のままにする。空なら何もしない。
 func prepareAdoptedTransferTemp(t *testing.T, media *pgstore.Media, cfg config.StorageConfig, assetID int64, targetPath string, content []byte, owner string) string {
 	t.Helper()
@@ -108,7 +111,12 @@ func prepareAdoptedTransferTemp(t *testing.T, media *pgstore.Media, cfg config.S
 	if err != nil || !ok {
 		t.Fatalf("preparing transfer whose destination is adopted = (%+v, %t, %v)", transfer, ok, err)
 	}
-	tempPath := transferTempPath(targetPath, assetID, transfer.CopyID)
+	leaseOwner := uuid.New()
+	progress, acquired, err := media.AcquireMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquiring progress for the previous attempt = (%+v, %t, %v)", progress, acquired, err)
+	}
+	tempPath := transferTempPath(targetPath, assetID, transfer.CopyID, progress.Generation)
 	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -120,49 +128,81 @@ func prepareAdoptedTransferTemp(t *testing.T, media *pgstore.Media, cfg config.S
 			t.Fatalf("linking destination to transfer temp: %v", err)
 		}
 	}
-	hasher := sha256.New()
-	_, _ = hasher.Write(content)
-	if err := fsink.WriteCheckpoint(tempPath, int64(len(content)), hasher, nil); err != nil {
-		t.Fatalf("writing transfer checkpoint: %v", err)
+	if err := media.ReleaseMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner); err != nil {
+		t.Fatalf("releasing progress of the previous attempt: %v", err)
 	}
 	return tempPath
 }
 
-// assertAdoptedTransferTemp は、宛先の採用後に temp と checkpoint が残る・残らないを確かめる。
+// assertAdoptedTransferTemp は、宛先の採用後に前の世代の temp が残る・残らないを確かめる。
 func assertAdoptedTransferTemp(t *testing.T, tempPath, owner string) {
 	t.Helper()
-	for _, path := range []string{tempPath, fsink.CheckpointPath(tempPath)} {
-		switch owner {
-		case "linked":
-			if fileExists(path) {
-				t.Errorf("%q remains after adopting the destination this transfer published", path)
-			}
-		case "foreign":
-			if !fileExists(path) {
-				t.Errorf("%q was removed although the adopted destination is not this transfer's temp", path)
-			}
+	if tempPath == "" {
+		return
+	}
+	switch owner {
+	case "linked":
+		if fileExists(tempPath) {
+			t.Errorf("%q remains after adopting the destination this transfer published", tempPath)
+		}
+	case "foreign":
+		if !fileExists(tempPath) {
+			t.Errorf("%q was removed although the adopted destination is not this transfer's temp", tempPath)
 		}
 	}
 }
 
+// saveTransferProgressForTest は、slice が partial まで書いて保存した状態を作る。
+// temp は今の世代の名前で partial を書き、fsink.SaveCheckpoint と同じ経路で保存して lease を切る。
+// 次の Work はきれいな引き継ぎとして、同じ世代の続きから書く。
+func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer store.MediaAssetTransfer, root string, partial []byte) string {
+	t.Helper()
+	ctx := context.Background()
+	owner := uuid.New()
+	progress, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, transfer.CopyID, owner, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquiring progress for saved slice = (%+v, %t, %v)", progress, acquired, err)
+	}
+	targetPath := filepath.Join(root, filepath.FromSlash(transfer.RelPath))
+	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
+	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(tempPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	if _, err := file.Write(partial); err != nil {
+		t.Fatal(err)
+	}
+	hasher := sha256.New()
+	if _, err := hasher.Write(partial); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsink.SaveCheckpoint(file, int64(len(partial)), hasher, func(c fsink.Checkpoint) error {
+		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.Generation, c.Offset, c.HashState)
+	}); err != nil {
+		t.Fatalf("saving transfer progress: %v", err)
+	}
+	return tempPath
+}
+
 func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 	for _, tc := range []struct {
-		name                      string
-		existing                  bool
-		resume                    bool
-		sourceChanged             bool
-		corruptCheckpointedPrefix bool
+		name     string
+		existing bool
+		// resume は、前の slice が半分まで書いて保存した状態から続けることを表す（きれいな引き継ぎ）。
+		resume bool
 		// tempOwner は、宛先を採用する時点の転送 temp の関係。"linked" は link 済み・commit 前に落ちた転送
 		// （temp と宛先が同じ inode）、"foreign" は別の inode（他人の宛先）を表す。
 		tempOwner string
 	}{
 		{name: "copy computes and stores SHA-256"},
 		{name: "matching restored destination is adopted", existing: true},
-		{name: "adopting a destination linked from this transfer's temp removes the temp and checkpoint", existing: true, tempOwner: "linked"},
+		{name: "adopting a destination linked from this transfer's temp removes the temp", existing: true, tempOwner: "linked"},
 		{name: "adopting a destination that is not this transfer's temp keeps the temp", existing: true, tempOwner: "foreign"},
-		{name: "checkpointed temp resumes", resume: true},
-		{name: "changed source prefix rejects checkpoint without deleting original", resume: true, sourceChanged: true},
-		{name: "damaged checkpointed temp prefix is recopied", resume: true, corruptCheckpointedPrefix: true},
+		{name: "saved progress resumes the same generation", resume: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
@@ -170,8 +210,6 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			content := []byte("transfer-asset-bytes")
 			assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 			targetPath := filepath.Join(roots["archive"], "sites/default/transfer/source.ts")
-			sourcePath := filepath.Join(roots["test-store"], "sites/default/transfer/source.ts")
-			var changedSource []byte
 			if tc.existing {
 				if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 					t.Fatal(err)
@@ -190,37 +228,9 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			if tc.resume {
 				transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
 				if err != nil || !ok {
-					t.Fatalf("preparing checkpointed transfer = (%+v, %t, %v)", transfer, ok, err)
+					t.Fatalf("preparing saved transfer = (%+v, %t, %v)", transfer, ok, err)
 				}
-				tempPath := filepath.Join(roots["archive"], "sites/default/transfer", fmt.Sprintf(".rokuban-transfer-%d-%d", assetID, transfer.CopyID))
-				if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				partial := content[:len(content)/2]
-				if err := os.WriteFile(tempPath, partial, 0o644); err != nil {
-					t.Fatal(err)
-				}
-				hasher := sha256.New()
-				if _, err := hasher.Write(partial); err != nil {
-					t.Fatal(err)
-				}
-				if err := fsink.WriteCheckpoint(tempPath, int64(len(partial)), hasher, nil); err != nil {
-					t.Fatalf("writing transfer checkpoint: %v", err)
-				}
-				if tc.corruptCheckpointedPrefix {
-					corrupted := bytes.Clone(partial)
-					corrupted[0] ^= 0xff
-					if err := os.WriteFile(tempPath, corrupted, 0o644); err != nil {
-						t.Fatalf("corrupting checkpointed transfer temp prefix: %v", err)
-					}
-				}
-				if tc.sourceChanged {
-					changedSource = bytes.Clone(content)
-					changedSource[0] ^= 0xff
-					if err := os.WriteFile(sourcePath, changedSource, 0o644); err != nil {
-						t.Fatalf("changing source prefix before resume: %v", err)
-					}
-				}
+				saveTransferProgressForTest(t, media, transfer, roots["archive"], content[:len(content)/2])
 			}
 			adoptedTempPath := prepareAdoptedTransferTemp(t, media, cfg, assetID, targetPath, content, tc.tempOwner)
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
@@ -231,28 +241,6 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 				t.Fatalf("StorageTransferWorker.Work: %v", err)
 			}
 			assertAdoptedTransferTemp(t, adoptedTempPath, tc.tempOwner)
-			if tc.sourceChanged {
-				if _, err := os.Lstat(targetPath); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("destination stat error = %v, want unpublished destination", err)
-				}
-				gotSource, err := os.ReadFile(sourcePath)
-				if err != nil || !bytes.Equal(gotSource, changedSource) {
-					t.Fatalf("source after mismatch = %q, %v; want preserved %q", gotSource, err, changedSource)
-				}
-				var state string
-				var attemptCount int32
-				if err := pool.QueryRow(context.Background(), `
-SELECT c.state, a.attempt_count
-FROM media_asset_copies c
-JOIN media_asset_transfer_attempts a ON a.copy_id = c.id
-WHERE c.media_asset_id = $1 AND c.store = 'archive'`, assetID).Scan(&state, &attemptCount); err != nil {
-					t.Fatalf("reading failed transfer state: %v", err)
-				}
-				if state != "pending" || attemptCount != 1 {
-					t.Fatalf("copy/failure state = %q/%d, want pending/1", state, attemptCount)
-				}
-				return
-			}
 			got, err := os.ReadFile(targetPath)
 			if err != nil || !bytes.Equal(got, content) {
 				t.Fatalf("destination bytes = %q, %v; want %q", got, err, content)
@@ -271,6 +259,13 @@ WHERE c.media_asset_id = $1 AND c.store = 'archive'`, assetID).Scan(&state, &att
 			}
 			if copyState != "active" {
 				t.Fatalf("destination copy state = %q, want active", copyState)
+			}
+			var progressRows int
+			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copy_transfer_progress`).Scan(&progressRows); err != nil {
+				t.Fatalf("counting transfer progress rows: %v", err)
+			}
+			if progressRows != 0 {
+				t.Fatalf("transfer progress rows after the copy became active = %d, want 0", progressRows)
 			}
 		})
 	}
@@ -678,10 +673,13 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	}
 }
 
-func TestStorageTransferWorkerResumesKnownSHAPrefixWithoutReadingSourcePrefix(t *testing.T) {
+// TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix は、SHA-256 が既知のとき、
+// 保存された先頭を読み直さずに続きだけを転送元から読むことを確かめる。転送元の先頭を変えておき、
+// 結果が保存された先頭と元の続きになることで、先頭が読まれていないことを見る。
+func TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
-	content := []byte("known SHA-256 makes the checkpointed destination prefix authoritative")
+	content := []byte("known SHA-256 makes the saved destination prefix authoritative")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	expectedSHA := sha256.Sum256(content)
 	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID); err != nil {
@@ -691,24 +689,10 @@ func TestStorageTransferWorkerResumesKnownSHAPrefixWithoutReadingSourcePrefix(t 
 	media := pgstore.NewMedia(pool, "test-store", "")
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
 	if err != nil || !ok {
-		t.Fatalf("preparing checkpointed transfer = (%+v, %t, %v)", transfer, ok, err)
+		t.Fatalf("preparing saved transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
-	tempPath := filepath.Join(roots["archive"], filepath.Dir(filepath.FromSlash(transfer.RelPath)), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, assetID, transfer.CopyID))
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	prefixSize := len(content) / 2
-	prefix := content[:prefixSize]
-	if err := os.WriteFile(tempPath, prefix, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	hasher := sha256.New()
-	if _, err := hasher.Write(prefix); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsink.WriteCheckpoint(tempPath, int64(prefixSize), hasher, nil); err != nil {
-		t.Fatal(err)
-	}
+	prefix := content[:len(content)/2]
+	saveTransferProgressForTest(t, media, transfer, roots["archive"], prefix)
 	changedSource := bytes.Clone(content)
 	changedSource[0] ^= 0xff
 	sourcePath := filepath.Join(roots["test-store"], filepath.FromSlash(transfer.SourceRelPath))
@@ -725,7 +709,254 @@ func TestStorageTransferWorkerResumesKnownSHAPrefixWithoutReadingSourcePrefix(t 
 	}
 	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)))
 	if err != nil || !bytes.Equal(got, content) {
-		t.Fatalf("resumed destination = %q, %v; want checkpoint prefix plus original source suffix %q", got, err, content)
+		t.Fatalf("resumed destination = %q, %v; want saved prefix plus original source suffix %q", got, err, content)
+	}
+}
+
+// TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed は、前の試行が保存せずに抜けた（handed_off が偽）
+// とき、世代を上げて転送元の先頭から取り直すことを確かめる。temp の先頭は壊しておき、続きから書いたら宛先の SHA-256 が合わない。
+func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	content := []byte("an unsaved previous slice must not be continued from its temp")
+	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
+	expectedSHA := sha256.Sum256(content)
+	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID); err != nil {
+		t.Fatal(err)
+	}
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	media := pgstore.NewMedia(pool, "test-store", "")
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
+	if err != nil || !ok {
+		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
+	}
+	leaseOwner := uuid.New()
+	progress, acquired, err := media.AcquireMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquiring progress = (%+v, %t, %v)", progress, acquired, err)
+	}
+	tempPath := transferTempPath(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)), assetID, transfer.CopyID, progress.Generation)
+	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	damaged := bytes.Clone(content[:len(content)/2])
+	damaged[0] ^= 0xff
+	if err := os.WriteFile(tempPath, damaged, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.ReleaseMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
+		t.Fatalf("Work after an unsaved slice: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("destination = %q, %v; want the source from its start %q", got, err, content)
+	}
+	var attempts int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1`, transfer.CopyID).Scan(&attempts); err != nil {
+		t.Fatalf("counting transfer attempts: %v", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("transfer attempts after a lease-expired previous slice = %d, want 0 (an expired lease is not a failure)", attempts)
+	}
+	if fileExists(tempPath) {
+		t.Fatalf("previous generation temp %q remains after the copy became active", tempPath)
+	}
+}
+
+// TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers は、きれいな引き継ぎなのに保存された offset と temp が合わないとき、
+// その試行を失敗として 1 回数え、次の試行が新しい世代で先頭から取り直して完了することを確かめる。
+// 短い temp は続きから書くと穴が空き、宛先の SHA-256 が合わなくなる（SHA-256 が未知の資産では、長さの確認だけが防ぐ）。
+func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// shorten は保存のあとで temp を縮める量。extend は伸ばす量。remove は temp を消すこと。
+		shorten, extend int
+		remove          bool
+	}{
+		{name: "shorter temp than the saved offset", shorten: 3},
+		{name: "longer temp than the saved offset", extend: 4},
+		{name: "missing temp for the saved offset", remove: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			roots := transferTestRoots(t, "test-store", "archive")
+			content := []byte("a saved offset must match the temp length before the temp is continued")
+			assetID := transferTestOriginal(t, pool, roots["test-store"], content)
+			cfg := transferTestConfig("archive", "archive", "test-store")
+			media := pgstore.NewMedia(pool, "test-store", "")
+			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
+			if err != nil || !ok {
+				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
+			}
+			saved := content[:len(content)/2]
+			tempPath := saveTransferProgressForTest(t, media, transfer, roots["archive"], saved)
+			switch {
+			case tc.remove:
+				if err := os.Remove(tempPath); err != nil {
+					t.Fatal(err)
+				}
+			case tc.shorten > 0:
+				if err := os.Truncate(tempPath, int64(len(saved)-tc.shorten)); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				extra, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_APPEND, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := extra.Write(bytes.Repeat([]byte("j"), tc.extend)); err != nil {
+					t.Fatal(err)
+				}
+				if err := extra.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fingerprint, err := cfg.PolicyFingerprint()
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+			args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
+			if err := worker.Work(context.Background(), args); err != nil {
+				t.Fatalf("first Work with an inconsistent saved transfer: %v", err)
+			}
+			destination := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
+			if fileExists(destination) {
+				t.Fatal("destination was published from an inconsistent saved transfer")
+			}
+			var attempts int32
+			var lastError string
+			if err := pool.QueryRow(context.Background(), `
+SELECT a.attempt_count, a.last_error
+FROM media_asset_transfer_attempts a
+WHERE a.copy_id = $1`, transferTestCopyID(t, pool, assetID, "archive")).Scan(&attempts, &lastError); err != nil {
+				t.Fatalf("reading recorded transfer attempt: %v", err)
+			}
+			if attempts != 1 || !strings.Contains(lastError, "saved offset is") {
+				t.Fatalf("recorded attempt = (%d, %q), want one failure naming the saved offset", attempts, lastError)
+			}
+			// 失敗した試行は世代を上げないので、次の試行の Acquire が世代を 1 つだけ上げ、不整合だった世代の temp をその試行が消す。
+			if !tc.remove && !fileExists(tempPath) {
+				t.Fatal("inconsistent temp was removed by the failed attempt; the next attempt should remove it")
+			}
+			if err := worker.Work(context.Background(), args); err != nil {
+				t.Fatalf("second Work after the failure: %v", err)
+			}
+			got, err := os.ReadFile(destination)
+			if err != nil || !bytes.Equal(got, content) {
+				t.Fatalf("destination after the restart = %q, %v; want %q", got, err, content)
+			}
+			if fileExists(tempPath) {
+				t.Fatalf("inconsistent generation temp %q remains after the next attempt", tempPath)
+			}
+		})
+	}
+}
+
+// TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice は、slice が止まったときに自分の lease が切れていて
+// 進捗を保存できなかった場合、Work を成功で終えずに snooze することを確かめる。
+func TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	content := bytes.Repeat([]byte("slice-bytes-"), 65536)
+	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := storageTransferSlice
+	storageTransferSlice = 300 * time.Millisecond
+	t.Cleanup(func() { storageTransferSlice = restore })
+	media := pgstore.NewMedia(pool, "test-store", "")
+	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+	// slice の最中に lease を切る。取った直後（handed_off が偽で期限が先）の行だけを対象にする。
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			_, _ = pool.Exec(context.Background(), `
+UPDATE media_asset_copy_transfer_progress SET lease_expires_at = now() - interval '1 second'
+WHERE handed_off = false AND lease_expires_at > now()`)
+		}
+	}()
+	err = worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint})
+	close(stop)
+	<-done
+	if delay, ok := jobq.SnoozeDelay(err); !ok || delay != storageTransferLockSnooze {
+		t.Fatalf("Work with an expired own lease = %v, want a snooze of %s", err, storageTransferLockSnooze)
+	}
+}
+
+// TestStorageTransferWorkerSliceStopsAndResumesToCompletion は、slice の期限を超える転送が、1 回の Work で終わらずに
+// 進捗を保存して snooze し、繰り返すと完了することを確かめる。
+func TestStorageTransferWorkerSliceStopsAndResumesToCompletion(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	// 読みは 128 KiB ずつなので、slice の期限を超えるよう 128 KiB より十分大きくする。
+	content := bytes.Repeat([]byte("slice-bytes-"), 65536)
+	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := storageTransferSlice
+	storageTransferSlice = 150 * time.Millisecond
+	t.Cleanup(func() { storageTransferSlice = restore })
+	media := pgstore.NewMedia(pool, "test-store", "")
+	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+	args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
+	snoozes := 0
+	var copyID int64
+	for range 200 {
+		err := worker.Work(context.Background(), args)
+		if err == nil {
+			break
+		}
+		delay, ok := jobq.SnoozeDelay(err)
+		if !ok {
+			t.Fatalf("Work returned %v; want a snooze until the copy is complete", err)
+		}
+		if delay != 0 {
+			t.Fatalf("slice snooze delay = %s, want 0", delay)
+		}
+		snoozes++
+		if copyID == 0 {
+			copyID = transferTestCopyID(t, pool, assetID, "archive")
+		}
+		var handedOff bool
+		var offset int64
+		if err := pool.QueryRow(context.Background(), `
+SELECT handed_off, offset_bytes FROM media_asset_copy_transfer_progress WHERE copy_id = $1`, copyID).Scan(&handedOff, &offset); err != nil {
+			t.Fatalf("reading saved progress after a slice: %v", err)
+		}
+		if !handedOff || offset <= 0 || offset >= int64(len(content)) {
+			t.Fatalf("saved progress after slice %d = handed_off %t offset %d, want handed_off with 0 < offset < %d", snoozes, handedOff, offset, len(content))
+		}
+	}
+	if snoozes == 0 {
+		t.Fatal("transfer finished in one Work; want the slice limit to split it")
+	}
+	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash("sites/default/transfer/source.ts")))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("destination after %d slices = %d bytes, %v; want %d bytes equal to the source", snoozes, len(got), err, len(content))
 	}
 }
 
@@ -918,64 +1149,6 @@ VALUES ($1, 'archive', 'sites/default/transfer/source.ts', 0, 'deleting')`, asse
 	}
 }
 
-func TestTransferTempOrphanCleanupWaitsForTransferLock(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	roots := transferTestRoots(t, "archive")
-	relPath := "sites/default/transfer/.rokuban-transfer-12-34"
-	tempPath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	tempLock, created, err := fsink.LockTempFile(tempPath)
-	if err != nil || !created {
-		t.Fatalf("creating transfer temp lock = (%v, %v), want new temp", created, err)
-	}
-	if _, err := tempLock.Write([]byte("partial transfer")); err != nil {
-		t.Fatal(err)
-	}
-	hasher := sha256.New()
-	if _, err := hasher.Write([]byte("partial transfer")); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsink.WriteCheckpoint(tempPath, int64(len("partial transfer")), hasher, nil); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-2 * time.Hour)
-	for i, path := range []string{tempPath, fsink.CheckpointPath(tempPath)} {
-		if err := os.Chtimes(path, old, old); err != nil {
-			t.Fatal(err)
-		}
-		orphanRelPath := relPath
-		if i == 1 {
-			orphanRelPath += fsink.CheckpointSuffix
-		}
-		if _, err := pool.Exec(context.Background(), `INSERT INTO orphan_files (store, rel_path) VALUES ('archive', $1) ON CONFLICT DO NOTHING`, orphanRelPath); err != nil {
-			t.Fatal(err)
-		}
-	}
-	worker := DeleteReconcileWorker{
-		Storage: pgstore.NewMedia(pool, "archive", ""), MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
-	}
-	worker.deleteOrphanFile(relPath, time.Hour)
-	if !fileExists(tempPath) || !fileExists(fsink.CheckpointPath(tempPath)) {
-		t.Fatal("active transfer temp or checkpoint was removed while locked")
-	}
-	if err := tempLock.Close(); err != nil {
-		t.Fatal(err)
-	}
-	worker.deleteOrphanFile(relPath, time.Hour)
-	if fileExists(tempPath) || fileExists(fsink.CheckpointPath(tempPath)) {
-		t.Fatal("aged transfer temp or checkpoint remains after the lock was released")
-	}
-	var orphanCount int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM orphan_files WHERE store = 'archive'`).Scan(&orphanCount); err != nil {
-		t.Fatal(err)
-	}
-	if orphanCount != 0 {
-		t.Fatalf("orphan rows after transfer temp cleanup = %d, want 0", orphanCount)
-	}
-}
-
 func TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
@@ -1160,7 +1333,7 @@ func TestStorageTransferWorkerUsesObjectStoreForDerivedCopies(t *testing.T) {
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("derived transfer destination = %q, %v; want %q", got, err, content)
 	}
-	if fileExists(transferTempPath(destination, assetID, transferTestCopyID(t, pool, assetID, "archive"))) {
+	if fileExists(transferTempPath(destination, assetID, transferTestCopyID(t, pool, assetID, "archive"), 1)) {
 		t.Fatal("derived transfer left an FS transfer temp beside the object key")
 	}
 	var sourceState, targetState string
@@ -1519,7 +1692,12 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tempPath := filepath.Join(filepath.Dir(targetPath), fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, transfer.MediaAssetID, transfer.CopyID))
+	// 実際の試行と同じく、進捗の行を作ってから世代の名前で temp を書く。回収は行の世代で temp を見つける。
+	progress, acquired, err := pgstore.NewMedia(pool, "archive", cfg.Derived).AcquireMediaAssetTransferProgress(context.Background(), transfer.CopyID, uuid.New(), time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquiring transfer progress = (%+v, %t, %v)", progress, acquired, err)
+	}
+	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
 	if err := os.WriteFile(tempPath, []byte("source-original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1944,5 +2122,80 @@ func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *t
 				t.Fatalf("mismatched source copy state = %q, want deleted (treated as a source mismatch)", sourceState)
 			}
 		})
+	}
+}
+
+// TestTransferTempOrphanCleanupFollowsProgressGeneration は、転送 temp の孤児回収が、コピーの進捗の世代で判定することを確かめる。
+// 進捗が世代 3 を指すとき、古い世代 1・2 の temp は（mtime が古ければ）消え、今の世代 3 の temp は残る。
+// 進捗の無い temp は、mtime の猶予の間は残り、猶予を過ぎたら消える。
+func TestTransferTempOrphanCleanupFollowsProgressGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	content := []byte("progress generation decides which transfer temp is still owned")
+	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	media := pgstore.NewMedia(pool, "test-store", "")
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
+	if err != nil || !ok {
+		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
+	}
+	// 世代を 3 まで進める。各試行は lease を切ってから次が取る（保存はしないので、次は世代を上げる）。
+	ctx := context.Background()
+	for want := int64(1); want <= 3; want++ {
+		owner := uuid.New()
+		progress, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, transfer.CopyID, owner, time.Minute)
+		if err != nil || !acquired || progress.Generation != want {
+			t.Fatalf("acquire #%d = (%+v, %t, %v), want generation %d", want, progress, acquired, err, want)
+		}
+		if err := media.ReleaseMediaAssetTransferProgress(ctx, transfer.CopyID, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const noProgressCopyID = 987654
+	type candidate struct {
+		relPath string
+		aged    bool
+		keep    bool
+	}
+	var candidates []candidate
+	for _, c := range []struct {
+		copyID int64
+		gen    int64
+		aged   bool
+		keep   bool
+	}{
+		{copyID: transfer.CopyID, gen: 1, aged: true, keep: false},
+		{copyID: transfer.CopyID, gen: 2, aged: true, keep: false},
+		{copyID: transfer.CopyID, gen: 3, aged: true, keep: true},
+		{copyID: noProgressCopyID, gen: 1, aged: true, keep: false},
+		{copyID: noProgressCopyID, gen: 2, aged: false, keep: true},
+	} {
+		relPath := filepath.ToSlash(filepath.Join(filepath.Dir(filepath.FromSlash(transfer.RelPath)),
+			fmt.Sprintf("%s%d-%d-g%d", mediapath.StorageTransferTempFilePrefix, assetID, c.copyID, c.gen)))
+		path := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("partial"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if c.aged {
+			old := time.Now().Add(-2 * time.Hour)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+		candidates = append(candidates, candidate{relPath: relPath, aged: c.aged, keep: c.keep})
+	}
+	worker := DeleteReconcileWorker{
+		Storage: media, MediaDir: roots["archive"], MediaStoreName: "archive",
+		StorageObjects: testStorageObjects(t, "archive", roots["archive"]),
+	}
+	for _, c := range candidates {
+		worker.deleteOrphanFile(c.relPath, time.Hour)
+		path := filepath.Join(roots["archive"], filepath.FromSlash(c.relPath))
+		if got := fileExists(path); got != c.keep {
+			t.Errorf("%s exists = %t after orphan cleanup, want %t (aged=%t)", c.relPath, got, c.keep, c.aged)
+		}
 	}
 }

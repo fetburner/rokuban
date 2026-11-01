@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -177,6 +179,9 @@ func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.M
 		if err := sqlcgen.New(tx).DeleteMediaAssetTransferObjectsForCopy(ctx, transfer.CopyID); err != nil {
 			return false, "", fmt.Errorf("clearing transfer object ownership for copy %d: %w", transfer.CopyID, mapDatabaseError(err))
 		}
+		if err := sqlcgen.New(tx).DeleteMediaAssetTransferProgress(ctx, transfer.CopyID); err != nil {
+			return false, "", fmt.Errorf("clearing transfer progress for copy %d: %w", transfer.CopyID, mapDatabaseError(err))
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, "", fmt.Errorf("committing media asset transfer: %w", mapDatabaseError(err))
@@ -292,8 +297,20 @@ func (s *Media) MarkMediaAssetCopyCorrupt(ctx context.Context, recordingID, medi
 
 // DiscardPendingMediaAssetCopy は pending な転送先コピーを無効にする。
 func (s *Media) DiscardPendingMediaAssetCopy(ctx context.Context, copyID int64) error {
-	if err := sqlcgen.New(s.pool).DiscardPendingMediaAssetCopy(ctx, copyID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning discard of pending media asset copy %d: %w", copyID, err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	if err := q.DiscardPendingMediaAssetCopy(ctx, copyID); err != nil {
 		return fmt.Errorf("discarding pending media asset copy %d: %w", copyID, err)
+	}
+	if err := q.DeleteMediaAssetTransferProgress(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing transfer progress for discarded copy %d: %w", copyID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing discard of pending media asset copy %d: %w", copyID, mapDatabaseError(err))
 	}
 	return nil
 }
@@ -376,6 +393,9 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	}
 	if err := q.DeleteMediaAssetTransferObjectsForCopy(ctx, candidate.CopyID); err != nil {
 		return false, fmt.Errorf("clearing obsolete transfer object ownership for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
+	}
+	if err := q.DeleteMediaAssetTransferProgress(ctx, candidate.CopyID); err != nil {
+		return false, fmt.Errorf("clearing obsolete transfer progress for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing obsolete pending transfer copy reclaim: %w", mapDatabaseError(err))
@@ -538,4 +558,96 @@ func (s *Media) DatabaseClock(ctx context.Context) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("reading database clock: %w", err)
 	}
 	return now, nil
+}
+
+// AcquireMediaAssetTransferProgress は pending コピーの進捗の lease を取る。
+// 行の読み書きは 1 つの transaction で行い、行を FOR UPDATE で直列にする。
+// 期限の比較は DB の now() で行うので、プロセス間の時計のずれは lease の判定に効かない。
+func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, ttl time.Duration) (store.TransferProgress, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return store.TransferProgress{}, false, fmt.Errorf("beginning transfer progress acquisition: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	ownerID := pgtype.UUID{Bytes: owner, Valid: true}
+	ttlSeconds := ttl.Seconds()
+	inserted, err := q.InsertMediaAssetTransferProgressIfAbsent(ctx, sqlcgen.InsertMediaAssetTransferProgressIfAbsentParams{
+		CopyID: copyID, Owner: ownerID, TtlSeconds: ttlSeconds,
+	})
+	if err != nil {
+		return store.TransferProgress{}, false, fmt.Errorf("inserting transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if inserted == 1 {
+		if err := tx.Commit(ctx); err != nil {
+			return store.TransferProgress{}, false, fmt.Errorf("committing transfer progress acquisition: %w", mapDatabaseError(err))
+		}
+		return store.TransferProgress{Generation: 1}, true, nil
+	}
+	cur, err := q.LockMediaAssetTransferProgress(ctx, copyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// コピーが pending でなくなったので、取れない。次の試行は予約し直さない。
+		return store.TransferProgress{}, false, nil
+	}
+	if err != nil {
+		return store.TransferProgress{}, false, fmt.Errorf("locking transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if !cur.HandedOff && cur.LeaseLive {
+		return store.TransferProgress{}, false, nil
+	}
+	progress := store.TransferProgress{PrevGeneration: cur.Generation, Generation: cur.Generation + 1}
+	if cur.HandedOff {
+		// 前の slice が保存して lease を切った。世代と保存状態をそのまま引き継ぐ。
+		progress = store.TransferProgress{
+			PrevGeneration: cur.Generation, Generation: cur.Generation, Resumed: true,
+			Offset: cur.OffsetBytes, HashState: cur.HashState,
+		}
+	}
+	if _, err := q.ClaimMediaAssetTransferProgress(ctx, sqlcgen.ClaimMediaAssetTransferProgressParams{
+		CopyID: copyID, Owner: ownerID, TtlSeconds: ttlSeconds,
+		Generation: progress.Generation, OffsetBytes: progress.Offset, HashState: progress.HashState,
+	}); err != nil {
+		return store.TransferProgress{}, false, fmt.Errorf("claiming transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.TransferProgress{}, false, fmt.Errorf("committing transfer progress claim: %w", mapDatabaseError(err))
+	}
+	return progress, true, nil
+}
+
+// SaveMediaAssetTransferProgress は slice の終わりの状態を保存し、lease を切る。
+func (s *Media) SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState []byte) error {
+	n, err := sqlcgen.New(s.pool).SaveMediaAssetTransferProgress(ctx, sqlcgen.SaveMediaAssetTransferProgressParams{
+		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, Generation: generation,
+		OffsetBytes: offset, HashState: hashState,
+	})
+	if err != nil {
+		return fmt.Errorf("saving transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if n != 1 {
+		return store.ErrTransferLeaseLost
+	}
+	return nil
+}
+
+// ReleaseMediaAssetTransferProgress は失敗で抜ける試行の lease を切る。
+func (s *Media) ReleaseMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID) error {
+	if err := sqlcgen.New(s.pool).ReleaseMediaAssetTransferProgress(ctx, sqlcgen.ReleaseMediaAssetTransferProgressParams{
+		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true},
+	}); err != nil {
+		return fmt.Errorf("releasing transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	return nil
+}
+
+// GetMediaAssetTransferProgressGeneration は、コピーの進捗が指す世代を返す。
+func (s *Media) GetMediaAssetTransferProgressGeneration(ctx context.Context, copyID int64) (int64, bool, error) {
+	generation, err := sqlcgen.New(s.pool).GetMediaAssetTransferProgressGeneration(ctx, copyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("reading transfer progress generation for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	return generation, true, nil
 }

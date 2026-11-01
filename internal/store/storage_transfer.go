@@ -2,8 +2,29 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+// ErrTransferLeaseLost は、転送の進捗の lease を別の試行が取った、または lease が切れたことを表す。
+// 保存や世代の上げ直しがこれを返したら、呼び出し側は進捗に触れずに止まる。
+var ErrTransferLeaseLost = errors.New("transfer progress lease lost")
+
+// TransferProgress は、転送の slice の開始時に取った進捗の状態である。
+type TransferProgress struct {
+	// Generation は、この試行が書く temp の世代である。
+	Generation int64
+	// PrevGeneration は、取る前の世代である。行が無かったときは 0。
+	PrevGeneration int64
+	// Resumed は、前の slice が保存した状態を引き継いだかを表す（きれいな引き継ぎ）。
+	Resumed bool
+	// Offset は、Resumed のとき temp に書き終えている長さである。
+	Offset int64
+	// HashState は、Resumed のとき保存された SHA-256 の状態である。
+	HashState []byte
+}
 
 // MediaAssetTransferCandidate は desired store にコピーが必要な論理資産を表す。
 type MediaAssetTransferCandidate struct {
@@ -97,6 +118,18 @@ type StorageTransfer interface {
 	ClearObsoleteMediaAssetTransferAttempts(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string) error
 	// AcquireTransferSourceBandwidth は転送元置き場ごとの advisory lock を取る。
 	AcquireTransferSourceBandwidth(ctx context.Context, sourceStore string) (lease TransferBandwidthLease, acquired bool, err error)
+	// AcquireMediaAssetTransferProgress は pending コピーの進捗の lease を owner として取る。
+	// 他の試行が lease を持っている（handed_off でなく、期限が DB の now() より後）ときは acquired=false を返す。
+	// 前の slice が保存していれば（handed_off）世代と状態を引き継ぎ、そうでなければ世代を上げて先頭から取り直す。
+	AcquireMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, ttl time.Duration) (progress TransferProgress, acquired bool, err error)
+	// SaveMediaAssetTransferProgress は slice の終わりに、書き終えた offset と SHA-256 の状態を保存し、lease を切る。
+	// lease が無い（別の試行が取った、期限が切れた）か、世代が違えば ErrTransferLeaseLost を返す。
+	SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState []byte) error
+	// ReleaseMediaAssetTransferProgress は失敗で抜ける試行の lease を切る。次の試行は世代を上げる。
+	// lease を持たなければ何もしない。
+	ReleaseMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID) error
+	// GetMediaAssetTransferProgressGeneration は、コピーの進捗が今どの世代を指すかを返す。行が無ければ ok=false。
+	GetMediaAssetTransferProgressGeneration(ctx context.Context, copyID int64) (generation int64, ok bool, err error)
 	// PrepareMediaAssetTransfer は行をロックし、現在も desired な宛先コピーを pending にする。
 	// sourceStores は転送元にできる置き場（マウント済み ∪ internal_url を持つ置き場）、fsStores はマウント済みの FS 置き場。
 	// 派生物の転送元は fsStores に限る。mountedStores は、この worker がマウントしている置き場で、転送元の優先に使う。

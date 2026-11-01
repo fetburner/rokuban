@@ -434,3 +434,60 @@ WHERE c.id = sqlc.arg('copy_id')
       sqlc.arg('overlap_cutoff')::timestamptz
   )
 RETURNING c.rel_path;
+
+-- Progress rows follow the pending copy: the caller deletes them in the same
+-- transaction that makes the copy active, deleted, or reclaimed.
+-- name: InsertMediaAssetTransferProgressIfAbsent :execrows
+INSERT INTO media_asset_copy_transfer_progress (copy_id, lease_owner, lease_expires_at, generation, handed_off, offset_bytes, hash_state)
+SELECT c.id, sqlc.arg('owner')::uuid, now() + make_interval(secs => sqlc.arg('ttl_seconds')::double precision), 1, false, 0, NULL
+FROM media_asset_copies c
+WHERE c.id = sqlc.arg('copy_id')
+  AND c.state = 'pending'
+-- 並行してコピーを pending でなくす transaction（進捗の行を消す側）の commit を待ち、state を読み直す。
+-- 待たないと、消された後に行を作り、pending でないコピーの行が残る。
+FOR SHARE OF c
+ON CONFLICT (copy_id) DO NOTHING;
+
+-- name: LockMediaAssetTransferProgress :one
+SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
+       (p.lease_expires_at > now())::boolean AS lease_live
+FROM media_asset_copy_transfer_progress p
+WHERE p.copy_id = sqlc.arg('copy_id')
+FOR UPDATE;
+
+-- name: ClaimMediaAssetTransferProgress :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET lease_owner = sqlc.arg('owner')::uuid,
+    lease_expires_at = now() + make_interval(secs => sqlc.arg('ttl_seconds')::double precision),
+    generation = sqlc.arg('generation'),
+    handed_off = false,
+    offset_bytes = sqlc.arg('offset_bytes'),
+    hash_state = sqlc.narg('hash_state')::bytea
+WHERE p.copy_id = sqlc.arg('copy_id');
+
+-- name: SaveMediaAssetTransferProgress :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET handed_off = true,
+    offset_bytes = sqlc.arg('offset_bytes'),
+    hash_state = sqlc.narg('hash_state')::bytea,
+    lease_expires_at = now()
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now();
+
+-- name: ReleaseMediaAssetTransferProgress :exec
+UPDATE media_asset_copy_transfer_progress p
+SET lease_expires_at = now(),
+    handed_off = false
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid;
+
+-- name: GetMediaAssetTransferProgressGeneration :one
+SELECT p.generation
+FROM media_asset_copy_transfer_progress p
+WHERE p.copy_id = sqlc.arg('copy_id');
+
+-- name: DeleteMediaAssetTransferProgress :exec
+DELETE FROM media_asset_copy_transfer_progress
+WHERE copy_id = sqlc.arg('copy_id');

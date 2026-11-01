@@ -20,9 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -196,23 +194,9 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("preparing checkpointed remote transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
-	tempPath := filepath.Join(f.roots["archive"], filepath.Dir(filepath.FromSlash(transfer.RelPath)),
-		fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, f.assetID, transfer.CopyID))
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	prefixSize := len(content) / 3
 	prefix := content[:prefixSize]
-	if err := os.WriteFile(tempPath, prefix, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	hasher := sha256.New()
-	if _, err := hasher.Write(prefix); err != nil {
-		t.Fatal(err)
-	}
-	if err := fsink.WriteCheckpoint(tempPath, int64(prefixSize), hasher, nil); err != nil {
-		t.Fatal(err)
-	}
+	saveTransferProgressForTest(t, f.storageMedia, transfer, f.roots["archive"], prefix)
 
 	worker := f.worker(t)
 	if err := worker.Work(context.Background(), f.args()); err != nil {
@@ -231,6 +215,60 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 }
 
 // 応答が offset からの原本として使えないとき、転送は失敗として記録され、宛先は公開されない。
+// 転送元の接続が途中で切れて試行が失敗しても、書いた分は保存され、次の試行は切れた位置から Range で続ける。
+// 先頭から取り直すと、切れやすい経路では大きな原本の転送が終わらない。
+func TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect(t *testing.T) {
+	content := []byte("a remote original whose connection drops halfway through the first attempt")
+	half := len(content) / 2
+	var mu sync.Mutex
+	broken := true
+	f := newTransferTestRemoteFixture(t, content, true, func(w http.ResponseWriter, r *http.Request, content []byte) {
+		mu.Lock()
+		isBroken := broken
+		mu.Unlock()
+		if !isBroken {
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(content))
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			// 張り直しにも答えない。読み進めないので、転送は諦めて試行を失敗にする。
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		// 全体の長さを宣言して半分で切る。クライアントは途中の EOF を受ける。
+		w.Header().Set("Content-Length", fmt.Sprint(len(content)))
+		_, _ = w.Write(content[:half])
+	})
+	worker := f.worker(t)
+	if err := worker.Work(context.Background(), f.args()); err != nil {
+		t.Fatalf("first Work returned %v; want the disconnect recorded as a failure", err)
+	}
+	if _, attempts := f.failureText(t); attempts != 1 {
+		t.Fatalf("attempt count after the disconnect = %d, want 1", attempts)
+	}
+	if f.destinationExists() {
+		t.Fatal("destination was published from a disconnected transfer")
+	}
+
+	mu.Lock()
+	broken = false
+	mu.Unlock()
+	seenBefore := len(f.streamer.seenRanges())
+	if err := worker.Work(context.Background(), f.args()); err != nil {
+		t.Fatalf("second Work: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath)))
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("destination = %q, %v; want %q", got, err, content)
+	}
+	if want := []string{fmt.Sprintf("bytes=%d-", half)}; !slices.Equal(f.streamer.seenRanges()[seenBefore:], want) {
+		t.Fatalf("second attempt Range headers = %q, want %q", f.streamer.seenRanges()[seenBefore:], want)
+	}
+	if state := f.copyState(t); state != "active" {
+		t.Fatalf("archive copy state = %q, want active", state)
+	}
+}
+
 func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -263,20 +301,8 @@ func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 			}
-			tempPath := filepath.Join(f.roots["archive"], filepath.Dir(filepath.FromSlash(transfer.RelPath)),
-				fmt.Sprintf("%s%d-%d", mediapath.StorageTransferTempFilePrefix, f.assetID, transfer.CopyID))
-			if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-				t.Fatal(err)
-			}
 			prefix := content[:len(content)/2]
-			if err := os.WriteFile(tempPath, prefix, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			hasher := sha256.New()
-			_, _ = hasher.Write(prefix)
-			if err := fsink.WriteCheckpoint(tempPath, int64(len(prefix)), hasher, nil); err != nil {
-				t.Fatal(err)
-			}
+			saveTransferProgressForTest(t, f.storageMedia, transfer, f.roots["archive"], prefix)
 
 			worker := f.worker(t)
 			if err := worker.Work(context.Background(), f.args()); err != nil {
