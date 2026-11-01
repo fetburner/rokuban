@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"mime"
 	"net/http"
@@ -150,65 +153,23 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if n, readErr := io.ReadFull(src, extra[:]); n != 0 || !errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("S3 object source for %q contains bytes beyond declared size 0", key)
 		}
-		emptySHA := sha256.Sum256(nil)
-		if emptySHA != wantSHA {
-			return objstore.ErrChecksumMismatch
-		}
-		newInput := func(conditional bool) *s3.PutObjectInput {
-			input := &s3.PutObjectInput{
-				Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(nil), ContentLength: aws.Int64(0),
-				ContentType: aws.String(contentType), Metadata: map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])},
-			}
-			if conditional {
-				input.IfNoneMatch = aws.String("*")
-			}
-			return input
-		}
-		_, err := s.client.PutObject(ctx, newInput(true))
-		if err != nil && isConditionalUnsupported(err) {
-			// 呼び出し側は key を使い回さないので、既存の object が無い前提で条件を外す。
-			_, err = s.client.PutObject(ctx, newInput(false))
-		}
-		if err != nil {
-			if isPreconditionFailed(err) {
-				return s.recoverExisting(ctx, key, size, wantSHA)
-			}
-			if recoverErr := s.recoverExisting(ctx, key, size, wantSHA); recoverErr == nil {
-				return nil
-			}
-			return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", key, err))
-		}
-		return nil
+		return s.putEmptyObject(ctx, key, contentType, wantSHA)
 	}
 
 	partSize := multipartPartSize(size)
-	created, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
-		Bucket:      aws.String(s.bucket),
-		Key:         aws.String(key),
-		ContentType: aws.String(contentType),
-		Metadata:    map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])},
-	})
+	uploadID, err := s.startMultipart(ctx, key, contentType, wantSHA)
 	if err != nil {
-		return withCredentialClass(fmt.Errorf("starting S3 multipart upload for %q: %w", key, err))
+		return err
 	}
-	if created.UploadId == nil || *created.UploadId == "" {
-		return fmt.Errorf("starting S3 multipart upload for %q: server returned an empty upload ID", key)
-	}
-	uploadID := *created.UploadId
 	parts := make([]types.CompletedPart, 0, (size-1)/partSize+1)
 	abort := func(cause error) error {
-		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		_, abortErr := s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
-			Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
-		})
-		if abortErr != nil && !isNoSuchUpload(abortErr) {
-			return errors.Join(cause, fmt.Errorf("aborting S3 multipart upload for %q: %w", key, abortErr))
+		if abortErr := s.abortMultipart(ctx, key, uploadID); abortErr != nil {
+			return errors.Join(cause, abortErr)
 		}
 		return cause
 	}
 
-	hash := sha256.New()
+	hasher := sha256.New()
 	remaining := size
 	for partNumber := int32(1); remaining > 0; partNumber++ {
 		length := partSize
@@ -219,7 +180,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if _, err := io.ReadFull(src, body); err != nil {
 			return abort(fmt.Errorf("reading S3 multipart part %d for %q: %w", partNumber, key, err))
 		}
-		if _, err := hash.Write(body); err != nil {
+		if _, err := hasher.Write(body); err != nil {
 			return abort(fmt.Errorf("hashing S3 multipart part %d for %q: %w", partNumber, key, err))
 		}
 		out, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
@@ -237,23 +198,12 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		return abort(fmt.Errorf("S3 object source for %q contains more than %d bytes", key, size))
 	}
 	var gotSHA [32]byte
-	copy(gotSHA[:], hash.Sum(nil))
+	copy(gotSHA[:], hasher.Sum(nil))
 	if gotSHA != wantSHA {
 		return abort(fmt.Errorf("S3 object %q: %w", key, objstore.ErrChecksumMismatch))
 	}
 
-	completeInput := &s3.CompleteMultipartUploadInput{
-		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
-		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
-	}
-	completeInput.IfNoneMatch = aws.String("*")
-	_, err = s.client.CompleteMultipartUpload(ctx, completeInput)
-	if err != nil && isConditionalUnsupported(err) {
-		// 呼び出し側は key を使い回さないので、既存の object が無い前提で条件を外す。
-		unconditional := *completeInput
-		unconditional.IfNoneMatch = nil
-		_, err = s.client.CompleteMultipartUpload(ctx, &unconditional)
-	}
+	err = s.completeMultipart(ctx, key, uploadID, parts)
 	if err == nil {
 		return nil
 	}
@@ -302,20 +252,7 @@ func (s *Store) Head(ctx context.Context, key string) (objstore.Object, error) {
 
 // Get opens a completed object's response body for streaming.
 func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	if err := validateKey(key); err != nil {
-		return nil, fmt.Errorf("invalid S3 object key %q: %w", key, err)
-	}
-	output, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
-	if err != nil {
-		if isMissingObject(err) {
-			return nil, objstore.ErrNotFound
-		}
-		return nil, withCredentialClass(fmt.Errorf("getting S3 object %q: %w", key, err))
-	}
-	if output.Body == nil {
-		return nil, fmt.Errorf("getting S3 object %q: server returned an empty body", key)
-	}
-	return output.Body, nil
+	return s.GetFrom(ctx, key, 0)
 }
 
 // Delete removes key idempotently.
@@ -486,6 +423,403 @@ func httpStatusCode(err error) int {
 	}
 	return 0
 }
+
+// putEmptyObject は 0 バイトの object を PutObject で公開する。条件付き書き込みに未対応なら条件を外して送り直す。
+func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wantSHA [32]byte) error {
+	emptySHA := sha256.Sum256(nil)
+	if emptySHA != wantSHA {
+		return objstore.ErrChecksumMismatch
+	}
+	newInput := func(conditional bool) *s3.PutObjectInput {
+		input := &s3.PutObjectInput{
+			Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(nil), ContentLength: aws.Int64(0),
+			ContentType: aws.String(contentType), Metadata: map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])},
+		}
+		if conditional {
+			input.IfNoneMatch = aws.String("*")
+		}
+		return input
+	}
+	_, err := s.client.PutObject(ctx, newInput(true))
+	if err != nil && isConditionalUnsupported(err) {
+		// 呼び出し側は key を使い回さないので、既存の object が無い前提で条件を外す。
+		_, err = s.client.PutObject(ctx, newInput(false))
+	}
+	if err != nil {
+		if isPreconditionFailed(err) {
+			return s.recoverExisting(ctx, key, 0, wantSHA)
+		}
+		if recoverErr := s.recoverExisting(ctx, key, 0, wantSHA); recoverErr == nil {
+			return nil
+		}
+		return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", key, err))
+	}
+	return nil
+}
+
+// startMultipart は ContentType と SHA-256 のメタデータを付けて multipart upload を始め、UploadId を返す。
+func (s *Store) startMultipart(ctx context.Context, key, contentType string, wantSHA [32]byte) (string, error) {
+	created, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(key),
+		ContentType: aws.String(contentType),
+		Metadata:    map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])},
+	})
+	if err != nil {
+		return "", withCredentialClass(fmt.Errorf("starting S3 multipart upload for %q: %w", key, err))
+	}
+	if created.UploadId == nil || *created.UploadId == "" {
+		return "", fmt.Errorf("starting S3 multipart upload for %q: server returned an empty upload ID", key)
+	}
+	return *created.UploadId, nil
+}
+
+// completeMultipart は条件付きで CompleteMultipartUpload を送り、条件に未対応のサーバーでは条件を外して送り直す。
+func (s *Store) completeMultipart(ctx context.Context, key, uploadID string, parts []types.CompletedPart) error {
+	input := &s3.CompleteMultipartUploadInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: parts},
+		IfNoneMatch:     aws.String("*"),
+	}
+	_, err := s.client.CompleteMultipartUpload(ctx, input)
+	if err != nil && isConditionalUnsupported(err) {
+		// 送信した入力は fake や呼び出し側が保持しうるので、条件だけ外したコピーで送り直す。
+		unconditional := *input
+		unconditional.IfNoneMatch = nil
+		_, err = s.client.CompleteMultipartUpload(ctx, &unconditional)
+	}
+	return err
+}
+
+// abortMultipart は UploadId を 1 回 Abort する。途中で止まったパートが残りうるので、
+// 呼び出し側は必要なら繰り返す。ctx が終わっていても Abort は試みる。
+func (s *Store) abortMultipart(ctx context.Context, key, uploadID string) error {
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_, err := s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+	})
+	if err != nil && !isNoSuchUpload(err) {
+		return fmt.Errorf("aborting S3 multipart upload for %q: %w", key, err)
+	}
+	return nil
+}
+
+// uploadState は s3store の再開状態。UploadId・パートの大きさ・送り終えたパートの一覧を DB に残す正の記録で、
+// Complete は ListParts ではなくこの一覧で完了する。
+type uploadState struct {
+	Key         string       `json:"key"`
+	Size        int64        `json:"size"`
+	SHA256      string       `json:"sha256"`
+	ContentType string       `json:"content_type"`
+	UploadID    string       `json:"upload_id"`
+	PartSize    int64        `json:"part_size"`
+	Parts       []uploadPart `json:"parts"`
+	Offset      int64        `json:"offset"`
+	Hash        []byte       `json:"hash"`
+}
+
+// uploadPart は UploadPart が成功したパートの番号と ETag。
+type uploadPart struct {
+	Number int32  `json:"number"`
+	ETag   string `json:"etag"`
+}
+
+// StartUpload は multipart upload を始め、パートの大きさを state に固定する。0 バイトなら UploadId を作らない。
+func (s *Store) StartUpload(ctx context.Context, key string, size int64, wantSHA [32]byte, contentType string) ([]byte, error) {
+	if s.readOnly {
+		return nil, objstore.ErrReadOnly
+	}
+	if err := validateKey(key); err != nil {
+		return nil, fmt.Errorf("invalid S3 object key %q: %w", key, err)
+	}
+	if size < 0 {
+		return nil, fmt.Errorf("negative S3 object size %d", size)
+	}
+	hashState, err := marshalHash(sha256.New())
+	if err != nil {
+		return nil, err
+	}
+	st := uploadState{
+		Key: key, Size: size, SHA256: hex.EncodeToString(wantSHA[:]), ContentType: contentType, Hash: hashState,
+	}
+	if size > 0 {
+		st.PartSize = multipartPartSize(size)
+		if st.UploadID, err = s.startMultipart(ctx, key, contentType, wantSHA); err != nil {
+			return nil, err
+		}
+	}
+	return encodeUploadState(st)
+}
+
+// ContinueUpload は state の offset から、パートを 1 つずつ送る。UploadPart が成功したパートだけを
+// 一覧・hash・offset に反映するので、返す state と offset は S3 に残ったパートと常に一致する。
+func (s *Store) ContinueUpload(ctx context.Context, raw []byte, src io.Reader) ([]byte, int64, error) {
+	st, err := decodeUploadState(raw)
+	if err != nil {
+		return raw, 0, err
+	}
+	if s.readOnly {
+		return raw, st.Offset, objstore.ErrReadOnly
+	}
+	original := st.Offset
+	h, err := restoreHash(st.Hash)
+	if err != nil {
+		return raw, original, err
+	}
+	if st.Offset < st.Size && (st.UploadID == "" || st.PartSize <= 0 || st.Offset != int64(len(st.Parts))*st.PartSize) {
+		return raw, original, fmt.Errorf("S3 upload state for %q does not match its %d parts: %w", st.Key, len(st.Parts), objstore.ErrUploadInvalid)
+	}
+	for err == nil && st.Offset < st.Size {
+		err = s.sendNextPart(ctx, &st, h, src)
+	}
+	if err == nil {
+		err = checkNoExtraByte(ctx, src, st.Key, st.Size)
+	}
+	hashState, hashErr := marshalHash(h)
+	if hashErr != nil {
+		return raw, original, hashErr
+	}
+	st.Hash = hashState
+	out, encErr := encodeUploadState(st)
+	if encErr != nil {
+		return raw, original, encErr
+	}
+	return out, st.Offset, err
+}
+
+// sendNextPart は次のパートを読んで送る。UploadPart が成功してから一覧・hash・offset を進める。
+func (s *Store) sendNextPart(ctx context.Context, st *uploadState, h hash.Hash, src io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("uploading S3 object %q: %w", st.Key, err)
+	}
+	number := int32(len(st.Parts) + 1)
+	length := min(st.PartSize, st.Size-st.Offset)
+	body := make([]byte, length)
+	if n, err := io.ReadFull(src, body); err != nil {
+		switch {
+		case ctx.Err() != nil:
+			return fmt.Errorf("reading S3 multipart part %d for %q: %w", number, st.Key, ctx.Err())
+		case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
+			return fmt.Errorf("S3 object source for %q ended after %d of %d bytes: %w", st.Key, st.Offset+int64(n), st.Size, objstore.ErrChecksumMismatch)
+		default:
+			return fmt.Errorf("reading S3 multipart part %d for %q: %w", number, st.Key, err)
+		}
+	}
+	out, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(st.Key), UploadId: aws.String(st.UploadID),
+		PartNumber: aws.Int32(number), Body: bytes.NewReader(body), ContentLength: aws.Int64(length),
+	})
+	if err != nil {
+		return withCredentialClass(fmt.Errorf("uploading S3 multipart part %d for %q: %w", number, st.Key, err))
+	}
+	if out.ETag == nil || *out.ETag == "" {
+		return fmt.Errorf("uploading S3 multipart part %d for %q: server returned no ETag", number, st.Key)
+	}
+	st.Parts = append(st.Parts, uploadPart{Number: number, ETag: *out.ETag})
+	_, _ = h.Write(body) // hash.Hash の Write は error を返さない。
+	st.Offset += length
+	return nil
+}
+
+// checkNoExtraByte は、size に達した後の src に余分なバイトが無いことを確かめる。
+func checkNoExtraByte(ctx context.Context, src io.Reader, key string, size int64) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("checking S3 object source for %q: %w", key, err)
+	}
+	var extra [1]byte
+	n, err := io.ReadFull(src, extra[:])
+	if n != 0 {
+		return fmt.Errorf("S3 object source for %q contains more than %d bytes: %w", key, size, objstore.ErrChecksumMismatch)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("reading S3 object source for %q: %w", key, err)
+	}
+	return nil
+}
+
+// CompleteUpload は state のパート一覧で multipart upload を完了する。
+// 送りながら計算した SHA-256 が一致したときだけ公開し、同じ key に同じ内容があれば成功、違えば ErrAlreadyExists。
+// 412 で既存を採用したときは UploadId を Abort する。
+func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
+	if s.readOnly {
+		return objstore.ErrReadOnly
+	}
+	st, err := decodeUploadState(raw)
+	if err != nil {
+		return err
+	}
+	if st.Offset != st.Size {
+		return fmt.Errorf("S3 upload for %q has %d of %d bytes", st.Key, st.Offset, st.Size)
+	}
+	want, err := decodeSHA256(st.SHA256)
+	if err != nil {
+		return err
+	}
+	h, err := restoreHash(st.Hash)
+	if err != nil {
+		return err
+	}
+	var got [32]byte
+	copy(got[:], h.Sum(nil))
+	if got != want {
+		return fmt.Errorf("S3 object %q: %w", st.Key, objstore.ErrChecksumMismatch)
+	}
+	if err := s.existingObject(ctx, st); err == nil || !errors.Is(err, objstore.ErrNotFound) {
+		return err
+	}
+	if st.UploadID == "" {
+		return s.putEmptyObject(ctx, st.Key, st.ContentType, want)
+	}
+	if st.PartSize <= 0 || int64(len(st.Parts)) != (st.Size+st.PartSize-1)/st.PartSize {
+		return fmt.Errorf("S3 upload for %q has %d parts for %d bytes: %w", st.Key, len(st.Parts), st.Size, objstore.ErrUploadInvalid)
+	}
+	parts := make([]types.CompletedPart, 0, len(st.Parts))
+	for _, part := range st.Parts {
+		parts = append(parts, types.CompletedPart{ETag: aws.String(part.ETag), PartNumber: aws.Int32(part.Number)})
+	}
+	err = s.completeMultipart(ctx, st.Key, st.UploadID, parts)
+	switch {
+	case err == nil:
+		return nil
+	case isPreconditionFailed(err):
+		if err := s.existingObject(ctx, st); err != nil {
+			return err
+		}
+		return s.abortMultipart(ctx, st.Key, st.UploadID)
+	case s.existingObject(ctx, st) == nil:
+		// 応答を失っただけで完了していた。HEAD で同じ内容なら成功とする。
+		return nil
+	case isUploadGone(err):
+		return fmt.Errorf("completing S3 multipart upload for %q: %w: %w", st.Key, objstore.ErrUploadInvalid, err)
+	default:
+		return withCredentialClass(fmt.Errorf("completing S3 multipart upload for %q: %w", st.Key, err))
+	}
+}
+
+// AbortUpload は UploadId を 1 回 Abort する。NoSuchUpload なら gone、成功なら送信中のパートが残りうるので gone は false。
+func (s *Store) AbortUpload(ctx context.Context, raw []byte) (bool, error) {
+	st, err := decodeUploadState(raw)
+	if err != nil {
+		return false, err
+	}
+	if st.UploadID == "" {
+		return true, nil
+	}
+	_, err = s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(st.Key), UploadId: aws.String(st.UploadID),
+	})
+	switch {
+	case err == nil:
+		return false, nil
+	case isNoSuchUpload(err):
+		return true, nil
+	default:
+		return false, withCredentialClass(fmt.Errorf("aborting S3 multipart upload for %q: %w", st.Key, err))
+	}
+}
+
+// GetFrom は completed object の offset から読める body を返す。offset が 0 のときは Range を付けない。
+func (s *Store) GetFrom(ctx context.Context, key string, offset int64) (io.ReadCloser, error) {
+	if err := validateKey(key); err != nil {
+		return nil, fmt.Errorf("invalid S3 object key %q: %w", key, err)
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("negative read offset %d", offset)
+	}
+	input := &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}
+	if offset > 0 {
+		input.Range = aws.String(fmt.Sprintf("bytes=%d-", offset))
+	}
+	output, err := s.client.GetObject(ctx, input)
+	if err != nil {
+		if isMissingObject(err) {
+			return nil, objstore.ErrNotFound
+		}
+		return nil, withCredentialClass(fmt.Errorf("getting S3 object %q: %w", key, err))
+	}
+	if output.Body == nil {
+		return nil, fmt.Errorf("getting S3 object %q: server returned an empty body", key)
+	}
+	return output.Body, nil
+}
+
+// existingObject は key の object が st と同じ内容なら nil、違えば ErrAlreadyExists、無ければ ErrNotFound を返す。
+func (s *Store) existingObject(ctx context.Context, st uploadState) error {
+	object, err := s.Head(ctx, st.Key)
+	if err != nil {
+		return err
+	}
+	if object.Size != st.Size || object.SHA256 != st.SHA256 {
+		return fmt.Errorf("S3 object %q already exists with different content: %w", st.Key, objstore.ErrAlreadyExists)
+	}
+	return nil
+}
+
+func decodeUploadState(raw []byte) (uploadState, error) {
+	var st uploadState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return uploadState{}, fmt.Errorf("decoding S3 upload state: %w: %w", objstore.ErrUploadInvalid, err)
+	}
+	if st.Key == "" || st.Size < 0 || st.Offset < 0 || st.Offset > st.Size || (st.Size > 0 && st.UploadID == "") {
+		return uploadState{}, fmt.Errorf("S3 upload state is inconsistent: %w", objstore.ErrUploadInvalid)
+	}
+	return st, nil
+}
+
+func encodeUploadState(st uploadState) ([]byte, error) {
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return nil, fmt.Errorf("encoding S3 upload state: %w", err)
+	}
+	return raw, nil
+}
+
+func decodeSHA256(hexSHA string) ([32]byte, error) {
+	var out [32]byte
+	raw, err := hex.DecodeString(hexSHA)
+	if err != nil || len(raw) != len(out) {
+		return out, fmt.Errorf("S3 upload state has an invalid SHA-256 %q: %w", hexSHA, objstore.ErrUploadInvalid)
+	}
+	copy(out[:], raw)
+	return out, nil
+}
+
+func marshalHash(h hash.Hash) ([]byte, error) {
+	m, ok := h.(encoding.BinaryMarshaler)
+	if !ok {
+		return nil, fmt.Errorf("hash %T cannot be marshaled", h)
+	}
+	state, err := m.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("marshaling SHA-256 state: %w", err)
+	}
+	return state, nil
+}
+
+func restoreHash(state []byte) (hash.Hash, error) {
+	h := sha256.New()
+	u, ok := h.(encoding.BinaryUnmarshaler)
+	if !ok {
+		return nil, fmt.Errorf("hash %T cannot be unmarshaled", h)
+	}
+	if err := u.UnmarshalBinary(state); err != nil {
+		return nil, fmt.Errorf("restoring SHA-256 state: %w: %w", objstore.ErrUploadInvalid, err)
+	}
+	return h, nil
+}
+
+func isUploadGone(err error) bool {
+	switch apiErrorCode(err) {
+	case "InvalidPart", "InvalidPartOrder", "NoSuchUpload":
+		return true
+	default:
+		return false
+	}
+}
+
+var _ objstore.Resumable = (*Store)(nil)
+var _ objstore.RangeReader = (*Store)(nil)
 
 var _ objstore.Store = (*Store)(nil)
 var _ objstore.SignedURL = (*Store)(nil)

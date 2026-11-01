@@ -44,11 +44,12 @@ const (
 const (
 	featureConditionalWrites = "conditional-writes"
 	featureMultipart         = "multipart-upload-and-abort"
+	featureMultipartResume   = "multipart-resume"
 	featureHeadChecksum      = "head-checksum-sha256"
 	featurePresignedRange    = "presigned-get-range"
 )
 
-var featureNames = []string{featureConditionalWrites, featureMultipart, featureHeadChecksum, featurePresignedRange}
+var featureNames = []string{featureConditionalWrites, featureMultipart, featureMultipartResume, featureHeadChecksum, featurePresignedRange}
 
 type featureResult struct {
 	Feature string            `json:"feature"`
@@ -91,6 +92,7 @@ func TestS3Conformance(t *testing.T) {
 	}{
 		{featureConditionalWrites, func(t *testing.T) (featureResult, error) { return probeConditionalWrites(t, ctx, tg) }},
 		{featureMultipart, func(t *testing.T) (featureResult, error) { return probeMultipart(t, ctx, tg) }},
+		{featureMultipartResume, func(t *testing.T) (featureResult, error) { return probeMultipartResume(t, ctx, tg) }},
 		{featureHeadChecksum, func(t *testing.T) (featureResult, error) { return probeHeadChecksum(t, ctx, tg) }},
 		{featurePresignedRange, func(t *testing.T) (featureResult, error) { return probePresignedRange(t, ctx, tg) }},
 	}
@@ -386,6 +388,95 @@ func probeMultipart(t *testing.T, ctx context.Context, tg target) (featureResult
 		return featureResult{}, errors.New("completed multipart object differs from uploaded parts")
 	}
 	return probeMultipartAbort(t, ctx, tg, statusSupported)
+}
+
+// probeMultipartResume は、UploadPart を 1 つ送った時点で送り手が止まったと見なし、
+// 同じ UploadId と ETag だけで残りを送って Complete すると元のバイト列になることを確かめる。
+// 再開できるアップロードは、この前提の上に立つ。
+func probeMultipartResume(t *testing.T, ctx context.Context, tg target) (featureResult, error) {
+	client, bucket := tg.client, tg.bucket
+	key := tg.prefix + "/multipart-resume"
+	registerObjectCleanup(t, client, bucket, key)
+	unsupported := func(err error) (featureResult, error) {
+		return featureResult{Feature: featureMultipartResume, Status: statusUnsupported, Note: err.Error()}, nil
+	}
+	upload, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: stringPointer(bucket),
+		Key:    stringPointer(key),
+	})
+	if err != nil {
+		if isUnsupportedFeature(err) {
+			return unsupported(err)
+		}
+		return featureResult{}, unexpectedS3Error("CreateMultipartUpload for resume", err)
+	}
+	if upload.UploadId == nil {
+		return featureResult{}, errors.New("CreateMultipartUpload returned no upload ID")
+	}
+	uploadID := *upload.UploadId
+	firstPart := makeMultipartPart(4)
+	secondPart := makeMultipartPart(5)
+
+	first, err := client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     stringPointer(bucket),
+		Key:        stringPointer(key),
+		UploadId:   stringPointer(uploadID),
+		PartNumber: int32Pointer(1),
+		Body:       bytes.NewReader(firstPart),
+	})
+	if err != nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		if isUnsupportedFeature(err) {
+			return unsupported(err)
+		}
+		return featureResult{}, unexpectedS3Error("UploadPart 1 before resume", err)
+	}
+	// ここで送り手が落ちたと見なす。以降は同じ UploadId と ETag だけで続ける。
+	if first.ETag == nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		return featureResult{}, errors.New("UploadPart returned no ETag")
+	}
+	second, err := client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     stringPointer(bucket),
+		Key:        stringPointer(key),
+		UploadId:   stringPointer(uploadID),
+		PartNumber: int32Pointer(2),
+		Body:       bytes.NewReader(secondPart),
+	})
+	if err != nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		return featureResult{}, unexpectedS3Error("UploadPart 2 after resume", err)
+	}
+	if second.ETag == nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		return featureResult{}, errors.New("UploadPart returned no ETag")
+	}
+	_, err = client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   stringPointer(bucket),
+		Key:      stringPointer(key),
+		UploadId: stringPointer(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: []types.CompletedPart{
+			{ETag: first.ETag, PartNumber: int32Pointer(1)},
+			{ETag: second.ETag, PartNumber: int32Pointer(2)},
+		}},
+	})
+	if err != nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		return featureResult{}, unexpectedS3Error("CompleteMultipartUpload after resume", err)
+	}
+	output, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: stringPointer(bucket), Key: stringPointer(key)})
+	if err != nil {
+		return featureResult{}, unexpectedS3Error("read resumed multipart object", err)
+	}
+	got, readErr := io.ReadAll(output.Body)
+	closeErr := output.Body.Close()
+	if readErr != nil || closeErr != nil {
+		return featureResult{}, fmt.Errorf("read resumed multipart object: read %v, close %v", readErr, closeErr)
+	}
+	if !bytes.Equal(got, append(firstPart, secondPart...)) {
+		return featureResult{}, errors.New("resumed multipart object differs from the bytes uploaded across the stop")
+	}
+	return featureResult{Feature: featureMultipartResume, Status: statusSupported}, nil
 }
 
 func probeMultipartAbort(t *testing.T, ctx context.Context, tg target, uploadStatus string) (featureResult, error) {
