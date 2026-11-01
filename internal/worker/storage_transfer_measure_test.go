@@ -125,15 +125,20 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expected[:], assetID); err != nil {
 		t.Fatalf("setting logical checksum: %v", err)
 	}
-	destinationPath := filepath.Join(roots["archive"], filepath.FromSlash(adoptVerifyRelPath))
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
+	media := pgstore.NewMedia(pool, "test-store", "")
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+	if err != nil || !ok {
+		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
+	}
+	destinationPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
 	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(destinationPath, destination, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := transferTestConfig("archive", "archive", "test-store")
-	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	fingerprint, err := cfg.PolicyFingerprint()
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +146,6 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
-	media := pgstore.NewMedia(pool, "test-store", "")
 	return adoptVerifyFixture{
 		pool: pool, roots: roots, media: media, cfg: cfg, assetID: assetID,
 		worker: StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()},
@@ -254,15 +258,20 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
-	destinationPath := filepath.Join(roots["archive"], filepath.FromSlash(adoptVerifyRelPath))
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
+	media := pgstore.NewMedia(pool, "test-store", "")
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+	if err != nil || !ok {
+		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
+	}
+	destinationPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
 	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(destinationPath, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := transferTestConfig("archive", "archive", "test-store")
-	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	fingerprint, err := cfg.PolicyFingerprint()
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +279,6 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
-	media := pgstore.NewMedia(pool, "test-store", "")
 	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 	args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
 
@@ -387,7 +395,7 @@ func TestStorageTransferWorkerResumesSourceVerificationAfterHandoff(t *testing.T
 			if n, _ := transferAttemptCount(t, f.pool, copyID); n != 0 {
 				t.Fatalf("failure counted during verification: attempts = %d, want 0", n)
 			}
-			dir := filepath.Dir(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath)))
+			dir := filepath.Dir(filepath.Join(f.roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, f.pool, f.assetID, "archive"))))
 			if names := transferTempFiles(t, dir); len(names) != 0 {
 				t.Fatalf("transfer temp files during verification = %v, want none", names)
 			}
@@ -451,7 +459,7 @@ func TestStorageTransferWorkerMeasuresUnknownDerivedSourceBeforeSending(t *testi
 			if got := f.scratchEntries(t); len(got) != 0 {
 				t.Fatalf("scratch entries during measurement = %v, want none", got)
 			}
-			if fileExists(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath))) {
+			if fileExists(filepath.Join(f.roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, f.pool, f.assetID, "archive")))) {
 				t.Fatal("destination was published while the source was still being measured")
 			}
 			continue

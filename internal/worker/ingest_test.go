@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
@@ -156,8 +157,23 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "recording.m2ts")
+	var relPath string
+	if err := pool.QueryRow(context.Background(), `SELECT c.rel_path
+		FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id
+		WHERE a.recording_id = $1 AND a.kind = 'original'`, recordingID).Scan(&relPath); err != nil {
+		t.Fatalf("reading committed original rel_path: %v", err)
+	}
+	if !strings.HasPrefix(relPath, "sites/default/") || filepath.Base(relPath) != "recording.m2ts" {
+		t.Fatalf("original rel_path = %q, want sites/default/<entropy>/recording.m2ts", relPath)
+	}
+	parts := strings.Split(strings.TrimPrefix(relPath, "sites/default/"), "/")
+	if len(parts) != 2 {
+		t.Fatalf("original rel_path = %q, want one entropy directory before the filename", relPath)
+	}
+	if _, err := uuid.Parse(parts[0]); err != nil {
+		t.Fatalf("original rel_path entropy directory = %q, want UUID: %v", parts[0], err)
+	}
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -170,6 +186,64 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	if fake.CallCount(http.MethodDelete, "/api/recording/records/rec-001") == 0 {
 		t.Error("edge record was not deleted after successful commit")
 	}
+}
+
+func assertIngestRelPath(t *testing.T, relPath, site, filename string) {
+	t.Helper()
+	prefix := "sites/" + site + "/"
+	if !strings.HasPrefix(relPath, prefix) || filepath.Base(relPath) != filename {
+		t.Fatalf("ingest rel_path = %q, want %s<entropy>/%s", relPath, prefix, filename)
+	}
+	parts := strings.Split(strings.TrimPrefix(relPath, prefix), "/")
+	if len(parts) != 2 {
+		t.Fatalf("ingest rel_path = %q, want one entropy directory before the filename", relPath)
+	}
+	if _, err := uuid.Parse(parts[0]); err != nil {
+		t.Fatalf("ingest rel_path entropy directory = %q, want UUID: %v", parts[0], err)
+	}
+}
+
+func ingestTestReservedRelPath(t *testing.T, pool *pgxpool.Pool, recordingID int64) string {
+	t.Helper()
+	var relPath string
+	if err := pool.QueryRow(context.Background(), `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&relPath); err != nil {
+		t.Fatalf("reading reserved ingest rel_path for recording %d: %v", recordingID, err)
+	}
+	if relPath == "" {
+		t.Fatalf("reserved ingest rel_path for recording %d is empty", recordingID)
+	}
+	return relPath
+}
+
+func ingestTestCommittedRelPath(t *testing.T, pool *pgxpool.Pool, recordingID int64) string {
+	t.Helper()
+	var relPath string
+	if err := pool.QueryRow(context.Background(), `
+SELECT copy.rel_path
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE asset.recording_id = $1 AND asset.kind = 'original' AND copy.state = 'active'
+ORDER BY copy.created_at DESC, copy.id DESC
+LIMIT 1`, recordingID).Scan(&relPath); err != nil {
+		t.Fatalf("reading committed ingest rel_path for recording %d: %v", recordingID, err)
+	}
+	return relPath
+}
+
+func ingestTestTempFilePath(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, site, recordID string) string {
+	t.Helper()
+	var relPath string
+	var writerGeneration int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT canonical_rel_path, writer_generation
+FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&relPath, &writerGeneration); err != nil {
+		t.Fatalf("reading ingest temp location for recording %d: %v", recordingID, err)
+	}
+	if relPath == "" || writerGeneration <= 0 {
+		t.Fatalf("ingest temp location = (%q, generation %d), want reserved path and positive generation", relPath, writerGeneration)
+	}
+	dir := filepath.Join(mediaDir, filepath.Dir(filepath.FromSlash(relPath)))
+	return ingestTempWriterFilePath(dir, site, recordID, writerGeneration)
 }
 
 // TestIngestWorker_SiteMismatch は、args.Site がワーカー自身の site
@@ -257,7 +331,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "site-a"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "sites", "site-a", "match", "recording.m2ts")
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -431,7 +505,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "partial.m2ts")
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -536,7 +610,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-follow"}); err != nil {
 		t.Fatalf("Work(): %v", err)
 	}
-	path := filepath.Join(w.MediaDir, "sites", "default", "test", "follow.m2ts")
+	path := filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading committed file: %v", err)
@@ -719,7 +793,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-catchup"}); err != nil {
 		t.Fatalf("Work(): %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "catchup.m2ts"))
+	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
 	if err != nil {
 		t.Fatalf("reading committed file: %v", err)
 	}
@@ -835,10 +909,7 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 			if n := deletes.Load(); n != 0 {
 				t.Errorf("DELETE requests = %d, want 0 (edge record must be kept: purging it can remove a successor's content file)", n)
 			}
-			tempPath := ingestTempFilePath(filepath.Join(w.MediaDir, "sites", "default", "test"), "default", tt.recordID)
-			if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("ingest temp after %s record termination: err=%v, want os.ErrNotExist", tt.name, err)
-			}
+			assertNoIngestTempFiles(t, w.MediaDir)
 		})
 	}
 }
@@ -916,7 +987,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-notready"}); err != nil {
 		t.Fatalf("Work() = %v, want nil（204 と 206/0 は接続失敗ではない）", err)
 	}
-	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "notready.m2ts"))
+	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
 	if err != nil {
 		t.Fatalf("reading committed file: %v", err)
 	}
@@ -1105,7 +1176,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-unknown"}); err != nil {
 		t.Fatalf("Work() = %v, want nil（未知の status はジョブ内で再試行する）", err)
 	}
-	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "unknown.m2ts"))
+	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
 	if err != nil {
 		t.Fatalf("reading committed file: %v", err)
 	}
@@ -1227,10 +1298,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("expected 'size mismatch' error, got: %v", err)
 	}
-	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", "rec-mismatch")
-	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("ingest temp after size mismatch: stat error = %v, want not exist", err)
-	}
+	assertNoIngestTempFiles(t, mediaDir)
 }
 
 func TestIngestWorker_HashMismatch(t *testing.T) {
@@ -1279,13 +1347,11 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
 	}
-	if _, err := os.Stat(filepath.Join(mediaDir, "sites", "default", "test", "hash-mismatch.m2ts")); !errors.Is(err, os.ErrNotExist) {
+	reservedRelPath := ingestTestReservedRelPath(t, pool, recordingID)
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(reservedRelPath))); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("canonical file after hash mismatch: stat error = %v, want not exist", err)
 	}
-	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", "rec-hash-mismatch")
-	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("ingest temp after hash mismatch: stat error = %v, want not exist", err)
-	}
+	assertNoIngestTempFiles(t, mediaDir)
 }
 
 type lateSHA256IngestCase struct {
@@ -1464,7 +1530,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	if _, ok := jobq.SnoozeDelay(firstErr); !ok {
 		t.Fatalf("first Work() error = %v, want slice snooze", firstErr)
 	}
-	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
+	tempPath := ingestTestTempFilePath(t, pool, mediaDir, recordingID, "default", recordID)
 	firstTemp, err := os.ReadFile(tempPath)
 	if err != nil {
 		t.Fatalf("reading temp after first slice: %v", err)
@@ -1487,8 +1553,12 @@ FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&h
 	if !ok {
 		t.Fatal("ingest temp state was not recorded after the first transfer slice")
 	}
-	if firstTempRelPath != "sites/default/test/.rokuban-ingest-default-rec%2Dsliced%2Dtransfer-g1" {
-		t.Errorf("temp_rel_path after first slice = %q, want media-root-relative temp path", firstTempRelPath)
+	wantFirstTempRelPath, err := ingestTempRelPath(mediaDir, tempPath)
+	if err != nil {
+		t.Fatalf("building expected first temp_rel_path: %v", err)
+	}
+	if firstTempRelPath != wantFirstTempRelPath {
+		t.Errorf("temp_rel_path after first slice = %q, want %q", firstTempRelPath, wantFirstTempRelPath)
 	}
 	if firstTempGeneration <= 0 {
 		t.Fatalf("temp_generation after first slice = %d, want a positive sequence value", firstTempGeneration)
@@ -1520,7 +1590,7 @@ FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&h
 	if committedGeneration != firstTempGeneration {
 		t.Fatalf("committed ingest_generation = %d, want the same byte generation %d across clean handoff", committedGeneration, firstTempGeneration)
 	}
-	canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
+	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	got, err := os.ReadFile(canonicalPath)
 	if err != nil {
 		t.Fatalf("reading committed canonical file: %v", err)
@@ -1645,7 +1715,7 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResul
 		// 2 回目は preflight 経路（転送せず temp の長さだけで待ちに入る）を通る。
 		t.Errorf("temp generation after a repeated SHA-256 snooze = %d, want unchanged %d", generation, run.waitGeneration)
 	}
-	tempPath := ingestTempFilePath(filepath.Join(run.mediaDir, "sites", "default", "test"), "default", run.recordID)
+	tempPath := ingestTestTempFilePath(t, run.pool, run.mediaDir, run.recordingID, "default", run.recordID)
 	info, err := os.Stat(tempPath)
 	if err != nil {
 		t.Fatalf("stating temp during SHA-256 wait: %v", err)
@@ -1670,7 +1740,7 @@ func (run *lateSHA256IngestRun) complete(t *testing.T, tc lateSHA256IngestCase) 
 		lateHash := tc.lateHash(run.tsData)
 		run.setHash(&lateHash)
 	} else {
-		tempPath := ingestTempFilePath(filepath.Join(run.mediaDir, "sites", "default", "test"), "default", run.recordID)
+		tempPath := ingestTestTempFilePath(t, run.pool, run.mediaDir, run.recordingID, "default", run.recordID)
 		oldTime := time.Now().Add(-2 * time.Minute)
 		if err := os.Chtimes(tempPath, oldTime, oldTime); err != nil {
 			t.Fatalf("aging temp mtime past SHA-256 deadline: %v", err)
@@ -1731,7 +1801,7 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 		if committedGeneration != run.waitGeneration {
 			t.Errorf("committed ingest_generation = %d, want the generation held during the SHA-256 wait (%d)", committedGeneration, run.waitGeneration)
 		}
-		canonicalPath := filepath.Join(run.mediaDir, "sites", "default", run.contentPath)
+		canonicalPath := filepath.Join(run.mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, run.pool, run.recordingID)))
 		committed, err := os.ReadFile(canonicalPath)
 		if err != nil {
 			t.Fatalf("reading committed canonical file: %v", err)
@@ -1760,7 +1830,7 @@ func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID i
 	if !ok || generation <= 0 {
 		t.Fatalf("progress row while waiting = (generation %d, present %t), want a row with a positive generation", generation, ok)
 	}
-	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
+	tempPath := ingestTestTempFilePath(t, pool, mediaDir, recordingID, "default", recordID)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != wantTempSize {
 		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, wantTempSize)
 	}
@@ -2164,7 +2234,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				t.Fatalf("retry Work() error: %v", err)
 			}
 
-			fullPath := filepath.Join(mediaDir, "sites", "default", "test", "durable-failure.m2ts")
+			fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 			gotData, err := os.ReadFile(fullPath)
 			if err != nil {
 				t.Fatalf("reading retried output file: %v", err)
@@ -2274,7 +2344,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "stall.m2ts")
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
@@ -2429,12 +2499,20 @@ type linkedIngestEnv struct {
 	fake        *mirakctest.Fake
 	recordID    string
 	recordingID int64
+	mediaDir    string
 	fullPath    string
-	tempPath    string
 	tsData      []byte
 }
 
 func newLinkedIngestEnv(t *testing.T, recordID, contentPath string) *linkedIngestEnv {
+	return newLinkedIngestEnvWithReservedPath(t, recordID, contentPath, true)
+}
+
+func newUnreservedLinkedIngestEnv(t *testing.T, recordID, contentPath string) *linkedIngestEnv {
+	return newLinkedIngestEnvWithReservedPath(t, recordID, contentPath, false)
+}
+
+func newLinkedIngestEnvWithReservedPath(t *testing.T, recordID, contentPath string, reserve bool) *linkedIngestEnv {
 	t.Helper()
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -2443,13 +2521,9 @@ func newLinkedIngestEnv(t *testing.T, recordID, contentPath string) *linkedInges
 	env := &linkedIngestEnv{pool: pool, recordID: recordID, tsData: makeTSData(50)}
 	env.fake = newFullTransferFake(t, recordID, env.tsData, contentPath)
 	mediaDir := t.TempDir()
+	env.mediaDir = mediaDir
 	env.recordingID = dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, env.recordingID, recordID)
-	env.fullPath = filepath.Join(mediaDir, "sites", "default", filepath.FromSlash(contentPath))
-	if err := os.MkdirAll(filepath.Dir(env.fullPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	env.tempPath = ingestTempFilePath(filepath.Dir(env.fullPath), "default", recordID)
 	env.w = &IngestWorker{
 		Publisher:        pgstoretest.Media(pool),
 		MirakcClients:    singleSiteClients("", mirakc.NewClient(env.fake.URL(), nil)),
@@ -2459,7 +2533,40 @@ func newLinkedIngestEnv(t *testing.T, recordID, contentPath string) *linkedInges
 		Precheck:         pgstoretest.Media(pool),
 		CMDetectionStore: pgstoretest.Analysis(pool),
 	}
+	if reserve {
+		env.reserveCanonicalPath(t)
+	}
 	return env
+}
+
+func (e *linkedIngestEnv) reserveCanonicalPath(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	owner := uuid.New()
+	checkpoint, acquired, err := e.w.Publisher.AcquireIngestCheckpoint(ctx, e.recordingID, owner, ingestCheckpointLeaseTTL())
+	if err != nil || !acquired {
+		t.Fatalf("acquiring test writer lease = (%+v, %t, %v)", checkpoint, acquired, err)
+	}
+	client := e.w.MirakcClients["default"]
+	record, err := client.GetRecord(ctx, e.recordID)
+	if err != nil {
+		t.Fatalf("getting fake mirakc record: %v", err)
+	}
+	relPath, err := e.w.determineRelPath(jobs.IngestJobArgs{Site: "default", RecordID: e.recordID}, record)
+	if err != nil {
+		t.Fatalf("determining test rel_path: %v", err)
+	}
+	relPath, err = e.w.Publisher.ReserveIngestRelPath(ctx, e.recordingID, owner, relPath)
+	if err != nil {
+		t.Fatalf("reserving test rel_path: %v", err)
+	}
+	if err := e.w.Publisher.ReleaseIngestCheckpoint(ctx, e.recordingID, owner); err != nil {
+		t.Fatalf("releasing test writer lease: %v", err)
+	}
+	e.fullPath = filepath.Join(e.mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(e.fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (e *linkedIngestEnv) run() error {
@@ -2517,7 +2624,8 @@ func TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent(t *testing
 	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, foreign) {
 		t.Errorf("canonical bytes changed (%d bytes, %v)", len(data), err)
 	}
-	if temp, err := os.ReadFile(env.tempPath); err != nil || !bytes.Equal(temp, env.tsData) {
+	tempPath := ingestTestTempFilePath(t, env.pool, env.mediaDir, env.recordingID, "default", env.recordID)
+	if temp, err := os.ReadFile(tempPath); err != nil || !bytes.Equal(temp, env.tsData) {
 		t.Errorf("completed ingest temp = (%d bytes, %v), want preserved transferred bytes", len(temp), err)
 	}
 	if n := env.assetCount(t); n != 0 {
@@ -2555,9 +2663,7 @@ func TestIngestWorker_AdoptsMatchingCanonicalWithDifferentInode(t *testing.T) {
 	if got := env.fake.CallCount(http.MethodDelete, "/api/recording/records/"+env.recordID); got != 1 {
 		t.Errorf("mirakc DeleteRecord calls = %d, want 1 after adoption", got)
 	}
-	if _, err := os.Stat(env.tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("stat(%q) error = %v, want temp cleanup after adoption", env.tempPath, err)
-	}
+	assertNoIngestTempFiles(t, env.mediaDir)
 }
 
 // link 後に commit が失敗しても、次の試行は転送せず commit だけをやり直して成功する。
@@ -2584,6 +2690,10 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if !handedOff || offset != int64(len(env.tsData)) {
 		t.Fatalf("writer checkpoint after failed commit = (handed_off %v, offset %d), want final handoff (true, %d)", handedOff, offset, len(env.tsData))
 	}
+	var reservedRelPath string
+	if err := env.pool.QueryRow(context.Background(), `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&reservedRelPath); err != nil {
+		t.Fatalf("reading reserved canonical path after failed commit: %v", err)
+	}
 	getsAfterFirst := env.streamGets()
 
 	if err := env.run(); err != nil {
@@ -2592,6 +2702,13 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if n := env.assetCount(t); n != 1 {
 		t.Errorf("media_assets rows = %d, want 1", n)
 	}
+	var committedRelPath string
+	if err := env.pool.QueryRow(context.Background(), `SELECT c.rel_path FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id WHERE a.recording_id = $1 AND a.kind = 'original'`, env.recordingID).Scan(&committedRelPath); err != nil {
+		t.Fatalf("reading committed canonical path: %v", err)
+	}
+	if committedRelPath != reservedRelPath {
+		t.Errorf("committed rel_path = %q, want retry to reuse reserved path %q", committedRelPath, reservedRelPath)
+	}
 	second, err := os.Stat(env.fullPath)
 	if err != nil || !os.SameFile(first, second) {
 		t.Errorf("canonical inode changed across retry (err = %v)", err)
@@ -2599,9 +2716,7 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if got := env.streamGets(); got != getsAfterFirst {
 		t.Errorf("stream GET calls = %d after retry, want %d (no transfer)", got, getsAfterFirst)
 	}
-	if _, err := os.Stat(env.tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("stat(%q) error = %v, want os.ErrNotExist after the committed retry", env.tempPath, err)
-	}
+	assertNoIngestTempFiles(t, env.mediaDir)
 	var checkpointRows int
 	if err := env.pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&checkpointRows); err != nil {
 		t.Fatalf("counting DB checkpoints after retry: %v", err)
@@ -2613,6 +2728,38 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
 	}
 	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
+}
+
+// 最初の Work が候補名をチェックポイントへ保存し、公開失敗後も再試行が同じ名前を使う。
+func TestIngestWorker_ReservesCanonicalPathOnFirstWorkAndReusesItAfterPublicationFailure(t *testing.T) {
+	env := newUnreservedLinkedIngestEnv(t, "rec-first-path-reservation", "template/should-not-be-used.m2ts")
+	env.fake = newRecordPathFake(t, env.recordID, env.tsData, strPtr("template/should-not-be-used.m2ts"), "/recording/actual-name.m2ts")
+	env.w.MirakcClients["default"] = mirakc.NewClient(env.fake.URL(), nil)
+	failFirstPublication(t)
+	if err := env.run(); err == nil {
+		t.Fatal("first Work() succeeded, want the injected publication failure")
+	}
+	var reservedRelPath string
+	if err := env.pool.QueryRow(context.Background(), `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&reservedRelPath); err != nil {
+		t.Fatalf("reading first Work canonical path reservation: %v", err)
+	}
+	if reservedRelPath == "" || !strings.HasPrefix(reservedRelPath, "sites/default/") || filepath.Base(reservedRelPath) != "actual-name.m2ts" {
+		t.Fatalf("reserved canonical path = %q, want a sites/default path based on mirakc Content.Path", reservedRelPath)
+	}
+	if _, err := os.Stat(filepath.Join(env.mediaDir, filepath.FromSlash(reservedRelPath))); err != nil {
+		t.Fatalf("canonical file after linked publication failure: %v", err)
+	}
+
+	if err := env.run(); err != nil {
+		t.Fatalf("second Work() error = %v, want commit-only retry", err)
+	}
+	var committedRelPath string
+	if err := env.pool.QueryRow(context.Background(), `SELECT c.rel_path FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id WHERE a.recording_id = $1 AND a.kind = 'original'`, env.recordingID).Scan(&committedRelPath); err != nil {
+		t.Fatalf("reading committed original path: %v", err)
+	}
+	if committedRelPath != reservedRelPath {
+		t.Fatalf("committed rel_path = %q, want first Work's reservation %q", committedRelPath, reservedRelPath)
+	}
 }
 
 // link 後の commit が失敗したあと、ディスク上の内容が壊れていても、再試行は読み直さず
@@ -2744,7 +2891,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	}
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
-	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "reingest.m2ts")
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	firstData, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading output file after first Work(): %v", err)
@@ -2960,13 +3107,9 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 			mediaDir := t.TempDir()
 			recordingID := dbtest.Recording(t, pool)
 			fake := newFullTransferFake(t, recordID, []byte("x"), "test/linked-temp.m2ts")
-			fullPath := filepath.Join(mediaDir, "sites", "default", "test", "linked-temp.m2ts")
-			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(fullPath, []byte("canonical"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			relPath := "sites/default/" + uuid.NewString() + "/linked-temp.m2ts"
+			seedOriginalAsset(t, pool, mediaDir, recordingID, relPath, []byte("canonical"))
+			fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 			tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
 			if linked {
 				if err := os.Link(fullPath, tempPath); err != nil {
@@ -2993,31 +3136,43 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 	}
 }
 
-// 前の試行が DeleteRecord まで終えて mirakc の record が無いのは通常の経路なので、警告しない。
-// 404 以外の失敗は警告する。
-func TestRemoveLinkedTempAfterCommit_WarnsOnlyForUnexpectedRecordLookupFailure(t *testing.T) {
+// 前の試行が DeleteRecord まで終えて copy path が無いのは通常の経路なので、警告しない。
+// それ以外の DB 失敗は警告する。
+func TestRemoveLinkedTempAfterCommit_WarnsOnlyForUnexpectedPathLookupFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		status   int
+		err      error
 		wantWarn bool
 	}{
-		{"record already deleted", http.StatusNotFound, false},
-		{"mirakc failure", http.StatusInternalServerError, true},
+		{"copy path absent", store.ErrNotFound, false},
+		{"database failure", errors.New("database unavailable"), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			const recordID = "already-committed-record-gone"
-			fake := mirakctest.New(t)
-			fake.FailNext(http.MethodGet, "/api/recording/records/"+recordID, 1, tc.status)
 			var logBuf bytes.Buffer
 			log := slog.New(slog.NewTextHandler(&logBuf, nil))
-			w := &IngestWorker{MediaDir: t.TempDir()}
-			w.removeLinkedTempAfterCommit(context.Background(), mirakc.NewClient(fake.URL(), nil),
-				jobs.IngestJobArgs{Site: "default", RecordID: recordID}, log)
+			w := &IngestWorker{MediaDir: t.TempDir(), Precheck: ingestCleanupPrecheck{err: tc.err}}
+			w.removeLinkedTempAfterCommit(context.Background(), 1, jobs.IngestJobArgs{Site: "default", RecordID: "committed"}, log)
 			if got := strings.Contains(logBuf.String(), "level=WARN"); got != tc.wantWarn {
 				t.Errorf("warn logged = %v, want %v; log:\n%s", got, tc.wantWarn, logBuf.String())
 			}
 		})
 	}
+}
+
+type ingestCleanupPrecheck struct {
+	err error
+}
+
+func (p ingestCleanupPrecheck) HasOriginalMediaAsset(context.Context, int64) (bool, error) {
+	return false, nil
+}
+
+func (p ingestCleanupPrecheck) GetIngestOriginalRelPath(context.Context, int64) (string, error) {
+	return "", p.err
+}
+
+func (p ingestCleanupPrecheck) GetLiveMediaAssetRecordingID(context.Context, string) (int64, error) {
+	return 0, store.ErrNotFound
 }
 
 func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
@@ -3852,10 +4007,9 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 	}
 }
 
-// TestIngestWorker_RelPathPrefixedWithSite は、issue #186 (M4-14) 受け入れの
-// 1 項目目を固定する: site "tokyo" の worker が ingest した原本の
-// media_asset_copies.rel_path が "sites/tokyo/" で始まり、実ファイルがその下に置かれる
-// （contentPath に階層があってもその下に入る）。
+// TestIngestWorker_RelPathPrefixedWithSite は、site "tokyo" の worker が ingest した
+// 原本を "sites/tokyo/{entropy}/{filename}" に置き、DB の相対パスと同じ場所に
+// 実ファイルを作ることを確認する。
 //
 // catalog.SiteRelPath が site 前置をしなくなると rel_path が
 // "20240101/prog.m2ts" のままになり、このテストは失敗する。
@@ -3897,20 +4051,15 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}
-	const wantRelPath = "sites/tokyo/20240101/prog.m2ts"
-	if asset.RelPath != wantRelPath {
-		t.Errorf("media_asset_copies.rel_path = %q, want %q (site prefix missing)", asset.RelPath, wantRelPath)
-	}
-
-	fullPath := filepath.Join(mediaDir, "sites", "tokyo", "20240101", "prog.m2ts")
+	assertIngestRelPath(t, asset.RelPath, "tokyo", "prog.m2ts")
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(asset.RelPath))
 	if _, err := os.Stat(fullPath); err != nil {
 		t.Errorf("expected file at %s (site-prefixed dir): %v", fullPath, err)
 	}
 }
 
-// TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath は受け入れの
-// 2 項目目を固定する: mirakc の contentPath が空で filepath.Base(record.Content.Path)
-// にフォールバックする経路でも "sites/{site}/" が前置される。
+// TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath は mirakc の
+// contentPath が空でも record.Content.Path のファイル名を保存名に使うことを確認する。
 func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) {
 	tsData := makeTSData(10)
 	// ContentPath を nil にしてフォールバック経路を通す。
@@ -3950,12 +4099,7 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}
-	// フォールバックは filepath.Base なので階層は失われ "plain.m2ts" だけが残る。
-	// そこに "sites/tokyo/" が前置される。
-	const wantRelPath = "sites/tokyo/plain.m2ts"
-	if asset.RelPath != wantRelPath {
-		t.Errorf("media_asset_copies.rel_path = %q, want %q (site prefix missing on fallback path)", asset.RelPath, wantRelPath)
-	}
+	assertIngestRelPath(t, asset.RelPath, "tokyo", "plain.m2ts")
 }
 
 // TestIngestWorker_DegenerateContentPath_Rejected は、mirakc の contentPath /
@@ -4020,12 +4164,9 @@ func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
 		".rokuban-media-asset-user.m2ts",
 	} {
 		t.Run(contentPath, func(t *testing.T) {
-			fake := newRecordPathFake(t, "reserved-basename", nil, strPtr(contentPath), "/recording/"+contentPath)
 			w := &IngestWorker{MediaDir: t.TempDir()}
-			client := mirakc.NewClient(fake.URL(), nil)
-			_, _, _, err := w.determineRelPath(context.Background(), IngestJobArgs{
-				Site: "default", RecordID: "reserved-basename",
-			}, client)
+			_, err := w.determineRelPath(jobs.IngestJobArgs{Site: "default", RecordID: "reserved-basename"},
+				&mirakc.Record{Content: mirakc.ContentInfo{Path: "/recording/" + contentPath}})
 			if err == nil {
 				t.Fatal("determineRelPath returned nil for a reserved storage basename")
 			}
@@ -4036,16 +4177,9 @@ func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
 	}
 }
 
-// TestIngestWorker_TwoSitesSameContentPath_DoNotCollide は受け入れの 3 項目目
-// （罠の核心）を固定する: 同じ contentPath を持つ 2 サイトの record を ingest
-// しても、rel_path の site 前置で実ファイルが別々になり両方が commit できる。
-//
-// 反転確認: determineRelPath の前置（"relPath = "sites/" + args.Site + "/" +
-// relPath"）を削ると、2 回目の Work() が media_asset_copies の一意索引違反
-// （CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted'）で
-// 失敗し、このテストは "second Work() error" で落ちる。実際に前置行を削って
-// 確認済み（PR 本文参照）。
-func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
+// TestIngestWorker_SameContentFilenameGetsUniquePaths は、同じ site で同じ
+// mirakc contentPath を持つ別録画が、独立した entropy 付きパスに保存されることを確認する。
+func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 	setFastIngestFollow(t)
 	tsDataA := makeTSData(10)
 	tsDataB := makeTSData(20)
@@ -4062,88 +4196,70 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 	}
 
 	recordingIDA := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Site, fixtureParams.EventID = "site-a", 201
+		fixtureParams.Site, fixtureParams.EventID = "default", 201
 	})
-	insertTestRecordSyncForSite(t, pool, "site-a", recordingIDA, "rec-collide-a", 327361024000201)
+	insertTestRecordSyncForSite(t, pool, "default", recordingIDA, "rec-collide-a", 327361024000201)
 	recordingIDB := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Site, fixtureParams.EventID = "site-b", 202
+		fixtureParams.Site, fixtureParams.EventID = "default", 202
 	})
-	insertTestRecordSyncForSite(t, pool, "site-b", recordingIDB, "rec-collide-b", 327361024000202)
+	insertTestRecordSyncForSite(t, pool, "default", recordingIDB, "rec-collide-b", 327361024000202)
 
-	wA := &IngestWorker{
+	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fakeA.URL(), nil)),
+		MirakcClients: singleSiteClients("default", mirakc.NewClient(fakeA.URL(), nil)),
 		RecordTarget:  pgstoretest.Recordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 		Precheck:      pgstoretest.Media(pool),
 	}
-	wA.CMDetectionStore = pgstoretest.Analysis(pool)
-	wB := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("site-b", mirakc.NewClient(fakeB.URL(), nil)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
-		Precheck:      pgstoretest.Media(pool),
-	}
-	wB.CMDetectionStore = pgstoretest.Analysis(pool)
+	w.CMDetectionStore = pgstoretest.Analysis(pool)
+	jobA := IngestJobArgs{Site: "default", RecordID: "rec-collide-a"}
+	jobB := IngestJobArgs{Site: "default", RecordID: "rec-collide-b"}
 
-	jobA := IngestJobArgs{Site: "site-a", RecordID: "rec-collide-a"}
-	jobB := IngestJobArgs{Site: "site-b", RecordID: "rec-collide-b"}
-
-	if err := runWorkerViaJobQFake(context.Background(), wA, jobA); err != nil {
-		t.Fatalf("first Work() (site-a) error: %v", err)
+	if err := runWorkerViaJobQFake(context.Background(), w, jobA); err != nil {
+		t.Fatalf("first Work() error: %v", err)
 	}
-	if err := runWorkerViaJobQFake(context.Background(), wB, jobB); err != nil {
-		t.Fatalf("second Work() (site-b) error: %v (site prefix likely missing, colliding on rel_path %q)", err, sharedContentPath)
-	}
-
-	pathA := filepath.Join(mediaDir, "sites", "site-a", "shared", "recording.m2ts")
-	pathB := filepath.Join(mediaDir, "sites", "site-b", "shared", "recording.m2ts")
-
-	dataA, err := os.ReadFile(pathA)
-	if err != nil {
-		t.Fatalf("reading site-a output file: %v", err)
-	}
-	if len(dataA) != len(tsDataA) {
-		t.Errorf("site-a file size = %d, want %d", len(dataA), len(tsDataA))
-	}
-
-	dataB, err := os.ReadFile(pathB)
-	if err != nil {
-		t.Fatalf("reading site-b output file: %v", err)
-	}
-	if len(dataB) != len(tsDataB) {
-		t.Errorf("site-b file size = %d, want %d", len(dataB), len(tsDataB))
+	w.MirakcClients["default"] = mirakc.NewClient(fakeB.URL(), nil)
+	if err := runWorkerViaJobQFake(context.Background(), w, jobB); err != nil {
+		t.Fatalf("second Work() error: %v (same filename %q must get a fresh path)", err, filepath.Base(sharedContentPath))
 	}
 
 	q := sqlcgen.New(pool)
 	assetA, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDA})
 	if err != nil {
-		t.Fatalf("GetActiveOriginalMediaAsset(site-a): %v", err)
+		t.Fatalf("GetActiveOriginalMediaAsset(first recording): %v", err)
 	}
 	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDB})
 	if err != nil {
-		t.Fatalf("GetActiveOriginalMediaAsset(site-b): %v", err)
+		t.Fatalf("GetActiveOriginalMediaAsset(second recording): %v", err)
 	}
 	if assetA.RelPath == assetB.RelPath {
-		t.Errorf("both sites committed the same rel_path %q; site prefix must make them distinct", assetA.RelPath)
+		t.Fatalf("both recordings committed the same rel_path %q", assetA.RelPath)
 	}
-	if assetA.RelPath != "sites/site-a/"+sharedContentPath {
-		t.Errorf("site-a rel_path = %q, want %q", assetA.RelPath, "sites/site-a/"+sharedContentPath)
+	assertIngestRelPath(t, assetA.RelPath, "default", "recording.m2ts")
+	assertIngestRelPath(t, assetB.RelPath, "default", "recording.m2ts")
+
+	dataA, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(assetA.RelPath)))
+	if err != nil {
+		t.Fatalf("reading first output file: %v", err)
 	}
-	if assetB.RelPath != "sites/site-b/"+sharedContentPath {
-		t.Errorf("site-b rel_path = %q, want %q", assetB.RelPath, "sites/site-b/"+sharedContentPath)
+	if len(dataA) != len(tsDataA) {
+		t.Errorf("first file size = %d, want %d", len(dataA), len(tsDataA))
+	}
+	dataB, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(assetB.RelPath)))
+	if err != nil {
+		t.Fatalf("reading second output file: %v", err)
+	}
+	if len(dataB) != len(tsDataB) {
+		t.Errorf("second file size = %d, want %d", len(dataB), len(tsDataB))
 	}
 }
 
-// --- issue #197: 一意性を知る前に canonical file を truncate して
-// （既存の active な media_asset を壊して 23505 で落ちる）の回帰テスト。
+// --- 保存済み canonical path の衝突を転送前に拒む回帰テスト。
 
-// TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile は
-// issue #197 の受け入れ基準 1 項目目を固定する: 同じ rel_path になる 2 つ目の
-// ingest が、先行の実ファイルを壊さずに失敗する。
+// TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile は、
+// 再開時に保存済み canonical path が別アセットに使われている場合、
+// ingest が先行の実ファイルを壊さずに失敗することを確認する。
 //
 // checkRelPathConflict の述語は `state <> 'deleted'`（一意索引の述語と同じ）
 // であり、'active' と 'deleting' の両方を「衝突」として塞ぐ。これを
@@ -4220,7 +4336,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		t.Fatal(err)
 	}
 
-	// 新規: 同じ contentPath（→ 同じ site 前置後の rel_path）を持つ別の録画。
+	// 新規: checkpoint に衝突する canonical path が保存された別の録画。
 	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 302
 	})
@@ -4238,6 +4354,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		StallTimeout:  5 * time.Second,
 		Precheck:      pgstoretest.Media(pool),
 	}
+	reserveTestIngestPath(t, w.Publisher, newRecordingID, conflictRelPath)
 
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
@@ -4288,16 +4405,10 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 	}
 }
 
-// TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted は issue #197 の
-// 受け入れ基準 2 項目目（罠: state <> 'deleted' の条件を落とさない）を固定する:
-// 同じ rel_path を持つ既存行が state='deleted'（tombstone）の場合は、その
-// rel_path を新しい ingest が正当に再利用できる --- 既存の削除済み行を
-// 「active な衝突」として誤って弾いてはいけない。
-//
-// checkRelPathConflict の `AND state <> 'deleted'` を落とす（例えば無条件で
-// rel_path 一致を見る）と、このテストは "Work() error" で失敗する
-// （tombstone を衝突と誤認して転送を始めずに落ちる）。
-func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
+// TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone は、同じ mirakc
+// ファイル名に対応する古いパスが tombstone でも、新しい ingest が entropy
+// 付きの別パスを割り当てることを確認する。
+func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -4318,7 +4429,7 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 
 	dbtest.SetMediaAssetState(t, pool, deletedAssetID, "deleted")
 
-	// 新規: 同じ rel_path になる録画。
+	// 新規: 同じファイル名を持つ録画。
 	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 312
 	})
@@ -4340,24 +4451,42 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"}
 
 	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work() error = %v, want nil (a tombstoned rel_path must be reusable)", err)
-	}
-
-	fullPath := filepath.Join(mediaDir, "sites", "default", "shared", "reused.m2ts")
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
-	if len(data) != len(tsData) {
-		t.Errorf("file size = %d, want %d", len(data), len(tsData))
+		t.Fatalf("Work() error = %v, want nil", err)
 	}
 
 	asset, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: newRecordingID})
 	if err != nil {
 		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
 	}
-	if asset.RelPath != reusedRelPath {
-		t.Errorf("new media_asset rel_path = %q, want %q", asset.RelPath, reusedRelPath)
+	if asset.RelPath == reusedRelPath {
+		t.Fatalf("new media_asset reused tombstoned rel_path %q", reusedRelPath)
+	}
+	assertIngestRelPath(t, asset.RelPath, "default", "reused.m2ts")
+	data, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(asset.RelPath)))
+	if err != nil {
+		t.Fatalf("reading output file: %v", err)
+	}
+	if len(data) != len(tsData) {
+		t.Errorf("file size = %d, want %d", len(data), len(tsData))
+	}
+}
+
+func reserveTestIngestPath(t *testing.T, publisher store.MediaPublish, recordingID int64, relPath string) {
+	t.Helper()
+	ctx := context.Background()
+	owner := uuid.New()
+	if _, acquired, err := publisher.AcquireIngestCheckpoint(ctx, recordingID, owner, ingestCheckpointLeaseTTL()); err != nil || !acquired {
+		t.Fatalf("acquiring test writer lease: acquired=%t err=%v", acquired, err)
+	}
+	defer func() {
+		if err := publisher.ReleaseIngestCheckpoint(ctx, recordingID, owner); err != nil {
+			t.Errorf("releasing test writer lease: %v", err)
+		}
+	}()
+	if got, err := publisher.ReserveIngestRelPath(ctx, recordingID, owner, relPath); err != nil {
+		t.Fatalf("reserving test canonical path: %v", err)
+	} else if got != relPath {
+		t.Fatalf("reserved path = %q, want %q", got, relPath)
 	}
 }
 

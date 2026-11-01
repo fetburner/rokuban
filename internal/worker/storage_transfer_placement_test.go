@@ -159,7 +159,7 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 
 	assertPresent := func(t *testing.T, step string) {
 		t.Helper()
-		rows, err := pool.Query(context.Background(), `SELECT store FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active'`, assetID)
+		rows, err := pool.Query(context.Background(), `SELECT store, rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active'`, assetID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,10 +167,11 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 		present := 0
 		for rows.Next() {
 			var storeName string
-			if err := rows.Scan(&storeName); err != nil {
+			var path string
+			if err := rows.Scan(&storeName, &path); err != nil {
 				t.Fatal(err)
 			}
-			if fileExists(filepath.Join(roots[storeName], filepath.FromSlash(relPath))) {
+			if fileExists(filepath.Join(roots[storeName], filepath.FromSlash(path))) {
 				present++
 			}
 		}
@@ -202,24 +203,39 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 			assertPresent(t, step+" after transfer")
 		}
 		var stores []string
-		rows, err := pool.Query(context.Background(), `SELECT store FROM media_asset_copies WHERE media_asset_id = $1 AND state <> 'deleted' ORDER BY store`, assetID)
+		rows, err := pool.Query(context.Background(), `SELECT store, rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND state <> 'deleted' ORDER BY store`, assetID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for rows.Next() {
 			var storeName string
-			if err := rows.Scan(&storeName); err != nil {
+			var path string
+			if err := rows.Scan(&storeName, &path); err != nil {
 				t.Fatal(err)
 			}
 			stores = append(stores, storeName)
+			if !fileExists(filepath.Join(roots[storeName], filepath.FromSlash(path))) {
+				t.Errorf("round %d: active copy %q in %s has no file", i, path, storeName)
+			}
 		}
 		rows.Close()
 		if len(stores) != 1 || stores[0] != desired {
 			t.Fatalf("round %d: surviving copies = %v, want only %q", i, stores, desired)
 		}
-		for name, root := range roots {
-			if got, want := fileExists(filepath.Join(root, filepath.FromSlash(relPath))), name == desired; got != want {
-				t.Fatalf("round %d: file in %s exists = %t, want %t", i, name, got, want)
+		if i == 1 {
+			var returnedRelPath string
+			if err := pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store' AND state <> 'deleted'`, assetID).Scan(&returnedRelPath); err != nil {
+				t.Fatalf("reading returned A copy path: %v", err)
+			}
+			if returnedRelPath == relPath {
+				t.Fatalf("A→B→A reused tombstoned path %q", relPath)
+			}
+			var oldPathState string
+			if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store' AND rel_path = $2`, assetID, relPath).Scan(&oldPathState); err != nil {
+				t.Fatalf("reading previous A path state: %v", err)
+			}
+			if oldPathState != "deleted" {
+				t.Fatalf("previous A path state = %q, want deleted tombstone", oldPathState)
 			}
 		}
 	}

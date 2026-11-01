@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,6 +343,50 @@ func TestRegisterInPlaceRejectsDeletingCopyPath(t *testing.T) {
 	assertCopyState(t, pool, assetID, dbtest.StoreName, "deleting")
 }
 
+func TestRegisterInPlaceRejectsTombstonedPathButAllowsRenamedPath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	media := NewMedia(pool, dbtest.StoreName, "")
+	originalPath := "sites/default/library/original.mp4"
+	input := inPlaceEncodedInput(originalPath, 100)
+	first, err := media.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("RegisterInPlace without a tombstone: %v", err)
+	}
+	assertCopyState(t, pool, first.AssetIDs[0], dbtest.StoreName, "active")
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, first.AssetIDs[0], dbtest.StoreName); err != nil {
+		t.Fatalf("creating path tombstone: %v", err)
+	}
+	// 同じ path に生きた行が無いので、tombstone だけで拒否される。
+	_, err = media.RegisterInPlace(ctx, input)
+	if !errors.Is(err, store.ErrConflict) || !errors.Is(err, store.ErrInPlacePathTombstoned) {
+		t.Fatalf("RegisterInPlace over tombstoned path error = %v, want conflict and tombstone errors", err)
+	}
+	if !strings.Contains(err.Error(), "move or rename") {
+		t.Fatalf("tombstone error = %q, want move or rename guidance", err)
+	}
+	assertCopyState(t, pool, first.AssetIDs[0], dbtest.StoreName, "deleted")
+
+	input.Assets[0].RelPath = "sites/default/library/renamed-original.mp4"
+	second, err := media.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("RegisterInPlace after renaming tombstoned path: %v", err)
+	}
+	if second.AssetIDs[0] != first.AssetIDs[0] {
+		t.Errorf("renamed path asset ID = %d, want existing logical asset %d", second.AssetIDs[0], first.AssetIDs[0])
+	}
+	var renamedPathState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies
+		WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, first.AssetIDs[0], dbtest.StoreName,
+		input.Assets[0].RelPath).Scan(&renamedPathState); err != nil {
+		t.Fatalf("reading renamed copy state: %v", err)
+	}
+	if renamedPathState != "active" {
+		t.Fatalf("renamed copy state = %q, want active", renamedPathState)
+	}
+	assertCopyStateAtPath(t, pool, first.AssetIDs[0], dbtest.StoreName, originalPath, "deleted")
+}
+
 func inPlaceEncodedInput(relPath string, size int64) store.InPlaceInput {
 	profile := "h264"
 	return store.InPlaceInput{
@@ -480,9 +525,9 @@ func TestRegisterInPlaceRejectsExistingAssetUnlessAllConditionsHold(t *testing.T
 	t.Run("all conditions hold", func(t *testing.T) {
 		media, pool, first := setup(t)
 		deleteCopies(t, pool, first.AssetIDs[0])
-		second, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 80))
+		second, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/renamed-show.g8.mp4", 80))
 		if err != nil {
-			t.Fatalf("re-registering a deleted copy at the current generation: %v", err)
+			t.Fatalf("registering a renamed file at the current generation: %v", err)
 		}
 		if second.AssetIDs[0] != first.AssetIDs[0] {
 			t.Fatalf("asset id = %d, want %d", second.AssetIDs[0], first.AssetIDs[0])
@@ -813,6 +858,18 @@ func assertCopyState(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName,
 	}
 	if copyState != want {
 		t.Fatalf("copy state = %q, want %q", copyState, want)
+	}
+}
+
+func assertCopyStateAtPath(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName, relPath, want string) {
+	t.Helper()
+	var copyState string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies
+		WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, assetID, storeName, relPath).Scan(&copyState); err != nil {
+		t.Fatalf("reading copy state at %q: %v", relPath, err)
+	}
+	if copyState != want {
+		t.Fatalf("copy state at %q = %q, want %q", relPath, copyState, want)
 	}
 }
 

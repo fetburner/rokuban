@@ -152,8 +152,9 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 		t.Fatalf("first Work() error = %v, want context.Canceled", err)
 	}
 
-	fullPath := filepath.Join(mediaDir, "sites", "default", "resume", "recording.m2ts")
-	firstTemp := ingestTempWriterFilePath(filepath.Dir(fullPath), args.Site, args.RecordID, 1)
+	canonicalRelPath := ingestTestReservedRelPath(t, pool, recordingID)
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(canonicalRelPath))
+	firstTemp := ingestTestTempFilePath(t, pool, mediaDir, recordingID, args.Site, args.RecordID)
 	info, err := os.Stat(firstTemp)
 	if err != nil || info.Size() != int64(cutoff) {
 		t.Fatalf("unclean writer temp stat = (%v, %v), want %d bytes", info, err, cutoff)

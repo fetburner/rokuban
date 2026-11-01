@@ -249,6 +249,8 @@ type IngestPrecheck interface {
 	// HasOriginalMediaAsset は kind='original' の media_asset 行があれば true を返す。
 	// state は問わない。行の存在が原本のコミットを表す。
 	HasOriginalMediaAsset(ctx context.Context, recordingID int64) (bool, error)
+	// GetIngestOriginalRelPath は置き場にある原本コピーの rel_path を state に関係なく返す。
+	GetIngestOriginalRelPath(ctx context.Context, recordingID int64) (string, error)
 	// GetLiveMediaAssetRecordingID は削除済みでない行の recording_id を返す。
 	// 転送前のヒントであり、一意性の最終判定ではない。述語は部分一意索引と同じで、
 	// state='deleting' の行も衝突に数える。

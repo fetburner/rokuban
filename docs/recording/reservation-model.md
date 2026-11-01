@@ -100,7 +100,7 @@ priority は、mirakc の schedule の再作成（DELETE + POST）で反映さ�
 
 contentPath には、ルール側に対応するフィールドが無い。明示指定した値は既存の schedule にも反映される。次の reconcile が DELETE + POST で張り替えるが、`state == "scheduled"` の間だけで、録画開始後は反映されない。テンプレートから生成した値（`filenameTemplate` や既定の形式）は、初回の生成値に固定され、EPG の番組名が変わっても動かない。上書きの削除（reset）は既存の schedule には反映されない。空文字は API が 400 で拒否する（消すのは `reset`）。
 
-filenameTemplate は、schedule の初回作成時の contentPath の生成に使う。`contentPath` と両方が指定されたら `contentPath` が勝つ。既存の schedule には反映されない。`contentPath` と違い、展開結果が EPG の番組名で動くためである。
+filenameTemplate は、schedule の初回作成時の contentPath（mirakc に渡すファイル名）の生成に使う。`contentPath` と両方が指定されたら `contentPath` が勝つ。既存の schedule には反映されない。`contentPath` と違い、展開結果が EPG の番組名で動くためである。Rokuban が保存する原本のパスはこの contentPath の basename だけを使うので、テンプレートのディレクトリ部分は保存先に残らない（[contentpath.md](contentpath.md)）。
 
 encodeProfiles と keepOriginal は、ingest が原本をコミットするトランザクションの中で、`recording_encode_policy` 行として焼かれる（凍結される）瞬間まで効く（§4.5）。
 

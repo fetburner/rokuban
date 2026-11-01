@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -178,7 +177,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	if progressRows != 1 {
 		t.Errorf("recording_ingest_progress rows while waiting = %d, want 1 (kept until commit)", progressRows)
 	}
-	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
+	tempPath := ingestTestTempFilePath(t, pool, mediaDir, recordingID, "default", recordID)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != int64(len(tsData)) {
 		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, len(tsData))
 	}

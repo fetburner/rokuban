@@ -1206,12 +1206,17 @@ WITH asset AS MATERIALIZED (
       AND storage_transfer_attempt_count($3, $4) < $8
 ), upserted AS (
     INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-    SELECT asset.id, $4, source.rel_path, asset.generation, 'pending'
+    SELECT asset.id,
+           $4,
+           COALESCE(substring(source.rel_path FROM '^.*/'), '') ||
+               $9::text ||
+               COALESCE(substring(source.rel_path FROM '[.][^./]+$'), ''),
+           asset.generation,
+           'pending'
     FROM eligible asset
     CROSS JOIN source
     ON CONFLICT (media_asset_id, store, generation) WHERE state <> 'deleted'
     DO UPDATE SET
-        rel_path = EXCLUDED.rel_path,
         state = 'pending',
         deleted_at = NULL
     WHERE media_asset_copies.state = 'pending'
@@ -1250,6 +1255,7 @@ type PrepareMediaAssetTransferParams struct {
 	FsStores      []string
 	MountedStores []string
 	AttemptLimit  interface{}
+	CopyToken     string
 }
 
 type PrepareMediaAssetTransferRow struct {
@@ -1279,6 +1285,7 @@ func (q *Queries) PrepareMediaAssetTransfer(ctx context.Context, arg PrepareMedi
 		arg.FsStores,
 		arg.MountedStores,
 		arg.AttemptLimit,
+		arg.CopyToken,
 	)
 	var i PrepareMediaAssetTransferRow
 	err := row.Scan(

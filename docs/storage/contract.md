@@ -27,7 +27,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 1. ffmpeg などの生成処理はワーカーのローカル scratch で行い、完成した出力だけを `objstore.Store.Put` に渡す。書き込みはシーケンシャルにし、Put には正確なサイズと SHA-256 を渡す
 2. `Store.Put` は全バイトを検証し、同じキーを上書きせず、完全なオブジェクトが durable になった後にだけ成功を返す。キーが無いことは `Head`、`Get`、`Open` が `ErrNotFound` で返し、一時的なエラーと区別する。`Delete` は冪等で、無いキーの削除も成功にする。`List` は完成したキーだけを返し、載るのが遅れてもよい。`Get`・`Open`・署名付き URL は、実装が持つ能力に応じて `objstore.Reader`・`Local`・`SignedURL` の別のインターフェースとして提供する
 3. **派生物の公開点は DB commit** とする。キーへの Put が成功した後、同じ transaction でコピーを `active` にして論理メタデータを記録する。DB commit 前のキーは配信対象にせず、失敗した `pending` のコピーと孤立したキーは reconcile が回収する
-4. 派生物のキーは世代ごとに一度だけ使う。差し替えは新世代のキーを作り旧世代を保持する。DB の現行 active 行だけが配信を許し、旧世代は `storage.transfer.overlap` 後に削除する
+4. 派生物のキーは世代ごとに一度だけ使う。差し替えは新世代のキーを作り旧世代を保持する。置き場間転送のコピーにも INSERT 時に新しい `rel_path` を割り当て、pending の再試行ではその値を保つ。DB の現行 active 行だけが配信を許し、旧世代は `storage.transfer.overlap` 後に削除する
 
 `Put` は 1 回の呼び出しで送り切る契約である。1 回の Work では送り切れない転送は、再開できる送信を使う。再開できる送信は `objstore.Resumable` の `StartUpload` / `ContinueUpload` / `CompleteUpload` / `AbortUpload` で行う。送信状態は置き場の実装が marshal した不透明なバイト列である。呼び出し側は進捗の行に保存してそのまま返す。
 
@@ -263,27 +263,24 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ### rel_path の名前空間
 
-原本の相対パスは、取り込みが先頭に固定の予約ディレクトリとサイト名を前置する。site 名だけを先頭にすると、既存行の先頭成分と偶然一致して衝突するからである。
+原本の保存先には、録画ごとに再利用されない相対パスを使う。判定基準は次のとおり。
 
-アーカイブの論理資産（`media_assets`）は `site` 列を持たず単一だが、原本コピーの `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。同じ置き場で 2 サイトが同じ contentPath から録ると、同じ実ファイルを取り合う。DB は `media_asset_copies` の `(store, rel_path)` 一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて失われる。そのため原本コピーは `sites/{site}/` を前置する。
+- 同じ名前の再録画でも、別の path になる
+- 永久に一意である。DB を失って ID 列がリセットされても衝突しない。recording_id だけで作らない
+- rescue が site を読み取れるよう `sites/{site}/` を保つ
+- 派生物の `EncodedRelPath` が同じディレクトリを引き継げる
+
+recording_id だけで名前を作ると、DB の再構築後に rescue が採番した録画と新しい ingest が同じ path を使う可能性がある。
+
+ingest は、mirakc の `Record.Content.Path` の basename だけを使い、`sites/{site}/{uuid}/{basename}` を候補にする。contentPath のディレクトリ部分は使わない。uuid は乱数（UUID v4）なので、ID 列がリセットされても衝突しない。uuid は最初の Work でチェックポイントに保存し、再試行と commit は保存済みの `rel_path` を使う。同じ basename の録画を再取得しても uuid のディレクトリが異なり、最初の Work で保存したパスは失敗後も変わらない。
 
 #### 予約ディレクトリと前置の規則
 
-トップレベルの予約ディレクトリは 3 つで、原本の名前空間はその 1 つの下にサイト名を置く。前置するのは取り込みだけで、contentPath のテンプレートの内容には依存しない。site 名を先頭にすると、既存行の先頭成分と偶然一致して衝突し、実ファイルが上書きされる。
+この節は、トップレベルの予約ディレクトリの用途と、原本の前置の形を定める。
 
-トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つである。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する。`thumbnails/` はサムネイルの名前空間（§5.1）で、`sites/` は site スコープの原本の名前空間になる。
+トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` である。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する。`thumbnails/` はサムネイルの名前空間（§5.1）で、`sites/` は rescue が site を読み取る原本の名前空間になる。
 
-**前置の 1 段目を site 名そのもの（`{site}/...`）にする当初案は採らない。** 1 段目は固定の `sites/` にする。当初案は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する。
-
-例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書き、site 名も `tokyo` だと、新規 ingest の rel_path が既存行と同じになる。一意索引が効く前に実ファイルが上書きされる。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない。
-
-固定の `sites/` を 1 段目に挟むと、新規 ingest の rel_path は必ず `sites/` から始まる。それ以前の既存行が `sites/` から始まっていない限り、構造的に衝突しない。
-
-前置するのは ingest であって、contentPath テンプレートではない。ingest は原本 `rel_path` の唯一の書き手である。ここで前置すれば、reconciler が生成する contentPath やユーザーの `filename_template` の内容に関わらず名前空間が保たれる。
-
-前置は空の相対パスを通す前に弾く。contentPath / Content.Path がどちらも空だと、前置前の相対パスは `.`（カレントディレクトリ）になる。前置後は `sites/{site}/.` の `.` が `Join` / `Clean` で消え、`sites/{site}` という一見正当なパスになり、`mediapath.Resolve` の脱出検知を通ってしまう。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作り、その後その site 配下の ingest が `MkdirAll` で not a directory になり失敗し続ける。ingest は前置前に相対パスが `.` であることを明示的に検査して弾く。
-
-サムネイルは `thumbnails/{recording_id}.jpg` のまま（§5.1）。原本の contentPath に依存しないので `sites/` 前置の影響を受けない（構造的に衝突しない）。派生物は原本の dir を引き継ぐので自動的に前置される（[retention.md](retention.md) §6 参照）。原本が `sites/tokyo/20240101/....m2ts` なら、派生物は `sites/tokyo/20240101/...._h264.mp4` になる。
+サムネイルは `thumbnails/{recording_id}.jpg` のまま（§5.1）。派生物は原本の dir を引き継ぐ（[retention.md](retention.md) §6 参照）。原本が `sites/tokyo/{uuid}/recording.m2ts` なら、派生物は同じ directory の `recording_h264.mp4` になる。
 
 原本と encoded の全行は `sites/{site}/` 前置済みである。前置なしの行は worker の起動時検査で拒否する。
 
@@ -317,7 +314,8 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 <details><summary>根拠</summary>
 
 - `.rokuban-locks/` を `rel_path` に使わない検査: `mediapath.Resolve`
-- `sites/{site}/` の前置と空 path の拒否: `internal/worker/ingest.go` の `determineRelPath`
+- record filename から作る UUID directory 付き path: `internal/worker/ingest.go` の `determineRelPath`
+- `sites/{site}/` 前置と basename の検査: `internal/catalog/rescue_scan.go` の `SiteRelPath`
 - 孤児回収の file walk と root symlink の解決: `internal/worker/storage_audit.go` の `walkMediaFiles`
 - rescue が root symlink を解決し、in-place 登録時に symlink を拒否すること: `rescueStorage`、`inplace.Register`
 - `catalog/` の除外と相対パスの基準に同じ root を使うこと: `filepath.Rel`

@@ -150,8 +150,11 @@ func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDi
 			return nil
 		}
 		if errors.Is(err, store.ErrConflict) {
-			// 既に台帳にある資産と両立しない（生きたコピーがある・世代が違う・ごみ箱の録画）。
+			// 既に台帳にある資産と両立しない（tombstone・生きたコピー・世代違い・ごみ箱の録画）。
 			// このファイルだけを飛ばし、残りの走査を続ける。
+			if errors.Is(err, store.ErrInPlacePathTombstoned) {
+				result.SkippedTombstonedFiles++
+			}
 			slog.Warn("rescue: skipping file that conflicts with an existing media asset",
 				"rel_path", relPath, "err", err)
 			result.SkippedConflictingFiles++

@@ -9,7 +9,6 @@ import (
 	"hash"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -460,9 +459,46 @@ func (w *IngestWorker) Work(ctx context.Context, args jobs.IngestJobArgs) (err e
 
 //nolint:funlen,gocognit // writer lease, generation handoff, transfer, hash verification, and publication share one cleanup boundary.
 func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, expectedBytes *int64, log *slog.Logger, result *string) error {
-	relPath, fullPath, initialRecord, err := w.determineRelPath(ctx, args, client)
+	owner := uuid.New()
+	checkpoint, acquired, err := w.Publisher.AcquireIngestCheckpoint(ctx, recordingID, owner, ingestCheckpointLeaseTTL())
 	if err != nil {
-		return fmt.Errorf("determining rel_path: %w", err)
+		return fmt.Errorf("acquiring ingest writer lease: %w", err)
+	}
+	if !acquired {
+		return store.ErrIngestCheckpointLeaseHeld
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), ingestCheckpointCleanupTimeout)
+			defer cancel()
+			if err := w.Publisher.ReleaseIngestCheckpoint(cleanupCtx, recordingID, owner); err != nil {
+				log.Warn("ingest: releasing writer lease failed", "recording_id", recordingID, "err", err)
+			}
+		}
+	}()
+
+	initialRecord, err := client.GetRecord(ctx, args.RecordID)
+	if err != nil {
+		return fmt.Errorf("getting mirakc record: %w", err)
+	}
+	if checkpoint.CanonicalRelPath == "" {
+		candidate, err := w.determineRelPath(args, initialRecord)
+		if err != nil {
+			return fmt.Errorf("determining rel_path: %w", err)
+		}
+		if _, err := mediapath.Resolve(w.MediaDir, candidate); err != nil {
+			return fmt.Errorf("resolving candidate ingest rel_path: %w", err)
+		}
+		checkpoint.CanonicalRelPath, err = w.Publisher.ReserveIngestRelPath(ctx, recordingID, owner, candidate)
+		if err != nil {
+			return fmt.Errorf("reserving ingest rel_path: %w", err)
+		}
+	}
+	relPath := checkpoint.CanonicalRelPath
+	fullPath, err := mediapath.Resolve(w.MediaDir, relPath)
+	if err != nil {
+		return fmt.Errorf("resolving reserved ingest rel_path: %w", err)
 	}
 
 	// 既に同じ rel_path を使う行がある場合は、無駄な転送を始める前に拒む。
@@ -483,24 +519,6 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		return fmt.Errorf("creating directory %s: %w", filepath.Dir(fullPath), err)
 	}
 
-	owner := uuid.New()
-	checkpoint, acquired, err := w.Publisher.AcquireIngestCheckpoint(ctx, recordingID, owner, ingestCheckpointLeaseTTL())
-	if err != nil {
-		return fmt.Errorf("acquiring ingest writer lease: %w", err)
-	}
-	if !acquired {
-		return store.ErrIngestCheckpointLeaseHeld
-	}
-	handedOff := false
-	defer func() {
-		if !handedOff {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), ingestCheckpointCleanupTimeout)
-			defer cancel()
-			if err := w.Publisher.ReleaseIngestCheckpoint(cleanupCtx, recordingID, owner); err != nil {
-				log.Warn("ingest: releasing writer lease failed", "recording_id", recordingID, "err", err)
-			}
-		}
-	}()
 	tempState, err := w.Publisher.GetIngestTempState(ctx, recordingID)
 	if err != nil {
 		return fmt.Errorf("getting ingest temp state: %w", err)
@@ -878,7 +896,7 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
 		log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", err)
 	}
-	w.removeLinkedTempAfterCommit(ctx, client, args, log)
+	w.removeLinkedTempAfterCommit(ctx, recordingID, args, log)
 	// 原本があるなら対象を絞った reconcile をヒントとして投入する。
 	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
@@ -888,15 +906,18 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 
 // removeLinkedTempAfterCommit は、commit 後に残った世代 temp のうち canonical と同じ inode だけを消す。
 // 失敗はログだけにする。
-func (w *IngestWorker) removeLinkedTempAfterCommit(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, log *slog.Logger) {
-	_, fullPath, _, err := w.determineRelPath(ctx, args, client)
+func (w *IngestWorker) removeLinkedTempAfterCommit(ctx context.Context, recordingID int64, args jobs.IngestJobArgs, log *slog.Logger) {
+	relPath, err := w.Precheck.GetIngestOriginalRelPath(ctx, recordingID)
 	if err != nil {
-		// 前の試行が DeleteRecord まで終えていれば record は既に無い。通常の経路なので警告しない。
-		var apiErr *mirakc.APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-			log.Debug("ingest: mirakc record is already gone; skipping committed temp cleanup", "err", err)
+		if errors.Is(err, store.ErrNotFound) {
+			log.Debug("ingest: committed original copy is not in this store; skipping temp cleanup", "err", err)
 			return
 		}
+		log.Warn("ingest: could not read canonical path to clean up a committed temp", "err", err)
+		return
+	}
+	fullPath, err := mediapath.Resolve(w.MediaDir, relPath)
+	if err != nil {
 		log.Warn("ingest: could not resolve canonical path to clean up a committed temp", "err", err)
 		return
 	}
@@ -1088,51 +1109,19 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args jobs.IngestJ
 	return *row.RecordingID, row.ContentLength, nil
 }
 
-// determineRelPath は保存先の相対パスと、それを解決した絶対パスを返す。
-// relPath は mirakc の contentPath 由来なので、メディアディレクトリの外を
-// 指していないことを検証する。`sites/{site}/` を前置する判断（前置する理由・
-// 固定の 1 段目を挟む理由・前置前の既存行を移行しない判断）は
-// docs/storage/contract.md §rel_path の名前空間にある。
-//
-// 前置に使うのは args.Site。Work は determineRelPath を呼ぶ前に verifySite
-// （internal/worker/worker.go）で args.Site が w.MirakcClients のいずれかの
-// キーと一致することを検査済みである。w.MirakcClients のキーは常に実際の
-// （空でない）site 名なので（config のバリデーションが site 名の非空を要求する。
-// verifySite は jobSite を正規化しない）、verifySite を通過した args.Site は
-// 常に非空である。
-//
-// client は verifySite が返したクライアント（Work が呼び出し元で解決済み）を
-// そのまま受け取る --- ここで再度 w.MirakcClients を引くと、verifySite が通した
-// site と実際に使うクライアントがズレる経路を作ってしまう。
-//
-// contentPath / Content.Path がどちらも空だと relPath が "."（カレント
-// ディレクトリ）になる。前置後は "sites/{site}/." が Join/Clean で "." が
-// 消えて "sites/{site}" という一見正当なパスになり mediapath.Resolve を
-// 通ってしまい、一時ファイル作成が "{media_dir}/sites/{site}" を通常ファイルとして
-// 作ってしまう（以後その site 配下の ingest が全て MkdirAll で
-// "not a directory" になる。docs/storage/contract.md §rel_path の名前空間
-// 参照）。前置前に弾く（下記）。
-func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJobArgs, client *mirakc.Client) (relPath, fullPath string, record *mirakc.Record, err error) {
-	record, err = client.GetRecord(ctx, args.RecordID)
+// determineRelPath はmirakc recordのファイル名を使い、原本の候補rel_pathを作る。
+// ユーザーの contentPath ではなく、recording ごとの entropy 付きディレクトリを使う。
+func (w *IngestWorker) determineRelPath(args jobs.IngestJobArgs, record *mirakc.Record) (string, error) {
+	base := filepath.Base(record.Content.Path)
+	if base == "." || base == ".." || base == string(os.PathSeparator) {
+		return "", fmt.Errorf("mirakc record %s has no usable content filename", args.RecordID)
+	}
+	relPath := filepath.Join(uuid.NewString(), base)
+	relPath, err := catalog.SiteRelPath(args.Site, relPath)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("getting mirakc record: %w", err)
+		return "", fmt.Errorf("building site rel_path for mirakc record %s: %w", args.RecordID, err)
 	}
-	if cp := record.Recording.Options.ContentPath; cp != nil && *cp != "" {
-		relPath = *cp
-	} else {
-		relPath = filepath.Base(record.Content.Path)
-	}
-	// 空の rel_path と予約名は、mirakc 由来か移行ライブラリ由来かによらず
-	// catalog.SiteRelPath で同じように拒否する。
-	relPath, err = catalog.SiteRelPath(args.Site, relPath)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("building site rel_path for mirakc record %s: %w", args.RecordID, err)
-	}
-	fullPath, err = mediapath.Resolve(w.MediaDir, relPath)
-	if err != nil {
-		return "", "", nil, err
-	}
-	return relPath, fullPath, record, nil
+	return relPath, nil
 }
 
 // commit は原本の公開プロトコルを 1 回実行する。

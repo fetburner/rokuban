@@ -351,9 +351,16 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		relPath := fmt.Sprintf("encoded/s3-fs-transfer-%d.mp4", time.Now().UnixNano())
 		content := bytes.Repeat([]byte("fs-to-s3-transfer-"), 3<<20)
 		assetID := seedEncodedOrThumbnailAsset(t, pool, root, recordingID, store.AssetKindEncoded, &profile, relPath, content)
+		targetRelPath := ""
 		t.Cleanup(func() {
-			if err := objects.Delete(context.Background(), relPath); err != nil {
-				t.Errorf("deleting S3 transfer key %q: %v", relPath, err)
+			if targetRelPath == "" {
+				targetRelPath = transferTestLatestCopyRelPath(t, pool, assetID, objectStoreName)
+			}
+			if targetRelPath == "" {
+				return
+			}
+			if err := objects.Delete(context.Background(), targetRelPath); err != nil {
+				t.Errorf("deleting S3 transfer key %q: %v", targetRelPath, err)
 			}
 		})
 		cfg := config.StorageConfig{
@@ -400,10 +407,14 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		if snoozes == 0 {
 			t.Fatal("transfer finished in one slice; the test needs several slices to exercise resumption")
 		}
-		if got := env.copyState(t, relPath); got != "active" {
+		targetRelPath = transferTestCopyRelPath(t, pool, assetID, objectStoreName)
+		if targetRelPath == relPath {
+			t.Fatalf("S3 copy rel_path = %q, want a fresh path distinct from the source", targetRelPath)
+		}
+		if got := env.copyState(t, targetRelPath); got != "active" {
 			t.Fatalf("S3 copy state = %q, want active", got)
 		}
-		object, err := objects.Head(ctx, relPath)
+		object, err := objects.Head(ctx, targetRelPath)
 		if err != nil {
 			t.Fatalf("heading transferred S3 object: %v", err)
 		}

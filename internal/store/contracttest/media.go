@@ -113,7 +113,7 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("encoded callback failure rolls back asset", func(t *testing.T) { runEncodedPublicationRollback(t, newFixture) })
 	t.Run("thumbnail and seek tiles publish through one callback", func(t *testing.T) { runDerivedPublication(t, newFixture) })
 	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
-	t.Run("in-place registration is idempotent and prefers published rows", func(t *testing.T) { runInPlacePublication(t, newFixture) })
+	t.Run("in-place registration is idempotent and prefers live rows over tombstones", func(t *testing.T) { runInPlacePublication(t, newFixture) })
 	t.Run("commit failure after publish returns an error and leaves no rows", func(t *testing.T) { runPublishCommitFailure(t, newFixture) })
 	t.Run("original publication rejects an occupied rel_path without publishing", func(t *testing.T) { runOriginalRelPathConflict(t, newFixture) })
 	t.Run("thumbnail and seek tiles skip trashed recordings and existing assets", func(t *testing.T) { runDerivedPublicationSkips(t, newFixture) })

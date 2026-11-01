@@ -192,7 +192,7 @@ rokuban import epgstation --config config.yml --library-json library.json
 
 増えないのは、放送の識別子とメディアの相対パスの両方に一意制約があるからである。
 
-既存の資産と両立しない Recorded は `ErrConflict` で拒否される。ごみ箱の録画に属するときや、生きたコピーが既にあるときである。その Recorded だけを飛ばし、Warn ログと出力の `conflicts:` の件数で報告して、残りの取り込みを続ける。条件は rescue と同じである（[storage/rescue.md](../storage/rescue.md) の「既存の資産と両立しないファイル」）。
+既存の資産と両立しない Recorded は `ErrConflict` で拒否される。例えば、ごみ箱の録画に属する、同じパスに生きたコピーがある、同じ置き場の同じパスに tombstone だけがある、などが該当する。その Recorded だけを飛ばし、Warn ログと出力の `conflicts:` 件数で報告して、残りの取り込みを続ける。`tombstones:` は `conflicts:` のうち tombstone による拒否の件数である。tombstone に当たったファイルは、移動または改名して再実行すると登録できる。それ以外は原因を片付けてから再実行する。拒否の条件の一覧は rescue と同じで、[storage/rescue.md](../storage/rescue.md) の「既存の資産と両立しないファイル」にある。
 
 <details><summary>根拠</summary>
 

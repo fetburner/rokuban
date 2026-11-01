@@ -207,7 +207,7 @@ func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) 
 	if visiblePath != oldTempRelPath || visibleBytes != 10 || visibleGeneration != oldGeneration {
 		t.Fatalf("visible progress after creating replacement = (%q, %d, %d), want old pointer at 10 bytes and generation %d", visiblePath, visibleBytes, visibleGeneration, oldGeneration)
 	}
-	tempPath := ingestTempWriterFilePath(dir, "default", recordID, 1)
+	tempPath := ingestTestTempFilePath(t, pool, mediaDir, recordingID, "default", recordID)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != 0 {
 		t.Fatalf("replacement temp after the stop: info=%v err=%v, want an empty file", info, err)
 	}

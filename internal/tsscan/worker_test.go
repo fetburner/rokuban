@@ -192,6 +192,12 @@ func TestTSScan_InPlaceOriginalAndSizeChangeReplaceStatistics(t *testing.T) {
 		t.Fatalf("replacing in-place original: %v", err)
 	}
 	dbtest.SetMediaAssetState(t, pool, first.AssetIDs[0], "deleted")
+	secondRelPath := "inplace/scan-renamed.m2ts"
+	secondPath := filepath.Join(mediaDir, filepath.FromSlash(secondRelPath))
+	if err := os.Rename(fullPath, secondPath); err != nil {
+		t.Fatalf("renaming in-place original after tombstone: %v", err)
+	}
+	input.Assets[0].RelPath = secondRelPath
 	second, err := inplace.Register(ctx, pgstoretest.Media(pool), mediaDir, input)
 	if err != nil {
 		t.Fatalf("second inplace.Register: %v", err)

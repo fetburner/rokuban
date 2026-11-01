@@ -37,6 +37,8 @@ type RescueResult struct {
 	// store.ErrConflict で登録を拒否されたファイルの件数。登録されないので、
 	// 台帳が知らないまま残る。呼び出し側のサマリ表示に必ず出す。
 	SkippedConflictingFiles int
+	// SkippedTombstonedFiles は削除済み path を再利用しようとして拒否されたファイルの件数。
+	SkippedTombstonedFiles int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等

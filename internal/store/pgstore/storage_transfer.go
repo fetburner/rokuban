@@ -141,6 +141,7 @@ func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int6
 	row, err := q.PrepareMediaAssetTransfer(ctx, sqlcgen.PrepareMediaAssetTransferParams{
 		MediaAssetID: mediaAssetID, TargetStore: targetStore, OriginalRules: originalRules, FsStores: fsStores,
 		SourceStores: sourceStores, MountedStores: mountedStores, DerivedStore: derivedStore, AttemptLimit: attemptLimit,
+		CopyToken: uuid.NewString(),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.MediaAssetTransfer{}, false, nil

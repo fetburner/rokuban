@@ -317,15 +317,28 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// Reconcile can mark the asset deleted while the physical file remains. A later
-	// rescue must treat that file as the same recording even if its mtime changed.
+	// A deleted copy leaves a tombstone. The same path is refused even when its mtime changes.
 	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 	if err := os.Chtimes(path, secondAt, secondAt); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
+	if err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
+	}
+	if result.SkippedTombstonedFiles != 1 {
+		t.Fatalf("tombstoned files skipped = %d, want 1", result.SkippedTombstonedFiles)
+	}
+
+	// Moving the file gives it a new physical identity, so rescue can register it again.
+	renamedRelPath := "sites/default/archive/renamed-show.m2ts"
+	renamedPath := filepath.Join(mediaDir, filepath.FromSlash(renamedRelPath))
+	if err := os.Rename(path, renamedPath); err != nil {
+		t.Fatalf("renaming file after tombstone: %v", err)
+	}
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
+		t.Fatalf("third RescueLatest after rename: %v", err)
 	}
 
 	var recordings, assets, liveRecordings int
@@ -341,8 +354,8 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 	`).Scan(&liveRecordings); err != nil {
 		t.Fatal(err)
 	}
-	if recordings != 1 || assets != 1 || liveRecordings != 1 {
-		t.Fatalf("rows after rescue = recordings %d, assets %d, live recordings %d; want 1/1/1",
+	if recordings != 2 || assets != 2 || liveRecordings != 2 {
+		t.Fatalf("rows after rescue = recordings %d, assets %d, live recordings %d; want 2/2/2",
 			recordings, assets, liveRecordings)
 	}
 
@@ -355,17 +368,17 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		FROM media_assets a JOIN recordings r ON r.id = a.recording_id
 		JOIN media_asset_copies c ON c.media_asset_id = a.id
 		WHERE c.rel_path = $1 AND c.state <> 'deleted'
-	`, "sites/default/archive/show.m2ts").Scan(
+	`, renamedRelPath).Scan(
 		&gotAssetID, &gotRecordingID, &state, &deletedAtIsNull, &programStartAt,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if gotAssetID != assetID || gotRecordingID != recordingID || state != "active" || !deletedAtIsNull {
-		t.Fatalf("rescued asset = id %d, recording %d, state %q, deleted_at NULL %v; want original active asset",
+	if gotAssetID == assetID || gotRecordingID == recordingID || state != "active" || !deletedAtIsNull {
+		t.Fatalf("rescued renamed asset = id %d, recording %d, state %q, deleted_at NULL %v; want a new active asset and recording",
 			gotAssetID, gotRecordingID, state, deletedAtIsNull)
 	}
-	if !programStartAt.Equal(firstAt) {
-		t.Errorf("program_start_at changed from initial mtime: got %s, want %s", programStartAt, firstAt)
+	if !programStartAt.Equal(secondAt) {
+		t.Errorf("program_start_at = %s, want renamed file mtime %s", programStartAt, secondAt)
 	}
 }
 
@@ -579,6 +592,56 @@ func TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
 		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("media_assets after refused rescue (store %q) = %d (err %v), want 0", name, count, err)
 		}
+	}
+}
+
+// 同じパスに生きた行と tombstone が並んでも、生きた行を優先して冪等に通す。拒否しない。
+func TestRescueLatest_LiveAssetBesideTombstoneIsNotSkipped(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newTestMediaDir(t)
+	dir := filepath.Join(mediaDir, "sites", "default", "archive")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relPath := "sites/default/archive/a.m2ts"
+	if err := os.WriteFile(filepath.Join(mediaDir, filepath.FromSlash(relPath)), []byte("bytes a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func() *RescueResult {
+		t.Helper()
+		res, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
+		if err != nil {
+			t.Fatalf("RescueLatest: %v", err)
+		}
+		return res
+	}
+	run()
+
+	// 過去の rel_path 再利用を模して、同じ path に tombstone を後から足す。
+	// tombstone の id を live 行より大きくして、id DESC だけでは tombstone が先に選ばれる配置にする。
+	tombstoneRecordingID := dbtest.Recording(t, pool)
+	tombstoneAssetID := dbtest.MediaAsset(t, pool, tombstoneRecordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "sites/default/archive/old.m2ts"
+		p.SizeBytes = 7
+	})
+	dbtest.SetMediaAssetState(t, pool, tombstoneAssetID, "deleted")
+	dbtest.SetMediaAssetRelPath(t, pool, tombstoneAssetID, relPath)
+	var assetsBefore int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assetsBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	res := run()
+	if res.SkippedTombstonedFiles != 0 || res.SkippedConflictingFiles != 0 {
+		t.Fatalf("rescan skipped tombstoned %d, conflicting %d files; want 0 and 0 when a live row exists at the path",
+			res.SkippedTombstonedFiles, res.SkippedConflictingFiles)
+	}
+	var assetsAfter int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assetsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if assetsAfter != assetsBefore {
+		t.Fatalf("media_assets rows = %d, want %d unchanged by an idempotent rescan", assetsAfter, assetsBefore)
 	}
 }
 

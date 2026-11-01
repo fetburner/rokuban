@@ -127,8 +127,8 @@ func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
 	}
 	assertUnknownSHA256()
 
-	// Re-register a physically present file whose copy was marked deleted. This
-	// follows the rescue upsert path and must discard any prior, unverified digest.
+	// A tombstoned path cannot be reused. Move the file and re-register it; the
+	// upsert path must discard any prior, unverified digest.
 	oldSHA := make([]byte, 32)
 	for i := range oldSHA {
 		oldSHA[i] = 0x5a
@@ -139,6 +139,11 @@ func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1", first.AssetIDs[0]); err != nil {
 		t.Fatalf("marking previous physical copy deleted: %v", err)
 	}
+	renamedPath := "shows/rescue-renamed.ts"
+	if err := os.Rename(filepath.Join(mediaDir, relPath), filepath.Join(mediaDir, renamedPath)); err != nil {
+		t.Fatalf("renaming file after tombstone: %v", err)
+	}
+	input.Assets[0].RelPath = renamedPath
 	second, err := Register(ctx, publisher, mediaDir, input)
 	if err != nil {
 		t.Fatalf("rescuing deleted copy: %v", err)
@@ -149,7 +154,7 @@ func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
 	assertUnknownSHA256()
 }
 
-func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
+func TestRegister_PrefersLiveAssetWhenTombstoneCoexists(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mediaDir, "reused"), 0o755); err != nil {
@@ -163,10 +168,10 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
 
-	// rel_path が再利用された後を模して、同じ rel_path に live 行 (新しい recording) と
+	// 過去の rel_path 再利用を模して、同じ rel_path に live 行 (新しい recording) と
 	// deleted 行 (古い recording) を直接仕込む。deleted 行を live 行より後に挿入して
-	// 大きい id を持たせる: これで id DESC の一発検索では deleted 行が先に来てしまう
-	// ため、live 行を優先する state の並び替えが効いているかを検証できる。
+	// 大きい id を持たせ、id DESC だけの検索では tombstone が先に選ばれる配置にする。
+	// 正常に登録済みのファイルの再登録は live 行への冪等な再登録なので、拒否しない。
 	liveRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = -20
 		p.ServiceID = -21
@@ -212,10 +217,10 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		Assets: []Asset{{Kind: store.AssetKindEncoded, Profile: &profile, RelPath: relPath}},
 	})
 	if err != nil {
-		t.Fatalf("Register: %v", err)
+		t.Fatalf("Register over a path with a tombstone and live row: %v", err)
 	}
 	if got.RecordingID != liveRecordingID || got.AssetIDs[0] != liveAssetID {
-		t.Fatalf("Register must pick the live row over the deleted one: got recording=%d asset=%d, want recording=%d asset=%d",
+		t.Fatalf("Register must pick the live row over the tombstone: got recording=%d asset=%d, want recording=%d asset=%d",
 			got.RecordingID, got.AssetIDs[0], liveRecordingID, liveAssetID)
 	}
 

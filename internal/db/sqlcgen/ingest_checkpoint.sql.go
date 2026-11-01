@@ -95,6 +95,31 @@ func (q *Queries) DiscardRecordingIngestCheckpoint(ctx context.Context, arg Disc
 	return result.RowsAffected(), nil
 }
 
+const getIngestOriginalRelPath = `-- name: GetIngestOriginalRelPath :one
+SELECT copy.rel_path
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE asset.recording_id = $1
+  AND asset.kind = 'original'
+  AND copy.store = $2
+ORDER BY (copy.state = 'active')::boolean DESC, copy.created_at DESC, copy.id DESC
+LIMIT 1
+`
+
+type GetIngestOriginalRelPathParams struct {
+	RecordingID int64
+	StoreName   string
+}
+
+// Ingest's durable byte offset and hash state have the lifetime of a writer lease,
+// which is separate from the streamer-facing recording_ingest_progress row.
+func (q *Queries) GetIngestOriginalRelPath(ctx context.Context, arg GetIngestOriginalRelPathParams) (string, error) {
+	row := q.db.QueryRow(ctx, getIngestOriginalRelPath, arg.RecordingID, arg.StoreName)
+	var rel_path string
+	err := row.Scan(&rel_path)
+	return rel_path, err
+}
+
 const getIngestWriterStateByMirakcRecord = `-- name: GetIngestWriterStateByMirakcRecord :one
 SELECT checkpoint.recording_id, checkpoint.writer_generation,
        COALESCE(progress.temp_rel_path, '') AS temp_rel_path,
@@ -147,8 +172,6 @@ type InsertRecordingIngestCheckpointIfAbsentParams struct {
 	TtlSeconds  float64
 }
 
-// Ingest's durable byte offset and hash state have the lifetime of a writer lease,
-// which is separate from the streamer-facing recording_ingest_progress row.
 func (q *Queries) InsertRecordingIngestCheckpointIfAbsent(ctx context.Context, arg InsertRecordingIngestCheckpointIfAbsentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, insertRecordingIngestCheckpointIfAbsent, arg.RecordingID, arg.Owner, arg.TtlSeconds)
 	if err != nil {
@@ -181,7 +204,7 @@ func (q *Queries) LockLeasedRecordingIngestCheckpoint(ctx context.Context, arg L
 }
 
 const lockRecordingIngestCheckpoint = `-- name: LockRecordingIngestCheckpoint :one
-SELECT writer_generation, handed_off, offset_bytes, hash_state,
+SELECT writer_generation, canonical_rel_path, handed_off, offset_bytes, hash_state,
        (lease_expires_at > now())::boolean AS lease_live
 FROM recording_ingest_checkpoints
 WHERE recording_id = $1
@@ -190,6 +213,7 @@ FOR UPDATE
 
 type LockRecordingIngestCheckpointRow struct {
 	WriterGeneration int64
+	CanonicalRelPath *string
 	HandedOff        bool
 	OffsetBytes      int64
 	HashState        []byte
@@ -201,6 +225,7 @@ func (q *Queries) LockRecordingIngestCheckpoint(ctx context.Context, recordingID
 	var i LockRecordingIngestCheckpointRow
 	err := row.Scan(
 		&i.WriterGeneration,
+		&i.CanonicalRelPath,
 		&i.HandedOff,
 		&i.OffsetBytes,
 		&i.HashState,
@@ -224,6 +249,30 @@ type ReleaseRecordingIngestCheckpointParams struct {
 func (q *Queries) ReleaseRecordingIngestCheckpoint(ctx context.Context, arg ReleaseRecordingIngestCheckpointParams) error {
 	_, err := q.db.Exec(ctx, releaseRecordingIngestCheckpoint, arg.RecordingID, arg.Owner)
 	return err
+}
+
+const reserveRecordingIngestRelPath = `-- name: ReserveRecordingIngestRelPath :one
+UPDATE recording_ingest_checkpoints
+SET canonical_rel_path = COALESCE(canonical_rel_path, $1::text)
+WHERE recording_id = $2
+  AND lease_owner = $3::uuid
+  AND lease_expires_at > now()
+RETURNING canonical_rel_path
+`
+
+type ReserveRecordingIngestRelPathParams struct {
+	RelPath     string
+	RecordingID int64
+	Owner       pgtype.UUID
+}
+
+// Reserve the original canonical path once. Retries retain it even when a writer
+// generation is reset; publication reads the returned value from this row.
+func (q *Queries) ReserveRecordingIngestRelPath(ctx context.Context, arg ReserveRecordingIngestRelPathParams) (*string, error) {
+	row := q.db.QueryRow(ctx, reserveRecordingIngestRelPath, arg.RelPath, arg.RecordingID, arg.Owner)
+	var canonical_rel_path *string
+	err := row.Scan(&canonical_rel_path)
+	return canonical_rel_path, err
 }
 
 const resetRecordingIngestCheckpoint = `-- name: ResetRecordingIngestCheckpoint :one

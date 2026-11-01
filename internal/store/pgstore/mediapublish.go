@@ -548,8 +548,9 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 }
 
 // RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。
-// rel_path が最も強い identity なので、行の state を問わず既存の recording_id を再利用する。
+// rel_path が最も強い identity なので、再利用可能な行があれば既存の recording_id を使う。
 // 拒否する場合は ErrConflict を返す。
+//   - 同じ置き場・同じ path に生きた行が無く、deleted copy だけがある（path を再利用せず、ファイルを移動または改名する）。
 //   - 同じパスの行が active でない（deleting / pending のファイルは unlink される）。
 //   - 録画がごみ箱にある。
 //   - 論理資産が既にあり、この置き場に生きたコピーがあるか、パスの世代が現行の世代と違う
@@ -582,8 +583,12 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 			return store.InPlaceResult{}, fmt.Errorf("in-place assets belong to different recordings: %d and %d: %w", recordingID, row.RecordingID, store.ErrConflict)
 		}
 		recordingID = row.RecordingID
+		// lookup は生きた行を優先するので、ここに来る deleted 行は同じ path に生きた行が無い tombstone だけである。
 		if row.State == "deleted" {
-			continue
+			return store.InPlaceResult{}, fmt.Errorf(
+				"in-place asset %q is tombstoned in store %q; move or rename the file before registering it again: %w",
+				asset.RelPath, s.storeName, errors.Join(store.ErrConflict, store.ErrInPlacePathTombstoned),
+			)
 		}
 		// 同じパスの active な再登録は UpsertInPlaceMediaAsset を通らないので、ごみ箱の録画はここで拒否する。
 		if row.RecordingTrashed {

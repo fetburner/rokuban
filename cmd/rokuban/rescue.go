@@ -123,5 +123,10 @@ func runRescue(ctx context.Context, catalogStore store.Catalog, mediaPublish sto
 			"  warning: skipped %d file(s) that conflict with an existing media asset (not registered; see the log)\n",
 			result.SkippedConflictingFiles)
 	}
+	if result.SkippedTombstonedFiles > 0 {
+		_, _ = fmt.Fprintf(out,
+			"  warning: %d file(s) use a deleted path tombstone; move or rename the file to register again\n",
+			result.SkippedTombstonedFiles)
+	}
 	return nil
 }
