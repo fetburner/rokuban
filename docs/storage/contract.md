@@ -31,7 +31,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 `Put` は 1 回の呼び出しで送り切る契約である。1 回の Work では送り切れない転送は、再開できる送信を使う。再開できる送信は `objstore.Resumable` の `StartUpload` / `ContinueUpload` / `CompleteUpload` / `AbortUpload` で行う。送信状態は置き場の実装が marshal した不透明なバイト列である。呼び出し側は進捗の行に保存してそのまま返す。
 
-`ContinueUpload` が返す offset は置き場に残ったバイトだけを表す。`CompleteUpload` は送りながら計算した SHA-256 が宣言と一致したときだけ公開する。ルール 2 の「全バイトを検証し、完全なオブジェクトだけを成功とする」は、再開できる送信でも同じである。送信状態に何を入れるかは実装が決める（S3 は UploadId とパートの一覧、FS は staging の相対パス）。手順は [FS 置き場間の転送](transfer.md) に従う。
+`ContinueUpload` が返す offset は置き場に残ったバイトだけを表す。`CompleteUpload` は送りながら計算した SHA-256 が宣言と一致したときだけ公開する。ルール 2 の「全バイトを検証し、完全なオブジェクトだけを成功とする」は、再開できる送信でも同じである。送信状態に何を入れるかは実装が決める（S3 は UploadId とパートの一覧、FS は staging の相対パス）。手順は [置き場間の転送](transfer.md) に従う。
 
 配信側も置き場の能力で経路を選ぶ。seekable な `objstore.Local` は Range 対応のローカル配信に使い、`storage.accel_location` が設定されていれば `Open` で存在を確認してから `X-Accel-Redirect` を返す。そうでなければ `objstore.SignedURL` で署名付き URL へ redirect する。原本の配信は引き続き POSIX file を開き、同じ `X-Accel-Redirect` 設定を使う。
 
@@ -96,9 +96,9 @@ ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取�
 
 canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
 
-### FS 置き場間の転送
+### 置き場間の転送
 
-転送 worker の再開、公開、配置削除、破損時の扱いは [FS 置き場間の転送](transfer.md) に従う。
+転送 worker の再開、公開、配置削除、破損時の扱いは [置き場間の転送](transfer.md) に従う。
 
 ### rel_path lock file の寿命
 
