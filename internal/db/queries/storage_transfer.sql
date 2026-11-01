@@ -450,6 +450,7 @@ ON CONFLICT (copy_id) DO NOTHING;
 
 -- name: LockMediaAssetTransferProgress :one
 SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
+       p.upload_store, p.upload_state,
        (p.lease_expires_at > now())::boolean AS lease_live
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = sqlc.arg('copy_id')
@@ -470,6 +471,7 @@ UPDATE media_asset_copy_transfer_progress p
 SET handed_off = true,
     offset_bytes = sqlc.arg('offset_bytes'),
     hash_state = sqlc.narg('hash_state')::bytea,
+    upload_state = sqlc.narg('upload_state')::bytea,
     lease_expires_at = now()
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid
@@ -491,3 +493,41 @@ WHERE p.copy_id = sqlc.arg('copy_id');
 -- name: DeleteMediaAssetTransferProgress :exec
 DELETE FROM media_asset_copy_transfer_progress
 WHERE copy_id = sqlc.arg('copy_id');
+
+-- Upload states are replaced inside one transaction: the lease is locked first,
+-- so a stale holder cannot retire a state that a newer holder is writing.
+-- name: LockLeasedMediaAssetTransferProgress :one
+SELECT p.upload_store, p.upload_state
+FROM media_asset_copy_transfer_progress p
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now()
+FOR UPDATE;
+
+-- name: InsertAbandonedMediaAssetTransferUpload :exec
+INSERT INTO media_asset_transfer_abandoned_uploads (store, upload_state)
+VALUES (sqlc.arg('store'), sqlc.arg('upload_state'));
+
+-- name: ReplaceMediaAssetTransferUpload :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET upload_store = sqlc.arg('upload_store')::text,
+    upload_state = sqlc.arg('upload_state')::bytea,
+    offset_bytes = 0,
+    hash_state = NULL,
+    handed_off = false
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now();
+
+-- name: ListAbandonedMediaAssetTransferUploads :many
+SELECT a.id, a.upload_state
+FROM media_asset_transfer_abandoned_uploads a
+WHERE a.store = sqlc.arg('store')
+ORDER BY a.id
+LIMIT sqlc.arg('row_limit')::integer;
+
+-- name: DeleteAbandonedMediaAssetTransferUpload :exec
+DELETE FROM media_asset_transfer_abandoned_uploads
+WHERE id = sqlc.arg('id');

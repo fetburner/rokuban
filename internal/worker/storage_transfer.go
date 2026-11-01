@@ -428,7 +428,7 @@ func (w *StorageTransferWorker) saveOriginalSlice(transfer store.MediaAssetTrans
 	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	saveErr := fsink.SaveCheckpoint(slice.file, written, slice.hasher, func(c fsink.Checkpoint) error {
-		if err := w.Storage.SaveMediaAssetTransferProgress(saveCtx, transfer.CopyID, owner, slice.generation, c.Offset, c.HashState); err != nil {
+		if err := w.Storage.SaveMediaAssetTransferProgress(saveCtx, transfer.CopyID, owner, slice.generation, c.Offset, c.HashState, nil); err != nil {
 			return err
 		}
 		*saved = true

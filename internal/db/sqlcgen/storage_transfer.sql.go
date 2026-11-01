@@ -309,6 +309,16 @@ func (q *Queries) CountMediaAssetTransferExhausted(ctx context.Context, arg Coun
 	return column_1, err
 }
 
+const deleteAbandonedMediaAssetTransferUpload = `-- name: DeleteAbandonedMediaAssetTransferUpload :exec
+DELETE FROM media_asset_transfer_abandoned_uploads
+WHERE id = $1
+`
+
+func (q *Queries) DeleteAbandonedMediaAssetTransferUpload(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteAbandonedMediaAssetTransferUpload, id)
+	return err
+}
+
 const deleteMediaAssetTransferAttemptsForCopy = `-- name: DeleteMediaAssetTransferAttemptsForCopy :exec
 DELETE FROM media_asset_transfer_attempts
 WHERE copy_id = $1
@@ -440,6 +450,21 @@ func (q *Queries) GetMediaAssetTransferProgressGeneration(ctx context.Context, c
 	return generation, err
 }
 
+const insertAbandonedMediaAssetTransferUpload = `-- name: InsertAbandonedMediaAssetTransferUpload :exec
+INSERT INTO media_asset_transfer_abandoned_uploads (store, upload_state)
+VALUES ($1, $2)
+`
+
+type InsertAbandonedMediaAssetTransferUploadParams struct {
+	Store       string
+	UploadState []byte
+}
+
+func (q *Queries) InsertAbandonedMediaAssetTransferUpload(ctx context.Context, arg InsertAbandonedMediaAssetTransferUploadParams) error {
+	_, err := q.db.Exec(ctx, insertAbandonedMediaAssetTransferUpload, arg.Store, arg.UploadState)
+	return err
+}
+
 const insertMediaAssetTransferProgressIfAbsent = `-- name: InsertMediaAssetTransferProgressIfAbsent :execrows
 INSERT INTO media_asset_copy_transfer_progress (copy_id, lease_owner, lease_expires_at, generation, handed_off, offset_bytes, hash_state)
 SELECT c.id, $1::uuid, now() + make_interval(secs => $2::double precision), 1, false, 0, NULL
@@ -496,6 +521,44 @@ func (q *Queries) IsPendingMediaAssetTransferCopyObsolete(ctx context.Context, a
 	var obsolete bool
 	err := row.Scan(&obsolete)
 	return obsolete, err
+}
+
+const listAbandonedMediaAssetTransferUploads = `-- name: ListAbandonedMediaAssetTransferUploads :many
+SELECT a.id, a.upload_state
+FROM media_asset_transfer_abandoned_uploads a
+WHERE a.store = $1
+ORDER BY a.id
+LIMIT $2::integer
+`
+
+type ListAbandonedMediaAssetTransferUploadsParams struct {
+	Store    string
+	RowLimit int32
+}
+
+type ListAbandonedMediaAssetTransferUploadsRow struct {
+	ID          int64
+	UploadState []byte
+}
+
+func (q *Queries) ListAbandonedMediaAssetTransferUploads(ctx context.Context, arg ListAbandonedMediaAssetTransferUploadsParams) ([]ListAbandonedMediaAssetTransferUploadsRow, error) {
+	rows, err := q.db.Query(ctx, listAbandonedMediaAssetTransferUploads, arg.Store, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAbandonedMediaAssetTransferUploadsRow
+	for rows.Next() {
+		var i ListAbandonedMediaAssetTransferUploadsRow
+		if err := rows.Scan(&i.ID, &i.UploadState); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listMediaAssetCopiesToDelete = `-- name: ListMediaAssetCopiesToDelete :many
@@ -745,6 +808,36 @@ func (q *Queries) ListObsoletePendingMediaAssetTransferCopies(ctx context.Contex
 	return items, nil
 }
 
+const lockLeasedMediaAssetTransferProgress = `-- name: LockLeasedMediaAssetTransferProgress :one
+SELECT p.upload_store, p.upload_state
+FROM media_asset_copy_transfer_progress p
+WHERE p.copy_id = $1
+  AND p.lease_owner = $2::uuid
+  AND p.generation = $3
+  AND p.lease_expires_at > now()
+FOR UPDATE
+`
+
+type LockLeasedMediaAssetTransferProgressParams struct {
+	CopyID     int64
+	Owner      pgtype.UUID
+	Generation int64
+}
+
+type LockLeasedMediaAssetTransferProgressRow struct {
+	UploadStore *string
+	UploadState []byte
+}
+
+// Upload states are replaced inside one transaction: the lease is locked first,
+// so a stale holder cannot retire a state that a newer holder is writing.
+func (q *Queries) LockLeasedMediaAssetTransferProgress(ctx context.Context, arg LockLeasedMediaAssetTransferProgressParams) (LockLeasedMediaAssetTransferProgressRow, error) {
+	row := q.db.QueryRow(ctx, lockLeasedMediaAssetTransferProgress, arg.CopyID, arg.Owner, arg.Generation)
+	var i LockLeasedMediaAssetTransferProgressRow
+	err := row.Scan(&i.UploadStore, &i.UploadState)
+	return i, err
+}
+
 const lockMediaAssetForStorageTransfer = `-- name: LockMediaAssetForStorageTransfer :one
 SELECT id FROM media_assets WHERE id = $1 FOR UPDATE
 `
@@ -758,6 +851,7 @@ func (q *Queries) LockMediaAssetForStorageTransfer(ctx context.Context, mediaAss
 
 const lockMediaAssetTransferProgress = `-- name: LockMediaAssetTransferProgress :one
 SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
+       p.upload_store, p.upload_state,
        (p.lease_expires_at > now())::boolean AS lease_live
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = $1
@@ -769,6 +863,8 @@ type LockMediaAssetTransferProgressRow struct {
 	HandedOff   bool
 	OffsetBytes int64
 	HashState   []byte
+	UploadStore *string
+	UploadState []byte
 	LeaseLive   bool
 }
 
@@ -780,6 +876,8 @@ func (q *Queries) LockMediaAssetTransferProgress(ctx context.Context, copyID int
 		&i.HandedOff,
 		&i.OffsetBytes,
 		&i.HashState,
+		&i.UploadStore,
+		&i.UploadState,
 		&i.LeaseLive,
 	)
 	return i, err
@@ -1143,21 +1241,58 @@ func (q *Queries) ReleaseMediaAssetTransferProgress(ctx context.Context, arg Rel
 	return err
 }
 
-const saveMediaAssetTransferProgress = `-- name: SaveMediaAssetTransferProgress :execrows
+const replaceMediaAssetTransferUpload = `-- name: ReplaceMediaAssetTransferUpload :execrows
 UPDATE media_asset_copy_transfer_progress p
-SET handed_off = true,
-    offset_bytes = $1,
-    hash_state = $2::bytea,
-    lease_expires_at = now()
+SET upload_store = $1::text,
+    upload_state = $2::bytea,
+    offset_bytes = 0,
+    hash_state = NULL,
+    handed_off = false
 WHERE p.copy_id = $3
   AND p.lease_owner = $4::uuid
   AND p.generation = $5
   AND p.lease_expires_at > now()
 `
 
+type ReplaceMediaAssetTransferUploadParams struct {
+	UploadStore string
+	UploadState []byte
+	CopyID      int64
+	Owner       pgtype.UUID
+	Generation  int64
+}
+
+func (q *Queries) ReplaceMediaAssetTransferUpload(ctx context.Context, arg ReplaceMediaAssetTransferUploadParams) (int64, error) {
+	result, err := q.db.Exec(ctx, replaceMediaAssetTransferUpload,
+		arg.UploadStore,
+		arg.UploadState,
+		arg.CopyID,
+		arg.Owner,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const saveMediaAssetTransferProgress = `-- name: SaveMediaAssetTransferProgress :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET handed_off = true,
+    offset_bytes = $1,
+    hash_state = $2::bytea,
+    upload_state = $3::bytea,
+    lease_expires_at = now()
+WHERE p.copy_id = $4
+  AND p.lease_owner = $5::uuid
+  AND p.generation = $6
+  AND p.lease_expires_at > now()
+`
+
 type SaveMediaAssetTransferProgressParams struct {
 	OffsetBytes int64
 	HashState   []byte
+	UploadState []byte
 	CopyID      int64
 	Owner       pgtype.UUID
 	Generation  int64
@@ -1167,6 +1302,7 @@ func (q *Queries) SaveMediaAssetTransferProgress(ctx context.Context, arg SaveMe
 	result, err := q.db.Exec(ctx, saveMediaAssetTransferProgress,
 		arg.OffsetBytes,
 		arg.HashState,
+		arg.UploadState,
 		arg.CopyID,
 		arg.Owner,
 		arg.Generation,

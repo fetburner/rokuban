@@ -181,7 +181,7 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 		t.Fatal(err)
 	}
 	if err := fsink.SaveCheckpoint(file, int64(len(partial)), hasher, func(c fsink.Checkpoint) error {
-		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.Generation, c.Offset, c.HashState)
+		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.Generation, c.Offset, c.HashState, nil)
 	}); err != nil {
 		t.Fatalf("saving transfer progress: %v", err)
 	}

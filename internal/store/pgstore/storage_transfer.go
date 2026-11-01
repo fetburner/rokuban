@@ -602,6 +602,10 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 			PrevGeneration: cur.Generation, Generation: cur.Generation, Resumed: true,
 			Offset: cur.OffsetBytes, HashState: cur.HashState,
 		}
+		if cur.UploadStore != nil {
+			progress.UploadStore = *cur.UploadStore
+			progress.UploadState = cur.UploadState
+		}
 	}
 	if _, err := q.ClaimMediaAssetTransferProgress(ctx, sqlcgen.ClaimMediaAssetTransferProgressParams{
 		CopyID: copyID, Owner: ownerID, TtlSeconds: ttlSeconds,
@@ -616,16 +620,84 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 }
 
 // SaveMediaAssetTransferProgress は slice の終わりの状態を保存し、lease を切る。
-func (s *Media) SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState []byte) error {
+func (s *Media) SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState, uploadState []byte) error {
 	n, err := sqlcgen.New(s.pool).SaveMediaAssetTransferProgress(ctx, sqlcgen.SaveMediaAssetTransferProgressParams{
 		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, Generation: generation,
-		OffsetBytes: offset, HashState: hashState,
+		OffsetBytes: offset, HashState: hashState, UploadState: uploadState,
 	})
 	if err != nil {
 		return fmt.Errorf("saving transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
 	}
 	if n != 1 {
 		return store.ErrTransferLeaseLost
+	}
+	return nil
+}
+
+// ReplaceMediaAssetTransferUpload は lease を持つ試行の送信状態を置き換える。
+// 古い送信状態は掃除待ちに移す。lease の照合と置換は 1 つの transaction で、行を FOR UPDATE で直列にする。
+func (s *Media) ReplaceMediaAssetTransferUpload(ctx context.Context, copyID int64, owner uuid.UUID, generation int64, uploadStore string, uploadState []byte) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transfer upload replacement: %w", err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	ownerID := pgtype.UUID{Bytes: owner, Valid: true}
+	cur, err := q.LockLeasedMediaAssetTransferProgress(ctx, sqlcgen.LockLeasedMediaAssetTransferProgressParams{
+		CopyID: copyID, Owner: ownerID, Generation: generation,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ErrTransferLeaseLost
+	}
+	if err != nil {
+		return fmt.Errorf("locking leased transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if cur.UploadState != nil {
+		if cur.UploadStore == nil {
+			return fmt.Errorf("transfer progress for copy %d has an upload state without a store", copyID)
+		}
+		if err := q.InsertAbandonedMediaAssetTransferUpload(ctx, sqlcgen.InsertAbandonedMediaAssetTransferUploadParams{
+			Store: *cur.UploadStore, UploadState: cur.UploadState,
+		}); err != nil {
+			return fmt.Errorf("recording abandoned upload for copy %d: %w", copyID, mapDatabaseError(err))
+		}
+	}
+	n, err := q.ReplaceMediaAssetTransferUpload(ctx, sqlcgen.ReplaceMediaAssetTransferUploadParams{
+		CopyID: copyID, Owner: ownerID, Generation: generation,
+		UploadStore: uploadStore, UploadState: uploadState,
+	})
+	if err != nil {
+		return fmt.Errorf("replacing transfer upload for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if n != 1 {
+		return store.ErrTransferLeaseLost
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing transfer upload replacement: %w", mapDatabaseError(err))
+	}
+	return nil
+}
+
+// ListAbandonedTransferUploads は置き場 store の掃除待ちを id 順に返す。
+func (s *Media) ListAbandonedTransferUploads(ctx context.Context, storeName string, limit int32) ([]store.AbandonedTransferUpload, error) {
+	rows, err := sqlcgen.New(s.pool).ListAbandonedMediaAssetTransferUploads(ctx, sqlcgen.ListAbandonedMediaAssetTransferUploadsParams{
+		Store: storeName, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing abandoned uploads for store %q: %w", storeName, mapDatabaseError(err))
+	}
+	out := make([]store.AbandonedTransferUpload, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.AbandonedTransferUpload{ID: r.ID, State: r.UploadState})
+	}
+	return out, nil
+}
+
+// DeleteAbandonedTransferUpload は掃除を済ませた掃除待ちを消す。
+func (s *Media) DeleteAbandonedTransferUpload(ctx context.Context, id int64) error {
+	if err := sqlcgen.New(s.pool).DeleteAbandonedMediaAssetTransferUpload(ctx, id); err != nil {
+		return fmt.Errorf("deleting abandoned upload %d: %w", id, mapDatabaseError(err))
 	}
 	return nil
 }
