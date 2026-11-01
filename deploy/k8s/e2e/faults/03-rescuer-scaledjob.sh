@@ -125,7 +125,7 @@ case "$river_job_id" in
     exit 0 ;;
 esac
 
-# River の client ID は `<hostname>_<起動時刻>`（river@v0.47.0 client.go の
+# River の client ID は `<hostname>_<起動時刻>`（river@v0.50.0 client.go の
 # defaultClientIDWithHost）。hostname は Pod 名なので、attempted_by から掴んだ Pod を引ける。
 running_pod=""
 job_claimed() {

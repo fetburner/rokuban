@@ -15,10 +15,10 @@ import (
 
 // DefaultSoftStopTimeout は Config.SoftStopTimeout の既定値。
 //
-// River v0.47.0 の公開契約では、Stop または Start に渡した ctx のキャンセルで
+// River v0.50.0 の公開契約では、Stop または Start に渡した ctx のキャンセルで
 // graceful stop を始めると、この猶予の後に実行中ジョブの ctx が cancel される。
 // StopAndCancel は猶予を待たずに cancel する。中断されたジョブは attempt が
-// 開始前の値に戻り、errors を増やさず `available` に戻る（River v0.47.0 API:
+// 開始前の値に戻り、errors を増やさず `available` に戻る（River v0.50.0 API:
 // Client.Stop / StopAndCancel, Config.SoftStopTimeout; CHANGELOG.md §0.44.0）。
 //
 // **5 秒という値は、既定の停止猶予の内側に収めるために選んでいる。** Docker の
@@ -62,12 +62,12 @@ type Config struct {
 
 	// JobTimeout は River の既定ジョブタイムアウト（1 分）。Spec.Timeout がある worker はその値を使う。
 	// 共有契約テストが RescueStuckJobsAfter を短くするために 0 でない値を渡す。River は
-	// RescueStuckJobsAfter < JobTimeout を設定エラーにする（river@v0.47.0 client.go の検証）ので、
+	// RescueStuckJobsAfter < JobTimeout を設定エラーにする（river@v0.50.0 client.go の検証）ので、
 	// この値はその検証を通すためにある。
 	JobTimeout time.Duration
 
 	// TestOnly は River の TestOnly を有効にする。メンテナンスサービスの起動遅延を省いて
-	// Start / Stop を速くする契約テスト用で、本番では使わない（river@v0.47.0 の doc も
+	// Start / Stop を速くする契約テスト用で、本番では使わない（river@v0.50.0 の doc も
 	// テスト以外での使用を禁じている）。
 	TestOnly bool
 
@@ -89,11 +89,11 @@ type Config struct {
 	// SoftStopTimeout は停止の合図を受けてから実行中のジョブを打ち切るまでの猶予。
 	// 0 なら既定値（DefaultSoftStopTimeout）。
 	//
-	// River v0.47.0 の公開契約では、SoftStopTimeout が設定されている場合、Stop または
+	// River v0.50.0 の公開契約では、SoftStopTimeout が設定されている場合、Stop または
 	// Start ctx の cancel は graceful stop となり、期限後にジョブ ctx を cancel する。
 	// StopAndCancel はこの猶予を待たずに cancel する（River API: Client.Start / Stop /
 	// StopAndCancel, Config.SoftStopTimeout）。中断されたジョブは attempt が開始前の値に
-	// 戻り、errors を増やさず `available` に戻る（River v0.47.0 CHANGELOG.md §0.44.0）。
+	// 戻り、errors を増やさず `available` に戻る（River v0.50.0 CHANGELOG.md §0.44.0）。
 	//
 	// 1 件消化モードの正常終了では `stopOnceProcess` が graceful stop を使うため、
 	// すでに掴んでいる追加ジョブの完走待ちにもこの猶予が適用される。
@@ -316,7 +316,7 @@ func sortedQueueNames(m map[string]river.QueueConfig) []string {
 // recoveryMargin は RecoveryGrace が River の救済閾値に足す余裕。
 //
 // 救済閾値を過ぎた running ジョブを rescuer が実際に拾うまでの遅れを見込む値だが、
-// rescuer の実行間隔は river@v0.47.0 の river.Config の公開ドキュメントに書かれておらず、
+// rescuer の実行間隔は river@v0.50.0 の river.Config の公開ドキュメントに書かれておらず、
 // この 2 分の根拠は未検証である。測定は 1 回だけで、共有契約テストのプロセス死ケース
 // （閾値 6 秒、attempted_at はクラッシュ時刻）の再配送に 35.6 秒かかり、この余裕の範囲に
 // 収まった。rescuer の間隔が環境で変わるかは見ていない。
@@ -326,7 +326,7 @@ const recoveryMargin = 2 * time.Minute
 // プロセスが死んだ running ジョブが、Timeout の経過後この時間以内に再配送の対象になることを
 // adapter として申告する。cmd/rokuban が worker へ渡し、共有契約テストの fixture も同じ値を使う。
 //
-// River の救済閾値 river.Config.RescueStuckJobsAfter は、公開ドキュメント（river@v0.47.0
+// River の救済閾値 river.Config.RescueStuckJobsAfter は、公開ドキュメント（river@v0.50.0
 // client.go）に「既定は 1 時間、JobTimeout が 1 時間を超えるなら JobTimeout + 1 時間」とある。
 // ドキュメントは 1 時間を超える場合だけを書いている。0 < JobTimeout <= 1h でも JobTimeout + 1h を
 // 申告すれば、ドキュメントの値（1h）以上になる。回復猶予は長い側に誤るほうが安全

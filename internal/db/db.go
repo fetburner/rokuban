@@ -294,7 +294,7 @@ func uniqueRoles(roles []string) map[string]struct{} {
 //     で site ごとに goroutine を持つようになったため、束縛サイトの数だけ
 //     この専有が増える（cmd/rokuban/server.go の watcher ループ）
 //   - worker: River の内部機構の LISTEN（elector と notifier で共有される 1 本。
-//     `river@v0.47.0 client.go` の `notifier.New` と `leadership.NewElector` で確認済み）。これは site 数に依存
+//     `river@v0.50.0 client.go` の `notifier.New` と `leadership.NewElector` で確認済み）。これは site 数に依存
 //     しないプロセス単位の資源なので、site が増えても専有本数は変わらない。
 //     もう 1 つは転送 job の advisory lock（マウントした FS 置き場ごとに 1 本。
 //     store.StorageTransfer.AcquireTransferSourceBandwidth が pool から借りた接続を転送中保持する）

@@ -12,7 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// このファイルは river@v0.47.0 を対象に、SubscribeOnceEvents の doc コメントが
+// このファイルは river@v0.50.0 を対象に、SubscribeOnceEvents の doc コメントが
 // 依拠する前提のうち「Work が選ぶ終わり方は
 // completed/failed/cancelled/snoozed の 4 EventKind で網羅される」を
 // 実 River client + 実 DB で固定する（issue #518）。
