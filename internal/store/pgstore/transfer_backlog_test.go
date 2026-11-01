@@ -181,3 +181,55 @@ func TestTransferBacklogLockKey_IsFixed(t *testing.T) {
 		t.Fatalf("transferBacklogLockKey = %d, want -5313926783724820846", transferBacklogLockKey)
 	}
 }
+
+// storage_transfer_destination は FS 置き場への宛先だけを返し、それ以外（規則に当たらない・FS 外・録画削除済み）は NULL を返す。
+func TestStorageTransferDestination(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := t.Context()
+	rules := `[{"match":{"site":"tiered"},"store":"archive"},{"match":{"site":"remote"},"store":"remote"}]`
+	fsStores := []string{"edge", "backup", "archive"}
+	end := backlogBase
+
+	tests := []struct {
+		name      string
+		kind      string
+		site      string
+		derived   string
+		deleted   bool
+		wantStore string // "" は NULL
+	}{
+		{name: "original matching a FS rule returns the FS store", kind: "original", site: "tiered", derived: "derived", wantStore: "archive"},
+		{name: "original matching a non-FS rule returns NULL", kind: "original", site: "remote", derived: "derived"},
+		{name: "original matching no rule returns NULL", kind: "original", site: "other", derived: "derived"},
+		{name: "deleted recording returns NULL even when the FS rule matches", kind: "original", site: "tiered", derived: "derived", deleted: true},
+		{name: "derived asset returns its FS store", kind: "encoded", site: "tiered", derived: "edge", wantStore: "edge"},
+		{name: "derived asset with a non-FS store returns NULL", kind: "encoded", site: "tiered", derived: "derived"},
+		{name: "deleted derived asset returns NULL", kind: "encoded", site: "tiered", derived: "edge", deleted: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var deletedAt *time.Time
+			if tc.deleted {
+				deletedAt = &end
+			}
+			var got *string
+			if err := pool.QueryRow(ctx,
+				`SELECT storage_transfer_destination($1, $2::jsonb, $3, $4::text[], $5, $6::timestamptz, $7::timestamptz)`,
+				tc.kind, rules, tc.derived, fsStores, tc.site, end, deletedAt,
+			).Scan(&got); err != nil {
+				t.Fatalf("storage_transfer_destination: %v", err)
+			}
+			if got == nil && tc.wantStore != "" || got != nil && *got != tc.wantStore {
+				t.Fatalf("destination = %s, want %s", fmtStore(got), fmtStore(&tc.wantStore))
+			}
+		})
+	}
+}
+
+// fmtStore は NULL を NULL と表す。空文字列の置き場は無いので、wantStore の "" は NULL を意味する。
+func fmtStore(s *string) string {
+	if s == nil || *s == "" {
+		return "NULL"
+	}
+	return fmt.Sprintf("%q", *s)
+}

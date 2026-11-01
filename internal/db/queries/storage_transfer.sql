@@ -37,7 +37,8 @@ WHERE storage_transfer_candidate(
   ) < sqlc.arg('attempt_limit');
 
 -- 背圧の判定に使う。候補の判定は CountMediaAssetTransferCandidates と同じ名前付き述語。
--- desired placement で先に絞る。最終判定は名前付き述語に委ね、別定義を持たない。
+-- placements は宛先を storage_transfer_destination で求め、宛先が無い行を落としてから
+-- storage_transfer_candidate と試行回数の判定をかける。判定は名前付き関数だけで行う。
 -- name: CountMediaAssetTransferBacklogBySourceStore :many
 WITH source_copies AS MATERIALIZED (
     SELECT DISTINCT a.id AS media_asset_id, source.store
@@ -45,46 +46,37 @@ WITH source_copies AS MATERIALIZED (
     CROSS JOIN LATERAL active_media_asset_copies(a.id, NULL) source
     WHERE source.store = ANY(sqlc.arg('source_stores')::text[])
 ), placements AS MATERIALIZED (
-    SELECT source.media_asset_id,
-           source.store,
-           desired_media_store(
-               a.kind,
-               sqlc.arg('original_rules')::jsonb,
-               sqlc.arg('derived_store')::text,
-               r.site,
-               (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-           ) AS desired_store
-    FROM source_copies source
-    JOIN media_assets a ON a.id = source.media_asset_id
+    SELECT sc.media_asset_id,
+           sc.store
+    FROM source_copies sc
+    JOIN media_assets a ON a.id = sc.media_asset_id
     JOIN recordings r ON r.id = a.recording_id
-    WHERE r.deleted_at IS NULL
-), eligible_placements AS MATERIALIZED (
-    SELECT placements.media_asset_id, placements.store, placements.desired_store
-    FROM placements
-    WHERE placements.desired_store IS NOT NULL
-      AND placements.desired_store = ANY(sqlc.arg('fs_stores')::text[])
+    CROSS JOIN LATERAL (
+        SELECT storage_transfer_destination(
+            a.kind,
+            sqlc.arg('original_rules')::jsonb,
+            sqlc.arg('derived_store')::text,
+            sqlc.arg('fs_stores')::text[],
+            r.site,
+            (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz,
+            r.deleted_at
+        )::text AS desired_store
+    ) placement
+    -- 宛先が無い行では候補判定を評価しない。宛先に依らない述語は、プランナが
+    -- media_assets のスキャンへ押し下げ、宛先の無い行にも掛かってしまう。
+    WHERE CASE WHEN placement.desired_store IS NULL THEN FALSE
+          ELSE storage_transfer_candidate(
+              a.id,
+              sqlc.arg('original_rules')::jsonb,
+              sqlc.arg('fs_stores')::text[],
+              sqlc.arg('derived_store')::text
+          )
+          AND storage_transfer_attempt_count(a.id, placement.desired_store) < sqlc.arg('attempt_limit')
+          END
 )
-SELECT ep.store::text AS store, count(DISTINCT ep.media_asset_id)::bigint AS asset_count
-FROM eligible_placements ep
-JOIN media_assets a ON a.id = ep.media_asset_id
-JOIN recordings r ON r.id = a.recording_id
-WHERE storage_transfer_candidate(
-    a.id,
-    sqlc.arg('original_rules')::jsonb,
-    sqlc.arg('fs_stores')::text[],
-    sqlc.arg('derived_store')::text
-)
-  AND storage_transfer_attempt_count(
-      a.id,
-      desired_media_store(
-          a.kind,
-          sqlc.arg('original_rules')::jsonb,
-          sqlc.arg('derived_store')::text,
-          r.site,
-          (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-      )
-  ) < sqlc.arg('attempt_limit')
-GROUP BY ep.store;
+SELECT store::text AS store, count(DISTINCT media_asset_id)::bigint AS asset_count
+FROM placements
+GROUP BY store;
 
 -- name: CountMediaAssetTransferExhausted :one
 SELECT count(*)::bigint
