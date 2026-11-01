@@ -1,10 +1,13 @@
 -- +goose Up
 
--- storage_transfer_destination は転送の宛先を返す。録画が削除済みでなく、desired 置き場が
--- FS 置き場ならその置き場、それ以外は NULL を返す。
--- 転送の宛先（削除済みでなく、desired 置き場が FS 置き場であること）を判定する述語は、この関数を通す。
+-- storage_transfer_destination は転送の宛先を返す。録画が削除済みなら NULL を返す。
+-- desired 置き場が p_fs_stores（転送元の FS 置き場の集合）に入るなら、その置き場を返す。
+-- 派生物は、desired 置き場が派生物の置き場 derived_store と一致するなら、それが S3 でも宛先になる。
+-- 原本の宛先は FS だけ（原本の規則は FS の置き場しか指せない）。
+-- どちらにも当たらない desired は NULL を返す。宛先の判定は、この関数を通す。
 -- PrepareMediaAssetTransfer / CompleteMediaAssetTransfer は、適用の瞬間に desired_media_store を
 -- 呼び出し元が渡した target_store と照合しており、この関数を通らない。
+-- 単一の CASE 式に留める。SQL 関数として呼び出し元にインライン展開されるので、関数呼び出しとしては残らない。
 CREATE FUNCTION storage_transfer_destination(
     asset_kind text,
     original_rules jsonb,
@@ -19,13 +22,19 @@ LANGUAGE sql STABLE
 AS $$
     SELECT CASE
         WHEN recording_deleted_at IS NULL
-         AND desired_media_store(asset_kind, original_rules, derived_store, recording_site, program_end_at) = ANY(fs_stores)
+         AND (
+             desired_media_store(asset_kind, original_rules, derived_store, recording_site, program_end_at) = ANY(fs_stores)
+             OR (
+                 asset_kind <> 'original'
+                 AND desired_media_store(asset_kind, original_rules, derived_store, recording_site, program_end_at) = derived_store
+             )
+         )
         THEN desired_media_store(asset_kind, original_rules, derived_store, recording_site, program_end_at)
     END
 $$;
 
 COMMENT ON FUNCTION storage_transfer_destination(text, jsonb, text, text[], text, timestamptz, timestamptz) IS
-    'Returns the FS store a transfer should write to, or NULL when the recording is deleted or the desired placement is not an FS store.';
+    'Returns the store a transfer should write to: the desired store when it is an FS store in fs_stores or the derived store, or NULL when the recording is deleted or the desired store is neither.';
 
 CREATE OR REPLACE FUNCTION storage_transfer_candidate(
     p_media_asset_id bigint,
@@ -73,7 +82,7 @@ AS $$
     )
 $$;
 
--- 予約（pending の copy）が古くなったかを判定する。宛先が NULL（削除済み・FS 外）か
+-- 予約（pending の copy）が古くなったかを判定する。宛先が NULL（削除済み・宛先でない）か
 -- 予約と別の置き場なら、IS DISTINCT FROM が真になる。copy.store は NOT NULL なので、
 -- 宛先が NULL の場合も真になる。
 CREATE OR REPLACE FUNCTION storage_transfer_pending_copy_obsolete(
@@ -115,6 +124,52 @@ $$;
 
 -- +goose Down
 
+CREATE OR REPLACE FUNCTION storage_transfer_candidate(
+    p_media_asset_id bigint,
+    p_original_rules jsonb,
+    p_fs_stores text[],
+    p_derived_store text
+)
+RETURNS boolean
+LANGUAGE sql STABLE
+AS $$
+    SELECT EXISTS (
+      SELECT 1
+      FROM media_assets a
+      JOIN recordings r ON r.id = a.recording_id
+      CROSS JOIN LATERAL (
+          SELECT desired_media_store(
+              a.kind, p_original_rules, p_derived_store, r.site,
+              (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
+          ) AS desired_store
+      ) placement
+      WHERE a.id = p_media_asset_id
+      AND r.deleted_at IS NULL
+      AND placement.desired_store IS NOT NULL
+      AND (
+          placement.desired_store = ANY(p_fs_stores)
+          OR (a.kind <> 'original' AND placement.desired_store = p_derived_store)
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM active_media_asset_copies(a.id, placement.desired_store) target
+          WHERE NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = target.id)
+      )
+      AND EXISTS (
+          SELECT 1 FROM active_media_asset_copies(a.id, NULL) source
+          WHERE source.store = ANY(p_fs_stores)
+            AND source.store <> placement.desired_store
+            AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source.id)
+      )
+      AND NOT (
+          a.kind = 'original'
+          AND EXISTS (
+              SELECT 1 FROM until_encoded_deletable_originals(p_derived_store) u
+              WHERE u.asset_id = a.id
+          )
+      )
+    )
+$$;
+
 CREATE OR REPLACE FUNCTION storage_transfer_pending_copy_obsolete(
     p_copy_id bigint,
     p_original_rules jsonb,
@@ -141,7 +196,10 @@ AS $$
             recording.deleted_at IS NOT NULL
             OR copy.generation <> COALESCE(asset.derived_generation, 0)
             OR placement.desired_store IS DISTINCT FROM copy.store
-            OR NOT (placement.desired_store = ANY(p_fs_stores))
+            OR NOT (
+                placement.desired_store = ANY(p_fs_stores)
+                OR (asset.kind <> 'original' AND placement.desired_store = p_derived_store)
+            )
             OR (
                 asset.kind = 'original'
                 AND EXISTS (
@@ -150,49 +208,6 @@ AS $$
                 )
             )
         )
-    )
-$$;
-
-CREATE OR REPLACE FUNCTION storage_transfer_candidate(
-    p_media_asset_id bigint,
-    p_original_rules jsonb,
-    p_fs_stores text[],
-    p_derived_store text
-)
-RETURNS boolean
-LANGUAGE sql STABLE
-AS $$
-    SELECT EXISTS (
-      SELECT 1
-      FROM media_assets a
-      JOIN recordings r ON r.id = a.recording_id
-      CROSS JOIN LATERAL (
-          SELECT desired_media_store(
-              a.kind, p_original_rules, p_derived_store, r.site,
-              (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-          ) AS desired_store
-      ) placement
-      WHERE a.id = p_media_asset_id
-      AND r.deleted_at IS NULL
-      AND placement.desired_store IS NOT NULL
-      AND placement.desired_store = ANY(p_fs_stores)
-      AND NOT EXISTS (
-          SELECT 1 FROM active_media_asset_copies(a.id, placement.desired_store) target
-          WHERE NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = target.id)
-      )
-      AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(a.id, NULL) source
-          WHERE source.store = ANY(p_fs_stores)
-            AND source.store <> placement.desired_store
-            AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source.id)
-      )
-      AND NOT (
-          a.kind = 'original'
-          AND EXISTS (
-              SELECT 1 FROM until_encoded_deletable_originals(p_derived_store) u
-              WHERE u.asset_id = a.id
-          )
-      )
     )
 $$;
 

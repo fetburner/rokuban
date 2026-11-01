@@ -97,11 +97,17 @@ func TestCountMediaAssetTransferBacklogBySourceStoreMatchesCandidates(t *testing
 	sourceStores := []string{"edge", "backup"}
 	const attemptLimit int32 = 10
 
-	assetWithSource := func(site, sourceStore string) (int64, int64) {
+	assetOfKindWithSource := func(kind, site, sourceStore string) (int64, int64) {
 		recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
 			params.Site = site
 		})
-		assetID := dbtest.MediaAsset(t, pool, recordingID)
+		assetID := dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+			params.Kind = kind
+			if kind == "encoded" {
+				profile := "web"
+				params.Profile = &profile
+			}
+		})
 		_, err := pool.Exec(ctx, `
 UPDATE media_asset_copies
 SET store = $2,
@@ -117,6 +123,9 @@ WHERE media_asset_id = $1 AND store = $2 AND state = 'active'`, assetID, sourceS
 			t.Fatalf("reading source copy for asset %d in %q: %v", assetID, sourceStore, err)
 		}
 		return assetID, copyID
+	}
+	assetWithSource := func(site, sourceStore string) (int64, int64) {
+		return assetOfKindWithSource("original", site, sourceStore)
 	}
 
 	addCopy := func(assetID int64, store, state string) int64 {
@@ -151,6 +160,10 @@ VALUES ($1, $2, 'exhausted')`, exhaustedCopyID, attemptLimit); err != nil {
 	}
 
 	assetWithSource("remote", "edge")
+	// 派生物は規則を見ず、派生物の置き場（ここでは FS 外の S3）へ送る。転送元が FS にあれば候補になる。
+	assetOfKindWithSource("encoded", "tiered", "edge")
+	derivedAlreadyThere, _ := assetOfKindWithSource("encoded", "tiered", "edge")
+	addCopy(derivedAlreadyThere, "derived", "active")
 	deletedAsset, _ := assetWithSource("tiered", "edge")
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = (SELECT recording_id FROM media_assets WHERE id = $1)`, deletedAsset); err != nil {
 		t.Fatalf("deleting recording for asset %d: %v", deletedAsset, err)
@@ -168,8 +181,10 @@ VALUES ($1, $2, 'exhausted')`, exhaustedCopyID, attemptLimit); err != nil {
 	for _, count := range byStore {
 		backlogCount += count
 	}
-	if candidateCount != 2 || backlogCount != candidateCount || byStore["edge"] != 1 || byStore["backup"] != 1 {
-		t.Fatalf("candidate count = %d, backlog by source store = %v (sum %d); want 2 candidates split edge=1 and backup=1", candidateCount, byStore, backlogCount)
+	// 候補は、原本 2（tiered の edge と backup）と、FS 外の派生物の置き場 derived へ送る派生物 1（edge）。
+	// 宛先が既にある派生物は候補にならない。
+	if candidateCount != 3 || backlogCount != candidateCount || byStore["edge"] != 2 || byStore["backup"] != 1 {
+		t.Fatalf("candidate count = %d, backlog by source store = %v (sum %d); want 3 candidates split edge=2 and backup=1", candidateCount, byStore, backlogCount)
 	}
 }
 
@@ -182,7 +197,8 @@ func TestTransferBacklogLockKey_IsFixed(t *testing.T) {
 	}
 }
 
-// storage_transfer_destination は FS 置き場への宛先だけを返し、それ以外（規則に当たらない・FS 外・録画削除済み）は NULL を返す。
+// storage_transfer_destination は、原本なら FS 置き場への宛先だけを返し、派生物なら派生物の置き場を返す。
+// それ以外（規則に当たらない・原本で FS 外・録画削除済み）は NULL を返す。
 func TestStorageTransferDestination(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := t.Context()
@@ -203,7 +219,7 @@ func TestStorageTransferDestination(t *testing.T) {
 		{name: "original matching no rule returns NULL", kind: "original", site: "other", derived: "derived"},
 		{name: "deleted recording returns NULL even when the FS rule matches", kind: "original", site: "tiered", derived: "derived", deleted: true},
 		{name: "derived asset returns its FS store", kind: "encoded", site: "tiered", derived: "edge", wantStore: "edge"},
-		{name: "derived asset with a non-FS store returns NULL", kind: "encoded", site: "tiered", derived: "derived"},
+		{name: "derived asset returns the derived store even when it is not an FS store", kind: "encoded", site: "tiered", derived: "derived", wantStore: "derived"},
 		{name: "deleted derived asset returns NULL", kind: "encoded", site: "tiered", derived: "edge", deleted: true},
 	}
 	for _, tc := range tests {

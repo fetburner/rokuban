@@ -9,7 +9,7 @@ import (
 )
 
 // storage_transfer_pending_copy_obsolete は、予約の pending copy が宛先と食い違うときだけ真を返す。
-// 規則は tiered を archive へ、remote を FS 外の remote へ送る。
+// 規則は tiered を archive へ、remote を FS 外の remote へ送る。派生物の置き場 derived は FS 外だが宛先になる。
 func TestStorageTransferPendingCopyObsolete(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := t.Context()
@@ -18,6 +18,7 @@ func TestStorageTransferPendingCopyObsolete(t *testing.T) {
 
 	tests := []struct {
 		name      string
+		kind      string
 		site      string
 		copyStore string
 		deleted   bool
@@ -27,13 +28,23 @@ func TestStorageTransferPendingCopyObsolete(t *testing.T) {
 		{name: "desired store outside FS makes the reservation obsolete", site: "remote", copyStore: "archive", want: true},
 		{name: "another desired store makes the reservation obsolete", site: "tiered", copyStore: "backup", want: true},
 		{name: "matching desired store keeps the reservation", site: "tiered", copyStore: "archive", want: false},
+		{name: "derived asset reserved on its non-FS derived store keeps the reservation", kind: "encoded", site: "tiered", copyStore: "derived", want: false},
+		{name: "derived asset reserved on another store becomes obsolete", kind: "encoded", site: "tiered", copyStore: "backup", want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
 				params.Site = tc.site
 			})
-			assetID := dbtest.MediaAsset(t, pool, recordingID)
+			assetID := dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+				if tc.kind != "" {
+					params.Kind = tc.kind
+				}
+				if tc.kind == "encoded" {
+					profile := "web"
+					params.Profile = &profile
+				}
+			})
 			if _, err := pool.Exec(ctx, `
 UPDATE media_asset_copies
 SET store = 'edge', rel_path = 'obsolete-test/' || $1::text || '/edge.ts'
