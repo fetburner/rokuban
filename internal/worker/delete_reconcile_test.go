@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
@@ -2339,7 +2340,7 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	const relPath = "sites/default/test/.rokuban-ingest-process-dead.m2ts"
+	const relPath = "sites/default/test/.rokuban-ingest-default-process-dead-g1"
 	tempPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
 		t.Fatalf("creating temp parent directory: %v", err)
@@ -2347,16 +2348,9 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	if err := os.WriteFile(tempPath, []byte("partial"), 0o644); err != nil {
 		t.Fatalf("writing ingest temp: %v", err)
 	}
-	checkpointPath := ingestCheckpointPath(tempPath)
-	if err := os.WriteFile(checkpointPath, []byte("checkpoint"), 0o644); err != nil {
-		t.Fatalf("writing ingest checkpoint: %v", err)
-	}
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	if err := os.Chtimes(tempPath, old, old); err != nil {
 		t.Fatalf("making ingest temp old: %v", err)
-	}
-	if err := os.Chtimes(checkpointPath, old, old); err != nil {
-		t.Fatalf("making ingest checkpoint old: %v", err)
 	}
 
 	w := &DeleteReconcileWorker{
@@ -2374,35 +2368,39 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	if !fileExists(tempPath) {
 		t.Fatal("ingest temp was deleted before orphan aging completed")
 	}
-	if !fileExists(checkpointPath) {
-		t.Fatal("ingest checkpoint was deleted before orphan aging completed")
-	}
 	var count int
-	checkpointRelPath := relPath + ingestCheckpointSuffix
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM orphan_files WHERE rel_path IN ($1, $2)", relPath, checkpointRelPath).Scan(&count); err != nil {
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
 		t.Fatalf("querying orphan_files after discovery: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("orphan_files count for ingest temp and checkpoint = %d, want 2", count)
+	if count != 1 {
+		t.Fatalf("orphan_files count for ingest temp = %d, want 1", count)
 	}
 
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE orphan_files SET first_seen = $3 WHERE rel_path IN ($1, $2)",
-		relPath, checkpointRelPath, time.Now().Add(-20*24*time.Hour)); err != nil {
+		"UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1",
+		relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
 		t.Fatalf("aging ingest temp orphan row: %v", err)
 	}
-	if err := os.Chtimes(checkpointPath, time.Now(), time.Now()); err != nil {
-		t.Fatalf("refreshing ingest checkpoint activity time: %v", err)
+	if err := os.Chtimes(tempPath, time.Now(), time.Now()); err != nil {
+		t.Fatalf("refreshing ingest temp activity time: %v", err)
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() with recent checkpoint error: %v", err)
+		t.Fatalf("Work() with recent temp error: %v", err)
 	}
-	if !fileExists(tempPath) || !fileExists(checkpointPath) {
-		t.Fatal("temp or checkpoint was deleted while a recent checkpoint marked a snoozed ingest")
+	if !fileExists(tempPath) {
+		t.Fatal("temp was deleted while its mtime was inside the grace period")
 	}
-	if err := os.Chtimes(checkpointPath, old, old); err != nil {
-		t.Fatalf("aging ingest checkpoint after retained snooze: %v", err)
+	if err := os.Chtimes(tempPath, old, old); err != nil {
+		t.Fatalf("aging ingest temp after retained pass: %v", err)
+	}
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() rediscovering old ingest temp error: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1",
+		relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
+		t.Fatalf("re-aging rediscovered ingest temp orphan row: %v", err)
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("final Work() error: %v", err)
@@ -2410,15 +2408,89 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	if fileExists(tempPath) {
 		t.Fatal("aged ingest temp still exists")
 	}
-	if fileExists(checkpointPath) {
-		t.Fatal("aged ingest checkpoint still exists")
-	}
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM orphan_files WHERE rel_path IN ($1, $2)", relPath, checkpointRelPath).Scan(&count); err != nil {
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
 		t.Fatalf("querying orphan_files after deletion: %v", err)
 	}
 	if count != 0 {
 		t.Errorf("orphan_files count after ingest temp deletion = %d, want 0", count)
+	}
+}
+
+func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGeneration(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, "local"); err != nil {
+		t.Fatal(err)
+	}
+	const recordID = "rec-ingest-orphan-generations"
+	recordingID := dbtest.Recording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, recordID)
+	media := pgstoretest.Media(pool)
+	oldOwner := uuid.New()
+	if _, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, oldOwner, time.Minute); err != nil || !acquired {
+		t.Fatalf("old writer Acquire = (acquired=%t, %v), want acquired", acquired, err)
+	}
+	dir := filepath.Join(mediaDir, "sites", "default", "test")
+	oldPath := ingestTempWriterFilePath(dir, "default", recordID, 1)
+	oldRelPath, err := ingestTempRelPath(mediaDir, oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte("old visible prefix"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.UpdateIngestProgress(ctx, store.IngestProgress{
+		RecordingID: recordingID, WrittenBytes: 100, TempRelPath: oldRelPath, TempGeneration: 23,
+	}, oldOwner, 1, time.Minute); err != nil {
+		t.Fatalf("writing old visible progress: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recording_ingest_checkpoints SET lease_expires_at = now() - interval '1 second' WHERE recording_id = $1`, recordingID); err != nil {
+		t.Fatalf("expiring old writer lease: %v", err)
+	}
+	newOwner := uuid.New()
+	checkpoint, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, newOwner, time.Minute)
+	if err != nil || !acquired || checkpoint.WriterGeneration != 2 {
+		t.Fatalf("new writer Acquire = (%+v, %t, %v), want generation 2", checkpoint, acquired, err)
+	}
+	newPath := ingestTempWriterFilePath(dir, "default", recordID, checkpoint.WriterGeneration)
+	newRelPath, err := ingestTempRelPath(mediaDir, newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("new writer payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeProgress := func(written int64) error {
+		return media.UpdateIngestProgress(ctx, store.IngestProgress{
+			RecordingID: recordingID, WrittenBytes: written, TempRelPath: newRelPath, TempGeneration: 23,
+		}, newOwner, checkpoint.WriterGeneration, time.Minute)
+	}
+	if err := writeProgress(0); err != nil {
+		t.Fatalf("starting new writer progress: %v", err)
+	}
+	w := &DeleteReconcileWorker{Storage: media, MediaDir: mediaDir, MediaStoreName: "local"}
+	w.deleteOrphanFile(oldRelPath, 24*time.Hour)
+	w.deleteOrphanFile(newRelPath, 24*time.Hour)
+	if !fileExists(oldPath) || !fileExists(newPath) {
+		t.Fatal("orphan cleanup removed a visible old temp or the current writer temp before catch-up")
+	}
+	if err := writeProgress(100); err != nil {
+		t.Fatalf("switching visible progress after catch-up: %v", err)
+	}
+	w.deleteOrphanFile(oldRelPath, 24*time.Hour)
+	if fileExists(oldPath) {
+		t.Fatal("superseded writer generation remained after the visible pointer switched")
+	}
+	if !fileExists(newPath) {
+		t.Fatal("current writer generation was deleted after the visible pointer switched")
 	}
 }
 
@@ -2591,7 +2663,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(ctx, recordingID,
-			relPath, tempPath, fullPath, int64(len(content)), nil)
+			relPath, tempPath, fullPath, int64(len(content)), nil, uuid.Nil, 0)
 	}()
 	select {
 	case err := <-commitDone:

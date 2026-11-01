@@ -156,6 +156,7 @@ func TestIsIngestTempFile(t *testing.T) {
 	}{
 		{name: "reserved basename", path: ".rokuban-ingest-1234", want: true},
 		{name: "reserved basename with media extension", path: "sites/default/.rokuban-ingest-abcd.m2ts", want: true},
+		{name: "old checkpoint sidecar is still a reserved temp", path: ".rokuban-ingest-site-record.checkpoint", want: true},
 		{name: "canonical media file", path: "sites/default/recording.m2ts", want: false},
 		{name: "similar but different prefix", path: ".rokuban-ingest", want: false},
 		{name: "ordinary hidden file", path: ".partial-recording.m2ts", want: false},
@@ -164,6 +165,39 @@ func TestIsIngestTempFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsIngestTempFile(tt.path); got != tt.want {
 				t.Errorf("IsIngestTempFile(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseIngestTempFile(t *testing.T) {
+	tests := []struct {
+		name           string
+		path           string
+		wantSite       string
+		wantRecordID   string
+		wantGeneration int64
+		wantOK         bool
+	}{
+		{
+			name:           "escaped identity and writer generation",
+			path:           "sites/site%2Da/.rokuban-ingest-site%2Da-record%2F..%2Fother-g12",
+			wantSite:       "site-a",
+			wantRecordID:   "record/../other",
+			wantGeneration: 12,
+			wantOK:         true,
+		},
+		{name: "old filename", path: ".rokuban-ingest-site-record", wantOK: false},
+		{name: "sidecar", path: ".rokuban-ingest-site-record-g2.checkpoint", wantOK: false},
+		{name: "zero generation", path: ".rokuban-ingest-site-record-g0", wantOK: false},
+		{name: "malformed escape", path: ".rokuban-ingest-site%GG-record-g2", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			site, recordID, generation, ok := ParseIngestTempFile(tt.path)
+			if site != tt.wantSite || recordID != tt.wantRecordID || generation != tt.wantGeneration || ok != tt.wantOK {
+				t.Fatalf("ParseIngestTempFile(%q) = (%q, %q, %d, %t), want (%q, %q, %d, %t)",
+					tt.path, site, recordID, generation, ok, tt.wantSite, tt.wantRecordID, tt.wantGeneration, tt.wantOK)
 			}
 		})
 	}

@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -80,37 +79,22 @@ func TestGeneratedObjectPublishDoesNotWriteWhenStoreMarkerIsMissing(t *testing.T
 	}
 }
 
-type checkpointInterruptContext struct {
-	context.Context
-	done     <-chan struct{}
-	firstErr bool
+type ingestCheckpointSaveCapture struct {
+	store.MediaPublish
+	saves int
 }
 
-type syncCountingIngestFile struct {
-	*os.File
-	syncCalls int
+func (c *ingestCheckpointSaveCapture) SaveIngestCheckpoint(context.Context, int64, uuid.UUID, int64, int64, []byte) error {
+	c.saves++
+	return nil
 }
 
-func (f *syncCountingIngestFile) Sync() error {
-	f.syncCalls++
-	return f.File.Sync()
-}
-
-func (c *checkpointInterruptContext) Done() <-chan struct{} { return c.done }
-func (c *checkpointInterruptContext) Err() error {
-	if c.firstErr {
-		c.firstErr = false
-		return nil
-	}
-	return context.DeadlineExceeded
-}
-
-func TestInterruptedIngestReplayWithholdsCheckpointWhenMarkerDisappears(t *testing.T) {
+func TestIngestWriterHandoffWithholdsCheckpointWhenMarkerDisappears(t *testing.T) {
 	mediaDir := t.TempDir()
 	if err := mediapath.WriteStoreMarker(mediaDir, "tokyo"); err != nil {
 		t.Fatal(err)
 	}
-	tempPath := filepath.Join(mediaDir, "sites", "tokyo", ".rokuban-ingest-test")
+	tempPath := filepath.Join(mediaDir, "sites", "tokyo", ".rokuban-ingest-test-g1")
 	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -122,22 +106,16 @@ func TestInterruptedIngestReplayWithholdsCheckpointWhenMarkerDisappears(t *testi
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Close() }()
-	temp := &syncCountingIngestFile{File: file}
-
-	done := make(chan struct{})
-	close(done)
-	ctx := &checkpointInterruptContext{Context: context.Background(), done: done, firstErr: true}
+	capture := &ingestCheckpointSaveCapture{}
+	worker := &IngestWorker{Publisher: capture, MediaDir: mediaDir, MediaStoreName: "tokyo"}
 	metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
-	check := func() error {
-		mismatchStoreMarker(t, mediaDir, "missing")
-		return requireMediaStoreMarker(mediaDir, "tokyo", "saving replay ingest checkpoint")
+	mismatchStoreMarker(t, mediaDir, "missing")
+	err = worker.saveIngestWriterHandoff(context.Background(), file, 1, uuid.New(), 1, int64(len("partial ingest data")), nil)
+	if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
+		t.Fatalf("saving handoff after marker disappeared = %v, want marker mismatch", err)
 	}
-	offset, complete, err := fsink.ReplayTempFileWithCheckpoint(ctx, tempPath, temp, sha256.New(), check)
-	if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) || complete {
-		t.Fatalf("interrupted replay = offset:%d complete:%t err:%v, want marker mismatch and incomplete", offset, complete, err)
-	}
-	if _, err := os.Stat(ingestCheckpointPath(tempPath)); !os.IsNotExist(err) {
-		t.Fatalf("checkpoint after marker disappeared = stat error %v, want absent", err)
+	if capture.saves != 0 {
+		t.Fatalf("SaveIngestCheckpoint calls = %d, want 0 without the matching marker", capture.saves)
 	}
 	if got := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo")); got != metricBefore+1 {
 		t.Errorf("store marker metric = %v, want %v", got, metricBefore+1)

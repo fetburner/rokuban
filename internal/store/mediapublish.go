@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/fetburner/rokuban/internal/chapters"
 )
 
@@ -16,6 +18,12 @@ var ErrPendingMediaAssetCopyMissing = errors.New("pending media asset copy is no
 
 // ErrGenerationAdvanced は別の pending または公開済みコピーが観測した世代を使用済みにしたことを表す。
 var ErrGenerationAdvanced = errors.New("derived media generation advanced")
+
+// ErrIngestCheckpointLeaseHeld は別の ingest worker が同じ録画の writer lease を持つことを表す。
+var ErrIngestCheckpointLeaseHeld = errors.New("ingest checkpoint lease is held")
+
+// ErrIngestCheckpointLeaseLost は writer lease の期限切れまたは所有者・世代の変更を表す。
+var ErrIngestCheckpointLeaseLost = errors.New("ingest checkpoint lease lost")
 
 // IngestProgress は原本の転送中に観測した進捗を表す。
 type IngestProgress struct {
@@ -30,6 +38,27 @@ type IngestProgress struct {
 type IngestTempState struct {
 	TempRelPath    string
 	TempGeneration int64
+}
+
+// IngestCheckpoint は DB に保存した ingest writer の handoff 状態を表す。
+type IngestCheckpoint struct {
+	WriterGeneration int64
+	Resumed          bool
+	Offset           int64
+	HashState        []byte
+}
+
+// IngestWriterState は mirakc record に対応する writer 世代と現在の HLS 表示先を表す。
+type IngestWriterState struct {
+	RecordingID      int64
+	WriterGeneration int64
+	TempRelPath      string
+	HasProgress      bool
+}
+
+// IngestWriterStateReader は ingest orphan 回収が writer 世代を調べる契約である。
+type IngestWriterStateReader interface {
+	GetIngestWriterState(ctx context.Context, site, recordID string) (IngestWriterState, bool, error)
 }
 
 // EncodeProgress は通知するエンコード進捗を表す。
@@ -51,6 +80,10 @@ type CommitOriginalInput struct {
 	RelPath     string
 	SizeBytes   int64
 	SHA256      []byte
+	// WriterOwner と WriterGeneration は、0 世代なら従来の登録経路として省略できる。
+	// ingest worker は両方を指定し、link と DB commit を同じ live lease に fenced する。
+	WriterOwner      uuid.UUID
+	WriterGeneration int64
 }
 
 // ReservationPolicyInputs は予約・意図・上書きから方針を解決する入力を表す。
@@ -218,6 +251,19 @@ type InPlaceResult struct {
 // publish が成功した後に commit が失敗したら、store はエラーを返し、ファイルは行を持たない孤児として残る。
 // 呼び出し側はそのファイルを消さず、孤児の監査に任せる。
 type MediaPublish interface {
+	// AcquireIngestCheckpoint は録画の writer lease を取り、前の clean handoff を返す。
+	// live lease が別にある場合は acquired=false を返す。unclean handoff では新世代から始める。
+	AcquireIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, ttl time.Duration) (checkpoint IngestCheckpoint, acquired bool, err error)
+	// ResetIngestCheckpoint は、handed_off のファイルと hash state が一致しないときに新 writer 世代へ進む。
+	ResetIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64) (int64, error)
+	// SaveIngestCheckpoint は同期・close 済み temp の offset と hash state を clean handoff として保存する。
+	SaveIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64, offset int64, hashState []byte) error
+	// SaveIngestFinalHandoff は全量の temp を lease を保ったまま保存する。link より前に呼ぶ。
+	SaveIngestFinalHandoff(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64, offset int64, hashState []byte) error
+	// ReleaseIngestCheckpoint は失敗で終わる writer の lease を解放する。handed_off には触らない。
+	ReleaseIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID) error
+	// DiscardIngestCheckpoint は現在の writer が所有する進捗行を削除し、checkpoint は世代を進めて lease を切る。
+	DiscardIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64) (bool, error)
 	// GetIngestTempState は進捗行の temp パスと世代を返す。行が無ければ nil, nil を返す。
 	GetIngestTempState(ctx context.Context, recordingID int64) (*IngestTempState, error)
 	// NextIngestTempGeneration は新しい temp ファイルに割り当てる世代を採番する。
@@ -245,6 +291,9 @@ type MediaPublish interface {
 	RegisterInPlace(ctx context.Context, input InPlaceInput) (InPlaceResult, error)
 	// UpsertIngestProgress は転送中の進捗を記録する。tx を持たず、失敗は ingest を止めない。
 	UpsertIngestProgress(ctx context.Context, progress IngestProgress) error
+	// UpdateIngestProgress は writer lease を検証して進捗を更新する。
+	// 新しい writer の offset が見えている古い offset に追いつく前は、temp path と written_bytes の組を維持する。
+	UpdateIngestProgress(ctx context.Context, progress IngestProgress, owner uuid.UUID, writerGeneration int64, ttl time.Duration) error
 }
 
 // EncodedPublishSkipReason はエンコード公開を飛ばす理由を表す。

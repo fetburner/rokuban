@@ -9,6 +9,7 @@ package mediapath
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -181,6 +182,41 @@ func WriteStoreMarker(mediaDir, expected string) error {
 // パス全体ではなく basename だけを見るため、走査側と ingest 側で同じ判定を使える。
 func IsIngestTempFile(name string) bool {
 	return strings.HasPrefix(filepath.Base(name), IngestTempFilePrefix)
+}
+
+// ParseIngestTempFile は writer 世代を含む ingest temp 名から site・record ID・世代を取り出す。
+// 旧形式や sidecar は世代を持たないため ok=false になり、年齢による孤児回収へ回る。
+func ParseIngestTempFile(name string) (site, recordID string, writerGeneration int64, ok bool) {
+	base := filepath.Base(name)
+	if !IsIngestTempFile(base) {
+		return "", "", 0, false
+	}
+	body := strings.TrimPrefix(base, IngestTempFilePrefix)
+	if strings.Contains(body, ".checkpoint") {
+		return "", "", 0, false
+	}
+	marker := strings.LastIndex(body, "-g")
+	if marker < 0 {
+		return "", "", 0, false
+	}
+	generation, ok := parsePositiveDecimal(body[marker+2:])
+	if !ok {
+		return "", "", 0, false
+	}
+	identity := body[:marker]
+	encodedSite, encodedRecordID, found := strings.Cut(identity, "-")
+	if !found || strings.Contains(encodedRecordID, "-") || encodedSite == "" || encodedRecordID == "" {
+		return "", "", 0, false
+	}
+	site, err := url.PathUnescape(encodedSite)
+	if err != nil {
+		return "", "", 0, false
+	}
+	recordID, err = url.PathUnescape(encodedRecordID)
+	if err != nil || site == "" || recordID == "" {
+		return "", "", 0, false
+	}
+	return site, recordID, generation, true
 }
 
 // IsStorageTransferTempFile はファイル名が物理コピー転送の temp かを返す。

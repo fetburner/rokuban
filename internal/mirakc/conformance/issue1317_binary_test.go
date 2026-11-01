@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
@@ -130,9 +130,7 @@ worker:
 	if !strings.Contains(firstOutput, "job_done") {
 		t.Fatalf("first ingest process did not consume one Work item:\n%s", firstOutput)
 	}
-	if got := countIssue1317Checkpoints(t, mediaDir); got == 0 {
-		t.Fatalf("first Work did not leave a checkpoint; process output:\n%s", firstOutput)
-	}
+	assertIssue1317CleanHandoff(t, ctx, pool, mediaDir, recordID, firstOutput)
 	firstRecord, err := client.GetRecord(ctx, recordID)
 	if err != nil {
 		t.Fatalf("checking recording after first bounded Work: %v", err)
@@ -282,20 +280,49 @@ func runIssue1317Binary(t *testing.T, binary string, args ...string) string {
 	return output.String()
 }
 
-func countIssue1317Checkpoints(t *testing.T, root string) int {
+func assertIssue1317CleanHandoff(t *testing.T, ctx context.Context, pool *pgxpool.Pool, mediaDir, recordID, processOutput string) {
 	t.Helper()
-	count := 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".checkpoint") {
-			count++
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking ingest media dir: %v", err)
+	var recordingID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT recording_id FROM record_sync
+		WHERE site = 'default' AND record_id = $1
+	`, recordID).Scan(&recordingID); err != nil {
+		t.Fatalf("looking up recording for clean handoff: %v\nprocess output:\n%s", err, processOutput)
 	}
-	return count
+	var handedOff bool
+	var offset int64
+	var hashState []byte
+	if err := pool.QueryRow(ctx, `
+		SELECT handed_off, offset_bytes, hash_state
+		FROM recording_ingest_checkpoints WHERE recording_id = $1
+	`, recordingID).Scan(&handedOff, &offset, &hashState); err != nil {
+		t.Fatalf("reading durable ingest handoff: %v\nprocess output:\n%s", err, processOutput)
+	}
+	if !handedOff || offset < 0 || len(hashState) == 0 {
+		t.Fatalf("first Work did not leave a clean DB handoff: handed_off=%t offset=%d hash_state_bytes=%d\nprocess output:\n%s",
+			handedOff, offset, len(hashState), processOutput)
+	}
+	hasher := sha256.New()
+	if err := fsink.RestoreHash(hasher, hashState); err != nil {
+		t.Fatalf("restoring persisted SHA-256 state: %v", err)
+	}
+	var tempRelPath string
+	var writtenBytes int64
+	if err := pool.QueryRow(ctx, `
+		SELECT temp_rel_path, written_bytes
+		FROM recording_ingest_progress WHERE recording_id = $1
+	`, recordingID).Scan(&tempRelPath, &writtenBytes); err != nil {
+		t.Fatalf("reading visible ingest progress: %v\nprocess output:\n%s", err, processOutput)
+	}
+	if writtenBytes != offset {
+		t.Fatalf("visible written bytes=%d, clean handoff offset=%d", writtenBytes, offset)
+	}
+	tempPath, err := mediapath.Resolve(mediaDir, tempRelPath)
+	if err != nil {
+		t.Fatalf("resolving handoff temp path: %v", err)
+	}
+	info, err := os.Lstat(tempPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != offset {
+		t.Fatalf("clean handoff temp stat=(%v, %v), want regular file of %d bytes", info, err, offset)
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -66,13 +67,16 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 	}
 
 	recordingID := dbtest.Recording(t, pool)
+	media := pgstoretest.Media(pool)
+	owner := uuid.New()
+	checkpoint, acquired, err := media.AcquireIngestCheckpoint(context.Background(), recordingID, owner, ingestCheckpointLeaseTTL())
+	if err != nil || !acquired {
+		t.Fatalf("acquiring ingest writer lease = (%+v, %t, %v), want acquired", checkpoint, acquired, err)
+	}
 	reporter := &ingestProgressReporter{
-		publisher:      pgstoretest.Media(pool),
-		recordingID:    recordingID,
-		tempRelPath:    "sites/default/.rokuban-ingest-test",
-		tempGeneration: 1,
-		interval:       time.Hour,
-		log:            slog.Default(),
+		publisher: media, recordingID: recordingID, owner: owner, writerGeneration: checkpoint.WriterGeneration,
+		tempRelPath: "sites/default/.rokuban-ingest-test", tempGeneration: 1,
+		interval: time.Hour, log: slog.Default(),
 	}
 
 	reporter.start(context.Background())

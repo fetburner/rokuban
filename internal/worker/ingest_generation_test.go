@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -25,26 +26,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
-
-func TestShouldAllocateIngestTempGeneration(t *testing.T) {
-	state := &store.IngestTempState{TempRelPath: "sites/default/test/.rokuban-ingest-default-rec-1", TempGeneration: 41}
-	for _, tt := range []struct {
-		name     string
-		created  bool
-		state    *store.IngestTempState
-		wantNext bool
-	}{
-		{name: "replay existing temp", state: state, wantNext: false},
-		{name: "new temp replaces prior temp", created: true, state: state, wantNext: true},
-		{name: "orphan temp without progress row", wantNext: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldAllocateIngestTempGeneration(tt.created, tt.state); got != tt.wantNext {
-				t.Fatalf("shouldAllocateIngestTempGeneration() = %t, want %t", got, tt.wantNext)
-			}
-		})
-	}
-}
 
 func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 	for _, mode := range []string{"size mismatch", "hash mismatch", "cancel"} {
@@ -160,9 +141,9 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 	}
 }
 
-// temp の作成直後・進捗行を書く前に止まった試行の次が、古い世代を引き継がないこと。
-// 古い世代の進捗行だけが残り temp が無い状態から始める（temp を消した後に落ちた状態）。
-func TestIngestWorker_TempCreatedBeforeProgressDoesNotInheritOldGeneration(t *testing.T) {
+// temp の作成直後・進捗行を書く前に止まっても、旧 HLS pointer と byte generation は、
+// 新 writer が追いつく前後で維持される。
+func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) {
 	setFastIngestFollow(t)
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -194,13 +175,20 @@ func TestIngestWorker_TempCreatedBeforeProgressDoesNotInheritOldGeneration(t *te
 	if err != nil {
 		t.Fatalf("allocating old generation: %v", err)
 	}
-	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
-	tempRelPath, err := ingestTempRelPath(mediaDir, tempPath)
+	dir := filepath.Join(mediaDir, "sites", "default", "test")
+	oldTempPath := filepath.Join(dir, ".rokuban-ingest-default-rec-ingest-create-crash")
+	oldTempRelPath, err := ingestTempRelPath(mediaDir, oldTempPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedIngestTempProgress(t, pool, recordingID, tempRelPath, oldGeneration)
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
+	seedIngestTempProgress(t, pool, recordingID, oldTempRelPath, oldGeneration)
+	if _, err := pool.Exec(context.Background(), `UPDATE recording_ingest_progress SET written_bytes = 10 WHERE recording_id = $1`, recordingID); err != nil {
+		t.Fatalf("setting old visible offset: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldTempPath, []byte("old-prefix"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,9 +199,15 @@ func TestIngestWorker_TempCreatedBeforeProgressDoesNotInheritOldGeneration(t *te
 	if err == nil || !strings.Contains(err.Error(), "simulated process stop") {
 		t.Fatalf("first Work() error = %v, want simulated process stop", err)
 	}
-	if _, ok := readIngestProgress(t, pool, recordingID); ok {
-		t.Fatal("old progress row remained after the replacement temp was created")
+	var visiblePath string
+	var visibleBytes, visibleGeneration int64
+	if err := pool.QueryRow(context.Background(), `SELECT temp_rel_path, written_bytes, temp_generation FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&visiblePath, &visibleBytes, &visibleGeneration); err != nil {
+		t.Fatalf("reading old visible progress after creating replacement: %v", err)
 	}
+	if visiblePath != oldTempRelPath || visibleBytes != 10 || visibleGeneration != oldGeneration {
+		t.Fatalf("visible progress after creating replacement = (%q, %d, %d), want old pointer at 10 bytes and generation %d", visiblePath, visibleBytes, visibleGeneration, oldGeneration)
+	}
+	tempPath := ingestTempWriterFilePath(dir, "default", recordID, 1)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != 0 {
 		t.Fatalf("replacement temp after the stop: info=%v err=%v, want an empty file", info, err)
 	}
@@ -228,8 +222,8 @@ func TestIngestWorker_TempCreatedBeforeProgressDoesNotInheritOldGeneration(t *te
 		recordingID).Scan(&committed); err != nil {
 		t.Fatalf("reading committed generation: %v", err)
 	}
-	if committed <= oldGeneration {
-		t.Fatalf("committed generation = %d, want newer than the stale %d", committed, oldGeneration)
+	if committed != oldGeneration {
+		t.Fatalf("committed generation = %d, want the unchanged byte generation %d", committed, oldGeneration)
 	}
 }
 
@@ -239,11 +233,11 @@ type ingestTempGenerationCapture struct {
 	generations []int64
 }
 
-func (p *ingestTempGenerationCapture) UpsertIngestProgress(ctx context.Context, progress store.IngestProgress) error {
+func (p *ingestTempGenerationCapture) UpdateIngestProgress(ctx context.Context, progress store.IngestProgress, owner uuid.UUID, writerGeneration int64, ttl time.Duration) error {
 	p.mu.Lock()
 	p.generations = append(p.generations, progress.TempGeneration)
 	p.mu.Unlock()
-	return p.MediaPublish.UpsertIngestProgress(ctx, progress)
+	return p.MediaPublish.UpdateIngestProgress(ctx, progress, owner, writerGeneration, ttl)
 }
 
 func (p *ingestTempGenerationCapture) firstGeneration(t *testing.T) int64 {
@@ -275,8 +269,8 @@ func readIngestTempGeneration(t *testing.T, pool *pgxpool.Pool, recordingID int6
 func seedIngestTempProgress(t *testing.T, pool *pgxpool.Pool, recordingID int64, tempRelPath string, generation int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
-INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_generation)
-VALUES ($1, 0, $2, $3)`, recordingID, tempRelPath, generation); err != nil {
+INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_store, temp_generation)
+VALUES ($1, 0, $2, $3, $4)`, recordingID, tempRelPath, pgstoretest.TestStore, generation); err != nil {
 		t.Fatalf("seeding ingest temp progress: %v", err)
 	}
 }

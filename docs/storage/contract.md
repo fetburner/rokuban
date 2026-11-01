@@ -47,7 +47,7 @@ scratch directory 名は Worker の復旧単位から決める。encode は `(re
 
 CM detect と CM logo candidate はプロセス死の残骸を回収しない。CM 検出は死後の次の開始で `attempt_count` が進み同じ名前に戻らず、ロゴ候補は `MkdirTemp` だからである。中身は原本への symlink と小さいファイルだけなので、残っても実害は小さいとして許容する。
 
-ingest は同じ root・同じディレクトリの record 固有 temp へ書く。temp 名は `.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを開く。
+ingest は同じ root・同じディレクトリの record 固有 temp へ書く。temp 名は `.rokuban-ingest-{site}-{record_id}-g{writer_generation}` である。writer 世代は DB lease で採番する。HLS の `temp_generation` は別に管理する。新 writer が以前の表示中の offset に追いつくまでは旧 path を指し、追いついた後は path だけを切り替える。`temp_generation` は維持する。
 
 予約 basename は、mirakc の contentPath には使わない。次の 4 つの prefix で始まる名前である。
 
@@ -55,22 +55,26 @@ ingest は同じ root・同じディレクトリの record 固有 temp へ書く
 
 rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。置き場の目印の root の `.rokuban-store` も同じく予約する。ネストした同名ファイルは予約しない。
 
-ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original の論理資産とコピー行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、temp の `flock` を保持したまま置き場の目印を照合して temp を unlink する。
+ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original の論理資産とコピー行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、置き場の目印を照合して temp を unlink する。temp の直列化には record 単位の DB lease を使い、canonical の公開・削除だけは `rel_path` lock を使う。
 
 公開に `os.Rename` を使わないのは、宛先が既存でも無言で置き換えるからである。この契約は、DB に行の無い canonical 名のファイルを自動で消さないと決めている。rename はそのファイルを無言で置き換えて失わせる。`link` は宛先が既存なら `EEXIST` で失敗するので上書きしない。
 
 `renameat2(RENAME_NOREPLACE)` も使わない。Linux の NFS クライアントは flag 付きの rename を `EINVAL` で断る（`fs/nfs/dir.c` の `nfs_rename`）ので、NFS では必ず失敗する。この契約は条件を満たす NFS を置き場に含める。link なら全 OS で同じ経路になる。
 
-宛先に既にファイルがあるときは、temp と canonical が同じ inode かを `os.SameFile` で判定する。同じなら前回の試行が link した後に commit で失敗した状態なので、公開済みとして commit へ進む。別の inode なら他人のファイルなので、temp を残し、mirakc の record を消さず、`media_assets` 行も作らずにエラーで止める。内容の照合も再利用もしない。
+宛先に既にファイルがあるときは、temp と canonical が同じ inode かを `os.SameFile` で判定する。同じなら前回の試行が link した後に commit で失敗した状態なので、公開済みとして commit へ進む。別の inode なら regular file・サイズ・SHA-256 を照合し、全て一致するときだけ既存内容を採用する。それ以外は他人のファイルとして temp を残し、mirakc の record を消さず、`media_assets` 行も作らずにエラーで止める。この照合はストレージ間転送の既存宛先採用と同じ helper を使う。
+
+未解決: この照合は canonical 全体を読んで SHA-256 を計算する。報告された読み直し速度（約 9.8 MB/s）では、地デジ 30 分（約 3.8 GB）の照合は 5 分の Work 時限を超える見込みである（未測定）。
 
 `link(2)` の BUGS 節は、NFS では link が成功しても戻り値が失敗になりうると書く。そのためどの失敗でも `SameFile` で確かめる。JuiceFS での hard link の動作は未検証である。
 
-link 後の temp は canonical と同じ inode である。temp は `O_APPEND` で開くので、書けば公開済みの canonical が変わる。次の試行は temp を `flock` した後、replay も転送もする前に `SameFile` を見て、同じなら commit だけをやり直す。
+link 後の temp は canonical と同じ inode である。新しい writer 世代は別の temp path を使うため、公開済みの canonical を追記しない。link の前に、全量の最終 handoff（offset と SHA-256 state）を DB に保存する。次の試行は writer 世代の temp と canonical が `SameFile` で、サイズが保存 offset と一致し、state を復元できるときだけ、保存した SHA-256 から commit をやり直す。temp は読み直さない。最終 handoff が無い link 済み temp は全量を読んで SHA-256 を計算する（未解決: 上の読み直しの費用と同じ）。
 
 <details><summary>根拠</summary>
 
 - `.rokuban-locks/` を `rel_path` として受け入れないこと: `mediapath.Resolve`
 - root の `.rokuban-store` だけを拒むこと: `TestResolve_ReservesRootStoreMarkerOnly`
+- 異なる inode の一致採用: `TestIngestWorker_AdoptsMatchingCanonicalWithDifferentInode`
+- 同じサイズの異なる内容を拒むこと: `TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent`
 
 </details>
 
@@ -82,19 +86,25 @@ link 後の temp は canonical と同じ inode である。temp は `O_APPEND` �
 
 原本は link 前の失敗では temp を残して次の試行へ渡す。中身の不一致、または record の cancel / fail が分かった場合だけ temp を消す。
 
-原本の link 後に fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行がそれを見て commit だけをやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。例えば再試行が成功しないまま temp が mtime 猶予と aging を過ぎると、孤児回収が temp を消す。次の試行は別の inode の temp を作るので、canonical は他人のファイルとして扱われて ingest が止まり、aging 後に orphan として報告される。
+原本の link 後に fsync か commit が失敗したら、transaction を rollback する。temp は canonical と同じ inode のまま残り、次の試行は保存済みの最終 handoff から SHA-256 を復元して commit をやり直す。canonical が行の無いまま残るのは、この再試行が成功しない場合である。孤児回収が先に temp 名を消した後でも、次の ingest は既存 canonical のサイズと SHA-256 が一致すればその内容を採用できる。異なる内容なら canonical は他人のファイルとして扱われ、ingest は止まり、エイジング後に orphan として報告される。
 
 mirakc record は、commit が成功するまで削除しない。commit 後の temp の unlink が失敗しても、ログだけで成功扱いにする。
 
 **この順序を反転させない**。DB commit 後に link すると、行が指す実体の欠落を作る。
 
-原本 ingest のコピー完了には、fsync と Close のエラー確認まで含める。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書くのは、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないためである。
+原本 ingest のコピー完了には、fsync と Close のエラー確認まで含める。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りでは `fsync` と `Close` の両方が成功してから、lease を検証して offset と SHA-256 state を DB に保存する。clean resume は temp サイズが保存 offset と一致するときだけ許し、サイズ不一致時は新しい writer 世代の temp を Range 0 から作る。
 
 区切りごとの fsync のコストは NFS / JuiceFS で未測定である。FUSE S3 は原本の置き場に使わないので、途中 fsync で fd に書けなくなる実装は考慮しない。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。link 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
 
-ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。
+ingest temp の回収は DB の writer 世代と表示中の `temp_rel_path` を照合する。現在の世代または表示中の path を指す temp は残し、より古い writer 世代で表示中でもない temp は回収できる。writer 世代を判定できない旧形式の名前は mtime 猶予とエイジングの後に回収する。
 
-canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
+canonical orphan はエイジング後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
+
+<details><summary>根拠</summary>
+
+- temp 世代回収: `TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGeneration`
+
+</details>
 
 ### 置き場間の転送
 
@@ -155,7 +165,7 @@ thumbnail と seek tiles の次世代は、論理行と削除済みを含む cop
 
 先行 job がすでに `active` の行を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
 
-FS store 内の staging file は予約 prefix 付きで `List` から隠し、mtime 猶予と aging の後に回収する。S3 store の multipart upload は Put の中で完了または abort する。canonical を直接書き換えないため、処理中に配信側が途中の画像を観測しない。
+FS store 内の staging file は予約 prefix 付きで `List` から隠し、mtime 猶予とエイジングの後に回収する。S3 store の multipart upload は Put の中で完了または abort する。canonical を直接書き換えないため、処理中に配信側が途中の画像を観測しない。
 
 <details><summary>根拠</summary>
 
@@ -283,7 +293,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 `media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）。孤児回収は symlink かどうかを見ずに DB の行と突き合わせる。未知の canonical 名になったリンクは孤児として報告するが、自動削除しない（`mediapath.Resolve` は字句判定のみで symlink を評価しない）。
 
-hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ。例外は ingest が公開中に持つ予約名 temp と canonical の hard link だけである。temp は予約名で `flock` の下にあり、unlink はリンク数を減らすだけで canonical を消さない。`(dev, ino)` による検出は、スキャンをまたぐと inode がバックアップ復元で変わるため実装しない。rescue の走査と in-place 登録は symlink だけを弾く。
+hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ。例外は ingest が公開中に持つ予約名 temp と canonical の hard link だけである。temp は writer lease が所有し、unlink はリンク数を減らすだけで canonical を消さない。`(dev, ino)` による検出は、スキャンをまたぐと inode がバックアップ復元で変わるため実装しない。rescue の走査と in-place 登録は symlink だけを弾く。
 
 ディレクトリへの symlink も作らない。rescue と孤児回収の走査は symlink を辿らないため、配下のファイルは孤児候補にも rescue にも見えず、災害復旧で救えない。symlink エントリ自身は孤児として報告するが、自動削除しない。リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける。
 

@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -41,6 +42,19 @@ func (s *Media) CommitOriginal(
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
+	if in.WriterGeneration > 0 {
+		if in.WriterOwner == ([16]byte{}) {
+			return store.ErrIngestCheckpointLeaseLost
+		}
+		if _, err := q.LockLeasedRecordingIngestCheckpoint(ctx, sqlcgen.LockLeasedRecordingIngestCheckpointParams{
+			RecordingID: in.RecordingID, Owner: pgtype.UUID{Bytes: in.WriterOwner, Valid: true}, WriterGeneration: in.WriterGeneration,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return store.ErrIngestCheckpointLeaseLost
+			}
+			return fmt.Errorf("locking ingest writer lease for recording %d: %w", in.RecordingID, mapDatabaseError(err))
+		}
+	}
 
 	assetID, err := q.CreateOriginalMediaAsset(ctx, sqlcgen.CreateOriginalMediaAssetParams{
 		RecordingID: in.RecordingID,
@@ -58,6 +72,11 @@ func (s *Media) CommitOriginal(
 	}
 	if err := q.DeleteRecordingIngestProgress(ctx, in.RecordingID); err != nil {
 		return fmt.Errorf("clearing ingest progress for recording %d: %w", in.RecordingID, err)
+	}
+	if in.WriterGeneration > 0 {
+		if err := q.DeleteRecordingIngestCheckpoint(ctx, in.RecordingID); err != nil {
+			return fmt.Errorf("clearing ingest checkpoint for recording %d: %w", in.RecordingID, err)
+		}
 	}
 
 	recording, err := q.GetRecordingByID(ctx, in.RecordingID)

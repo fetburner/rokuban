@@ -8,7 +8,7 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 | §3 §3.5 §3.6 §3.7 | desired: `reservations` / `program_intents`・`program_overrides` / `circuit_breakers` / `program_snapshots` | [schema/reservations.md](schema/reservations.md) |
 | §4 | observed: `schedule_sync` / `schedule_sync_snapshots` / `ruler_pass_snapshots` / `record_sweep_snapshots` | [schema/schedule-sync.md](schema/schedule-sync.md) |
 | §5 | 永続資産: `recordings`（行の作られ方・status・ごみ箱・重複防止）/ `never_scheduled_events` / `recording_purge_requests` / `encoded_asset_removal_requests` | [schema/recordings/history.md](schema/recordings/history.md) |
-| §5 | 永続資産（衛星表）: `recording_encode_policy` / `recording_ingest_progress` / `recording_encode_attempts` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
+| §5 | 永続資産（衛星表）: `recording_encode_policy` / `recording_ingest_progress` / `recording_ingest_checkpoints` / `recording_encode_attempts` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
 | §5 | 永続資産（衛星表）: `recording_cm_detections` / `recording_cm_attempts` / `cm_logos` / `cm_logo_areas` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
 | §5 | 永続資産（衛星表）: `recording_chapter_ownership` / `recording_chapter_spans` / `recording_playback_positions` / `recording_watched` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
 | §6 | 永続資産: `media_assets` / `media_asset_cuts` / `media_asset_thumbnail_seeks` | [schema/recordings/media-assets.md](schema/recordings/media-assets.md) |
@@ -38,6 +38,7 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 
 - 原本保持ポリシーの凍結: `recording_encode_policy`
 - 転送の途中経過: `recording_ingest_progress`
+- ingest writer の lease と clean handoff: `recording_ingest_checkpoints`
 - 即時完全削除の要求: `recording_purge_requests`
 - 外したエンコード結果の要求: `encoded_asset_removal_requests`
 - encode ジョブの直近の試行状態: `recording_encode_attempts`
@@ -68,6 +69,7 @@ erDiagram
     recordings ||--o{ media_assets : "recording_id"
     recordings ||--o| recording_encode_policy : "recording_id (凍結。衛星表、ON DELETE CASCADE)"
     recordings ||--o| recording_ingest_progress : "recording_id (転送中。衛星表)"
+    recordings ||--o| recording_ingest_checkpoints : "recording_id (ingest writer lease と再開点。衛星表)"
     recordings ||--o| recording_purge_requests : "recording_id (即時削除の要求。衛星表)"
     recordings ||--o{ encoded_asset_removal_requests : "recording_id (外した版の要求。衛星表)"
     recordings ||--o{ recording_encode_attempts : "recording_id (encode 試行の観測。衛星表)"
@@ -102,7 +104,8 @@ observed は mirakc の観測で、短命で使い捨てである。schedule 全
 <details><summary>根拠</summary>
 
 - 凍結済み（行の存在）: `recording_encode_policy`。`recordings` の削除で CASCADE
-- 原本を転送中（コミットで消える）: `recording_ingest_progress`
+- 原本を転送中（コミット・破棄で消える）: `recording_ingest_progress`
+- ingest writer の lease と clean handoff（原本のコミットで消える。破棄では世代を進めて残す）: `recording_ingest_checkpoints`
 - ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）: `recording_purge_requests`
 - ユーザーがそのエンコード結果を外した（削除の確定か足し直しで DELETE）: `encoded_asset_removal_requests`
 - encode ジョブが running か failed（完了で消える）: `recording_encode_attempts`

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -91,7 +92,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	}
 	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 	if err := (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(
-		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), nil,
+		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), nil, uuid.Nil, 0,
 	); err != nil {
 		t.Fatalf("IngestWorker.commit: %v", err)
 	}

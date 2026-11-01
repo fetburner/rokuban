@@ -90,7 +90,9 @@ const apiHlsRecording = {
     { profile: 'sd', masterUrl: apiHlsPath(1, 'sd') },
   ],
 }
-// 410 復旧の判定は、録画が終わって取り込み中の録画で、temp を捨てて世代を替えるサーバーの遷移を再現する。
+// 録画 API の 410 復旧（HLS 世代 1 から 2 への切替）の fixture。
+// writer の切替では temp_generation は変わらない（バイト列が同じだから）。この fixture が表す世代の変更は、
+// 期限切れ（410）を経た復旧だけである。
 const apiHlsRecoveryFinished = {
   ...apiHlsRecording,
   startAt: new Date(now - 120_000).toISOString(),
@@ -107,7 +109,7 @@ const apiHlsRecoveryV1 = {
 const apiHlsRecoveryEmpty = { ...apiHlsRecoveryFinished, ingest: { state: 'pending' }, hlsPlayback: [] }
 const apiHlsRecoveryV2 = {
   ...apiHlsRecoveryFinished,
-  ingest: { state: 'transferring', writtenBytes: 100_000, observedAt: new Date(now).toISOString() },
+  ingest: { state: 'transferring', writtenBytes: 1_500_000, observedAt: new Date(now).toISOString() },
   hlsPlayback: [
     { profile: 'hd', masterUrl: apiHlsPath(2, 'hd') },
     { profile: 'sd', masterUrl: apiHlsPath(2, 'sd') },
@@ -788,6 +790,57 @@ async function runRecordingApiHlsRecoveryCheck() {
     await page.close()
     return
   }
+
+  // 新 writer が旧 offset に届く前の再取得でも、browser は master を取り直さずに再生を続ける（fixture は旧 URL を返す）。
+  const progressBeforeRestart = await page.evaluate(() => window.__progressedSeconds)
+  const masterRequestsBeforeRestart = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  const restartRefresh = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return response.request().method() === 'GET' && responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 })
+  activeRecording = {
+    ...apiHlsRecoveryV1,
+    ingest: { ...apiHlsRecoveryV1.ingest, observedAt: new Date().toISOString() },
+  }
+  await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  // fixture は同じ応答を返すので、ここで見るのは再取得が返ったことと、browser が master を取り直さないこと。
+  const duringRestart = await restartRefresh.then((response) => response.json()).catch(() => null)
+  if (!duringRestart) ng.push('writer 再起動中に録画 API の再取得が応答しない')
+  const continuedDuringRestart = await page.waitForFunction((baseline) => {
+    const video = document.querySelector('video')
+    return video && !video.paused && window.__progressedSeconds > baseline + 0.5
+  }, progressBeforeRestart, { timeout: 5000 }).then(() => true).catch(() => false)
+  if (!continuedDuringRestart) ng.push('新 writer が旧 offset へ追いつく前に録画 HLS の再生が止まる')
+  const masterRequestsDuringRestart = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  if (masterRequestsDuringRestart !== masterRequestsBeforeRestart) {
+    ng.push('旧 HLS pointer を維持する writer 再起動中に master playlist を張り直した')
+  }
+
+  // 同じ byte generation のまま writer が追いつき、可視 offset が伸びても再生を張り直さない。
+  const progressBeforeCatchup = await page.evaluate(() => window.__progressedSeconds)
+  const masterRequestsBeforeCatchup = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  const catchupRefresh = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return response.request().method() === 'GET' && responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 })
+  activeRecording = {
+    ...activeRecording,
+    ingest: { ...activeRecording.ingest, observedAt: new Date().toISOString(), writtenBytes: 1_500_000 },
+  }
+  await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  // 同じ URL のまま再生が続くことは、browser が master を取り直さないことで確かめる（API の値は fixture が決める）。
+  const caughtUp = await catchupRefresh.then((response) => response.json()).catch(() => null)
+  if (!caughtUp) ng.push('writer catch-up 後に録画 API の再取得が応答しない')
+  const continuedAfterCatchup = await page.waitForFunction((baseline) => {
+    const video = document.querySelector('video')
+    return video && !video.paused && window.__progressedSeconds > baseline + 0.5
+  }, progressBeforeCatchup, { timeout: 5000 }).then(() => true).catch(() => false)
+  if (!continuedAfterCatchup) ng.push('同じ byte generation の writer catch-up 後に録画 HLS の再生が止まる')
+  const masterRequestsAfterCatchup = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  if (masterRequestsAfterCatchup !== masterRequestsBeforeCatchup) {
+    ng.push('同じ byte generation の writer catch-up 後に master playlist を張り直した')
+  }
+
   const sessionStartSeconds = apiHlsRecoveryV1.resumePositionMs / 1000
   // 応答を待つ（要求の時点では、止まる直前の位置を読む handler がまだ終わっていない）。
   const nextMaster = page.waitForResponse((response) => new URL(response.url()).pathname === apiHlsPath(2, 'hd'), { timeout: 30000 })

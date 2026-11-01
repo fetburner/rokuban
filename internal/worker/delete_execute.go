@@ -18,11 +18,11 @@
 //
 //	操作      原本                         派生物                     ingest / transfer temp
 //	解決      mediapath.Resolve            objstore key                mediapath.Resolve
-//	flock     media root の rel_path lock  なし（key は再利用しない）   temp 自身の flock
-//	stat      巻き戻し時の現存確認         objstore.Head               mtime・サイズ・inode
+//	排他      media root の rel_path lock  なし（key は再利用しない）   DB writer lease
+//	stat      巻き戻し時の現存確認         objstore.Head               世代・visible path・mtime
 //	unlink    os.Remove                    objstore.Delete             os.Remove
 //
-// 原本と temp の flock・inode 照合はファイルシステム上に残る。
+// 原本の公開・削除だけが rel_path lock を使う。ingest temp は writer lease と別世代の path で隔離する。
 
 package worker
 
@@ -624,8 +624,8 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 }
 
 // deleteOrphanFile は公開前と判定できる孤児だけを物理削除し orphan_files 行を消す。
-// canonical 名はここへ来ても削除しない。ingest temp/checkpoint は同じ flock を取り、
-// 転送 temp は進捗の世代で判定し、staging と転送の sidecar は一意な予約名なので lock を取らず、
+// canonical 名はここへ来ても削除しない。ingest temp は DB writer 世代と visible path、
+// 転送 temp は進捗世代で判定する。staging と転送 sidecar は一意な予約名なので lock を取らず、
 // mtime を再確認してから unlink する。
 func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time.Duration) {
 	log := slog.With("rel_path", relPath, "source", "orphan")
@@ -640,8 +640,8 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		log.Error("delete_reconcile: rejecting orphan rel_path outside the media directory", "err", err)
 		return
 	}
-	if kind == orphanCleanupIngestCheckpoint {
-		w.deleteOrphanIngestCheckpoint(path, relPath, mtimeGrace, log)
+	if kind == orphanCleanupIngestTemp {
+		w.deleteOrphanIngestTemp(path, relPath, mtimeGrace, log)
 		return
 	}
 	if kind == orphanCleanupTransferTemp {
@@ -649,37 +649,12 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		return
 	}
 
-	isTemp := kind == orphanCleanupIngestTemp
-	var tempLock *os.File
-	var checkpointPath, checkpointRelPath string
-	if isTemp {
-		var ok bool
-		tempLock, ok = w.lockOrphanIngestTemp(path, relPath, log)
-		if !ok {
-			return
-		}
-		defer closeOrphanTempLock(tempLock, log)
-		// A recent checkpoint means active work still owns this temp. Keep the temp
-		// mtime unchanged because it anchors the fallback SHA-256 wait deadline.
-		checkpointPath = ingestCheckpointPath(path)
-		checkpointRelPath = relPath + ingestCheckpointSuffix
-		checkpointInfo, err := os.Stat(checkpointPath)
-		if err == nil && checkpointInfo.ModTime().After(time.Now().Add(-mtimeGrace)) {
-			return
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Warn("delete_reconcile: stating temp checkpoint before temp cleanup", "err", err)
-			return
-		}
-	}
-
-	size, missing, ready := inspectAgedOrphan(path, tempLock, isTemp, mtimeGrace, log)
+	size, missing, ready := inspectAgedOrphan(path, mtimeGrace, log)
 	if !ready {
 		if !missing {
 			return
 		}
-		// ロック取得後にパスが消えた temp から os.Remove へ進むと、同名で再作成された
-		// 新しい temp をロックなしで消しうる。temp も staging も、候補記録だけを整理する。
+		// temp も staging も、候補記録だけを整理する。
 		w.clearAbsentOrphanRecord(relPath, log)
 		return
 	}
@@ -701,20 +676,73 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		}
 	}
 
-	if isTemp {
-		// checkpoint は base temp と同じ寿命である。base の flock を保持したまま
-		// 消し、古い hash 状態を次の同名 temp が誤って読む経路を閉じる。
-		// 直前の temp の unlink と同じ照合で守られている。
-		removeCheckpointErr := os.Remove(checkpointPath)
-		if removeCheckpointErr != nil && !errors.Is(removeCheckpointErr, os.ErrNotExist) {
-			log.Warn("delete_reconcile: removing checkpoint with aged temp failed", "err", removeCheckpointErr)
-		} else {
-			if err := w.Storage.DeleteOrphanFile(context.Background(), checkpointRelPath); err != nil {
-				log.Warn("delete_reconcile: clearing checkpoint orphan row", "err", err)
+	w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
+}
+
+// deleteOrphanIngestTemp は DB が参照する writer 世代だけを残す。
+// 現世代より古く、streamer の表示先でもない世代は、年齢を待たずに回収できる。
+func (w *DeleteReconcileWorker) deleteOrphanIngestTemp(path, relPath string, mtimeGrace time.Duration, log *slog.Logger) {
+	site, recordID, generation, parsed := mediapath.ParseIngestTempFile(relPath)
+	superseded := false
+	if parsed {
+		if reader, ok := w.Storage.(store.IngestWriterStateReader); ok {
+			lookupCtx, cancel := context.WithTimeout(context.Background(), deleteOrphanCleanupTimeout)
+			state, found, err := reader.GetIngestWriterState(lookupCtx, site, recordID)
+			cancel()
+			if err != nil {
+				log.Error("delete_reconcile: reading ingest writer generation before temp cleanup", "err", err)
+				return
+			}
+			if found {
+				if generation >= state.WriterGeneration || (state.HasProgress && state.TempRelPath == relPath) {
+					return
+				}
+				superseded = true
 			}
 		}
-		w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
+	}
+
+	var size int64
+	if superseded {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			w.clearAbsentOrphanRecord(relPath, log)
+			return
+		}
+		if err != nil {
+			log.Error("delete_reconcile: stating superseded ingest writer temp", "err", err)
+			return
+		}
+		if !info.Mode().IsRegular() {
+			log.Warn("delete_reconcile: superseded ingest temp is not a regular file; keeping it")
+			return
+		}
+		size = info.Size()
+	} else {
+		var missing, ready bool
+		size, missing, ready = inspectAgedOrphan(path, mtimeGrace, log)
+		if !ready {
+			if missing {
+				w.clearAbsentOrphanRecord(relPath, log)
+			}
+			return
+		}
+	}
+	beforeOrphanFileUnlink(relPath)
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking orphan ingest temp"); err != nil {
+		log.Warn("delete_reconcile: withholding ingest temp unlink because media store marker did not match", "err", err)
 		return
+	}
+	physicallyDeleted, ok := removeOrphanFile(path, log)
+	if !ok {
+		return
+	}
+	afterOrphanFileUnlink(relPath)
+	if !physicallyDeleted {
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming ingest temp is absent"); err != nil {
+			log.Warn("delete_reconcile: withholding missing-temp decision because media store marker did not match", "err", err)
+			return
+		}
 	}
 	w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
 }
@@ -755,7 +783,7 @@ func (w *DeleteReconcileWorker) deleteOrphanTransferTemp(path, relPath string, m
 		size = info.Size()
 	default:
 		var missing, ready bool
-		size, missing, ready = inspectAgedOrphan(path, nil, false, mtimeGrace, log)
+		size, missing, ready = inspectAgedOrphan(path, mtimeGrace, log)
 		if !ready {
 			if missing {
 				w.clearAbsentOrphanRecord(relPath, log)
@@ -783,76 +811,9 @@ func (w *DeleteReconcileWorker) deleteOrphanTransferTemp(path, relPath string, m
 	w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
 }
 
-// deleteOrphanIngestCheckpoint は SHA-256 状態を base temp の flock の下で回収する。
-// checkpoint の削除だけでも次回 replay の量が増えるだけだが、temp と同じ寿命で扱う。
-func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(path, relPath string, mtimeGrace time.Duration, log *slog.Logger) {
-	tempPath := ingestTempPathForCheckpoint(path)
-	tempLock, err := lockExistingIngestTempFile(tempPath)
-	if err == nil {
-		defer closeOrphanTempLock(tempLock, log)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		if ingestTempLockBusy(err) {
-			log.Debug("delete_reconcile: ingest temp is locked; deferring checkpoint removal")
-			return
-		}
-		log.Warn("delete_reconcile: locking ingest temp before checkpoint removal", "err", err)
-		return
-	}
-
-	info, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		w.clearAbsentOrphanRecord(relPath, log)
-		return
-	}
-	if err != nil {
-		log.Warn("delete_reconcile: stating ingest checkpoint", "err", err)
-		return
-	}
-	if info.ModTime().After(time.Now().Add(-mtimeGrace)) {
-		return
-	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking ingest checkpoint"); err != nil {
-		log.Warn("delete_reconcile: withholding checkpoint unlink because media store marker did not match", "err", err)
-		return
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("delete_reconcile: removing ingest checkpoint", "err", err)
-		return
-	}
-	w.clearOrphanFileRecord(relPath, info.Size(), true, log)
-}
-
-// lockOrphanIngestTemp は ingest と同じ flock を temp ファイルに取得する。
-// パスが消えた場合は再作成された別 inode を無 lock で消さないため、DB 行だけ
-// を整理して呼び出し元に false を返す。busy やその他の lock エラーも安全側で
-// 削除を延期する。
-func (w *DeleteReconcileWorker) lockOrphanIngestTemp(path, relPath string, log *slog.Logger) (*os.File, bool) {
-	tempLock, err := lockExistingIngestTempFile(path)
-	if err == nil {
-		return tempLock, true
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		w.clearAbsentOrphanRecord(relPath, log)
-		return nil, false
-	}
-	if ingestTempLockBusy(err) {
-		log.Debug("delete_reconcile: ingest temp is locked; deferring orphan removal")
-		return nil, false
-	}
-	log.Warn("delete_reconcile: locking ingest temp before orphan removal", "err", err)
-	return nil, false
-}
-
-// closeOrphanTempLock は orphan cleanup が取得した temp lock を閉じる。
-func closeOrphanTempLock(tempLock *os.File, log *slog.Logger) {
-	if err := tempLock.Close(); err != nil {
-		log.Warn("delete_reconcile: closing locked ingest temp", "err", err)
-	}
-}
-
 // inspectAgedOrphan は unlink 直前に孤児の mtime とサイズを再確認する。
-// ingest temp では flock と inode も照合する。missing は stat が ENOENT だった場合だけ true。
-func inspectAgedOrphan(path string, tempLock *os.File, isTemp bool, mtimeGrace time.Duration, log *slog.Logger) (size int64, missing, ready bool) {
+// missing は stat が ENOENT だった場合だけ true。
+func inspectAgedOrphan(path string, mtimeGrace time.Duration, log *slog.Logger) (size int64, missing, ready bool) {
 	info, statErr := os.Stat(path)
 	if statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
@@ -860,15 +821,6 @@ func inspectAgedOrphan(path string, tempLock *os.File, isTemp bool, mtimeGrace t
 		}
 		log.Error("delete_reconcile: stating orphan file", "err", statErr)
 		return 0, false, false
-	}
-	if isTemp && tempLock != nil {
-		lockedInfo, lockStatErr := tempLock.Stat()
-		if lockStatErr != nil || !os.SameFile(lockedInfo, info) {
-			// パスがロック取得後に差し替わった。別 inode をロックなしで
-			// 消さず、次の pass で現在の temp を取り直す。
-			log.Debug("delete_reconcile: ingest temp inode changed while locking; deferring orphan removal")
-			return 0, false, false
-		}
 	}
 	if info.ModTime().After(time.Now().Add(-mtimeGrace)) {
 		// 候補抽出後に書き込みが進んだ。次の reconcile pass で再確認する。

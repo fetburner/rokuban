@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -241,7 +242,7 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
-			int64(len("committed bytes")), nil)
+			int64(len("committed bytes")), nil, uuid.Nil, 0)
 	}()
 
 	waitCommit := func() error {
@@ -307,7 +308,7 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 		}
 		seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 		if err := w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
-			int64(len(content)), nil); err != nil {
+			int64(len(content)), nil, uuid.Nil, 0); err != nil {
 			t.Fatalf("commit %d: %v", i, err)
 		}
 		if _, err := os.Stat(fullPath); err != nil {
@@ -406,7 +407,7 @@ func runCanonicalOrphanSurvives(
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- w.commit(ctx, recordingID, relPath, tempPath, fullPath,
-			int64(len(content)), nil)
+			int64(len(content)), nil, uuid.Nil, 0)
 	}()
 
 	waitCommit := func() error {

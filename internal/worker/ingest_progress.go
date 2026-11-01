@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -35,8 +37,10 @@ const ingestProgressInterval = 2 * time.Second
 // progressWriter 経由で継続的に report する。行の存在そのものが「転送中」の
 // 主張なので（不変条件 10）、0 バイトの start にも意味がある。
 type ingestProgressReporter struct {
-	publisher   store.MediaPublish
-	recordingID int64
+	publisher        store.MediaPublish
+	recordingID      int64
+	owner            uuid.UUID
+	writerGeneration int64
 	// expectedBytes は進捗の分母。Work 開始時は record_sync.content_length
 	// （watcher の観測）で初期化し、追従中は observeProgress が GetRecord の
 	// content.length で更新する（固定すると録画中に 100% で止まる。issue #425）。
@@ -54,7 +58,7 @@ type ingestProgressReporter struct {
 	lastAt time.Time
 }
 
-// start は転送開始を記録する。再開時は既存 temp の replay 済みバイト数を渡す。
+// start は転送開始を記録する。clean handoff の再開時は保存 offset を渡す。
 // これは進捗の観測ではないため、report の間引き時計を進めない。
 // 引数を省略した場合は新規 temp の 0 バイトとして扱う。
 func (r *ingestProgressReporter) start(ctx context.Context, initial ...int64) {
@@ -101,10 +105,10 @@ func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err := r.publisher.UpsertIngestProgress(ctx, store.IngestProgress{
+	if err := r.publisher.UpdateIngestProgress(ctx, store.IngestProgress{
 		RecordingID: r.recordingID, WrittenBytes: written, ExpectedBytes: r.expectedBytes,
 		TempRelPath: r.tempRelPath, TempGeneration: r.tempGeneration,
-	}); err != nil {
+	}, r.owner, r.writerGeneration, ingestCheckpointLeaseTTL()); err != nil {
 		// 進捗が書けないこと自体は転送の失敗ではない。ログだけ残して続ける。
 		r.log.Warn("ingest: failed to record transfer progress",
 			"recording_id", r.recordingID, "written_bytes", written, "err", err)
@@ -114,8 +118,8 @@ func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 // progressWriter は下位 Writer への書き込みバイト数を数え、書けたぶんだけ
 // onWrite に通知する io.Writer。
 //
-// written は**このジョブが扱う temp の先頭からの累計**で、ジョブ内リトライ
-// （層 1、Range 再開）だけでなくプロセス死後の replay（層 2）も跨いで積み上がる。
+// written は**このジョブが扱う temp の先頭からの累計**で、clean handoff の
+// Range 再開を跨いで積み上がる。
 // 中身が悪いと確定して temp を消した次の試行だけは 0 から始まる
 // （docs/recording/ingest-retry.md §5.3）。
 type progressWriter struct {
