@@ -104,8 +104,8 @@ observed は mirakc の観測で、短命で使い捨てである。schedule 全
 <details><summary>根拠</summary>
 
 - 凍結済み（行の存在）: `recording_encode_policy`。`recordings` の削除で CASCADE
-- 原本を転送中（コミットで消える）: `recording_ingest_progress`
-- ingest writer の lease と clean handoff（コミット・破棄で消える）: `recording_ingest_checkpoints`
+- 原本を転送中（コミット・破棄で消える）: `recording_ingest_progress`
+- ingest writer の lease と clean handoff（原本のコミットで消える。破棄では世代を進めて残す）: `recording_ingest_checkpoints`
 - ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）: `recording_purge_requests`
 - ユーザーがそのエンコード結果を外した（削除の確定か足し直しで DELETE）: `encoded_asset_removal_requests`
 - encode ジョブが running か failed（完了で消える）: `recording_encode_attempts`

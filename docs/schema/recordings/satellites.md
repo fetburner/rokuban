@@ -190,7 +190,7 @@ CREATE TABLE cm_logo_areas (
 
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 
-**行の存在が、ingest がまだ commit していない temp を streamer に見せていることを意味する**（不変条件 10）。転送中に加え、SHA-256 待ちで snooze している間も行は残る。書き込みバイト数は単調に増えず、現在 visible な一時ファイルに書けた量の観測である。clean handoff の再開点と writer lease は別の衛星表に置く。
+**行の存在が、ingest がまだ commit していない temp を streamer に見せていることを意味する**（不変条件 10）。転送中に加え、SHA-256 待ちで snooze している間も行は残る。書き込みバイト数は単調に増えず、現在表示中の一時ファイルに書けた量の観測である。clean handoff の再開点と writer lease は別の衛星表に置く。
 
 ```sql
 CREATE TABLE recording_ingest_progress (
@@ -208,9 +208,9 @@ CREATE TABLE recording_ingest_progress (
 
 `temp_generation` は `ingest_temp_generation_seq` から採番する。HLS が配るバイト列の同一性を表し、writer lease の世代とは別である。
 
-writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_path`・`written_bytes`・`temp_generation` を保つ。新 temp が旧 visible offset に追いついたトランザクションで path だけを切り替える。writer の作り直しだけでは byte generation を進めない。
+writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_path`・`written_bytes`・`temp_generation` を保つ。新 temp が旧い表示中の offset（旧 `written_bytes`）に追いついたトランザクションで path だけを切り替える。writer の作り直しだけでは `temp_generation` を進めない。
 
-新しい進捗行が初めて作られるときに byte generation を採番する。SHA-256 待ちや clean handoff の再開では同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
+新しい進捗行が初めて作られるときに `temp_generation` を採番する。SHA-256 待ちや clean handoff の再開では同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
 
 進捗行の出入りと `temp_generation` の変化は `recordings` トピックへ通知し、`written_bytes` の更新では通知しない。
 
@@ -223,7 +223,7 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 
 書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。あちらは mirakc 側の観測で書き手は watcher、こちらは Rokuban 側のファイルに何バイト書けたかで、1 表 2 書き手になる（不変条件 12）。
 
-書き込みバイト数は、単調に増えない。clean handoff の Range 再開では値が続き、unclean restart では新 writer の進捗が旧 visible offset に達するまで旧 path と offset を保つ。catch-up 後は新 path の offset に切り替わる。サイズや SHA-256 の不一致、record の cancel / fail で進捗を捨てると、次の進捗は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。これは現在 visible な temp の書き込み量の観測であり、累積の転送実績ではない。
+書き込みバイト数は、単調に増えない。clean handoff の Range 再開では値が続き、unclean restart では新 writer の進捗が旧い表示中の offset に達するまで旧 path と offset を保つ。追いついた後は新 path の offset に切り替わる。サイズや SHA-256 の不一致、record の cancel / fail で進捗を捨てると、次の進捗は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。これは現在表示中の temp の書き込み量の観測であり、累積の転送実績ではない。
 
 期待バイト数は、同期表の長さのコピーで、転送開始時に読む。mirakc が長さを返さなければ NULL のままにする。でっち上げた分母を置かない。ジョブが失敗して River のバックオフ待ちに入ると、行は観測時刻が古いまま残る。これは意図した挙動で、`river_job` を API 契約に露出させない代わりに、停滞を読ませる唯一の材料になる（[recording/ingest-followup.md](../../recording/ingest-followup.md) §5.6）。
 
@@ -243,9 +243,9 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 
 ### recording_ingest_checkpoints — ingest writer の lease と再開点（衛星表）
 
-この表は、writer の所有権と正常な引き継ぎ位置を記録する。
+この表は、writer の所有権と clean handoff の位置を記録する。
 
-進捗表示とは寿命が異なる。writer の作り直しは別の世代を使い、clean handoff が有効な場合だけ同じ世代の temp を Range 再開する。
+進捗表示とは寿命が異なる。writer の作り直しは別の writer 世代を使い、clean handoff が有効な場合だけ同じ世代の temp を Range 再開する。
 
 ```sql
 CREATE TABLE recording_ingest_checkpoints (
@@ -260,17 +260,19 @@ CREATE TABLE recording_ingest_checkpoints (
 );
 ```
 
-slice の終わりは temp の fsync と close の後に lease を照合して offset と hash state を保存する。再開時は通常ファイルのサイズが offset と一致し、hash state を復元できる場合だけ Range を続ける。条件を満たさない temp は新しい writer generation の別 path に Range 0 から作り直す。原本 commit と record 削除では行も消える。
+slice の終わりは temp の fsync と close の後に lease を照合して offset と hash state を保存する。再開時は通常ファイルのサイズが offset と一致し、hash state を復元できる場合だけ Range を続ける。条件を満たさない temp は新しい writer 世代の別 path に Range 0 から作り直す。行が消えるのは原本の commit と record 削除（CASCADE）だけである。破棄では行を消さず、writer 世代を進めて lease を切る。次の writer が、破棄した世代と同じ temp 名を使わないためである。全量を書き終えた後は、link の前に同じ内容を保存する（最終 handoff）。
 
 <details><summary>根拠</summary>
 
 - lease と clean handoff: `recording_ingest_checkpoints`
-- visible path と HLS byte generation: `recording_ingest_progress`
-- writer lease / file name の世代: `writer_generation`
+- 表示中の path と HLS の temp_generation: `recording_ingest_progress`
+- writer lease / file name の writer 世代: `writer_generation`
 - 再開可能なバイト位置と SHA-256 state: `offset_bytes` / `hash_state`
 - clean handoff の所有権と再開 state: `TestIngestCheckpointCleanHandoffResumesAndFencesZombie`
 - 通常ファイルの再開判定: `TestIngestWorker_RejectsSymlinkedCleanHandoff`
-- visible path の切り替え: `TestIngestProgressKeepsVisibleWriterUntilNewWriterCatchesUp`
+- 表示中の path の切り替え: `TestIngestProgressKeepsVisibleWriterUntilNewWriterCatchesUp`
+- 最終 handoff から読み直さずに commit すること: `TestIngestWorker_LinkedRetryCommitsReceivedSHA256WithoutReadingCanonical`
+- 破棄後に世代を再利用しないこと: `TestIngestCheckpointDiscardNeverReusesWriterGeneration`
 
 </details>
 
