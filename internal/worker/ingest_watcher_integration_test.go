@@ -36,7 +36,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	const programID int64 = 5000000001281
 	seedIngestLifecycleReservation(t, pool, programID)
 
-	record, contentPath := ingestLifecycleRecord(programID)
+	record, _ := ingestLifecycleRecord(programID)
 	tsData := ingestLifecycleTSData(20)
 	mcServer := newIngestLifecycleMirakc(t, record, tsData)
 	originalLogger := slog.Default()
@@ -116,7 +116,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs after the second job = %q, want verified SHA-256 commit", logOutput.String())
 	}
-	assertIngestLifecycleCommitted(t, pool, mediaDir, contentPath, tsData, int32(mcServer.fake.CallCount(http.MethodDelete, "/api/recording/records/"+record.ID)))
+	assertIngestLifecycleCommitted(t, pool, mediaDir, record.ID, tsData, int32(mcServer.fake.CallCount(http.MethodDelete, "/api/recording/records/"+record.ID)))
 }
 
 func seedIngestLifecycleReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
@@ -373,17 +373,22 @@ func assertIngestLifecycleWaited(t *testing.T, pool *pgxpool.Pool, deleteAttempt
 	if deleteAttempts != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", deleteAttempts)
 	}
+	var canonicalRelPath string
+	if err := pool.QueryRow(ctx, `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = (SELECT recording_id FROM record_sync WHERE site = 'default' AND record_id = $1)`, recordID).Scan(&canonicalRelPath); err != nil {
+		t.Fatalf("reading reserved canonical path while waiting: %v", err)
+	}
 	tempName := mediapath.IngestTempFilePrefix + "default-" + strings.ReplaceAll(recordID, "-", "%2D") + "-g1"
-	tempPath := filepath.Join(mediaDir, "sites", "default", "test", tempName)
+	tempPath := filepath.Join(mediaDir, filepath.Dir(filepath.FromSlash(canonicalRelPath)), tempName)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != wantTempSize {
 		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, wantTempSize)
 	}
 }
 
-func assertIngestLifecycleCommitted(t *testing.T, pool *pgxpool.Pool, mediaDir, contentPath string, tsData []byte, deleteAttempts int32) {
+func assertIngestLifecycleCommitted(t *testing.T, pool *pgxpool.Pool, mediaDir, recordID string, tsData []byte, deleteAttempts int32) {
 	t.Helper()
+	ctx := context.Background()
 	var assetCount int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount); err != nil {
 		t.Fatalf("counting committed original media assets: %v", err)
 	}
 	if assetCount != 1 {
@@ -392,7 +397,11 @@ func assertIngestLifecycleCommitted(t *testing.T, pool *pgxpool.Pool, mediaDir, 
 	if deleteAttempts != 1 {
 		t.Errorf("DeleteRecord attempts after verified commit = %d, want 1", deleteAttempts)
 	}
-	fullPath := filepath.Join(mediaDir, "sites", "default", filepath.FromSlash(contentPath))
+	var canonicalRelPath string
+	if err := pool.QueryRow(ctx, `SELECT copy.rel_path FROM media_assets asset JOIN media_asset_copies copy ON copy.media_asset_id = asset.id WHERE asset.kind = 'original' AND asset.recording_id = (SELECT recording_id FROM record_sync WHERE site = 'default' AND record_id = $1)`, recordID).Scan(&canonicalRelPath); err != nil {
+		t.Fatalf("reading committed canonical path: %v", err)
+	}
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(canonicalRelPath))
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("reading committed media file: %v", err)

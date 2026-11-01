@@ -146,7 +146,13 @@ WHERE copy.media_asset_id = $1 AND copy.store = 'archive'`, f.assetID).Scan(&las
 }
 
 func (f transferTestRemoteFixture) destinationExists() bool {
-	return fileExists(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath)))
+	var relPath string
+	if err := f.pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies
+		WHERE media_asset_id = $1 AND store = 'archive' AND state <> 'deleted'
+		ORDER BY id DESC LIMIT 1`, f.assetID).Scan(&relPath); err != nil {
+		return false
+	}
+	return fileExists(filepath.Join(f.roots["archive"], filepath.FromSlash(relPath)))
 }
 
 func TestStorageTransferWorkerCopiesOriginalFromInternalURL(t *testing.T) {
@@ -164,7 +170,7 @@ func TestStorageTransferWorkerCopiesOriginalFromInternalURL(t *testing.T) {
 			if err := worker.Work(context.Background(), f.args()); err != nil {
 				t.Fatalf("Work from internal_url: %v", err)
 			}
-			got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath)))
+			got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, f.pool, f.assetID, "archive"))))
 			if err != nil || !bytes.Equal(got, content) {
 				t.Fatalf("destination = %q, %v; want %q", got, err, content)
 			}
@@ -202,7 +208,7 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 	if err := worker.Work(context.Background(), f.args()); err != nil {
 		t.Fatalf("resuming remote transfer: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath)))
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(transfer.RelPath)))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("resumed destination = %q, %v; want %q", got, err, content)
 	}
@@ -257,7 +263,7 @@ func TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect(t *te
 	if err := worker.Work(context.Background(), f.args()); err != nil {
 		t.Fatalf("second Work: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath)))
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, f.pool, f.assetID, "archive"))))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("destination = %q, %v; want %q", got, err, content)
 	}
@@ -433,7 +439,12 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 func TestStorageTransferWorkerDoesNotAdoptUnverifiableRemoteDestination(t *testing.T) {
 	content := []byte("unverified destination with an old row that has no SHA-256")
 	f := newTransferTestRemoteFixture(t, content, false, nil)
-	destination := filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath))
+	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
+		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, storageTransferAttemptLimit)
+	if err != nil || !ok {
+		t.Fatalf("preparing unverified destination = (%+v, %t, %v)", transfer, ok, err)
+	}
+	destination := filepath.Join(f.roots["archive"], filepath.FromSlash(transfer.RelPath))
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +502,7 @@ VALUES ($1, 'local-src', 'sites/default/transfer/source.ts', 0, 'active', now() 
 	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(roots["archive"], "sites/default/transfer/source.ts"))
+	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, pool, assetID, "archive"))))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("destination = %q, %v; want %q", got, err, content)
 	}

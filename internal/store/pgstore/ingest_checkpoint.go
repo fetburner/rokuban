@@ -14,6 +14,20 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
+// GetIngestOriginalRelPath は置き場にある原本コピーの path を返す。
+func (s *Media) GetIngestOriginalRelPath(ctx context.Context, recordingID int64) (string, error) {
+	relPath, err := sqlcgen.New(s.pool).GetIngestOriginalRelPath(ctx, sqlcgen.GetIngestOriginalRelPathParams{
+		RecordingID: recordingID, StoreName: s.storeName,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", store.ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting ingest original rel_path for recording %d in store %q: %w", recordingID, s.storeName, mapDatabaseError(err))
+	}
+	return relPath, nil
+}
+
 // AcquireIngestCheckpoint は recorder ごとの writer lease を取り、clean handoff だけを再開する。
 func (s *Media) AcquireIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, ttl time.Duration) (store.IngestCheckpoint, bool, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -45,10 +59,18 @@ func (s *Media) AcquireIngestCheckpoint(ctx context.Context, recordingID int64, 
 	if cur.LeaseLive {
 		return store.IngestCheckpoint{}, false, nil
 	}
-	checkpoint := store.IngestCheckpoint{WriterGeneration: cur.WriterGeneration + 1}
+	canonicalRelPath := ""
+	if cur.CanonicalRelPath != nil {
+		canonicalRelPath = *cur.CanonicalRelPath
+	}
+	checkpoint := store.IngestCheckpoint{
+		WriterGeneration: cur.WriterGeneration + 1,
+		CanonicalRelPath: canonicalRelPath,
+	}
 	if cur.HandedOff {
 		checkpoint = store.IngestCheckpoint{
 			WriterGeneration: cur.WriterGeneration,
+			CanonicalRelPath: canonicalRelPath,
 			Resumed:          true,
 			Offset:           cur.OffsetBytes,
 			HashState:        cur.HashState,
@@ -64,6 +86,23 @@ func (s *Media) AcquireIngestCheckpoint(ctx context.Context, recordingID int64, 
 		return store.IngestCheckpoint{}, false, fmt.Errorf("committing ingest checkpoint claim: %w", mapDatabaseError(err))
 	}
 	return checkpoint, true, nil
+}
+
+// ReserveIngestRelPath は canonical path を初回だけチェックポイントへ保存する。
+func (s *Media) ReserveIngestRelPath(ctx context.Context, recordingID int64, owner uuid.UUID, relPath string) (string, error) {
+	reserved, err := sqlcgen.New(s.pool).ReserveRecordingIngestRelPath(ctx, sqlcgen.ReserveRecordingIngestRelPathParams{
+		RecordingID: recordingID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, RelPath: relPath,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", store.ErrIngestCheckpointLeaseLost
+		}
+		return "", fmt.Errorf("reserving ingest rel_path for recording %d: %w", recordingID, mapDatabaseError(err))
+	}
+	if reserved == nil {
+		return "", errors.New("reserving ingest rel_path returned NULL")
+	}
+	return *reserved, nil
 }
 
 // ResetIngestCheckpoint は無効な handoff を捨て、新しい writer 世代を Range 0 から始める。

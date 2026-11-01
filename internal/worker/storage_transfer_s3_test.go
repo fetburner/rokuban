@@ -145,7 +145,8 @@ func TestStorageTransferWorkerSendsDerivedCopyToS3FromFSSource(t *testing.T) {
 	if snoozes == 0 {
 		t.Fatal("transfer finished in one slice; the test needs several slices to exercise resumption")
 	}
-	got, err := os.ReadFile(filepath.Join(f.cloudRoot, filepath.FromSlash(f.relPath)))
+	relPath := transferTestCopyRelPath(t, f.pool, f.assetID, "cloud")
+	got, err := os.ReadFile(filepath.Join(f.cloudRoot, filepath.FromSlash(relPath)))
 	if err != nil || !bytes.Equal(got, f.content) {
 		t.Fatalf("cloud object = %d bytes, %v; want the %d source bytes", len(got), err, len(f.content))
 	}

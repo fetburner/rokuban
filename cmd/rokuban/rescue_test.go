@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -83,6 +84,39 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 			t.Errorf("output = %q, want the incomplete generation to be reported", out.String())
 		}
 	})
+}
+
+func TestRunRescueReportsTombstonedPathAndRenameGuidance(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newRescueTestMediaDir(t)
+	ctx := context.Background()
+	relPath := "sites/default/archive/replaced.m2ts"
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("replacement bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID)
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies
+		SET rel_path = $1, state = 'deleted', deleted_at = now()
+		WHERE media_asset_id = $2 AND store = $3`, relPath, assetID, dbtest.StoreName); err != nil {
+		t.Fatalf("creating deleted path tombstone: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runRescue(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}, &out); err != nil {
+		t.Fatalf("runRescue: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "skipped 1 file(s) that conflict with an existing media asset") {
+		t.Errorf("output = %q, want one rejected file in the summary", got)
+	}
+	if !strings.Contains(got, "1 file(s) use a deleted path tombstone; move or rename the file to register again") {
+		t.Errorf("output = %q, want tombstone reason and rename guidance", got)
+	}
 }
 
 // 到達不能な DB（127.0.0.1:1）+ 2 サイトのレジストリを使う。

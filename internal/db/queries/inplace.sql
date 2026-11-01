@@ -9,15 +9,12 @@ JOIN media_assets a ON a.id = c.media_asset_id
 JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path = sqlc.arg('rel_path')
   AND c.store = sqlc.arg('store_name')
--- media_asset_copies_store_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
--- deleted copy もそのファイルの所属を示すという理由でここは意図的に述語を外し、索引を使えず
--- seq scan になる。述語を戻すと deleted 行を見落とし、mtime が変わった rescue 再実行で
--- 同じファイルに live な recordings が 2 行できる（issue #662。
--- TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges が検出する）。実測 (media_assets 3000 行、EXPLAIN (ANALYZE, TIMING OFF)): 旧クエリ
--- (述語あり) Index Scan 0.010 ms → 新クエリ (述語なし) Seq Scan 0.123 ms。Register は
--- asset 1 件ごとに呼ぶので rescue 全体ではアセット数に比例するが、家庭用サーバー規模を
--- 前提に許容する。増えたら非部分索引の追加が上げ幅。
-ORDER BY (c.state <> 'deleted')::boolean DESC, a.id DESC
+-- media_asset_copies_store_rel_path_idx は state <> 'deleted' の部分索引なので、
+-- tombstone を検出するこの lookup は意図的に述語を外す。deleted 行を見落とすと
+-- 削除済み path を再利用でき、古い delete work が新しいファイルを unlink しうる。
+-- 同じ path に過去の再利用による live 行もあれば tombstone を優先する。
+-- そのため seq scan を許容する。表が大きくなったら tombstone lookup 用の非部分索引を検討する。
+ORDER BY (c.state = 'deleted')::boolean DESC, a.id DESC
 LIMIT 1;
 
 -- name: UpsertInPlaceRecording :one

@@ -175,12 +175,17 @@ WITH asset AS MATERIALIZED (
       AND storage_transfer_attempt_count(sqlc.arg('media_asset_id'), sqlc.arg('target_store')) < sqlc.arg('attempt_limit')
 ), upserted AS (
     INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-    SELECT asset.id, sqlc.arg('target_store'), source.rel_path, asset.generation, 'pending'
+    SELECT asset.id,
+           sqlc.arg('target_store'),
+           COALESCE(substring(source.rel_path FROM '^.*/'), '') ||
+               sqlc.arg('copy_token')::text ||
+               COALESCE(substring(source.rel_path FROM '[.][^./]+$'), ''),
+           asset.generation,
+           'pending'
     FROM eligible asset
     CROSS JOIN source
     ON CONFLICT (media_asset_id, store, generation) WHERE state <> 'deleted'
     DO UPDATE SET
-        rel_path = EXCLUDED.rel_path,
         state = 'pending',
         deleted_at = NULL
     WHERE media_asset_copies.state = 'pending'

@@ -16,6 +16,9 @@ var ErrStalePublishPlan = errors.New("encoded publish plan is stale")
 // ErrPendingMediaAssetCopyMissing は公開前に pending copy の live 行が無くなったことを表す。
 var ErrPendingMediaAssetCopyMissing = errors.New("pending media asset copy is no longer live")
 
+// ErrInPlacePathTombstoned は過去に削除された置き場と相対パスの組を再利用しようとしたことを表す。
+var ErrInPlacePathTombstoned = errors.New("in-place path is tombstoned")
+
 // ErrGenerationAdvanced は別の pending または公開済みコピーが観測した世代を使用済みにしたことを表す。
 var ErrGenerationAdvanced = errors.New("derived media generation advanced")
 
@@ -43,6 +46,7 @@ type IngestTempState struct {
 // IngestCheckpoint は DB に保存した ingest writer の handoff 状態を表す。
 type IngestCheckpoint struct {
 	WriterGeneration int64
+	CanonicalRelPath string
 	Resumed          bool
 	Offset           int64
 	HashState        []byte
@@ -254,6 +258,8 @@ type MediaPublish interface {
 	// AcquireIngestCheckpoint は録画の writer lease を取り、前の clean handoff を返す。
 	// live lease が別にある場合は acquired=false を返す。unclean handoff では新世代から始める。
 	AcquireIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, ttl time.Duration) (checkpoint IngestCheckpoint, acquired bool, err error)
+	// ReserveIngestRelPath は原本の canonical path を一度だけ保存し、lease が有効な間にその値を返す。
+	ReserveIngestRelPath(ctx context.Context, recordingID int64, owner uuid.UUID, relPath string) (string, error)
 	// ResetIngestCheckpoint は、handed_off のファイルと hash state が一致しないときに新 writer 世代へ進む。
 	ResetIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64) (int64, error)
 	// SaveIngestCheckpoint は同期・close 済み temp の offset と hash state を clean handoff として保存する。

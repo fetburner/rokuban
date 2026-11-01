@@ -1,5 +1,15 @@
 -- Ingest's durable byte offset and hash state have the lifetime of a writer lease,
 -- which is separate from the streamer-facing recording_ingest_progress row.
+-- name: GetIngestOriginalRelPath :one
+SELECT copy.rel_path
+FROM media_assets asset
+JOIN media_asset_copies copy ON copy.media_asset_id = asset.id
+WHERE asset.recording_id = sqlc.arg('recording_id')
+  AND asset.kind = 'original'
+  AND copy.store = sqlc.arg('store_name')
+ORDER BY (copy.state = 'active')::boolean DESC, copy.created_at DESC, copy.id DESC
+LIMIT 1;
+
 -- name: InsertRecordingIngestCheckpointIfAbsent :execrows
 INSERT INTO recording_ingest_checkpoints (
     recording_id, lease_owner, lease_expires_at, writer_generation, handed_off, offset_bytes, hash_state
@@ -11,11 +21,21 @@ VALUES (
 ON CONFLICT (recording_id) DO NOTHING;
 
 -- name: LockRecordingIngestCheckpoint :one
-SELECT writer_generation, handed_off, offset_bytes, hash_state,
+SELECT writer_generation, canonical_rel_path, handed_off, offset_bytes, hash_state,
        (lease_expires_at > now())::boolean AS lease_live
 FROM recording_ingest_checkpoints
 WHERE recording_id = sqlc.arg('recording_id')
 FOR UPDATE;
+
+-- Reserve the original canonical path once. Retries retain it even when a writer
+-- generation is reset; publication reads the returned value from this row.
+-- name: ReserveRecordingIngestRelPath :one
+UPDATE recording_ingest_checkpoints
+SET canonical_rel_path = COALESCE(canonical_rel_path, sqlc.arg('rel_path')::text)
+WHERE recording_id = sqlc.arg('recording_id')
+  AND lease_owner = sqlc.arg('owner')::uuid
+  AND lease_expires_at > now()
+RETURNING canonical_rel_path;
 
 -- name: LockLeasedRecordingIngestCheckpoint :one
 SELECT recording_id

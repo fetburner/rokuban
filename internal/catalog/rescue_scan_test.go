@@ -317,15 +317,28 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	// Reconcile can mark the asset deleted while the physical file remains. A later
-	// rescue must treat that file as the same recording even if its mtime changed.
+	// A deleted copy leaves a tombstone. The same path is refused even when its mtime changes.
 	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
 	if err := os.Chtimes(path, secondAt, secondAt); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
+	if err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
+	}
+	if result.SkippedTombstonedFiles != 1 {
+		t.Fatalf("tombstoned files skipped = %d, want 1", result.SkippedTombstonedFiles)
+	}
+
+	// Moving the file gives it a new physical identity, so rescue can register it again.
+	renamedRelPath := "sites/default/archive/renamed-show.m2ts"
+	renamedPath := filepath.Join(mediaDir, filepath.FromSlash(renamedRelPath))
+	if err := os.Rename(path, renamedPath); err != nil {
+		t.Fatalf("renaming file after tombstone: %v", err)
+	}
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
+		t.Fatalf("third RescueLatest after rename: %v", err)
 	}
 
 	var recordings, assets, liveRecordings int
@@ -341,8 +354,8 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 	`).Scan(&liveRecordings); err != nil {
 		t.Fatal(err)
 	}
-	if recordings != 1 || assets != 1 || liveRecordings != 1 {
-		t.Fatalf("rows after rescue = recordings %d, assets %d, live recordings %d; want 1/1/1",
+	if recordings != 2 || assets != 2 || liveRecordings != 2 {
+		t.Fatalf("rows after rescue = recordings %d, assets %d, live recordings %d; want 2/2/2",
 			recordings, assets, liveRecordings)
 	}
 
@@ -355,17 +368,17 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		FROM media_assets a JOIN recordings r ON r.id = a.recording_id
 		JOIN media_asset_copies c ON c.media_asset_id = a.id
 		WHERE c.rel_path = $1 AND c.state <> 'deleted'
-	`, "sites/default/archive/show.m2ts").Scan(
+	`, renamedRelPath).Scan(
 		&gotAssetID, &gotRecordingID, &state, &deletedAtIsNull, &programStartAt,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if gotAssetID != assetID || gotRecordingID != recordingID || state != "active" || !deletedAtIsNull {
-		t.Fatalf("rescued asset = id %d, recording %d, state %q, deleted_at NULL %v; want original active asset",
+	if gotAssetID == assetID || gotRecordingID == recordingID || state != "active" || !deletedAtIsNull {
+		t.Fatalf("rescued renamed asset = id %d, recording %d, state %q, deleted_at NULL %v; want a new active asset and recording",
 			gotAssetID, gotRecordingID, state, deletedAtIsNull)
 	}
-	if !programStartAt.Equal(firstAt) {
-		t.Errorf("program_start_at changed from initial mtime: got %s, want %s", programStartAt, firstAt)
+	if !programStartAt.Equal(secondAt) {
+		t.Errorf("program_start_at = %s, want renamed file mtime %s", programStartAt, secondAt)
 	}
 }
 

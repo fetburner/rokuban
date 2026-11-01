@@ -181,6 +181,9 @@ func printLibraryImportResult(out io.Writer, r epgimport.LibraryImportResult) {
 	_, _ = fmt.Fprintf(out, "  registered: %d\n", r.Registered)
 	_, _ = fmt.Fprintf(out, "  skipped:    %d\n", r.Skipped)
 	_, _ = fmt.Fprintf(out, "  conflicts:  %d (rejected by an existing media asset; see the log)\n", r.SkippedConflicts)
+	if r.SkippedTombstonedPaths > 0 {
+		_, _ = fmt.Fprintf(out, "  tombstones: %d (move or rename the file to register it again)\n", r.SkippedTombstonedPaths)
+	}
 	for _, w := range r.Warnings {
 		_, _ = fmt.Fprintf(out, "  warning: %s\n", w)
 	}

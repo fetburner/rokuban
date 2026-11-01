@@ -299,8 +299,8 @@ func TestImportLibrary_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
 	}
 }
 
-// ごみ箱の録画に属するファイルの再登録は ErrConflict で拒否される。その Recorded だけを飛ばして件数に出し、
-// 後続の Recorded は登録して処理を続ける。
+// 削除済み path の再利用は ErrConflict で拒否される。その Recorded だけを飛ばし、
+// tombstone 件数を報告しながら後続の Recorded は登録して処理を続ける。
 func TestImportLibrary_ConflictSkipsOnlyThatRecordedAndContinues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := newMarkedMediaDir(t)
@@ -323,7 +323,7 @@ func TestImportLibrary_ConflictSkipsOnlyThatRecordedAndContinues(t *testing.T) {
 	if err != nil || first.Registered != 1 {
 		t.Fatalf("first import = %+v, %v; want 1 registered", first, err)
 	}
-	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now()`); err != nil {
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now()`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,7 +334,7 @@ func TestImportLibrary_ConflictSkipsOnlyThatRecordedAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportLibrary must continue past a conflict: %v", err)
 	}
-	if res.SkippedConflicts != 1 || res.Registered != 1 {
-		t.Fatalf("result = %+v, want 1 conflict skipped and 1 registered", res)
+	if res.SkippedConflicts != 1 || res.SkippedTombstonedPaths != 1 || res.Registered != 1 {
+		t.Fatalf("result = %+v, want 1 tombstone conflict skipped and 1 registered", res)
 	}
 }

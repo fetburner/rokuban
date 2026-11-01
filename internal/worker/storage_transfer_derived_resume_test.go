@@ -233,7 +233,8 @@ func (f derivedResumeFixture) driveToEnd(t *testing.T) {
 // assertPublished は、宛先が論理資産と同じ内容で、コピーが active であることを確かめる。
 func (f derivedResumeFixture) assertPublished(t *testing.T) {
 	t.Helper()
-	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath)))
+	relPath := transferTestCopyRelPath(t, f.pool, f.assetID, "archive")
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(relPath)))
 	if err != nil || !bytes.Equal(got, f.content) {
 		t.Fatalf("destination = %d bytes, %v; want the %d source bytes", len(got), err, len(f.content))
 	}

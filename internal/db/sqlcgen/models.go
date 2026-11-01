@@ -436,6 +436,7 @@ type RecordingIngestCheckpoint struct {
 	HandedOff        bool
 	OffsetBytes      int64
 	HashState        []byte
+	CanonicalRelPath *string
 }
 
 type RecordingIngestProgress struct {

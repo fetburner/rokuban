@@ -127,8 +127,8 @@ func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
 	}
 	assertUnknownSHA256()
 
-	// Re-register a physically present file whose copy was marked deleted. This
-	// follows the rescue upsert path and must discard any prior, unverified digest.
+	// A tombstoned path cannot be reused. Move the file and re-register it; the
+	// upsert path must discard any prior, unverified digest.
 	oldSHA := make([]byte, 32)
 	for i := range oldSHA {
 		oldSHA[i] = 0x5a
@@ -139,6 +139,11 @@ func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1", first.AssetIDs[0]); err != nil {
 		t.Fatalf("marking previous physical copy deleted: %v", err)
 	}
+	renamedPath := "shows/rescue-renamed.ts"
+	if err := os.Rename(filepath.Join(mediaDir, relPath), filepath.Join(mediaDir, renamedPath)); err != nil {
+		t.Fatalf("renaming file after tombstone: %v", err)
+	}
+	input.Assets[0].RelPath = renamedPath
 	second, err := Register(ctx, publisher, mediaDir, input)
 	if err != nil {
 		t.Fatalf("rescuing deleted copy: %v", err)

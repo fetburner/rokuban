@@ -28,11 +28,9 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// TestIngestWorker_ConcurrentSameRelPathUsesTempFiles は同じ rel_path に対する 2 本の
-// ingest が、canonical file を共有せず並行して転送できることを確認する。DB の
-// unique INSERT だけが採用を決めるので、勝者のバイト列が丸ごと残り、敗者の
-// 一時ファイルは DB エラー時の規約に従って残り、orphan 回収へ渡る。
-func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
+// TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths は、同じファイル名の
+// 原本を並行 ingest しても、それぞれ別の canonical path と全バイトを保持することを確かめる。
+func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -76,16 +74,17 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	jobB := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"}
 
 	type result struct {
-		data     []byte
-		recordID string
-		err      error
+		data        []byte
+		recordID    string
+		recordingID int64
+		err         error
 	}
 	results := make(chan result, 2)
 	go func() {
-		results <- result{data: tsDataA, recordID: jobA.RecordID, err: runWorkerViaJobQFake(context.Background(), wA, jobA)}
+		results <- result{data: tsDataA, recordID: jobA.RecordID, recordingID: recordingIDA, err: runWorkerViaJobQFake(context.Background(), wA, jobA)}
 	}()
 	go func() {
-		results <- result{data: tsDataB, recordID: jobB.RecordID, err: runWorkerViaJobQFake(context.Background(), wB, jobB)}
+		results <- result{data: tsDataB, recordID: jobB.RecordID, recordingID: recordingIDB, err: runWorkerViaJobQFake(context.Background(), wB, jobB)}
 	}()
 
 	for i := 0; i < 2; i++ {
@@ -98,72 +97,43 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	}
 	close(release)
 
-	// winnerData の由来: DB でコミットが成功した側 (Work が nil を返した側) の
-	// バイト列。この 1 行が「INSERT が rename より先」という commit の核心の
-	// 不変条件を固定している --- rename + 親 fsync を CreateMediaAsset の前へ
-	// 移す変異は、canonical file の中身を「A か B のどちらか」としか見ない
-	// 旧アサーションでは検出できず、worker パッケージ全体が緑のまま通っていた
-	// (変異で確認済み)。DB の勝者と canonical file の中身が食い違えば、それは
-	// 敗者が勝者の canonical file を上書きしてから自分の INSERT で失敗した
-	// (順序が逆転した) ことを意味する。
-	var success, failure int
-	var winnerData []byte
-	var winnerRecordID, loserRecordID string
-	var loserData []byte
+	resultsByRecording := make(map[int64]result, 2)
 	for i := 0; i < 2; i++ {
 		select {
-		case result := <-results:
-			if result.err == nil {
-				success++
-				winnerData = result.data
-				winnerRecordID = result.recordID
-			} else {
-				failure++
-				loserData = result.data
-				loserRecordID = result.recordID
+		case got := <-results:
+			if got.err != nil {
+				t.Errorf("concurrent Work for %s: %v", got.recordID, got.err)
 			}
+			resultsByRecording[got.recordingID] = got
 		case <-time.After(5 * time.Second):
 			t.Fatal("concurrent ingest did not finish")
 		}
 	}
-	if success != 1 || failure != 1 {
-		t.Fatalf("concurrent Work results = success %d, failure %d; want one of each", success, failure)
+	if len(resultsByRecording) != 2 {
+		t.Fatalf("concurrent Work results = %d recording(s), want 2", len(resultsByRecording))
 	}
-	if got := deleteCalls.Load(); got != 1 {
-		t.Errorf("DeleteRecord calls = %d, want one for the DB winner", got)
-	}
-
-	fullPath := filepath.Join(mediaDir, "sites", "default", filepath.FromSlash(contentPath))
-	got, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading winning canonical file: %v", err)
-	}
-	if !bytes.Equal(got, winnerData) {
-		t.Errorf("canonical file does not match the DB winner: got %d bytes", len(got))
-	}
-	winnerTempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", winnerRecordID)
-	if _, err := os.Stat(winnerTempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("winner ingest temp still exists: stat error = %v, want not exist", err)
-	}
-	loserTempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", loserRecordID)
-	loserTemp, err := os.ReadFile(loserTempPath)
-	if err != nil {
-		t.Fatalf("reading preserved loser ingest temp: %v", err)
-	}
-	if !bytes.Equal(loserTemp, loserData) {
-		t.Errorf("preserved loser ingest temp differs from its transferred bytes")
+	if got := deleteCalls.Load(); got != 2 {
+		t.Errorf("DeleteRecord calls = %d, want one for each committed recording", got)
 	}
 
-	var liveAssets int
-	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM media_asset_copies WHERE rel_path = $1 AND state <> 'deleted'",
-		"sites/default/"+contentPath,
-	).Scan(&liveAssets); err != nil {
-		t.Fatalf("counting live assets for concurrent rel_path: %v", err)
+	paths := make(map[int64]string, 2)
+	for _, recordingID := range []int64{recordingIDA, recordingIDB} {
+		result := resultsByRecording[recordingID]
+		relPath := ingestTestCommittedRelPath(t, pool, recordingID)
+		assertIngestRelPath(t, relPath, "default", "concurrent.m2ts")
+		paths[recordingID] = relPath
+		got, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(relPath)))
+		if err != nil {
+			t.Fatalf("reading committed file for %s: %v", result.recordID, err)
+		}
+		if !bytes.Equal(got, result.data) {
+			t.Errorf("committed file for %s differs from its input bytes", result.recordID)
+		}
 	}
-	if liveAssets != 1 {
-		t.Errorf("live assets for concurrent rel_path = %d, want 1", liveAssets)
+	if paths[recordingIDA] == paths[recordingIDB] {
+		t.Fatalf("concurrent recordings share rel_path %q", paths[recordingIDA])
 	}
+	assertNoIngestTempFiles(t, mediaDir)
 }
 
 func newConcurrentIngestServer(t *testing.T, tsData []byte, contentPath string, started chan<- struct{}, release <-chan struct{}, deleteCalls *atomic.Int32) *httptest.Server {
@@ -585,7 +555,8 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 				t.Errorf("DeleteRecord calls after failed publication = %d, want 0", got)
 			}
-			fullPath := filepath.Join(mediaDir, "sites", "default", filepath.FromSlash(contentPath))
+			canonicalRelPath := ingestTestReservedRelPath(t, pool, recordingID)
+			fullPath := filepath.Join(mediaDir, filepath.FromSlash(canonicalRelPath))
 			if tt.canonicalOnError {
 				got, err := os.ReadFile(fullPath)
 				if err != nil {
@@ -597,7 +568,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			} else if _, err := os.Stat(fullPath); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("canonical file stat error = %v, want not exist", err)
 			}
-			tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
+			tempPath := ingestTestTempFilePath(t, pool, mediaDir, recordingID, "default", recordID)
 			got, err := os.ReadFile(tempPath)
 			if err != nil {
 				t.Fatalf("reading preserved ingest temp: %v", err)
