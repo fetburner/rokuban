@@ -816,6 +816,33 @@ async function runRecordingApiHlsRecoveryCheck() {
     ng.push('旧 HLS pointer を維持する writer 再起動中に master playlist を張り直した')
   }
 
+  // 同じ byte generation のまま writer が追いつき、可視 offset が伸びても再生を張り直さない。
+  const progressBeforeCatchup = await page.evaluate(() => window.__progressedSeconds)
+  const masterRequestsBeforeCatchup = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  const catchupRefresh = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return response.request().method() === 'GET' && responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 })
+  activeRecording = {
+    ...activeRecording,
+    ingest: { ...activeRecording.ingest, observedAt: new Date().toISOString(), writtenBytes: 1_500_000 },
+  }
+  await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  const caughtUp = await catchupRefresh.then((response) => response.json()).catch(() => null)
+  if (caughtUp?.ingest?.writtenBytes !== 1_500_000 ||
+    !caughtUp.hlsPlayback.some(({ masterUrl }) => masterUrl === apiHlsPath(1, 'hd'))) {
+    ng.push(`同じ byte generation の writer catch-up 後に可視 offset と旧 HLS pointer を維持しない (${JSON.stringify(caughtUp?.ingest)}, ${JSON.stringify(caughtUp?.hlsPlayback)})`)
+  }
+  const continuedAfterCatchup = await page.waitForFunction((baseline) => {
+    const video = document.querySelector('video')
+    return video && !video.paused && window.__progressedSeconds > baseline + 0.5
+  }, progressBeforeCatchup, { timeout: 5000 }).then(() => true).catch(() => false)
+  if (!continuedAfterCatchup) ng.push('同じ byte generation の writer catch-up 後に録画 HLS の再生が止まる')
+  const masterRequestsAfterCatchup = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  if (masterRequestsAfterCatchup !== masterRequestsBeforeCatchup) {
+    ng.push('同じ byte generation の writer catch-up 後に master playlist を張り直した')
+  }
+
   const sessionStartSeconds = apiHlsRecoveryV1.resumePositionMs / 1000
   // 応答を待つ（要求の時点では、止まる直前の位置を読む handler がまだ終わっていない）。
   const nextMaster = page.waitForResponse((response) => new URL(response.url()).pathname === apiHlsPath(2, 'hd'), { timeout: 30000 })
