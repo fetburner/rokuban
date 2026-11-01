@@ -197,8 +197,10 @@ WITH source_copies AS MATERIALIZED (
             r.deleted_at
         )::text AS desired_store
     ) placement
-    -- 宛先が無い行では候補判定を評価しない。宛先に依らない述語は、プランナが
-    -- media_assets のスキャンへ押し下げ、宛先の無い行にも掛かってしまう。
+    -- 宛先が NULL の行では候補判定と試行回数を評価しない。CASE が必要な部分式だけを
+    -- 評価することは PostgreSQL の 4.2.14 Expression Evaluation Rules に書かれている。
+    -- ELSE 内の AND の順序は規定されないが、どちらも宛先のある行にだけ掛かるので件数は変わらない。
+    -- 宛先に依らない述語にすると、プランナが media_assets のスキャンへ押し下げ、宛先の無い行にも掛かる（計測で確認）。
     WHERE CASE WHEN placement.desired_store IS NULL THEN FALSE
           ELSE storage_transfer_candidate(
               a.id,

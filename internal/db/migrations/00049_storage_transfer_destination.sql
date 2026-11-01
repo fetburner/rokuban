@@ -1,9 +1,12 @@
 -- +goose Up
 
--- The destination of a transfer is the FS store that the desired placement names,
--- or NULL when the recording is deleted or the placement is not an FS store.
--- The backlog prefilter and the candidate predicate both call this function, so
--- the three conditions are written once.
+-- storage_transfer_destination は転送の宛先（FS 置き場）を 1 か所で求める。
+-- 録画が削除済み、または desired 置き場が FS 外なら NULL を返す。
+-- この関数を通る判定は次の 3 つだけ: 候補の述語（storage_transfer_candidate）、
+-- 予約の obsolete 判定（storage_transfer_pending_copy_obsolete）、背圧の集計
+-- （CountMediaAssetTransferBacklogBySourceStore）。
+-- 適用の瞬間に desired_media_store を確かめ直す PrepareMediaAssetTransfer /
+-- CompleteMediaAssetTransfer はこの関数を通らない（今回の対象外）。
 CREATE FUNCTION storage_transfer_destination(
     asset_kind text,
     original_rules jsonb,
@@ -39,8 +42,9 @@ AS $$
       SELECT 1
       FROM media_assets a
       JOIN recordings r ON r.id = a.recording_id
-      -- OFFSET 0 は副問い合わせを展開させない囲い。これがないと宛先の式が参照のたびに
-      -- 展開され、規則の評価が行ごとに何度も走る（20k 行の計測で約 2 倍遅くなった）。
+      -- OFFSET 0 は最適化のヒントにすぎず、無くても結果は変わらない。
+      -- 2 万行の計測（集計の中央値）では、なしが 2,181 ms、ありが 1,044 ms。
+      -- ヒントがないと、宛先の式が本体で参照されるたびに規則の評価が走る。
       CROSS JOIN LATERAL (
           SELECT storage_transfer_destination(
               a.kind, p_original_rules, p_derived_store, p_fs_stores, r.site,
@@ -71,7 +75,85 @@ AS $$
     )
 $$;
 
+-- 予約（pending の copy）が古くなったかを判定する。宛先が NULL（削除済み・FS 外）か
+-- 予約と別の置き場なら、IS DISTINCT FROM が真になる。copy.store は NOT NULL なので、
+-- 宛先が NULL の場合も真になる。
+CREATE OR REPLACE FUNCTION storage_transfer_pending_copy_obsolete(
+    p_copy_id bigint,
+    p_original_rules jsonb,
+    p_fs_stores text[],
+    p_derived_store text
+)
+RETURNS boolean
+LANGUAGE sql STABLE
+AS $$
+    SELECT EXISTS (
+      SELECT 1
+      FROM media_asset_copies copy
+      JOIN media_assets asset ON asset.id = copy.media_asset_id
+      JOIN recordings recording ON recording.id = asset.recording_id
+      CROSS JOIN LATERAL (
+          SELECT storage_transfer_destination(
+              asset.kind, p_original_rules, p_derived_store, p_fs_stores, recording.site,
+              (recording.program_start_at + recording.program_duration_ms * interval '1 millisecond')::timestamptz,
+              recording.deleted_at
+          ) AS desired_store
+      ) placement
+      WHERE copy.id = p_copy_id
+        AND copy.state = 'pending'
+        AND (
+            copy.generation <> COALESCE(asset.derived_generation, 0)
+            OR placement.desired_store IS DISTINCT FROM copy.store
+            OR (
+                asset.kind = 'original'
+                AND EXISTS (
+                    SELECT 1 FROM until_encoded_deletable_originals(p_derived_store) u
+                    WHERE u.asset_id = asset.id
+                )
+            )
+        )
+    )
+$$;
+
 -- +goose Down
+
+CREATE OR REPLACE FUNCTION storage_transfer_pending_copy_obsolete(
+    p_copy_id bigint,
+    p_original_rules jsonb,
+    p_fs_stores text[],
+    p_derived_store text
+)
+RETURNS boolean
+LANGUAGE sql STABLE
+AS $$
+    SELECT EXISTS (
+      SELECT 1
+      FROM media_asset_copies copy
+      JOIN media_assets asset ON asset.id = copy.media_asset_id
+      JOIN recordings recording ON recording.id = asset.recording_id
+      CROSS JOIN LATERAL (
+          SELECT desired_media_store(
+              asset.kind, p_original_rules, p_derived_store, recording.site,
+              (recording.program_start_at + recording.program_duration_ms * interval '1 millisecond')::timestamptz
+          ) AS desired_store
+      ) placement
+      WHERE copy.id = p_copy_id
+        AND copy.state = 'pending'
+        AND (
+            recording.deleted_at IS NOT NULL
+            OR copy.generation <> COALESCE(asset.derived_generation, 0)
+            OR placement.desired_store IS DISTINCT FROM copy.store
+            OR NOT (placement.desired_store = ANY(p_fs_stores))
+            OR (
+                asset.kind = 'original'
+                AND EXISTS (
+                    SELECT 1 FROM until_encoded_deletable_originals(p_derived_store) u
+                    WHERE u.asset_id = asset.id
+                )
+            )
+        )
+    )
+$$;
 
 CREATE OR REPLACE FUNCTION storage_transfer_candidate(
     p_media_asset_id bigint,
