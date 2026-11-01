@@ -410,6 +410,23 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		if object.Size != int64(len(content)) || object.SHA256 != fmt.Sprintf("%x", sha256.Sum256(content)) {
 			t.Fatalf("transferred S3 metadata = (size %d, sha256 %q), want (%d, %x)", object.Size, object.SHA256, len(content), sha256.Sum256(content))
 		}
+
+		// 完了した upload の送信状態は、進捗の行が消えるときに掃除待ちへ移る。その行が実 MinIO の Abort で
+		// gone になり、掃除で消えることを確かめる。完了直後に行があることを先に見て、空虚な成功にしない。
+		abandonedOnS3 := func() int {
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_transfer_abandoned_uploads WHERE store = $1`, objectStoreName).Scan(&n); err != nil {
+				t.Fatalf("counting abandoned uploads on %s: %v", objectStoreName, err)
+			}
+			return n
+		}
+		if n := abandonedOnS3(); n < 1 {
+			t.Fatalf("abandoned uploads on %s after completion = %d, want at least 1 (the completed upload)", objectStoreName, n)
+		}
+		worker.abortAbandonedUploads(ctx, objectStoreName)
+		if n := abandonedOnS3(); n != 0 {
+			t.Fatalf("abandoned uploads on %s after cleanup = %d, want 0 (MinIO must answer NoSuchUpload for a completed upload)", objectStoreName, n)
+		}
 	})
 }
 
