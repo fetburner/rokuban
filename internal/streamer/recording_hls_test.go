@@ -14,9 +14,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 type recordingHLSTestStore struct {
@@ -174,7 +178,7 @@ func installRecordingHLSTestFFprobe(t *testing.T, hasSubtitles bool, probe recor
 	}
 	script := fmt.Sprintf(`#!/bin/sh
 case " $* " in
-  *" pipe:0 "*) echo x >> %[1]q; %[2]scat %[3]q ;;
+  *" pipe:0 "*) echo x >> %[1]q; %[2]s[ "$(wc -c)" -gt 0 ] || exit 1; cat %[3]q ;;
   *" -show_packets "*) printf '%%d\n' %[4]d ;;
   *) printf '%%s\n' '%[5]s' ;;
 esac
@@ -345,25 +349,45 @@ func TestRecordingHLSSegmentCacheSurvivesTempCommitAtSameURL(t *testing.T) {
 	}
 }
 
-// Ingest writer の切替中も、同じ HLS 世代で公開した playlist とセグメントを保つ。
-// 新 writer が旧 writer の進捗へ追いつく前に DB の temp_rel_path を切り替えても、
-// 読者には旧 path を見せ続ける必要がある。byte 世代は writer 世代では変えない。
+// Ingest writer の切替中も、公開済みの playlist とセグメントを変えない。
+// 新 writer が旧 writer の written_bytes に追いつくまで、DB の表示先は旧 temp_rel_path と
+// written_bytes のままである。ここでは本物の pgstore（UpdateIngestProgress と
+// GetRecordingHLSTarget）を通し、要求ごとに DB から表示先を引く。
 //
-// 壊し方: temp_rel_path の切替時に temp_generation も writer 世代へ変える。
-// 既に配った URL が 410 になり、同じ HLS URL から segment を取得できなくなる。
+// 壊し方: UpdateRecordingIngestProgress の CASE を無条件の上書きに替える（素朴な切替）。
+// 新 writer は 0 バイトなので、streamer は空の temp を測って失敗し、playlist が 503 になる。
+// 偽 ffprobe は空の入力で失敗する（実際の ffprobe と同じ）。
 func TestRecordingHLSTempWriterSwitchKeepsPublishedSegmentsAndPlaylist(t *testing.T) {
-	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20.04)})
-	target := h.store.target
-	target.Kind = store.RecordingHLSInputTemp
-	target.ID = 0
-	target.RelPath = "ingest/old-writer.ts"
-	target.StoreName = "main"
-	if err := os.WriteFile(filepath.Join(h.root, target.RelPath), []byte("old writer has the published prefix"), 0o600); err != nil {
+	ctx := t.Context()
+	pool := testutil.SetupDB(t)
+	recordingID := dbtest.Recording(t, pool)
+	// 録画中の temp の再生には開始時刻が要る（metadataForTarget）。
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2 WHERE id = $1`, recordingID, time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	h.store.setTarget(target)
+	media := pgstore.NewMedia(pool, "main", "derived")
+	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20.04)})
+	// URL の 42 は DB の録画 id と違うので、検索だけ本物の録画へ向ける。
+	h.store.setLookup(func(int64, int) (store.RecordingHLSInputTarget, error) {
+		return media.GetRecordingHLSTarget(ctx, recordingID)
+	})
 
-	playlistPath := recordingHLSRequestPath("main", 42, 7, "video/index.m3u8")
+	const generation = 7
+	oldContent := []byte("old writer has the published prefix")
+	if err := os.WriteFile(filepath.Join(h.root, "ingest", "old-writer.ts"), oldContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldOwner := uuid.New()
+	if _, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, oldOwner, time.Minute); err != nil || !acquired {
+		t.Fatalf("acquiring old writer lease = (acquired %v, %v)", acquired, err)
+	}
+	if err := media.UpdateIngestProgress(ctx, store.IngestProgress{
+		RecordingID: recordingID, WrittenBytes: int64(len(oldContent)), TempRelPath: "ingest/old-writer.ts", TempGeneration: generation,
+	}, oldOwner, 1, time.Minute); err != nil {
+		t.Fatalf("publishing old writer progress: %v", err)
+	}
+
+	playlistPath := recordingHLSRequestPath("main", 42, generation, "video/index.m3u8")
 	before := h.get(t, playlistPath)
 	beforeRows, beforeEndlist := playlistRows(before.Body.String())
 	if before.Code != http.StatusOK || beforeEndlist || len(beforeRows) != 5 {
@@ -372,21 +396,33 @@ func TestRecordingHLSTempWriterSwitchKeepsPublishedSegmentsAndPlaylist(t *testin
 
 	segmentKey := SegmentKey{RecordingID: "42", Generation: "7", Profile: "hd", Rendition: "video", Number: 0}
 	h.seedSegment(t, segmentKey, "previously published transport stream")
-	segmentPath := recordingHLSRequestPath("main", 42, 7, "video/0.ts")
+	segmentPath := recordingHLSRequestPath("main", 42, generation, "video/0.ts")
 	firstSegment := h.get(t, segmentPath)
 	if firstSegment.Code != http.StatusOK || firstSegment.Body.String() != "previously published transport stream" {
 		t.Fatalf("segment before writer switch = %d %q", firstSegment.Code, firstSegment.Body.String())
 	}
 
-	// 新 writer のファイルはまだ空だが、旧 writer の有効な進捗を追い越すまで
-	// DB の HLS target は旧 path を指し続ける。byte generation も同じ値を保つ。
-	if err := os.WriteFile(filepath.Join(h.root, "ingest/new-writer.ts"), nil, 0o600); err != nil {
+	// old writer の lease が切れ、新 writer が 0 バイトで始まる。旧 writer が見せた長さ
+	// より短いので、表示先は旧 path のままでなければならない。
+	if _, err := pool.Exec(ctx, `UPDATE recording_ingest_checkpoints SET lease_expires_at = now() WHERE recording_id = $1`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	target.RelPath = "ingest/new-writer.ts"
-	target.SizeBytes = 0
-	h.store.setTarget(target)
+	newOwner := uuid.New()
+	if cp, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, newOwner, time.Minute); err != nil || !acquired || cp.WriterGeneration != 2 {
+		t.Fatalf("acquiring new writer lease = (%+v, acquired %v, %v), want generation 2", cp, acquired, err)
+	}
+	if err := os.WriteFile(filepath.Join(h.root, "ingest", "new-writer.ts"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.UpdateIngestProgress(ctx, store.IngestProgress{
+		RecordingID: recordingID, WrittenBytes: 0, TempRelPath: "ingest/new-writer.ts", TempGeneration: generation,
+	}, newOwner, 2, time.Minute); err != nil {
+		t.Fatalf("publishing new writer progress: %v", err)
+	}
 
+	// 切替後の要求は metadata の cache を使わず、表示先から測り直す（cache があると、
+	// 測れなかった新 temp の代わりに古い値を返し、表示先の違いが隠れる）。
+	h.h.meta.removeRecording(42, generation)
 	after := h.get(t, playlistPath)
 	afterRows, afterEndlist := playlistRows(after.Body.String())
 	if after.Code != http.StatusOK || afterEndlist || strings.Join(afterRows, "\n") != strings.Join(beforeRows, "\n") {
