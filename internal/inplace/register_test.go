@@ -154,7 +154,7 @@ func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
 	assertUnknownSHA256()
 }
 
-func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
+func TestRegister_RejectsPathWhenTombstoneCoexistsWithLiveAsset(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mediaDir, "reused"), 0o755); err != nil {
@@ -168,10 +168,9 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
 
-	// rel_path が再利用された後を模して、同じ rel_path に live 行 (新しい recording) と
-	// deleted 行 (古い recording) を直接仕込む。deleted 行を live 行より後に挿入して
-	// 大きい id を持たせる: これで id DESC の一発検索では deleted 行が先に来てしまう
-	// ため、live 行を優先する state の並び替えが効いているかを検証できる。
+	// 過去の rel_path 再利用を模して、同じ rel_path に live 行 (新しい recording) と
+	// deleted 行 (古い recording) を直接仕込む。過去の削除 Work が同じ path を unlink
+	// しうるため、live 行があっても tombstone を優先して拒否する。
 	liveRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = -20
 		p.ServiceID = -21
@@ -183,7 +182,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		p.ProgramDurationMs = 0
 	})
 	profile := "rescue-mp4"
-	liveAssetID := dbtest.MediaAsset(t, pool, liveRecordingID, func(p *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, liveRecordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = relPath
@@ -207,7 +206,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 	dbtest.SetMediaAssetState(t, pool, deletedAssetID, "deleted")
 	dbtest.SetMediaAssetRelPath(t, pool, deletedAssetID, relPath)
 
-	got, err := Register(ctx, pgstoretest.Media(pool), mediaDir, Input{
+	_, err := Register(ctx, pgstoretest.Media(pool), mediaDir, Input{
 		Recording: Recording{
 			Source: "manual", Site: "default",
 			NetworkID: -20, ServiceID: -21, EventID: -22,
@@ -216,12 +215,8 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		},
 		Assets: []Asset{{Kind: store.AssetKindEncoded, Profile: &profile, RelPath: relPath}},
 	})
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	if got.RecordingID != liveRecordingID || got.AssetIDs[0] != liveAssetID {
-		t.Fatalf("Register must pick the live row over the deleted one: got recording=%d asset=%d, want recording=%d asset=%d",
-			got.RecordingID, got.AssetIDs[0], liveRecordingID, liveAssetID)
+	if !errors.Is(err, store.ErrConflict) || !errors.Is(err, store.ErrInPlacePathTombstoned) {
+		t.Fatalf("Register over a path with a tombstone and live row error = %v, want conflict and tombstone errors", err)
 	}
 
 	var assetCount int
@@ -229,7 +224,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if assetCount != 2 {
-		t.Fatalf("Register must not create a new row when a live asset already exists at rel_path, got %d rows", assetCount)
+		t.Fatalf("Register must not create a new row when a tombstone blocks rel_path reuse, got %d rows", assetCount)
 	}
 }
 
