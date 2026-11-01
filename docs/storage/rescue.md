@@ -241,11 +241,11 @@ catalog があるときは、照合してフルメタデータ（番組情報・
 拒否される条件は次のとおりである。規則は [schema/recordings/media-assets.md](../schema/recordings/media-assets.md) の in-place 登録にある。
 
 - 同じパスの行が `deleting` か `pending` である
-- 同じ置き場の同じ `rel_path` に `deleted` 行があり、path が tombstone になっている
+- 同じ置き場の同じ `rel_path` に生きた行が無く、tombstone（`deleted` 行）だけがある
 - 録画がごみ箱にある
 - 論理資産が既にあり、この置き場に生きたコピーがあるか、パスの世代が現行と違う
 
-ごみ箱の録画や、unlink される予定のファイル、削除済み path を、走査が黙って公開し直さないための拒否である。tombstone に当たったファイルは別の path へ移動または改名すると登録できる。飛ばしたファイルは登録されず、canonical orphan として報告され続ける。拒否件数と tombstone 件数は CLI summary に出る。
+ごみ箱の録画や、unlink される予定のファイル、削除済みのパスを、走査が黙って公開し直さないための拒否である。tombstone 以外の条件は、原因を片付けてから rescue を再実行すると登録できる。tombstone に当たったファイルは、別のパスへ移動または改名すると登録できる（元のパスには戻せない）。飛ばしたファイルは登録されず、canonical orphan として報告され続ける。拒否件数と tombstone 件数は CLI summary に出る。
 
 ### Postgres 運用
 

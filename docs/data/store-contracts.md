@@ -308,7 +308,7 @@ encoded の公開は、試行番号・desired・作り直し要求・cut の区�
 
 thumbnail と seek tiles の公開は、同じ録画のごみ箱移動・完全削除と直列化する。ごみ箱か削除済みの録画には公開しない。初回の公開は、active な行が既にあれば公開しない。thumbnail の置き換えは、観測した行（id・rel_path・seek）が変わっておらず、入力の原本が active なときだけ行う。
 
-in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査とファイルロックは、呼び出し側の `internal/inplace` が持つ。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。
+in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査とファイルロックは、呼び出し側の `internal/inplace` が持つ。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。tombstone しか無いパスは拒否する。
 
 <details><summary>根拠</summary>
 

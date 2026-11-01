@@ -263,22 +263,22 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ### rel_path の名前空間
 
-原本の保存先には、録画ごとに再利用されない相対パスを使う。
+原本の保存先には、録画ごとに再利用されない相対パスを使う。判定基準は次のとおり。
 
 - 同じ名前の再録画でも、別の path になる
-- DB の連番 ID がリセットされても、名前が再利用されないよう entropy を含む
+- 永久に一意である。DB を失って ID 列がリセットされても衝突しない。recording_id だけで作らない
 - rescue が site を読み取れるよう `sites/{site}/` を保つ
 - 派生物の `EncodedRelPath` が同じディレクトリを引き継げる
 
-ingest は `mirakc.Record.Content.Path` の basename を使い、`sites/{site}/{uuid}/{filename}` を候補にする。ユーザー設定の `contentPath` は使わない。UUID は最初の Work でチェックポイントに保存し、再試行と commit は保存済みの `rel_path` を使う。ID だけで名前を作ると、DB の再構築後に rescue が採番した録画と新しい ingest が同じ path を使う可能性がある。
+recording_id だけで名前を作ると、DB の再構築後に rescue が採番した録画と新しい ingest が同じ path を使う可能性がある。
+
+ingest は、mirakc の `Record.Content.Path` の basename だけを使い、`sites/{site}/{uuid}/{basename}` を候補にする。contentPath のディレクトリ部分は使わない。uuid は乱数（UUID v4）なので、ID 列がリセットされても衝突しない。uuid は最初の Work でチェックポイントに保存し、再試行と commit は保存済みの `rel_path` を使う。同じ basename の録画を再取得しても uuid directory が異なり、最初の Work で保存した path は失敗後も変わらない。
 
 #### 予約ディレクトリと前置の規則
 
-予約ディレクトリは用途で分け、録画関連ファイルには site を含む名前空間を使う。
+予約ディレクトリは用途で分ける。トップレベルの予約は 3 つで、どれも一般のディレクトリ名として使うと正しく動かなくなるので外せない。
 
-トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つである。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する。`thumbnails/` はサムネイルの名前空間（§5.1）で、`sites/` は rescue が site を読み取る原本の名前空間になる。
-
-`sites/` の直後に site 名を置き、その後に UUID directory と record filename を続ける。`contentPath` の directory や template は canonical path に持ち込まない。同じ basename の録画を再取得しても UUID directory が異なり、最初の Work で保存した path は失敗後も変わらない。
+トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` である。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する。`thumbnails/` はサムネイルの名前空間（§5.1）で、`sites/` は rescue が site を読み取る原本の名前空間になる。
 
 サムネイルは `thumbnails/{recording_id}.jpg` のまま（§5.1）。派生物は原本の dir を引き継ぐ（[retention.md](retention.md) §6 参照）。原本が `sites/tokyo/{uuid}/recording.m2ts` なら、派生物は同じ directory の `recording_h264.mp4` になる。
 
@@ -307,7 +307,7 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 トップレベルディレクトリ名の予約と site 名の禁止は、根拠が異なる。
 
 1. トップレベルディレクトリ名の予約は `catalog` / `thumbnails` / `sites` の 3 つである。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが読み飛ばす対象、`thumbnails/` はサムネイルの名前空間、`sites/` は本節の原本の名前空間である。いずれも一般のディレクトリ名として使うと正しく動かなくなるため、この予約は外せない。
-2. site 名としての `catalog` / `thumbnails` も設定で禁止する。現在の `sites/{site}/...` ではトップレベル名と衝突しないが、site 名の制約を緩める運用要求がなく、変更コストに見合わない。
+2. site 名としての `catalog` / `thumbnails` は禁止する。導入時は `{site}/` を先頭成分にしており、この 2 つはトップレベル予約ディレクトリと直接衝突していた。`sites/` を挟んだ今は、site 名が `sites/{site}/...` に閉じるため、トップレベルの `catalog/` / `thumbnails/` と構造的に衝突しない。
 
 この禁止を残すのはパス衝突を防ぐためではない。`catalog` / `thumbnails` を site 名にしたい運用要求がなく、禁止を緩める自由度がバリデーションとテストの変更コストに見合わないためである。`sites` 自体を site 名にしても `sites/sites/...` となるだけで衝突しない。
 
