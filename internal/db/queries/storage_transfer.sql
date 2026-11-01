@@ -465,18 +465,6 @@ SET lease_owner = sqlc.arg('owner')::uuid,
     hash_state = sqlc.narg('hash_state')::bytea
 WHERE p.copy_id = sqlc.arg('copy_id');
 
--- The reset is only valid for the lease holder, so a zombie that lost its lease cannot bump the generation.
--- name: ResetMediaAssetTransferProgress :one
-UPDATE media_asset_copy_transfer_progress p
-SET generation = p.generation + 1,
-    offset_bytes = 0,
-    hash_state = NULL,
-    handed_off = false
-WHERE p.copy_id = sqlc.arg('copy_id')
-  AND p.lease_owner = sqlc.arg('owner')::uuid
-  AND p.lease_expires_at > now()
-RETURNING p.generation;
-
 -- name: SaveMediaAssetTransferProgress :execrows
 UPDATE media_asset_copy_transfer_progress p
 SET handed_off = true,

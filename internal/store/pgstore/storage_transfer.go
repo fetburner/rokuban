@@ -615,20 +615,6 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 	return progress, true, nil
 }
 
-// ResetMediaAssetTransferProgress は lease を持つ試行の進捗を、世代を上げて先頭からに戻す。
-func (s *Media) ResetMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID) (int64, error) {
-	generation, err := sqlcgen.New(s.pool).ResetMediaAssetTransferProgress(ctx, sqlcgen.ResetMediaAssetTransferProgressParams{
-		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true},
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, store.ErrTransferLeaseLost
-	}
-	if err != nil {
-		return 0, fmt.Errorf("resetting transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
-	}
-	return generation, nil
-}
-
 // SaveMediaAssetTransferProgress は slice の終わりの状態を保存し、lease を切る。
 func (s *Media) SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState []byte) error {
 	n, err := sqlcgen.New(s.pool).SaveMediaAssetTransferProgress(ctx, sqlcgen.SaveMediaAssetTransferProgressParams{

@@ -1143,31 +1143,6 @@ func (q *Queries) ReleaseMediaAssetTransferProgress(ctx context.Context, arg Rel
 	return err
 }
 
-const resetMediaAssetTransferProgress = `-- name: ResetMediaAssetTransferProgress :one
-UPDATE media_asset_copy_transfer_progress p
-SET generation = p.generation + 1,
-    offset_bytes = 0,
-    hash_state = NULL,
-    handed_off = false
-WHERE p.copy_id = $1
-  AND p.lease_owner = $2::uuid
-  AND p.lease_expires_at > now()
-RETURNING p.generation
-`
-
-type ResetMediaAssetTransferProgressParams struct {
-	CopyID int64
-	Owner  pgtype.UUID
-}
-
-// The reset is only valid for the lease holder, so a zombie that lost its lease cannot bump the generation.
-func (q *Queries) ResetMediaAssetTransferProgress(ctx context.Context, arg ResetMediaAssetTransferProgressParams) (int64, error) {
-	row := q.db.QueryRow(ctx, resetMediaAssetTransferProgress, arg.CopyID, arg.Owner)
-	var generation int64
-	err := row.Scan(&generation)
-	return generation, err
-}
-
 const saveMediaAssetTransferProgress = `-- name: SaveMediaAssetTransferProgress :execrows
 UPDATE media_asset_copy_transfer_progress p
 SET handed_off = true,

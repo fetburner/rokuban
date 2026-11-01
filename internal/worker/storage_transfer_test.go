@@ -843,6 +843,10 @@ WHERE a.copy_id = $1`, transferTestCopyID(t, pool, assetID, "archive")).Scan(&at
 			if attempts != 1 || !strings.Contains(lastError, "saved offset is") {
 				t.Fatalf("recorded attempt = (%d, %q), want one failure naming the saved offset", attempts, lastError)
 			}
+			// 失敗した試行は世代を上げないので、次の試行の Acquire が世代を 1 つだけ上げ、不整合だった世代の temp をその試行が消す。
+			if !tc.remove && !fileExists(tempPath) {
+				t.Fatal("inconsistent temp was removed by the failed attempt; the next attempt should remove it")
+			}
 			if err := worker.Work(context.Background(), args); err != nil {
 				t.Fatalf("second Work after the failure: %v", err)
 			}
@@ -850,7 +854,52 @@ WHERE a.copy_id = $1`, transferTestCopyID(t, pool, assetID, "archive")).Scan(&at
 			if err != nil || !bytes.Equal(got, content) {
 				t.Fatalf("destination after the restart = %q, %v; want %q", got, err, content)
 			}
+			if fileExists(tempPath) {
+				t.Fatalf("inconsistent generation temp %q remains after the next attempt", tempPath)
+			}
 		})
+	}
+}
+
+// TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice は、slice が止まったときに自分の lease が切れていて
+// 進捗を保存できなかった場合、Work を成功で終えずに snooze することを確かめる。
+func TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	content := bytes.Repeat([]byte("slice-bytes-"), 65536)
+	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := storageTransferSlice
+	storageTransferSlice = 300 * time.Millisecond
+	t.Cleanup(func() { storageTransferSlice = restore })
+	media := pgstore.NewMedia(pool, "test-store", "")
+	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+	// slice の最中に lease を切る。取った直後（handed_off が偽で期限が先）の行だけを対象にする。
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			_, _ = pool.Exec(context.Background(), `
+UPDATE media_asset_copy_transfer_progress SET lease_expires_at = now() - interval '1 second'
+WHERE handed_off = false AND lease_expires_at > now()`)
+		}
+	}()
+	err = worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint})
+	close(stop)
+	<-done
+	if delay, ok := jobq.SnoozeDelay(err); !ok || delay != storageTransferLockSnooze {
+		t.Fatalf("Work with an expired own lease = %v, want a snooze of %s", err, storageTransferLockSnooze)
 	}
 }
 

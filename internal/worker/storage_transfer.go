@@ -264,12 +264,8 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	if sourceSize >= 0 && sourceSize != transfer.SizeBytes {
 		return w.handleTransferMismatch(ctx, transfer, log, src, "", fmt.Sprintf("source size %d differs from logical asset size %d", sourceSize, transfer.SizeBytes))
 	}
-	slice, mismatch, err := w.openTransferSlice(ctx, transfer, owner, progress, targetPath)
+	slice, mismatch, err := w.openTransferSlice(transfer, progress, targetPath)
 	if err != nil {
-		if errors.Is(err, store.ErrTransferLeaseLost) {
-			log.Info("storage transfer: progress lease lost before writing; another attempt owns the transfer")
-			return nil
-		}
 		return w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if mismatch != "" {
@@ -290,8 +286,12 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("copying transfer source: %w", copyErr))
 		}
 		// slice の期限か親 ctx の終わりで止まった。保存できていれば次の Work に譲る。
-		if saveErr != nil || !saved {
+		if saveErr != nil {
 			return saveErr
+		}
+		if !saved {
+			// 自分の lease が切れていた。別の試行が持っていれば、次の Work は取れずに snooze するだけなので害はない。
+			return jobq.Snooze(storageTransferLockSnooze)
 		}
 		return jobq.Snooze(0)
 	}
@@ -332,9 +332,9 @@ type transferSlice struct {
 
 // openTransferSlice は、進捗が指す世代の temp を開き、書き始める位置と SHA-256 の状態を用意する。
 // きれいな引き継ぎで temp の長さと状態が保存と一致すれば、同じ世代の続きから書く。
-// 一致しないときは、世代を上げて今の試行を止め、理由を mismatch に返す。呼び出し側がそれを試行の失敗として数える。
+// 一致しないときは、世代を上げずに理由を mismatch に返す。呼び出し側がそれを試行の失敗として数え、次の試行の Acquire が世代を上げる。
 // 前の試行が保存していない（lease が切れただけの）ときは、ここでは何も数えず、世代を上げて先頭から書く。
-func (w *StorageTransferWorker) openTransferSlice(ctx context.Context, transfer store.MediaAssetTransfer, owner uuid.UUID, progress store.TransferProgress, targetPath string) (slice transferSlice, mismatch string, err error) {
+func (w *StorageTransferWorker) openTransferSlice(transfer store.MediaAssetTransfer, progress store.TransferProgress, targetPath string) (slice transferSlice, mismatch string, err error) {
 	if progress.Resumed {
 		path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
 		resumed, reason, err := resumeTransferTemp(path, progress)
@@ -346,10 +346,7 @@ func (w *StorageTransferWorker) openTransferSlice(ctx context.Context, transfer 
 			return resumed, "", nil
 		}
 		// きれいな引き継ぎなのに続けられないのは、「fsync してから保存する」順序が破れたことを示す。
-		// 世代だけ上げておき、この試行は失敗として止める。次の試行は新しい世代から取り直す。
-		if _, err := w.Storage.ResetMediaAssetTransferProgress(ctx, transfer.CopyID, owner); err != nil {
-			return transferSlice{}, "", fmt.Errorf("starting a new transfer generation: %w", err)
-		}
+		// この試行は失敗として止める。失敗で抜けると lease が切れるので、次の試行の Acquire が世代を上げて先頭から取り直す。
 		return transferSlice{}, reason, nil
 	}
 	// 前の試行が保存せずに抜けた（lease が切れた）ときは、Acquire が世代を上げている。ここでは数えない。

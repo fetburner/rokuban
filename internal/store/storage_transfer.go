@@ -122,9 +122,6 @@ type StorageTransfer interface {
 	// 他の試行が lease を持っている（handed_off でなく、期限が DB の now() より後）ときは acquired=false を返す。
 	// 前の slice が保存していれば（handed_off）世代と状態を引き継ぎ、そうでなければ世代を上げて先頭から取り直す。
 	AcquireMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, ttl time.Duration) (progress TransferProgress, acquired bool, err error)
-	// ResetMediaAssetTransferProgress は lease を持つ owner の進捗を、世代を上げて先頭からに戻し、新しい世代を返す。
-	// lease を失っていれば ErrTransferLeaseLost を返す。
-	ResetMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID) (generation int64, err error)
 	// SaveMediaAssetTransferProgress は slice の終わりに、書き終えた offset と SHA-256 の状態を保存し、lease を切る。
 	// lease が無い（別の試行が取った、期限が切れた）か、世代が違えば ErrTransferLeaseLost を返す。
 	SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState []byte) error

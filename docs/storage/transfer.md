@@ -10,21 +10,23 @@
 
 転送は転送元ごとに 1 本だけ走らせる。1 回の Work は一定時間（slice）だけ続け、時間が来たら進捗を保存して snooze する。次の Work が保存された位置から続ける。
 
-転送は転送元ごとの advisory lock を、pool から借りた接続のまま保持する。pool の外に接続を張ると、`db.max_conns` がプロセスの接続上限だという契約を破るためである。この接続の数は pool の予算に数える（[データベース](../operations/database.md)）。転送元と宛先の rel_path lock は、置き場名と相対パスの順で取る。転送元の root の目印を照合してから読み、lock を取れない job は snooze する。どちらの lock も Work ごとに取り直す。
+転送は転送元ごとの advisory lock を、pool から借りた接続のまま保持する。pool の外に接続を張ると、`db.max_conns` がプロセスの接続上限だという契約を破るためである。この接続の数は pool の予算に数える（[データベース](../operations/database.md)）。
 
-進捗（lease、世代、保存した長さと SHA-256 の状態）は、pending のコピーの衛星表に持つ。lease の期限は DB の `now()` と比べ、プロセスの時計は比べない。
+転送元と宛先の rel_path lock は、置き場名と相対パスの順で取る。転送元の root の目印を照合してから読み、lock を取れない job は snooze する。どちらの lock も Work ごとに取り直す。
 
-temp は宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}-{copy_id}-g{generation}` の名前で作る。世代は試行ごとに上がるので、2 つの試行が同じ temp に書くことはない。転送は flock を使わない。
+進捗（lease、世代、保存した長さと SHA-256 の状態）は、pending のコピーの衛星表に持つ。lease の期限は DB の `now()` と比べ、プロセスの時計は使わない。
 
-前の試行が保存していて、その保存が引き継がれるとき（きれいな引き継ぎ）だけ、同じ世代の temp の続きから書く。転送元は保存された長さから開く。temp の長さか SHA-256 の状態が保存と合わないときは、この試行を失敗として数え、世代を上げて止める。次の試行は新しい世代で先頭から取り直す。
+temp は宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}-{copy_id}-g{generation}` の名前で作る。世代はきれいな引き継ぎ以外では上がる。同じ temp を続けるのは、前の試行が保存して lease を手放した後だけなので、2 つの試行が同時に同じ temp に書くことはない。転送は flock を使わない。
+
+前の試行が進捗を保存して lease を手放したとき（きれいな引き継ぎ）だけ、同じ世代の temp の続きから書く。転送元は保存された長さから開く。temp の長さか SHA-256 の状態が保存と合わないときは、この試行を失敗として数えて止める。次の試行は世代を上げて先頭から取り直す。
 
 前の試行が保存せずに抜けて lease が切れただけのときは、世代を上げて先頭から取り直す。これは中断であり、失敗としては数えない。
 
 転送元の接続が切れるなど、コピーの途中で失敗した試行も、書いた分を保存してから失敗を記録する。次の試行は切れた位置から続ける。先頭から取り直すと、切れやすい経路では大きな原本の転送が終わらない。
 
-論理資産の SHA-256 が既知なら、きれいな引き継ぎでも転送元の先頭は読み直さない。未知の古い行では、slice の合間に転送元が変わっても検出しない。
+論理資産の SHA-256 が既知かどうかにかかわらず、転送元の先頭は読み直さない。未知の古い行では、slice の合間に転送元が変わっても検出せず、転送したバイト列の SHA-256 がそのまま記録される。
 
-slice の合間に temp を読み直してハッシュを取り直さない。offset までのバイトが残っていることは、「fsync してから DB に保存する」順序で確保し、再開時は長さだけを確かめる。きれいな引き継ぎなのに長さや状態が合わないのは、この順序が破れたことを示すので、試行の失敗として数える。完了時の SHA-256 の照合は、転送経路と再開手順の誤りを、黙ったコピーではなく試行の失敗として表に出すためのものである。
+slice の合間に temp を読み直してハッシュを取り直さない。保存した長さまでのバイトが残っていることは、「fsync してから DB に保存する」順序で保証し、再開時は長さだけを確かめる。きれいな引き継ぎなのに長さや状態が合わないのは、この順序が破れたことを示すので、試行の失敗として数える。完了時の SHA-256 の照合は、転送経路と再開手順の誤りを、気づかれないまま壊れたコピーとして残すのではなく試行の失敗として表に出すためのものである。
 
 未解決: 宛先の中身が、書き込みの後、転送元が prune されるまでの間に壊れても検出しない（コピーの active 化は中身を読み直さない）。
 
@@ -82,10 +84,11 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 自分の temp の片付け、他の書き手の宛先を採用するときの temp の保持、完了時の進捗の行の消去: `TestStorageTransferWorkerCopiesAndAdopts`
 - 保存された状態から、同じ世代の続きを転送元の残りだけから読む: `TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix`
 - 保存せずに抜けた試行は、世代を上げて先頭から取り直し、失敗として数えない: `TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed`
-- 長さや状態が合わない引き継ぎは、失敗として 1 回数えてから、次の試行が取り直す: `TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers`
+- 長さや状態が合わない引き継ぎは失敗として 1 回数え、次の試行が世代を上げて取り直して、その世代の temp を消す: `TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers`
 - 転送元の接続が切れて失敗した試行の次は、切れた位置から Range で続ける: `TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect`
 - コピーを pending でなくす transaction と並行に進捗を取っても、行を作らない: `TestTransferProgressAcquireWaitsForConcurrentCopyRetirement`
 - slice の時間で止まって保存し snooze し、繰り返すと完了する: `TestStorageTransferWorkerSliceStopsAndResumesToCompletion`
+- slice が止まったとき自分の lease が切れていて保存できなければ、成功で終えず snooze する: `TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice`
 - lease を別の試行に取られた試行の保存を拒む: `TestTransferProgressZombieSaveIsRejected`
 - lease が切れた後の、持ち主自身の保存を拒む: `TestTransferProgressSaveAfterOwnLeaseExpiryIsRejected`
 - 進捗の行は、コピーが pending でなくなるときに消える: `TestTransferProgressRowIsDeletedWithPendingCopy`

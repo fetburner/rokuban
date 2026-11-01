@@ -121,9 +121,6 @@ func TestTransferProgressZombieSaveIsRejected(t *testing.T) {
 	if err := media.SaveMediaAssetTransferProgress(ctx, copyID, zombie, 1, 7, []byte("zombie")); !errors.Is(err, store.ErrTransferLeaseLost) {
 		t.Fatalf("zombie Save = %v, want ErrTransferLeaseLost", err)
 	}
-	if _, err := media.ResetMediaAssetTransferProgress(ctx, copyID, zombie); !errors.Is(err, store.ErrTransferLeaseLost) {
-		t.Fatalf("zombie Reset = %v, want ErrTransferLeaseLost", err)
-	}
 }
 
 func TestTransferProgressRowIsDeletedWithPendingCopy(t *testing.T) {
