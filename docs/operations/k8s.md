@@ -135,6 +135,7 @@ Secret のプレースホルダを `resources` に入れると、参照実装を
 ScaledJob はキュー単位に作り、切る軸は寿命と site 束縛の 2 つにする。ロール単位では作らない。
 
 - 長時間ジョブと短いジョブを混ぜない（`encode` は完了まで実行し、`ingest` は有限の Work slice ごとに snooze して再開する。`ruler` / `reconciler` は短時間で終わる）。`terminationGracePeriodSeconds` が桁で違うので、混ぜると短い側に合わせて長いジョブが殺されるか、長い側に合わせて全体のスケールインが遅くなる
+- 転送（`transfer`）は、`ingest` と同じく slice ごとに保存して snooze する。そのため `storage` と同じ短命のレーン（`--soft-stop-timeout` 5 秒、終了猶予 30 秒）に置く。
 - site 束縛キューと site 非依存キューを混ぜない。混ぜると中央のジョブがサイト側で起きる。
 - 複製される ScaledJob は、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）がサイト数ぶん。置き場で修飾するキューは置き場の数ぶんである。
 - スケーラが引くキュー名が site 修飾されていることを確かめる。共有キューを見ていると、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま終わってまた起きる

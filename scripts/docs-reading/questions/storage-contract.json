@@ -27,15 +27,6 @@
       ]
     },
     {
-      "heading": "派生物の公開（encode）は既存の canonical を上書きする",
-      "question": "エンコード出力が既にある行のパスへ公開されるとき、同じ録画の試行が並走しても問題が起きないようにどうしているか。",
-      "points": [
-        "canonical と同じディレクトリの staging file へ書き、rename で公開する。canonical を直接開いて切り詰めない",
-        "公開は lock の中で、判定、rename、親ディレクトリの fsync、DB 登録、commit の順に行う",
-        "古い試行や計画が古くなった試行は、試行回数の照合と行の再確認で公開できない"
-      ]
-    },
-    {
       "heading": "thumbnail / seek tiles の公開",
       "question": "サムネイルとシークタイルは、どう公開されるか。同じ録画のジョブが重なったらどうなるか。",
       "points": [
