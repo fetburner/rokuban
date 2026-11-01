@@ -75,8 +75,7 @@ SELECT EXISTS (
     SELECT 1 FROM media_asset_copies copy
     WHERE copy.media_asset_id = $1
       AND copy.store = $2
-      AND copy.rel_path = $3
-      AND copy.generation = $4
+      AND copy.generation = $3
       AND copy.state = 'deleted'
 )
 `
@@ -84,18 +83,37 @@ SELECT EXISTS (
 type CatalogHasDeletedMediaAssetCopyParams struct {
 	MediaAssetID int64
 	Store        string
-	RelPath      string
 	Generation   int64
 }
 
-// Repeated rescue of an already missing copy must not add duplicate tombstones.
+// Match a tombstone by copy identity, not rel_path: a uniqueness migration can move
+// duplicate tombstones to reserved paths while old catalogs still carry the old path.
 func (q *Queries) CatalogHasDeletedMediaAssetCopy(ctx context.Context, arg CatalogHasDeletedMediaAssetCopyParams) (bool, error) {
-	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopy,
-		arg.MediaAssetID,
-		arg.Store,
-		arg.RelPath,
-		arg.Generation,
-	)
+	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopy, arg.MediaAssetID, arg.Store, arg.Generation)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const catalogHasDeletedMediaAssetCopyAtPhysicalPath = `-- name: CatalogHasDeletedMediaAssetCopyAtPhysicalPath :one
+SELECT EXISTS (
+    SELECT 1 FROM media_asset_copies copy
+    WHERE copy.store = $1
+      AND copy.rel_path = $2
+      AND copy.state = 'deleted'
+)
+`
+
+type CatalogHasDeletedMediaAssetCopyAtPhysicalPathParams struct {
+	Store   string
+	RelPath string
+}
+
+// An active catalog row must not replace a tombstone that still owns its physical path.
+// This lookup is separate from the identity lookup because an older tombstone may have
+// been moved to a reserved path while the original path remains owned by another row.
+func (q *Queries) CatalogHasDeletedMediaAssetCopyAtPhysicalPath(ctx context.Context, arg CatalogHasDeletedMediaAssetCopyAtPhysicalPathParams) (bool, error) {
+	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopyAtPhysicalPath, arg.Store, arg.RelPath)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -220,7 +238,7 @@ func (q *Queries) InsertMediaAssetForPendingCopy(ctx context.Context, arg Insert
 const insertPendingMediaAssetCopy = `-- name: InsertPendingMediaAssetCopy :execrows
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
 VALUES ($1, $2, $3, $4, 'pending')
-ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING
+ON CONFLICT (store, rel_path) DO NOTHING
 `
 
 type InsertPendingMediaAssetCopyParams struct {
@@ -382,8 +400,8 @@ type LockMediaAssetCopyByPhysicalPathRow struct {
 }
 
 // Catalog restore identifies copies by physical path because catalog rows do
-// not expose database copy IDs. Lock the current path owner before transitioning a
-// copy verified missing; historical tombstones can coexist with a reused live path.
+// not expose database copy IDs. Lock the live path owner before transitioning a
+// copy verified missing. Tombstones reserve their path and are checked separately.
 func (q *Queries) LockMediaAssetCopyByPhysicalPath(ctx context.Context, arg LockMediaAssetCopyByPhysicalPathParams) (LockMediaAssetCopyByPhysicalPathRow, error) {
 	row := q.db.QueryRow(ctx, lockMediaAssetCopyByPhysicalPath, arg.Store, arg.RelPath)
 	var i LockMediaAssetCopyByPhysicalPathRow
@@ -484,9 +502,11 @@ VALUES (
     $1, $2, $3, $4,
     $5, COALESCE($6::timestamptz, now()), $7
 )
-ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO UPDATE SET
+ON CONFLICT (store, rel_path) DO UPDATE SET
     created_at = COALESCE($6::timestamptz, media_asset_copies.created_at)
-WHERE media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
+WHERE EXCLUDED.state <> 'deleted'
+  AND media_asset_copies.state <> 'deleted'
+  AND media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
   AND media_asset_copies.generation = EXCLUDED.generation
 `
 
@@ -504,6 +524,8 @@ type UpsertMediaAssetCopyParams struct {
 // can evolve without moving the logical asset's satellite rows.
 // 競合したときは state / deleted_at を書かない。生きた行の state を決めるのは削除エンジンの
 // 遷移だけで、再登録や再公開が deleting を active に戻すと unlink 予定のファイルを公開してしまう。
+// 墓石も (store, rel_path) を予約する。新しいコピーは削除済みのパスを再利用できない
+// （TestMediaAssetCopiesRejectNewRowAtTombstonedPath）。
 func (q *Queries) UpsertMediaAssetCopy(ctx context.Context, arg UpsertMediaAssetCopyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, upsertMediaAssetCopy,
 		arg.MediaAssetID,

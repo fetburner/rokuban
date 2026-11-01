@@ -154,7 +154,7 @@ func TestRegister_RescueLeavesSHA256Unknown(t *testing.T) {
 	assertUnknownSHA256()
 }
 
-func TestRegister_PrefersLiveAssetWhenTombstoneCoexists(t *testing.T) {
+func TestRegister_ReusesLiveAssetAtPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mediaDir, "reused"), 0o755); err != nil {
@@ -168,10 +168,6 @@ func TestRegister_PrefersLiveAssetWhenTombstoneCoexists(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
 
-	// 過去の rel_path 再利用を模して、同じ rel_path に live 行 (新しい recording) と
-	// deleted 行 (古い recording) を直接仕込む。deleted 行を live 行より後に挿入して
-	// 大きい id を持たせ、id DESC だけの検索では tombstone が先に選ばれる配置にする。
-	// 正常に登録済みのファイルの再登録は live 行への冪等な再登録なので、拒否しない。
 	liveRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = -20
 		p.ServiceID = -21
@@ -190,23 +186,6 @@ func TestRegister_PrefersLiveAssetWhenTombstoneCoexists(t *testing.T) {
 		p.SizeBytes = 5
 	})
 
-	deletedRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.NetworkID = -10
-		p.ServiceID = -11
-		p.EventID = -12
-		p.ServiceName = "old"
-		p.Channel = "unknown"
-		p.Title = "old"
-		p.ProgramStartAt = at
-		p.ProgramDurationMs = 0
-	})
-	deletedAssetID := dbtest.MediaAsset(t, pool, deletedRecordingID, func(p *dbtest.MediaAssetParams) {
-		p.RelPath = "reused/old-show.ts"
-		p.SizeBytes = 5
-	})
-	dbtest.SetMediaAssetState(t, pool, deletedAssetID, "deleted")
-	dbtest.SetMediaAssetRelPath(t, pool, deletedAssetID, relPath)
-
 	got, err := Register(ctx, pgstoretest.Media(pool), mediaDir, Input{
 		Recording: Recording{
 			Source: "manual", Site: "default",
@@ -217,10 +196,10 @@ func TestRegister_PrefersLiveAssetWhenTombstoneCoexists(t *testing.T) {
 		Assets: []Asset{{Kind: store.AssetKindEncoded, Profile: &profile, RelPath: relPath}},
 	})
 	if err != nil {
-		t.Fatalf("Register over a path with a tombstone and live row: %v", err)
+		t.Fatalf("Register over an existing live path: %v", err)
 	}
 	if got.RecordingID != liveRecordingID || got.AssetIDs[0] != liveAssetID {
-		t.Fatalf("Register must pick the live row over the tombstone: got recording=%d asset=%d, want recording=%d asset=%d",
+		t.Fatalf("Register must reuse the live path owner: got recording=%d asset=%d, want recording=%d asset=%d",
 			got.RecordingID, got.AssetIDs[0], liveRecordingID, liveAssetID)
 	}
 
@@ -228,7 +207,7 @@ func TestRegister_PrefersLiveAssetWhenTombstoneCoexists(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE rel_path = $1`, relPath).Scan(&assetCount); err != nil {
 		t.Fatal(err)
 	}
-	if assetCount != 2 {
+	if assetCount != 1 {
 		t.Fatalf("Register must not create a new row when a live asset already exists at rel_path, got %d rows", assetCount)
 	}
 }

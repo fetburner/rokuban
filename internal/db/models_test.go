@@ -334,16 +334,20 @@ INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, sta
 VALUES ($1, $2, 'same/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName)
 	assertPgError(t, err, "23505")
 
-	// deleted にすればパス再利用可
+	// deleted 行も path を予約する。新しい copy は別 path なら作成できる。
 	_, err = pool.Exec(ctx,
 		`UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, firstAssetID)
 	if err != nil {
 		t.Fatalf("update to deleted: %v", err)
 	}
+	_, err = pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, 'same/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName)
+	assertPgError(t, err, "23505")
 	if _, err := pool.Exec(ctx, `
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-VALUES ($1, $2, 'same/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName); err != nil {
-		t.Fatalf("reusing path after deleting its former copy: %v", err)
+VALUES ($1, $2, 'other/path.m2ts', 0, 'active')`, secondAssetID, dbtest.StoreName); err != nil {
+		t.Fatalf("creating copy at a different path after deletion: %v", err)
 	}
 }
 

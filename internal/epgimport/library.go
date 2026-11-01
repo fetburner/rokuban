@@ -86,7 +86,7 @@ type LibraryImportResult struct {
 // mediaDir 配下に既にマウントされている前提の相対パスを検証して登録する。
 //
 // 冪等性は inplace.Register が持つ 2 つの一意制約に乗る:
-//   - media_asset_copies (store, rel_path)（state <> 'deleted' の部分一意）
+//   - media_asset_copies (store, rel_path)（tombstone を含む全体一意）
 //   - recordings (site, network_id, service_id, event_id, program_start_at)
 //     （deleted_at/superseded_at が NULL の部分一意）
 //

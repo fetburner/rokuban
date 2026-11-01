@@ -190,16 +190,38 @@ storage:
   derived: main
 ```
 
-compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。移行の操作は次のとおりである。
+compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。
+
+#### 構成ごとの移行手順
+
+以下の順で移行する。
 
 - compose: 手順 1 は `docker compose stop rokuban` である。手順 2 と 3 は `docker compose up -d migrate adopt-media` で、手順 4 は `docker compose up -d rokuban` である。
-- k8s の手順 1: `kubectl delete scaledjob -l app.kubernetes.io/component=worker` で旧 worker の ScaledJob を消す。`kubectl get jobs,pods -l app.kubernetes.io/component=worker` が空になるまで待つ。
+- k8s の手順 1: worker ScaledJob を pause し、CronJob を suspend し、watcher を 0 replica にする。実行中の Job は残るため、一覧が空になるのではなく、`ACTIVE` が全て 0 になるまで待つ。
+
+  ```sh
+  kubectl annotate scaledjob -l app.kubernetes.io/component=worker autoscaling.keda.sh/paused=true --overwrite
+  kubectl patch cronjob -l app.kubernetes.io/name=rokuban --type=merge -p '{"spec":{"suspend":true}}'
+  kubectl scale deployment -l app.kubernetes.io/name=rokuban,app.kubernetes.io/component=watcher --replicas=0
+  kubectl get jobs -l app.kubernetes.io/name=rokuban -o custom-columns=NAME:.metadata.name,ACTIVE:.status.active
+  ```
+
+  KEDA pause と CronJob suspend は実行中の Job を止めない。すべての active Job が完了するまで待ってから migration を始める。手順開始前に ScaledJob / CronJob の pause / suspend 状態と watcher の replica 数を控える。下の一括再開コマンドは標準構成の全対象が稼働中だった場合に使う。単一プロセス構成では、migration 前にそのプロセスを正常停止する。
 - k8s の手順 2 と 3: 標準の `rokuban-migrate` Job がやる。`migrate up` を initContainer、`storage adopt main` を本体のコンテナにして続けて走らせるので、`storage adopt main` は手で打たない。
 - k8s の手順 2 の操作: `kubectl delete job rokuban-migrate --ignore-not-found` で前回の Job を消す。次の 2 つを順に apply し、`kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s` で完了を待つ。
   - `kustomize build base | kubectl apply -f - -l '!app.kubernetes.io/component'` で設定の ConfigMap を作る
   - `kustomize build base | kubectl apply -f - -l app.kubernetes.io/component=migrate` で migrate の Job を作る
 - k8s の手順 2 で絞る理由: base には worker の ScaledJob も入っており、絞らずに apply すると完了前に worker が起きる。ConfigMap は名前に設定のハッシュが付き、component のラベルを持たない。Job だけを apply すると、新しい設定の ConfigMap が無く Job が起動しない。
-- k8s の手順 4: `kustomize build base | kubectl apply -f -` と `kustomize build site | kubectl apply -f -` で、worker と api を起こす。[deploy/k8s/README.md](../../deploy/k8s/README.md) の使い方と同じ順序である。
+- k8s の手順 4: 新版の worker と api を適用し、watcher を戻す。最後に ScaledJob の pause を外す。残った River 行は新しい Job が処理する。
+
+  ```sh
+  kustomize build base | kubectl apply -f -
+  kustomize build site | kubectl apply -f -
+  kubectl patch cronjob -l app.kubernetes.io/name=rokuban --type=merge -p '{"spec":{"suspend":false}}'
+  kubectl annotate scaledjob -l app.kubernetes.io/component=worker autoscaling.keda.sh/paused-
+  ```
+
+  作業前から pause / suspend 済みの資源がある場合は一括再開せず、控えた状態に個別で戻す。pause 中の River 行は削除しない。kind v1.36.1 / KEDA v2.20.2 では、pause 解除後に Job が作られ、queue が空になることを確認した（[ストレージ契約](../storage/contract.md)）。[deploy/k8s/README.md](../../deploy/k8s/README.md) の使い方と同じ apply 順である。
 
 移行後に旧 worker を動かすと、旧版の `ON CONFLICT (media_asset_id, store)` は削除済みの一意制約を推論できず、コピーを伴う公開・取り込みの commit が失敗する。`storage adopt` は既存コピーのパスや状態を同期しないので、旧 worker を止めてから adopt を再実行しても、commit に失敗したファイルは登録されない。移行前に止められなかったときは、旧 worker を止めた上で、commit に失敗したジョブと、孤児として報告されるファイルを確認する。公開の途中で commit が失敗したファイルは、DB の行が無いまま canonical 名で残る（`rokuban_orphan_files_unresolved`。[operations/monitoring.md](../operations/monitoring.md)）。
 

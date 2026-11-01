@@ -414,45 +414,55 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 // applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
 func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetCopyKeys map[store.MediaAssetCopyKey]struct{}, storeName string) error {
 	var missingAt time.Time
-	for _, a := range assets {
-		assetStore := a.Store
-		if assetStore == "" {
-			assetStore = storeName
-		}
-		copyState, copyDeletedAt := a.State, a.DeletedAt
-		_, observedMissing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]
-		fileVerifiedMissing := observedMissing && a.State != "deleted"
-		if fileVerifiedMissing {
-			if missingAt.IsZero() {
-				if err := tx.QueryRow(ctx, "SELECT now()").Scan(&missingAt); err != nil {
-					return fmt.Errorf("reading database time for missing catalog assets: %w", err)
-				}
+	// Old catalogs can list a historical tombstone before the current copy that
+	// reused its path. Reserve paths for copies that still have files first, so
+	// input ordering cannot make the tombstone hide the live copy
+	// (TestCatalogRestorePrefersPresentCopyOverEarlierTombstone).
+	for pass := 0; pass < 2; pass++ {
+		for _, a := range assets {
+			assetStore := a.Store
+			if assetStore == "" {
+				assetStore = storeName
 			}
-			// Keep the historical copy and dependent statistics, but never publish
-			// an active state for a file removed since export.
-			copyState = "deleted"
-			copyDeletedAt = &missingAt
-			res.MissingMediaFiles++
-		}
-		sha256Bytes, err := decodeMediaAssetSHA256(a.SHA256)
-		if err != nil {
-			return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
-		}
-		derivedGeneration := catalogDerivedGeneration(a)
-		copyGeneration := catalogCopyGeneration(a)
-		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
-			ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
-			SizeBytes: a.SizeBytes,
-			CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
-			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes, CopyGeneration: copyGeneration,
-		}); err != nil {
-			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
-		}
-		if err := upsertCatalogMediaAssetCopy(ctx, q, sqlcgen.UpsertMediaAssetCopyParams{
-			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
-			Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
-		}, fileVerifiedMissing); err != nil {
-			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
+			_, observedMissing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]
+			presentCopy := a.State != "deleted" && !observedMissing
+			if (pass == 0) != presentCopy {
+				continue
+			}
+			copyState, copyDeletedAt := a.State, a.DeletedAt
+			fileVerifiedMissing := observedMissing && a.State != "deleted"
+			if fileVerifiedMissing {
+				if missingAt.IsZero() {
+					if err := tx.QueryRow(ctx, "SELECT now()").Scan(&missingAt); err != nil {
+						return fmt.Errorf("reading database time for missing catalog assets: %w", err)
+					}
+				}
+				// Keep the historical copy and dependent statistics, but never publish
+				// an active state for a file removed since export.
+				copyState = "deleted"
+				copyDeletedAt = &missingAt
+				res.MissingMediaFiles++
+			}
+			sha256Bytes, err := decodeMediaAssetSHA256(a.SHA256)
+			if err != nil {
+				return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
+			}
+			derivedGeneration := catalogDerivedGeneration(a)
+			copyGeneration := catalogCopyGeneration(a)
+			if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
+				ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
+				SizeBytes: a.SizeBytes,
+				CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+				DerivedGeneration: derivedGeneration, Sha256: sha256Bytes, CopyGeneration: copyGeneration,
+			}); err != nil {
+				return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
+			}
+			if err := upsertCatalogMediaAssetCopy(ctx, q, sqlcgen.UpsertMediaAssetCopyParams{
+				MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
+				Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
+			}, fileVerifiedMissing); err != nil {
+				return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
+			}
 		}
 	}
 	res.MediaAssets = len(assets)
@@ -465,10 +475,35 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 		if err != nil {
 			return err
 		}
-		if rows != 1 {
-			return fmt.Errorf("upsert affected %d rows, want one", rows)
+		if rows == 1 {
+			return nil
 		}
-		return nil
+		if rows != 0 {
+			return fmt.Errorf("upsert affected %d rows, want zero or one", rows)
+		}
+		// The row may have been deleted after rescue statted the file. The full
+		// (store, rel_path) index or a migration-moved tombstone must win, so an
+		// older active snapshot cannot resurrect it (TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat,
+		// TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath).
+		identityTombstone, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
+			MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
+		})
+		if err != nil {
+			return err
+		}
+		if identityTombstone {
+			return nil
+		}
+		tombstone, err := q.CatalogHasDeletedMediaAssetCopyAtPhysicalPath(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyAtPhysicalPathParams{
+			Store: params.Store, RelPath: params.RelPath,
+		})
+		if err != nil {
+			return err
+		}
+		if tombstone {
+			return nil
+		}
+		return fmt.Errorf("upsert affected %d rows, want one", rows)
 	}
 
 	copy, err := q.LockMediaAssetCopyByPhysicalPath(ctx, sqlcgen.LockMediaAssetCopyByPhysicalPathParams{
@@ -489,13 +524,14 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 			return nil
 		}
 		// A catalog tombstone is historical state, not proof that the current path
-		// owner is missing. Preserve any live owner and restore the tombstone separately.
+		// owner is missing. Preserve any live owner and restore the tombstone separately
+		// (TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive).
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 
 	exists, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
-		MediaAssetID: params.MediaAssetID, Store: params.Store, RelPath: params.RelPath, Generation: params.Generation,
+		MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
 	})
 	if err != nil {
 		return err
@@ -507,10 +543,41 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 	if err != nil {
 		return err
 	}
-	if rows != 1 {
-		return fmt.Errorf("insert affected %d rows, want one", rows)
+	if rows == 1 {
+		return nil
 	}
-	return nil
+	if rows != 0 {
+		return fmt.Errorf("insert affected %d rows, want zero or one", rows)
+	}
+
+	// Older catalogs can contain a tombstone for a path now owned by a different
+	// copy. Preserve that tombstone under a reserved synthetic key; the long single
+	// component cannot name a supported filesystem path or S3 object.
+	params.RelPath = catalogTombstoneRelPath(params)
+	rows, err = q.UpsertMediaAssetCopy(ctx, params)
+	if err != nil {
+		return err
+	}
+	if rows == 1 {
+		return nil
+	}
+	if rows != 0 {
+		return fmt.Errorf("insert at reserved path affected %d rows, want zero or one", rows)
+	}
+	exists, err = q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
+		MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
+	})
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return fmt.Errorf("insert at reserved path affected %d rows, want one", rows)
+}
+
+func catalogTombstoneRelPath(params sqlcgen.UpsertMediaAssetCopyParams) string {
+	return strings.Repeat("t", 1025) + fmt.Sprintf("-catalog-%d-%s-%d", params.MediaAssetID, params.Store, params.Generation)
 }
 
 func decodeMediaAssetSHA256(value *string) ([]byte, error) {
