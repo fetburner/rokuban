@@ -1064,11 +1064,9 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // 転送前の安価なヒントであり、同時 ingest の決着ではない。採用の根拠は commit
 // 内の media_asset_copies INSERT と全体一意索引である。
 //
-// 通常削除も同じ rel_path の filesystem lock の下で状態更新と unlink を行うため、
-// 公開・削除の確定区間はこの SELECT と独立に直列化される。canonical 孤児は自動で
-// unlink しない。ただしこの関数自体は転送前の安価なヒントであり、ingest 同士の
-// 決着は commit 内の lock と media_asset_copies の一意索引に任せる。ここを一意性の
-// 最終判定に使わない。
+// canonical 孤児は自動で unlink しない。この関数は転送前の安価なヒントであり、
+// ingest 同士の決着は commit の media_asset_copies INSERT と全体一意索引に任せる。
+// ここを一意性の最終判定に使わない。
 //
 // WHERE state <> 'deleted' は live owner の事前確認だけに使う。tombstone はここでは
 // 返さないが、commit の全体一意索引が削除済みパスの再利用を拒む
@@ -1127,10 +1125,9 @@ func (w *IngestWorker) determineRelPath(args jobs.IngestJobArgs, record *mirakc.
 
 // commit は原本の公開プロトコルを 1 回実行する。
 //
-// rel_path lock を保持し、論理資産とコピーの行予約・link・親ディレクトリ fsync・commit を
-// store の 1 transaction に渡す。store は DB transaction を先に開始し、2 つの行を作った後に
-// callback を呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、この関数が返るまで
-// rel_path lock を保持する。
+// store の 1 transaction が論理資産とコピーの行を作って (store, rel_path) を一意に予約し、
+// callback で link と親ディレクトリ fsync を行ってから commit する。DB 接続が失われても
+// goroutine のファイル操作は続きうるため、link は宛先を置き換えない。
 // 進捗行は原本の行と同じ tx で消す。コミット = DB 行なので、原本の行が生まれる瞬間に進捗行が消え、
 // 「原本があるのに取り込み中」という中間状態が読み手から見えない。
 //
@@ -1141,14 +1138,9 @@ func (w *IngestWorker) determineRelPath(args jobs.IngestJobArgs, record *mirakc.
 // link 前の失敗では、中身の不一致や record の cancel / fail と確定した場合だけ呼び出し側が
 // tempPath を消し、それ以外は次の試行へ残す。
 func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, contentSHA256 []byte, owner uuid.UUID, writerGeneration int64) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "locking original for publication"); err != nil {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing original"); err != nil {
 		return err
 	}
-	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, relPath)
-	if err != nil {
-		return fmt.Errorf("locking canonical file protocol: %w", err)
-	}
-	defer func() { _ = fileLock.Close() }()
 	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
 		RecordingID: recordingID, RelPath: relPath, SizeBytes: size, SHA256: contentSHA256,
 		WriterOwner: owner, WriterGeneration: writerGeneration,

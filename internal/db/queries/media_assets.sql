@@ -35,10 +35,8 @@ WHERE recording_id = $1 AND kind = 'original';
 -- 試行が一時ファイルへ並行転送でき、commit 内の media_asset_copies INSERT と
 -- 全体一意索引が採用を一つに決める。ここで拾うのは転送を始める価値が無い
 -- 「別の recording が既にコミットした」という恒久的な衝突である。
--- 通常削除は ingest commit と同じ rel_path filesystem lock を取得するため、
--- 公開・削除の確定区間はこの SELECT と独立に直列化される。canonical orphan は
--- 自動で unlink しない。ただしこの関数自体は転送前の安価なヒントで、
--- ingest 同士の決着は commit 内の lock と media_asset_copies の一意索引に任せる。
+-- canonical orphan は自動で unlink しない。この関数自体は転送前の安価なヒントで、
+-- ingest 同士の決着は commit の media_asset_copies INSERT と全体一意索引に任せる。
 -- ここを一意性の最終判定に使わない。WHERE state <> 'deleted' は live owner の
 -- 事前確認だけに使う。tombstone はこの確認では返さないが、commit の全体一意索引が
 -- 削除済みパスの再利用を拒む（TestMediaAssetCopiesRejectNewRowAtTombstonedPath）。

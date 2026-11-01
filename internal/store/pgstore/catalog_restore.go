@@ -22,7 +22,8 @@ import (
 
 // Restore は catalog の全表を 1 tx で upsert し、分類ルールを再評価する。
 // この tx は分類ルールの再評価と直列化する。直列化は最初の書き込みより前から始まる。
-// 呼び出し側は media asset のファイルロックを先に取る。
+// 呼び出し側は古い catalog がメディア状態を上書きしないよう、メディア資産を変更する
+// worker を Restore の完了まで停止する。
 //
 // 順序: 再評価ロック → rules（+ 子）→ label_rules → program_snapshots →
 // program_intents / program_overrides → recordings → recording_purge_requests →

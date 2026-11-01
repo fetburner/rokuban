@@ -180,21 +180,20 @@ flowchart TD
 
 #### 復元の前提
 
-実行前に、ファイルやメディア資産を変更する worker を止め、rescue が終わるまで再開しない。復元の間は、公開・削除と共通のファイル排他を DB トランザクションの開始前から保持する。
+実行前に、ファイルやメディア資産を変更する worker を止め、rescue が終わるまで再開しない。古い catalog が録画・保持方針などを上書きするのを防ぐための運用要件である。
 
-止める対象は ingest / encode / thumbnail / seek tiles / delete_reconcile などである。catalog 復元は、全 asset の rel_path をソートして、公開・削除と共通の filesystem lock を DB トランザクションの開始前に取得し、コミットまで保持する。走査の in-place 登録も、ファイルの再確認からコミットまで同じ lock を保持する。DB 接続の切断だけでは排他が消えない。
+止める対象は ingest / encode / thumbnail / seek tiles / delete_reconcile などである。catalog 復元は各ファイルを Lstat し、通常ファイルであることを確かめる。無いファイルは missing として渡し、その `(store, rel_path)` の copy を active にしない。走査の in-place 登録も登録直前に Lstat し、通常ファイルであることを確かめる。
 
 スナップショット後にファイルが消えた asset は、履歴と統計を残して `deleted` として復元し、件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。
 
 以前の catalog 世代に残る tombstone は、現在のパス所有者と衝突することがある。復元は tombstone を `(media_asset_id, store, generation)` で照合する。物理パスが別の copy に割り当て済みなら、実在しない予約キーに tombstone を残し、世代全体の復元を続ける。active の snapshot が同じパスの tombstone に当たった場合は active に戻さない。
 
-この排他は、ファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの上書きを防ぐものではないので、復旧中に worker を止める運用要件は続く。共有ストレージでは、全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
+削除がファイルを unlink して `deleted` にした後も、全体一意索引は tombstone の `(store, rel_path)` を予約する。ファイルが無いなら、同じ path の別 copy を active にできない。worker を止める要件は、古い catalog による録画・保持方針などの上書きを防ぐために残る。
 
 <details><summary>根拠</summary>
 
 - catalog の実体無し asset を `deleted` として復元すること: `TestRescueCatalogMissingFiles`
 - 走査後に消えたファイルを登録しないこと: `TestRescueScanCandidateRemoved`
-- 削除と復元の排他を両経路で保つこと: `TestRescueDeletionSerialization`
 - 削除後に古い active snapshot で復活させないこと: `TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat`
 - 移動済み tombstone の identity でも復活を防ぐこと: `TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath`
 - 旧 catalog の tombstone を移行後のパスから照合すること: `TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive`

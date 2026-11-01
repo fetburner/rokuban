@@ -394,8 +394,7 @@ WHERE c.store = sqlc.arg('store_name')
 ORDER BY c.id
 LIMIT sqlc.arg('row_limit');
 
--- The caller holds the path flock before this row lock, matching transfer's
--- filesystem-lock then transaction order.
+-- Lock the recording, logical asset, and copy together while rechecking the pending reservation.
 -- name: LockPendingMediaAssetTransferCopy :one
 SELECT c.id
 FROM media_asset_copies c

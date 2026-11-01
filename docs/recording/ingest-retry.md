@@ -73,7 +73,7 @@ SIGTERM による停止では Work context が `Canceled` になる。5 分の d
 
 writer 世代はファイル名と lease fencing に使い、HLS の `temp_generation` には使わない。新しい temp の path は、前の表示中の `written_bytes` に新 writer が追いつくまで進捗表へ切り替えない。追いついた更新で path だけを切り替え、`temp_generation` は維持する。新 writer が追いつく前は、旧 path と旧 offset のまま、同じ HLS URL の playlist と配信済みのセグメントが同じ行と内容で返る。
 
-この経路では、ingest の job-id advisory lock や `record_sweep` による River 行の生 SQL 回収を使わない。`record_sweep` は mirakc の record を定期取得し、欠けた ingest job の投入を補う。writer の直列化と zombie の fencing は DB lease が担い、公開時の同じ `rel_path` への採用は DB の一意 reservation と `rel_path` lock が決める。
+この経路では、ingest の job-id advisory lock や `record_sweep` による River 行の生 SQL 回収を使わない。`record_sweep` は mirakc の record を定期取得し、欠けた ingest job の投入を補う。writer の直列化と zombie の fencing は DB lease が担い、公開時の採用は `(store, rel_path)` の全体一意索引が決める。
 
 ##### KEDA Job での再開
 
@@ -129,7 +129,7 @@ mirakc が finished 後にハッシュを計算中のとき、`content.sha256` �
 flowchart LR
   A[長さと SHA-256 を照合] --> B[temp を fsync して Close]
   B --> B2[最終 handoff を DB に保存（lease は保持）]
-  B2 --> C[rel_path のロックを取得]
+  B2 --> C[(store, rel_path) を全体一意索引で予約]
   C --> D[original の論理資産とコピーを INSERT して予約]
   D --> E[canonical へ link]
   E --> F[親ディレクトリを fsync]
@@ -140,7 +140,7 @@ flowchart LR
 
 照合を通ったら、canonical rel_path と同じディレクトリに作った record 固有 temp の fsync と Close を行う。区切りでの fsync（checkpoint 保存の直前）とは別に完了時にも行う。バッファごとには行わない。
 
-その後の短い確定区間で、rel_path 固有 filesystem lock を取得し、original の論理資産とコピー行を INSERT して一意性を予約する。INSERT は commit まで他セッションに見えない。lock と transaction を保持したまま temp を canonical へ link し、親ディレクトリを fsync してから DB transaction を commit する。commit が成功したら temp を unlink する。宛先に別の内容のファイルがあれば、temp を残し、record を消さず、行も作らずにエラーで止める。同じサイズと SHA-256 の regular file は既に公開済みの内容として採用する。未解決: この採用の照合も canonical 全体を読み、同じ読み直しの費用がかかる。
+その後の短い確定区間で、original の論理資産とコピー行を INSERT し、全体一意索引で path を予約する。INSERT は commit まで他セッションに見えない。transaction 内で temp を canonical へ link し、親ディレクトリを fsync してから DB transaction を commit する。commit が成功したら temp を unlink する。宛先に別の内容のファイルがあれば、temp を残し、record を消さず、行も作らずにエラーで止める。同じサイズと SHA-256 の regular file は既に公開済みの内容として採用する。未解決: この採用の照合も canonical 全体を読み、同じ読み直しの費用がかかる。
 
 link 前の失敗では、temp を残して次の試行へ渡し、pull を続けられる。ただし長さ / SHA-256 の不一致と `canceled` / `failed` は、中身が不採用と確定しているので temp を消す。link 後の親ディレクトリ fsync または DB commit が失敗した場合は transaction を rollback し、temp を残す。次の試行は、保存した最終 handoff の SHA-256 を復元して commit をやり直し、temp を読み直さない。canonical file は自動削除しない。mirakc record は削除しない。link と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
 
@@ -224,17 +224,17 @@ ingest は commit しないのでエッジの record を消さず、mirakc に�
 
 DB の一意な予約を先に取った取り込みが公開を完了して採用される。後発は先発の結果を待って失敗し、その一時ファイルは回収に委ねられる。転送中は canonical path へ書かないので、転送自体は並行してよい。
 
-canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの record 固有 temp へ並行して pull できる。同じ record は DB writer lease で直列化し、失効した writer の progress 更新と commit は fencing する。公開時は rel_path filesystem lock と DB の一意 reservation を使い、同じ canonical path の ingest と通常削除の競合を直列化する。canonical orphan は削除せず、エイジング後に報告する。
+canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの record 固有 temp へ並行して pull できる。同じ record は DB writer lease で直列化し、失効した writer の progress 更新と commit は fencing する。公開時は `(store, rel_path)` の全体一意索引が採用を決める。通常削除の完了時にファイルが無ければ、その path の行は active ではなく `deleted` であり、tombstone が path の再利用を防ぐ。canonical orphan は削除せず、エイジング後に報告する。
 
-各 transaction のコピー INSERT が部分一意索引を予約する。先に INSERT した transaction が link・親 directory fsync・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
+各 transaction のコピー INSERT が全体一意索引で path を予約する。先に INSERT した transaction が link・親 directory fsync・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
 
-転送前の判定は安価なヒントにすぎず、転送中は lock を保持しない。最終判断は一意索引と適用時の状態遷移に残る。
+転送前の判定は安価なヒントにすぎず、canonical path には転送しない。最終判断は一意索引と適用時の状態遷移に残る。
 
-##### ロックの範囲
+##### 一意 path と削除
 
-rel_path の filesystem lock は、公開と通常削除の区間だけに使う。canonical path に直接転送しないので、転送全体の job lock heartbeat や lock 喪失による cancel は不要である。
+物理削除の後も path の所有権を残し、削除済み path を再公開しない。
 
-ingest commit と通常削除は、同じ rel_path の予約 lock file に対する POSIX `flock` を保持する。対象区間は link / unlink から DB commit までである。
+通常削除は同じ copy 行を `deleting` にしてから unlink し、unlink 後に `deleted` へ確定する。全体一意索引は tombstone を残すため、削除中や削除後に同じ `(store, rel_path)` へ別の copy は公開できない。新しい copy は別の path を使うので、古い delete Work が保持する path への unlink は新しい copy に届かない。
 
 ##### RWX 越しの writer lease
 

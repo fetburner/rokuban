@@ -347,9 +347,9 @@ func TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat(t *testing.T) {
 	deletedAt := now.Add(-time.Second)
 	insertCatalogRestoreCopy(t, pool, assetID, path, "deleted", now.Add(-time.Hour), &deletedAt)
 
-	// The catalog snapshot is active because rescue statted the file before the
-	// delete worker unlinked it and committed the tombstone. Call the same restore
-	// path without taking the rel_path lock to exercise the #982 database race.
+	// Rescue statted the file before the delete worker unlinked it and committed
+	// the tombstone. Restoring that stale active snapshot must leave the path
+	// non-active after the file is gone.
 	snapshot := []catalogdoc.MediaAsset{{
 		ID: assetID, RecordingID: recordingID, Kind: "original",
 		RelPath: path, SizeBytes: 100, State: "active",

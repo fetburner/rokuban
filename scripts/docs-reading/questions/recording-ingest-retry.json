@@ -139,11 +139,11 @@
       ]
     },
     {
-      "heading": "RWX 越しの排他",
-      "question": "別ノードの 2 レプリカ構成で、RWX の media 越しのファイルロックは効くか。",
+      "heading": "公開 path の再利用",
+      "question": "削除中の古い Work が新しい copy のファイルを消さないのはなぜか。",
       "points": [
-        "効くかどうかは未検証である",
-        "効かなければ、旧実行と代替実行が同じ一時ファイルへ書きうる"
+        "全体一意索引が tombstone の (store, rel_path) を予約し、別 copy は新しい path を使う",
+        "古い Work の unlink は削除対象行が持っていた path だけに作用する"
       ]
     },
     {

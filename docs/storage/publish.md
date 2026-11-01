@@ -24,7 +24,7 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - 作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る。
 - 各試行は開始時に増えた attempt count を fencing token として公開時に照合する。古い token の試行は canonical を公開できない。
 - ctx cancellation に従わない古い ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる。
-- 公開は **事前計画 → `Store.Put` → DB transaction で attempt token と論理状態を再確認し、pending を active にする**。削除済みでない別行が同じ `(store, rel_path)` を持てば DB の一意制約が拒み、既存キーは上書きされない。canonical file の filesystem lock は派生物の Put / commit には使わない。
+- 公開は **事前計画 → `Store.Put` → DB transaction で attempt token と論理状態を再確認し、pending を active にする**。削除済みでない別行が同じ `(store, rel_path)` を持てば DB の一意制約が拒み、既存キーは上書きされない。
 - Store 実装は、内部の staging file や multipart upload を `List` に出さない。公開済みだが DB commit されなかったキーは `pending` 行を基準に reconcile が削除する。通常削除も派生物では `Store.Delete` を使い、original の file unlink と混同しない。
 - encoded の `pending` のコピーを回収するときは字幕 sidecar を先に削除する。失敗したら本体と pending 行を残して、次の reconcile で再試行する。
 - `fsstore` は staging file（`.rokuban-media-asset-`）を `List` に返さない。`Put` が止まって残った staging file は、削除 reconcile が FS の走査で孤児として観測し、mtime 猶予と aging の後に、走査した root 上で mtime を再確認して消す。fsstore 内部のファイルなので objstore のキーとしては扱わず、派生物の置き場が S3 でも FS 上で回収する。S3 の multipart upload は成功前に `List` に現れず、Put の失敗時に abort する。DB に `active` な行が無い canonical なキーは自動では消さない。
@@ -38,7 +38,6 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - 別 scope の実行中 encode がいても stale scratch を掃除する: `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`
 - scratch cleanup が作成 gate を待つ: `TestRemoveStaleEncodeScratchWaitsForScratchCreationGate`
 - 新しい scratch directory の作成が gate を待つ: `TestNewEncodeScratchDirWaitsForScratchCreationGate`
-- 原本 file の unlink と ingest publish を直列化する filesystem lock: `deleteMediaAsset`
 - staged file の walk と削除: `walkMediaFiles`、`deleteOrphanFile`
 - encoded pending の字幕削除失敗時に本体と行を残す: `TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds`
 - Put 中に回収された派生物のキーを公開側が削除する: `TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed`
