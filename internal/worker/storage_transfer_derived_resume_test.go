@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -34,6 +35,10 @@ type fakeResumableStore struct {
 	beforeGetFrom func()      // GetFrom の最初に呼ぶ。テストが読みの途中で論理資産の世代を変えるのに使う。
 	completeErr   []error     // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
 	abortResult   []fakeAbort // AbortUpload が先頭から返す。尽きたら本物。
+	abortCalls    int         // AbortUpload が呼ばれた回数
+	beforeAbort   func()      // AbortUpload の最初に呼ぶ。テストが掃除の途中で締切を切るのに使う。
+	// lastAbortDeadline は直近の AbortUpload に渡された ctx の締切（無ければ零値）。
+	lastAbortDeadline time.Time
 }
 
 type fakeAbort struct {
@@ -61,6 +66,11 @@ func (s *fakeResumableStore) CompleteUpload(ctx context.Context, state []byte) e
 }
 
 func (s *fakeResumableStore) AbortUpload(ctx context.Context, state []byte) (bool, error) {
+	s.abortCalls++
+	s.lastAbortDeadline, _ = ctx.Deadline()
+	if s.beforeAbort != nil {
+		s.beforeAbort()
+	}
 	if len(s.abortResult) > 0 {
 		r := s.abortResult[0]
 		s.abortResult = s.abortResult[1:]
@@ -392,6 +402,119 @@ func TestStorageTransferWorkerKeepsAbandonedUploadUntilStoreReportsGone(t *testi
 	}
 	if slices.Contains(f.stagingFiles(t), first[0]) {
 		t.Fatalf("the abandoned staging %q survived the gone answer", first[0])
+	}
+	f.driveToEnd(t)
+	f.assertPublished(t)
+}
+
+// TestStorageTransferWorkerCleanupStopsWhenItRunsOutOfTime は、掃除の途中で締切が切れたら残りの掃除待ちの行に触れず、
+// 掃除の Abort には専用の締切が掛かっていて、転送は次の Work で最後まで進むことを確かめる。
+func TestStorageTransferWorkerCleanupStopsWhenItRunsOutOfTime(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	requireSliceSnooze(t, f.work(t), "first slice")
+	// 掃除待ちの行を 2 件作る。各 Work は先頭で掃除をするので、1 件目は次の Work の掃除で「まだ残っている」と答えさせる。
+	f.target(t).abortResult = []fakeAbort{{gone: false}}
+	for range 2 {
+		f.expireLease(t)
+		requireSliceSnooze(t, f.work(t), "attempt that abandons the previous upload")
+	}
+	if n := f.abandonedCount(t); n != 2 {
+		t.Fatalf("abandoned uploads = %d, want 2 before the cleanup", n)
+	}
+
+	// 1 件目の Abort の途中で締切を切る。Abort は「まだ残っている」を返すので、行は消えない。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target := f.target(t)
+	target.abortResult = []fakeAbort{{gone: false}}
+	target.beforeAbort = cancel
+	target.abortCalls = 0
+	f.worker.abortAbandonedUploads(ctx, "archive")
+
+	if target.abortCalls != 1 {
+		t.Fatalf("AbortUpload calls after the deadline ran out = %d, want 1 (the rest must wait for the next Work)", target.abortCalls)
+	}
+	if n := f.abandonedCount(t); n != 2 {
+		t.Fatalf("abandoned uploads = %d, want both rows kept (2)", n)
+	}
+	// 掃除の Abort には締切が掛かる（Work の締切を食わないための上限）。
+	if left := time.Until(target.lastAbortDeadline); target.lastAbortDeadline.IsZero() || left <= 0 || left > abandonedUploadCleanupTimeout {
+		t.Fatalf("cleanup Abort deadline = %v (%v from now), want a deadline within %v", target.lastAbortDeadline, left, abandonedUploadCleanupTimeout)
+	}
+
+	// 転送は止まらず、次の Work で掃除を終えて完了する。
+	f.driveToEnd(t)
+	f.assertPublished(t)
+	// 掃除は Work の先頭で行う。完了した後の Work でも残りが片付くことを確かめる。
+	if err := f.work(t); err != nil {
+		t.Fatalf("Work after the transfer finished = %v, want nil", err)
+	}
+	if n := f.abandonedCount(t); n != 0 {
+		t.Fatalf("abandoned uploads after the next Work = %d, want 0", n)
+	}
+}
+
+// uploadStateOf は copyID の進捗行に保存された送信状態を返す。行が無いか未保存なら nil。
+func uploadStateOf(t *testing.T, f derivedResumeFixture) []byte {
+	t.Helper()
+	var state []byte
+	if err := f.pool.QueryRow(context.Background(), `SELECT upload_state FROM media_asset_copy_transfer_progress WHERE copy_id = $1`, f.copyID(t)).Scan(&state); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("reading saved upload state: %v", err)
+	}
+	return state
+}
+
+// TestStorageTransferWorkerRestartsAfterSourceLengthMismatch は、転送元が宣言より長くなって送信が ErrChecksumMismatch になったとき、
+// ずれた転送元のバイトを含む送信状態を保存せず、次の試行が新しいアップロード（新しい staging）から始まることを確かめる。
+// 送った slice の区切りで止まる場合は、保存された状態から続くこと（TestStorageTransferWorkerResumesDerivedUploadAcrossSlices）と対になる。
+func TestStorageTransferWorkerRestartsAfterSourceLengthMismatch(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	requireSliceSnooze(t, f.work(t), "first slice")
+	firstStaging := f.stagingFiles(t)
+	if len(firstStaging) != 1 {
+		t.Fatalf("staging files after the first slice = %v, want exactly one", firstStaging)
+	}
+
+	// 宣言より 1 バイト長い転送元にする。送信は宣言の長さを超えたところで ErrChecksumMismatch になる。
+	sourcePath := filepath.Join(f.roots["test-store"], filepath.FromSlash(f.relPath))
+	if err := os.WriteFile(sourcePath, append(bytes.Clone(f.content), '!'), 0o644); err != nil {
+		t.Fatalf("lengthening the source: %v", err)
+	}
+	var prev []byte
+	var err error
+	for range 300 {
+		prev = uploadStateOf(t, f)
+		err = f.work(t)
+		if _, snooze := jobq.SnoozeDelay(err); !snooze {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("mismatched attempt = %v, want nil after recording the failure", err)
+	}
+	if n, last := transferAttemptCount(t, f.pool, f.copyID(t)); n != 1 || !strings.Contains(last, "derived source mismatch") {
+		t.Fatalf("recorded failure = (%d, %q), want one derived source mismatch", n, last)
+	}
+	if after := uploadStateOf(t, f); !bytes.Equal(after, prev) {
+		t.Fatal("the mismatched attempt saved its upload state; want the last clean state kept")
+	}
+	if row, ok := readProgressRow(t, f.pool, f.copyID(t)); ok && row.handedOff {
+		t.Fatal("the mismatched attempt left the progress handed off; want the lease released without a save")
+	}
+
+	// 転送元を正しい長さに戻す。次の試行は保存された状態から続かず、新しいアップロードを始める。
+	if err := os.WriteFile(sourcePath, f.content, 0o644); err != nil {
+		t.Fatalf("restoring the source: %v", err)
+	}
+	requireSliceSnooze(t, f.work(t), "next attempt")
+	if after := uploadStateOf(t, f); bytes.Equal(after, prev) {
+		t.Fatal("the next attempt continued the previous upload state; want a new upload")
+	}
+	if n := f.abandonedCount(t); n != 1 {
+		t.Fatalf("abandoned uploads after the next attempt = %d, want the previous upload (1)", n)
+	}
+	if got := f.stagingFiles(t); len(got) != 2 || !slices.Contains(got, firstStaging[0]) {
+		t.Fatalf("staging files = %v, want the previous upload %q and the new one", got, firstStaging[0])
 	}
 	f.driveToEnd(t)
 	f.assertPublished(t)

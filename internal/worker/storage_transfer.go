@@ -36,6 +36,9 @@ const (
 	storageTransferLockSnooze         = 30 * time.Second
 	// abandonedUploadRowLimit は 1 回の Work で Abort する掃除待ちの上限である。
 	abandonedUploadRowLimit int32 = 100
+	// abandonedUploadCleanupTimeout は 1 回の Work の掃除に許す時間である。掃除は Work の締切と同じ ctx を使うので、
+	// 上限が無いと Abort の直列な往復で転送の slice が締切を失う。超えた残りは次の Work に回す。
+	abandonedUploadCleanupTimeout = 30 * time.Second
 )
 
 var errTransferSourceMismatch = errors.New("source copy does not match the logical media asset")
@@ -200,18 +203,26 @@ func (w *StorageTransferWorker) requireDestinationMarker(targetRoot, targetStore
 
 // abortAbandonedUploads は、置き場 storeName の掃除待ちの送信状態を置き場の Abort で片付ける。
 // 置き場が gone と答えた行だけ消し、残りは次の Work で繰り返す。失敗は転送を止めない（ジョブは失敗にしない）。
+// 掃除は abandonedUploadCleanupTimeout で区切り、締切を過ぎたら残りの行に触れずに戻る。
 func (w *StorageTransferWorker) abortAbandonedUploads(ctx context.Context, storeName string) {
 	resumable, ok := w.ObjectStores[storeName].(objstore.Resumable)
 	if !ok {
 		return
 	}
-	rows, err := w.Storage.ListAbandonedTransferUploads(ctx, storeName, abandonedUploadRowLimit)
+	cleanupCtx, cancel := context.WithTimeout(ctx, abandonedUploadCleanupTimeout)
+	defer cancel()
+	rows, err := w.Storage.ListAbandonedTransferUploads(cleanupCtx, storeName, abandonedUploadRowLimit)
 	if err != nil {
 		slog.Warn("storage transfer: listing abandoned uploads failed; skipping cleanup", "store", storeName, "err", err)
 		return
 	}
 	for _, row := range rows {
-		gone, err := resumable.AbortUpload(ctx, row.State)
+		if err := cleanupCtx.Err(); err != nil {
+			slog.Warn("storage transfer: abandoned upload cleanup stopped early; the rest waits for the next Work",
+				"store", storeName, "err", err)
+			return
+		}
+		gone, err := resumable.AbortUpload(cleanupCtx, row.State)
 		if err != nil {
 			slog.Warn("storage transfer: aborting abandoned upload failed", "store", storeName, "id", row.ID, "err", err)
 			continue
@@ -219,7 +230,7 @@ func (w *StorageTransferWorker) abortAbandonedUploads(ctx context.Context, store
 		if !gone {
 			continue
 		}
-		if err := w.Storage.DeleteAbandonedTransferUpload(ctx, row.ID); err != nil {
+		if err := w.Storage.DeleteAbandonedTransferUpload(cleanupCtx, row.ID); err != nil {
 			slog.Warn("storage transfer: deleting aborted upload row failed", "store", storeName, "id", row.ID, "err", err)
 		}
 	}
@@ -1028,7 +1039,8 @@ func (w *StorageTransferWorker) putDerivedResumable(
 			saved = true
 			return false, true, jobq.Snooze(0)
 		case errors.Is(sendErr, objstore.ErrChecksumMismatch):
-			saved = w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			// 転送元の長さが宣言と違う。ずれていると判定した転送元のバイトを含む送信状態は保存しない。
+			// saved は偽のまま defer で lease を切り、次の試行は新しいアップロードから始まる。
 			return false, true, w.handleTransferMismatch(ctx, transfer, log)
 		case errors.Is(sendErr, objstore.ErrUploadInvalid):
 			// 続けられない送信状態を掃除待ちに移せるよう保存してから、defer で lease を切る（saved は偽のまま）。
