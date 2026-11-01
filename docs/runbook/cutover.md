@@ -173,7 +173,7 @@ live の DB に向けると、catalog の内容で上書きする。
 
 4. 練習 DB を消す: `docker compose exec postgres sh -c 'dropdb -U "$POSTGRES_USER" rokuban_drill'`
 
-**練習 DB に向けて `server` を起動しない。** 削除 reconcile が練習 DB の内容で共有の `media_dir` を unlink しに行く。rescue 自身はファイルを変更しない。ただしファイル操作の lock を live の worker と共有するので、走っている間は公開と削除が待たされる。世代の選び方と復元の契約は [storage/rescue.md](../storage/rescue.md) にある。
+**練習 DB に向けて `server` を起動しない。** 削除 reconcile が練習 DB の内容で共有の `media_dir` を unlink しに行く。rescue はファイルを Lstat して練習 DB に登録するが、live worker とその確認を直列化しない。実行中にファイルが変わると、練習 DB の結果が観測時点を反映しないことがある。世代の選び方と復元の契約は [storage/rescue.md](../storage/rescue.md) にある。
 
 ### webhook の疎通（項目 6）
 
