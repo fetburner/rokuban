@@ -30,6 +30,8 @@ const (
 	storageTransferAttemptLimit int32 = 10
 	storageTransferRowLimit     int32 = 1000
 	storageTransferLockSnooze         = 30 * time.Second
+	// abandonedUploadRowLimit は 1 回の Work で Abort する掃除待ちの上限である。
+	abandonedUploadRowLimit int32 = 100
 )
 
 var errTransferSourceMismatch = errors.New("source copy does not match the logical media asset")
@@ -144,7 +146,35 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 	if err != nil {
 		return err
 	}
+	w.abortAbandonedUploads(ctx, args.Store)
 	return w.copyAsset(ctx, args, rules, fsStores, transferSourceStores(w.Config, fsStores), fsStores, targetRoot)
+}
+
+// abortAbandonedUploads は、置き場 storeName の掃除待ちの送信状態を置き場の Abort で片付ける。
+// 置き場が gone と答えた行だけ消し、残りは次の Work で繰り返す。失敗は転送を止めない（ジョブは失敗にしない）。
+func (w *StorageTransferWorker) abortAbandonedUploads(ctx context.Context, storeName string) {
+	resumable, ok := w.ObjectStores[storeName].(objstore.Resumable)
+	if !ok {
+		return
+	}
+	rows, err := w.Storage.ListAbandonedTransferUploads(ctx, storeName, abandonedUploadRowLimit)
+	if err != nil {
+		slog.Warn("storage transfer: listing abandoned uploads failed; skipping cleanup", "store", storeName, "err", err)
+		return
+	}
+	for _, row := range rows {
+		gone, err := resumable.AbortUpload(ctx, row.State)
+		if err != nil {
+			slog.Warn("storage transfer: aborting abandoned upload failed", "store", storeName, "id", row.ID, "err", err)
+			continue
+		}
+		if !gone {
+			continue
+		}
+		if err := w.Storage.DeleteAbandonedTransferUpload(ctx, row.ID); err != nil {
+			slog.Warn("storage transfer: deleting aborted upload row failed", "store", storeName, "id", row.ID, "err", err)
+		}
+	}
 }
 
 func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, error) {
@@ -491,59 +521,9 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		owned[relPath] = struct{}{}
 	}
 
-	// 論理資産の SHA-256 が既知なら、source の Get を（帯域制限を通して）そのまま Put に流す。
-	// Store.Put は宣言サイズと SHA-256 が合わなければ何も公開しないので、scratch に複製して照合する必要が無い。
-	// 未計測のときだけ scratch に複製してハッシュを取る。
-	var openMain func() (io.ReadCloser, error)
-	digest, size := transfer.SHA256, transfer.SizeBytes
-	var streamed *countingReadCloser
-	if len(transfer.SHA256) == sha256.Size {
-		openMain = func() (io.ReadCloser, error) {
-			source, err := w.openTransferSourceStream(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath)
-			if err != nil {
-				return nil, err
-			}
-			streamed = source
-			return source, nil
-		}
-	} else {
-		assetPath, stagedDigest, stagedSize, err := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
-		if err != nil {
-			if errors.Is(err, errTransferSourceMismatch) {
-				return w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
-			}
-			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", err))
-		}
-		digest, size = stagedDigest, stagedSize
-		openMain = func() (io.ReadCloser, error) { return os.Open(assetPath) }
-	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
+	digest, size, done, err := w.putDerivedMain(ctx, transfer, args, sourceStore, targetStore, targetRoot, scratchDir, owned, log)
+	if done {
 		return err
-	}
-	_, mainOwned := owned[transfer.RelPath]
-	mainCreated, err := putTransferredObject(ctx, targetStore, transfer.RelPath, openMain, size, digest, objectContentType(transfer.RelPath), mainOwned)
-	if err != nil {
-		if streamed != nil && streamed.sourceDiffers(size, err) {
-			return w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
-		}
-		metrics.RecordObjectStoreError("put", err)
-		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
-	}
-	if mainCreated {
-		pending, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, transfer.RelPath)
-		if err != nil {
-			cleanupErr := targetStore.Delete(ctx, transfer.RelPath)
-			return w.recordTransferFailure(ctx, transfer, log, errors.Join(
-				fmt.Errorf("recording ownership of derived transfer destination: %w", err), cleanupErr,
-			))
-		}
-		if !pending {
-			if err := targetStore.Delete(ctx, transfer.RelPath); err != nil {
-				return fmt.Errorf("removing destination created after transfer was retired: %w", err)
-			}
-			return nil
-		}
-		owned[transfer.RelPath] = struct{}{}
 	}
 
 	continueTransfer, err := w.syncDerivedTransferSubtitle(ctx, transfer, args, sourceStore, targetStore, scratchDir, owned, log)
@@ -576,6 +556,264 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	metrics.StorageTransferLastSuccess.Set(float64(time.Now().Unix()))
 	log.Info("storage transfer: derived copy active", "bytes", size)
 	return nil
+}
+
+// putDerivedMain は派生物の本体を宛先に公開し、今回作ったものを所有記録に残す。
+// 返す digest と size は完了（CompleteMediaAssetTransfer）に渡す値である。done が真なら、この試行はここで終わるので err を返す。
+// 論理資産の SHA-256 が既知で両方の置き場が対応しているときは、再開できるアップロードで送る（putDerivedResumable）。
+// それ以外は従来どおり、既知なら Get を Put へ流し、未計測なら scratch に複製してから Put する。
+func (w *StorageTransferWorker) putDerivedMain(
+	ctx context.Context,
+	transfer store.MediaAssetTransfer,
+	args jobs.StorageTransferArgs,
+	sourceStore, targetStore objstore.Store,
+	targetRoot string,
+	scratchDir func() (string, error),
+	owned map[string]struct{},
+	log *slog.Logger,
+) (digest []byte, size int64, done bool, err error) {
+	digest, size = transfer.SHA256, transfer.SizeBytes
+	var mainCreated bool
+	resumable, canResume := targetStore.(objstore.Resumable)
+	rangeSource, canRange := sourceStore.(objstore.RangeReader)
+	if len(transfer.SHA256) == sha256.Size && canResume && canRange {
+		mainCreated, done, err = w.putDerivedResumable(ctx, transfer, args, targetRoot, targetStore, resumable, rangeSource, owned, log)
+		if done {
+			return digest, size, true, err
+		}
+	} else {
+		var openMain func() (io.ReadCloser, error)
+		var streamed *countingReadCloser
+		if len(transfer.SHA256) == sha256.Size {
+			openMain = func() (io.ReadCloser, error) {
+				source, err := w.openTransferSourceStream(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath)
+				if err != nil {
+					return nil, err
+				}
+				streamed = source
+				return source, nil
+			}
+		} else {
+			assetPath, stagedDigest, stagedSize, stageErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
+			if stageErr != nil {
+				if errors.Is(stageErr, errTransferSourceMismatch) {
+					return digest, size, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+				}
+				return digest, size, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", stageErr))
+			}
+			digest, size = stagedDigest, stagedSize
+			openMain = func() (io.ReadCloser, error) { return os.Open(assetPath) }
+		}
+		if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
+			return digest, size, true, err
+		}
+		_, mainOwned := owned[transfer.RelPath]
+		mainCreated, err = putTransferredObject(ctx, targetStore, transfer.RelPath, openMain, size, digest, objectContentType(transfer.RelPath), mainOwned)
+		if err != nil {
+			if streamed != nil && streamed.sourceDiffers(size, err) {
+				return digest, size, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+			}
+			metrics.RecordObjectStoreError("put", err)
+			return digest, size, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
+		}
+	}
+	if !mainCreated {
+		return digest, size, false, nil
+	}
+	pending, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, transfer.RelPath)
+	if err != nil {
+		cleanupErr := targetStore.Delete(ctx, transfer.RelPath)
+		return digest, size, true, w.recordTransferFailure(ctx, transfer, log, errors.Join(
+			fmt.Errorf("recording ownership of derived transfer destination: %w", err), cleanupErr,
+		))
+	}
+	if !pending {
+		if err := targetStore.Delete(ctx, transfer.RelPath); err != nil {
+			return digest, size, true, fmt.Errorf("removing destination created after transfer was retired: %w", err)
+		}
+		return digest, size, true, nil
+	}
+	owned[transfer.RelPath] = struct{}{}
+	return digest, size, false, nil
+}
+
+// putDerivedResumable は、SHA-256 が既知の派生物の本体を再開できるアップロードで宛先に公開する。
+// 宛先に同じ内容があれば何もせず created=false で返す。slice の期限で止まったら送った分を保存して snooze する。
+// created は今回公開したことを表す。done が真なら、この試行はここで終わるので err を返す（失敗は記録済み、または snooze）。
+//
+// 進捗の lease は保存で切れる。保存せずに抜けたときは defer で切り、次の試行が世代を上げる。
+// 続けられない送信状態は、保存してから lease を切る。次の試行は handed_off でない行を引き継がず、
+// Replace が古い送信状態を掃除待ちに移すので、どの場合も新しいアップロードから始まる。
+func (w *StorageTransferWorker) putDerivedResumable(
+	ctx context.Context,
+	transfer store.MediaAssetTransfer,
+	args jobs.StorageTransferArgs,
+	targetRoot string,
+	objects objstore.Store,
+	dest objstore.Resumable,
+	source objstore.RangeReader,
+	owned map[string]struct{},
+	log *slog.Logger,
+) (created, done bool, err error) {
+	var checksum [sha256.Size]byte
+	copy(checksum[:], transfer.SHA256)
+	_, mainOwned := owned[transfer.RelPath]
+	exists, err := existingTransferredObjectMatches(ctx, objects, transfer.RelPath, transfer.SHA256, transfer.SizeBytes, mainOwned)
+	if err != nil {
+		metrics.RecordObjectStoreError("put", err)
+		return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
+	}
+	if exists {
+		return false, false, nil
+	}
+	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
+		return false, true, err
+	}
+
+	owner := uuid.New()
+	progress, acquired, err := w.Storage.AcquireMediaAssetTransferProgress(ctx, transfer.CopyID, owner, storageTransferLeaseTTL())
+	if err != nil {
+		return false, true, fmt.Errorf("acquiring transfer progress: %w", err)
+	}
+	if !acquired {
+		return false, true, jobq.Snooze(storageTransferLockSnooze)
+	}
+	saved := false
+	defer func() {
+		if saved {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		releaseErr := w.Storage.ReleaseMediaAssetTransferProgress(releaseCtx, transfer.CopyID, owner)
+		switch {
+		case releaseErr == nil:
+		case created:
+			// 公開は済んでいる。残るのは lease だけなので、ジョブは失敗にせず記録する。
+			log.Warn("storage transfer: releasing derived upload progress after publishing failed", "err", releaseErr)
+		default:
+			err = errors.Join(err, fmt.Errorf("releasing transfer progress: %w", releaseErr))
+		}
+	}()
+
+	// きれいな引き継ぎ（同じ置き場の送信状態が保存されている）なら続きから、それ以外は新しいアップロードを始める。
+	var state []byte
+	var offset int64
+	if progress.Resumed && progress.UploadState != nil && progress.UploadStore == args.Store {
+		state, offset = progress.UploadState, progress.Offset
+	} else {
+		if err := requireMediaStoreMarker(targetRoot, args.Store, "starting derived upload"); err != nil {
+			return false, true, err
+		}
+		fresh, startErr := dest.StartUpload(ctx, transfer.RelPath, transfer.SizeBytes, checksum, objectContentType(transfer.RelPath))
+		if startErr != nil {
+			metrics.RecordObjectStoreError("put", startErr)
+			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("starting derived upload: %w", startErr))
+		}
+		if replaceErr := w.Storage.ReplaceMediaAssetTransferUpload(ctx, transfer.CopyID, owner, progress.Generation, args.Store, fresh); replaceErr != nil {
+			// 行に記録できなかった送信状態は、どの行も指さないのでここで捨てる。
+			abortCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if _, abortErr := dest.AbortUpload(abortCtx, fresh); abortErr != nil {
+				log.Warn("storage transfer: aborting unrecorded derived upload failed", "err", abortErr)
+			}
+			cancel()
+			if errors.Is(replaceErr, store.ErrTransferLeaseLost) {
+				return false, true, jobq.Snooze(storageTransferLockSnooze)
+			}
+			return false, true, fmt.Errorf("recording derived upload state: %w", replaceErr)
+		}
+		state, offset = fresh, 0
+	}
+
+	size := transfer.SizeBytes
+	if offset < size {
+		if err := requireMediaStoreMarker(targetRoot, args.Store, "writing derived upload"); err != nil {
+			return false, true, err
+		}
+		sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
+		var sendErr error
+		state, offset, sendErr = w.continueDerivedUpload(sliceCtx, transfer, dest, source, state, offset)
+		sliceEnded := sliceCtx.Err() != nil
+		cancelSlice()
+		if sendErr == nil && offset < size {
+			sendErr = fmt.Errorf("derived upload stopped at %d of %d bytes without an error", offset, size)
+		}
+		switch {
+		case sendErr == nil:
+			// 全部送り終えた。保存せずに、続けて完了する。
+		case sliceEnded:
+			if err := w.saveDerivedProgress(transfer.CopyID, owner, progress.Generation, state, offset); err != nil {
+				if errors.Is(err, store.ErrTransferLeaseLost) {
+					return false, true, jobq.Snooze(storageTransferLockSnooze)
+				}
+				return false, true, fmt.Errorf("saving derived transfer progress: %w", err)
+			}
+			saved = true
+			return false, true, jobq.Snooze(0)
+		case errors.Is(sendErr, objstore.ErrChecksumMismatch):
+			saved = w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			return false, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+		case errors.Is(sendErr, objstore.ErrUploadInvalid):
+			// 続けられない送信状態を掃除待ちに移せるよう保存してから、defer で lease を切る（saved は偽のまま）。
+			w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("continuing derived upload: %w", sendErr))
+		default:
+			metrics.RecordObjectStoreError("put", sendErr)
+			saved = w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("copying derived transfer source: %w", sendErr))
+		}
+	}
+
+	if err := requireMediaStoreMarker(targetRoot, args.Store, "completing derived upload"); err != nil {
+		return false, true, err
+	}
+	if completeErr := dest.CompleteUpload(ctx, state); completeErr != nil {
+		switch {
+		case errors.Is(completeErr, objstore.ErrChecksumMismatch):
+			return false, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+		case errors.Is(completeErr, objstore.ErrUploadInvalid):
+			w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("completing derived upload: %w", completeErr))
+		}
+		metrics.RecordObjectStoreError("put", completeErr)
+		saved = w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+		return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", completeErr))
+	}
+	return true, false, nil
+}
+
+// continueDerivedUpload は source の offset から読み、state の続きとして送る。読みは帯域制限を通し、ctx（slice の期限）で止まる。
+// 返す state と offset は、置き場に確実に残ったバイトだけを表す。
+func (w *StorageTransferWorker) continueDerivedUpload(ctx context.Context, transfer store.MediaAssetTransfer, dest objstore.Resumable, source objstore.RangeReader, state []byte, offset int64) ([]byte, int64, error) {
+	reader, err := source.GetFrom(ctx, transfer.SourceRelPath, offset)
+	if err != nil {
+		return state, offset, fmt.Errorf("opening derived transfer source: %w", err)
+	}
+	defer func() { _ = reader.Close() }()
+	limited, err := w.transferSourceReader(ctx, transfer.SourceStore, reader)
+	if err != nil {
+		return state, offset, err
+	}
+	return dest.ContinueUpload(ctx, state, limited)
+}
+
+// saveDerivedProgress は送信状態と書いた長さを保存して lease を切る。
+// 親 ctx が切れていても保存できるよう、保存は独立した ctx で行う（原本の saveOriginalSlice と同じ）。
+// 派生物はハッシュの状態を持たず、送信状態は必ず非 nil で渡す（nil を渡すと upload_store だけ残って CHECK に違反する）。
+func (w *StorageTransferWorker) saveDerivedProgress(copyID int64, owner uuid.UUID, generation int64, state []byte, offset int64) error {
+	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return w.Storage.SaveMediaAssetTransferProgress(saveCtx, copyID, owner, generation, offset, nil, state)
+}
+
+// keepDerivedProgress は失敗で抜ける前に送った分を保存する。保存できたかを返す。
+// 保存できなくても失敗の記録は止めない（LK-1 の原本と同じ）。
+func (w *StorageTransferWorker) keepDerivedProgress(transfer store.MediaAssetTransfer, owner uuid.UUID, generation int64, state []byte, offset int64, log *slog.Logger) bool {
+	if err := w.saveDerivedProgress(transfer.CopyID, owner, generation, state, offset); err != nil {
+		log.Warn("storage transfer: saving derived upload progress failed", "err", err)
+		return false
+	}
+	return true
 }
 
 func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
@@ -705,21 +943,12 @@ func putTransferredObject(ctx context.Context, objects objstore.Store, key strin
 		return false, fmt.Errorf("invalid SHA-256 length %d", len(digest))
 	}
 	copy(checksum[:], digest)
-	if _, headErr := objects.Head(ctx, key); headErr == nil {
-		actual, actualSize, err := hashStoredObject(ctx, objects, key)
-		if err != nil {
-			return false, err
-		}
-		if actualSize == size && bytes.Equal(actual, digest) {
-			return false, nil
-		}
-		ownership := "pre-existing"
-		if alreadyOwned {
-			ownership = "owned"
-		}
-		return false, fmt.Errorf("%s destination object differs from transfer source: %w", ownership, objstore.ErrAlreadyExists)
-	} else if !errors.Is(headErr, objstore.ErrNotFound) {
-		return false, headErr
+	exists, err := existingTransferredObjectMatches(ctx, objects, key, digest, size, alreadyOwned)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
 	}
 	src, err := open()
 	if err != nil {
@@ -734,6 +963,28 @@ func putTransferredObject(ctx context.Context, objects objstore.Store, key strin
 		return true, fmt.Errorf("closing transfer source for %q: %w", key, closeErr)
 	}
 	return true, nil
+}
+
+// existingTransferredObjectMatches は key に既存のオブジェクトがあるかを返す。内容が同じなら exists=true、
+// 無ければ false、内容が違えば所有記録に応じた衝突の error を返す。どの場合も key には触らない。
+func existingTransferredObjectMatches(ctx context.Context, objects objstore.Store, key string, digest []byte, size int64, alreadyOwned bool) (bool, error) {
+	if _, headErr := objects.Head(ctx, key); headErr == nil {
+		actual, actualSize, err := hashStoredObject(ctx, objects, key)
+		if err != nil {
+			return false, err
+		}
+		if actualSize == size && bytes.Equal(actual, digest) {
+			return true, nil
+		}
+		ownership := "pre-existing"
+		if alreadyOwned {
+			ownership = "owned"
+		}
+		return false, fmt.Errorf("%s destination object differs from transfer source: %w", ownership, objstore.ErrAlreadyExists)
+	} else if !errors.Is(headErr, objstore.ErrNotFound) {
+		return false, headErr
+	}
+	return false, nil
 }
 
 // countingReadCloser は、Put に流す source の読んだ長さと読み取りエラーを覚える。
