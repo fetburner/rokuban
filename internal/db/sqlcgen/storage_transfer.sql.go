@@ -200,7 +200,8 @@ WITH source_copies AS MATERIALIZED (
     -- 宛先が NULL の行では候補判定と試行回数を評価しない。CASE が必要な部分式だけを
     -- 評価することは PostgreSQL の 4.2.14 Expression Evaluation Rules に書かれている。
     -- ELSE 内の AND の順序は規定されないが、どちらも宛先のある行にだけ掛かるので件数は変わらない。
-    -- 宛先に依らない述語にすると、プランナが media_assets のスキャンへ押し下げ、宛先の無い行にも掛かる（計測で確認）。
+    -- 観測: IS NOT NULL と候補の述語を別々の AND にした形では、2 万行の実行計画（EXPLAIN ANALYZE）で
+    -- 候補の述語が media_assets の Index Scan の Filter に置かれ、宛先の無い行を含む loops=20000 で評価された。
     WHERE CASE WHEN placement.desired_store IS NULL THEN FALSE
           ELSE storage_transfer_candidate(
               a.id,

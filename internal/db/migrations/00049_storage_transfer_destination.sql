@@ -1,12 +1,10 @@
 -- +goose Up
 
--- storage_transfer_destination は転送の宛先（FS 置き場）を 1 か所で求める。
--- 録画が削除済み、または desired 置き場が FS 外なら NULL を返す。
--- この関数を通る判定は次の 3 つだけ: 候補の述語（storage_transfer_candidate）、
--- 予約の obsolete 判定（storage_transfer_pending_copy_obsolete）、背圧の集計
--- （CountMediaAssetTransferBacklogBySourceStore）。
--- 適用の瞬間に desired_media_store を確かめ直す PrepareMediaAssetTransfer /
--- CompleteMediaAssetTransfer はこの関数を通らない（今回の対象外）。
+-- storage_transfer_destination は転送の宛先を返す。録画が削除済みでなく、desired 置き場が
+-- FS 置き場ならその置き場、それ以外は NULL を返す。
+-- 転送の宛先（削除済みでなく、desired 置き場が FS 置き場であること）を判定する述語は、この関数を通す。
+-- PrepareMediaAssetTransfer / CompleteMediaAssetTransfer は、適用の瞬間に desired_media_store を
+-- 呼び出し元が渡した target_store と照合しており、この関数を通らない。
 CREATE FUNCTION storage_transfer_destination(
     asset_kind text,
     original_rules jsonb,
