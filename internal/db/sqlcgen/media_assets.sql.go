@@ -301,16 +301,17 @@ type GetLiveMediaAssetByRelPathParams struct {
 // 'deleting' 行にも発火する事実とずれる）。
 //
 // **ingest 対 ingest の決着はこの SELECT ではない**（issue #731）。複数の
-// 試行が一時ファイルへ並行転送でき、commit 内の media_assets INSERT と
-// 部分一意索引が採用を一つに決める。ここで拾うのは転送を始める価値が無い
+// 試行が一時ファイルへ並行転送でき、commit 内の media_asset_copies INSERT と
+// 全体一意索引が採用を一つに決める。ここで拾うのは転送を始める価値が無い
 // 「別の recording が既にコミットした」という恒久的な衝突である。
 // 通常削除は ingest commit と同じ rel_path filesystem lock を取得するため、
 // 公開・削除の確定区間はこの SELECT と独立に直列化される。canonical orphan は
 // 自動で unlink しない。ただしこの関数自体は転送前の安価なヒントで、
-// ingest 同士の決着は commit 内の lock と media_assets の一意索引に任せる。
-// ここを一意性の最終判定に使わない。WHERE state <> 'deleted' はその一意索引の
-// 述語と同じにする --- 削除済みの行が使っていた rel_path は正当に再利用できるので、
-// 削除済み行と衝突させてはいけない。呼び出し側は recording_id しか使わないので
+// ingest 同士の決着は commit 内の lock と media_asset_copies の一意索引に任せる。
+// ここを一意性の最終判定に使わない。WHERE state <> 'deleted' は live owner の
+// 事前確認だけに使う。tombstone はこの確認では返さないが、commit の全体一意索引が
+// 削除済みパスの再利用を拒む（TestMediaAssetCopiesRejectNewRowAtTombstonedPath）。
+// 呼び出し側は recording_id しか使わないので
 // id は選択しない。該当行が無ければ pgx.ErrNoRows を返す。
 func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, arg GetLiveMediaAssetByRelPathParams) (int64, error) {
 	row := q.db.QueryRow(ctx, getLiveMediaAssetByRelPath, arg.RelPath, arg.StoreName)

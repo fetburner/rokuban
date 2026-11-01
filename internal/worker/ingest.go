@@ -1062,7 +1062,7 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // （state <> 'deleted'。'active' に限らず、削除処理中の 'deleting' も含む）
 // media_asset があれば、その recording_id を返す（無ければ 0, nil）。これは
 // 転送前の安価なヒントであり、同時 ingest の決着ではない。採用の根拠は commit
-// 内の media_asset_copies INSERT と部分一意索引である。
+// 内の media_asset_copies INSERT と全体一意索引である。
 //
 // 通常削除も同じ rel_path の filesystem lock の下で状態更新と unlink を行うため、
 // 公開・削除の確定区間はこの SELECT と独立に直列化される。canonical 孤児は自動で
@@ -1070,9 +1070,10 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // 決着は commit 内の lock と media_asset_copies の一意索引に任せる。ここを一意性の
 // 最終判定に使わない。
 //
-// WHERE state <> 'deleted' はその一意索引の述語と同じにする。削除済み
-// （state='deleted'）の行が使っていた rel_path は正当に再利用できるので、
-// ここで引っかけて誤って失敗させてはいけない。'deleting'（delete_reconcile の
+// WHERE state <> 'deleted' は live owner の事前確認だけに使う。tombstone はここでは
+// 返さないが、commit の全体一意索引が削除済みパスの再利用を拒む
+// (TestMediaAssetCopiesRejectNewRowAtTombstonedPath)。'deleting'
+// （delete_reconcile の
 // unlink 前後の中間状態）はまだ 'deleted' ではない --- unlink 前・unlink
 // 失敗中は実ファイルが残っており、かつ resolveUnqualifiedDeletingAsset が
 // ファイルの現存を確認した上でその行を active に戻しうる

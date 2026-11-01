@@ -56,18 +56,18 @@
 
 cut の世代付きパスは `.g{n}`、uncut の削除後再生成パスは `.u{n}` を使う。どちらも番号は `media_assets.derived_generation` から採り、パスの印は rescue 後もカット版かどうかを残す。
 
-これらを拒むと、同じ原本から作る相対パスは、名前と世代ごとに異なる。別の原本どうしでは、同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。そのパスを削除済みでない別の行が持っているとき、後から公開する側のエンコード試行は失敗し、既存のファイルは変わらない（[storage/contract.md](../storage/contract.md) §派生物の公開（encode））。
+これらを拒むと、同じ原本から作る相対パスは、名前と世代ごとに異なる。別の原本どうしでは、同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。そのパスを別のコピー行が持っているときは状態を問わず、後から公開する側のエンコード試行は失敗し、既存のファイルは変わらない（[storage/contract.md](../storage/contract.md) §派生物の公開（encode））。
 
 この規則は設定の読み込みで検査するので、全ロールに効く。規則に当たる名前が設定にあると、更新しただけで全ロールが起動を拒む。意味の検査の対象でない watcher・streamer・notifier も止まる。
 
 規則に当たる名前は改名する。改名すると、旧名で凍結した録画のうち旧名の encoded がまだ無いものは、満たせなくなる（`rokuban_encode_reconcile_unsatisfiable` に出る）。その `until_encoded` の原本は消えずに残る。旧名は設定に戻せないので、対処はその録画のエンコード方針から旧名を外すことである（[runbook/troubleshooting.md](../runbook/troubleshooting.md) §エンコードが失敗している（理由を知りたい））。
 
-新名は、旧名をサニタイズした名前（`a:b` なら `a_b`）と同じにしない。旧名の encoded が削除済みでない録画では、新名のエンコードが同じ相対パスを予約できず、毎回失敗して試行の上限で止まるからである。止まった後の扱いは [runbook/troubleshooting.md](../runbook/troubleshooting.md) §encode が上限に達して止まった にある。
+新名は、旧名をサニタイズした名前（`a:b` なら `a_b`）と同じにしない。旧名の encoded コピー行が残る録画では、新名のエンコードが同じ相対パスを予約できず、毎回失敗して試行の上限で止まるからである。止まった後の扱いは [runbook/troubleshooting.md](../runbook/troubleshooting.md) §encode が上限に達して止まった にある。
 
 <details><summary>根拠</summary>
 
 - 公開が `rel_path` の予約を rename より先に行うこと: `publishEncoded`
-- 削除済みでない行がパスを予約し続けること: 一意索引 `media_asset_copies_store_rel_path_idx`（`(store, rel_path) WHERE state <> 'deleted'`）
+- 削除後もパスが予約されること: 一意索引 `media_asset_copies_store_rel_path_idx`（`(store, rel_path)`）
 - active の行とパスが衝突したとき、ファイルを保護して試行を失敗として記録すること: `TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite`
 
 </details>

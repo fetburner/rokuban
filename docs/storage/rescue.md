@@ -186,6 +186,8 @@ flowchart TD
 
 スナップショット後にファイルが消えた asset は、履歴と統計を残して `deleted` として復元し、件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。
 
+以前の catalog 世代に残る tombstone は、現在のパス所有者と衝突することがある。復元は tombstone を `(media_asset_id, store, generation)` で照合する。物理パスが別の copy に割り当て済みなら、実在しない予約キーに tombstone を残し、世代全体の復元を続ける。active の snapshot が同じパスの tombstone に当たった場合は active に戻さない。
+
 この排他は、ファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの上書きを防ぐものではないので、復旧中に worker を止める運用要件は続く。共有ストレージでは、全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
 
 <details><summary>根拠</summary>
@@ -193,6 +195,10 @@ flowchart TD
 - catalog の実体無し asset を `deleted` として復元すること: `TestRescueCatalogMissingFiles`
 - 走査後に消えたファイルを登録しないこと: `TestRescueScanCandidateRemoved`
 - 削除と復元の排他を両経路で保つこと: `TestRescueDeletionSerialization`
+- 削除後に古い active snapshot で復活させないこと: `TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat`
+- 移動済み tombstone の identity でも復活を防ぐこと: `TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath`
+- 旧 catalog の tombstone を移行後のパスから照合すること: `TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive`
+- 衝突する catalog tombstone を保持し、後続資産も復元すること: `TestCatalogRestoreKeepsConflictingTombstoneAndContinuesGeneration`
 
 </details>
 
@@ -241,7 +247,7 @@ catalog があるときは、照合してフルメタデータ（番組情報・
 拒否される条件は次のとおりである。規則は [schema/recordings/media-assets.md](../schema/recordings/media-assets.md) の in-place 登録にある。
 
 - 同じパスの行が `deleting` か `pending` である
-- 同じ置き場の同じ `rel_path` に生きた行が無く、tombstone（`deleted` 行）だけがある
+- 同じ置き場の同じ `rel_path` に tombstone（`deleted` 行）がある
 - 録画がごみ箱にある
 - 論理資産が既にあり、この置き場に生きたコピーがあるか、パスの世代が現行と違う
 

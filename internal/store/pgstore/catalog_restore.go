@@ -465,10 +465,35 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 		if err != nil {
 			return err
 		}
-		if rows != 1 {
-			return fmt.Errorf("upsert affected %d rows, want one", rows)
+		if rows == 1 {
+			return nil
 		}
-		return nil
+		if rows != 0 {
+			return fmt.Errorf("upsert affected %d rows, want zero or one", rows)
+		}
+		// The row may have been deleted after rescue statted the file. The full
+		// (store, rel_path) index or a migration-moved tombstone must win, so an
+		// older active snapshot cannot resurrect it (TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat,
+		// TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath).
+		identityTombstone, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
+			MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
+		})
+		if err != nil {
+			return err
+		}
+		if identityTombstone {
+			return nil
+		}
+		tombstone, err := q.CatalogHasDeletedMediaAssetCopyAtPhysicalPath(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyAtPhysicalPathParams{
+			Store: params.Store, RelPath: params.RelPath,
+		})
+		if err != nil {
+			return err
+		}
+		if tombstone {
+			return nil
+		}
+		return fmt.Errorf("upsert affected %d rows, want one", rows)
 	}
 
 	copy, err := q.LockMediaAssetCopyByPhysicalPath(ctx, sqlcgen.LockMediaAssetCopyByPhysicalPathParams{
@@ -489,13 +514,14 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 			return nil
 		}
 		// A catalog tombstone is historical state, not proof that the current path
-		// owner is missing. Preserve any live owner and restore the tombstone separately.
+		// owner is missing. Preserve any live owner and restore the tombstone separately
+		// (TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive).
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 
 	exists, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
-		MediaAssetID: params.MediaAssetID, Store: params.Store, RelPath: params.RelPath, Generation: params.Generation,
+		MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
 	})
 	if err != nil {
 		return err
@@ -507,10 +533,41 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 	if err != nil {
 		return err
 	}
-	if rows != 1 {
-		return fmt.Errorf("insert affected %d rows, want one", rows)
+	if rows == 1 {
+		return nil
 	}
-	return nil
+	if rows != 0 {
+		return fmt.Errorf("insert affected %d rows, want zero or one", rows)
+	}
+
+	// Older catalogs can contain a tombstone for a path now owned by a different
+	// copy. Preserve that tombstone under a reserved synthetic key; the long single
+	// component cannot name a supported filesystem path or S3 object.
+	params.RelPath = catalogTombstoneRelPath(params)
+	rows, err = q.UpsertMediaAssetCopy(ctx, params)
+	if err != nil {
+		return err
+	}
+	if rows == 1 {
+		return nil
+	}
+	if rows != 0 {
+		return fmt.Errorf("insert at reserved path affected %d rows, want zero or one", rows)
+	}
+	exists, err = q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
+		MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
+	})
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return fmt.Errorf("insert at reserved path affected %d rows, want one", rows)
+}
+
+func catalogTombstoneRelPath(params sqlcgen.UpsertMediaAssetCopyParams) string {
+	return strings.Repeat("t", 1025) + fmt.Sprintf("-catalog-%d-%s-%d", params.MediaAssetID, params.Store, params.Generation)
 }
 
 func decodeMediaAssetSHA256(value *string) ([]byte, error) {

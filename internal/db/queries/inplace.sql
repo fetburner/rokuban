@@ -9,13 +9,8 @@ JOIN media_assets a ON a.id = c.media_asset_id
 JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path = sqlc.arg('rel_path')
   AND c.store = sqlc.arg('store_name')
--- media_asset_copies_store_rel_path_idx は state <> 'deleted' の部分索引なので、
--- tombstone を検出するこの lookup は意図的に述語を外す。同じ path に過去の再利用による
--- live 行と tombstone が並ぶことがあるため、live 行を優先する（live なら従来どおり冪等に
--- 通す）。tombstone しか無いときだけ呼び出し側が拒否する。tombstone を優先すると、
--- 正常に登録済みのファイルが拒否される。そのため seq scan を許容する。
--- 表が大きくなったら tombstone lookup 用の非部分索引を検討する。
-ORDER BY (c.state <> 'deleted')::boolean DESC, a.id DESC
+-- The full unique path index covers tombstones too, so this lookup returns at most one copy
+-- (TestMediaAssetCopiesRejectNewRowAtTombstonedPath).
 LIMIT 1;
 
 -- name: UpsertInPlaceRecording :one

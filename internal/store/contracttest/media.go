@@ -113,7 +113,7 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("encoded callback failure rolls back asset", func(t *testing.T) { runEncodedPublicationRollback(t, newFixture) })
 	t.Run("thumbnail and seek tiles publish through one callback", func(t *testing.T) { runDerivedPublication(t, newFixture) })
 	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
-	t.Run("in-place registration is idempotent and prefers live rows over tombstones", func(t *testing.T) { runInPlacePublication(t, newFixture) })
+	t.Run("in-place registration is idempotent and reuses its active path", func(t *testing.T) { runInPlacePublication(t, newFixture) })
 	t.Run("commit failure after publish returns an error and leaves no rows", func(t *testing.T) { runPublishCommitFailure(t, newFixture) })
 	t.Run("original publication rejects an occupied rel_path without publishing", func(t *testing.T) { runOriginalRelPathConflict(t, newFixture) })
 	t.Run("thumbnail and seek tiles skip trashed recordings and existing assets", func(t *testing.T) { runDerivedPublicationSkips(t, newFixture) })
@@ -326,17 +326,15 @@ func runInPlacePublication(t *testing.T, newFixture NewMediaFixture) {
 	}
 
 	path := fmt.Sprintf("sites/%s/imported/preferred-%d.m2ts", f.Site, time.Now().UnixNano())
-	staleRecording := f.NewRecording(t)
 	liveRecording := f.NewRecording(t)
-	staleAsset := f.NewAsset(t, staleRecording, "original", nil, path, "deleted")
 	liveAsset := f.NewAsset(t, liveRecording, "original", nil, path, "active")
 	preferred := f.NewInPlaceInput(t, path)
 	got, err := f.Publisher.RegisterInPlace(ctx, preferred)
 	if err != nil {
-		t.Fatalf("RegisterInPlace with deleted and active rows: %v", err)
+		t.Fatalf("RegisterInPlace with an existing active path: %v", err)
 	}
-	if got.RecordingID != liveRecording || len(got.AssetIDs) != 1 || got.AssetIDs[0] != liveAsset || got.AssetIDs[0] == staleAsset {
-		t.Fatalf("in-place preferred result = %+v, want active row recording %d/asset %d (deleted asset %d)", got, liveRecording, liveAsset, staleAsset)
+	if got.RecordingID != liveRecording || len(got.AssetIDs) != 1 || got.AssetIDs[0] != liveAsset {
+		t.Fatalf("in-place result = %+v, want active row recording %d/asset %d", got, liveRecording, liveAsset)
 	}
 }
 

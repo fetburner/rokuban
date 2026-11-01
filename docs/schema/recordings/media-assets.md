@@ -50,7 +50,7 @@ CREATE TABLE media_asset_copies (
 
 CREATE INDEX ON media_asset_copies (media_asset_id);
 CREATE INDEX ON media_asset_copies (media_asset_id, store) WHERE state = 'active';
-CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
+CREATE UNIQUE INDEX ON media_asset_copies (store, rel_path);
 CREATE UNIQUE INDEX ON media_asset_copies (media_asset_id, store, generation) WHERE state <> 'deleted';
 
 CREATE TABLE missing_media_assets (
@@ -61,7 +61,7 @@ CREATE TABLE missing_media_assets (
 
 `media_asset_copies` の 1 行は物理ファイル 1 つを表す。`generation` はファイルの内容世代で、INSERT 時に書いた後は更新しない。original は 0、派生物は `media_assets.derived_generation` と同じ世代のコピーを現行とする。
 
-同じ論理資産・同じ置き場に世代違いの行が並ぶので、一意の鍵は 2 つある。`(store, rel_path) WHERE state <> 'deleted'` は、生きているパスを 1 行に絞る。`(media_asset_id, store, generation) WHERE state <> 'deleted'` は、同じ置き場・同じ世代の生きたコピーを 1 行に絞る。後者が無いと、配信が選ぶコピーが決まらない。後から足すと溜まった違反を掃除する移行が要るので、最初から置く。
+同じ論理資産・同じ置き場に世代違いの行が並ぶので、一意の鍵は 2 つある。`(store, rel_path)` は墓石を含めてパスを 1 行に絞り、削除したパスの再利用を防ぐ。古い削除 Work が、同じパスに後から公開されたファイルを unlink しないためである。`(media_asset_id, store, generation) WHERE state <> 'deleted'` は、同じ置き場・同じ世代の生きたコピーを 1 行に絞る。後者が無いと、配信が選ぶコピーが決まらない。削除済みの行は物理コピーの履歴として残し、パスの一意性にも含める。
 
 配信・一覧・派生物の有無を調べる読み手は `active_media_asset_copies` または `preferred_active_media_asset_copy` を使う。両者は active かつ現行世代のコピーだけを返す。CM 検出と TS 解析は original だけを読むので、世代の述語は要らない。削除・棚卸し・rescue・パス名前空間の検査は古い世代も含む全物理行を読む。
 
@@ -114,7 +114,7 @@ in-place 登録は、パスの状態と世代、録画の状態を確かめて�
 
 論理資産が既にあるときは、次の 3 つを満たす場合だけ通す。この置き場に生きたコピー（`active` / `deleting` / `pending`）が無い。パスの世代が `COALESCE(derived_generation, 0)` と等しい。録画がごみ箱にない。満たさなければ `ErrConflict` で拒否し、論理資産が無ければ新規に登録する。パスの世代が古いファイルを受け付けると、登録したファイル自体が旧世代として overlap の後に消える。新しいファイルを受け付けると、そのコピーは現行にも旧世代にもならず、配信も削除もされない。論理行の世代は in-place 登録では動かさない。生きたコピーがある置き場へ足すと、配信が選ぶ行が決まらない。
 
-同じパスの `active` な行が既にあれば、何も変えずに通す。同じパスの `deleting` / `pending` は unlink される予定のファイルなので拒否する。同じ置き場の同じ `rel_path` に生きた行が無く `deleted` 行（tombstone）だけがあれば拒否する。古い削除 Work が、後から同じパスに置かれた新しいファイルを unlink しうるためである。Rokuban が削除したファイルを同じ場所へ戻しても、そのパスは再利用できない。ファイルを移動または改名すると新しいパスで登録できる。生きた行と tombstone が同じパスに並ぶときは生きた行を選ぶ。この並びは過去のパス再利用で残ったもので、tombstone を優先すると登録済みのファイルまで拒否してしまうためである。
+同じパスの `active` な行が既にあれば、何も変えずに通す。`deleting` / `pending` / tombstone は拒否する。削除済みのファイルを戻すときは、移動または改名すると新しいパスで登録できる。全体一意索引が状態を問わず 1 パス 1 行に保つ。
 
 規則は 1 文の SQL に置き、並行する 2 本の登録は前述の一意索引が止める。
 
@@ -148,6 +148,8 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 列削除の拒否: `TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets`
 - 巻き戻しの代表コピー: `TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy`
 - 巻き戻しの拒否: `TestDropMediaAssetCopyColumnsDownRefusesUnrepresentableState`
+- in-place の tombstone パス拒否: `TestRegisterInPlaceRejectsTombstonedPathButAllowsRenamedPath`
+- tombstone パスへの insert 拒否: `TestMediaAssetCopiesRejectNewRowAtTombstonedPath`
 
 </details>
 
