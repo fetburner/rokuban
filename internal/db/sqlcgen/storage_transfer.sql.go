@@ -201,29 +201,53 @@ func (q *Queries) CompleteMediaAssetTransfer(ctx context.Context, arg CompleteMe
 }
 
 const countMediaAssetTransferBacklogBySourceStore = `-- name: CountMediaAssetTransferBacklogBySourceStore :many
-SELECT source.store::text AS store, count(DISTINCT a.id)::bigint AS asset_count
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-CROSS JOIN LATERAL active_media_asset_copies(a.id, NULL) source
-WHERE source.store = ANY($1::text[])
-  AND storage_transfer_candidate(
-      a.id, $2::jsonb, $3::text[], $4::text
-  )
-  AND storage_transfer_attempt_count(
-      a.id,
-      desired_media_store(
-          a.kind, $2::jsonb, $4::text,
-          r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-      )
-  ) < $5
-GROUP BY source.store
+WITH source_copies AS MATERIALIZED (
+    SELECT DISTINCT a.id AS media_asset_id, source.store
+    FROM media_assets a
+    CROSS JOIN LATERAL active_media_asset_copies(a.id, NULL) source
+    WHERE source.store = ANY($1::text[])
+), placements AS MATERIALIZED (
+    SELECT sc.media_asset_id,
+           sc.store
+    FROM source_copies sc
+    JOIN media_assets a ON a.id = sc.media_asset_id
+    JOIN recordings r ON r.id = a.recording_id
+    CROSS JOIN LATERAL (
+        SELECT storage_transfer_destination(
+            a.kind,
+            $2::jsonb,
+            $3::text,
+            $4::text[],
+            r.site,
+            (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz,
+            r.deleted_at
+        )::text AS desired_store
+    ) placement
+    -- 宛先が NULL の行では候補判定と試行回数を評価しない。CASE が必要な部分式だけを
+    -- 評価することは PostgreSQL の 4.2.14 Expression Evaluation Rules に書かれている。
+    -- ELSE 内の AND の順序は規定されないが、どちらも宛先のある行にだけ掛かるので件数は変わらない。
+    -- 観測: IS NOT NULL と候補の述語を別々の AND にした形では、2 万行の実行計画（EXPLAIN ANALYZE）で
+    -- 候補の述語が media_assets の Index Scan の Filter に置かれ、宛先の無い行を含む loops=20000 で評価された。
+    WHERE CASE WHEN placement.desired_store IS NULL THEN FALSE
+          ELSE storage_transfer_candidate(
+              a.id,
+              $2::jsonb,
+              $4::text[],
+              $3::text
+          )
+          AND storage_transfer_attempt_count(a.id, placement.desired_store) < $5
+          END
+)
+SELECT store::text AS store, count(DISTINCT media_asset_id)::bigint AS asset_count
+FROM placements
+GROUP BY store
 `
 
 type CountMediaAssetTransferBacklogBySourceStoreParams struct {
 	SourceStores  []string
 	OriginalRules json.RawMessage
-	FsStores      []string
 	DerivedStore  string
+	FsStores      []string
 	AttemptLimit  int64
 }
 
@@ -233,12 +257,14 @@ type CountMediaAssetTransferBacklogBySourceStoreRow struct {
 }
 
 // 背圧の判定に使う。候補の判定は CountMediaAssetTransferCandidates と同じ名前付き述語。
+// placements は宛先を storage_transfer_destination で求め、宛先が無い行を落としてから
+// storage_transfer_candidate と試行回数の判定をかける。判定は名前付き関数だけで行う。
 func (q *Queries) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, arg CountMediaAssetTransferBacklogBySourceStoreParams) ([]CountMediaAssetTransferBacklogBySourceStoreRow, error) {
 	rows, err := q.db.Query(ctx, countMediaAssetTransferBacklogBySourceStore,
 		arg.SourceStores,
 		arg.OriginalRules,
-		arg.FsStores,
 		arg.DerivedStore,
+		arg.FsStores,
 		arg.AttemptLimit,
 	)
 	if err != nil {
