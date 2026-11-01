@@ -595,8 +595,7 @@ func TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
 	}
 }
 
-// 既存の資産と両立しないファイル（ごみ箱の録画に属する）は ErrConflict で拒否される。
-// そのファイルだけを飛ばして件数に出し、後続のファイルは登録して走査を続ける。
+// 同じパスに生きた行と tombstone が並んでも、生きた行を優先して冪等に通す。拒否しない。
 func TestRescueLatest_LiveAssetBesideTombstoneIsNotSkipped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := newTestMediaDir(t)
@@ -646,6 +645,8 @@ func TestRescueLatest_LiveAssetBesideTombstoneIsNotSkipped(t *testing.T) {
 	}
 }
 
+// 既存の資産と両立しないファイル（ごみ箱の録画に属する）は ErrConflict で拒否される。
+// そのファイルだけを飛ばして件数に出し、後続のファイルは登録して走査を続ける。
 func TestRescueLatest_ConflictSkipsOnlyThatFileAndContinues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := newTestMediaDir(t)
