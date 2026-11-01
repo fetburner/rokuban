@@ -14,7 +14,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -290,19 +289,6 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if err != nil {
 		return fmt.Errorf("resolving transfer destination: %w", err)
 	}
-	paths := []transferPathLock{{store: args.Store, root: targetRoot, relPath: transfer.RelPath}}
-	// リモートの転送元には、ロックを取る先のローカル root が無い。ローカルの原本だけ rel_path lock を取る。
-	if sourceRoot != "" {
-		paths = append(paths, transferPathLock{store: transfer.SourceStore, root: sourceRoot, relPath: transfer.SourceRelPath})
-	}
-	locks, err := lockTransferPaths(ctx, paths)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		return w.recordTransferFailure(ctx, transfer, log, err)
-	}
-	defer closeTransferLocks(locks)
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing storage transfer destination"); err != nil {
 		return err
 	}
@@ -666,7 +652,7 @@ func (w *StorageTransferWorker) openTransferSlice(transfer store.MediaAssetTrans
 	path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
 	if progress.PrevGeneration > 0 && progress.PrevGeneration != progress.Generation {
 		// 前の世代の temp は、この試行が引き継がないので消す。前の世代の書き手は lease を失っていて、
-		// 書いても今の世代のファイルには影響しない。rel_path lock の下で行うので、他の転送と競合しない。
+		// 書いても別世代の temp にしか影響しない。
 		superseded := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevGeneration)
 		if err := os.Remove(superseded); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return transferSlice{}, "", fmt.Errorf("removing superseded transfer temp: %w", err)
@@ -1623,37 +1609,6 @@ func (w *StorageTransferWorker) recordTransferFailure(ctx context.Context, trans
 	}
 	log.Warn("storage transfer: copy attempt failed", "err", cause)
 	return nil
-}
-
-type transferPathLock struct {
-	store   string
-	root    string
-	relPath string
-}
-
-func lockTransferPaths(ctx context.Context, paths []transferPathLock) ([]*mediaRelPathFileLock, error) {
-	sort.Slice(paths, func(i, j int) bool {
-		if paths[i].store != paths[j].store {
-			return paths[i].store < paths[j].store
-		}
-		return paths[i].relPath < paths[j].relPath
-	})
-	var locks []*mediaRelPathFileLock
-	for _, path := range paths {
-		lock, err := lockMediaRelPathFile(ctx, path.root, path.relPath)
-		if err != nil {
-			closeTransferLocks(locks)
-			return nil, err
-		}
-		locks = append(locks, lock)
-	}
-	return locks, nil
-}
-
-func closeTransferLocks(locks []*mediaRelPathFileLock) {
-	for i := len(locks) - 1; i >= 0; i-- {
-		_ = locks[i].Close()
-	}
 }
 
 func hashTransferFile(ctx context.Context, path string) ([]byte, int64, error) {

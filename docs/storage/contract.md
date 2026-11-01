@@ -6,13 +6,13 @@
 
 ## 2. FUSE 越し S3 の制約
 
-FUSE 越しの S3 は、原本にも派生物にも使わない。atomic rename、ランダムライト、fsync、ロックの意味論を信頼できず、ファイルを公開する根拠にできないためである。S3 は API で使えば、直接配信もできる。
+FUSE 越しの S3 は、原本にも派生物にも使わない。atomic rename、ランダムライト、fsync の意味論を信頼できず、ファイルを公開する根拠にできないためである。S3 は API で使えば、直接配信もできる。
 
 S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、次の 3 点は、原本 root（`storage.media_dir`）でも派生物の置き場でも、契約として信頼できない。
 
 - 同一 FS 内の atomic rename がない。コピー + 削除になり、数十 GB の録画で実コピーが走る。Mountpoint は rename 自体に非対応である
 - ランダムライトができないか遅い。特に ffmpeg は MP4 出力時にヘッダ（moov atom）を書き戻すためシークするので、S3 マウント上への直接エンコード出力は正しく書けないか激遅になる
-- ファイル `fsync`、`Close` のエラー報告、親ディレクトリ `fsync`、ファイルロックの意味論が、ファイルを公開する根拠として信頼できない
+- ファイル `fsync`、`Close` のエラー報告、親ディレクトリ `fsync` の意味論が、ファイルを公開する根拠として信頼できない
 
 したがって FUSE S3 は置き場として使わない。派生物を S3 に置くときは S3 API 実装を使う。
 
@@ -51,11 +51,11 @@ ingest は同じ root・同じディレクトリの record 固有 temp へ書く
 
 予約 basename は、mirakc の contentPath には使わない。次の 4 つの prefix で始まる名前である。
 
-`.rokuban-ingest-` は ingest temp、`.rokuban-rel-path-lock-` は旧形式 lock file の prefix である。`.rokuban-media-asset-` は fsstore が `Put` の途中に作る staging file の prefix で、`List` は返さない。`.rokuban-encode-` は旧 worker が使った prefix で、いまの実装は作らず、残骸としてだけ現れる。どちらも孤児回収が消す。
+`.rokuban-ingest-` は ingest temp、`.rokuban-rel-path-lock-` は旧版の lock file 名である。`.rokuban-media-asset-` は fsstore が `Put` の途中に作る staging file の prefix で、`List` は返さない。`.rokuban-encode-` は旧 worker が使った prefix で、いまの実装は作らず、残骸としてだけ現れる。どちらも孤児回収が消す。
 
-rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。置き場の目印の root の `.rokuban-store` も同じく予約する。ネストした同名ファイルは予約しない。
+旧版の lock metadata が media root に残ることがあるため、`.rokuban-locks/` は引き続き予約し、DB の `rel_path` として拒否して走査から除く。置き場の目印の root の `.rokuban-store` も同じく予約する。ネストした同名ファイルは予約しない。
 
-ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original の論理資産とコピー行を INSERT して rel_path を予約し、`link(temp, canonical)` で公開して親ディレクトリを `fsync` する。DB commit が成功したら、置き場の目印を照合して temp を unlink する。temp の直列化には record 単位の DB lease を使い、canonical の公開・削除だけは `rel_path` lock を使う。
+ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。DB transaction 内で original の論理資産とコピー行を INSERT し、`(store, rel_path)` を全体一意索引で予約する。その後 `link(temp, canonical)` で公開し、親ディレクトリを `fsync` する。DB commit が成功したら、置き場の目印を照合して temp を unlink する。temp の直列化には record 単位の DB lease を使う。
 
 公開に `os.Rename` を使わないのは、宛先が既存でも無言で置き換えるからである。この契約は、DB に行の無い canonical 名のファイルを自動で消さないと決めている。rename はそのファイルを無言で置き換えて失わせる。`link` は宛先が既存なら `EEXIST` で失敗するので上書きしない。
 
@@ -98,7 +98,7 @@ mirakc record は、commit が成功するまで削除しない。commit 後の 
 
 ingest temp の回収は DB の writer 世代と表示中の `temp_rel_path` を照合する。現在の世代または表示中の path を指す temp は残し、より古い writer 世代で表示中でもない temp は回収できる。writer 世代を判定できない旧形式の名前は mtime 猶予とエイジングの後に回収する。
 
-canonical orphan はエイジング後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
+canonical orphan はエイジング後に報告するだけで unlink しない。通常削除は file を unlink してからその `(store, rel_path)` 行を `deleted` にする。全体一意索引が tombstone を含めて path を予約し、同じ path の別 copy は作られない。
 
 <details><summary>根拠</summary>
 
@@ -110,50 +110,15 @@ canonical orphan はエイジング後に報告するだけで unlink しない�
 
 転送 worker の再開、公開、配置削除、破損時の扱いは [置き場間の転送](transfer.md) に従う。
 
-### rel_path lock file の寿命
+### 旧版の rel_path lock metadata の掃除
 
-パスごとの lock file は、通常終了のときに削除してから解放するので、何度処理しても残らない。異常終了で残った lock file は、次の lock 取得時の掃除が回収する。
-
-rel_path lock は `.rokuban-locks/<prefix><sha256(rel_path)>.lock` に置く。canonical file と同じ directory entry ではないため、canonical の rename / unlink で lock 対象が置き換わらない。通常終了時は per-rel_path lock を保持したまま gate を排他し、lock file を unlink してから flock と fd を解放する。したがって複数回の ingest / encode / delete の後も per-rel_path file は残らない。`.gate.lock` は lock directory の調停に使う固定 file として残る。
-
-取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が新 inode を取得」という二重 lock を防ぐ規則である。active lock は残して次回に回す。lock 取得や cleanup に失敗したときは、ファイル操作を進めずにエラーを返す。
-
-この GC は lock file の directory entry だけを扱い、メディアファイルは扱わない。
-
-プロセスが異常終了すると kernel が gate と per-rel_path flock を解放する。unlink 前なら lock file の directory entry は残るが、次の lock 取得時の GC が gate 排他下で stale file を回収する。GC 中に active owner がいる file は flock が取れず削除されない。複数プロセスは同じ media root とこの gate protocol を使う必要がある。POSIX `flock` の前提はこの文書のルール 4 と同じで、JuiceFS / NFS 越しの実効性は未検証。
-
-lock directory は mode `0777`、gate / per-rel_path file は `0666` で作り、通常どおり umask を適用する。異なる uid の worker を同じ media root で動かす場合は、共有 group / ACL が directory の作成・削除と lock file の read-write を許すことを先に確認する。
-
-#### 旧形式の lock file と更新時の並走
-
-旧形式の lock file は、移行時に自動削除しない。旧 worker が新しい排他の手順に参加しないため、消すと旧プロセスの待機側が古い inode を握る可能性がある。旧 worker と新 worker が並走している間は、消す操作も実行しない。
-
-旧形式とは、canonical と同じ directory の `.rokuban-rel-path-lock-*.lock` である。
-
-新形式も同じ接頭辞を `.rokuban-locks/` の下で使う。そのため接頭辞だけで消す `find -name '.rokuban-rel-path-lock-*' -delete` は、稼働中の新形式 lock まで消す。旧形式だけを消すときは `.rokuban-locks/` を除外する。`-delete` は `-prune` と併用できない（`-depth` を暗黙に有効にする）ので `-exec rm` を使う。
+旧 worker が作った .rokuban-locks/ と .rokuban-rel-path-lock-*.lock は media root に残ることがある。これらは予約名として走査から除外する。旧 worker をすべて停止してから掃除する。
 
 ```bash
 find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
-  -type f -name '.rokuban-rel-path-lock-*.lock' -exec rm -- {} +
+  -type f -name ".rokuban-rel-path-lock-*.lock" -exec rm -- {} +
+rm -rf -- "$MEDIA_ROOT/.rokuban-locks"
 ```
-
-旧 worker と新 worker が同じ media root に並走している間は、この削除も実行しない。
-
-k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は旧イメージの実行中 Job が完走するまで新しい Job と並走する。並走の原因はこの設定であり、ScaledJob 一般の性質ではない。この窓では旧 worker が新 worker の gate を知らないまま、同じ rel_path を別の inode で lock しうる。
-
-更新前に `autoscaling.keda.sh/paused=true` を全 worker ScaledJob に付け、CronJob を suspend し、watcher Deployment を 0 replica にする。この annotation は[KEDA v2.20 の公式文書](https://keda.sh/docs/2.20/concepts/scaling-jobs/#pausing-autoscaling)にある。pause は新しい Job の起動を止める。実行中の Job は止めない。
-
-全 Job の `ACTIVE` が 0 または `<none>` になってから新しいイメージを適用する。確認コマンドは[更新手順](../runbook/setup.md)にある。
-
-pause 中も River 行は DB に残る。pause 解除後は KEDA が Job を起こす（[runbook](../runbook/setup.md)「旧版からの更新」）。
-
-この操作は kind v1.36.1 / KEDA v2.20.2 で測定した（2026-11-02）。試験では media PVC を mount した PostgreSQL fixture consumer を使った。
-
-5 秒 polling の ScaledJob で 20 秒動く Job を作り、実行中に pause して River に 2 件目を追加した。既存 Job は完了した。その後 16 秒（3 polling intervals）見ても Job は 1 件のままで、2 件目は `available` に残った。
-
-pause 解除後は Job が 1 件増え、最終状態は `completed:2`、待ち行列 0 件だった。単一プロセス構成では migration 前にそのプロセスを正常停止する。
-
-止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上のコマンドで消す。
 
 ### 字幕サイドカー
 

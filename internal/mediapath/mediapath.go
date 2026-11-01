@@ -41,20 +41,18 @@ const StorageTransferTempFilePrefix = ".rokuban-transfer-"
 // catalog 無し rescue では原本へ昇格させない。
 const GeneratedAssetTempFilePrefix = ".rokuban-media-asset-"
 
-// MediaRelPathLockDirName は media root 内の rel_path lock 専用ディレクトリ。
-// canonical media と同じディレクトリ entry を共有せず、orphan walker は配下全体を飛ばす。
+// MediaRelPathLockDirName は旧版の rel_path lock metadata が残りうる予約ディレクトリ。
+// 孤児と rescue の走査は配下全体を飛ばす。
 const MediaRelPathLockDirName = ".rokuban-locks"
 
-// MediaRelPathLockFilePrefix は rel_path 固有のファイル排他用 lock file の予約接頭辞。
-// 新しい lock file は MediaRelPathLockDirName に置く。旧バージョンの canonical 隣接
-// lock file を contentPath として採用しないため、接頭辞は予約し続ける。
+// MediaRelPathLockFilePrefix は旧版が残した lock file を media path として採用しないための予約接頭辞。
 const MediaRelPathLockFilePrefix = ".rokuban-rel-path-lock-"
 
 // EncodeTempFilePrefix は encode が canonical file と同じディレクトリに作る、
 // 公開前の一時ファイル（scratch からストリームコピーした staged 出力）の予約接頭辞。
 // catalog 無し rescue では原本へ昇格させない（拡張子を付けないので rescue の対象に
-// ならない）。プロセス死で残った temp は、walkMediaFiles が lock directory、旧形式の
-// rel_path lock file、catalog ディレクトリを除いて走査するため孤児候補になり、
+// ならない）。プロセス死で残った temp は、walkMediaFiles が予約済み metadata directory、
+// 旧版の lock file 名、catalog ディレクトリを除いて走査するため孤児候補になり、
 // defaultOrphanMTimeGrace
 // （7 日）の後に deleteOrphanFile が canonical と同じ手順で消す。
 const EncodeTempFilePrefix = ".rokuban-encode-"
@@ -307,14 +305,14 @@ func IsEncodeTempFile(name string) bool {
 	return strings.HasPrefix(filepath.Base(name), EncodeTempFilePrefix)
 }
 
-// IsMediaRelPathLockFile は rel_path 固有のファイル排他用 lock file かを返す。
+// IsMediaRelPathLockFile は旧版の rel_path lock file 名かを返す。
 func IsMediaRelPathLockFile(name string) bool {
 	return strings.HasPrefix(filepath.Base(name), MediaRelPathLockFilePrefix)
 }
 
 // Resolve は mediaDir と relPath を結合した絶対パスを返す。
 // relPath が mediaDir の外を指す場合は ErrEscapesMediaDir を返す。
-// ロックディレクトリ配下と、root の置き場の目印 StoreMarkerFileName は ErrReservedMediaPath を返す。
+// 旧版 lock metadata directory 配下と、root の置き場の目印 StoreMarkerFileName は ErrReservedMediaPath を返す。
 func Resolve(mediaDir, relPath string) (string, error) {
 	if relPath == "" {
 		return "", fmt.Errorf("%w: empty path", ErrEscapesMediaDir)

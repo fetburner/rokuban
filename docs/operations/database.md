@@ -43,16 +43,16 @@ DB が輻輳しても止まらない処理と、DB に依存し続ける処理�
 
 試行ごとの scratch は別ディレクトリにする。締切後も cancel を無視する古い ffmpeg が動いていても、出力は衝突しない。
 
-公開前に一時ファイルを canonical と同じディレクトリへコピーする。ファイルパスの filesystem lock と DB transaction を取り、行を読み直してから rename する。canonical は直接書かない。既に active で（カット版は凍結区間も）同じ内容なら、成功で飛ばして何も置かない。
+公開前に一時出力を派生物の置き場へ `Store.Put` する。公開 tx は試行 token と desired・cut の状態を読み直し、現在の計画に合うときだけ pending copy を active にする。古い計画なら成功で飛ばすか snooze で再計画する。
 
-パスが計画時と違い、行が active なら、River の snooze で再計画する。行が active でなければ成功で飛ばす。RWX のメディア越しにファイルロックが効くかは未検証である。cancel を無視する処理やネットワーク filesystem の停止は、job timeout で止められない。k8s の liveness が最後の停止手段になる（詳細は [k8s 運用](k8s.md)）。
+cancel を無視する処理やネットワーク filesystem の停止は、job timeout で止められない。k8s の liveness が最後の停止手段になる（詳細は [k8s 運用](k8s.md)）。
 
 <details><summary>根拠</summary>
 
 - ドメイン試行数の保存先: `recording_encode_attempts`
 - ファイルパスの列: `rel_path`
 - canonical を直接書かない: `O_TRUNC` で書かない
-- ファイルロック: `flock`
+- pending copy の準備と公開: `PreparePendingMediaAssetCopy`、`PublishEncoded`
 
 </details>
 

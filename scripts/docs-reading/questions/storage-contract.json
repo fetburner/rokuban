@@ -19,18 +19,18 @@
       ]
     },
     {
-      "heading": "rel_path lock file の寿命",
-      "question": "パス単位の排他に使う lock file は、通常終了のあと、またプロセスの異常終了のあとにどうなるか。",
+      "heading": "(store, rel_path) の一意予約",
+      "question": "通常削除後も同じ path を別の copy に再利用できないのはなぜか。",
       "points": [
-        "通常終了では lock file を削除してから解放するので、何度処理しても残らない",
-        "異常終了で残った lock file は、次の lock 取得時の掃除が回収する"
+        "全体一意索引が deleted tombstone の (store, rel_path) も予約する",
+        "新しい copy は別の path を使うので、古い delete Work の unlink は届かない"
       ]
     },
     {
       "heading": "thumbnail / seek tiles の公開",
       "question": "サムネイルとシークタイルは、どう公開されるか。同じ録画のジョブが重なったらどうなるか。",
       "points": [
-        "staging file へコピーして fsync し、lock と transaction の中で rename して commit する",
+        "Store.Put で staging file を no-replace 公開し、状態を再確認した DB transaction を commit する",
         "先行のジョブが公開済みか、原本が消えていれば、後続は公開を飛ばして成功扱いにする"
       ]
     },

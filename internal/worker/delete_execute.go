@@ -3,8 +3,7 @@
 // 書く表は circuit_breakers、media_assets、encoded_asset_removal_requests、orphan_files。
 //
 // 実行は until_encoded の述語を、実行の直前に再評価する
-// （MediaDelete.MarkUntilEncodedDeleting）。flock を deleting 遷移より前に取るので、
-// この遷移は選定へ移せない。
+// （MediaDelete.MarkUntilEncodedDeleting）。この遷移は選定へ移せない。
 //
 // orphan_files の書き手は 2 者いる。候補は storage_audit.go が書き、実行が unlink の後に
 // 行を消す。実行が消すのは、ctx が取り消された後も削除の事実を記録するためである。
@@ -18,11 +17,11 @@
 //
 //	操作      原本                         派生物                     ingest / transfer temp
 //	解決      mediapath.Resolve            objstore key                mediapath.Resolve
-//	排他      media root の rel_path lock  なし（key は再利用しない）   DB writer lease
+//	排他      なし（(store, rel_path) は再利用しない） なし（key は再利用しない） DB writer lease
 //	stat      巻き戻し時の現存確認         objstore.Head               世代・visible path・mtime
 //	unlink    os.Remove                    objstore.Delete             os.Remove
 //
-// 原本の公開・削除だけが rel_path lock を使う。ingest temp は writer lease と別世代の path で隔離する。
+// 原本のコピー path は再利用しない。ingest temp は writer lease と別世代の path で隔離する。
 
 package worker
 
@@ -224,16 +223,6 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		log.Error("delete_reconcile: rejecting placement rel_path outside the media directory", "err", err)
 		return
 	}
-	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, candidate.RelPath)
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Error("delete_reconcile: acquiring filesystem lock before placement removal", "err", err)
-		}
-		return
-	}
-	if fileLock != nil {
-		defer func() { _ = fileLock.Close() }()
-	}
 	markedPath, marked, err := w.StorageTransfer.MarkMediaAssetCopyDeleting(ctx, candidate, arm.rules, arm.derived, arm.overlapCutoff)
 	if err != nil {
 		log.Error("delete_reconcile: rechecking placement copy before unlink", "err", err)
@@ -272,7 +261,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 }
 
 // reclaimObsoletePendingTransferCopy retires an unpublished transfer reservation after its
-// current placement has changed. It takes the same path lock as transfer before locking DB rows.
+// current placement has changed.
 func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate) {
 	log := slog.With("media_asset_id", candidate.MediaAssetID, "media_asset_copy_id", candidate.CopyID,
 		"store", candidate.Store, "rel_path", candidate.RelPath, "source", "pending_transfer_reclaim")
@@ -296,16 +285,6 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 		log.Error("delete_reconcile: rejecting pending transfer rel_path outside the media directory", "err", err)
 		return
 	}
-	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, candidate.RelPath)
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Error("delete_reconcile: acquiring filesystem lock before pending transfer reclaim", "err", err)
-		}
-		return
-	}
-	if fileLock != nil {
-		defer func() { _ = fileLock.Close() }()
-	}
 	rules, err := w.StorageTransferPolicy.OriginalRulesJSON()
 	if err != nil {
 		log.Error("delete_reconcile: encoding current transfer policy for pending reclaim", "err", err)
@@ -313,8 +292,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 	}
 	beforeMediaAssetUnlink(candidate.RelPath)
 	fsStores := w.StorageTransferPolicy.FSStoreNames()
-	// 転送の書き手は rel_path lock の下でだけ temp に書くので、ここで読む世代は、この回収が消す temp と一致する。
-	// 進捗の行が無ければ、この回収が消す temp は無い。
+	// temp は copy ID と世代で識別する。進捗の行が無ければ、この回収が消す temp は無い。
 	tempPath := ""
 	generation, hasProgress, err := w.StorageTransfer.GetMediaAssetTransferProgressGeneration(ctx, candidate.CopyID)
 	if err != nil {
@@ -465,21 +443,6 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		log.Error("delete_reconcile: rejecting rel_path outside the media directory", "err", err)
 		return
 	}
-
-	// canonical の書き手と同じ filesystem lock を、DB の deleting 遷移より前に取る。
-	// 通常削除が canonical を unlink している間に ingest / encode が同じ rel_path を
-	// 公開すると、DB 行と実体の組が入れ替わる窓ができる。
-	// lock は canonical の親ではなく media root に置くため、canonical の親が無くても
-	// 排他できる。media root / lock directory にアクセスできない場合は安全側で何もしない。
-	fileLock, lockErr := lockMediaRelPathFile(ctx, w.MediaDir, t.RelPath)
-	if lockErr != nil {
-		log.Error("delete_reconcile: acquiring filesystem lock before asset removal", "err", lockErr)
-		return
-	}
-	if fileLock != nil {
-		defer func() { _ = fileLock.Close() }()
-	}
-
 	// 新規 until_encoded 候補は列挙後に作り直し要求が追加される可能性がある。
 	// API と同じ recordings 行ロックを取り、要求が commit されていないことを
 	// 名前付き述語で再確認してから deleting にする。

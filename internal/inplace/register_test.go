@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,5 +274,55 @@ func TestRegister_RejectsPathOutsideMediaDir(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("rejected asset created %d recording rows", count)
+	}
+}
+
+func TestRegister_RequiresExistingRegularFile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	directory := filepath.Join(mediaDir, "directory")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name        string
+		relPath     string
+		wantMissing bool
+	}{
+		{name: "missing", relPath: "missing.ts", wantMissing: true},
+		{name: "directory", relPath: "directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Register(ctx, pgstoretest.Media(pool), mediaDir, Input{
+				Recording: Recording{
+					Source: "manual", Site: "default",
+					NetworkID: -11, ServiceID: -12, EventID: -13,
+					ServiceName: "Test file", ChannelType: "GR", Channel: "unknown",
+					Title: "Test file", ProgramStartAt: time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC),
+					Status: "finished",
+				},
+				Assets: []Asset{{Kind: store.AssetKindOriginal, RelPath: tc.relPath}},
+			})
+			if err == nil {
+				t.Fatal("Register succeeded for a path without a regular file")
+			}
+			if tc.wantMissing && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("Register error = %v, want os.ErrNotExist", err)
+			}
+			if !tc.wantMissing && !strings.Contains(err.Error(), "not a regular file") {
+				t.Fatalf("Register error = %v, want a non-regular-file error", err)
+			}
+		})
+	}
+	var recordings, copies int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recordings`).Scan(&recordings); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies`).Scan(&copies); err != nil {
+		t.Fatal(err)
+	}
+	if recordings != 0 || copies != 0 {
+		t.Fatalf("rows after rejected registrations = recordings %d, copies %d; want 0/0", recordings, copies)
 	}
 }
