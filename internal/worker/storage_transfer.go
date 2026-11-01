@@ -1465,11 +1465,11 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, at
 		}
 		return true, w.measureAdoptedSource(ctx, att, transfer, src, progress, log)
 	}
-	destinationSHA, size, err := hashTransferFile(ctx, targetPath)
+	destinationSHA, size, matches, err := verifyExistingFileSHA256(ctx, targetPath, transfer.SizeBytes, transfer.SHA256)
 	if err != nil {
 		return true, w.recordTransferFailure(ctx, transfer, log, err)
 	}
-	if size == transfer.SizeBytes && bytes.Equal(destinationSHA, transfer.SHA256) {
+	if matches {
 		return true, w.completeTransfer(ctx, att, transfer, args, rules, destinationSHA, src, targetPath, ownedTempPath, false, log)
 	}
 	return true, w.startSourceVerification(ctx, att, transfer, src, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes), log)
@@ -1681,6 +1681,29 @@ func hashTransferFile(ctx context.Context, path string) ([]byte, int64, error) {
 		return nil, count, fmt.Errorf("transfer file changed while hashing: read=%d size=%d", count, info.Size())
 	}
 	return hasher.Sum(nil), count, nil
+}
+
+// verifyExistingFileSHA256 は既存の canonical を、期待サイズと SHA-256 の両方で照合する。
+// ingest と storage transfer が EEXIST を採用する条件を同じ実装に保つ。
+func verifyExistingFileSHA256(ctx context.Context, path string, expectedSize int64, expectedSHA256 []byte) ([]byte, int64, bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("stating existing destination: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, info.Size(), false, fmt.Errorf("existing destination is not a regular file")
+	}
+	if info.Size() != expectedSize {
+		return nil, info.Size(), false, nil
+	}
+	digest, size, err := hashTransferFile(ctx, path)
+	if err != nil {
+		return nil, size, false, err
+	}
+	return digest, size, size == expectedSize && bytes.Equal(digest, expectedSHA256), nil
 }
 
 func (w *StorageTransferWorker) transferSourceReader(ctx context.Context, sourceStore string, source io.Reader) (io.Reader, error) {

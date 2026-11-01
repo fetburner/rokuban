@@ -1472,14 +1472,22 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	if len(firstTemp) == 0 || len(firstTemp) >= len(data) {
 		t.Fatalf("first slice temp size = %d, want a nonempty partial transfer of %d bytes", len(firstTemp), len(data))
 	}
-	if _, err := os.Stat(ingestCheckpointPath(tempPath)); err != nil {
-		t.Fatalf("checkpoint after first slice: %v", err)
+	var handedOff bool
+	var checkpointOffset int64
+	var hashState []byte
+	if err := pool.QueryRow(context.Background(), `
+SELECT handed_off, offset_bytes, hash_state
+FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&handedOff, &checkpointOffset, &hashState); err != nil {
+		t.Fatalf("reading DB checkpoint after first slice: %v", err)
+	}
+	if !handedOff || checkpointOffset != int64(len(firstTemp)) || len(hashState) == 0 {
+		t.Fatalf("DB checkpoint after first slice = (handed_off=%t, offset=%d, hash state %d bytes), want clean handoff at %d", handedOff, checkpointOffset, len(hashState), len(firstTemp))
 	}
 	firstTempRelPath, firstTempGeneration, ok := readIngestTempGeneration(t, pool, recordingID)
 	if !ok {
 		t.Fatal("ingest temp state was not recorded after the first transfer slice")
 	}
-	if firstTempRelPath != "sites/default/test/.rokuban-ingest-default-rec-sliced-transfer" {
+	if firstTempRelPath != "sites/default/test/.rokuban-ingest-default-rec%2Dsliced%2Dtransfer-g1" {
 		t.Errorf("temp_rel_path after first slice = %q, want media-root-relative temp path", firstTempRelPath)
 	}
 	if firstTempGeneration <= 0 {
@@ -1510,7 +1518,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		t.Fatalf("reading committed original ingest generation: %v", err)
 	}
 	if committedGeneration != firstTempGeneration {
-		t.Fatalf("committed ingest_generation = %d, want replayed temp generation %d", committedGeneration, firstTempGeneration)
+		t.Fatalf("committed ingest_generation = %d, want the same byte generation %d across clean handoff", committedGeneration, firstTempGeneration)
 	}
 	canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
 	got, err := os.ReadFile(canonicalPath)
@@ -1532,8 +1540,12 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	if got := deleteAttempts.Load(); got != 1 {
 		t.Errorf("DeleteRecord attempts = %d, want 1 after final commit", got)
 	}
-	if _, err := os.Stat(ingestCheckpointPath(tempPath)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("checkpoint after commit: stat error = %v, want not exist", err)
+	var checkpointRows int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&checkpointRows); err != nil {
+		t.Fatalf("counting DB checkpoints after commit: %v", err)
+	}
+	if checkpointRows != 0 {
+		t.Errorf("DB checkpoint rows after commit = %d, want 0", checkpointRows)
 	}
 }
 
@@ -1618,9 +1630,10 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResul
 	if got := ingestDurationSamples(t); got != durationBefore {
 		t.Errorf("IngestDuration samples while pending = %d, want %d", got, durationBefore)
 	}
-	wantSyncs := int32(2)
-	if first {
-		wantSyncs = 1
+	wantSyncs := int32(1)
+	if !first {
+		// tempSyncs は複数の Work 呼び出しにまたがる累積値。
+		wantSyncs = 2
 	}
 	if got := run.tempSyncs.Load(); got != wantSyncs {
 		t.Errorf("temp Sync calls while pending = %d, want %d", got, wantSyncs)
@@ -1643,7 +1656,7 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResul
 		run.tempModTime = info.ModTime()
 	} else {
 		if !slices.Equal(gotOffsets, run.firstOffsets) {
-			t.Errorf("Range offsets after a repeated pending job = %v, want unchanged %v (no temp replay)", gotOffsets, run.firstOffsets)
+			t.Errorf("Range offsets after a repeated pending job = %v, want unchanged %v (no repeated transfer)", gotOffsets, run.firstOffsets)
 		}
 		if !info.ModTime().Equal(run.tempModTime) {
 			t.Errorf("temp mtime after a repeated SHA-256 snooze = %s, want unchanged %s", info.ModTime(), run.tempModTime)
@@ -1697,7 +1710,7 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 		t.Errorf("DeleteRecord attempts after resume = %d, want %d", got, tc.wantDeleteAttempts)
 	}
 	if want := []int64{0, int64(len(run.tsData)), int64(len(run.tsData)), int64(len(run.tsData)), int64(len(run.tsData))}; !slices.Equal(run.offsets(), want) {
-		t.Errorf("Range offsets across completed jobs and replay = %v, want %v", run.offsets(), want)
+		t.Errorf("Range offsets across completed jobs = %v, want %v", run.offsets(), want)
 	}
 	if tc.wantVerification != "" && !strings.Contains(run.logOutput.String(), tc.wantVerification) {
 		t.Errorf("logs = %q, want %q", run.logOutput.String(), tc.wantVerification)
@@ -2144,8 +2157,8 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				t.Errorf("DeleteRecord attempts after failed Work() = %d, want 0", got)
 			}
 
-			// 再試行では実装本来の opener に戻す。失敗した試行の temp を replay して、
-			// 正しい原本を続きから公開できることを確認する。
+			// 再試行では実装本来の opener に戻す。失敗した試行とは別の writer temp へ
+			// Range 0 から取り直して、正しい原本を公開できることを確認する。
 			openIngestFile = originalOpenFile
 			if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 				t.Fatalf("retry Work() error: %v", err)
@@ -2515,6 +2528,38 @@ func TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent(t *testing
 	}
 }
 
+// 同じサイズと SHA-256 の既存 canonical は、別 inode でも完成済み内容として採用する。
+func TestIngestWorker_AdoptsMatchingCanonicalWithDifferentInode(t *testing.T) {
+	env := newLinkedIngestEnv(t, "rec-matching-canonical", "test/matching.m2ts")
+	if err := os.WriteFile(env.fullPath, env.tsData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(env.fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.run(); err != nil {
+		t.Fatalf("Work() error = %v, want matching existing canonical to be adopted", err)
+	}
+	after, err := os.Stat(env.fullPath)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("canonical inode changed on adoption (stat err = %v)", err)
+	}
+	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
+		t.Fatalf("canonical bytes = (%d bytes, %v), want transferred bytes", len(data), err)
+	}
+	if n := env.assetCount(t); n != 1 {
+		t.Errorf("media_assets rows = %d, want 1", n)
+	}
+	if got := env.fake.CallCount(http.MethodDelete, "/api/recording/records/"+env.recordID); got != 1 {
+		t.Errorf("mirakc DeleteRecord calls = %d, want 1 after adoption", got)
+	}
+	if _, err := os.Stat(env.tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat(%q) error = %v, want temp cleanup after adoption", env.tempPath, err)
+	}
+}
+
 // link 後に commit が失敗しても、次の試行は転送せず commit だけをやり直して成功する。
 func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T) {
 	env := newLinkedIngestEnv(t, "rec-linked-retry", "test/linked-retry.m2ts")
@@ -2530,32 +2575,14 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if n := env.assetCount(t); n != 0 {
 		t.Fatalf("media_assets rows after failed commit = %d, want 0", n)
 	}
-	checkpointHash := sha256.New()
-	offset, restored := fsink.RestoreCheckpoint(env.tempPath, first.Size(), checkpointHash)
-	if !restored || offset != first.Size() {
-		t.Fatalf("ingest checkpoint = (%d, %v), want (%d, true) before linked retry", offset, restored, first.Size())
+	var handedOff bool
+	if err := env.pool.QueryRow(context.Background(), `SELECT handed_off FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff); err != nil {
+		t.Fatalf("reading DB writer checkpoint after failed commit: %v", err)
 	}
-	wantHash := sha256.Sum256(env.tsData)
-	if !bytes.Equal(checkpointHash.Sum(nil), wantHash[:]) {
-		t.Fatalf("checkpoint SHA-256 = %x, want %x", checkpointHash.Sum(nil), wantHash)
+	if handedOff {
+		t.Fatal("writer checkpoint was marked as a clean handoff while the commit attempt still owned its lease")
 	}
 	getsAfterFirst := env.streamGets()
-
-	// checkpoint が無い linked retry は bounded slice で読み進める。
-	// slice の切れ目では全量を読む代わりに snooze する。
-	if err := fsink.RemoveCheckpoint(env.tempPath); err != nil {
-		t.Fatalf("removing checkpoint to exercise linked retry replay: %v", err)
-	}
-	oldSlice := ingestTransferSlice
-	ingestTransferSlice = 0
-	err = env.w.Work(context.Background(), IngestJobArgs{Site: "default", RecordID: env.recordID})
-	ingestTransferSlice = oldSlice
-	if _, ok := jobq.SnoozeDelay(err); !ok {
-		t.Fatalf("linked retry with an expired hash slice = %v, want Snooze", err)
-	}
-	if n := env.assetCount(t); n != 0 {
-		t.Fatalf("media_assets rows after interrupted hash replay = %d, want 0", n)
-	}
 
 	if err := env.run(); err != nil {
 		t.Fatalf("second Work() error = %v, want commit-only retry to succeed", err)
@@ -2570,10 +2597,15 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if got := env.streamGets(); got != getsAfterFirst {
 		t.Errorf("stream GET calls = %d after retry, want %d (no transfer)", got, getsAfterFirst)
 	}
-	for _, p := range []string{env.tempPath, ingestCheckpointPath(env.tempPath)} {
-		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("stat(%q) error = %v, want os.ErrNotExist after the committed retry", p, err)
-		}
+	if _, err := os.Stat(env.tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat(%q) error = %v, want os.ErrNotExist after the committed retry", env.tempPath, err)
+	}
+	var checkpointRows int
+	if err := env.pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&checkpointRows); err != nil {
+		t.Fatalf("counting DB checkpoints after retry: %v", err)
+	}
+	if checkpointRows != 0 {
+		t.Errorf("DB checkpoint rows after retry = %d, want 0", checkpointRows)
 	}
 	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
 		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
@@ -2869,10 +2901,6 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 			} else if err := os.WriteFile(tempPath, []byte("another attempt"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(ingestCheckpointPath(tempPath), []byte("checkpoint"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-
 			w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: newRecordingEnqueuer(), Precheck: pgstoretest.Media(pool), MediaDir: mediaDir}
 			w.handleAlreadyCommittedIngest(context.Background(), mirakc.NewClient(fake.URL(), nil),
 				jobs.IngestJobArgs{Site: "default", RecordID: recordID}, recordingID, slog.Default())
@@ -2880,14 +2908,12 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 			if data, err := os.ReadFile(fullPath); err != nil || string(data) != "canonical" {
 				t.Errorf("canonical = (%q, %v), want unchanged", data, err)
 			}
-			for _, p := range []string{tempPath, ingestCheckpointPath(tempPath)} {
-				_, err := os.Stat(p)
-				if linked && !errors.Is(err, os.ErrNotExist) {
-					t.Errorf("stat(%q) error = %v, want os.ErrNotExist for the linked temp", p, err)
-				}
-				if !linked && err != nil {
-					t.Errorf("stat(%q) error = %v, want the unrelated temp to remain", p, err)
-				}
+			_, err := os.Stat(tempPath)
+			if linked && !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("stat(%q) error = %v, want os.ErrNotExist for the linked temp", tempPath, err)
+			}
+			if !linked && err != nil {
+				t.Errorf("stat(%q) error = %v, want the unrelated temp to remain", tempPath, err)
 			}
 		})
 	}

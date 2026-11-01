@@ -4,20 +4,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/fsink"
@@ -26,440 +26,88 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
-// cancelAfterBytesTransport は response body の読み出し側で cutoff バイトを
-// 返した直後に ctx を cancel する。サーバーの Flush はクライアントの temp への
-// Write 完了を保証しないため、再開統合テストでは HTTP 層の受理位置ではなく
-// io.Copy の直後を同期点にする。
-type cancelAfterBytesTransport struct {
-	base   http.RoundTripper
-	cancel context.CancelFunc
-	cutoff int64
-	done   atomic.Bool
-}
-
-func (t *cancelAfterBytesTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	resp, err := t.base.RoundTrip(r)
-	if err != nil {
-		return nil, err
-	}
-	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream") &&
-		r.Header.Get("Range") == "bytes=0-" && t.done.CompareAndSwap(false, true) {
-		resp.Body = &cancelAfterBytesBody{
-			ReadCloser: resp.Body,
-			remaining:  t.cutoff,
-			cancel:     t.cancel,
-		}
-	}
-	return resp, nil
-}
-
-type cancelAfterBytesBody struct {
-	io.ReadCloser
-	remaining int64
-	cancel    context.CancelFunc
-}
-
-func (r *cancelAfterBytesBody) Read(p []byte) (int, error) {
-	if r.remaining == 0 {
-		r.cancel()
-		return 0, context.Canceled
-	}
-	if int64(len(p)) > r.remaining {
-		p = p[:r.remaining]
-	}
-	n, err := r.ReadCloser.Read(p)
-	r.remaining -= int64(n)
-	if r.remaining == 0 {
-		// Return the cutoff bytes first. The next Read returns context.Canceled,
-		// so the caller has already written exactly cutoff bytes to the temp.
-		r.cancel()
-	}
-	return n, err
-}
-
-func TestCancelAfterBytesBodyCancelsAfterCutoff(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	body := &cancelAfterBytesBody{
-		ReadCloser: io.NopCloser(strings.NewReader("abcdef")),
-		remaining:  3,
-		cancel:     cancel,
-	}
-
-	buf := make([]byte, 16)
-	n, err := body.Read(buf)
-	if err != nil {
-		t.Fatalf("first read error = %v, want nil", err)
-	}
-	if n != 3 || string(buf[:n]) != "abc" {
-		t.Fatalf("first read = (%d, %q), want (3, %q)", n, buf[:n], "abc")
-	}
-	if err := ctx.Err(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("context after cutoff = %v, want context.Canceled", err)
-	}
-	if n, err := body.Read(buf); n != 0 || !errors.Is(err, context.Canceled) {
-		t.Fatalf("read after cutoff = (%d, %v), want (0, context.Canceled)", n, err)
-	}
-}
-
-// TestIngestTempFile_ResumeReplaysHash は、プロセス死を挟んだ再試行が temp の
-// 先頭から SHA-256 を復元して末尾から続くことを固定する。
-func TestIngestTempFile_ResumeReplaysHash(t *testing.T) {
-	mediaDir := t.TempDir()
-	tempPath := ingestTempFilePath(mediaDir, "site-a", "record-1")
-
-	prefix := makeTSData(4)
-	// 0,1,2,5 なので prefix 内に 1 drop を作る。
-	prefix[3*188+3] = 0x10 | 5
-	suffix := makeTSData(2)
-	// prefix の最後が CC=5 なので、再開後は 6,7 と続ける。
-	suffix[0*188+3] = 0x10 | 6
-	suffix[1*188+3] = 0x10 | 7
-	want := append(append([]byte(nil), prefix...), suffix...)
-
-	firstLock, firstCreated, err := lockIngestTempFile(tempPath)
-	if err != nil {
-		t.Fatalf("locking first ingest temp: %v", err)
-	}
-	if !firstCreated {
-		t.Fatal("first temp lock reported an existing file, want newly created")
-	}
-	firstFile, err := openIngestFile(tempPath, firstLock)
-	if err != nil {
-		_ = firstLock.Close()
-		t.Fatalf("opening first ingest temp: %v", err)
-	}
-	if _, err := firstFile.Write(prefix); err != nil {
-		_ = firstFile.Close()
-		_ = firstLock.Close()
-		t.Fatalf("writing first ingest temp: %v", err)
-	}
-	if err := firstFile.Close(); err != nil {
-		_ = firstLock.Close()
-		t.Fatalf("closing first ingest temp: %v", err)
-	}
-	// プロセス死で fd が閉じた状態を、firstFile の close で模す。ロックと
-	// writer は同じ open file description を共有するが fd は dup なので、
-	// lock fd も閉じて排他を解放する。
-	if err := firstLock.Close(); err != nil {
-		t.Fatalf("releasing first ingest temp lock: %v", err)
-	}
-
-	secondLock, secondCreated, err := lockIngestTempFile(tempPath)
-	if err != nil {
-		t.Fatalf("locking resumed ingest temp: %v", err)
-	}
-	if secondCreated {
-		t.Fatal("resumed temp lock reported a new file, want existing temp")
-	}
-	secondFile, err := openIngestFile(tempPath, secondLock)
-	if err != nil {
-		t.Fatalf("opening resumed ingest temp: %v", err)
-	}
-	defer func() {
-		_ = secondFile.Close()
-		_ = secondLock.Close()
-	}()
-
-	hasher := sha256.New()
-	offset, err := fsink.ReplayTempFile(context.Background(), tempPath, hasher)
-	if err != nil {
-		t.Fatalf("replaying ingest temp: %v", err)
-	}
-	if offset != int64(len(prefix)) {
-		t.Fatalf("replayed offset = %d, want %d", offset, len(prefix))
-	}
-
-	sink := fsink.NewHashingWriter(secondFile, hasher)
-	if _, err := sink.Write(suffix); err != nil {
-		t.Fatalf("writing resumed suffix: %v", err)
-	}
-
-	got, err := os.ReadFile(tempPath)
-	if err != nil {
-		t.Fatalf("reading resumed ingest temp: %v", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("resumed temp bytes differ: got=%d want=%d", len(got), len(want))
-	}
-	if gotHash := hex.EncodeToString(hasher.Sum(nil)); gotHash != sha256Hex(want) {
-		t.Errorf("replayed hash = %s, want %s", gotHash, sha256Hex(want))
-	}
-}
-
-func TestIngestCheckpoint_ResumeFromTailMatchesSingleTransferHash(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
-	prefix := []byte("committed prefix")
-	suffix := []byte(" bytes after the checkpoint")
-
-	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatalf("creating ingest temp: %v", err)
-	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			t.Errorf("closing ingest temp: %v", err)
-		}
-	}()
-	if _, err := file.Write(prefix); err != nil {
-		t.Fatalf("writing ingest prefix: %v", err)
-	}
-	prefixHash := sha256.New()
-	_, _ = prefixHash.Write(prefix)
-	if err := file.Sync(); err != nil {
-		t.Fatalf("syncing ingest prefix: %v", err)
-	}
-	if err := fsink.WriteCheckpoint(tempPath, int64(len(prefix)), prefixHash, nil); err != nil {
-		t.Fatalf("writing ingest checkpoint: %v", err)
-	}
-	if _, err := file.Write(suffix); err != nil {
-		t.Fatalf("writing bytes after checkpoint: %v", err)
-	}
-	checkpointOffset, restored := fsink.RestoreCheckpoint(tempPath, int64(len(prefix)+len(suffix)), sha256.New())
-	if !restored || checkpointOffset != int64(len(prefix)) {
-		t.Fatalf("restored checkpoint = (%d, %v), want (%d, true)", checkpointOffset, restored, len(prefix))
-	}
-
-	hasher := sha256.New()
-	offset, complete, err := fsink.ReplayTempFileWithCheckpoint(context.Background(), tempPath, file, hasher, nil)
-	if err != nil {
-		t.Fatalf("replaying from checkpoint: %v", err)
-	}
-	if !complete {
-		t.Fatal("replay did not complete")
-	}
-	if want := int64(len(prefix) + len(suffix)); offset != want {
-		t.Fatalf("replayed offset = %d, want %d", offset, want)
-	}
-	if got, want := hex.EncodeToString(hasher.Sum(nil)), sha256Hex(append(bytes.Clone(prefix), suffix...)); got != want {
-		t.Fatalf("resumed SHA-256 = %s, want single-transfer SHA-256 %s", got, want)
-	}
-}
-
-func TestIngestCheckpoint_WriteDoesNotRefreshTempActivityTime(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
-	if err := os.WriteFile(tempPath, []byte("committed prefix"), 0o644); err != nil {
-		t.Fatalf("writing ingest temp: %v", err)
-	}
-	oldTime := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
-	if err := os.Chtimes(tempPath, oldTime, oldTime); err != nil {
-		t.Fatalf("setting ingest temp mtime: %v", err)
-	}
-
-	hasher := sha256.New()
-	_, _ = hasher.Write([]byte("committed prefix"))
-	if err := fsink.WriteCheckpoint(tempPath, int64(len("committed prefix")), hasher, nil); err != nil {
-		t.Fatalf("writing ingest checkpoint: %v", err)
-	}
-
-	info, err := os.Stat(tempPath)
-	if err != nil {
-		t.Fatalf("stating ingest temp: %v", err)
-	}
-	if !info.ModTime().Equal(oldTime) {
-		t.Fatalf("ingest temp mtime = %s, want unchanged %s", info.ModTime(), oldTime)
-	}
-}
-
-func TestIngestCheckpoint_InvalidCheckpointFallsBackToFullReplay(t *testing.T) {
-	for _, checkpoint := range []string{"missing", "corrupt", "ahead of temp"} {
-		t.Run(checkpoint, func(t *testing.T) {
-			tempPath := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
-			data := []byte("complete transfer bytes")
-			if err := os.WriteFile(tempPath, data, 0o644); err != nil {
-				t.Fatalf("writing ingest temp: %v", err)
-			}
-			switch checkpoint {
-			case "corrupt":
-				if err := os.WriteFile(ingestCheckpointPath(tempPath), []byte("not a checkpoint"), 0o644); err != nil {
-					t.Fatalf("writing corrupt checkpoint: %v", err)
-				}
-			case "ahead of temp":
-				hasher := sha256.New()
-				_, _ = hasher.Write(data)
-				if err := fsink.WriteCheckpoint(tempPath, int64(len(data)+1), hasher, nil); err != nil {
-					t.Fatalf("writing ahead checkpoint: %v", err)
-				}
-			}
-
-			file, err := os.OpenFile(tempPath, os.O_RDWR|os.O_APPEND, 0o644)
-			if err != nil {
-				t.Fatalf("opening ingest temp: %v", err)
-			}
-			defer func() {
-				if err := file.Close(); err != nil {
-					t.Errorf("closing ingest temp: %v", err)
-				}
-			}()
-			hasher := sha256.New()
-			_, _ = hasher.Write([]byte("stale state"))
-			offset, complete, err := fsink.ReplayTempFileWithCheckpoint(context.Background(), tempPath, file, hasher, nil)
-			if err != nil {
-				t.Fatalf("replaying with %s checkpoint: %v", checkpoint, err)
-			}
-			if !complete || offset != int64(len(data)) {
-				t.Fatalf("replay = (offset %d, complete %v), want (%d, true)", offset, complete, len(data))
-			}
-			if got, want := hex.EncodeToString(hasher.Sum(nil)), sha256Hex(data); got != want {
-				t.Fatalf("fallback SHA-256 = %s, want full-replay SHA-256 %s", got, want)
-			}
-		})
-	}
-}
-
-func TestIngestTempFile_LockIsNonBlockingAndReleasedOnClose(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
-
-	first, _, err := lockIngestTempFile(path)
-	if err != nil {
-		t.Fatalf("first lock: %v", err)
-	}
-	second, _, err := lockIngestTempFile(path)
-	if err == nil {
-		_ = second.Close()
-		_ = first.Close()
-		t.Fatal("second lock succeeded while first lock was held")
-	}
-	if err := first.Close(); err != nil {
-		t.Fatalf("closing first lock: %v", err)
-	}
-
-	third, _, err := lockIngestTempFile(path)
-	if err != nil {
-		t.Fatalf("lock after release: %v", err)
-	}
-	if err := third.Close(); err != nil {
-		t.Fatalf("closing third lock: %v", err)
-	}
-}
-
-func TestIngestTempFile_OrphanLockSkipsLiveIngestAndDoesNotCreate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
-
-	live, _, err := lockIngestTempFile(path)
-	if err != nil {
-		t.Fatalf("live ingest lock: %v", err)
-	}
-	if _, err := lockExistingIngestTempFile(path); !ingestTempLockBusy(err) {
-		t.Fatalf("orphan lock error = %v, want a non-blocking lock conflict", err)
-	}
-	if err := live.Close(); err != nil {
-		t.Fatalf("closing live ingest lock: %v", err)
-	}
-
-	missing := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-2")
-	if _, err := lockExistingIngestTempFile(missing); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("missing orphan lock error = %v, want os.ErrNotExist", err)
-	}
-	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("missing orphan lock created a file: stat error = %v", err)
-	}
-}
-
-func TestIngestTempFile_WriterSharesLockedInode(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
-	lock, _, err := lockIngestTempFile(path)
-	if err != nil {
-		t.Fatalf("locking ingest temp: %v", err)
-	}
-	writer, err := openIngestFile(path, lock)
-	if err != nil {
-		_ = lock.Close()
-		t.Fatalf("opening ingest writer: %v", err)
-	}
-	defer func() {
-		_ = writer.Close()
-		_ = lock.Close()
-	}()
-
-	writerFile, ok := writer.(*os.File)
-	if !ok {
-		t.Fatalf("writer type = %T, want *os.File", writer)
-	}
-	lockInfo, err := lock.Stat()
-	if err != nil {
-		t.Fatalf("stating lock fd: %v", err)
-	}
-	writerInfo, err := writerFile.Stat()
-	if err != nil {
-		t.Fatalf("stating writer fd: %v", err)
-	}
-	if !os.SameFile(lockInfo, writerInfo) {
-		t.Fatal("writer and lock refer to different inodes")
-	}
-}
-
-func TestIngestTempFilePath_DoesNotEscapeForSlashInRecordID(t *testing.T) {
+func TestIngestTempFilePathEscapesIdentityAndIncludesWriterGeneration(t *testing.T) {
 	dir := t.TempDir()
 	path := ingestTempFilePath(dir, "site-a", "record/../other")
 	if filepath.Dir(path) != dir {
 		t.Fatalf("temp path escaped directory: %q", path)
 	}
-	if filepath.Base(path) != ".rokuban-ingest-site-a-record%2F..%2Fother" {
-		t.Fatalf("temp basename = %q, want escaped deterministic basename", filepath.Base(path))
+	if got, want := filepath.Base(path), ".rokuban-ingest-site%2Da-record%2F..%2Fother-g1"; got != want {
+		t.Fatalf("temp basename = %q, want %q", got, want)
 	}
 	if other := ingestTempFilePath(dir, "site-a", "record%2F..%2Fother"); filepath.Base(other) == filepath.Base(path) {
 		t.Fatalf("temp basename collision for escaped record IDs: %q", filepath.Base(path))
 	}
+	if got := filepath.Base(ingestTempWriterFilePath(dir, "site-a", "record/../other", 2)); !strings.HasSuffix(got, "-g2") {
+		t.Fatalf("second writer path = %q, want writer generation 2", got)
+	}
 }
 
-// TestIngestWorker_ResumesExistingTempAfterWorkCancellation は、Work が途中で
-// 終了した後の新しい job が、DB の進捗値ではなく同じ deterministic temp を
-// replay して Range を末尾から再開することを固定する。
-func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
+// Cancellation leaves an unclean handoff. The retry must use Range 0 and a new
+// writer file while the streamer-facing path continues to point at the old bytes
+// until the new writer catches up, then removes the superseded temp on commit.
+// Writer generation must not change the HLS byte generation.
+//
+//nolint:funlen // This integration test follows one restart through the visible pointer, catch-up, and final commit.
+func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.T) {
 	full := makeTSData(8)
 	cutoff := 3 * 188
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var firstStream atomic.Bool
-	var resumedAt atomic.Int64
-	resumedAt.Store(-1)
+	var retryRange atomic.Int64
+	retryRange.Store(-1)
 	var deleteRequested atomic.Bool
+	firstChunkFlushed := make(chan struct{}, 1)
+	retryStreamStarted := make(chan struct{}, 1)
+	retryStreamRelease := make(chan struct{})
+	var retryStreamReleaseOnce sync.Once
+	releaseRetryStream := func() { retryStreamReleaseOnce.Do(func() { close(retryStreamRelease) }) }
+	t.Cleanup(releaseRetryStream)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			offset := mirakctest.RangeOffset(r)
-			if offset == int64(cutoff) {
-				resumedAt.Store(offset)
-			}
 			if offset == 0 && firstStream.CompareAndSwap(false, true) {
-				w.Header().Set("Content-Length", fmt.Sprintf("%d", cutoff))
+				// Keep the response open after the prefix. The test cancels Work only
+				// after recording_ingest_progress confirms that the temp Write completed.
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
 				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write(full[:cutoff])
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
+				firstChunkFlushed <- struct{}{}
+				<-r.Context().Done()
 				return
 			}
+			if offset == 0 {
+				retryRange.Store(offset)
+				select {
+				case retryStreamStarted <- struct{}{}:
+				default:
+				}
+				<-retryStreamRelease
+			}
 			mirakctest.WriteRecordStream(w, r, full)
-
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
 			w.WriteHeader(http.StatusOK)
-
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{
-					Status:  "finished",
-					Options: mirakc.Options{ContentPath: strPtr("resume/recording.m2ts")},
-				},
-				Content: mirakc.ContentInfo{
-					Path:   "/recording/resume/recording.m2ts",
-					Sha256: strPtr(sha256Hex(full)),
-				},
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("resume/recording.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/resume/recording.m2ts", Sha256: strPtr(sha256Hex(full))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(record)
-
 		case r.Method == http.MethodDelete:
 			deleteRequested.Store(true)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
-
 		default:
 			http.NotFound(w, r)
 		}
@@ -473,152 +121,172 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	}
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-resume")
-	streamClient := &http.Client{
-		Transport: &cancelAfterBytesTransport{
-			base:   http.DefaultTransport,
-			cancel: cancel,
-			cutoff: int64(cutoff),
-		},
-	}
-
 	w := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, streamClient)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
-		Precheck:      pgstoretest.Media(pool),
+		Publisher: pgstoretest.Media(pool), MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		RecordTarget: pgstoretest.Recordings(pool), MediaDir: mediaDir, StallTimeout: 5 * time.Second,
+		Precheck: pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	args := IngestJobArgs{Site: "default", RecordID: "rec-resume"}
-	if err := runWorkerViaJobQFake(ctx, w, args); err == nil {
-		t.Fatal("first Work() error = nil, want cancellation after partial transfer")
-	} else if !errors.Is(err, context.Canceled) {
+	firstWork := make(chan error, 1)
+	go func() { firstWork <- runWorkerViaJobQFake(ctx, w, args) }()
+	select {
+	case <-firstChunkFlushed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first stream did not flush its partial prefix")
+	}
+	progressDeadline := time.Now().Add(5 * time.Second)
+	for {
+		var writtenBytes int64
+		err := pool.QueryRow(context.Background(), `SELECT written_bytes FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&writtenBytes)
+		if err == nil && writtenBytes == int64(cutoff) {
+			break
+		}
+		if time.Now().After(progressDeadline) {
+			t.Fatalf("visible progress after first file Write = (%d, %v), want %d bytes", writtenBytes, err, cutoff)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-firstWork; err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("first Work() error = %v, want context.Canceled", err)
 	}
 
 	fullPath := filepath.Join(mediaDir, "sites", "default", "resume", "recording.m2ts")
-	tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", "rec-resume")
-	info, err := os.Stat(tempPath)
+	firstTemp := ingestTempWriterFilePath(filepath.Dir(fullPath), args.Site, args.RecordID, 1)
+	info, err := os.Stat(firstTemp)
+	if err != nil || info.Size() != int64(cutoff) {
+		t.Fatalf("unclean writer temp stat = (%v, %v), want %d bytes", info, err, cutoff)
+	}
+	var firstByteGeneration, visibleBytes int64
+	var visiblePath string
+	if err := pool.QueryRow(context.Background(), `SELECT temp_generation, written_bytes, temp_rel_path FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&firstByteGeneration, &visibleBytes, &visiblePath); err != nil {
+		t.Fatal(err)
+	}
+	firstTempRelPath, err := ingestTempRelPath(mediaDir, firstTemp)
 	if err != nil {
-		t.Fatalf("stat preserved ingest temp: %v", err)
+		t.Fatal(err)
 	}
-	if info.Size() != int64(cutoff) {
-		t.Fatalf("preserved ingest temp size = %d, want %d", info.Size(), cutoff)
+	if visiblePath != firstTempRelPath {
+		t.Fatalf("visible temp path after cancellation = %q, want the first writer path %q", visiblePath, firstTempRelPath)
+	}
+	if visibleBytes != int64(cutoff) {
+		t.Fatalf("visible bytes after cancellation = %d, want %d", visibleBytes, cutoff)
 	}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
-		t.Fatalf("resumed Work() error: %v", err)
+	secondTemp := ingestTempWriterFilePath(filepath.Dir(fullPath), args.Site, args.RecordID, 2)
+	retryDone := make(chan error, 1)
+	go func() { retryDone <- runWorkerViaJobQFake(context.Background(), w, args) }()
+	select {
+	case <-retryStreamStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry did not reach the gated Range 0 stream")
 	}
-
+	if info, err := os.Stat(secondTemp); err != nil || info.Size() != 0 {
+		t.Fatalf("new writer temp before catch-up = (%v, %v), want empty generation 2", info, err)
+	}
+	var pathBeforeCatchup string
+	var bytesBeforeCatchup, generationBeforeCatchup int64
+	if err := pool.QueryRow(context.Background(), `SELECT temp_rel_path, written_bytes, temp_generation FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&pathBeforeCatchup, &bytesBeforeCatchup, &generationBeforeCatchup); err != nil {
+		t.Fatal(err)
+	}
+	if pathBeforeCatchup != firstTempRelPath || bytesBeforeCatchup != int64(cutoff) || generationBeforeCatchup != firstByteGeneration {
+		t.Fatalf("visible progress before catch-up = (%q, %d, %d), want old pointer/offset/generation (%q, %d, %d)", pathBeforeCatchup, bytesBeforeCatchup, generationBeforeCatchup, firstTempRelPath, cutoff, firstByteGeneration)
+	}
+	releaseRetryStream()
+	if err := <-retryDone; err != nil {
+		t.Fatalf("retry Work() error: %v", err)
+	}
+	if _, err := os.Stat(secondTemp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("new writer temp after commit: err=%v, want os.ErrNotExist", err)
+	}
+	if _, err := os.Stat(firstTemp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("superseded writer temp after commit: err=%v, want os.ErrNotExist", err)
+	}
 	got, err := os.ReadFile(fullPath)
 	if err != nil {
-		t.Fatalf("reading resumed canonical file: %v", err)
+		t.Fatalf("reading committed original: %v", err)
 	}
 	if !bytes.Equal(got, full) {
-		t.Fatalf("resumed canonical bytes differ: got=%d want=%d", len(got), len(full))
+		t.Fatalf("committed original differs: got %d bytes, want %d", len(got), len(full))
 	}
-	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("ingest temp after commit: err=%v, want os.ErrNotExist", err)
+	if got := retryRange.Load(); got != 0 {
+		t.Errorf("retry Range offset = %d, want Range 0 after an unclean handoff", got)
 	}
-	if got := resumedAt.Load(); got != int64(cutoff) {
-		t.Errorf("resumed Range offset = %d, want %d", got, cutoff)
+	var committedByteGeneration int64
+	if err := pool.QueryRow(context.Background(), `SELECT ingest_generation FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, recordingID).Scan(&committedByteGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if committedByteGeneration != firstByteGeneration {
+		t.Errorf("committed byte generation = %d, want the unchanged HLS generation %d after writer catch-up", committedByteGeneration, firstByteGeneration)
 	}
 	if !deleteRequested.Load() {
-		t.Error("edge record was not deleted after resumed commit")
+		t.Error("edge record was not deleted after commit")
 	}
 }
 
-// TestIngestCheckpoint_ReplaySkipsBytesBeforeCheckpointOffset は checkpoint が実際に使われ、
-// offset より前の temp を読み直していないことを固定する。checkpoint には temp の先頭と
-// 別のバイト列の状態を書くので、全量 replay に退行すると期待値と一致しない。
-func TestIngestCheckpoint_ReplaySkipsBytesBeforeCheckpointOffset(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-skip")
-	onDisk := []byte("AAAAAAAAAA")
-	claimed := []byte("BBBBBBBBBB")
-	suffix := []byte("-tail")
-	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatal(err)
+func TestIngestWorker_RejectsSymlinkedCleanHandoff(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
 	}
-	defer func() { _ = file.Close() }()
-	if _, err := file.Write(append(bytes.Clone(onDisk), suffix...)); err != nil {
-		t.Fatal(err)
-	}
-	claimedHash := sha256.New()
-	_, _ = claimedHash.Write(claimed)
-	if err := fsink.WriteCheckpoint(tempPath, int64(len(onDisk)), claimedHash, nil); err != nil {
-		t.Fatal(err)
-	}
-
+	ctx := context.Background()
+	media := pgstoretest.Media(pool)
+	recordingID := dbtest.Recording(t, pool)
+	prefix := []byte("already-written-prefix")
 	hasher := sha256.New()
-	if _, complete, err := fsink.ReplayTempFileWithCheckpoint(context.Background(), tempPath, file, hasher, nil); err != nil || !complete {
-		t.Fatalf("replay = (complete=%v, err=%v), want complete", complete, err)
-	}
-	if got, want := hex.EncodeToString(hasher.Sum(nil)), sha256Hex([]byte("BBBBBBBBBB-tail")); got != want {
-		t.Fatalf("SHA-256 = %s, want %s (checkpoint state + tail only)", got, want)
-	}
-}
-
-// cancelAfterFirstWriteHash は最初の Write の直後に cancel する。
-type cancelAfterFirstWriteHash struct {
-	hash.Hash
-	cancel  context.CancelFunc
-	written int64
-}
-
-func (h *cancelAfterFirstWriteHash) Write(p []byte) (int, error) {
-	n, err := h.Hash.Write(p)
-	h.written += int64(n)
-	h.cancel()
-	return n, err
-}
-
-func (h *cancelAfterFirstWriteHash) MarshalBinary() ([]byte, error) {
-	return h.Hash.(interface{ MarshalBinary() ([]byte, error) }).MarshalBinary()
-}
-
-func (h *cancelAfterFirstWriteHash) UnmarshalBinary(b []byte) error {
-	return h.Hash.(interface{ UnmarshalBinary([]byte) error }).UnmarshalBinary(b)
-}
-
-// TestIngestCheckpoint_InterruptedReplaySavesPartialCheckpoint は replay の途中で区切りが
-// 来たとき、実際に hash へ通した位置の checkpoint を残し、そこから再開して同じ SHA-256 になることを固定する。
-func TestIngestCheckpoint_InterruptedReplaySavesPartialCheckpoint(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-partial")
-	data := make([]byte, 1<<20)
-	for i := range data {
-		data[i] = byte(i * 7)
-	}
-	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
-	if err != nil {
+	if _, err := hasher.Write(prefix); err != nil {
 		t.Fatal(err)
+	}
+	hashState, err := fsink.MarshalHashState(hasher)
+	if err != nil {
+		t.Fatalf("marshaling checkpoint hash state: %v", err)
+	}
+	firstOwner := uuid.New()
+	checkpoint, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, firstOwner, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("first Acquire = (%+v, %t, %v), want acquired", checkpoint, acquired, err)
+	}
+	mediaDir := t.TempDir()
+	dir := filepath.Join(mediaDir, "sites", "default", "test")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tempPath := ingestTempWriterFilePath(dir, "default", "rec-symlink", checkpoint.WriterGeneration)
+	externalPath := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(externalPath, prefix, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalPath, tempPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.SaveIngestCheckpoint(ctx, recordingID, firstOwner, checkpoint.WriterGeneration, int64(len(prefix)), hashState); err != nil {
+		t.Fatalf("saving clean handoff: %v", err)
+	}
+	secondOwner := uuid.New()
+	checkpoint, acquired, err = media.AcquireIngestCheckpoint(ctx, recordingID, secondOwner, time.Minute)
+	if err != nil || !acquired || !checkpoint.Resumed {
+		t.Fatalf("second Acquire = (%+v, %t, %v), want resumed handoff", checkpoint, acquired, err)
+	}
+
+	w := &IngestWorker{MediaDir: mediaDir, Publisher: media}
+	checkpoint, openedPath, _, file, offset, err := w.openIngestWriterFile(
+		ctx, dir, "default", "rec-symlink", recordingID, secondOwner, checkpoint,
+	)
+	if err != nil {
+		t.Fatalf("opening replacement writer: %v", err)
 	}
 	defer func() { _ = file.Close() }()
-	if _, err := file.Write(data); err != nil {
-		t.Fatal(err)
+	if checkpoint.WriterGeneration != 2 || checkpoint.Resumed || offset != 0 {
+		t.Fatalf("checkpoint after rejecting symlink = (%+v, offset %d), want fresh generation 2 at zero", checkpoint, offset)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	hasher := &cancelAfterFirstWriteHash{Hash: sha256.New(), cancel: cancel}
-	offset, complete, err := fsink.ReplayTempFileWithCheckpoint(ctx, tempPath, file, hasher, nil)
-	if complete || !errors.Is(err, context.Canceled) {
-		t.Fatalf("replay = (complete=%v, err=%v), want incomplete context.Canceled", complete, err)
+	if openedPath != ingestTempWriterFilePath(dir, "default", "rec-symlink", 2) {
+		t.Fatalf("replacement path = %q, want generation 2", openedPath)
 	}
-	if hasher.written == 0 || hasher.written >= int64(len(data)) || offset != hasher.written {
-		t.Fatalf("offset = %d, hashed = %d, size = %d; want offset == hashed within (0, size)", offset, hasher.written, len(data))
+	if got, err := os.ReadFile(externalPath); err != nil || !bytes.Equal(got, prefix) {
+		t.Fatalf("symlink target after rejecting handoff = (%q, %v), want unchanged prefix", got, err)
 	}
-
-	resumed := sha256.New()
-	saved, restored := fsink.RestoreCheckpoint(tempPath, int64(len(data)), resumed)
-	if !restored || saved != hasher.written {
-		t.Fatalf("saved checkpoint = (%d, %v), want (%d, true)", saved, restored, hasher.written)
-	}
-	if _, complete, err := fsink.ReplayTempFileWithCheckpoint(context.Background(), tempPath, file, resumed, nil); err != nil || !complete {
-		t.Fatalf("resumed replay = (complete=%v, err=%v)", complete, err)
-	}
-	if got, want := hex.EncodeToString(resumed.Sum(nil)), sha256Hex(data); got != want {
-		t.Fatalf("resumed SHA-256 = %s, want %s", got, want)
+	if info, err := os.Lstat(tempPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("original handoff path = (%v, %v), want preserved symlink", info, err)
 	}
 }

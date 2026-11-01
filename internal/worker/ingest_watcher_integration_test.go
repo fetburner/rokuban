@@ -373,7 +373,8 @@ func assertIngestLifecycleWaited(t *testing.T, pool *pgxpool.Pool, deleteAttempt
 	if deleteAttempts != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", deleteAttempts)
 	}
-	tempPath := filepath.Join(mediaDir, "sites", "default", "test", mediapath.IngestTempFilePrefix+"default-"+recordID)
+	tempName := mediapath.IngestTempFilePrefix + "default-" + strings.ReplaceAll(recordID, "-", "%2D") + "-g1"
+	tempPath := filepath.Join(mediaDir, "sites", "default", "test", tempName)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != wantTempSize {
 		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, wantTempSize)
 	}

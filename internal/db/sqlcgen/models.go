@@ -428,6 +428,16 @@ type RecordingEncodePolicy struct {
 	CmDetectGeneration int64
 }
 
+type RecordingIngestCheckpoint struct {
+	RecordingID      int64
+	LeaseOwner       pgtype.UUID
+	LeaseExpiresAt   time.Time
+	WriterGeneration int64
+	HandedOff        bool
+	OffsetBytes      int64
+	HashState        []byte
+}
+
 type RecordingIngestProgress struct {
 	RecordingID   int64
 	WrittenBytes  int64

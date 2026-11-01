@@ -182,8 +182,19 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != int64(len(tsData)) {
 		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, len(tsData))
 	}
-	if _, err := os.Stat(ingestCheckpointPath(tempPath)); err != nil {
-		t.Errorf("SHA-256 checkpoint while waiting: %v, want present", err)
+	var handedOff bool
+	var offset int64
+	var hashState []byte
+	if err := pool.QueryRow(context.Background(), `
+SELECT handed_off, offset_bytes, hash_state
+FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&handedOff, &offset, &hashState); err != nil {
+		t.Fatalf("reading DB SHA-256 checkpoint while waiting: %v", err)
+	}
+	if !handedOff || offset != int64(len(tsData)) || len(hashState) == 0 {
+		t.Errorf("DB SHA-256 checkpoint while waiting = (handed_off=%t, offset=%d, state bytes=%d), want clean checkpoint at %d", handedOff, offset, len(hashState), len(tsData))
+	}
+	if _, err := os.Stat(tempPath + ".checkpoint"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("legacy sidecar checkpoint stat error = %v, want no sidecar file", err)
 	}
 
 }

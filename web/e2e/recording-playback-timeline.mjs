@@ -90,7 +90,7 @@ const apiHlsRecording = {
     { profile: 'sd', masterUrl: apiHlsPath(1, 'sd') },
   ],
 }
-// 410 復旧の判定は、録画が終わって取り込み中の録画で、temp を捨てて世代を替えるサーバーの遷移を再現する。
+// writer 再起動中は旧 byte generation を維持し、新 writer が旧 offset に追いついた後だけ世代を替える。
 const apiHlsRecoveryFinished = {
   ...apiHlsRecording,
   startAt: new Date(now - 120_000).toISOString(),
@@ -107,7 +107,7 @@ const apiHlsRecoveryV1 = {
 const apiHlsRecoveryEmpty = { ...apiHlsRecoveryFinished, ingest: { state: 'pending' }, hlsPlayback: [] }
 const apiHlsRecoveryV2 = {
   ...apiHlsRecoveryFinished,
-  ingest: { state: 'transferring', writtenBytes: 100_000, observedAt: new Date(now).toISOString() },
+  ingest: { state: 'transferring', writtenBytes: 1_500_000, observedAt: new Date(now).toISOString() },
   hlsPlayback: [
     { profile: 'hd', masterUrl: apiHlsPath(2, 'hd') },
     { profile: 'sd', masterUrl: apiHlsPath(2, 'sd') },
@@ -788,6 +788,34 @@ async function runRecordingApiHlsRecoveryCheck() {
     await page.close()
     return
   }
+
+  // 新 writer が先頭から再取得して旧 offset に届く前は、HLS URL と可視 offset が旧値のまま続く。
+  const progressBeforeRestart = await page.evaluate(() => window.__progressedSeconds)
+  const masterRequestsBeforeRestart = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  const restartRefresh = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return response.request().method() === 'GET' && responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 })
+  activeRecording = {
+    ...apiHlsRecoveryV1,
+    ingest: { ...apiHlsRecoveryV1.ingest, observedAt: new Date().toISOString() },
+  }
+  await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  const duringRestart = await restartRefresh.then((response) => response.json()).catch(() => null)
+  if (duringRestart?.ingest?.writtenBytes !== 1_000_000 ||
+    !duringRestart.hlsPlayback.some(({ masterUrl }) => masterUrl === apiHlsPath(1, 'hd'))) {
+    ng.push(`新 writer が catch-up する前に旧 HLS pointer と offset を維持しない (${JSON.stringify(duringRestart?.ingest)}, ${JSON.stringify(duringRestart?.hlsPlayback)})`)
+  }
+  const continuedDuringRestart = await page.waitForFunction((baseline) => {
+    const video = document.querySelector('video')
+    return video && !video.paused && window.__progressedSeconds > baseline + 0.5
+  }, progressBeforeRestart, { timeout: 5000 }).then(() => true).catch(() => false)
+  if (!continuedDuringRestart) ng.push('新 writer が旧 offset へ追いつく前に録画 HLS の再生が止まる')
+  const masterRequestsDuringRestart = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
+  if (masterRequestsDuringRestart !== masterRequestsBeforeRestart) {
+    ng.push('旧 HLS pointer を維持する writer 再起動中に master playlist を張り直した')
+  }
+
   const sessionStartSeconds = apiHlsRecoveryV1.resumePositionMs / 1000
   // 応答を待つ（要求の時点では、止まる直前の位置を読む handler がまだ終わっていない）。
   const nextMaster = page.waitForResponse((response) => new URL(response.url()).pathname === apiHlsPath(2, 'hd'), { timeout: 30000 })

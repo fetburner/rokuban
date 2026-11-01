@@ -345,6 +345,59 @@ func TestRecordingHLSSegmentCacheSurvivesTempCommitAtSameURL(t *testing.T) {
 	}
 }
 
+// Ingest writer の切替中も、同じ HLS 世代で公開した playlist とセグメントを保つ。
+// 新 writer が旧 writer の進捗へ追いつく前に DB の temp_rel_path を切り替えても、
+// 読者には旧 path を見せ続ける必要がある。byte 世代は writer 世代では変えない。
+//
+// 壊し方: temp_rel_path の切替時に temp_generation も writer 世代へ変える。
+// 既に配った URL が 410 になり、同じ HLS URL から segment を取得できなくなる。
+func TestRecordingHLSTempWriterSwitchKeepsPublishedSegmentsAndPlaylist(t *testing.T) {
+	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20.04)})
+	target := h.store.target
+	target.Kind = store.RecordingHLSInputTemp
+	target.ID = 0
+	target.RelPath = "ingest/old-writer.ts"
+	target.StoreName = "main"
+	if err := os.WriteFile(filepath.Join(h.root, target.RelPath), []byte("old writer has the published prefix"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.store.setTarget(target)
+
+	playlistPath := recordingHLSRequestPath("main", 42, 7, "video/index.m3u8")
+	before := h.get(t, playlistPath)
+	beforeRows, beforeEndlist := playlistRows(before.Body.String())
+	if before.Code != http.StatusOK || beforeEndlist || len(beforeRows) != 5 {
+		t.Fatalf("playlist before writer switch = %d, %d rows, endlist %v: %s", before.Code, len(beforeRows), beforeEndlist, before.Body.String())
+	}
+
+	segmentKey := SegmentKey{RecordingID: "42", Generation: "7", Profile: "hd", Rendition: "video", Number: 0}
+	h.seedSegment(t, segmentKey, "previously published transport stream")
+	segmentPath := recordingHLSRequestPath("main", 42, 7, "video/0.ts")
+	firstSegment := h.get(t, segmentPath)
+	if firstSegment.Code != http.StatusOK || firstSegment.Body.String() != "previously published transport stream" {
+		t.Fatalf("segment before writer switch = %d %q", firstSegment.Code, firstSegment.Body.String())
+	}
+
+	// 新 writer のファイルはまだ空だが、旧 writer の有効な進捗を追い越すまで
+	// DB の HLS target は旧 path を指し続ける。byte generation も同じ値を保つ。
+	if err := os.WriteFile(filepath.Join(h.root, "ingest/new-writer.ts"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target.RelPath = "ingest/new-writer.ts"
+	target.SizeBytes = 0
+	h.store.setTarget(target)
+
+	after := h.get(t, playlistPath)
+	afterRows, afterEndlist := playlistRows(after.Body.String())
+	if after.Code != http.StatusOK || afterEndlist || strings.Join(afterRows, "\n") != strings.Join(beforeRows, "\n") {
+		t.Fatalf("playlist after writer switch = %d, %d rows, endlist %v: %s; before rows were %v", after.Code, len(afterRows), afterEndlist, after.Body.String(), beforeRows)
+	}
+	segmentAfterSwitch := h.get(t, segmentPath)
+	if segmentAfterSwitch.Code != http.StatusOK || segmentAfterSwitch.Body.String() != firstSegment.Body.String() {
+		t.Fatalf("published segment after writer switch = %d %q, want the same %d bytes", segmentAfterSwitch.Code, segmentAfterSwitch.Body.String(), firstSegment.Body.Len())
+	}
+}
+
 // 壊し方: 異なる temp generation を stale として検出しない。
 func TestRecordingHLSTempGenerationChangeReturnsGone(t *testing.T) {
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")

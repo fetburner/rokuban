@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -18,6 +17,20 @@ type File interface {
 	io.Writer
 	Sync() error
 	Close() error
+}
+
+// DuplicateFile は close-on-exec を原子的に設定して fd を複製する。
+func DuplicateFile(file *os.File) (*os.File, error) {
+	fd, err := unix.FcntlInt(file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	dup := os.NewFile(uintptr(fd), file.Name())
+	if dup == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("creating duplicate temp fd")
+	}
+	return dup, nil
 }
 
 // HashingWriter は下流 writer が受理したバイトだけを hash に流す。
@@ -46,107 +59,10 @@ func (w *HashingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// OpenFileFromLock は flock 済み temp fd と同じ open file description を複製して返す。
-// dup により writer の Close 後も元 fd が flock を保持する。
-func OpenFileFromLock(locked *os.File) (File, error) {
-	return DuplicateFile(locked)
-}
-
-// DuplicateFile は close-on-exec を原子的に設定して fd を複製する。
-func DuplicateFile(locked *os.File) (*os.File, error) {
-	fd, err := unix.FcntlInt(locked.Fd(), unix.F_DUPFD_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	dup := os.NewFile(uintptr(fd), locked.Name())
-	if dup == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("creating duplicate temp fd")
-	}
-	return dup, nil
-}
-
-// LockTempFile は O_APPEND の temp を作成または開き、非待機の排他 flock を取る。
-// 返す bool はこの呼び出しが temp を作成したかを示す。
-func LockTempFile(path string) (*os.File, bool, error) {
-	return lockTempFile(path, true)
-}
-
-// LockExistingTempFile は既存 temp だけを O_APPEND で開き、非待機の排他 flock を取る。
-// 存在しないときに空ファイルを作らないため、回収側が未作成 temp を誤認しない。
-func LockExistingTempFile(path string) (*os.File, error) {
-	lock, _, err := lockTempFile(path, false)
-	return lock, err
-}
-
-func lockTempFile(path string, create bool) (*os.File, bool, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		flags := os.O_RDWR | os.O_APPEND
-		created := false
-		var lock *os.File
-		var err error
-		if create {
-			lock, err = os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o666)
-			if err == nil {
-				created = true
-			} else if errors.Is(err, os.ErrExist) {
-				lock, err = os.OpenFile(path, flags, 0o666)
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-			}
-		} else {
-			lock, err = os.OpenFile(path, flags, 0o666)
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			_ = lock.Close()
-			return nil, false, err
-		}
-
-		lockedInfo, err := lock.Stat()
-		pathInfo, pathErr := os.Stat(path)
-		if err == nil && pathErr == nil && os.SameFile(lockedInfo, pathInfo) {
-			return lock, created, nil
-		}
-
-		// open と flock の間に path が unlink / rename された場合、見えない inode を返さず取り直す。
-		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		_ = lock.Close()
-		if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
-			return nil, false, pathErr
-		}
-		if err != nil {
-			return nil, false, err
-		}
-	}
-	return nil, false, fmt.Errorf("temp file %q was replaced while acquiring its lock", path)
-}
-
-// TempLockBusy は err が non-blocking flock の競合を表すか返す。
-func TempLockBusy(err error) bool {
-	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
-}
-
-// RemoveTemp は temp と対応する checkpoint を削除し、両方の削除エラーを返す。
+// RemoveTemp は ingest temp を削除する。
 func RemoveTemp(path string) error {
-	var errs []error
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		errs = append(errs, fmt.Errorf("removing temp file %q: %w", path, err))
-	}
-	if err := RemoveCheckpoint(path); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
-
-// RemoveCheckpoint は temp に対応する SHA-256 checkpoint を削除する。
-func RemoveCheckpoint(tempPath string) error {
-	checkpointPath := CheckpointPath(tempPath)
-	if err := os.Remove(checkpointPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("removing checkpoint %q: %w", checkpointPath, err)
+		return fmt.Errorf("removing temp file %q: %w", path, err)
 	}
 	return nil
 }
