@@ -90,7 +90,9 @@ const apiHlsRecording = {
     { profile: 'sd', masterUrl: apiHlsPath(1, 'sd') },
   ],
 }
-// writer 再起動中は旧 byte generation を維持し、新 writer が旧 offset に追いついた後だけ世代を替える。
+// 録画 API の 410 復旧（HLS 世代 1 から 2 への切替）の fixture。
+// writer の切替では temp_generation は変わらない（バイト列が同じだから）。この fixture が表す世代の変更は、
+// 期限切れ（410）を経た復旧だけである。
 const apiHlsRecoveryFinished = {
   ...apiHlsRecording,
   startAt: new Date(now - 120_000).toISOString(),
@@ -789,7 +791,7 @@ async function runRecordingApiHlsRecoveryCheck() {
     return
   }
 
-  // 新 writer が先頭から再取得して旧 offset に届く前は、HLS URL と可視 offset が旧値のまま続く。
+  // 新 writer が旧 offset に届く前の再取得でも、browser は master を取り直さずに再生を続ける（fixture は旧 URL を返す）。
   const progressBeforeRestart = await page.evaluate(() => window.__progressedSeconds)
   const masterRequestsBeforeRestart = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
   const restartRefresh = page.waitForResponse((response) => {
@@ -801,11 +803,9 @@ async function runRecordingApiHlsRecoveryCheck() {
     ingest: { ...apiHlsRecoveryV1.ingest, observedAt: new Date().toISOString() },
   }
   await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  // fixture は同じ応答を返すので、ここで見るのは再取得が返ったことと、browser が master を取り直さないこと。
   const duringRestart = await restartRefresh.then((response) => response.json()).catch(() => null)
-  if (duringRestart?.ingest?.writtenBytes !== 1_000_000 ||
-    !duringRestart.hlsPlayback.some(({ masterUrl }) => masterUrl === apiHlsPath(1, 'hd'))) {
-    ng.push(`新 writer が catch-up する前に旧 HLS pointer と offset を維持しない (${JSON.stringify(duringRestart?.ingest)}, ${JSON.stringify(duringRestart?.hlsPlayback)})`)
-  }
+  if (!duringRestart) ng.push('writer 再起動中に録画 API の再取得が応答しない')
   const continuedDuringRestart = await page.waitForFunction((baseline) => {
     const video = document.querySelector('video')
     return video && !video.paused && window.__progressedSeconds > baseline + 0.5
@@ -828,11 +828,9 @@ async function runRecordingApiHlsRecoveryCheck() {
     ingest: { ...activeRecording.ingest, observedAt: new Date().toISOString(), writtenBytes: 1_500_000 },
   }
   await page.evaluate(() => window.__sendRecordingEvent('recordings'))
+  // 同じ URL のまま再生が続くことは、browser が master を取り直さないことで確かめる（API の値は fixture が決める）。
   const caughtUp = await catchupRefresh.then((response) => response.json()).catch(() => null)
-  if (caughtUp?.ingest?.writtenBytes !== 1_500_000 ||
-    !caughtUp.hlsPlayback.some(({ masterUrl }) => masterUrl === apiHlsPath(1, 'hd'))) {
-    ng.push(`同じ byte generation の writer catch-up 後に可視 offset と旧 HLS pointer を維持しない (${JSON.stringify(caughtUp?.ingest)}, ${JSON.stringify(caughtUp?.hlsPlayback)})`)
-  }
+  if (!caughtUp) ng.push('writer catch-up 後に録画 API の再取得が応答しない')
   const continuedAfterCatchup = await page.waitForFunction((baseline) => {
     const video = document.querySelector('video')
     return video && !video.paused && window.__progressedSeconds > baseline + 0.5
