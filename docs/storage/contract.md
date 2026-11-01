@@ -272,11 +272,11 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 recording_id だけで名前を作ると、DB の再構築後に rescue が採番した録画と新しい ingest が同じ path を使う可能性がある。
 
-ingest は、mirakc の `Record.Content.Path` の basename だけを使い、`sites/{site}/{uuid}/{basename}` を候補にする。contentPath のディレクトリ部分は使わない。uuid は乱数（UUID v4）なので、ID 列がリセットされても衝突しない。uuid は最初の Work でチェックポイントに保存し、再試行と commit は保存済みの `rel_path` を使う。同じ basename の録画を再取得しても uuid directory が異なり、最初の Work で保存した path は失敗後も変わらない。
+ingest は、mirakc の `Record.Content.Path` の basename だけを使い、`sites/{site}/{uuid}/{basename}` を候補にする。contentPath のディレクトリ部分は使わない。uuid は乱数（UUID v4）なので、ID 列がリセットされても衝突しない。uuid は最初の Work でチェックポイントに保存し、再試行と commit は保存済みの `rel_path` を使う。同じ basename の録画を再取得しても uuid のディレクトリが異なり、最初の Work で保存したパスは失敗後も変わらない。
 
 #### 予約ディレクトリと前置の規則
 
-予約ディレクトリは用途で分ける。トップレベルの予約は 3 つで、どれも一般のディレクトリ名として使うと正しく動かなくなるので外せない。
+この節は、トップレベルの予約ディレクトリの用途と、原本の前置の形を定める。
 
 トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` である。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する。`thumbnails/` はサムネイルの名前空間（§5.1）で、`sites/` は rescue が site を読み取る原本の名前空間になる。
 
