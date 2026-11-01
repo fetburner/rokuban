@@ -52,11 +52,11 @@ temp は宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}
 
 きれいな引き継ぎ（同じ置き場の送信状態が保存され、保存で lease を手放したあと）だけ続きを送る。保存せずに抜けた試行、置き場が違う送信状態、続けられない送信状態は、新しいアップロードから始める。古い送信状態は置き換えのときに掃除待ちへ移る。転送元の長さが宣言と違うと分かった試行も、ずれたバイトを含む送信状態は保存しない。
 
-続けられないと分かったとき（`ErrUploadInvalid`）は、送信状態を保存してから lease を切り、この試行を失敗として数える。Complete が InvalidPart などで落ちたときも、`ErrUploadInvalid` に変換して同じ扱いにする。次の試行は新しいアップロードで最初から送る。古い試行の送信中のパートが同じ番号を後から上書きすることがある。そのとき保存した ETag と合わず、Complete が InvalidPart で落ちる。同じ番号のパートを送り直しても ETag が一致するとは限らない（SSE-KMS などでは ETag が MD5 ではない）ので、続けずに取り直す。
+続けられないと分かったとき（`ErrUploadInvalid`）は、送信状態を保存してから lease を切り、この試行を失敗として数える。Complete が InvalidPart などで落ちたときも、`ErrUploadInvalid` に変換して同じ扱いにする。次の試行は新しいアップロードで最初から送る。古い試行の送信中のパートが同じ番号を後から上書きすることがある。上書きされたパートの ETag が保存した ETag と合わなければ、Complete が InvalidPart で落ちる。同じ番号のパートを送り直しても ETag が一致するとは限らない（SSE-KMS などでは ETag が MD5 ではない）ので、続けずに取り直す。
 
 進捗の行が消えると（完了、破棄、回収、コピーの CASCADE）、送信状態は DB の trigger で掃除待ちの表に移る。掃除は転送の Work の冒頭で、その宛先の置き場の分だけ行う。掃除待ちの行ごとに置き場の `AbortUpload` を呼び、置き場が `gone` と答えた行だけを消す。S3 では Abort のあとの ListParts が NoSuchUpload を返したときが gone で、FS では staging が無いときが gone である。掃除全体は短い締切（30 秒）で区切り、超えた残りは次の Work に回す。
 
-S3 の Abort は 1 回で済むとは限らない。送信中のパートが Abort のあとに残りうる。MinIO の固定版では、Abort 済みの UploadId への Abort も成功を返す（根拠の節）。そこで Abort が成功しても gone とは扱わない。Abort のあとの ListParts が NoSuchUpload を返すまで記録を残し、次の Work で繰り返す。掃除が失敗しても転送は止めない。記録の無い送信状態は掃除しない。
+S3 の Abort は 1 回で済むとは限らない。AWS のリファレンスは、Abort のあとにパートが残りうるので ListParts で確かめるよう勧めている。そこで Abort が成功しても gone とは扱わない。Abort のあとの ListParts が NoSuchUpload を返すまで記録を残し、次の Work で繰り返す。掃除が失敗しても転送は止めない。記録の無い送信状態は掃除しない。
 
 FS の staging は、書かれないまま mtime 猶予と aging を過ぎると削除 reconcile の孤児回収が消す。孤児回収は進捗の行を見ない。消えた staging の続きは `ErrUploadInvalid` になり、1 回の失敗として数えて新しいアップロードから始まる。
 
@@ -195,8 +195,8 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 上限の直前の不一致でも照合が回り、失敗が 1 回数えられる: `TestStorageTransferWorkerCountsVerifiedFailureAtAttemptLimitEdge`
 - S3 の派生物への転送は、転送元の FS 置き場の worker が slice をまたいで完了する: `TestStorageTransferWorkerSendsDerivedCopyToS3FromFSSource`。宛先の root は無い
 - MinIO での同じ経路。5 MiB 以上のパートを slice をまたいで送る: `TestS3DerivedObjectPublicationAndRecovery/FS_derived_copy_transfers_to_S3_across_slices`
-- MinIO の固定版は、Abort 済みの UploadId への Abort も成功を返す。修正前は `TestStoreContract/resumable_upload_abort_repeats_until_gone` が落ちた
-  - 検出: `internal/objstore/s3store` の `TestStoreContract`（`s3conformance` タグ、CI の `s3-conformance` ジョブ）
+- 完了した upload の送信状態は、掃除で gone になり行が消える（実 MinIO）
+  - 検査: `TestS3DerivedObjectPublicationAndRecovery/FS_derived_copy_transfers_to_S3_across_slices`
 - 転送元が未マウントの S3 宛ての job は、予約せず再試行できるエラーで止まる: `TestStorageTransferWorkerRequiresSourceMountForS3Destination`
 - S3 宛ての候補は転送元のキューに積む。FS 宛ての候補は宛先のキューのままで、原本は S3 宛てにならない: `TestStorageTransferReconcileRoutesS3CopiesToSourceQueue`
 - キューの選択: `TestPhysicalQueueForRequiresQueueSiteOnlyForSiteBoundQueues`
