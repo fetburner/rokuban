@@ -16,13 +16,17 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // TestS3DerivedObjectPublicationAndRecovery は、実際の S3 API の実装（CI では MinIO）に対して、
@@ -332,6 +336,96 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		}
 		if !containsString(aged, key) {
 			t.Fatalf("DB-less key %q is absent from aged orphan report %v", key, aged)
+		}
+	})
+
+	t.Run("FS derived copy transfers to S3 across slices", func(t *testing.T) {
+		// 転送元の FS 置き場の worker が S3 へ直接送る。S3 のパートは 5 MiB 以上なので、帯域の上限と短い slice で
+		// 複数の slice に分け、途中の保存から続けて完了することを確かめる。
+		root := t.TempDir()
+		if err := mediapath.WriteStoreMarker(root, dbtest.StoreName); err != nil {
+			t.Fatalf("writing source store marker: %v", err)
+		}
+		recordingID := dbtest.Recording(t, pool)
+		profile := "h264"
+		relPath := fmt.Sprintf("encoded/s3-fs-transfer-%d.mp4", time.Now().UnixNano())
+		content := bytes.Repeat([]byte("fs-to-s3-transfer-"), 3<<20)
+		assetID := seedEncodedOrThumbnailAsset(t, pool, root, recordingID, store.AssetKindEncoded, &profile, relPath, content)
+		t.Cleanup(func() {
+			if err := objects.Delete(context.Background(), relPath); err != nil {
+				t.Errorf("deleting S3 transfer key %q: %v", relPath, err)
+			}
+		})
+		cfg := config.StorageConfig{
+			Stores: map[string]config.StoreConfig{
+				dbtest.StoreName: {Kind: "fs"},
+				objectStoreName:  {Kind: "s3", Bucket: bucket},
+			},
+			Originals: []config.OriginalStoreRule{{Store: dbtest.StoreName}},
+			Derived:   objectStoreName,
+			Transfer: config.StorageTransferConfig{
+				Overlap:   2 * time.Hour,
+				Bandwidth: map[string]string{dbtest.StoreName: "10MiBps"},
+			},
+		}
+		fingerprint, err := cfg.PolicyFingerprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		restoreSlice := storageTransferSlice
+		storageTransferSlice = time.Second
+		t.Cleanup(func() { storageTransferSlice = restoreSlice })
+		sourceFS, err := fsstore.New(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker := StorageTransferWorker{
+			Storage: pgstore.NewMedia(pool, dbtest.StoreName, ""), Config: cfg,
+			Roots:        map[string]string{dbtest.StoreName: root},
+			ObjectStores: map[string]objstore.Store{dbtest.StoreName: sourceFS, objectStoreName: objects},
+			ScratchDir:   t.TempDir(),
+		}
+		args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: objectStoreName, SourceStore: dbtest.StoreName, PolicyFingerprint: fingerprint}
+		snoozes := 0
+		for range 300 {
+			err := worker.Work(ctx, args)
+			if err == nil {
+				break
+			}
+			if delay, ok := jobq.SnoozeDelay(err); !ok || delay != 0 {
+				t.Fatalf("Work returned %v; want a slice snooze with delay 0", err)
+			}
+			snoozes++
+		}
+		if snoozes == 0 {
+			t.Fatal("transfer finished in one slice; the test needs several slices to exercise resumption")
+		}
+		if got := env.copyState(t, relPath); got != "active" {
+			t.Fatalf("S3 copy state = %q, want active", got)
+		}
+		object, err := objects.Head(ctx, relPath)
+		if err != nil {
+			t.Fatalf("heading transferred S3 object: %v", err)
+		}
+		if object.Size != int64(len(content)) || object.SHA256 != fmt.Sprintf("%x", sha256.Sum256(content)) {
+			t.Fatalf("transferred S3 metadata = (size %d, sha256 %q), want (%d, %x)", object.Size, object.SHA256, len(content), sha256.Sum256(content))
+		}
+
+		// 完了した upload の送信状態は、進捗の行が消えるときに掃除待ちへ移る。その行が実 MinIO の Abort で
+		// gone になり、掃除で消えることを確かめる。完了直後に行があることを先に見て、空虚な成功にしない。
+		abandonedOnS3 := func() int {
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_transfer_abandoned_uploads WHERE store = $1`, objectStoreName).Scan(&n); err != nil {
+				t.Fatalf("counting abandoned uploads on %s: %v", objectStoreName, err)
+			}
+			return n
+		}
+		if n := abandonedOnS3(); n < 1 {
+			t.Fatalf("abandoned uploads on %s after completion = %d, want at least 1 (the completed upload)", objectStoreName, n)
+		}
+		worker.abortAbandonedUploads(ctx, objectStoreName)
+		if n := abandonedOnS3(); n != 0 {
+			t.Fatalf("abandoned uploads on %s after cleanup = %d, want 0 (MinIO must answer NoSuchUpload for a completed upload)", objectStoreName, n)
 		}
 	})
 }

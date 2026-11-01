@@ -54,8 +54,11 @@ const (
 	// 既定を明示する。
 	storageSyncJobTimeout              = time.Minute
 	storageTransferReconcileJobTimeout = 5 * time.Minute
-	// FS 間コピーは GB 単位になりうる。queue adapter の timeout は 1 回の転送の締切。
-	storageTransferJobTimeout = 12 * time.Hour
+	// 転送（原本・派生物）は worker の storageTransferSlice（4 分）ごとに snooze して継続するので、
+	// 締切は資産の大きさや転送速度で決まらない。5 分にしたのは、締切が slice より長く、
+	// slice の終わりの保存と片付けが締切の前に収まるようにするためである。
+	// 締切を長くするとプロセス死後の再配送上限も長くなる。
+	storageTransferJobTimeout = 5 * time.Minute
 )
 
 // EncodeUnknownDurationTimeout is the execution limit for an encode job without a saved

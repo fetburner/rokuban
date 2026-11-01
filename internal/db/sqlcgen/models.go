@@ -212,13 +212,16 @@ type MediaAssetCopy struct {
 }
 
 type MediaAssetCopyTransferProgress struct {
-	CopyID         int64
-	LeaseOwner     pgtype.UUID
-	LeaseExpiresAt time.Time
-	Generation     int64
-	HandedOff      bool
-	OffsetBytes    int64
-	HashState      []byte
+	CopyID          int64
+	LeaseOwner      pgtype.UUID
+	LeaseExpiresAt  time.Time
+	Generation      int64
+	HandedOff       bool
+	OffsetBytes     int64
+	HashState       []byte
+	UploadStore     *string
+	UploadState     []byte
+	VerifyingSource bool
 }
 
 type MediaAssetCut struct {
@@ -229,6 +232,14 @@ type MediaAssetCut struct {
 type MediaAssetThumbnailSeek struct {
 	MediaAssetID int64
 	SeekMs       int64
+}
+
+// Upload states no longer used by any transfer; a row exists until the store has aborted that upload.
+type MediaAssetTransferAbandonedUpload struct {
+	ID          int64
+	Store       string
+	UploadState []byte
+	AbandonedAt time.Time
 }
 
 // Failure observations for one destination media asset copy; successful transfers clear the row.

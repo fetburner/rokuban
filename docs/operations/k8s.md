@@ -33,7 +33,7 @@ ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読する�
 
 実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）か `<論理名>_<store>`（例: `encode_takamatsu`）になる。DB だけを触る reconcile（`cleanup`）と `ruler` などは修飾されない。KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
 
-置き場で修飾するキューのジョブは、ジョブを積む側が置き場を選んで積む。`transfer` 以外は原本のコピーのある置き場を選び、`transfer` は書き込み先の置き場を選ぶ（`StorageTransferArgs` の `QueueStore`）。
+置き場で修飾するキューのジョブは、ジョブを積む側が置き場を選んで積む。`transfer` 以外は原本のコピーのある置き場を選ぶ。`transfer` は宛先が FS なら宛先の置き場を選び、宛先が S3 の派生物の置き場なら転送元の FS 置き場（`SourceStore`）のキューを選ぶ（`StorageTransferArgs` の `QueueStore`）。S3 へ送るのは転送元の置き場の worker だからである。
 
 worker は実行時に、ジョブの置き場をマウントしているかを照合する。マウントしていなければ、ファイルに触れる前に失敗にして `rokuban_store_route_mismatch_total{kind,store}` を増やす。
 
@@ -135,6 +135,7 @@ Secret のプレースホルダを `resources` に入れると、参照実装を
 ScaledJob はキュー単位に作り、切る軸は寿命と site 束縛の 2 つにする。ロール単位では作らない。
 
 - 長時間ジョブと短いジョブを混ぜない（`encode` は完了まで実行し、`ingest` は有限の Work slice ごとに snooze して再開する。`ruler` / `reconciler` は短時間で終わる）。`terminationGracePeriodSeconds` が桁で違うので、混ぜると短い側に合わせて長いジョブが殺されるか、長い側に合わせて全体のスケールインが遅くなる
+- 転送（`transfer`）は、`ingest` と同じく slice ごとに保存して snooze する。そのため `storage` と同じ短命のレーン（`--soft-stop-timeout` 5 秒）に置く。終了猶予は保存の 5 秒を足して 40 秒にする（下記「終了猶予の足し算」）。
 - site 束縛キューと site 非依存キューを混ぜない。混ぜると中央のジョブがサイト側で起きる。
 - 複製される ScaledJob は、site 束縛キュー（`ingest_<site>` / `epg_<site>` / `reconciler_<site>` / `watcher_<site>`）がサイト数ぶん。置き場で修飾するキューは置き場の数ぶんである。
 - スケーラが引くキュー名が site 修飾されていることを確かめる。共有キューを見ていると、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は自分のサイトの仕事が無いまま終わってまた起きる
@@ -342,6 +343,8 @@ flowchart LR
   E --> F[終了: 最悪値は和。既定なら preStop 抜きで 25 秒]
   F -.->|これより長く取る| G[SIGKILL]
 ```
+
+転送（`transfer`）の Job は、slice の終わりの保存（独立した ctx の 5 秒）も足す。`10s + --soft-stop-timeout 5s + 10s + 保存 5s = 30s` になるので、終了猶予は 40 秒にする。
 
 `terminationGracePeriodSeconds` はこれより長く取る。等号にしない。上の値はプロセスが消えるまでの最悪値そのものなので、等号だと SIGKILL と同着になる。しかも同着になるのは予算を使い切ったケース、つまりここで避けようとしている「行が `running` のまま残る」経路そのものである。既定なら 30 秒（`docker-compose.yml` の `stop_grace_period` がこの値）。
 
