@@ -468,8 +468,11 @@ spec:
         restartPolicy: Never
         enableServiceLinks: false
         automountServiceAccountToken: false
-        # Transfers checkpoint into the destination store and resume on retry.
-        terminationGracePeriodSeconds: 1830
+        # **短命のレーン。** 10s + `--soft-stop-timeout` 5s + 10s = 25s を包む
+        # （docs/operations/k8s.md「終了猶予の足し算」。storage と同じ値）。転送は
+        # slice ごとに送信状態を保存して snooze するので、猶予で切られた Work も
+        # 独立した ctx で保存してから抜ける。
+        terminationGracePeriodSeconds: 30
         securityContext:
           runAsNonRoot: true
           runAsUser: 65534
@@ -492,7 +495,7 @@ spec:
               - --stores
               - main
               - --soft-stop-timeout
-              - 30m
+              - 5s
               - --config
               - /etc/rokuban/config.yml
             env:
