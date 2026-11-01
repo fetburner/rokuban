@@ -54,6 +54,41 @@ func TestIngestCheckpointCleanHandoffResumesAndFencesZombie(t *testing.T) {
 	}
 }
 
+// 破棄のあとに始まる writer は、破棄した世代を再利用しない。temp 名に世代が入るので、
+// 再利用すると残っている古い temp と衝突する。
+func TestIngestCheckpointDiscardNeverReusesWriterGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	media := NewMedia(pool, "test-store", "")
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	owner := uuid.New()
+	if _, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, owner, time.Minute); err != nil || !acquired {
+		t.Fatalf("first Acquire = (acquired=%t, %v), want acquired", acquired, err)
+	}
+	if err := media.UpdateIngestProgress(ctx, store.IngestProgress{
+		RecordingID: recordingID, WrittenBytes: 10, TempRelPath: "sites/default/.rokuban-ingest-default-record-g1", TempGeneration: 5,
+	}, owner, 1, time.Minute); err != nil {
+		t.Fatalf("writing progress: %v", err)
+	}
+	if discarded, err := media.DiscardIngestCheckpoint(ctx, recordingID, owner, 1); err != nil || !discarded {
+		t.Fatalf("Discard = (%t, %v), want discarded", discarded, err)
+	}
+	var progressRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&progressRows); err != nil {
+		t.Fatal(err)
+	}
+	if progressRows != 0 {
+		t.Fatalf("progress rows after discard = %d, want 0", progressRows)
+	}
+	next, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, uuid.New(), time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("Acquire after discard = (%+v, %t, %v), want acquired", next, acquired, err)
+	}
+	if next.WriterGeneration <= 1 || next.Resumed || next.Offset != 0 {
+		t.Fatalf("writer after discard = %+v, want a fresh generation above the discarded 1", next)
+	}
+}
+
 func TestIngestProgressKeepsVisibleWriterUntilNewWriterCatchesUp(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	media := NewMedia(pool, "test-store", "")

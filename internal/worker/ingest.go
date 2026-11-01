@@ -513,13 +513,30 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		}
 	} else {
 		tempGeneration = tempState.TempGeneration
+	}
+	// 前の試行が link まで進んだなら、その temp は canonical と同じ inode である。
+	// 最終 handoff が保存されていれば hash を復元して commit だけをやり直す。読み直さない。
+	linkedTempPath := ingestTempWriterFilePath(filepath.Dir(fullPath), args.Site, args.RecordID, checkpoint.WriterGeneration)
+	if digest, size, ok := linkedIngestFinalHandoff(linkedTempPath, fullPath, checkpoint); ok {
+		// Claim が handed_off を落としているので、commit が再び失敗しても残るように保存し直す。
+		if err := w.Publisher.SaveIngestFinalHandoff(ctx, recordingID, owner, checkpoint.WriterGeneration, size, checkpoint.HashState); err != nil {
+			return fmt.Errorf("saving final ingest handoff for linked retry: %w", err)
+		}
+		log.Info("ingest: temp is already linked to canonical path with a final handoff, retrying commit only", "bytes", size)
+		return w.commitAndFinish(ctx, client, args, recordingID, relPath, linkedTempPath, fullPath, size, digest, owner, checkpoint.WriterGeneration, log, result)
+	}
+	if tempState != nil {
 		oldTempPath, resolveErr := mediapath.Resolve(w.MediaDir, tempState.TempRelPath)
 		if resolveErr == nil && fsink.SameFile(oldTempPath, fullPath) {
+			// 未解決: 最終 handoff が無い link 済み temp（古い binary が link した場合など）は全量を読んで hash する。
+			// 5 分の Work 時限に収まらない大きさでは、この再試行が終わらず、進捗行が link 済みの temp を指したままになる見込み（未測定）。
+			// 読み直すとディスク上の破損が producer の値として commit される（保存済み hash を使えない場合の代償）。
+			// 転送中の hash 採用の判定（EEXIST 採用）も同じく全量を読む。
 			digest, size, hashErr := hashTransferFile(ctx, oldTempPath)
 			if hashErr != nil {
 				return fmt.Errorf("hashing ingest temp already linked to canonical path: %w", hashErr)
 			}
-			log.Info("ingest: temp is already linked to canonical path, retrying commit only", "bytes", size)
+			log.Info("ingest: temp is already linked to canonical path without a final handoff, retrying commit after full hash", "bytes", size)
 			return w.commitAndFinish(ctx, client, args, recordingID, relPath, oldTempPath, fullPath, size, digest, owner, checkpoint.WriterGeneration, log, result)
 		}
 	}
@@ -683,7 +700,36 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 
 	recordIngestMetrics(offset)
 
+	// link より前に最終 handoff を保存する。commit が link 後に失敗しても、次の試行は
+	// temp を読み直さずに hash を復元できる。lease は残す（公開の tx が lease を要る）。
+	// handedOff は立てない。立てると defer の Release が走らず、lease が TTL まで残る。
+	finalState, err := fsink.MarshalHashState(hasher)
+	if err != nil {
+		return err
+	}
+	if err := w.Publisher.SaveIngestFinalHandoff(ctx, recordingID, owner, checkpoint.WriterGeneration, offset, finalState); err != nil {
+		return fmt.Errorf("saving final ingest handoff before publication: %w", err)
+	}
+
 	return w.commitAndFinish(ctx, client, args, recordingID, relPath, tempPath, fullPath, offset, hasher.Sum(nil), owner, checkpoint.WriterGeneration, log, result)
+}
+
+// linkedIngestFinalHandoff は、link 済みの writer temp について最終 handoff が保存されていれば、
+// そこから復元した SHA-256 と size を返す。canonical と同じ inode で、size が保存した offset と一致し、
+// hash state が復元できる場合だけ ok になる。ファイルの内容は読まない。
+func linkedIngestFinalHandoff(tempPath, fullPath string, checkpoint store.IngestCheckpoint) ([]byte, int64, bool) {
+	if !checkpoint.Resumed || !fsink.SameFile(tempPath, fullPath) {
+		return nil, 0, false
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != checkpoint.Offset {
+		return nil, 0, false
+	}
+	hasher := sha256.New()
+	if err := fsink.RestoreHash(hasher, checkpoint.HashState); err != nil {
+		return nil, 0, false
+	}
+	return hasher.Sum(nil), checkpoint.Offset, true
 }
 
 // commitAndFinish は原本を commit し、成功したら temp を片付けてエッジ record の後続処理を投入する。

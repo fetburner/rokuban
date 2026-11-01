@@ -47,6 +47,18 @@ WHERE recording_id = sqlc.arg('recording_id')
   AND writer_generation = sqlc.arg('writer_generation')
   AND lease_expires_at > now();
 
+-- The final handoff is saved before the canonical link and keeps the lease live,
+-- because the publication tx still needs the lease. A retry restores the hash from here.
+-- name: SaveRecordingIngestFinalHandoff :execrows
+UPDATE recording_ingest_checkpoints
+SET handed_off = true,
+    offset_bytes = sqlc.arg('offset_bytes'),
+    hash_state = sqlc.arg('hash_state')::bytea
+WHERE recording_id = sqlc.arg('recording_id')
+  AND lease_owner = sqlc.arg('owner')::uuid
+  AND writer_generation = sqlc.arg('writer_generation')
+  AND lease_expires_at > now();
+
 -- name: ResetRecordingIngestCheckpoint :one
 UPDATE recording_ingest_checkpoints
 SET writer_generation = writer_generation + 1,
@@ -61,10 +73,12 @@ RETURNING writer_generation;
 
 -- name: ReleaseRecordingIngestCheckpoint :exec
 UPDATE recording_ingest_checkpoints
-SET lease_expires_at = now(), handed_off = false
+SET lease_expires_at = now()
 WHERE recording_id = sqlc.arg('recording_id')
   AND lease_owner = sqlc.arg('owner')::uuid;
 
+-- The checkpoint row stays and its generation moves on, so the next writer never reuses
+-- a temp name that an earlier discard may have left behind (the temp file name carries the generation).
 -- name: DiscardRecordingIngestCheckpoint :execrows
 WITH owned AS (
     SELECT checkpoint.recording_id
@@ -78,8 +92,13 @@ WITH owned AS (
     USING owned
     WHERE p.recording_id = owned.recording_id
 )
-DELETE FROM recording_ingest_checkpoints c
-USING owned
+UPDATE recording_ingest_checkpoints c
+SET writer_generation = c.writer_generation + 1,
+    lease_expires_at = now(),
+    handed_off = false,
+    offset_bytes = 0,
+    hash_state = NULL
+FROM owned
 WHERE c.recording_id = owned.recording_id;
 
 -- name: DeleteRecordingIngestCheckpoint :exec

@@ -258,9 +258,11 @@ type MediaPublish interface {
 	ResetIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64) (int64, error)
 	// SaveIngestCheckpoint は同期・close 済み temp の offset と hash state を clean handoff として保存する。
 	SaveIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64, offset int64, hashState []byte) error
-	// ReleaseIngestCheckpoint は失敗で終わる writer の lease を解放する。handed_off は false に戻る。
+	// SaveIngestFinalHandoff は全量の temp を lease を保ったまま保存する。link より前に呼ぶ。
+	SaveIngestFinalHandoff(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64, offset int64, hashState []byte) error
+	// ReleaseIngestCheckpoint は失敗で終わる writer の lease を解放する。handed_off には触らない。
 	ReleaseIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID) error
-	// DiscardIngestCheckpoint は現在の writer が所有する checkpoint と進捗行を削除する。
+	// DiscardIngestCheckpoint は現在の writer が所有する進捗行を削除し、checkpoint は世代を進めて lease を切る。
 	DiscardIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64) (bool, error)
 	// GetIngestTempState は進捗行の temp パスと世代を返す。行が無ければ nil, nil を返す。
 	GetIngestTempState(ctx context.Context, recordingID int64) (*IngestTempState, error)

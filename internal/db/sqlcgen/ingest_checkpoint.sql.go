@@ -69,8 +69,13 @@ WITH owned AS (
     USING owned
     WHERE p.recording_id = owned.recording_id
 )
-DELETE FROM recording_ingest_checkpoints c
-USING owned
+UPDATE recording_ingest_checkpoints c
+SET writer_generation = c.writer_generation + 1,
+    lease_expires_at = now(),
+    handed_off = false,
+    offset_bytes = 0,
+    hash_state = NULL
+FROM owned
 WHERE c.recording_id = owned.recording_id
 `
 
@@ -80,6 +85,8 @@ type DiscardRecordingIngestCheckpointParams struct {
 	WriterGeneration int64
 }
 
+// The checkpoint row stays and its generation moves on, so the next writer never reuses
+// a temp name that an earlier discard may have left behind (the temp file name carries the generation).
 func (q *Queries) DiscardRecordingIngestCheckpoint(ctx context.Context, arg DiscardRecordingIngestCheckpointParams) (int64, error) {
 	result, err := q.db.Exec(ctx, discardRecordingIngestCheckpoint, arg.RecordingID, arg.Owner, arg.WriterGeneration)
 	if err != nil {
@@ -204,7 +211,7 @@ func (q *Queries) LockRecordingIngestCheckpoint(ctx context.Context, recordingID
 
 const releaseRecordingIngestCheckpoint = `-- name: ReleaseRecordingIngestCheckpoint :exec
 UPDATE recording_ingest_checkpoints
-SET lease_expires_at = now(), handed_off = false
+SET lease_expires_at = now()
 WHERE recording_id = $1
   AND lease_owner = $2::uuid
 `
@@ -267,6 +274,41 @@ type SaveRecordingIngestCheckpointParams struct {
 
 func (q *Queries) SaveRecordingIngestCheckpoint(ctx context.Context, arg SaveRecordingIngestCheckpointParams) (int64, error) {
 	result, err := q.db.Exec(ctx, saveRecordingIngestCheckpoint,
+		arg.OffsetBytes,
+		arg.HashState,
+		arg.RecordingID,
+		arg.Owner,
+		arg.WriterGeneration,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const saveRecordingIngestFinalHandoff = `-- name: SaveRecordingIngestFinalHandoff :execrows
+UPDATE recording_ingest_checkpoints
+SET handed_off = true,
+    offset_bytes = $1,
+    hash_state = $2::bytea
+WHERE recording_id = $3
+  AND lease_owner = $4::uuid
+  AND writer_generation = $5
+  AND lease_expires_at > now()
+`
+
+type SaveRecordingIngestFinalHandoffParams struct {
+	OffsetBytes      int64
+	HashState        []byte
+	RecordingID      int64
+	Owner            pgtype.UUID
+	WriterGeneration int64
+}
+
+// The final handoff is saved before the canonical link and keeps the lease live,
+// because the publication tx still needs the lease. A retry restores the hash from here.
+func (q *Queries) SaveRecordingIngestFinalHandoff(ctx context.Context, arg SaveRecordingIngestFinalHandoffParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveRecordingIngestFinalHandoff,
 		arg.OffsetBytes,
 		arg.HashState,
 		arg.RecordingID,

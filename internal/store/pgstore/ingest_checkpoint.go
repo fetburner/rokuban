@@ -92,7 +92,24 @@ func (s *Media) SaveIngestCheckpoint(ctx context.Context, recordingID int64, own
 	return nil
 }
 
-// ReleaseIngestCheckpoint は異常終了した writer の lease を切り、次回に先頭から再開させる。
+// SaveIngestFinalHandoff は全量を書き終えた temp を、lease を残したまま clean handoff として保存する。
+// 公開（link）より前に呼ぶ。link 後の commit が失敗しても、次の試行はここから hash を復元できる。
+func (s *Media) SaveIngestFinalHandoff(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64, offset int64, hashState []byte) error {
+	rows, err := sqlcgen.New(s.pool).SaveRecordingIngestFinalHandoff(ctx, sqlcgen.SaveRecordingIngestFinalHandoffParams{
+		RecordingID: recordingID, Owner: pgtype.UUID{Bytes: owner, Valid: true},
+		WriterGeneration: writerGeneration, OffsetBytes: offset, HashState: hashState,
+	})
+	if err != nil {
+		return fmt.Errorf("saving final ingest handoff for recording %d: %w", recordingID, mapDatabaseError(err))
+	}
+	if rows == 0 {
+		return store.ErrIngestCheckpointLeaseLost
+	}
+	return nil
+}
+
+// ReleaseIngestCheckpoint は失敗で終わった writer の lease を切り、次の試行を直ぐ始められるようにする。
+// handed_off には触らない。公開後の commit 失敗で最終 handoff を残すため。
 func (s *Media) ReleaseIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID) error {
 	if err := sqlcgen.New(s.pool).ReleaseRecordingIngestCheckpoint(ctx, sqlcgen.ReleaseRecordingIngestCheckpointParams{
 		RecordingID: recordingID, Owner: pgtype.UUID{Bytes: owner, Valid: true},
@@ -102,7 +119,8 @@ func (s *Media) ReleaseIngestCheckpoint(ctx context.Context, recordingID int64, 
 	return nil
 }
 
-// DiscardIngestCheckpoint は lease を持つ writer の checkpoint と streamer 向け進捗を捨てる。
+// DiscardIngestCheckpoint は lease を持つ writer の進捗行を消し、checkpoint は lease を切って世代を進める。
+// checkpoint 行を消さないのは、次の writer が破棄済みの世代の temp 名を再利用しないようにするため。
 func (s *Media) DiscardIngestCheckpoint(ctx context.Context, recordingID int64, owner uuid.UUID, writerGeneration int64) (bool, error) {
 	rows, err := sqlcgen.New(s.pool).DiscardRecordingIngestCheckpoint(ctx, sqlcgen.DiscardRecordingIngestCheckpointParams{
 		RecordingID: recordingID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, WriterGeneration: writerGeneration,

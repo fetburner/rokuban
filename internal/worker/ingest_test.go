@@ -2575,12 +2575,14 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if n := env.assetCount(t); n != 0 {
 		t.Fatalf("media_assets rows after failed commit = %d, want 0", n)
 	}
+	// 公開の前に全量の最終 handoff が保存されていて、失敗後も残る。
 	var handedOff bool
-	if err := env.pool.QueryRow(context.Background(), `SELECT handed_off FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff); err != nil {
+	var offset int64
+	if err := env.pool.QueryRow(context.Background(), `SELECT handed_off, offset_bytes FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff, &offset); err != nil {
 		t.Fatalf("reading DB writer checkpoint after failed commit: %v", err)
 	}
-	if handedOff {
-		t.Fatal("writer checkpoint was marked as a clean handoff while the commit attempt still owned its lease")
+	if !handedOff || offset != int64(len(env.tsData)) {
+		t.Fatalf("writer checkpoint after failed commit = (handed_off %v, offset %d), want final handoff (true, %d)", handedOff, offset, len(env.tsData))
 	}
 	getsAfterFirst := env.streamGets()
 
@@ -2606,6 +2608,78 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	}
 	if checkpointRows != 0 {
 		t.Errorf("DB checkpoint rows after retry = %d, want 0", checkpointRows)
+	}
+	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
+		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
+	}
+	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
+}
+
+// link 後の commit が失敗したあと、ディスク上の内容が壊れていても、再試行は読み直さず
+// 受信時の SHA-256（DB の最終 handoff）で commit する。読み直すと破損が producer の値になる。
+func TestIngestWorker_LinkedRetryCommitsReceivedSHA256WithoutReadingCanonical(t *testing.T) {
+	env := newLinkedIngestEnv(t, "rec-linked-no-reread", "test/linked-no-reread.m2ts")
+	failFirstPublication(t)
+	if err := env.run(); err == nil {
+		t.Fatal("first Work() succeeded, want the injected commit failure")
+	}
+	// 同じ大きさのまま 1 バイトだけ壊す。canonical と temp は同じ inode なので両方に効く。
+	f, err := os.OpenFile(env.fullPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{env.tsData[0] ^ 0xFF}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	getsAfterFirst := env.streamGets()
+
+	if err := env.run(); err != nil {
+		t.Fatalf("second Work() error = %v, want commit-only retry to succeed", err)
+	}
+	if got := env.streamGets(); got != getsAfterFirst {
+		t.Errorf("stream GET calls = %d after retry, want %d (no transfer)", got, getsAfterFirst)
+	}
+	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
+}
+
+// link の前に commit が失敗しても、保存済みの最終 handoff（offset = 全量）から再開して commit できる。
+// link が無いので canonical は無く、temp は保存 offset と一致する。
+func TestIngestWorker_ResumesFinalHandoffWhenPublicationFailedBeforeLink(t *testing.T) {
+	env := newLinkedIngestEnv(t, "rec-final-handoff-no-link", "test/final-handoff-no-link.m2ts")
+	original := beforeIngestFilePublication
+	t.Cleanup(func() { beforeIngestFilePublication = original })
+	failed := false
+	beforeIngestFilePublication = func() error {
+		if !failed {
+			failed = true
+			return errors.New("injected publication failure before link")
+		}
+		return nil
+	}
+
+	if err := env.run(); err == nil {
+		t.Fatal("first Work() succeeded, want the injected publication failure")
+	}
+	if _, err := os.Stat(env.fullPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical after pre-link failure: stat error = %v, want not exist", err)
+	}
+	var handedOff bool
+	var offset int64
+	if err := env.pool.QueryRow(context.Background(), `SELECT handed_off, offset_bytes FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff, &offset); err != nil {
+		t.Fatalf("reading DB writer checkpoint after pre-link failure: %v", err)
+	}
+	if !handedOff || offset != int64(len(env.tsData)) {
+		t.Fatalf("writer checkpoint = (handed_off %v, offset %d), want final handoff (true, %d)", handedOff, offset, len(env.tsData))
+	}
+
+	if err := env.run(); err != nil {
+		t.Fatalf("second Work() error = %v, want resume from the final handoff to commit", err)
+	}
+	if n := env.assetCount(t); n != 1 {
+		t.Errorf("media_assets rows = %d, want 1", n)
 	}
 	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
 		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
