@@ -1,11 +1,13 @@
 package pgstore
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -83,6 +85,91 @@ func TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce(t *testing.T) {
 		if got := sawNoRow.Load(); got != 1 {
 			t.Fatalf("round %d: writes that saw no previous row = %d, want 1", round, got)
 		}
+	}
+}
+
+func TestCountMediaAssetTransferBacklogBySourceStoreMatchesCandidates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	media := NewMediaWithStores(pool, "test-store", "edge", "derived")
+	ctx := t.Context()
+	rules := []byte(`[{"match":{"site":"tiered"},"store":"archive"},{"match":{"site":"remote"},"store":"remote"}]`)
+	fsStores := []string{"edge", "backup", "archive"}
+	sourceStores := []string{"edge", "backup"}
+	const attemptLimit int32 = 10
+
+	assetWithSource := func(site, sourceStore string) (int64, int64) {
+		recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
+			params.Site = site
+		})
+		assetID := dbtest.MediaAsset(t, pool, recordingID)
+		_, err := pool.Exec(ctx, `
+UPDATE media_asset_copies
+SET store = $2,
+    rel_path = 'backlog-test/' || $1::text || '/' || $2 || '.ts'
+WHERE media_asset_id = $1 AND state = 'active'`, assetID, sourceStore)
+		if err != nil {
+			t.Fatalf("moving source copy for asset %d to %q: %v", assetID, sourceStore, err)
+		}
+		var copyID int64
+		if err := pool.QueryRow(ctx, `
+SELECT id FROM media_asset_copies
+WHERE media_asset_id = $1 AND store = $2 AND state = 'active'`, assetID, sourceStore).Scan(&copyID); err != nil {
+			t.Fatalf("reading source copy for asset %d in %q: %v", assetID, sourceStore, err)
+		}
+		return assetID, copyID
+	}
+
+	addCopy := func(assetID int64, store, state string) int64 {
+		var copyID int64
+		if err := pool.QueryRow(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, $3, 0, $4)
+RETURNING id`, assetID, store, fmt.Sprintf("backlog-test/%d/%s.ts", assetID, store), state).Scan(&copyID); err != nil {
+			t.Fatalf("adding %q copy for asset %d: %v", store, assetID, err)
+		}
+		return copyID
+	}
+
+	assetWithSource("tiered", "edge")
+	assetWithSource("tiered", "backup")
+	assetWithSource("recent", "edge")
+
+	destinationPresent, _ := assetWithSource("tiered", "edge")
+	addCopy(destinationPresent, "archive", "active")
+
+	missingSource, missingCopyID := assetWithSource("tiered", "edge")
+	if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, missingCopyID); err != nil {
+		t.Fatalf("marking source copy for asset %d missing: %v", missingSource, err)
+	}
+
+	exhaustedAsset, _ := assetWithSource("tiered", "edge")
+	exhaustedCopyID := addCopy(exhaustedAsset, "archive", "pending")
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_transfer_attempts (copy_id, attempt_count, last_error)
+VALUES ($1, $2, 'exhausted')`, exhaustedCopyID, attemptLimit); err != nil {
+		t.Fatalf("marking destination copy for asset %d exhausted: %v", exhaustedAsset, err)
+	}
+
+	assetWithSource("remote", "edge")
+	deletedAsset, _ := assetWithSource("tiered", "edge")
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = (SELECT recording_id FROM media_assets WHERE id = $1)`, deletedAsset); err != nil {
+		t.Fatalf("deleting recording for asset %d: %v", deletedAsset, err)
+	}
+
+	candidateCount, _, err := media.CountMediaAssetTransferCandidates(ctx, rules, fsStores, "derived", attemptLimit)
+	if err != nil {
+		t.Fatalf("counting transfer candidates: %v", err)
+	}
+	byStore, err := media.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, fsStores, sourceStores, "derived", attemptLimit)
+	if err != nil {
+		t.Fatalf("counting backlog by source store: %v", err)
+	}
+	var backlogCount int64
+	for _, count := range byStore {
+		backlogCount += count
+	}
+	if candidateCount != 2 || backlogCount != candidateCount || byStore["edge"] != 1 || byStore["backup"] != 1 {
+		t.Fatalf("candidate count = %d, backlog by source store = %v (sum %d); want 2 candidates split edge=1 and backup=1", candidateCount, byStore, backlogCount)
 	}
 }
 
