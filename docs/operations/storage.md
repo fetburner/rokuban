@@ -197,6 +197,8 @@ S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 �
 
 接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。worker には S3 の権限として `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject`、`AbortMultipartUpload` が要る。streamer に要るのは `HeadObject` と署名付き URL の作成だけである。
 
+派生物の置き場が S3 のときは、S3 へ送るのは転送元の FS 置き場の転送 worker である（[転送](../storage/transfer.md) の「宛先が S3 の派生物」）。その worker にも上記の資格情報と権限が要る。deploy/k8s では、転送の ScaledJob（`rokuban-worker-transfer`）が encode と同じ Secret を `envFrom` で受け取るので、追加の設定は要らない。
+
 worker は起動時に S3 へ接続しない。S3 に繋がらなくても、資格情報が失効していても worker は起動する。S3 のコードを通らないジョブ（ingest など）は、S3 の状態に左右されない。S3 を使うジョブ（派生物の公開と削除）だけが失敗し、`rokuban_object_store_errors_total{operation}` に数える。資格情報の失効と取得失敗は `rokuban_object_store_credential_errors_total` にも数えるので、権限や接続の失敗と区別できる。S3 へ書けない間は、派生物の置き場に encoded のコピーが揃わず、`until_encoded` の原本は消えない。
 
 署名付き URL の寿命は 24 時間で固定し、設定からは変えられない。SigV4 の上限は 7 日である。`web/e2e/s3-302.mjs` の Chrome 156.0.8078.48 と Safari 27.0.1 の測定では、Range 要求は署名付き URL に送られ、期限切れ後に元の URL へ戻らなかった。24 時間を超える 1 回の再生は、途中で止まりうる。再生の途中で期限が切れる場合は測っていない（未検証）。

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,7 +64,9 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	if err := w.Storage.ClearObsoleteMediaAssetTransferAttempts(ctx, rules, fsStores, w.Config.Derived); err != nil {
 		return fmt.Errorf("clearing obsolete storage transfer attempts: %w", err)
 	}
-	if len(fsStores) < 2 {
+	// 転送の宛先は FS の置き場と、派生物が S3 ならその置き場。FS 1 つ + S3 の派生物でも移す先がある。
+	// 下の SQL 引数の fsStores は転送元の集合のままにする（S3 を入れると、古い S3 のコピーを転送元に数える）。
+	if len(w.Config.TransferDestinationStoreNames()) < 2 {
 		metrics.StorageTransferWaitingAssets.Set(0)
 		metrics.StorageTransferWaitingBytes.Set(0)
 		metrics.StorageTransferExhaustedAssets.Set(0)
@@ -92,10 +96,17 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 		return fmt.Errorf("listing storage transfer candidates: %w", err)
 	}
 	for _, candidate := range transfers {
-		if err := enqueueJob(ctx, w.Enqueuer, jobs.StorageTransferArgs{
-			MediaAssetID: candidate.MediaAssetID, Store: candidate.Store, PolicyFingerprint: fingerprint,
-		}); err != nil {
-			slog.Error("storage transfer reconcile: failed to enqueue copy", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store, "err", err)
+		job := jobs.StorageTransferArgs{MediaAssetID: candidate.MediaAssetID, Store: candidate.Store, PolicyFingerprint: fingerprint}
+		if w.Config.Stores[candidate.Store].Kind == "s3" {
+			// S3 の宛先は、転送元の FS 置き場の転送キューに積む（その worker が S3 へ直接送る）。
+			if candidate.SourceStore == "" {
+				slog.Warn("storage transfer reconcile: no current FS copy to transfer to s3; skipping", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store)
+				continue
+			}
+			job.SourceStore = candidate.SourceStore
+		}
+		if err := enqueueJob(ctx, w.Enqueuer, job); err != nil {
+			slog.Error("storage transfer reconcile: failed to enqueue copy", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store, "source_store", job.SourceStore, "err", err)
 		}
 	}
 	return nil
@@ -128,16 +139,24 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 			"media_asset_id", args.MediaAssetID, "store", args.Store)
 		return fmt.Errorf("storage transfer policy fingerprint changed: %w", jobq.ErrDiscard)
 	}
-	if cfg, ok := w.Config.Stores[args.Store]; !ok || cfg.Kind != "fs" {
-		return fmt.Errorf("storage transfer: store %q is not a configured fs store: %w", args.Store, jobq.ErrDiscard)
+	cfg, ok := w.Config.Stores[args.Store]
+	if !ok || (cfg.Kind != "fs" && cfg.Kind != "s3") {
+		return fmt.Errorf("storage transfer: store %q is not a configured fs or s3 store: %w", args.Store, jobq.ErrDiscard)
 	}
-	targetRoot, ok := w.Roots[args.Store]
-	if !ok || targetRoot == "" {
-		metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
-		return fmt.Errorf("storage transfer: target store %q is not mounted on this worker", args.Store)
-	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "starting storage transfer"); err != nil {
-		metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
+	// S3 の宛先は root と目印を持たないので、ここでは見ない。転送元の FS 置き場の worker だけが来る。
+	var targetRoot string
+	if cfg.Kind == "fs" {
+		root, ok := w.Roots[args.Store]
+		if !ok || root == "" {
+			metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
+			return fmt.Errorf("storage transfer: target store %q is not mounted on this worker", args.Store)
+		}
+		if err := requireMediaStoreMarker(root, args.Store, "starting storage transfer"); err != nil {
+			metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
+			return err
+		}
+		targetRoot = root
+	} else if err := w.checkS3TransferWorker(args); err != nil {
 		return err
 	}
 	rules, err := w.Config.OriginalRulesJSON()
@@ -150,6 +169,33 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 	}
 	w.abortAbandonedUploads(ctx, args.Store)
 	return w.copyAsset(ctx, args, rules, fsStores, transferSourceStores(w.Config, fsStores), fsStores, targetRoot)
+}
+
+// checkS3TransferWorker は、宛先が S3 の転送をこの worker が実行できるかを確かめる。
+// 宛先の objstore が再開できて、転送元の FS 置き場をこの worker がマウントしていること。どちらも無ければ、
+// FS の宛先が未マウントのときと同じメトリクスとエラーにする。
+func (w *StorageTransferWorker) checkS3TransferWorker(args jobs.StorageTransferArgs) error {
+	if args.SourceStore == "" {
+		return fmt.Errorf("storage transfer: s3 store %q has no source store: %w", args.Store, jobq.ErrDiscard)
+	}
+	if _, ok := w.ObjectStores[args.Store].(objstore.Resumable); !ok {
+		metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
+		return fmt.Errorf("storage transfer: target store %q is not a resumable object store on this worker", args.Store)
+	}
+	if w.Roots[args.SourceStore] == "" {
+		metrics.StorageTransferMountMismatches.WithLabelValues(args.SourceStore).Inc()
+		return fmt.Errorf("storage transfer: source store %q is not mounted on this worker", args.SourceStore)
+	}
+	return nil
+}
+
+// requireDestinationMarker は派生物の経路で宛先の目印を確かめる。宛先が FS のときだけ確かめ、S3 の宛先では何もしない。
+// 原本の経路は宛先が常に FS なので、直接 requireMediaStoreMarker を呼ぶ。
+func (w *StorageTransferWorker) requireDestinationMarker(targetRoot, targetStore, operation string) error {
+	if w.Config.Stores[targetStore].Kind == "s3" {
+		return nil
+	}
+	return requireMediaStoreMarker(targetRoot, targetStore, operation)
 }
 
 // abortAbandonedUploads は、置き場 storeName の掃除待ちの送信状態を置き場の Abort で片付ける。
@@ -717,7 +763,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 			return err
 		}
 	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing derived storage transfer destination"); err != nil {
+	if err := w.requireDestinationMarker(targetRoot, args.Store, "writing derived storage transfer destination"); err != nil {
 		return err
 	}
 	// scratch は、内容を複製して照合する必要があるときだけ作る（SHA-256 が既知の本体と、字幕が無い encoded は作らない）。
@@ -760,7 +806,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		return nil
 	}
 
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "committing derived storage transfer"); err != nil {
+	if err := w.requireDestinationMarker(targetRoot, args.Store, "committing derived storage transfer"); err != nil {
 		return err
 	}
 	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
@@ -835,7 +881,7 @@ func (w *StorageTransferWorker) putDerivedMain(
 			digest, size = stagedDigest, stagedSize
 			openMain = func() (io.ReadCloser, error) { return os.Open(assetPath) }
 		}
-		if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
+		if err := w.requireDestinationMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
 			return digest, size, true, err
 		}
 		_, mainOwned := owned[transfer.RelPath]
@@ -897,7 +943,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 	if exists {
 		return false, false, nil
 	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
+	if err := w.requireDestinationMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
 		return false, true, err
 	}
 
@@ -933,7 +979,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 	if progress.Resumed && progress.UploadState != nil && progress.UploadStore == args.Store {
 		state, offset = progress.UploadState, progress.Offset
 	} else {
-		if err := requireMediaStoreMarker(targetRoot, args.Store, "starting derived upload"); err != nil {
+		if err := w.requireDestinationMarker(targetRoot, args.Store, "starting derived upload"); err != nil {
 			return false, true, err
 		}
 		fresh, startErr := dest.StartUpload(ctx, transfer.RelPath, transfer.SizeBytes, checksum, objectContentType(transfer.RelPath))
@@ -958,7 +1004,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 
 	size := transfer.SizeBytes
 	if offset < size {
-		if err := requireMediaStoreMarker(targetRoot, args.Store, "writing derived upload"); err != nil {
+		if err := w.requireDestinationMarker(targetRoot, args.Store, "writing derived upload"); err != nil {
 			return false, true, err
 		}
 		sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
@@ -995,7 +1041,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 		}
 	}
 
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "completing derived upload"); err != nil {
+	if err := w.requireDestinationMarker(targetRoot, args.Store, "completing derived upload"); err != nil {
 		return false, true, err
 	}
 	if completeErr := dest.CompleteUpload(ctx, state); completeErr != nil {
@@ -1199,13 +1245,21 @@ func putTransferredObject(ctx context.Context, objects objstore.Store, key strin
 // existingTransferredObjectMatches は key に既存のオブジェクトがあるかを返す。内容が同じなら exists=true、
 // 無ければ false、内容が違えば所有記録に応じた衝突の error を返す。どの場合も key には触らない。
 func existingTransferredObjectMatches(ctx context.Context, objects objstore.Store, key string, digest []byte, size int64, alreadyOwned bool) (bool, error) {
-	if _, headErr := objects.Head(ctx, key); headErr == nil {
-		actual, actualSize, err := hashStoredObject(ctx, objects, key)
-		if err != nil {
-			return false, err
-		}
-		if actualSize == size && bytes.Equal(actual, digest) {
-			return true, nil
+	object, headErr := objects.Head(ctx, key)
+	if headErr == nil {
+		// 置き場が SHA-256 を返すなら（S3 はメタデータから）、中身を読まずに比べる。返さない置き場（FS）は中身を測る。
+		if object.SHA256 != "" {
+			if object.Size == size && strings.EqualFold(object.SHA256, hex.EncodeToString(digest)) {
+				return true, nil
+			}
+		} else {
+			actual, actualSize, err := hashStoredObject(ctx, objects, key)
+			if err != nil {
+				return false, err
+			}
+			if actualSize == size && bytes.Equal(actual, digest) {
+				return true, nil
+			}
 		}
 		ownership := "pre-existing"
 		if alreadyOwned {

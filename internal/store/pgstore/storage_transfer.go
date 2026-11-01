@@ -27,7 +27,7 @@ func (s *Media) ListMediaAssetTransferCandidates(ctx context.Context, originalRu
 	}
 	out := make([]store.MediaAssetTransferCandidate, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, store.MediaAssetTransferCandidate{MediaAssetID: row.MediaAssetID, Store: row.DesiredStore})
+		out = append(out, store.MediaAssetTransferCandidate{MediaAssetID: row.MediaAssetID, Store: row.DesiredStore, SourceStore: row.SourceStore})
 	}
 	return out, nil
 }

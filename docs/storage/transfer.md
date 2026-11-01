@@ -4,7 +4,19 @@
 
 複数の FS 置き場に同じ論理資産を置くための転送契約を示す。DB の判定、帯域、公開順、削除条件を扱う。
 
-転送 worker は、設定された FS 置き場のキューだけを購読する。宛先の root と目印を確認してから、DB に pending のコピー行を予約する。宛先がマウントされていない間は予約せず、転送試行にも数えない。
+転送 worker は、マウントした FS 置き場のキューだけを購読する。宛先が FS の置き場なら、宛先の root と目印を確認してから、DB に pending のコピー行を予約する。宛先がマウントされていない間は予約せず、転送試行にも数えない。宛先が S3 の派生物の置き場なら、転送元の FS 置き場の worker が実行する（次の節）。
+
+### 宛先が S3 の派生物
+
+派生物の置き場が S3 のときは、転送元の FS 置き場の worker が S3 へ直接送る。宛先が S3 のジョブは、転送元の置き場の転送キューに積む。配信の route と ScaledJob は増やさない。
+
+これはエピックの前提「中央が pull して派生物の置き場へ入れる」を、派生物の置き場が S3 のときだけ変える判断である。S3 は API で直接書けるので、中継は要らない。中継すると、データが WAN を 2 回通る（転送元から中央へ、中央から S3 へ）。配信の route と ScaledJob も置き場ごとに増える。
+
+帯域は、転送元の置き場の `storage.transfer.bandwidth` で絞る。S3 宛ての送信も同じ上限を通る。宛先の目印は確かめない（S3 の宛先には root が無い）。転送元の FS 置き場の転送 worker には、S3 の資格情報が要る（[ストレージ運用](../operations/storage.md) の「S3 の置き場の運用要件」）。
+
+宛先の判定は、FS の置き場の集合か、派生物の置き場（`p_derived_store`）に一致するかで行う。転送元の集合は FS の置き場のままである。S3 の古い派生物のコピーを転送元に数えると、マウントしていない置き場から読む候補が残り続けるからである。原本の宛先は FS だけである。
+
+転送の宛先が 2 つ未満のとき、転送も配置の削除も走らない。FS の置き場 1 つと S3 の派生物の置き場は、2 つに数える。
 
 ### 排他と再開
 
@@ -106,7 +118,7 @@ deleted への確定は、コピー自身の置き場の行をロックして行
 
 退役した encoded のコピーは、encode の補完の入力である `unencoded_desired_profiles` に行として現れる。この行から encode が再生成するところまでは確かめていない。thumbnail とシークタイルが再生成されるかも未検証である。
 
-未解決: 原本で SHA-256 が既知の宛先が既にあるときの照合、派生物の宛先キーが既にあるときの照合、派生物の転送元の再検査（`handleTransferMismatch`）は、全長を読む。slice になっていない。
+未解決: 原本で SHA-256 が既知の宛先が既にあるときの照合、派生物の宛先キーの照合のうち SHA-256 を返さない置き場（FS）の分、派生物の転送元の再検査（`handleTransferMismatch`）は、全長を読む。slice になっていない。S3 の宛先キーは Head の SHA-256 で比べ、中身を読まない。その SHA-256 はオブジェクトに付けたメタデータで、中身を読み直して確かめてはいない（未検証）。
 
 ### 不要になったコピーの回収
 
@@ -174,6 +186,14 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 宛先が既にある未計測の原本を slice で測ってから採用する: `TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting`
 - 照合を slice をまたいで行い、失敗は照合の後に 1 回だけ数える: `TestStorageTransferWorkerVerifiesMismatchAcrossSlicesBeforeCountingFailure`
 - 上限の直前の不一致でも照合が回り、失敗が 1 回数えられる: `TestStorageTransferWorkerCountsVerifiedFailureAtAttemptLimitEdge`
+- S3 の派生物への転送は、転送元の FS 置き場の worker が slice をまたいで完了する: `TestStorageTransferWorkerSendsDerivedCopyToS3FromFSSource`。宛先の root は無い
+- MinIO での同じ経路。5 MiB 以上のパートを slice をまたいで送る: `TestS3DerivedObjectPublicationAndRecovery/FS_derived_copy_transfers_to_S3_across_slices`
+- 転送元が未マウントの S3 宛ての job は、予約せず再試行できるエラーで止まる: `TestStorageTransferWorkerRequiresSourceMountForS3Destination`
+- S3 宛ての候補は転送元のキューに積む。FS 宛ての候補は宛先のキューのままで、原本は S3 宛てにならない: `TestStorageTransferReconcileRoutesS3CopiesToSourceQueue`
+- キューの選択: `TestPhysicalQueueForRequiresQueueSiteOnlyForSiteBoundQueues`
+- S3 の派生物の pending 予約を、FS だけを見る掃除が消さない: `TestStorageTransferS3PendingReservationIsNotObsolete`
+- FS 1 つ + S3 の派生物で、転送の後に旧い FS のコピーを配置の削除が消す: `TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy`。宛先の集合: `TestTransferDestinationStoreNamesIncludesS3Derived`
+- 宛先キーの照合は、Head の SHA-256 があれば中身を読まず、無ければ読んで測る: `TestExistingTransferredObjectUsesHeadSHA256`
 - 照合の途中で lease が引き継がれても、続きから読む: `TestStorageTransferWorkerResumesSourceVerificationAfterHandoff`
 - 世代が変わった後の SHA-256 の観測を書かない: `TestStorageTransferWorkerDoesNotRecordSHA256AfterGenerationChanges`
 - 送信状態の引き継ぎは、きれいなときだけ続きから: `TestTransferProgressCleanHandoffResumesSavedState`

@@ -43,6 +43,9 @@ type AbandonedTransferUpload struct {
 type MediaAssetTransferCandidate struct {
 	MediaAssetID int64
 	Store        string
+	// SourceStore は、転送を実行しうる FS 置き場の候補である。reconcile は宛先が S3 のときだけ使う。
+	// 候補が無いときは空になる（FS の宛先の候補は、この値を使わない）。
+	SourceStore string
 }
 
 // MediaAssetTransfer は 1 回の転送に必要な、ロック後の論理資産とコピーの状態を表す。

@@ -103,6 +103,18 @@ func (c StorageConfig) fsStoreNames() []string {
 // FSStoreNames はファイルシステム置き場の名前を昇順で返す。
 func (c StorageConfig) FSStoreNames() []string { return c.fsStoreNames() }
 
+// TransferDestinationStoreNames は転送の宛先になれる置き場の名前を昇順で返す。
+// FS の置き場すべてと、派生物の置き場が S3 ならその名前である。原本の宛先は FS だけなので、S3 は派生物の置き場として足す。
+// 転送の宛先が 2 つ未満なら、転送も配置の削除も走らない（FS 1 つだけの構成は移す先が無い）。
+func (c StorageConfig) TransferDestinationStoreNames() []string {
+	names := c.fsStoreNames()
+	if derived, ok := c.Stores[c.Derived]; ok && derived.Kind == "s3" {
+		names = append(names, c.Derived)
+		sort.Strings(names)
+	}
+	return names
+}
+
 // StoreRoots は、マウントする FS 置き場の名前から root への対応を返す。
 // root は置き場の `root`、無ければ storage.media_dir である。
 // 2 つ以上の置き場が同じ root になる構成は、別の置き場の目印と書き込みを取り違えるので拒む

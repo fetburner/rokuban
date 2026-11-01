@@ -694,7 +694,18 @@ SELECT a.id AS media_asset_id,
        desired_media_store(
            a.kind, $1::jsonb, $2::text,
            r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-       ) AS desired_store
+       ) AS desired_store,
+       COALESCE((
+           SELECT source.store::text
+           FROM active_media_asset_copies(a.id, NULL) source
+           WHERE source.store = ANY($3::text[])
+             AND source.generation = COALESCE(a.derived_generation, 0)
+             AND NOT EXISTS (
+                 SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source.id
+             )
+           ORDER BY source.created_at DESC, source.id
+           LIMIT 1
+       ), '')::text AS source_store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 WHERE storage_transfer_candidate(
@@ -722,9 +733,13 @@ type ListMediaAssetTransferCandidatesParams struct {
 type ListMediaAssetTransferCandidatesRow struct {
 	MediaAssetID int64
 	DesiredStore string
+	SourceStore  string
 }
 
 // Candidate selection and waiting metrics use the same named predicate.
+// source_store は、宛先が S3 の派生物の転送を実行する FS 置き場（キューの修飾に使う）。PrepareMediaAssetTransfer の
+// source CTE と同じ順（作成の新しい順）で選ぶ。マウントの有無は reconcile からは分からないので、ここでは見ない。
+// 候補の述語は世代を見ず、この選び方は世代を見るので、見つからないことがある（空文字を返す。呼び出し側は空なら積まない）。
 func (q *Queries) ListMediaAssetTransferCandidates(ctx context.Context, arg ListMediaAssetTransferCandidatesParams) ([]ListMediaAssetTransferCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, listMediaAssetTransferCandidates,
 		arg.OriginalRules,
@@ -740,7 +755,7 @@ func (q *Queries) ListMediaAssetTransferCandidates(ctx context.Context, arg List
 	var items []ListMediaAssetTransferCandidatesRow
 	for rows.Next() {
 		var i ListMediaAssetTransferCandidatesRow
-		if err := rows.Scan(&i.MediaAssetID, &i.DesiredStore); err != nil {
+		if err := rows.Scan(&i.MediaAssetID, &i.DesiredStore, &i.SourceStore); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
