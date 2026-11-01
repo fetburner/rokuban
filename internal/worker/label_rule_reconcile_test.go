@@ -10,7 +10,7 @@ import (
 // 投入されずに捨てられ、次の定期再評価（15 分）まで反映されない。
 //
 // **River は running を外した ByState を挿入時にエラーにする**ので、
-// 「実行中を除いた状態集合」で代用はできない（river@v0.47.0 の
+// 「実行中を除いた状態集合」で代用はできない（river@v0.50.0 の
 // requiredV3states）。docs/data/series.md §8。
 func TestLabelRuleReconcileArgs_NotUnique(t *testing.T) {
 	spec := jobs.LabelRuleReconcileArgs{}.Spec()

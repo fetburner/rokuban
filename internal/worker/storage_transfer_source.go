@@ -20,7 +20,7 @@ import (
 )
 
 // transferSource は原本の転送元を、ローカルのファイルか内部 URL の streamer から読む形で抽象化する。
-// コピーの本体（copyToTransferTemp）と照合（hashTransferSource）は、この 2 つだけを通して読む。
+// 原本のコピーと照合・測定は、この 2 つだけを通して読む（hashSourceFrom と copyTransferSlice）。
 type transferSource interface {
 	// precheck は読まずに分かる転送元のサイズを返す。分からないときは -1 を返す。
 	// ローカルはここで通常ファイルであることも確かめる。
@@ -61,7 +61,7 @@ func (s localTransferSource) open(_ context.Context, offset int64) (io.ReadClose
 
 // remoteTransferSource は、マウントしていない原本を、転送元の置き場の internal_url の streamer から読む。
 // 配信 route は、その置き場の有効な原本を返す。SourceRelPath と違うファイルを返しうるが、
-// その場合もサイズと SHA-256 の照合（copyToTransferTemp と hashTransferSource の後）が不一致として扱う。
+// その場合もサイズと SHA-256 の照合（コピーの完了の後、または照合の終わり）が不一致として扱う。
 type remoteTransferSource struct {
 	url         string
 	sourceStore string

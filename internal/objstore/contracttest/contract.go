@@ -32,6 +32,25 @@ func Run(t *testing.T, newStore func(*testing.T) objstore.Store) {
 	t.Run("list never exposes an incomplete write", func(t *testing.T) {
 		checkListHidesIncompleteWrite(t, newStore)
 	})
+
+	// 再開できるアップロードと範囲読みは、それを満たす実装だけに走らせる。
+	if _, ok := newStore(t).(objstore.Resumable); ok {
+		t.Run("resumable upload stopped and continued yields the same bytes", func(t *testing.T) {
+			checkResumableStopAndContinue(t, newStore(t))
+		})
+		t.Run("resumable upload with a wrong digest publishes nothing", func(t *testing.T) {
+			checkResumableWrongDigestPublishesNothing(t, newStore(t))
+		})
+		t.Run("resumable upload abort repeats until gone", func(t *testing.T) {
+			checkResumableAbortRepeatsUntilGone(t, newStore(t))
+		})
+		t.Run("resumable upload rejects short and long sources", func(t *testing.T) {
+			checkResumableSourceLength(t, newStore(t))
+		})
+		t.Run("range reader starts at offset", func(t *testing.T) {
+			checkRangeReaderStartsAtOffset(t, newStore(t))
+		})
+	}
 }
 
 func checkPutPublishesCompleteBytes(t *testing.T, newStore func(*testing.T) objstore.Store) {
@@ -226,4 +245,188 @@ func (r *blockedReader) Read(p []byte) (int, error) {
 	<-r.release
 	r.done = true
 	return copy(p, r.data), nil
+}
+
+// checkResumableStopAndContinue は、途中で ctx を切って返った state と offset だけから続きを送っても、
+// 同じバイト列のオブジェクトになることを確かめる。newStore は呼ぶたびに別の置き場を返すので、
+// 1 回目と 2 回目で同じ Store を使う。別プロセスからの再開は各実装の単体テストで Store を作り直して確かめる。
+func checkResumableStopAndContinue(t *testing.T, objects objstore.Store) {
+	t.Helper()
+	resumable := objects.(objstore.Resumable)
+	key := testKey(t)
+	data := deterministicBytes(11 << 20)
+	digest := sha256.Sum256(data)
+	state, err := resumable.StartUpload(t.Context(), key, int64(len(data)), digest, "application/octet-stream")
+	if err != nil {
+		t.Fatalf("StartUpload: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stopped := &stopAfterReader{reader: bytes.NewReader(data), limit: 7 << 20, cancel: cancel}
+	state, offset, err := resumable.ContinueUpload(ctx, state, stopped)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first ContinueUpload error = %v, want context.Canceled", err)
+	}
+	if offset <= 0 || offset >= int64(len(data)) {
+		t.Fatalf("first ContinueUpload offset = %d, want a partial offset in (0, %d)", offset, len(data))
+	}
+
+	state, offset, err = resumable.ContinueUpload(t.Context(), state, bytes.NewReader(data[offset:]))
+	if err != nil {
+		t.Fatalf("second ContinueUpload: %v", err)
+	}
+	if offset != int64(len(data)) {
+		t.Fatalf("second ContinueUpload offset = %d, want %d", offset, len(data))
+	}
+	if err := resumable.CompleteUpload(t.Context(), state); err != nil {
+		t.Fatalf("CompleteUpload: %v", err)
+	}
+	got := readObject(t, objects, key)
+	if sha256.Sum256(got) != digest || len(got) != len(data) {
+		t.Fatalf("resumed object has %d bytes, want the original %d bytes", len(got), len(data))
+	}
+}
+
+// checkResumableWrongDigestPublishesNothing は、送りながら計算した SHA-256 が違うとき、
+// Complete が何も公開しないことを確かめる。
+func checkResumableWrongDigestPublishesNothing(t *testing.T, objects objstore.Store) {
+	t.Helper()
+	resumable := objects.(objstore.Resumable)
+	key := testKey(t)
+	data := []byte("resumable payload")
+	state, err := resumable.StartUpload(t.Context(), key, int64(len(data)), sha256.Sum256([]byte("other")), "application/octet-stream")
+	if err != nil {
+		t.Fatalf("StartUpload: %v", err)
+	}
+	state, _, err = resumable.ContinueUpload(t.Context(), state, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ContinueUpload: %v", err)
+	}
+	if err := resumable.CompleteUpload(t.Context(), state); !errors.Is(err, objstore.ErrChecksumMismatch) {
+		t.Fatalf("CompleteUpload with a wrong digest error = %v, want ErrChecksumMismatch", err)
+	}
+	if _, err := objects.Head(t.Context(), key); !errors.Is(err, objstore.ErrNotFound) {
+		t.Fatalf("Head after rejected Complete error = %v, want ErrNotFound", err)
+	}
+	abortUntilGone(t, resumable, state)
+}
+
+// checkResumableAbortRepeatsUntilGone は、Abort 後の Complete が公開せずに失敗し、
+// Abort を繰り返すといずれ gone が true になることを確かめる。
+func checkResumableAbortRepeatsUntilGone(t *testing.T, objects objstore.Store) {
+	t.Helper()
+	resumable := objects.(objstore.Resumable)
+	key := testKey(t)
+	data := deterministicBytes(2 << 20)
+	digest := sha256.Sum256(data)
+	state, err := resumable.StartUpload(t.Context(), key, int64(len(data)), digest, "application/octet-stream")
+	if err != nil {
+		t.Fatalf("StartUpload: %v", err)
+	}
+	state, _, err = resumable.ContinueUpload(t.Context(), state, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ContinueUpload: %v", err)
+	}
+	abortUntilGone(t, resumable, state)
+	if err := resumable.CompleteUpload(t.Context(), state); !errors.Is(err, objstore.ErrUploadInvalid) {
+		t.Fatalf("CompleteUpload after abort error = %v, want ErrUploadInvalid", err)
+	}
+	if _, err := objects.Head(t.Context(), key); !errors.Is(err, objstore.ErrNotFound) {
+		t.Fatalf("Head after aborted upload error = %v, want ErrNotFound", err)
+	}
+}
+
+// checkResumableSourceLength は、source が size より短いときと長いときの両方を ErrChecksumMismatch で拒むことを確かめる。
+func checkResumableSourceLength(t *testing.T, objects objstore.Store) {
+	t.Helper()
+	resumable := objects.(objstore.Resumable)
+	key := testKey(t)
+	data := []byte("exact length payload")
+	state, err := resumable.StartUpload(t.Context(), key, int64(len(data)), sha256.Sum256(data), "application/octet-stream")
+	if err != nil {
+		t.Fatalf("StartUpload: %v", err)
+	}
+	// 短い場合と長い場合は同じ staging（同じ UploadId）を指すので、最後に 1 回だけ Abort する。
+	_, _, err = resumable.ContinueUpload(t.Context(), state, bytes.NewReader(data[:10]))
+	if !errors.Is(err, objstore.ErrChecksumMismatch) {
+		t.Fatalf("ContinueUpload with a short source error = %v, want ErrChecksumMismatch", err)
+	}
+	long, _, err := resumable.ContinueUpload(t.Context(), state, bytes.NewReader(append(bytes.Clone(data), 'x')))
+	if !errors.Is(err, objstore.ErrChecksumMismatch) {
+		t.Fatalf("ContinueUpload with a long source error = %v, want ErrChecksumMismatch", err)
+	}
+	abortUntilGone(t, resumable, long)
+}
+
+// checkRangeReaderStartsAtOffset は、GetFrom(offset) が data[offset:] を返すことを確かめる。
+func checkRangeReaderStartsAtOffset(t *testing.T, objects objstore.Store) {
+	t.Helper()
+	ranged, ok := objects.(objstore.RangeReader)
+	if !ok {
+		t.Fatal("store implements objstore.Resumable but not objstore.RangeReader")
+	}
+	key := testKey(t)
+	data := deterministicBytes(64 << 10)
+	if err := objects.Put(t.Context(), key, bytes.NewReader(data), int64(len(data)), sha256.Sum256(data), "application/octet-stream"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	for _, offset := range []int64{0, 12345, int64(len(data)) - 1} {
+		body, err := ranged.GetFrom(t.Context(), key, offset)
+		if err != nil {
+			t.Fatalf("GetFrom(%d): %v", offset, err)
+		}
+		got, readErr := io.ReadAll(body)
+		closeErr := body.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatalf("reading GetFrom(%d): read %v, close %v", offset, readErr, closeErr)
+		}
+		if !bytes.Equal(got, data[offset:]) {
+			t.Fatalf("GetFrom(%d) returned %d bytes, want data[%d:] with %d bytes", offset, len(got), offset, len(data)-int(offset))
+		}
+	}
+}
+
+// abortUntilGone は AbortUpload を gone が true になるまで繰り返す。送信中のパートは Abort の後に残りうる。
+func abortUntilGone(t *testing.T, resumable objstore.Resumable, state []byte) {
+	t.Helper()
+	for range 10 {
+		gone, err := resumable.AbortUpload(t.Context(), state)
+		if err != nil {
+			t.Fatalf("AbortUpload: %v", err)
+		}
+		if gone {
+			return
+		}
+	}
+	t.Fatal("AbortUpload never reported the upload gone")
+}
+
+// stopAfterReader は limit バイトを読んだ後に ctx を切る。以降の Read は context.Canceled を返す。
+type stopAfterReader struct {
+	reader *bytes.Reader
+	limit  int64
+	read   int64
+	cancel context.CancelFunc
+}
+
+func (r *stopAfterReader) Read(p []byte) (int, error) {
+	if r.read >= r.limit {
+		r.cancel()
+		return 0, context.Canceled
+	}
+	if remaining := r.limit - r.read; int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	return n, err
+}
+
+func deterministicBytes(n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = byte((i*31 + i/251) % 251)
+	}
+	return out
 }

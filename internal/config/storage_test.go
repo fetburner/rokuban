@@ -556,3 +556,33 @@ func TestLoadRejectsInternalURLHostOutsideAllowedHosts(t *testing.T) {
 		})
 	}
 }
+
+// TransferDestinationStoreNames は、FS の置き場と、派生物が S3 のときだけその置き場を返す。
+func TestTransferDestinationStoreNamesIncludesS3Derived(t *testing.T) {
+	fs := map[string]StoreConfig{"tokyo": {Kind: "fs"}, "takamatsu": {Kind: "fs"}}
+	withS3 := map[string]StoreConfig{"tokyo": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "b"}}
+	tests := []struct {
+		name    string
+		stores  map[string]StoreConfig
+		derived string
+		want    []string
+	}{
+		{name: "FS only", stores: fs, derived: "tokyo", want: []string{"takamatsu", "tokyo"}},
+		{name: "one FS store plus an S3 derived store", stores: withS3, derived: "cloud", want: []string{"cloud", "tokyo"}},
+		{name: "S3 store that is not the derived store is not a destination", stores: map[string]StoreConfig{"tokyo": {Kind: "fs"}, "old": {Kind: "s3", Bucket: "b"}}, derived: "tokyo", want: []string{"tokyo"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := StorageConfig{Stores: tt.stores, Derived: tt.derived}
+			got := cfg.TransferDestinationStoreNames()
+			if len(got) != len(tt.want) {
+				t.Fatalf("TransferDestinationStoreNames() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("TransferDestinationStoreNames() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}

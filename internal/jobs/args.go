@@ -240,14 +240,24 @@ type StorageTransferReconcileArgs struct{}
 func (StorageTransferReconcileArgs) Kind() string { return "storage_transfer_reconcile" }
 
 // StorageTransferArgs は desired store へコピーする論理資産を指定する。
+//
+// 宛先が FS の置き場なら SourceStore は空で、キューは宛先の置き場で修飾される。宛先が S3 の派生物の置き場なら、
+// 転送は転送元の FS 置き場の worker が S3 へ直接送るので、SourceStore にその置き場を入れてキューを選ぶ。
 type StorageTransferArgs struct {
-	MediaAssetID      int64  `json:"media_asset_id"`
-	Store             string `json:"store"`
+	MediaAssetID int64  `json:"media_asset_id"`
+	Store        string `json:"store"`
+	// SourceStore は S3 宛ての転送を実行する FS 置き場。省略時（旧いジョブを含む）は Store のキューに載る。
+	SourceStore       string `json:"source_store,omitempty"`
 	PolicyFingerprint string `json:"policy_fingerprint"`
 }
 
-// QueueStore は書き込み先の物理コピー置き場を返す。
-func (a StorageTransferArgs) QueueStore() string { return a.Store }
+// QueueStore は、このジョブを載せる物理キューの置き場を返す。SourceStore があればそれ、無ければ書き込み先の Store。
+func (a StorageTransferArgs) QueueStore() string {
+	if a.SourceStore != "" {
+		return a.SourceStore
+	}
+	return a.Store
+}
 
 // Kind はジョブ種別名を返す。
 func (StorageTransferArgs) Kind() string { return "storage_transfer" }

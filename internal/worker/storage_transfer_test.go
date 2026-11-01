@@ -181,7 +181,7 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 		t.Fatal(err)
 	}
 	if err := fsink.SaveCheckpoint(file, int64(len(partial)), hasher, func(c fsink.Checkpoint) error {
-		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.Generation, c.Offset, c.HashState)
+		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.Generation, c.Offset, c.HashState, nil)
 	}); err != nil {
 		t.Fatalf("saving transfer progress: %v", err)
 	}
@@ -234,9 +234,11 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			}
 			adoptedTempPath := prepareAdoptedTransferTemp(t, media, cfg, assetID, targetPath, content, tc.tempOwner)
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
-				MediaAssetID: assetID,
-				Store:        "archive", PolicyFingerprint: fingerprint,
+			if err := settleTransferWork(t, func() error {
+				return worker.Work(context.Background(), jobs.StorageTransferArgs{
+					MediaAssetID: assetID,
+					Store:        "archive", PolicyFingerprint: fingerprint,
+				})
 			}); err != nil {
 				t.Fatalf("StorageTransferWorker.Work: %v", err)
 			}
@@ -340,7 +342,9 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 				}
 			}
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
+			if err := settleTransferWork(t, func() error {
+				return worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint})
+			}); err != nil {
 				t.Fatalf("StorageTransferWorker.Work: %v", err)
 			}
 
@@ -545,8 +549,10 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	}
 	objects := transferTestObjectStores(t, roots)
 	transferWorker := StorageTransferWorker{Storage: media, Config: transferConfig, Roots: roots, ObjectStores: objects, ScratchDir: t.TempDir()}
-	if err := transferWorker.Work(context.Background(), jobs.StorageTransferArgs{
-		MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
+	if err := settleTransferWork(t, func() error {
+		return transferWorker.Work(context.Background(), jobs.StorageTransferArgs{
+			MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
+		})
 	}); err != nil {
 		t.Fatalf("StorageTransferWorker.Work on destination collision: %v", err)
 	}

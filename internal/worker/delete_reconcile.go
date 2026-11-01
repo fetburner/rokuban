@@ -174,10 +174,10 @@ type placementArm struct {
 	overlapCutoff time.Time
 }
 
-// placementPolicy は配置の腕に渡す規則と派生物の置き場を返す。FS の置き場が 2 つ未満のとき、
-// この腕は FS から FS の転送を扱わないので、常に偽になる空の規則と空の置き場（enabled=false）を返す。
+// placementPolicy は配置の腕に渡す規則と派生物の置き場を返す。転送の宛先の置き場（TransferDestinationStoreNames）が
+// 2 つ未満のとき、この腕は移す先を持たないので、常に偽になる空の規則と空の置き場（enabled=false）を返す。
 func (w *DeleteReconcileWorker) placementPolicy() (rules []byte, derived string, enabled bool, err error) {
-	if len(w.StorageTransferPolicy.FSStoreNames()) < 2 {
+	if len(w.StorageTransferPolicy.TransferDestinationStoreNames()) < 2 {
 		return nil, "", false, nil
 	}
 	rules, err = w.StorageTransferPolicy.OriginalRulesJSON()

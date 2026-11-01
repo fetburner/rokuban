@@ -1,10 +1,24 @@
 -- Candidate selection and waiting metrics use the same named predicate.
+-- source_store は、宛先が S3 の派生物の転送を実行する FS 置き場（キューの修飾に使う）。PrepareMediaAssetTransfer の
+-- source CTE と同じ順（作成の新しい順）で選ぶ。マウントの有無は reconcile からは分からないので、ここでは見ない。
+-- 候補の述語は世代を見ず、この選び方は世代を見るので、見つからないことがある（空文字を返す。呼び出し側は空なら積まない）。
 -- name: ListMediaAssetTransferCandidates :many
 SELECT a.id AS media_asset_id,
        desired_media_store(
            a.kind, sqlc.arg('original_rules')::jsonb, sqlc.arg('derived_store')::text,
            r.site, (r.program_start_at + r.program_duration_ms * interval '1 millisecond')::timestamptz
-       ) AS desired_store
+       ) AS desired_store,
+       COALESCE((
+           SELECT source.store::text
+           FROM active_media_asset_copies(a.id, NULL) source
+           WHERE source.store = ANY(sqlc.arg('fs_stores')::text[])
+             AND source.generation = COALESCE(a.derived_generation, 0)
+             AND NOT EXISTS (
+                 SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source.id
+             )
+           ORDER BY source.created_at DESC, source.id
+           LIMIT 1
+       ), '')::text AS source_store
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 WHERE storage_transfer_candidate(
@@ -476,6 +490,7 @@ ON CONFLICT (copy_id) DO NOTHING;
 
 -- name: LockMediaAssetTransferProgress :one
 SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
+       p.upload_store, p.upload_state, p.verifying_source,
        (p.lease_expires_at > now())::boolean AS lease_live
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = sqlc.arg('copy_id')
@@ -496,6 +511,7 @@ UPDATE media_asset_copy_transfer_progress p
 SET handed_off = true,
     offset_bytes = sqlc.arg('offset_bytes'),
     hash_state = sqlc.narg('hash_state')::bytea,
+    upload_state = sqlc.narg('upload_state')::bytea,
     lease_expires_at = now()
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid
@@ -517,3 +533,70 @@ WHERE p.copy_id = sqlc.arg('copy_id');
 -- name: DeleteMediaAssetTransferProgress :exec
 DELETE FROM media_asset_copy_transfer_progress
 WHERE copy_id = sqlc.arg('copy_id');
+
+-- Upload states are replaced inside one transaction: the lease is locked first,
+-- so a stale holder cannot retire a state that a newer holder is writing.
+-- name: LockLeasedMediaAssetTransferProgress :one
+SELECT p.upload_store, p.upload_state
+FROM media_asset_copy_transfer_progress p
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now()
+FOR UPDATE;
+
+-- name: InsertAbandonedMediaAssetTransferUpload :exec
+INSERT INTO media_asset_transfer_abandoned_uploads (store, upload_state)
+VALUES (sqlc.arg('store'), sqlc.arg('upload_state'));
+
+-- name: ReplaceMediaAssetTransferUpload :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET upload_store = sqlc.arg('upload_store')::text,
+    upload_state = sqlc.arg('upload_state')::bytea,
+    offset_bytes = 0,
+    hash_state = NULL,
+    handed_off = false
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now();
+
+-- name: ListAbandonedMediaAssetTransferUploads :many
+SELECT a.id, a.upload_state
+FROM media_asset_transfer_abandoned_uploads a
+WHERE a.store = sqlc.arg('store')
+ORDER BY a.id
+LIMIT sqlc.arg('row_limit')::integer;
+
+-- name: DeleteAbandonedMediaAssetTransferUpload :exec
+DELETE FROM media_asset_transfer_abandoned_uploads
+WHERE id = sqlc.arg('id');
+
+-- 原本の照合は、lease を持つ試行だけが始めて終える。照合中は offset_bytes / hash_state が転送元の読み直しの位置を表す。
+-- name: BeginMediaAssetTransferSourceVerification :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET verifying_source = true,
+    offset_bytes = 0,
+    hash_state = NULL
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now();
+
+-- name: EndMediaAssetTransferSourceVerification :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET verifying_source = false,
+    offset_bytes = 0,
+    hash_state = NULL
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now();
+
+-- 転送の観測で NULL の SHA-256 を埋める。世代が変わった論理資産や、既に値のある行には書かない。
+-- name: RecordObservedMediaAssetSHA256 :execrows
+UPDATE media_assets a
+SET sha256 = sqlc.arg('sha256')::bytea
+WHERE a.id = sqlc.arg('media_asset_id')
+  AND a.sha256 IS NULL
+  AND COALESCE(a.derived_generation, 0) = sqlc.arg('generation')::bigint;

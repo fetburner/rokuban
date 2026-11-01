@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -28,9 +29,18 @@ type fakeAPI struct {
 	putErrs        []error
 	putInputs      []*s3.PutObjectInput
 	completeInputs []*s3.CompleteMultipartUploadInput
+	// uploadPartErrs は UploadPart の応答を呼び出し順に返す。空なら成功する。
+	uploadPartErrs []error
+	// abortErrs は AbortMultipartUpload の応答を呼び出し順に返す。nil は成功。空なら成功する。
+	abortErrs []error
+	// listPartsErrs は ListParts の応答を呼び出し順に返す。nil は成功（残りがある）。空なら NoSuchUpload（Abort 済みで残りが無い）。
+	listPartsErrs []error
+	// parts は成功した UploadPart の内容を番号ごとに保存する。
+	parts          map[int32][]byte
 	headCalls      int
 	completeCalls  int
 	abortCalls     int
+	listPartsCalls int
 	putPartCalls   int
 	putCalls       int
 	mutationCalls  int
@@ -79,11 +89,22 @@ func (f *fakeAPI) CreateMultipartUpload(context.Context, *s3.CreateMultipartUplo
 
 func (f *fakeAPI) UploadPart(_ context.Context, in *s3.UploadPartInput, _ ...func(*s3.Options)) (*s3.UploadPartOutput, error) {
 	f.mutationCalls++
-	if _, err := io.ReadAll(in.Body); err != nil {
+	body, err := io.ReadAll(in.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(f.uploadPartErrs) > 0 {
+		err := f.uploadPartErrs[0]
+		f.uploadPartErrs = f.uploadPartErrs[1:]
 		return nil, err
 	}
 	f.putPartCalls++
-	return &s3.UploadPartOutput{ETag: aws.String("part-etag")}, nil
+	number := aws.ToInt32(in.PartNumber)
+	if f.parts == nil {
+		f.parts = map[int32][]byte{}
+	}
+	f.parts[number] = body
+	return &s3.UploadPartOutput{ETag: aws.String(fmt.Sprintf("etag-%d", number))}, nil
 }
 
 func (f *fakeAPI) CompleteMultipartUpload(_ context.Context, in *s3.CompleteMultipartUploadInput, _ ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error) {
@@ -101,7 +122,25 @@ func (f *fakeAPI) CompleteMultipartUpload(_ context.Context, in *s3.CompleteMult
 func (f *fakeAPI) AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error) {
 	f.abortCalls++
 	f.mutationCalls++
+	if len(f.abortErrs) > 0 {
+		err := f.abortErrs[0]
+		f.abortErrs = f.abortErrs[1:]
+		return &s3.AbortMultipartUploadOutput{}, err
+	}
 	return &s3.AbortMultipartUploadOutput{}, nil
+}
+
+func (f *fakeAPI) ListParts(context.Context, *s3.ListPartsInput, ...func(*s3.Options)) (*s3.ListPartsOutput, error) {
+	f.listPartsCalls++
+	if len(f.listPartsErrs) > 0 {
+		err := f.listPartsErrs[0]
+		f.listPartsErrs = f.listPartsErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+		return &s3.ListPartsOutput{}, nil
+	}
+	return nil, &smithy.GenericAPIError{Code: "NoSuchUpload", Message: "gone", Fault: smithy.FaultClient}
 }
 
 type fakePresigner struct{}

@@ -23,6 +23,10 @@ var (
 	ErrCredentials = errors.New("object store credentials are unusable")
 	// ErrReadOnly means the object store was initialized without write capabilities.
 	ErrReadOnly = errors.New("object store is read-only")
+	// ErrUploadInvalid は、保存した再開状態ではもう続きを送れない・完了できないことを表す
+	// （S3 の NoSuchUpload / InvalidPart / InvalidPartOrder、fsstore の staging が無い・短い等）。
+	// 呼び出し側は状態を捨てて新しいアップロードを最初から始める。
+	ErrUploadInvalid = errors.New("resumable upload is no longer valid")
 )
 
 // Object describes a completed object returned by Head or List.
@@ -53,6 +57,25 @@ type Reader interface {
 // Local is implemented by stores that can serve objects from a seekable reader.
 type Local interface {
 	Open(ctx context.Context, key string) (io.ReadSeekCloser, Object, error)
+}
+
+// Resumable は、1 つのアップロードをプロセスをまたいで続けられる置き場が実装する。
+// state は実装が marshal する不透明なバイト列で、呼び出し側は DB に保存してそのまま返す。
+type Resumable interface {
+	// StartUpload は key に size バイト・SHA-256 が sha256 のオブジェクトを送るアップロードを始める。バイトはまだ送らない。
+	StartUpload(ctx context.Context, key string, size int64, sha256 [32]byte, contentType string) (state []byte, err error)
+	// ContinueUpload は state が記録する offset から始まる src を読み、size に達するか ctx が終わるまで送る。
+	// 返す newState と offset は、置き場に確実に残ったバイトだけを表す。err が非 nil でも呼び出し側は両方を保存してよい。
+	ContinueUpload(ctx context.Context, state []byte, src io.Reader) (newState []byte, offset int64, err error)
+	// CompleteUpload は、size バイトすべてを送り終え、送りながら計算した SHA-256 が一致したときだけ公開する。
+	CompleteUpload(ctx context.Context, state []byte) error
+	// AbortUpload はアップロードを破棄する。gone は「アップロードの残骸が何も無い」と確認できたときだけ true。
+	AbortUpload(ctx context.Context, state []byte) (gone bool, err error)
+}
+
+// RangeReader は、完了したオブジェクトを offset から読める置き場が実装する。
+type RangeReader interface {
+	GetFrom(ctx context.Context, key string, offset int64) (io.ReadCloser, error)
 }
 
 // SignedURL is implemented by stores that can issue browser-readable URLs.

@@ -25,6 +25,9 @@ func TestPhysicalQueueForRequiresQueueSiteOnlyForSiteBoundQueues(t *testing.T) {
 		{name: "rejects a site-bound queue without QueueSite", args: siteBoundArgsWithoutQueueSite{}, wantErr: true},
 		{name: "qualifies an empty site as the default site", args: jobs.RecordSweepArgs{}, want: "watcher_default"},
 		{name: "leaves a site-independent ruler queue unqualified", args: jobs.RulerPassArgs{Site: "tokyo"}, want: "ruler"},
+		{name: "queues an fs-destination transfer on the destination store", args: jobs.StorageTransferArgs{Store: "archive"}, want: "transfer_archive"},
+		{name: "queues an s3-destination transfer on its source store", args: jobs.StorageTransferArgs{Store: "cloud", SourceStore: "main"}, want: "transfer_main"},
+		{name: "keeps a pre-existing transfer job on its destination store", args: jobs.StorageTransferArgs{Store: "archive", PolicyFingerprint: "old"}, want: "transfer_archive"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

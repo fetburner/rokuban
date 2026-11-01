@@ -195,7 +195,9 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
 
-接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。worker には S3 の権限として `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject`、`AbortMultipartUpload` が要る。streamer に要るのは `HeadObject` と署名付き URL の作成だけである。
+接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。worker には S3 の権限として `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject` が要る。さらに `AbortMultipartUpload` と `ListMultipartUploadParts` が要る。後者は ListParts の権限で、Abort のあとの確認に使う。streamer に要るのは `HeadObject` と署名付き URL の作成だけである。
+
+派生物の置き場が S3 のときは、S3 へ送るのは転送元の FS 置き場の転送 worker である（[転送](../storage/transfer.md) の「宛先が S3 の派生物」）。その worker にも上記の資格情報と権限が要る。deploy/k8s では、転送の ScaledJob（`rokuban-worker-transfer`）が encode と同じ Secret を `envFrom` で受け取るので、追加の設定は要らない。
 
 worker は起動時に S3 へ接続しない。S3 に繋がらなくても、資格情報が失効していても worker は起動する。S3 のコードを通らないジョブ（ingest など）は、S3 の状態に左右されない。S3 を使うジョブ（派生物の公開と削除）だけが失敗し、`rokuban_object_store_errors_total{operation}` に数える。資格情報の失効と取得失敗は `rokuban_object_store_credential_errors_total` にも数えるので、権限や接続の失敗と区別できる。S3 へ書けない間は、派生物の置き場に encoded のコピーが揃わず、`until_encoded` の原本は消えない。
 
@@ -205,9 +207,35 @@ worker は起動時に S3 へ接続しない。S3 に繋がらなくても、資
 
 動画の再生そのものに CORS が要る。プレイヤーの `<video>` は `crossorigin="anonymous"` を付けて S3 の URL を読むためである。bucket の CORS では、UI の origin からの GET と HEAD、`Range` request header を許可する。`Content-Range` と `Accept-Ranges` は expose する。字幕の取得も同じ設定を使う。bucket の CORS を変えたときは、実ブラウザの S3 配信判定（`web/e2e/s3-302.mjs`）も通す。
 
-適合テストが測るのは 4 つで、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range である。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。
+#### 適合テストが測る機能
 
-置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残るためである。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後にする。
+適合テストが測るのは 6 つである。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。
+
+- 条件付き書き込み（`If-None-Match: *`）
+- multipart の完了と abort
+- abort のあとの ListParts が NoSuchUpload を返すか。s3store の掃除が gone と判定する根拠なので、ここで測る
+- HEAD での SHA-256 の取得
+- 署名付き GET の Range
+- multipart の続き。送り手が落ちたあとも、同じ UploadId とパートの ETag だけで続けて完了できるかを見る
+
+条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。multipart の続きが非対応・一部対応のサーバーで派生物の転送が続きから送れるかは未検証である。
+
+置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちればパートが残るためである。派生物の転送は 1 つのアップロードを slice をまたいで続けるので、途中のアップロードは何日も残りうる。`DaysAfterInitiation`（日単位）は、転送が slice をまたいで続く期間より十分長くする。短いと、続きの途中のアップロードが消え、次の試行は新しいアップロードから送り直すことになる。
+
+記録のある送信状態は、その置き場への転送の Work の冒頭の掃除が Abort する（[置き場間の転送](../storage/transfer.md) の「派生物の再開できる送信」）。ライフサイクル規則が S3 互換サーバーで効くかは未検証なので、互換サーバーでは手で掃除する。DB を正として、DB に載っていない UploadId だけを Abort する。進行中の転送のアップロードを消さないためである。
+
+DB を失った後は記録と突き合わせられないので、この手順は使えない。ライフサイクル規則が効かないサーバーでは、転送が slice をまたいで続く期間より十分古い（`DaysAfterInitiation` と同じ考え方）UploadId だけを手で Abort する。
+
+```bash
+# DB が指す UploadId（S3 の送信状態と掃除待ちの両方）。出力を known.txt に保存する
+psql "$POSTGRES_CONNECTION_STRING" -At -c "SELECT convert_from(upload_state, 'UTF8')::jsonb->>'upload_id' FROM media_asset_copy_transfer_progress WHERE upload_state IS NOT NULL UNION SELECT convert_from(upload_state, 'UTF8')::jsonb->>'upload_id' FROM media_asset_transfer_abandoned_uploads" > known.txt
+
+# bucket の未完了アップロード（Key と UploadId の組）のうち、known.txt に無いものだけを Abort する
+aws s3api list-multipart-uploads --bucket BUCKET --query 'Uploads[].[Key,UploadId]' --output text
+aws s3api abort-multipart-upload --bucket BUCKET --key KEY --upload-id UPLOAD_ID
+```
+
+Abort は送信中のパートが残りうるので、一覧に同じ UploadId が残らなくなるまで繰り返す。
 
 孤児の回収では、DB にコピー行が無い S3 のキーを報告して保持し、削除しない。DB を復元した直後に、唯一の実体を消さないためである。DB にある古い `pending` のキーは孤児ではなく、削除 reconcile が回収する。
 
@@ -233,7 +261,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 結果は `-v` の出力の `S3_CONFORMANCE` で始まる行に、機能ごとの JSON で出る。`status` が `supported`、`unsupported`、`partial` のいずれかで、`checks` に内訳が入る。想定外のエラーで判定できなかった機能は `unknown` で、`note` に原因が入る。
 
-`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 4 機能すべてに `supported` を期待し、退行を検知する。
+`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 6 機能すべてに `supported` を期待し、退行を検知する。
 
 <details><summary>根拠</summary>
 
@@ -245,7 +273,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 - CI の MinIO: `.github/workflows/ci.yml` `s3-conformance`
 - multipart の上限（部品の大きさと個数）: [S3 multipart upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
 - checksum の種類（SHA-256 は multipart で composite だけ）: [S3 object integrity](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)
-- abort の確認方法（`ListParts` の parts が空）: [AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)
+- abort の確認方法（Abort のあとの `ListParts` でパートが消えたことを確かめる）: [AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)
 - 不完全な upload のライフサイクル規則: [Abort multipart upload](https://docs.aws.amazon.com/AmazonS3/latest/userguide/abort-mpu.html)
 
 </details>

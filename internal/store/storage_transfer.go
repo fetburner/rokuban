@@ -24,12 +24,28 @@ type TransferProgress struct {
 	Offset int64
 	// HashState は、Resumed のとき保存された SHA-256 の状態である。
 	HashState []byte
+	// UploadStore と UploadState は、Resumed のとき保存された再開できるアップロードの送信状態である。
+	// きれいでない引き継ぎでは詰めない（古い送信状態は行に残り、置き換えるまで掃除待ちに移らない）。
+	UploadStore string
+	UploadState []byte
+	// VerifyingSource は、原本の不一致の照合が途中であることを表す。きれいでない引き継ぎでも真のまま返る。
+	// 真のとき、Offset と HashState は転送元の読み直しの位置で、temp の位置ではない。
+	VerifyingSource bool
+}
+
+// AbandonedTransferUpload は、もう使わない送信状態の掃除待ちの 1 行である。
+type AbandonedTransferUpload struct {
+	ID    int64
+	State []byte
 }
 
 // MediaAssetTransferCandidate は desired store にコピーが必要な論理資産を表す。
 type MediaAssetTransferCandidate struct {
 	MediaAssetID int64
 	Store        string
+	// SourceStore は、転送を実行しうる FS 置き場の候補である。reconcile は宛先が S3 のときだけ使う。
+	// 候補が無いときは空になる（FS の宛先の候補は、この値を使わない）。
+	SourceStore string
 }
 
 // MediaAssetTransfer は 1 回の転送に必要な、ロック後の論理資産とコピーの状態を表す。
@@ -122,9 +138,27 @@ type StorageTransfer interface {
 	// 他の試行が lease を持っている（handed_off でなく、期限が DB の now() より後）ときは acquired=false を返す。
 	// 前の slice が保存していれば（handed_off）世代と状態を引き継ぎ、そうでなければ世代を上げて先頭から取り直す。
 	AcquireMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, ttl time.Duration) (progress TransferProgress, acquired bool, err error)
-	// SaveMediaAssetTransferProgress は slice の終わりに、書き終えた offset と SHA-256 の状態を保存し、lease を切る。
+	// SaveMediaAssetTransferProgress は slice の終わりに、書き終えた offset と SHA-256 の状態と送信状態を保存し、lease を切る。
+	// 原本は uploadState に nil を渡す。派生物は ReplaceMediaAssetTransferUpload の後に、その送信状態を渡す。
 	// lease が無い（別の試行が取った、期限が切れた）か、世代が違えば ErrTransferLeaseLost を返す。
-	SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState []byte) error
+	SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState, uploadState []byte) error
+	// ReplaceMediaAssetTransferUpload は、lease を持つ試行の送信状態を新しいものに置き換える。
+	// 古い送信状態があれば掃除待ちに移し、offset を 0、SHA-256 の状態と handed_off を初期化する。
+	// lease を持たなければ ErrTransferLeaseLost を返し、何も変えない。
+	ReplaceMediaAssetTransferUpload(ctx context.Context, copyID int64, owner uuid.UUID, generation int64, uploadStore string, uploadState []byte) error
+	// ListAbandonedTransferUploads は置き場 store の掃除待ちを id 順に最大 limit 件返す。
+	ListAbandonedTransferUploads(ctx context.Context, store string, limit int32) ([]AbandonedTransferUpload, error)
+	// DeleteAbandonedTransferUpload は掃除を済ませた掃除待ちを消す。
+	DeleteAbandonedTransferUpload(ctx context.Context, id int64) error
+	// BeginMediaAssetTransferSourceVerification は、lease を持つ試行が原本の照合を始める。
+	// verifying_source を真にし、offset と SHA-256 の状態を 0 / nil に戻す。lease を失っていれば ErrTransferLeaseLost を返す。
+	BeginMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error
+	// EndMediaAssetTransferSourceVerification は、lease を持つ試行が照合を終える。verifying_source を偽にし、offset と SHA-256 の状態を 0 / nil に戻す。
+	// 照合の結果は保存しない。lease を失っていれば ErrTransferLeaseLost を返す。
+	EndMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error
+	// RecordObservedMediaAssetSHA256 は、転送の途中で観測した論理資産の SHA-256 を、SHA-256 が未知で世代が generation の行にだけ書く。
+	// 書けたら recorded=true を返す。既に値がある、または世代が変わっていれば何も書かず recorded=false を返す。
+	RecordObservedMediaAssetSHA256(ctx context.Context, mediaAssetID, generation int64, sha256 []byte) (recorded bool, err error)
 	// ReleaseMediaAssetTransferProgress は失敗で抜ける試行の lease を切る。次の試行は世代を上げる。
 	// lease を持たなければ何もしない。
 	ReleaseMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID) error

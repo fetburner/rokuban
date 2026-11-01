@@ -205,7 +205,7 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // **middleware だけでは足りない。** River の executor は、登録されていない
 // kind のジョブに対して WorkUnit == nil で早期 return し、その時点では
 // **WorkerMiddleware のチェーンをまだ組み立てていない**
-// （river@v0.47.0 internal/jobexecutor/job_executor.go の `if e.WorkUnit == nil`
+// （river@v0.50.0 internal/jobexecutor/job_executor.go の `if e.WorkUnit == nil`
 // が `execution.MiddlewareChain` より前にある）。したがって OnceGate の
 // middleware は一度も呼ばれず、Job は「1 件も claim していない」と誤認したまま
 // idleTimeout まで掴み続ける。
@@ -230,13 +230,13 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // job_executor.go の読解（上記）からはこの 2 つも同じ結論になるはずだが、
 // **未検証**。completed/cancelled/snoozed の 3 つは「将来 River が
 // middleware チェーンの組み立てタイミングを変える」場合への保険であって、
-// 今の River (v0.47.0) ではこの 3 kind を落としても本番の挙動は壊れない
+// 今の River (v0.50.0) ではこの 3 kind を落としても本番の挙動は壊れない
 // と考えられる（根拠の強さは上記の通り一様ではない）。
 //
 // **River v0.44 で 5 つ目の終わり方（EventKindJobInterrupted）が増えたが、
 // これは購読しない。** クライアントの停止で実行中のジョブが中断されたとき
 // （`SoftStopTimeout` 経過または `StopAndCancel`）に起き、行は attempt を消費せず available に
-// 戻る（River v0.47.0 CHANGELOG.md §0.44.0）。1 件消化モードでこれが起きるのは
+// 戻る（River v0.50.0 CHANGELOG.md §0.44.0）。1 件消化モードでこれが起きるのは
 // **停止が始まったあと**、つまり Start に渡した ctx が cancel されたか
 // stopOnceProcess が Stop を撃ったあとだけである。前者では Wait が
 // ctx.Done で OnceOutcomeCanceled を返し、後者では Wait が既に戻っている。

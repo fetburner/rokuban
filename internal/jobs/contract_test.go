@@ -43,7 +43,7 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		{"catalog_export", CatalogExportArgs{Store: "tokyo", Keep: 3}, "catalog_export", OriginalQueue, "original_tokyo", 5 * time.Minute, 1, true, 1},
 		{"storage_sync", StorageSyncArgs{Store: "tokyo"}, "storage_sync", StorageQueue, "storage_tokyo", time.Minute, 1, true, 1},
 		{"storage_transfer_reconcile", StorageTransferReconcileArgs{}, "storage_transfer_reconcile", CleanupQueue, "cleanup", 5 * time.Minute, 1, true, 1},
-		{"storage_transfer", StorageTransferArgs{MediaAssetID: 9, Store: "tokyo", PolicyFingerprint: "abc"}, "storage_transfer", TransferQueue, "transfer_tokyo", 12 * time.Hour, 1, true, 1},
+		{"storage_transfer", StorageTransferArgs{MediaAssetID: 9, Store: "tokyo", PolicyFingerprint: "abc"}, "storage_transfer", TransferQueue, "transfer_tokyo", 5 * time.Minute, 1, true, 1},
 	}
 
 	for _, tt := range tests {
