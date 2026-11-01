@@ -12,7 +12,7 @@
 
 転送は転送元ごとの advisory lock を、pool から借りた接続のまま保持する。pool の外に接続を張ると、`db.max_conns` がプロセスの接続上限だという契約を破るためである。この接続の数は pool の予算に数える（[データベース](../operations/database.md)）。
 
-転送元と宛先の rel_path lock は、置き場名と相対パスの順で取る。転送元の root の目印を照合してから読み、lock を取れない job は snooze する。どちらの lock も Work ごとに取り直す。
+転送元と宛先の rel_path lock は、置き場名と相対パスの順で取る。転送元の root の目印を照合してから読み、lock を取れない job は snooze する。advisory lock と rel_path lock は、どちらも Work ごとに取り直す。
 
 進捗（lease、世代、保存した長さと SHA-256 の状態）は、pending のコピーの衛星表に持つ。lease の期限は DB の `now()` と比べ、プロセスの時計は使わない。
 
@@ -84,7 +84,7 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 自分の temp の片付け、他の書き手の宛先を採用するときの temp の保持、完了時の進捗の行の消去: `TestStorageTransferWorkerCopiesAndAdopts`
 - 保存された状態から、同じ世代の続きを転送元の残りだけから読む: `TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix`
 - 保存せずに抜けた試行は、世代を上げて先頭から取り直し、失敗として数えない: `TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed`
-- 長さや状態が合わない引き継ぎは失敗として 1 回数え、次の試行が世代を上げて取り直して、その世代の temp を消す: `TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers`
+- 長さや状態が合わない引き継ぎは失敗として 1 回数える。次の試行は世代を上げて取り直し、合わなかった世代の temp を消す: `TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers`
 - 転送元の接続が切れて失敗した試行の次は、切れた位置から Range で続ける: `TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect`
 - コピーを pending でなくす transaction と並行に進捗を取っても、行を作らない: `TestTransferProgressAcquireWaitsForConcurrentCopyRetirement`
 - slice の時間で止まって保存し snooze し、繰り返すと完了する: `TestStorageTransferWorkerSliceStopsAndResumesToCompletion`
