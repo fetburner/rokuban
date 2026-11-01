@@ -443,6 +443,9 @@ SELECT c.id, sqlc.arg('owner')::uuid, now() + make_interval(secs => sqlc.arg('tt
 FROM media_asset_copies c
 WHERE c.id = sqlc.arg('copy_id')
   AND c.state = 'pending'
+-- 並行してコピーを pending でなくす transaction（進捗の行を消す側）の commit を待ち、state を読み直す。
+-- 待たないと、消された後に行を作り、pending でないコピーの行が残る。
+FOR SHARE OF c
 ON CONFLICT (copy_id) DO NOTHING;
 
 -- name: LockMediaAssetTransferProgress :one

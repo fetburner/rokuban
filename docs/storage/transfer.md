@@ -20,6 +20,8 @@ temp は宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}
 
 前の試行が保存せずに抜けて lease が切れただけのときは、世代を上げて先頭から取り直す。これは中断であり、失敗としては数えない。
 
+転送元の接続が切れるなど、コピーの途中で失敗した試行も、書いた分を保存してから失敗を記録する。次の試行は切れた位置から続ける。先頭から取り直すと、切れやすい経路では大きな原本の転送が終わらない。
+
 論理資産の SHA-256 が既知なら、きれいな引き継ぎでも転送元の先頭は読み直さない。未知の古い行では、slice の合間に転送元が変わっても検出しない。
 
 slice の合間に temp を読み直してハッシュを取り直さない。offset までのバイトが残っていることは、「fsync してから DB に保存する」順序で確保し、再開時は長さだけを確かめる。きれいな引き継ぎなのに長さや状態が合わないのは、この順序が破れたことを示すので、試行の失敗として数える。完了時の SHA-256 の照合は、転送経路と再開手順の誤りを、黙ったコピーではなく試行の失敗として表に出すためのものである。
@@ -81,6 +83,8 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 保存された状態から、同じ世代の続きを転送元の残りだけから読む: `TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix`
 - 保存せずに抜けた試行は、世代を上げて先頭から取り直し、失敗として数えない: `TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed`
 - 長さや状態が合わない引き継ぎは、失敗として 1 回数えてから、次の試行が取り直す: `TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers`
+- 転送元の接続が切れて失敗した試行の次は、切れた位置から Range で続ける: `TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect`
+- コピーを pending でなくす transaction と並行に進捗を取っても、行を作らない: `TestTransferProgressAcquireWaitsForConcurrentCopyRetirement`
 - slice の時間で止まって保存し snooze し、繰り返すと完了する: `TestStorageTransferWorkerSliceStopsAndResumesToCompletion`
 - lease を別の試行に取られた試行の保存を拒む: `TestTransferProgressZombieSaveIsRejected`
 - lease が切れた後の、持ち主自身の保存を拒む: `TestTransferProgressSaveAfterOwnLeaseExpiryIsRejected`

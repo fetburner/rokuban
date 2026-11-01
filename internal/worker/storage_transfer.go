@@ -280,12 +280,20 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	written, copyErr := w.copyTransferSlice(sliceCtx, src, transfer.SourceStore, slice, transfer.SizeBytes)
 	// 全部書き終えたあとで期限が来た場合（帯域制限の待ちが最後の読みと同時に終わる）も、書いた分はすべてハッシュ済みなので完了として扱う。
 	if copyErr != nil && written != transfer.SizeBytes {
+		// 書いた分は止まった理由にかかわらず転送元のバイトなので、保存して次の試行に引き継ぐ。
+		// 転送元の接続が切れた試行も、次は切れた位置から続ける（先頭から取り直さない）。
+		saveErr := w.saveOriginalSlice(transfer, owner, slice, written, targetRoot, args.Store, log, &saved)
 		if sliceCtx.Err() == nil {
-			_ = slice.file.Close()
+			if saveErr != nil {
+				log.Warn("storage transfer: saving progress after a copy error failed", "err", saveErr)
+			}
 			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("copying transfer source: %w", copyErr))
 		}
-		// slice の期限か親 ctx の終わりで止まった。書いた分を保存して次の Work に譲る。
-		return w.pauseOriginalSlice(transfer, owner, slice, written, log, &saved)
+		// slice の期限か親 ctx の終わりで止まった。保存できていれば次の Work に譲る。
+		if saveErr != nil || !saved {
+			return saveErr
+		}
+		return jobq.Snooze(0)
 	}
 	if err := slice.file.Sync(); err != nil {
 		_ = slice.file.Close()
@@ -412,8 +420,14 @@ func (w *StorageTransferWorker) copyTransferSlice(ctx context.Context, src trans
 	return slice.offset + count, err
 }
 
-// pauseOriginalSlice は slice の終わりの状態を保存し、次の Work に譲る。保存で lease を失っていたら、他の試行が持っているので何もしない。
-func (w *StorageTransferWorker) pauseOriginalSlice(transfer store.MediaAssetTransfer, owner uuid.UUID, slice transferSlice, written int64, log *slog.Logger, saved *bool) error {
+// saveOriginalSlice は temp を閉じ、書いた長さと SHA-256 の状態を保存する。保存できたら *saved を真にする。
+// 保存で lease を失っていたら、他の試行が持っているので nil を返す（*saved は偽のまま）。
+// 宛先の目印が合わなければ保存しない。別の root に書いたバイトを、次の試行に引き継がせないためである。
+func (w *StorageTransferWorker) saveOriginalSlice(transfer store.MediaAssetTransfer, owner uuid.UUID, slice transferSlice, written int64, targetRoot, targetStore string, log *slog.Logger, saved *bool) error {
+	if err := requireMediaStoreMarker(targetRoot, targetStore, "saving transfer progress"); err != nil {
+		_ = slice.file.Close()
+		return err
+	}
 	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	saveErr := fsink.SaveCheckpoint(slice.file, written, slice.hasher, func(c fsink.Checkpoint) error {
@@ -433,8 +447,8 @@ func (w *StorageTransferWorker) pauseOriginalSlice(transfer store.MediaAssetTran
 		}
 		return fmt.Errorf("saving transfer slice: %w", saveErr)
 	}
-	log.Info("storage transfer: slice paused", "offset", written, "generation", slice.generation)
-	return jobq.Snooze(0)
+	log.Info("storage transfer: slice saved", "offset", written, "generation", slice.generation)
+	return nil
 }
 
 // copyDerivedAsset transfers derived media through the object-store API. Temporary bytes live only in scratch;

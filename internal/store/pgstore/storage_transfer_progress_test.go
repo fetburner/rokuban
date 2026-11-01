@@ -161,3 +161,60 @@ func TestTransferProgressSaveAfterOwnLeaseExpiryIsRejected(t *testing.T) {
 		t.Fatalf("Save after own lease expiry = %v, want ErrTransferLeaseLost", err)
 	}
 }
+
+// コピーを pending でなくす transaction と並行に進捗を取ると、その commit を待ってから state を読み直し、行を作らない。
+// 待たずに古いスナップショットで作ると、pending でないコピーに行が残り、その世代の temp が GC で消えなくなる。
+func TestTransferProgressAcquireWaitsForConcurrentCopyRetirement(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	media := NewMedia(pool, "test-store", "")
+	copyID := progressTestCopy(t, pool)
+	ctx := context.Background()
+
+	retire, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = retire.Rollback(ctx) }()
+	if _, err := retire.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE id = $1`, copyID); err != nil {
+		t.Fatalf("retiring copy: %v", err)
+	}
+
+	type result struct {
+		acquired bool
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, copyID, uuid.New(), time.Minute)
+		done <- result{acquired, err}
+	}()
+	// Acquire が retire の行ロックを待つまで待つ。待たずに終わったら（変異）、その結果で判定する。
+	deadline := time.Now().Add(5 * time.Second)
+	for blocked := false; !blocked; {
+		if time.Now().After(deadline) {
+			t.Fatal("Acquire neither blocked on the retiring copy nor finished")
+		}
+		if len(done) > 0 {
+			break
+		}
+		if err := pool.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%media_asset_copy_transfer_progress%')`).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := retire.Commit(ctx); err != nil {
+		t.Fatalf("committing retirement: %v", err)
+	}
+	got := <-done
+	if got.err != nil || got.acquired {
+		t.Fatalf("Acquire on a copy retired concurrently = (acquired=%t, %v), want not acquired", got.acquired, got.err)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copy_transfer_progress WHERE copy_id = $1`, copyID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("progress rows for a retired copy = %d, want 0", rows)
+	}
+}

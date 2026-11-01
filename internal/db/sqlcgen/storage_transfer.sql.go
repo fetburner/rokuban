@@ -446,6 +446,7 @@ SELECT c.id, $1::uuid, now() + make_interval(secs => $2::double precision), 1, f
 FROM media_asset_copies c
 WHERE c.id = $3
   AND c.state = 'pending'
+FOR SHARE OF c
 ON CONFLICT (copy_id) DO NOTHING
 `
 
@@ -457,6 +458,8 @@ type InsertMediaAssetTransferProgressIfAbsentParams struct {
 
 // Progress rows follow the pending copy: the caller deletes them in the same
 // transaction that makes the copy active, deleted, or reclaimed.
+// 並行してコピーを pending でなくす transaction（進捗の行を消す側）の commit を待ち、state を読み直す。
+// 待たないと、消された後に行を作り、pending でないコピーの行が残る。
 func (q *Queries) InsertMediaAssetTransferProgressIfAbsent(ctx context.Context, arg InsertMediaAssetTransferProgressIfAbsentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, insertMediaAssetTransferProgressIfAbsent, arg.Owner, arg.TtlSeconds, arg.CopyID)
 	if err != nil {
