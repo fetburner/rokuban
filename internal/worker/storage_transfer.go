@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -264,12 +266,26 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	return w.copyOriginalSlice(ctx, transfer, args, rules, src, targetRoot, targetPath, owner, progress, log)
 }
 
+// transferAttempt は、転送の 1 試行が持つ進捗の lease と、その試行の 1 slice の期限である。
+// saved は、slice の終わりに進捗を保存して lease を切ったことを表す。真なら defer で lease を切らない
+// （切ると、保存で立てた handed_off が偽に戻り、次の試行がきれいな引き継ぎにならない）。
+type transferAttempt struct {
+	owner      uuid.UUID
+	generation int64
+	// slice は、この試行の読み（コピー・採用の測定・照合）が止まる期限である。Work の 1 回の時間を slice に縛る。
+	slice context.Context
+	saved bool
+}
+
 // copyOriginalSlice は原本を 1 slice ぶん転送する。slice の期限か親 ctx の終わりで止まったら進捗を保存して snooze し、
 // 次の Work が続きから再開する。失敗で抜けるときは lease を切り、次の試行が世代を上げるようにする。
+// 照合の途中（progress.VerifyingSource）なら、コピーや採用の手順には入らず、転送元の読み直しを続ける。
 func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, src transferSource, targetRoot, targetPath string, owner uuid.UUID, progress store.TransferProgress, log *slog.Logger) (retErr error) {
-	saved := false
+	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
+	defer cancelSlice()
+	att := &transferAttempt{owner: owner, generation: progress.Generation, slice: sliceCtx}
 	defer func() {
-		if saved {
+		if att.saved {
 			return
 		}
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -278,7 +294,11 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 			retErr = errors.Join(retErr, fmt.Errorf("releasing transfer progress: %w", err))
 		}
 	}()
-	if handled, err := w.adoptExistingDestination(ctx, transfer, args, rules, targetPath, progress.PrevGeneration, src, log); handled {
+	if progress.VerifyingSource {
+		offset, state := sourceReadStart(progress)
+		return w.verifyOriginalSlice(ctx, att, transfer, src, offset, state, log)
+	}
+	if handled, err := w.adoptExistingDestination(ctx, att, transfer, args, rules, targetPath, src, progress, log); handled {
 		return err
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "creating transfer destination directory"); err != nil {
@@ -292,7 +312,7 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 		return w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if sourceSize >= 0 && sourceSize != transfer.SizeBytes {
-		return w.handleTransferMismatch(ctx, transfer, log, src, "", fmt.Sprintf("source size %d differs from logical asset size %d", sourceSize, transfer.SizeBytes))
+		return w.startSourceVerification(ctx, att, transfer, src, "", fmt.Sprintf("source size %d differs from logical asset size %d", sourceSize, transfer.SizeBytes), log)
 	}
 	slice, mismatch, err := w.openTransferSlice(transfer, progress, targetPath)
 	if err != nil {
@@ -301,14 +321,12 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	if mismatch != "" {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("saved transfer progress does not match its temp: %s", mismatch))
 	}
-	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
-	defer cancelSlice()
 	written, copyErr := w.copyTransferSlice(sliceCtx, src, transfer.SourceStore, slice, transfer.SizeBytes)
 	// 全部書き終えたあとで期限が来た場合（帯域制限の待ちが最後の読みと同時に終わる）も、書いた分はすべてハッシュ済みなので完了として扱う。
 	if copyErr != nil && written != transfer.SizeBytes {
 		// 書いた分は止まった理由にかかわらず転送元のバイトなので、保存して次の試行に引き継ぐ。
 		// 転送元の接続が切れた試行も、次は切れた位置から続ける（先頭から取り直さない）。
-		saveErr := w.saveOriginalSlice(transfer, owner, slice, written, targetRoot, args.Store, log, &saved)
+		saveErr := w.saveOriginalSlice(transfer, owner, slice, written, targetRoot, args.Store, log, &att.saved)
 		if sliceCtx.Err() == nil {
 			if saveErr != nil {
 				log.Warn("storage transfer: saving progress after a copy error failed", "err", saveErr)
@@ -319,7 +337,7 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 		if saveErr != nil {
 			return saveErr
 		}
-		if !saved {
+		if !att.saved {
 			// 自分の lease が切れていた。別の試行が持っていれば、次の Work は取れずに snooze するだけなので害はない。
 			return jobq.Snooze(storageTransferLockSnooze)
 		}
@@ -334,10 +352,10 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	}
 	digest := slice.hasher.Sum(nil)
 	if written != transfer.SizeBytes {
-		return w.handleTransferMismatch(ctx, transfer, log, src, slice.path, fmt.Sprintf("source size %d differs from logical asset size %d", written, transfer.SizeBytes))
+		return w.startSourceVerification(ctx, att, transfer, src, slice.path, fmt.Sprintf("source size %d differs from logical asset size %d", written, transfer.SizeBytes), log)
 	}
 	if len(transfer.SHA256) > 0 && !bytes.Equal(digest, transfer.SHA256) {
-		return w.handleTransferMismatch(ctx, transfer, log, src, slice.path, "transfer SHA-256 differs from logical asset")
+		return w.startSourceVerification(ctx, att, transfer, src, slice.path, "transfer SHA-256 differs from logical asset", log)
 	}
 	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing storage transfer"); err != nil {
 		return err
@@ -348,7 +366,215 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	if err := fsink.SyncParentDir(targetPath); err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("syncing transfer destination directory: %w", err))
 	}
-	return w.completeTransfer(ctx, transfer, args, rules, digest, src, targetPath, slice.path, true, log)
+	return w.completeTransfer(ctx, att, transfer, args, rules, digest, src, targetPath, slice.path, true, log)
+}
+
+// verifiedMismatchReason は、照合の結果を失敗として記録するときの理由である。照合の途中で止まっても、
+// 理由を DB に残さず、照合が終わったときに同じ文言で記録する。
+const verifiedMismatchReason = "copy SHA-256 or size differs from logical asset"
+
+// startSourceVerification は、原本の不一致を見つけたときに、失敗として数えずに照合へ入る。
+// tempPath はこの試行が作った temp で、無ければ空である。照合は temp を使わないので、ここで消す。
+// 世代は照合の間は変えない。残すと、世代による temp の回収（LK-1）で消えないためである。
+func (w *StorageTransferWorker) startSourceVerification(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, src transferSource, tempPath, reason string, log *slog.Logger) error {
+	if tempPath != "" {
+		if err := fsink.RemoveTemp(tempPath); err != nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("discarding transfer temp before source verification: %w", err))
+		}
+	}
+	if err := w.Storage.BeginMediaAssetTransferSourceVerification(ctx, transfer.CopyID, att.owner, att.generation); err != nil {
+		if errors.Is(err, store.ErrTransferLeaseLost) {
+			return jobq.Snooze(storageTransferLockSnooze)
+		}
+		return fmt.Errorf("beginning source verification: %w", err)
+	}
+	log.Warn("storage transfer: copy does not match the logical asset; verifying the source before counting a failure", "reason", reason)
+	return w.verifyOriginalSlice(ctx, att, transfer, src, 0, nil, log)
+}
+
+// verifyOriginalSlice は原本の照合を 1 slice ぶん続ける。転送元を offset から末尾まで読んで SHA-256 とサイズを求める。temp には書かない。
+// slice の期限で止まったら途中経過を保存して snooze し、末尾まで読んだら照合を終えて結果を記録する。
+func (w *StorageTransferWorker) verifyOriginalSlice(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, src transferSource, offset int64, state []byte, log *slog.Logger) error {
+	hasher, offset := resumeSourceHash(offset, state)
+	count, err := w.hashSourceFrom(att.slice, src.open, transfer.SourceStore, offset, transfer.SizeBytes, false, hasher)
+	if err != nil {
+		if att.slice.Err() == nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading transfer source for verification: %w", err))
+		}
+		return w.pauseSourceHash(att, transfer, count, hasher)
+	}
+	return w.finishSourceVerification(ctx, att, transfer, count, hasher.Sum(nil), log)
+}
+
+// finishSourceVerification は、末尾まで読み終えた照合の結果を記録する。失敗として数えるのはここで 1 回だけである。
+// 照合を終えてから lease を切る（defer）。次の試行はきれいでない引き継ぎになり、先頭からコピーし直す。
+func (w *StorageTransferWorker) finishSourceVerification(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, size int64, sum []byte, log *slog.Logger) error {
+	endCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.Storage.EndMediaAssetTransferSourceVerification(endCtx, transfer.CopyID, att.owner, att.generation); err != nil {
+		if errors.Is(err, store.ErrTransferLeaseLost) {
+			return jobq.Snooze(storageTransferLockSnooze)
+		}
+		return fmt.Errorf("ending source verification: %w", err)
+	}
+	if sourceMatchesTransferMetadata(transfer, size, sum) {
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("destination differs from the valid source: %s", verifiedMismatchReason))
+	}
+	log.Error("storage transfer: original source does not match its logical asset; preserving source",
+		"reason", verifiedMismatchReason, "sha256", fmt.Sprintf("%x", sum), "size", size)
+	return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("%w: %s", errTransferSourceMismatch, verifiedMismatchReason))
+}
+
+// pauseSourceHash は、slice の期限か親 ctx の終わりで止まった転送元の読みを保存して snooze する。
+// count は先頭から読み終えた位置で、hasher はその位置までの状態である。全長まで読み終えた位置も保存する。
+// 次の試行は、その位置が全長なら転送元を開かずに続きを終える（hashSourceFrom）。
+// 保存しないと、末尾の位置で止まったときに次の試行が先頭から読み直し、同じ位置で止まり続けるおそれがある。
+func (w *StorageTransferWorker) pauseSourceHash(att *transferAttempt, transfer store.MediaAssetTransfer, count int64, hasher hash.Hash) error {
+	state, err := marshalHashState(hasher)
+	if err != nil {
+		return err
+	}
+	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := w.Storage.SaveMediaAssetTransferProgress(saveCtx, transfer.CopyID, att.owner, att.generation, count, state, nil); err != nil {
+		if errors.Is(err, store.ErrTransferLeaseLost) {
+			return jobq.Snooze(storageTransferLockSnooze)
+		}
+		return fmt.Errorf("saving source read progress: %w", err)
+	}
+	att.saved = true
+	return jobq.Snooze(0)
+}
+
+// hashSourceFrom は転送元を offset から読み、hasher に流す。全長 size の手前まで読み終えていれば（offset >= size）転送元を開かない。
+// 返す位置は先頭からの読み終えた位置で、err が非 nil のときは、その位置までが hasher に入っている。
+// excessCheck が真なら全長より 1 バイト多く読んで、全長を超えて続く転送元を見分ける（超えたら返す位置が size+1 になる）。
+// 読みは帯域制限を通し、ctx（slice の期限）で止まる。copyTransferSlice と同じく、全長の末尾は開かずに扱う。
+func (w *StorageTransferWorker) hashSourceFrom(ctx context.Context, open func(context.Context, int64) (io.ReadCloser, error), sourceStore string, offset, size int64, excessCheck bool, hasher hash.Hash) (int64, error) {
+	if offset >= size {
+		return offset, nil
+	}
+	maxBytes := int64(math.MaxInt64)
+	if excessCheck {
+		maxBytes = size - offset + 1
+	}
+	reader, err := open(ctx, offset)
+	if err != nil {
+		return offset, fmt.Errorf("opening transfer source: %w", err)
+	}
+	defer func() { _ = reader.Close() }()
+	limited, err := w.transferSourceReader(ctx, sourceStore, reader)
+	if err != nil {
+		return offset, err
+	}
+	n, err := io.CopyBuffer(hasher, io.LimitReader(limited, maxBytes), make([]byte, 128*1024))
+	return offset + n, err
+}
+
+// sourceReadStart は進捗から、転送元の読みを始める位置と SHA-256 の状態を返す。きれいな引き継ぎの保存だけを使う。
+func sourceReadStart(progress store.TransferProgress) (int64, []byte) {
+	if progress.Resumed {
+		return progress.Offset, progress.HashState
+	}
+	return 0, nil
+}
+
+// resumeSourceHash は保存された状態から、転送元の読みを続ける hasher と位置を返す。
+// 位置が 0 のときや状態が戻せないときは、先頭から読む新しい hasher を返す。
+func resumeSourceHash(offset int64, state []byte) (hash.Hash, int64) {
+	if offset <= 0 {
+		return sha256.New(), 0
+	}
+	hasher := sha256.New()
+	if err := fsink.RestoreHash(hasher, state); err != nil {
+		return sha256.New(), 0
+	}
+	return hasher, offset
+}
+
+// marshalHashState は hasher の SHA-256 の状態を保存できる形にする。fsink.SaveCheckpoint と同じ BinaryMarshaler を使う。
+func marshalHashState(hasher hash.Hash) ([]byte, error) {
+	marshaler, ok := hasher.(encoding.BinaryMarshaler)
+	if !ok {
+		return nil, fmt.Errorf("hash %T cannot be marshaled", hasher)
+	}
+	state, err := marshaler.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("marshaling SHA-256 state: %w", err)
+	}
+	return state, nil
+}
+
+// recordMeasuredSHA256 は、測り終えた転送元の SHA-256 を論理資産に書く。
+// 次の Work は SHA-256 が既知の経路を通るので、この試行は snooze して譲る。世代が変わっていれば書かれず、その試行は古いものになる。
+func (w *StorageTransferWorker) recordMeasuredSHA256(ctx context.Context, transfer store.MediaAssetTransfer, digest []byte, log *slog.Logger) error {
+	recorded, err := w.Storage.RecordObservedMediaAssetSHA256(ctx, transfer.MediaAssetID, transfer.Generation, digest)
+	if err != nil {
+		return fmt.Errorf("recording observed SHA-256: %w", err)
+	}
+	log.Info("storage transfer: observed the source SHA-256 before transferring", "recorded", recorded)
+	return jobq.Snooze(0)
+}
+
+// measureAdoptedSource は、宛先が既にあって論理資産の SHA-256 が未知のとき、転送元の SHA-256 を slice ごとに測る。
+// コピーの途中経過と同じ意味（転送元の先頭から offset までの状態）なので、保存された位置から続けられる。
+// 測り終えたらサイズを確かめ、同じなら SHA-256 を記録して次の Work に譲る。次の Work は既知の経路で宛先と比べる。
+func (w *StorageTransferWorker) measureAdoptedSource(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, src transferSource, progress store.TransferProgress, log *slog.Logger) error {
+	offset, state := sourceReadStart(progress)
+	hasher, offset := resumeSourceHash(offset, state)
+	count, err := w.hashSourceFrom(att.slice, src.open, transfer.SourceStore, offset, transfer.SizeBytes, false, hasher)
+	if err != nil {
+		if att.slice.Err() == nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading transfer source: %w", err))
+		}
+		return w.pauseSourceHash(att, transfer, count, hasher)
+	}
+	if count != transfer.SizeBytes {
+		return w.startSourceVerification(ctx, att, transfer, src, "", fmt.Sprintf("source size %d differs from logical asset size %d", count, transfer.SizeBytes), log)
+	}
+	return w.recordMeasuredSHA256(ctx, transfer, hasher.Sum(nil), log)
+}
+
+// measureDerivedSource は、SHA-256 が未知の派生物の転送元を slice ごとに測る。宛先には書かず、scratch にも複製しない。
+// 測り終えたらサイズを確かめて SHA-256 を記録する。次の Work は既知の経路で再開できるアップロードとして送る。
+func (w *StorageTransferWorker) measureDerivedSource(ctx context.Context, transfer store.MediaAssetTransfer, source objstore.RangeReader, log *slog.Logger) (retErr error) {
+	owner := uuid.New()
+	progress, acquired, err := w.Storage.AcquireMediaAssetTransferProgress(ctx, transfer.CopyID, owner, storageTransferLeaseTTL())
+	if err != nil {
+		return fmt.Errorf("acquiring transfer progress: %w", err)
+	}
+	if !acquired {
+		return jobq.Snooze(storageTransferLockSnooze)
+	}
+	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
+	defer cancelSlice()
+	att := &transferAttempt{owner: owner, generation: progress.Generation, slice: sliceCtx}
+	defer func() {
+		if att.saved {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := w.Storage.ReleaseMediaAssetTransferProgress(releaseCtx, transfer.CopyID, owner); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("releasing transfer progress: %w", err))
+		}
+	}()
+	offset, state := sourceReadStart(progress)
+	hasher, offset := resumeSourceHash(offset, state)
+	open := func(c context.Context, off int64) (io.ReadCloser, error) {
+		return source.GetFrom(c, transfer.SourceRelPath, off)
+	}
+	count, err := w.hashSourceFrom(sliceCtx, open, transfer.SourceStore, offset, transfer.SizeBytes, true, hasher)
+	if err != nil {
+		if sliceCtx.Err() == nil {
+			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", err))
+		}
+		return w.pauseSourceHash(att, transfer, count, hasher)
+	}
+	if count != transfer.SizeBytes {
+		return w.handleTransferMismatch(ctx, transfer, log)
+	}
+	return w.recordMeasuredSHA256(ctx, transfer, hasher.Sum(nil), log)
 }
 
 // transferSlice は、1 回の slice が書く temp と、その続きから書き始める位置である。
@@ -560,8 +786,9 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 
 // putDerivedMain は派生物の本体を宛先に公開し、今回作ったものを所有記録に残す。
 // 返す digest と size は完了（CompleteMediaAssetTransfer）に渡す値である。done が真なら、この試行はここで終わるので err を返す。
-// 論理資産の SHA-256 が既知で両方の置き場が対応しているときは、再開できるアップロードで送る（putDerivedResumable）。
-// それ以外は従来どおり、既知なら Get を Put へ流し、未計測なら scratch に複製してから Put する。
+// 両方の置き場が対応していて論理資産の SHA-256 が未知なら、送る前に転送元を slice ごとに測る（measureDerivedSource）。
+// 既知なら、再開できるアップロードで送る（putDerivedResumable）。
+// 対応していない置き場は従来どおり、既知なら Get を Put へ流し、未計測なら scratch に複製してから Put する。
 func (w *StorageTransferWorker) putDerivedMain(
 	ctx context.Context,
 	transfer store.MediaAssetTransfer,
@@ -576,7 +803,11 @@ func (w *StorageTransferWorker) putDerivedMain(
 	var mainCreated bool
 	resumable, canResume := targetStore.(objstore.Resumable)
 	rangeSource, canRange := sourceStore.(objstore.RangeReader)
-	if len(transfer.SHA256) == sha256.Size && canResume && canRange {
+	if canResume && canRange {
+		if len(transfer.SHA256) != sha256.Size {
+			// 論理資産の SHA-256 が未知なら、宛先に送る前に転送元を slice ごとに測る。測り終えた次の Work が既知の経路で送る。
+			return digest, size, true, w.measureDerivedSource(ctx, transfer, rangeSource, log)
+		}
 		mainCreated, done, err = w.putDerivedResumable(ctx, transfer, args, targetRoot, targetStore, resumable, rangeSource, owned, log)
 		if done {
 			return digest, size, true, err
@@ -597,7 +828,7 @@ func (w *StorageTransferWorker) putDerivedMain(
 			assetPath, stagedDigest, stagedSize, stageErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
 			if stageErr != nil {
 				if errors.Is(stageErr, errTransferSourceMismatch) {
-					return digest, size, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+					return digest, size, true, w.handleTransferMismatch(ctx, transfer, log)
 				}
 				return digest, size, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", stageErr))
 			}
@@ -611,7 +842,7 @@ func (w *StorageTransferWorker) putDerivedMain(
 		mainCreated, err = putTransferredObject(ctx, targetStore, transfer.RelPath, openMain, size, digest, objectContentType(transfer.RelPath), mainOwned)
 		if err != nil {
 			if streamed != nil && streamed.sourceDiffers(size, err) {
-				return digest, size, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+				return digest, size, true, w.handleTransferMismatch(ctx, transfer, log)
 			}
 			metrics.RecordObjectStoreError("put", err)
 			return digest, size, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
@@ -752,7 +983,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 			return false, true, jobq.Snooze(0)
 		case errors.Is(sendErr, objstore.ErrChecksumMismatch):
 			saved = w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
-			return false, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+			return false, true, w.handleTransferMismatch(ctx, transfer, log)
 		case errors.Is(sendErr, objstore.ErrUploadInvalid):
 			// 続けられない送信状態を掃除待ちに移せるよう保存してから、defer で lease を切る（saved は偽のまま）。
 			w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
@@ -770,7 +1001,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 	if completeErr := dest.CompleteUpload(ctx, state); completeErr != nil {
 		switch {
 		case errors.Is(completeErr, objstore.ErrChecksumMismatch):
-			return false, true, w.handleTransferMismatch(ctx, transfer, log, nil, "", "derived source differs from logical asset metadata")
+			return false, true, w.handleTransferMismatch(ctx, transfer, log)
 		case errors.Is(completeErr, objstore.ErrUploadInvalid):
 			w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("completing derived upload: %w", completeErr))
@@ -1119,20 +1350,24 @@ func storageTransferLeaseTTL() time.Duration {
 	return storageTransferSlice + 2*time.Minute
 }
 
-// adoptExistingDestination は宛先が既にあるとき、採用するか失敗にするかを決める。prevGeneration は前の試行の世代で、0 なら temp は無かった。
-func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath string, prevGeneration int64, src transferSource, log *slog.Logger) (bool, error) {
-	_, statErr := os.Lstat(targetPath)
-	if errors.Is(statErr, os.ErrNotExist) {
+// adoptExistingDestination は宛先が既にあるとき、採用するか、SHA-256 を測るか、照合へ入るかを決める。
+// progress.PrevGeneration の temp が宛先と同じ inode なら、採用と同時に片付ける。
+func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath string, src transferSource, progress store.TransferProgress, log *slog.Logger) (bool, error) {
+	info, err := os.Lstat(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if statErr != nil {
-		return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("stating transfer destination: %w", statErr))
+	if err != nil {
+		return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("stating transfer destination: %w", err))
+	}
+	if !info.Mode().IsRegular() {
+		return true, w.recordTransferFailure(ctx, transfer, log, errors.New("transfer path is not a regular file"))
 	}
 	// link 済み・commit 前に落ちた転送は、宛先と前の世代の temp が同じ inode を指す。その temp は
 	// 採用と同時に片付ける。他人の宛先を採用するときは temp に触れない。
 	ownedTempPath := ""
-	if prevGeneration > 0 {
-		tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, prevGeneration)
+	if progress.PrevGeneration > 0 {
+		tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevGeneration)
 		owned, err := pendingTransferDestinationOwnedByTemp(targetPath, tempPath)
 		if err != nil {
 			return true, w.recordTransferFailure(ctx, transfer, log, err)
@@ -1141,14 +1376,11 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 			ownedTempPath = tempPath
 		}
 	}
-	destinationSHA, size, err := hashTransferFile(ctx, targetPath)
-	if err != nil {
-		return true, w.recordTransferFailure(ctx, transfer, log, err)
-	}
-	if size == transfer.SizeBytes && len(transfer.SHA256) > 0 && bytes.Equal(destinationSHA, transfer.SHA256) {
-		return true, w.completeTransfer(ctx, transfer, args, rules, destinationSHA, src, targetPath, ownedTempPath, false, log)
-	}
-	if size == transfer.SizeBytes && len(transfer.SHA256) == 0 {
+	if len(transfer.SHA256) == 0 {
+		// 論理資産の SHA-256 が未知なら、宛先の内容と比べる値が無い。宛先は読まず、サイズだけ見る。
+		if info.Size() != transfer.SizeBytes {
+			return true, w.startSourceVerification(ctx, att, transfer, src, "", fmt.Sprintf("destination already exists with different size (size=%d, want=%d)", info.Size(), transfer.SizeBytes), log)
+		}
 		// 論理資産の SHA-256 が未知でリモートの転送元なら、既存の宛先を照合できない。採用せず失敗として記録する。
 		// 通常の copy に進むと PublishLink が既存の宛先を拒むので、その経路にも落とさない。
 		if _, remote := src.(remoteTransferSource); remote {
@@ -1158,21 +1390,26 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, tr
 					"reads it locally and records the SHA-256, or, after checking that the file is stale, remove %q from store %q and retry",
 				transfer.RelPath, args.Store, transfer.RelPath, args.Store))
 		}
-		sourceSHA, sourceSize, sourceErr := w.hashTransferSource(ctx, src, transfer.SourceStore)
-		if sourceErr != nil {
-			return true, w.recordTransferFailure(ctx, transfer, log, sourceErr)
+		// 宛先と同じ inode の前の世代の temp は、測定の途中で世代が上がると次の試行から見えなくなる。
+		// 宛先がこの転送のものだと分かった今、ここで片付ける（宛先の inode は残る）。
+		if ownedTempPath != "" {
+			if err := fsink.RemoveTemp(ownedTempPath); err != nil {
+				return true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("removing temp linked to the destination: %w", err))
+			}
 		}
-		if sourceSize != transfer.SizeBytes {
-			return true, w.handleTransferMismatch(ctx, transfer, log, src, "", "source size differs from logical asset")
-		}
-		if bytes.Equal(destinationSHA, sourceSHA) {
-			return true, w.completeTransfer(ctx, transfer, args, rules, sourceSHA, src, targetPath, ownedTempPath, false, log)
-		}
+		return true, w.measureAdoptedSource(ctx, att, transfer, src, progress, log)
 	}
-	return true, w.handleTransferMismatch(ctx, transfer, log, src, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes))
+	destinationSHA, size, err := hashTransferFile(ctx, targetPath)
+	if err != nil {
+		return true, w.recordTransferFailure(ctx, transfer, log, err)
+	}
+	if size == transfer.SizeBytes && bytes.Equal(destinationSHA, transfer.SHA256) {
+		return true, w.completeTransfer(ctx, att, transfer, args, rules, destinationSHA, src, targetPath, ownedTempPath, false, log)
+	}
+	return true, w.startSourceVerification(ctx, att, transfer, src, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes), log)
 }
 
-func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, src transferSource, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
+func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, src transferSource, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
 	if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
 		return err
 	}
@@ -1193,7 +1430,7 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 					return fmt.Errorf("syncing transfer directory after SHA-256 rejection: %w", err)
 				}
 			}
-			return w.handleTransferMismatch(ctx, transfer, log, src, tempPath, "completion rejected a stale SHA-256")
+			return w.startSourceVerification(ctx, att, transfer, src, tempPath, "completion rejected a stale SHA-256", log)
 		}
 		if createdCanonical {
 			if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing uncommitted transfer"); err != nil {
@@ -1228,44 +1465,28 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, transfer s
 	return nil
 }
 
-func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger, src transferSource, tempPath, reason string) error {
-	var sourceSHA []byte
-	var sourceSize int64
-	var err error
-	if transfer.Kind == store.AssetKindOriginal {
-		sourceSHA, sourceSize, err = w.hashTransferSource(ctx, src, transfer.SourceStore)
-	} else {
-		objects := w.ObjectStores[transfer.SourceStore]
-		if objects == nil {
-			return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived source object store %q is not configured", transfer.SourceStore))
-		}
-		sourceSHA, sourceSize, err = hashStoredObject(ctx, objects, transfer.SourceRelPath)
+// derivedSourceMismatchReason は、派生物の転送元が論理資産の大きさや SHA-256 と合わないときの理由である。
+const derivedSourceMismatchReason = "derived source differs from logical asset metadata"
+
+// handleTransferMismatch は派生物の転送で、転送元が論理資産と合わないときに、転送元を退役させるか失敗として記録するかを決める。
+// 派生物の転送元はマウント済みのローカルの置き場にあるので、ここでは objstore を読み直す。
+// 原本の不一致は照合（startSourceVerification）が扱うので、ここへは来ない。
+func (w *StorageTransferWorker) handleTransferMismatch(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger) error {
+	reason := derivedSourceMismatchReason
+	objects := w.ObjectStores[transfer.SourceStore]
+	if objects == nil {
+		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived source object store %q is not configured", transfer.SourceStore))
 	}
+	sourceSHA, sourceSize, err := hashStoredObject(ctx, objects, transfer.SourceRelPath)
 	if err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("rechecking transfer source after %s: %w", reason, err))
 	}
 	if sourceMatchesTransferMetadata(transfer, sourceSize, sourceSHA) {
-		if tempPath != "" {
-			if err := fsink.RemoveTemp(tempPath); err != nil {
-				return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("discarding transfer temp that differs from the valid source: %w", err))
-			}
-		}
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("destination differs from the valid source: %s", reason))
 	}
-	if transfer.Kind == "original" {
-		log.Error("storage transfer: original source does not match its logical asset; preserving source",
-			"reason", reason, "sha256", fmt.Sprintf("%x", sourceSHA), "size", sourceSize)
-		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("%w: %s", errTransferSourceMismatch, reason))
-	}
-
 	corrupt, err := w.Storage.MarkMediaAssetCopyCorrupt(ctx, transfer.RecordingID, transfer.MediaAssetID, transfer.SourceCopyID, transfer.SourceStore)
 	if err != nil {
 		return err
-	}
-	if tempPath != "" {
-		if err := fsink.RemoveTemp(tempPath); err != nil {
-			log.Warn("storage transfer: removing mismatched temp failed", "path", tempPath, "err", err)
-		}
 	}
 	if corrupt {
 		if err := w.unlinkRetiredDerivedSource(ctx, transfer); err != nil {
@@ -1406,32 +1627,6 @@ func (w *StorageTransferWorker) transferSourceReader(ctx context.Context, source
 		reader = &transferRateReader{ctx: ctx, reader: reader, bytesPerSecond: bandwidth, started: time.Now()}
 	}
 	return reader, nil
-}
-
-// hashTransferSource は転送元の全体を読んで SHA-256 とサイズを返す。ローカルはサイズが分かるので、読んでいる途中で変わったら失敗にする。
-func (w *StorageTransferWorker) hashTransferSource(ctx context.Context, src transferSource, sourceStore string) ([]byte, int64, error) {
-	knownSize, err := src.precheck()
-	if err != nil {
-		return nil, 0, err
-	}
-	reader, err := src.open(ctx, 0)
-	if err != nil {
-		return nil, 0, fmt.Errorf("opening transfer source: %w", err)
-	}
-	defer func() { _ = reader.Close() }()
-	limited, err := w.transferSourceReader(ctx, sourceStore, reader)
-	if err != nil {
-		return nil, 0, err
-	}
-	hasher := sha256.New()
-	count, copyErr := io.Copy(hasher, limited)
-	if copyErr != nil {
-		return nil, count, fmt.Errorf("hashing transfer source: %w", copyErr)
-	}
-	if knownSize >= 0 && count != knownSize {
-		return nil, count, fmt.Errorf("transfer source changed while hashing: read=%d size=%d", count, knownSize)
-	}
-	return hasher.Sum(nil), count, nil
 }
 
 type storageTransferContextReader struct {

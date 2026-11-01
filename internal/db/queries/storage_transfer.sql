@@ -450,7 +450,7 @@ ON CONFLICT (copy_id) DO NOTHING;
 
 -- name: LockMediaAssetTransferProgress :one
 SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
-       p.upload_store, p.upload_state,
+       p.upload_store, p.upload_state, p.verifying_source,
        (p.lease_expires_at > now())::boolean AS lease_live
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = sqlc.arg('copy_id')
@@ -531,3 +531,32 @@ LIMIT sqlc.arg('row_limit')::integer;
 -- name: DeleteAbandonedMediaAssetTransferUpload :exec
 DELETE FROM media_asset_transfer_abandoned_uploads
 WHERE id = sqlc.arg('id');
+
+-- 原本の照合は、lease を持つ試行だけが始めて終える。照合中は offset_bytes / hash_state が転送元の読み直しの位置を表す。
+-- name: BeginMediaAssetTransferSourceVerification :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET verifying_source = true,
+    offset_bytes = 0,
+    hash_state = NULL
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now();
+
+-- name: EndMediaAssetTransferSourceVerification :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET verifying_source = false,
+    offset_bytes = 0,
+    hash_state = NULL
+WHERE p.copy_id = sqlc.arg('copy_id')
+  AND p.lease_owner = sqlc.arg('owner')::uuid
+  AND p.generation = sqlc.arg('generation')
+  AND p.lease_expires_at > now();
+
+-- 転送の観測で NULL の SHA-256 を埋める。世代が変わった論理資産や、既に値のある行には書かない。
+-- name: RecordObservedMediaAssetSHA256 :execrows
+UPDATE media_assets a
+SET sha256 = sqlc.arg('sha256')::bytea
+WHERE a.id = sqlc.arg('media_asset_id')
+  AND a.sha256 IS NULL
+  AND COALESCE(a.derived_generation, 0) = sqlc.arg('generation')::bigint;

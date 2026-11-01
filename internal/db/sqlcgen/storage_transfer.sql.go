@@ -13,6 +13,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const beginMediaAssetTransferSourceVerification = `-- name: BeginMediaAssetTransferSourceVerification :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET verifying_source = true,
+    offset_bytes = 0,
+    hash_state = NULL
+WHERE p.copy_id = $1
+  AND p.lease_owner = $2::uuid
+  AND p.generation = $3
+  AND p.lease_expires_at > now()
+`
+
+type BeginMediaAssetTransferSourceVerificationParams struct {
+	CopyID     int64
+	Owner      pgtype.UUID
+	Generation int64
+}
+
+// 原本の照合は、lease を持つ試行だけが始めて終える。照合中は offset_bytes / hash_state が転送元の読み直しの位置を表す。
+func (q *Queries) BeginMediaAssetTransferSourceVerification(ctx context.Context, arg BeginMediaAssetTransferSourceVerificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, beginMediaAssetTransferSourceVerification, arg.CopyID, arg.Owner, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimMediaAssetTransferProgress = `-- name: ClaimMediaAssetTransferProgress :execrows
 UPDATE media_asset_copy_transfer_progress p
 SET lease_owner = $1::uuid,
@@ -390,6 +416,31 @@ WHERE t.copy_id = d.id
 func (q *Queries) DiscardPendingMediaAssetCopy(ctx context.Context, copyID int64) error {
 	_, err := q.db.Exec(ctx, discardPendingMediaAssetCopy, copyID)
 	return err
+}
+
+const endMediaAssetTransferSourceVerification = `-- name: EndMediaAssetTransferSourceVerification :execrows
+UPDATE media_asset_copy_transfer_progress p
+SET verifying_source = false,
+    offset_bytes = 0,
+    hash_state = NULL
+WHERE p.copy_id = $1
+  AND p.lease_owner = $2::uuid
+  AND p.generation = $3
+  AND p.lease_expires_at > now()
+`
+
+type EndMediaAssetTransferSourceVerificationParams struct {
+	CopyID     int64
+	Owner      pgtype.UUID
+	Generation int64
+}
+
+func (q *Queries) EndMediaAssetTransferSourceVerification(ctx context.Context, arg EndMediaAssetTransferSourceVerificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, endMediaAssetTransferSourceVerification, arg.CopyID, arg.Owner, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getMediaAssetCopyForDeletion = `-- name: GetMediaAssetCopyForDeletion :one
@@ -851,7 +902,7 @@ func (q *Queries) LockMediaAssetForStorageTransfer(ctx context.Context, mediaAss
 
 const lockMediaAssetTransferProgress = `-- name: LockMediaAssetTransferProgress :one
 SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
-       p.upload_store, p.upload_state,
+       p.upload_store, p.upload_state, p.verifying_source,
        (p.lease_expires_at > now())::boolean AS lease_live
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = $1
@@ -859,13 +910,14 @@ FOR UPDATE
 `
 
 type LockMediaAssetTransferProgressRow struct {
-	Generation  int64
-	HandedOff   bool
-	OffsetBytes int64
-	HashState   []byte
-	UploadStore *string
-	UploadState []byte
-	LeaseLive   bool
+	Generation      int64
+	HandedOff       bool
+	OffsetBytes     int64
+	HashState       []byte
+	UploadStore     *string
+	UploadState     []byte
+	VerifyingSource bool
+	LeaseLive       bool
 }
 
 func (q *Queries) LockMediaAssetTransferProgress(ctx context.Context, copyID int64) (LockMediaAssetTransferProgressRow, error) {
@@ -878,6 +930,7 @@ func (q *Queries) LockMediaAssetTransferProgress(ctx context.Context, copyID int
 		&i.HashState,
 		&i.UploadStore,
 		&i.UploadState,
+		&i.VerifyingSource,
 		&i.LeaseLive,
 	)
 	return i, err
@@ -1221,6 +1274,29 @@ type RecordMediaAssetTransferFailureParams struct {
 func (q *Queries) RecordMediaAssetTransferFailure(ctx context.Context, arg RecordMediaAssetTransferFailureParams) error {
 	_, err := q.db.Exec(ctx, recordMediaAssetTransferFailure, arg.CopyID, arg.LastError)
 	return err
+}
+
+const recordObservedMediaAssetSHA256 = `-- name: RecordObservedMediaAssetSHA256 :execrows
+UPDATE media_assets a
+SET sha256 = $1::bytea
+WHERE a.id = $2
+  AND a.sha256 IS NULL
+  AND COALESCE(a.derived_generation, 0) = $3::bigint
+`
+
+type RecordObservedMediaAssetSHA256Params struct {
+	Sha256       []byte
+	MediaAssetID int64
+	Generation   int64
+}
+
+// 転送の観測で NULL の SHA-256 を埋める。世代が変わった論理資産や、既に値のある行には書かない。
+func (q *Queries) RecordObservedMediaAssetSHA256(ctx context.Context, arg RecordObservedMediaAssetSHA256Params) (int64, error) {
+	result, err := q.db.Exec(ctx, recordObservedMediaAssetSHA256, arg.Sha256, arg.MediaAssetID, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const releaseMediaAssetTransferProgress = `-- name: ReleaseMediaAssetTransferProgress :exec

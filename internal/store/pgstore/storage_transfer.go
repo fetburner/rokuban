@@ -607,6 +607,8 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 			progress.UploadState = cur.UploadState
 		}
 	}
+	// 照合は、きれいな引き継ぎでもきれいでない引き継ぎでも、途中であることを返す（きれいでない引き継ぎでは offset だけ 0 に戻る）。
+	progress.VerifyingSource = cur.VerifyingSource
 	if _, err := q.ClaimMediaAssetTransferProgress(ctx, sqlcgen.ClaimMediaAssetTransferProgressParams{
 		CopyID: copyID, Owner: ownerID, TtlSeconds: ttlSeconds,
 		Generation: progress.Generation, OffsetBytes: progress.Offset, HashState: progress.HashState,
@@ -677,6 +679,45 @@ func (s *Media) ReplaceMediaAssetTransferUpload(ctx context.Context, copyID int6
 		return fmt.Errorf("committing transfer upload replacement: %w", mapDatabaseError(err))
 	}
 	return nil
+}
+
+// BeginMediaAssetTransferSourceVerification は、lease を持つ試行が原本の照合を始める。
+func (s *Media) BeginMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error {
+	n, err := sqlcgen.New(s.pool).BeginMediaAssetTransferSourceVerification(ctx, sqlcgen.BeginMediaAssetTransferSourceVerificationParams{
+		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, Generation: generation,
+	})
+	if err != nil {
+		return fmt.Errorf("beginning source verification for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if n != 1 {
+		return store.ErrTransferLeaseLost
+	}
+	return nil
+}
+
+// EndMediaAssetTransferSourceVerification は、lease を持つ試行が原本の照合を終える。
+func (s *Media) EndMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error {
+	n, err := sqlcgen.New(s.pool).EndMediaAssetTransferSourceVerification(ctx, sqlcgen.EndMediaAssetTransferSourceVerificationParams{
+		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, Generation: generation,
+	})
+	if err != nil {
+		return fmt.Errorf("ending source verification for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if n != 1 {
+		return store.ErrTransferLeaseLost
+	}
+	return nil
+}
+
+// RecordObservedMediaAssetSHA256 は、SHA-256 が未知で世代が generation の論理資産にだけ、観測した SHA-256 を書く。
+func (s *Media) RecordObservedMediaAssetSHA256(ctx context.Context, mediaAssetID, generation int64, sha256 []byte) (bool, error) {
+	n, err := sqlcgen.New(s.pool).RecordObservedMediaAssetSHA256(ctx, sqlcgen.RecordObservedMediaAssetSHA256Params{
+		MediaAssetID: mediaAssetID, Generation: generation, Sha256: sha256,
+	})
+	if err != nil {
+		return false, fmt.Errorf("recording observed SHA-256 for media asset %d: %w", mediaAssetID, mapDatabaseError(err))
+	}
+	return n == 1, nil
 }
 
 // ListAbandonedTransferUploads は置き場 store の掃除待ちを id 順に返す。

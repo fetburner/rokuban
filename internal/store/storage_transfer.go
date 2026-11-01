@@ -28,6 +28,9 @@ type TransferProgress struct {
 	// きれいでない引き継ぎでは詰めない（古い送信状態は行に残り、置き換えるまで掃除待ちに移らない）。
 	UploadStore string
 	UploadState []byte
+	// VerifyingSource は、原本の不一致の照合が途中であることを表す。きれいでない引き継ぎでも真のまま返る。
+	// 真のとき、Offset と HashState は転送元の読み直しの位置で、temp の位置ではない。
+	VerifyingSource bool
 }
 
 // AbandonedTransferUpload は、もう使わない送信状態の掃除待ちの 1 行である。
@@ -144,6 +147,15 @@ type StorageTransfer interface {
 	ListAbandonedTransferUploads(ctx context.Context, store string, limit int32) ([]AbandonedTransferUpload, error)
 	// DeleteAbandonedTransferUpload は掃除を済ませた掃除待ちを消す。
 	DeleteAbandonedTransferUpload(ctx context.Context, id int64) error
+	// BeginMediaAssetTransferSourceVerification は、lease を持つ試行が原本の照合を始める。
+	// verifying_source を真にし、offset と SHA-256 の状態を 0 / nil に戻す。lease を失っていれば ErrTransferLeaseLost を返す。
+	BeginMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error
+	// EndMediaAssetTransferSourceVerification は、lease を持つ試行が照合を終える。verifying_source を偽にし、offset と SHA-256 の状態を 0 / nil に戻す。
+	// 照合の結果は保存しない。lease を失っていれば ErrTransferLeaseLost を返す。
+	EndMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error
+	// RecordObservedMediaAssetSHA256 は、転送の途中で観測した論理資産の SHA-256 を、SHA-256 が未知で世代が generation の行にだけ書く。
+	// 書けたら recorded=true を返す。既に値がある、または世代が変わっていれば何も書かず recorded=false を返す。
+	RecordObservedMediaAssetSHA256(ctx context.Context, mediaAssetID, generation int64, sha256 []byte) (recorded bool, err error)
 	// ReleaseMediaAssetTransferProgress は失敗で抜ける試行の lease を切る。次の試行は世代を上げる。
 	// lease を持たなければ何もしない。
 	ReleaseMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID) error

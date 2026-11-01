@@ -30,9 +30,10 @@ import (
 // 埋め込みで Store / Reader / RangeReader / Resumable を全部委譲するので、worker は本物と同じ経路を通る。
 type fakeResumableStore struct {
 	*fsstore.Store
-	getOffsets  []int64     // GetFrom が呼ばれた offset の列
-	completeErr []error     // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
-	abortResult []fakeAbort // AbortUpload が先頭から返す。尽きたら本物。
+	getOffsets    []int64     // GetFrom が呼ばれた offset の列
+	beforeGetFrom func()      // GetFrom の最初に呼ぶ。テストが読みの途中で論理資産の世代を変えるのに使う。
+	completeErr   []error     // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
+	abortResult   []fakeAbort // AbortUpload が先頭から返す。尽きたら本物。
 }
 
 type fakeAbort struct {
@@ -42,6 +43,9 @@ type fakeAbort struct {
 
 func (s *fakeResumableStore) GetFrom(ctx context.Context, key string, offset int64) (io.ReadCloser, error) {
 	s.getOffsets = append(s.getOffsets, offset)
+	if s.beforeGetFrom != nil {
+		s.beforeGetFrom()
+	}
 	return s.Store.GetFrom(ctx, key, offset)
 }
 
@@ -80,6 +84,12 @@ type derivedResumeFixture struct {
 
 func newDerivedResumeFixture(t *testing.T) derivedResumeFixture {
 	t.Helper()
+	return newDerivedResumeFixtureWithSHA(t, true)
+}
+
+// newDerivedResumeFixtureWithSHA は、論理資産の SHA-256 を knownSHA に応じて記録するか、未計測のまま残す。
+func newDerivedResumeFixtureWithSHA(t *testing.T, knownSHA bool) derivedResumeFixture {
+	t.Helper()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -87,9 +97,11 @@ func newDerivedResumeFixture(t *testing.T) derivedResumeFixture {
 	relPath := "sites/default/transfer/resumed.mp4"
 	content := bytes.Repeat([]byte("derived-resume-"), 20000)
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, content)
-	sum := sha256.Sum256(content)
-	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID); err != nil {
-		t.Fatalf("setting logical checksum: %v", err)
+	if knownSHA {
+		sum := sha256.Sum256(content)
+		if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID); err != nil {
+			t.Fatalf("setting logical checksum: %v", err)
+		}
 	}
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
