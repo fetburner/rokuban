@@ -5,32 +5,22 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fetburner/rokuban/internal/medialock"
+	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
-const mediaRelPathLockGateFile = medialock.GateFile
-
-var mediaRelPathLockPath = medialock.Path
-
-func mediaRelPathLockGatePath(mediaDir string) string {
-	return filepath.Join(mediaDir, ".rokuban-locks", medialock.GateFile)
-}
-func TestWalkMediaFiles_IgnoresRelPathLockDirectoryAndLegacyFiles(t *testing.T) {
+func TestWalkMediaFiles_IgnoresReservedLockArtifacts(t *testing.T) {
 	mediaDir := t.TempDir()
 	canonicalPath := filepath.Join(mediaDir, "recording.m2ts")
 	const relPath = "recording.m2ts"
 	if err := os.WriteFile(canonicalPath, []byte("media"), 0o644); err != nil {
 		t.Fatalf("writing canonical file: %v", err)
 	}
-	lockPath := mediaRelPathLockPath(mediaDir, relPath)
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	lockDir := filepath.Join(mediaDir, mediapath.MediaRelPathLockDirName)
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
 		t.Fatalf("creating lock directory: %v", err)
 	}
-	if err := os.WriteFile(mediaRelPathLockGatePath(mediaDir), nil, 0o666); err != nil {
-		t.Fatalf("writing GC gate: %v", err)
-	}
-	if err := os.WriteFile(lockPath, nil, 0o666); err != nil {
-		t.Fatalf("writing rel_path lock file: %v", err)
+	if err := os.WriteFile(filepath.Join(lockDir, "legacy-entry"), nil, 0o666); err != nil {
+		t.Fatalf("writing reserved lock directory entry: %v", err)
 	}
 	legacyPath := filepath.Join(mediaDir, ".rokuban-rel-path-lock-legacy.lock")
 	if err := os.WriteFile(legacyPath, nil, 0o666); err != nil {
@@ -70,12 +60,4 @@ func TestWalkMediaFilesIgnoresOnlyRootStoreMarker(t *testing.T) {
 	if len(got) != 1 || got[0] != "nested/.rokuban-store" {
 		t.Fatalf("walked files = %v, want only nested/.rokuban-store", got)
 	}
-}
-
-func entryNames(entries []os.DirEntry) []string {
-	names := make([]string, len(entries))
-	for i, entry := range entries {
-		names[i] = entry.Name()
-	}
-	return names
 }

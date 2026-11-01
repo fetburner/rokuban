@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/fetburner/rokuban/internal/medialock"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -98,8 +97,8 @@ func RescueLatest(
 	return result, nil
 }
 
-// RescueFile は path の catalog JSON を読み、mediaDir のファイルをロックしたまま
-// store に渡して冪等 upsert する。存在しないファイルの行は deleted として復元する。
+// RescueFile は path の catalog JSON を読み、存在する通常ファイルだけを media asset として復元する。
+// ファイルが無ければその copy を active にせず、欠損として復元する。
 //
 // 書き込み順は store.Catalog.Restore の実装（pgstore.Catalog.Restore）にあり、
 // 全部 1 トランザクションで、途中失敗なら何も残さない。storeName は RescueLatest と同じ。
@@ -120,21 +119,6 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 			return nil, fmt.Errorf("catalog media asset %d has invalid store name %q", asset.ID, asset.Store)
 		}
 	}
-
-	// Acquire file locks before DB row locks and retain them through commit.
-	// deleted の行は active 行を作らない（ファイルも見ない）ので、ロック対象から外す。
-	// 墓石は運用とともに増えるため、ロック数を live な行に抑える。
-	paths := make([]string, 0, len(doc.MediaAssets))
-	for _, asset := range doc.MediaAssets {
-		if asset.State != "deleted" && asset.Store == storeName {
-			paths = append(paths, asset.RelPath)
-		}
-	}
-	release, err := medialock.LockPaths(ctx, mediaDir, paths)
-	if err != nil {
-		return nil, fmt.Errorf("locking rescue assets: %w", err)
-	}
-	defer func() { _ = release() }()
 
 	missing := make(map[store.MediaAssetCopyKey]struct{})
 	for _, asset := range doc.MediaAssets {

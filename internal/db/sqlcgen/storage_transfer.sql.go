@@ -993,8 +993,7 @@ type LockPendingMediaAssetTransferCopyParams struct {
 	StoreName string
 }
 
-// The caller holds the path flock before this row lock, matching transfer's
-// filesystem-lock then transaction order.
+// Lock the recording, logical asset, and copy together while rechecking the pending reservation.
 func (q *Queries) LockPendingMediaAssetTransferCopy(ctx context.Context, arg LockPendingMediaAssetTransferCopyParams) (int64, error) {
 	row := q.db.QueryRow(ctx, lockPendingMediaAssetTransferCopy, arg.CopyID, arg.StoreName)
 	var id int64

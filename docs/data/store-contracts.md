@@ -292,11 +292,11 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。tx は公開のメソッドごとに store が持つ。
 
-ファイルの公開は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。`publish` は rename と fsync を行う。検査で公開しないと決めたときは呼ばない。
+公開物の作成と耐久化は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。検査で公開しないと決めたときは呼ばない。
 
 `publish` がエラーを返したら、store は rollback してそのエラーを返す。`publish` が成功した後に commit が失敗したら、store はエラーを返す。このときファイルは行を持たない孤児として残る。呼び出し側はそのファイルを消さず、孤児の監査に回収を任せる。
 
-呼び出し側は、rel_path のファイルロックを持って store を呼ぶ。store はファイルシステムを知らない。
+呼び出し側は rel_path の filesystem lock を持たずに store を呼ぶ。store はファイルシステムを知らない。
 
 `publish` は副作用を持つので、[ロック後の判断](#ロック後の判断)の「関数は DB に触れず状態を変えない」規則の例外である。DB の判定とファイルの公開の順序を固定するために、store が `publish` を呼ぶ。
 
@@ -308,7 +308,7 @@ encoded の公開は、試行番号・desired・作り直し要求・cut の区�
 
 thumbnail と seek tiles の公開は、同じ録画のごみ箱移動・完全削除と直列化する。ごみ箱か削除済みの録画には公開しない。初回の公開は、active な行が既にあれば公開しない。thumbnail の置き換えは、観測した行（id・rel_path・seek）が変わっておらず、入力の原本が active なときだけ行う。
 
-in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査とファイルロックは、呼び出し側の `internal/inplace` が持つ。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。tombstone しか無いパスは拒否する。
+in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査は、呼び出し側の `internal/inplace` が登録前に行う。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。tombstone しか無いパスは拒否する。
 
 <details><summary>根拠</summary>
 
@@ -326,11 +326,7 @@ in-place 登録は、録画とアセットの行を 1 つの tx で書く。フ�
 - in-place の冪等性と active な行の優先: `TestMediaStoreContract` の `in-place registration is idempotent and prefers published rows`
 - ingest の commit 失敗で canonical が孤児として残ること: `TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect`
 - encode の commit 失敗で古い試行が後の公開を上書きしないこと: `TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication`
-- ingest のファイルロックと store の統合: `TestIngestWorker_CommitHoldsRelPathFileLockThroughRename`
-- encode のファイルロックと store の統合: `TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit`
-- thumbnail のファイルロックと store の統合: `TestThumbnailWorkerPublishesUnderRelPathLock`
-- seek tiles のファイルロックと store の統合: `TestSeekTilesWorkerPublishesUnderRelPathLock`
-- in-place のファイル検証とファイルロック: `internal/inplace.Register`
+- in-place 登録で通常ファイル以外を拒否すること: `TestRegister_RequiresExistingRegularFile`
 
 </details>
 

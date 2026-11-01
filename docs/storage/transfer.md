@@ -26,7 +26,7 @@
 
 転送は転送元ごとの advisory lock を、pool から借りた接続のまま保持する。pool の外に接続を張ると、`db.max_conns` がプロセスの接続上限だという契約を破るためである。この接続の数は pool の予算に数える（[データベース](../operations/database.md)）。
 
-転送元と宛先の rel_path lock は、置き場名と相対パスの順で取る。転送元の root の目印を照合してから読み、lock を取れない job は snooze する。advisory lock と rel_path lock は、どちらも Work ごとに取り直す。
+転送元の root の目印を照合してから読み、コピー単位の DB progress lease を取る。temp は copy ID と世代を含む名前で分離する。全体一意索引が `(store, rel_path)` の再利用を防ぐ。
 
 進捗（lease、世代、保存した長さと SHA-256 の状態、送信状態、照合中であること）は、pending のコピーの衛星表に持つ。lease の期限は DB の `now()` と比べ、プロセスの時計は使わない。
 
@@ -112,7 +112,7 @@ encoded の隣接 `.vtt` は、本体のキーを作った後、コピーを act
 
 派生コピーが壊れていたときは、同じ録画に active・実体ありの原本コピーが残る場合だけ、壊れた転送元のコピーを退役させる。転送 worker は録画の行、派生の論理行の順にロックした 1 つの transaction で、転送元のコピーを deleting にする。この順序は until_encoded の原本削除と同じで、両者を直列化する。直列化しないと、原本の削除と派生コピーの退役が同時に通り、どちらの実体も残らない。
 
-退役の続きは、転送元の rel_path lock の下で行う。目印を照合してからファイル（encoded なら字幕の sidecar も）を消し、親ディレクトリを fsync して deleted にする。
+退役の続きでは、目印を照合してからファイル（encoded なら字幕の sidecar も）を消し、親ディレクトリを fsync して deleted にする。
 
 deleted への確定は、コピー自身の置き場の行をロックして行うので、転送 worker が束縛された置き場と違う置き場の転送元でも確定できる。同じ transaction で、実体無しの記録と転送の試行行も消す。退役させたら `rokuban_storage_transfer_corrupt_sources_retired_total` を増やし、Error ログを出す。deleting にして unlink の前に落ちた場合は、削除 reconcile がどの腕にも該当しない deleting 行として active に戻し、転送の再試行が不一致を再検出して消す。原本が無ければコピーを残して報告し、試行回数を記録する。
 
@@ -122,9 +122,9 @@ deleted への確定は、コピー自身の置き場の行をロックして行
 
 ### 不要になったコピーの回収
 
-不要になった pending のコピーは、転送と同じ順序で lock を取り、削除 reconcile が回収する。
+不要になった pending のコピーは、削除 reconcile が回収する。
 
-ごみ箱・世代・desired の置き場の変更、または until_encoded の保持条件の成立で不要になった pending のコピーは、削除 reconcile が回収する。候補を列挙した後に rel_path lock を取り、録画・論理資産・コピーの行をロックした transaction で、不要になった条件を再評価する。
+ごみ箱・世代・desired の置き場の変更、または until_encoded の保持条件の成立で不要になった pending のコピーは、削除 reconcile が回収する。候補を列挙した後、録画・論理資産・コピーの行をロックした transaction で不要になった条件を再評価する。
 
 原本の回収では、正規名の宛先を転送 temp と inode が一致するときだけ消す。派生物の回収では、所有記録のあるキーだけを消す。所有記録のない宛先は残す。いずれも字幕 sidecar を本体より先に消し、sidecar を消せなかったときは本体と pending 行を残して次回に再試行する。
 
