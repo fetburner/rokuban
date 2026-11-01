@@ -11,11 +11,11 @@ Rokuban's own source code is covered by LICENSE.
 ffmpeg and Debian base-image packages are outside this file; their own
 distribution notices remain in the image supplied by their distributors.
 Component: Go standard library
-Version: go1.27.3
+Version: go1.27.1
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
-Source: https://go.dev/dl/go1.27.3.src.tar.gz
+Source: https://go.dev/dl/go1.27.1.src.tar.gz
 
 ----- LICENSE (license text) -----
 Copyright 2009 The Go Authors.
