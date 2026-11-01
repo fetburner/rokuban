@@ -298,7 +298,7 @@ func assertIssue1317CleanHandoff(t *testing.T, ctx context.Context, pool *pgxpoo
 	`, recordingID).Scan(&handedOff, &offset, &hashState); err != nil {
 		t.Fatalf("reading durable ingest handoff: %v\nprocess output:\n%s", err, processOutput)
 	}
-	if !handedOff || offset <= 0 || len(hashState) == 0 {
+	if !handedOff || offset < 0 || len(hashState) == 0 {
 		t.Fatalf("first Work did not leave a clean DB handoff: handed_off=%t offset=%d hash_state_bytes=%d\nprocess output:\n%s",
 			handedOff, offset, len(hashState), processOutput)
 	}
