@@ -541,8 +541,8 @@ jobs:
       AWS_ACCESS_KEY_ID: rokuban
       AWS_SECRET_ACCESS_KEY: rokuban-minio-conformance
       AWS_REGION: us-east-1
-      # MinIO は 4 機能すべて対応する。記録がこれと違えば退行として落とす。
-      ROKUBAN_S3_CONFORMANCE_EXPECT: conditional-writes=supported,multipart-upload-and-abort=supported,head-checksum-sha256=supported,presigned-get-range=supported
+      # MinIO は 5 機能すべて対応する。記録がこれと違えば退行として落とす。
+      ROKUBAN_S3_CONFORMANCE_EXPECT: conditional-writes=supported,multipart-upload-and-abort=supported,multipart-resume=supported,head-checksum-sha256=supported,presigned-get-range=supported
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

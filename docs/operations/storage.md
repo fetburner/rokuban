@@ -205,7 +205,7 @@ worker は起動時に S3 へ接続しない。S3 に繋がらなくても、資
 
 動画の再生そのものに CORS が要る。プレイヤーの `<video>` は `crossorigin="anonymous"` を付けて S3 の URL を読むためである。bucket の CORS では、UI の origin からの GET と HEAD、`Range` request header を許可する。`Content-Range` と `Accept-Ranges` は expose する。字幕の取得も同じ設定を使う。bucket の CORS を変えたときは、実ブラウザの S3 配信判定（`web/e2e/s3-302.mjs`）も通す。
 
-適合テストが測るのは 5 つである。内訳は、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range と、multipart の続きである。multipart の続きは、送り手が落ちたあとも同じ UploadId とパートの ETag だけで続けて完了できるかを見る。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。multipart の続きが非対応・一部対応のサーバーで派生物の転送が続きから送れるかは未検証である。CI の期待（`ROKUBAN_S3_CONFORMANCE_EXPECT`）は multipart の続きを含まない。
+適合テストが測るのは 5 つである。内訳は、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range と、multipart の続きである。multipart の続きは、送り手が落ちたあとも同じ UploadId とパートの ETag だけで続けて完了できるかを見る。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。multipart の続きが非対応・一部対応のサーバーで派生物の転送が続きから送れるかは未検証である。
 
 置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残るためである。派生物の転送は 1 つのアップロードを slice をまたいで続けるので、途中のアップロードは何日も残りうる。`DaysAfterInitiation`（日単位）は、転送が slice をまたいで続く期間より十分長くする。短いと、続きの途中のアップロードが消え、次の試行は新しいアップロードから送り直すことになる。
 
@@ -248,7 +248,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 結果は `-v` の出力の `S3_CONFORMANCE` で始まる行に、機能ごとの JSON で出る。`status` が `supported`、`unsupported`、`partial` のいずれかで、`checks` に内訳が入る。想定外のエラーで判定できなかった機能は `unknown` で、`note` に原因が入る。
 
-`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 4 機能すべてに `supported` を期待し、退行を検知する。
+`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 5 機能すべてに `supported` を期待し、退行を検知する。
 
 <details><summary>根拠</summary>
 
