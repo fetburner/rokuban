@@ -145,42 +145,6 @@ func writeSegmentFile(t *testing.T, root, contents string) string {
 	return path
 }
 
-func TestSegmentCacheCanUnlinkAnOpenDeliveryFile(t *testing.T) {
-	cache, err := newSegmentCache(t.TempDir(), 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := SegmentKey{"recording", "generation", "profile", "video", 10}
-	b := SegmentKey{"recording", "generation", "profile", "video", 11}
-	published, _, err := cache.publish(writeSegmentFile(t, cache.root, "four"), a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	published.release()
-
-	delivery, ok, err := cache.acquire(a)
-	if err != nil || !ok {
-		t.Fatalf("acquire delivery = (ok %v, err %v)", ok, err)
-	}
-	replacement, _, err := cache.publish(writeSegmentFile(t, cache.root, "next"), b)
-	if err != nil {
-		t.Fatalf("new segment should evict the open delivery path: %v", err)
-	}
-	replacement.release()
-
-	got, err := io.ReadAll(delivery.file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	delivery.release()
-	if string(got) != "four" {
-		t.Fatalf("open delivery bytes = %q, want four", got)
-	}
-	if _, ok, err := cache.acquire(a); err != nil || ok {
-		t.Fatalf("evicted path still indexed: ok=%v err=%v", ok, err)
-	}
-}
-
 func TestSegmentCachePublishRejectsSegmentLargerThanWholeCacheWithoutWaiting(t *testing.T) {
 	cache, err := newSegmentCache(t.TempDir(), 4)
 	if err != nil {
@@ -193,5 +157,102 @@ func TestSegmentCachePublishRejectsSegmentLargerThanWholeCacheWithoutWaiting(t *
 	}
 	if _, ok, err := cache.acquire(key); err != nil || ok {
 		t.Fatalf("oversized segment cached: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestSegmentCacheCountsOpenDeliveryBytesUntilClose(t *testing.T) {
+	cache, err := newSegmentCache(t.TempDir(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := SegmentKey{"recording", "generation", "profile", "video", 20}
+	b := SegmentKey{"recording", "generation", "profile", "video", 21}
+	published, _, err := cache.publish(writeSegmentFile(t, cache.root, "four"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published.release()
+
+	delivery, ok, err := cache.acquire(a)
+	if err != nil || !ok {
+		t.Fatalf("acquire delivery = (ok %v, err %v)", ok, err)
+	}
+	if _, _, err := cache.publish(writeSegmentFile(t, cache.root, "next"), b); !errors.Is(err, errSegmentCacheFull) {
+		t.Fatalf("publish while delivery is open = %v, want errSegmentCacheFull", err)
+	}
+	delivery.release()
+
+	next, _, err := cache.publish(writeSegmentFile(t, cache.root, "next"), b)
+	if err != nil {
+		t.Fatalf("publish after delivery close: %v", err)
+	}
+	next.release()
+	if cache.usedBytes() != 4 {
+		t.Fatalf("used bytes = %d, want 4", cache.usedBytes())
+	}
+}
+
+func TestSegmentCacheRemovedOpenFileStaysCountedUntilClose(t *testing.T) {
+	cache, err := newSegmentCache(t.TempDir(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := SegmentKey{"recording", "generation", "profile", "video", 30}
+	published, _, err := cache.publish(writeSegmentFile(t, cache.root, "four"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published.release()
+
+	delivery, ok, err := cache.acquire(a)
+	if err != nil || !ok {
+		t.Fatalf("acquire delivery = (ok %v, err %v)", ok, err)
+	}
+	cache.removeRecording("recording", "generation")
+	if cache.usedBytes() != 4 {
+		t.Fatalf("used bytes after removeRecording with open delivery = %d, want 4", cache.usedBytes())
+	}
+	got, err := io.ReadAll(delivery.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "four" {
+		t.Fatalf("unlinked delivery bytes = %q, want four", got)
+	}
+	delivery.release()
+	if cache.usedBytes() != 0 {
+		t.Fatalf("used bytes after last close = %d, want 0", cache.usedBytes())
+	}
+}
+
+func TestSegmentFileDoubleCloseCountsOnce(t *testing.T) {
+	cache, err := newSegmentCache(t.TempDir(), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := SegmentKey{"recording", "generation", "profile", "video", 40}
+	published, _, err := cache.publish(writeSegmentFile(t, cache.root, "four"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published.release()
+
+	d1, ok, err := cache.acquire(a)
+	if err != nil || !ok {
+		t.Fatalf("acquire d1 = (ok %v, err %v)", ok, err)
+	}
+	d2, ok, err := cache.acquire(a)
+	if err != nil || !ok {
+		t.Fatalf("acquire d2 = (ok %v, err %v)", ok, err)
+	}
+	cache.removeRecording("recording", "generation")
+	_ = d1.file.Close()
+	_ = d1.file.Close()
+	if cache.usedBytes() != 4 {
+		t.Fatalf("used bytes after closing d1 twice = %d, want 4 (d2 still open)", cache.usedBytes())
+	}
+	_ = d2.file.Close()
+	if cache.usedBytes() != 0 {
+		t.Fatalf("used bytes after closing d2 = %d, want 0", cache.usedBytes())
 	}
 }

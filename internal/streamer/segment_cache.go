@@ -33,15 +33,24 @@ func (k SegmentKey) validate() error {
 }
 
 type segmentCacheEntry struct {
-	key        SegmentKey
-	path       string
-	size       int64
-	leases     int
+	key  SegmentKey
+	path string
+	size int64
+	// leases は、このエントリから開いて、まだ Close していない記述子の数。
+	leases int
+	// removed は、索引と LRU から外れたことを表す。外れても、開いている記述子の分のバイトは
+	// 最後の Close まで used に残る（unlink 済みでも tmpfs を使うため）。
+	removed    bool
 	lruElement *list.Element
 }
 
 // segmentCache は、1 つのファイルシステム上のファイルを持つ、バイト数上限のプロセス内 LRU。
-// lease は、待っている要求がファイルを開いて配信を始めるまで、そのエントリを退避から守る。
+//
+// used が数えるのは、索引にあるエントリのバイトと、索引から外れたが記述子が開いているエントリの
+// バイトの合計である。unlink 済みのファイルも最後の Close まで tmpfs に残るので、こう数えないと
+// tmpfs の使用量が maxBytes を超える。読みを止めたクライアントが記述子を持ち続けると、新しい
+// セグメントは空きを待つ。待つ期限を超えると 503 と Retry-After になる。
+// 開いている記述子があるエントリは退避の候補にならない。
 type segmentCache struct {
 	mu       sync.Mutex
 	root     string
@@ -70,39 +79,37 @@ func newSegmentCache(root string, maxBytes int64) (*segmentCache, error) {
 	}, nil
 }
 
-// segmentLease は、呼び出し側へ返す記述子を持つ。登録した側の lease は、
-// 待っている呼び出し側が自分のファイルを開くまで、キャッシュのエントリも守る。
+// SegmentFile は、キャッシュから開いたセグメントの記述子。Close するまで、そのバイトは
+// キャッシュの使用量に数える（unlink 済みでも tmpfs に残るため）。
+// 埋め込んだ File の Close を直接呼ぶと記述子の数が減らず、そのバイトが使用量に残り続けるので、SegmentFile の Close を呼ぶ。
+type SegmentFile struct {
+	*os.File
+	cache     *segmentCache
+	entry     *segmentCacheEntry
+	closeOnce sync.Once
+}
+
+// Close は記述子を閉じ、キャッシュの数を 1 つ減らす。2 回目以降の呼び出しは何もしない。
+func (f *SegmentFile) Close() error {
+	var err error
+	f.closeOnce.Do(func() {
+		err = f.File.Close()
+		f.cache.closeFile(f.entry)
+	})
+	return err
+}
+
+// segmentLease は、呼び出し側へ返す記述子を持つ。
 type segmentLease struct {
-	file        *os.File
-	cache       *segmentCache
-	key         SegmentKey
-	protected   bool
-	protectOnce sync.Once
-	closeOnce   sync.Once
+	file *SegmentFile
 }
 
-// releaseProtection は、待っている呼び出し側が記述子を開いた後に、キャッシュがこの path を
-// unlink してよい状態にする。開いた記述子は unlink 後も読める。
-func (l *segmentLease) releaseProtection() {
-	if l == nil || !l.protected {
-		return
-	}
-	l.protectOnce.Do(func() {
-		l.cache.release(l.key)
-	})
-}
-
-// release はファイルを閉じ、残っている登録側の保護を手放す。
+// release は記述子を閉じる。nil に対して呼んでも安全。
 func (l *segmentLease) release() {
-	if l == nil {
+	if l == nil || l.file == nil {
 		return
 	}
-	l.releaseProtection()
-	l.closeOnce.Do(func() {
-		if l.file != nil {
-			_ = l.file.Close()
-		}
-	})
+	_ = l.file.Close()
 }
 
 func (c *segmentCache) acquire(key SegmentKey) (*segmentLease, bool, error) {
@@ -120,8 +127,9 @@ func (c *segmentCache) acquire(key SegmentKey) (*segmentLease, bool, error) {
 		}
 		return nil, false, fmt.Errorf("opening cached segment: %w", err)
 	}
+	entry.leases++
 	c.lru.MoveToFront(entry.lruElement)
-	return &segmentLease{file: file}, true, nil
+	return &segmentLease{file: &SegmentFile{File: file, cache: c, entry: entry}}, true, nil
 }
 
 // publish は、完成した scratch のファイルをハードリンクでキャッシュに登録する。同じ key を
@@ -144,7 +152,7 @@ func (c *segmentCache) publish(tempPath string, key SegmentKey) (*segmentLease, 
 		entry.leases++
 		c.lru.MoveToFront(entry.lruElement)
 		_ = os.Remove(tempPath)
-		return &segmentLease{file: file, cache: c, key: key, protected: true}, false, nil
+		return &segmentLease{file: &SegmentFile{File: file, cache: c, entry: entry}}, false, nil
 	}
 
 	info, err := os.Stat(tempPath)
@@ -196,7 +204,7 @@ func (c *segmentCache) publish(tempPath string, key SegmentKey) (*segmentLease, 
 	c.used += entry.size
 	c.signalChangedLocked()
 	_ = os.Remove(tempPath)
-	return &segmentLease{file: file, cache: c, key: key, protected: true}, createdLink, nil
+	return &segmentLease{file: &SegmentFile{File: file, cache: c, entry: entry}}, createdLink, nil
 }
 
 func (c *segmentCache) pathFor(key SegmentKey) string {
@@ -233,24 +241,28 @@ func (c *segmentCache) evictForLocked(needed int64) bool {
 	return true
 }
 
+// removeEntryLocked は、エントリを索引と LRU から外す。開いている記述子が無ければ、そのバイトを
+// used から引く。開いている記述子があれば、最後の closeFile まで used に残す。
 func (c *segmentCache) removeEntryLocked(entry *segmentCacheEntry) {
 	delete(c.entries, entry.key)
 	c.lru.Remove(entry.lruElement)
-	c.used -= entry.size
+	entry.removed = true
+	if entry.leases == 0 {
+		c.used -= entry.size
+	}
 	c.signalChangedLocked()
 }
 
-func (c *segmentCache) release(key SegmentKey) {
+// closeFile は、entry から開いた記述子が閉じたことを記録する。キーではなくエントリで数えるので、
+// 外されたエントリと同じキーの新しいエントリの数を減らすことは無い。
+func (c *segmentCache) closeFile(entry *segmentCacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry := c.entries[key]
-	if entry == nil {
-		return
+	entry.leases--
+	if entry.removed && entry.leases == 0 {
+		c.used -= entry.size
 	}
-	if entry.leases > 0 {
-		entry.leases--
-		c.signalChangedLocked()
-	}
+	c.signalChangedLocked()
 }
 
 func (c *segmentCache) signalChangedLocked() {
