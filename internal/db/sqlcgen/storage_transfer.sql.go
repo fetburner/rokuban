@@ -514,6 +514,22 @@ func (q *Queries) GetMediaAssetCopyForDeletion(ctx context.Context, arg GetMedia
 	return i, err
 }
 
+const getMediaAssetTransferCopyState = `-- name: GetMediaAssetTransferCopyState :one
+SELECT state FROM media_asset_copies WHERE id = $1 AND store = $2
+`
+
+type GetMediaAssetTransferCopyStateParams struct {
+	CopyID    int64
+	StoreName string
+}
+
+func (q *Queries) GetMediaAssetTransferCopyState(ctx context.Context, arg GetMediaAssetTransferCopyStateParams) (string, error) {
+	row := q.db.QueryRow(ctx, getMediaAssetTransferCopyState, arg.CopyID, arg.StoreName)
+	var state string
+	err := row.Scan(&state)
+	return state, err
+}
+
 const getMediaAssetTransferProgressGeneration = `-- name: GetMediaAssetTransferProgressGeneration :one
 SELECT p.generation
 FROM media_asset_copy_transfer_progress p

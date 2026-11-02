@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"sync"
 	"time"
 
@@ -200,11 +201,12 @@ func (s *Media) RecordMediaAssetTransferFailure(ctx context.Context, copyID int6
 	return nil
 }
 
-// MarkMediaAssetTransferObjectOwned は、pending copy のために作成した object key を記録する。
-func (s *Media) MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (bool, error) {
+// MarkMediaAssetTransferObjectOwned は、pending のコピーが作った relPath の所有を記録する。
+// pending でなければ、コピーが退役したか（TransferObjectCopyRetired）、別の試行が進めたか（TransferObjectCopyAdvanced）を返す。
+func (s *Media) MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (store.TransferObjectOwnership, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("beginning transfer object ownership record: %w", err)
+		return 0, fmt.Errorf("beginning transfer object ownership record: %w", err)
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
@@ -212,31 +214,41 @@ func (s *Media) MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID in
 		CopyID: copyID, StoreName: storeName,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		state, stateErr := q.GetMediaAssetTransferCopyState(ctx, sqlcgen.GetMediaAssetTransferCopyStateParams{
+			CopyID: copyID, StoreName: storeName,
+		})
+		if errors.Is(stateErr, pgx.ErrNoRows) {
+			return store.TransferObjectCopyRetired, nil
+		}
+		if stateErr != nil {
+			return 0, fmt.Errorf("reading transfer copy %d state after ownership record: %w", copyID, mapDatabaseError(stateErr))
+		}
+		if state == "deleted" {
+			return store.TransferObjectCopyRetired, nil
+		}
+		return store.TransferObjectCopyAdvanced, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("locking pending transfer copy %d to record object ownership: %w", copyID, mapDatabaseError(err))
+		return 0, fmt.Errorf("locking pending transfer copy %d to record object ownership: %w", copyID, mapDatabaseError(err))
 	}
 	if _, err := q.MarkMediaAssetTransferObjectOwned(ctx, sqlcgen.MarkMediaAssetTransferObjectOwnedParams{
 		CopyID: copyID, StoreName: storeName, RelPath: relPath,
 	}); err != nil {
-		return false, fmt.Errorf("recording ownership of transfer object %q: %w", relPath, mapDatabaseError(err))
+		return 0, fmt.Errorf("recording ownership of transfer object %q: %w", relPath, mapDatabaseError(err))
 	}
 	owned, err := q.ListMediaAssetTransferObjectsOwned(ctx, sqlcgen.ListMediaAssetTransferObjectsOwnedParams{
 		CopyID: copyID, StoreName: storeName,
 	})
 	if err != nil {
-		return false, fmt.Errorf("checking ownership of transfer object %q: %w", relPath, mapDatabaseError(err))
+		return 0, fmt.Errorf("checking ownership of transfer object %q: %w", relPath, mapDatabaseError(err))
 	}
-	for _, ownedPath := range owned {
-		if ownedPath == relPath {
-			if err := tx.Commit(ctx); err != nil {
-				return false, fmt.Errorf("committing transfer object ownership record: %w", mapDatabaseError(err))
-			}
-			return true, nil
-		}
+	if !slices.Contains(owned, relPath) {
+		return 0, fmt.Errorf("transfer object %q is missing from the ownership record after it was written", relPath)
 	}
-	return false, nil
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("committing transfer object ownership record: %w", mapDatabaseError(err))
+	}
+	return store.TransferObjectOwned, nil
 }
 
 // ListMediaAssetTransferObjectsOwned は pending copy のために作成した key を返す。
