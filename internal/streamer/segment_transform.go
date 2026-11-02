@@ -142,7 +142,7 @@ type segmentTransformTask struct {
 	stopping      bool
 	finished      bool
 	// starting は、起動処理（launchTask）が cmd を入れるまで true で、cmd は nil である。
-	// 起動に失敗して retire された後も true のまま残る（finished が true になる）。
+	// 起動しないまま retire された後も true のまま残る（finished が true になる）。
 	starting bool
 	// cancelStart は、起動処理の入力を開く ctx（m.ctx 由来）を止める。起動中に止めるときに呼ぶ。
 	// launchTask は起動の成功・失敗のどちらでも最後に呼ぶ。
@@ -714,7 +714,7 @@ func (m *SegmentManager) touchTasksForCachedSegmentLocked(group segmentTransform
 	}
 }
 
-// resumeTaskLocked・pauseTask・maybePauseForAhead は Process に触れるため、cmd が nil の起動中の変換を明示的に除く。
+// resumeTaskLocked は、止めた変換を SIGCONT で再開する。Process に触れるので、cmd が nil の起動中の変換は除く。
 func (m *SegmentManager) resumeTaskLocked(task *segmentTransformTask) error {
 	if task.finished || task.stopping || task.cmd == nil || task.pauseReason == transformRunning {
 		return nil
@@ -726,6 +726,7 @@ func (m *SegmentManager) resumeTaskLocked(task *segmentTransformTask) error {
 	return nil
 }
 
+// pauseTask は、変換を SIGSTOP で止める。Process に触れるので、cmd が nil の起動中の変換は除く。
 func (m *SegmentManager) pauseTask(task *segmentTransformTask, reason transformPauseReason) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -738,6 +739,7 @@ func (m *SegmentManager) pauseTask(task *segmentTransformTask, reason transformP
 	task.pauseReason = reason
 }
 
+// maybePauseForAhead は、先読みで要求より進みすぎた変換を SIGSTOP で止める。cmd が nil の起動中の変換は除く。
 func (m *SegmentManager) maybePauseForAhead(task *segmentTransformTask) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
