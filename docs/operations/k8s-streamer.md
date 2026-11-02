@@ -115,4 +115,15 @@ FFmpeg の実測 peak は 173Mi だったため、1 セッションに 512Mi を
 
 キャッシュの下限は `max_concurrent × (先読み 5 + 要求 1) × 最大 5 rendition（映像・音声 3・字幕）× 16 MiB` である。`cache_bytes` はこの値より大きくし、起動時の検証が下回る設定を弾く。同梱設定は 3 × 6 × 5 × 16 MiB = 1440 MiB に対して 1536 MiB である。既定を 3 にしたのは、追従変換 2 本では 3 人目の視聴中に idle 変換を止めて起動し直す往復が起きると見込んだためである。この往復は測っていない（未検証）。16 MiB は下限を計算するための見積もりで、実セグメントの上限ではない。見積もりを超えるセグメントも配信は止めず、キャッシュ全体より大きい場合だけエラーにする。この式はここだけに置き、[playback.md](../api/media/playback.md) と `config.example.yml` はここを参照する。
 
-同梱の `sizeLimit: 2Gi` は、キャッシュの 1.5Gi に 512Mi の余白を足した値である。作業 scratch の実測値は無い（未検証）ので、この余白は見積もりにとどまる。memory limit の `3584Mi` は、`sizeLimit` + 512Mi × 同時変換数（2Gi + 3 × 512Mi）で決めた。512Mi はライブの ffmpeg の実測 peak に由来し、この経路の ffmpeg の peak は未測定（未検証）である。tmpfs が満杯になったときにこの経路の変換とキャッシュがどう振る舞うかも未検証である。
+`cache_bytes` には、配信中の記述子が開いているセグメントのバイトも含む。キャッシュから外れた（unlink 済みの）セグメントも、最後の記述子が閉じるまで数え続ける。
+
+読みを止めたクライアントがいると、新しいセグメントは空きを待つ。`recording_hls.wait_timeout` を超えると 503 と `Retry-After` を返す。
+
+同梱の `sizeLimit: 2Gi` は、キャッシュの 1.5Gi に 512Mi の余白を足した値である。この余白に入るのは変換の作業 scratch だけである。キャッシュのバイトは `cache_bytes` が数える。作業 scratch の実測値は無い（未検証）ので、この余白は見積もりにとどまる。memory limit の `3584Mi` は、`sizeLimit` + 512Mi × 同時変換数（2Gi + 3 × 512Mi）で決めた。512Mi はライブの ffmpeg の実測 peak に由来し、この経路の ffmpeg の peak は未測定（未検証）である。tmpfs が満杯になったときにこの経路の変換とキャッシュがどう振る舞うかも未検証である。
+
+<details><summary>根拠</summary>
+
+- 配信中の記述子のバイトは Close まで数える: `TestSegmentCacheCountsOpenDeliveryBytesUntilClose`
+- unlink 済みで開いているバイトも Close まで数える: `TestSegmentCacheRemovedOpenFileStaysCountedUntilClose`
+
+</details>

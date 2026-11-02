@@ -80,7 +80,7 @@ type segmentTransformGroup struct {
 }
 
 type segmentTransformResult struct {
-	file *os.File
+	file *SegmentFile
 	err  error
 }
 
@@ -287,14 +287,16 @@ func NewSegmentManager(opts SegmentTransformOptions) (*SegmentManager, error) {
 
 // Get は、キャッシュ済みのセグメントを開いたファイルとして返す。
 // 返した記述子は呼び出し側のもので、キャッシュが path を unlink した後も読み続けられる。
+// 返した記述子は Close するまでキャッシュの使用量に数える。
 // 録画の最後より後ろの番号は、待たずにすぐエラーを返す。
-func (m *SegmentManager) Get(ctx context.Context, key SegmentKey, input SegmentTransformInput) (*os.File, error) {
+func (m *SegmentManager) Get(ctx context.Context, key SegmentKey, input SegmentTransformInput) (*SegmentFile, error) {
 	file, _, err := m.GetWithCacheStatus(ctx, key, input)
 	return file, err
 }
 
 // GetWithCacheStatus はセグメントを返し、要求時点でキャッシュにあったかを示す。
-func (m *SegmentManager) GetWithCacheStatus(ctx context.Context, key SegmentKey, input SegmentTransformInput) (*os.File, bool, error) {
+// 返した記述子は Close するまでキャッシュの使用量に数える。
+func (m *SegmentManager) GetWithCacheStatus(ctx context.Context, key SegmentKey, input SegmentTransformInput) (*SegmentFile, bool, error) {
 	if err := key.validate(); err != nil {
 		return nil, false, err
 	}
@@ -334,7 +336,7 @@ func (m *SegmentManager) getOnce(
 	key SegmentKey,
 	profile LiveProfile,
 	input SegmentTransformInput,
-) (*os.File, bool, error) {
+) (*SegmentFile, bool, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
