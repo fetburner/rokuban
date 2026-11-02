@@ -8,7 +8,7 @@
 
 保護対象は、ルール・録画履歴・計測記録など、再取得できないデータだけで、合計しても数 MB に収まる。EPG の射影は mirakc から再構築でき、ジョブキューは一時的なので入れない。
 
-**保護対象は、ルール・シリーズ分類ルール・録画履歴・メディア資産・原本 TS の計測記録・ドロップ統計・ドロップ位置・tombstone・手動オーバーライド・ユーザーが置いたチャプター・視聴済みの印のみである。**
+**保護対象は、ルール・シリーズ分類ルール・録画履歴・メディア資産・原本 TS の計測記録・ドロップ統計・ドロップ位置・ tombstone ・手動オーバーライド・ユーザーが置いたチャプター・視聴済みの印のみである。**
 
 <details><summary>根拠</summary>
 
@@ -142,7 +142,7 @@ catalog のバージョンは、列や JSON キーを移すだけでは上げず
 
 `schemaVersion` は「読めない」を意味するので、列や JSON キーを移すだけでは上げない。判定 3 は、自分より新しいバージョンの世代を拒否する条件である。上げた瞬間から、新しいバイナリが書いたダンプは古いバイナリで rescue できなくなる。災害復旧で古いバイナリしか手元にない状況は作りたくない。同じ事実を別のキーや別の配列に移したときは、バージョンを据え置く。
 
-代償は、新ダンプを旧バイナリで読む場合である。旧バイナリは知らないキーを気づかないうちに無視するので、移した事実が落ちる。だから、移してよいのは、落ちたときに安全なほうへ向かう事実だけである。例えば、即時削除の要求が落ちても、その録画はごみ箱に残って猶予超過で消える。要求より遅く消えるだけである。落ちると取り返せない事実（録画本体・アセット・tombstone）を新しいキーへ移すなら、バージョンを上げる。
+代償は、新ダンプを旧バイナリで読む場合である。旧バイナリは知らないキーを気づかないうちに無視するので、移した事実が落ちる。だから、移してよいのは、落ちたときに安全なほうへ向かう事実だけである。例えば、即時削除の要求が落ちても、その録画はごみ箱に残って猶予超過で消える。要求より遅く消えるだけである。落ちると取り返せない事実（録画本体・アセット・ tombstone ）を新しいキーへ移すなら、バージョンを上げる。
 
 同じ方針を `manifestVersion` にも適用する。manifest 自体の形（`document` / `sizeBytes` / `sha256` のキー）を変えたとき、旧バイナリが新形式を読むと、欠けたキーのせいで完成判定そのものが無条件に不完全になる。世代が丸ごと読めなくなるので、この変更は安全なほうへ向かうとは言えない。`schemaVersion` と同じ基準に従うと、`manifestVersion` は上げる側になる。
 
@@ -186,7 +186,7 @@ flowchart TD
 
 スナップショット後にファイルが消えた asset は、履歴と統計を残して `deleted` として復元し、件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。
 
-以前の catalog 世代に残る tombstone は、現在のパス所有者と衝突することがある。復元は tombstone を、同じ asset・置き場・世代のtombstoneが原パスまたは予約キーにあるかで照合する。予約キーは、ファイルシステムの名前や S3 キーより長い 1 成分の rel_path で、asset・世代と原パスのハッシュから決まる。原パスが別のコピーに割り当て済みなら、この予約キーにtombstoneを残して世代全体の復元を続ける。生きたコピーの snapshot が同じパスのtombstoneに当たった場合は、active に戻さない。
+以前の catalog 世代に残る tombstone は、現在のパス所有者と衝突することがある。復元は catalog の tombstone ごとに、同じ asset・置き場・世代の tombstone が原パスまたは予約キーにあれば、復元済みとみなす。予約キーは、ファイルシステムの名前や S3 キーより長い 1 成分の rel_path で、asset・世代と原パスのハッシュから決まる。原パスが別のコピーに割り当て済みなら、この予約キーに tombstone を残して世代全体の復元を続ける。生きたコピーの snapshot が同じパスの tombstone に当たった場合は、active に戻さない。
 
 この排他は、ファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの上書きを防ぐものではないので、復旧中に worker を止める運用要件は続く。共有ストレージでは、全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
 
@@ -199,9 +199,9 @@ flowchart TD
 - 移動済み tombstone の identity でも復活を防ぐこと: `TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath`
 - 旧 catalog の tombstone を移行後のパスから照合すること: `TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive`
 - 衝突する catalog tombstone を保持し、後続資産も復元すること: `TestCatalogRestoreKeepsConflictingTombstoneAndContinuesGeneration`
-- 同じ identity の 2 つのtombstoneを、両方のパスに復元すること: `TestCatalogRestoreRestoresTwoTombstonesOfOneIdentity`
-- 占有済みの原パスのtombstoneが、identity ごとに別々の予約キーへ入ること: `TestCatalogRestoreTwoTombstonesOfOneIdentityGetDistinctSyntheticPaths`
-- 同じ catalog を 2 回復元しても予約キーのtombstoneが 1 行のままであること: `TestCatalogRestoreRerunKeepsOneSyntheticTombstone`
+- 同じ identity の 2 つの tombstone を、両方のパスに復元すること: `TestCatalogRestoreRestoresTwoTombstonesOfOneIdentity`
+- 占有済みの原パスの tombstone が、identity ごとに別々の予約キーへ入ること: `TestCatalogRestoreTwoTombstonesOfOneIdentityGetDistinctSyntheticPaths`
+- 同じ catalog を 2 回復元しても予約キーの tombstone が 1 行のままであること: `TestCatalogRestoreRerunKeepsOneSyntheticTombstone`
 - 予約キーの形の rel_path を持つ catalog を空の DB へ復元できること: `TestCatalogRestoreAcceptsSyntheticTombstonePath`
 
 </details>
@@ -255,7 +255,7 @@ catalog があるときは、照合してフルメタデータ（番組情報・
 - 録画がごみ箱にある
 - 論理資産が既にあり、この置き場に生きたコピーがあるか、パスの世代が現行と違う
 
-ごみ箱の録画や、unlink される予定のファイル、削除済みのパスを、走査が黙って公開し直さないための拒否である。tombstone 以外の条件は、原因を片付けてから rescue を再実行すると登録できる。tombstone に当たったファイルは、別のパスへ移動または改名すると登録できる（元のパスには戻せない）。飛ばしたファイルは登録されず、canonical orphan として報告され続ける。拒否件数と tombstone 件数は CLI summary に出る。
+ごみ箱の録画や、unlink される予定のファイル、削除済みのパスを、走査が黙って公開し直さないための拒否である。 tombstone 以外の条件は、原因を片付けてから rescue を再実行すると登録できる。 tombstone に当たったファイルは、別のパスへ移動または改名すると登録できる（元のパスには戻せない）。飛ばしたファイルは登録されず、canonical orphan として報告され続ける。拒否件数と tombstone 件数は CLI summary に出る。
 
 ### Postgres 運用
 

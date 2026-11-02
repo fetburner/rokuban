@@ -61,7 +61,7 @@ CREATE TABLE missing_media_assets (
 
 `media_asset_copies` の 1 行は物理ファイル 1 つを表す。`generation` はファイルの内容世代で、INSERT 時に書いた後は更新しない。original は 0、派生物は `media_assets.derived_generation` と同じ世代のコピーを現行とする。
 
-同じ論理資産・同じ置き場に世代違いの行が並ぶので、一意の鍵は 2 つある。`(store, rel_path)` はtombstoneを含めてパスを 1 行に絞り、削除したパスの再利用を防ぐ。古い削除 Work が、同じパスに後から公開されたファイルを unlink しないためである。`(media_asset_id, store, generation) WHERE state <> 'deleted'` は、同じ置き場・同じ世代の生きたコピーを 1 行に絞る。後者が無いと、配信が選ぶコピーが決まらない。後から足すと溜まった違反を掃除する移行が要るので、最初から置く。tombstoneの `rel_path` は、catalog 復元で原パスが別の行に使われていたときに、予約用の合成パスになることがある。物理パスではない。
+同じ論理資産・同じ置き場に世代違いの行が並ぶので、一意の鍵は 2 つある。`(store, rel_path)` は tombstone を含めてパスを 1 行に絞り、削除したパスの再利用を防ぐ。古い削除 Work が、同じパスに後から公開されたファイルを unlink しないためである。`(media_asset_id, store, generation) WHERE state <> 'deleted'` は、同じ置き場・同じ世代の生きたコピーを 1 行に絞る。後者が無いと、配信が選ぶコピーが決まらない。後から足すと溜まった違反を掃除する移行が要るので、最初から置く。 tombstone の `rel_path` は、catalog 復元で原パスが別の行に使われていたときに、予約用の合成パスになることがある。物理パスではない。
 
 配信・一覧・派生物の有無を調べる読み手は `active_media_asset_copies` または `preferred_active_media_asset_copy` を使う。両者は active かつ現行世代のコピーだけを返す。CM 検出と TS 解析は original だけを読むので、世代の述語は要らない。削除・棚卸し・rescue・パス名前空間の検査は古い世代も含む全物理行を読む。
 
@@ -102,7 +102,7 @@ CREATE TABLE media_asset_transfer_objects (
 
 uncut の再生成パスは `.u{n}` にする。単調な `derived_generation` を uncut にも適用すると、再生成したパスに世代の印が要る。`.g{n}` は[カット版かどうか](../../configuration/cut.md)を表す印なので、uncut に使うとカット版と見分けられない。世代が正かどうかでカット版かどうかを決める案は、uncut の tombstone を再生成した行をカット版と誤判定する。
 
-行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）と in-place 登録（rescue / EPGStation 取り込み）で、衝突時は冪等に書く。物理コピーの状態はコピー行だけで遷移し、削除済みの行も消さない（tombstone）。ドロップ統計と元サイズは、原本コピーの削除後も UI で見られる。
+行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）と in-place 登録（rescue / EPGStation 取り込み）で、衝突時は冪等に書く。物理コピーの状態はコピー行だけで遷移し、削除済みの行も消さない（ tombstone ）。ドロップ統計と元サイズは、原本コピーの削除後も UI で見られる。
 
 S3 の置き場への公開は、PUT の前に `pending` のコピー行を新しい世代で commit する。`pending` は現行にも旧世代にも入らず、読み手には見えない。論理行が無い初回の公開だけは、予約する世代で論理行を先に作る。この時点では現行のコピーが無いので、読み手はこの資産を公開済みと見ない。PUT の後、公開の transaction が `pending` を `active` にし、`created_at` を公開の時刻に書き換えて、SHA-256 を論理行へ書く。overlap は現行世代の最初のコピー行の `created_at` から数えるので、予約の時刻のままだと encode の所要時間の分だけ猶予が縮む。置き換えでは旧世代の行に触れず、削除 reconcile が overlap の後に消す。
 

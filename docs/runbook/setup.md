@@ -198,13 +198,13 @@ compose と k8s の標準の構成には、この名前（`main`）と adopt の
 
 - compose: 手順 1 は `docker compose stop rokuban` である。手順 2 と 3 は `docker compose up -d migrate adopt-media` で、手順 4 は `docker compose up -d rokuban` である。
 - k8s の手順 1: 「旧 worker の停止と再開（k8s）」の 1 から 3 までを行う（現状を控える、止める、Job が終わるまで待つ）。
-- k8s の手順 4: 「旧 worker の停止と再開（k8s）」の 4 を行う（再開する）。
-- k8s を使わない単一プロセス構成: migration の前に、旧プロセスを正常停止する。
 - k8s の手順 2 と 3: 標準の `rokuban-migrate` Job がやる。`migrate up` を initContainer、`storage adopt main` を本体のコンテナにして続けて走らせるので、`storage adopt main` は手で打たない。
 - k8s の手順 2 の操作: `kubectl delete job rokuban-migrate --ignore-not-found` で前回の Job を消す。次の 2 つを順に apply し、`kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s` で完了を待つ。
   - `kustomize build base | kubectl apply -f - -l '!app.kubernetes.io/component'` で設定の ConfigMap を作る
   - `kustomize build base | kubectl apply -f - -l app.kubernetes.io/component=migrate` で migrate の Job を作る
 - k8s の手順 2 で絞る理由: base には worker の ScaledJob も入っており、絞らずに apply すると完了前に worker が起きる。ConfigMap は名前に設定のハッシュが付き、component のラベルを持たない。Job だけを apply すると、新しい設定の ConfigMap が無く Job が起動しない。
+- k8s の手順 4: 「旧 worker の停止と再開（k8s）」の 4 を行う（再開する）。
+- k8s を使わない単一プロセス構成: migration の前に、旧プロセスを正常停止する。
 
 移行後に旧 worker を動かすと、旧版の `ON CONFLICT (media_asset_id, store)` は削除済みの一意制約を推論できず、コピーを伴う公開・取り込みの commit が失敗する。`storage adopt` は既存コピーのパスや状態を同期しないので、旧 worker を止めてから adopt を再実行しても、commit に失敗したファイルは登録されない。移行前に止められなかったときは、旧 worker を止めた上で、commit に失敗したジョブと、孤児として報告されるファイルを確認する。公開の途中で commit が失敗したファイルは、DB の行が無いまま canonical 名で残る（`rokuban_orphan_files_unresolved`。[operations/monitoring.md](../operations/monitoring.md)）。
 
@@ -249,7 +249,7 @@ k8s の構成で、旧 worker を止めてから再開するまでの手順で�
 
 tombstone も含む全体の一意索引へ広げる migration を含む版では、旧 worker を先に止めなければならない。止めないと、旧 worker による tombstone のパスへの INSERT が失敗し続ける。
 
-旧 worker を「旧 worker の停止と再開（k8s）」の手順で止めてから migration を適用し、新版を起動する。更新が、旧 worker は新版の前提（パスの予約、rel_path の lock）を知らないまま動くと壊れる、と判断されるときも、同じ手順で旧 worker を止める。単一プロセス構成では、migration の前に旧プロセスを正常停止する。
+旧 worker を「旧 worker の停止と再開（k8s）」の手順で止めてから migration を適用し、新版を起動する。旧 worker が新版の前提（パスの予約、rel_path の lock）を知らないまま動くと壊れる更新でも、同じ手順で旧 worker を止める。単一プロセス構成では、migration の前に旧プロセスを正常停止する。
 
 
 ## 定期ジョブの周期とヒント
