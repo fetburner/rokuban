@@ -127,6 +127,6 @@ FFmpeg の実測 peak は 173Mi だったため、1 セッションに 512Mi を
 - unlink 済みで開いているバイトも Close まで数える: `TestSegmentCacheRemovedOpenFileStaysCountedUntilClose`
 - 空きが無い間は変換が一時停止し、空きができると実 ffmpeg の変換が再開して要求が完了する: `TestSegmentTransformWaitsForCacheSpaceThenResumes`
 - 変換が期限内にセグメントを出せないと 503 と `Retry-After: 1` を返す。ffmpeg の代わりに sleep を使い、キャッシュ満杯は経由しない: `TestRecordingHLSCacheMissTimesOutAs503`
-- 未検証: 読みを止めたクライアントの記述子でキャッシュが埋まり、待ちが `wait_timeout` を超えて 503 になる一連の流れは、1 本のテストでは確かめていない。上の 3 つの組み合わせである
+- 未検証: 読みを止めたクライアントの記述子でキャッシュが埋まり、待ちが `wait_timeout` を超えて 503 になる一連の流れは、1 本のテストでは確かめていない。公開できない・変換が待つ・期限で 503 になる、の 3 行のテストの組み合わせである
 
 </details>
