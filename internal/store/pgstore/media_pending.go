@@ -79,6 +79,11 @@ func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.Pendi
 		// 中断した同じ key の pending を再開する。encode は ReserveNewGeneration で上の検査が止めている。
 		row, err := q.GetMediaAssetCopyByPath(ctx, sqlcgen.GetMediaAssetCopyByPathParams{Store: s.storeName, RelPath: in.RelPath})
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Full path uniqueness can only return no visible row here for a tombstone.
+				// TestPreparePendingMediaAssetCopyRejectsTombstonedPath exercises this branch.
+				return fmt.Errorf("media asset copy key %q is reserved by a tombstone: %w", in.RelPath, store.ErrConflict)
+			}
 			return fmt.Errorf("checking existing pending media asset copy: %w", mapDatabaseError(err))
 		}
 		if row.MediaAssetID != assetID || row.Generation != in.DerivedGeneration || row.State != "pending" {

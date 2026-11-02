@@ -252,8 +252,9 @@ type IngestPrecheck interface {
 	// GetIngestOriginalRelPath は置き場にある原本コピーの rel_path を state に関係なく返す。
 	GetIngestOriginalRelPath(ctx context.Context, recordingID int64) (string, error)
 	// GetLiveMediaAssetRecordingID は削除済みでない行の recording_id を返す。
-	// 転送前のヒントであり、一意性の最終判定ではない。述語は部分一意索引と同じで、
-	// state='deleting' の行も衝突に数える。
+	// 転送前のヒントであり、一意性の最終判定ではない。対象は削除済みでない行
+	// （state <> 'deleted'）で、state='deleting' の行も衝突に数える。墓石はここでは
+	// 返さないが、(store, rel_path) の一意索引が墓石のパスへの INSERT を拒む。
 	GetLiveMediaAssetRecordingID(ctx context.Context, relPath string) (int64, error)
 }
 

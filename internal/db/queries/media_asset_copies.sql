@@ -3,15 +3,19 @@
 
 -- 競合したときは state / deleted_at を書かない。生きた行の state を決めるのは削除エンジンの
 -- 遷移だけで、再登録や再公開が deleting を active に戻すと unlink 予定のファイルを公開してしまう。
+-- 墓石も (store, rel_path) を予約する。新しいコピーは削除済みのパスを再利用できない
+-- （TestMediaAssetCopiesRejectNewRowAtTombstonedPath）。
 -- name: UpsertMediaAssetCopy :execrows
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at, deleted_at)
 VALUES (
     sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('generation'),
     sqlc.arg('state'), COALESCE(sqlc.narg('created_at')::timestamptz, now()), sqlc.narg('deleted_at')
 )
-ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO UPDATE SET
+ON CONFLICT (store, rel_path) DO UPDATE SET
     created_at = COALESCE(sqlc.narg('created_at')::timestamptz, media_asset_copies.created_at)
-WHERE media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
+WHERE EXCLUDED.state <> 'deleted'
+  AND media_asset_copies.state <> 'deleted'
+  AND media_asset_copies.media_asset_id = EXCLUDED.media_asset_id
   AND media_asset_copies.generation = EXCLUDED.generation;
 
 -- The copy row must exist before a transition can start, as enforced by the
@@ -28,8 +32,8 @@ WHERE id = sqlc.arg('id')
   AND state = sqlc.arg('expected_state');
 
 -- Catalog restore identifies copies by physical path because catalog rows do
--- not expose database copy IDs. Lock the current path owner before transitioning a
--- copy verified missing; historical tombstones can coexist with a reused live path.
+-- not expose database copy IDs. Lock the live path owner before transitioning a
+-- copy verified missing. Tombstones reserve their path and are checked separately.
 -- name: LockMediaAssetCopyByPhysicalPath :one
 SELECT copy.id, copy.media_asset_id, copy.generation, copy.state
 FROM media_assets asset
@@ -39,14 +43,25 @@ WHERE copy.store = sqlc.arg('store')
   AND copy.state <> 'deleted'
 FOR UPDATE OF asset, copy;
 
--- Repeated rescue of an already missing copy must not add duplicate tombstones.
+-- 墓石の identity 判定。同じ asset・store・世代でも、削除を重ねて別パスに墓石が並ぶことが
+-- あるので、rel_paths で原パスと合成パスの 2 つに絞る（catalog restore の判定と同じ 2 つ）。
 -- name: CatalogHasDeletedMediaAssetCopy :one
 SELECT EXISTS (
     SELECT 1 FROM media_asset_copies copy
     WHERE copy.media_asset_id = sqlc.arg('media_asset_id')
       AND copy.store = sqlc.arg('store')
-      AND copy.rel_path = sqlc.arg('rel_path')
       AND copy.generation = sqlc.arg('generation')
+      AND copy.rel_path = ANY(sqlc.arg('rel_paths')::text[])
+      AND copy.state = 'deleted'
+);
+
+-- 生きた行が復元されるとき、そのパスに墓石（どの identity でも）があれば置かない。
+-- 墓石は (store, rel_path) を予約するので、パスだけで判定する。identity 判定とは別の問い。
+-- name: CatalogHasDeletedMediaAssetCopyAtPhysicalPath :one
+SELECT EXISTS (
+    SELECT 1 FROM media_asset_copies copy
+    WHERE copy.store = sqlc.arg('store')
+      AND copy.rel_path = sqlc.arg('rel_path')
       AND copy.state = 'deleted'
 );
 
@@ -95,7 +110,7 @@ WHERE media_asset_id = sqlc.arg('media_asset_id');
 -- name: InsertPendingMediaAssetCopy :execrows
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
 VALUES (sqlc.arg('media_asset_id'), sqlc.arg('store'), sqlc.arg('rel_path'), sqlc.arg('generation'), 'pending')
-ON CONFLICT (store, rel_path) WHERE state <> 'deleted' DO NOTHING;
+ON CONFLICT (store, rel_path) DO NOTHING;
 
 -- name: GetMediaAssetCopyByPath :one
 SELECT id, media_asset_id, generation, state

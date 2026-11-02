@@ -141,7 +141,7 @@ find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
 
 k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は旧イメージの実行中 Job が完走するまで新しい Job と並走する。並走の原因はこの設定であり、ScaledJob 一般の性質ではない。この窓では旧 worker が新 worker の gate を知らないまま、同じ rel_path を別の inode で lock しうる。
 
-並走を避けるには、更新前に media を mount する ScaledJob の新規起動を止め、`kubectl get jobs` で旧 Job が全て終わったことを確認してから新しいイメージを適用する。新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
+更新前に、全 worker ScaledJob に `autoscaling.keda.sh/paused=true` を付け、CronJob を suspend し、watcher を 0 replica にする。この annotation は[KEDA v2.20 の公式文書](https://keda.sh/docs/2.20/concepts/scaling-jobs/#pausing-autoscaling)にある。pause は新しい Job の起動を止めるが、実行中の Job は止めない。止めている間の River 行は DB に残り、pause を外すと処理される。kind v1.36.1 / KEDA v2.20.2 で、pause 中に Job が作られないことと、解除後に待ち行列が空になることを確かめた（2026-11-02）。操作は[runbook](../runbook/setup.md)の「旧 worker の停止と再開（k8s）」節にある。
 
 止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上のコマンドで消す。
 
@@ -185,7 +185,7 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 カット版とサムネイルを作り直すときは、同じパスへ上書きせず、新しい世代のコピー行を追加して公開する。旧世代の物理行は残し、配信・派生物の有無を調べる読み手からは世代カウンターで隠す。旧世代の unlink は削除 reconcile が overlap の後に行う。
 
-カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きているコピーの `(store, rel_path)` 部分一意索引とも衝突するからである。
+カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、`(store, rel_path)` の全体一意索引とも衝突するからである。
 
 - 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時にコピーの世代へ読み込む
 - 新しいキーへ `Store.Put` し、1 つの tx で論理サイズ・`derived_generation`・`media_asset_cuts` と新しい物理コピー行を active にする。コピー行の世代は後から書き換えない。旧世代は同じ置き場に残り、削除 reconcile が overlap 後に回収する

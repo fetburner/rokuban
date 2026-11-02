@@ -1051,7 +1051,7 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 // cut の初回は 1、uncut の初回は 0。置き換えと tombstone からの再生成は DB の世代を進める。
 // 置き換えは「新しいパスに置いてから旧パスを消す」
 // ので、同じパスへ上書きしてはならない（ストレージ契約の「置くのは一回」。
-// 生きている行の rel_path 部分一意索引とも衝突する）。
+// (store, rel_path) の一意索引とも衝突する。墓石もパスを予約するので、消したパスへも置けない）。
 //
 // profile 名は、そのまま 1 つのパス成分として入れる。入らない名前は、設定と同じ規則
 // （config.ValidateEncodeProfileName）でエラーにする。サニタイズすると別の名前と同じ

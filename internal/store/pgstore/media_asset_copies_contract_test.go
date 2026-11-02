@@ -569,6 +569,72 @@ func TestMediaAssetCopiesRejectSecondLiveCopyOfSameStoreAndGeneration(t *testing
 	}
 }
 
+func TestMediaAssetCopiesRejectNewRowAtTombstonedPath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	path := "originals/deleted-path-is-reserved.ts"
+
+	deletedAssetID := dbtest.MediaAsset(t, pool, dbtest.Recording(t, pool))
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies
+		(media_asset_id, store, rel_path, generation, state, deleted_at)
+		VALUES ($1, $2, $3, 0, 'deleted', now())`, deletedAssetID, dbtest.StoreName, path); err != nil {
+		t.Fatalf("creating tombstone at reserved path: %v", err)
+	}
+
+	newAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: dbtest.Recording(t, pool), Kind: "original", SizeBytes: 1,
+	})
+	if err != nil {
+		t.Fatalf("creating logical asset for conflicting copy: %v", err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO media_asset_copies
+		(media_asset_id, store, rel_path, generation, state)
+		VALUES ($1, $2, $3, 0, 'active')`, newAssetID, dbtest.StoreName, path)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != "media_asset_copies_store_rel_path_idx" {
+		t.Fatalf("inserting a row at tombstoned path error = %v, want unique violation of media_asset_copies_store_rel_path_idx", err)
+	}
+
+	var pathRows, tombstones int
+	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE state = 'deleted')
+		FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, path).Scan(&pathRows, &tombstones); err != nil {
+		t.Fatalf("checking reserved path after rejected insert: %v", err)
+	}
+	if pathRows != 1 || tombstones != 1 {
+		t.Fatalf("rows at reserved path = %d (%d tombstones), want one tombstone", pathRows, tombstones)
+	}
+}
+
+func TestPreparePendingMediaAssetCopyRejectsTombstonedPath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	path := "originals/reserved-after-delete.ts"
+	tombstonedAssetID := dbtest.MediaAsset(t, pool, dbtest.Recording(t, pool))
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies
+		(media_asset_id, store, rel_path, generation, state, deleted_at)
+		VALUES ($1, $2, $3, 0, 'deleted', now())`, tombstonedAssetID, dbtest.StoreName, path); err != nil {
+		t.Fatalf("creating tombstone at reserved path: %v", err)
+	}
+
+	profile := "h264"
+	media := NewMedia(pool, dbtest.StoreName, "")
+	err := media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+		RecordingID: dbtest.Recording(t, pool), Kind: store.AssetKindEncoded, Profile: &profile,
+		RelPath: path, SizeBytes: 1, DerivedGeneration: 1,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("PreparePendingMediaAssetCopy at tombstoned path error = %v, want store.ErrConflict", err)
+	}
+
+	var copiesAtPath int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, path).Scan(&copiesAtPath); err != nil {
+		t.Fatalf("checking reserved path after pending insert: %v", err)
+	}
+	if copiesAtPath != 1 {
+		t.Fatalf("copies at reserved path = %d, want only the tombstone", copiesAtPath)
+	}
+}
+
 // 競合したコピーの upsert は state を書かない。deleting を active に戻すと、unlink 予定のファイルを公開してしまう。
 func TestUpsertMediaAssetCopyConflictKeepsState(t *testing.T) {
 	pool := testutil.SetupDB(t)

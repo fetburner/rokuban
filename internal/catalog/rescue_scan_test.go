@@ -595,8 +595,8 @@ func TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
 	}
 }
 
-// 同じパスに生きた行と tombstone が並んでも、生きた行を優先して冪等に通す。拒否しない。
-func TestRescueLatest_LiveAssetBesideTombstoneIsNotSkipped(t *testing.T) {
+// 既存の live path を再走査しても file を飛ばさず、同じ asset row を保つ。
+func TestRescueLatest_LivePathRescanIsIdempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := newTestMediaDir(t)
 	dir := filepath.Join(mediaDir, "sites", "default", "archive")
@@ -617,15 +617,6 @@ func TestRescueLatest_LiveAssetBesideTombstoneIsNotSkipped(t *testing.T) {
 	}
 	run()
 
-	// 過去の rel_path 再利用を模して、同じ path に tombstone を後から足す。
-	// tombstone の id を live 行より大きくして、id DESC だけでは tombstone が先に選ばれる配置にする。
-	tombstoneRecordingID := dbtest.Recording(t, pool)
-	tombstoneAssetID := dbtest.MediaAsset(t, pool, tombstoneRecordingID, func(p *dbtest.MediaAssetParams) {
-		p.RelPath = "sites/default/archive/old.m2ts"
-		p.SizeBytes = 7
-	})
-	dbtest.SetMediaAssetState(t, pool, tombstoneAssetID, "deleted")
-	dbtest.SetMediaAssetRelPath(t, pool, tombstoneAssetID, relPath)
 	var assetsBefore int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assetsBefore); err != nil {
 		t.Fatal(err)
@@ -633,7 +624,7 @@ func TestRescueLatest_LiveAssetBesideTombstoneIsNotSkipped(t *testing.T) {
 
 	res := run()
 	if res.SkippedTombstonedFiles != 0 || res.SkippedConflictingFiles != 0 {
-		t.Fatalf("rescan skipped tombstoned %d, conflicting %d files; want 0 and 0 when a live row exists at the path",
+		t.Fatalf("rescan skipped tombstoned %d, conflicting %d files; want 0 and 0 for an existing live path",
 			res.SkippedTombstonedFiles, res.SkippedConflictingFiles)
 	}
 	var assetsAfter int
