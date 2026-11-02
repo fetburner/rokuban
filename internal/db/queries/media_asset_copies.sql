@@ -43,20 +43,20 @@ WHERE copy.store = sqlc.arg('store')
   AND copy.state <> 'deleted'
 FOR UPDATE OF asset, copy;
 
--- Match a tombstone by copy identity, not rel_path: a uniqueness migration can move
--- duplicate tombstones to reserved paths while old catalogs still carry the old path.
+-- 墓石の identity 判定。同じ asset・store・世代でも、削除を重ねて別パスに墓石が並ぶことが
+-- あるので、rel_paths で原パスと合成パスの 2 つに絞る（catalog restore の判定と同じ 2 つ）。
 -- name: CatalogHasDeletedMediaAssetCopy :one
 SELECT EXISTS (
     SELECT 1 FROM media_asset_copies copy
     WHERE copy.media_asset_id = sqlc.arg('media_asset_id')
       AND copy.store = sqlc.arg('store')
       AND copy.generation = sqlc.arg('generation')
+      AND copy.rel_path = ANY(sqlc.arg('rel_paths')::text[])
       AND copy.state = 'deleted'
 );
 
--- An active catalog row must not replace a tombstone that still owns its physical path.
--- This lookup is separate from the identity lookup because an older tombstone may have
--- been moved to a reserved path while the original path remains owned by another row.
+-- 生きた行が復元されるとき、そのパスに墓石（どの identity でも）があれば置かない。
+-- 墓石は (store, rel_path) を予約するので、パスだけで判定する。identity 判定とは別の問い。
 -- name: CatalogHasDeletedMediaAssetCopyAtPhysicalPath :one
 SELECT EXISTS (
     SELECT 1 FROM media_asset_copies copy

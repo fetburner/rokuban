@@ -3,6 +3,7 @@ package pgstore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -469,6 +470,11 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 	return nil
 }
 
+// upsertCatalogMediaAssetCopy は catalog の 1 コピー行を復元する。
+//
+// 墓石（state='deleted'）は (store, rel_path) を予約するので、パス P が別の行に
+// 使われていると P に置けない。その墓石は catalogTombstoneRelPath の合成パスに置く。
+// 同じ identity の墓石が既にあるかは、原パス P と合成パスの両方で判定する。
 func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params sqlcgen.UpsertMediaAssetCopyParams, fileVerifiedMissing bool) error {
 	if params.State != "deleted" {
 		rows, err := q.UpsertMediaAssetCopy(ctx, params)
@@ -481,19 +487,11 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 		if rows != 0 {
 			return fmt.Errorf("upsert affected %d rows, want zero or one", rows)
 		}
-		// The row may have been deleted after rescue statted the file. The full
-		// (store, rel_path) index or a migration-moved tombstone must win, so an
-		// older active snapshot cannot resurrect it (TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat,
+		// The row may have been deleted after rescue statted the file, so an older
+		// active snapshot must not resurrect it. A tombstone at P, or a tombstone of
+		// this identity at the synthetic path, also means the copy is already gone
+		// (TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat,
 		// TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath).
-		identityTombstone, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
-			MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
-		})
-		if err != nil {
-			return err
-		}
-		if identityTombstone {
-			return nil
-		}
 		tombstone, err := q.CatalogHasDeletedMediaAssetCopyAtPhysicalPath(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyAtPhysicalPathParams{
 			Store: params.Store, RelPath: params.RelPath,
 		})
@@ -501,6 +499,16 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 			return err
 		}
 		if tombstone {
+			return nil
+		}
+		moved, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
+			MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
+			RelPaths: []string{catalogTombstoneRelPath(params)},
+		})
+		if err != nil {
+			return err
+		}
+		if moved {
 			return nil
 		}
 		return fmt.Errorf("upsert affected %d rows, want one", rows)
@@ -530,8 +538,14 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 		return err
 	}
 
+	// 同じ identity の墓石が原パスか合成パスにあれば、この行は復元済みである。
+	// 同じ asset・store・世代でも、削除を重ねて別パスに墓石が並ぶことがある。
+	// その別パスの墓石は数えず、この P の墓石だけを見る
+	// (TestCatalogRestoreRestoresTwoTombstonesOfOneIdentity)。
+	synthetic := catalogTombstoneRelPath(params)
 	exists, err := q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
 		MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
+		RelPaths: []string{params.RelPath, synthetic},
 	})
 	if err != nil {
 		return err
@@ -550,10 +564,9 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 		return fmt.Errorf("insert affected %d rows, want zero or one", rows)
 	}
 
-	// Older catalogs can contain a tombstone for a path now owned by a different
-	// copy. Preserve that tombstone under a reserved synthetic key; the long single
-	// component cannot name a supported filesystem path or S3 object.
-	params.RelPath = catalogTombstoneRelPath(params)
+	// P が別の行に使われている。合成パスは (asset, 世代, P) で一意なので、ここで
+	// 0 行になるのは並行した復元が先に置いた場合だけである。
+	params.RelPath = synthetic
 	rows, err = q.UpsertMediaAssetCopy(ctx, params)
 	if err != nil {
 		return err
@@ -564,20 +577,16 @@ func upsertCatalogMediaAssetCopy(ctx context.Context, q *sqlcgen.Queries, params
 	if rows != 0 {
 		return fmt.Errorf("insert at reserved path affected %d rows, want zero or one", rows)
 	}
-	exists, err = q.CatalogHasDeletedMediaAssetCopy(ctx, sqlcgen.CatalogHasDeletedMediaAssetCopyParams{
-		MediaAssetID: params.MediaAssetID, Store: params.Store, Generation: params.Generation,
-	})
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
 	return fmt.Errorf("insert at reserved path affected %d rows, want one", rows)
 }
 
-func catalogTombstoneRelPath(params sqlcgen.UpsertMediaAssetCopyParams) string {
-	return strings.Repeat("t", 1025) + fmt.Sprintf("-catalog-%d-%s-%d", params.MediaAssetID, params.Store, params.Generation)
+// catalogTombstoneRelPath は catalog の墓石を、原パス p.RelPath が別の行に使われて
+// いるときに置く合成パスを返す。(asset, 世代, 原パス) から決まるので、同じ墓石は
+// 何度復元しても同じパスになる。長い単一成分なので、ファイルシステムの成分にも
+// S3 のキーにもならない。
+func catalogTombstoneRelPath(p sqlcgen.UpsertMediaAssetCopyParams) string {
+	sum := sha256.Sum256([]byte(p.RelPath))
+	return strings.Repeat("t", 1025) + fmt.Sprintf("-catalog-%d-%d-%x", p.MediaAssetID, p.Generation, sum[:16])
 }
 
 func decodeMediaAssetSHA256(value *string) ([]byte, error) {

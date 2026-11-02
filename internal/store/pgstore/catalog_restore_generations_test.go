@@ -133,9 +133,9 @@ func TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive(t *testing.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	oldCreatedAt := now.Add(-time.Hour)
 	oldDeletedAt := now.Add(-time.Minute)
-	// Simulate a tombstone moved to its reserved migration path. Old catalogs
-	// still carry the original path and must match this row by asset/store/generation.
-	oldCopyID := insertCatalogRestoreCopy(t, pool, assetID, catalogMigrationTombstonePath("1"), "deleted", oldCreatedAt, &oldDeletedAt)
+	// Simulate a tombstone that an earlier restore moved to its synthetic path. The
+	// catalog still carries the original path and must match this row by identity and path.
+	oldCopyID := insertCatalogRestoreCopy(t, pool, assetID, catalogTombstoneRelPath(sqlcgen.UpsertMediaAssetCopyParams{MediaAssetID: assetID, Generation: 0, RelPath: path}), "deleted", oldCreatedAt, &oldDeletedAt)
 	currentCopyID := insertCatalogRestoreCopy(t, pool, assetID, path, "active", now, nil)
 
 	assets := []catalogdoc.MediaAsset{
@@ -205,7 +205,7 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	if err != nil {
 		t.Fatalf("creating historical logical original: %v", err)
 	}
-	insertCatalogRestoreCopy(t, pool, oldAssetID, catalogMigrationTombstonePath("2"), "deleted", oldCreatedAt, &oldDeletedAt)
+	insertCatalogRestoreCopy(t, pool, oldAssetID, catalogTombstoneRelPath(sqlcgen.UpsertMediaAssetCopyParams{MediaAssetID: oldAssetID, Generation: 0, RelPath: path}), "deleted", oldCreatedAt, &oldDeletedAt)
 
 	currentRecordingID := dbtest.Recording(t, pool)
 	currentAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
@@ -394,7 +394,7 @@ func TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath(t *testing.T) 
 	if err != nil {
 		t.Fatalf("creating deleted logical original: %v", err)
 	}
-	insertCatalogRestoreCopy(t, pool, deletedAssetID, catalogMigrationTombstonePath("moved"), "deleted", now.Add(-time.Hour), &deletedAt)
+	insertCatalogRestoreCopy(t, pool, deletedAssetID, catalogTombstoneRelPath(sqlcgen.UpsertMediaAssetCopyParams{MediaAssetID: deletedAssetID, Generation: 0, RelPath: path}), "deleted", now.Add(-time.Hour), &deletedAt)
 
 	currentRecordingID := dbtest.Recording(t, pool)
 	currentAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
@@ -405,7 +405,7 @@ func TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath(t *testing.T) 
 	}
 	currentCopyID := insertCatalogRestoreCopy(t, pool, currentAssetID, path, "active", now, nil)
 
-	// The migration moved the deleted copy's tombstone off this physical path,
+	// An earlier restore moved the deleted copy's tombstone off this physical path,
 	// which a newer copy now owns. An older active catalog row for that identity
 	// must still be ignored rather than aborting the generation or resurrecting it.
 	snapshot := []catalogdoc.MediaAsset{{
@@ -564,6 +564,201 @@ func insertCatalogRestoreCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, r
 	return copyID
 }
 
-func catalogMigrationTombstonePath(id string) string {
-	return strings.Repeat("t", 1025) + "-migration-" + id
+func TestCatalogRestoreRestoresTwoTombstonesOfOneIdentity(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, assetID := createCatalogRestoreOriginal(t, pool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	deletedAt := now.Add(-time.Minute)
+	first, second := "originals/identity-first.ts", "originals/identity-second.ts"
+
+	// One logical original deleted at two paths (a re-registered copy at a renamed
+	// path, then deleted again). Both tombstones are in the catalog.
+	applyCatalogMediaAssets(t, pool, []catalogdoc.MediaAsset{
+		{
+			ID: assetID, RecordingID: recordingID, Kind: "original",
+			RelPath: first, SizeBytes: 100, State: "deleted", DeletedAt: &deletedAt,
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Store: dbtest.StoreName,
+		},
+		{
+			ID: assetID, RecordingID: recordingID, Kind: "original",
+			RelPath: second, SizeBytes: 100, State: "deleted", DeletedAt: &deletedAt,
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Store: dbtest.StoreName,
+		},
+	})
+
+	paths := tombstonePaths(t, pool, assetID)
+	if !containsString(paths, first) || !containsString(paths, second) {
+		t.Fatalf("tombstone paths = %q, want both %q and %q", paths, first, second)
+	}
+}
+
+func TestCatalogRestoreTwoTombstonesOfOneIdentityGetDistinctSyntheticPaths(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID, assetID := createCatalogRestoreOriginal(t, pool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	deletedAt := now.Add(-time.Minute)
+	first, second := "originals/owned-first.ts", "originals/owned-second.ts"
+
+	// Both original paths are owned by live copies of other logical originals.
+	_, ownerOfFirst := createCatalogRestoreOriginal(t, pool)
+	_, ownerOfSecond := createCatalogRestoreOriginal(t, pool)
+	insertCatalogRestoreCopy(t, pool, ownerOfFirst, first, "active", now, nil)
+	insertCatalogRestoreCopy(t, pool, ownerOfSecond, second, "active", now, nil)
+
+	applyCatalogMediaAssets(t, pool, []catalogdoc.MediaAsset{
+		{
+			ID: assetID, RecordingID: recordingID, Kind: "original",
+			RelPath: first, SizeBytes: 100, State: "deleted", DeletedAt: &deletedAt,
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Store: dbtest.StoreName,
+		},
+		{
+			ID: assetID, RecordingID: recordingID, Kind: "original",
+			RelPath: second, SizeBytes: 100, State: "deleted", DeletedAt: &deletedAt,
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Store: dbtest.StoreName,
+		},
+	})
+
+	paths := tombstonePaths(t, pool, assetID)
+	if len(paths) != 2 || paths[0] == paths[1] {
+		t.Fatalf("tombstone paths = %q, want two distinct synthetic paths", paths)
+	}
+	for _, p := range paths {
+		if p == first || p == second || len(p) <= 1024 || strings.Contains(p, "/") {
+			t.Fatalf("tombstone path %q is not a reserved single-component synthetic path", p)
+		}
+	}
+	for _, owner := range []int64{ownerOfFirst, ownerOfSecond} {
+		var state string
+		if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2 AND state <> 'deleted'`, owner, dbtest.StoreName).Scan(&state); err != nil {
+			t.Fatalf("reading live owner %d: %v", owner, err)
+		}
+		if state != "active" {
+			t.Fatalf("live owner %d state = %q, want active", owner, state)
+		}
+	}
+}
+
+func TestCatalogRestoreRerunKeepsOneSyntheticTombstone(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	path := "originals/rerun-conflict.ts"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	deletedAt := now.Add(-time.Minute)
+
+	currentRecordingID, currentAssetID := createCatalogRestoreOriginal(t, pool)
+	currentCopyID := insertCatalogRestoreCopy(t, pool, currentAssetID, path, "active", now, nil)
+	historicalRecordingID, historicalAssetID := createCatalogRestoreOriginal(t, pool)
+
+	assets := []catalogdoc.MediaAsset{
+		{
+			ID: currentAssetID, RecordingID: currentRecordingID, Kind: "original",
+			RelPath: path, SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now, Store: dbtest.StoreName,
+		},
+		{
+			ID: historicalAssetID, RecordingID: historicalRecordingID, Kind: "original",
+			RelPath: path, SizeBytes: 100, State: "deleted", DeletedAt: &deletedAt,
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Store: dbtest.StoreName,
+		},
+	}
+	// The same catalog restored twice: the second run must find the synthetic
+	// tombstone the first run wrote, not add another one or fail.
+	applyCatalogMediaAssets(t, pool, assets)
+	applyCatalogMediaAssets(t, pool, assets)
+
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, currentCopyID).Scan(&state); err != nil {
+		t.Fatalf("reading current path owner: %v", err)
+	}
+	if state != "active" {
+		t.Fatalf("current path owner state = %q, want active", state)
+	}
+	if paths := tombstonePaths(t, pool, historicalAssetID); len(paths) != 1 {
+		t.Fatalf("historical tombstones after two restores = %q, want exactly one", paths)
+	}
+}
+
+func TestCatalogRestoreAcceptsSyntheticTombstonePath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, assetID := createCatalogRestoreOriginal(t, pool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	deletedAt := now.Add(-time.Minute)
+	original := "originals/already-moved.ts"
+	// A catalog exported after an earlier restore lists the tombstone at its synthetic path.
+	synthetic := catalogTombstoneRelPath(sqlcgen.UpsertMediaAssetCopyParams{MediaAssetID: assetID, Generation: 0, RelPath: original})
+
+	applyCatalogMediaAssets(t, pool, []catalogdoc.MediaAsset{{
+		ID: assetID, RecordingID: recordingID, Kind: "original",
+		RelPath: synthetic, SizeBytes: 100, State: "deleted", DeletedAt: &deletedAt,
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Store: dbtest.StoreName,
+	}})
+
+	paths := tombstonePaths(t, pool, assetID)
+	if len(paths) != 1 || paths[0] != synthetic {
+		t.Fatalf("tombstone paths = %q, want the synthetic path %q kept as is", paths, synthetic)
+	}
+}
+
+// createCatalogRestoreOriginal は録画と原本の論理行を 1 組作り、その ID を返す。
+func createCatalogRestoreOriginal(t *testing.T, pool *pgxpool.Pool) (recordingID, assetID int64) {
+	t.Helper()
+	ctx := context.Background()
+	recordingID = dbtest.Recording(t, pool)
+	assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID, Kind: "original", SizeBytes: 100,
+	})
+	if err != nil {
+		t.Fatalf("creating logical original: %v", err)
+	}
+	return recordingID, assetID
+}
+
+// applyCatalogMediaAssets は catalog の media_assets を 1 tx で復元し、コミットする。
+func applyCatalogMediaAssets(t *testing.T, pool *pgxpool.Pool, assets []catalogdoc.MediaAsset) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning catalog restore: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	var restoreResult store.RestoreResult
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil, dbtest.StoreName); err != nil {
+		t.Fatalf("restoring catalog media assets: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("committing catalog restore: %v", err)
+	}
+}
+
+// tombstonePaths は asset の墓石の rel_path を昇順で返す。
+func tombstonePaths(t *testing.T, pool *pgxpool.Pool, assetID int64) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `SELECT rel_path FROM media_asset_copies
+		WHERE media_asset_id = $1 AND store = $2 AND state = 'deleted' ORDER BY rel_path`, assetID, dbtest.StoreName)
+	if err != nil {
+		t.Fatalf("querying tombstones of asset %d: %v", assetID, err)
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatalf("scanning tombstone of asset %d: %v", assetID, err)
+		}
+		paths = append(paths, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading tombstones of asset %d: %v", assetID, err)
+	}
+	return paths
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }

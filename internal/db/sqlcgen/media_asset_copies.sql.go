@@ -76,6 +76,7 @@ SELECT EXISTS (
     WHERE copy.media_asset_id = $1
       AND copy.store = $2
       AND copy.generation = $3
+      AND copy.rel_path = ANY($4::text[])
       AND copy.state = 'deleted'
 )
 `
@@ -84,12 +85,18 @@ type CatalogHasDeletedMediaAssetCopyParams struct {
 	MediaAssetID int64
 	Store        string
 	Generation   int64
+	RelPaths     []string
 }
 
-// Match a tombstone by copy identity, not rel_path: a uniqueness migration can move
-// duplicate tombstones to reserved paths while old catalogs still carry the old path.
+// 墓石の identity 判定。同じ asset・store・世代でも、削除を重ねて別パスに墓石が並ぶことが
+// あるので、rel_paths で原パスと合成パスの 2 つに絞る（catalog restore の判定と同じ 2 つ）。
 func (q *Queries) CatalogHasDeletedMediaAssetCopy(ctx context.Context, arg CatalogHasDeletedMediaAssetCopyParams) (bool, error) {
-	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopy, arg.MediaAssetID, arg.Store, arg.Generation)
+	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopy,
+		arg.MediaAssetID,
+		arg.Store,
+		arg.Generation,
+		arg.RelPaths,
+	)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -109,9 +116,8 @@ type CatalogHasDeletedMediaAssetCopyAtPhysicalPathParams struct {
 	RelPath string
 }
 
-// An active catalog row must not replace a tombstone that still owns its physical path.
-// This lookup is separate from the identity lookup because an older tombstone may have
-// been moved to a reserved path while the original path remains owned by another row.
+// 生きた行が復元されるとき、そのパスに墓石（どの identity でも）があれば置かない。
+// 墓石は (store, rel_path) を予約するので、パスだけで判定する。identity 判定とは別の問い。
 func (q *Queries) CatalogHasDeletedMediaAssetCopyAtPhysicalPath(ctx context.Context, arg CatalogHasDeletedMediaAssetCopyAtPhysicalPathParams) (bool, error) {
 	row := q.db.QueryRow(ctx, catalogHasDeletedMediaAssetCopyAtPhysicalPath, arg.Store, arg.RelPath)
 	var exists bool
