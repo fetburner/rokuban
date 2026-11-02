@@ -287,7 +287,7 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 }
 
 // TestEncodedRelPath_Generation は cut 版のパスが世代ごとに変わることを固定する。
-// **同じパスへ上書きすると、生きている行の rel_path 部分一意索引と衝突し、
+// **同じパスへ上書きすると、(store, rel_path) の一意索引と衝突し、
 // ストレージ契約の「置くのは一回」も破る。**
 func TestEncodedRelPath_Generation(t *testing.T) {
 	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1, true)

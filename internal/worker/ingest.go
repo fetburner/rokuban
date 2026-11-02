@@ -1072,8 +1072,7 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 //
 // WHERE state <> 'deleted' は live owner の事前確認だけに使う。tombstone はここでは
 // 返さないが、commit の全体一意索引が削除済みパスの再利用を拒む
-// (TestMediaAssetCopiesRejectNewRowAtTombstonedPath)。'deleting'
-// （delete_reconcile の
+// (TestMediaAssetCopiesRejectNewRowAtTombstonedPath)。'deleting'（delete_reconcile の
 // unlink 前後の中間状態）はまだ 'deleted' ではない --- unlink 前・unlink
 // 失敗中は実ファイルが残っており、かつ resolveUnqualifiedDeletingAsset が
 // ファイルの現存を確認した上でその行を active に戻しうる

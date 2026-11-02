@@ -82,7 +82,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("recording encode times preserve nullable timestamps", func(t *testing.T) { runRecordingEncodeTimes(t, newFixture) })
 	t.Run("encode notify subject includes purged recordings", func(t *testing.T) { runRecordingNotifySubject(t, newFixture) })
 	t.Run("ingest precheck recognizes committed originals in every state", func(t *testing.T) { runHasOriginalMediaAsset(t, newFixture) })
-	t.Run("live rel_path precheck matches the partial unique index", func(t *testing.T) { runLiveMediaAssetRecordingID(t, newFixture) })
+	t.Run("live rel_path precheck skips tombstones and counts deleting rows", func(t *testing.T) { runLiveMediaAssetRecordingID(t, newFixture) })
 	t.Run("media jobs read active inputs through their contract", func(t *testing.T) { runMediaJobInputs(t, newFixture) })
 	t.Run("encode planning reads asset and request state through its contract", func(t *testing.T) { runMediaEncodePlanning(t, newFixture) })
 	t.Run("encode queue filters desired profiles and attempts", func(t *testing.T) { runEncodeQueue(t, newFixture) })

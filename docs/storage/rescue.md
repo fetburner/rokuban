@@ -186,7 +186,7 @@ flowchart TD
 
 スナップショット後にファイルが消えた asset は、履歴と統計を残して `deleted` として復元し、件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。
 
-以前の catalog 世代に残る tombstone は、現在のパス所有者と衝突することがある。復元は tombstone を `(media_asset_id, store, generation)` で照合する。物理パスが別の copy に割り当て済みなら、実在しない予約キーに tombstone を残し、世代全体の復元を続ける。active の snapshot が同じパスの tombstone に当たった場合は active に戻さない。
+以前の catalog 世代に残る tombstone は、現在のパス所有者と衝突することがある。復元は tombstone を、同じ asset・置き場・世代の墓石が原パスまたは予約キーにあるかで照合する。予約キーは、ファイルシステムの名前や S3 キーより長い 1 成分の rel_path で、asset・世代と原パスのハッシュから決まる。原パスが別のコピーに割り当て済みなら、この予約キーに墓石を残して世代全体の復元を続ける。生きたコピーの snapshot が同じパスの墓石に当たった場合は、active に戻さない。
 
 この排他は、ファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの上書きを防ぐものではないので、復旧中に worker を止める運用要件は続く。共有ストレージでは、全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
 
@@ -199,6 +199,10 @@ flowchart TD
 - 移動済み tombstone の identity でも復活を防ぐこと: `TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath`
 - 旧 catalog の tombstone を移行後のパスから照合すること: `TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive`
 - 衝突する catalog tombstone を保持し、後続資産も復元すること: `TestCatalogRestoreKeepsConflictingTombstoneAndContinuesGeneration`
+- 同じ identity の 2 つの墓石を、両方のパスに復元すること: `TestCatalogRestoreRestoresTwoTombstonesOfOneIdentity`
+- 占有済みの原パスの墓石が、identity ごとに別々の予約キーへ入ること: `TestCatalogRestoreTwoTombstonesOfOneIdentityGetDistinctSyntheticPaths`
+- 同じ catalog を 2 回復元しても予約キーの墓石が 1 行のままであること: `TestCatalogRestoreRerunKeepsOneSyntheticTombstone`
+- 予約キーの形の rel_path を持つ catalog を空の DB へ復元できること: `TestCatalogRestoreAcceptsSyntheticTombstonePath`
 
 </details>
 

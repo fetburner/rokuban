@@ -257,7 +257,7 @@ worker は `StorageObservation` に置き場単位の `storage_sync` と、孤�
 - encode 締切用の nullable 時刻: `TestMediaStoreContract` の `recording encode times preserve nullable timestamps`
 - purged 録画の通知対象: `TestMediaStoreContract` の `encode notify subject includes purged recordings`
 - state を問わない原本の有無: `TestMediaStoreContract` の `ingest precheck recognizes committed originals in every state`
-- 転送前の `rel_path` 確認: `TestMediaStoreContract` の `live rel_path precheck matches the partial unique index`
+- 転送前の `rel_path` 確認: `TestMediaStoreContract` の `live rel_path precheck skips tombstones and counts deleting rows`
 - サムネイル再選択の候補の型付き値: `TestMediaStoreContract` の `thumbnail reselection candidates carry typed timeline and inputs`
 - 名前空間の検査の受理と空の site 成分: `TestMediaStoreContract` の `namespace guard accepts site paths and rejects malformed ones`
 - 接頭辞の無い原本と encoded: `TestMediaStoreContract` の `namespace guard rejects unprefixed originals and encoded files`

@@ -61,7 +61,7 @@ CREATE TABLE missing_media_assets (
 
 `media_asset_copies` の 1 行は物理ファイル 1 つを表す。`generation` はファイルの内容世代で、INSERT 時に書いた後は更新しない。original は 0、派生物は `media_assets.derived_generation` と同じ世代のコピーを現行とする。
 
-同じ論理資産・同じ置き場に世代違いの行が並ぶので、一意の鍵は 2 つある。`(store, rel_path)` は墓石を含めてパスを 1 行に絞り、削除したパスの再利用を防ぐ。古い削除 Work が、同じパスに後から公開されたファイルを unlink しないためである。`(media_asset_id, store, generation) WHERE state <> 'deleted'` は、同じ置き場・同じ世代の生きたコピーを 1 行に絞る。後者が無いと、配信が選ぶコピーが決まらない。削除済みの行は物理コピーの履歴として残し、パスの一意性にも含める。
+同じ論理資産・同じ置き場に世代違いの行が並ぶので、一意の鍵は 2 つある。`(store, rel_path)` は墓石を含めてパスを 1 行に絞り、削除したパスの再利用を防ぐ。古い削除 Work が、同じパスに後から公開されたファイルを unlink しないためである。`(media_asset_id, store, generation) WHERE state <> 'deleted'` は、同じ置き場・同じ世代の生きたコピーを 1 行に絞る。後者が無いと、配信が選ぶコピーが決まらない。後から足すと溜まった違反を掃除する移行が要るので、最初から置く。墓石の `rel_path` は、catalog 復元で原パスが別の行に使われていたときに、予約用の合成パスになることがある。物理パスではない。
 
 配信・一覧・派生物の有無を調べる読み手は `active_media_asset_copies` または `preferred_active_media_asset_copy` を使う。両者は active かつ現行世代のコピーだけを返す。CM 検出と TS 解析は original だけを読むので、世代の述語は要らない。削除・棚卸し・rescue・パス名前空間の検査は古い世代も含む全物理行を読む。
 

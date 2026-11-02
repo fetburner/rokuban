@@ -9,8 +9,8 @@ JOIN media_assets a ON a.id = c.media_asset_id
 JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path = sqlc.arg('rel_path')
   AND c.store = sqlc.arg('store_name')
--- The full unique path index covers tombstones too, so this lookup returns at most one copy
--- (TestMediaAssetCopiesRejectNewRowAtTombstonedPath).
+-- 全件の一意索引は墓石も覆うので、この lookup が返すコピーは高々 1 行である
+-- （TestMediaAssetCopiesRejectNewRowAtTombstonedPath）。
 LIMIT 1;
 
 -- name: UpsertInPlaceRecording :one

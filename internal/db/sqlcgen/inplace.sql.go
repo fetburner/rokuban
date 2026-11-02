@@ -39,8 +39,8 @@ type GetInPlaceAssetByRelPathRow struct {
 
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
 // Bytes are already under storage.media_dir; these queries only publish DB rows.
-// The full unique path index covers tombstones too, so this lookup returns at most one copy
-// (TestMediaAssetCopiesRejectNewRowAtTombstonedPath).
+// 全件の一意索引は墓石も覆うので、この lookup が返すコピーは高々 1 行である
+// （TestMediaAssetCopiesRejectNewRowAtTombstonedPath）。
 func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAssetByRelPathParams) (GetInPlaceAssetByRelPathRow, error) {
 	row := q.db.QueryRow(ctx, getInPlaceAssetByRelPath, arg.RelPath, arg.StoreName)
 	var i GetInPlaceAssetByRelPathRow
