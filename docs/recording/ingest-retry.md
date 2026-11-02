@@ -226,7 +226,7 @@ DB の一意な予約を先に取った取り込みが公開を完了して採�
 
 canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの record 固有 temp へ並行して pull できる。同じ record は DB writer lease で直列化し、失効した writer の progress 更新と commit は fencing する。公開時は rel_path filesystem lock と DB の一意 reservation を使い、同じ canonical path の ingest と通常削除の競合を直列化する。canonical orphan は削除せず、エイジング後に報告する。
 
-各 transaction のコピー INSERT が (store, rel_path) の一意索引を予約する。 tombstone もこの索引で予約されるので、削除済みのパスへの INSERT も同じく失敗する。先に INSERT した transaction が link・親 directory fsync・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
+各 transaction のコピー INSERT が (store, rel_path) の一意索引を予約する。tombstone もこの索引で予約されるので、削除済みのパスへの INSERT も同じく失敗する。先に INSERT した transaction が link・親 directory fsync・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
 
 転送前の判定は安価なヒントにすぎず、転送中は lock を保持しない。最終判断は一意索引と適用時の状態遷移に残る。
 
