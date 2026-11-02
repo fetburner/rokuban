@@ -6,32 +6,42 @@
 
 以下の例では、エッジの site と置き場を `takamatsu`、中央の置き場を `tokyo` と呼ぶ。
 
-1. config（ConfigMap は 1 つ）で両方の FS 置き場を定義する。エッジの置き場には `internal_url` を付ける。原本の規則は、エッジの site の新しい原本をエッジに置き、古くなった原本を中央へ送る。派生物は中央に置く。転送の帯域と転送待ちの上限は、転送元のエッジの置き場に付ける。
+1. config（ConfigMap は 1 つ）で 2 つの FS 置き場と、派生物の S3 置き場を定義する。エッジの置き場には `internal_url` を付ける。原本の規則は、エッジの site の新しい原本をエッジに置き、古くなった原本を中央へ送る。派生物は S3 に置く。転送の帯域と転送待ちの上限は、転送元のエッジの置き場に付ける。
 
    ```yaml
    storage:
      stores:
        tokyo: { kind: fs, root: /mnt/tokyo }
        takamatsu: { kind: fs, root: /mnt/takamatsu, internal_url: "http://rokuban-recording-hls-takamatsu:40773" }
+       s3: { kind: s3, endpoint: "http://minio:9000", bucket: rokuban-derived, region: us-east-1 }
      originals:
        - match: { site: takamatsu, older_than: 30d }
          store: tokyo
        - match: { site: takamatsu }
          store: takamatsu
        - store: tokyo
-     derived: tokyo
+     derived: s3
      transfer:
        bandwidth: { takamatsu: 50Mbps }
        backlog_limit: { takamatsu: 20 }
    ```
 
-2. `server.allowed_hosts` に、`internal_url` のホスト（この例では `rokuban-recording-hls-takamatsu`）を加える。`server.allowed_hosts` が空でないとき、含まない構成は起動時に拒否される。
+   派生物を S3 にする理由は [エッジに置き場を持つ構成](../operations/storage.md#エッジに置き場を持つ構成) に、S3 の資格情報・権限・CORS は [S3 の置き場の運用要件](../operations/storage.md#s3-の置き場の運用要件) にある。
+
+   既存の環境で派生物の置き場を FS から S3 に変えると、既存の派生物のコピーを、その FS 置き場の転送 worker が S3 へ送る。この転送は、`storage.transfer.bandwidth` にその FS 置き場を書かない限り絞られない。
+2. `server.allowed_hosts` に、`internal_url` のホスト（この例では `rokuban-recording-hls-takamatsu`）を加える。`server.allowed_hosts` が空でないとき、含まない構成は起動時に拒否される。`storage.accel_location` は空のままにする。ConfigMap は 1 つなので、値を入れると置き場の streamer も X-Accel-Redirect を返す。転送の worker はその応答を拒むので、転送が失敗する。
 3. エッジの置き場の Pod を [deploy/k8s/store](../../deploy/k8s/store) で配る。その Service を、VPN の外から届かないようにする。エッジの worker には `--stores takamatsu` を渡す。
 4. 置き場の目印を作って採用する（[setup.md](setup.md) §置き場の目印）。
 5. 次の 3 つを確かめる。
    - `rokuban_storage_transfer_waiting_assets` が減る。
    - `rokuban_storage_transfer_last_success_timestamp_seconds` が進む。
    - 転送の実測レートが `bandwidth` の上限の下に収まる。アプリは実測レートを出さないので、網の計測で見る。
+
+   この例の規則は `older_than: 30d` で、30 日を過ぎたエッジの原本だけを中央へ送る。新しく置く環境では、30 日を過ぎた原本が出るまで原本の転送は起きない。
+
+   既存の環境では、導入前から tokyo にある 30 日未満の高松の原本が、`rokuban_storage_transfer_waiting_assets` に数えられる。これらはエッジへ送られず、失敗にも数えられない。30 日を過ぎると件数から消える。30 日を過ぎるまでは、件数が減るかどうかでは転送の進みを確かめられない。
+
+   手順 1 の派生物のコピーの転送は、これとは別に起きる。
 
 > **注意**: 規則がエッジを置き場にしている間と、転送が終わるまでは、エッジの置き場が原本の唯一のコピーである。この例では、30 日未満の高松の原本は desired が `takamatsu` なので、転送の候補にならない。`rokuban_storage_transfer_waiting_assets` が 0 でも、そのコピーはエッジにしか無い。エッジのディスクを交換・初期化する前に、エッジにしかコピーが無い資産が残っていないかを、次のクエリで確かめる。メトリクスにはこの件数を出すものが無い。
 
