@@ -280,7 +280,11 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 ### エッジに置き場を持つ構成
 
-録画の原本と、エッジで作る派生物は、まずエッジの置き場に入る。中央の転送ワーカーが、エッジの置き場の内部 URL から HTTP の Range で読み、desired の置き場へ書く。派生物の置き場が S3 なら、エッジのワーカーが S3 へ直接書く。
+録画の原本は、まずエッジの置き場に入る。中央の転送ワーカーが、エッジの置き場の内部 URL から HTTP の Range で原本を読み、desired の置き場へ書く。
+
+派生物の置き場は S3 にする。FS にすると、派生物を書くワーカーは全部その置き場をマウントする必要がある。エッジの encode と thumbnail のワーカーは置き場を 1 つだけマウントするので、起動を拒まれる。内部 URL で読めるのは原本だけなので、中央のワーカーはエッジの派生物を読めない。
+
+エッジで作る派生物は、エッジの encode と thumbnail のワーカーが S3 へ直接書く。エッジの置き場に残った派生物のコピーは、エッジの置き場の転送ワーカーが S3 へ直接送る。
 
 規則がエッジを置き場にしている間と、転送が終わるまでは、エッジのコピーが原本の唯一のコピーである。desired がエッジの原本は転送の候補にならないので、`rokuban_storage_transfer_waiting_assets` が 0 でも唯一のコピーのままである。その間にエッジのディスクを失うと、その原本は戻らない。エッジにしかコピーが無い資産の確かめ方は [エッジに置き場を持つ構成の導入](../runbook/edge-store.md) の注意にある。
 
@@ -289,6 +293,21 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 `storage.transfer.bandwidth` が絞るのは転送の読みだけである。ジョブキューに帯域の制御が無いので、アプリ内の reader で絞る。ライブ視聴、HLS、エッジの encode が S3 へ直接書く PUT は対象に入らない。転送ワーカーが S3 へ書く Put は、転送の帯域の上限の下で流れる。回線全体を守るなら、網の層で絞る。
 
 転送が遅れて転送待ちが溜まると、その置き場の原本を読む encode が止まる。その上限は `storage.transfer.backlog_limit` で置き場ごとに決める（[設定キー](../configuration/keys.md)）。止まっているかは `rokuban_encode_backpressure{store}` で見る（[監視](monitoring-transfer.md)）。
+
+<details><summary>根拠</summary>
+
+- encode と thumbnail のキューを引くワーカーは、FS の派生物の置き場をマウントしていないと起動を拒むこと: `TestValidateStoreBinding`（`cmd/rokuban/stores_test.go`）
+- 内部 URL で読めるのは原本だけで、派生物の転送元はマウントした置き場に限ること: `TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted`
+- `internal_url` の streamer が X-Accel-Redirect を返すと、転送ワーカーがその応答を拒むこと: `TestStorageTransferWorkerRejectsAccelRedirectAnswer`
+- 宛先が S3 の派生物は、転送元の FS 置き場の転送キューへ積むこと: `TestStorageTransferReconcileRoutesS3CopiesToSourceQueue`
+- 転送の読みは、`storage.transfer.bandwidth` に転送元の置き場を書かない限り絞られないこと: `TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore`
+- 既存の環境で、tokyo にある 30 日未満の高松の原本が待ちの件数に数えられ、エッジへは送られないこと: テストは無く未検証で、次のコードを読んで確かめた。
+  - 判定: `internal/db/migrations/00050_storage_transfer_s3_target.sql` の `storage_transfer_candidate`。desired にコピーが無く、FS 置き場のどれかにコピーがある資産が候補になる。
+  - 件数: `internal/db/queries/storage_transfer.sql` の `CountMediaAssetTransferCandidates`。
+  - 転送元: `internal/worker/storage_transfer_source.go` の `transferSourceStores`。マウントしている置き場と、`internal_url` を持つ置き場に限られる。
+  - エッジのワーカーは tokyo をマウントしない。導入手順の例の config では、tokyo に `internal_url` が無い。そのため `PrepareMediaAssetTransfer` は何も予約しない。
+
+</details>
 
 ### disaster recovery（catalog + rescue）
 
