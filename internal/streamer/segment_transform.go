@@ -141,13 +141,17 @@ type segmentTransformTask struct {
 	pauseReason   transformPauseReason
 	stopping      bool
 	finished      bool
-	cmd           *exec.Cmd
-	wait          chan error
-	done          chan struct{}
-	stop          chan struct{}
-	workDir       string
-	stderr        *tailBuffer
-	waiters       map[SegmentKey][]*segmentTransformWaiter
+	// starting は、起動処理（launchTask）がまだ cmd を入れていない間だけ true。cmd は nil である。
+	starting bool
+	// cancelStart は、起動処理の入力を開く ctx（m.ctx 由来）を止める。起動中に止めるときに呼ぶ。
+	cancelStart context.CancelFunc
+	cmd         *exec.Cmd
+	wait        chan error
+	done        chan struct{}
+	stop        chan struct{}
+	workDir     string
+	stderr      *tailBuffer
+	waiters     map[SegmentKey][]*segmentTransformWaiter
 }
 
 // SegmentTransformOptions は、メモリ上のキャッシュと ffmpeg の同時実行を設定する。
@@ -368,12 +372,14 @@ func (m *SegmentManager) getOnce(
 				return nil, false, errSegmentManagerClosed
 			}
 		}
-		newTask, err := m.startTaskLocked(ctx, group, profile, input, key, waiter)
+		newTask, args, startCtx, err := m.startTaskLocked(group, profile, input, key, waiter)
 		if err != nil {
 			m.mu.Unlock()
 			return nil, false, err
 		}
 		task = newTask
+		m.mu.Unlock()
+		go m.launchTask(task, startCtx, args)
 	} else {
 		task.waiters[key] = append(task.waiters[key], waiter)
 		if err := m.touchTaskLocked(task, key.Number); err != nil {
@@ -381,8 +387,8 @@ func (m *SegmentManager) getOnce(
 			m.mu.Unlock()
 			return nil, false, err
 		}
+		m.mu.Unlock()
 	}
-	m.mu.Unlock()
 
 	select {
 	case result := <-waiter.ch:
@@ -538,6 +544,11 @@ func (m *SegmentManager) stopTaskLocked(task *segmentTransformTask) {
 	if task.stop != nil {
 		close(task.stop)
 	}
+	if task.cmd == nil {
+		// 起動中はまだ子がいない。入力の open を止めれば launchTask が片付ける。
+		task.cancelStart()
+		return
+	}
 	_ = task.cmd.Process.Kill()
 }
 
@@ -546,49 +557,31 @@ func (m *SegmentManager) signalCapacityLocked() {
 	m.capacityCh = make(chan struct{})
 }
 
+// startTaskLocked は、番号 key.Number を待つ起動中の変換を予約して m.tasks に入れ、
+// launchTask に渡す引数と起動用の ctx を返す。ロックの中で行うのは ID・作業ディレクトリ・
+// ffmpeg の引数の決定と、タスクの登録だけである。MkdirAll・OpenFile・cmd.Start は
+// ロックの外の launchTask で行う（呼び出し側はロックを外してから go m.launchTask する）。
+// 引数の構築に失敗したときは何も登録せずエラーを返す。
+// waiter は最初の相乗り相手として登録される。同じ位置への後続の Get は、起動中の変換にも waiter として
+// 相乗りする。
 func (m *SegmentManager) startTaskLocked(
-	ctx context.Context,
 	group segmentTransformGroup,
 	profile LiveProfile,
 	input SegmentTransformInput,
 	key SegmentKey,
 	waiter *segmentTransformWaiter,
-) (*segmentTransformTask, error) {
+) (*segmentTransformTask, []string, context.Context, error) {
 	startNumber := key.Number
 	if startNumber > 0 {
 		startNumber--
 	}
 	id := m.nextTaskID.Add(1)
 	workDir := filepath.Join(m.root, "work", strconv.FormatUint(id, 10))
-	if err := os.MkdirAll(filepath.Join(workDir, "segments"), 0o750); err != nil {
-		return nil, fmt.Errorf("creating transform scratch: %w", err)
-	}
 	args, err := buildSegmentTransformArgs(m.cfg, profile, input, startNumber, workDir)
 	if err != nil {
-		_ = os.RemoveAll(workDir)
-		return nil, err
+		return nil, nil, nil, err
 	}
-	file, err := input.OpenFile(ctx)
-	if err != nil {
-		_ = os.RemoveAll(workDir)
-		return nil, fmt.Errorf("opening segment transform input: %w", err)
-	}
-	if file == nil {
-		_ = os.RemoveAll(workDir)
-		return nil, errors.New("segment transform input opener returned a nil file")
-	}
-	stderr := &tailBuffer{limit: 16 * 1024}
-	cmd := exec.Command(m.cfg.FFmpeg, args...)
-	cmd.ExtraFiles = []*os.File{file}
-	cmd.Stdout = io.Discard
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		_ = file.Close()
-		_ = os.RemoveAll(workDir)
-		return nil, fmt.Errorf("starting segment ffmpeg: %w", err)
-	}
-	_ = file.Close()
-
+	startCtx, cancelStart := context.WithCancel(m.ctx)
 	task := &segmentTransformTask{
 		group:         group,
 		profile:       profile,
@@ -598,23 +591,96 @@ func (m *SegmentManager) startTaskLocked(
 		currentNumber: startNumber,
 		maxRequested:  key.Number,
 		lastDemand:    time.Now(),
-		cmd:           cmd,
+		starting:      true,
+		cancelStart:   cancelStart,
 		wait:          make(chan error, 1),
 		done:          make(chan struct{}),
 		stop:          make(chan struct{}),
 		workDir:       workDir,
-		stderr:        stderr,
+		stderr:        &tailBuffer{limit: 16 * 1024},
 		waiters:       map[SegmentKey][]*segmentTransformWaiter{key: {waiter}},
 	}
 	if m.tasks[group] == nil {
 		m.tasks[group] = make(map[*segmentTransformTask]struct{})
 	}
 	m.tasks[group][task] = struct{}{}
-	go func() {
-		task.wait <- cmd.Wait()
-	}()
-	go m.watch(task)
-	return task, nil
+	return task, args, startCtx, nil
+}
+
+// launchTask は startTaskLocked で予約した変換を起動する。ロックの外で作業ディレクトリと入力を
+// 用意し、cmd.Start だけをロックの中で行う。Start をロックの外に出さないのは、停止と Close の確認と
+// Start を 1 つのロック区間にまとめるためである。こうすると、Start の直後に停止が来て kill が
+// 届かない窓ができない。fork/exec の所要時間は未計測であり、ロックを持つ時間はそれに従う。
+//
+// 成功したら task.cmd を入れ、watch を起動する。失敗・停止・Close のときは、ロックの中で
+// 残りの waiter を外して登録を消し、そのエラーを決める。ロックの外で入力を閉じ、startCtx を止め、
+// waiter に結果を渡し、作業ディレクトリを消してから done を閉じる。Close は done を待つので、
+// この片付けが終わるまで戻らない。
+//
+// 片付けの経路は次のとおり。
+//   - 失敗（MkdirAll・OpenFile・Start）: 開いた入力を閉じ、waiter 全員に文脈付きのエラーを返す。
+//   - 停止（StopRecording や容量のための停止、waiter の全員離脱）: stopTaskLocked が startCtx を止めて
+//     OpenFile を中断させる。開けていた場合もここで閉じる。waiter には errSegmentTransformStopped を返す。
+//   - Close: 起動中の子はまだ無いので kill せず、m.ctx の取り消しで OpenFile を中断させる。
+//     Start は m.closed を見てから行うので、Close 後に子が生まれることはない。waiter には errSegmentManagerClosed を返す。
+func (m *SegmentManager) launchTask(task *segmentTransformTask, startCtx context.Context, args []string) {
+	file, err := m.openTaskInput(task, startCtx)
+	m.mu.Lock()
+	if err == nil && !task.stopping && !m.closed {
+		cmd := exec.Command(m.cfg.FFmpeg, args...)
+		cmd.ExtraFiles = []*os.File{file}
+		cmd.Stdout = io.Discard
+		cmd.Stderr = task.stderr
+		if err = cmd.Start(); err == nil {
+			task.cmd = cmd
+			task.starting = false
+			m.mu.Unlock()
+			_ = file.Close()
+			task.cancelStart()
+			go func() {
+				task.wait <- cmd.Wait()
+			}()
+			go m.watch(task)
+			return
+		}
+		err = fmt.Errorf("starting segment ffmpeg: %w", err)
+	}
+	var waiterErr error
+	switch {
+	case m.closed:
+		waiterErr = errSegmentManagerClosed
+	case task.stopping:
+		waiterErr = errSegmentTransformStopped
+	default:
+		waiterErr = err
+	}
+	waiters := m.retireTaskLocked(task)
+	m.mu.Unlock()
+
+	if file != nil {
+		_ = file.Close()
+	}
+	task.cancelStart()
+	for _, waiter := range waiters {
+		m.deliver(waiter, segmentTransformResult{err: waiterErr})
+	}
+	_ = os.RemoveAll(task.workDir)
+	close(task.done)
+}
+
+// openTaskInput は変換の作業ディレクトリを作り、入力を開く。どちらも launchTask からロックの外で呼ぶ。
+func (m *SegmentManager) openTaskInput(task *segmentTransformTask, startCtx context.Context) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Join(task.workDir, "segments"), 0o750); err != nil {
+		return nil, fmt.Errorf("creating transform scratch: %w", err)
+	}
+	file, err := task.input.OpenFile(startCtx)
+	if err != nil {
+		return nil, fmt.Errorf("opening segment transform input: %w", err)
+	}
+	if file == nil {
+		return nil, errors.New("segment transform input opener returned a nil file")
+	}
+	return file, nil
 }
 
 // touchTaskLocked は、number が要求されたことを変換に伝える。
@@ -697,6 +763,10 @@ func (m *SegmentManager) removeWaiterLocked(task *segmentTransformTask, key Segm
 			if len(task.waiters[key]) == 0 {
 				delete(task.waiters, key)
 				if len(task.waiters) == 0 {
+					if task.starting {
+						// 起動中に全員が離れたら、起動をやめる。launchTask が片付ける。
+						m.stopTaskLocked(task)
+					}
 					m.signalCapacityLocked()
 				}
 			}
@@ -1033,12 +1103,9 @@ func (m *SegmentManager) maybeStopIdleTask(task *segmentTransformTask) {
 	m.stopTaskLocked(task)
 }
 
-func (m *SegmentManager) finishTask(task *segmentTransformTask, processErr error) {
-	m.mu.Lock()
-	if task.finished {
-		m.mu.Unlock()
-		return
-	}
+// retireTaskLocked は変換を終わったものとして m.tasks から外し、まだ残っている waiter を返す。
+// 呼び出し側はロックを持ったまま呼び、結果は waiter へロックの外で渡す。
+func (m *SegmentManager) retireTaskLocked(task *segmentTransformTask) []*segmentTransformWaiter {
 	task.finished = true
 	task.pauseReason = transformRunning
 	if groupTasks := m.tasks[task.group]; groupTasks != nil {
@@ -1053,6 +1120,16 @@ func (m *SegmentManager) finishTask(task *segmentTransformTask, processErr error
 	}
 	task.waiters = make(map[SegmentKey][]*segmentTransformWaiter)
 	m.signalCapacityLocked()
+	return waiters
+}
+
+func (m *SegmentManager) finishTask(task *segmentTransformTask, processErr error) {
+	m.mu.Lock()
+	if task.finished {
+		m.mu.Unlock()
+		return
+	}
+	waiters := m.retireTaskLocked(task)
 	m.mu.Unlock()
 
 	var waiterErr error
