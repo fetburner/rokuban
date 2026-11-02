@@ -894,21 +894,26 @@ func (w *StorageTransferWorker) putDerivedMain(
 	if !mainCreated {
 		return digest, size, false, nil
 	}
-	pending, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, transfer.RelPath)
+	ownership, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, transfer.RelPath)
 	if err != nil {
-		cleanupErr := targetStore.Delete(ctx, transfer.RelPath)
-		return digest, size, true, w.recordTransferFailure(ctx, transfer, log, errors.Join(
-			fmt.Errorf("recording ownership of derived transfer destination: %w", err), cleanupErr,
-		))
+		// 所有記録を書けなかったキーは消さない。未記録のまま残り、同じコピーの次の試行が内容一致で採用する。
+		return digest, size, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("recording ownership of derived transfer destination: %w", err))
 	}
-	if !pending {
+	switch ownership {
+	case store.TransferObjectOwned:
+		owned[transfer.RelPath] = struct{}{}
+		return digest, size, false, nil
+	case store.TransferObjectCopyRetired:
 		if err := targetStore.Delete(ctx, transfer.RelPath); err != nil {
 			return digest, size, true, fmt.Errorf("removing destination created after transfer was retired: %w", err)
 		}
 		return digest, size, true, nil
+	case store.TransferObjectCopyAdvanced:
+		// 別の試行が完了済みで、このキーはそのコピーの実体なので消さない。
+		return digest, size, true, nil
+	default:
+		return digest, size, true, fmt.Errorf("unknown ownership result %d for derived transfer destination %q", ownership, transfer.RelPath)
 	}
-	owned[transfer.RelPath] = struct{}{}
-	return digest, size, false, nil
 }
 
 // putDerivedResumable は、SHA-256 が既知の派生物の本体を再開できるアップロードで宛先に公開する。
@@ -1138,21 +1143,26 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 	if !subtitleCreated {
 		return true, nil
 	}
-	pending, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, subtitleKey)
+	ownership, err := w.Storage.MarkMediaAssetTransferObjectOwned(ctx, transfer.CopyID, args.Store, subtitleKey)
 	if err != nil {
-		cleanupErr := targetStore.Delete(ctx, subtitleKey)
-		return false, w.recordTransferFailure(ctx, transfer, log, errors.Join(
-			fmt.Errorf("recording ownership of transferred subtitle: %w", err), cleanupErr,
-		))
+		// 所有記録を書けなかった字幕は消さない。未記録のまま残り、同じコピーの次の試行が内容一致で採用する。
+		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("recording ownership of transferred subtitle: %w", err))
 	}
-	if !pending {
+	switch ownership {
+	case store.TransferObjectOwned:
+		owned[subtitleKey] = struct{}{}
+		return true, nil
+	case store.TransferObjectCopyRetired:
 		if err := targetStore.Delete(ctx, subtitleKey); err != nil {
 			return false, fmt.Errorf("removing subtitle created after transfer was retired: %w", err)
 		}
 		return false, nil
+	case store.TransferObjectCopyAdvanced:
+		// 別の試行が完了済みで、この字幕はそのコピーの実体なので消さない。
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown ownership result %d for transferred subtitle %q", ownership, subtitleKey)
 	}
-	owned[subtitleKey] = struct{}{}
-	return true, nil
 }
 
 func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, objects objstore.Store, sourceStoreName, key string, scratchDir func() (string, error), expectedSize int64, expectedSHA []byte) (string, []byte, int64, error) {

@@ -12,6 +12,24 @@ import (
 // 保存や世代の上げ直しがこれを返したら、呼び出し側は進捗に触れずに止まる。
 var ErrTransferLeaseLost = errors.New("transfer progress lease lost")
 
+// TransferObjectOwnership は MarkMediaAssetTransferObjectOwned の結果を表す。
+//
+// pending でないときに作ったキーを消してよいのは、コピーが退役したときだけである。
+// 別の試行が同じコピーを active にしたなら、そのキーは公開済みのコピーの実体なので消してはならない。
+// この 2 つを bool にまとめると、呼び出し側が区別できず、どちらの場合も消してしまう。
+type TransferObjectOwnership int
+
+const (
+	// TransferObjectOwned は、コピーが pending のまま所有を記録したことを表す。
+	TransferObjectOwned TransferObjectOwnership = iota + 1
+	// TransferObjectCopyRetired は、コピーが deleted か行が無いことを表す。
+	// rel_path は copy token を含み再利用されないので、今回作ったキーは消してよい。
+	TransferObjectCopyRetired
+	// TransferObjectCopyAdvanced は、コピーが pending でも deleted でもないことを表す（別の試行が active にした、または削除中）。
+	// キーはそのコピーの実体なので消してはならない。
+	TransferObjectCopyAdvanced
+)
+
 // TransferProgress は、転送の slice の開始時に取った進捗の状態である。
 type TransferProgress struct {
 	// Generation は、この試行が書く temp の世代である。
@@ -174,7 +192,8 @@ type StorageTransfer interface {
 	// RecordMediaAssetTransferFailure は転送失敗を記録する。
 	RecordMediaAssetTransferFailure(ctx context.Context, copyID int64, message string) error
 	// MarkMediaAssetTransferObjectOwned は、pending 転送が新規作成した destination key を記録する。
-	MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (pending bool, err error)
+	// pending でなかったときの区別は TransferObjectOwnership を参照（キーを消してよいのは退役時だけ）。
+	MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (TransferObjectOwnership, error)
 	// ListMediaAssetTransferObjectsOwned は、pending 転送が新規作成した destination key を返す。
 	ListMediaAssetTransferObjectsOwned(ctx context.Context, copyID int64, storeName string) ([]string, error)
 	// DeleteMediaAssetTransferObjectOwned は、pending 転送が不要になった owned key の記録を消す。

@@ -100,7 +100,7 @@ FS の staging は、書かれないまま mtime 猶予と aging を過ぎると
 
 commit が拒否されたとき、原本ではこの転送の temp と同じ inode の宛先を消し、派生物では所有記録のあるキーだけを消す。派生物の字幕 sidecar は本体より先に消し、sidecar の削除に失敗したら本体と pending 行を残して次回に再試行する。拒否は世代や規則の変化、または記録済みの SHA-256 との不一致で起きる。派生物は Put 成功後に所有記録を commit するため、その間にプロセスが落ちたキーは未記録のまま残り、回収では他の書き手のキーと区別できないので消さない。
 
-採用する宛先が、この転送の temp と同じ inode なら、採用と同時に temp を片付ける。inode が違う宛先は他の書き手が置いたものなので、temp に触れない。同じ pending 行を別の worker が先に active にしたときは、そのコピーを完了済みとして扱い、公開済みの宛先と sidecar を消さない。
+採用する宛先が、この転送の temp と同じ inode なら、採用と同時に temp を片付ける。inode が違う宛先は他の書き手が置いたものなので、temp に触れない。所有記録の commit が pending でなかったときは、コピーの状態で分ける。コピーが deleted（または行が無い）なら、この試行が作ったキーを消す。rel_path は copy token を含み再利用されないので、そのキーは退役したコピーのものだと言える。active や deleting なら、キーはそのコピーの実体なので消さない。別の worker が先に active にした場合もここに入る。所有記録の書き込みがエラーになったときも消さず、未記録のまま残す。同じコピーの次の試行が、内容一致でそれを採用する。
 
 encoded の隣接 `.vtt` は、本体のキーを作った後、コピーを active にする前に、宛先のキーへ作る。転送元に sidecar が無いときは、この転送が作った（所有記録のある）宛先の sidecar だけを消し、所有記録のない sidecar は残す。字幕は独立した `media_assets` 行ではないので、動画のコピー状態を commit する前に sidecar を揃える。字幕は小さいので、slice にせず従来どおり scratch に複製してから置く。
 
@@ -153,6 +153,12 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 古い世代の temp は回収し、今の世代の temp と猶予内の進捗の無い temp は残す: `TestTransferTempOrphanCleanupFollowsProgressGeneration`
 - temp 名の旧形式と新形式の判定: `TestParseStorageTransferTempFile`
 - 記録済みの SHA-256 を上書きしない: `TestCompleteMediaAssetTransferRejectsChangedSHA`
+- 別の試行が先に active にしたコピーの本体のキーは、遅れた試行が消さない: `TestStorageTransferWorkerKeepsDerivedMainWhenAnotherAttemptActivatedCopy`
+- 所有記録の時点でコピーが deleted なら、今回作った本体のキーを消す: `TestStorageTransferWorkerRemovesDerivedMainWhenCopyRetiredBeforeOwnership`
+- 所有記録の書き込みがエラーでも本体のキーを消さず、次の試行が内容一致で採用する: `TestStorageTransferWorkerKeepsDerivedMainWhenOwnershipRecordFails`
+- 別の試行が active にしたコピーの字幕は、遅れた試行が消さない: `TestStorageTransferWorkerKeepsDerivedSubtitleWhenAnotherAttemptActivatedCopy`
+- 所有記録の時点でコピーが deleted なら、今回作った字幕を消す: `TestStorageTransferWorkerRemovesDerivedSubtitleWhenCopyRetiredBeforeOwnership`
+- 所有記録の書き込みがエラーでも字幕 sidecar を消さず、次の試行が内容一致で採用する: `TestStorageTransferWorkerKeepsDerivedSubtitleWhenOwnershipRecordFails`
 - 内容の違う既存の sidecar の衝突、source に sidecar が無いときは所有記録のある sidecar だけを消す: `TestStorageTransferWorkerEncodedSubtitleKeys`
 - SHA-256 が既知の派生物を scratch に複製せず、再開できる送信で送る: `TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch`
 - 宣言サイズや SHA-256 と違う転送元は何も公開せず、転送元の不一致にする: `TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing`

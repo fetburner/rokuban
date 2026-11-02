@@ -409,8 +409,8 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 				}
 			}
 			if tc.targetOwned {
-				if pending, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", targetSubtitleRelPath); err != nil || !pending {
-					t.Fatalf("recording subtitle ownership = (%t, %v)", pending, err)
+				if ownership, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", targetSubtitleRelPath); err != nil || ownership != store.TransferObjectOwned {
+					t.Fatalf("recording subtitle ownership = (%d, %v)", ownership, err)
 				}
 			}
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
@@ -535,9 +535,9 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 		if err := objects["archive"].Put(context.Background(), object.key, bytes.NewReader(object.content), int64(len(object.content)), sum, object.contentType); err != nil {
 			t.Fatalf("putting owned pending transfer object %q: %v", object.key, err)
 		}
-		owned, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", object.key)
-		if err != nil || !owned {
-			t.Fatalf("recording ownership of pending transfer object %q = (%t, %v)", object.key, owned, err)
+		ownership, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", object.key)
+		if err != nil || ownership != store.TransferObjectOwned {
+			t.Fatalf("recording ownership of pending transfer object %q = (%d, %v)", object.key, ownership, err)
 		}
 	}
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
@@ -701,9 +701,9 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	if err := uploadObjectFile(context.Background(), objects["archive"], targetRelPath, filepath.Join(roots["test-store"], filepath.FromSlash(relPath)), int64(len(video)), sha256.Sum256(video), objectContentType(targetRelPath)); err != nil {
 		t.Fatalf("putting pending derived destination: %v", err)
 	}
-	owned, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", targetRelPath)
-	if err != nil || !owned {
-		t.Fatalf("recording pending destination ownership = (%t, %v), want owned", owned, err)
+	ownership, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", targetRelPath)
+	if err != nil || ownership != store.TransferObjectOwned {
+		t.Fatalf("recording pending destination ownership = (%d, %v), want owned", ownership, err)
 	}
 	subtitleRelPath, err := mediapath.SubtitleSibling(targetRelPath)
 	if err != nil {
@@ -716,9 +716,9 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("making subtitle removal fail: %v", err)
 	}
-	owned, err = media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", subtitleRelPath)
-	if err != nil || !owned {
-		t.Fatalf("recording pending subtitle ownership = (%t, %v), want owned", owned, err)
+	ownership, err = media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", subtitleRelPath)
+	if err != nil || ownership != store.TransferObjectOwned {
+		t.Fatalf("recording pending subtitle ownership = (%d, %v), want owned", ownership, err)
 	}
 	deleteConfig := transferTestConfig("test-store", "archive", "test-store")
 	worker := DeleteReconcileWorker{

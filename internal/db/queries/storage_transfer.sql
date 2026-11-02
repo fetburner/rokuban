@@ -394,6 +394,9 @@ WHERE c.store = sqlc.arg('store_name')
 ORDER BY c.id
 LIMIT sqlc.arg('row_limit');
 
+-- name: GetMediaAssetTransferCopyState :one
+SELECT state FROM media_asset_copies WHERE id = sqlc.arg('copy_id') AND store = sqlc.arg('store_name');
+
 -- Lock the recording, logical asset, and copy together while rechecking the pending reservation.
 -- name: LockPendingMediaAssetTransferCopy :one
 SELECT c.id

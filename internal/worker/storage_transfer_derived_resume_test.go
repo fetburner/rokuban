@@ -31,12 +31,14 @@ import (
 // 埋め込みで Store / Reader / RangeReader / Resumable を全部委譲するので、worker は本物と同じ経路を通る。
 type fakeResumableStore struct {
 	*fsstore.Store
-	getOffsets    []int64     // GetFrom が呼ばれた offset の列
-	beforeGetFrom func()      // GetFrom の最初に呼ぶ。テストが読みの途中で論理資産の世代を変えるのに使う。
-	completeErr   []error     // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
-	abortResult   []fakeAbort // AbortUpload が先頭から返す。尽きたら本物。
-	abortCalls    int         // AbortUpload が呼ばれた回数
-	beforeAbort   func()      // AbortUpload の最初に呼ぶ。テストが掃除の途中で締切を切るのに使う。
+	getOffsets    []int64          // GetFrom が呼ばれた offset の列
+	beforeGetFrom func()           // GetFrom の最初に呼ぶ。テストが読みの途中で論理資産の世代を変えるのに使う。
+	completeErr   []error          // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
+	abortResult   []fakeAbort      // AbortUpload が先頭から返す。尽きたら本物。
+	abortCalls    int              // AbortUpload が呼ばれた回数
+	beforeAbort   func()           // AbortUpload の最初に呼ぶ。テストが掃除の途中で締切を切るのに使う。
+	afterComplete func()           // CompleteUpload が本物で成功した後に呼ぶ。別の試行が同じコピーを先に完了した状態を作るのに使う。
+	afterPut      func(key string) // Put が本物で成功した後に key で呼ぶ。
 	// lastAbortDeadline は直近の AbortUpload に渡された ctx の締切（無ければ零値）。
 	lastAbortDeadline time.Time
 }
@@ -62,7 +64,23 @@ func (s *fakeResumableStore) CompleteUpload(ctx context.Context, state []byte) e
 			return err
 		}
 	}
-	return s.Store.CompleteUpload(ctx, state)
+	if err := s.Store.CompleteUpload(ctx, state); err != nil {
+		return err
+	}
+	if s.afterComplete != nil {
+		s.afterComplete()
+	}
+	return nil
+}
+
+func (s *fakeResumableStore) Put(ctx context.Context, key string, src io.Reader, size int64, sha256 [32]byte, contentType string) error {
+	if err := s.Store.Put(ctx, key, src, size, sha256, contentType); err != nil {
+		return err
+	}
+	if s.afterPut != nil {
+		s.afterPut(key)
+	}
+	return nil
 }
 
 func (s *fakeResumableStore) AbortUpload(ctx context.Context, state []byte) (bool, error) {
@@ -519,4 +537,181 @@ func TestStorageTransferWorkerRestartsAfterSourceLengthMismatch(t *testing.T) {
 	}
 	f.driveToEnd(t)
 	f.assertPublished(t)
+}
+
+// markFailStore は StorageTransfer を包み、fail に当たる relPath の所有記録だけをエラーにする。
+type markFailStore struct {
+	store.StorageTransfer
+	fail func(relPath string) bool
+}
+
+func (s markFailStore) MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (store.TransferObjectOwnership, error) {
+	if s.fail(relPath) {
+		return 0, errors.New("injected ownership record failure")
+	}
+	return s.StorageTransfer.MarkMediaAssetTransferObjectOwned(ctx, copyID, storeName, relPath)
+}
+
+// driveToDone は Work を繰り返し、slice の snooze を越えて Work が nil を返すまで進める。コピーの状態は見ない。
+func (f derivedResumeFixture) driveToDone(t *testing.T) {
+	t.Helper()
+	for range 300 {
+		err := f.work(t)
+		if err == nil {
+			return
+		}
+		requireSliceSnooze(t, err, "driving the transfer to the end")
+	}
+	t.Fatal("transfer did not finish in 300 Work calls")
+}
+
+// copyRelPath は、宛先コピーの rel_path（今回のアップロードのキー）を返す。
+func (f derivedResumeFixture) copyRelPath(t *testing.T) string {
+	t.Helper()
+	var relPath string
+	if err := f.pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies WHERE id = $1`, f.copyID(t)).Scan(&relPath); err != nil {
+		t.Fatalf("reading copy rel_path: %v", err)
+	}
+	return relPath
+}
+
+// subtitleRelPath は、宛先コピーの字幕 sidecar の key を返す。
+func (f derivedResumeFixture) subtitleRelPath(t *testing.T) string {
+	t.Helper()
+	sub, err := mediapath.SubtitleSibling(f.copyRelPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sub
+}
+
+// writeSourceSubtitle は、転送元の本体の隣に字幕 sidecar を置く。
+func (f derivedResumeFixture) writeSourceSubtitle(t *testing.T, captions []byte) {
+	t.Helper()
+	sub, err := mediapath.SubtitleSibling(f.relPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.roots["test-store"], filepath.FromSlash(sub)), captions, 0o644); err != nil {
+		t.Fatalf("writing source subtitle: %v", err)
+	}
+}
+
+// TestStorageTransferWorkerKeepsDerivedMainWhenAnotherAttemptActivatedCopy は、遅れて再開した試行が
+// 所有記録の時点でコピーが別の試行に active にされていたら、公開済みの本体のキーを消さないことを確かめる。
+func TestStorageTransferWorkerKeepsDerivedMainWhenAnotherAttemptActivatedCopy(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	f.target(t).afterComplete = func() {
+		if _, err := f.pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'active' WHERE id = $1`, f.copyID(t)); err != nil {
+			t.Errorf("activating copy as another attempt: %v", err)
+		}
+	}
+	f.driveToDone(t)
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.copyRelPath(t))))
+	if err != nil || !bytes.Equal(got, f.content) {
+		t.Fatalf("destination = %d bytes, %v; want the %d published bytes kept", len(got), err, len(f.content))
+	}
+	if state := f.copyState(t); state != "active" {
+		t.Fatalf("archive copy state = %q, want active", state)
+	}
+}
+
+// TestStorageTransferWorkerRemovesDerivedMainWhenCopyRetiredBeforeOwnership は、所有記録の時点でコピーが
+// deleted なら、遅れて再開した試行が今回公開した本体のキーを消すことを確かめる（上の試験の逆方向）。
+func TestStorageTransferWorkerRemovesDerivedMainWhenCopyRetiredBeforeOwnership(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	f.target(t).afterComplete = func() {
+		if _, err := f.pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE id = $1`, f.copyID(t)); err != nil {
+			t.Errorf("retiring copy: %v", err)
+		}
+	}
+	f.driveToDone(t)
+	if _, err := os.Stat(filepath.Join(f.roots["archive"], filepath.FromSlash(f.copyRelPath(t)))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination stat after the retired copy = %v, want removed", err)
+	}
+}
+
+// TestStorageTransferWorkerKeepsDerivedMainWhenOwnershipRecordFails は、所有記録の書き込みがエラーでも本体のキーを消さず、
+// 次の試行が同じ内容の本体を採用して、コピーを active にすることを確かめる。
+func TestStorageTransferWorkerKeepsDerivedMainWhenOwnershipRecordFails(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	stub := markFailStore{StorageTransfer: f.worker.Storage, fail: func(relPath string) bool {
+		return relPath == f.copyRelPath(t)
+	}}
+	f.worker.Storage = stub
+	f.driveToDone(t)
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.copyRelPath(t))))
+	if err != nil || !bytes.Equal(got, f.content) {
+		t.Fatalf("destination = %d bytes, %v; want the %d published bytes kept after the ownership failure", len(got), err, len(f.content))
+	}
+	f.worker.Storage = stub.StorageTransfer
+	f.driveToEnd(t)
+	f.assertPublished(t)
+}
+
+// TestStorageTransferWorkerKeepsDerivedSubtitleWhenAnotherAttemptActivatedCopy は、字幕 sidecar の所有記録の時点で
+// コピーが別の試行に active にされていたら、公開済みの字幕を消さないことを確かめる。
+func TestStorageTransferWorkerKeepsDerivedSubtitleWhenAnotherAttemptActivatedCopy(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	captions := []byte("WEBVTT\n\nderived captions\n")
+	f.writeSourceSubtitle(t, captions)
+	f.target(t).afterPut = func(key string) {
+		if !strings.HasSuffix(key, ".vtt") {
+			return
+		}
+		if _, err := f.pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'active' WHERE id = $1`, f.copyID(t)); err != nil {
+			t.Errorf("activating copy as another attempt: %v", err)
+		}
+	}
+	f.driveToDone(t)
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.subtitleRelPath(t))))
+	if err != nil || !bytes.Equal(got, captions) {
+		t.Fatalf("destination subtitle = %q, %v; want the published captions kept", got, err)
+	}
+	if state := f.copyState(t); state != "active" {
+		t.Fatalf("archive copy state = %q, want active", state)
+	}
+}
+
+// TestStorageTransferWorkerRemovesDerivedSubtitleWhenCopyRetiredBeforeOwnership は、字幕 sidecar の所有記録の時点で
+// コピーが deleted なら、今回公開した字幕を消すことを確かめる（上の試験の逆方向）。
+func TestStorageTransferWorkerRemovesDerivedSubtitleWhenCopyRetiredBeforeOwnership(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	f.writeSourceSubtitle(t, []byte("WEBVTT\n\nderived captions\n"))
+	f.target(t).afterPut = func(key string) {
+		if !strings.HasSuffix(key, ".vtt") {
+			return
+		}
+		if _, err := f.pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE id = $1`, f.copyID(t)); err != nil {
+			t.Errorf("retiring copy: %v", err)
+		}
+	}
+	f.driveToDone(t)
+	if _, err := os.Stat(filepath.Join(f.roots["archive"], filepath.FromSlash(f.subtitleRelPath(t)))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination subtitle stat after the retired copy = %v, want removed", err)
+	}
+}
+
+// TestStorageTransferWorkerKeepsDerivedSubtitleWhenOwnershipRecordFails は、字幕 sidecar の所有記録の書き込みが
+// エラーでも字幕を消さず、次の試行が同じ内容の字幕を採用して、コピーを active にすることを確かめる。
+func TestStorageTransferWorkerKeepsDerivedSubtitleWhenOwnershipRecordFails(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	captions := []byte("WEBVTT\n\nderived captions\n")
+	f.writeSourceSubtitle(t, captions)
+	stub := markFailStore{StorageTransfer: f.worker.Storage, fail: func(relPath string) bool {
+		return relPath == f.subtitleRelPath(t)
+	}}
+	f.worker.Storage = stub
+	f.driveToDone(t)
+	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.subtitleRelPath(t))))
+	if err != nil || !bytes.Equal(got, captions) {
+		t.Fatalf("destination subtitle = %q, %v; want the captions kept after the ownership failure", got, err)
+	}
+	f.worker.Storage = stub.StorageTransfer
+	f.driveToEnd(t)
+	f.assertPublished(t)
+	got, err = os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(f.subtitleRelPath(t))))
+	if err != nil || !bytes.Equal(got, captions) {
+		t.Fatalf("destination subtitle after the retry = %q, %v; want the captions adopted", got, err)
+	}
 }
