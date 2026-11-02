@@ -2524,6 +2524,58 @@ func TestSegmentTransformCloseBeforeStartDoesNotStartFFmpeg(t *testing.T) {
 	assertWorkScratchEmpty(t, manager)
 }
 
+// TestSegmentTransformCloseDuringStartupReturnsPromptlyWithoutStartingFFmpeg は、入力の open が ctx に従って
+// 止まっている間に Close が 3 秒以内に返り、待っている Get が errSegmentManagerClosed で返ることを確かめる。
+// 実際の入力の open（DB 照会）は ctx に従うので、これが最も実際に近い Close の経路である。
+func TestSegmentTransformCloseDuringStartupReturnsPromptlyWithoutStartingFFmpeg(t *testing.T) {
+	ffmpeg, marker := startupMarkerFFmpeg(t)
+	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
+
+	entered := make(chan struct{})
+	input := SegmentTransformInput{
+		OpenFile: func(ctx context.Context) (*os.File, error) {
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		AudioStreamCount: 2,
+	}
+	key := SegmentKey{"recording", "generation", "test", "video", 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := startSegmentGet(manager, ctx, key, input)
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OpenFile was never reached")
+	}
+	task := taskForRecording(t, manager, "recording")
+	closed := make(chan error, 1)
+	go func() {
+		closed <- manager.Close()
+	}()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close during startup: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close waited for the startup")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, errSegmentManagerClosed) {
+			t.Fatalf("Get after Close during startup = %v, want errSegmentManagerClosed", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Get did not return after Close")
+	}
+	waitForTransformCount(t, manager, 0)
+	assertTaskNeverStarted(t, manager, task)
+	assertNoFFmpegStart(t, marker)
+	assertWorkScratchEmpty(t, manager)
+}
+
 // TestSegmentTransformClosedFlagDuringStartupDoesNotStartFFmpeg は、m.closed だけが立っていて待つ waiter が
 // まだ残っている場合に launchTask が Start しないことを確かめる。Close の本来の経路では、m.ctx の取り消しで
 // 待っている Get が waiter を外し、stopping が先に立つ。そのため Close の経路では m.closed の判定を単独では
