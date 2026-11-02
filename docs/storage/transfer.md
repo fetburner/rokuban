@@ -24,9 +24,9 @@
 
 保存は親の ctx と独立した ctx（5 秒）で行う。SIGTERM や締切で ctx が切れた Work も、保存してから抜ける。lease の期限は slice + 2 分（6 分）で、締切より後まで残す。締切で止まった Work が最後の保存を終える前に、lease が切れないようにするためである。
 
-転送は転送元ごとの advisory lock を、pool から借りた接続のまま保持する。pool の外に接続を張ると、`db.max_conns` がプロセスの接続上限だという契約を破るためである。この接続の数は pool の予算に数える（[データベース](../operations/database.md)）。
+転送は転送元ごとの advisory lock を Work ごとに取り直し、pool から借りた接続のまま保持する。pool の外に接続を張ると、`db.max_conns` がプロセスの接続上限だという契約を破るためである。この接続の数は pool の予算に数える（[データベース](../operations/database.md)）。
 
-転送元の root の目印を照合してから読み、コピー単位の DB progress lease を取る。temp は copy ID と世代を含む名前で分離する。全体一意索引が `(store, rel_path)` の再利用を防ぐ。
+転送元と宛先の root の目印を照合し、コピー単位の DB progress lease を取ってから読む。temp は copy ID と世代を含む名前で分離する。全体一意索引が `(store, rel_path)` の再利用を防ぐ。
 
 進捗（lease、世代、保存した長さと SHA-256 の状態、送信状態、照合中であること）は、pending のコピーの衛星表に持つ。lease の期限は DB の `now()` と比べ、プロセスの時計は使わない。
 

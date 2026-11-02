@@ -292,11 +292,11 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。tx は公開のメソッドごとに store が持つ。
 
-公開物の作成と耐久化は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。検査で公開しないと決めたときは呼ばない。
+公開物を作って永続化する処理は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。検査で公開しないと決めたときは呼ばない。
 
 `publish` がエラーを返したら、store は rollback してそのエラーを返す。`publish` が成功した後に commit が失敗したら、store はエラーを返す。このときファイルは行を持たない孤児として残る。呼び出し側はそのファイルを消さず、孤児の監査に回収を任せる。
 
-呼び出し側は rel_path の filesystem lock を持たずに store を呼ぶ。store はファイルシステムを知らない。
+store はファイルシステムを知らない。
 
 `publish` は副作用を持つので、[ロック後の判断](#ロック後の判断)の「関数は DB に触れず状態を変えない」規則の例外である。DB の判定とファイルの公開の順序を固定するために、store が `publish` を呼ぶ。
 

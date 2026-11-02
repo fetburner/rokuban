@@ -3,7 +3,8 @@
 // 書く表は circuit_breakers、media_assets、encoded_asset_removal_requests、orphan_files。
 //
 // 実行は until_encoded の述語を、実行の直前に再評価する
-// （MediaDelete.MarkUntilEncodedDeleting）。この遷移は選定へ移せない。
+// （MediaDelete.MarkUntilEncodedDeleting）。新規候補は列挙の後に作り直し要求が commit されうるので、
+// 述語は列挙へ移せず、実行の直前に読み直す。
 //
 // orphan_files の書き手は 2 者いる。候補は storage_audit.go が書き、実行が unlink の後に
 // 行を消す。実行が消すのは、ctx が取り消された後も削除の事実を記録するためである。
@@ -15,11 +16,11 @@
 // 孤児の走査（fsstore の staging ファイルを含む）に使う。staging は fsstore 内部のファイルなので、
 // objstore の key としては扱わず、走査した root 上で mtime を再確認して消す。
 //
-//	操作      原本                         派生物                     ingest / transfer temp
-//	解決      mediapath.Resolve            objstore key                mediapath.Resolve
-//	排他      なし（(store, rel_path) は再利用しない） なし（key は再利用しない） DB writer lease
-//	stat      巻き戻し時の現存確認         objstore.Head               世代・visible path・mtime
-//	unlink    os.Remove                    objstore.Delete             os.Remove
+//	操作    原本                                      派生物                      ingest / transfer temp
+//	解決    mediapath.Resolve                         objstore key                mediapath.Resolve
+//	排他    なし（(store, rel_path) は再利用しない）  なし（key は再利用しない）  DB writer lease
+//	stat    巻き戻し時の現存確認                      objstore.Head               世代・visible path・mtime
+//	unlink  os.Remove                                 objstore.Delete             os.Remove
 //
 // 原本のコピー path は再利用しない。ingest temp は writer lease と別世代の path で隔離する。
 

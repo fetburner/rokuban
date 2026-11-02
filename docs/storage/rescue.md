@@ -188,7 +188,7 @@ flowchart TD
 
 以前の catalog 世代に残る tombstone は、現在のパス所有者と衝突することがある。復元は catalog の tombstone ごとに、同じ asset・置き場・世代の tombstone が原パスまたは予約キーにあれば、復元済みとみなす。予約キーは、ファイルシステムの名前や S3 キーより長い 1 成分の rel_path で、asset・世代と原パスのハッシュから決まる。原パスが別のコピーに割り当て済みなら、この予約キーに tombstone を残して世代全体の復元を続ける。生きたコピーの snapshot が同じパスの tombstone に当たった場合は、active に戻さない。
 
-削除がファイルを unlink して `deleted` にした後も、全体一意索引は tombstone の `(store, rel_path)` を予約する。ファイルが無いなら、同じ path の別 copy を active にできない。worker を止める要件は、古い catalog による録画・保持方針などの上書きを防ぐために残る。
+通常削除がファイルを unlink して `deleted` にした後も、全体一意索引は tombstone の `(store, rel_path)` を予約する。ファイルが無いなら、同じ path の別 copy を active にできない。
 
 <details><summary>根拠</summary>
 

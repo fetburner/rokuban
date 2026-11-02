@@ -139,7 +139,7 @@
       ]
     },
     {
-      "heading": "公開 path の再利用",
+      "heading": "一意 path と削除",
       "question": "削除中の古い Work が新しい copy のファイルを消さないのはなぜか。",
       "points": [
         "全体一意索引が tombstone の (store, rel_path) を予約し、別 copy は新しい path を使う",

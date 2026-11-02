@@ -112,7 +112,9 @@ canonical orphan はエイジング後に報告するだけで unlink しない�
 
 ### 旧版の rel_path lock metadata の掃除
 
-旧 worker が作った .rokuban-locks/ と .rokuban-rel-path-lock-*.lock は media root に残ることがある。これらは予約名として走査から除外する。旧 worker をすべて停止してから掃除する。
+旧 worker が作った予約名のディレクトリとファイルは media root 配下に残ることがある。旧 worker をすべて停止してから掃除する。
+
+対象は `.rokuban-locks/` と `.rokuban-rel-path-lock-*.lock` である。これらは予約名として走査から除外する。
 
 ```bash
 find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \

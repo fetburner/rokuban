@@ -19,11 +19,11 @@
       ]
     },
     {
-      "heading": "(store, rel_path) の一意予約",
-      "question": "通常削除後も同じ path を別の copy に再利用できないのはなぜか。",
+      "heading": "公開順序と失敗時の扱い",
+      "question": "通常削除した後も同じ path を別の copy に再利用できないのはなぜか。",
       "points": [
-        "全体一意索引が deleted tombstone の (store, rel_path) も予約する",
-        "新しい copy は別の path を使うので、古い delete Work の unlink は届かない"
+        "全体一意索引が tombstone を含めて path を予約する",
+        "同じ path の別 copy は作られないので、古い delete Work の unlink は別の copy に届かない"
       ]
     },
     {
@@ -123,11 +123,11 @@
       ]
     },
     {
-      "heading": "旧形式の lock file と更新時の並走",
-      "question": "旧形式の lock file は移行時に自動で消すか。旧 worker と新 worker が並走している間はどうするか。",
+      "heading": "旧版の rel_path lock metadata の掃除",
+      "question": "旧版の lock metadata は、どう扱うか。掃除はいつ行うか。",
       "points": [
-        "自動では消さない。旧 worker が新しい排他の手順に参加しないため、消すと旧プロセスの待機側が古い inode を握りうる",
-        "旧 worker と新 worker が並走している間は、消す操作も実行しない"
+        "`.rokuban-locks/` と `.rokuban-rel-path-lock-*.lock` は走査から予約名として除外する",
+        "掃除は旧 worker をすべて停止してから行う"
       ]
     },
     {

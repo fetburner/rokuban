@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -2537,12 +2538,16 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	}
 }
 
-func TestDeleteReconcileStaleWorkLeavesCopyPublishedAtUniquePath(t *testing.T) {
+// TestDeleteReconcileStaleWorkCannotUnlinkRepublishedPath は、遅れた削除が公開済みの別の原本を消さないことを検査する。
+// 削除は行を deleting にしてから unlink する。その間に別の経路が同じファイルを消して deleted にし、
+// 同じ rel_path へ別の録画の原本を commit する。tombstone が path を予約していれば commit は拒否される。
+// 予約していなければ commit は成功し、遅れた unlink がその新しいファイルを消す。
+func TestDeleteReconcileStaleWorkCannotUnlinkRepublishedPath(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	const oldRelPath = "originals/stale-delete.ts"
-	const newRelPath = "originals/recovered-copy.ts"
+	const republishedContent = "republished bytes"
 	oldRecordingID := dbtest.Recording(t, pool)
 	oldAssetID := seedOriginalAsset(t, pool, mediaDir, oldRecordingID, oldRelPath, []byte("old bytes"))
 	var oldCopyID int64
@@ -2551,40 +2556,34 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, old
 		t.Fatalf("reading old copy ID: %v", err)
 	}
 	oldPath := filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))
-	newPath := filepath.Join(mediaDir, filepath.FromSlash(newRelPath))
-	var publishedAssetID int64
-	var hookErr error
+
+	// 別の録画の temp。公開の commit がこれを oldPath へ link しようとする。
+	newRecordingID := dbtest.Recording(t, pool)
+	tempPath := filepath.Join(filepath.Dir(oldPath), ".rokuban-ingest-republish")
+	if err := os.WriteFile(tempPath, []byte(republishedContent), 0o644); err != nil {
+		t.Fatalf("writing republish temp: %v", err)
+	}
+	seedIngestTempForCommit(t, pool, newRecordingID, mediaDir, tempPath)
+
+	var commitErr error
 	previousHook := beforeMediaAssetUnlink
 	t.Cleanup(func() { beforeMediaAssetUnlink = previousHook })
 	beforeMediaAssetUnlink = func(relPath string) {
 		if relPath != oldRelPath {
 			return
 		}
+		// 別の経路が同じ削除を完了させ、行を deleted にした状態を作る。
 		if err := os.Remove(oldPath); err != nil {
-			hookErr = err
+			t.Errorf("removing old file in hook: %v", err)
 			return
 		}
-		if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
-			hookErr = err
+		if _, err := pool.Exec(ctx,
+			"UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE id = $1", oldCopyID); err != nil {
+			t.Errorf("marking old copy deleted in hook: %v", err)
 			return
 		}
-		if err := os.WriteFile(newPath, []byte("new bytes"), 0o644); err != nil {
-			hookErr = err
-			return
-		}
-		registered, err := inplace.Register(ctx, pgstoretest.Media(pool), mediaDir, inplace.Input{
-			Recording: inplace.Recording{
-				Source: "manual", Site: "default", NetworkID: -101, ServiceID: -102, EventID: -103,
-				ServiceName: "Recovered", ChannelType: "GR", Channel: "unknown", Title: "Recovered copy",
-				ProgramStartAt: time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC), Status: "finished",
-			},
-			Assets: []inplace.Asset{{Kind: store.AssetKindOriginal, RelPath: newRelPath}},
-		})
-		if err != nil {
-			hookErr = err
-			return
-		}
-		publishedAssetID = registered.AssetIDs[0]
+		w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}
+		commitErr = w.commit(ctx, newRecordingID, oldRelPath, tempPath, oldPath, int64(len(republishedContent)), nil, uuid.Nil, 0)
 	}
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), MediaDir: mediaDir}
@@ -2592,27 +2591,25 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, old
 		ID: oldCopyID, MediaAssetID: oldAssetID, RecordingID: oldRecordingID,
 		RelPath: oldRelPath, SizeBytes: int64(len("old bytes")), Kind: store.AssetKindOriginal,
 	}, "trash")
-	if hookErr != nil {
-		t.Fatalf("publishing a different copy during stale delete: %v", hookErr)
+
+	var activeAtPath int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM media_asset_copies WHERE store = $1 AND rel_path = $2 AND state = 'active'",
+		dbtest.StoreName, oldRelPath).Scan(&activeAtPath); err != nil {
+		t.Fatalf("counting active copies at path: %v", err)
 	}
-	if publishedAssetID == 0 {
-		t.Fatal("stale delete did not reach the publication hook")
+	// 最初に検査する: 生きた copy は、公開時のバイト列を保った実ファイルを持たねばならない。
+	if activeAtPath > 0 {
+		if got, err := os.ReadFile(oldPath); err != nil || string(got) != republishedContent {
+			t.Fatalf("active copy at %s lost its file to the stale unlink: read %q, %v; want %q", oldRelPath, got, err, republishedContent)
+		}
 	}
-	if fileExists(oldPath) {
-		t.Fatal("old path still exists after stale delete")
+	// 完全な一意索引は tombstone と衝突するので、upsert は 0 行になり ErrConflict になる。
+	if !errors.Is(commitErr, store.ErrConflict) {
+		t.Fatalf("republishing the tombstoned path: commit error = %v, want store.ErrConflict", commitErr)
 	}
-	if got, err := os.ReadFile(newPath); err != nil || string(got) != "new bytes" {
-		t.Fatalf("new copy after stale unlink = %q, %v; want preserved bytes", got, err)
-	}
-	var oldState, newState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, oldCopyID).Scan(&oldState); err != nil {
-		t.Fatalf("reading old copy state: %v", err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND rel_path = $2`, publishedAssetID, newRelPath).Scan(&newState); err != nil {
-		t.Fatalf("reading new copy state: %v", err)
-	}
-	if oldState != "deleted" || newState != "active" {
-		t.Fatalf("old/new copy states = %q/%q, want deleted/active", oldState, newState)
+	if activeAtPath != 0 {
+		t.Fatalf("active copies at %s = %d, want 0 after the rejected publish", oldRelPath, activeAtPath)
 	}
 }
 

@@ -245,6 +245,13 @@ k8s の構成で、旧 worker を止めてから再開するまでの手順で�
 
    site の apply で watcher は manifest の `replicas: 1` に戻る。手順 1 で控えた値がそれと違うなら、`kubectl scale` で控えた値に戻す。作業前から pause / suspend 済みだった資源は、一括で戻さず控えた状態に個別に戻す。pause 中の River 行は削除しない。pause を外すと新しい Job が処理する。apply の順序は [deploy/k8s/README.md](../../deploy/k8s/README.md) と同じである。
 
+   pause の仕様は [KEDA の文書](https://keda.sh/docs/2.20/concepts/scaling-jobs/#pausing-autoscaling) に従う。kind v1.36.1 / KEDA v2.20.2 での確認は 2026-11-02 に行い、次の結果を得た。
+
+   1. media PVC を mount した PostgreSQL の fixture consumer を使い、5 秒 polling の ScaledJob で 20 秒の Job を走らせた。
+   2. 実行中に pause し、River 行を 1 件追加した。
+   3. 実行中の Job は完了した。その後 16 秒（polling 3 周期分）の間、Job 数は 1 のまま、追加した行は `available` のままだった。
+   4. pause を外すと Job がもう 1 つ作られ、最終状態は `completed:2`、queue は 0 になった。
+
 #### パスの全体一意索引を入れる版への更新
 
 tombstone も含む全体の一意索引へ広げる migration を含む版では、旧 worker を先に止めなければならない。止めないと、旧 worker による tombstone のパスへの INSERT が失敗し続ける。

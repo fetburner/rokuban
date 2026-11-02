@@ -306,7 +306,7 @@ ingest の temp は、record ごとに固有の名前を持つ。孤児候補に
 
 ingest は canonical file と同じディレクトリに、record 固有の `.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。
 
-名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しの rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。temp の物理削除は DB の writer 世代と表示中の path で判定する。現在の世代や replay 中の temp は残し、旧世代または aging を過ぎた temp だけを unlink する。新しい writer は別の世代名を使う。
+名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しの rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。temp の物理削除は DB の writer 世代と表示中の path で判定する。現在の世代か表示中の temp は残し、それより古い世代の temp は aging を待たずに unlink する。DB に writer の状態が無いか世代を読めない temp は、mtime 猶予と aging の後に unlink する。新しい writer は別の世代名を使う。
 
 NFS で open 中 unlink による `.nfsXXXX` が見えた場合は、canonical orphan として aging 後に報告する。自動削除や rescue の昇格には進まない。
 

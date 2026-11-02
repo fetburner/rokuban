@@ -129,8 +129,7 @@ mirakc が finished 後にハッシュを計算中のとき、`content.sha256` �
 flowchart LR
   A[長さと SHA-256 を照合] --> B[temp を fsync して Close]
   B --> B2[最終 handoff を DB に保存（lease は保持）]
-  B2 --> C[(store, rel_path) を全体一意索引で予約]
-  C --> D[original の論理資産とコピーを INSERT して予約]
+  B2 --> D["original の論理資産とコピーを INSERT し、(store, rel_path) を全体一意索引で予約"]
   D --> E[canonical へ link]
   E --> F[親ディレクトリを fsync]
   F --> G[DB commit: 公開点]
@@ -224,7 +223,7 @@ ingest は commit しないのでエッジの record を消さず、mirakc に�
 
 DB の一意な予約を先に取った取り込みが公開を完了して採用される。後発は先発の結果を待って失敗し、その一時ファイルは回収に委ねられる。転送中は canonical path へ書かないので、転送自体は並行してよい。
 
-canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの record 固有 temp へ並行して pull できる。同じ record は DB writer lease で直列化し、失効した writer の progress 更新と commit は fencing する。公開時は `(store, rel_path)` の全体一意索引が採用を決める。通常削除の完了時にファイルが無ければ、その path の行は active ではなく `deleted` であり、tombstone が path の再利用を防ぐ。canonical orphan は削除せず、エイジング後に報告する。
+canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの record 固有 temp へ並行して pull できる。同じ record は DB writer lease で直列化し、失効した writer の progress 更新と commit は fencing する。公開時は `(store, rel_path)` の全体一意索引が採用を決める。通常削除は unlink の後に行を `deleted` にするので、削除で消えたファイルの行は active ではない。tombstone が残り、同じ path の再利用を防ぐ。canonical orphan は削除せず、エイジング後に報告する。
 
 各 transaction のコピー INSERT が (store, rel_path) の一意索引を予約する。tombstone もこの索引で予約されるので、削除済みのパスへの INSERT も同じく失敗する。先に INSERT した transaction が link・親 directory fsync・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
 
@@ -232,7 +231,7 @@ canonical path へ転送中のバイトが存在しないため、異なる reco
 
 ##### 一意 path と削除
 
-物理削除の後も path の所有権を残し、削除済み path を再公開しない。
+物理削除の後も tombstone の行が (store, rel_path) を持ち続けるので、削除済みの path へは再公開しない。
 
 通常削除は同じ copy 行を `deleting` にしてから unlink し、unlink 後に `deleted` へ確定する。全体一意索引は tombstone を残すため、削除中や削除後に同じ `(store, rel_path)` へ別の copy は公開できない。新しい copy は別の path を使うので、古い delete Work が保持する path への unlink は新しい copy に届かない。
 

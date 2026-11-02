@@ -43,7 +43,7 @@ DB が輻輳しても止まらない処理と、DB に依存し続ける処理�
 
 試行ごとの scratch は別ディレクトリにする。締切後も cancel を無視する古い ffmpeg が動いていても、出力は衝突しない。
 
-公開前に一時出力を派生物の置き場へ `Store.Put` する。公開 tx は試行 token と desired・cut の状態を読み直し、現在の計画に合うときだけ pending copy を active にする。古い計画なら成功で飛ばすか snooze で再計画する。
+公開前に一時出力を派生物の置き場へ `Store.Put` する。公開 tx は試行 token と desired・cut の状態を読み直し、現在の計画に合うときだけ pending copy を active にする。計画が変わり行が active なら、snooze して計画をやり直す。行が active でない（ごみ箱など）なら、成功で飛ばす。
 
 cancel を無視する処理やネットワーク filesystem の停止は、job timeout で止められない。k8s の liveness が最後の停止手段になる（詳細は [k8s 運用](k8s.md)）。
 
