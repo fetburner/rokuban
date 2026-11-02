@@ -141,17 +141,7 @@ find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
 
 k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は旧イメージの実行中 Job が完走するまで新しい Job と並走する。並走の原因はこの設定であり、ScaledJob 一般の性質ではない。この窓では旧 worker が新 worker の gate を知らないまま、同じ rel_path を別の inode で lock しうる。
 
-更新前に `autoscaling.keda.sh/paused=true` を全 worker ScaledJob に付け、CronJob を suspend し、watcher Deployment を 0 replica にする。この annotation は[KEDA v2.20 の公式文書](https://keda.sh/docs/2.20/concepts/scaling-jobs/#pausing-autoscaling)にある。pause は新しい Job の起動を止める。実行中の Job は止めない。
-
-全 Job の `ACTIVE` が 0 または `<none>` になってから新しいイメージを適用する。確認コマンドは[更新手順](../runbook/setup.md)にある。
-
-pause 中も River 行は DB に残る。pause 解除後は KEDA が Job を起こす（[runbook](../runbook/setup.md)「旧版からの更新」）。
-
-この操作は kind v1.36.1 / KEDA v2.20.2 で測定した（2026-11-02）。試験では media PVC を mount した PostgreSQL fixture consumer を使った。
-
-5 秒 polling の ScaledJob で 20 秒動く Job を作り、実行中に pause して River に 2 件目を追加した。既存 Job は完了した。その後 16 秒（3 polling intervals）見ても Job は 1 件のままで、2 件目は `available` に残った。
-
-pause 解除後は Job が 1 件増え、最終状態は `completed:2`、待ち行列 0 件だった。単一プロセス構成では migration 前にそのプロセスを正常停止する。
+更新前に、全 worker ScaledJob に `autoscaling.keda.sh/paused=true` を付け、CronJob を suspend し、watcher を 0 replica にする。この annotation は[KEDA v2.20 の公式文書](https://keda.sh/docs/2.20/concepts/scaling-jobs/#pausing-autoscaling)にある。pause は新しい Job の起動を止めるが、実行中の Job は止めない。止めている間の River 行は DB に残り、pause を外すと処理される。kind v1.36.1 / KEDA v2.20.2 で、pause 中に Job が作られないことと、解除後に待ち行列が空になることを確かめた（2026-11-02）。操作は[runbook](../runbook/setup.md)の「旧 worker の停止と再開（k8s）」節にある。
 
 止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上のコマンドで消す。
 
