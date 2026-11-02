@@ -141,9 +141,11 @@ type segmentTransformTask struct {
 	pauseReason   transformPauseReason
 	stopping      bool
 	finished      bool
-	// starting は、起動処理（launchTask）がまだ cmd を入れていない間だけ true。cmd は nil である。
+	// starting は、起動処理（launchTask）が cmd を入れるまで true で、cmd は nil である。
+	// 起動に失敗して retire された後も true のまま残る（finished が true になる）。
 	starting bool
 	// cancelStart は、起動処理の入力を開く ctx（m.ctx 由来）を止める。起動中に止めるときに呼ぶ。
+	// launchTask は起動の成功・失敗のどちらでも最後に呼ぶ。
 	cancelStart context.CancelFunc
 	cmd         *exec.Cmd
 	wait        chan error
@@ -535,7 +537,8 @@ func (m *SegmentManager) makeRoomLocked() bool {
 	return false
 }
 
-// stopTaskLocked は変換を止め中にして kill する。
+// stopTaskLocked は変換を止め中にする。子がいれば kill する。起動中ならまだ子が無いので、
+// startCtx を止めて入力の open を中断させ、後の片付けは launchTask に任せる。
 func (m *SegmentManager) stopTaskLocked(task *segmentTransformTask) {
 	if task.finished || task.stopping {
 		return
@@ -559,11 +562,10 @@ func (m *SegmentManager) signalCapacityLocked() {
 
 // startTaskLocked は、番号 key.Number を待つ起動中の変換を予約して m.tasks に入れ、
 // launchTask に渡す引数と起動用の ctx を返す。ロックの中で行うのは ID・作業ディレクトリ・
-// ffmpeg の引数の決定と、タスクの登録だけである。MkdirAll・OpenFile・cmd.Start は
-// ロックの外の launchTask で行う（呼び出し側はロックを外してから go m.launchTask する）。
-// 引数の構築に失敗したときは何も登録せずエラーを返す。
-// waiter は最初の相乗り相手として登録される。同じ位置への後続の Get は、起動中の変換にも waiter として
-// 相乗りする。
+// ffmpeg の引数の決定と、タスクの登録だけである。MkdirAll と OpenFile は、ロックの外で
+// 呼び出し側が起動する launchTask で行う。引数の構築に失敗したときは何も登録せずエラーを返す。
+// 渡された waiter を最初の waiter として登録する。同じ位置への後続の Get は、起動中の変換にも
+// waiter として相乗りする。
 func (m *SegmentManager) startTaskLocked(
 	group segmentTransformGroup,
 	profile LiveProfile,
@@ -607,21 +609,22 @@ func (m *SegmentManager) startTaskLocked(
 	return task, args, startCtx, nil
 }
 
-// launchTask は startTaskLocked で予約した変換を起動する。ロックの外で作業ディレクトリと入力を
-// 用意し、cmd.Start だけをロックの中で行う。Start をロックの外に出さないのは、停止と Close の確認と
-// Start を 1 つのロック区間にまとめるためである。こうすると、Start の直後に停止が来て kill が
-// 届かない窓ができない。fork/exec の所要時間は未計測であり、ロックを持つ時間はそれに従う。
+// launchTask は startTaskLocked で予約した変換を起動する。作業ディレクトリと入力はロックの外で
+// 用意し、cmd.Start だけをロックの中で行う。Start を停止・Close の確認と同じロック区間に置くのは、
+// 停止の後に kill する経路を別に持たずに済ませるためである。その代わり、ロックを持つ時間は
+// fork/exec の所要時間で決まる。fork/exec の所要時間は未計測。
 //
 // 成功したら task.cmd を入れ、watch を起動する。失敗・停止・Close のときは、ロックの中で
-// 残りの waiter を外して登録を消し、そのエラーを決める。ロックの外で入力を閉じ、startCtx を止め、
-// waiter に結果を渡し、作業ディレクトリを消してから done を閉じる。Close は done を待つので、
-// この片付けが終わるまで戻らない。
+// task を m.tasks から外し（retireTaskLocked）、waiter に返すエラーを決める。ロックの外で入力を閉じ、
+// startCtx を止め、waiter に結果を渡し、作業ディレクトリを消してから done を閉じる。Close は done を
+// 待つので、この片付けが終わるまで戻らない。
 //
 // 片付けの経路は次のとおり。
 //   - 失敗（MkdirAll・OpenFile・Start）: 開いた入力を閉じ、waiter 全員に文脈付きのエラーを返す。
 //   - 停止（StopRecording や容量のための停止、waiter の全員離脱）: stopTaskLocked が startCtx を止めて
-//     OpenFile を中断させる。開けていた場合もここで閉じる。waiter には errSegmentTransformStopped を返す。
-//   - Close: 起動中の子はまだ無いので kill せず、m.ctx の取り消しで OpenFile を中断させる。
+//     OpenFile を中断させる。開けていた入力は launchTask がロックの外で閉じる。waiter には
+//     errSegmentTransformStopped を返す。
+//   - Close: 起動中はまだ子が無いので kill せず、m.ctx の取り消しで OpenFile を中断させる。
 //     Start は m.closed を見てから行うので、Close 後に子が生まれることはない。waiter には errSegmentManagerClosed を返す。
 func (m *SegmentManager) launchTask(task *segmentTransformTask, startCtx context.Context, args []string) {
 	file, err := m.openTaskInput(task, startCtx)
@@ -711,8 +714,9 @@ func (m *SegmentManager) touchTasksForCachedSegmentLocked(group segmentTransform
 	}
 }
 
+// resumeTaskLocked・pauseTask・maybePauseForAhead は Process に触れるため、cmd が nil の起動中の変換を明示的に除く。
 func (m *SegmentManager) resumeTaskLocked(task *segmentTransformTask) error {
-	if task.finished || task.stopping || task.pauseReason == transformRunning {
+	if task.finished || task.stopping || task.cmd == nil || task.pauseReason == transformRunning {
 		return nil
 	}
 	if err := task.cmd.Process.Signal(syscall.SIGCONT); err != nil {
@@ -725,7 +729,7 @@ func (m *SegmentManager) resumeTaskLocked(task *segmentTransformTask) error {
 func (m *SegmentManager) pauseTask(task *segmentTransformTask, reason transformPauseReason) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if task.finished || task.stopping || task.pauseReason != transformRunning {
+	if task.finished || task.stopping || task.cmd == nil || task.pauseReason != transformRunning {
 		return
 	}
 	if err := task.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
@@ -737,7 +741,7 @@ func (m *SegmentManager) pauseTask(task *segmentTransformTask, reason transformP
 func (m *SegmentManager) maybePauseForAhead(task *segmentTransformTask) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if task.finished || task.stopping || task.pauseReason != transformRunning {
+	if task.finished || task.stopping || task.cmd == nil || task.pauseReason != transformRunning {
 		return
 	}
 	if task.currentNumber <= task.maxRequested+int64(m.prefetchSegments) {
@@ -763,16 +767,22 @@ func (m *SegmentManager) removeWaiterLocked(task *segmentTransformTask, key Segm
 			if len(task.waiters[key]) == 0 {
 				delete(task.waiters, key)
 				if len(task.waiters) == 0 {
-					if task.starting {
-						// 起動中に全員が離れたら、起動をやめる。launchTask が片付ける。
-						m.stopTaskLocked(task)
-					}
-					m.signalCapacityLocked()
+					m.lastWaiterGoneLocked(task)
 				}
 			}
 			return
 		}
 	}
+}
+
+// lastWaiterGoneLocked は、task の waiter が 1 人も無くなったときの後始末をする。起動中なら
+// 起動をやめ、容量を待っている Get を起こす。removeWaiterLocked と deliverKey の両方から呼ぶ。
+func (m *SegmentManager) lastWaiterGoneLocked(task *segmentTransformTask) {
+	if task.starting {
+		// 起動中に全員が離れたら、起動をやめる。片付けは launchTask が行う。
+		m.stopTaskLocked(task)
+	}
+	m.signalCapacityLocked()
 }
 
 func (m *SegmentManager) watch(task *segmentTransformTask) {
@@ -1031,7 +1041,7 @@ func (m *SegmentManager) deliverKey(group segmentTransformGroup, key SegmentKey,
 		if _, had := task.waiters[key]; had {
 			delete(task.waiters, key)
 			if len(task.waiters) == 0 {
-				m.signalCapacityLocked()
+				m.lastWaiterGoneLocked(task)
 			}
 		}
 	}

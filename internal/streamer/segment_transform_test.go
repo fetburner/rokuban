@@ -2316,10 +2316,11 @@ func startupMarkerFFmpeg(t *testing.T) (ffmpeg, marker string) {
 	return ffmpeg, marker
 }
 
-// assertNoFFmpegStart は、起動の経路が動く時間を待ってから marker が無いことを確かめる。
+// assertNoFFmpegStart は marker が無いことを確かめる。呼ぶ前に waitForTransformCount(t, manager, 0) で
+// 変換が 0 本になるのを待つこと。launchTask は Start を m.tasks から外す（retire する）前に行うので、
+// 0 本になった後に Start が来ることはない。
 func assertNoFFmpegStart(t *testing.T, marker string) {
 	t.Helper()
-	time.Sleep(200 * time.Millisecond)
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("segment ffmpeg was started after its input was abandoned")
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -2328,17 +2329,22 @@ func assertNoFFmpegStart(t *testing.T, marker string) {
 }
 
 // assertWorkScratchEmpty は、変換の作業ディレクトリが 1 つも残っていないことを確かめる。
+// 作業ディレクトリは launchTask が m.tasks から外した後に消すので、消えるまで待つ。
 func assertWorkScratchEmpty(t *testing.T, manager *SegmentManager) {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(manager.root, "work"))
-	if errors.Is(err, os.ErrNotExist) {
-		return
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("transform scratch left %d entries under work", len(entries))
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		entries, err := os.ReadDir(filepath.Join(manager.root, "work"))
+		if errors.Is(err, os.ErrNotExist) || (err == nil && len(entries) == 0) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("transform scratch left %d entries under work", len(entries))
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -2381,8 +2387,8 @@ func TestSegmentTransformStartupFailureWakesEveryWaiterWithoutStarting(t *testin
 			t.Fatal("waiter was not released after the open failed")
 		}
 	}
-	assertNoFFmpegStart(t, marker)
 	waitForTransformCount(t, manager, 0)
+	assertNoFFmpegStart(t, marker)
 	assertWorkScratchEmpty(t, manager)
 }
 
@@ -2425,8 +2431,8 @@ func TestSegmentTransformStopRecordingDuringStartupDoesNotStartFFmpeg(t *testing
 	case <-time.After(3 * time.Second):
 		t.Fatal("Get did not return after StopRecording")
 	}
-	assertNoFFmpegStart(t, marker)
 	waitForTransformCount(t, manager, 0)
+	assertNoFFmpegStart(t, marker)
 	assertWorkScratchEmpty(t, manager)
 }
 
@@ -2472,8 +2478,8 @@ func TestSegmentTransformCloseDuringStartupReturnsPromptlyWithoutStartingFFmpeg(
 	case <-time.After(3 * time.Second):
 		t.Fatal("Get did not return after Close")
 	}
-	assertNoFFmpegStart(t, marker)
 	waitForTransformCount(t, manager, 0)
+	assertNoFFmpegStart(t, marker)
 	assertWorkScratchEmpty(t, manager)
 }
 
@@ -2516,7 +2522,64 @@ func TestSegmentTransformLastWaiterLeavingDuringStartupCancelsOpen(t *testing.T)
 	case <-time.After(3 * time.Second):
 		t.Fatal("Get did not return after cancel")
 	}
-	assertNoFFmpegStart(t, marker)
 	waitForTransformCount(t, manager, 0)
+	assertNoFFmpegStart(t, marker)
+	assertWorkScratchEmpty(t, manager)
+}
+
+func TestSegmentTransformDeliverKeyWithoutWaitersStopsStartingTask(t *testing.T) {
+	ffmpeg, marker := startupMarkerFFmpeg(t)
+	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
+	defer closeSegmentManager(t, manager)
+
+	entered := make(chan struct{})
+	openCanceled := make(chan struct{})
+	input := SegmentTransformInput{
+		OpenFile: func(ctx context.Context) (*os.File, error) {
+			close(entered)
+			<-ctx.Done()
+			close(openCanceled)
+			return nil, ctx.Err()
+		},
+		AudioStreamCount: 2,
+	}
+	key := SegmentKey{"recording", "generation", "test", "video", 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := startSegmentGet(manager, ctx, key, input)
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OpenFile was never reached")
+	}
+	task := taskForRecording(t, manager, "recording")
+	waitForSegmentWaiter(t, manager, task, key, 2*time.Second)
+
+	// 同じ位置のファイルを、起動中の変換以外の経路（別の変換の公開）から deliverKey で渡す。
+	path := filepath.Join(manager.cache.root, "published.ts")
+	if err := os.WriteFile(path, []byte("cached"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lease, _, err := manager.cache.publish(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.deliverKey(task.group, key, lease, nil)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Get waiting on the published key = %v, want success", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiter was not released by deliverKey")
+	}
+	select {
+	case <-openCanceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OpenFile kept running after deliverKey left the starting transform without waiters")
+	}
+	waitForTransformCount(t, manager, 0)
+	assertNoFFmpegStart(t, marker)
 	assertWorkScratchEmpty(t, manager)
 }
