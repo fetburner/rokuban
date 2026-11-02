@@ -81,6 +81,7 @@ func newSegmentCache(root string, maxBytes int64) (*segmentCache, error) {
 
 // SegmentFile は、キャッシュから開いたセグメントの記述子。Close するまで、そのバイトは
 // キャッシュの使用量に数える（unlink 済みでも tmpfs に残るため）。
+// 埋め込んだ File の Close を直接呼ぶと使用量の数え方を素通りするため、必ず SegmentFile の Close を呼ぶ。
 type SegmentFile struct {
 	*os.File
 	cache     *segmentCache
