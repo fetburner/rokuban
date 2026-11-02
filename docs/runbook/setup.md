@@ -197,13 +197,15 @@ compose と k8s の標準の構成には、この名前（`main`）と adopt の
 移行の操作は構成によって違う。使っている構成の項目だけを読む。
 
 - compose: 手順 1 は `docker compose stop rokuban` である。手順 2 と 3 は `docker compose up -d migrate adopt-media` で、手順 4 は `docker compose up -d rokuban` である。
-- k8s の手順 1 から 4 は、「旧 worker の停止と再開（k8s）」の (1) から (4) である。
+- k8s の手順 1: 「旧 worker の停止と再開（k8s）」の 1 から 3 までを行う（現状を控える、止める、Job が終わるまで待つ）。
+- k8s の手順 4: 「旧 worker の停止と再開（k8s）」の 4 を行う（再開する）。
 - k8s を使わない単一プロセス構成: migration の前に、旧プロセスを正常停止する。
 - k8s の手順 2 と 3: 標準の `rokuban-migrate` Job がやる。`migrate up` を initContainer、`storage adopt main` を本体のコンテナにして続けて走らせるので、`storage adopt main` は手で打たない。
 - k8s の手順 2 の操作: `kubectl delete job rokuban-migrate --ignore-not-found` で前回の Job を消す。次の 2 つを順に apply し、`kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s` で完了を待つ。
   - `kustomize build base | kubectl apply -f - -l '!app.kubernetes.io/component'` で設定の ConfigMap を作る
   - `kustomize build base | kubectl apply -f - -l app.kubernetes.io/component=migrate` で migrate の Job を作る
 - k8s の手順 2 で絞る理由: base には worker の ScaledJob も入っており、絞らずに apply すると完了前に worker が起きる。ConfigMap は名前に設定のハッシュが付き、component のラベルを持たない。Job だけを apply すると、新しい設定の ConfigMap が無く Job が起動しない。
+
 移行後に旧 worker を動かすと、旧版の `ON CONFLICT (media_asset_id, store)` は削除済みの一意制約を推論できず、コピーを伴う公開・取り込みの commit が失敗する。`storage adopt` は既存コピーのパスや状態を同期しないので、旧 worker を止めてから adopt を再実行しても、commit に失敗したファイルは登録されない。移行前に止められなかったときは、旧 worker を止めた上で、commit に失敗したジョブと、孤児として報告されるファイルを確認する。公開の途中で commit が失敗したファイルは、DB の行が無いまま canonical 名で残る（`rokuban_orphan_files_unresolved`。[operations/monitoring.md](../operations/monitoring.md)）。
 
 #### 旧 worker の停止と再開（k8s）
@@ -243,11 +245,11 @@ k8s の構成で、旧 worker を止めてから再開するまでの手順で�
 
    site の apply で watcher は manifest の `replicas: 1` に戻る。手順 1 で控えた値がそれと違うなら、`kubectl scale` で控えた値に戻す。作業前から pause / suspend 済みだった資源は、一括で戻さず控えた状態に個別に戻す。pause 中の River 行は削除しない。pause を外すと新しい Job が処理する。apply の順序は [deploy/k8s/README.md](../../deploy/k8s/README.md) と同じである。
 
-#### 完全な path 一意索引を入れる版への更新
+#### パスの全体一意索引を入れる版への更新
 
-墓石も含む全体の一意索引へ広げる migration を含む版では、旧 worker を先に止めなければならない。止めないと、旧 worker は墓石のパスへの INSERT を失敗させ続ける。
+tombstone も含む全体の一意索引へ広げる migration を含む版では、旧 worker を先に止めなければならない。止めないと、旧 worker による tombstone のパスへの INSERT が失敗し続ける。
 
-旧 worker を「旧 worker の停止と再開（k8s）」の手順で止めてから migration を適用し、新版を起動する。以後の一意索引を変える更新も同じ手順による。単一プロセス構成では、migration の前に旧プロセスを正常停止する。
+旧 worker を「旧 worker の停止と再開（k8s）」の手順で止めてから migration を適用し、新版を起動する。更新が、旧 worker は新版の前提（パスの予約、rel_path の lock）を知らないまま動くと壊れる、と判断されるときも、同じ手順で旧 worker を止める。単一プロセス構成では、migration の前に旧プロセスを正常停止する。
 
 
 ## 定期ジョブの周期とヒント

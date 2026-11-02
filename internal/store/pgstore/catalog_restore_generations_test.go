@@ -3,6 +3,7 @@ package pgstore
 import (
 	"bytes"
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -587,7 +588,7 @@ func TestCatalogRestoreRestoresTwoTombstonesOfOneIdentity(t *testing.T) {
 	})
 
 	paths := tombstonePaths(t, pool, assetID)
-	if !containsString(paths, first) || !containsString(paths, second) {
+	if !slices.Contains(paths, first) || !slices.Contains(paths, second) {
 		t.Fatalf("tombstone paths = %q, want both %q and %q", paths, first, second)
 	}
 }
@@ -752,13 +753,4 @@ func tombstonePaths(t *testing.T, pool *pgxpool.Pool, assetID int64) []string {
 		t.Fatalf("reading tombstones of asset %d: %v", assetID, err)
 	}
 	return paths
-}
-
-func containsString(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }
