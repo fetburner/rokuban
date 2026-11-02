@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fetburner/rokuban/internal/medialock"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -46,17 +45,6 @@ func Register(ctx context.Context, publisher store.MediaPublish, mediaDir string
 	if err != nil {
 		return nil, fmt.Errorf("resolving media_dir symlinks: %w", err)
 	}
-
-	paths := make([]string, len(in.Assets))
-	for i, asset := range in.Assets {
-		// checkAsset と同じ正規化。LockPaths は非正規 path を拒否する。
-		paths[i] = filepath.ToSlash(filepath.Clean(asset.RelPath))
-	}
-	release, err := medialock.LockPaths(ctx, mediaDir, paths)
-	if err != nil {
-		return nil, fmt.Errorf("locking in-place assets: %w", err)
-	}
-	defer func() { _ = release() }()
 
 	assets := make([]store.InPlaceAsset, 0, len(in.Assets))
 	for i, asset := range in.Assets {

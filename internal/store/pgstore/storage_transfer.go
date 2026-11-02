@@ -334,7 +334,7 @@ func (s *Media) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context,
 	return out, nil
 }
 
-// ReclaimObsoletePendingMediaAssetTransferCopy は path lock の下で不要な pending copy を物理削除して退役させる。
+// ReclaimObsoletePendingMediaAssetTransferCopy は不要な pending copy を行ロック中に物理削除して退役させる。
 func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	ctx context.Context,
 	candidate store.MediaAssetCopyDeleteCandidate,

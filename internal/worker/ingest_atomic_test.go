@@ -175,130 +175,6 @@ func newConcurrentIngestServer(t *testing.T, tsData []byte, contentPath string, 
 	return srv
 }
 
-// TestIngestWorker_CommitHoldsRelPathFileLockThroughRename は実際の commit 経路が
-// rename 中も filesystem lock を保持することを確認する。lock の取得を外した変異は、
-// rename 停止中に同じ lock file を取得できてしまうため検出できる。
-func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	relPath := "sites/default/lock/commit.m2ts"
-	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-commit-lock")
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		t.Fatalf("creating commit directory: %v", err)
-	}
-	if err := os.WriteFile(tempPath, []byte("committed bytes"), 0o644); err != nil {
-		t.Fatalf("writing commit temp: %v", err)
-	}
-	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
-
-	renameStarted := make(chan struct{})
-	releaseRename := make(chan struct{})
-	var releaseRenameOnce sync.Once
-	release := func() { releaseRenameOnce.Do(func() { close(releaseRename) }) }
-	originalRename := linkIngestFile
-	t.Cleanup(func() { linkIngestFile = originalRename })
-	linkIngestFile = func(src, dst string) error {
-		close(renameStarted)
-		<-releaseRename
-		return originalRename(src, dst)
-	}
-
-	w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}
-	commitDone := make(chan error, 1)
-	go func() {
-		commitDone <- w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
-			int64(len("committed bytes")), nil, uuid.Nil, 0)
-	}()
-
-	waitCommit := func() error {
-		t.Helper()
-		select {
-		case err := <-commitDone:
-			return err
-		case <-time.After(5 * time.Second):
-			t.Fatal("commit did not finish after the rename gate was released")
-			return nil
-		}
-	}
-	select {
-	case <-renameStarted:
-	case err := <-commitDone:
-		release()
-		t.Fatalf("commit returned before reaching the rename hook: %v", err)
-	case <-time.After(5 * time.Second):
-		release()
-		err := waitCommit()
-		t.Fatalf("commit did not reach the rename hook (result: %v)", err)
-	}
-	fileLock, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
-	if err != nil {
-		release()
-		_ = waitCommit()
-		t.Fatalf("trying rel_path file lock during commit: %v", err)
-	}
-	if acquired {
-		_ = fileLock.Close()
-		release()
-		_ = waitCommit()
-		t.Fatal("rel_path file lock was available while commit was renaming canonical")
-	}
-	release()
-	if err := waitCommit(); err != nil {
-		t.Fatalf("commit() error: %v", err)
-	}
-	if got, err := os.ReadFile(fullPath); err != nil || string(got) != "committed bytes" {
-		t.Fatalf("committed canonical = %q, %v; want committed bytes", got, err)
-	}
-}
-
-func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	mediaDir := t.TempDir()
-	w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}
-	const commits = 5
-	for i := 0; i < commits; i++ {
-		recordingID := dbtest.Recording(t, pool)
-		relPath := fmt.Sprintf("sites/default/lock-lifecycle/commit-%d.m2ts", i)
-		fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-		tempPath := filepath.Join(filepath.Dir(fullPath), fmt.Sprintf(".rokuban-ingest-lock-lifecycle-%d", i))
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-			t.Fatalf("creating commit directory: %v", err)
-		}
-		content := []byte(fmt.Sprintf("committed payload %d", i))
-		if err := os.WriteFile(tempPath, content, 0o644); err != nil {
-			t.Fatalf("writing commit temp: %v", err)
-		}
-		seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
-		if err := w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
-			int64(len(content)), nil, uuid.Nil, 0); err != nil {
-			t.Fatalf("commit %d: %v", i, err)
-		}
-		if _, err := os.Stat(fullPath); err != nil {
-			t.Fatalf("canonical file after commit %d: %v", i, err)
-		}
-		lockPath := mediaRelPathLockPath(mediaDir, relPath)
-		if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("per-rel_path lock after commit %d: stat error = %v, want not exist", i, err)
-		}
-	}
-
-	entries, err := os.ReadDir(filepath.Join(mediaDir, ".rokuban-locks"))
-	if err != nil {
-		t.Fatalf("reading lock directory after %d commits: %v", commits, err)
-	}
-	if len(entries) != 1 || entries[0].Name() != mediaRelPathLockGateFile {
-		t.Errorf("lock directory entries after %d successful commits = %v, want only persistent gate %q", commits, entryNames(entries), mediaRelPathLockGateFile)
-	}
-}
-
 // TestIngestWorker_CanonicalOrphanSurvivesPublishCallbackFailure は、rename 後に
 // publish callback が失敗しても canonical を孤児回収が消さず、orphan_files の
 // 追跡記録も保持することを確認する。
@@ -401,7 +277,7 @@ func runCanonicalOrphanSurvives(
 		t.Fatalf("commit did not reach the publication hook (result: %v)", err)
 	}
 
-	// The path lock prevents cleanup from deleting the file while the transaction is unresolved.
+	// Canonical orphan cleanup is report-only, including while the publication transaction is unresolved.
 	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	cleanup.deleteOrphanFile(relPath, 0)

@@ -248,12 +248,11 @@ type InPlaceResult struct {
 // MediaPublish は原本・派生物の公開と in-place 登録を永続化する。
 //
 // publish 関数を取るメソッドは、すべて次の規則に従う。
-// 呼び出し側は rel_path のファイルロックを持って呼ぶ。store はファイルシステムを知らない。
-// store は検査と行の書き込みをすべて終えた後、commit の前に publish を 1 回だけ呼ぶ。
-// publish は rename と fsync でファイルを公開する。検査で公開しないと決めたときは呼ばない。
+// store は検査と行の書き込みを終えた後、commit の前に publish を 1 回だけ呼ぶ。
+// 検査で公開しないと決めたときは呼ばない。
 // publish がエラーを返したら、store は rollback してそのエラーを返す。
-// publish が成功した後に commit が失敗したら、store はエラーを返し、ファイルは行を持たない孤児として残る。
-// 呼び出し側はそのファイルを消さず、孤児の監査に任せる。
+// publish が成功した後に commit が失敗したら、store はエラーを返し、公開物は行を持たない孤児として残る。
+// 呼び出し側は公開物を消さず、孤児の監査に任せる。
 type MediaPublish interface {
 	// AcquireIngestCheckpoint は録画の writer lease を取り、前の clean handoff を返す。
 	// live lease が別にある場合は acquired=false を返す。unclean handoff では新世代から始める。

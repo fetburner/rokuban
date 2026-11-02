@@ -126,7 +126,6 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 - 投入の失敗で Error、成功で Warn を出すこと: `TestEnqueueContinuation_LogsFailureAndSuccess`
 - 公開済みなら後から来た thumbnail の公開を捨てること（`published` が false）: `TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive`
 - 公開済みなら後から来た thumbnail と seek_tiles の公開を捨てること: `runDerivedPublicationSkips`（`internal/store/contracttest/mediapublish.go`）
-- 公開が rel_path のロック下で直列になること: `TestThumbnailWorkerPublishesUnderRelPathLock`、`TestSeekTilesWorkerPublishesUnderRelPathLock`
 
 </details>
 

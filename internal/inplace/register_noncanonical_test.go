@@ -13,7 +13,7 @@ import (
 )
 
 // epgimport は外部 JSON の relPath をそのまま連結するので "./" や "//" を含みうる。
-// Register は正規化した path で登録する（LockPaths が非正規 path を拒否しても落ちない）。
+// Register は正規化した path で登録する。
 func TestRegister_AcceptsNonCanonicalRelPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()

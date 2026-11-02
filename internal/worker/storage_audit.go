@@ -440,7 +440,7 @@ func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, age t
 var beforeWalkMediaFiles = func() {}
 
 // walkMediaFiles は mediaDir 配下の通常ファイルを列挙する。catalog.Subdir
-// （災害復旧用メタデータ）、.rokuban-locks（調停用 metadata）、.rokuban-store
+// （災害復旧用メタデータ）、.rokuban-locks（旧版の lock metadata）、.rokuban-store
 // （置き場の目印）は走査から除く。
 // mediaDir 自体が symlink の場合は、走査 root・catalogDir・rel_path の基準を
 // 同じ実体パスに揃えるため、走査前に解決する。
@@ -486,7 +486,7 @@ func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) 
 	}
 
 	catalogDir := filepath.Join(resolvedMediaDir, catalog.Subdir)
-	lockDir := filepath.Join(resolvedMediaDir, mediapath.MediaRelPathLockDirName)
+	reservedDir := filepath.Join(resolvedMediaDir, mediapath.MediaRelPathLockDirName)
 	return filepath.Walk(resolvedMediaDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -494,7 +494,7 @@ func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) 
 			}
 			return err
 		}
-		if path == lockDir {
+		if path == reservedDir {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

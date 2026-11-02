@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/medialock"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -194,19 +193,7 @@ func TestRescueScanCandidateRemoved(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		removed := make(chan error, 1)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			lock, err := medialock.Lock(ctx, mediaDir, rel)
-			if err != nil {
-				removed <- err
-				return
-			}
-			defer func() { _ = lock.Close() }()
-			removed <- os.Remove(p)
-		}()
-		if err := <-removed; err != nil {
+		if err := os.Remove(p); err != nil {
 			return nil, err
 		}
 		return info, nil

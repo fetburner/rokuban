@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -2495,12 +2496,12 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 }
 
 // canonical orphan は公開済みか未公開かを行の欠如だけで判断できないため、
-// rel_path lock が空いていても孤児回収から unlink しない。
+// age を超えても孤児回収から unlink しない。
 func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
-	relPath := "orphan/rel-path-lock-" + filepath.Base(mediaDir) + ".m2ts"
+	relPath := "orphan/canonical-" + filepath.Base(mediaDir) + ".m2ts"
 	orphanPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
 		t.Fatalf("creating orphan parent directory: %v", err)
@@ -2521,24 +2522,11 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 		_ = q.DeleteOrphanFile(context.Background(), sqlcgen.DeleteOrphanFileParams{Store: "", RelPath: relPath})
 	})
 
-	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
-	if err != nil {
-		t.Fatalf("locking rel_path file: %v", err)
-	}
-
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	w.deleteOrphanFile(relPath, time.Hour)
 	if !fileExists(orphanPath) {
-		t.Fatal("canonical orphan was removed while rel_path lock was held")
-	}
-	if err := fileLock.Close(); err != nil {
-		t.Fatalf("releasing rel_path file lock: %v", err)
-	}
-
-	w.deleteOrphanFile(relPath, time.Hour)
-	if !fileExists(orphanPath) {
-		t.Fatal("canonical orphan was removed after rel_path lock was released")
+		t.Fatal("canonical orphan was removed")
 	}
 	var count int
 	if err := pool.QueryRow(ctx,
@@ -2547,6 +2535,81 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("orphan_files count after canonical cleanup = %d, want 1", count)
+	}
+}
+
+// TestDeleteReconcileStaleWorkCannotUnlinkRepublishedPath は、遅れた削除が公開済みの別の原本を消さないことを検査する。
+// 削除は行を deleting にしてから unlink する。その間に別の経路が同じファイルを消して deleted にし、
+// 同じ rel_path へ別の録画の原本を commit する。tombstone が path を予約していれば commit は拒否される。
+// 予約していなければ commit は成功し、遅れた unlink がその新しいファイルを消す。
+func TestDeleteReconcileStaleWorkCannotUnlinkRepublishedPath(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	const oldRelPath = "originals/stale-delete.ts"
+	const republishedContent = "republished bytes"
+	oldRecordingID := dbtest.Recording(t, pool)
+	oldAssetID := seedOriginalAsset(t, pool, mediaDir, oldRecordingID, oldRelPath, []byte("old bytes"))
+	var oldCopyID int64
+	if err := pool.QueryRow(ctx, `
+SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, oldAssetID, dbtest.StoreName).Scan(&oldCopyID); err != nil {
+		t.Fatalf("reading old copy ID: %v", err)
+	}
+	oldPath := filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))
+
+	// 別の録画の temp。公開の commit がこれを oldPath へ link しようとする。
+	newRecordingID := dbtest.Recording(t, pool)
+	tempPath := filepath.Join(filepath.Dir(oldPath), ".rokuban-ingest-republish")
+	if err := os.WriteFile(tempPath, []byte(republishedContent), 0o644); err != nil {
+		t.Fatalf("writing republish temp: %v", err)
+	}
+	seedIngestTempForCommit(t, pool, newRecordingID, mediaDir, tempPath)
+
+	var commitErr error
+	previousHook := beforeMediaAssetUnlink
+	t.Cleanup(func() { beforeMediaAssetUnlink = previousHook })
+	beforeMediaAssetUnlink = func(relPath string) {
+		if relPath != oldRelPath {
+			return
+		}
+		// 別の経路が同じ削除を完了させ、行を deleted にした状態を作る。
+		if err := os.Remove(oldPath); err != nil {
+			t.Errorf("removing old file in hook: %v", err)
+			return
+		}
+		if _, err := pool.Exec(ctx,
+			"UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE id = $1", oldCopyID); err != nil {
+			t.Errorf("marking old copy deleted in hook: %v", err)
+			return
+		}
+		w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}
+		commitErr = w.commit(ctx, newRecordingID, oldRelPath, tempPath, oldPath, int64(len(republishedContent)), nil, uuid.Nil, 0)
+	}
+
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), MediaDir: mediaDir}
+	w.deleteMediaAsset(ctx, store.MediaDeleteAsset{
+		ID: oldCopyID, MediaAssetID: oldAssetID, RecordingID: oldRecordingID,
+		RelPath: oldRelPath, SizeBytes: int64(len("old bytes")), Kind: store.AssetKindOriginal,
+	}, "trash")
+
+	var activeAtPath int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM media_asset_copies WHERE store = $1 AND rel_path = $2 AND state = 'active'",
+		dbtest.StoreName, oldRelPath).Scan(&activeAtPath); err != nil {
+		t.Fatalf("counting active copies at path: %v", err)
+	}
+	// 最初に検査する: 生きた copy は、公開時のバイト列を保った実ファイルを持たねばならない。
+	if activeAtPath > 0 {
+		if got, err := os.ReadFile(oldPath); err != nil || string(got) != republishedContent {
+			t.Fatalf("active copy at %s lost its file to the stale unlink: read %q, %v; want %q", oldRelPath, got, err, republishedContent)
+		}
+	}
+	// 完全な一意索引は tombstone と衝突するので、upsert は 0 行になり ErrConflict になる。
+	if !errors.Is(commitErr, store.ErrConflict) {
+		t.Fatalf("republishing the tombstoned path: commit error = %v, want store.ErrConflict", commitErr)
+	}
+	if activeAtPath != 0 {
+		t.Fatalf("active copies at %s = %d, want 0 after the rejected publish", oldRelPath, activeAtPath)
 	}
 }
 
@@ -2852,7 +2915,7 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 	}
 }
 
-func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *testing.T) {
+func TestDeleteReconcileWorker_StagingOrphansAreDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -2875,10 +2938,6 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *tes
 		}
 	}
 
-	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, paths[0])
-	if err != nil {
-		t.Fatalf("locking staging rel_path for test: %v", err)
-	}
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
 		RecordingPurge: pgstoretest.Recordings(pool),
@@ -2888,22 +2947,8 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *tes
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
-	done := make(chan error, 1)
-	go func() { done <- runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Work(): %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		_ = fileLock.Close()
-		if err := <-done; err != nil {
-			t.Logf("Work returned after releasing the file lock: %v", err)
-		}
-		t.Fatal("staging cleanup waited for a canonical rel_path lock")
-	}
-	if err := fileLock.Close(); err != nil {
-		t.Fatalf("releasing staging rel_path lock: %v", err)
+	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work(): %v", err)
 	}
 	for _, relPath := range paths {
 		if fileExists(filepath.Join(mediaDir, filepath.FromSlash(relPath))) {

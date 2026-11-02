@@ -145,7 +145,7 @@ func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDi
 			Assets: []inplace.Asset{{Kind: kind, Profile: profile, RelPath: relPath}},
 		})
 		if errors.Is(err, os.ErrNotExist) {
-			// The walk observation is a hint; Register checks again under the path lock.
+			// The walk observation is a hint; Register checks the file again before publishing.
 			result.MissingMediaFiles++
 			return nil
 		}
