@@ -454,9 +454,7 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		}
 		var derivedGeneration *int64
 		var copyGeneration int64
-		if a.Kind == "original" {
-			copyGeneration = 0
-		} else {
+		if a.Kind != "original" {
 			derivedGeneration = a.DerivedGeneration
 			copyGeneration = *a.Generation
 		}

@@ -120,8 +120,8 @@ func runCatalogRestoreRollback(t *testing.T, newStore NewCatalogStore) {
 	}
 }
 
-// runCatalogRestoreRejectsMissingMediaAssetFields は、資産の必須キーが 1 つ欠けた文書を Restore が拒否し、何も書かないことを確かめる。
-// 文言は見ない。契約は拒否することと、拒否の前に書かないことだけを約束する。
+// runCatalogRestoreRejectsMissingMediaAssetFields は、資産の必須キーが 1 つ欠けた文書を Restore が拒否し、何も残さないことを確かめる。
+// エラーの文言は見ない（契約は文言を約束しない）。
 func runCatalogRestoreRejectsMissingMediaAssetFields(t *testing.T, newStore NewCatalogStore) {
 	tests := []struct {
 		name    string
