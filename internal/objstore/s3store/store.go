@@ -163,22 +163,10 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if err := checkEmptySHA(wantSHA); err != nil {
 			return err
 		}
-		err := s.putEmptyObject(ctx, key, contentType, wantSHA, uploadToken)
-		if err == nil {
-			return nil
+		if err := s.putEmptyObject(ctx, key, contentType, wantSHA, uploadToken); err != nil {
+			return s.resolveOwnPut(ctx, key, 0, wantSHA, uploadToken, err, "putting empty S3 object")
 		}
-		if isPreconditionFailed(err) {
-			recoveryErr := s.recoverOwnObject(ctx, key, 0, wantSHA, uploadToken)
-			if errors.Is(recoveryErr, objstore.ErrNotFound) {
-				return alreadyExistsError(key)
-			}
-			return recoveryErr
-		}
-		recoveryErr := s.recoverOwnObject(ctx, key, 0, wantSHA, uploadToken)
-		if recoveryErr == nil || errors.Is(recoveryErr, objstore.ErrAlreadyExists) || errors.Is(recoveryErr, objstore.ErrChecksumMismatch) {
-			return recoveryErr
-		}
-		return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", key, err))
+		return nil
 	}
 
 	partSize := multipartPartSize(size)
@@ -235,27 +223,12 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 	if err == nil {
 		return nil
 	}
-	if isPreconditionFailed(err) {
-		recoveryErr := s.recoverOwnObject(ctx, key, size, wantSHA, uploadToken)
-		if recoveryErr == nil {
-			return nil
-		}
-		if errors.Is(recoveryErr, objstore.ErrNotFound) {
-			recoveryErr = alreadyExistsError(key)
-		}
-		return abort(recoveryErr)
-	}
 	// A lost CompleteMultipartUpload response is recoverable only when HEAD identifies
 	// this upload, not merely another publisher's object with the same digest.
-	recoveryErr := s.recoverOwnObject(ctx, key, size, wantSHA, uploadToken)
-	switch {
-	case recoveryErr == nil:
-		return nil
-	case errors.Is(recoveryErr, objstore.ErrAlreadyExists), errors.Is(recoveryErr, objstore.ErrChecksumMismatch):
-		return abort(recoveryErr)
-	default:
-		return abort(withCredentialClass(fmt.Errorf("completing S3 multipart upload for %q: %w", key, err)))
+	if resolveErr := s.resolveOwnPut(ctx, key, size, wantSHA, uploadToken, err, "completing S3 multipart upload for"); resolveErr != nil {
+		return abort(resolveErr)
 	}
+	return nil
 }
 
 // Head returns metadata for a completed key. An absent object differs from a service error.
@@ -391,6 +364,22 @@ func newUploadToken() (string, error) {
 		return "", fmt.Errorf("generating S3 upload token: %w", err)
 	}
 	return hex.EncodeToString(token[:]), nil
+}
+
+// resolveOwnPut は Put の公開要求が失敗したとき、HEAD の upload token でこの Put が公開したかを判定する。
+// この Put の公開なら nil、他の書き手のキーなら ErrAlreadyExists を返す。
+func (s *Store) resolveOwnPut(ctx context.Context, key string, size int64, wantSHA [32]byte, uploadToken string, putErr error, operation string) error {
+	recoveryErr := s.recoverOwnObject(ctx, key, size, wantSHA, uploadToken)
+	if isPreconditionFailed(putErr) {
+		if errors.Is(recoveryErr, objstore.ErrNotFound) {
+			return alreadyExistsError(key)
+		}
+		return recoveryErr
+	}
+	if recoveryErr == nil || errors.Is(recoveryErr, objstore.ErrAlreadyExists) || errors.Is(recoveryErr, objstore.ErrChecksumMismatch) {
+		return recoveryErr
+	}
+	return withCredentialClass(fmt.Errorf("%s %q: %w", operation, key, putErr))
 }
 
 func (s *Store) recoverOwnObject(ctx context.Context, key string, size int64, wantSHA [32]byte, uploadToken string) error {
