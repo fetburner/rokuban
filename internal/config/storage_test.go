@@ -235,6 +235,11 @@ func TestStoragePolicyValidation(t *testing.T) {
 			wantError: "storage.transfer.backlog_limit references unknown store",
 		},
 		{
+			name:      "bandwidth references unknown store",
+			policy:    strings.Replace(validStoragePolicy, "bandwidth: { main: 50Mbps }", "bandwidth: { nope: 50Mbps }", 1),
+			wantError: "storage.transfer.bandwidth references unknown store",
+		},
+		{
 			name:      "bandwidth store must be fs",
 			policy:    strings.Replace(validStoragePolicy, "bandwidth: { main: 50Mbps }", "bandwidth: { s3main: 50Mbps }", 1),
 			wantError: "storage.transfer.bandwidth.s3main: store must be kind fs",
