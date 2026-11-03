@@ -410,10 +410,9 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 	}))
 	riveradapter.Register[jobs.StorageSyncArgs](workers, newStoreRoute("storage_sync", deps.perStore(), func(d *Deps) jobq.Worker[jobs.StorageSyncArgs] {
 		return &StorageSyncWorker{
-			Storage:       d.StorageObservation,
-			MediaDir:      d.MediaDir,
-			ScratchDir:    d.ScratchDir,
-			MountedStores: d.MountedStores,
+			Storage:    d.StorageObservation,
+			MediaDir:   d.MediaDir,
+			ScratchDir: d.ScratchDir,
 		}
 	}))
 	riveradapter.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps.perStore(), func(d *Deps) jobq.Worker[tsscan.ScanArgs] {

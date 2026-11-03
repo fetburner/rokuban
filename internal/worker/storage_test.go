@@ -272,22 +272,21 @@ func fakeStat(usageByPath map[string]diskUsage, failPaths map[string]bool) func(
 	}
 }
 
-// Two store-scoped workers must keep separate capacity series for the same root.
-func TestReviewRepro_STOR02_CapacityGaugesKeepEachMountedStore(t *testing.T) {
+// 同じ root 名でも置き場が違えば容量ゲージの系列が分かれ、後から走った置き場の値で上書きされないこと。
+func TestStorageSyncWorker_CapacityGaugesKeepEachMountedStore(t *testing.T) {
 	tokyoDir, takamatsuDir := t.TempDir(), t.TempDir()
 	for _, tc := range []struct {
 		store string
 		path  string
 		total int64
 	}{
-		{store: "review-tokyo-1718", path: tokyoDir, total: 100},
-		{store: "review-takamatsu-1718", path: takamatsuDir, total: 200},
+		{store: "tokyo", path: tokyoDir, total: 100},
+		{store: "takamatsu", path: takamatsuDir, total: 200},
 	} {
 		w := &StorageSyncWorker{
-			Storage:       noopStorageObservation{},
-			MediaDir:      tc.path,
-			MountedStores: []string{"review-tokyo-1718", "review-takamatsu-1718"},
-			Stat:          fakeStat(map[string]diskUsage{tc.path: {totalBytes: tc.total, usedBytes: 10, availableBytes: tc.total - 10}}, nil),
+			Storage:  noopStorageObservation{},
+			MediaDir: tc.path,
+			Stat:     fakeStat(map[string]diskUsage{tc.path: {totalBytes: tc.total, usedBytes: 10, availableBytes: tc.total - 10}}, nil),
 		}
 		if err := runStorageSyncForStore(t, w, tc.store); err != nil {
 			t.Fatalf("Work(%s): %v", tc.store, err)
@@ -300,7 +299,7 @@ func TestReviewRepro_STOR02_CapacityGaugesKeepEachMountedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantByStore := map[string]float64{"review-tokyo-1718": 100, "review-takamatsu-1718": 200}
+	wantByStore := map[string]float64{"tokyo": 100, "takamatsu": 200}
 	var mediaTotals []float64
 	gotByStore := make(map[string]float64)
 	for _, family := range families {
@@ -474,58 +473,6 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 	}
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch TotalBytes = %v after removal, want 0", got)
-	}
-}
-
-// A later pass also removes every series for a store this process no longer mounts.
-func TestStorageSyncWorker_MetricsClearedWhenStoreUnmounted(t *testing.T) {
-	storeA, storeB := "review-mounted-1718", "review-unmounted-1718"
-	dirA, dirB := t.TempDir(), t.TempDir()
-	mountedStores := []string{storeA, storeB}
-	workerA := &StorageSyncWorker{
-		Storage:       noopStorageObservation{},
-		MediaDir:      dirA,
-		MountedStores: mountedStores,
-		Stat:          fakeStat(map[string]diskUsage{dirA: {totalBytes: 100, usedBytes: 10, availableBytes: 90}}, nil),
-	}
-	workerB := &StorageSyncWorker{
-		Storage:       noopStorageObservation{},
-		MediaDir:      dirB,
-		MountedStores: mountedStores,
-		Stat:          fakeStat(map[string]diskUsage{dirB: {totalBytes: 200, usedBytes: 20, availableBytes: 180}}, nil),
-	}
-	if err := runStorageSyncForStore(t, workerA, storeA); err != nil {
-		t.Fatalf("Work(%s): %v", storeA, err)
-	}
-	if err := runStorageSyncForStore(t, workerB, storeB); err != nil {
-		t.Fatalf("Work(%s): %v", storeB, err)
-	}
-
-	workerA.MountedStores = []string{storeA}
-	if err := runStorageSyncForStore(t, workerA, storeA); err != nil {
-		t.Fatalf("Work(%s) after store removal: %v", storeA, err)
-	}
-
-	reg := prometheus.NewRegistry()
-	reg.MustRegister(
-		metrics.StorageSyncLastSuccess,
-		metrics.StorageRootLastSuccess,
-		metrics.StorageRootTotalBytes,
-		metrics.StorageRootUsedBytes,
-		metrics.StorageRootAvailableBytes,
-	)
-	families, err := reg.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, family := range families {
-		for _, metric := range family.GetMetric() {
-			for _, label := range metric.GetLabel() {
-				if label.GetName() == "store" && label.GetValue() == storeB {
-					t.Errorf("stale %s series still has store=%q", family.GetName(), storeB)
-				}
-			}
-		}
 	}
 }
 

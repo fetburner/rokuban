@@ -181,7 +181,9 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 `rokuban_missing_asset_scan_suspected_storage_failure_total` は、`storage.stores` に FS 置き場が無い構成でだけ進む。走査でファイルを 1 件も観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
 
-`rokuban_storage_sync_last_success_timestamp_seconds` は置き場ごとの全 root 観測時刻で、1 root でも失敗した部分成功では進まない。`{store,root}` の最終観測時刻と対で見る。root（`media` / `scratch`）ごとの鮮度は、その置き場で片方だけ恒久的に動かなくなったケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。`store` ラベルが加わったため、既存のアラート式とダッシュボードは置き場を指定するよう更新する。
+`rokuban_storage_sync_last_success_timestamp_seconds{store}` は、その置き場の全 root を観測できたパスの時刻で、1 root でも失敗した部分成功では進まない。`rokuban_storage_root_last_success_timestamp_seconds{store,root}` と対で見る。root（`media` / `scratch`）ごとの鮮度は、その置き場で片方だけ恒久的に動かなくなったケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。
+
+容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。`store` ラベルは置き場が 1 つの構成でも付く。`store` を指定しないセレクタ（`root="media"` など）は全置き場の系列に一致するので、そのまま動く。壊れるのは `root` だけで集約・結合している式（`by (root)` / `on (root)`）で、それらは `store` を含めるよう直す。scratch はプロセスで共有するが、置き場の数だけ同じ値の系列が出る。
 
 <details><summary>根拠</summary>
 
