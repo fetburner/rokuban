@@ -18,6 +18,21 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
+// ListActiveDerivedCopiesInNonDerivedS3 は、現在の派生物置き場以外に残る current-generation の active 派生コピーを返す。
+func (s *Media) ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string, derivedStore string) ([]store.DerivedS3CopyCount, error) {
+	rows, err := sqlcgen.New(s.pool).ListActiveDerivedCopiesInNonDerivedS3(ctx, sqlcgen.ListActiveDerivedCopiesInNonDerivedS3Params{
+		S3Stores: s3Stores, DerivedStore: derivedStore,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing active derived copies in non-derived S3 stores: %w", err)
+	}
+	out := make([]store.DerivedS3CopyCount, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.DerivedS3CopyCount{Store: row.Store, Copies: row.Copies})
+	}
+	return out, nil
+}
+
 // ListMediaAssetTransferCandidates は desired store にコピーが無い論理資産を列挙する。
 func (s *Media) ListMediaAssetTransferCandidates(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit, limit int32) ([]store.MediaAssetTransferCandidate, error) {
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetTransferCandidates(ctx, sqlcgen.ListMediaAssetTransferCandidatesParams{

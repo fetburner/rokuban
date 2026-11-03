@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -149,6 +150,140 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 	}
 	if _, err := os.Stat(filepath.Join(roots["test-store"], filepath.FromSlash(relPath))); err == nil {
 		t.Error("non-desired file in test-store remains after the delete reconcile")
+	}
+}
+
+func TestStoreScopedDeleteReconcileKeepsOldS3CopyAfterDerivedStoreSwitch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	cfg := &config.Config{Storage: config.StorageConfig{
+		Stores: map[string]config.StoreConfig{
+			"test-store": {Kind: "fs"},
+			"s3-a":       {Kind: "s3", Bucket: "old-bucket"},
+			"s3-b":       {Kind: "s3", Bucket: "new-bucket"},
+		},
+		Originals: []config.OriginalStoreRule{{Store: "test-store"}},
+		Derived:   "s3-a",
+		Transfer:  config.StorageTransferConfig{Overlap: time.Hour},
+	}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
+	oldFingerprint, err := cfg.Storage.PolicyFingerprint()
+	if err != nil {
+		t.Fatalf("old storage PolicyFingerprint: %v", err)
+	}
+	cfg.Storage.Derived = "s3-b"
+	newFingerprint, err := cfg.Storage.PolicyFingerprint()
+	if err != nil {
+		t.Fatalf("new storage PolicyFingerprint: %v", err)
+	}
+	if newFingerprint == oldFingerprint {
+		t.Fatal("PolicyFingerprint did not change when the derived S3 store changed")
+	}
+
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = store.AssetKindEncoded
+		profile := "h264"
+		p.Profile = &profile
+		p.RelPath = "sites/default/s3-switch/fs-copy.mp4"
+		p.SizeBytes = 11
+	})
+	if _, err := pool.Exec(ctx, `
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = now()
+WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
+		t.Fatalf("retiring fixture FS copy: %v", err)
+	}
+	oldRelPath := "sites/default/s3-switch/old-s3-a.mp4"
+	newRelPath := "sites/default/s3-switch/new-s3-b.mp4"
+	for _, copy := range []struct{ name, relPath string }{{"s3-a", oldRelPath}, {"s3-b", newRelPath}} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at)
+SELECT a.id, $2, $3, COALESCE(a.derived_generation, 0), 'active', now() - interval '3 hours'
+FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != nil {
+			t.Fatalf("adding active copy in %s: %v", copy.name, err)
+		}
+	}
+
+	// The store-scoped SQL can identify s3-a as prunable once s3-b is active and the overlap has elapsed.
+	rules, err := cfg.Storage.OriginalRulesJSON()
+	if err != nil {
+		t.Fatalf("encoding storage rules: %v", err)
+	}
+	oldStoreMedia := pgstore.NewMediaWithStores(pool, "s3-a", "test-store", "s3-b")
+	candidates, err := oldStoreMedia.ListMediaAssetCopiesToDelete(ctx, rules, "s3-b", time.Now().Add(-time.Hour), 10)
+	if err != nil {
+		t.Fatalf("listing s3-a placement candidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Store != "s3-a" {
+		t.Fatalf("s3-a placement candidates after s3-b passed overlap = %+v, want the s3-a copy", candidates)
+	}
+
+	fsRoot := t.TempDir()
+	if err := mediapath.WriteStoreMarker(fsRoot, "test-store"); err != nil {
+		t.Fatalf("writing FS store marker: %v", err)
+	}
+	fsObjects, err := fsstore.New(fsRoot)
+	if err != nil {
+		t.Fatalf("creating FS object store: %v", err)
+	}
+	derivedObjects, err := fsstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("creating s3-b test object store: %v", err)
+	}
+	oldS3Root := t.TempDir()
+	oldS3Path := filepath.Join(oldS3Root, filepath.FromSlash(oldRelPath))
+	if err := os.MkdirAll(filepath.Dir(oldS3Path), 0o755); err != nil {
+		t.Fatalf("creating old S3 object directory: %v", err)
+	}
+	if err := os.WriteFile(oldS3Path, []byte("old s3-a copy"), 0o644); err != nil {
+		t.Fatalf("writing old S3 object: %v", err)
+	}
+
+	media := pgstore.NewMediaWithStores(pool, "", "", "s3-b")
+	base := &worker.Deps{
+		Breakers:              pgstore.NewBreakers(pool),
+		RecordingPurge:        pgstore.NewRecordings(pool, ""),
+		StorageObservation:    media,
+		StorageObjects:        map[string]objstore.Store{"test-store": fsObjects, "s3-b": derivedObjects},
+		StorageRoots:          map[string]string{"test-store": fsRoot},
+		StorageTransfer:       media,
+		StorageTransferPolicy: cfg.Storage,
+		TransferOverlap:       cfg.Storage.Transfer.Overlap,
+		Cleanup:               config.CleanupConfig{MaxDeletesPerPass: 100},
+	}
+	perStore := newPerStoreWorkerDeps(pool, cfg, base, base.StorageRoots, derivedObjects)
+	perStoreNames := make([]string, 0, len(perStore))
+	for name := range perStore {
+		perStoreNames = append(perStoreNames, name)
+	}
+	slices.Sort(perStoreNames)
+	// 変異候補: configured S3 置き場にも Deps を作ると、下の key assertion に s3-a/s3-b が加わって失敗する。
+	if !slices.Equal(perStoreNames, []string{"test-store"}) {
+		t.Fatalf("server per-store Deps = %v, want only mounted FS stores", perStoreNames)
+	}
+	registry := worker.NewWorkers(&worker.Deps{PerStore: perStore})
+	for _, name := range perStoreNames {
+		if err := registry.Work(ctx, jobs.DeleteReconcileArgs{Store: name}); err != nil {
+			t.Fatalf("delete reconcile for server-scoped store %q: %v", name, err)
+		}
+	}
+
+	var oldState, newState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 's3-a'`, assetID).Scan(&oldState); err != nil {
+		t.Fatalf("reading s3-a copy state: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 's3-b'`, assetID).Scan(&newState); err != nil {
+		t.Fatalf("reading s3-b copy state: %v", err)
+	}
+	if oldState != "active" {
+		t.Fatalf("s3-a copy state after server-scoped delete reconcile = %q, want active", oldState)
+	}
+	if newState != "active" {
+		t.Fatalf("current s3-b copy state after delete reconcile = %q, want active", newState)
+	}
+	if _, err := os.Stat(oldS3Path); err != nil {
+		t.Fatalf("old s3-a object after server-scoped delete reconcile: %v", err)
 	}
 }
 

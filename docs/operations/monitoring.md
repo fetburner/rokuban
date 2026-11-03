@@ -165,6 +165,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_object_store_errors_total{operation}` | Counter | S3 の置き場の操作（put / head / get / list / delete / presign）の失敗回数 |
 | `rokuban_object_store_credential_errors_total` | Counter | 上の失敗のうち、資格情報の取得失敗・失効・不明が原因のもの |
 | `rokuban_object_store_orphans_unresolved` | Gauge | DB にコピー行が無いまま残っている S3 のキーの数。報告だけで削除しない |
+| `rokuban_storage_derived_copies_outside_derived_s3` | Gauge | 設定中の S3 のうち、現在の `storage.derived` 以外にある active な現世代の派生コピー数 |
 | `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
 | `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
 | `rokuban_storage_sync_last_success_timestamp_seconds{store}` | Gauge | 置き場の全 root を観測できたパスの時刻 |
@@ -174,6 +175,8 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 `rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
 
 `rokuban_store_marker_mismatch_total{store}` は、設定した置き場名と `.rokuban-store` が一致しない、または目印を読めないときに操作を見送った回数である。起動時と操作ごとに増えるため、同じ障害中は再試行のたびに増える。
+
+`rokuban_storage_derived_copies_outside_derived_s3` は、storage transfer reconcile が DB のコピー行と設定中の S3 置き場を照合して更新する。非ゼロなら転送 reconcile の Warn に出る置き場名を調べる。storage transfer reconcile は起動を止めず、旧い S3 のコピーも自動削除しない。
 
 `rokuban_orphan_files_unresolved` は、`media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数である。
 
