@@ -166,7 +166,7 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
   - 画面別判定（番組表・予約・検索など）
   - ffmpeg で fixture を作るもの
     - 録画 HLS の時間軸と世代切替: `recording-playback-timeline`（fixture を Go のテストで作るため Go も要る）
-    - そのほか: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`
+    - そのほか: `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`
   - `design.mjs`: 63 枚のショットを撮るぶん重い
 
 `s3-302` は上の 3 類型のどれでもなく、`browser-e2e` と別のジョブ `browser-s3-302` で回す。ダイジェスト固定した RustFS の公式イメージと実 Chrome が要り、選定基準の「Chromium だけで軽く終わる」を満たさないためである。
