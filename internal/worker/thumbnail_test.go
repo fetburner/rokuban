@@ -26,6 +26,7 @@ import (
 var tinyJPEG = []byte{0xFF, 0xD8, 0xFF, 0xD9}
 
 func TestThumbnailSeek(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		dur  time.Duration
@@ -48,6 +49,7 @@ func TestThumbnailSeek(t *testing.T) {
 }
 
 func TestThumbnailPlanForInputs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		inputs    thumbnailInputs
@@ -132,6 +134,7 @@ func TestThumbnailPlanForInputs(t *testing.T) {
 }
 
 func TestThumbnailRelPathUsesPersistedGeneration(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		generation int64
 		want       string
@@ -147,6 +150,7 @@ func TestThumbnailRelPathUsesPersistedGeneration(t *testing.T) {
 }
 
 func TestNextUnusedThumbnailRelPathAdvancesPastExistingFile(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mediaDir, "thumbnails"), 0o755); err != nil {
 		t.Fatal(err)
@@ -168,6 +172,7 @@ func TestNextUnusedThumbnailRelPathAdvancesPastExistingFile(t *testing.T) {
 }
 
 func TestThumbnailNeedsReselect(t *testing.T) {
+	t.Parallel()
 	inputs := thumbnailInputs{Original: &thumbnailSource{MediaAssetID: 1, RelPath: "original.ts"}}
 	timeline := chapters.Derive(false, nil,
 		[]chapters.Span{{StartMs: 0, EndMs: 60000, Label: chapters.LabelCM, Cut: true}}, 1800000)
@@ -211,6 +216,7 @@ func TestThumbnailNeedsReselect(t *testing.T) {
 }
 
 func TestThumbnailWorker_CreatesAsset(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -292,6 +298,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 }
 
 func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -378,6 +385,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 }
 
 func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -449,6 +457,7 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 }
 
 func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -523,6 +532,7 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 }
 
 func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -593,6 +603,7 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 }
 
 func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -618,6 +629,7 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 }
 
 func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
+	t.Parallel()
 	// ON CONFLICT DO UPDATE の UpsertDerivedMediaAsset(thumbnail) は、既に active な行がある
 	// recording に対しても同じ行を更新する（行数は増えない）。
 	pool := setupTestPool(t)
@@ -672,6 +684,7 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 }
 
 func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
+	t.Parallel()
 	// state='deleted' の tombstone（過去の完全削除の残骸）がある recording に
 	// 対して Work を実行すると、行が active に戻り GetActiveThumbnailMediaAssetID
 	// が引けるようになる（issue #108）。
@@ -781,6 +794,7 @@ func fakeThumbnailTools(t *testing.T, durationSec float64) func(ctx context.Cont
 // ブラウザで横に潰れて見える。解像度はハードコードせず SAR だけで正規化する
 // （BS の 1920x1080 SAR 1:1 は no-op）ので、フィルタ式そのものを固定する。
 func TestExtractFrameBakesSAR(t *testing.T) {
+	t.Parallel()
 	var gotArgs []string
 	w := &ThumbnailWorker{
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -802,6 +816,7 @@ func TestExtractFrameBakesSAR(t *testing.T) {
 }
 
 func TestProbeDuration_IgnoresStderr(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ffprobe := filepath.Join(dir, "ffprobe")
 	const wantSeconds = "2546.360222"
@@ -831,6 +846,7 @@ func TestProbeDuration_IgnoresStderr(t *testing.T) {
 // （cmd.Output() は cmd.CombinedOutput() と違い stderr を戻り値に混ぜないため、
 // 失敗時の診断はこの分岐でしか出てこない）。
 func TestCommandOutput_IncludesStderrOnFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fake-ffprobe")
 	script := "#!/bin/sh\n" +
@@ -951,6 +967,7 @@ func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) 
 // 再選択の入口は候補クエリ 1 本なので、チャプター無し・ごみ箱の録画は、後続 id に
 // 本物の候補があっても作り直さない（`after = id-1, limit 1` が別録画の行を返す形）。
 func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandidate(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return

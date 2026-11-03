@@ -9,6 +9,7 @@ import (
 // ディスクサイズは環境依存で決定的な値を主張できないため、絶対値ではなく
 // 不変条件（total >= used、avail <= total、total > 0）だけを検査する。
 func TestStatDisk_RealTempDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	u, err := statDisk(dir)
@@ -36,6 +37,7 @@ func TestStatDisk_RealTempDir(t *testing.T) {
 // TestStatDisk_NonexistentPath は存在しないパスに対してエラーを返すことを確認する
 // （StorageSyncWorker が「その root の観測に失敗した」と判定する経路）。
 func TestStatDisk_NonexistentPath(t *testing.T) {
+	t.Parallel()
 	_, err := statDisk("/nonexistent-path-for-rokuban-diskusage-test")
 	if err == nil {
 		t.Fatal("statDisk() on a nonexistent path succeeded, want error")

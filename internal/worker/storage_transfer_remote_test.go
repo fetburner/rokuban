@@ -156,6 +156,7 @@ func (f transferTestRemoteFixture) destinationExists() bool {
 }
 
 func TestStorageTransferWorkerCopiesOriginalFromInternalURL(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		knownSHA bool
@@ -193,6 +194,7 @@ func TestStorageTransferWorkerCopiesOriginalFromInternalURL(t *testing.T) {
 }
 
 func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
+	t.Parallel()
 	content := []byte("resumed remote original: the checkpointed prefix is kept and only the suffix is requested")
 	f := newTransferTestRemoteFixture(t, content, true, nil)
 	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
@@ -224,6 +226,7 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 // 転送元の接続が途中で切れて試行が失敗しても、書いた分は保存され、次の試行は切れた位置から Range で続ける。
 // 先頭から取り直すと、切れやすい経路では大きな原本の転送が終わらない。
 func TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect(t *testing.T) {
+	t.Parallel()
 	content := []byte("a remote original whose connection drops halfway through the first attempt")
 	half := len(content) / 2
 	var mu sync.Mutex
@@ -276,6 +279,7 @@ func TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect(t *te
 }
 
 func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		serve func(http.ResponseWriter, *http.Request, []byte)
@@ -334,6 +338,7 @@ func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
 // internal_url の streamer が X-Accel-Redirect で返すと、本体が無いので転送は失敗になる。
 // 原因が分かるように、文言でその理由を示す。
 func TestStorageTransferWorkerRejectsAccelRedirectAnswer(t *testing.T) {
+	t.Parallel()
 	content := []byte("bytes behind an X-Accel-Redirect answer never reach the transfer")
 	f := newTransferTestRemoteFixture(t, content, true, func(w http.ResponseWriter, _ *http.Request, _ []byte) {
 		w.Header().Set("X-Accel-Redirect", "/internal/stores/test-store/sites/default/transfer/source.ts")
@@ -358,6 +363,7 @@ func TestStorageTransferWorkerRejectsAccelRedirectAnswer(t *testing.T) {
 // 論理資産の SHA-256 と違うバイトが internal_url から来たら、既存の不一致の扱い（原本の不一致として記録し、
 // 転送元を残す）になる。
 func TestStorageTransferWorkerRemoteBytesDifferingFromLogicalSHAAreMismatch(t *testing.T) {
+	t.Parallel()
 	content := []byte("logical original recorded with this SHA-256")
 	served := bytes.Clone(content)
 	served[0] ^= 0xff
@@ -387,6 +393,7 @@ func TestStorageTransferWorkerRemoteBytesDifferingFromLogicalSHAAreMismatch(t *t
 // TestStorageTransferWorkerChecksMountsBeforePrepare の "missing source does not reserve or count an attempt" が見る。
 // ここでは、同じ録画で internal_url の有無だけを変えて、予約されるかを対で確かめる。
 func TestPrepareMediaAssetTransferReservesUnmountedSourceOnlyWithInternalURL(t *testing.T) {
+	t.Parallel()
 	content := []byte("reservation depends on internal_url, not on the mount")
 	f := newTransferTestRemoteFixture(t, content, true, nil)
 	reserve := func(cfg config.StorageConfig) (bool, error) {
@@ -408,6 +415,7 @@ func TestPrepareMediaAssetTransferReservesUnmountedSourceOnlyWithInternalURL(t *
 // 派生物は HTTP で読む経路が無いので、転送元はマウントした置き場に限る。internal_url の置き場にしか無い
 // 派生物は予約されず、マウントされると予約される。原本の経路（上の内容）とは別の SQL の枝を見る。
 func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	sourceRoot := transferTestRoots(t, "test-store")["test-store"]
 	recordingID := dbtest.Recording(t, pool)
@@ -437,6 +445,7 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 
 // SHA-256 が未知の原本で、宛先が既に在り、転送元がリモートなら、採用せず失敗を記録する。文言は運用者の対処を示す。
 func TestStorageTransferWorkerDoesNotAdoptUnverifiableRemoteDestination(t *testing.T) {
+	t.Parallel()
 	content := []byte("unverified destination with an old row that has no SHA-256")
 	f := newTransferTestRemoteFixture(t, content, false, nil)
 	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
@@ -473,6 +482,7 @@ func TestStorageTransferWorkerDoesNotAdoptUnverifiableRemoteDestination(t *testi
 // 新しい copy が internal_url の置き場にしか無く、古い copy がマウントした置き場にあるとき、
 // 転送はマウントした copy から読み、internal_url へ要求を送らない。
 func TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "local-src", "archive")
 	content := []byte("older mounted copy is read locally while a newer remote-only copy exists")

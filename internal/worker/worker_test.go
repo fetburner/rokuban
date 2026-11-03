@@ -31,6 +31,7 @@ func (f mirakcRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, er
 // The original row exists only in the DB: Work must find it through the injected precheck,
 // skip transfer, and clear stale progress for that recording.
 func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -158,6 +159,7 @@ func countEnqueuedForRecording(t *testing.T, enqueuer *recordingEnqueuer, kind s
 // （map の判定 `clients[site]` を消して常に何らかのクライアントを返す等）。
 // その場合 "unbound site is refused" が誤って通ってしまい、このテストが落ちる。
 func TestVerifySite(t *testing.T) {
+	t.Parallel()
 	tokyoClient := mirakc.NewClient("http://tokyo.example", nil)
 	takamatsuClient := mirakc.NewClient("http://takamatsu.example", nil)
 	clients := map[string]*mirakc.Client{
@@ -206,6 +208,7 @@ func TestVerifySite(t *testing.T) {
 // epg_sync のパス完了はヒント経路の 1 つ: RulerPassArgs を投入して評価を早める
 // （docs/recording.md §3.1「EPG 同期の完了」）。
 func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
+	t.Parallel()
 	fake := newEpgFake(t, &epgFixture{})
 	enqueuer := newRecordingEnqueuer()
 	pool := testutil.SetupDB(t)
@@ -233,6 +236,7 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 
 // 区切り + 処理余白の上限は River の既定 JobTimeout より長く、rescue 待ちより短い。
 func TestIngestWorker_TimeoutFitsBeforeRescue(t *testing.T) {
+	t.Parallel()
 	args := jobs.IngestJobArgs{}
 	got := args.Spec().Timeout(args)
 	if got != 5*time.Minute {
@@ -245,6 +249,7 @@ func TestIngestWorker_TimeoutFitsBeforeRescue(t *testing.T) {
 
 // EPG 同期は無制限にせず、10 分で打ち切る。
 func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
+	t.Parallel()
 	args := EpgSyncArgs{}
 	got := args.Spec().Timeout(args)
 	if got != 10*time.Minute {
@@ -254,6 +259,7 @@ func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
 
 // ruler は Args.Spec で既定より長い有限の締切を持つ。
 func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
+	t.Parallel()
 	args := jobs.RulerPassArgs{}
 	got := args.Spec().Timeout(args)
 	if got != 5*time.Minute {
@@ -262,6 +268,7 @@ func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 }
 
 func TestLabelRuleReconcileWorker_TimeoutUsesSpec(t *testing.T) {
+	t.Parallel()
 	args := jobs.LabelRuleReconcileArgs{}
 	got := args.Spec().Timeout(args)
 	if got != time.Minute {
@@ -273,6 +280,7 @@ func TestLabelRuleReconcileWorker_TimeoutUsesSpec(t *testing.T) {
 // （ロジック自体は internal/ruler でテスト済みなので、ここでは「ジョブとして
 // 呼ばれると本当に動く」という配線だけを確認する）。
 func TestRulerPassWorker_CreatesReservation(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -339,6 +347,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 
 // ruler の処理が失敗したときは、ScaledJob の再試行を促すため marker を進めない。
 func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

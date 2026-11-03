@@ -62,6 +62,7 @@ func copyStateIn(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName stri
 }
 
 func TestDeleteReconcilePendingPathFinishesPlacementDeleting(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	cfg := transferTestConfig("archive", "archive", "test-store")
@@ -79,6 +80,7 @@ func TestDeleteReconcilePendingPathFinishesPlacementDeleting(t *testing.T) {
 }
 
 func TestDeleteReconcileRevertsPlacementDeletingWhenDesiredMissing(t *testing.T) {
+	t.Parallel()
 	setMissing := func(t *testing.T, pool *pgxpool.Pool, assetID int64) {
 		t.Helper()
 		if _, err := pool.Exec(context.Background(), `
@@ -150,6 +152,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 // TestStorageTransferPolicyRoundTripConverges は規則を A→B→A と切り替えても、各段で
 // active・実体ありのコピーが 1 つ以上残り、最後は desired の置き場だけに収束することを確かめる。
 func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	relPath := "sites/default/roundtrip/source.ts"
@@ -242,6 +245,7 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 }
 
 func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("sha guarded bytes"))
@@ -283,6 +287,7 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 // 順序は advisory lock で決める。先に動く側の deleting への遷移を、テストが持つ lock の解放まで
 // トリガで止め、止まったのを pg_locks で確かめてから後の側を起動する。
 func TestStorageTransferCorruptRetirementSerializesWithUntilEncoded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		corruptFirst bool

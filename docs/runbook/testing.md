@@ -37,11 +37,11 @@ export ROKUBAN_TEST_DATABASE_URL="postgres://rokuban:<password>@localhost:5432/r
 go test ./...
 ```
 
-**この URL が指す DB は直接使われない。** テスト用 DB の準備処理はここからパッケージごとの DB 名を導出する（`rokuban_test_api` 等）。プロセスごとに 1 回だけ DROP → CREATE → マイグレーションしてから、各テストは TRUNCATE で空にする。
+**この URL が指す DB は直接使われない。** テスト用の準備処理はここからパッケージごとのテンプレート DB を導出する（`rokuban_test_api_tmpl` 等）。プロセスごとに 1 回だけ DROP → CREATE → マイグレーション → 空にして、以後は接続しない。各テストは、そのテンプレートから `CREATE DATABASE ... TEMPLATE` で専用の空の DB を複製し、終了時に DROP する。
 
-パッケージが DB を共有しないので、`go test ./...` の並行実行で衝突しない（以前は advisory lock で直列化していた）。待たされた側がロック待ちのタイムアウトで落ちて CI が flaky になっていた。マイグレーションは、テストごとには走らず、プロセスごとに 1 回だけ走るので速い。
+テストが DB を共有しないので、`t.Parallel()` を付けたテストが行を取り合うことはない。マイグレーションは、テストごとには走らず、プロセスごとに 1 回だけ走るので速い。
 
-派生 DB は実行後も残る（次回の実行が DROP して作り直す）。失敗時の事後調査に使える。掃除したいときは次のコマンドを使う。
+テンプレート DB は実行後も残る（次回の実行が DROP して作り直す）。テスト用 DB は終了時に消える。異常終了で残ったものを掃除するときは次のコマンドを使う。
 
 ```sh
 psql -h localhost -d postgres -tAc \
@@ -55,7 +55,7 @@ mirakc を相手にするテストは `internal/mirakc/mirakctest` の fake を�
 
 <details><summary>根拠</summary>
 
-- テスト用 DB の導出と TRUNCATE: `testutil.SetupDB`
+- テスト用 DB の導出と複製: `testutil.SetupDB`
 - ロック待ちのタイムアウト: `lock_timeout`
 
 </details>

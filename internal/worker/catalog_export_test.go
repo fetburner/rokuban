@@ -13,6 +13,7 @@ import (
 
 // CatalogExport が media_dir/catalog/ に JSON を書き出すこと。
 func TestCatalogExportWorker_WritesFile(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -57,6 +58,7 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 // 常に一致してしまい何も主張しない。docs/overview.md のキュー配置表が
 // 約束している実際の名前と一致するかを確認したい）。
 func TestCatalogExportArgs_KindAndQueue(t *testing.T) {
+	t.Parallel()
 	args := CatalogExportArgs{}
 	if args.Kind() != "catalog_export" {
 		t.Errorf("Kind = %q", args.Kind())

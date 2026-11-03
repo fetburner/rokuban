@@ -61,6 +61,7 @@ func setRecordSyncContentLength(t *testing.T, pool *pgxpool.Pool, recordID strin
 // TestIngestProgressReporter_ThrottlesContinuedWrites は、最初の進捗を記録した後の
 // Write が interval 内なら DB へ書かれないことを確認する。
 func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -125,6 +126,7 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 // 送らない --- 「転送が終わってから 1 回だけ書く」実装ではここで観測できない
 // （そして観測できないことこそが issue #212 の症状そのもの）。
 func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(1000) // 188 KB
 	release := make(chan struct{})
 
@@ -376,6 +378,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 // ジョブが進捗行も残さないことを確認する。進捗行は「commit していない temp を持っている」
 // ことを表すので、捨てた temp を指す行を残さない。
 func TestIngestWorker_ProgressClearedWhenTempDiscarded(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(100)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

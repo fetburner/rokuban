@@ -20,6 +20,7 @@ import (
 )
 
 func TestDeleteReconcileAuditIsScopedToMountedStore(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	storeA, rootA := newStoreRootForAuditTest(t, "store-a")
@@ -62,6 +63,7 @@ func TestDeleteReconcileAuditIsScopedToMountedStore(t *testing.T) {
 }
 
 func TestDeleteReconcileBreakerIsScopedToMountedStore(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	storeA, rootA := newStoreRootForAuditTest(t, "store-a")

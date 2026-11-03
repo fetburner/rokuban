@@ -31,6 +31,7 @@ func (s *storeWithoutResumable) Put(ctx context.Context, key string, src io.Read
 // TestStorageTransferWorkerRejectsDerivedDestinationWithoutResumableSupport は、再開できない宛先を転送失敗として数えず、
 // Put より前にジョブエラーで拒否することを確かめる。
 func TestStorageTransferWorkerRejectsDerivedDestinationWithoutResumableSupport(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -82,6 +83,7 @@ type storeWithoutRangeReader struct {
 // TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport は、範囲読みできない転送元を転送失敗として数えず、
 // 宛先へ書く前にジョブエラーで拒否することを確かめる。
 func TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)

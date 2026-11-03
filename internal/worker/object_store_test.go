@@ -243,6 +243,7 @@ func (p *objectPublishOwnershipPublisher) HasLiveMediaAssetCopy(context.Context,
 // TestObjectPublishTreatsIdenticalExistingKeyAsAnotherPublisher fixes the ownership
 // signal used by cleanup: an identical object already created by another Put is not ours.
 func TestObjectPublishTreatsIdenticalExistingKeyAsAnotherPublisher(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base, err := fsstore.New(t.TempDir())
 	if err != nil {
@@ -298,6 +299,7 @@ func TestObjectPublishTreatsIdenticalExistingKeyAsAnotherPublisher(t *testing.T)
 // 旧世代は公開の tx では触らず、削除 reconcile が overlap の後に消す。
 // 署名付き URL で旧世代を再生中の視聴者が、公開の直後に 404 にならないためである。
 func TestObjectPublishKeepsPreviousGenerationUntilOverlapElapses(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	oldKey, newKey := env.replaceThumbnail(t)
@@ -341,6 +343,7 @@ func TestObjectPublishKeepsPreviousGenerationUntilOverlapElapses(t *testing.T) {
 // SHA-256 は作り手が commit の tx で論理行へ書く。S3 の metadata にだけ載せると、
 // 論理行は NULL のまま残り、転送の照合が使えない。
 func TestObjectPublishWritesSHA256InTheCommitTransaction(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, env.pool)
@@ -404,6 +407,7 @@ func TestObjectPublishWritesSHA256InTheCommitTransaction(t *testing.T) {
 // 削除ブレーカーの範囲は派生物の置き場の名前である。S3 の件数を FS の置き場のブレーカーへ足さず、
 // FS の置き場のブレーカーが発動していても S3 の削除を止めない。
 func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	scopes := func(env objectEnv) []string {
 		rows, err := env.pool.Query(ctx, `SELECT scope FROM circuit_breakers WHERE name = $1 ORDER BY scope`, breaker.DeleteReconcile)
@@ -487,6 +491,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 
 // 公開されないまま猶予を過ぎた pending の key の回収は、新しい削除の判断としてブレーカーの件数に数える。
 func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	var keys []string
@@ -535,6 +540,7 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 // 共有 FS の派生物も Store.Put 後に公開が失敗した pending key を、通常の FS reconcile が
 // ブレーカーに数えたうえで Store.Delete 経由で回収する。
 func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -662,6 +668,7 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 }
 
 func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -737,6 +744,7 @@ func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t 
 
 // 回収は pending の行をロックしたまま key を消す。公開の tx が先に active にした行は消さない。
 func TestObjectPendingReclaimSkipsCopyPublishedFirst(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, env.pool)
@@ -761,6 +769,7 @@ func TestObjectPendingReclaimSkipsCopyPublishedFirst(t *testing.T) {
 
 // 回収された pending は公開できない。公開の tx は ErrStalePublishPlan を返し、encode は計画を立て直す。
 func TestObjectPublishFailsWhenPendingCopyWasReclaimed(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, env.pool)
@@ -796,6 +805,7 @@ func TestObjectPublishFailsWhenPendingCopyWasReclaimed(t *testing.T) {
 
 // A live Put that finishes after pending reclaim must not leave its canonical key unowned.
 func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T) {
+	t.Parallel()
 	for _, markTrashed := range []bool{false, true} {
 		name := "activation_detects_missing_copy"
 		if markTrashed {
@@ -872,6 +882,7 @@ func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T)
 
 // A failed companion Put still cleans a main key whose pending row was reclaimed during Put.
 func TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, env.pool)
@@ -926,6 +937,7 @@ func TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim(t *testing.
 
 // A late cleanup delete must not remove a thumbnail generation published after reclaim.
 func TestObjectPublishCleanupDoesNotDeleteNewerThumbnailGeneration(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, env.pool)
@@ -1053,6 +1065,7 @@ func TestObjectPublishCleanupDoesNotDeleteNewerThumbnailGeneration(t *testing.T)
 
 // encode が ffmpeg の前に予約した世代は、公開前に止まっても再利用しない。
 func TestObjectEncodeReservationNeverReusesAnInterruptedGeneration(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, env.pool)
@@ -1083,6 +1096,7 @@ func TestObjectEncodeReservationNeverReusesAnInterruptedGeneration(t *testing.T)
 
 // 世代は挿入後に変えない。置き換えは新しい世代の行を足し、旧世代の行を書き換えない。
 func TestObjectReplacementAddsRowAndNeverRewritesGeneration(t *testing.T) {
+	t.Parallel()
 	env := newObjectEnv(t)
 	ctx := context.Background()
 	oldKey, newKey := env.replaceThumbnail(t)

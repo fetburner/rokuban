@@ -9,6 +9,7 @@ import (
 )
 
 func TestWalkMediaFiles_IgnoresReservedLockArtifacts(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 	canonicalPath := filepath.Join(mediaDir, "recording.m2ts")
 	const relPath = "recording.m2ts"
@@ -39,6 +40,7 @@ func TestWalkMediaFiles_IgnoresReservedLockArtifacts(t *testing.T) {
 }
 
 func TestWalkMediaFilesIgnoresOnlyRootStoreMarker(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(mediaDir, ".rokuban-store"), []byte("tokyo"), 0o644); err != nil {
 		t.Fatalf("writing root store marker: %v", err)

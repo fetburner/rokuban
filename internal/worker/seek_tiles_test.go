@@ -29,6 +29,7 @@ func testStoreNameArg() *string {
 // openapi.yaml を経由しないので手で揃えるしかない。片方を変えたらこのテストが
 // 落ちるので、変えるときはもう片方も同じ PR で直すことになる。
 func TestSeekTileCount(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		dur  time.Duration
@@ -54,6 +55,7 @@ func TestSeekTileCount(t *testing.T) {
 // TestSeekTilesRelPath は相対パスをリテラルで固定する。poster と同じ
 // thumbnails/ 配下に置く（rel_path の名前空間の検査を増やさない）。
 func TestSeekTilesRelPath(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		generation int64
 		want       string
@@ -73,6 +75,7 @@ func TestSeekTilesRelPath(t *testing.T) {
 // 固定する。読み捨てをやめると生成コストが番組長に比例するようになる（issue #873
 // の測定で全デコード方式の約 9 倍）。
 func TestSeekTilesWorker_ExtractTileArgs(t *testing.T) {
+	t.Parallel()
 	var gotArgs []string
 	out := filepath.Join(t.TempDir(), "out.jpg")
 	w := &SeekTilesWorker{
@@ -111,6 +114,7 @@ func TestSeekTilesWorker_ExtractTileArgs(t *testing.T) {
 // フレーム列が 0 始まりであることを固定する。クライアントは列数と 1 枚の大きさ
 // だけを知っていれば位置を計算できるので、この 2 つがずれると全部の位置がずれる。
 func TestSeekTilesWorker_ComposeSheetArgs(t *testing.T) {
+	t.Parallel()
 	var gotArgs []string
 	w := &SeekTilesWorker{
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -223,6 +227,7 @@ func runSeekTilesJob(t *testing.T, w *SeekTilesWorker, recordingID int64) error 
 }
 
 func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
@@ -301,6 +306,7 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 // TestSeekTilesWorker_CreatesAsset は生成からコミットまでの 1 周を見る。
 // 枚数はリテラル（100 秒 → 10 枚 → 1 行）で固定する。
 func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -350,6 +356,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 
 // 既に active な seek_tiles があるなら ffmpeg を走らせない（冪等）。
 func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -383,6 +390,7 @@ func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 // Deleted seek_tiles keep their generation. A leftover output path from an
 // uncommitted publish also advances the candidate instead of being overwritten.
 func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -459,6 +467,7 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 
 // original が無ければ何もせず成功で終える（レベルトリガー。再試行しても埋まらない）。
 func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	recordingID := dbtest.Recording(t, pool)
 
@@ -477,6 +486,7 @@ func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 // 途中で失敗したら部分成果をコミットせず、ジョブ固有 scratch も消す
 // （行の存在 = 全部そろっている）。
 func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
@@ -517,6 +527,7 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 // 行が「全部そろっている」を主張し、定期パスが作り直さず、until_encoded の
 // 原本削除の条件も満たしてしまう。
 func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -542,6 +553,7 @@ func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
 // ffmpeg が 0 フレームで終了コード 0 を返しても、穴の空いた格子をコミットしない
 // （image2 は連番の穴で読むのをやめ、以降が黒のまま合成される）。
 func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
@@ -567,6 +579,7 @@ func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
 
 // 抜き出し位置は i×10 秒だが、映像の終端から 1 秒より後ろには置かない。
 func TestSeekTileAt(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		i    int
 		dur  time.Duration
@@ -588,6 +601,7 @@ func TestSeekTileAt(t *testing.T) {
 // 映像の終端より手前から取り、コミットまで進む。終端を指すと 1 フレームも出ず、
 // 毎回同じ枚で失敗し続けて until_encoded の原本が消えなくなる。
 func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -612,6 +626,7 @@ func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 
 // 長さ 0 秒も「取れない」と同じ扱いにする（1 枚の格子をコミットしない）。
 func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -635,6 +650,7 @@ func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 // 終端の 2 秒手前でも失敗した）。最後の 1 枚だけは直前のタイルで埋めてコミットまで
 // 進む。埋めないと毎回同じ枚で落ち、until_encoded の原本が消えなくなる。
 func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -660,6 +676,7 @@ func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 
 // 1 枚しか無いときは埋める元が無いので失敗する。
 func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
@@ -687,6 +704,7 @@ func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 // （映像 19.5 秒・format 22 秒）で format を使うと 3 枚になり、最後の 20 秒は
 // 映像の終端を越える。
 func TestSeekTilesWorker_UsesVideoStreamDuration(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)

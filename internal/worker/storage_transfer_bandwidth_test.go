@@ -14,6 +14,7 @@ import (
 // 上限を持つ置き場（edge）の読みは 4000 B を 8000 B/s で読むので約 500ms かかり、
 // 上限の無い置き場（central）は即座に読み終わる。
 func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
+	t.Parallel()
 	w := &StorageTransferWorker{Config: config.StorageConfig{Transfer: config.StorageTransferConfig{
 		Bandwidth: map[string]string{"edge": "8KBps"},
 	}}}
@@ -85,6 +86,7 @@ func (s *stallingReader) Read(p []byte) (int, error) {
 // TestTransferSourceReaderDoesNotCatchUpAfterStall は、読みの途中で止まった後も帯域の上限が効くことを固定する。
 // 切断から張り直しまでの無応答を経過時間に数えると、再開後に貯まった分を回線速度で読んでしまう。
 func TestTransferSourceReaderDoesNotCatchUpAfterStall(t *testing.T) {
+	t.Parallel()
 	w := &StorageTransferWorker{Config: config.StorageConfig{Transfer: config.StorageTransferConfig{
 		Bandwidth: map[string]string{"edge": "8KBps"},
 	}}}

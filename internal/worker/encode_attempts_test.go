@@ -124,6 +124,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 // recording_encode_attempts が state='failed' になり、error にメッセージが
 // 入ることを固定する。
 func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -378,6 +379,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 }
 
 func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -416,6 +418,7 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 }
 
 func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -454,6 +457,7 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 }
 
 func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -533,6 +537,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 
 // 上限到達後の POST encode-profiles 相当（failed 行の削除）で、次の Work が count 1 から走る。
 func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -672,6 +677,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 // encodeAttemptErrorMaxLen(2000) バイト目はちょうど文字の内側に落ちる
 // （2000 = 3*666 + 2）。
 func TestTruncateEncodeAttemptError_MultibyteBoundary(t *testing.T) {
+	t.Parallel()
 	msg := strings.Repeat("日", 1000)
 	if len(msg) <= encodeAttemptErrorMaxLen {
 		t.Fatalf("test fixture too short: %d bytes, want > %d", len(msg), encodeAttemptErrorMaxLen)
@@ -694,6 +700,7 @@ func TestTruncateEncodeAttemptError_MultibyteBoundary(t *testing.T) {
 // そのまま返ることを固定する（truncateEncodeAttemptError_MultibyteBoundary の
 // 逆方向 --- 短い入力まで削ってしまわないこと）。
 func TestTruncateEncodeAttemptError_ShortMessageUnchanged(t *testing.T) {
+	t.Parallel()
 	msg := "short ascii error"
 	if got := truncateEncodeAttemptError(msg); got != msg {
 		t.Errorf("truncateEncodeAttemptError(%q) = %q, want unchanged", msg, got)
@@ -708,6 +715,7 @@ func TestTruncateEncodeAttemptError_ShortMessageUnchanged(t *testing.T) {
 // （実機で「失敗が失敗として見えなくなる」形の再現。issue #316 のレビューで
 // 判明）。
 func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -764,6 +772,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 // 冪等スキップ経路の掃除も二度と走らない（不変条件 10）。
 // clearEncodeAttempt から attemptWriteContext を外すとこのテストが落ちる。
 func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -969,6 +978,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 // exit するため、StdoutPipe と Wait を併用して Wait が先に pipe を閉じる形では
 // 最終値が失われる。
 func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	ffmpegPath := filepath.Join(tmp, "ffmpeg")
 	releaseMarker := filepath.Join(tmp, "release")
@@ -1066,6 +1076,7 @@ func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *test
 // その異常で encode を落とさない。子プロセス内で実行し、回帰時に Wait が止まっても
 // 親テストからプロセスグループごと終了できるようにする。
 func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.T) {
+	t.Parallel()
 	const helperEnv = "ROKUBAN_LONG_PROGRESS_HELPER"
 	if os.Getenv(helperEnv) == "1" {
 		worker := &EncodeWorker{FFmpeg: os.Getenv("ROKUBAN_LONG_PROGRESS_FFMPEG")}

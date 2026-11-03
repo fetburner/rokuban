@@ -110,6 +110,7 @@ FROM media_assets a WHERE copy.media_asset_id = a.id AND a.recording_id = $1`, i
 
 // 再試行の開始（running）は、前の失敗が付けた stage を持ち越さない。
 func TestBeginCMDetectionAttemptClearsStage(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1100)))

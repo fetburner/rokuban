@@ -184,6 +184,7 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 // 保存の失敗（stage = save）も failed の行として書ける。CHECK に save が無いと
 // MarkCMLogoCandidateFailure 自体が 23514 で落ち、running のまま固まる。
 func TestMarkCMLogoCandidateFailureAcceptsSaveStage(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(944)))
@@ -256,6 +257,7 @@ func insertRunningCandidateForService(t *testing.T, pool *pgxpool.Pool, serviceI
 }
 
 func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(947)))
@@ -296,6 +298,7 @@ func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) 
 }
 
 func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(948)))
@@ -344,6 +347,7 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 
 // 録画行が消えて recording_id が NULL になった候補も、最小締切と猶予で回収する。
 func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(949)))
@@ -379,6 +383,7 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 
 // The ingest hint and periodic reconciliation both pass the actual recording duration in Args.
 func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := newRecordingEnqueuer()
@@ -421,6 +426,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 }
 
 func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -497,6 +503,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 
 // 定期パスは、枠があって候補の無い局に解析ジョブを積む。失敗した候補がある局には積まない。
 func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := newRecordingEnqueuer()

@@ -79,6 +79,7 @@ func markCMDetectionTestFailure(
 }
 
 func TestCMFrameTimeConversionsUse30000Over1001(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name       string
 		ms         int64
@@ -103,6 +104,7 @@ func TestCMFrameTimeConversionsUse30000Over1001(t *testing.T) {
 }
 
 func TestCMRangesFromCutAVSInvertsMainIntervals(t *testing.T) {
+	t.Parallel()
 	got, err := cmRangesFromCutAVS("Trim(150,269) ++ Trim(30,89)", 10010)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +120,7 @@ func TestCMRangesFromCutAVSInvertsMainIntervals(t *testing.T) {
 }
 
 func TestCMRangesFromCutAVSNoCommercialsAndInvalidOutput(t *testing.T) {
+	t.Parallel()
 	got, err := cmRangesFromCutAVS("Trim(0,299)", 10010)
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +137,7 @@ func TestCMRangesFromCutAVSNoCommercialsAndInvalidOutput(t *testing.T) {
 }
 
 func TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		durationMs int64
 		want       time.Duration
@@ -150,6 +154,7 @@ func TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum(t *testing.T
 }
 
 func TestCMWorkerTimeoutsUseDurationFromJobArgs(t *testing.T) {
+	t.Parallel()
 	cmArgs := cmJob(1)
 	cmArgs.RecordingDurationMs = 45 * 60 * 1000
 	if got := cmArgs.Spec().Timeout(cmArgs); got != 90*time.Minute {
@@ -167,6 +172,7 @@ func TestCMWorkerTimeoutsUseDurationFromJobArgs(t *testing.T) {
 }
 
 func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1101)))
@@ -218,6 +224,7 @@ func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
 }
 
 func TestCMFailureStagePreservesWorkerObservation(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"setup", "probe", "area", "logo", "chapter", "join", "parse", "save", "stopped", "resolution", "match"} {
 		t.Run(stage, func(t *testing.T) {
 			got := cmFailureStage(fmt.Errorf("outer: %w", cmFailure(stage, fmt.Errorf("failure"))))
@@ -232,6 +239,7 @@ func TestCMFailureStagePreservesWorkerObservation(t *testing.T) {
 }
 
 func TestCMLogoMatchPercentParsesLogoframeOutput(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name    string
 		output  string
@@ -263,6 +271,7 @@ func TestCMLogoMatchPercentParsesLogoframeOutput(t *testing.T) {
 }
 
 func TestStationLogoFilesUseLogoframeLatestConvention(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	logo := []byte("LGD fixture")
 	if err := writeStationLogo(dir, "n1-s2", logo); err != nil {
@@ -284,6 +293,7 @@ func TestStationLogoFilesUseLogoframeLatestConvention(t *testing.T) {
 }
 
 func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -381,6 +391,7 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 // 枠あり・ロゴなしの局でも新しい録画は desired から外れず（候補が既にあっても）、検出ジョブが
 // 書く adopt の attempt で止まる。採用（learned_at）で初めて失敗録画が戻る。
 func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -475,6 +486,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 }
 
 func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -538,6 +550,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 }
 
 func TestReadStationLogoLatestFormats(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name, latest string
 		ok           bool
@@ -566,6 +579,7 @@ func TestReadStationLogoLatestFormats(t *testing.T) {
 }
 
 func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)

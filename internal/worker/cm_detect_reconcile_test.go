@@ -11,6 +11,7 @@ import (
 )
 
 func TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -51,6 +52,7 @@ func TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate(t *testing.T) {
 }
 
 func TestCMDetectReconcileCandidateRowMovesPastFirstStation(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return

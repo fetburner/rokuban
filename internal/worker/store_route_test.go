@@ -41,6 +41,7 @@ func newTestEncodeRoute(calls *[]string, stores ...string) *storeRoute[jobs.Enco
 
 // 置き場で修飾したキューのジョブは、Args の置き場に束ねたワーカーだけが実行する。
 func TestStoreRouteRunsTheWorkerBoundToTheJobsStore(t *testing.T) {
+	t.Parallel()
 	var calls []string
 	route := newTestEncodeRoute(&calls, "tokyo", "takamatsu")
 	if err := route.Work(context.Background(), jobs.EncodeJobArgs{Store: "takamatsu", RecordingID: 1, Profile: "p"}); err != nil {
@@ -73,6 +74,7 @@ func TestStoreRouteFailsAndCountsAJobForAnUnmountedStore(t *testing.T) {
 
 // 空の置き場（投入側の選び損ね）はどの置き場の名前にも一致しない。
 func TestStoreRouteRejectsAnEmptyStore(t *testing.T) {
+	t.Parallel()
 	var calls []string
 	route := newTestEncodeRoute(&calls, "tokyo")
 	if err := route.Work(context.Background(), jobs.EncodeJobArgs{RecordingID: 1, Profile: "p"}); err == nil || len(calls) != 0 {
@@ -173,6 +175,7 @@ func TestIngestRouteLogsFallbackDestination(t *testing.T) {
 
 // ingest は、規則に合う置き場がマウント済みならそこへ、そうでなければ --stores の順で先頭のマウント済みの置き場へ書く。
 func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
+	t.Parallel()
 	policy := config.StorageConfig{
 		Stores:    map[string]config.StoreConfig{"tokyo": {Kind: "fs"}, "takamatsu": {Kind: "fs"}, "nagoya": {Kind: "fs"}},
 		Originals: []config.OriginalStoreRule{{Store: "nagoya"}},
@@ -211,6 +214,7 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 // 原本を読むジョブを積む側は、原本のコピーがある置き場を選ぶ（置き場を決め打ちしない）。
 // コピーを別の置き場へ移した録画の encode は、その置き場のキューに積まれる。
 func TestEncodeReconcileQueuesForTheStoreHoldingTheOriginal(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -241,6 +245,7 @@ func (failingStoreChooser) DesiredOriginalStoreAtIngest(context.Context, []byte,
 // 規則の評価が失敗しても ingest は止まらず、`--stores` の順で先頭のマウント済みの置き場へ書く。
 // 名前順では takamatsu が先頭になるので、順序を名前順に戻すとこのテストが落ちる。
 func TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail(t *testing.T) {
+	t.Parallel()
 	policy := config.StorageConfig{
 		Stores:    map[string]config.StoreConfig{"tokyo": {Kind: "fs"}, "takamatsu": {Kind: "fs"}, "nagoya": {Kind: "fs"}},
 		Originals: []config.OriginalStoreRule{{Store: "nagoya"}},

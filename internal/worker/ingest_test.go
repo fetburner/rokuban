@@ -126,6 +126,7 @@ func (f *ingestTestFile) Close() error {
 }
 
 func TestIngestWorker_FullTransfer(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(100)
 	fake := newFullTransferFake(t, "rec-001", tsData, "test/recording.m2ts")
 
@@ -256,6 +257,7 @@ FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&r
 // （lookupRecordingID がここで成功してしまうと、ガードを外したときに
 // GetRecord まで進んで初めてモックへ到達する、という現実の壊れ方を再現できる）。
 func TestIngestWorker_SiteMismatch(t *testing.T) {
+	t.Parallel()
 	fake := newRecordPathFake(t, "rec-mismatch", makeTSData(1), strPtr("mismatch/recording.m2ts"), "/recording/mismatch/recording.m2ts")
 
 	mediaDir := t.TempDir()
@@ -298,6 +300,7 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 // ジョブは従来どおり処理されることを確認する（TestIngestWorker_SiteMismatch と
 // 対になる、両方向の確認。CLAUDE.md テスト規律「分岐を直したら両方向で確認する」）。
 func TestIngestWorker_SiteMatch(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(20)
 	fake := newFullTransferFake(t, "rec-match", tsData, "match/recording.m2ts")
 
@@ -342,6 +345,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 }
 
 func TestIngestWorker_WriteErrorDoesNotRetryMirakc(t *testing.T) {
+	t.Parallel()
 	injectedErr := errors.New("injected local write failure")
 	fake := mirakctest.New(t)
 	fake.SetRecordStream("record", []byte("recorded"))
@@ -366,6 +370,7 @@ func TestIngestWorker_WriteErrorDoesNotRetryMirakc(t *testing.T) {
 }
 
 func TestIngestWorker_CapturesSHA256OnlyAfterFinished(t *testing.T) {
+	t.Parallel()
 	provisionalSHA256 := strings.Repeat("a", sha256.Size*2)
 	var rangeRequests atomic.Int32
 	var statusRequests atomic.Int32
@@ -415,6 +420,7 @@ func TestIngestWorker_CapturesSHA256OnlyAfterFinished(t *testing.T) {
 }
 
 func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(100)
 	cutoff := 50 * 188
 
@@ -633,6 +639,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 // 差分が返る定常状態でリクエストが往復時間で律速され、1 秒に数十〜百回
 // mirakc を叩く。recording のあいだは差分の有無に関わらず待つ。
 func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
+	t.Parallel()
 	data := makeTSData(200)
 	const packetsPerPoll = 5
 
@@ -1302,6 +1309,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 }
 
 func TestIngestWorker_HashMismatch(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(50)
 	wrongData := bytes.Clone(tsData)
 	wrongData[len(wrongData)-1] ^= 0xff
@@ -2258,6 +2266,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 }
 
 func TestIngestWorker_StallDetection(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(10)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2603,6 +2612,7 @@ func failFirstPublication(t *testing.T) {
 
 // 同じ大きさで内容の違う canonical は他人のファイルとして扱い、何も変えずに止まる。
 func TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent(t *testing.T) {
+	t.Parallel()
 	env := newLinkedIngestEnv(t, "rec-foreign-canonical", "test/foreign.m2ts")
 	foreign := bytes.Repeat([]byte{0xAA}, len(env.tsData))
 	if err := os.WriteFile(env.fullPath, foreign, 0o644); err != nil {
@@ -2638,6 +2648,7 @@ func TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent(t *testing
 
 // 同じサイズと SHA-256 の既存 canonical は、別 inode でも完成済み内容として採用する。
 func TestIngestWorker_AdoptsMatchingCanonicalWithDifferentInode(t *testing.T) {
+	t.Parallel()
 	env := newLinkedIngestEnv(t, "rec-matching-canonical", "test/matching.m2ts")
 	if err := os.WriteFile(env.fullPath, env.tsData, 0o644); err != nil {
 		t.Fatal(err)
@@ -2856,6 +2867,7 @@ func TestIngestWorker_NeverAppendsToLinkedTempOnRetry(t *testing.T) {
 // 0 バイトに切り詰めて全量を再転送し、最後に media_assets の unique 制約
 // 違反でエラーになっていた。
 func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(50)
 	const recordID = "rec-reingest"
 	fake := newFullTransferFake(t, recordID, tsData, "test/reingest.m2ts")
@@ -3097,6 +3109,7 @@ func setReservationBase(t *testing.T, pool *pgxpool.Pool, programID int64, base 
 
 // commit 済みの再配送では、canonical と同じ inode の temp だけを消す。同名でも別の inode の temp は残す。
 func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
+	t.Parallel()
 	for _, linked := range []bool{true, false} {
 		t.Run(fmt.Sprintf("linked=%v", linked), func(t *testing.T) {
 			pool := setupTestPool(t)
@@ -3139,6 +3152,7 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 // 前の試行が DeleteRecord まで終えて copy path が無いのは通常の経路なので、警告しない。
 // それ以外の DB 失敗は警告する。
 func TestRemoveLinkedTempAfterCommit_WarnsOnlyForUnexpectedPathLookupFailure(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		err      error
@@ -3176,6 +3190,7 @@ func (p ingestCleanupPrecheck) GetLiveMediaAssetRecordingID(context.Context, str
 }
 
 func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -3293,6 +3308,7 @@ func countEncodeJobsForRecording(t *testing.T, enqueuer *recordingEnqueuer, reco
 // recording_encode_policy.encode_profiles が一致し、対象 reconcile が投入されて
 // reconcile 実行後に encode ジョブが投入される」を確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -3353,6 +3369,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 // until_encoded）が競合するとき、reservation.EffectiveOptions を通して overrides が勝つ
 // ことも合わせて確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -3441,6 +3458,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 // （不変条件 3「コミット = DB 行」）。resolveAndSnapshotEncodePolicy のクランプで
 // keepOriginal を 'always' に倒して書くことを確認する。
 func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -3518,6 +3536,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 // 何も見つからないケース。dbtest.Recording が作る録画にはそもそも対応する
 // program_snapshots / reservations 行が無い）。
 func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -3590,6 +3609,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 // 「DeleteEndedProgramSnapshots deleted 0 rows, want 1」で落ちる（確認済み）。
 // 決定を変えるならこのテストも一緒に変える。
 func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -3694,6 +3714,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 // TestReconciler_NeverScheduledExclusionSurvivesRematerialization と同じ模し方
 // （DELETE してから CreateManualReservation で作り直す）。
 func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -4014,6 +4035,7 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 // catalog.SiteRelPath が site 前置をしなくなると rel_path が
 // "20240101/prog.m2ts" のままになり、このテストは失敗する。
 func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(10)
 	const recordID = "rec-tokyo"
 	fake := newRecordPathFake(t, recordID, tsData, strPtr("20240101/prog.m2ts"), "/recording/20240101/prog.m2ts")
@@ -4061,6 +4083,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 // TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath は mirakc の
 // contentPath が空でも record.Content.Path のファイル名を保存名に使うことを確認する。
 func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(10)
 	// ContentPath を nil にしてフォールバック経路を通す。
 	const recordID = "rec-tokyo-fallback"
@@ -4110,6 +4133,7 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 // ファイルを指す rel_path として通ってしまう。catalog.SiteRelPath の直接テストで
 // 検査を固定し、この経路では不正な保存先を作らないことも確認する。
 func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
+	t.Parallel()
 	tsData := makeTSData(10)
 	// ContentPath も Content.Path も空。
 	const recordID = "rec-tokyo-degenerate"
@@ -4157,6 +4181,7 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 }
 
 func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
+	t.Parallel()
 	for _, contentPath := range []string{
 		".rokuban-ingest-user.m2ts",
 		".rokuban-rel-path-lock-user.m2ts",
@@ -4275,6 +4300,7 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 // そのためテーブル駆動で 'active' / 'deleting' の両方を確認する
 // （CLAUDE.md テスト規律「分岐を直したら両方向で確認する」）。
 func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *testing.T) {
+	t.Parallel()
 	for _, existingState := range []string{"active", "deleting"} {
 		t.Run(existingState, func(t *testing.T) {
 			testRelPathConflictRefusesWithoutCorruptingExistingFile(t, existingState)
@@ -4409,6 +4435,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 // ファイル名に対応する古いパスが tombstone でも、新しい ingest が entropy
 // 付きの別パスを割り当てることを確認する。
 func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -4491,6 +4518,7 @@ func reserveTestIngestPath(t *testing.T, publisher store.MediaPublish, recording
 }
 
 func TestIngestSHA256WaitFor(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		size int64

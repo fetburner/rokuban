@@ -31,6 +31,7 @@ import (
 // TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths は、同じファイル名の
 // 原本を並行 ingest しても、それぞれ別の canonical path と全バイトを保持することを確かめる。
 func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 

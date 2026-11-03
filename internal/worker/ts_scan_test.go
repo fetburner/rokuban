@@ -63,6 +63,7 @@ func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID in
 // TestTSScan_StatisticsAreWrittenAfterIngestCommit verifies ingest leaves TS
 // statistics absent until the asynchronous scan records them.
 func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -148,6 +149,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 }
 
 func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -182,6 +184,7 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 }
 
 func TestTSScanArgsAndSiteBinding(t *testing.T) {
+	t.Parallel()
 	scanArgs := tsscan.ScanArgs{RecordingID: 123}
 	if got, want := scanArgs.Kind(), "ts_scan"; got != want {
 		t.Errorf("ScanArgs.Kind() = %q, want %q", got, want)

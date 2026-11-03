@@ -57,6 +57,7 @@ func (r *cancelDuringCopyReader) Read(p []byte) (int, error) {
 }
 
 func TestCopyWithContextStopsAfterCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	dst := &bytes.Buffer{}
 	n, err := copyWithContext(ctx, dst, &cancelDuringCopyReader{cancel: cancel})
@@ -122,6 +123,7 @@ func assertMediaAssetSHA256(t *testing.T, pool *pgxpool.Pool, recordingID int64,
 }
 
 func TestThumbnailWorkerPublishesThroughObjectStore(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
@@ -157,6 +159,7 @@ UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_
 }
 
 func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
@@ -232,6 +235,7 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 }
 
 func TestSeekTilesWorkerPublishesThroughObjectStore(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
@@ -294,6 +298,7 @@ func writeScratchForTest(t *testing.T, b []byte) string {
 
 // active な thumbnail が既にあるなら公開を飛ばし、canonical も行も staged file も変えない。
 func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/skip-active.m2ts", nil, []byte("original"))
@@ -355,6 +360,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 
 // ffmpeg 実行中に原本が active でなくなった場合は新しい active 派生行を作らず、Put 済み key は pending に残す。
 func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/skip-orig.m2ts", nil, []byte("original"))
@@ -389,6 +395,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 }
 
 func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	makeDir := func(rel string) string {
 		t.Helper()
@@ -422,6 +429,7 @@ func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
 // os.ReadDir の名前順では -1-dead < -2-<random> < -3-dead になる。生きた試行に
 // 当たっても走査を打ち切らず、後ろの -3-dead も消えることを見る。
 func TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	live, liveLock, err := newEncodeScratchDir(root, 7, "h264", 2)
 	if err != nil {
@@ -458,6 +466,7 @@ func TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope(t *testing.T) {
 
 // 別の recording / profile の生きた encode があっても、対象 scope の死んだ残骸は消える。
 func TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	otherRecording, l1, err := newEncodeScratchDir(root, 70, "h264", 1)
 	if err != nil {
@@ -489,6 +498,7 @@ func TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope(t *testing.T) {
 // 作成（MkdirTemp から dir lock 取得まで）の間は掃除が入れない。gate を外から
 // 保持して、掃除が待つこと・解放後に進むことを見る。
 func TestRemoveStaleEncodeScratchWaitsForScratchCreationGate(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dead := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+"-1-dead")
 	if err := os.MkdirAll(dead, 0o700); err != nil {
@@ -529,6 +539,7 @@ func TestRemoveStaleEncodeScratchWaitsForScratchCreationGate(t *testing.T) {
 
 // 作成側も gate を取る。掃除側の待ちと合わせて、作成直後で lock 前の dir が消される窓が塞がる。
 func TestNewEncodeScratchDirWaitsForScratchCreationGate(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	gate, err := openEncodeScratchGate(root)
 	if err != nil {
@@ -566,6 +577,7 @@ func TestNewEncodeScratchDirWaitsForScratchCreationGate(t *testing.T) {
 }
 
 func TestNewEncodeScratchDirUsesRecordingProfileAndAttempt(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir, lock, err := newEncodeScratchDir(root, 42, "h264", 3)
 	if err != nil {
@@ -583,6 +595,7 @@ func TestNewEncodeScratchDirUsesRecordingProfileAndAttempt(t *testing.T) {
 }
 
 func TestNewEncodeScratchDirSupportsLongProfileNames(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	profile := strings.Repeat("profile", 128)
 	dir, lock, err := newEncodeScratchDir(root, 42, profile, 3)
@@ -599,6 +612,7 @@ func TestNewEncodeScratchDirSupportsLongProfileNames(t *testing.T) {
 }
 
 func TestNewWorkerScratchDirIsUniqueForSameRecording(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	first, err := newWorkerScratchDir(root, "thumbnail", "42-")
 	if err != nil {
@@ -619,6 +633,7 @@ func TestNewWorkerScratchDirIsUniqueForSameRecording(t *testing.T) {
 }
 
 func TestScratchDirectoryHelpersRejectEmptyRoot(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		make func() (string, error)
@@ -642,6 +657,7 @@ func TestScratchDirectoryHelpersRejectEmptyRoot(t *testing.T) {
 }
 
 func TestNewDomainScratchDirClearsPreviousResidue(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	dir, err := newDomainScratchDir(root, "cm_detect", "42-1")
 	if err != nil {

@@ -234,6 +234,7 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 }
 
 func TestPrepareMediaAssetTransferKeepsPendingRelPathAcrossRetries(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("pending transfer path"))
@@ -258,6 +259,7 @@ func TestPrepareMediaAssetTransferKeepsPendingRelPathAcrossRetries(t *testing.T)
 }
 
 func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		existing bool
@@ -344,6 +346,7 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 // encoded の字幕 key の転送は、内容の違う既存の key を所有記録の有無にかかわらず衝突として扱い、消さない。
 // source に字幕が無いときは、この転送が作った（所有記録のある）宛先の字幕だけを消す。
 func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
+	t.Parallel()
 	const sourceCaptions = "WEBVTT\n\nsource captions\n"
 	const otherCaptions = "WEBVTT\n\nother captions\n"
 	for _, tc := range []struct {
@@ -451,6 +454,7 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 }
 
 func TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -594,6 +598,7 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 }
 
 func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferReclaim(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -680,6 +685,7 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 }
 
 func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -766,6 +772,7 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 // 保存された先頭を読み直さずに続きだけを転送元から読むことを確かめる。転送元の先頭を変えておき、
 // 結果が保存された先頭と元の続きになることで、先頭が読まれていないことを見る。
 func TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	content := []byte("known SHA-256 makes the saved destination prefix authoritative")
@@ -805,6 +812,7 @@ func TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix(t *
 // TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed は、前の試行が保存せずに抜けた（handed_off が偽）
 // とき、世代を上げて転送元の先頭から取り直すことを確かめる。temp の先頭は壊しておき、続きから書いたら宛先の SHA-256 が合わない。
 func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	content := []byte("an unsaved previous slice must not be continued from its temp")
@@ -864,6 +872,7 @@ func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *tes
 // その試行を失敗として 1 回数え、次の試行が新しい世代で先頭から取り直して完了することを確かめる。
 // 短い temp は続きから書くと穴が空き、宛先の SHA-256 が合わなくなる（SHA-256 が未知の資産では、長さの確認だけが防ぐ）。
 func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// shorten は保存のあとで temp を縮める量。extend は伸ばす量。remove は temp を消すこと。
@@ -1140,6 +1149,7 @@ func TestStorageTransferWorkerChecksMountsBeforePrepare(t *testing.T) {
 }
 
 func TestStorageTransferWorkerSnoozesWhenSourceLockIsBusyWithoutAttempt(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("source"))
@@ -1173,6 +1183,7 @@ func TestStorageTransferWorkerSnoozesWhenSourceLockIsBusyWithoutAttempt(t *testi
 }
 
 func TestStorageTransferWorkerSnoozesDerivedWhenSourceLockIsBusyWithoutAttempt(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -1214,6 +1225,7 @@ func TestStorageTransferWorkerSnoozesDerivedWhenSourceLockIsBusyWithoutAttempt(t
 }
 
 func TestPrepareMediaAssetTransferDoesNotReviveDeletingCopy(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("source"))
@@ -1239,6 +1251,7 @@ VALUES ($1, 'archive', 'sites/default/transfer/source.ts', 0, 'deleting')`, asse
 }
 
 func TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	actual := []byte("badbytes")
@@ -1395,6 +1408,7 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 }
 
 func TestStorageTransferWorkerUsesObjectStoreForDerivedCopies(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -1437,6 +1451,7 @@ func TestStorageTransferWorkerUsesObjectStoreForDerivedCopies(t *testing.T) {
 }
 
 func TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive", "cold")
 	content := []byte("asset after policy change")
@@ -1624,6 +1639,7 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 }
 
 func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		change  func(t *testing.T, pool *pgxpool.Pool, recordingID, assetID int64)
@@ -1689,6 +1705,7 @@ func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.
 }
 
 func TestStorageTransferPendingReclaimRechecksAfterRecordingRestore(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -1773,6 +1790,7 @@ SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE 
 }
 
 func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -1842,6 +1860,7 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 }
 
 func TestStorageTransferPendingReclaimRechecksUntilEncodedEligibility(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -1885,6 +1904,7 @@ SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE 
 }
 
 func TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1936,6 +1956,7 @@ func TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore(t *testi
 }
 
 func TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
@@ -1982,6 +2003,7 @@ func TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap(t *testing.
 }
 
 func TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
@@ -2015,6 +2037,7 @@ WHERE media_asset_id = $1 AND state = 'active' AND store IN ('archive', 'cold')`
 }
 
 func TestStorageTransferDeletionSerializesPolicySwitches(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
@@ -2117,6 +2140,7 @@ func mustOriginalRules(t *testing.T, cfg config.StorageConfig) []byte {
 // 論理資産の SHA-256 が既知の派生物は、source の Get をそのまま Put に流し、scratch に複製しない。
 // ScratchDir を作れない場所にしても転送が成功することで確かめる。
 func TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
@@ -2159,6 +2183,7 @@ func TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch(t *testing.T)
 
 // 既知の SHA-256 または宣言サイズと違う source は、Put が何も公開せず、source 不一致として扱われる。
 func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		declare    func(content []byte) (size int64, sum [sha256.Size]byte)
@@ -2222,6 +2247,7 @@ func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *t
 // 進捗が世代 3 を指すとき、古い世代 1・2 の temp は（mtime が古ければ）消え、今の世代 3 の temp は残る。
 // 進捗の無い temp は、mtime の猶予の間は残り、猶予を過ぎたら消える。
 func TestTransferTempOrphanCleanupFollowsProgressGeneration(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	content := []byte("progress generation decides which transfer temp is still owned")

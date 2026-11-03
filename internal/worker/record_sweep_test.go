@@ -16,6 +16,7 @@ import (
 
 // record_sweep は Args.Spec で既定より長い有限の締切を持つ。
 func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
+	t.Parallel()
 	args := RecordSweepArgs{}
 	got := args.Spec().Timeout(args)
 	if got != 10*time.Minute {
@@ -29,6 +30,7 @@ func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
 // （docs/recording.md §3.3「SSE 断中に finished になった record を sweep が拾う」の
 // 受け入れ基準）。
 func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -118,6 +120,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 // mirakc の全量取得に失敗した record_sweep は成功扱いにせず、前回成功時刻を
 // 進めない。ScaledJob の停止検出で「HTTP 障害なのに新鮮」と誤認させないため。
 func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 
 	fake := newRecordSweepFake(t, nil)
@@ -165,6 +168,7 @@ func newRecordSweepFake(t *testing.T, records []mirakc.Record) *mirakctest.Fake 
 // （手で INSERT した / 将来のヒント投入のバグで queue と args.Site がずれた場合）
 // への保険が効いていることを、queue 選択を経由せずに固定する。
 func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 
 	fake := newRecordSweepFake(t, nil)
@@ -188,6 +192,7 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 // TestRecordSweepWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
 // 処理されることを確認する（TestRecordSweepWorker_VerifySiteDirect と対になる確認）。
 func TestRecordSweepWorker_SiteMatch(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 

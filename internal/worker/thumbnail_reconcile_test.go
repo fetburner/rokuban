@@ -170,6 +170,7 @@ func countThumbnailJobs(t *testing.T, enqueuer *recordingEnqueuer, recordingID i
 // 状態でも、定期パスが thumbnail ジョブを作り、通常の worker が thumbnail を
 // コミットできることを端から端まで固定する。
 func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -210,6 +211,7 @@ func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testi
 }
 
 func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -258,6 +260,7 @@ func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T
 }
 
 func TestThumbnailReconcile_ReselectionWindowContinuesWithoutEnqueueing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -317,6 +320,7 @@ func TestThumbnailReconcile_ReselectionWindowContinuesWithoutEnqueueing(t *testi
 // thumbnail 欠落、3・4・5 は既存 thumbnail と chapter 候補に分け、2 パスで
 // reselect 側の末尾 5 まで判定されることを確認する。
 func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -371,6 +375,7 @@ func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
 }
 
 func TestThumbnailReconcile_DoesNotRepeatUnactionableReselections(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -474,6 +479,7 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 
 // 対象を絞った reconcile も known-missing original を飛び越えず、マーカーが消えた後は拾う。
 func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -511,6 +517,7 @@ func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t
 
 // ごみ箱の録画は original が残っていても定期パスから除外する。
 func TestThumbnailReconcile_ExcludesTrash(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -536,6 +543,7 @@ func TestThumbnailReconcile_ExcludesTrash(t *testing.T) {
 // RowLimit は録画単位の上限であり、先頭候補が解消しなくても窓を回して
 // 後続候補へ到達する。
 func TestThumbnailReconcile_WindowRotatesPastStuckCandidates(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -576,6 +584,7 @@ func TestThumbnailReconcile_WindowRotatesPastStuckCandidates(t *testing.T) {
 // continuation starts a new worker, and all three candidate windows advance from
 // the positions produced by the previous pass.
 func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -684,6 +693,7 @@ func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 }
 
 func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -763,6 +773,7 @@ func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 // missing 1 / 再選択 2 / seek_tiles 3 のとき、先に末尾へ達した窓が後続ページで先頭から
 // 読み直されない（先頭の候補を投入し直さない）ことを固定する。
 func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -835,6 +846,7 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 }
 
 func TestThumbnailReconcileWorker_WorkWithoutClientErrors(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -848,6 +860,7 @@ func TestThumbnailReconcileWorker_WorkWithoutClientErrors(t *testing.T) {
 }
 
 func TestThumbnailReconcileArgs_KindAndSpec(t *testing.T) {
+	t.Parallel()
 	if kind := (ThumbnailReconcileArgs{}).Kind(); kind != "thumbnail_reconcile" {
 		t.Errorf("Kind() = %q, want thumbnail_reconcile", kind)
 	}
@@ -866,6 +879,7 @@ func countSeekTilesJobs(t *testing.T, enqueuer *recordingEnqueuer, recordingID i
 
 // 定期パスは thumbnail だけでなく seek_tiles のギャップも埋める。
 func TestThumbnailReconcile_EnqueuesMissingSeekTiles(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "seek-tiles/original.m2ts", []byte("fake-ts"))
@@ -887,6 +901,7 @@ func TestThumbnailReconcile_EnqueuesMissingSeekTiles(t *testing.T) {
 
 // 実体無しと確認済みの原本は seek_tiles の候補からも除外する（poster と同じ扱い）。
 func TestThumbnailReconcile_SeekTilesSkipsKnownMissingOriginal(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -917,6 +932,7 @@ func TestThumbnailReconcile_SeekTilesSkipsKnownMissingOriginal(t *testing.T) {
 // 「thumbnail が尽きたので 0 に戻る」→ seek_tiles の窓が 0 に戻り、5 が永久に
 // 届かない（2 件のまま）ので落ちる。
 func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -963,6 +979,7 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 // 本番の既存サムネイルには衛星表の行が無い。チャプターが無い録画は作り直さず、
 // 検出済みの録画だけを作り直す（崩れるとデプロイ直後に全録画が作り直される）。
 func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1021,6 +1038,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 // 使える入力が無い録画（原本は missing、encoded 無し）は、ジョブがエラーにならず
 // サムネイルも変えず、reconcile も投入しない。
 func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return

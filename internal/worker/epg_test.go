@@ -117,6 +117,7 @@ func allPrograms(t *testing.T, pool *pgxpool.Pool) []sqlcgen.EpgProgram {
 }
 
 func TestEpgSyncWorker_FullSync(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -217,6 +218,7 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 
 // genre_lv1 は genres から DB の生成列で導出され、重複を除いて昇順になる。
 func TestEpgSyncWorker_DerivesGenreLv1FromGenres(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 	program := testProgram(32736, 1024, 1, "ジャンル重複", now.Add(time.Hour), time.Hour)
@@ -241,6 +243,7 @@ func TestEpgSyncWorker_DerivesGenreLv1FromGenres(t *testing.T) {
 
 // 全量同期は冪等。2 回走っても行が増えず、内容が更新される。
 func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -285,6 +288,7 @@ func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 
 // EPG から消えた番組・サービスは observed_at スイープで削除される。
 func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -332,6 +336,7 @@ func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
 // mirakc が一時的に空リストを返しても（再起動直後で EPG 未ロード等）
 // プロジェクション全体を消さないこと。
 func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -378,6 +383,7 @@ func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 // mirakc の EPG 収集はチャンネル単位なので、あるチャンネルだけ番組を返さなかった場合は
 // そのチャンネルの番組を消さず、番組を返したチャンネルは通常どおりスイープすること。
 func TestEpgSyncWorker_SweepIsPerChannel(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -431,6 +437,7 @@ func TestEpgSyncWorker_SweepIsPerChannel(t *testing.T) {
 // 同一チャンネルの他サービスが観測できていれば古い行がスイープされること。
 // （スイープをサービス単位にしてしまうとこの行が残ってしまう）
 func TestEpgSyncWorker_SweepsSubServiceWhenChannelObserved(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -465,6 +472,7 @@ func TestEpgSyncWorker_SweepsSubServiceWhenChannelObserved(t *testing.T) {
 // 投影できる番組が 1 件もない場合もスイープを見送ること
 // （startAt なしばかりが返る異常時に番組表を消さない）。
 func TestEpgSyncWorker_NoProjectableProgramsKeepsProjection(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -489,6 +497,7 @@ func TestEpgSyncWorker_NoProjectableProgramsKeepsProjection(t *testing.T) {
 
 // ローリングウィンドウ: 放送終了から猶予を超えた番組は、mirakc が返し続けても刈り取る。
 func TestEpgSyncWorker_PrunesAiredPrograms(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -524,6 +533,7 @@ func TestEpgSyncWorker_PrunesAiredPrograms(t *testing.T) {
 
 // 投影できない番組・サービスは捨てて同期は続行する。
 func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -593,6 +603,7 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 // サブサービスの影の行（同じ eventId で name が null）を投影しないこと。
 // マルチ編成の実番組は name を持つので残る（issue #17 の決定）。
 func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -651,6 +662,7 @@ func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
 
 // epgBatchSize を超える件数がチャンク分割されて全件入ること。
 func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -683,6 +695,7 @@ func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
 
 // ListEpgPrograms の時間窓とサービス絞り込み（M1-7 の番組表グリッドが使う軸）。
 func TestListEpgPrograms_WindowAndServiceFilter(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -769,6 +782,7 @@ func TestListEpgPrograms_WindowAndServiceFilter(t *testing.T) {
 // 確認する（issue #139）。モックは 200 を返す（弱いテストにしないため。
 // issue #139 のテスト規律）。
 func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 
 	fx := &epgFixture{
@@ -793,6 +807,7 @@ func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
 // TestEpgSyncWorker_SiteMatch は、args.Site が一致するジョブは従来どおり処理
 // されることを確認する（TestEpgSyncWorker_SiteMismatch と対になる両方向の確認）。
 func TestEpgSyncWorker_SiteMatch(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 
 	fx := &epgFixture{
@@ -818,6 +833,7 @@ func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 }
 
 func TestChunks(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		in   []int
@@ -843,6 +859,7 @@ func TestChunks(t *testing.T) {
 }
 
 func TestChunksEarlyBreak(t *testing.T) {
+	t.Parallel()
 	var seen int
 	for range chunks([]int{1, 2, 3, 4, 5, 6}, 2) {
 		seen++
@@ -854,6 +871,7 @@ func TestChunksEarlyBreak(t *testing.T) {
 }
 
 func TestMarshalOrNil(t *testing.T) {
+	t.Parallel()
 	// 「詳細なし」は型を問わず SQL NULL にする
 	nilCases := []struct {
 		name string
