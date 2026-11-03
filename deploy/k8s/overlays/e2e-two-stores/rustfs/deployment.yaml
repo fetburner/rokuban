@@ -2,8 +2,9 @@
 #
 # 派生物は S3 か FS のどちらでもよい。ここは S3 の経路（objstore の s3store）を判定するために
 # RustFS の公式イメージを使う。イメージは CI（.github/workflows/ci.yml の RUSTFS_IMAGE）と同じダイジェストで固定し、
-# 一致は deploy/k8s/two_stores_test.go が見る。kind には load せず、kind node が registry から pull する
-# （172b0b24 で load をやめた。理由は commit に書かれておらず未確認。kind load はダイジェスト固定の ref と組み合わせて未検証）。
+# 一致は deploy/k8s/two_stores_test.go が見る。kind には load せず、kind node が registry から pull する。
+# kind load は、colima の docker（arm64）で digest ref・tag ref のどちらでも `ctr ... content digest ... not found` で失敗し、
+# ノードに入らない。その状態で pull policy を Never にすると ErrImageNeverPull になる（実測）。
 #
 # RustFS の data と log は read-only root filesystem の外に出す。両方 emptyDir にして、
 # Pod の fsGroup と合わせる。資格情報は製品用 rokuban-secrets の AWS_* を RUSTFS_* に渡す。

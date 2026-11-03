@@ -210,9 +210,14 @@ E2E_S3_DISABLE_CORS=1 corepack pnpm e2e:s3-302          # 正例 bucket の CORS
 E2E_S3_VIDEO_TTL_SECONDS=2 corepack pnpm e2e:s3-302     # 動画の署名の期限を 2 秒にする負例
 ```
 
-負例の 2 つは、どちらも非 0 で終わる。前者（`E2E_S3_DISABLE_CORS=1`）は、通常の再生で動画の metadata を待つ `waitFor` が 15 秒で時間切れになって落ちる。動画が CORS で読めず、字幕の cue の判定まで届かない。後者（`E2E_S3_VIDEO_TTL_SECONDS=2`）は、通常の署名 URL でのシークの判定（`normal signed URL seek did not complete`）で落ちる。
+負例の 2 つは、どちらも非 0 で終わる。落ちる判定は次のとおりである。
 
-未解決: 正例 bucket の CORS を外す変異では、字幕の cue の判定（CORS の expect）が実行されない。
+- `E2E_S3_DISABLE_CORS=1`（正例 bucket の CORS を外す）: 正例 bucket の 2xx 応答に `Access-Control-Allow-Origin` が無い。`bucket CORS for ...` が指摘する。
+- `E2E_S3_VIDEO_TTL_SECONDS=2`（動画の署名の期限を短くする）: 通常の署名 URL でのシークの判定（`normal signed URL seek did not complete`）で落ちる。
+
+動画が CORS で読めないので、後続の待ちも時間切れで落ちる。字幕の cue の判定は、この変異では届かない。
+
+字幕の負例（CORS を掛けない `BAD_BUCKET`）は、この bucket に CORS を掛けると落ちる。落ちる判定は `subtitle track unexpectedly loaded without bucket CORS` と `the negative bucket has CORS` の 2 つである。
 
 期限切れの判定は結果の記録で、良し悪しは決めない。結果は 3 つに分けて出力する。元の URL へ戻れば `refreshed-at-origin`、403 を受けて video が error を出せば `media-error`、403 を受けても error が無ければ `403-without-error` である。期限後の Range 要求・S3 の最終の応答・error かシークの完了のどれかが観測できないときは、失敗にする。3 つのどれにも当たらないときも失敗にする。
 

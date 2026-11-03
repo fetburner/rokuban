@@ -15,7 +15,9 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh
 ```
 
-**判定 6（`checks/06-two-stores.sh`）は、kind（colima 4 CPU / 8 GB）で全項目が PASS した（2026-11-03）。** 所要は約 45 分で、大半は 6.7 の overlap 待ちである。置き場 2 つ（tokyo / takamatsu）の overlay で、派生物は RustFS の S3 に置く。実物の仕事を見る（probe は使わない）。
+**判定 6（`checks/06-two-stores.sh`）は、kind（4 CPU / 8 GB）で全項目が PASS した（2026-11-03）。**
+
+置き場 2 つ（tokyo / takamatsu）の overlay で、派生物は RustFS の S3 に置く。実物の仕事を見る（probe は使わない）。
 
 - 6.1 / 6.6 置き場束縛キューの ScaledJob と CronJob が置き場ごとに 1 本ずつあること（静的）
 - 6.2 encode / thumbnail が原本のある置き場の Job で完了し、派生物の行が S3 にだけ載ること。手動の録画は予約を経由しないので、desired が空である。desired が無いと、encode は desired_profile_excluded で飛ばされる。そこで判定は `POST /api/recordings/{id}/encode-profiles` で e2e-fast を desired に足してから encode を積む
@@ -28,7 +30,9 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 6.2 / 6.3 / 6.5 / 6.7 の原本は `cluster/store-original-seed-job.yaml` が PVC に書く（録画の取り込みは通さない。取り込みは 6.8 だけ）。中身は `cluster/store-check-job.yaml` で覗く（目印 `.rokuban-store` が無ければ失敗させる）。
 
 **実行の前提**
-- RustFS は `.github/workflows/ci.yml` と同じ公式イメージをダイジェストで固定する。kind には load せず、kind node が registry から pull する。172b0b24 で load をやめたが、理由は commit に書かれておらず未確認。kind load は、ダイジェスト固定の ref と組み合わせた場合が未検証である
+- RustFS は `.github/workflows/ci.yml` と同じ公式イメージをダイジェストで固定する。kind node は registry から pull する（digest ref で pull は成功した）
+- kind には load しない。colima の docker（arm64）では `kind load docker-image` が digest ref・tag ref のどちらでも失敗し（`ctr ... not found`）、ノードに入らない。
+- ノードに入らないイメージは、pull policy を Never にすると ErrImageNeverPull になる。
 - bucket は製品のイメージの curl（SigV4）で作る（`overlays/e2e-two-stores/rustfs/bucket-job.yaml`）
 - 上の PASS は 4 CPU / 8 GB で得た。これより小さい割り当ては試していない
 

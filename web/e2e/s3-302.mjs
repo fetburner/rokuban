@@ -459,6 +459,7 @@ function startFixtureServers(videoKey, subtitleKey) {
       origin: req.headers.origin ?? null,
       expiresAt: parseExpiresAt(url.searchParams),
       status: null,
+      allowOrigin: null,
     }
     requests.push(record)
     const headers = { ...req.headers, host: req.headers.host }
@@ -473,6 +474,7 @@ function startFixtureServers(videoKey, subtitleKey) {
       headers,
     }, (upstreamResponse) => {
       record.status = upstreamResponse.statusCode ?? 502
+      record.allowOrigin = upstreamResponse.headers['access-control-allow-origin'] ?? null
       // 応答の頭が届く前にブラウザが切った接続には書けない（pipeline が同期に投げる）。
       if (res.destroyed) {
         upstreamResponse.destroy()
@@ -573,7 +575,7 @@ async function main() {
     await createBucket(GOOD_BUCKET)
     createdBuckets.push(GOOD_BUCKET)
     // 正例 bucket（動画・字幕）の CORS は E2E_S3_DISABLE_CORS=1 で外せる。外すと通常の再生判定が落ちる（変異の確認）。
-    // 字幕の負例は、CORS を掛けない BAD_BUCKET に字幕を置いて作る。正例と同じ bucket に置くと、CORS を外しても負例にならない。Origin を外す細工はしない。
+    // 字幕の負例は、CORS を掛けない BAD_BUCKET に字幕を置いて作る。正例と同じ bucket だと CORS が掛かっているので負例にならない。Origin を外す細工はしない。
     if (process.env.E2E_S3_DISABLE_CORS !== '1') await configureBucketCors(GOOD_BUCKET)
     await createBucket(BAD_BUCKET)
     createdBuckets.push(BAD_BUCKET)
@@ -599,8 +601,18 @@ async function main() {
 
     const normalRequestStart = requests.length
     await browser.navigate(origins.publicOrigin + '/probe?scenario=normal')
-    await waitFor(browser, () => window.__state && window.__state.metadata)
-    await waitFor(browser, () => window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0, undefined, 20000)
+    // 待ちの時間切れは CORS の判定より先に起きるので保留する。先に CORS の expect を出してから投げ直す。
+    let waitError = null
+    try {
+      await waitFor(browser, () => window.__state && window.__state.metadata)
+      await waitFor(browser, () => window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0, undefined, 20000)
+    } catch (error) {
+      waitError = error
+    }
+    const normalGoodObjects = requests.slice(normalRequestStart).filter((request) => request.route === 's3' && request.bucket === GOOD_BUCKET && request.status >= 200 && request.status < 300)
+    expect(normalGoodObjects.length > 0 && normalGoodObjects.every((request) => request.allowOrigin === origins.publicOrigin),
+      'bucket CORS for ' + origins.publicOrigin + ' is not in effect on the positive bucket: 2xx responses had Access-Control-Allow-Origin ' + JSON.stringify(normalGoodObjects.map((request) => request.allowOrigin)))
+    if (waitError) throw waitError
     const normalReady = await browser.evaluate(() => window.__state)
     expect(normalReady.crossOrigin === 'anonymous', 'fixture <video> is missing crossorigin="anonymous"')
     expect(normalReady.trackMode === 'showing', 'cross-origin WebVTT track did not enter showing mode')
@@ -694,11 +706,14 @@ async function main() {
     const negativeStart = requests.length
     await browser.navigate(origins.publicOrigin + '/probe?scenario=negative-cors')
     await waitFor(browser, () => window.__state && window.__state.metadata)
-    await waitFor(browser, () => window.__state && window.__state.trackReadyState === 3)
+    // 字幕が読めたとき（2）も読めなかったとき（3）も確定した状態を待つ。負例の判定は両方を見る。
+    await waitFor(browser, () => window.__state && (window.__state.trackReadyState === 2 || window.__state.trackReadyState === 3))
     const negative = await browser.evaluate(() => ({ readyState: window.__state.trackReadyState, cueCount: window.__state.cueCount, mediaError: window.__state.mediaError }))
     expect(negative.readyState === 3 && negative.cueCount === 0, 'subtitle track unexpectedly loaded without bucket CORS: ' + JSON.stringify(negative))
     const negativeRequests = requests.slice(negativeStart).filter((request) => request.route === 's3' && request.bucket === BAD_BUCKET)
     expect(negativeRequests.some((request) => request.status === 200), 'no-CORS VTT object did not reach S3 successfully; the browser failure may not be a CORS failure')
+    expect(negativeRequests.filter((request) => request.status === 200).every((request) => request.allowOrigin === null),
+      'the negative bucket has CORS: a 2xx VTT response had Access-Control-Allow-Origin ' + JSON.stringify(negativeRequests.map((request) => request.allowOrigin)))
 
     const expiryStart = requests.length
     await browser.navigate(origins.publicOrigin + '/probe?scenario=expiry')
