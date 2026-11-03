@@ -104,10 +104,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 		return fmt.Errorf("storage sync: deleting stale roots: %w", err)
 	}
 
-	// Prometheus 側も同じ desired set で毎パス揃える。置き場の集合は --stores で
-	// プロセスの寿命の間固定されていて、再起動すると Prometheus のレジストリは空から
-	// 始まる。そのため掃除が要るのは root 単位の系列だけで、この掃除は毎パス走る
-	// （レベルトリガー）。DB 行と違って
+	// Prometheus 側も同じ desired set で毎パス揃える。DB 行と違って
 	// DeleteLabelValues は「消えていること」に対して冪等なので、既に消えている
 	// ラベルを毎パス消しても何も起きない --- 逆に「行がまだ見えていた 1 パス」に
 	// 掃除を賭けると、storage キューを引く別レプリカが先に行を消したパスで
@@ -116,6 +113,10 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 	// 取り残されたラベルは「凍結した鮮度ゲージ」= Pod を再起動するまで消えない
 	// 偽陽性アラートになる（docs/operations/monitoring.md §警告が出ないことは保証ではない が
 	// この鮮度を判断材料に挙げている）。
+	//
+	// 置き場単位の系列は掃除しない。置き場の集合は --stores でプロセスの寿命の間
+	// 固定されていて、再起動すると Prometheus のレジストリは空から始まるので、
+	// 担当しなくなった置き場の系列はプロセス内に残らない。
 	for _, r := range allRoots {
 		if slices.Contains(desired, r.name) {
 			continue

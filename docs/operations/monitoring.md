@@ -183,7 +183,9 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 `rokuban_storage_sync_last_success_timestamp_seconds{store}` は、その置き場の全 root を観測できたパスの時刻で、1 root でも失敗した部分成功では進まない。`rokuban_storage_root_last_success_timestamp_seconds{store,root}` と対で見る。root（`media` / `scratch`）ごとの鮮度は、その置き場で片方だけ恒久的に動かなくなったケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。
 
-容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。`store` ラベルは置き場が 1 つの構成でも付く。`store` を指定しないセレクタ（`root="media"` など）は全置き場の系列に一致するので、そのまま動く。壊れるのは `root` だけで集約・結合している式（`by (root)` / `on (root)`）で、それらは `store` を含めるよう直す。scratch はプロセスで共有するが、置き場の数だけ同じ値の系列が出る。
+容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。
+
+以上の storage ゲージはすべて `store` ラベルを持ち、置き場が 1 つの構成でも付く。`store` を指定しないセレクタ（`root="media"` など）は全置き場の系列に一致するので、そのまま動く。`root` だけで集約・結合している式（`by (root)` / `on (root)`）は置き場をまたいで合算・照合してしまうので、`store` を含めるよう直す。scratch はプロセスで共有するが、置き場の数だけ同じ値の系列が出るので、scratch の容量アラートは置き場の数だけ鳴る。
 
 <details><summary>根拠</summary>
 
