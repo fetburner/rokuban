@@ -105,9 +105,13 @@
 
 `storage.originals` は上から評価して最初に一致した規則を使う。時刻の条件を `older_than`（放送終了時刻からの経過時間）だけにするのは、`newer_than` や時刻の窓を許すと desired の置き場が行き来し、転送と削除が往復するからである。最後の規則を無条件にするのは、どの資産にも desired の置き場が決まるようにするためである。原本の置き場は `fsync` と atomic rename と hard link を信頼できる POSIX FS に限る（[ストレージ契約](../storage/contract.md) §1）。`storage.derived` は、全 site 共通の派生物の置き場を 1 つ選ぶ。派生物には FS と S3 API の置き場を使える。
 
+#### 転送
+
+転送は FS 置き場を読み元にし、帯域・待ち数と旧コピーの削除猶予を設定する。
+
 `storage.transfer.overlap` の下限は、実体無しの猶予（`cleanup.missing_asset_age`）に削除 reconcile の周期の 2 倍を足した値である。新しいコピーの実体無しの判定が確定する前に、旧コピーを消さないためである。省略すると `48h` になり、既定の猶予ならこの下限を満たす。猶予を延ばして下限を割るときは、検証が overlap の明示を求める。
 
-`storage.transfer.bandwidth` は転送元ごとの正の帯域値である。`bps` / `Bps` は 1 秒あたりの bit / byte、`Kbps` / `Mbps` / `Gbps` と `KBps` / `MBps` / `GBps` は 10 進、`KiBps` / `MiBps` / `GiBps` は 2 進で読む。たとえば `50Mbps` は毎秒 6.25 MB である。
+`storage.transfer.bandwidth` は転送元の FS 置き場ごとの正の帯域値である。S3 置き場名を指定すると設定を拒否する。`bps` / `Bps` は 1 秒あたりの bit / byte、`Kbps` / `Mbps` / `Gbps` と `KBps` / `MBps` / `GBps` は 10 進、`KiBps` / `MiBps` / `GiBps` は 2 進で読む。たとえば `50Mbps` は毎秒 6.25 MB である。
 
 `storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。件数が上限に達すると、encode reconcile はその置き場の原本を読む encode（キュー `encode_{store}`）を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
 
@@ -155,7 +159,7 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 - `internal_url` のホストが `server.allowed_hosts` に無い構成の拒否: `TestLoadRejectsInternalURLHostOutsideAllowedHosts`
 - マウントした置き場のローカル優先: `TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy`
 - 下限の周期は `config.DeleteReconcileInterval`、指紋は `StorageConfig.PolicyFingerprint` が持つ。
-- `backlog_limit` の検証（未知の置き場・s3 置き場・0 以下）: `TestStoragePolicyValidation`
+- `bandwidth` / `backlog_limit` の検証（未知の置き場・S3 置き場・不正な値）: `TestStoragePolicyValidation`
 - 読みの途中で切れたときの Range での張り直し: `TestResumingRemoteReaderContinuesAfterDisconnect`
 - 読み進まない張り直しが上限に達したら諦めること: `TestResumingRemoteReaderGivesUpAfterReconnectLimit`
 - checkpoint からの再開: `TestStorageTransferWorkerResumesRemoteOriginalWithRange`
