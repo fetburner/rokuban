@@ -79,7 +79,7 @@ import (
 //
 // # site 照合ガード（issue #139）は不要と判断
 //
-// EncodeJobArgs は recording_id + profile のみで site を持たない。エンコードは
+// EncodeJobArgs は site を持たない。エンコードは
 // 原本 media_asset（mediapath.Resolve でこの worker の MediaDir 配下に解決する）を読み、
 // 派生物は object store に公開するだけで mirakc には一切触れない（不変条件 4「ffmpeg/ffprobe の exec は
 // worker / streamer パッケージのみ」であって mirakc 呼び出しではない）。

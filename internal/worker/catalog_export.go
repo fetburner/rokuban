@@ -14,7 +14,7 @@ import (
 // 配下の catalog/ に JSON で書き出す queue worker（docs/storage.md §8、issue #71）。
 //
 // キューは置き場ごとの original_{store}（internal/jobs/spec.go）なので、MediaDir は
-// その置き場の root になる。Export は全 site を対象にする。
+// その置き場の root になる。
 //
 // site 照合ガード（issue #139）は不要と判断: mirakc には触れない（DB 読み取りと
 // FS 書き出しのみ）。catalog は常に全サイトをエクスポートするので、他サイトの

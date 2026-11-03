@@ -21,14 +21,15 @@ func newCatalogCmd() *cobra.Command {
 
 // newCatalogVerifyCmd は `rokuban catalog verify` を作る。
 //
-// **DB に一切触らない**（読むのは media_dir/catalog/ だけ）。バックアップの
+// **DB に一切触らない**（読むのは対象の置き場の catalog/ だけ）。バックアップの
 // 健全性確認に `rokuban rescue` を使うと live DB を catalog の内容で上書きして
 // しまうので、確認専用の入口をここに置く（docs/operations.md §3）。
 func newCatalogVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "catalog 世代の完成を検証する（DB には触らない）",
-		Long: `media_dir/catalog/ の各世代を完成判定に掛けて結果を出す
+		Long: `--store で選んだ FS 置き場の catalog/ の各世代を完成判定に掛けて結果を出す
+（置き場を設定していない構成では storage.media_dir の catalog/）。
 （manifest の検証 + 構成ファイルのサイズと sha256 の照合。docs/storage.md §8）。
 
 DB には一切触らない。完成世代が 1 つも無ければ非ゼロ終了する。`,

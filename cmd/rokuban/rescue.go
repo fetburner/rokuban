@@ -15,7 +15,7 @@ import (
 
 // newRescueCmd は `rokuban rescue` サブコマンドを作る（M3-9 / issue #71）。
 //
-// media_dir/catalog/ の最新 catalog JSON を読み、コアメタデータ
+// --store で選んだ FS 置き場の catalog/ の最新 catalog JSON を読み、コアメタデータ
 // （rules / recordings / media_assets / drop_stats / drop_positions / media_asset_ts_scans / program_intents /
 // program_overrides）を DB に冪等 upsert する。catalog が無ければ storage を走査し、
 // `sites/{site}/` 前置を持つ認識可能な動画ファイルを素の asset として in-place 登録する。
