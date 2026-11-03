@@ -224,6 +224,9 @@ func ensureTemplate(ctx context.Context, base string) (string, error) {
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
+	if err := dropStaleTestDBs(ctx, conn, packagePrefix(baseURL)); err != nil {
+		return "", err
+	}
 	if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+quoted); err != nil {
 		return "", fmt.Errorf("dropping template database: %w", err)
 	}
@@ -282,6 +285,34 @@ func createTestDB(ctx context.Context, base string) (*testDB, error) {
 	u := *baseURL
 	u.Path = "/" + name
 	return &testDB{name: name, url: u.String()}, nil
+}
+
+// testDBSuffix は createTestDB が付ける `_<pid>_<連番>` にマッチする。
+var testDBSuffix = regexp.MustCompile(`_[0-9]+_[0-9]+$`)
+
+// dropStaleTestDBs は、このパッケージの過去のプロセスが残したテスト用 DB を消す。
+// 途中で殺されたプロセスは t.Cleanup が走らず、名前に pid を含むので次の実行でも
+// 再利用されない。名前は createTestDB と同じ規則で組み直して完全一致で照合する。
+// 前方一致にすると、接頭辞が別パッケージの接頭辞の先頭になっている場合
+// （`postgres_w` と `postgres_worker`）に、並行して走っている別パッケージの DB を消す。
+// 使用中の DB（同じパッケージを別プロセスで同時に走らせている場合）は DROP が失敗するので飛ばす。
+func dropStaleTestDBs(ctx context.Context, conn *pgx.Conn, prefix string) error {
+	rows, err := conn.Query(ctx, `SELECT datname FROM pg_database WHERE datname ~ '_[0-9]+_[0-9]+$'`)
+	if err != nil {
+		return fmt.Errorf("listing stale test databases: %w", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("listing stale test databases: %w", err)
+	}
+	for _, name := range names {
+		suffix := testDBSuffix.FindString(name)
+		if name != truncateBytes(prefix, postgresIdentifierMaxBytes-len(suffix))+suffix {
+			continue
+		}
+		_, _ = conn.Exec(ctx, "DROP DATABASE "+pgx.Identifier{name}.Sanitize())
+	}
+	return nil
 }
 
 // templateDBName はテンプレートを一度だけ用意し、その名前を返す。

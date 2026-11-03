@@ -2,8 +2,11 @@ package testutil
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // handshakeTimeout は並列サブテスト同士の待ち合わせの上限。共有 DB を返す壊れた実装では
@@ -111,5 +114,55 @@ func TestDatabaseConfig_PointsAtSetupDBDatabase(t *testing.T) {
 	}
 	if before.Database != name || after.Database != name {
 		t.Fatalf("config databases = %q (before SetupDB) and %q (after); pool database = %q", before.Database, after.Database, name)
+	}
+}
+
+// TestDropStaleTestDBs_DropsOnlyThisPackagesNames は、残った DB の掃除が自パッケージの
+// 名前だけを消すことを確かめる。前方一致で照合すると、接頭辞が自分の接頭辞の先頭に
+// なっている別パッケージの DB（short）まで消えて落ちる。
+func TestDropStaleTestDBs_DropsOnlyThisPackagesNames(t *testing.T) {
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, envDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 後始末の DROP より後に閉じる（t.Cleanup は登録の逆順に走る）。
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+	long := "zz_stale_" + strings.Repeat("l", 60) // 63 バイトを超え、切り詰めが起きる
+	cases := []struct {
+		prefix, name string
+		wantDropped  bool
+	}{
+		{"zz_stale_probe", "zz_stale_probe_999999_1", true},
+		{"zz_stale_probe", "zz_stale_prob_999999_2", false},   // 別パッケージ（接頭辞が自分の先頭）
+		{"zz_stale_probe", "zz_stale_probex_999999_3", false}, // 別パッケージ（自分が相手の先頭）
+		{long, truncateBytes(long, postgresIdentifierMaxBytes-len("_999999_4")) + "_999999_4", true},
+		{long, truncateBytes(long, postgresIdentifierMaxBytes-len("_999999_5")-1) + "_999999_5", false},
+	}
+	for _, c := range cases {
+		q := pgx.Identifier{c.name}.Sanitize()
+		if _, err := conn.Exec(ctx, "CREATE DATABASE "+q); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+q); err != nil {
+				t.Errorf("dropping %s: %v", c.name, err)
+			}
+		})
+	}
+	for _, prefix := range []string{"zz_stale_probe", long} {
+		if err := dropStaleTestDBs(ctx, conn, prefix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range cases {
+		var exists bool
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, c.name).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if exists == c.wantDropped {
+			t.Errorf("%s: exists=%v after sweep, want dropped=%v", c.name, exists, c.wantDropped)
+		}
 	}
 }
