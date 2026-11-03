@@ -224,7 +224,7 @@ flowchart TD
 
 mock では検出できない前提は、実物の mirakc コンテナに対する conformance テストが判定する。Docker が要る。
 
-コマンドは `go test -tags conformance ./internal/mirakc/conformance/...`。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock は権威にならず、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
+コマンドは `go test -tags conformance -p 1 ./internal/mirakc/conformance/...`。放送病態はケースごとにパッケージを分け、CI の `gotestsum tool ci-matrix` が実測時間でシャードへ振り分ける。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock は権威にならず、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
 
 <details><summary>根拠</summary>
 
@@ -238,8 +238,8 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 その理由は、rokuban がどのバージョンの mirakc イメージも自身で出荷せず、mirakc は運用者が用意するものだからである。`main` を pin し続けるのが恒常の形である。手順は次の通り。
 
-1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を新しいバージョンに変える
-2. `go test -tags conformance ./internal/mirakc/conformance/...` を回す
+1. `internal/mirakc/conformance/harness/mirakc.go` の `MirakcImage` / `MirakcVersion` を新しいバージョンに変える
+2. `go test -tags conformance -p 1 ./internal/mirakc/conformance/...` を回す
 3. 落ちた項目があれば、まず mirakc 側の変更か rokuban の前提の誤りかを切り分ける。まず役に立つのは 2 つで、1 つは `docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールのオプション・出力形式が変わっていないか見ること。もう 1 つは `docker logs` でコンテナ内の `mirakc` 自体のエラーを見ること
 4. mirakc 側の変更なら、対応する docs（delegation.md / reconciler.md / ingest.md / watcher.md）の記述を実際の挙動に合わせて直す。rokuban 側の前提が誤っていたなら実装を直す
 5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc のバージョンの文言（`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える

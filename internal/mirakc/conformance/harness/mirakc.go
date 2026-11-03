@@ -1,6 +1,6 @@
 //go:build conformance
 
-package conformance
+package harness
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// mirakcImage は判定対象の mirakc の版。
+// MirakcImage は判定対象の mirakc イメージ。
 //
 // **`main` ブランチのビルドを digest で固定する。番号付きリリースには戻らない。**
 // rokuban の ingest / streamer が依存する `/api/recording/records/*`（records.rs）は
@@ -33,55 +33,30 @@ import (
 // 上書きされる可動タグで、古い digest は untagged manifest として残るだけ）。
 // pull 失敗はテストの回帰ではなく pin の失効なので、docs/runbook/testing.md の
 // 「mirakc のバージョンを上げる手順」の手順で最新の digest に取り直す。
-const mirakcImage = "docker.io/mirakc/mirakc@sha256:3fd884b3bb7c5c33f6d9241abf36db81b6fe25e42a869b8f14ecddd482a41c93"
+const MirakcImage = "docker.io/mirakc/mirakc@sha256:3fd884b3bb7c5c33f6d9241abf36db81b6fe25e42a869b8f14ecddd482a41c93"
 
 const mirakcImageEnv = "ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
 
-// configuredMirakcImage returns the pinned image unless the caller supplies an image override.
+// configuredMirakcImage は環境変数の上書きを反映した mirakc イメージを返す。
 func configuredMirakcImage() string {
 	if image := os.Getenv(mirakcImageEnv); image != "" {
 		return image
 	}
-	return mirakcImage
+	return MirakcImage
 }
 
-// TestMirakcRunArgsImage は startMirakc が実際に docker へ渡す引数列の末尾（イメージ名）を
-// 見る。configuredMirakcImage() 単体のテストでは、startMirakc 内の配線
-// （args = append(args, configuredMirakcImage())）を pin 定数へ直接差し替える変異を
-// 検出できない。mirakcRunArgs を経由することで、その配線そのものを検査対象にする。
-func TestMirakcRunArgsImage(t *testing.T) {
-	lastArg := func(args []string) string { return args[len(args)-1] }
-
-	t.Run("uses the pinned image by default", func(t *testing.T) {
-		t.Setenv(mirakcImageEnv, "")
-		args := mirakcRunArgs("c", "/tuner", "/config.yml", "/recordings", "")
-		if got := lastArg(args); got != mirakcImage {
-			t.Fatalf("mirakcRunArgs last arg = %q, want pinned image %q", got, mirakcImage)
-		}
-	})
-
-	t.Run("uses the environment override", func(t *testing.T) {
-		const want = "docker.io/mirakc/mirakc:main-debian"
-		t.Setenv(mirakcImageEnv, want)
-		args := mirakcRunArgs("c", "/tuner", "/config.yml", "/recordings", "")
-		if got := lastArg(args); got != want {
-			t.Fatalf("mirakcRunArgs last arg = %q, want %q", got, want)
-		}
-	})
-}
-
-// mirakcVersion は mirakcImage が実際に埋め込んでいる版（GetVersion で照合する。
+// MirakcVersion は MirakcImage が実際に埋め込んでいる版（GetVersion で照合する。
 // 受け入れ項目 5）。
 //
 // **この照合が捕まえるのは番号付きの版が変わったことだけ。** `main` の Cargo バージョンは
-// 4.0.0 が出るまでどの main ビルドでも "4.0.0-dev.0" のままなので、mirakcImage の
+// 4.0.0 が出るまでどの main ビルドでも "4.0.0-dev.0" のままなので、MirakcImage の
 // digest を差し替えても（＝別のコミットに pin し直しても）ここは変わらない ---
 // `main` ビルド同士を区別する検査ではない（`docker run <image@digest>` を使っている
 // 時点で起動イメージが pin と一致することはそちらで保証済みなので、この照合を
 // digest 検査の代わりにする必要もない）。この定数の実質的な価値は、
 // delegation.md / reconciler.md / ingest.md / troubleshooting.md が引用する
 // 「mirakc 4.0.0-dev.0 相当」という文言を嘘にしないことである。
-const mirakcVersion = "4.0.0-dev.0"
+const MirakcVersion = "4.0.0-dev.0"
 
 // dockerArch は docker デーモンが実行するコンテナの CPU アーキテクチャを Go の GOARCH 名で返す。
 // フィクスチャの偽チューナーはコンテナに bind mount するバイナリなので、ホストではなく
@@ -101,20 +76,20 @@ func dockerArch(t *testing.T) string {
 	return arch
 }
 
-// buildFixtureTuner は internal/mirakc/conformance/cmd/fixturetuner を mirakc コンテナ向けに
+// BuildFixtureTuner は internal/mirakc/conformance/cmd/fixturetuner を mirakc コンテナ向けに
 // クロスビルドし、そのバイナリのホスト側パスを返す。dir は Docker と共有されているホストの
 // ディレクトリ（bind mount できる場所）でなければならない --- macOS の Docker Desktop は
 // 既定で /tmp 配下のすべてを共有しているわけではなく、リポジトリ配下（このパッケージの
 // ディレクトリ）は確実に共有される（実測で確認した。t.TempDir() の既定の置き場所
 // （os.TempDir() 配下）はホストによっては共有されないことがあるので使わない）。
-func buildFixtureTuner(t *testing.T, dir string) string {
+func BuildFixtureTuner(t *testing.T, dir string) string {
 	t.Helper()
 	arch := dockerArch(t)
 	out := filepath.Join(dir, "fixturetuner")
 	cmd := exec.Command("go", "build", "-tags", "conformance", "-o", out,
 		"github.com/fetburner/rokuban/internal/mirakc/conformance/cmd/fixturetuner")
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
-	cmd.Dir = repoRoot(t)
+	cmd.Dir = RepoRoot(t)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -126,13 +101,13 @@ func buildFixtureTuner(t *testing.T, dir string) string {
 	return out
 }
 
-// testDir はこのテスト専用の作業ディレクトリを作る。t.TempDir() を使わないのは、その既定の
+// TestDir はこのテスト専用の作業ディレクトリを作る。t.TempDir() を使わないのは、その既定の
 // 置き場所（os.TempDir() 配下）が Docker Desktop の bind mount 共有パスに含まれるとは限らない
 // ため（実測: macOS でこのテストを書いた際、/private/tmp 配下の一時ディレクトリを bind mount
 // しても、コンテナ側には空のディレクトリしか見えなかった）。リポジトリ配下は確実に共有される。
-func testDir(t *testing.T) string {
+func TestDir(t *testing.T) string {
 	t.Helper()
-	base := filepath.Join(repoRoot(t), "internal", "mirakc", "conformance", ".tmp")
+	base := filepath.Join(RepoRoot(t), "internal", "mirakc", "conformance", ".tmp")
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", base, err)
 	}
@@ -144,9 +119,9 @@ func testDir(t *testing.T) string {
 	return dir
 }
 
-// repoRoot はこのテストが属す go module のルートを返す（`go build` の作業ディレクトリに使う。
+// RepoRoot はこのテストが属す go module のルートを返す（`go build` の作業ディレクトリに使う。
 // GOFLAGS 等に依存せず常にモジュールルートから解決させるため）。
-func repoRoot(t *testing.T) string {
+func RepoRoot(t *testing.T) string {
 	t.Helper()
 	out, err := exec.Command("go", "env", "GOMOD").Output()
 	if err != nil {
@@ -192,10 +167,10 @@ recording:
 `, tunerCommand)
 }
 
-// mirakcLiveReleaseConfigYAML はライブストリームのチューナー解放遅延を測るための構成。
+// MirakcLiveReleaseConfigYAML はライブストリームのチューナー解放遅延を測るための構成。
 // 3 つの異なる channel / service を 2 本の tuner で受ける。録画 A とライブ B がそれぞれ
 // tuner を占有した状態でライブ C を要求し、B の Close 後に C が通るかを測る。
-func mirakcLiveReleaseConfigYAML(tunerCommand string) string {
+func MirakcLiveReleaseConfigYAML(tunerCommand string) string {
 	return fmt.Sprintf(`server:
   addrs:
     - http: '0.0.0.0:40772'
@@ -235,13 +210,13 @@ recording:
 `, tunerCommand, tunerCommand)
 }
 
-// mirakcContainer は起動済みの mirakc コンテナへのハンドルである。
-type mirakcContainer struct {
+// Container は起動済みの mirakc コンテナへのハンドルである。
+type Container struct {
 	name    string
-	baseURL string
+	BaseURL string
 }
 
-// mirakcRunArgs は startMirakc が docker に渡す `run` 引数列を組み立てる。
+// mirakcRunArgs は StartMirakc が docker に渡す `run` 引数列を組み立てる。
 func mirakcRunArgs(name, tunerBin, configPath, recBase, fixtureCase string) []string {
 	args := []string{
 		// --rm は起動直後に mirakc が終了した場合の診断ログまで消してしまう。
@@ -261,14 +236,15 @@ func mirakcRunArgs(name, tunerBin, configPath, recBase, fixtureCase string) []st
 	return append(args, configuredMirakcImage())
 }
 
-// startMirakc は mirakc 実物のコンテナを起こし、/api/version が応答するまで待つ。
+// StartMirakc は mirakc 実物のコンテナを起こし、/api/version が応答するまで待つ。
 // t.Cleanup でコンテナの停止・削除を登録する。
-func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase string) *mirakcContainer {
-	return startMirakcWithConfig(t, hostDir, tunerBin, fixtureCase,
+func StartMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase string) *Container {
+	return StartMirakcWithConfig(t, hostDir, tunerBin, fixtureCase,
 		mirakcConfigYAML("/fixtures/fixturetuner"))
 }
 
-func startMirakcWithConfig(t *testing.T, hostDir string, tunerBin string, fixtureCase string, configYAML string) *mirakcContainer {
+// StartMirakcWithConfig は設定を指定して実物の mirakc コンテナを起動する。
+func StartMirakcWithConfig(t *testing.T, hostDir string, tunerBin string, fixtureCase string, configYAML string) *Container {
 	t.Helper()
 
 	recBase := filepath.Join(hostDir, "recordings")
@@ -286,8 +262,8 @@ func startMirakcWithConfig(t *testing.T, hostDir string, tunerBin string, fixtur
 		t.Fatalf("write config.yml: %v", err)
 	}
 
-	// t.Name() を混ぜて呼び出しごとに一意にする --- TestBroadcastPathologies は 1 バイナリ
-	// から 4 回 startMirakc を呼ぶ（+ TestConformance の 1 回）。--rm を使わないので
+	// t.Name() を混ぜて呼び出しごとに一意にする --- 4 つの病態テストはそれぞれ独立したパッケージ
+	// から 4 回 StartMirakc を呼ぶ（+ TestRecordLifecycle の 1 回）。--rm を使わないので
 	// （下記コメント参照）名前が衝突すると `docker rm -f` が別サブテストのコンテナを
 	// 巻き込んで消す。PID だけが一意性の根拠だとサブテストが直列だから成り立っているに
 	// すぎず、将来 t.Parallel() を足すと壊れる。
@@ -302,15 +278,15 @@ func startMirakcWithConfig(t *testing.T, hostDir string, tunerBin string, fixtur
 		t.Fatalf("docker run: %v\n%s", err, stderr.String())
 	}
 
-	c := &mirakcContainer{name: name}
+	c := &Container{name: name}
 	t.Cleanup(func() {
 		dumpContainerLogsOnFailure(t, name)
 		_ = exec.Command("docker", "rm", "-f", name).Run()
 	})
 
 	port := waitForPublishedPort(t, name, 40772)
-	c.baseURL = fmt.Sprintf("http://127.0.0.1:%s", port)
-	waitForHTTP(t, c.baseURL+"/api/version", 30*time.Second)
+	c.BaseURL = fmt.Sprintf("http://127.0.0.1:%s", port)
+	waitForHTTP(t, c.BaseURL+"/api/version", 30*time.Second)
 	return c
 }
 

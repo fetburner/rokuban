@@ -234,7 +234,7 @@ Work 開始時に分母を固定すると、録画が伸びて `written_bytes` �
 <details><summary>根拠</summary>
 
 - 分母の由来: `record_sync.content_length`（`content.length`）
-- 録画中の length 観測: `TestConformance/RecordingInProgress`
+- 録画中の length 観測: `internal/mirakc/conformance/recordlifecycle` の `TestRecordLifecycle/RecordingInProgress`
 - 追い付き時の分母と observed_at: `TestIngestWorker_FollowingCaughtUpKeepsProgressFresh`
 
 </details>

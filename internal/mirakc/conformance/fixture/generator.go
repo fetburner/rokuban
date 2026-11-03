@@ -44,7 +44,7 @@ const (
 
 	// EventDuration は番組の長さ。録画が自然終了するまでテストが待つ時間の上限でもあるので、
 	// 「録画中」の判定を試すのに十分かつ待ち時間が膨らまない値にする（実測して決めた値。
-	// internal/mirakc/conformance/conformance_test.go の TestConformance/RecordingInProgress
+	// internal/mirakc/conformance/recordlifecycle/recordlifecycle_test.go の TestRecordLifecycle/RecordingInProgress
 	// 参照）。
 	EventDuration = 30 * time.Second
 

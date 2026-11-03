@@ -34,46 +34,11 @@ jobs:
     env:
       ROKUBAN_CONFORMANCE_MIRAKC_IMAGE: ${{ github.event.inputs.mirakc_image || 'docker.io/mirakc/mirakc:main-debian' }}
       ROKUBAN_CONFORMANCE_TEST_DATABASE_URL: postgres://conformance:conformance@localhost:5432/conformance_test?sslmode=disable
-    # -timeout の根拠（コード中の named timeout の積算。TestConformance +
-    # TestBroadcastPathologies の 4 病態ケース + TestLiveStreamReleaseUnderRecording +
-    # TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording が同じテストバイナリで直列に走り、
-    # 合計 7 コンテナを起動する）。PR をブロックする
-    # ci.yml のジョブと同じ値を保つ。
-    #
-    # コード上の named timeout で積める分（helpers_test.go / conformance_test.go /
-    # pathology_test.go / live_release_test.go の定数から）:
-    #   コンテナ起動 ×7（waitForHTTP 30s + waitForPublishedPort 10s） ≈ 280s
-    #   TestConformance ≈ 288s（epgBootstrapTimeout 60s×2 + recordingStartTimeout 20s×2 +
-    #     RecordingInProgress の各種ポーリング ≈28s + recordingFinishTimeout 90s +
-    #     SSE 系サブテスト ≈10s）
-    #   TestBroadcastPathologies ≈ 955s（waitForService 60s×4 = 240s +
-    #     scheduleFreshPathologyProgram の retryDeadline 120s×4 = 480s [内部の
-    #     waitForProgramAt にこの deadline をそのまま渡しているので実際に包む。
-    #     waitForProgramAt が自前の予算を持つと上限がこの 2 倍近くまで伸びる] +
-    #     waitForPathologyRecord
-    #     45s×3 = 135s + EventIDReset の judgeEventIDResetWithEvents 45s +
-    #     waitForFinishedWithoutReplacement(45s 待ち + 10s settle) = 100s）
-    #   TestLiveStreamReleaseUnderRecording ≈ 295s（waitForService 60s×3 = 180s +
-    #     waitForProgram 60s + recording の開始待ち 40s [waitForRecord 20s +
-    #     waitForRecordingStatus 20s] + 容量拒否確認の failedCtx 10s +
-    #     mirakc 解放待ちループ 5s）
-    #   TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording ≈ 280s（service / program
-    #     待ち 120s + recording 開始 / 終了待ち 110s + watcher / ingest once worker の
-    #     idle timeout 50s。実バイナリのビルドと起動は named timeout が無く、別途余裕を含める）
-    #   小計 ≈ 2098s
-    #
-    # コード上に named timeout が無く積めない分（実測/見積もりであることを明示する。
-    # digest を先に記録するため image pull は専用 step で行うが、可動タグは pin より
-    # cache が効きにくいので、この job の所要時間にも余裕を持たせる）:
-    #   docker image pull（同一ジョブ内では 7 コンテナが同じ digest を使うので実質 1 回。
-    #     イメージサイズ ≈49MB、ローカル実測はキャッシュ済みで数秒未満。CI の初回 pull
-    #     を見積もりで 30s とする） + buildFixtureTuner ×4（ローカル実測 arm64 cross
-    #     build ≈0.6s/回、CI 変動を見て 5s/回） ≈ 50s
-    #
-    # 合計 ≈ 2148s（36 分弱）。**-timeout はこれに 132s（約 6%）の余裕を足した 2280s
-    # （38m）にする。** timeout-minutes は go test の -timeout に加えて checkout/setup-go、
-    # PostgreSQL service の起動、digest 用の image pull、GH Actions 側のジョブ終了処理のぶんの余裕（300s = 5m）を
-    # 足した 43m にする。
+    # `go test` はパッケージごとに test binary を作り、-p 1 で直列実行する。
+    # -timeout は各 binary に掛かる。named wait の積算は EventIDReset 約 320s、
+    # live release 約 295s、RecordLifecycle 約 288s、ingest resume 約 280s。
+    # 4 病態パッケージと他の conformance package を直列に回すので、ジョブ全体の時間は
+    # それぞれの積算時間の合計になる。PR をブロックする ci.yml と同じ -timeout 38m を保つ。
     timeout-minutes: 43
     steps:
       - uses: actions/checkout@v7
@@ -84,4 +49,4 @@ jobs:
         run: |
           docker pull "$ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
           docker inspect --format '{{index .RepoDigests 0}}' "$ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
-      - run: go test -tags conformance ./internal/mirakc/conformance/... -timeout 38m -v
+      - run: go test -tags conformance -p 1 ./internal/mirakc/conformance/... -timeout 38m -v

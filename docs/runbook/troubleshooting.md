@@ -279,7 +279,7 @@ curl -s http://localhost:9090/api/v1/query --data-urlencode \
 <details>
 <summary>根拠</summary>
 
-- 前提を mirakc 4.0.0-dev.0 相当に対して判定する適合テスト: `internal/mirakc/conformance` の `TestConformance/ContentPathRoundTrip`
+- 前提を mirakc 4.0.0-dev.0 相当に対して判定する適合テスト: `recordlifecycle.TestRecordLifecycle/ContentPathRoundTrip`
 
 </details>
 

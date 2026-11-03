@@ -1,6 +1,6 @@
 //go:build conformance
 
-package conformance
+package ingestresume
 
 import (
 	"bytes"
@@ -26,24 +26,25 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
+	"github.com/fetburner/rokuban/internal/mirakc/conformance/harness"
 	"github.com/fetburner/rokuban/internal/programid"
 )
 
-func TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording(t *testing.T) {
+func TestIngestResumesAcrossProcessesDuringRecording(t *testing.T) {
 	dbURL := os.Getenv("ROKUBAN_CONFORMANCE_TEST_DATABASE_URL")
 	if dbURL == "" {
 		t.Skip("ROKUBAN_CONFORMANCE_TEST_DATABASE_URL is required for the isolated binary conformance run")
 	}
 
-	dir := testDir(t)
-	root := repoRoot(t)
-	binary := buildIssue1317Binary(t, root, dir)
-	tunerBin := buildFixtureTuner(t, dir)
-	container := startMirakc(t, dir, tunerBin, "")
-	client := mirakc.NewClient(container.baseURL, nil)
+	dir := harness.TestDir(t)
+	root := harness.RepoRoot(t)
+	binary := buildRokuban(t, root, dir)
+	tunerBin := harness.BuildFixtureTuner(t, dir)
+	container := harness.StartMirakc(t, dir, tunerBin, "")
+	client := mirakc.NewClient(container.BaseURL, nil)
 	ctx := context.Background()
 
-	dbConfig := parseIssue1317DBURL(t, dbURL)
+	dbConfig := parseDBURL(t, dbURL)
 	if dbConfig.password == "" {
 		dbConfig.password = "test"
 	}
@@ -84,29 +85,29 @@ worker:
   periodic_jobs: false
   rescue_stuck_jobs_after: 6m
 `, strconv.Quote(dbConfig.host), dbConfig.port, strconv.Quote(dbConfig.user), strconv.Quote(dbConfig.password),
-		strconv.Quote(dbConfig.database), strconv.Quote(mediaDir), strconv.Quote(scratchDir), strconv.Quote(container.baseURL))
+		strconv.Quote(dbConfig.database), strconv.Quote(mediaDir), strconv.Quote(scratchDir), strconv.Quote(container.BaseURL))
 	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
-	runIssue1317Binary(t, binary, "--config", configPath, "config", "validate")
-	runIssue1317Binary(t, binary, "--config", configPath, "migrate", "up")
+	runRokuban(t, binary, "--config", configPath, "config", "validate")
+	runRokuban(t, binary, "--config", configPath, "migrate", "up")
 
 	serviceID := programid.ServiceID(fixture.NetworkID, fixture.ServiceID)
 	programID := programid.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
-	waitForService(t, ctx, client, serviceID)
-	waitForProgram(t, ctx, client, programID)
+	harness.WaitForService(t, ctx, client, serviceID)
+	harness.WaitForProgram(t, ctx, client, programID)
 	if _, err := client.CreateSchedule(ctx, mirakc.ScheduleInput{
 		ProgramID: programID,
-		Options:   mirakc.Options{ContentPath: strPtr("conformance/issue-1317-slice.ts"), Priority: 1},
+		Options:   mirakc.Options{ContentPath: strPtr("conformance/ingest-resume.ts"), Priority: 1},
 		Tags:      []string{mirakc.ProgramTag(programID)},
 	}); err != nil {
 		t.Fatalf("creating fixture recording schedule: %v", err)
 	}
-	recordID := waitForRecord(t, ctx, client, programID)
-	waitForRecordingStatus(t, ctx, client, recordID, "recording", recordingStartTimeout)
+	recordID := harness.WaitForRecord(t, ctx, client, programID)
+	harness.WaitForRecordingStatus(t, ctx, client, recordID, "recording", harness.RecordingStartTimeout)
 
-	runIssue1317Binary(t, binary, "--config", configPath, "enqueue", "record-sweep", "--site", "default")
-	runIssue1317Binary(t, binary, "--config", configPath, "server", "--roles", "worker", "--sites", "default",
+	runRokuban(t, binary, "--config", configPath, "enqueue", "record-sweep", "--site", "default")
+	runRokuban(t, binary, "--config", configPath, "server", "--roles", "worker", "--sites", "default",
 		"--queues", "watcher", "--once", "--once-idle-timeout", "5s")
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -123,14 +124,14 @@ worker:
 	}
 
 	serverOnce := func() string {
-		return runIssue1317Binary(t, binary, "--config", configPath, "server", "--roles", "worker", "--sites", "default",
+		return runRokuban(t, binary, "--config", configPath, "server", "--roles", "worker", "--sites", "default",
 			"--queues", "ingest", "--once", "--once-idle-timeout", "5s")
 	}
 	firstOutput := serverOnce()
 	if !strings.Contains(firstOutput, "job_done") {
 		t.Fatalf("first ingest process did not consume one Work item:\n%s", firstOutput)
 	}
-	assertIssue1317CleanHandoff(t, ctx, pool, mediaDir, recordID, firstOutput)
+	assertCleanHandoff(t, ctx, pool, mediaDir, recordID, firstOutput)
 	firstRecord, err := client.GetRecord(ctx, recordID)
 	if err != nil {
 		t.Fatalf("checking recording after first bounded Work: %v", err)
@@ -140,7 +141,7 @@ worker:
 	}
 	// Ingest deletes the mirakc record after committing the original, so save its
 	// completed SHA before allowing a later slice to finish the job.
-	waitForRecordingStatus(t, ctx, client, recordID, "finished", recordingFinishTimeout)
+	harness.WaitForRecordingStatus(t, ctx, client, recordID, "finished", harness.RecordingFinishTimeout)
 	finished, err := client.GetRecord(ctx, recordID)
 	if err != nil {
 		t.Fatalf("getting finished mirakc record before ingest resumes: %v", err)
@@ -210,9 +211,9 @@ worker:
 	t.Logf("actual binary resumed %d once-mode Work items and committed %d bytes from a pinned mirakc recording", workItems, len(data))
 }
 
-type issue1317DBConfig struct{ host, port, user, password, database string }
+type dbConfig struct{ host, port, user, password, database string }
 
-func parseIssue1317DBURL(t *testing.T, value string) issue1317DBConfig {
+func parseDBURL(t *testing.T, value string) dbConfig {
 	t.Helper()
 	u, err := url.Parse(value)
 	if err != nil {
@@ -224,10 +225,10 @@ func parseIssue1317DBURL(t *testing.T, value string) issue1317DBConfig {
 		user = u.User.Username()
 		password, _ = u.User.Password()
 	}
-	return issue1317DBConfig{host: u.Hostname(), port: u.Port(), user: user, password: password, database: strings.TrimPrefix(u.Path, "/")}
+	return dbConfig{host: u.Hostname(), port: u.Port(), user: user, password: password, database: strings.TrimPrefix(u.Path, "/")}
 }
 
-func buildIssue1317Binary(t *testing.T, root, dir string) string {
+func buildRokuban(t *testing.T, root, dir string) string {
 	t.Helper()
 	sourcePath, err := filepath.Abs(filepath.Join(root, "internal", "worker", "ingest.go"))
 	if err != nil {
@@ -268,7 +269,7 @@ func buildIssue1317Binary(t *testing.T, root, dir string) string {
 	return binary
 }
 
-func runIssue1317Binary(t *testing.T, binary string, args ...string) string {
+func runRokuban(t *testing.T, binary string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
 	var output bytes.Buffer
@@ -280,7 +281,7 @@ func runIssue1317Binary(t *testing.T, binary string, args ...string) string {
 	return output.String()
 }
 
-func assertIssue1317CleanHandoff(t *testing.T, ctx context.Context, pool *pgxpool.Pool, mediaDir, recordID, processOutput string) {
+func assertCleanHandoff(t *testing.T, ctx context.Context, pool *pgxpool.Pool, mediaDir, recordID, processOutput string) {
 	t.Helper()
 	var recordingID int64
 	if err := pool.QueryRow(ctx, `
@@ -326,3 +327,5 @@ func assertIssue1317CleanHandoff(t *testing.T, ctx context.Context, pool *pgxpoo
 		t.Fatalf("clean handoff temp stat=(%v, %v), want regular file of %d bytes", info, err, offset)
 	}
 }
+
+func strPtr(s string) *string { return &s }

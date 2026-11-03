@@ -40,7 +40,7 @@ func (e *liveUpstreamStartError) Unwrap() error {
 // `<-s.done` を待った後、1 回だけ再試行する前の待ち時間。実 mirakc
 // 4.0.0-dev.0 + fixture tuner 2 本 + 録画 1 本で、旧ライブの Close から次の
 // 異なる波のライブ要求が通るまでを測ったところ 2.35〜4.18 秒だった（2026-09-06、
-// internal/mirakc/conformance/live_release_test.go）。5 秒にして、mirakc 側の
+// internal/mirakc/conformance/liverelease/liverelease_test.go）。5 秒にして、mirakc 側の
 // 非同期な tuner プロセス終了の揺れを吸収する。ここは再試行の回数を増やすための
 // backoff ではなく、退避後に 1 回だけ行う解放待ちである。
 //
@@ -48,7 +48,7 @@ func (e *liveUpstreamStartError) Unwrap() error {
 // 2.35 秒で終わる（上記実測の最小値）が、固定 5 秒はその典型ケースで最大 2.6 秒を
 // 余分に払う。予算内で 100ms 間隔のポーリングに変える案もあるが、この PR の範囲
 // （issue #677 の「再試行は 1 回だけ」---反復禁止であって解放待ちの実装方式では
-// ない）を広げない。判定手段は internal/mirakc/conformance/live_release_test.go
+// ない）を広げない。判定手段は internal/mirakc/conformance/liverelease/liverelease_test.go
 // に既にある（100ms ポーリングで解放を検出している）ので、ポーリング化するときは
 // そこを使って測り直す。
 //
