@@ -952,10 +952,13 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, base *worker.Dep
 		derivedMedia := pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, name, cfg.Storage.Derived)
 		scoped.DerivedMediaPublish = derivedMedia
 		// この置き場が派生物の置き場と同じ FS なら、既存の削除・監査の経路を共有する。
-		// 別の S3 の派生物の置き場は、独立した 1 パスで扱う。FS の派生物の置き場を別の置き場の
-		// worker が mount しているときは、その FS 全体を objstore のパスで掃かないよう、このパスを作らない
-		// （派生物の FS は置き場ごとのマーカー照合の経路を通らない）。
-		if cfg.Storage.Derived != name && cfg.Storage.Stores[cfg.Storage.Derived].Kind == "s3" {
+		// S3 の独立パスは名前順で最初の FS 置き場だけに載せ、複数の original キューから同じ S3 を
+		// 繰り返し走査・削除しない。FS の派生物の置き場を別の置き場の worker が mount している
+		// ときは、その FS 全体を objstore のパスで掃かないよう、このパスを作らない。
+		fsNames := cfg.Storage.FSStoreNames()
+		if cfg.Storage.Derived != name &&
+			cfg.Storage.Stores[cfg.Storage.Derived].Kind == "s3" &&
+			len(fsNames) > 0 && name == fsNames[0] {
 			scoped.DerivedMediaDelete = derivedMedia
 			scoped.DerivedStorage = derivedMedia
 			scoped.DerivedPendingReclaim = derivedMedia
