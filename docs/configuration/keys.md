@@ -29,7 +29,7 @@
 | `db.max_conns` | `0`（roles から自動算出） | プロセスが持つ唯一のプールの上限 |
 | `db.api_statement_timeout` | `0`（= 30s） | api を含むプロセスの statement timeout |
 | `mirakcs` | —（必須。既定なし） | mirakc の `{site, url}` 配列 |
-| `storage.media_dir` | —（FS 置き場があり、各 root を指定すれば不要） | root を省略した FS 置き場の既定値 |
+| `storage.media_dir` | —（FS 置き場を 1 つ以上定義し、そのすべてに `root` を書けば不要） | `root` を省略した FS 置き場の root |
 | `storage.stores` | —（必須になる条件は下記「置き場の規則」） | 名前付き置き場の定義（FS は任意で `root`） |
 | `storage.originals` | —（`stores` / `derived` と一緒に書く） | 上から評価する原本の置き場の規則 |
 | `storage.derived` | —（`stores` / `originals` と一緒に書く） | 派生物の共通の置き場 |

@@ -234,7 +234,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ストレージの残量は、ファイルシステムを持つ worker が定期的に観測して射影し、API から読めるようにする。対象はアーカイブとローカルのスクラッチだけで、mirakc の録画バッファは対象外である。
 
-`storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の容量は、worker が定期的に statfs 相当で観測して `storage_sync` に射影する。`GET /api/storage` で読める。api ロールはファイルシステムに依存しない（不変条件 1）。そのため観測は、ファイルシステムを持つ worker の仕事に限る。mirakc の recording.basedir（録画バッファ、上記「2 階層」表のエッジ側）は対象外である。Rokuban 自身が直接読み書きする 2 つのローカルパスだけを見る。
+FS 置き場ごとに、その root と `storage.scratch_dir` の容量を、担当 worker が定期的に statfs 相当で観測する。root は `storage.stores.<name>.root`（無ければ `storage.media_dir`）である。観測値は `storage_sync` に `(store, root)` 単位で射影する。`GET /api/storage` で読める。api ロールはファイルシステムに依存しない（不変条件 1）。そのため観測は、ファイルシステムを持つ worker の仕事に限る。mirakc の recording.basedir（録画バッファ、上記「2 階層」表のエッジ側）は対象外である。Rokuban 自身が直接読み書きするローカルパス（置き場の root と scratch）だけを見る。
 
 `tuner_sync`（[docs/data.md](../data.md) §6.5）と同じ「使い捨てプロジェクション」の形を採る。正しい状態は常にファイルシステム側にあり、毎パス全量を作り直せる観測値である。そのため全行 upsert で常に最新観測だけを保持する（過去の観測を積むログにはしない。不変条件 9）。`observed_at` の鮮度が「観測ループが止まっている」ことを示す唯一の手がかりになる（警告が出ないことは保証ではない。docs/data.md §6.5 の同じ姿勢である）。
 

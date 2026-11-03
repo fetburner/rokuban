@@ -20,8 +20,9 @@ type storageRoot struct {
 	path string
 }
 
-// StorageSyncWorker は storage.media_dir / storage.scratch_dir の容量を
+// StorageSyncWorker は担当する FS 置き場の root と storage.scratch_dir の容量を
 // storage_sync に全量投影する queue worker（issue #238 M7-5）。
+// 置き場ごとに組み立てられ、MediaDir はその置き場の root を指す。
 //
 // 存在理由は不変条件 1（api ロールはファイルシステムに依存しない）。ファイル
 // システムを持つ worker がここで観測し、api はこの射影だけを読んで

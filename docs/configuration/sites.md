@@ -35,7 +35,7 @@ site は省略も重複もできず、文字種と長さを制約する。
 
 束縛は起動時のフラグで表す。watcher と worker は複数の site を束縛でき、中央プロセスの worker は site 非依存のキューに絞る。
 
-`server` サブコマンドの `--sites` フラグで表す。多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](../overview.md) の役割分類に決定済みである。site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけである。DB と録画資産は全 site で共有するため、api / notifier / ruler など mirakc に触れない仕事は site に束縛しない。物理処理が置き場に依存する worker は、site と別に置き場へ束縛する。
+`server` サブコマンドの `--sites` フラグで表す。多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](../overview.md) の役割分類に決定済みである。site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけである。DB と録画資産は全 site で共有するため、api / notifier / ruler など mirakc に触れない仕事は site に束縛しない。置き場の FS を読み書きする worker と録画配信 streamer は、site と別に置き場へ束縛する。
 
 `--sites` は `--all` / ロール選択と同じ「起動形態」の軸で、[basics.md](basics.md)「やらないこと」の CLI フラグ方針に沿う。
 

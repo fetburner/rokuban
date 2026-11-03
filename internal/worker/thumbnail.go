@@ -43,7 +43,7 @@ const (
 //
 // site 照合ガード（issue #139）は不要と判断: EncodeWorker と同じ理由
 // （ThumbnailJobArgs は recording_id のみで site を持たず、原本読み取りは
-// mediapath.Resolve 経由の単一 MediaDir、mirakc には触れない）。EncodeWorker
+// 原本読み取りは mediapath.Resolve でこの worker の MediaDir 配下に解決する、mirakc には触れない）。EncodeWorker
 // の doc コメント参照。
 type ThumbnailWorker struct {
 	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
