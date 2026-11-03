@@ -86,7 +86,8 @@ func chooseIngestStore(ctx context.Context, deps *Deps, site string) (string, er
 //
 // 書き込み先は、置き場の規則を年齢 0 で評価して一致した置き場のうち、このプロセスがマウントして
 // いるものである。無ければ、マウントしている置き場のうち `--stores` の順で先頭の置き場に書く。
-// desired との差は転送が埋めるので、置き場を理由に ingest が止まる経路は作らない。
+// 規則で置き場を選べなかった場合や選んだ置き場が未マウントの場合は、desired と実際の置き場を Warn ログに残す。
+// 原本を失わないよう ingest は続けながら、転送待ちの原因を追えるようにする（TestIngestRouteLogsFallbackDestination）。
 // 規則の評価は SQL の関数が行い、ここには規則の写しを置かない。
 func newIngestRoute(deps *Deps, build func(*Deps) jobq.Worker[jobs.IngestJobArgs]) *storeRoute[jobs.IngestJobArgs] {
 	stores := deps.perStore()
@@ -113,6 +114,11 @@ func newIngestRoute(deps *Deps, build func(*Deps) jobq.Worker[jobs.IngestJobArgs
 				if _, ok := workers[name]; ok {
 					return name, nil
 				}
+				slog.Warn("ingest: desired original store is unavailable; writing to the first mounted store",
+					"site", args.Site,
+					"record_id", args.RecordID,
+					"desired_store", name,
+					"actual_store", mounted[0])
 			}
 			return mounted[0], nil
 		},
