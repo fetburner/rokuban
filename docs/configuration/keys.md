@@ -144,6 +144,8 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 
 `storage.stores.<名前>.internal_url` は、その置き場の原本を別のプロセスが転送元として読むための URL である。読むのは転送ワーカーで、転送元の置き場をそのプロセスがマウントしていないときに使う。
 
+`internal_url` は規則の指紋に含めない。転送元をどこから読むかを決めるだけで、宛先の判断には使わない。転送ワーカーは実行のたびに今の設定から転送元を選び直すので、変えても積み済みの転送ジョブを捨てさせない。
+
 `internal_url` が指すのは、その置き場をマウントした streamer のベース URL である。転送ワーカーは `<internal_url>/api/media/stores/<置き場>/recordings/<id>/file` へ Range 付きで要求する。応答が `X-Accel-Redirect` で本体を前段に任せる streamer を指すと、転送は失敗する。原本を直接返す streamer を指す。
 
 `server.allowed_hosts` が空でないとき、`internal_url` のホストはその一覧に含める。streamer の Host 検証は転送の要求にもかかるので、一覧に無いホストは 400 になる。この構成は起動時に拒否する。

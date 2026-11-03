@@ -25,8 +25,11 @@ type StoreConfig struct {
 	// Root は kind fs の置き場の root ディレクトリ。省略した FS 置き場は storage.media_dir を使う。
 	// 1 つのプロセスが複数の FS 置き場をマウントするとき、各置き場の root は互いに別でなければならない
 	// （StorageConfig.StoreRoots が検査する）。マウント先の違いは規則の指紋に入れない（json:"-"）。
-	Root        string `yaml:"root,omitempty" json:"-"`
-	InternalURL string `yaml:"internal_url,omitempty" json:"internal_url,omitempty"`
+	Root string `yaml:"root,omitempty" json:"-"`
+	// InternalURL は、この置き場をマウントしていないプロセスが原本を転送元として読むための streamer の URL。
+	// 転送元をどこから読むかを決めるだけで宛先の判断に使わず、worker は実行のたびに今の設定から
+	// 転送元を選び直すので、規則の指紋に入れない（json:"-"）。
+	InternalURL string `yaml:"internal_url,omitempty" json:"-"`
 	Endpoint    string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
 	Region      string `yaml:"region,omitempty" json:"region,omitempty"`
 	Bucket      string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
@@ -503,6 +506,7 @@ type storagePolicyFingerprintInput struct {
 // PolicyFingerprint は置き場の定義と原本・派生物の規則だけをハッシュした指紋を返す。
 // transfer は含めない。帯域と overlap は転送ジョブの宛先の判断に使わないので、
 // 変えても積み済みの転送ジョブを捨てさせない。
+// 置き場の定義のうち root と internal_url も含めない。どちらも転送元をどこから読むかを決めるだけで、宛先の判断に使わない。
 // encoding/json が map のキーを整列し、時間はマイクロ秒で表す。
 func (c StorageConfig) PolicyFingerprint() (string, error) {
 	rules, err := c.sqlOriginalRules()
