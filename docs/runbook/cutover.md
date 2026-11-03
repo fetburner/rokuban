@@ -41,7 +41,7 @@ EPGStation を止めて Rokuban を主運用にする手順と、その判断に
 デバイスの存在は起動時に検査されず、足し忘れは encode ジョブの失敗として出る。同梱の ffmpeg は apt 版で、ARIB 字幕を使うなら差し替えるが、差し替えると apt 版のエンコーダを失う。
 
 - device の存在は起動時に検査しない。compose なら `rokuban` サービスに `devices: ["/dev/dri:/dev/dri"]` を足す。足し忘れは encode ジョブの失敗として出る
-- `rokuban:full` の ffmpeg は apt 版で、`h264_vaapi` / `hevc_vaapi` を持つ。ARIB 字幕（`subtitles: webvtt`）を使うなら libaribcaption 入りの ffmpeg に差し替える。差し替えると apt 版のエンコーダを失う
+- `rokuban:full` の ffmpeg は apt 版で、`h264_vaapi` / `hevc_vaapi` を持つ。amd64 には Intel の VA ドライバも入るが、AMD / NVIDIA の GPU なら自分で足す。ARIB 字幕（`subtitles: webvtt`）を使うなら libaribcaption 入りの ffmpeg に差し替える。差し替えると apt 版のエンコーダを失う
 - エンコーダの有無は `docker compose exec rokuban ffmpeg -hide_banner -encoders | grep vaapi` で見る
 - 設定から消したプロファイルを参照するルールは `unknown encode profile` で失敗する（[troubleshooting.md](troubleshooting.md)）
 
