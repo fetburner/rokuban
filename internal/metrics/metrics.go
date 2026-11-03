@@ -613,6 +613,10 @@ var (
 		Name: "rokuban_storage_transfer_exhausted_assets",
 		Help: "Number of desired-store copies that stopped retrying after the transfer attempt limit.",
 	})
+	StorageDerivedCopiesOutsideDerivedS3 = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_storage_derived_copies_outside_derived_s3",
+		Help: "Number of active current-generation derived media copies in configured S3 stores other than storage.derived.",
+	})
 	StorageTransferLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_transfer_last_success_timestamp_seconds",
 		Help: "Unix time of the last successful media asset transfer.",
@@ -885,6 +889,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		StorageTransferWaitingAssets,
 		StorageTransferWaitingBytes,
 		StorageTransferExhaustedAssets,
+		StorageDerivedCopiesOutsideDerivedS3,
 		StorageTransferLastSuccess,
 		StorageTransferPolicyMismatches,
 		StorageTransferCorruptSourcesRetired,

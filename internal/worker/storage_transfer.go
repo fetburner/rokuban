@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,6 +59,9 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	if w.Storage == nil {
 		return fmt.Errorf("storage transfer reconcile: storage contract is nil")
 	}
+	if err := w.warnForDerivedCopiesOutsideS3(ctx); err != nil {
+		return err
+	}
 	rules, err := w.Config.OriginalRulesJSON()
 	if err != nil {
 		return fmt.Errorf("encoding storage original rules: %w", err)
@@ -67,7 +71,7 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 		return fmt.Errorf("clearing obsolete storage transfer attempts: %w", err)
 	}
 	// 転送の宛先は FS の置き場と、派生物が S3 ならその置き場。FS 1 つ + S3 の派生物でも移す先がある。
-	// 下の SQL 引数の fsStores は転送元の集合のままにする（S3 を入れると、古い S3 のコピーを転送元に数える）。
+	// 下の SQL 引数の fsStores は転送元の集合のままにする。どの転送も片端が FS で、その隣の worker が実行する。
 	if len(w.Config.TransferDestinationStoreNames()) < 2 {
 		metrics.StorageTransferWaitingAssets.Set(0)
 		metrics.StorageTransferWaitingBytes.Set(0)
@@ -110,6 +114,30 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 		if err := enqueueJob(ctx, w.Enqueuer, job); err != nil {
 			slog.Error("storage transfer reconcile: failed to enqueue copy", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store, "source_store", job.SourceStore, "err", err)
 		}
+	}
+	return nil
+}
+
+func (w *StorageTransferReconcileWorker) warnForDerivedCopiesOutsideS3(ctx context.Context) error {
+	s3Stores := make([]string, 0, len(w.Config.Stores))
+	for name, cfg := range w.Config.Stores {
+		if cfg.Kind == "s3" {
+			s3Stores = append(s3Stores, name)
+		}
+	}
+	slices.Sort(s3Stores)
+	counts, err := w.Storage.ListActiveDerivedCopiesInNonDerivedS3(ctx, s3Stores, w.Config.Derived)
+	if err != nil {
+		return fmt.Errorf("storage transfer reconcile: checking derived copies in non-derived S3 stores: %w", err)
+	}
+	var total int64
+	for _, count := range counts {
+		total += count.Copies
+	}
+	metrics.StorageDerivedCopiesOutsideDerivedS3.Set(float64(total))
+	for _, count := range counts {
+		slog.Warn("storage transfer reconcile: active derived copies remain in a non-derived S3 store; until_encoded originals can remain undeletable if encoded exists only there",
+			"derived_store", w.Config.Derived, "store", count.Store, "active_copies", count.Copies)
 	}
 	return nil
 }

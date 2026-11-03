@@ -654,6 +654,51 @@ func (q *Queries) ListAbandonedMediaAssetTransferUploads(ctx context.Context, ar
 	return items, nil
 }
 
+const listActiveDerivedCopiesInNonDerivedS3 = `-- name: ListActiveDerivedCopiesInNonDerivedS3 :many
+SELECT c.store, count(*)::bigint AS copies
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+WHERE c.store = ANY($1::text[])
+  AND c.store <> $2::text
+  AND c.state = 'active'
+  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND a.kind <> 'original'
+GROUP BY c.store
+ORDER BY c.store
+`
+
+type ListActiveDerivedCopiesInNonDerivedS3Params struct {
+	S3Stores     []string
+	DerivedStore string
+}
+
+type ListActiveDerivedCopiesInNonDerivedS3Row struct {
+	Store  string
+	Copies int64
+}
+
+// Active derived copies left in a configured S3 store after a policy switch.
+// Store identity comes from the copy rows; the caller supplies only configured S3 names.
+func (q *Queries) ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, arg ListActiveDerivedCopiesInNonDerivedS3Params) ([]ListActiveDerivedCopiesInNonDerivedS3Row, error) {
+	rows, err := q.db.Query(ctx, listActiveDerivedCopiesInNonDerivedS3, arg.S3Stores, arg.DerivedStore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveDerivedCopiesInNonDerivedS3Row
+	for rows.Next() {
+		var i ListActiveDerivedCopiesInNonDerivedS3Row
+		if err := rows.Scan(&i.Store, &i.Copies); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMediaAssetCopiesToDelete = `-- name: ListMediaAssetCopiesToDelete :many
 SELECT c.id AS copy_id, c.media_asset_id, c.store, c.rel_path, c.state,
        a.recording_id, a.size_bytes, a.kind, c.generation

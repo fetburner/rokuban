@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1576,6 +1577,86 @@ func TestStorageTransferWorkerReconcileEnqueuesDesiredCopies(t *testing.T) {
 	}
 }
 
+func TestStorageTransferReconcileWarnsForActiveDerivedCopyInNonDerivedS3(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store")
+	recordingID := dbtest.Recording(t, pool)
+	profile := "web"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/old-s3.mp4", []byte("encoded"))
+	transferTestAddCopy(t, pool, assetID, "s3-a", "sites/default/transfer/old-s3.mp4")
+	cfg := config.StorageConfig{
+		Stores: map[string]config.StoreConfig{
+			"test-store": {Kind: "fs"},
+			"s3-a":       {Kind: "s3", Bucket: "old"},
+			"s3-b":       {Kind: "s3", Bucket: "new"},
+		},
+		Originals: []config.OriginalStoreRule{{Store: "test-store"}},
+		Derived:   "s3-b",
+		Transfer:  config.StorageTransferConfig{Overlap: 2 * time.Hour},
+	}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	metrics.StorageDerivedCopiesOutsideDerivedS3.Set(0)
+	t.Cleanup(func() { metrics.StorageDerivedCopiesOutsideDerivedS3.Set(0) })
+
+	reconcile := StorageTransferReconcileWorker{
+		Enqueuer: newRecordingEnqueuer(), Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
+	}
+	if err := reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
+		t.Fatalf("storage transfer reconcile: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 1 {
+		t.Fatalf("active derived copies outside current S3 = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), "active derived copies remain in a non-derived S3 store") || !strings.Contains(logs.String(), "store=s3-a") {
+		t.Fatalf("reconcile warning = %q, want warning naming s3-a", logs.String())
+	}
+}
+
+func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerivedS3(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store")
+	recordingID := dbtest.Recording(t, pool)
+	profile := "web"
+	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/deleted-s3.mp4", []byte("encoded"))
+	transferTestAddCopy(t, pool, assetID, "s3-a", "sites/default/transfer/deleted-s3.mp4")
+	transferTestAddCopy(t, pool, assetID, "s3-b", "sites/default/transfer/current-s3.mp4")
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted' WHERE media_asset_id = $1 AND store = 's3-a'`, assetID); err != nil {
+		t.Fatalf("retiring old S3 copy: %v", err)
+	}
+	cfg := config.StorageConfig{
+		Stores: map[string]config.StoreConfig{
+			"test-store": {Kind: "fs"},
+			"s3-a":       {Kind: "s3", Bucket: "old"},
+			"s3-b":       {Kind: "s3", Bucket: "new"},
+		},
+		Originals: []config.OriginalStoreRule{{Store: "test-store"}},
+		Derived:   "s3-b",
+		Transfer:  config.StorageTransferConfig{Overlap: 2 * time.Hour},
+	}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	metrics.StorageDerivedCopiesOutsideDerivedS3.Set(3)
+	t.Cleanup(func() { metrics.StorageDerivedCopiesOutsideDerivedS3.Set(0) })
+
+	reconcile := StorageTransferReconcileWorker{
+		Enqueuer: newRecordingEnqueuer(), Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
+	}
+	if err := reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
+		t.Fatalf("storage transfer reconcile: %v", err)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 0 {
+		t.Fatalf("active derived copies outside current S3 = %v, want 0", got)
+	}
+	if strings.Contains(logs.String(), "active derived copies remain in a non-derived S3 store") {
+		t.Fatalf("reconcile warned without an active stale copy: %q", logs.String())
+	}
+}
+
 func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive", "cold")
@@ -1951,6 +2032,92 @@ func TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore(t *testi
 	for _, candidate := range candidates {
 		if candidate.MediaAssetID == originalID {
 			t.Fatal("until_encoded original remained a transfer candidate after the desired derived copies were present")
+		}
+	}
+}
+
+func TestUntilEncodedOriginalStallsWhenEncodedExistsOnlyInOldS3AfterDerivedStoreSwitch(t *testing.T) {
+	t.Parallel()
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	recordingID := dbtest.Recording(t, pool)
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "sites/default/s3-switch/original.ts", []byte("original"))
+	profile := "h264"
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "sites/default/s3-switch/encoded.mp4", []byte("encoded"))
+	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "sites/default/s3-switch/thumbnail.jpg", []byte("thumb"))
+	seekTilesID := seedSeekTilesAsset(t, pool, mediaDir, recordingID, "sites/default/s3-switch/tiles.jpg")
+	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+	derivedIDs := []int64{encodedID, thumbnailID, seekTilesID}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE media_asset_copies
+SET state = 'deleted', deleted_at = now()
+WHERE media_asset_id = ANY($1::bigint[]) AND store = 'test-store'`, derivedIDs); err != nil {
+		t.Fatalf("retiring fixture FS copies: %v", err)
+	}
+	for _, assetID := range derivedIDs {
+		transferTestAddCopy(t, pool, assetID, "s3-a", fmt.Sprintf("sites/default/s3-switch/s3-a-%d", assetID))
+	}
+
+	var activeElsewhere int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM media_asset_copies
+WHERE media_asset_id = ANY($1::bigint[]) AND state = 'active' AND store <> 's3-a'`, derivedIDs).Scan(&activeElsewhere); err != nil {
+		t.Fatalf("checking active derived copies outside s3-a: %v", err)
+	}
+	if activeElsewhere != 0 {
+		t.Fatalf("active derived copies outside s3-a = %d, want 0", activeElsewhere)
+	}
+
+	cfg := config.StorageConfig{
+		Stores: map[string]config.StoreConfig{
+			"test-store": {Kind: "fs"},
+			"s3-a":       {Kind: "s3", Bucket: "old-bucket"},
+			"s3-b":       {Kind: "s3", Bucket: "new-bucket"},
+		},
+		Originals: []config.OriginalStoreRule{{Store: "test-store"}},
+		Derived:   "s3-b",
+		Transfer:  config.StorageTransferConfig{Overlap: time.Hour},
+	}
+	var deletable bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+  SELECT 1 FROM until_encoded_deletable_originals('s3-b') WHERE asset_id = $1
+)`, originalID).Scan(&deletable); err != nil {
+		t.Fatalf("querying until_encoded deletion eligibility for s3-b: %v", err)
+	}
+	if deletable {
+		t.Fatal("until_encoded original became deletable although derived copies exist only in s3-a")
+	}
+
+	missing, err := pgstore.NewMedia(pool, "", "s3-b").ListMissingEncodeProfiles(context.Background(), store.MissingEncodeProfilesParams{
+		RecordingID:   &recordingID,
+		KnownProfiles: []string{profile},
+		CutProfiles:   []string{},
+		AttemptLimit:  10,
+		RowLimit:      10,
+	})
+	if err != nil {
+		t.Fatalf("listing missing encode profiles for s3-b: %v", err)
+	}
+	for _, row := range missing {
+		if row.RecordingID == recordingID && row.Profile == profile {
+			t.Fatalf("old-S3 encoded profile was queued for re-encode: %+v", row)
+		}
+	}
+
+	rules, err := cfg.OriginalRulesJSON()
+	if err != nil {
+		t.Fatalf("encoding storage original rules: %v", err)
+	}
+	candidates, err := pgstore.NewMedia(pool, "", "s3-b").ListMediaAssetTransferCandidates(
+		context.Background(), rules, cfg.FSStoreNames(), cfg.Derived, 10, 100,
+	)
+	if err != nil {
+		t.Fatalf("listing derived transfer candidates for s3-b: %v", err)
+	}
+	for _, candidate := range candidates {
+		if candidate.MediaAssetID == encodedID && candidate.SourceStore != "" {
+			t.Fatalf("encoded asset in s3-a has transfer source %q, want no FS source", candidate.SourceStore)
 		}
 	}
 }

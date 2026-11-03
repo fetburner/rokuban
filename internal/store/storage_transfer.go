@@ -94,6 +94,12 @@ type MediaAssetCopyDeleteCandidate struct {
 	Generation   int64
 }
 
+// DerivedS3CopyCount は、現在の派生物置き場以外に残る active 派生コピーの件数を置き場ごとに表す。
+type DerivedS3CopyCount struct {
+	Store  string
+	Copies int64
+}
+
 // TransferBandwidthLease は転送元置き場の排他を保持する、pool から借りた DB 接続を表す。
 type TransferBandwidthLease interface {
 	// Release は advisory lock を解放して接続を pool に戻す。
@@ -130,6 +136,8 @@ type TransferBacklogReader interface {
 // StorageTransfer は desired state と物理コピーの reconcile を永続化する契約である。
 type StorageTransfer interface {
 	TransferBacklogReader
+	// ListActiveDerivedCopiesInNonDerivedS3 は、設定済み S3 置き場にある current-generation の active 派生コピーを、現在の derived 以外について返す。
+	ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string, derivedStore string) ([]DerivedS3CopyCount, error)
 	// DatabaseClock は DB の時計の現在時刻を返す。RecordTransferBacklog の countedAt の出所は、
 	// プロセスごとに違う時計ではなく、この 1 つにする。
 	DatabaseClock(ctx context.Context) (time.Time, error)

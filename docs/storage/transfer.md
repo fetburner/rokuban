@@ -10,13 +10,31 @@
 
 派生物の置き場が S3 のときは、転送元の FS 置き場の worker が S3 へ直接送る。宛先が S3 のジョブは、転送元の置き場の転送キューに積む。配信の route と ScaledJob は増やさない。
 
-派生物の置き場が S3 のときは中央を中継しない。S3 は API で直接書けるので、中継は要らない。中継すると、データが WAN を 2 回通る（転送元から中央へ、中央から S3 へ）。配信の route と ScaledJob も置き場ごとに増える。
+どの転送も、少なくとも片端は FS の置き場である。FS から FS への転送は宛先をマウントした worker が読み込み、FS から S3 への転送は転送元をマウントした worker が送る。このように、転送の両端の置き場から実行する worker を決められる。
+
+転送元は FS に限る。S3 は自分で読み込みを始められないため、宛先が S3 のときは転送元 FS の隣の worker が送る。転送元を S3 にすると、S3 から S3 への転送では両端の隣に worker がいないため、実行場所を決められない。S3 を転送元に含めるには、置き場に縛られないキューか S3 を担当する worker、削除パスの担当の移設、k8s 構成の追加が要る。追加の仕組みで得られるのは S3 間移行の自動化だけである。
+
+派生物の宛先が S3 のときも中央を中継しない。S3 は API で直接書けるので、中継は要らない。中継すると、データが WAN を 2 回通る（転送元から中央へ、中央から S3 へ）。配信の route と ScaledJob も置き場ごとに増える。
+
+S3 から別の S3 へ移すときは、`storage.derived` を切り替えず、同じ置き場名の bucket の中身を移す。DB の `(store, rel_path)` はそのまま使える。`rclone` などでキーと `rokuban-sha256` メタデータを保ってコピーする手順は [bucket の移行](../runbook/storage-bucket-move.md) にある。
 
 帯域は、転送元の置き場の `storage.transfer.bandwidth` で絞る。S3 宛ての送信も同じ上限を通る。宛先の目印は確かめない（S3 の宛先には root が無い）。転送元の FS 置き場の転送 worker には、S3 の資格情報が要る（[ストレージ運用](../operations/storage.md) の「S3 の置き場の運用要件」）。
 
-宛先の判定は、FS の置き場の集合か、派生物の置き場（`p_derived_store`）に一致するかで行う。転送元の集合は FS の置き場のままである。S3 の古い派生物のコピーを転送元に数えると、マウントしていない置き場から読む候補が残り続けるからである。原本の宛先は FS だけである。
+宛先の判定は、FS の置き場の集合か、派生物の置き場（`p_derived_store`）に一致するかで行う。転送元の集合は FS の置き場のままである。原本の宛先は FS だけである。
 
 転送の宛先が 2 つ未満のとき、転送も配置の削除も走らない。FS の置き場 1 つと S3 の派生物の置き場は、2 つに数える。
+
+別の S3 に切り替えた後、`storage.stores` に残っている旧い S3 に active な派生コピーがあると、reconcile は警告とメトリクスで知らせる。旧い S3 を転送元にせず、自動削除もしない。
+
+`until_encoded` は現在の派生物置き場に encoded、thumbnail、seek tiles が揃うまで原本を削除しない。旧い S3 にだけ encoded がある場合、`unencoded_desired_profiles` はその encoded の再エンコード候補を作らず、S3 は転送元にならないため、その encoded は新しい派生物置き場に届かない。
+
+このため、`until_encoded` の原本は削除対象に出ないまま残る。
+
+<details><summary>根拠</summary>
+
+- 旧い S3 に派生物だけがあるときの削除・再エンコード・転送判定: `TestUntilEncodedOriginalStallsWhenEncodedExistsOnlyInOldS3AfterDerivedStoreSwitch`
+
+</details>
 
 ### 排他と再開
 

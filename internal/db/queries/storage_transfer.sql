@@ -1,3 +1,17 @@
+-- Active derived copies left in a configured S3 store after a policy switch.
+-- Store identity comes from the copy rows; the caller supplies only configured S3 names.
+-- name: ListActiveDerivedCopiesInNonDerivedS3 :many
+SELECT c.store, count(*)::bigint AS copies
+FROM media_asset_copies c
+JOIN media_assets a ON a.id = c.media_asset_id
+WHERE c.store = ANY(sqlc.arg('s3_stores')::text[])
+  AND c.store <> sqlc.arg('derived_store')::text
+  AND c.state = 'active'
+  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND a.kind <> 'original'
+GROUP BY c.store
+ORDER BY c.store;
+
 -- Candidate selection and waiting metrics use the same named predicate.
 -- source_store は、宛先が S3 の派生物の転送を実行する FS 置き場（キューの修飾に使う）。PrepareMediaAssetTransfer の
 -- source CTE と同じ順（作成の新しい順）で選ぶ。マウントの有無は reconcile からは分からないので、ここでは見ない。

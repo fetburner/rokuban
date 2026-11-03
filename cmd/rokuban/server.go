@@ -879,11 +879,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	}
-	base.PerStore = make(map[string]*worker.Deps, len(roots))
-	for _, name := range sortedKeys(roots) {
-		scoped := newStoreScopedDeps(pool, cfg, base, name, roots[name], derivedObjects)
-		base.PerStore[name] = scoped
-	}
+	base.PerStore = newPerStoreWorkerDeps(pool, cfg, base, roots, derivedObjects)
 	workers := worker.NewWorkers(base)
 	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, clientCfg)
 	if err != nil {
@@ -891,6 +887,15 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	}
 	deferred.Set(adapter)
 	return adapter, nil
+}
+
+// newPerStoreWorkerDeps は、サーバーがマウントした FS 置き場ごとに worker.Deps を作る。
+func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, base *worker.Deps, roots map[string]string, derivedObjects objstore.Store) map[string]*worker.Deps {
+	perStore := make(map[string]*worker.Deps, len(roots))
+	for _, name := range sortedKeys(roots) {
+		perStore[name] = newStoreScopedDeps(pool, cfg, base, name, roots[name], derivedObjects)
+	}
+	return perStore
 }
 
 // newDerivedObjects は storage.derived の置き場の objstore を作る。
