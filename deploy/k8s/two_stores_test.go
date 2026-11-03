@@ -18,10 +18,9 @@ import (
 // マウントしなければならない**（cmd/rokuban/stores.go の起動検査が拒む）。置き場が 2 つの構成で
 // 派生物を 1 つの FS に寄せると、もう一方の置き場の worker が起動できない。
 //
-// 判定 6（deploy/k8s/e2e/checks/06-two-stores.sh）の派生物は RustFS を通るので、ここで
-// config と overlay の 3 か所（endpoint の Service 名・bucket の作成・イメージ名）が
-// ずれていないことを固定する。ずれると、判定 6.2 が「派生物の書き込みに失敗」で赤くなり、
-// 原因が config か manifest か読めなくなる。
+// 判定 6（deploy/k8s/e2e/checks/06-two-stores.sh）の派生物は RustFS を通るので、config の
+// endpoint が RustFS Service と、bucket が作成 Job と一致することを固定する。
+// ずれると、判定 6.2 が「派生物の書き込みに失敗」で赤くなり、原因が読めなくなる。
 func TestTwoStoreOverlayDerivedIsS3OnTheRustFSService(t *testing.T) {
 	const overlayDir = "overlays/e2e-two-stores"
 
@@ -92,8 +91,13 @@ func TestTwoStoreOverlayDerivedIsS3OnTheRustFSService(t *testing.T) {
 	if !strings.Contains(script, "http://rustfs:9000/"+derived.Bucket+"\"") {
 		t.Errorf("rustfs/bucket-job.yaml does not PUT bucket %q on the rustfs Service (script = %q)", derived.Bucket, script)
 	}
+}
 
-	// RustFS のイメージ ref は CI と判定ハーネスで同じダイジェストを使う。
+// TestTwoStoreRustFSDeploymentUsesPinnedImage は RustFS のイメージ ref が CI と判定ハーネスで
+// 同じダイジェストを使い、設定・ボリュームがイメージの実行契約と一致することを確かめる。
+func TestTwoStoreRustFSDeploymentUsesPinnedImage(t *testing.T) {
+	const overlayDir = "overlays/e2e-two-stores"
+
 	var dep struct {
 		Spec struct {
 			Template struct {
@@ -178,8 +182,12 @@ func TestTwoStoreOverlayDerivedIsS3OnTheRustFSService(t *testing.T) {
 	if !emptyDirs["data"] || !emptyDirs["logs"] {
 		t.Errorf("RustFS emptyDir volumes = %v, want data and logs", emptyDirs)
 	}
+}
 
-	// overlay がその 3 つを読んでいる（書いても組まれなければ判定 6 は S3 を測れない）。
+// TestTwoStoreOverlayIncludesRustFS は kustomization が RustFS のリソースを含めることを確かめる。
+func TestTwoStoreOverlayIncludesRustFS(t *testing.T) {
+	const overlayDir = "overlays/e2e-two-stores"
+
 	var kust struct {
 		Resources []string `yaml:"resources"`
 	}
