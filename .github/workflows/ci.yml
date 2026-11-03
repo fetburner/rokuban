@@ -1,7 +1,8 @@
 name: CI
 
 env:
-  RUSTFS_IMAGE: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+  # Service containers cannot read the env context; this anchor shares the pin with their image fields.
+  RUSTFS_IMAGE: &rustfs_image rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
 
 on:
   # PR と main への push だけを検証する。その他のブランチ push は
@@ -218,6 +219,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      rustfs:
+        image: *rustfs_image
+        env:
+          RUSTFS_ACCESS_KEY: rokuban
+          RUSTFS_SECRET_KEY: rokuban-test-secret
+          RUSTFS_VOLUMES: /data
+        ports:
+          - 9000:9000
+        command: /data
     env:
       ROKUBAN_TEST_DATABASE_URL: postgres://conformance:conformance@localhost:5432/conformance_test?sslmode=disable
       AWS_ACCESS_KEY_ID: rokuban
@@ -244,36 +254,31 @@ jobs:
       - run: pnpm exec playwright install --with-deps chrome
         working-directory: web
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      # docker run keeps readiness probing and startup log capture beside the RustFS process.
-      - name: Start RustFS
+      - name: Wait for RustFS
+        env:
+          RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
         run: |
-          docker run --detach --name rokuban-rustfs \
-            --publish 9000:9000 \
-            --env RUSTFS_ACCESS_KEY=rokuban \
-            --env RUSTFS_SECRET_KEY=rokuban-test-secret \
-            --env RUSTFS_VOLUMES=/data \
-            "$RUSTFS_IMAGE" /data
           for _ in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:9000/health >/dev/null; then
               echo "RustFS is ready at http://127.0.0.1:9000"
               exit 0
             fi
-            if [ "$(docker inspect --format '{{.State.Running}}' rokuban-rustfs 2>/dev/null || true)" != true ]; then
+            if [ "$(docker inspect --format '{{.State.Running}}' "$RUSTFS_CONTAINER_ID" 2>/dev/null || true)" != true ]; then
               break
             fi
             sleep 1
           done
-          echo "::error::RustFS did not become ready; container log follows"
-          docker logs rokuban-rustfs || true
           exit 1
       - run: pnpm e2e:s3-302
         working-directory: web
         env:
           E2E_S3_URL: http://127.0.0.1:9000
           E2E_STREAMER_FIXTURE_BINARY: ${{ runner.temp }}/rokuban-s3streamer-conformance
-      - name: Stop RustFS
-        if: always()
-        run: docker rm --force rokuban-rustfs 2>/dev/null || true
+      - name: RustFS logs on failure
+        if: failure()
+        env:
+          RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
+        run: docker logs "$RUSTFS_CONTAINER_ID" || true
 
   # go test を 2 ランナーに分ける。4 コアのランナー 1 台に全パッケージ（race 付きの合計は
   # 約 600 秒）を詰めると、CPU の取り合いで最長パッケージがそのままジョブ長になるため。
@@ -525,6 +530,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      rustfs:
+        image: *rustfs_image
+        env:
+          RUSTFS_ACCESS_KEY: rokuban
+          RUSTFS_SECRET_KEY: rokuban-rustfs-conformance
+          RUSTFS_VOLUMES: /data
+        ports:
+          - 9000:9000
+        command: /data
     env:
       ROKUBAN_S3_CONFORMANCE_ENDPOINT: http://127.0.0.1:9000
       ROKUBAN_S3_CONFORMANCE_REGION: us-east-1
@@ -543,27 +557,20 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # docker run permits an explicit S3 readiness check and preserves logs if startup fails.
-      - name: Start RustFS
+      - name: Wait for RustFS
+        env:
+          RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
         run: |
-          docker run --detach --name rokuban-rustfs \
-            --publish 9000:9000 \
-            --env RUSTFS_ACCESS_KEY=rokuban \
-            --env RUSTFS_SECRET_KEY=rokuban-rustfs-conformance \
-            --env RUSTFS_VOLUMES=/data \
-            "$RUSTFS_IMAGE" /data
           for _ in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:9000/health >/dev/null; then
               echo "RustFS is ready at http://127.0.0.1:9000"
               exit 0
             fi
-            if [ "$(docker inspect --format '{{.State.Running}}' rokuban-rustfs 2>/dev/null || true)" != true ]; then
+            if [ "$(docker inspect --format '{{.State.Running}}' "$RUSTFS_CONTAINER_ID" 2>/dev/null || true)" != true ]; then
               break
             fi
             sleep 1
           done
-          echo "::error::RustFS did not become ready; container log follows"
-          docker logs rokuban-rustfs || true
           exit 1
       - name: Run S3 API conformance tests
         run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
@@ -571,9 +578,11 @@ jobs:
         run: go test -tags s3conformance ./internal/objstore/s3store -run '^TestStoreContract$' -count=1 -timeout 5m -v
       - name: Run S3 worker publication and recovery tests
         run: go test -tags s3conformance ./internal/worker -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
-      - name: Stop RustFS
-        if: always()
-        run: docker rm --force rokuban-rustfs 2>/dev/null || true
+      - name: RustFS logs on failure
+        if: failure()
+        env:
+          RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
+        run: docker logs "$RUSTFS_CONTAINER_ID" || true
 
   # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
   # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。

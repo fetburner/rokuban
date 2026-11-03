@@ -134,15 +134,33 @@ func TestTwoStoreRustFSDeploymentUsesPinnedImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading CI workflow: %v", err)
 	}
-	var ciImage string
-	for _, line := range strings.Split(string(workflow), "\n") {
-		if value, ok := strings.CutPrefix(line, "  RUSTFS_IMAGE: "); ok {
-			ciImage = strings.TrimSpace(value)
-			break
-		}
+	var ci struct {
+		Env struct {
+			RustFSImage string `yaml:"RUSTFS_IMAGE"`
+		} `yaml:"env"`
+		Jobs map[string]struct {
+			Services map[string]struct {
+				Image string `yaml:"image"`
+			} `yaml:"services"`
+		} `yaml:"jobs"`
 	}
+	if err := yaml.Unmarshal(workflow, &ci); err != nil {
+		t.Fatalf("decoding CI workflow: %v", err)
+	}
+	ciImage := ci.Env.RustFSImage
 	if ciImage == "" || ciImage != envImage {
 		t.Errorf("CI RUSTFS_IMAGE = %q, want lib/env.sh E2E_RUSTFS_IMAGE %q", ciImage, envImage)
+	}
+	for _, jobName := range []string{"browser-s3-302", "s3-conformance"} {
+		job, ok := ci.Jobs[jobName]
+		if !ok {
+			t.Errorf("CI job %q is missing", jobName)
+			continue
+		}
+		service, ok := job.Services["rustfs"]
+		if !ok || service.Image != ciImage {
+			t.Errorf("CI job %q RustFS image = %q, want shared RUSTFS_IMAGE %q", jobName, service.Image, ciImage)
+		}
 	}
 	if len(dep.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("rustfs/deployment.yaml has %d containers, want 1", len(dep.Spec.Template.Spec.Containers))
