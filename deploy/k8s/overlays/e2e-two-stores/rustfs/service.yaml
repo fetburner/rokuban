@@ -1,0 +1,16 @@
+# 判定 6 の派生物の置き場（S3 互換）の Service。endpoint は config.yml の `http://rustfs:9000`。
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: rustfs
+spec:
+  selector:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: rustfs
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3

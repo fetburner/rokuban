@@ -1,18 +1,20 @@
 # 判定 6 の派生物の置き場（S3 互換）。**製品のマニフェストではない**（overlays/e2e-two-stores 限り）。
 #
 # 派生物は S3 か FS のどちらでもよい。ここは S3 の経路（objstore の s3store）を判定するために
-# MinIO を立てる。イメージは lib/cluster.sh の build_minio_image が .github/actions/build-minio
-# と同じ commit から作って kind に載せる（公式イメージは公開されていない）。
+# RustFS の公式イメージを使う。イメージは CI（.github/workflows/ci.yml の RUSTFS_IMAGE）と同じダイジェストで固定し、
+# 一致は deploy/k8s/two_stores_test.go が見る。kind には load せず、kind node が registry から pull する。
+# kind load は、colima の docker（arm64）で digest ref・tag ref のどちらでも `ctr ... content digest ... not found` で失敗し、
+# ノードに入らない。その状態で pull policy を Never にすると ErrImageNeverPull になる（実測）。
 #
-# 資格情報は rokuban-secrets の AWS_* を MinIO のルートに渡す。製品の Pod も同じ secret を
-# envFrom で読むので、資格情報の出どころは 1 つのまま。
+# RustFS の data と log は read-only root filesystem の外に出す。両方 emptyDir にして、
+# Pod の fsGroup と合わせる。資格情報は製品用 rokuban-secrets の AWS_* を RUSTFS_* に渡す。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: minio
+  name: rustfs
   labels:
     app.kubernetes.io/name: rokuban-e2e
-    app.kubernetes.io/component: minio
+    app.kubernetes.io/component: rustfs
 spec:
   replicas: 1
   strategy:
@@ -20,12 +22,12 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: rokuban-e2e
-      app.kubernetes.io/component: minio
+      app.kubernetes.io/component: rustfs
   template:
     metadata:
       labels:
         app.kubernetes.io/name: rokuban-e2e
-        app.kubernetes.io/component: minio
+        app.kubernetes.io/component: rustfs
     spec:
       enableServiceLinks: false
       automountServiceAccountToken: false
@@ -38,22 +40,25 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: minio
-          image: minio:e2e
+        - name: rustfs
+          image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
           imagePullPolicy: IfNotPresent
-          args: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+          args: ["/data"]
           env:
-            - name: MINIO_ROOT_USER
+            - name: RUSTFS_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: rokuban-secrets
                   key: AWS_ACCESS_KEY_ID
-            - name: MINIO_ROOT_PASSWORD
+            - name: RUSTFS_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: rokuban-secrets
                   key: AWS_SECRET_ACCESS_KEY
-            # 既定の HOME は読み取り専用なので、MinIO の設定の書き出し先を emptyDir に向ける。
+            - name: RUSTFS_VOLUMES
+              value: /data
+            - name: RUSTFS_OBS_LOG_DIRECTORY
+              value: /logs
             - name: HOME
               value: /tmp
           ports:
@@ -61,7 +66,7 @@ spec:
               containerPort: 9000
           readinessProbe:
             httpGet:
-              path: /minio/health/live
+              path: /health
               port: s3
             periodSeconds: 2
             failureThreshold: 30
@@ -77,10 +82,14 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: logs
+              mountPath: /logs
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: data
+          emptyDir: {}
+        - name: logs
           emptyDir: {}
         - name: tmp
           emptyDir: {}

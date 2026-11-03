@@ -191,7 +191,7 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - Abort が成功しても ListParts が成功するなら gone にしない: `TestAbortUploadWithRemainingPartsIsNotGone`
 - ListParts の失敗は gone と誤らず、資格情報の分類で返す: `TestAbortUploadReturnsListPartsErrorWithCredentialClass`
 - Abort が NoSuchUpload 以外で失敗したら、ListParts を呼ばずに返す: `TestAbortUploadSkipsListPartsWhenAbortFails`
-- MinIO で、Abort のあとの ListParts が NoSuchUpload を返す（適合テストの機能 `multipart-abort-gone`）: `TestS3Conformance/multipart-abort-gone`
+- RustFS で、Abort のあとの ListParts が NoSuchUpload を返す（適合テストの機能 `multipart-abort-gone`）: `TestS3Conformance/multipart-abort-gone`
 - 転送元の長さが宣言と違う送信の扱い: `checkResumableSourceLength`（同じ）
 - slice をまたいで派生物を送り続け、完了する: `TestStorageTransferWorkerResumesDerivedUploadAcrossSlices`
 - きれいでない引き継ぎは新しい UploadId で送り直し、古い送信状態を掃除待ちに移す: `TestStorageTransferWorkerRestartsDerivedUploadAfterUncleanHandoff`
@@ -204,8 +204,8 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 照合を slice をまたいで行い、失敗は照合の後に 1 回だけ数える: `TestStorageTransferWorkerVerifiesMismatchAcrossSlicesBeforeCountingFailure`
 - 上限の直前の不一致でも照合が回り、失敗が 1 回数えられる: `TestStorageTransferWorkerCountsVerifiedFailureAtAttemptLimitEdge`
 - S3 の派生物への転送は、転送元の FS 置き場の worker が slice をまたいで完了する: `TestStorageTransferWorkerSendsDerivedCopyToS3FromFSSource`。宛先の root は無い
-- MinIO での同じ経路。5 MiB 以上のパートを slice をまたいで送る: `TestS3DerivedObjectPublicationAndRecovery/FS_derived_copy_transfers_to_S3_across_slices`
-- 完了した upload の送信状態は、掃除で gone になり行が消える（実 MinIO）
+- RustFS での同じ経路。5 MiB 以上のパートを slice をまたいで送る: `TestS3DerivedObjectPublicationAndRecovery/FS_derived_copy_transfers_to_S3_across_slices`
+- 完了した upload の送信状態は、掃除で gone になり行が消える（実 RustFS）
   - 検査: `TestS3DerivedObjectPublicationAndRecovery/FS_derived_copy_transfers_to_S3_across_slices`
 - 転送元が未マウントの S3 宛ての job は、予約せず再試行できるエラーで止まる: `TestStorageTransferWorkerRequiresSourceMountForS3Destination`
 - S3 宛ての候補は転送元のキューに積む。FS 宛ての候補は宛先のキューのままで、原本は S3 宛てにならない: `TestStorageTransferReconcileRoutesS3CopiesToSourceQueue`

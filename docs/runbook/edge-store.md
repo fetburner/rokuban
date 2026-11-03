@@ -13,7 +13,7 @@
      stores:
        tokyo: { kind: fs, root: /mnt/tokyo }
        takamatsu: { kind: fs, root: /mnt/takamatsu, internal_url: "http://rokuban-recording-hls-takamatsu:40773" }
-       s3: { kind: s3, endpoint: "http://minio:9000", bucket: rokuban-derived, region: us-east-1 }
+       s3: { kind: s3, endpoint: "http://object-store:9000", bucket: rokuban-derived, region: us-east-1 }
      originals:
        - match: { site: takamatsu, older_than: 30d }
          store: tokyo

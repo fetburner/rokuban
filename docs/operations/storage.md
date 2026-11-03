@@ -193,7 +193,7 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 ### S3 の置き場の運用要件
 
-S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
+S3 の置き場は、AWS S3 と S3 互換サーバー（RustFS、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
 
 接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。
 
@@ -206,7 +206,7 @@ worker は起動時に S3 へ接続しない。S3 に繋がらなくても、資
 
 署名付き URL の寿命は 24 時間で固定し、設定からは変えられない。SigV4 の上限は 7 日である。`web/e2e/s3-302.mjs` の Chrome 156.0.8078.48 と Safari 27.0.1 の測定では、Range 要求は署名付き URL に送られ、期限切れ後に元の URL へ戻らなかった。24 時間を超える 1 回の再生は、途中で止まりうる。再生の途中で期限が切れる場合は測っていない（未検証）。
 
-署名する資格情報の有効期間が 24 時間より短いと、URL はその期間で先に無効になる。署名するのは streamer だけなので、24 時間以上有効な資格情報が要るのは streamer である。workload identity や STS の一時的な資格情報はセッションが失効するので、streamer には使わない。IAM ユーザーの長期のアクセスキーと、MinIO や R2 の静的なキーは、24 時間以上有効な資格情報に当たる。worker の書き込みは、一時的な資格情報でもよい。この制約は AWS の仕様から書いたもので、この設計では測っていない（未検証）。
+署名する資格情報の有効期間が 24 時間より短いと、URL はその期間で先に無効になる。署名するのは streamer だけなので、24 時間以上有効な資格情報が要るのは streamer である。workload identity や STS の一時的な資格情報はセッションが失効するので、streamer には使わない。IAM ユーザーの長期のアクセスキーと、S3 互換サーバーの静的なキーは、24 時間以上有効な資格情報に当たる。worker の書き込みは、一時的な資格情報でもよい。この制約は AWS の仕様から書いたもので、この設計では測っていない（未検証）。
 
 動画の再生そのものに CORS が要る。プレイヤーの `<video>` は `crossorigin="anonymous"` を付けて S3 の URL を読むためである。bucket の CORS では、UI の origin からの GET と HEAD、`Range` request header を許可する。`Content-Range` と `Accept-Ranges` は expose する。字幕の取得も同じ設定を使う。bucket の CORS を変えたときは、実ブラウザの S3 配信判定（`web/e2e/s3-302.mjs`）も通す。
 
@@ -264,7 +264,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 結果は `-v` の出力の `S3_CONFORMANCE` で始まる行に、機能ごとの JSON で出る。`status` が `supported`、`unsupported`、`partial` のいずれかで、`checks` に内訳が入る。想定外のエラーで判定できなかった機能は `unknown` で、`note` に原因が入る。
 
-`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 6 機能すべてに `supported` を期待し、退行を検知する。
+`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI はダイジェスト固定した RustFS で 6 機能すべてに `supported` を期待し、退行を検知する。
 
 <details><summary>根拠</summary>
 
@@ -274,7 +274,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 - `until_encoded` の原本が消えない条件（派生物のコピーが desired の置き場に揃うこと）: `TestUntilEncodedDeletableRequiresDerivedCopiesInDesiredStore`
 - 署名付き URL の寿命が 24 時間固定であること: `internal/streamer/streamer.go` の `SignedURLExpiry`（0 なら 24 時間）で、`cmd/rokuban` は値を渡さない
 - 一時的な資格情報で署名した URL がセッションの失効で無効になること: [Sharing objects with presigned URLs](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)
-- CI の MinIO: `.github/workflows/ci.yml` `s3-conformance`
+- CI の RustFS: `.github/workflows/ci.yml` `s3-conformance`
 - multipart の上限（部品の大きさと個数）: [S3 multipart upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
 - checksum の種類（SHA-256 は multipart で composite だけ）: [S3 object integrity](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)
 - abort の確認方法（Abort のあとの `ListParts` でパートが消えたことを確かめる）: [AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)
