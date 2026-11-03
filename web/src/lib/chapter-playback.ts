@@ -8,6 +8,7 @@ type ChapterPlaybackOptions = {
   seekToSeconds: (seconds: number) => void
   seekToBoundary: (boundaryMs: number) => void
   onClear?: () => void
+  onFinish?: () => void
   onStart?: () => void
   onSelectBoundary?: () => void
 }
@@ -36,6 +37,7 @@ export function useChapterPlayback(options: ChapterPlaybackOptions) {
     if (stopAtRef.current === null) return
     const boundaryMs = stopBoundaryMsRef.current
     clear()
+    optionsRef.current.onFinish?.()
     media.pause()
     if (boundaryMs !== null) optionsRef.current.seekToBoundary(boundaryMs)
   }, [clear])

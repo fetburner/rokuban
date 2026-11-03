@@ -554,6 +554,7 @@ export function LivePlayer(props: LivePlayerProps) {
   const chapterPlayback = useChapterPlayback({
     seekToSeconds: (seconds) => seekRecordingRef.current(seconds),
     seekToBoundary: (boundaryMs) => seekRecordingBoundaryRef.current(boundaryMs),
+    onFinish: () => { resumePlaybackPendingRef.current = false },
     onSelectBoundary: () => { resumePlaybackPendingRef.current = false },
   })
   const clearChapterPlayback = chapterPlayback.clear

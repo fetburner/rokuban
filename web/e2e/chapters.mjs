@@ -5,7 +5,7 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは次の 11 点:
+// 見るのは次の 12 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
@@ -18,6 +18,7 @@
 //   ⑨ md 未満の幅でもマウスで映像（操作の幕）を押すと再生 / 一時停止する
 //   ⑩ 停止位置まで進まない場合に実時間タイマーが録画ファイルの再生を止める
 //   ⑪ 同じ実時間タイマーが LivePlayer の録画 HLS も止める
+//   ⑫ 停止タイマー後に HLS の canplay 自動再開が復活しない
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -82,6 +83,7 @@ const recording = {
   createdAt: '2026-01-02T12:30:00Z',
 }
 const RECORDING_HLS_MASTER_URL = '/api/media/stores/media/recordings/1/hls/v1/hd/master.m3u8'
+const RECORDING_HLS_SD_MASTER_URL = '/api/media/stores/media/recordings/1/hls/v1/sd/master.m3u8'
 const recordingHls = {
   ...recording,
   status: 'finished',
@@ -90,7 +92,10 @@ const recordingHls = {
   durationMs: 120_000,
   media: recordingMedia(1, [], { original: true }),
   encodedAssets: [],
-  hlsPlayback: [{ profile: 'hd', masterUrl: RECORDING_HLS_MASTER_URL }],
+  hlsPlayback: [
+    { profile: 'hd', masterUrl: RECORDING_HLS_MASTER_URL },
+    { profile: 'sd', masterUrl: RECORDING_HLS_SD_MASTER_URL },
+  ],
   ingest: { state: 'transferring', writtenBytes: 1_000_000, observedAt: '2026-01-01T12:02:00.000Z' },
 }
 let activeRecording = recording
@@ -186,6 +191,9 @@ function rangeResponse(route, bytes, contentType) {
 let videoBytes = Buffer.alloc(0)
 let tileBytes = Buffer.alloc(0)
 let hlsMasterPath
+let delayRecordingHlsSdMaster = false
+let releaseRecordingHlsSdMaster
+const recordingHlsRequests = []
 
 /** ensureHlsFixture は LivePlayer の録画 HLS 経路で使う 120 秒の MPEG-TS VOD を作る。 */
 function ensureHlsFixture(videoPath) {
@@ -244,10 +252,16 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(apiPath)) {
     return route.fulfill({ status: 404 })
   }
-  const recordingHlsMatch = /^\/api\/media\/stores\/media\/recordings\/1\/hls\/v1\/hd\/(.+)$/.exec(apiPath)
+  const recordingHlsMatch = /^\/api\/media\/stores\/media\/recordings\/1\/hls\/v1\/(hd|sd)\/(.+)$/.exec(apiPath)
   if (recordingHlsMatch && hlsMasterPath !== undefined) {
+    recordingHlsRequests.push(apiPath)
     const hlsDir = path.dirname(hlsMasterPath)
-    const resource = recordingHlsMatch[1]
+    const profile = recordingHlsMatch[1]
+    const resource = recordingHlsMatch[2]
+    if (profile === 'sd' && resource === 'master.m3u8' && delayRecordingHlsSdMaster) {
+      delayRecordingHlsSdMaster = false
+      await new Promise((resolve) => { releaseRecordingHlsSdMaster = resolve })
+    }
     const file = path.resolve(hlsDir, resource)
     if (!file.startsWith(`${hlsDir}${path.sep}`)) return route.fulfill({ status: 404 })
     if (!existsSync(file)) return route.fulfill({ status: 404, body: `fixture missing: ${resource}` })
@@ -1826,6 +1840,70 @@ if (!hlsReady) {
       const resumedAfterTimeout = await resumeAndRead(hlsVideo, hlsPage, 4500)
       if (resumedAfterTimeout.seconds < 40 || resumedAfterTimeout.paused) {
         ng.push(`⑪ 停止保険後に LivePlayer の録画 HLS の再生が続かない（${JSON.stringify(resumedAfterTimeout)}）`)
+      }
+    }
+  }
+}
+log('\n=== ⑫ タイムアウト後の録画 HLS ソース再読込で canplay が再生を復活させない ===')
+await hlsPage.getByRole('button', { name: '再生設定' }).click()
+await hlsPage.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+await hlsPage.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+const recoveryBoundary = hlsPage.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="70000"]')
+if ((await recoveryBoundary.count()) !== 1) {
+  ng.push('⑫ 遅延再読込判定に使う 70 秒境界が無い --- 判定の前提が崩れている')
+} else {
+  await recoveryBoundary.click()
+  await hlsPage.getByRole('button', { name: '選択中の境界の前後3秒を再生' }).click()
+  const recoveryPlaybackStarted = await hlsPage.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video && !video.paused && video.currentTime >= 67 && video.currentTime < 70
+  }, undefined, { timeout: 10000 }).then(() => true).catch(() => false)
+  if (!recoveryPlaybackStarted) {
+    const state = await hlsVideo.evaluate((v) => ({ currentTime: v.currentTime, paused: v.paused, readyState: v.readyState }))
+    ng.push(`⑫ 録画 HLS の境界再生が再読込前に始まらない (${JSON.stringify(state)})`)
+  } else {
+    // 編集モードには設定歯車が無い。やめるは同じ video の再生・境界タイマーを保つ。
+    await hlsPage.getByRole('button', { name: 'やめる', exact: true }).click()
+    await hlsPage.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
+    delayRecordingHlsSdMaster = true
+    const sdMasterRequest = hlsPage.waitForRequest(
+      (request) => new URL(request.url()).pathname === RECORDING_HLS_SD_MASTER_URL,
+      { timeout: 10000 },
+    ).then(() => true).catch(() => false)
+    await hlsPage.mouse.move(640, 300)
+    await hlsPage.getByRole('button', { name: '再生設定' }).click()
+    await hlsPage.getByRole('menuitem', { name: '画質' }).click()
+    await hlsPage.getByRole('menuitemradio', { name: 'sd', exact: true }).click()
+    if (!(await sdMasterRequest)) {
+      delayRecordingHlsSdMaster = false
+      log(`⑫ profile 変更後の URL=${hlsPage.url()} / HLS requests=${JSON.stringify(recordingHlsRequests)}`)
+      ng.push('⑫ sd master のリクエストが発生しない --- 判定の前提が崩れている')
+    } else {
+      const sourcePaused = await hlsPage.waitForFunction(() => {
+        const video = document.querySelector('video')
+        return video && video.paused && video.readyState === HTMLMediaElement.HAVE_NOTHING
+      }, undefined, { timeout: 5000 }).then(() => true).catch(() => false)
+      if (!sourcePaused) ng.push('⑫ 画質変更後の録画 HLS が新しい source の待機状態にならない')
+
+      // OP 境界での停止タイマー（残り 6 秒 + 2 秒）が、遅延させた master の応答より先に発火する。
+      await hlsPage.waitForTimeout(9500)
+      const afterTimeout = await hlsVideo.evaluate((v) => ({ seconds: v.currentTime, paused: v.paused }))
+      if (!afterTimeout.paused) ng.push(`⑫ 遅延 source の待機中に境界再生のタイマーが止めない (${JSON.stringify(afterTimeout)})`)
+
+      releaseRecordingHlsSdMaster?.()
+      releaseRecordingHlsSdMaster = undefined
+      const canPlayAfterReload = await hlsPage.waitForFunction(() => {
+        const video = document.querySelector('video')
+        return video && video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA
+      }, undefined, { timeout: 20000 }).then(() => true).catch(() => false)
+      if (!canPlayAfterReload) {
+        ng.push('⑫ 遅延 source の解放後に録画 HLS が canplay まで復旧しない')
+      } else {
+        await hlsPage.waitForTimeout(1000)
+        const afterCanPlay = await hlsVideo.evaluate((v) => ({ seconds: v.currentTime, paused: v.paused }))
+        if (!afterCanPlay.paused) {
+          ng.push(`⑫ 停止タイマー後の canplay が録画 HLS の再生を復活させた (${JSON.stringify(afterCanPlay)})`)
+        }
       }
     }
   }
