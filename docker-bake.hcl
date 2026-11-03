@@ -13,6 +13,19 @@ variable "VERSION" {
   default = "dev"
 }
 
+# Actions の runner では "true" になる（bake は同名の環境変数を変数に読む）。
+# gha キャッシュは runner の外では使えないので、手元の bake ではキャッシュ指定を空にする。
+variable "GITHUB_ACTIONS" {
+  default = ""
+}
+
+# gha_cache は scope ごとのキャッシュ指定を返す。scope 名は target 名と同じにして、
+# 同じ target を組む workflow（ci / publish-sha / release）がキャッシュを共有する。
+function "gha_cache" {
+  params = [scope, extra]
+  result = GITHUB_ACTIONS == "true" ? ["type=gha,scope=${scope}${extra}"] : []
+}
+
 target "docker-metadata-action" {}
 
 target "docker-metadata-full" {}
@@ -23,6 +36,8 @@ target "image" {
   dockerfile = "Dockerfile"
   args       = { VERSION = VERSION }
   platforms  = ["linux/amd64", "linux/arm64"]
+  cache-from = gha_cache("image", "")
+  cache-to   = gha_cache("image", ",mode=max")
 }
 
 target "full" {
@@ -32,6 +47,8 @@ target "full" {
   args       = { BASE = "base" }
   contexts   = { base = "target:image" }
   platforms  = ["linux/amd64", "linux/arm64"]
+  cache-from = gha_cache("full", "")
+  cache-to   = gha_cache("full", ",mode=max")
 }
 
 group "default" {

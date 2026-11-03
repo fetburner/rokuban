@@ -839,8 +839,8 @@ jobs:
 
   # イメージをローカルビルドして起動を検査する自己完結ジョブ。publish に依存しないので
   # fork PR（GITHUB_TOKEN に packages:write が無く GHCR へ push できない）でも回る。
-  # 重い層は publish-sha.yml と gha キャッシュ（scope=image / full）を共有する。
   # publish と同じ docker-bake.hcl で組むので、bake の定義が壊れたら main に入る前にここで落ちる。
+  # gha キャッシュも bake の定義が持ち、publish-sha.yml / release.yml と共有する。
   # ただし組むのは amd64 だけで、arm64 へのクロスビルドは publish-sha.yml でしか通らない。
   docker:
     runs-on: ubuntu-latest
@@ -859,8 +859,6 @@ jobs:
             *.platform=linux/amd64
             image.tags=rokuban:test
             full.tags=rokuban:test-full
-            image.cache-from=type=gha,scope=image
-            full.cache-from=type=gha,scope=full
       - name: JLSE binaries start with their runtime libraries
         run: |
           docker run --rm --entrypoint sh rokuban:test-full -eu -c '
