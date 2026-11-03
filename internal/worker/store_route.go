@@ -84,9 +84,26 @@ func chooseIngestStore(ctx context.Context, deps *Deps, site string) (string, er
 
 // newIngestRoute は ingest を、マウントした置き場のうち規則に合う置き場のワーカーへ振り分ける。
 //
-// 書き込み先は、置き場の規則を年齢 0 で評価して一致した置き場のうち、このプロセスがマウントして
-// いるものである。無ければ、マウントしている置き場のうち `--stores` の順で先頭の置き場に書く。
-// desired との差は転送が埋めるので、置き場を理由に ingest が止まる経路は作らない。
+// 書き込み先は、置き場の規則を年齢 0 で評価して一致した置き場のうち、
+// このプロセスがマウントしているものである。無ければ、マウントしている
+// 置き場のうち `--stores` の順で先頭の置き場に書く。規則の評価が失敗した
+// ときも先頭の置き場に書き、Error ログを出す。この書き込み先は
+// TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail が固定している。
+//
+// desired との差は転送が埋めるので、原本を失わないよう、置き場を理由に
+// ingest が止まる経路は作らない。規則に一致する置き場が無いときと、
+// 一致した置き場をマウントしていないときは、desired の置き場と実際に
+// 書いた置き場を Warn ログに残す（TestIngestRouteLogsFallbackDestination）。
+//
+// メトリクスにせずログに残すのは、このログが Work の試行 1 回につき
+// 高々 1 回しか出ないからである。転送待ちの積み上がり自体は
+// rokuban_storage_transfer_waiting_assets で見える。ここでは、ingest の
+// 時点で desired と違う置き場に書いたことを、後から特定できれば足りる。
+//
+// 最後の規則が無条件であることは、設定検証が強制する
+// （TestStoragePolicyValidation）。そのため desired が空になるのは、
+// 設定と SQL の評価が食い違ったときだけである。このときも Warn にする。
+//
 // 規則の評価は SQL の関数が行い、ここには規則の写しを置かない。
 func newIngestRoute(deps *Deps, build func(*Deps) jobq.Worker[jobs.IngestJobArgs]) *storeRoute[jobs.IngestJobArgs] {
 	stores := deps.perStore()
@@ -107,12 +124,17 @@ func newIngestRoute(deps *Deps, build func(*Deps) jobq.Worker[jobs.IngestJobArgs
 				name, err := chooseIngestStore(ctx, deps, args.Site)
 				if err != nil {
 					slog.Error("ingest: choosing the original store failed; writing to the first mounted store",
-						"site", args.Site, "store", mounted[0], "error", err)
+						"site", args.Site, "record_id", args.RecordID, "actual_store", mounted[0], "error", err)
 					return mounted[0], nil
 				}
 				if _, ok := workers[name]; ok {
 					return name, nil
 				}
+				slog.Warn("ingest: the desired original store is not mounted or was not chosen; writing to the first mounted store",
+					"site", args.Site,
+					"record_id", args.RecordID,
+					"desired_store", name,
+					"actual_store", mounted[0])
 			}
 			return mounted[0], nil
 		},
