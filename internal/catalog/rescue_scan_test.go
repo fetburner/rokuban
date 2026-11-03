@@ -459,8 +459,8 @@ func TestRescueStorage_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 	}
 }
 
-// アーカイブは全 site で共有される単一のストレージなので、`sites/{site}/` 前置
-// ファイルは前置を持つ他 site の分も同じスキャンで見つかる。前置ありのファイルは
+// 選んだ置き場を site で絞らずに走査するので、`sites/{site}/` 前置
+// ファイルは異なる site の分も同じスキャンで見つかる。前置ありのファイルは
 // prefix から site を決め、レジストリに無い site の前置（`junkdir`）も typo の疑いは
 // あるが復元は止めない。前置の無いファイルは site を決められないため登録しない。
 func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {

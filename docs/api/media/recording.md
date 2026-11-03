@@ -133,7 +133,7 @@ streamer は、読める置き場にある active コピーから派生物を 1 
 <details><summary>根拠</summary>
 
 - 配らない録画: `recordings.deleted_at IS NOT NULL`
-- 配らないアセット: `storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../../configuration/keys.md#置き場の規則)）の `media_asset_copies.state <> 'active'`
+- 配らないアセット: [`storage.stores` の FS 置き場](../../configuration/keys.md#置き場の規則)ごとの `media_asset_copies.state <> 'active'`
 - 未 ingest の判定: 指定 kind の `media_assets` 行なし
 - ingest と共有するパス検証: `internal/mediapath.Resolve`
 - 相対パスの列: `media_asset_copies.rel_path`

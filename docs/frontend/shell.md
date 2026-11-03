@@ -233,11 +233,11 @@ URL の形は `/reservations/$site/$programId` である。
 
 #### site を持たない資源
 
-ルール一覧・エンコードプロファイル・ストレージ残高・能力の API に、site は無い（アーカイブ用ストレージが単一なのは [api.md](../api.md)）。録画詳細も id が site 非依存だが、観測対象の録画が運ぶ site は、多サイト構成のときに表示する。
+ルール一覧・エンコードプロファイル・能力の API に、site は無い。ストレージ残高は site でなく置き場ごとの観測を返す（[api.md](../api.md)）。録画詳細も id が site 非依存だが、観測対象の録画が運ぶ site は、多サイト構成のときに表示する。
 
 対象の API は `/api/rules` / `/api/encode-profiles` / `/api/storage` / `/api/capabilities` である。録画詳細の URL は `/recordings/$id` である。
 
-ストレージ残高は、この単一の観測に、上段の全サイト分の録画・予約から作った見込みを重ねる。site で絞らない。
+ストレージ残高は、各置き場の観測に、上段の全サイト分の録画・予約から作った見込みを重ねる。site で絞らない。
 
 <details><summary>根拠</summary>
 

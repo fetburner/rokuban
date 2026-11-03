@@ -107,7 +107,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 <details><summary>根拠</summary>
 
 - 復元で消す印: `recordings.deleted_at`
-- 状態を見る列: `storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../configuration/keys.md#置き場の規則)）の `media_asset_copies.state`
+- 状態を見る列: `storage.stores` の FS 置き場ごとの `media_asset_copies.state`
 - 相対パスの列: `media_asset_copies.rel_path`
 
 </details>

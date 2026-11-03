@@ -126,7 +126,7 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 
 目印は `rokuban storage adopt <store-name>` で作る。照合は完全一致で、末尾の改行も違いとして扱うので、`echo main > .rokuban-store` は改行を足して不一致になる。
 
-worker ロールでは `storage.stores` に FS 置き場を定義する（今は 1 つだけ。[置き場の規則](../configuration/keys.md#置き場の規則)）。worker は media root の `.rokuban-store` をその名前と照合し、一致しなければ書き込みと削除を見送る。照合の判断は [operations/storage.md](../operations/storage.md) にある。
+worker ロールでは [`storage.stores` に FS 置き場](../configuration/keys.md#置き場の規則)を定義する。worker は対象の media root の `.rokuban-store` を置き場名と照合し、一致しなければ書き込みと削除を見送る。照合の判断は [operations/storage.md](../operations/storage.md) にある。
 
 `adopt` は実際にマウントされた media root に対して実行する。マウントが外れた状態で実行すると、マウントポイントの下にあるローカルディスクに目印を書いてしまう。
 

@@ -80,10 +80,10 @@ import (
 // # site 照合ガード（issue #139）は不要と判断
 //
 // EncodeJobArgs は recording_id + profile のみで site を持たない。エンコードは
-// 原本 media_asset（mediapath.Resolve で解決する単一の MediaDir 配下）を読み、
+// 原本 media_asset（mediapath.Resolve でこの worker の MediaDir 配下に解決する）を読み、
 // 派生物は object store に公開するだけで mirakc には一切触れない（不変条件 4「ffmpeg/ffprobe の exec は
 // worker / streamer パッケージのみ」であって mirakc 呼び出しではない）。
-// アーカイブは複数サイト構成でも単一（site に従属しない。docs/storage.md）ため、
+// 録画資産は全 site で共有される（docs/storage.md）ため、
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {

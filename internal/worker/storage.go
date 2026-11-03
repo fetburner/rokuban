@@ -37,8 +37,8 @@ type StorageSyncWorker struct {
 	// Storage は storage_sync の永続化契約。nil は同期を呼ばない部分テストでのみ許容する。
 	Storage store.StorageObservation
 
-	// MediaDir は storage.media_dir（必須。空なら Work がエラーを返す --- config
-	// の validate:"required" を信頼しきらず、テストの部分構成でも安全に失敗する）。
+	// MediaDir はこの worker が観測する FS 置き場の root。空なら Work がエラーを返す
+	// （config を経由しないテストの部分構成でも安全に失敗する。`TestStorageSyncWorker_EmptyMediaDirFails`）。
 	MediaDir string
 
 	// ScratchDir は storage.scratch_dir。worker ロールは空の scratch_dir では起動しない

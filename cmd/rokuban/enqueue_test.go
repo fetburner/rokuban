@@ -259,8 +259,8 @@ func TestRunEnqueue_StorageSync(t *testing.T) {
 
 // delete-reconcile も投入できること。**`worker.periodic_jobs: false`
 // （k8s の出荷値）ではこの経路が唯一の投入者**になるので、載っていないと
-// ごみ箱・孤児回収のパスが一度も走らない構成ができる。物理ストレージは単一の
-// media_dir で site に従属しないので site は空で渡す。
+// ごみ箱・孤児回収のパスが一度も走らない構成ができる。物理処理は置き場に束縛されるので
+// store を渡し、mirakc site は指定しない。
 func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
