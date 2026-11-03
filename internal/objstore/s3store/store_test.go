@@ -249,47 +249,51 @@ func TestPutRejectsNonEmptySourceForDeclaredEmptyObject(t *testing.T) {
 	}
 }
 
-func TestPutRecoversPreconditionFailedOnlyAfterHeadChecksumMatch(t *testing.T) {
+func TestPutRejectsExistingKeyRegardlessOfContent(t *testing.T) {
 	data := []byte("same bytes")
-	digest := sha256.Sum256(data)
-	client := &fakeAPI{completeErr: &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}}
-	client.headFn = func(_ context.Context, _ *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
-		if client.completeCalls == 0 {
-			return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
-		}
-		return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), Metadata: map[string]string{
-			checksumMetadata: hex.EncodeToString(digest[:]),
-		}}, nil
-	}
-	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
-	if err := store.Put(context.Background(), "encoded/2.mp4", bytes.NewReader(data), int64(len(data)), digest, "video/mp4"); err != nil {
-		t.Fatalf("Put after matching 412 recovery: %v", err)
-	}
-	if client.abortCalls != 1 {
-		t.Fatalf("AbortMultipartUpload calls = %d, want cleanup after 412", client.abortCalls)
+	for _, tc := range []struct {
+		name     string
+		source   []byte
+		existing []byte
+	}{
+		{name: "same content", source: data, existing: data},
+		{name: "different content", source: data, existing: []byte("different bytes")},
+		{name: "same empty content"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existingDigest := sha256.Sum256(tc.existing)
+			client := &fakeAPI{headFn: func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+				return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(tc.existing))), Metadata: map[string]string{
+					checksumMetadata: hex.EncodeToString(existingDigest[:]),
+				}}, nil
+			}}
+			store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+			sourceDigest := sha256.Sum256(tc.source)
+			err := store.Put(context.Background(), "encoded/existing.mp4", bytes.NewReader(tc.source), int64(len(tc.source)), sourceDigest, "video/mp4")
+			if !errors.Is(err, objstore.ErrAlreadyExists) {
+				t.Fatalf("Put = %v, want ErrAlreadyExists", err)
+			}
+			if errors.Is(err, objstore.ErrChecksumMismatch) {
+				t.Fatalf("Put error = %v, must classify the occupied key rather than its contents", err)
+			}
+			if client.mutationCalls != 0 {
+				t.Fatalf("S3 mutations = %d, want none for an existing key", client.mutationCalls)
+			}
+		})
 	}
 }
 
-func TestPutDoesNotAccept412WhenHeadChecksumDiffers(t *testing.T) {
-	data := []byte("new content")
-	want := sha256.Sum256(data)
-	client := &fakeAPI{completeErr: &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}}
-	client.headFn = func(_ context.Context, _ *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
-		if client.completeCalls == 0 {
-			return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
-		}
-		other := sha256.Sum256([]byte("old content"))
-		return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), Metadata: map[string]string{
-			checksumMetadata: hex.EncodeToString(other[:]),
-		}}, nil
-	}
+func TestPutEmptyRejectsPreconditionFailed(t *testing.T) {
+	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
+	client := &fakeAPI{putErrs: []error{precondition}}
+	emptySHA := sha256.Sum256(nil)
 	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
-	err := store.Put(context.Background(), "encoded/3.mp4", bytes.NewReader(data), int64(len(data)), want, "video/mp4")
-	if !errors.Is(err, objstore.ErrChecksumMismatch) {
-		t.Fatalf("Put error = %v, want ErrChecksumMismatch", err)
+	err := store.Put(context.Background(), "encoded/empty-existing", bytes.NewReader(nil), 0, emptySHA, "application/octet-stream")
+	if !errors.Is(err, objstore.ErrAlreadyExists) {
+		t.Fatalf("Put after empty-object 412 = %v, want ErrAlreadyExists", err)
 	}
-	if client.abortCalls != 1 {
-		t.Fatalf("AbortMultipartUpload calls = %d, want 1", client.abortCalls)
+	if client.putCalls != 1 {
+		t.Fatalf("PutObject calls = %d, want 1", client.putCalls)
 	}
 }
 
@@ -403,22 +407,16 @@ func TestPutRetriesWithoutConditionOnlyWhenServerDoesNotSupportIt(t *testing.T) 
 		t.Fatalf("AbortMultipartUpload calls = %d, want 0 after the unconditional retry succeeded", client.abortCalls)
 	}
 
-	// 412 は非対応ではない。条件なしでやり直さず、HEAD の照合へ進む。
+	// 412 は条件非対応ではなくキー競合なので、内容にかかわらず拒否し条件なしで再試行しない。
 	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
 	client = &fakeAPI{completeErrs: []error{precondition}}
 	store = &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
-	other := sha256.Sum256([]byte("other"))
-	client.headFn = func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
-		if client.completeCalls == 0 {
-			return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
-		}
-		return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), Metadata: map[string]string{
-			checksumMetadata: hex.EncodeToString(other[:]),
-		}}, nil
-	}
 	err := store.Put(context.Background(), "encoded/412.mp4", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data), "video/mp4")
-	if !errors.Is(err, objstore.ErrChecksumMismatch) || client.completeCalls != 1 {
-		t.Fatalf("Put after 412 = %v with %d Complete calls, want ErrChecksumMismatch after exactly one", err, client.completeCalls)
+	if !errors.Is(err, objstore.ErrAlreadyExists) || client.completeCalls != 1 {
+		t.Fatalf("Put after 412 = %v with %d Complete calls, want ErrAlreadyExists after exactly one", err, client.completeCalls)
+	}
+	if client.abortCalls != 1 {
+		t.Fatalf("AbortMultipartUpload calls = %d, want 1 after the key conflict", client.abortCalls)
 	}
 }
 

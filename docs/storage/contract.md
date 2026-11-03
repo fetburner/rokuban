@@ -29,6 +29,10 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 3. **派生物の公開点は DB commit** とする。キーへの Put が成功した後、同じ transaction でコピーを `active` にして論理メタデータを記録する。DB commit 前のキーは配信対象にせず、失敗した `pending` のコピーと孤立したキーは reconcile が回収する
 4. 派生物のキーは世代ごとに一度だけ使う。差し替えは新世代のキーを作り旧世代を保持する。置き場間転送のコピーにも INSERT 時に新しい `rel_path` を割り当て、pending の再試行ではその値を保つ。DB の現行 active 行だけが配信を許し、旧世代は `storage.transfer.overlap` 後に削除する
 
+`Put` は、内容が一致する場合も既存キーに対して `ErrAlreadyExists` を返す。呼び出し元は成功を自分が作ったキーの印として cleanup の判定に使うため、同じ内容を成功扱いすると、後続の失敗時に他の送信のキーを削除しかねない。
+
+`CompleteUpload` は公開後に応答を失った送信の再試行に使うため、同じ内容の既存キーを成功として扱う。この違いにより、`Put` の所有判定と再開送信の再試行を両立する。
+
 `Put` は 1 回の呼び出しで送り切る契約である。1 回の Work では送り切れない転送は、再開できる送信を使う。再開できる送信は `objstore.Resumable` の `StartUpload` / `ContinueUpload` / `CompleteUpload` / `AbortUpload` で行う。送信状態は置き場の実装が marshal した不透明なバイト列である。呼び出し側は進捗の行に保存してそのまま返す。
 
 `ContinueUpload` が返す offset は置き場に残ったバイトだけを表す。`CompleteUpload` は送りながら計算した SHA-256 が宣言と一致したときだけ公開する。ルール 2 の「全バイトを検証し、完全なオブジェクトだけを成功とする」は、再開できる送信でも同じである。送信状態に何を入れるかは実装が決める（S3 は UploadId とパートの一覧、FS は staging の相対パス）。手順は [置き場間の転送](transfer.md) に従う。

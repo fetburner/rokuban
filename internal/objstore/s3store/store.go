@@ -133,7 +133,7 @@ func newReaderWithClient(client api, signer presigner, bucket string) (*Store, e
 	return &Store{client: client, presigner: signer, bucket: bucket, readOnly: true}, nil
 }
 
-// Put uploads a complete object using multipart upload and verifies the full SHA-256 in the process.
+// Put uploads a complete object through the S3 API and verifies its exact size and SHA-256.
 func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, wantSHA [32]byte, contentType string) error {
 	if s.readOnly {
 		return objstore.ErrReadOnly
@@ -145,7 +145,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		return fmt.Errorf("negative S3 object size %d", size)
 	}
 	if _, err := s.Head(ctx, key); err == nil {
-		return s.recoverExisting(ctx, key, size, wantSHA)
+		return alreadyExistsError(key)
 	} else if !errors.Is(err, objstore.ErrNotFound) {
 		return fmt.Errorf("checking existing S3 object %q: %w", key, err)
 	}
@@ -154,7 +154,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if n, readErr := io.ReadFull(src, extra[:]); n != 0 || !errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("S3 object source for %q contains bytes beyond declared size 0", key)
 		}
-		return s.putEmptyObject(ctx, key, contentType, wantSHA)
+		return s.putEmptyObject(ctx, key, contentType, wantSHA, false)
 	}
 
 	partSize := multipartPartSize(size)
@@ -209,11 +209,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		return nil
 	}
 	if isPreconditionFailed(err) {
-		if recoveryErr := s.recoverExisting(ctx, key, size, wantSHA); recoveryErr == nil {
-			return abort(nil)
-		} else {
-			return abort(fmt.Errorf("S3 object %q failed 412 HEAD verification: %w", key, recoveryErr))
-		}
+		return abort(alreadyExistsError(key))
 	}
 	// A lost CompleteMultipartUpload response can leave a complete object even though the
 	// request returned an error. HEAD is the recovery check; multipart ETags are not SHA-256.
@@ -338,6 +334,10 @@ func (s *Store) Presign(ctx context.Context, key, method string, expires time.Du
 	return request.URL, nil
 }
 
+func alreadyExistsError(key string) error {
+	return fmt.Errorf("S3 object %q already exists: %w", key, objstore.ErrAlreadyExists)
+}
+
 func (s *Store) recoverExisting(ctx context.Context, key string, size int64, wantSHA [32]byte) error {
 	object, err := s.Head(ctx, key)
 	if err != nil {
@@ -426,7 +426,7 @@ func httpStatusCode(err error) int {
 }
 
 // putEmptyObject は 0 バイトの object を PutObject で公開する。条件付き書き込みに未対応なら条件を外して送り直す。
-func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wantSHA [32]byte) error {
+func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wantSHA [32]byte, allowExisting bool) error {
 	emptySHA := sha256.Sum256(nil)
 	if emptySHA != wantSHA {
 		return objstore.ErrChecksumMismatch
@@ -448,7 +448,10 @@ func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wan
 	}
 	if err != nil {
 		if isPreconditionFailed(err) {
-			return s.recoverExisting(ctx, key, 0, wantSHA)
+			if !allowExisting {
+				return alreadyExistsError(key)
+			}
+			return s.existingObject(ctx, uploadState{Key: key, Size: 0, SHA256: hex.EncodeToString(wantSHA[:])})
 		}
 		if recoverErr := s.recoverExisting(ctx, key, 0, wantSHA); recoverErr == nil {
 			return nil
@@ -670,7 +673,7 @@ func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
 		return err
 	}
 	if st.UploadID == "" {
-		return s.putEmptyObject(ctx, st.Key, st.ContentType, want)
+		return s.putEmptyObject(ctx, st.Key, st.ContentType, want, true)
 	}
 	if st.PartSize <= 0 || int64(len(st.Parts)) != (st.Size+st.PartSize-1)/st.PartSize {
 		return fmt.Errorf("S3 upload for %q has %d parts for %d bytes: %w", st.Key, len(st.Parts), st.Size, objstore.ErrUploadInvalid)

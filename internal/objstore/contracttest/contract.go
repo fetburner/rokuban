@@ -74,16 +74,23 @@ func checkPutPublishesCompleteBytes(t *testing.T, newStore func(*testing.T) objs
 		t.Fatalf("read after Put = %q, want %q", got, want)
 	}
 
-	other := []byte("replacement payload")
-	err = objects.Put(t.Context(), key, bytes.NewReader(other), int64(len(other)), sha256.Sum256(other), "application/octet-stream")
-	if err == nil {
-		t.Fatal("Put with reused key succeeded, want a key conflict")
-	}
-	if !errors.Is(err, objstore.ErrAlreadyExists) && !errors.Is(err, objstore.ErrChecksumMismatch) {
-		t.Fatalf("Put with reused key error = %v, want a key conflict", err)
+	for _, existing := range [][]byte{want, []byte("replacement payload")} {
+		err := objects.Put(t.Context(), key, bytes.NewReader(existing), int64(len(existing)), sha256.Sum256(existing), "application/octet-stream")
+		if !errors.Is(err, objstore.ErrAlreadyExists) {
+			t.Fatalf("Put with reused key containing %q error = %v, want ErrAlreadyExists", existing, err)
+		}
 	}
 	if got := readObject(t, objects, key); !bytes.Equal(got, want) {
 		t.Fatalf("reused key now contains %q, want original bytes %q", got, want)
+	}
+
+	emptyKey := testKey(t)
+	emptySHA := sha256.Sum256(nil)
+	if err := objects.Put(t.Context(), emptyKey, bytes.NewReader(nil), 0, emptySHA, "application/octet-stream"); err != nil {
+		t.Fatalf("Put empty object: %v", err)
+	}
+	if err := objects.Put(t.Context(), emptyKey, bytes.NewReader(nil), 0, emptySHA, "application/octet-stream"); !errors.Is(err, objstore.ErrAlreadyExists) {
+		t.Fatalf("Put reusing empty-object key = %v, want ErrAlreadyExists", err)
 	}
 }
 
