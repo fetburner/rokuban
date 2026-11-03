@@ -73,3 +73,50 @@ SELECT COALESCE((SELECT attempt_count FROM media_asset_transfer_attempts WHERE c
 		t.Fatalf("recorded transfer attempts = %d, want 0 for a worker capability error", attempts)
 	}
 }
+
+// storeWithoutRangeReader は Store の基本操作だけを委譲し、RangeReader を隠す。
+type storeWithoutRangeReader struct {
+	objstore.Store
+}
+
+// TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport は、範囲読みできない転送元を転送失敗として数えず、
+// 宛先へ書く前にジョブエラーで拒否することを確かめる。
+func TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	roots := transferTestRoots(t, "test-store", "archive")
+	recordingID := dbtest.Recording(t, pool)
+	relPath := "sites/default/transfer/non-range.jpg"
+	content := []byte("derived bytes must not be written from a source without range reads")
+	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, relPath, content)
+	cfg := transferTestConfig("archive", "archive", "test-store")
+	fingerprint, err := cfg.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := transferTestObjectStores(t, roots)
+	objects["test-store"] = &storeWithoutRangeReader{Store: objects["test-store"]}
+	worker := StorageTransferWorker{
+		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots,
+		ObjectStores: objects, ScratchDir: t.TempDir(),
+	}
+
+	err = worker.Work(context.Background(), jobs.StorageTransferArgs{
+		MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support range reads") {
+		t.Fatalf("Work error = %v, want a non-range source job error", err)
+	}
+	destination := filepath.Join(roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, pool, assetID, "archive")))
+	if _, statErr := os.Stat(destination); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination stat error = %v, want the object to be absent", statErr)
+	}
+	copyID := transferTestCopyID(t, pool, assetID, "archive")
+	var attempts int
+	if err := pool.QueryRow(context.Background(), `
+SELECT COALESCE((SELECT attempt_count FROM media_asset_transfer_attempts WHERE copy_id = $1), 0)`, copyID).Scan(&attempts); err != nil {
+		t.Fatalf("reading transfer attempt count: %v", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("recorded transfer attempts = %d, want 0 for a worker capability error", attempts)
+	}
+}

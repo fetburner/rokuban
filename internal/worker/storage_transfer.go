@@ -763,7 +763,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	if err := w.requireDestinationMarker(targetRoot, args.Store, "writing derived storage transfer destination"); err != nil {
 		return err
 	}
-	// scratch は、内容を複製して照合する必要があるときだけ作る（SHA-256 が既知の本体と、字幕が無い encoded は作らない）。
+	// scratch は、内容を複製して照合する必要があるときだけ作る（本体は scratch を使わず、字幕だけが使う）。
 	var scratchPath string
 	defer func() {
 		if scratchPath != "" {
@@ -830,7 +830,8 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 // putDerivedMain は派生物の本体を宛先に公開し、今回作ったものを所有記録に残す。
 // 返す digest と size は完了（CompleteMediaAssetTransfer）に渡す値である。done が真なら、この試行はここで終わるので err を返す。
 // 宛先の Resumable と転送元の RangeReader は worker の契約である。どちらかが欠けたらジョブエラーを返し、
-// データの不一致ではないため転送失敗として数えない。S3 宛ては checkS3TransferWorker が同じ不足を事前に拒否する。
+// 転送失敗として数えない。この worker の構成の問題であってコピーの失敗ではないので、宛先が未マウントのときと同じ扱いにする。
+// S3 宛ての宛先の不足だけは checkS3TransferWorker が事前に拒否する。転送元の RangeReader は見ない。
 // SHA-256 が未知なら送る前に転送元を slice ごとに測り（measureDerivedSource）、既知なら再開できるアップロードで送る（putDerivedResumable）。
 func (w *StorageTransferWorker) putDerivedMain(
 	ctx context.Context,
@@ -850,6 +851,7 @@ func (w *StorageTransferWorker) putDerivedMain(
 		return digest, size, true, fmt.Errorf("storage transfer: target store %q is not a resumable object store on this worker", args.Store)
 	}
 	if !canRange {
+		metrics.StorageTransferMountMismatches.WithLabelValues(transfer.SourceStore).Inc()
 		return digest, size, true, fmt.Errorf("storage transfer: source store %q does not support range reads on this worker", transfer.SourceStore)
 	}
 	if len(transfer.SHA256) != sha256.Size {
