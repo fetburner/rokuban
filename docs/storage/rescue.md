@@ -50,7 +50,7 @@ rescue は、同じトランザクションの末尾で全件を再評価して�
 
 書き込み順は、録画 → 論理資産と物理コピー → チャプターの所有 2 表 → ドロップ統計 → ドロップ位置 → TS 計測記録である。区間の表は主キーを持たず、重なりを EXCLUDE が禁じている。そのため rescue の 2 回目は衝突を無視して受ける。素の INSERT だと、同じ区間が自分自身と衝突して、1 世代まるごと復元できなくなる。
 
-TS 計測記録は、原本ごとに TS 計測時のサイズを記録する。配列が無い文書では計測記録を復元せず、原本は未計測のままになる。復旧後の TS 計測ジョブが読み直す。
+TS 計測記録は、原本ごとに TS 計測時のサイズを記録する。計測記録の無い原本は未計測のまま復元し、復旧後の TS 計測ジョブが読み直す。
 
 <details><summary>根拠</summary>
 
@@ -68,7 +68,7 @@ worker の定期ジョブが、このコアデータを JSON で各ファイル�
 
 catalog は `media_asset_cuts` の keep 区間を含めない。
 
-rescue が書く置き場の名前は、`storage.stores` の FS 置き場の名前である。FS 置き場が 1 つでない構成では、`RequireStoreMarker` が名前を決められずにエラーにするので、何も書かずに止まる。media root の目印と一致しないときも、何も書かずに止まる。物理コピーの `store` が文書に無ければ、復元を拒否する。実体を確認するのは、この置き場にある資産だけである。別の置き場のファイルが無いことは欠損とは扱わない。
+rescue が照合する置き場は、`storage.stores` の FS 置き場である。FS 置き場が 1 つでない構成では、`RequireStoreMarker` が名前を決められずにエラーにするので、何も書かずに止まる。media root の目印と一致しないときも、何も書かずに止まる。物理コピーの置き場には文書の `store` をそのまま書き、`store` が無い文書では何も書かずに止まる。実体を確認するのは、この FS 置き場にある資産だけである。別の置き場のファイルが無いことは欠損とは扱わない。
 
 移行時に `rokuban storage adopt` を実行する順序は、[runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 
@@ -195,7 +195,7 @@ flowchart TD
 - 走査後に消えたファイルを登録しないこと: `TestRescueScanCandidateRemoved`
 - 削除後に古い active snapshot で復活させないこと: `TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat`
 - 移動済み tombstone の identity でも復活を防ぐこと: `TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath`
-- 旧 catalog の tombstone を移行後のパスから照合すること: `TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive`
+- 予約キーへ移した tombstone を、以前の catalog 世代の原パスから照合すること: `TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive`
 - 衝突する catalog tombstone を保持し、後続資産も復元すること: `TestCatalogRestoreKeepsConflictingTombstoneAndContinuesGeneration`
 - 同じ identity の 2 つの tombstone を、両方のパスに復元すること: `TestCatalogRestoreRestoresTwoTombstonesOfOneIdentity`
 - 占有済みの原パスの tombstone が、identity ごとに別々の予約キーへ入ること: `TestCatalogRestoreTwoTombstonesOfOneIdentityGetDistinctSyntheticPaths`

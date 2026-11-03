@@ -3,15 +3,11 @@ package pgstore
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/catalogdoc"
@@ -20,122 +16,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-type catalogRestorePreflightTx struct{ pgx.Tx }
-
-func (catalogRestorePreflightTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, errors.New("database accessed before catalog validation")
-}
-
-func TestApplyDocumentRejectsMissingMediaAssetFieldsBeforeDatabaseAccess(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	generation := int64(1)
-	tests := []struct {
-		name       string
-		asset      catalogdoc.MediaAsset
-		missingKey string
-	}{
-		{
-			name: "store", missingKey: "store",
-			asset: catalogdoc.MediaAsset{
-				ID: 1, Kind: "original", RelPath: "originals/missing-store.ts",
-				SizeBytes: 100, State: "active",
-			},
-		},
-		{
-			name: "derivedGeneration", missingKey: "derivedGeneration",
-			asset: catalogdoc.MediaAsset{
-				ID: 1, Kind: "thumbnail", RelPath: "thumbnails/missing-derived.g1.jpg",
-				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
-				Generation: &generation, Store: dbtest.StoreName,
-			},
-		},
-		{
-			name: "generation", missingKey: "generation",
-			asset: catalogdoc.MediaAsset{
-				ID: 1, Kind: "thumbnail", RelPath: "thumbnails/missing-copy.g1.jpg",
-				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
-				DerivedGeneration: &generation, Store: dbtest.StoreName,
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			doc := &catalogdoc.Document{MediaAssets: []catalogdoc.MediaAsset{tt.asset}}
-			if _, err := applyDocument(context.Background(), catalogRestorePreflightTx{}, doc, store.RestoreOptions{}, nil); err == nil || !strings.Contains(err.Error(), tt.missingKey) {
-				t.Fatalf("applyDocument error = %v, want missing %s before database access", err, tt.missingKey)
-			}
-		})
-	}
-}
-
-func TestCatalogRestoreRejectsMissingMediaAssetFieldsBeforeWriting(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	generation := int64(1)
-	tests := []struct {
-		name       string
-		asset      catalogdoc.MediaAsset
-		missingKey string
-	}{
-		{
-			name:       "store",
-			missingKey: "store",
-			asset: catalogdoc.MediaAsset{
-				ID: 1, RecordingID: 42, Kind: "original", RelPath: "originals/a.ts",
-				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
-			},
-		},
-		{
-			name:       "derivedGeneration",
-			missingKey: "derivedGeneration",
-			asset: catalogdoc.MediaAsset{
-				ID: 1, RecordingID: 42, Kind: "thumbnail", RelPath: "thumbnails/a.g1.jpg",
-				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
-				Generation: &generation, Store: dbtest.StoreName,
-			},
-		},
-		{
-			name:       "generation",
-			missingKey: "generation",
-			asset: catalogdoc.MediaAsset{
-				ID: 1, RecordingID: 42, Kind: "thumbnail", RelPath: "thumbnails/a.g1.jpg",
-				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
-				DerivedGeneration: &generation, Store: dbtest.StoreName,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pool := testutil.SetupDB(t)
-			ctx := context.Background()
-			doc := &catalogdoc.Document{
-				Rules: []catalogdoc.Rule{{
-					ID: 1, Name: "preflight", Description: "", Enabled: true, Priority: 1,
-					KeepOriginal: "always", EncodeProfiles: []string{}, FilenameTemplate: "",
-					Metadata: json.RawMessage(`{}`), CreatedAt: now, UpdatedAt: now,
-				}},
-				MediaAssets: []catalogdoc.MediaAsset{tt.asset},
-			}
-			tx, err := pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("beginning catalog restore: %v", err)
-			}
-			t.Cleanup(func() { _ = tx.Rollback(ctx) })
-
-			if _, err := applyDocument(ctx, tx, doc, store.RestoreOptions{}, []string{"default"}); err == nil || !strings.Contains(err.Error(), tt.missingKey) {
-				t.Fatalf("applyDocument error = %v, want missing %s", err, tt.missingKey)
-			}
-			var rules, assets int
-			if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM rules), (SELECT count(*) FROM media_assets)`).Scan(&rules, &assets); err != nil {
-				t.Fatalf("checking writes after rejected catalog: %v", err)
-			}
-			if rules != 0 || assets != 0 {
-				t.Fatalf("rows after rejected catalog = rules %d, assets %d; want no writes", rules, assets)
-			}
-		})
-	}
-}
 
 func TestCatalogRestoreKeepsCurrentGenerationOnLogicalRow(t *testing.T) {
 	pool := testutil.SetupDB(t)

@@ -66,6 +66,9 @@ func RunCatalog(t *testing.T, newStore NewCatalogStore) {
 	t.Run("restore waits before writing for label rule reevaluation", func(t *testing.T) {
 		runCatalogRestoreSerialization(t, newStore)
 	})
+	t.Run("restore rejects media assets missing required keys", func(t *testing.T) {
+		runCatalogRestoreRejectsMissingMediaAssetFields(t, newStore)
+	})
 }
 
 func runCatalogRestoreMissingAssets(t *testing.T, newStore NewCatalogStore) {
@@ -114,6 +117,36 @@ func runCatalogRestoreRollback(t *testing.T, newStore NewCatalogStore) {
 	assertCatalogEmpty(t, f, ctx)
 	if revisionsAfter := catalogRulerInputRevisions(t, f, ctx); !reflect.DeepEqual(revisionsAfter, revisionsBefore) {
 		t.Fatalf("ruler input revisions after failed restore = %v, want unchanged %v", revisionsAfter, revisionsBefore)
+	}
+}
+
+// runCatalogRestoreRejectsMissingMediaAssetFields は、資産の必須キーが 1 つ欠けた文書を Restore が拒否し、何も書かないことを確かめる。
+// 文言は見ない。契約は拒否することと、拒否の前に書かないことだけを約束する。
+func runCatalogRestoreRejectsMissingMediaAssetFields(t *testing.T, newStore NewCatalogStore) {
+	tests := []struct {
+		name    string
+		assetID int64
+		drop    func(asset *catalogdoc.MediaAsset)
+	}{
+		{name: "store", assetID: 40, drop: func(asset *catalogdoc.MediaAsset) { asset.Store = "" }},
+		{name: "derivedGeneration", assetID: 41, drop: func(asset *catalogdoc.MediaAsset) { asset.DerivedGeneration = nil }},
+		{name: "generation", assetID: 41, drop: func(asset *catalogdoc.MediaAsset) { asset.Generation = nil }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newStore(t)
+			ctx := context.Background()
+			doc := roundTripCatalogDocument()
+			for i := range doc.MediaAssets {
+				if doc.MediaAssets[i].ID == tt.assetID {
+					tt.drop(&doc.MediaAssets[i])
+				}
+			}
+			if _, err := f.Store.Restore(ctx, doc, store.RestoreOptions{}); err == nil {
+				t.Fatal("Restore accepted a media asset with a missing required key")
+			}
+			assertCatalogEmpty(t, f, ctx)
+		})
 	}
 }
 

@@ -1202,7 +1202,7 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    COALESCE(NULLIF($26::jsonb, 'null'::jsonb), '[]'::jsonb),
+    $26::jsonb,
     $21, $22, $23, $24, $25
 )
 ON CONFLICT (id) DO UPDATE SET

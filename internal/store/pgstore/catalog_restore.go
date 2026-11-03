@@ -452,13 +452,13 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 		if err != nil {
 			return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
 		}
-		derivedGeneration := a.DerivedGeneration
-		copyGeneration := int64(0)
-		if a.Kind != "original" {
-			copyGeneration = *a.Generation
-		}
+		var derivedGeneration *int64
+		var copyGeneration int64
 		if a.Kind == "original" {
-			derivedGeneration = nil
+			copyGeneration = 0
+		} else {
+			derivedGeneration = a.DerivedGeneration
+			copyGeneration = *a.Generation
 		}
 		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
 			ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,

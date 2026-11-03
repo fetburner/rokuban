@@ -272,7 +272,7 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    COALESCE(NULLIF(sqlc.arg('quality_events')::jsonb, 'null'::jsonb), '[]'::jsonb),
+    sqlc.arg('quality_events')::jsonb,
     $21, $22, $23, $24, $25
 )
 ON CONFLICT (id) DO UPDATE SET
