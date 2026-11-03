@@ -105,15 +105,6 @@ build_images() {
   rm -rf "$ctx"
 
   local images=("$E2E_IMAGE" "$E2E_FULL_IMAGE" "$E2E_MOCK_IMAGE")
-  # RustFS の公式イメージは判定 6 の overlay でだけ要る。他の overlay では pull しない。
-  if [ "$E2E_OVERLAY" = "e2e-two-stores" ]; then
-    if ! docker image inspect "$E2E_RUSTFS_IMAGE" >/dev/null 2>&1; then
-      log_step "pulling ${E2E_RUSTFS_IMAGE}"
-      docker pull "$E2E_RUSTFS_IMAGE" || return 1
-    fi
-    images+=("$E2E_RUSTFS_IMAGE")
-  fi
-
   log_step "loading images into kind"
   kind load docker-image "${images[@]}" \
     --name "$E2E_CLUSTER" >/dev/null || return 1

@@ -1,7 +1,7 @@
 # 判定 6 の派生物の置き場（S3 互換）。**製品のマニフェストではない**（overlays/e2e-two-stores 限り）。
 #
 # 派生物は S3 か FS のどちらでもよい。ここは S3 の経路（objstore の s3store）を判定するために
-# RustFS の公式イメージを使う。イメージは env.sh でダイジェスト固定し、cluster.sh が kind に載せる。
+# RustFS の公式イメージを使う。イメージは env.sh でダイジェスト固定し、kind node が registry から pull する。
 #
 # RustFS の data と log は read-only root filesystem の外に出す。両方 emptyDir にして、
 # Pod の fsGroup と合わせる。資格情報は製品用 rokuban-secrets の AWS_* を RUSTFS_* に渡す。

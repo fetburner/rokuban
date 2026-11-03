@@ -15,7 +15,7 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh
 ```
 
-**RustFS へ切り替えた後の判定 6 は未検証**。置き場 2 つ（tokyo / takamatsu）の overlay で、派生物は RustFS の S3 に置き、実物の仕事を見る（probe は使わない）。
+置き場 2 つ（tokyo / takamatsu）の overlay で、派生物は RustFS の S3 に置き、実物の仕事を見る（probe は使わない）。2026-11-03 の 4 CPU / 8 GB の実行では判定 6 が PASS 13 / FAIL 0 / TODO 0 だった。
 
 - 6.1 / 6.6 置き場束縛キューの ScaledJob と CronJob が置き場ごとに 1 本ずつあること（静的）
 - 6.2 encode / thumbnail が原本のある置き場の Job で完了し、派生物の行が S3 にだけ載ること。手動の録画は予約を経由しないので、desired が空である。desired が無いと、encode は desired_profile_excluded で飛ばされる。そこで判定は `POST /api/recordings/{id}/encode-profiles` で e2e-fast を desired に足してから encode を積む
@@ -28,7 +28,7 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 6.2 / 6.3 / 6.5 / 6.7 の原本は `cluster/store-original-seed-job.yaml` が PVC に書く（録画の取り込みは通さない。取り込みは 6.8 だけ）。中身は `cluster/store-check-job.yaml` で覗く（目印 `.rokuban-store` が無ければ失敗させる）。
 
 **実行の前提**
-- RustFS は `.github/workflows/ci.yml` と同じ公式イメージをダイジェストで固定し、kind に載せる
+- RustFS は `.github/workflows/ci.yml` と同じ公式イメージをダイジェストで固定し、kind node が registry から pull する
 - bucket は製品のイメージの curl（SigV4）で作る（`overlays/e2e-two-stores/rustfs/bucket-job.yaml`）
 - 上の PASS は 4 CPU / 8 GB で得た。これより小さい割り当ては試していない
 

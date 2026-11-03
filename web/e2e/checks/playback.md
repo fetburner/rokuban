@@ -191,7 +191,7 @@ fixture が再現するのは配信の条件である。ローカルの RustFS �
 必要なものは Node の固定版、Go、ffmpeg、Docker である。RustFS は CI の `browser-s3-302` と同じ公式イメージで起動する。ダイジェストの権威は `.github/workflows/ci.yml` にある。
 
 ```sh
-RUSTFS_IMAGE="$(sed -n 's/^  RUSTFS_IMAGE: //p' .github/workflows/ci.yml)"
+RUSTFS_IMAGE="$(sed -n 's/^  RUSTFS_IMAGE: &rustfs_image //p' .github/workflows/ci.yml)"
 test -n "$RUSTFS_IMAGE"
 docker run --rm --name rokuban-s3-302-rustfs \
   --publish 9000:9000 \
