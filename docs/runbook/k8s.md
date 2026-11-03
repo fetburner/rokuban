@@ -156,7 +156,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
 ### 判定 6（置き場 2 つ）
 
-判定 6 は、置き場を 2 つ持つ別の overlay を別の名前空間で回す。5 項目とは別の判定である。ingest・encode・転送・削除・配信を、製品の経路で実際に走らせて見る。派生物の置き場は MinIO の S3 にする。
+判定 6 は、置き場を 2 つ持つ別の overlay を別の名前空間で回す。5 項目とは別の判定である。ingest・encode・転送・削除・配信を、製品の経路で実際に走らせて見る。派生物の置き場は RustFS の S3 にする。
 
 ```sh
 E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh

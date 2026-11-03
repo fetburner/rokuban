@@ -1,7 +1,7 @@
-# 派生物の bucket（rokuban-derived）を作る Job。MinIO は起動時に bucket を作らない。
+# 派生物の bucket（rokuban-derived）を作る Job。RustFS は起動時に bucket を作らない。
 #
-# bucket の作成は curl の SigV4（`--aws-sigv4`）で行う。mc（minio/mc）のイメージは Docker Hub に無い
-# （`minio/mc` は 404。`curlimages/curl` も使わない）。代わりに製品のイメージ（debian trixie の
+# bucket の作成は curl の SigV4（`--aws-sigv4`）で行う。専用 CLI のイメージに依存
+# せず、代わりに製品のイメージ（debian trixie の
 # curl 8.x。`--aws-sigv4` は 7.75 以降）を使い、kustomize の images（overlay の kustomization）が
 # `ghcr.io/fetburner/rokuban` を `rokuban:e2e` に置き換える。
 #
@@ -10,17 +10,17 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: minio-bucket-create
+  name: rustfs-bucket-create
   labels:
     app.kubernetes.io/name: rokuban-e2e
-    app.kubernetes.io/component: minio-bucket
+    app.kubernetes.io/component: rustfs-bucket
 spec:
   backoffLimit: 20
   template:
     metadata:
       labels:
         app.kubernetes.io/name: rokuban-e2e
-        app.kubernetes.io/component: minio-bucket
+        app.kubernetes.io/component: rustfs-bucket
     spec:
       restartPolicy: OnFailure
       enableServiceLinks: false
@@ -39,9 +39,9 @@ spec:
           args:
             - |
               set -eu
-              url="http://minio:9000/rokuban-derived"
+              url="http://rustfs:9000/rokuban-derived"
               out=/tmp/bucket-response
-              # MinIO が起動するまで接続を再試行する（--retry-all-errors は 7.71 以降）。
+              # RustFS が起動するまで接続を再試行する（--retry-all-errors は 7.71 以降）。
               code="$(curl -sS -o "$out" -w '%{http_code}' --retry 30 --retry-all-errors --retry-delay 2 \
                 --aws-sigv4 'aws:amz:us-east-1:s3' --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
                 -X PUT "$url")"

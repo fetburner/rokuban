@@ -36,10 +36,10 @@ storage:
     # accel_location は既定で空なので、この streamer は X-Accel-Redirect を返さず中身を配る。
     tokyo: { kind: fs, root: /mnt/stores/tokyo, internal_url: "http://rokuban-recording-hls-tokyo:40773" }
     takamatsu: { kind: fs, root: /mnt/stores/takamatsu, internal_url: "http://rokuban-recording-hls-takamatsu:40773" }
-    # 派生物の置き場（S3 互換の MinIO。overlays/e2e-two-stores/minio）。資格情報は
+    # 派生物の置き場（S3 互換の RustFS。overlays/e2e-two-stores/rustfs）。資格情報は
     # rokuban-secrets の AWS_*（環境変数）から読む。**2 つの FS 置き場がある構成では、
     # 派生物は S3 にする**（FS にすると、派生物を書く worker が全部その置き場をマウントする必要がある）。
-    s3: { kind: s3, endpoint: http://minio:9000, bucket: rokuban-derived, region: us-east-1 }
+    s3: { kind: s3, endpoint: http://rustfs:9000, bucket: rokuban-derived, region: us-east-1 }
   # sitea の録画のうち 2 日を過ぎたものは takamatsu へ（判定 6.3 の転送を起こす）。
   # それ以外の sitea は tokyo、siteb は takamatsu。先頭から評価して最初に一致した規則を使う。
   originals:

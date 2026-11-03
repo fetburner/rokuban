@@ -10,9 +10,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 import { createPlaywrightAdapter } from './lib.mjs'
 
-const MINIO_URL = new URL(process.env.E2E_MINIO_URL ?? 'http://127.0.0.1:9000')
-const ACCESS_KEY = process.env.E2E_MINIO_ACCESS_KEY ?? 'rokuban'
-const SECRET_KEY = process.env.E2E_MINIO_SECRET_KEY ?? 'rokuban-test-secret'
+const S3_URL = new URL(process.env.E2E_S3_URL ?? 'http://127.0.0.1:9000')
+const ACCESS_KEY = process.env.E2E_S3_ACCESS_KEY ?? 'rokuban'
+const SECRET_KEY = process.env.E2E_S3_SECRET_KEY ?? 'rokuban-test-secret'
 const REGION = 'us-east-1'
 const RUN_ID = randomUUID().replace(/-/g, '').slice(0, 12)
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -26,7 +26,7 @@ const EXPIRED_TTL_SECONDS = 5
 const VIDEO_SECONDS = 90
 const STREAMER_PROFILE = 's3conformance'
 const STREAMER_PORT = 4176
-// MinIO の CORS 許可がこのオリジンに固定されているので、変えられない。
+// このオリジンを正例 bucket の PutBucketCors に設定する。
 const FIXTURE_PORT = 4174
 const S3_PROXY_PORT = 4175
 const TARGET_SEEK_SECONDS = 32
@@ -40,8 +40,8 @@ const failures = []
 let streamerOrigin = ''
 let streamerRecordingID = 0
 
-if (MINIO_URL.protocol !== 'http:') {
-  throw new Error('E2E_MINIO_URL must use http for the local MinIO fixture')
+if (S3_URL.protocol !== 'http:') {
+  throw new Error('E2E_S3_URL must use http for the local S3 fixture')
 }
 if (!Number.isInteger(VIDEO_TTL_SECONDS) || VIDEO_TTL_SECONDS < 1 || VIDEO_TTL_SECONDS > 604800) {
   throw new Error('E2E_S3_VIDEO_TTL_SECONDS must be an integer from 1 to 604800')
@@ -123,7 +123,7 @@ function authorizationHeaders(method, url, body, extraHeaders = {}) {
 }
 
 async function signedS3Request(method, pathName, body = Buffer.alloc(0), extraHeaders = {}) {
-  const url = new URL(pathName, MINIO_URL)
+  const url = new URL(pathName, S3_URL)
   const headers = authorizationHeaders(method, url, body, extraHeaders)
   const response = await fetch(url, { method, headers, body: body.length === 0 ? undefined : body })
   const responseText = await response.text()
@@ -190,8 +190,8 @@ async function listen(server, port) {
   return 'http://127.0.0.1:' + server.address().port
 }
 
-async function waitForMinio() {
-  const healthUrl = new URL('/minio/health/live', MINIO_URL)
+async function waitForRustFS() {
+  const healthUrl = new URL('/health', S3_URL)
   const deadline = Date.now() + 30000
   while (Date.now() < deadline) {
     try {
@@ -200,7 +200,7 @@ async function waitForMinio() {
     } catch {}
     await delay(250)
   }
-  throw new Error('MinIO did not become ready at ' + healthUrl)
+  throw new Error('RustFS did not become ready at ' + healthUrl)
 }
 
 async function startStreamerFixture(videoKey, videoSize, s3Origin) {
@@ -259,6 +259,23 @@ async function stopStreamerFixture(child) {
 
 async function createBucket(bucket) {
   await signedS3Request('PUT', '/' + bucket)
+}
+
+async function configureBucketCors(bucket) {
+  const cors = Buffer.from([
+    '<CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">',
+    '<CORSRule>',
+    '<AllowedOrigin>http://127.0.0.1:4174</AllowedOrigin>',
+    '<AllowedMethod>GET</AllowedMethod>',
+    '<AllowedMethod>HEAD</AllowedMethod>',
+    '<AllowedHeader>*</AllowedHeader>',
+    '<ExposeHeader>Content-Range</ExposeHeader>',
+    '<ExposeHeader>Accept-Ranges</ExposeHeader>',
+    '<MaxAgeSeconds>3000</MaxAgeSeconds>',
+    '</CORSRule>',
+    '</CORSConfiguration>',
+  ].join(''))
+  await signedS3Request('PUT', '/' + bucket + '?cors', cors, { 'content-type': 'application/xml' })
 }
 
 function makeVideo(tempDir) {
@@ -423,8 +440,8 @@ function startFixtureServers(videoKey, subtitleKey) {
     res.writeHead(404, { 'Cache-Control': 'no-store' }).end('not found')
   })
 
-  const minioHost = MINIO_URL.hostname
-  const minioPort = Number(MINIO_URL.port || 80)
+  const s3Host = S3_URL.hostname
+  const s3Port = Number(S3_URL.port || 80)
   const proxyServer = createServer((req, res) => {
     const url = new URL(req.url, s3Origin)
     const bucket = url.pathname.split('/')[1]
@@ -446,13 +463,11 @@ function startFixtureServers(videoKey, subtitleKey) {
     requests.push(record)
     const headers = { ...req.headers, host: req.headers.host }
     const isSubtitle = url.pathname.endsWith('/' + subtitleKey)
-    // The pinned MinIO community build uses global CORS; omit Origin to model a bucket rule that rejects this origin.
-    if (bucket === BAD_BUCKET || (process.env.E2E_S3_DISABLE_CORS === '1' && isSubtitle)) delete headers.origin
     delete headers.connection
     delete headers['proxy-connection']
     const upstream = httpRequest({
-      hostname: minioHost,
-      port: minioPort,
+      hostname: s3Host,
+      port: s3Port,
       method: req.method,
       path: req.url,
       headers,
@@ -542,7 +557,7 @@ function conciseRequests(records) {
 }
 
 async function main() {
-  await waitForMinio()
+  await waitForRustFS()
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'rokuban-s3-302-'))
   let browser
   let fixture
@@ -557,6 +572,8 @@ async function main() {
     const vtt = Buffer.from('WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nS3 subtitle loaded\n\n00:00:05.000 --> 00:00:10.000\n302 subtitle still visible\n')
     await createBucket(GOOD_BUCKET)
     createdBuckets.push(GOOD_BUCKET)
+    // Keep the positive path's CORS policy removable: this mutation must make normal browser playback fail.
+    if (process.env.E2E_S3_DISABLE_CORS !== '1') await configureBucketCors(GOOD_BUCKET)
     await createBucket(BAD_BUCKET)
     createdBuckets.push(BAD_BUCKET)
     await signedS3Request('PUT', '/' + GOOD_BUCKET + '/' + videoKey, video, { 'content-type': 'video/mp4' })
@@ -577,7 +594,7 @@ async function main() {
     browser = await createPlaywrightAdapter(BROWSER)
     console.log('Browser: ' + BROWSER + ' ' + browser.version)
     console.log('Fixture: ' + origins.publicOrigin + ' -> ' + origins.s3Origin)
-    console.log('MinIO: ' + MINIO_URL.origin + ', MP4 size: ' + video.length + ' bytes, duration: ' + VIDEO_SECONDS + 's')
+    console.log('RustFS: ' + S3_URL.origin + ', MP4 size: ' + video.length + ' bytes, duration: ' + VIDEO_SECONDS + 's')
 
     const normalRequestStart = requests.length
     await browser.navigate(origins.publicOrigin + '/probe?scenario=normal')
@@ -680,7 +697,7 @@ async function main() {
     const negative = await browser.evaluate(() => ({ readyState: window.__state.trackReadyState, cueCount: window.__state.cueCount, mediaError: window.__state.mediaError }))
     expect(negative.readyState === 3 && negative.cueCount === 0, 'subtitle track unexpectedly loaded without bucket CORS: ' + JSON.stringify(negative))
     const negativeRequests = requests.slice(negativeStart).filter((request) => request.route === 's3' && request.bucket === BAD_BUCKET)
-    expect(negativeRequests.some((request) => request.status === 200), 'no-CORS VTT object did not reach MinIO successfully; the browser failure may not be a CORS failure')
+    expect(negativeRequests.some((request) => request.status === 200), 'no-CORS VTT object did not reach S3 successfully; the browser failure may not be a CORS failure')
 
     const expiryStart = requests.length
     await browser.navigate(origins.publicOrigin + '/probe?scenario=expiry')
@@ -705,11 +722,11 @@ async function main() {
     }
     if (!expirySeek) throw new Error('could not read media state after the expired seek')
     const refreshedAtOrigin = afterExpiry.some((request) => request.route === 'redirect')
-    const rejectedByMinIO = afterExpiry.some((request) => request.route === 's3' && request.status === 403)
+    const rejectedByS3 = afterExpiry.some((request) => request.route === 's3' && request.status === 403)
     const settledRange = afterExpiry.some((request) => request.route === 's3' && request.status !== null)
     // 期限切れの結果はブラウザごとに違うので、良し悪しを判定せず 3 つのどれかに分類して記録する。
     const outcome = refreshedAtOrigin ? 'refreshed-at-origin'
-      : !rejectedByMinIO ? null
+      : !rejectedByS3 ? null
         : expirySeek.error ? 'media-error' : '403-without-error'
     if (!expirySeekCached) {
       expect(afterExpiry.length > 0, 'could not observe a ranged media request after the signed URL expired')

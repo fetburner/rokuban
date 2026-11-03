@@ -12,17 +12,17 @@ import (
 )
 
 // 置き場が 2 つの overlay の派生物は S3 であり、その endpoint・bucket・イメージは overlay に同梱した
-// MinIO と一致すること。
+// RustFS と一致すること。
 //
 // **派生物を FS の置き場にすると、派生物を書く worker（encode / thumbnail）は全部その置き場を
 // マウントしなければならない**（cmd/rokuban/stores.go の起動検査が拒む）。置き場が 2 つの構成で
 // 派生物を 1 つの FS に寄せると、もう一方の置き場の worker が起動できない。
 //
-// 判定 6（deploy/k8s/e2e/checks/06-two-stores.sh）の派生物は MinIO を通るので、ここで
+// 判定 6（deploy/k8s/e2e/checks/06-two-stores.sh）の派生物は RustFS を通るので、ここで
 // config と overlay の 3 か所（endpoint の Service 名・bucket の作成・イメージ名）が
 // ずれていないことを固定する。ずれると、判定 6.2 が「派生物の書き込みに失敗」で赤くなり、
 // 原因が config か manifest か読めなくなる。
-func TestTwoStoreOverlayDerivedIsS3OnTheMinIOService(t *testing.T) {
+func TestTwoStoreOverlayDerivedIsS3OnTheRustFSService(t *testing.T) {
 	const overlayDir = "overlays/e2e-two-stores"
 
 	raw, err := os.ReadFile(filepath.Join(overlayDir, configFileName))
@@ -62,13 +62,13 @@ func TestTwoStoreOverlayDerivedIsS3OnTheMinIOService(t *testing.T) {
 			} `yaml:"ports"`
 		} `yaml:"spec"`
 	}
-	readYAMLFile(t, filepath.Join(overlayDir, "minio", "service.yaml"), &svc)
+	readYAMLFile(t, filepath.Join(overlayDir, "rustfs", "service.yaml"), &svc)
 	if len(svc.Spec.Ports) != 1 {
-		t.Fatalf("minio Service has %d ports, want 1", len(svc.Spec.Ports))
+		t.Fatalf("rustfs Service has %d ports, want 1", len(svc.Spec.Ports))
 	}
 	wantEndpoint := fmt.Sprintf("http://%s:%d", svc.Metadata.Name, svc.Spec.Ports[0].Port)
 	if derived.Endpoint != wantEndpoint {
-		t.Errorf("storage.stores.%s.endpoint = %q, want %q (the minio Service)", cfg.Storage.Derived, derived.Endpoint, wantEndpoint)
+		t.Errorf("storage.stores.%s.endpoint = %q, want %q (the rustfs Service)", cfg.Storage.Derived, derived.Endpoint, wantEndpoint)
 	}
 
 	// bucket は bucket-job が作る bucket と同じ。
@@ -83,33 +83,100 @@ func TestTwoStoreOverlayDerivedIsS3OnTheMinIOService(t *testing.T) {
 			} `yaml:"template"`
 		} `yaml:"spec"`
 	}
-	readYAMLFile(t, filepath.Join(overlayDir, "minio", "bucket-job.yaml"), &job)
+	readYAMLFile(t, filepath.Join(overlayDir, "rustfs", "bucket-job.yaml"), &job)
 	// bucket の作成は curl の SigV4 PUT（script の中の URL）。URL の bucket 名が config と同じこと。
 	if len(job.Spec.Template.Spec.Containers) != 1 {
-		t.Fatalf("minio/bucket-job.yaml has %d containers, want 1", len(job.Spec.Template.Spec.Containers))
+		t.Fatalf("rustfs/bucket-job.yaml has %d containers, want 1", len(job.Spec.Template.Spec.Containers))
 	}
 	script := strings.Join(job.Spec.Template.Spec.Containers[0].Args, "\n")
-	if !strings.Contains(script, "http://minio:9000/"+derived.Bucket+"\"") {
-		t.Errorf("minio/bucket-job.yaml does not PUT bucket %q on the minio Service (script = %q)", derived.Bucket, script)
+	if !strings.Contains(script, "http://rustfs:9000/"+derived.Bucket+"\"") {
+		t.Errorf("rustfs/bucket-job.yaml does not PUT bucket %q on the rustfs Service (script = %q)", derived.Bucket, script)
 	}
 
-	// MinIO のイメージ名は判定ハーネスが kind に載せる名前と同じ（lib/env.sh の E2E_MINIO_IMAGE）。
+	// RustFS のイメージ ref は CI と判定ハーネスで同じダイジェストを使う。
 	var dep struct {
 		Spec struct {
 			Template struct {
 				Spec struct {
 					Containers []struct {
-						Image string `yaml:"image"`
+						Image string   `yaml:"image"`
+						Args  []string `yaml:"args"`
+						Env   []struct {
+							Name      string `yaml:"name"`
+							Value     string `yaml:"value"`
+							ValueFrom struct {
+								SecretKeyRef struct {
+									Name string `yaml:"name"`
+									Key  string `yaml:"key"`
+								} `yaml:"secretKeyRef"`
+							} `yaml:"valueFrom"`
+						} `yaml:"env"`
+						VolumeMounts []struct {
+							Name      string `yaml:"name"`
+							MountPath string `yaml:"mountPath"`
+						} `yaml:"volumeMounts"`
 					} `yaml:"containers"`
+					Volumes []struct {
+						Name     string    `yaml:"name"`
+						EmptyDir *struct{} `yaml:"emptyDir"`
+					} `yaml:"volumes"`
 				} `yaml:"spec"`
 			} `yaml:"template"`
 		} `yaml:"spec"`
 	}
-	readYAMLFile(t, filepath.Join(overlayDir, "minio", "deployment.yaml"), &dep)
-	envImage := envShellValue(t, "E2E_MINIO_IMAGE")
-	if len(dep.Spec.Template.Spec.Containers) != 1 || dep.Spec.Template.Spec.Containers[0].Image != envImage {
-		t.Errorf("minio/deployment.yaml image = %+v, want %q (lib/env.sh E2E_MINIO_IMAGE; lib/cluster.sh builds that name)",
-			dep.Spec.Template.Spec.Containers, envImage)
+	readYAMLFile(t, filepath.Join(overlayDir, "rustfs", "deployment.yaml"), &dep)
+	envImage := envShellValue(t, "E2E_RUSTFS_IMAGE")
+	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("reading CI workflow: %v", err)
+	}
+	var ciImage string
+	for _, line := range strings.Split(string(workflow), "\n") {
+		if value, ok := strings.CutPrefix(line, "  RUSTFS_IMAGE: "); ok {
+			ciImage = strings.TrimSpace(value)
+			break
+		}
+	}
+	if ciImage == "" || ciImage != envImage {
+		t.Errorf("CI RUSTFS_IMAGE = %q, want lib/env.sh E2E_RUSTFS_IMAGE %q", ciImage, envImage)
+	}
+	if len(dep.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("rustfs/deployment.yaml has %d containers, want 1", len(dep.Spec.Template.Spec.Containers))
+	}
+	container := dep.Spec.Template.Spec.Containers[0]
+	if container.Image != envImage || !strings.Contains(container.Image, "@sha256:") {
+		t.Errorf("rustfs/deployment.yaml image = %q, want the digest-pinned lib/env.sh E2E_RUSTFS_IMAGE %q", container.Image, envImage)
+	}
+	if !slices.Contains(container.Args, "/data") {
+		t.Errorf("rustfs container args = %v, want /data", container.Args)
+	}
+	envValues := make(map[string]string, len(container.Env))
+	envSecrets := make(map[string]string, len(container.Env))
+	for _, env := range container.Env {
+		envValues[env.Name] = env.Value
+		if env.ValueFrom.SecretKeyRef.Name != "" {
+			envSecrets[env.Name] = env.ValueFrom.SecretKeyRef.Name + "/" + env.ValueFrom.SecretKeyRef.Key
+		}
+	}
+	if envValues["RUSTFS_VOLUMES"] != "/data" || envValues["RUSTFS_OBS_LOG_DIRECTORY"] != "/logs" {
+		t.Errorf("RustFS data/log directories = %q/%q, want /data and /logs", envValues["RUSTFS_VOLUMES"], envValues["RUSTFS_OBS_LOG_DIRECTORY"])
+	}
+	if envSecrets["RUSTFS_ACCESS_KEY"] != "rokuban-secrets/AWS_ACCESS_KEY_ID" || envSecrets["RUSTFS_SECRET_KEY"] != "rokuban-secrets/AWS_SECRET_ACCESS_KEY" {
+		t.Errorf("RustFS credential sources = %v, want the shared rokuban-secrets AWS keys", envSecrets)
+	}
+	mountPaths := make(map[string]string, len(container.VolumeMounts))
+	for _, mount := range container.VolumeMounts {
+		mountPaths[mount.Name] = mount.MountPath
+	}
+	if mountPaths["data"] != "/data" || mountPaths["logs"] != "/logs" {
+		t.Errorf("RustFS volume mounts = %v, want data at /data and logs at /logs", mountPaths)
+	}
+	emptyDirs := make(map[string]bool, len(dep.Spec.Template.Spec.Volumes))
+	for _, volume := range dep.Spec.Template.Spec.Volumes {
+		emptyDirs[volume.Name] = volume.EmptyDir != nil
+	}
+	if !emptyDirs["data"] || !emptyDirs["logs"] {
+		t.Errorf("RustFS emptyDir volumes = %v, want data and logs", emptyDirs)
 	}
 
 	// overlay がその 3 つを読んでいる（書いても組まれなければ判定 6 は S3 を測れない）。
@@ -117,8 +184,8 @@ func TestTwoStoreOverlayDerivedIsS3OnTheMinIOService(t *testing.T) {
 		Resources []string `yaml:"resources"`
 	}
 	readYAMLFile(t, filepath.Join(overlayDir, "kustomization.yaml"), &kust)
-	if !slices.Contains(kust.Resources, "minio") {
-		t.Errorf("%s/kustomization.yaml does not include the minio directory (resources = %v)", overlayDir, kust.Resources)
+	if !slices.Contains(kust.Resources, "rustfs") {
+		t.Errorf("%s/kustomization.yaml does not include the rustfs directory (resources = %v)", overlayDir, kust.Resources)
 	}
 }
 

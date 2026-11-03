@@ -86,11 +86,10 @@ E2E_ENCODE_TITLE="e2e encode probe"
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 E2E_DIR="${E2E_ROOT}/deploy/k8s/e2e"
 
-# 判定 6 の派生物の置き場（S3 互換の MinIO）。overlays/e2e-two-stores の `storage.stores.s3`
-# と同じ名前・同じ資格情報を使う。資格情報は rokuban-secrets の AWS_* に入れ、MinIO の
-# ルートユーザーにもそれを渡す（出どころは 1 か所）。**実 AWS の資格情報ではない**。
+# 判定 6 の派生物の置き場（S3 互換の RustFS）。overlays/e2e-two-stores の `storage.stores.s3`
+# と同じ名前・同じ資格情報を使う。製品 Pod 用 AWS_* Secret の値を RustFS の RUSTFS_* に渡す。
+# **実 AWS の資格情報ではない**。
 E2E_S3_ACCESS_KEY="rokuban"
 E2E_S3_SECRET_KEY="rokuban-e2e-secret"
-# MinIO のイメージ名。overlays/e2e-two-stores/minio/deployment.yaml の `image:` と一致させる
-# （deploy/k8s/stores_test.go が両者の一致を見る）。
-E2E_MINIO_IMAGE="minio:e2e"
+# RustFS は CI と同じ公式イメージをダイジェストで固定する。deployment.yaml と同じ値にする。
+E2E_RUSTFS_IMAGE="rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2"

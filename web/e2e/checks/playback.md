@@ -180,21 +180,25 @@ Chrome と Playwright WebKit は、どちらも `Hls.isSupported()` が真なら
 
 rokuban が S3 の署名付き URL へ 302 で飛ばした動画を、実 Chrome と Playwright WebKit で測る。測るのは Range 要求の宛先・署名の期限切れ・字幕・シークと再開位置である。
 
-fixture が再現するのは配信の条件である。ローカルの MinIO に 90 秒の H.264 MP4 と WebVTT を置き、fixture のリダイレクターが署名付き URL へ 302 を返す。S3 宛ての要求は別 port のプロキシが MinIO へ転送し、要求先・Range・status を記録する。
+fixture が再現するのは配信の条件である。ローカルの RustFS に 90 秒の H.264 MP4 と WebVTT を置き、fixture のリダイレクターが署名付き URL へ 302 を返す。S3 宛ての要求は別 port のプロキシが RustFS へ転送し、要求先・Range・status を記録する。
 
 プロキシは動画の応答を、動画のビットレートの 3 倍の速度に絞る。絞らないとブラウザが fixture をまるごと先読みし、シークがキャッシュから返って Range 要求が出ない可能性がある。シークの直前に `video.buffered` がシーク先を含んでいれば、測定の前提が崩れた旨の失敗にする。
 
 判定用ページは再開位置をブラウザ内に保存し、302 の後に読み込んだ動画で再生位置を復元する。製品のプレイヤーも `recording-player.tsx` の `onLoadedMetadata` で `currentTime` に代入して位置を戻すので、ブラウザから見た経路は同じである。プレイヤーの戻し方を変えたら、このページも見直す。これはブラウザの動作の測定で、製品 API の保存契約は対象外である。
 
-MinIO の CORS 許可は、サーバー全体の設定として `http://127.0.0.1:4174` に固定する。固定した版の MinIO は、バケットごとの CORS を設定できず、サーバー全体の設定しか持たない。字幕の負例では、プロキシが負例のバケット宛ての要求から Origin ヘッダーを外し、バケットに CORS が無い場合を再現する。
+正例 bucket には `http://127.0.0.1:4174` を許可する `PutBucketCors` を設定し、字幕の負例 bucket には設定しない。プロキシは Origin をそのまま転送するので、ブラウザが S3 の bucket ごとの設定を判定する。`E2E_S3_DISABLE_CORS=1` は正例 bucket の CORS 設定を省き、通常の再生判定が失敗することを確かめる。
 
-必要なものは Node の固定版、Go、ffmpeg、MinIO である。MinIO は CI の `browser-s3-302` と同じ固定した版で起動する。版の権威は `.github/actions/build-minio/action.yml` の `ref` で、下の `go install` にはその commit を渡す。
+必要なものは Node の固定版、Go、ffmpeg、Docker である。RustFS は CI の `browser-s3-302` と同じ公式イメージで起動する。ダイジェストの権威は `.github/workflows/ci.yml` にある。
 
 ```sh
-go install github.com/minio/minio@<action.yml の ref の commit>
-mkdir -p /tmp/rokuban-s3-302-minio
-MINIO_ROOT_USER=rokuban MINIO_ROOT_PASSWORD=rokuban-test-secret MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:4174 \
-  "$(go env GOPATH)/bin/minio" server /tmp/rokuban-s3-302-minio --address 127.0.0.1:9000 --console-address 127.0.0.1:9001
+RUSTFS_IMAGE="$(sed -n 's/^  RUSTFS_IMAGE: //p' .github/workflows/ci.yml)"
+test -n "$RUSTFS_IMAGE"
+docker run --rm --name rokuban-s3-302-rustfs \
+  --publish 9000:9000 \
+  --env RUSTFS_ACCESS_KEY=rokuban \
+  --env RUSTFS_SECRET_KEY=rokuban-test-secret \
+  --env RUSTFS_VOLUMES=/data \
+  "$RUSTFS_IMAGE" /data
 ```
 
 別のターミナルから `web/` で実行する。

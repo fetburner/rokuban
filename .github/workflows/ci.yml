@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  RUSTFS_IMAGE: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+
 on:
   # PR と main への push だけを検証する。その他のブランチ push は
   # publish-sha.yml の publish ジョブだけを起動する（同じ commit の検証を二重にしない）。
@@ -196,7 +199,7 @@ jobs:
         run: cat "${RUNNER_TEMP}/rokuban-e2e-server.log"
 
   # S3 の署名付き URL への 302 を実 Chrome で測る（`web/e2e/s3-302.mjs`）。`browser-e2e` と別ジョブにしている
-  # のは、MinIO のビルドと実 Chrome（`playwright install chrome`）が要り、`browser-e2e` の選定基準
+  # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）が要り、`browser-e2e` の選定基準
   # 「Chromium だけで軽く終わる」を満たさないため。実 Safari の測定は macOS のローカルで行い、CI には載せない。
   browser-s3-302:
     runs-on: ubuntu-latest
@@ -238,45 +241,39 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      - id: minio
-        uses: ./.github/actions/build-minio
       - run: pnpm exec playwright install --with-deps chrome
         working-directory: web
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - name: Start MinIO
+      # docker run keeps readiness probing and startup log capture beside the RustFS process.
+      - name: Start RustFS
         run: |
-          minio_data="${RUNNER_TEMP}/rokuban-s3-302-minio"
-          minio_log="${RUNNER_TEMP}/rokuban-s3-302-minio.log"
-          mkdir -p "${minio_data}"
-          MINIO_ROOT_USER=rokuban MINIO_ROOT_PASSWORD=rokuban-test-secret MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:4174 \
-            "${{ steps.minio.outputs.path }}" server "${minio_data}" --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >"${minio_log}" 2>&1 &
-          minio_pid=$!
-          echo "${minio_pid}" > "${RUNNER_TEMP}/rokuban-s3-302-minio.pid"
+          docker run --detach --name rokuban-rustfs \
+            --publish 9000:9000 \
+            --env RUSTFS_ACCESS_KEY=rokuban \
+            --env RUSTFS_SECRET_KEY=rokuban-test-secret \
+            --env RUSTFS_VOLUMES=/data \
+            "$RUSTFS_IMAGE" /data
           for _ in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
-              echo "MinIO is ready at http://127.0.0.1:9000"
+            if curl --fail --silent http://127.0.0.1:9000/health >/dev/null; then
+              echo "RustFS is ready at http://127.0.0.1:9000"
               exit 0
             fi
-            if ! kill -0 "${minio_pid}" 2>/dev/null; then
+            if [ "$(docker inspect --format '{{.State.Running}}' rokuban-rustfs 2>/dev/null || true)" != true ]; then
               break
             fi
             sleep 1
           done
-          echo "::error::MinIO did not become ready; server log follows"
-          cat "${minio_log}"
+          echo "::error::RustFS did not become ready; container log follows"
+          docker logs rokuban-rustfs || true
           exit 1
       - run: pnpm e2e:s3-302
         working-directory: web
         env:
-          E2E_MINIO_URL: http://127.0.0.1:9000
+          E2E_S3_URL: http://127.0.0.1:9000
           E2E_STREAMER_FIXTURE_BINARY: ${{ runner.temp }}/rokuban-s3streamer-conformance
-      - name: Stop MinIO
+      - name: Stop RustFS
         if: always()
-        run: |
-          if [ -f "${RUNNER_TEMP}/rokuban-s3-302-minio.pid" ]; then
-            read -r minio_pid < "${RUNNER_TEMP}/rokuban-s3-302-minio.pid"
-            kill "${minio_pid}" 2>/dev/null || true
-          fi
+        run: docker rm --force rokuban-rustfs 2>/dev/null || true
 
   # go test を 2 ランナーに分ける。4 コアのランナー 1 台に全パッケージ（race 付きの合計は
   # 約 600 秒）を詰めると、CPU の取り合いで最長パッケージがそのままジョブ長になるため。
@@ -510,7 +507,7 @@ jobs:
     steps:
       - run: test "${{ needs.mirakc-conformance-shard.result }}" = success
 
-  # S3 API の互換性を MinIO の固定ソースリリースで検査する。
+  # S3 API の互換性をダイジェスト固定した RustFS イメージで検査する。
   s3-conformance:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -529,55 +526,54 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      MINIO_ROOT_USER: rokuban
-      MINIO_ROOT_PASSWORD: rokuban-minio-conformance
       ROKUBAN_S3_CONFORMANCE_ENDPOINT: http://127.0.0.1:9000
       ROKUBAN_S3_CONFORMANCE_REGION: us-east-1
       ROKUBAN_S3_CONFORMANCE_BUCKET: rokuban-conformance
       ROKUBAN_S3_CONFORMANCE_ACCESS_KEY_ID: rokuban
-      ROKUBAN_S3_CONFORMANCE_SECRET_ACCESS_KEY: rokuban-minio-conformance
+      ROKUBAN_S3_CONFORMANCE_SECRET_ACCESS_KEY: rokuban-rustfs-conformance
       ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET: "true"
       ROKUBAN_TEST_DATABASE_URL: postgres://conformance:conformance@localhost:5432/conformance_test?sslmode=disable
       AWS_ACCESS_KEY_ID: rokuban
-      AWS_SECRET_ACCESS_KEY: rokuban-minio-conformance
+      AWS_SECRET_ACCESS_KEY: rokuban-rustfs-conformance
       AWS_REGION: us-east-1
-      # MinIO は 6 機能すべて対応する。記録がこれと違えば退行として落とす。
+      # 固定した RustFS は 6 機能すべて対応する。記録がこれと違えば退行として落とす。
       ROKUBAN_S3_CONFORMANCE_EXPECT: conditional-writes=supported,multipart-upload-and-abort=supported,multipart-abort-gone=supported,multipart-resume=supported,head-checksum-sha256=supported,presigned-get-range=supported
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - id: minio
-        uses: ./.github/actions/build-minio
-      - name: Start MinIO service
+      # docker run permits an explicit S3 readiness check and preserves logs if startup fails.
+      - name: Start RustFS
         run: |
-          mkdir -p "$RUNNER_TEMP/minio-data"
-          nohup "${{ steps.minio.outputs.path }}" server "$RUNNER_TEMP/minio-data" --address 127.0.0.1:9000 >"$RUNNER_TEMP/minio.log" 2>&1 &
-          echo "$!" > "$RUNNER_TEMP/minio.pid"
+          docker run --detach --name rokuban-rustfs \
+            --publish 9000:9000 \
+            --env RUSTFS_ACCESS_KEY=rokuban \
+            --env RUSTFS_SECRET_KEY=rokuban-rustfs-conformance \
+            --env RUSTFS_VOLUMES=/data \
+            "$RUSTFS_IMAGE" /data
           for _ in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:9000/health >/dev/null; then
+              echo "RustFS is ready at http://127.0.0.1:9000"
               exit 0
             fi
-            if ! kill -0 "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null; then
+            if [ "$(docker inspect --format '{{.State.Running}}' rokuban-rustfs 2>/dev/null || true)" != true ]; then
               break
             fi
             sleep 1
           done
-          cat "$RUNNER_TEMP/minio.log"
+          echo "::error::RustFS did not become ready; container log follows"
+          docker logs rokuban-rustfs || true
           exit 1
       - name: Run S3 API conformance tests
         run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
-      - name: Run shared object store contract against MinIO
+      - name: Run shared object store contract against RustFS
         run: go test -tags s3conformance ./internal/objstore/s3store -run '^TestStoreContract$' -count=1 -timeout 5m -v
       - name: Run S3 worker publication and recovery tests
         run: go test -tags s3conformance ./internal/worker -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
-      - name: Stop MinIO service
+      - name: Stop RustFS
         if: always()
-        run: |
-          if [ -f "$RUNNER_TEMP/minio.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null || true
-          fi
+        run: docker rm --force rokuban-rustfs 2>/dev/null || true
 
   # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
   # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。
