@@ -13,7 +13,6 @@ import {
   playbackResumeSeconds,
   saveChapterEditPlaybackRate,
   savePlaybackRate,
-  activePlaybackRateSaver,
 } from '@/lib/playback-position'
 
 type Vector = { fromMs: number; toMs: number }
@@ -158,14 +157,6 @@ describe('再生速度は端末ごとに 1 つ', () => {
     expect(localStorage.getItem('rokuban:chapter-edit-playback-rate')).toBeNull()
     expect(loadChapterEditPlaybackRate()).toBe(1)
     expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
-  })
-
-  it('activePlaybackRateSaver は通常再生と編集の保存先を切り替える', () => {
-    activePlaybackRateSaver(false)(1.5)
-    activePlaybackRateSaver(true)(2)
-
-    expect(loadPlaybackRate()).toBe(1.5)
-    expect(loadChapterEditPlaybackRate()).toBe(2)
   })
 
   it('編集中の速度の壊れた値は 1 倍に落とす', () => {

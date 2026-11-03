@@ -28,7 +28,6 @@ import {
 import { useChapterPlayback } from '@/lib/chapter-playback'
 import { fixedPlaybackTimeline } from '@/lib/playback-timeline'
 import {
-  activePlaybackRateSaver,
   applyPlaybackRate,
   clearLegacyPlaybackPositions,
   loadChapterEditPlaybackRate,
@@ -37,6 +36,8 @@ import {
   playbackResumeSeconds,
   persistPlaybackPosition,
   cutMsToOriginalMs,
+  saveChapterEditPlaybackRate,
+  savePlaybackRate,
 } from '@/lib/playback-position'
 import { formatDate, formatTime } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
@@ -211,7 +212,7 @@ export function RecordingPlayer({
   const [chapterEditPlaybackRate, setChapterEditPlaybackRate] = useState(loadChapterEditPlaybackRate)
   const activePlaybackRate = chapterEditing ? chapterEditPlaybackRate : playbackRate
   const setActivePlaybackRate = chapterEditing ? setChapterEditPlaybackRate : setPlaybackRate
-  const saveActivePlaybackRate = activePlaybackRateSaver(chapterEditing)
+  const saveActivePlaybackRate = chapterEditing ? saveChapterEditPlaybackRate : savePlaybackRate
   const videoRef = useRef<HTMLVideoElement>(null)
   const getDisplayedFrameSeconds = useDisplayedFrameSeconds(videoRef, chapterEditing, videoKey)
   const frameRef = useRef<HTMLDivElement>(null)
@@ -256,10 +257,10 @@ export function RecordingPlayer({
   // 境界の前後再生の間は自動スキップを止める。境界が cut 区間の先頭のとき、
   // 飛ばすと「その境界を見る」操作そのものが成立しない。
   const skipSuppressedRef = useRef(false)
-  const chapterBoundarySeekRef = useRef<(boundaryMs: number) => void>(() => {})
   const chapterPlayback = useChapterPlayback({
+    videoRef,
     seekToSeconds: (seconds) => jumpToRef.current(seconds),
-    seekToBoundary: (boundaryMs) => chapterBoundarySeekRef.current(boundaryMs),
+    seekToBoundary: (boundaryMs) => seekToChapterBoundary(boundaryMs),
     onClear: () => { skipSuppressedRef.current = false },
     onStart: () => { skipSuppressedRef.current = true },
   })
@@ -546,7 +547,6 @@ export function RecordingPlayer({
     pendingBoundarySeekMsRef.current = null
     jumpTo(chapterBoundaryMsToSeekSeconds(boundaryMs))
   }
-  chapterBoundarySeekRef.current = seekToChapterBoundary
   jumpToRef.current = jumpTo
   const jumpChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapterSpans, currentSeconds, direction)
@@ -575,18 +575,9 @@ export function RecordingPlayer({
           onSaveChapters !== undefined && onResetChapters !== undefined
         }
         onEnterChapterEditing={onEnterChapterEditing}
-        onPlayAround={editorSelected === null ? undefined : () => {
-          const video = videoRef.current
-          if (video) chapterPlayback.playAround(video, Math.round(editorSelected * 1000))
-        }}
-        onPlayToBoundary={editorSelected === null ? undefined : () => {
-          const video = videoRef.current
-          if (video) chapterPlayback.playAround(video, Math.round(editorSelected * 1000), 'to')
-        }}
-        onPlayFromBoundary={editorSelected === null ? undefined : () => {
-          const video = videoRef.current
-          if (video) chapterPlayback.playAround(video, Math.round(editorSelected * 1000), 'from')
-        }}
+        onPlayAround={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000))}
+        onPlayToBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'to')}
+        onPlayFromBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'from')}
         seekTilesEnabled
         requestSeekTilesOnMount={chapterEditing && !playingCut}
         tileTimeAtSeconds={(seconds) => {
@@ -776,10 +767,7 @@ export function RecordingPlayer({
             durationSeconds={durationSeconds}
             tilesAvailable={tilesAvailableFor === recordingId}
             jumpTo={jumpTo}
-            onBoundaryAction={(seconds) => {
-              const video = videoRef.current
-              if (video) chapterPlayback.selectBoundary(video, seconds)
-            }}
+            onBoundaryAction={chapterPlayback.selectBoundary}
             onSelectedBoundaryChange={setEditorSelected}
             onSave={onSaveChapters}
             onReset={async () => await onResetChapters()}

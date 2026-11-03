@@ -176,11 +176,6 @@ export function saveChapterEditPlaybackRate(rate: number): void {
   savePlaybackRateTo(CHAPTER_EDIT_RATE_KEY, rate)
 }
 
-/** activePlaybackRateSaver は通常再生とチャプター編集中で使う保存先を選ぶ。 */
-export function activePlaybackRateSaver(chapterEditing: boolean): (rate: number) => void {
-  return chapterEditing ? saveChapterEditPlaybackRate : savePlaybackRate
-}
-
 /**
  * applyPlaybackRate は速度を video に設定し、ブラウザが拒否した場合は 1 倍へ戻して保存先へ反映する。
  * 対応する速度の範囲はブラウザごとに異なるため、保存時の数値検証だけでは

@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type MutableRefObject,
@@ -46,7 +45,6 @@ import {
   readSubtitleVisibility,
 } from '@/lib/live'
 import {
-  activePlaybackRateSaver,
   applyPlaybackRate,
   loadChapterEditPlaybackRate,
   clearLegacyPlaybackPositions,
@@ -54,6 +52,8 @@ import {
   loadPlaybackRate,
   playbackPositionWrite,
   persistPlaybackPosition,
+  saveChapterEditPlaybackRate,
+  savePlaybackRate,
 } from '@/lib/playback-position'
 import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
 import { usePlayerFrame } from '@/lib/use-player-frame'
@@ -464,7 +464,7 @@ export function LivePlayer(props: LivePlayerProps) {
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const [chapterEditPlaybackRate, setChapterEditPlaybackRate] = useState(loadChapterEditPlaybackRate)
   const activePlaybackRate = chapterEditing ? chapterEditPlaybackRate : playbackRate
-  const saveActivePlaybackRate = activePlaybackRateSaver(chapterEditing)
+  const saveActivePlaybackRate = chapterEditing ? saveChapterEditPlaybackRate : savePlaybackRate
   const setActivePlaybackRate = chapterEditing ? setChapterEditPlaybackRate : setPlaybackRate
   const playbackRateRef = useRef(playbackRate)
   const saveActivePlaybackRateRef = useRef(saveActivePlaybackRate)
@@ -549,11 +549,10 @@ export function LivePlayer(props: LivePlayerProps) {
     ))
   }
   const [recordingTilesAvailable, setRecordingTilesAvailable] = useState(false)
-  const seekRecordingRef = useRef<(seconds: number) => void>(() => {})
-  const seekRecordingBoundaryRef = useRef<(boundaryMs: number) => void>(() => {})
   const chapterPlayback = useChapterPlayback({
-    seekToSeconds: (seconds) => seekRecordingRef.current(seconds),
-    seekToBoundary: (boundaryMs) => seekRecordingBoundaryRef.current(boundaryMs),
+    videoRef,
+    seekToSeconds: (seconds) => seekRecording(seconds),
+    seekToBoundary: (boundaryMs) => seekToRecordingBoundary(boundaryMs),
     onFinish: () => { resumePlaybackPendingRef.current = false },
     onSelectBoundary: () => { resumePlaybackPendingRef.current = false },
   })
@@ -1260,10 +1259,6 @@ export function LivePlayer(props: LivePlayerProps) {
     pendingBoundarySeekMsRef.current = null
     seekRecording(chapterBoundaryMsToSeekSeconds(boundaryMs))
   }
-  useLayoutEffect(() => {
-    seekRecordingRef.current = seekRecording
-    seekRecordingBoundaryRef.current = seekToRecordingBoundary
-  })
   const jumpRecordingChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapters ?? [], playbackAxisForRender.positionSeconds, direction)
     if (target !== undefined) seekRecording(chapterBoundaryMsToSeekSeconds(Math.round(target * 1000)))
@@ -1481,18 +1476,9 @@ export function LivePlayer(props: LivePlayerProps) {
         onSaveChapters !== undefined && onResetChapters !== undefined
       }
       onEnterChapterEditing={onEnterChapterEditing}
-      onPlayAround={editorSelected === null ? undefined : () => {
-        const media = videoRef.current
-        if (media) chapterPlayback.playAround(media, Math.round(editorSelected * 1000))
-      }}
-      onPlayToBoundary={editorSelected === null ? undefined : () => {
-        const media = videoRef.current
-        if (media) chapterPlayback.playAround(media, Math.round(editorSelected * 1000), 'to')
-      }}
-      onPlayFromBoundary={editorSelected === null ? undefined : () => {
-        const media = videoRef.current
-        if (media) chapterPlayback.playAround(media, Math.round(editorSelected * 1000), 'from')
-      }}
+      onPlayAround={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000))}
+      onPlayToBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'to')}
+      onPlayFromBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'from')}
       seekTilesEnabled={isRecordingHLS}
       requestSeekTilesOnMount={chapterEditing && isRecordingHLS}
       commitLastDisplayedPreview={isRecordingHLS}
@@ -1594,10 +1580,7 @@ export function LivePlayer(props: LivePlayerProps) {
             durationSeconds={recordingDuration}
             tilesAvailable={recordingTilesAvailable}
             jumpTo={seekRecording}
-            onBoundaryAction={(seconds) => {
-              const media = videoRef.current
-              if (media) chapterPlayback.selectBoundary(media, seconds)
-            }}
+            onBoundaryAction={chapterPlayback.selectBoundary}
             onSelectedBoundaryChange={setEditorSelected}
             onSave={onSaveChapters}
             onReset={async () => await onResetChapters()}

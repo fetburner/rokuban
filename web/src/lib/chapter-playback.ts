@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 
 import { PLAY_AROUND_SECONDS, chapterBoundaryMsToSeekSeconds } from '@/lib/chapters'
 
 export type ChapterPlaybackMode = 'around' | 'to' | 'from'
 
 type ChapterPlaybackOptions = {
+  videoRef: RefObject<HTMLVideoElement | null>
   seekToSeconds: (seconds: number) => void
   seekToBoundary: (boundaryMs: number) => void
   onClear?: () => void
@@ -22,14 +23,12 @@ export function useChapterPlayback(options: ChapterPlaybackOptions) {
   const timerRef = useRef<number | undefined>(undefined)
   const stopAtRef = useRef<number | null>(null)
   const stopBoundaryMsRef = useRef<number | null>(null)
-  const generationRef = useRef(0)
 
   const clear = useCallback(() => {
     window.clearTimeout(timerRef.current)
     timerRef.current = undefined
     stopAtRef.current = null
     stopBoundaryMsRef.current = null
-    generationRef.current += 1
     optionsRef.current.onClear?.()
   }, [])
 
@@ -42,22 +41,22 @@ export function useChapterPlayback(options: ChapterPlaybackOptions) {
     if (boundaryMs !== null) optionsRef.current.seekToBoundary(boundaryMs)
   }, [clear])
 
+  // 発火したら位置を確かめずに止める。timer は clear と再設定のたびに clearTimeout されるので、
+  // 無効になった timer が後から走ることは無い。
   const rescheduleStop = useCallback((media: HTMLVideoElement) => {
     const stopAt = stopAtRef.current
     if (stopAt === null) return
     window.clearTimeout(timerRef.current)
-    const generation = generationRef.current
     const remainingSeconds = Math.max(0, stopAt - media.currentTime)
     timerRef.current = window.setTimeout(
-      () => {
-        if (generationRef.current !== generation) return
-        finishIfActive(media)
-      },
+      () => finishIfActive(media),
       (remainingSeconds * 1000) / Math.max(media.playbackRate, 0.1) + 2000,
     )
   }, [finishIfActive])
 
-  const playAround = useCallback((media: HTMLVideoElement, boundaryMs: number, mode: ChapterPlaybackMode = 'around') => {
+  const playAround = useCallback((boundaryMs: number, mode: ChapterPlaybackMode = 'around') => {
+    const media = optionsRef.current.videoRef.current
+    if (!media) return
     clear()
     const boundarySeconds = boundaryMs / 1000
     const start = mode === 'from'
@@ -80,7 +79,9 @@ export function useChapterPlayback(options: ChapterPlaybackOptions) {
     if (stopAt !== null && media.currentTime >= stopAt) finishIfActive(media)
   }, [finishIfActive])
 
-  const selectBoundary = useCallback((media: HTMLVideoElement, seconds: number) => {
+  const selectBoundary = useCallback((seconds: number) => {
+    const media = optionsRef.current.videoRef.current
+    if (!media) return
     clear()
     optionsRef.current.onSelectBoundary?.()
     if (!media.paused) media.pause()
