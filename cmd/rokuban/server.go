@@ -955,31 +955,16 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, base *worker.Dep
 		// S3 の独立パスは最初の FS 置き場だけに載せ、複数の original キューから同じ S3 を
 		// 繰り返し走査・削除しない。FS の派生物の置き場を別の置き場の worker が mount している
 		// ときは、その FS 全体を objstore のパスで掃かないよう、このパスを作らない。
+		fsNames := cfg.Storage.FSStoreNames()
 		if cfg.Storage.Derived != name &&
 			cfg.Storage.Stores[cfg.Storage.Derived].Kind == "s3" &&
-			name == firstFSStoreName(cfg.Storage.Stores) {
+			len(fsNames) > 0 && name == fsNames[0] {
 			scoped.DerivedMediaDelete = derivedMedia
 			scoped.DerivedStorage = derivedMedia
 			scoped.DerivedPendingReclaim = derivedMedia
 		}
 	}
 	return &scoped
-}
-
-// firstFSStoreName は、設定された FS 置き場のうち名前順で最初のものを返す。
-// S3 の派生物削除パスを載せる置き場を全 worker で一意にする。
-func firstFSStoreName(stores map[string]config.StoreConfig) string {
-	names := make([]string, 0, len(stores))
-	for name, store := range stores {
-		if store.Kind == "fs" {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	if len(names) == 0 {
-		return ""
-	}
-	return names[0]
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。
