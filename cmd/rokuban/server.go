@@ -296,6 +296,38 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
+// newStreamerObjectStores は、streamer が配れる派生物の置き場を作る。
+// FS はこのプロセスがマウントしたものだけ、S3 は設定された全置き場を reader として登録する。
+func newStreamerObjectStores(ctx context.Context, storage config.StorageConfig, roots map[string]string) (map[string]objstore.Store, error) {
+	objects := make(map[string]objstore.Store, len(roots)+len(storage.Stores))
+	for _, name := range sortedKeys(roots) {
+		objectStore, err := fsstore.New(roots[name])
+		if err != nil {
+			return nil, fmt.Errorf("creating filesystem object store %q for streamer: %w", name, err)
+		}
+		objects[name] = objectStore
+	}
+
+	storeNames := slices.Collect(maps.Keys(storage.Stores))
+	slices.Sort(storeNames)
+	for _, name := range storeNames {
+		configured := storage.Stores[name]
+		if configured.Kind != "s3" {
+			continue
+		}
+		objectStore, err := s3store.NewReader(ctx, s3store.Config{
+			Endpoint: configured.Endpoint,
+			Region:   configured.Region,
+			Bucket:   configured.Bucket,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("creating S3 object store reader %q for streamer: %w", name, err)
+		}
+		objects[name] = objectStore
+	}
+	return objects, nil
+}
+
 // runServer は server サブコマンドの本体。
 //
 // newServerCmd から切り出してあるのは、フラグ登録を本体の直後に置くため
@@ -625,29 +657,17 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 
 	var mounters api.Mounters
 	if slices.Contains(roles, "streamer") {
-		objectStores := make(map[string]objstore.Store)
-		if derived, ok := cfg.Storage.Stores[cfg.Storage.Derived]; ok {
-			var objects objstore.Store
-			var err error
-			switch derived.Kind {
-			case "fs":
-				// 派生物の置き場が FS なら、この streamer がその置き場をマウントしているときだけ配れる。
-				if root, mounted := roots[cfg.Storage.Derived]; mounted {
-					objects, err = fsstore.New(root)
-				}
-			case "s3":
-				objects, err = s3store.NewReader(egCtx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
-			default:
-				err = fmt.Errorf("unsupported derived store kind %q", derived.Kind)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("creating derived object store %q: %w", cfg.Storage.Derived, err)
-			}
-			if objects != nil {
-				objectStores[cfg.Storage.Derived] = objects
-			}
+		objectStores, err := newStreamerObjectStores(egCtx, cfg.Storage, roots)
+		if err != nil {
+			return nil, err
 		}
-		mounters = append(mounters, streamer.New(mediaStore, streamer.Config{
+		readableStores := make([]string, 0, len(objectStores))
+		for name := range objectStores {
+			readableStores = append(readableStores, name)
+		}
+		slices.Sort(readableStores)
+		streamerMedia := pgstore.NewMediaForStreamer(pool, cfg.Storage.Derived, readableStores)
+		mounters = append(mounters, streamer.New(streamerMedia, streamer.Config{
 			MediaRoots:    roots,
 			AccelLocation: cfg.Storage.AccelLocation,
 			ObjectStores:  objectStores,

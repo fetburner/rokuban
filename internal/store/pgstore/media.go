@@ -28,6 +28,9 @@ type Media struct {
 	// 空なら規則が無く、原本は消さない。コピーを読み書きする置き場（storeName）とは別の値で、
 	// storeName を代わりに使ってはならない。
 	derivedStore string
+	// servingStores が非 nil なら、配信コピーを streamer が読める置き場に絞る。
+	// nil は従来の MediaServing 契約（置き場を限定しない）を表す。
+	servingStores []string
 }
 
 // NewMedia は PostgreSQL を使う Media を作る。storeName はこのプロセスが書く置き場の名前。
@@ -41,6 +44,14 @@ func NewMedia(pool *pgxpool.Pool, storeName, derivedStore string) *Media {
 // NewMediaWithStores builds a Media implementation with distinct stores for source and derived assets.
 func NewMediaWithStores(pool *pgxpool.Pool, storeName, originalStore, derivedStore string) *Media {
 	return &Media{pool: pool, storeName: storeName, originalStore: originalStore, derivedStore: derivedStore}
+}
+
+// NewMediaForStreamer は streamer が読める置き場だけから派生物のコピーを選ぶ Media を作る。
+// readableStores が空なら、配信できる派生物コピーは無い。
+func NewMediaForStreamer(pool *pgxpool.Pool, preferredDerivedStore string, readableStores []string) *Media {
+	stores := make([]string, len(readableStores))
+	copy(stores, readableStores)
+	return &Media{pool: pool, derivedStore: preferredDerivedStore, servingStores: stores}
 }
 
 func (s *Media) originalStoreName() string {
@@ -158,6 +169,16 @@ func (s *Media) GetOriginalMediaAssetForServingInStore(ctx context.Context, reco
 
 // GetEncodedMediaAssetForServing は指定プロファイルの配信可能な encoded を返す。
 func (s *Media) GetEncodedMediaAssetForServing(ctx context.Context, recordingID int64, profile string) (store.MediaAsset, error) {
+	if s.servingStores != nil {
+		row, err := sqlcgen.New(s.pool).GetEncodedMediaAssetForStreamer(ctx, sqlcgen.GetEncodedMediaAssetForStreamerParams{
+			RecordingID: recordingID, Profile: &profile,
+			PreferredStore: s.derivedStore, ReadableStores: s.servingStores,
+		})
+		if err != nil {
+			return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading encoded media asset for recording %d profile %q", recordingID, profile))
+		}
+		return store.MediaAsset{ID: row.ID, Store: row.Store, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+	}
 	row, err := sqlcgen.New(s.pool).GetEncodedMediaAssetForServing(ctx, sqlcgen.GetEncodedMediaAssetForServingParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
@@ -171,6 +192,15 @@ func (s *Media) GetEncodedMediaAssetForServing(ctx context.Context, recordingID 
 
 // GetThumbnailMediaAssetForServing は配信可能なサムネイルを返す。
 func (s *Media) GetThumbnailMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
+	if s.servingStores != nil {
+		row, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForStreamer(ctx, sqlcgen.GetThumbnailMediaAssetForStreamerParams{
+			RecordingID: recordingID, PreferredStore: s.derivedStore, ReadableStores: s.servingStores,
+		})
+		if err != nil {
+			return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading thumbnail media asset for recording %d", recordingID))
+		}
+		return store.MediaAsset{ID: row.AssetID, Store: row.Store, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+	}
 	row, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForServing(ctx, sqlcgen.GetThumbnailMediaAssetForServingParams{
 		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})
@@ -182,6 +212,15 @@ func (s *Media) GetThumbnailMediaAssetForServing(ctx context.Context, recordingI
 
 // GetSeekTilesMediaAssetForServing は配信可能なシークタイルを返す。
 func (s *Media) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
+	if s.servingStores != nil {
+		row, err := sqlcgen.New(s.pool).GetSeekTilesMediaAssetForStreamer(ctx, sqlcgen.GetSeekTilesMediaAssetForStreamerParams{
+			RecordingID: recordingID, PreferredStore: s.derivedStore, ReadableStores: s.servingStores,
+		})
+		if err != nil {
+			return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading seek tiles media asset for recording %d", recordingID))
+		}
+		return store.MediaAsset{ID: row.ID, Store: row.Store, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+	}
 	row, err := sqlcgen.New(s.pool).GetSeekTilesMediaAssetForServing(ctx, sqlcgen.GetSeekTilesMediaAssetForServingParams{
 		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})

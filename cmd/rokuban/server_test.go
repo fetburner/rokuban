@@ -29,6 +29,7 @@ import (
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -755,6 +756,122 @@ storage:
 	httpServer := httptest.NewServer(server.Handler)
 	t.Cleanup(httpServer.Close)
 	return httpServer
+}
+
+func newFSAndS3StreamerServer(t *testing.T, ctx context.Context, pool *pgxpool.Pool, mediaDir string) *httptest.Server {
+	t.Helper()
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+	configPath := writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:0"
+  allowed_hosts: []
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakcs:
+  - site: default
+    url: http://127.0.0.1:1
+storage:
+  media_dir: %q
+  stores:
+    test-store:
+      kind: fs
+    zz-s3:
+      kind: s3
+      bucket: rokuban-derived
+  originals:
+    - store: test-store
+  derived: zz-s3
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mediaDir))
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("loading streamer configuration: %v", err)
+	}
+	var eg errgroup.Group
+	httpServer, err := buildHTTPServer(ctx, cfg, []string{"streamer"}, nil,
+		map[string]string{dbtest.StoreName: mediaDir}, pool, &eg, true)
+	if err != nil {
+		t.Fatalf("building streamer HTTP server: %v", err)
+	}
+	server := httptest.NewServer(httpServer.Handler)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestServerStreamsOldDerivedCopyFromMountedFSDuringS3Switch(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	const relPath = "2026/07/recording_h264.mp4"
+	content := []byte("old filesystem derived payload")
+	mediaDir := t.TempDir()
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	profile := "h264"
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile, p.RelPath, p.SizeBytes = "encoded", &profile, relPath, int64(len(content))
+	})
+	server := newFSAndS3StreamerServer(t, ctx, pool, mediaDir)
+
+	response, err := http.Get(fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", server.URL, recordingID))
+	if err != nil {
+		t.Fatalf("GET encoded media: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("reading encoded media: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET encoded media status = %d, want 200", response.StatusCode)
+	}
+	if !bytes.Equal(body, content) {
+		t.Fatalf("encoded media body = %q, want %q", body, content)
+	}
+}
+
+func TestNewStreamerObjectStoresIncludesMountedFSAndAllS3(t *testing.T) {
+	storage := config.StorageConfig{Stores: map[string]config.StoreConfig{
+		"mounted-fs":   {Kind: "fs"},
+		"unmounted-fs": {Kind: "fs"},
+		"old-s3":       {Kind: "s3", Bucket: "old-derived"},
+		"new-s3":       {Kind: "s3", Bucket: "new-derived"},
+	}}
+	objects, err := newStreamerObjectStores(context.Background(), storage, map[string]string{"mounted-fs": t.TempDir()})
+	if err != nil {
+		t.Fatalf("newStreamerObjectStores: %v", err)
+	}
+	if len(objects) != 3 {
+		t.Fatalf("object store count = %d, want mounted FS plus both S3 stores", len(objects))
+	}
+	if _, ok := objects["mounted-fs"].(objstore.Local); !ok {
+		t.Fatalf("mounted FS store has type %T, want objstore.Local", objects["mounted-fs"])
+	}
+	for _, name := range []string{"old-s3", "new-s3"} {
+		if _, ok := objects[name].(objstore.SignedURL); !ok {
+			t.Fatalf("S3 store %q has type %T, want objstore.SignedURL", name, objects[name])
+		}
+	}
+	if _, ok := objects["unmounted-fs"]; ok {
+		t.Fatal("unmounted FS store was registered for streamer")
+	}
 }
 
 func TestServerRecordingQueryShowsS3EncodedCopyAfterOriginalRemoval(t *testing.T) {

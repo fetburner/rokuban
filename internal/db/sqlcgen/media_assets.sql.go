@@ -276,6 +276,60 @@ func (q *Queries) GetEncodedMediaAssetForServing(ctx context.Context, arg GetEnc
 	return i, err
 }
 
+const getEncodedMediaAssetForStreamer = `-- name: GetEncodedMediaAssetForStreamer :one
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, a.profile, c.store
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL preferred_streamer_media_asset_copy(
+    a.id,
+    $1::text,
+    $2::text[]
+) c ON true
+WHERE a.recording_id = $3
+  AND a.kind = 'encoded'
+  AND a.profile = $4
+  AND r.deleted_at IS NULL
+`
+
+type GetEncodedMediaAssetForStreamerParams struct {
+	PreferredStore string
+	ReadableStores []string
+	RecordingID    int64
+	Profile        *string
+}
+
+type GetEncodedMediaAssetForStreamerRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+	UpdatedAt time.Time
+	Title     string
+	Profile   *string
+	Store     string
+}
+
+// streamer が配れる active コピーから storage.derived を優先して encoded を引く。
+// desired の置き場以外も読めるコピーから選ぶため、転送前・overlap 中も配信できる。
+func (q *Queries) GetEncodedMediaAssetForStreamer(ctx context.Context, arg GetEncodedMediaAssetForStreamerParams) (GetEncodedMediaAssetForStreamerRow, error) {
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForStreamer,
+		arg.PreferredStore,
+		arg.ReadableStores,
+		arg.RecordingID,
+		arg.Profile,
+	)
+	var i GetEncodedMediaAssetForStreamerRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.UpdatedAt,
+		&i.Title,
+		&i.Profile,
+		&i.Store,
+	)
+	return i, err
+}
+
 const getLiveMediaAssetByRelPath = `-- name: GetLiveMediaAssetByRelPath :one
 SELECT a.recording_id
 FROM media_asset_copies c
@@ -520,6 +574,49 @@ func (q *Queries) GetSeekTilesMediaAssetForServing(ctx context.Context, arg GetS
 	return i, err
 }
 
+const getSeekTilesMediaAssetForStreamer = `-- name: GetSeekTilesMediaAssetForStreamer :one
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, c.store
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL preferred_streamer_media_asset_copy(
+    a.id,
+    $1::text,
+    $2::text[]
+) c ON true
+WHERE a.recording_id = $3
+  AND a.kind = 'seek_tiles'
+  AND r.deleted_at IS NULL
+`
+
+type GetSeekTilesMediaAssetForStreamerParams struct {
+	PreferredStore string
+	ReadableStores []string
+	RecordingID    int64
+}
+
+type GetSeekTilesMediaAssetForStreamerRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+	UpdatedAt time.Time
+	Title     string
+	Store     string
+}
+
+func (q *Queries) GetSeekTilesMediaAssetForStreamer(ctx context.Context, arg GetSeekTilesMediaAssetForStreamerParams) (GetSeekTilesMediaAssetForStreamerRow, error) {
+	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForStreamer, arg.PreferredStore, arg.ReadableStores, arg.RecordingID)
+	var i GetSeekTilesMediaAssetForStreamerRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.UpdatedAt,
+		&i.Title,
+		&i.Store,
+	)
+	return i, err
+}
+
 const getThumbnailMediaAssetForServing = `-- name: GetThumbnailMediaAssetForServing :one
 SELECT asset.id AS asset_id, copy.rel_path,
        asset.size_bytes, asset.updated_at, recording.title, copy.store
@@ -552,6 +649,50 @@ type GetThumbnailMediaAssetForServingRow struct {
 func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, arg GetThumbnailMediaAssetForServingParams) (GetThumbnailMediaAssetForServingRow, error) {
 	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, arg.RecordingID, arg.StoreName)
 	var i GetThumbnailMediaAssetForServingRow
+	err := row.Scan(
+		&i.AssetID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.UpdatedAt,
+		&i.Title,
+		&i.Store,
+	)
+	return i, err
+}
+
+const getThumbnailMediaAssetForStreamer = `-- name: GetThumbnailMediaAssetForStreamer :one
+SELECT asset.id AS asset_id, copy.rel_path,
+       asset.size_bytes, asset.updated_at, recording.title, copy.store
+FROM media_assets asset
+JOIN recordings recording ON recording.id = asset.recording_id
+JOIN LATERAL preferred_streamer_media_asset_copy(
+    asset.id,
+    $1::text,
+    $2::text[]
+) copy ON true
+WHERE asset.recording_id = $3
+  AND asset.kind = 'thumbnail'
+  AND recording.deleted_at IS NULL
+`
+
+type GetThumbnailMediaAssetForStreamerParams struct {
+	PreferredStore string
+	ReadableStores []string
+	RecordingID    int64
+}
+
+type GetThumbnailMediaAssetForStreamerRow struct {
+	AssetID   int64
+	RelPath   string
+	SizeBytes int64
+	UpdatedAt time.Time
+	Title     string
+	Store     string
+}
+
+func (q *Queries) GetThumbnailMediaAssetForStreamer(ctx context.Context, arg GetThumbnailMediaAssetForStreamerParams) (GetThumbnailMediaAssetForStreamerRow, error) {
+	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForStreamer, arg.PreferredStore, arg.ReadableStores, arg.RecordingID)
+	var i GetThumbnailMediaAssetForStreamerRow
 	err := row.Scan(
 		&i.AssetID,
 		&i.RelPath,

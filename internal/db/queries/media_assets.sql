@@ -270,6 +270,49 @@ WHERE a.recording_id = $1
   AND a.profile = $2
   AND r.deleted_at IS NULL;
 
+-- streamer が配れる active コピーから storage.derived を優先して encoded を引く。
+-- desired の置き場以外も読めるコピーから選ぶため、転送前・overlap 中も配信できる。
+-- name: GetEncodedMediaAssetForStreamer :one
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, a.profile, c.store
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL preferred_streamer_media_asset_copy(
+    a.id,
+    sqlc.arg('preferred_store')::text,
+    sqlc.arg('readable_stores')::text[]
+) c ON true
+WHERE a.recording_id = sqlc.arg('recording_id')
+  AND a.kind = 'encoded'
+  AND a.profile = sqlc.arg('profile')
+  AND r.deleted_at IS NULL;
+
+-- name: GetThumbnailMediaAssetForStreamer :one
+SELECT asset.id AS asset_id, copy.rel_path,
+       asset.size_bytes, asset.updated_at, recording.title, copy.store
+FROM media_assets asset
+JOIN recordings recording ON recording.id = asset.recording_id
+JOIN LATERAL preferred_streamer_media_asset_copy(
+    asset.id,
+    sqlc.arg('preferred_store')::text,
+    sqlc.arg('readable_stores')::text[]
+) copy ON true
+WHERE asset.recording_id = sqlc.arg('recording_id')
+  AND asset.kind = 'thumbnail'
+  AND recording.deleted_at IS NULL;
+
+-- name: GetSeekTilesMediaAssetForStreamer :one
+SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, c.store
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+JOIN LATERAL preferred_streamer_media_asset_copy(
+    a.id,
+    sqlc.arg('preferred_store')::text,
+    sqlc.arg('readable_stores')::text[]
+) c ON true
+WHERE a.recording_id = sqlc.arg('recording_id')
+  AND a.kind = 'seek_tiles'
+  AND r.deleted_at IS NULL;
+
 -- 原本を読むジョブを積む側が置き場のキューを選ぶための、録画ごとの active な原本のコピーの置き場。
 -- 候補の件数に比例して問い合わせないよう、ページ単位でまとめて引く。複数の置き場にあれば名前順で先頭。
 -- name: ListActiveOriginalStores :many

@@ -21,7 +21,7 @@
 
 URL は録画 API の `Recording.media` が返す。UI はそれをそのまま使い、自分では組み立てない。
 
-原本とコマは置き場の URL で、その置き場をマウントした streamer だけが配る。派生物（encoded・サムネイル・シークタイル）は置き場を含まない URL で、中央の FS なら streamer が配り、S3 なら 302 で署名付き URL へ送る。
+原本とコマは置き場の URL で、その置き場をマウントした streamer だけが配る。派生物（encoded・サムネイル・シークタイル）は置き場を含まない URL で、streamer が配れるコピーから選ぶ。FS はマウント済みの置き場だけを読み、S3 は設定された置き場の reader を使う。選んだコピーが S3 なら 302 で署名付き URL へ送る。
 
 ```
 GET  /api/media/stores/{store}/recordings/{id}/file              →  video/MP2T（原本、Range 対応）
@@ -96,11 +96,15 @@ URL には site ではなく置き場の名前を入れる。規則しだいで 
 
 `/file` は `profile` クエリが無いときは原本、あるときはそのプロファイル名の encoded を返す。`/thumbnail` はサムネイルを返す。アセットの解決は種別ごとに独立しているので、原本が `until_encoded` で消えた後も派生物だけで再生できる。
 
+派生物は、streamer が配れる active コピーの中から `storage.derived` を優先する。そこにコピーが無ければ、配れる置き場名の昇順で選ぶ。転送前は旧い置き場のコピーを使い、転送後の overlap 中は新しい置き場のコピーを優先する。配れるコピーが 1 つもなければ 404 にする。
+
 <details><summary>根拠</summary>
 
 - `/file` が原本を返す条件: `kind = 'original'`
 - `/file?profile=` が返すアセット: `kind = 'encoded'` かつそのプロファイル名
 - `/thumbnail` が返すアセット: `kind = 'thumbnail'`
+- 派生物のコピー選択: `TestDerivedServingUsesPreferredReadableCopyAcrossKinds`
+- 配れるコピーがないときの応答: `TestDerivedServingReturnsNotFoundWhenNoReadableCopyExists`
 
 </details>
 
