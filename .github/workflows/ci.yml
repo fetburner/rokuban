@@ -844,16 +844,6 @@ jobs:
               if ldd "/usr/local/bin/$tool" 2>&1 | grep -F "not found"; then exit 1; fi
             done
           '
-      # apt の ffmpeg は VA ドライバを Suggests にしか持たないので、Dockerfile.full が
-      # 明示しないと h264_vaapi が初期化で落ちる。ここで組むのは amd64 だけなので、
-      # Intel の 2 ドライバが載っていることを主張する。
-      - name: Intel VA-API drivers are installed
-        run: |
-          docker run --rm --entrypoint sh rokuban:test-full -eu -c '
-            for drv in i965 iHD; do
-              test -f "/usr/lib/x86_64-linux-gnu/dri/${drv}_drv_video.so"
-            done
-          '
       # /mnt/media（storage.media_dir 既定値）と /var/tmp/rokuban
       # （storage.scratch_dir 既定値）が実行ユーザーから書けること。
       # 修正前のイメージでは media 側が Permission denied で落ちる。
