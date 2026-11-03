@@ -174,7 +174,6 @@ func TestWorkerWithoutMountsRefusesStorelessJobs(t *testing.T) {
 // 変異確認: newStoreScopedDeps の kind == "s3" の条件を外すと、FS 派生物のケースで
 // DerivedMediaDelete が載り、このテストが落ちる。
 func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
-	pool := testutil.SetupDB(t)
 	derivedObjects, err := fsstore.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -194,10 +193,38 @@ func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
 				Stores:  map[string]config.StoreConfig{"takamatsu": {Kind: "fs"}, "derived": tc.derived},
 				Derived: "derived",
 			}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
-			scoped := newStoreScopedDeps(pool, cfg, base, "takamatsu", t.TempDir(), derivedObjects)
+			scoped := newStoreScopedDeps(nil, cfg, base, "takamatsu", t.TempDir(), derivedObjects)
 			if got := scoped.DerivedMediaDelete != nil; got != tc.wantPass {
 				t.Errorf("separate derived delete pass configured = %v, want %v", got, tc.wantPass)
 			}
 		})
+	}
+}
+
+// TestStoreScopedS3DeletePassHasSingleOwner は、S3 の派生物削除パスを載せる Deps が
+// 複数の FS 置き場の中で 1 つだけであり、名前順で決まることを確かめる。
+func TestStoreScopedS3DeletePassHasSingleOwner(t *testing.T) {
+	derivedObjects, err := fsstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Storage: config.StorageConfig{
+		Stores: map[string]config.StoreConfig{
+			"tokyo":     {Kind: "fs"},
+			"takamatsu": {Kind: "fs"},
+			"s3main":    {Kind: "s3"},
+		},
+		Derived: "s3main",
+	}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
+
+	var owners []string
+	for _, name := range []string{"tokyo", "takamatsu"} {
+		scoped := newStoreScopedDeps(nil, cfg, &worker.Deps{}, name, t.TempDir(), derivedObjects)
+		if scoped.DerivedMediaDelete != nil {
+			owners = append(owners, name)
+		}
+	}
+	if !slices.Equal(owners, []string{"takamatsu"}) {
+		t.Fatalf("S3 derived delete pass owners = %v, want [takamatsu]", owners)
 	}
 }
