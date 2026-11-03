@@ -287,7 +287,8 @@ jobs:
   # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
   # 必須チェック名 `test` は下の集約ジョブが担う。
   test-matrix:
-    runs-on: ubuntu-slim
+    # 全シャードの開始を待たせる。ubuntu-slim では setup-go と gotestsum のビルドで 24s → 110s に伸びた。
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
