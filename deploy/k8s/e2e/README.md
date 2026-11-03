@@ -31,8 +31,8 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 
 **実行の前提**
 - RustFS は `.github/workflows/ci.yml` と同じ公式イメージをダイジェストで固定する。kind node は registry から pull する（digest ref で pull は成功した）
-- kind には load しない。colima の docker（arm64）では `kind load docker-image` が digest ref・tag ref のどちらでも失敗し（`ctr ... not found`）、ノードに入らない。
-- ノードに入らないイメージは、pull policy を Never にすると ErrImageNeverPull になる。
+- kind には load しない。colima の docker（arm64）では `kind load docker-image` が digest ref・tag ref のどちらでも失敗し（`ctr ... not found`）、ノードに入らない
+- ノードに入らないイメージは、pull policy を Never にすると ErrImageNeverPull になる
 - bucket は製品のイメージの curl（SigV4）で作る（`overlays/e2e-two-stores/rustfs/bucket-job.yaml`）
 - 上の PASS は 4 CPU / 8 GB で得た。これより小さい割り当ては試していない
 
