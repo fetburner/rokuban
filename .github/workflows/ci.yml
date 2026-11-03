@@ -287,7 +287,7 @@ jobs:
   # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
   # 必須チェック名 `test` は下の集約ジョブが担う。
   test-matrix:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -405,7 +405,7 @@ jobs:
   test-timings:
     needs: test-shard
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -421,7 +421,7 @@ jobs:
   test:
     needs: test-shard
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - run: test "${{ needs.test-shard.result }}" = success
 
@@ -545,7 +545,7 @@ jobs:
   mirakc-conformance:
     needs: mirakc-conformance-shard
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - run: test "${{ needs.mirakc-conformance-shard.result }}" = success
 
@@ -705,7 +705,7 @@ jobs:
   # 保守対象の Markdown 全体（README.md / CLAUDE.md / deploy/**/*.md / docs/**/*.md /
   # web/e2e/**/*.md）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
   docs-lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -741,7 +741,7 @@ jobs:
   # ツールは版を固定する。runner イメージの同梱物に依存すると、イメージ更新で
   # 黙って挙動が変わる（kustomize は runner に入っているが版が動く）。
   manifests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
       - name: Install kustomize, kubeconform and shellcheck
