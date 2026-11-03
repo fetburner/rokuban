@@ -16,7 +16,7 @@ site は省略も重複もできず、文字種と長さを制約する。
 
 - `mirakcs:` は非空が必須である。空（未指定含む）は起動エラーになる
 - 各要素の `site` は省略できない。`mirakc:`（単一形式）の時代のような "default" への既定値フォールバックは無い。`site` を書かない要素は空文字列のまま下記の構文制約に落ちて起動エラーになる
-- 要素は `site` と `url` の 2 つだけである。`storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータで、site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
+- 要素は `site` と `url` の 2 つだけである。`storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。録画資産は全 site で共有し、`media_assets` に site 列を持たない。`worker.queues` 等はデプロイ時のパラメータで、site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
 - レジストリ内の site 名の重複も不可である。違反はすべて起動エラーとして全件列挙される（[basics.md](basics.md) §規約 4）
 - 削除 reconcile のサーキットブレーカー（`breaker.DeleteReconcile`）は site ではなく置き場名を範囲（`scope` 列）にする。API は `store` に置き場名を返し、`POST /api/stores/{store}/breakers/delete_reconcile/resume` でその行を再開する。置き場名は `storage.stores` の設定だけで検証する。
 
@@ -35,7 +35,7 @@ site は省略も重複もできず、文字種と長さを制約する。
 
 束縛は起動時のフラグで表す。watcher と worker は複数の site を束縛でき、中央プロセスの worker は site 非依存のキューに絞る。
 
-`server` サブコマンドの `--sites` フラグで表す。多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](../overview.md) の役割分類に決定済みである。site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけである。DB もアーカイブも単一なので、api / notifier / 録画配信 streamer / ruler / encode / thumbnail / 削除 reconcile は site 非依存の中央プロセスになる。
+`server` サブコマンドの `--sites` フラグで表す。多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](../overview.md) の役割分類に決定済みである。site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけである。DB と録画資産は全 site で共有するため、api / notifier / ruler など mirakc に触れない仕事は site に束縛しない。置き場の FS を読み書きする worker と録画配信 streamer は、site と別に置き場へ束縛する。
 
 `--sites` は `--all` / ロール選択と同じ「起動形態」の軸で、[basics.md](basics.md)「やらないこと」の CLI フラグ方針に沿う。
 

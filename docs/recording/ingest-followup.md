@@ -51,7 +51,7 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 専用クエリが desired（`recording_encode_policy.encode_profiles`）から observed（active な `encoded` の `media_assets`）を引いた不足分を、一括で取得する。取得するのは不足している `(recording_id, profile)` であり、それを queue に投入する。権威は DB の状態であって、「ヒントが飛んだかどうか」ではない（不変条件 5）。
 
-ここでの原本は、`kind='original'` が active でコミット済みの行である。ingest 未完了の録画とユーザーが捨てた録画は、掘り起こさない。エンコードは site の属性を持たない（アーカイブもプロファイルも単一）ので、このジョブは record_sweep のような site 単位でなく、全体で 1 本になる。
+ここでの原本は、`kind='original'` が active でコミット済みの行である。ingest 未完了の録画とユーザーが捨てた録画は、掘り起こさない。エンコードの候補照合は全 site の録画を対象にするため、このジョブは record_sweep のような site 単位でなく、全体で 1 本になる。
 
 `worker.periodic_jobs: false` の構成では、`rokuban enqueue encode-reconcile` を CronJob から叩く。一覧は [operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧にある。
 

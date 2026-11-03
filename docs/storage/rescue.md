@@ -68,7 +68,9 @@ worker の定期ジョブが、このコアデータを JSON で各ファイル�
 
 catalog は `media_asset_cuts` の keep 区間を含めない。
 
-rescue が照合する置き場は、`storage.stores` の FS 置き場である。FS 置き場が 1 つでない構成では、`RequireStoreMarker` が名前を決められずにエラーにするので、何も書かずに止まる。media root の目印と一致しないときも、何も書かずに止まる。物理コピーの置き場には文書の `store` をそのまま書き、`store` が無い文書では何も書かずに止まる。実体を確認するのは、この FS 置き場にある資産だけである。別の置き場のファイルが無いことは欠損とは扱わない。
+rescue の対象 FS 置き場は `--store` で選ぶ。省略できるのは FS 置き場が 1 つの構成に限る。root の目印と選んだ置き場名が一致しないときは、何も書かずに止まる。catalog の各メディア資産には `store` が要り、1 件でも欠けた文書では何も書かずに止まる。物理コピーの置き場には、`--store` ではなく文書の `store` をそのまま書く。
+
+実体を確認するのは、選んだ置き場にある資産だけである。別の置き場のファイルが無いことは欠損とは扱わない。
 
 移行時に `rokuban storage adopt` を実行する順序は、[runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 
@@ -80,7 +82,9 @@ rescue が照合する置き場は、`storage.stores` の FS 置き場である�
 
 - 書き出し先: `catalog/`
 - 差し替えても公開点にならない名前: `latest`
+- `--store` での置き場解決: `resolveCommandStore`、`TestResolveEnqueueJobScope`
 - 目印と違う名前では書く前に止まる: `TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker`
+- catalog の media asset に `store` が無い場合の拒否: `TestRescueFileRejectsMissingMediaAssetStoreBeforeRestore`
 
 </details>
 
@@ -218,9 +222,9 @@ flowchart TD
 
 ### rescue --- ストレージスキャンからの再構築
 
-catalog が無いとき、rescue は設定の FS 置き場の root だけを走査し、前置を持つ既知の形式のファイルを現在位置のまま録画と asset として登録する。ファイル本体はコピーも変更もしない。番組情報は無い素の録画になり、同じパスは同じ録画に写るので、再実行しても増えない。rescue の CLI は置き場の引数を持たず、FS 置き場が 1 つに限られる間は設定から決まる。
+rescue は catalog があれば、照合したうえで保存済みのメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元し、無ければファイルを走査して登録する。
 
-catalog があるときは、照合してフルメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元する。
+catalog が無いとき、rescue は `--store` で選んだ FS 置き場の root だけを走査し、前置を持つ既知の形式のファイルを現在位置のまま録画と asset として登録する。ファイル本体はコピーも変更もしない。番組情報は無い素の録画になり、同じパスは同じ録画に写るので、再実行しても増えない。
 
 登録トランザクションは `internal/inplace` に置き、`rokuban import epgstation` も同じ in-place 登録機構を使う。DB 行のコミットが公開であるというストレージ契約は、通常の ingest と同じである。
 

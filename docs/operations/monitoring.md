@@ -319,20 +319,22 @@ ruler と record_sweep については、この既存ゲージを互換性のた
 
 手動で走らせたいときは `rokuban enqueue <job>` を使う。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全である。
 
-site 束縛ジョブと site 非依存ジョブで、`--site` の要否が違う。
+ジョブが site と置き場のどちらに束縛されるかで、投入する引数と CronJob の立て方が変わる。
 
-| 種別 | ジョブ | `--site` | CronJob の立て方 |
+| 種別 | ジョブ | `--site` / `--store` | CronJob の立て方 |
 |---|---|---|---|
-| site 束縛 | `rokuban enqueue --help` の「site 束縛ジョブ」 | 多サイトでは必須（1 サイトなら省略可） | サイトごとに 1 本（`--site tokyo` 等） |
-| site 非依存 | 上記以外 | 付けない（付けるとエラー） | 全体で 1 本（サイトごとに立てない） |
+| site 束縛 | `rokuban enqueue --help` の「site 束縛ジョブ」 | 多サイトでは必須（1 site なら省略可） | サイトごとに 1 本（`--site tokyo` 等） |
+| 置き場ごと | 同「置き場ごとのジョブ」 | FS 置き場が複数なら必須（1 つなら省略可） | FS 置き場ごとに 1 本 |
+| site 非依存 | 同「site 非依存ジョブ」 | どちらも付けない | 全体で 1 本 |
 
-site 非依存にする理由は、単一の資源（アーカイブ・プロファイル・DB 全体）を相手にすることである。`catalog-export` と `storage-sync` は、アーカイブ（+ スクラッチ）が単一なので、site の属性を持たない。`encode-reconcile` は、エンコードのプロファイルとアーカイブがどちらも単一である。`thumbnail-reconcile` は、サムネイルの名前空間とアーカイブが単一である。`ts-scan-reconcile` は、共有アーカイブ上の原本を走査する。`delete-reconcile` は、単一の物理ストレージ全体を走査する。
+site に束縛しないことは、全体で 1 回という意味ではない。置き場ごとのジョブは FS 置き場ごとに投入する。全体で 1 回投入するのは `--site` も `--store` も取らないジョブだけである。フラグの要否と各分類のジョブ一覧は `rokuban enqueue --help` が権威である。
 
-これらのジョブをサイトごとの CronJob から叩くと、N 回投入される。River の一意制約で 1 本に合流はするが、意図が読めない。
+site 非依存ジョブを site ごと（または置き場ごと）の CronJob から叩くと N 回投入される。River の一意制約で 1 本に合流はするが、CronJob の意図が読めなくなる。
 
 <details><summary>根拠</summary>
 
-- `rokuban enqueue --help` における site 要否の一覧: `cmd/rokuban/enqueue.go` の `RequiresSite`
+- `rokuban enqueue --help` における範囲の一覧: `cmd/rokuban/enqueue.go` の `RequiresSite` / `RequiresStore`
+- site / store の引数解決: `TestResolveEnqueueJobScope`
 
 </details>
 

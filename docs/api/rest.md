@@ -240,9 +240,9 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 
 #### ストレージ残量の取得
 
-ストレージ残量の API は、site ごとの項目を持たず、全サイトを返す形にも当てはまらない。
+ストレージ残量は mirakc site の軸に属さず、置き場ごとに観測する。
 
-`GET /api/storage` が対象とするアーカイブ（`storage.media_dir`）とスクラッチ（`storage.scratch_dir`）は、複数存在しうる mirakc サイトと違い、単一である。詳細は [docs/storage.md](../storage.md) §5「残量の観測」にある。
+`GET /api/storage` は各置き場の `storage_sync` 観測を返す。`storage.media_dir` は FS 置き場の root を省略したときに使う既定値で、唯一のアーカイブを表すとは限らない。詳細は [docs/storage.md](../storage.md) §5「残量の観測」にある。
 
 #### ごみ箱でのカーソル軸
 

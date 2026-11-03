@@ -15,7 +15,7 @@ import (
 
 // newRescueCmd は `rokuban rescue` サブコマンドを作る（M3-9 / issue #71）。
 //
-// media_dir/catalog/ の最新 catalog JSON を読み、コアメタデータ
+// --store で選んだ FS 置き場の catalog/ の最新 catalog JSON を読み、コアメタデータ
 // （rules / recordings / media_assets / drop_stats / drop_positions / media_asset_ts_scans / program_intents /
 // program_overrides）を DB に冪等 upsert する。catalog が無ければ storage を走査し、
 // `sites/{site}/` 前置を持つ認識可能な動画ファイルを素の asset として in-place 登録する。
@@ -23,11 +23,11 @@ func newRescueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rescue",
 		Short: "catalog からコアメタデータを DB に復元する",
-		Long: `media_dir/catalog/ 配下の最新 catalog JSON を読み、ルール・録画・
+		Long: `--store で選んだ FS 置き場の catalog/ 配下の最新 catalog JSON を読み、ルール・録画・
 media_assets・原本 TS 計測記録・ドロップ統計・手動意図/上書きを Postgres に冪等 upsert する
 （docs/storage.md §8、災害復旧）。
 
-catalog が無ければ media_dir を走査し、sites/{site}/ 前置を持つ TS / M2TS /
+catalog が無ければ同じ置き場の root を走査し、sites/{site}/ 前置を持つ TS / M2TS /
 MP4 / MKV / WebM を既存位置のまま素の asset として登録する。前置の無いファイルは
 登録しない。再実行しても増殖しない。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -61,7 +61,7 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 // runRescue は catalog 復元の本体。cobra の RunE は配線に留め、DB / ファイル
 // 操作はここに閉じ込める（runEnqueue と同じ切り出し）。
 //
-// storeName は storage.stores に FS が 1 つだけある場合の名前で、media_dir の目印と照合して使う（RescueLatest）。
+// storeName は解決済みの FS 置き場名で、root の目印との照合と RescueLatest に使う。
 //
 // registrySites は `mirakcs:` レジストリの site 名一覧
 // （catalog.RescueLatest 参照。ストレージ走査で見つけた sites/{site}/ 前置の

@@ -24,7 +24,7 @@ import (
 // からは導出しない --- キュー修飾の集合と「Args に Site が要るか」は
 // 一致しない。ruler-pass は mirakc 非依存で
 // キューも修飾しないが RulerPassArgs.Site でサイト単位に回すので RequiresSite
-// は true。catalog-export はアーカイブが単一なので Site を持たず false。
+// は true。catalog-export は全 site の catalog を出力し、置き場は RequiresStore で束縛するため Site を持たず false。
 // 次にジョブを足すときはここに RequiresSite を書いてから factory を足す。
 type enqueueJob struct {
 	// RequiresSite が true なら --site 解決（多サイトでは必須）を行い、
@@ -85,8 +85,8 @@ var enqueueJobs = map[string]enqueueJob{
 		NewArgs:      func(string) jobq.Args { return jobs.LabelRuleReconcileArgs{} },
 	},
 	"encode-reconcile": {
-		// エンコードは site の属性を持たない（アーカイブもプロファイルも単一。
-		// jobs.EncodeReconcileArgs のコメント）。delete_reconcile と違って
+		// エンコード reconcile は全 site の録画を対象に候補を照合し、site に束縛しない。
+		// jobs.EncodeReconcileArgs のコメント。delete_reconcile と違って
 		// 何も削除せず、DB を読んで encode ジョブを投入するだけなので、
 		// `worker.periodic_jobs: false` の構成（k8s）で CronJob から叩けるよう
 		// ここに載せる --- 載せないと、その構成ではこの定期パスが一度も走らず

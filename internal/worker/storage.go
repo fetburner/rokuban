@@ -20,8 +20,9 @@ type storageRoot struct {
 	path string
 }
 
-// StorageSyncWorker は storage.media_dir / storage.scratch_dir の容量を
+// StorageSyncWorker は担当する FS 置き場の root と storage.scratch_dir の容量を
 // storage_sync に全量投影する queue worker（issue #238 M7-5）。
+// 置き場ごとに組み立てられ、MediaDir はその置き場の root を指す。
 //
 // 存在理由は不変条件 1（api ロールはファイルシステムに依存しない）。ファイル
 // システムを持つ worker がここで観測し、api はこの射影だけを読んで
@@ -37,8 +38,8 @@ type StorageSyncWorker struct {
 	// Storage は storage_sync の永続化契約。nil は同期を呼ばない部分テストでのみ許容する。
 	Storage store.StorageObservation
 
-	// MediaDir は storage.media_dir（必須。空なら Work がエラーを返す --- config
-	// の validate:"required" を信頼しきらず、テストの部分構成でも安全に失敗する）。
+	// MediaDir はこの worker が観測する FS 置き場の root。空なら Work がエラーを返す
+	// （config を経由しないテストの部分構成でも安全に失敗する。`TestStorageSyncWorker_EmptyMediaDirFails`）。
 	MediaDir string
 
 	// ScratchDir は storage.scratch_dir。worker ロールは空の scratch_dir では起動しない
