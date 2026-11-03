@@ -63,9 +63,8 @@ type Document struct {
 	DropStats        []DropStat         `json:"dropStats"`
 	DropPositions    []DropPosition     `json:"dropPositions"`
 	// MediaAssetTSScans は原本 TS の計測時サイズを記録する。
-	// 配列の追加なので Version は上げない。旧 catalog では drop_stats がある原本だけを、
-	// 同じ文書の media_assets.size_bytes を使って計測済みとして補う。
-	// nil（キーが無い / null）は旧形式とみなして補完する。export は空でも `[]` を書く。
+	// nil（キーが無い / null）は空配列として扱い、計測記録を復元しない。
+	// 記録が無い原本は、復旧後の TS 計測ジョブが読み直す。export は空でも `[]` を書く。
 	MediaAssetTSScans []MediaAssetTSScan `json:"mediaAssetTsScans"`
 	ProgramSnapshots  []ProgramSnapshot  `json:"programSnapshots"`
 	ProgramIntents    []ProgramIntent    `json:"programIntents"`
@@ -252,20 +251,25 @@ type RecordingChapterSpan struct {
 
 // MediaAsset は media_assets の 1 行。
 type MediaAsset struct {
-	ID                int64      `json:"id"`
-	RecordingID       int64      `json:"recordingId"`
-	Kind              string     `json:"kind"`
-	Profile           *string    `json:"profile,omitempty"`
-	RelPath           string     `json:"relPath"`
-	SizeBytes         int64      `json:"sizeBytes"`
-	State             string     `json:"state"`
-	DeletedAt         *time.Time `json:"deletedAt,omitempty"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
-	DerivedGeneration *int64     `json:"derivedGeneration,omitempty"`
-	Generation        *int64     `json:"generation,omitempty"`
-	SHA256            *string    `json:"sha256,omitempty"`
-	Store             string     `json:"store,omitempty"`
+	ID          int64      `json:"id"`
+	RecordingID int64      `json:"recordingId"`
+	Kind        string     `json:"kind"`
+	Profile     *string    `json:"profile,omitempty"`
+	RelPath     string     `json:"relPath"`
+	SizeBytes   int64      `json:"sizeBytes"`
+	State       string     `json:"state"`
+	DeletedAt   *time.Time `json:"deletedAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+	// DerivedGeneration は派生資産の現行世代。原本は値を持たない。
+	// 派生資産で欠けている場合、rescue は relPath から推測せず文書全体を拒否する。
+	DerivedGeneration *int64 `json:"derivedGeneration,omitempty"`
+	// Generation は物理コピーの世代。原本は 0 として扱い、派生資産では必須。
+	// 派生資産で欠けている場合、rescue は relPath から推測せず文書全体を拒否する。
+	Generation *int64  `json:"generation,omitempty"`
+	SHA256     *string `json:"sha256,omitempty"`
+	// Store は物理コピーの置き場名。欠けた場合に rescue 先の置き場で補わず拒否する。
+	Store string `json:"store,omitempty"`
 }
 
 // DropStat は drop_stats の 1 行。

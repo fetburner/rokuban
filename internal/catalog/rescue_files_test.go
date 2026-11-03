@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/catalogdoc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -21,7 +24,12 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 			QualityEvents: json.RawMessage("[]"), CreatedAt: fixedTime(), UpdatedAt: fixedTime()}},
 	}
 	for i, state := range []string{"active", "deleting", "deleted"} {
-		a := MediaAsset{ID: int64(i + 1), RecordingID: 1, Kind: "encoded", RelPath: state + ".mp4", State: state, CreatedAt: fixedTime(), UpdatedAt: fixedTime()}
+		generation := int64(1)
+		a := MediaAsset{
+			ID: int64(i + 1), RecordingID: 1, Kind: "encoded", RelPath: state + ".mp4", State: state,
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(), Store: "test-store",
+			DerivedGeneration: &generation, Generation: &generation,
+		}
 		a.Profile = &state
 		if state == "deleted" {
 			at := fixedTime()
@@ -30,7 +38,12 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 		doc.MediaAssets = append(doc.MediaAssets, a)
 	}
 	profile := "present"
-	doc.MediaAssets = append(doc.MediaAssets, MediaAsset{ID: 4, RecordingID: 1, Kind: "encoded", Profile: &profile, RelPath: "present.mp4", State: "active", CreatedAt: fixedTime(), UpdatedAt: fixedTime()})
+	generation := int64(1)
+	doc.MediaAssets = append(doc.MediaAssets, MediaAsset{
+		ID: 4, RecordingID: 1, Kind: "encoded", Profile: &profile, RelPath: "present.mp4", State: "active",
+		CreatedAt: fixedTime(), UpdatedAt: fixedTime(), Store: "test-store",
+		DerivedGeneration: &generation, Generation: &generation,
+	})
 	if err := os.WriteFile(filepath.Join(mediaDir, "present.mp4"), []byte("media"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +65,50 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 		if active != 1 || deleted != 3 {
 			t.Fatalf("live/deleted = %d/%d", active, deleted)
 		}
+	}
+}
+
+type rescueCatalogSpy struct {
+	restoreCalls int
+}
+
+// Export は store.Catalog を満たすための未使用メソッド。
+func (*rescueCatalogSpy) Export(context.Context) (*catalogdoc.Document, error) { return nil, nil }
+
+// Restore は呼び出し回数を記録する。
+func (s *rescueCatalogSpy) Restore(context.Context, *catalogdoc.Document, store.RestoreOptions) (*store.RestoreResult, error) {
+	s.restoreCalls++
+	return &store.RestoreResult{}, nil
+}
+
+func TestRescueFileRejectsMissingMediaAssetStoreBeforeRestore(t *testing.T) {
+	mediaDir := newTestMediaDir(t)
+	profile := "h264"
+	generation := int64(1)
+	doc := &Document{
+		Version: Version, ExportedAt: fixedTime(),
+		Recordings: []Recording{{
+			ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1,
+			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "missing store rescue",
+			ProgramStartAt: fixedTime(), ProgramDurationMs: time.Hour.Milliseconds(), Status: "finished",
+			QualityEvents: json.RawMessage("[]"), CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+		}},
+		MediaAssets: []MediaAsset{{
+			ID: 1, RecordingID: 1, Kind: "encoded", Profile: &profile, RelPath: "missing.mp4", State: "active",
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(), DerivedGeneration: &generation, Generation: &generation,
+		}},
+	}
+	genDir, err := Write(mediaDir, doc, 1, nil)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	catalogStore := &rescueCatalogSpy{}
+	_, err = RescueFile(context.Background(), catalogStore, mediaDir, "test-store", filepath.Join(genDir, DocumentFilename))
+	if err == nil || !strings.Contains(err.Error(), "missing store") {
+		t.Fatalf("RescueFile error = %v, want missing-store rejection", err)
+	}
+	if catalogStore.restoreCalls != 0 {
+		t.Fatalf("catalog Restore calls = %d, want 0 for a document without media asset store", catalogStore.restoreCalls)
 	}
 }
 

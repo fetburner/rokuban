@@ -113,7 +113,7 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 	for i := range doc.MediaAssets {
 		asset := &doc.MediaAssets[i]
 		if asset.Store == "" {
-			asset.Store = storeName
+			return nil, fmt.Errorf("catalog media asset %d is missing store", asset.ID)
 		}
 		if !mediapath.ValidStoreName(asset.Store) {
 			return nil, fmt.Errorf("catalog media asset %d has invalid store name %q", asset.ID, asset.Store)

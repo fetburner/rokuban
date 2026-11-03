@@ -1202,11 +1202,7 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    COALESCE((
-        SELECT jsonb_agg(event.value ORDER BY event.ordinality)
-        FROM jsonb_array_elements($26::jsonb) WITH ORDINALITY AS event(value, ordinality)
-        WHERE event.value->>'event' IS DISTINCT FROM 'bcas_anomaly'
-    ), '[]'::jsonb),
+    $26::jsonb,
     $21, $22, $23, $24, $25
 )
 ON CONFLICT (id) DO UPDATE SET
@@ -1274,8 +1270,6 @@ type CatalogUpsertRecordingParams struct {
 // keep_original / encode_profiles は issue #159 で recording_encode_policy
 // 衛星表に切り出されたので、この INSERT には含まれない
 // （CatalogUpsertRecordingEncodePolicy 参照）。
-// 古い catalog は引き続き読めるため、復元時に旧 quality_events の bcas_anomaly
-// だけを取り除く。他の履歴要素と配列順序は保持する（TestRescueLegacyQualityEvents）。
 func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertRecordingParams) error {
 	_, err := q.db.Exec(ctx, catalogUpsertRecording,
 		arg.ID,
