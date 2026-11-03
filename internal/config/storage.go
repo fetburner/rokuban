@@ -316,8 +316,11 @@ func (c StorageConfig) validateTransfer(missingAssetAge time.Duration) []string 
 	sort.Strings(bandwidthStores)
 	for _, store := range bandwidthStores {
 		bandwidth := c.Transfer.Bandwidth[store]
-		if _, ok := c.Stores[store]; !ok {
+		st, ok := c.Stores[store]
+		if !ok {
 			errs = append(errs, fmt.Sprintf("storage.transfer.bandwidth references unknown store %q", store))
+		} else if st.Kind != "fs" {
+			errs = append(errs, fmt.Sprintf("storage.transfer.bandwidth.%s: store must be kind fs", store))
 		}
 		if strings.TrimSpace(bandwidth) == "" {
 			errs = append(errs, fmt.Sprintf("storage.transfer.bandwidth.%s must not be empty", store))

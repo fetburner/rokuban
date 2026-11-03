@@ -105,15 +105,23 @@
 
 `storage.originals` は上から評価して最初に一致した規則を使う。時刻の条件を `older_than`（放送終了時刻からの経過時間）だけにするのは、`newer_than` や時刻の窓を許すと desired の置き場が行き来し、転送と削除が往復するからである。最後の規則を無条件にするのは、どの資産にも desired の置き場が決まるようにするためである。原本の置き場は `fsync` と atomic rename と hard link を信頼できる POSIX FS に限る（[ストレージ契約](../storage/contract.md) §1）。`storage.derived` は、全 site 共通の派生物の置き場を 1 つ選ぶ。派生物には FS と S3 API の置き場を使える。
 
+#### 転送
+
+転送元は FS 置き場に限る。転送の設定は、転送元ごとの帯域と転送待ちの上限、旧コピーを消すまでの猶予からなる。
+
 `storage.transfer.overlap` の下限は、実体無しの猶予（`cleanup.missing_asset_age`）に削除 reconcile の周期の 2 倍を足した値である。新しいコピーの実体無しの判定が確定する前に、旧コピーを消さないためである。省略すると `48h` になり、既定の猶予ならこの下限を満たす。猶予を延ばして下限を割るときは、検証が overlap の明示を求める。
 
-`storage.transfer.bandwidth` は転送元ごとの正の帯域値である。`bps` / `Bps` は 1 秒あたりの bit / byte、`Kbps` / `Mbps` / `Gbps` と `KBps` / `MBps` / `GBps` は 10 進、`KiBps` / `MiBps` / `GiBps` は 2 進で読む。たとえば `50Mbps` は毎秒 6.25 MB である。
+`storage.transfer.bandwidth` は、転送元の FS 置き場ごとの正の帯域値である。S3 置き場は転送元にならず、帯域を書いてもどの転送も絞らないので、検証は S3 置き場の名前を拒否する。既存の設定に S3 置き場の帯域を書いていると、起動できなくなる。`bps` / `Bps` は 1 秒あたりの bit / byte、`Kbps` / `Mbps` / `Gbps` と `KBps` / `MBps` / `GBps` は 10 進、`KiBps` / `MiBps` / `GiBps` は 2 進で読む。たとえば `50Mbps` は毎秒 6.25 MB である。
 
 `storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。件数が上限に達すると、encode reconcile はその置き場の原本を読む encode（キュー `encode_{store}`）を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
 
 集計は資産数に比例して重い（media_assets 2 万行で約 2.1 秒、6 万行で約 6.6 秒。[監視](../operations/monitoring-transfer.md)）。
 
 `storage.transfer` は規則の指紋に含めない。帯域・転送待ちの上限・overlap は転送の宛先の判断に使わないので、変えても積み済みの転送ジョブを捨てさせない。
+
+#### 置き場の定義とマウント
+
+置き場の種類によって、参照できる規則が決まる。マウントする置き場はプロセスの引数で選び、成り立たない組み合わせは起動時に拒否する。マウントしていない転送元は、その置き場をマウントした streamer から読む。
 
 `storage.originals` の参照先は FS 置き場に限る。FS 置き場は何個でも定義でき、規則ごとに別の置き場を指せる。`storage.derived` は、FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
 
@@ -155,7 +163,8 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 - `internal_url` のホストが `server.allowed_hosts` に無い構成の拒否: `TestLoadRejectsInternalURLHostOutsideAllowedHosts`
 - マウントした置き場のローカル優先: `TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy`
 - 下限の周期は `config.DeleteReconcileInterval`、指紋は `StorageConfig.PolicyFingerprint` が持つ。
-- `backlog_limit` の検証（未知の置き場・s3 置き場・0 以下）: `TestStoragePolicyValidation`
+- `bandwidth` の未知の置き場・S3 置き場と、`backlog_limit` の未知の置き場・S3 置き場・0 以下の拒否: `TestStoragePolicyValidation`
+- 帯域値の書式: `TestStorageTransferBandwidthBytesPerSecond`
 - 読みの途中で切れたときの Range での張り直し: `TestResumingRemoteReaderContinuesAfterDisconnect`
 - 読み進まない張り直しが上限に達したら諦めること: `TestResumingRemoteReaderGivesUpAfterReconnectLimit`
 - checkpoint からの再開: `TestStorageTransferWorkerResumesRemoteOriginalWithRange`
