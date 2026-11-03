@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -758,7 +759,8 @@ storage:
 	return httpServer
 }
 
-func newFSAndS3StreamerServer(t *testing.T, ctx context.Context, pool *pgxpool.Pool, mediaDir string) *httptest.Server {
+// s3Endpoint が空なら AWS の既定の宛先になる。
+func newFSAndS3StreamerServer(t *testing.T, ctx context.Context, pool *pgxpool.Pool, mediaDir, s3Endpoint string) *httptest.Server {
 	t.Helper()
 	dbCfg := testutil.DatabaseConfig(t)
 	user := dbCfg.User
@@ -790,11 +792,12 @@ storage:
       kind: fs
     zz-s3:
       kind: s3
+      endpoint: %q
       bucket: rokuban-derived
   originals:
     - store: test-store
   derived: zz-s3
-`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mediaDir))
+`, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mediaDir, s3Endpoint))
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		t.Fatalf("loading streamer configuration: %v", err)
@@ -828,7 +831,7 @@ func TestServerStreamsOldDerivedCopyFromMountedFSDuringS3Switch(t *testing.T) {
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind, p.Profile, p.RelPath, p.SizeBytes = "encoded", &profile, relPath, int64(len(content))
 	})
-	server := newFSAndS3StreamerServer(t, ctx, pool, mediaDir)
+	server := newFSAndS3StreamerServer(t, ctx, pool, mediaDir, "")
 
 	response, err := http.Get(fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", server.URL, recordingID))
 	if err != nil {
@@ -845,6 +848,75 @@ func TestServerStreamsOldDerivedCopyFromMountedFSDuringS3Switch(t *testing.T) {
 	if !bytes.Equal(body, content) {
 		t.Fatalf("encoded media body = %q, want %q", body, content)
 	}
+}
+
+// 読める置き場が重なるとき、名前順で先に来る FS（test-store）より派生物の置き場の S3 コピーを選ぶ。
+// newStreamerObjectStores と NewMediaForStreamer の配線が外れると、FS のコピーを 200 で配ってしまう。
+func TestServerStreamsPreferredS3CopyWhenMountedFSCopyAlsoActive(t *testing.T) {
+	// 署名 URL の生成に資格情報が要る。宛先は newFakeS3Bucket の HTTP サーバーで、外へは出ない。
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
+	t.Setenv("AWS_REGION", "us-east-1")
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	const relPath = "2026/07/overlap_h264.mp4"
+	mediaDir := t.TempDir()
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("mounted filesystem payload")
+	if err := os.WriteFile(fullPath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	profile := "h264"
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile, p.RelPath, p.SizeBytes = "encoded", &profile, relPath, 1
+	})
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT media_asset_id, 'zz-s3', rel_path, generation, 'active' FROM media_asset_copies WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	bucket := newFakeS3Bucket(t, "rokuban-derived", relPath, int64(len(payload)))
+	server := newFSAndS3StreamerServer(t, ctx, pool, mediaDir, bucket.URL)
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get(fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", server.URL, recordingID))
+	if err != nil {
+		t.Fatalf("GET encoded media: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusFound {
+		t.Fatalf("GET encoded media status = %d, want 302 to the S3 copy (the FS copy sorts first but must not be chosen)", response.StatusCode)
+	}
+	location, err := url.Parse(response.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parsing Location %q: %v", response.Header.Get("Location"), err)
+	}
+	bucketURL, err := url.Parse(bucket.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location.Host != bucketURL.Host || location.Path != "/rokuban-derived/"+relPath {
+		t.Fatalf("Location = %q, want a presigned URL for bucket rokuban-derived key %s on %s", location, relPath, bucketURL.Host)
+	}
+}
+
+// newFakeS3Bucket は bucket/key の HEAD だけに答える。署名 URL の生成の前に streamer が HEAD するため。
+func newFakeS3Bucket(t *testing.T, bucket, key string, size int64) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead && r.URL.Path == "/"+bucket+"/"+key {
+			w.Header().Set("Content-Length", fmt.Sprint(size))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server
 }
 
 func TestNewStreamerObjectStoresIncludesMountedFSAndAllS3(t *testing.T) {

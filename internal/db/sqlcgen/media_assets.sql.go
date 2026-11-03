@@ -236,7 +236,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM preferred_active_media_asset_copy(a.id, $3::text) copy
+    FROM preferred_readable_media_asset_copy(a.id, $3::text, $4::text[]) copy
 ) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'encoded'
@@ -245,9 +245,10 @@ WHERE a.recording_id = $1
 `
 
 type GetEncodedMediaAssetForServingParams struct {
-	RecordingID int64
-	Profile     *string
-	StoreName   *string
+	RecordingID    int64
+	Profile        *string
+	PreferredStore *string
+	ReadableStores []string
 }
 
 type GetEncodedMediaAssetForServingRow struct {
@@ -262,62 +263,13 @@ type GetEncodedMediaAssetForServingRow struct {
 
 // 配信対象の encoded 派生物を引く（?profile= 付き）。原本と同じ配信規律。
 func (q *Queries) GetEncodedMediaAssetForServing(ctx context.Context, arg GetEncodedMediaAssetForServingParams) (GetEncodedMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedMediaAssetForServing, arg.RecordingID, arg.Profile, arg.StoreName)
-	var i GetEncodedMediaAssetForServingRow
-	err := row.Scan(
-		&i.ID,
-		&i.RelPath,
-		&i.SizeBytes,
-		&i.UpdatedAt,
-		&i.Title,
-		&i.Profile,
-		&i.Store,
-	)
-	return i, err
-}
-
-const getEncodedMediaAssetForStreamer = `-- name: GetEncodedMediaAssetForStreamer :one
-SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, a.profile, c.store
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-JOIN LATERAL preferred_streamer_media_asset_copy(
-    a.id,
-    $1::text,
-    $2::text[]
-) c ON true
-WHERE a.recording_id = $3
-  AND a.kind = 'encoded'
-  AND a.profile = $4
-  AND r.deleted_at IS NULL
-`
-
-type GetEncodedMediaAssetForStreamerParams struct {
-	PreferredStore string
-	ReadableStores []string
-	RecordingID    int64
-	Profile        *string
-}
-
-type GetEncodedMediaAssetForStreamerRow struct {
-	ID        int64
-	RelPath   string
-	SizeBytes int64
-	UpdatedAt time.Time
-	Title     string
-	Profile   *string
-	Store     string
-}
-
-// streamer が配れる active コピーから storage.derived を優先して encoded を引く。
-// desired の置き場以外も読めるコピーから選ぶため、転送前・overlap 中も配信できる。
-func (q *Queries) GetEncodedMediaAssetForStreamer(ctx context.Context, arg GetEncodedMediaAssetForStreamerParams) (GetEncodedMediaAssetForStreamerRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedMediaAssetForStreamer,
-		arg.PreferredStore,
-		arg.ReadableStores,
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForServing,
 		arg.RecordingID,
 		arg.Profile,
+		arg.PreferredStore,
+		arg.ReadableStores,
 	)
-	var i GetEncodedMediaAssetForStreamerRow
+	var i GetEncodedMediaAssetForServingRow
 	err := row.Scan(
 		&i.ID,
 		&i.RelPath,
@@ -538,7 +490,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM preferred_active_media_asset_copy(a.id, $2::text) copy
+    FROM preferred_readable_media_asset_copy(a.id, $2::text, $3::text[]) copy
 ) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'seek_tiles'
@@ -546,8 +498,9 @@ WHERE a.recording_id = $1
 `
 
 type GetSeekTilesMediaAssetForServingParams struct {
-	RecordingID int64
-	StoreName   *string
+	RecordingID    int64
+	PreferredStore *string
+	ReadableStores []string
 }
 
 type GetSeekTilesMediaAssetForServingRow struct {
@@ -561,51 +514,8 @@ type GetSeekTilesMediaAssetForServingRow struct {
 
 // 配信対象のシークタイルを引く。ごみ箱・削除済みは配らない。
 func (q *Queries) GetSeekTilesMediaAssetForServing(ctx context.Context, arg GetSeekTilesMediaAssetForServingParams) (GetSeekTilesMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForServing, arg.RecordingID, arg.StoreName)
+	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForServing, arg.RecordingID, arg.PreferredStore, arg.ReadableStores)
 	var i GetSeekTilesMediaAssetForServingRow
-	err := row.Scan(
-		&i.ID,
-		&i.RelPath,
-		&i.SizeBytes,
-		&i.UpdatedAt,
-		&i.Title,
-		&i.Store,
-	)
-	return i, err
-}
-
-const getSeekTilesMediaAssetForStreamer = `-- name: GetSeekTilesMediaAssetForStreamer :one
-SELECT a.id, c.rel_path, a.size_bytes, a.updated_at, r.title, c.store
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-JOIN LATERAL preferred_streamer_media_asset_copy(
-    a.id,
-    $1::text,
-    $2::text[]
-) c ON true
-WHERE a.recording_id = $3
-  AND a.kind = 'seek_tiles'
-  AND r.deleted_at IS NULL
-`
-
-type GetSeekTilesMediaAssetForStreamerParams struct {
-	PreferredStore string
-	ReadableStores []string
-	RecordingID    int64
-}
-
-type GetSeekTilesMediaAssetForStreamerRow struct {
-	ID        int64
-	RelPath   string
-	SizeBytes int64
-	UpdatedAt time.Time
-	Title     string
-	Store     string
-}
-
-func (q *Queries) GetSeekTilesMediaAssetForStreamer(ctx context.Context, arg GetSeekTilesMediaAssetForStreamerParams) (GetSeekTilesMediaAssetForStreamerRow, error) {
-	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForStreamer, arg.PreferredStore, arg.ReadableStores, arg.RecordingID)
-	var i GetSeekTilesMediaAssetForStreamerRow
 	err := row.Scan(
 		&i.ID,
 		&i.RelPath,
@@ -624,7 +534,7 @@ FROM media_assets asset
 JOIN recordings recording ON recording.id = asset.recording_id
 JOIN LATERAL (
     SELECT c.rel_path, c.store
-    FROM preferred_active_media_asset_copy(asset.id, $2::text) c
+    FROM preferred_readable_media_asset_copy(asset.id, $2::text, $3::text[]) c
 ) copy ON true
 WHERE asset.recording_id = $1
   AND asset.kind = 'thumbnail'
@@ -632,8 +542,9 @@ WHERE asset.recording_id = $1
 `
 
 type GetThumbnailMediaAssetForServingParams struct {
-	RecordingID int64
-	StoreName   *string
+	RecordingID    int64
+	PreferredStore *string
+	ReadableStores []string
 }
 
 type GetThumbnailMediaAssetForServingRow struct {
@@ -645,54 +556,12 @@ type GetThumbnailMediaAssetForServingRow struct {
 	Store     string
 }
 
+// 下の 3 件（サムネイル・シークタイル・encoded）のコピー選択は preferred_readable_media_asset_copy に集約する。
+// 配信コピーの選び方を SQL に置くのは、streamer の配信と契約テストが同じ問い合わせを通るようにするため。
 // 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
 func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, arg GetThumbnailMediaAssetForServingParams) (GetThumbnailMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, arg.RecordingID, arg.StoreName)
+	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, arg.RecordingID, arg.PreferredStore, arg.ReadableStores)
 	var i GetThumbnailMediaAssetForServingRow
-	err := row.Scan(
-		&i.AssetID,
-		&i.RelPath,
-		&i.SizeBytes,
-		&i.UpdatedAt,
-		&i.Title,
-		&i.Store,
-	)
-	return i, err
-}
-
-const getThumbnailMediaAssetForStreamer = `-- name: GetThumbnailMediaAssetForStreamer :one
-SELECT asset.id AS asset_id, copy.rel_path,
-       asset.size_bytes, asset.updated_at, recording.title, copy.store
-FROM media_assets asset
-JOIN recordings recording ON recording.id = asset.recording_id
-JOIN LATERAL preferred_streamer_media_asset_copy(
-    asset.id,
-    $1::text,
-    $2::text[]
-) copy ON true
-WHERE asset.recording_id = $3
-  AND asset.kind = 'thumbnail'
-  AND recording.deleted_at IS NULL
-`
-
-type GetThumbnailMediaAssetForStreamerParams struct {
-	PreferredStore string
-	ReadableStores []string
-	RecordingID    int64
-}
-
-type GetThumbnailMediaAssetForStreamerRow struct {
-	AssetID   int64
-	RelPath   string
-	SizeBytes int64
-	UpdatedAt time.Time
-	Title     string
-	Store     string
-}
-
-func (q *Queries) GetThumbnailMediaAssetForStreamer(ctx context.Context, arg GetThumbnailMediaAssetForStreamerParams) (GetThumbnailMediaAssetForStreamerRow, error) {
-	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForStreamer, arg.PreferredStore, arg.ReadableStores, arg.RecordingID)
-	var i GetThumbnailMediaAssetForStreamerRow
 	err := row.Scan(
 		&i.AssetID,
 		&i.RelPath,

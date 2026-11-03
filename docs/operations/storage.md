@@ -197,10 +197,8 @@ S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 �
 
 接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。
 
-1. worker: `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject` が要る。さらに `AbortMultipartUpload` と `ListMultipartUploadParts` が要る。後者は ListParts の権限で、Abort のあとの確認に使う。
-2. streamer: `HeadObject` と署名付き URL の作成だけでよい。配信中や転送の overlap 中は旧い S3 コピーを選ぶこともあるため、`storage.stores` に設定されたすべての S3 置き場で使える資格情報が要る。
-
-streamer はマウント済みの FS 置き場と、`storage.stores` の S3 置き場すべてに reader を作る。
+- worker: `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject` が要る。さらに `AbortMultipartUpload` と `ListMultipartUploadParts` が要る。後者は ListParts の権限で、Abort のあとの確認に使う。
+- streamer: `HeadObject` と署名付き URL の作成だけでよい。派生物の置き場を切り替えた後は、転送が終わるまで古い S3 コピーを選ぶことがあるため、`storage.stores` に設定されたすべての S3 置き場で使える資格情報が要る。
 
 派生物の置き場が S3 のときは、S3 へ送るのは転送元の FS 置き場の転送 worker である（[転送](../storage/transfer.md) の「宛先が S3 の派生物」）。その worker にも上記の資格情報と権限が要る。deploy/k8s では、転送の ScaledJob（`rokuban-worker-transfer`）が encode と同じ Secret を `envFrom` で受け取るので、追加の設定は要らない。
 
