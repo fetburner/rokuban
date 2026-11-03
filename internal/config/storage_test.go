@@ -412,16 +412,19 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 		t.Fatalf("sha256 hex length = %d, want 64", len(want))
 	}
 
-	changedDefinition := newStorage()
-	changedDefinition.Stores["main"] = StoreConfig{Kind: "fs", InternalURL: "http://other.internal:8080"}
+	changedBucket := newStorage()
+	changedBucket.Stores["s3main"] = StoreConfig{Kind: "s3", Endpoint: "https://s3.example.com", Bucket: "other-derived"}
+	changedEndpoint := newStorage()
+	changedEndpoint.Stores["s3main"] = StoreConfig{Kind: "s3", Endpoint: "https://other-s3.example.com", Bucket: "derived"}
 	changedRule := newStorage()
 	changedRule.Originals[0].Match.OlderThan = "31d"
 	changedDerived := newStorage()
 	changedDerived.Derived = "main"
 	for name, changed := range map[string]StorageConfig{
-		"store definition": changedDefinition,
-		"original rule":    changedRule,
-		"derived store":    changedDerived,
+		"s3 bucket":     changedBucket,
+		"s3 endpoint":   changedEndpoint,
+		"original rule": changedRule,
+		"derived store": changedDerived,
 	} {
 		got, err := changed.PolicyFingerprint()
 		if err != nil {
@@ -430,6 +433,16 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 		if got == want {
 			t.Errorf("fingerprint unchanged after changing %s", name)
 		}
+	}
+
+	changedInternalURL := newStorage()
+	changedInternalURL.Stores["main"] = StoreConfig{Kind: "fs", InternalURL: "http://other.internal:8080"}
+	internalURLFingerprint, err := changedInternalURL.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if internalURLFingerprint != want {
+		t.Fatalf("fingerprint changed after changing only internal_url: got %s want %s", internalURLFingerprint, want)
 	}
 
 	changedTransfer := newStorage()
