@@ -218,7 +218,14 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		return nil
 	}
 	if isPreconditionFailed(err) {
-		return abort(alreadyExistsError(key))
+		recoveryErr := s.recoverOwnObject(ctx, key, size, wantSHA, uploadToken)
+		if recoveryErr == nil {
+			return nil
+		}
+		if errors.Is(recoveryErr, objstore.ErrNotFound) {
+			recoveryErr = alreadyExistsError(key)
+		}
+		return abort(recoveryErr)
 	}
 	// A lost CompleteMultipartUpload response is recoverable only when HEAD identifies
 	// this upload, not merely another publisher's object with the same digest.
@@ -497,10 +504,14 @@ func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wan
 	}
 	if err != nil {
 		if isPreconditionFailed(err) {
-			if !allowExisting {
+			if allowExisting {
+				return s.existingObject(ctx, uploadState{Key: key, Size: 0, SHA256: hex.EncodeToString(wantSHA[:])})
+			}
+			recoveryErr := s.recoverOwnObject(ctx, key, 0, wantSHA, uploadToken)
+			if errors.Is(recoveryErr, objstore.ErrNotFound) {
 				return alreadyExistsError(key)
 			}
-			return s.existingObject(ctx, uploadState{Key: key, Size: 0, SHA256: hex.EncodeToString(wantSHA[:])})
+			return recoveryErr
 		}
 		if allowExisting {
 			if recoverErr := s.recoverExisting(ctx, key, 0, wantSHA); recoverErr == nil {

@@ -299,6 +299,44 @@ func TestPutEmptyRejectsPreconditionFailed(t *testing.T) {
 	}
 }
 
+func TestPutEmptyRecoversConditionalRetryOnlyForThisUpload(t *testing.T) {
+	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
+	emptySHA := sha256.Sum256(nil)
+	for _, tc := range []struct {
+		name        string
+		ownedObject bool
+	}{
+		{name: "same upload", ownedObject: true},
+		{name: "competing publisher", ownedObject: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeAPI{putErrs: []error{precondition}}
+			client.headFn = func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+				if client.putCalls == 0 {
+					return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
+				}
+				token := "competing-publisher"
+				if tc.ownedObject {
+					token = client.putInputs[0].Metadata[uploadTokenMetadata]
+				}
+				return &s3.HeadObjectOutput{ContentLength: aws.Int64(0), Metadata: map[string]string{
+					checksumMetadata:    hex.EncodeToString(emptySHA[:]),
+					uploadTokenMetadata: token,
+				}}, nil
+			}
+			store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+			err := store.Put(context.Background(), "encoded/retried-empty", bytes.NewReader(nil), 0, emptySHA, "application/octet-stream")
+			if tc.ownedObject {
+				if err != nil {
+					t.Fatalf("Put after retrying its own empty object = %v, want nil", err)
+				}
+			} else if !errors.Is(err, objstore.ErrAlreadyExists) {
+				t.Fatalf("Put after competing empty object = %v, want ErrAlreadyExists", err)
+			}
+		})
+	}
+}
+
 func TestPutReportsAbortFailureAfterPreconditionConflict(t *testing.T) {
 	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
 	abortErr := errors.New("abort denied")
@@ -364,6 +402,53 @@ func TestPutRecoversLostMultipartResponseOnlyForThisUpload(t *testing.T) {
 			}
 			if len(client.createInputs) != 1 || client.createInputs[0].Metadata[uploadTokenMetadata] == "" {
 				t.Fatalf("CreateMultipartUpload metadata = %+v, want a non-empty upload token", client.createInputs)
+			}
+		})
+	}
+}
+
+func TestPutRecoversConditionalRetryOnlyForThisUpload(t *testing.T) {
+	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
+	data := []byte("multipart source")
+	digest := sha256.Sum256(data)
+	for _, tc := range []struct {
+		name        string
+		ownedObject bool
+	}{
+		{name: "same upload", ownedObject: true},
+		{name: "competing publisher", ownedObject: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeAPI{completeErr: precondition}
+			client.headFn = func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+				if client.completeCalls == 0 {
+					return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
+				}
+				token := "competing-publisher"
+				if tc.ownedObject {
+					token = client.createInputs[0].Metadata[uploadTokenMetadata]
+				}
+				return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), Metadata: map[string]string{
+					checksumMetadata:    hex.EncodeToString(digest[:]),
+					uploadTokenMetadata: token,
+				}}, nil
+			}
+			store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+			err := store.Put(context.Background(), "encoded/retried-multipart.mp4", bytes.NewReader(data), int64(len(data)), digest, "video/mp4")
+			if tc.ownedObject {
+				if err != nil {
+					t.Fatalf("Put after retrying its own multipart completion = %v, want nil", err)
+				}
+				if client.abortCalls != 0 {
+					t.Fatalf("AbortMultipartUpload calls = %d, want 0 after recovering own completion", client.abortCalls)
+				}
+			} else {
+				if !errors.Is(err, objstore.ErrAlreadyExists) {
+					t.Fatalf("Put after competing multipart completion = %v, want ErrAlreadyExists", err)
+				}
+				if client.abortCalls != 1 {
+					t.Fatalf("AbortMultipartUpload calls = %d, want 1 after a competing completion", client.abortCalls)
+				}
 			}
 		})
 	}
