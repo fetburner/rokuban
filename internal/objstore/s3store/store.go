@@ -160,7 +160,25 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if n, readErr := io.ReadFull(src, extra[:]); n != 0 || !errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("S3 object source for %q contains bytes beyond declared size 0", key)
 		}
-		return s.putEmptyObject(ctx, key, contentType, wantSHA, uploadToken, false)
+		if err := checkEmptySHA(wantSHA); err != nil {
+			return err
+		}
+		err := s.putEmptyObject(ctx, key, contentType, wantSHA, uploadToken)
+		if err == nil {
+			return nil
+		}
+		if isPreconditionFailed(err) {
+			recoveryErr := s.recoverOwnObject(ctx, key, 0, wantSHA, uploadToken)
+			if errors.Is(recoveryErr, objstore.ErrNotFound) {
+				return alreadyExistsError(key)
+			}
+			return recoveryErr
+		}
+		recoveryErr := s.recoverOwnObject(ctx, key, 0, wantSHA, uploadToken)
+		if recoveryErr == nil || errors.Is(recoveryErr, objstore.ErrAlreadyExists) || errors.Is(recoveryErr, objstore.ErrChecksumMismatch) {
+			return recoveryErr
+		}
+		return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", key, err))
 	}
 
 	partSize := multipartPartSize(size)
@@ -477,12 +495,17 @@ func httpStatusCode(err error) int {
 	return 0
 }
 
-// putEmptyObject は 0 バイトの object を PutObject で公開する。条件付き書き込みに未対応なら条件を外して送り直す。
-func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wantSHA [32]byte, uploadToken string, allowExisting bool) error {
-	emptySHA := sha256.Sum256(nil)
-	if emptySHA != wantSHA {
+// checkEmptySHA は 0 バイトの object の SHA-256 が空の内容の digest と一致するかを確かめる。
+func checkEmptySHA(wantSHA [32]byte) error {
+	if sha256.Sum256(nil) != wantSHA {
 		return objstore.ErrChecksumMismatch
 	}
+	return nil
+}
+
+// putEmptyObject は 0 バイトの object を条件付きで PutObject する。条件付き書き込みに未対応なら条件を外して送り直す。
+// 失敗はそのまま返す。412 や応答の喪失からの回復は呼び出し側が決める。
+func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wantSHA [32]byte, uploadToken string) error {
 	newInput := func(conditional bool) *s3.PutObjectInput {
 		metadata := map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])}
 		if uploadToken != "" {
@@ -502,41 +525,21 @@ func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wan
 		// 呼び出し側は key を使い回さないので、既存の object が無い前提で条件を外す。
 		_, err = s.client.PutObject(ctx, newInput(false))
 	}
-	if err != nil {
-		if isPreconditionFailed(err) {
-			if allowExisting {
-				return s.existingObject(ctx, uploadState{Key: key, Size: 0, SHA256: hex.EncodeToString(wantSHA[:])})
-			}
-			recoveryErr := s.recoverOwnObject(ctx, key, 0, wantSHA, uploadToken)
-			if errors.Is(recoveryErr, objstore.ErrNotFound) {
-				return alreadyExistsError(key)
-			}
-			return recoveryErr
-		}
-		if allowExisting {
-			if recoverErr := s.recoverExisting(ctx, key, 0, wantSHA); recoverErr == nil {
-				return nil
-			}
-		} else {
-			recoverErr := s.recoverOwnObject(ctx, key, 0, wantSHA, uploadToken)
-			if recoverErr == nil || errors.Is(recoverErr, objstore.ErrAlreadyExists) || errors.Is(recoverErr, objstore.ErrChecksumMismatch) {
-				return recoverErr
-			}
-		}
-		return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", key, err))
-	}
-	return nil
+	return err
 }
 
-// startMultipart は ContentType・SHA-256・upload token の metadata を付けて multipart upload を始め、UploadId を返す。
+// startMultipart は ContentType・SHA-256 の metadata を付けて multipart upload を始め、UploadId を返す。
+// uploadToken が空でなければ upload token の metadata も付ける。
 func (s *Store) startMultipart(ctx context.Context, key, contentType string, wantSHA [32]byte, uploadToken string) (string, error) {
+	metadata := map[string]string{checksumMetadata: hex.EncodeToString(wantSHA[:])}
+	if uploadToken != "" {
+		metadata[uploadTokenMetadata] = uploadToken
+	}
 	created, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
 		ContentType: aws.String(contentType),
-		Metadata: map[string]string{
-			checksumMetadata: hex.EncodeToString(wantSHA[:]), uploadTokenMetadata: uploadToken,
-		},
+		Metadata:    metadata,
 	})
 	if err != nil {
 		return "", withCredentialClass(fmt.Errorf("starting S3 multipart upload for %q: %w", key, err))
@@ -578,13 +581,12 @@ func (s *Store) abortMultipart(ctx context.Context, key, uploadID string) error 
 	return nil
 }
 
-// uploadState は s3store の再開状態。UploadToken・UploadId・パートの大きさ・送り終えたパートの一覧を DB に残す正の記録で、
+// uploadState は s3store の再開状態。UploadId・パートの大きさ・送り終えたパートの一覧を DB に残す正の記録で、
 // Complete は ListParts ではなくこの一覧で完了する。
 type uploadState struct {
 	Key         string       `json:"key"`
 	Size        int64        `json:"size"`
 	SHA256      string       `json:"sha256"`
-	UploadToken string       `json:"upload_token,omitempty"`
 	ContentType string       `json:"content_type"`
 	UploadID    string       `json:"upload_id"`
 	PartSize    int64        `json:"part_size"`
@@ -614,17 +616,13 @@ func (s *Store) StartUpload(ctx context.Context, key string, size int64, wantSHA
 	if err != nil {
 		return nil, err
 	}
-	uploadToken, err := newUploadToken()
-	if err != nil {
-		return nil, err
-	}
 	st := uploadState{
 		Key: key, Size: size, SHA256: hex.EncodeToString(wantSHA[:]), ContentType: contentType,
-		UploadToken: uploadToken, Hash: hashState,
+		Hash: hashState,
 	}
 	if size > 0 {
 		st.PartSize = multipartPartSize(size)
-		if st.UploadID, err = s.startMultipart(ctx, key, contentType, wantSHA, uploadToken); err != nil {
+		if st.UploadID, err = s.startMultipart(ctx, key, contentType, wantSHA, ""); err != nil {
 			return nil, err
 		}
 	}
@@ -748,7 +746,20 @@ func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
 		return err
 	}
 	if st.UploadID == "" {
-		return s.putEmptyObject(ctx, st.Key, st.ContentType, want, st.UploadToken, true)
+		if err := checkEmptySHA(want); err != nil {
+			return err
+		}
+		err := s.putEmptyObject(ctx, st.Key, st.ContentType, want, "")
+		if err == nil {
+			return nil
+		}
+		if isPreconditionFailed(err) {
+			return s.existingObject(ctx, uploadState{Key: st.Key, Size: 0, SHA256: hex.EncodeToString(want[:])})
+		}
+		if s.recoverExisting(ctx, st.Key, 0, want) == nil {
+			return nil
+		}
+		return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", st.Key, err))
 	}
 	if st.PartSize <= 0 || int64(len(st.Parts)) != (st.Size+st.PartSize-1)/st.PartSize {
 		return fmt.Errorf("S3 upload for %q has %d parts for %d bytes: %w", st.Key, len(st.Parts), st.Size, objstore.ErrUploadInvalid)
