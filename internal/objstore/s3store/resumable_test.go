@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -111,6 +112,43 @@ func TestResumeAfterStopCompletesWithStatedParts(t *testing.T) {
 	}
 	if client.putPartCalls != 3 {
 		t.Fatalf("UploadPart successes = %d, want 3 (no part resent after resume)", client.putPartCalls)
+	}
+}
+
+func TestCompleteEmptyUploadHandlesExistingKeyAfterPrecondition(t *testing.T) {
+	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
+	for _, tc := range []struct {
+		name     string
+		existing []byte
+		wantErr  error
+	}{
+		{name: "same content"},
+		{name: "different content", existing: []byte("occupied"), wantErr: objstore.ErrAlreadyExists},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeAPI{putErrs: []error{precondition}}
+			client.headFn = func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+				if client.putCalls == 0 {
+					return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
+				}
+				digest := sha256.Sum256(tc.existing)
+				return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(tc.existing))), Metadata: map[string]string{
+					checksumMetadata: hex.EncodeToString(digest[:]),
+				}}, nil
+			}
+			store := resumableStore(client)
+			state, err := store.StartUpload(context.Background(), "encoded/empty-race", 0, sha256.Sum256(nil), "application/octet-stream")
+			if err != nil {
+				t.Fatalf("StartUpload: %v", err)
+			}
+			err = store.CompleteUpload(context.Background(), state)
+			if tc.wantErr == nil && err != nil {
+				t.Fatalf("CompleteUpload after same-content 412 = %v, want nil", err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("CompleteUpload after different-content 412 = %v, want %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 

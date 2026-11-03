@@ -28,6 +28,7 @@ type fakeAPI struct {
 	// putErrs は PutObject の応答を呼び出し順に返す。空なら成功する。
 	putErrs        []error
 	putInputs      []*s3.PutObjectInput
+	createInputs   []*s3.CreateMultipartUploadInput
 	completeInputs []*s3.CompleteMultipartUploadInput
 	// uploadPartErrs は UploadPart の応答を呼び出し順に返す。空なら成功する。
 	uploadPartErrs []error
@@ -82,8 +83,9 @@ func (*fakeAPI) ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*
 	return &s3.ListObjectsV2Output{}, nil
 }
 
-func (f *fakeAPI) CreateMultipartUpload(context.Context, *s3.CreateMultipartUploadInput, ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error) {
+func (f *fakeAPI) CreateMultipartUpload(_ context.Context, in *s3.CreateMultipartUploadInput, _ ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error) {
 	f.mutationCalls++
+	f.createInputs = append(f.createInputs, in)
 	return &s3.CreateMultipartUploadOutput{UploadId: aws.String("upload-1")}, nil
 }
 
@@ -294,6 +296,116 @@ func TestPutEmptyRejectsPreconditionFailed(t *testing.T) {
 	}
 	if client.putCalls != 1 {
 		t.Fatalf("PutObject calls = %d, want 1", client.putCalls)
+	}
+}
+
+func TestPutReportsAbortFailureAfterPreconditionConflict(t *testing.T) {
+	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
+	abortErr := errors.New("abort denied")
+	client := &fakeAPI{
+		completeErr: precondition,
+		abortErrs:   []error{abortErr},
+	}
+	store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+	data := []byte("multipart source")
+	err := store.Put(context.Background(), "encoded/abort-conflict.mp4", bytes.NewReader(data), int64(len(data)), sha256.Sum256(data), "video/mp4")
+	if !errors.Is(err, abortErr) {
+		t.Fatalf("Put after failed abort = %v, want the abort error", err)
+	}
+	if errors.Is(err, objstore.ErrAlreadyExists) {
+		t.Fatalf("Put after failed abort = %v, must not look like a clean existing-key conflict", err)
+	}
+	if client.abortCalls != 1 {
+		t.Fatalf("AbortMultipartUpload calls = %d, want 1", client.abortCalls)
+	}
+}
+
+func TestPutRecoversLostMultipartResponseOnlyForThisUpload(t *testing.T) {
+	data := []byte("multipart source")
+	digest := sha256.Sum256(data)
+	for _, tc := range []struct {
+		name        string
+		ownedObject bool
+	}{
+		{name: "same upload", ownedObject: true},
+		{name: "competing publisher", ownedObject: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeAPI{completeErr: errors.New("response lost")}
+			client.headFn = func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+				if client.completeCalls == 0 {
+					return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
+				}
+				token := "competing-publisher"
+				if tc.ownedObject {
+					token = client.createInputs[0].Metadata[uploadTokenMetadata]
+				}
+				return &s3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), Metadata: map[string]string{
+					checksumMetadata:    hex.EncodeToString(digest[:]),
+					uploadTokenMetadata: token,
+				}}, nil
+			}
+			store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+			err := store.Put(context.Background(), "encoded/lost-response.mp4", bytes.NewReader(data), int64(len(data)), digest, "video/mp4")
+			if tc.ownedObject {
+				if err != nil {
+					t.Fatalf("Put after recovering its own completion = %v, want nil", err)
+				}
+				if client.abortCalls != 0 {
+					t.Fatalf("AbortMultipartUpload calls = %d, want 0 after own completion", client.abortCalls)
+				}
+			} else {
+				if !errors.Is(err, objstore.ErrAlreadyExists) {
+					t.Fatalf("Put after finding a competing object's digest = %v, want ErrAlreadyExists", err)
+				}
+				if client.abortCalls != 1 {
+					t.Fatalf("AbortMultipartUpload calls = %d, want 1 for the competing object", client.abortCalls)
+				}
+			}
+			if len(client.createInputs) != 1 || client.createInputs[0].Metadata[uploadTokenMetadata] == "" {
+				t.Fatalf("CreateMultipartUpload metadata = %+v, want a non-empty upload token", client.createInputs)
+			}
+		})
+	}
+}
+
+func TestPutEmptyRecoversLostResponseOnlyForThisUpload(t *testing.T) {
+	emptySHA := sha256.Sum256(nil)
+	for _, tc := range []struct {
+		name        string
+		ownedObject bool
+	}{
+		{name: "same upload", ownedObject: true},
+		{name: "competing publisher", ownedObject: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeAPI{putErrs: []error{errors.New("response lost")}}
+			client.headFn = func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+				if client.putCalls == 0 {
+					return nil, &smithy.GenericAPIError{Code: "NoSuchKey", Message: "missing", Fault: smithy.FaultClient}
+				}
+				token := "competing-publisher"
+				if tc.ownedObject {
+					token = client.putInputs[0].Metadata[uploadTokenMetadata]
+				}
+				return &s3.HeadObjectOutput{ContentLength: aws.Int64(0), Metadata: map[string]string{
+					checksumMetadata:    hex.EncodeToString(emptySHA[:]),
+					uploadTokenMetadata: token,
+				}}, nil
+			}
+			store := &Store{client: client, presigner: fakePresigner{}, bucket: "derived"}
+			err := store.Put(context.Background(), "encoded/lost-empty-response", bytes.NewReader(nil), 0, emptySHA, "application/octet-stream")
+			if tc.ownedObject {
+				if err != nil {
+					t.Fatalf("Put after recovering its own empty completion = %v, want nil", err)
+				}
+			} else if !errors.Is(err, objstore.ErrAlreadyExists) {
+				t.Fatalf("Put after finding a competing empty object = %v, want ErrAlreadyExists", err)
+			}
+			if len(client.putInputs) != 1 || client.putInputs[0].Metadata[uploadTokenMetadata] == "" {
+				t.Fatalf("PutObject metadata = %+v, want a non-empty upload token", client.putInputs)
+			}
+		})
 	}
 }
 
