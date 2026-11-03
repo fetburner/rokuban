@@ -237,7 +237,7 @@ URL の形は `/reservations/$site/$programId` である。
 
 対象の API は `/api/rules` / `/api/encode-profiles` / `/api/storage` / `/api/capabilities` である。録画詳細の URL は `/recordings/$id` である。
 
-ストレージ残高は、各置き場の観測に、上段の全サイト分の録画・予約から作った見込みを重ねる。site で絞らない。
+ストレージ残高は、置き場が 1 つの場合だけ、上段の全サイト分の録画・予約から作った見込みを重ねる。複数の置き場がある場合は予約先を特定できないため、各置き場の観測値だけを表示する（`storage-balance.test.tsx` の「置き場が複数あるときは満杯見込みを出さない」）。site で絞らない。
 
 <details><summary>根拠</summary>
 

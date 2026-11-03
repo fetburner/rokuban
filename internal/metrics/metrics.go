@@ -639,8 +639,8 @@ var (
 	// StorageSyncLastSuccess は最後に**全 root を観測できた**パスの時刻（UNIX 秒）。
 	// 1 root でも失敗したパスでは進めない（部分成功を「成功」に数えない。
 	// internal/worker/storage.go の StorageSyncWorker.Work 参照）。
-	// site ラベルは持たない --- アーカイブ/スクラッチは単一で site に従属しない
-	// （StorageSyncArgs のコメント参照）。
+	// site ラベルは持たない --- 容量の観測は置き場単位で行い、録画や放送局の site に
+	// 従属しない（StorageSyncArgs のコメント参照）。
 	StorageSyncLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_sync_last_success_timestamp_seconds",
 		Help: "Unix time of the last storage sync pass where every configured root was observed successfully. Use with time() to detect a degraded sync; check rokuban_storage_root_last_success_timestamp_seconds{root} for which root is stale.",
