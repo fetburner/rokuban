@@ -186,7 +186,7 @@ func TestRunRescue_ReportsMissingCatalogFiles(t *testing.T) {
 	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	doc := &catalog.Document{Version: catalog.Version, ExportedAt: at,
 		Recordings:  []catalog.Recording{{ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1, ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test", ProgramStartAt: at, Status: "finished", CreatedAt: at, UpdatedAt: at}},
-		MediaAssets: []catalog.MediaAsset{{ID: 1, RecordingID: 1, Kind: "original", RelPath: "sites/default/missing.m2ts", State: "active", CreatedAt: at, UpdatedAt: at}},
+		MediaAssets: []catalog.MediaAsset{{ID: 1, RecordingID: 1, Kind: "original", RelPath: "sites/default/missing.m2ts", State: "active", Store: "test-store", CreatedAt: at, UpdatedAt: at}},
 	}
 	mediaDir := newRescueTestMediaDir(t)
 	if _, err := catalog.Write(mediaDir, doc, 7, nil); err != nil {

@@ -195,7 +195,10 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 S3 の置き場は、AWS S3 と S3 互換サーバー（RustFS、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
 
-接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。worker には S3 の権限として `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject` が要る。さらに `AbortMultipartUpload` と `ListMultipartUploadParts` が要る。後者は ListParts の権限で、Abort のあとの確認に使う。streamer に要るのは `HeadObject` と署名付き URL の作成だけである。
+接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。
+
+- worker: `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject` が要る。さらに `AbortMultipartUpload` と `ListMultipartUploadParts` が要る。後者は ListParts の権限で、Abort のあとの確認に使う。
+- streamer: `HeadObject` と署名付き URL の作成だけでよい。派生物の置き場を切り替えた後は、転送が終わるまで古い S3 コピーを選ぶことがあるため、`storage.stores` に設定されたすべての S3 置き場で使える資格情報が要る。
 
 派生物の置き場が S3 のときは、S3 へ送るのは転送元の FS 置き場の転送 worker である（[転送](../storage/transfer.md) の「宛先が S3 の派生物」）。その worker にも上記の資格情報と権限が要る。deploy/k8s では、転送の ScaledJob（`rokuban-worker-transfer`）が encode と同じ Secret を `envFrom` で受け取るので、追加の設定は要らない。
 
@@ -266,6 +269,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 <details><summary>根拠</summary>
 
 - 適合テスト: `internal/objstore/conformance/conformance_test.go`
+- streamer の reader がマウント済み FS と設定済み S3 全置き場を含むこと: `TestNewStreamerObjectStoresIncludesMountedFSAndAllS3`
 - 資格情報が無く S3 に繋がらなくても worker が起動すること: `TestServerCmd_WorkerStartsWithUnreachableS3AndNoCredentials`。ジョブごとの実行は未検証で、ingest が S3 のコードを呼ばないことはコードを読んで確かめた
 - `until_encoded` の原本が消えない条件（派生物のコピーが desired の置き場に揃うこと）: `TestUntilEncodedDeletableRequiresDerivedCopiesInDesiredStore`
 - 署名付き URL の寿命が 24 時間固定であること: `internal/streamer/streamer.go` の `SignedURLExpiry`（0 なら 24 時間）で、`cmd/rokuban` は値を渡さない

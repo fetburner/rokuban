@@ -223,7 +223,7 @@ DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 
 キュー名を変えるときは、キューを一意キーに含めておく。含めていないと、旧キューの残骸が新キューへの投入を気づかないうちに塞ぐ。エラーを返さないので、ログにも出ない。
 
-River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true` の全ジョブでキューを一意キーへ含める。`ByArgs` と `ByQueue` は別軸なので、片方だけでは意図した identity にならない。キュー名を変える（リネーム・site 修飾の追加）ときに Queue を一意キーに含めていないと、旧キューの残骸が新キューへの Insert を塞ぐ。この結果は `UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。トラブルシュート手順は [runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの残骸が `river_job` に残っている」を参照。
+River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true` の全ジョブでキューを一意キーへ含める。`ByArgs` と `ByQueue` は別軸なので、片方だけでは意図した identity にならない。キュー名を変える（リネーム・site 修飾の追加）ときに Queue を一意キーに含めていないと、旧キューの残骸が新キューへの Insert を塞ぐ。この結果は `UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。
 
 #### 合流の identity
 

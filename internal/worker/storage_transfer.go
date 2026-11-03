@@ -763,7 +763,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	if err := w.requireDestinationMarker(targetRoot, args.Store, "writing derived storage transfer destination"); err != nil {
 		return err
 	}
-	// scratch は、内容を複製して照合する必要があるときだけ作る（SHA-256 が既知の本体と、字幕が無い encoded は作らない）。
+	// scratch は、内容を複製して照合する必要があるときだけ作る（本体は scratch を使わず、字幕だけが使う）。
 	var scratchPath string
 	defer func() {
 		if scratchPath != "" {
@@ -790,7 +790,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		owned[relPath] = struct{}{}
 	}
 
-	digest, size, done, err := w.putDerivedMain(ctx, transfer, args, sourceStore, targetStore, targetRoot, scratchDir, owned, log)
+	digest, size, done, err := w.putDerivedMain(ctx, transfer, args, sourceStore, targetStore, targetRoot, owned, log)
 	if done {
 		return err
 	}
@@ -829,16 +829,16 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 
 // putDerivedMain は派生物の本体を宛先に公開し、今回作ったものを所有記録に残す。
 // 返す digest と size は完了（CompleteMediaAssetTransfer）に渡す値である。done が真なら、この試行はここで終わるので err を返す。
-// 両方の置き場が対応していて論理資産の SHA-256 が未知なら、送る前に転送元を slice ごとに測る（measureDerivedSource）。
-// 既知なら、再開できるアップロードで送る（putDerivedResumable）。
-// 対応していない置き場は従来どおり、既知なら Get を Put へ流し、未計測なら scratch に複製してから Put する。
+// 宛先の Resumable と転送元の RangeReader は、この worker が満たすべき前提である。どちらかが欠けたらジョブエラーを返し、
+// 転送失敗として数えない。この worker の構成の問題であってコピーの失敗ではないので、宛先が未マウントのときと同じ扱いにする。
+// S3 宛てでは、checkS3TransferWorker が宛先の不足だけを事前に拒否する（転送元の RangeReader は見ない）。
+// SHA-256 が未知なら送る前に転送元を slice ごとに測り（measureDerivedSource）、既知なら再開できるアップロードで送る（putDerivedResumable）。
 func (w *StorageTransferWorker) putDerivedMain(
 	ctx context.Context,
 	transfer store.MediaAssetTransfer,
 	args jobs.StorageTransferArgs,
 	sourceStore, targetStore objstore.Store,
 	targetRoot string,
-	scratchDir func() (string, error),
 	owned map[string]struct{},
 	log *slog.Logger,
 ) (digest []byte, size int64, done bool, err error) {
@@ -846,50 +846,21 @@ func (w *StorageTransferWorker) putDerivedMain(
 	var mainCreated bool
 	resumable, canResume := targetStore.(objstore.Resumable)
 	rangeSource, canRange := sourceStore.(objstore.RangeReader)
-	if canResume && canRange {
-		if len(transfer.SHA256) != sha256.Size {
-			// 論理資産の SHA-256 が未知なら、宛先に送る前に転送元を slice ごとに測る。測り終えた次の Work が既知の経路で送る。
-			return digest, size, true, w.measureDerivedSource(ctx, transfer, rangeSource, log)
-		}
-		mainCreated, done, err = w.putDerivedResumable(ctx, transfer, args, targetRoot, targetStore, resumable, rangeSource, owned, log)
-		if done {
-			return digest, size, true, err
-		}
-	} else {
-		var openMain func() (io.ReadCloser, error)
-		var streamed *countingReadCloser
-		if len(transfer.SHA256) == sha256.Size {
-			openMain = func() (io.ReadCloser, error) {
-				source, err := w.openTransferSourceStream(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath)
-				if err != nil {
-					return nil, err
-				}
-				streamed = source
-				return source, nil
-			}
-		} else {
-			assetPath, stagedDigest, stagedSize, stageErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, transfer.SourceRelPath, scratchDir, transfer.SizeBytes, transfer.SHA256)
-			if stageErr != nil {
-				if errors.Is(stageErr, errTransferSourceMismatch) {
-					return digest, size, true, w.handleTransferMismatch(ctx, transfer, log)
-				}
-				return digest, size, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("reading derived transfer source: %w", stageErr))
-			}
-			digest, size = stagedDigest, stagedSize
-			openMain = func() (io.ReadCloser, error) { return os.Open(assetPath) }
-		}
-		if err := w.requireDestinationMarker(targetRoot, args.Store, "publishing derived storage transfer destination"); err != nil {
-			return digest, size, true, err
-		}
-		_, mainOwned := owned[transfer.RelPath]
-		mainCreated, err = putTransferredObject(ctx, targetStore, transfer.RelPath, openMain, size, digest, objectContentType(transfer.RelPath), mainOwned)
-		if err != nil {
-			if streamed != nil && streamed.sourceDiffers(size, err) {
-				return digest, size, true, w.handleTransferMismatch(ctx, transfer, log)
-			}
-			metrics.RecordObjectStoreError("put", err)
-			return digest, size, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
-		}
+	if !canResume {
+		metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
+		return digest, size, true, fmt.Errorf("storage transfer: target store %q is not a resumable object store on this worker", args.Store)
+	}
+	if !canRange {
+		metrics.StorageTransferMountMismatches.WithLabelValues(transfer.SourceStore).Inc()
+		return digest, size, true, fmt.Errorf("storage transfer: source store %q does not support range reads on this worker", transfer.SourceStore)
+	}
+	if len(transfer.SHA256) != sha256.Size {
+		// 論理資産の SHA-256 が未知なら、宛先に送る前に転送元を slice ごとに測る。測り終えた次の Work が既知の経路で送る。
+		return digest, size, true, w.measureDerivedSource(ctx, transfer, rangeSource, log)
+	}
+	mainCreated, done, err = w.putDerivedResumable(ctx, transfer, args, targetRoot, targetStore, resumable, rangeSource, owned, log)
+	if done {
+		return digest, size, true, err
 	}
 	if !mainCreated {
 		return digest, size, false, nil
@@ -1116,7 +1087,7 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 	if err != nil {
 		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("building destination subtitle object key: %w", err))
 	}
-	subtitlePath, subtitleDigest, subtitleSize, subtitleErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, sourceSubtitleKey, scratchDir, -1, nil)
+	subtitlePath, subtitleDigest, subtitleSize, subtitleErr := w.stageObjectForTransfer(ctx, sourceStore, transfer.SourceStore, sourceSubtitleKey, scratchDir)
 	if errors.Is(subtitleErr, objstore.ErrNotFound) {
 		// source に字幕が無いとき、宛先の字幕 key は所有記録のある（この転送が作った）ものだけ消す。
 		// 所有記録の無い key は、この転送が作ったものではないので残す。
@@ -1165,7 +1136,7 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 	}
 }
 
-func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, objects objstore.Store, sourceStoreName, key string, scratchDir func() (string, error), expectedSize int64, expectedSHA []byte) (string, []byte, int64, error) {
+func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, objects objstore.Store, sourceStoreName, key string, scratchDir func() (string, error)) (string, []byte, int64, error) {
 	reader, ok := objects.(objstore.Reader)
 	if !ok {
 		return "", nil, 0, fmt.Errorf("object store %q does not support reads", sourceStoreName)
@@ -1209,14 +1180,6 @@ func (w *StorageTransferWorker) stageObjectForTransfer(ctx context.Context, obje
 		return "", nil, count, fmt.Errorf("closing scratch object: %w", closeFileErr)
 	}
 	digest := hasher.Sum(nil)
-	if expectedSize >= 0 && count != expectedSize {
-		_ = os.Remove(name)
-		return "", nil, count, fmt.Errorf("source object size is %d, want %d: %w", count, expectedSize, errTransferSourceMismatch)
-	}
-	if len(expectedSHA) != 0 && !bytes.Equal(digest, expectedSHA) {
-		_ = os.Remove(name)
-		return "", nil, count, fmt.Errorf("source object SHA-256 differs from logical asset: %w", errTransferSourceMismatch)
-	}
 	return name, digest, count, nil
 }
 
@@ -1278,57 +1241,6 @@ func existingTransferredObjectMatches(ctx context.Context, objects objstore.Stor
 		return false, headErr
 	}
 	return false, nil
-}
-
-// countingReadCloser は、Put に流す source の読んだ長さと読み取りエラーを覚える。
-type countingReadCloser struct {
-	io.Reader
-	closer  io.Closer
-	n       int64
-	eof     bool
-	readErr error
-}
-
-func (c *countingReadCloser) Read(p []byte) (int, error) {
-	n, err := c.Reader.Read(p)
-	c.n += int64(n)
-	if errors.Is(err, io.EOF) {
-		c.eof = true
-	} else if err != nil {
-		c.readErr = err
-	}
-	return n, err
-}
-
-func (c *countingReadCloser) Close() error { return c.closer.Close() }
-
-// sourceDiffers は Put の失敗が、source の内容が論理資産と違うことによるかを返す。
-// SHA-256 の不一致のほか、source が宣言サイズより短く終わった場合と、宣言サイズを超えて続く場合も含む。
-// source の読み取り自体が失敗したときや、書き込み側の失敗で途中までしか読んでいないときは、
-// 内容が違うとは言えないので false を返す。
-func (c *countingReadCloser) sourceDiffers(size int64, putErr error) bool {
-	if c.readErr != nil {
-		return false
-	}
-	return errors.Is(putErr, objstore.ErrChecksumMismatch) || (c.eof && c.n != size) || c.n > size
-}
-
-// openTransferSourceStream は source の Get を、帯域制限を通した読み取りとして開く。
-func (w *StorageTransferWorker) openTransferSourceStream(ctx context.Context, objects objstore.Store, sourceStoreName, key string) (*countingReadCloser, error) {
-	reader, ok := objects.(objstore.Reader)
-	if !ok {
-		return nil, fmt.Errorf("object store %q does not support reads", sourceStoreName)
-	}
-	source, err := reader.Get(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	limited, err := w.transferSourceReader(ctx, sourceStoreName, source)
-	if err != nil {
-		_ = source.Close()
-		return nil, err
-	}
-	return &countingReadCloser{Reader: limited, closer: source}, nil
 }
 
 func ownedRelPathsFromSet(owned map[string]struct{}) []string {

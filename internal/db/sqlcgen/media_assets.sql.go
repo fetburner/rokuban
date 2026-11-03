@@ -236,7 +236,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM preferred_active_media_asset_copy(a.id, $3::text) copy
+    FROM preferred_readable_media_asset_copy(a.id, $3::text, $4::text[]) copy
 ) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'encoded'
@@ -245,9 +245,10 @@ WHERE a.recording_id = $1
 `
 
 type GetEncodedMediaAssetForServingParams struct {
-	RecordingID int64
-	Profile     *string
-	StoreName   *string
+	RecordingID    int64
+	Profile        *string
+	PreferredStore *string
+	ReadableStores []string
 }
 
 type GetEncodedMediaAssetForServingRow struct {
@@ -262,7 +263,12 @@ type GetEncodedMediaAssetForServingRow struct {
 
 // 配信対象の encoded 派生物を引く（?profile= 付き）。原本と同じ配信規律。
 func (q *Queries) GetEncodedMediaAssetForServing(ctx context.Context, arg GetEncodedMediaAssetForServingParams) (GetEncodedMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedMediaAssetForServing, arg.RecordingID, arg.Profile, arg.StoreName)
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForServing,
+		arg.RecordingID,
+		arg.Profile,
+		arg.PreferredStore,
+		arg.ReadableStores,
+	)
 	var i GetEncodedMediaAssetForServingRow
 	err := row.Scan(
 		&i.ID,
@@ -484,7 +490,7 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 JOIN LATERAL (
     SELECT copy.rel_path, copy.store
-    FROM preferred_active_media_asset_copy(a.id, $2::text) copy
+    FROM preferred_readable_media_asset_copy(a.id, $2::text, $3::text[]) copy
 ) c ON true
 WHERE a.recording_id = $1
   AND a.kind = 'seek_tiles'
@@ -492,8 +498,9 @@ WHERE a.recording_id = $1
 `
 
 type GetSeekTilesMediaAssetForServingParams struct {
-	RecordingID int64
-	StoreName   *string
+	RecordingID    int64
+	PreferredStore *string
+	ReadableStores []string
 }
 
 type GetSeekTilesMediaAssetForServingRow struct {
@@ -507,7 +514,7 @@ type GetSeekTilesMediaAssetForServingRow struct {
 
 // 配信対象のシークタイルを引く。ごみ箱・削除済みは配らない。
 func (q *Queries) GetSeekTilesMediaAssetForServing(ctx context.Context, arg GetSeekTilesMediaAssetForServingParams) (GetSeekTilesMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForServing, arg.RecordingID, arg.StoreName)
+	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForServing, arg.RecordingID, arg.PreferredStore, arg.ReadableStores)
 	var i GetSeekTilesMediaAssetForServingRow
 	err := row.Scan(
 		&i.ID,
@@ -527,7 +534,7 @@ FROM media_assets asset
 JOIN recordings recording ON recording.id = asset.recording_id
 JOIN LATERAL (
     SELECT c.rel_path, c.store
-    FROM preferred_active_media_asset_copy(asset.id, $2::text) c
+    FROM preferred_readable_media_asset_copy(asset.id, $2::text, $3::text[]) c
 ) copy ON true
 WHERE asset.recording_id = $1
   AND asset.kind = 'thumbnail'
@@ -535,8 +542,9 @@ WHERE asset.recording_id = $1
 `
 
 type GetThumbnailMediaAssetForServingParams struct {
-	RecordingID int64
-	StoreName   *string
+	RecordingID    int64
+	PreferredStore *string
+	ReadableStores []string
 }
 
 type GetThumbnailMediaAssetForServingRow struct {
@@ -548,9 +556,11 @@ type GetThumbnailMediaAssetForServingRow struct {
 	Store     string
 }
 
+// 下の 3 件（サムネイル・シークタイル・encoded）のコピー選択は preferred_readable_media_asset_copy に集約する。
+// 配信コピーの選び方を SQL に置くのは、streamer の配信と契約テストが同じ問い合わせを通るようにするため。
 // 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
 func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, arg GetThumbnailMediaAssetForServingParams) (GetThumbnailMediaAssetForServingRow, error) {
-	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, arg.RecordingID, arg.StoreName)
+	row := q.db.QueryRow(ctx, getThumbnailMediaAssetForServing, arg.RecordingID, arg.PreferredStore, arg.ReadableStores)
 	var i GetThumbnailMediaAssetForServingRow
 	err := row.Scan(
 		&i.AssetID,

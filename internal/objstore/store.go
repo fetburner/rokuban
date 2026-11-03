@@ -39,9 +39,10 @@ type Object struct {
 
 // Store is the durable object contract used for derived media.
 //
-// Put must publish all bytes or none, must reject a reused key, and must return only
-// after the object is durable. List may lag, but it must never return an incomplete
-// multipart upload.
+// Put must publish all bytes or none, reject any reused key (even when its content is
+// identical), and return only after the object is durable. Callers use a successful Put
+// to identify keys created by that call when deciding what may be cleaned up. List may
+// lag, but it must never return an incomplete multipart upload.
 type Store interface {
 	Put(ctx context.Context, key string, src io.Reader, size int64, sha256 [32]byte, contentType string) error
 	Head(ctx context.Context, key string) (Object, error)
