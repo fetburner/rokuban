@@ -19,7 +19,7 @@
 //   ⑩ 停止位置まで進まない場合に実時間タイマーが録画ファイルの再生を止め、編集中の再生は 33 秒を越えて続く
 //   ⑪ LivePlayer の録画 HLS が境界の 3 秒後（33 秒付近）で、手で止めずに再生位置で止まる
 //   ⑫ 停止位置まで進まない場合に実時間タイマーが録画 HLS を止め、編集中の再生は 33 秒を越えて続く
-//   ⑬ 停止タイマー後に HLS の canplay 自動再開が復活しない
+//   ⑬ 停止タイマー後に HLS の canplay 自動再開が復活しない（録画 HLS が再生できないときは飛ばす）
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -1863,12 +1863,18 @@ if (hlsReady) {
     if (resumedInEdit.seconds < 34 || resumedInEdit.paused) {
       ng.push(`⑫ 停止保険の後、編集中の LivePlayer の録画 HLS が 33 秒を越えて再生を続けない（${JSON.stringify(resumedInEdit)}）`)
     }
+  }
+  // 再生開始の成否にかかわらず、編集モードが開いていれば閉じる（次の ⑬ は通常表示から入り直す）。
+  if (await hlsPage.locator('[data-testid="chapter-edit-layout"]').isVisible()) {
     // 編集モードには設定歯車が無い。やめるは同じ video の再生・境界タイマーを保つ。
     await hlsPage.getByRole('button', { name: 'やめる', exact: true }).click()
     await hlsPage.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
   }
 }
 
+if (!hlsReady) {
+  log('\n=== ⑬ skip: 録画 HLS fixture が再生できないため（⑪ で報告済み） ===')
+} else {
 log('\n=== ⑬ タイムアウト後の録画 HLS ソース再読込で canplay が再生を復活させない ===')
 await hlsPage.getByRole('button', { name: '再生設定' }).click()
 await hlsPage.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
@@ -1932,6 +1938,7 @@ if ((await recoveryBoundary.count()) !== 1) {
       }
     }
   }
+}
 }
 await hlsPage.close()
 activeRecording = recording

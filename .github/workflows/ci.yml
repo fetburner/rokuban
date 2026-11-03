@@ -62,7 +62,7 @@ jobs:
   # issue-1233-dialog-focus は確認ダイアログを開いた直後の初期フォーカスと Tab / Return / Escape の行き先を測る。
   # design のルールカード判定（`E2E_RULE_CARD_ONLY`）は 360 / 390px でルールカードの縦積みと補助導線の muted 色・アイコン位置を測る。
   # live-player-modes はライブの pagehide と visibilitychange の離脱ヒント（jsdom には sendBeacon が無く fetch に落ちる）、ライブと録画 HLS の 503 文言、ffmpeg で作った実メディアの再生を測る。
-  # chapters は録画ファイルと LivePlayer の録画 HLS の境界再生が、停止保険後も続くことを実測する。所要時間は CI 実測で約 110 秒（2026-11-03 の run で 109 秒）、手元の実測で 125 秒（同日）。
+  # chapters は録画ファイルと LivePlayer の録画 HLS の境界再生が、停止保険後も続くことを実測し、録画 HLS が再生位置で止まることも実測する。所要時間は手元の実測で約 125 秒（2026-11-03）。CI での所要時間は未計測。
   # recording-playback-timeline は録画詳細とライブ画面の世代付き HLS、実メディア再生、410 後の位置復元を測る。
   # reservations-series は 360px での行全体リンクと内側リンクの当たり判定・折り返しを、
   # reservation-detail-layout は詳細の欄の折り返しと viewport への収まりを測る。どちらも jsdom には測れない。
