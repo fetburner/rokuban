@@ -29,7 +29,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
-// TestS3DerivedObjectPublicationAndRecovery は、実際の S3 API の実装（CI では MinIO）に対して、
+// TestS3DerivedObjectPublicationAndRecovery は、実際の S3 API の実装（CI では RustFS）に対して、
 // 派生物の公開・回収・入力の読み出しを測る。DB の振る舞いは object_store_test.go が fsstore で測るので、
 // ここは S3 の応答（条件付き書き込み・multipart・HEAD の SHA-256・List）に依存する部分に絞る。
 func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
@@ -422,7 +422,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 			t.Fatalf("transferred S3 metadata = (size %d, sha256 %q), want (%d, %x)", object.Size, object.SHA256, len(content), sha256.Sum256(content))
 		}
 
-		// 完了した upload の送信状態は、進捗の行が消えるときに掃除待ちへ移る。その行が実 MinIO の Abort で
+		// 完了した upload の送信状態は、進捗の行が消えるときに掃除待ちへ移る。その行が実 RustFS の Abort で
 		// gone になり、掃除で消えることを確かめる。完了直後に行があることを先に見て、空虚な成功にしない。
 		abandonedOnS3 := func() int {
 			var n int
@@ -436,7 +436,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		}
 		worker.abortAbandonedUploads(ctx, objectStoreName)
 		if n := abandonedOnS3(); n != 0 {
-			t.Fatalf("abandoned uploads on %s after cleanup = %d, want 0 (MinIO must answer NoSuchUpload for a completed upload)", objectStoreName, n)
+			t.Fatalf("abandoned uploads on %s after cleanup = %d, want 0 (RustFS must answer NoSuchUpload for a completed upload)", objectStoreName, n)
 		}
 	})
 }

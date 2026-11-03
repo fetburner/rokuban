@@ -29,6 +29,7 @@ func recordingHLSVideoPlaylistPath() string {
 // `videoDurationPTS/segmentPTS - 1`（長さで判定）にする。
 // 壊し方: observeInput の `max(timing.videoLastFramePTS, lastFrame)` を `lastFrame` にする。
 func TestRecordingHLSTempPlaylistListsOnlyObservedVideo(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	h.useTemp()
 	// 先頭の映像パケットは 10 秒。D は 2 秒。
@@ -81,6 +82,7 @@ func TestRecordingHLSTempPlaylistListsOnlyObservedVideo(t *testing.T) {
 //
 // 壊し方: buildRecordingHLSTempPlaylist を切り上げ（最後の短い行も D 秒で載せる）にする。
 func TestRecordingHLSCommitKeepsPublishedRowsWhenIngestOutlastsRecording(t *testing.T) {
+	t.Parallel()
 	// 映像の長さ 362.0617 秒（実録画の値）。D=2 なので temp は 181 行、原本は最後の 0.062 秒を足した 182 行。
 	endTicks := int64(900000) + 362*mpegTSTimestampClock + 5553
 	tail := fmt.Sprintf("pts=%d|duration=3600|\n", endTicks-3600)
@@ -121,6 +123,7 @@ func TestRecordingHLSCommitKeepsPublishedRowsWhenIngestOutlastsRecording(t *test
 //
 // 壊し方: RenditionPlaylist の temp 分岐を buildRecordingHLSRenditionPlaylist にする。
 func TestRecordingHLSEndlistOnlyFromTheOriginal(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	h.useTemp()
 	response := h.get(t, recordingHLSVideoPlaylistPath())
@@ -139,6 +142,7 @@ func TestRecordingHLSEndlistOnlyFromTheOriginal(t *testing.T) {
 // 壊し方: recordingHLSMetadataCache.getAny の「原本を優先する」分岐を消す。
 // 壊し方: RecordingHLS.request の DB エラーの分岐で cacheKey.kind が temp のとき timing.videoDurationPTS を 0 にする。
 func TestRecordingHLSDatabaseOutageKeepsEndlistAndPublishedRows(t *testing.T) {
+	t.Parallel()
 	t.Run("temp の行を減らさない", func(t *testing.T) {
 		h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20.04)})
 		h.useTemp()
@@ -183,6 +187,7 @@ func TestRecordingHLSDatabaseOutageKeepsEndlistAndPublishedRows(t *testing.T) {
 // 壊し方: metadataForTarget の h.observe.Do を直接 h.observeInput の呼び出しにする。
 // 壊し方: observeInput の `cached.observedSize == info.Size()` の早期 return を消す。
 func TestRecordingHLSTempObservationIsSharedAndSkippedForUnchangedSize(t *testing.T) {
+	t.Parallel()
 	probe := recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20), tailDelay: "0.3"}
 	h := newRecordingHLSTestHarnessWithProbe(t, false, false, 5*time.Second, "", probe)
 	h.useTemp()
@@ -216,6 +221,7 @@ func TestRecordingHLSTempObservationIsSharedAndSkippedForUnchangedSize(t *testin
 //
 // 壊し方: observeInput の errRecordingHLSNoVideoPacket の分岐を、エラーを返すようにする。
 func TestRecordingHLSTempWithoutVideoPacketInTheWindowKeepsPreviousValue(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: ""})
 	h.useTemp()
 	rowsNow := func(step string) int {
@@ -247,6 +253,7 @@ func TestRecordingHLSTempWithoutVideoPacketInTheWindowKeepsPreviousValue(t *test
 //
 // 壊し方: recordingHLSVideoDurationFromPackets の `%recordingHLSPTSModulus` を消す。
 func TestRecordingHLSTempPlaylistAcrossPTSWrap(t *testing.T) {
+	t.Parallel()
 	// 原点は巻き戻りの 3 秒前。末尾は巻き戻りの後の 5 秒なので、映像の長さは 8 秒（4 本）。
 	origin := recordingHLSPTSModulus - 3*mpegTSTimestampClock
 	probe := recordingHLSTestProbe{firstPacketPTS: origin, tail: fmt.Sprintf("pts=%d|duration=3600|\n", 5*mpegTSTimestampClock-3600)}
@@ -268,6 +275,7 @@ func TestRecordingHLSTempPlaylistAcrossPTSWrap(t *testing.T) {
 }
 
 func TestRecordingHLSVideoDurationFromPackets(t *testing.T) {
+	t.Parallel()
 	const second = mpegTSTimestampClock
 	nearWrap := recordingHLSPTSModulus - 3*second
 	for _, tc := range []struct {
@@ -302,6 +310,7 @@ func TestRecordingHLSVideoDurationFromPackets(t *testing.T) {
 //
 // 壊し方: RecordingHLS.request の store.ErrNotFound の分岐で 404 ではなく 503 を返す。
 func TestRecordingHLSCanceledIngestReturns404AndStopsTransform(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("starts a child process")
 	}
@@ -335,6 +344,7 @@ func TestRecordingHLSCanceledIngestReturns404AndStopsTransform(t *testing.T) {
 // 壊し方: RecordingHLS.Segment で temp にも VideoDurationPTS を渡す。
 // 壊し方: RecordingHLS.Segment で原本にも -follow 1 を渡す。
 func TestRecordingHLSTempFollowsAndOriginalHasKnownEnd(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []store.RecordingHLSInputKind{store.RecordingHLSInputTemp, store.RecordingHLSInputOriginal} {
 		t.Run(fmt.Sprint(kind), func(t *testing.T) {
 			argsPath := filepath.Join(t.TempDir(), "ffmpeg-args")
@@ -385,6 +395,7 @@ func TestRecordingHLSTempFollowsAndOriginalHasKnownEnd(t *testing.T) {
 // 壊し方: finalSegmentNumber を ⌈長さ/D⌉−1 にする（完了後の最後が 5 番になり、録画中と合わなくなる）。
 // 壊し方: buildRecordingHLSTempPlaylist の判定を `videoDurationPTS` にする（録画中に 4 番が載る）。
 func TestRecordingHLSFinalRowFollowsLastFrameStart(t *testing.T) {
+	t.Parallel()
 	metadata := recordingHLSMetadata{
 		startedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
 		timing:    recordingHLSTiming{videoDurationPTS: 900900, videoLastFramePTS: 897840},

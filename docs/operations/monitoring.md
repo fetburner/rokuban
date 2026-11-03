@@ -167,9 +167,9 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_object_store_orphans_unresolved` | Gauge | DB にコピー行が無いまま残っている S3 のキーの数。報告だけで削除しない |
 | `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
 | `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
-| `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | 全 root を観測できたパスの時刻 |
-| `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root ごとに最後に観測できた時刻 |
-| `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数 |
+| `rokuban_storage_sync_last_success_timestamp_seconds{store}` | Gauge | 置き場の全 root を観測できたパスの時刻 |
+| `rokuban_storage_root_last_success_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最終観測時刻 |
+| `rokuban_storage_total_bytes{store,root}` / `rokuban_storage_used_bytes{store,root}` / `rokuban_storage_available_bytes{store,root}` | Gauge | 置き場と root ごとの直近観測バイト数 |
 
 `rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
 
@@ -181,7 +181,11 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 `rokuban_missing_asset_scan_suspected_storage_failure_total` は、`storage.stores` に FS 置き場が無い構成でだけ進む。走査でファイルを 1 件も観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
 
-`rokuban_storage_sync_last_success_timestamp_seconds` は、1 root でも失敗した部分成功では進まない。root ごとのゲージと対で見る。root（`media` / `scratch`）ごとの最終観測時刻は、片方だけ恒久的に動かなくなっているケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で容量アラートを組むために出す。
+`rokuban_storage_sync_last_success_timestamp_seconds{store}` は、その置き場の全 root を観測できたパスの時刻で、1 root でも失敗した部分成功では進まない。`rokuban_storage_root_last_success_timestamp_seconds{store,root}` と対で見る。root（`media` / `scratch`）ごとの鮮度は、その置き場で片方だけ恒久的に動かなくなったケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。
+
+容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。
+
+以上の storage ゲージはすべて `store` ラベルを持ち、置き場が 1 つの構成でも付く。`store` を指定しないセレクタ（`root="media"` など）は全置き場の系列に一致するので、そのまま動く。`root` だけで集約・結合している式（`by (root)` / `on (root)`）は置き場をまたいで合算・照合してしまうので、`store` を含めるよう直す。scratch はプロセスで共有するが、置き場の数だけ同じ値の系列が出るので、scratch の容量アラートは置き場の数だけ鳴る。
 
 <details><summary>根拠</summary>
 
@@ -631,7 +635,7 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 
 | 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
-| `GET /api/storage` に root が載っている | 最新の観測とは限らない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
+| `GET /api/storage` に root が載っている | 最新の観測とは限らない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{store,root}` |
 | `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない | `rokuban_store_marker_mismatch_total{store}`（置き場名が空なら `rokuban_missing_asset_scan_suspected_storage_failure_total`）が増えていないこと、かつ `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること |
 
 1 root の statfs が失敗すると、前回の観測行をそのまま残す。そのため、行の存在だけでは観測が続いていることを保証しない。

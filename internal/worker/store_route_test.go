@@ -1,8 +1,10 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -92,6 +94,81 @@ type ingestRecorder struct {
 func (w ingestRecorder) Work(context.Context, jobs.IngestJobArgs) error {
 	*w.calls = append(*w.calls, w.store)
 	return nil
+}
+
+// fallback の destination は記録し、desired を使える場合は fallback のログを出さない。
+func TestIngestRouteLogsFallbackDestination(t *testing.T) {
+	policy := config.StorageConfig{
+		Stores:    map[string]config.StoreConfig{"tokyo": {Kind: "fs"}, "nagoya": {Kind: "fs"}},
+		Originals: []config.OriginalStoreRule{{Store: "nagoya"}},
+		Derived:   "tokyo",
+	}
+	tests := []struct {
+		name    string
+		chosen  string
+		mounted []string
+		want    string
+		fields  []string
+	}{
+		{
+			name:    "desired store is not mounted",
+			chosen:  "nagoya",
+			mounted: []string{"tokyo"},
+			want:    "tokyo",
+			fields:  []string{"level=WARN", "desired_store=nagoya", "actual_store=tokyo"},
+		},
+		{
+			name:    "rules select no store",
+			mounted: []string{"tokyo"},
+			want:    "tokyo",
+			fields:  []string{"level=WARN", `desired_store=""`, "actual_store=tokyo"},
+		},
+		{
+			name:    "desired store is mounted",
+			chosen:  "nagoya",
+			mounted: []string{"tokyo", "nagoya"},
+			want:    "nagoya",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			perStore := make(map[string]*Deps, len(tt.mounted))
+			for _, name := range tt.mounted {
+				perStore[name] = &Deps{MediaStoreName: name}
+			}
+			var calls []string
+			deps := &Deps{
+				PerStore:              perStore,
+				MountedStores:         tt.mounted,
+				IngestStores:          fixedStoreChooser{tt.chosen},
+				StorageTransferPolicy: policy,
+			}
+			route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
+				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
+			})
+			if err := route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}); err != nil {
+				t.Fatalf("Work: %v", err)
+			}
+			if got := strings.Join(calls, ","); got != tt.want {
+				t.Fatalf("ingest wrote to %q, want literal %q", got, tt.want)
+			}
+			if len(tt.fields) == 0 {
+				if got := logs.String(); got != "" {
+					t.Fatalf("logs = %q, want no fallback log", got)
+				}
+				return
+			}
+			for _, field := range tt.fields {
+				if !strings.Contains(logs.String(), field) {
+					t.Errorf("log %q does not include %q", logs.String(), field)
+				}
+			}
+		})
+	}
 }
 
 // ingest は、規則に合う置き場がマウント済みならそこへ、そうでなければ --stores の順で先頭のマウント済みの置き場へ書く。

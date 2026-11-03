@@ -223,6 +223,78 @@ func (e objectEnv) replaceThumbnail(t *testing.T) (oldKey, newKey string) {
 	return oldKey, newKey
 }
 
+// objectPublishOwnershipPublisher records whether cleanup asks the database who owns a key.
+type objectPublishOwnershipPublisher struct {
+	store.DerivedMediaPublisher
+	ownershipChecks int
+}
+
+// PreparePendingMediaAssetCopy satisfies the publication contract for this isolated test.
+func (*objectPublishOwnershipPublisher) PreparePendingMediaAssetCopy(context.Context, store.PendingMediaAssetCopy) error {
+	return nil
+}
+
+// HasLiveMediaAssetCopy records an ownership lookup; this conflict path must not need one.
+func (p *objectPublishOwnershipPublisher) HasLiveMediaAssetCopy(context.Context, string) (bool, error) {
+	p.ownershipChecks++
+	return false, nil
+}
+
+// TestObjectPublishTreatsIdenticalExistingKeyAsAnotherPublisher fixes the ownership
+// signal used by cleanup: an identical object already created by another Put is not ours.
+func TestObjectPublishTreatsIdenticalExistingKeyAsAnotherPublisher(t *testing.T) {
+	ctx := context.Background()
+	base, err := fsstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("creating filesystem object store: %v", err)
+	}
+	publisher := &objectPublishOwnershipPublisher{}
+	const key = "thumbnails/earlier-publisher.jpg"
+	payload := []byte("identical object from the earlier publisher")
+	scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
+	writeFile(t, scratch, payload)
+	pending := store.PendingMediaAssetCopy{
+		RecordingID: 1, Kind: store.AssetKindThumbnail, RelPath: key,
+		DerivedGeneration: 0, ReserveNewGeneration: true,
+	}
+	objects := beforePutObjectStore{
+		Store: base,
+		beforePut: func(putCtx context.Context, putKey string) error {
+			if putKey != key {
+				return fmt.Errorf("unexpected Put key %q", putKey)
+			}
+			return base.Put(putCtx, putKey, bytes.NewReader(payload), int64(len(payload)), sha256.Sum256(payload), "image/jpeg")
+		},
+	}
+	commitCalled := false
+	_, published, err := publishGeneratedObject(ctx, objects, publisher, pending, scratch, "image/jpeg", false, nil,
+		func(int64, [sha256.Size]byte) (bool, error) {
+			commitCalled = true
+			return true, nil
+		})
+	if err != nil || published {
+		t.Fatalf("publish result = (%t, %v), want an uncommitted no-op", published, err)
+	}
+	if commitCalled {
+		t.Fatal("commit ran after Put reported that the key already existed")
+	}
+	if publisher.ownershipChecks != 0 {
+		t.Fatalf("cleanup ownership checks = %d, want 0 for a key this Put did not create", publisher.ownershipChecks)
+	}
+	body, _, err := base.Open(ctx, key)
+	if err != nil {
+		t.Fatalf("opening the earlier publisher's object: %v", err)
+	}
+	got, readErr := io.ReadAll(body)
+	closeErr := body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("reading the earlier publisher's object = (%v, %v)", readErr, closeErr)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("object after the second publisher = %q, want the earlier bytes %q", got, payload)
+	}
+}
+
 // 旧世代は公開の tx では触らず、削除 reconcile が overlap の後に消す。
 // 署名付き URL で旧世代を再生中の視聴者が、公開の直後に 404 にならないためである。
 func TestObjectPublishKeepsPreviousGenerationUntilOverlapElapses(t *testing.T) {

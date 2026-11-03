@@ -209,6 +209,7 @@ func writeWrapTestTS(t *testing.T, ffmpeg, path string, seconds int) {
 }
 
 func TestSeekFrameErrorPicksFirstFrameAtOrAfterTargetAndRejectsAmbiguousHash(t *testing.T) {
+	t.Parallel()
 	var reference []hashedFrame
 	for i := 0; i < 10; i++ {
 		reference = append(reference, hashedFrame{pts: big.NewRat(int64(1000+i*3600), 1), hash: strconv.Itoa(i)})

@@ -22,6 +22,7 @@ import (
 )
 
 func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{
 		Name: "test", VideoCodec: "libx264", AudioCodec: "aac",
 		SegmentSeconds: 2, PlaylistSize: 0,
@@ -75,6 +76,7 @@ func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *
 //
 // 壊し方: buildSegmentTransformArgs の -output_ts_offset の正規化を外す（trimSeconds をそのまま渡す）。
 func TestBuildSegmentTransformArgsNormalizesNegativeOutputOffset(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	args, err := buildSegmentTransformArgs(
 		LiveConfig{FFmpeg: "ffmpeg", Profiles: []LiveProfile{profile}},
@@ -97,6 +99,7 @@ func TestBuildSegmentTransformArgsNormalizesNegativeOutputOffset(t *testing.T) {
 //
 // 壊し方: buildSegmentTransformArgs の -output_ts_offset の正規化を外す。10 秒と 50 秒の入力が落ちる。
 func TestSegmentTransformRealFFmpegKeepsGridAcrossEarlyPTSWrap(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	const (
@@ -106,6 +109,7 @@ func TestSegmentTransformRealFFmpegKeepsGridAcrossEarlyPTSWrap(t *testing.T) {
 	)
 	for _, wrapAt := range []int{10, 50, 70, 100} {
 		t.Run(fmt.Sprintf("wrap at %d s", wrapAt), func(t *testing.T) {
+			t.Parallel()
 			inputPath := filepath.Join(t.TempDir(), "wrap.ts")
 			writeWrapAtTestTS(t, ffmpeg, inputPath, wrapAt, wrapAt+10)
 			originPTS := firstPacketPTS(t, ffprobe, inputPath)
@@ -182,6 +186,7 @@ func writeWrapAtTestTS(t *testing.T, ffmpeg, path string, wrapAt, seconds int) {
 }
 
 func TestSegmentTransformDoesNotJoinTempAndOriginalInputs(t *testing.T) {
+	t.Parallel()
 	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
 	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -232,6 +237,7 @@ func TestSegmentTransformDoesNotJoinTempAndOriginalInputs(t *testing.T) {
 }
 
 func TestBuildSegmentTransformArgsKeepsGrowingInputOptionsBeforeFD(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	args, err := buildSegmentTransformArgs(
 		LiveConfig{FFmpeg: "ffmpeg", Profiles: []LiveProfile{profile}},
@@ -259,6 +265,7 @@ func TestBuildSegmentTransformArgsKeepsGrowingInputOptionsBeforeFD(t *testing.T)
 }
 
 func TestGrowingTempFollowReadsAppendedBytesThroughFD3WithRealFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	fullPath := filepath.Join(t.TempDir(), "full.ts")
 	writeAlignedTestTS(t, ffmpeg, fullPath, 4)
@@ -421,6 +428,7 @@ func framehashVideoFrameCount(t *testing.T, ffmpeg, path string) int {
 }
 
 func TestBuildSegmentTransformArgsMapsOnlyPresentSubtitles(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	input := SegmentTransformInput{Path: "/dev/fd/3", OriginPTS: 90000, AudioStreamCount: 1}
 	workDir := t.TempDir()
@@ -456,6 +464,7 @@ func TestBuildSegmentTransformArgsMapsOnlyPresentSubtitles(t *testing.T) {
 }
 
 func TestNewSegmentManagerValidatesCacheWindowAndCleansOwnedScratch(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	base := SegmentTransformOptions{
 		Config:           LiveConfig{Profiles: []LiveProfile{profile}},
@@ -487,6 +496,7 @@ func TestNewSegmentManagerValidatesCacheWindowAndCleansOwnedScratch(t *testing.T
 }
 
 func TestReadSegmentPlaylistParsesStableAndTemporaryNames(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	playlist := filepath.Join(dir, "profile.0.m3u8")
 	if err := os.WriteFile(playlist, []byte("#EXTM3U\n#EXTINF:2.0,\nsegments/profile.0_seg00007.ts\n#EXTINF:2.0,\nsegments/profile.0_seg00008.ts\n#EXT-X-ENDLIST\n"), 0o600); err != nil {
@@ -508,6 +518,7 @@ func TestReadSegmentPlaylistParsesStableAndTemporaryNames(t *testing.T) {
 }
 
 func TestReadSubtitleSegmentPlaylistCachesVTTByCanonicalNumber(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	playlist := filepath.Join(dir, "subtitles_0.m3u8")
 	contents := "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/seg0.vtt\n#EXTINF:2.0,\nsegments/seg1.vtt\n#EXT-X-ENDLIST\n"
@@ -532,6 +543,7 @@ func TestReadSubtitleSegmentPlaylistCachesVTTByCanonicalNumber(t *testing.T) {
 }
 
 func TestSegmentTransformCachesSegmentsInPlaylistOrder(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	workDir := filepath.Join(root, "work")
 	segmentDir := filepath.Join(workDir, "segments")
@@ -585,6 +597,7 @@ func TestSegmentTransformCachesSegmentsInPlaylistOrder(t *testing.T) {
 }
 
 func TestSegmentTransformCachesWebVTTSegments(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	workDir := filepath.Join(root, "work")
 	if err := os.MkdirAll(workDir, 0o750); err != nil {
@@ -639,6 +652,7 @@ func TestSegmentTransformCachesWebVTTSegments(t *testing.T) {
 }
 
 func TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	for _, tc := range []struct {
@@ -701,6 +715,7 @@ func TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid(t *testing.T) {
 // 起動位置の T と最初のフレームの差が起動ごとに変わる（startNumber 1 で 180 tick、16 で 2880 tick）。
 // キーフレームの格子をその差に引きずられると、キャッシュでつないだ境界でフレームが重複・欠落する。
 func TestSegmentTransformRestartKeepsSegmentStartFrame(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "ntsc.ts")
@@ -781,6 +796,7 @@ func write2997TestTS(t *testing.T, ffmpeg, path string, seconds int) {
 }
 
 func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -881,6 +897,7 @@ func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
 }
 
 func TestSegmentTransformResumeAfterSIGSTOPUpdatesPlaylistPromptly(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -937,6 +954,7 @@ func TestSegmentTransformResumeAfterSIGSTOPUpdatesPlaylistPromptly(t *testing.T)
 }
 
 func TestSegmentTransformAtCapacityDoesNotKillTransformsWithWaiters(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -984,6 +1002,7 @@ func TestSegmentTransformAtCapacityDoesNotKillTransformsWithWaiters(t *testing.T
 }
 
 func TestSegmentTransformAtCapacityKillsOldestIdleTransform(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -1034,6 +1053,7 @@ func TestSegmentTransformAtCapacityKillsOldestIdleTransform(t *testing.T) {
 }
 
 func TestSegmentTransformWaitWindowReusesAndRestartsWithRealFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -1110,10 +1130,12 @@ func TestSegmentTransformWaitWindowReusesAndRestartsWithRealFFmpeg(t *testing.T)
 }
 
 func TestSegmentTransformGracefulStopDoesNotCacheInterruptedTail(t *testing.T) {
+	t.Parallel()
 	// ffmpeg は SIGINT/SIGTERM で終わるとき、書きかけの末尾を rename して playlist に載せる。
 	// 次のセグメントが始まっていないその末尾を、キャッシュに入れてはならない。
 	for _, signal := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
 		t.Run(signal.String(), func(t *testing.T) {
+			t.Parallel()
 			ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 			ffprobe := lookPathFFprobe(t)
 			inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -1401,6 +1423,7 @@ func assertArgPair(t *testing.T, args []string, flag, want string) {
 }
 
 func TestSegmentTransformWaitWindowIs24Seconds(t *testing.T) {
+	t.Parallel()
 	group := segmentTransformGroup{recordingID: "recording", generation: "generation", profile: "test"}
 	task := &segmentTransformTask{group: group, currentNumber: 10}
 	manager := &SegmentManager{
@@ -1417,6 +1440,7 @@ func TestSegmentTransformWaitWindowIs24Seconds(t *testing.T) {
 }
 
 func TestSegmentTransformDoesNotWaitForPreRollSegmentBeforeRequestStart(t *testing.T) {
+	t.Parallel()
 	group := segmentTransformGroup{recordingID: "recording", generation: "generation", profile: "test"}
 	// n=5 を要求して起動した変換は 4 から書き始めるが、4 は pre-roll なのでキャッシュに入れない。
 	task := &segmentTransformTask{group: group, requestStart: 5, startNumber: 4, currentNumber: 4}
@@ -1432,6 +1456,7 @@ func TestSegmentTransformDoesNotWaitForPreRollSegmentBeforeRequestStart(t *testi
 }
 
 func TestSegmentTransformFindsPrefetchPausedTransformForItsLastCompletedSegment(t *testing.T) {
+	t.Parallel()
 	group := segmentTransformGroup{recordingID: "recording", generation: "generation", profile: "test"}
 	// current=7 は 7 を書き始めた状態で、6 は完成済み（playlist への掲載が遅れているだけ）。
 	task := &segmentTransformTask{group: group, requestStart: 1, startNumber: 0, currentNumber: 7}
@@ -1447,6 +1472,7 @@ func TestSegmentTransformFindsPrefetchPausedTransformForItsLastCompletedSegment(
 }
 
 func TestSegmentTransformDoesNotCachePlaylistEntryUntilNextSegmentStarts(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	manager, err := NewSegmentManager(SegmentTransformOptions{
 		Config:          LiveConfig{Profiles: []LiveProfile{profile}},
@@ -1496,6 +1522,7 @@ func TestSegmentTransformDoesNotCachePlaylistEntryUntilNextSegmentStarts(t *test
 }
 
 func TestSegmentTransformWaitsForCacheSpaceThenResumes(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -1558,6 +1585,7 @@ func TestSegmentTransformWaitsForCacheSpaceThenResumes(t *testing.T) {
 }
 
 func TestSegmentTransformStopsAfterIdleTimeout(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -1607,6 +1635,7 @@ func TestSegmentTransformStopsAfterIdleTimeout(t *testing.T) {
 }
 
 func TestSegmentTransformNormalEOFPublishesFinalShortSegment(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "short.ts")
@@ -1634,6 +1663,7 @@ func TestSegmentTransformNormalEOFPublishesFinalShortSegment(t *testing.T) {
 }
 
 func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -1748,6 +1778,7 @@ func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
 }
 
 func TestSegmentTransformRequestForSegmentBeforeRunningStartStartsNewTransformWithRealFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -1777,6 +1808,7 @@ func TestSegmentTransformRequestForSegmentBeforeRunningStartStartsNewTransformWi
 }
 
 func TestSegmentTransformEndlistMakesOnlyTheRecordingsLastSegmentFinal(t *testing.T) {
+	t.Parallel()
 	// 10 秒の録画なら D=2 秒で最後の番号は 4（ENDLIST の有無ではなく長さで決まる）。
 	for _, tc := range []struct {
 		name         string
@@ -1822,6 +1854,7 @@ func TestSegmentTransformEndlistMakesOnlyTheRecordingsLastSegmentFinal(t *testin
 }
 
 func TestFinalSegmentNumber(t *testing.T) {
+	t.Parallel()
 	// 単位は 90 kHz tick。10.010 秒は 900900、9.976 秒は 897840（29.97 fps の最後のフレームが
 	// 2 秒の格子の 4 番に始まる例）。
 	for _, tc := range []struct {
@@ -1852,6 +1885,7 @@ func TestFinalSegmentNumber(t *testing.T) {
 //
 // 壊し方: finalSegmentNumber を ⌈長さ/D⌉−1 にする（10 秒の入力で最後が 5 番になり、変換が作れない）。
 func TestSegmentTransformFinalFrameCrossingBoundaryServesLastSegments(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	for _, tc := range []struct {
@@ -1902,6 +1936,7 @@ func TestSegmentTransformFinalFrameCrossingBoundaryServesLastSegments(t *testing
 }
 
 func TestSegmentTransformGetBeyondRecordingEndFailsWithoutStartingFFmpeg(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	manager, err := NewSegmentManager(SegmentTransformOptions{
 		Config:      LiveConfig{Profiles: []LiveProfile{profile}},
@@ -1925,6 +1960,7 @@ func TestSegmentTransformGetBeyondRecordingEndFailsWithoutStartingFFmpeg(t *test
 }
 
 func TestSegmentTransformEOFNotAtKnownLastSegmentIsNotCachedWithRealFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "short.ts")
@@ -1955,6 +1991,7 @@ func TestSegmentTransformEOFNotAtKnownLastSegmentIsNotCachedWithRealFFmpeg(t *te
 }
 
 func TestSegmentTransformOversizedSegmentIsDeliveredAndHugeSegmentFailsWithoutWaiting(t *testing.T) {
+	t.Parallel()
 	newTask := func(t *testing.T, manager *SegmentManager, content string) (*segmentTransformTask, SegmentKey, *segmentTransformWaiter) {
 		workDir := filepath.Join(t.TempDir(), "work")
 		if err := os.MkdirAll(filepath.Join(workDir, "segments"), 0o750); err != nil {
@@ -2027,6 +2064,7 @@ func TestSegmentTransformOversizedSegmentIsDeliveredAndHugeSegmentFailsWithoutWa
 }
 
 func TestSegmentTransformDeletesPreRollSegmentOnceNextSegmentStarts(t *testing.T) {
+	t.Parallel()
 	manager := newBareSegmentManager(t, 1<<20)
 	workDir := filepath.Join(t.TempDir(), "work")
 	segmentDir := filepath.Join(workDir, "segments")
@@ -2061,6 +2099,7 @@ func TestSegmentTransformDeletesPreRollSegmentOnceNextSegmentStarts(t *testing.T
 }
 
 func TestSegmentTransformCachedRequestResumesPrefetchPausedTransformWithRealFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
@@ -2163,6 +2202,7 @@ func videoSpanPTS(t *testing.T, ffprobe, path string) (durationPTS, lastFramePTS
 }
 
 func TestSegmentTransformStopAtCachedPositionKeepsTransformsStillProducingAWaitedSegment(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		waitedFor  int64
@@ -2220,6 +2260,7 @@ func TestSegmentTransformStopAtCachedPositionKeepsTransformsStillProducingAWaite
 }
 
 func TestSegmentTransformBlockedOpenDoesNotBlockOtherRecordings(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	manager, err := NewSegmentManager(SegmentTransformOptions{
 		Config:      LiveConfig{Profiles: []LiveProfile{profile}},
@@ -2377,6 +2418,7 @@ func assertWorkScratchEmpty(t *testing.T, manager *SegmentManager) {
 }
 
 func TestSegmentTransformStartupFailureWakesEveryWaiterWithoutStarting(t *testing.T) {
+	t.Parallel()
 	ffmpeg, marker := startupMarkerFFmpeg(t)
 	scratch := t.TempDir()
 	manager := newRealSegmentManager(t, ffmpeg, scratch, 2, 128<<20, 1<<20)
@@ -2422,6 +2464,7 @@ func TestSegmentTransformStartupFailureWakesEveryWaiterWithoutStarting(t *testin
 }
 
 func TestSegmentTransformStopRecordingDuringStartupDoesNotStartFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg, marker := startupMarkerFFmpeg(t)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
 	defer closeSegmentManager(t, manager)
@@ -2468,6 +2511,7 @@ func TestSegmentTransformStopRecordingDuringStartupDoesNotStartFFmpeg(t *testing
 }
 
 func TestSegmentTransformCloseBeforeStartDoesNotStartFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg, marker := startupMarkerFFmpeg(t)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
 
@@ -2528,6 +2572,7 @@ func TestSegmentTransformCloseBeforeStartDoesNotStartFFmpeg(t *testing.T) {
 // 止まっている間に Close が 3 秒以内に返り、待っている Get が errSegmentManagerClosed で返ることを確かめる。
 // 実際の入力の open（DB 照会）は ctx に従うので、これが最も実際に近い Close の経路である。
 func TestSegmentTransformCloseDuringStartupReturnsPromptlyWithoutStartingFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg, marker := startupMarkerFFmpeg(t)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
 
@@ -2581,6 +2626,7 @@ func TestSegmentTransformCloseDuringStartupReturnsPromptlyWithoutStartingFFmpeg(
 // 待っている Get が waiter を外し、stopping が先に立つ。そのため Close の経路では m.closed の判定を単独では
 // 確かめられない。ここでは m.ctx を取り消さずに m.closed だけを立てる。
 func TestSegmentTransformClosedFlagDuringStartupDoesNotStartFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg, marker := startupMarkerFFmpeg(t)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
 	defer manager.cancel()
@@ -2628,6 +2674,7 @@ func TestSegmentTransformClosedFlagDuringStartupDoesNotStartFFmpeg(t *testing.T)
 }
 
 func TestSegmentTransformLastWaiterLeavingDuringStartupCancelsOpen(t *testing.T) {
+	t.Parallel()
 	ffmpeg, marker := startupMarkerFFmpeg(t)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
 	defer closeSegmentManager(t, manager)
@@ -2674,6 +2721,7 @@ func TestSegmentTransformLastWaiterLeavingDuringStartupCancelsOpen(t *testing.T)
 }
 
 func TestSegmentTransformDeliverKeyWithoutWaitersStopsStartingTask(t *testing.T) {
+	t.Parallel()
 	ffmpeg, marker := startupMarkerFFmpeg(t)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 1<<20)
 	defer closeSegmentManager(t, manager)

@@ -2,7 +2,7 @@
 # 判定 6: 置き場が 2 つあるとき、原本・派生物・転送・削除・配信が正しい置き場で実際に働く。
 #
 # **置き場が 1 つの構成では原理的に測れない**ので、`overlays/e2e-two-stores`
-# （FS 置き場 tokyo / takamatsu、派生物は MinIO の S3）でだけ走る（run.sh が overlay で振り分ける）。
+# （FS 置き場 tokyo / takamatsu、派生物は RustFS の S3）でだけ走る（run.sh が overlay で振り分ける）。
 #
 # 判定 6 は「実物の仕事が起きた」ことを、DB の行・KEDA が起こした Job の Pod テンプレート・
 # 置き場の PVC の中身（サイズと SHA-256）・配信の応答で見る。probe（`e2e_probe`）は使わない。
@@ -32,15 +32,8 @@
 #     Pod テンプレートで見る（録画との対応は観測しない）。
 #   - Ingress controller を経由した経路。kind には controller が無いので、Ingress の行き先の
 #     Service（rokuban-recording-hls-<置き場>）を直接叩く（行と Service 名の対応は stores_test.go）。
-#   - 派生物の S3 の中身。派生物の行（copy の state = active）で見る。MinIO の中は覗かない。
+#   - 派生物の S3 の中身。派生物の行（copy の state = active）で見る。RustFS の中は覗かない。
 #
-# **この判定は実行していない版である**（書いた環境に kind / docker が無かった）。初回の実機実行で
-# 次が合わなければ、ここを直す。
-#   - storage-transfer-reconcile の CLI（`rokuban enqueue storage-transfer-reconcile`）が未マージなら、
-#     6.3 は「enqueue に失敗」で赤くなる
-#   - bucket の SigV4 PUT（overlays/e2e-two-stores/minio/bucket-job.yaml）が MinIO に受理されないと、
-#     派生物の書き込みが失敗して 6.2 が赤くなる
-#   - 6.7 は overlap（32 分）の満了を待つので、判定全体で 40 分前後かかる
 set -uo pipefail
 
 E2E_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"

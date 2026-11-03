@@ -358,6 +358,7 @@ func mustFloat(t *testing.T, v string) float64 {
 // pickFrame は pts が at 以上の最初のコマを採り、大きさが JPEG と違えば 1 つ前を見る。
 // SAR が不明なら 1:1 にする。
 func TestPickFrame(t *testing.T) {
+	t.Parallel()
 	two := "1.00,1440,1080,4:3\n1.04,720,480,32:27\n"
 	hd, sd := probedFrame{1440, 1080, "4:3"}, probedFrame{720, 480, "32:27"}
 	for _, tc := range []struct {

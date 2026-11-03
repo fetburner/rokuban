@@ -45,6 +45,11 @@ type StorageSyncWorker struct {
 	// ScratchDir は storage.scratch_dir。worker ロールは空の scratch_dir では起動しない
 	// （cmd/rokuban の起動時検証）。空文字列を「観測しない」と扱うのは、テストの
 	// 部分構成で statfs("") に落ちないための防御である。
+	//
+	// scratch は置き場ごとの worker がそれぞれ観測する。storage_sync とその DB
+	// 射影は (store, root) で識別されるため、各置き場の worker が scratch も
+	// 記録して、その置き場から見える観測行を保つ。その結果、scratch は置き場の数
+	// だけ同じ値で書き出される。
 	ScratchDir string
 
 	// Stat は 1 root を観測する関数。nil なら statDisk を使う。
@@ -61,7 +66,8 @@ func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
 }
 
 // Work はストレージ観測の全量同期を 1 パス実行する。
-func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) error {
+func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs) error {
+	storeName := args.QueueStore()
 	if w.MediaDir == "" {
 		return fmt.Errorf("storage sync: media dir is empty")
 	}
@@ -108,14 +114,18 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 	// 取り残されたラベルは「凍結した鮮度ゲージ」= Pod を再起動するまで消えない
 	// 偽陽性アラートになる（docs/operations/monitoring.md §警告が出ないことは保証ではない が
 	// この鮮度を判断材料に挙げている）。
+	//
+	// 置き場単位の系列は掃除しない。置き場の集合は --stores でプロセスの寿命の間
+	// 固定されていて、再起動すると Prometheus のレジストリは空から始まるので、
+	// 担当しなくなった置き場の系列はプロセス内に残らない。
 	for _, r := range allRoots {
 		if slices.Contains(desired, r.name) {
 			continue
 		}
-		metrics.StorageRootLastSuccess.DeleteLabelValues(r.name)
-		metrics.StorageRootTotalBytes.DeleteLabelValues(r.name)
-		metrics.StorageRootUsedBytes.DeleteLabelValues(r.name)
-		metrics.StorageRootAvailableBytes.DeleteLabelValues(r.name)
+		metrics.StorageRootLastSuccess.DeleteLabelValues(storeName, r.name)
+		metrics.StorageRootTotalBytes.DeleteLabelValues(storeName, r.name)
+		metrics.StorageRootUsedBytes.DeleteLabelValues(storeName, r.name)
+		metrics.StorageRootAvailableBytes.DeleteLabelValues(storeName, r.name)
 	}
 
 	stat := w.statFunc()
@@ -132,7 +142,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 			// なる想定。metrics.TunerSyncLastSuccess と同じ「警告が出ないことは保証ではない」
 			// 姿勢）。
 			slog.Warn("storage sync: statfs failed, keeping previous observation",
-				"root", r.name, "path", r.path, "err", err)
+				"store", storeName, "root", r.name, "path", r.path, "err", err)
 			continue
 		}
 		if err := w.Storage.UpsertStorageSync(ctx, store.StorageObservationInput{
@@ -142,17 +152,17 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 			UsedBytes:      u.usedBytes,
 			AvailableBytes: u.availableBytes,
 		}); err != nil {
-			return fmt.Errorf("storage sync: upserting root %s: %w", r.name, err)
+			return fmt.Errorf("storage sync: upserting store %s root %s: %w", storeName, r.name, err)
 		}
 		observed++
 
 		// root ごとのゲージは、この root の観測が実際に成功した場合にだけ進める
 		// （StorageSyncLastSuccess の対になる、root 単位の鮮度シグナル。
 		// internal/metrics.StorageRootLastSuccess のコメント参照）。
-		metrics.StorageRootLastSuccess.WithLabelValues(r.name).SetToCurrentTime()
-		metrics.StorageRootTotalBytes.WithLabelValues(r.name).Set(float64(u.totalBytes))
-		metrics.StorageRootUsedBytes.WithLabelValues(r.name).Set(float64(u.usedBytes))
-		metrics.StorageRootAvailableBytes.WithLabelValues(r.name).Set(float64(u.availableBytes))
+		metrics.StorageRootLastSuccess.WithLabelValues(storeName, r.name).SetToCurrentTime()
+		metrics.StorageRootTotalBytes.WithLabelValues(storeName, r.name).Set(float64(u.totalBytes))
+		metrics.StorageRootUsedBytes.WithLabelValues(storeName, r.name).Set(float64(u.usedBytes))
+		metrics.StorageRootAvailableBytes.WithLabelValues(storeName, r.name).Set(float64(u.availableBytes))
 	}
 
 	if observed == 0 {
@@ -171,8 +181,8 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 	// 見失う（PR #258 のレビュー指摘）。root 単位の欠落は
 	// StorageRootLastSuccess で検知する。
 	if observed == len(roots) {
-		metrics.StorageSyncLastSuccess.SetToCurrentTime()
+		metrics.StorageSyncLastSuccess.WithLabelValues(storeName).SetToCurrentTime()
 	}
-	slog.Info("storage sync complete", "roots", len(roots), "observed", observed)
+	slog.Info("storage sync complete", "store", storeName, "roots", len(roots), "observed", observed)
 	return nil
 }

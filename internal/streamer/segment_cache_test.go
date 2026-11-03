@@ -9,6 +9,7 @@ import (
 )
 
 func TestSegmentCacheLRUAndProtectedLeases(t *testing.T) {
+	t.Parallel()
 	cache, err := newSegmentCache(t.TempDir(), 6)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +79,7 @@ func TestSegmentCacheLRUAndProtectedLeases(t *testing.T) {
 }
 
 func TestSegmentCacheHardLinkFirstWriterWins(t *testing.T) {
+	t.Parallel()
 	cache, err := newSegmentCache(t.TempDir(), 32)
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +122,7 @@ func TestSegmentCacheHardLinkFirstWriterWins(t *testing.T) {
 }
 
 func TestSegmentCachePathCannotEscapeRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cache, err := newSegmentCache(root, 64)
 	if err != nil {
@@ -146,6 +149,7 @@ func writeSegmentFile(t *testing.T, root, contents string) string {
 }
 
 func TestSegmentCachePublishRejectsSegmentLargerThanWholeCacheWithoutWaiting(t *testing.T) {
+	t.Parallel()
 	cache, err := newSegmentCache(t.TempDir(), 4)
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +165,7 @@ func TestSegmentCachePublishRejectsSegmentLargerThanWholeCacheWithoutWaiting(t *
 }
 
 func TestSegmentCacheCountsOpenDeliveryBytesUntilClose(t *testing.T) {
+	t.Parallel()
 	cache, err := newSegmentCache(t.TempDir(), 4)
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +198,7 @@ func TestSegmentCacheCountsOpenDeliveryBytesUntilClose(t *testing.T) {
 }
 
 func TestSegmentCacheRemovedOpenFileStaysCountedUntilClose(t *testing.T) {
+	t.Parallel()
 	cache, err := newSegmentCache(t.TempDir(), 4)
 	if err != nil {
 		t.Fatal(err)
@@ -226,6 +232,7 @@ func TestSegmentCacheRemovedOpenFileStaysCountedUntilClose(t *testing.T) {
 }
 
 func TestSegmentFileDoubleCloseCountsOnce(t *testing.T) {
+	t.Parallel()
 	cache, err := newSegmentCache(t.TempDir(), 8)
 	if err != nil {
 		t.Fatal(err)
