@@ -614,6 +614,28 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 	}
 }
 
+// 読める置き場の nil は SQL の NULL（全置き場が読める）、空配列は '{}'（読める置き場が無い）に対応する。
+// 取り違えると、全置き場の読み手が配れなくなるか、読める置き場の無い streamer が他の置き場のコピーを配る。
+func TestServingReadableStoresNilMeansAllAndEmptyMeansNone(t *testing.T) {
+	ctx := context.Background()
+	env := newStoreScopeEnv(t)
+	rec := env.recording(t)
+	env.asset(t, rec, store.AssetKindThumbnail, nil)
+
+	got, err := NewMedia(env.pool, "", "").GetThumbnailMediaAssetForServing(ctx, rec)
+	if err != nil || got.Store != dbtest.StoreName {
+		t.Fatalf("all stores readable (nil) = (%+v, %v), want the %s copy", got, err, dbtest.StoreName)
+	}
+	for name, m := range map[string]*Media{
+		"empty readable":     NewMediaForStreamer(env.pool, "", []string{}),
+		"unrelated readable": NewMediaForStreamer(env.pool, "", []string{otherStoreName}),
+	} {
+		if _, err := m.GetThumbnailMediaAssetForServing(ctx, rec); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%s: err = %v, want ErrNotFound (the only copy is in %s, not readable here)", name, err, dbtest.StoreName)
+		}
+	}
+}
+
 // 原本の削除は取り返せないので、desired_store が欠けた（NULL の）ときは全置き場には倒さず、何も返さない。
 func TestUntilEncodedDeletableReturnsNothingForNullDesiredStore(t *testing.T) {
 	env := newStoreScopeEnv(t)

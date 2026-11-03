@@ -24,15 +24,21 @@ type Media struct {
 	pool          *pgxpool.Pool
 	storeName     string
 	originalStore string
-	// derivedStore は until_encoded の原本を消してよいかを判定する、派生物の desired 置き場。
-	// 空なら規則が無く、原本は消さない。コピーを読み書きする置き場（storeName）とは別の値で、
-	// storeName を代わりに使ってはならない。
+	// derivedStore は派生物の desired 置き場。until_encoded の原本を消してよいかの判定に使い、
+	// 配信では読めるコピーのうち優先する置き場になる。空なら規則が無く、原本は消さない。
+	// コピーを読み書きする置き場（storeName）とは別の値で、storeName を代わりに使ってはならない。
 	derivedStore string
+	// servingStores が非 nil なら、派生物の配信で読める置き場をこの一覧に絞る。
+	// nil のときは derivedStore（無ければ storeName）の置き場だけを読める扱いにする。
+	// derivedStore と storeName が両方空なら読める置き場は絞らず、全置き場が対象になる。
+	servingStores []string
 }
 
 // NewMedia は PostgreSQL を使う Media を作る。storeName はこのプロセスが書く置き場の名前。
 // 読み取り先の置き場を固定しないロールは "" を明示する。
-// derivedStore は storage.derived で、until_encoded の原本を消してよいかの判定にだけ使う。
+// derivedStore は storage.derived。until_encoded の原本を消してよいかの判定に使い、派生物の配信では
+// その置き場だけを読める扱いにする。derivedStore が空なら storeName の置き場だけになり、
+// derivedStore と storeName が両方空なら全置き場が対象になる。
 // 削除の判定をしない呼び出し元は "" を渡す。"" は規則が無い扱いで、原本は消えない。
 func NewMedia(pool *pgxpool.Pool, storeName, derivedStore string) *Media {
 	return NewMediaWithStores(pool, storeName, storeName, derivedStore)
@@ -41,6 +47,14 @@ func NewMedia(pool *pgxpool.Pool, storeName, derivedStore string) *Media {
 // NewMediaWithStores builds a Media implementation with distinct stores for source and derived assets.
 func NewMediaWithStores(pool *pgxpool.Pool, storeName, originalStore, derivedStore string) *Media {
 	return &Media{pool: pool, storeName: storeName, originalStore: originalStore, derivedStore: derivedStore}
+}
+
+// NewMediaForStreamer は streamer が読める置き場だけから派生物のコピーを選ぶ Media を作る。
+// readableStores が空なら、配信できる派生物コピーは無い。
+func NewMediaForStreamer(pool *pgxpool.Pool, preferredDerivedStore string, readableStores []string) *Media {
+	stores := make([]string, len(readableStores))
+	copy(stores, readableStores)
+	return &Media{pool: pool, derivedStore: preferredDerivedStore, servingStores: stores}
 }
 
 func (s *Media) originalStoreName() string {
@@ -55,6 +69,26 @@ func (s *Media) derivedStoreName() string {
 		return s.derivedStore
 	}
 	return s.storeName
+}
+
+// servingSelection は派生物の配信で選ぶコピーの置き場を、SQL の preferred_readable_media_asset_copy
+// に渡す値にする。readable が nil なら全置き場が読める扱い（NULL）で、NewMedia で derivedStore と
+// storeName が両方空の読み手がこれに当たる。
+// streamer は読めると設定された置き場を readable に、derivedStore を preferred に渡す。
+// それ以外の読み手は derivedStoreName() の置き場だけを読める扱いにして、従来の絞り込みを保つ。
+func (s *Media) servingSelection() (preferred *string, readable []string) {
+	if s.servingStores != nil {
+		return mediaStoreNameArg(s.derivedStore), s.servingStores
+	}
+	name := s.derivedStoreName()
+	return mediaStoreNameArg(name), mediaReadableArg(name)
+}
+
+func mediaReadableArg(storeName string) []string {
+	if storeName == "" {
+		return nil
+	}
+	return []string{storeName}
 }
 
 func mediaStoreNameArg(storeName string) *string {
@@ -158,10 +192,12 @@ func (s *Media) GetOriginalMediaAssetForServingInStore(ctx context.Context, reco
 
 // GetEncodedMediaAssetForServing は指定プロファイルの配信可能な encoded を返す。
 func (s *Media) GetEncodedMediaAssetForServing(ctx context.Context, recordingID int64, profile string) (store.MediaAsset, error) {
+	preferred, readable := s.servingSelection()
 	row, err := sqlcgen.New(s.pool).GetEncodedMediaAssetForServing(ctx, sqlcgen.GetEncodedMediaAssetForServingParams{
-		RecordingID: recordingID,
-		Profile:     &profile,
-		StoreName:   mediaStoreNameArg(s.derivedStoreName()),
+		RecordingID:    recordingID,
+		Profile:        &profile,
+		PreferredStore: preferred,
+		ReadableStores: readable,
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading encoded media asset for recording %d profile %q", recordingID, profile))
@@ -171,8 +207,9 @@ func (s *Media) GetEncodedMediaAssetForServing(ctx context.Context, recordingID 
 
 // GetThumbnailMediaAssetForServing は配信可能なサムネイルを返す。
 func (s *Media) GetThumbnailMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
+	preferred, readable := s.servingSelection()
 	row, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForServing(ctx, sqlcgen.GetThumbnailMediaAssetForServingParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
+		RecordingID: recordingID, PreferredStore: preferred, ReadableStores: readable,
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading thumbnail media asset for recording %d", recordingID))
@@ -182,8 +219,9 @@ func (s *Media) GetThumbnailMediaAssetForServing(ctx context.Context, recordingI
 
 // GetSeekTilesMediaAssetForServing は配信可能なシークタイルを返す。
 func (s *Media) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
+	preferred, readable := s.servingSelection()
 	row, err := sqlcgen.New(s.pool).GetSeekTilesMediaAssetForServing(ctx, sqlcgen.GetSeekTilesMediaAssetForServingParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
+		RecordingID: recordingID, PreferredStore: preferred, ReadableStores: readable,
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading seek tiles media asset for recording %d", recordingID))
