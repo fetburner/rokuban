@@ -7,7 +7,9 @@ DROP INDEX storage_sync_root_legacy_key;
 
 -- +goose Down
 
--- Recreating the old global keys fails when stores share a root or relative
--- path. That failure is intentional: the old writers cannot represent those rows.
+-- Recreating the global keys fails when stores share a root or relative path.
+-- We keep that failure instead of deleting rows: orphan_files.first_seen
+-- drives orphan aging, and a multi-store deployment would hit 23505 again
+-- on the next observation pass under the restored global key.
 CREATE UNIQUE INDEX orphan_files_rel_path_legacy_key ON orphan_files (rel_path);
 CREATE UNIQUE INDEX storage_sync_root_legacy_key ON storage_sync (root);
