@@ -278,20 +278,44 @@ jobs:
             kill "${minio_pid}" 2>/dev/null || true
           fi
 
-  # go test を 2 ランナーに分ける。4 コアのランナー 1 台に全パッケージ（race 付きの合計は
+  # go test を複数ランナーに分ける。4 コアのランナー 1 台に全パッケージ（race 付きの合計は
   # 約 600 秒）を詰めると、CPU の取り合いで最長パッケージがそのままジョブ長になるため。
   # 分ける軸は所要時間で、ffmpeg の要否ではない。ffmpeg を見るテストは ROKUBAN_REQUIRE_FFMPEG を
-  # 見ずに黙って skip するもの（internal/ffargs）があるので、両シャードに ffmpeg を入れる。
-  # heavy は HEAVY_PKGS に挙げた長いパッケージ、rest は `go list ./...` から heavy を除いた残り全部
-  # （将来足されたパッケージは自動で rest に入る）。HEAVY_PKGS の綴り違いは `go list` が落とす。
+  # 見ずに黙って skip するもの（internal/ffargs）があるので、全シャードに ffmpeg を入れる。
+  # 振り分けは直前の main 実行の実測（go-test-timings- のキャッシュ）を見て gotestsum の ci-matrix が
+  # 決める。手で名前を並べると、パッケージが増えるたびに直すことになるため。
+  # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
   # 必須チェック名 `test` は下の集約ジョブが担う。
+  test-matrix:
+    # 全シャードの開始を待たせる。ubuntu-slim では setup-go と gotestsum のビルドで 24s → 110s に伸びた。
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # go:embed の all:dist が存在しないと go list が落ちる。パッケージ一覧だけ要るので空の置き場で足りる。
+      - run: mkdir -p web/dist && touch web/dist/.keep
+      - uses: actions/cache/restore@v6
+        with:
+          path: timings
+          key: go-test-timings-${{ github.run_id }}
+          restore-keys: go-test-timings-
+      - id: plan
+        run: |
+          go list ./... > "$RUNNER_TEMP/packages.txt"
+          go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$RUNNER_TEMP/packages.txt" > "$RUNNER_TEMP/matrix.json"
+          echo "matrix=$(cat "$RUNNER_TEMP/matrix.json")" >> "$GITHUB_OUTPUT"
+
   test-shard:
-    name: test (${{ matrix.shard }})
+    name: test (${{ matrix.description }})
+    needs: test-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        shard: [heavy, rest]
+      matrix: ${{ fromJSON(needs.test-matrix.outputs.matrix) }}
     services:
       postgres:
         image: postgres:17
@@ -311,8 +335,6 @@ jobs:
       # 実 ffmpeg / ffprobe を回すテスト（この変数を見るもの）を
       # skip させない。ライブの音声 rendition の並びと PDT を実経路で見ているのはそれらだけ。
       ROKUBAN_REQUIRE_FFMPEG: "1"
-      # 単独で数十秒〜100 秒かかるパッケージ。均す対象なので、実測が動いたら入れ替える。
-      HEAVY_PKGS: ./internal/streamer ./internal/worker ./cmd/rokuban ./internal/api
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -368,21 +390,39 @@ jobs:
       - name: Run go test shard
         shell: bash
         env:
-          SHARD: ${{ matrix.shard }}
+          PACKAGES: ${{ matrix.packages }}
+          TIMING_FILE: timing-${{ matrix.id }}.json
         run: |
-          heavy=$(go list $HEAVY_PKGS)
-          if [ "$SHARD" = heavy ]; then
-            pkgs=$heavy
-          else
-            pkgs=$(go list ./... | grep -vxF "$heavy")
-          fi
-          go test -race -p 8 -count=1 -timeout 10m $pkgs
+          read -r -a pkgs <<< "$PACKAGES"
+          go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$TIMING_FILE" -- -race -p 8 -count=1 -timeout 10m "${pkgs[@]}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: go-test-timing-${{ matrix.id }}
+          path: timing-${{ matrix.id }}.json
+          # 同じ run の test-timings に渡すだけ。残すのは cache 側。
+          retention-days: 1
+
+  # main の実行だけが見積もりを更新する。PR はこの保存を行わず、main のキャッシュを読むだけ。
+  test-timings:
+    needs: test-shard
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: go-test-timing-*
+          merge-multiple: true
+          path: timings
+      - uses: actions/cache/save@v6
+        with:
+          path: timings
+          key: go-test-timings-${{ github.run_id }}
 
   # 必須チェック名 test を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
   test:
     needs: test-shard
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - run: test "${{ needs.test-shard.result }}" = success
 
@@ -506,7 +546,7 @@ jobs:
   mirakc-conformance:
     needs: mirakc-conformance-shard
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - run: test "${{ needs.mirakc-conformance-shard.result }}" = success
 
@@ -666,7 +706,7 @@ jobs:
   # 保守対象の Markdown 全体（README.md / CLAUDE.md / deploy/**/*.md / docs/**/*.md /
   # web/e2e/**/*.md）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
   docs-lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -702,7 +742,7 @@ jobs:
   # ツールは版を固定する。runner イメージの同梱物に依存すると、イメージ更新で
   # 黙って挙動が変わる（kustomize は runner に入っているが版が動く）。
   manifests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
       - name: Install kustomize, kubeconform and shellcheck
