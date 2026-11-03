@@ -83,17 +83,19 @@ RUN set -eux; \
 
 FROM ${BASE}
 USER root
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg libavformat61 libavcodec61 libavutil59 libswscale8 libswresample5
+# Intel GPU の VA-API ドライバと QSV ランタイム（冒頭のコメント）。amd64 だけ。
 ARG TARGETARCH
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    set -eux; \
-    gpu=""; \
     if [ "$TARGETARCH" = amd64 ]; then \
-      sed -i 's/^Components: main$/Components: main non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
-      gpu="i965-va-driver intel-media-va-driver-non-free libmfx-gen1.2"; \
-    fi; \
-    apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg libavformat61 libavcodec61 libavutil59 libswscale8 libswresample5 $gpu
+      sed -i 's/^Components: main$/Components: main non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources && \
+      apt-get update && apt-get install -y --no-install-recommends \
+        i965-va-driver intel-media-va-driver-non-free libmfx-gen1.2; \
+    fi
 COPY --from=jls /opt/jls/bin/ /usr/local/bin/
 COPY --from=jls /opt/jls/share/rokuban/cm_detect/ /usr/local/share/rokuban/cm_detect/
 USER nobody
