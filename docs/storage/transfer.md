@@ -44,7 +44,7 @@ temp は宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}
 
 ### 派生物の再開できる送信
 
-派生物は、宛先と転送元の両方が続きから読み書きできる置き場なら、再開できる送信で送る。FS と S3 はどちらもそれを満たす。両方がそろわない組み合わせは、従来の経路（一度に送り切る）を通る。
+派生物は再開できる送信だけで送る。宛先は続きから書けて、転送元は続きから読める必要がある。FS と S3 はどちらもこの条件を満たす。満たさない置き場への転送は、送信前にジョブエラーで止め、転送失敗には数えない。この worker の構成の問題であってコピーの失敗ではないので、宛先が未マウントのときと同じ扱いにする。
 
 判定は、宛先が `objstore.Resumable`、転送元が `objstore.RangeReader` を満たすかで行う。送信状態は進捗の行の `upload_store` と `upload_state` に、置き場の名前と不透明なバイト列で保存する。S3 の状態は UploadId、パートの大きさ、送り終えたパートの番号と ETag の一覧、SHA-256 の途中状態を持つ。FS の状態は staging の相対パス、offset、SHA-256 の途中状態を持つ。
 
@@ -92,7 +92,7 @@ FS の staging は、書かれないまま mtime 猶予と aging を過ぎると
 
 原本の既存宛先は、転送 temp と同じ inode なら前回の公開として採用する。inode が違う場合も、サイズと SHA-256 が一致するときだけ採用する。派生物のキーは、サイズと SHA-256 が一致すれば再開に使う。転送が新規作成したキーは所有記録を付け、同じ pending のコピーの再試行だけが再利用する。所有記録のない既存のキーも内容が一致すれば採用できるが、commit が拒否されたときに削除しない。
 
-派生物は、再開できる送信で宛先へ送る（前の節）。`CompleteUpload` は送りながら計算した SHA-256 と宣言が合ったときだけ公開するので、合わなければ何も公開されない。SHA-256 が既知の派生物は scratch に複製しない。
+派生物は、再開できる送信で宛先へ送る（前の節）。`CompleteUpload` は送りながら計算した SHA-256 と宣言が合ったときだけ公開するので、合わなければ何も公開されない。派生物の本体は、SHA-256 が既知でも未知でも scratch に複製しない（未知なら先に測る）。
 
 内容が異なる既存のキーは、動画も encoded の字幕も、所有記録の有無にかかわらず衝突として扱う。転送は失敗として記録し、そのキーは消さない。原本で既知の SHA-256 が合わないときは、転送元を slice ごとに読み直して照合し（前の節）、原本の宛先 temp の破損と転送元の破損を区別する。異なる動画を rename や link で上書きしない。
 
@@ -163,6 +163,8 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 所有記録の書き込みがエラーでも字幕 sidecar を消さず、次の試行が内容一致で採用する: `TestStorageTransferWorkerKeepsDerivedSubtitleWhenOwnershipRecordFails`
 - 内容の違う既存の sidecar の衝突、source に sidecar が無いときは所有記録のある sidecar だけを消す: `TestStorageTransferWorkerEncodedSubtitleKeys`
 - SHA-256 が既知の派生物を scratch に複製せず、再開できる送信で送る: `TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch`
+- `objstore.Resumable` を満たさない宛先へ書かず、ジョブエラーを返す: `TestStorageTransferWorkerRejectsDerivedDestinationWithoutResumableSupport`
+- `objstore.RangeReader` を満たさない転送元のときは宛先へ書かず、ジョブエラーを返す: `TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport`
 - 宣言サイズや SHA-256 と違う転送元は何も公開せず、転送元の不一致にする: `TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing`
 - 壊れた派生コピーのファイルと sidecar の削除、原本が無いときの保持: `TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebuild`
 - 束縛と違う置き場の転送元を deleted に確定する: 同じテスト
