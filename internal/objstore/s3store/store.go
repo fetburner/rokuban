@@ -172,7 +172,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 	abort := func(cause error) error {
 		if abortErr := s.abortMultipart(ctx, key, uploadID); abortErr != nil {
 			if errors.Is(cause, objstore.ErrAlreadyExists) {
-				return fmt.Errorf("%v; multipart cleanup failed: %w", cause, abortErr)
+				return fmt.Errorf("multipart cleanup failed after object conflict: %w", abortErr)
 			}
 			return errors.Join(cause, abortErr)
 		}
