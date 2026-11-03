@@ -286,6 +286,7 @@ func (h recordingHLSTestHarness) seedSegment(t *testing.T, key SegmentKey, conte
 }
 
 func TestRecordingHLSMasterAndEVENTPlaylist(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 
 	master := h.get(t, recordingHLSRequestPath("main", 42, 7, "master.m3u8"))
@@ -322,6 +323,7 @@ func TestRecordingHLSMasterAndEVENTPlaylist(t *testing.T) {
 
 // 壊し方: セグメント cache key に入力種別を含め、commit 後の同世代 cache を分ける。
 func TestRecordingHLSSegmentCacheSurvivesTempCommitAtSameURL(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	target := h.store.target
 	target.Kind = store.RecordingHLSInputTemp
@@ -436,6 +438,7 @@ func TestRecordingHLSTempWriterSwitchKeepsPublishedSegmentsAndPlaylist(t *testin
 
 // 壊し方: 異なる temp generation を stale として検出しない。
 func TestRecordingHLSTempGenerationChangeReturnsGone(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	target := h.store.target
 	target.Kind = store.RecordingHLSInputTemp
@@ -452,6 +455,7 @@ func TestRecordingHLSTempGenerationChangeReturnsGone(t *testing.T) {
 }
 
 func TestRecordingHLSTempTransformErrorsAreRetryableAndDoNotEndPlaylist(t *testing.T) {
+	t.Parallel()
 	for _, exitCode := range []int{0, 7} {
 		t.Run(fmt.Sprintf("ffmpeg exit %d", exitCode), func(t *testing.T) {
 			ffmpeg := filepath.Join(t.TempDir(), "fake-ffmpeg")
@@ -480,6 +484,7 @@ func TestRecordingHLSTempTransformErrorsAreRetryableAndDoNotEndPlaylist(t *testi
 }
 
 func TestRecordingHLSUsesConfiguredHardwareAcceleration(t *testing.T) {
+	t.Parallel()
 	argsPath := filepath.Join(t.TempDir(), "args")
 	ffmpeg := filepath.Join(t.TempDir(), "ffmpeg")
 	if err := os.WriteFile(ffmpeg, []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit 7\n", argsPath)), 0o755); err != nil {
@@ -505,6 +510,7 @@ func TestRecordingHLSUsesConfiguredHardwareAcceleration(t *testing.T) {
 //
 // 壊し方: buildRecordingHLSRenditionPlaylist の programDateTime の加算を消す。
 func TestRecordingHLSProgramDateTimeFollowsTheGrid(t *testing.T) {
+	t.Parallel()
 	probe := recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(17)}
 	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", probe)
 
@@ -534,6 +540,7 @@ func TestRecordingHLSProgramDateTimeFollowsTheGrid(t *testing.T) {
 //
 // 壊し方: recordingHLSVideoDurationFromPackets の引き算を originPTS ではなく 0 にする。
 func TestRecordingHLSSegmentCountFollowsFirstVideoPacket(t *testing.T) {
+	t.Parallel()
 	// 末尾の映像は 17.0 秒に終わる。最初の映像パケットは 12.0 なので長さは 5.0 秒、
 	// 2 秒セグメントなら 3 本。ストリームの start_time（10.0）を原点にすると 7.0 秒で 4 本になる。
 	probe := recordingHLSTestProbe{firstPacketPTS: 12 * 90000, tail: recordingHLSTailPackets(17)}
@@ -552,6 +559,7 @@ func TestRecordingHLSSegmentCountFollowsFirstVideoPacket(t *testing.T) {
 }
 
 func TestRecordingHLSGenerationAndStoreChecks(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	staleKey := SegmentKey{RecordingID: "42", Generation: "6", Profile: "hd", Rendition: "video", Number: 0}
 	h.seedSegment(t, staleKey, "stale")
@@ -575,6 +583,7 @@ func TestRecordingHLSGenerationAndStoreChecks(t *testing.T) {
 }
 
 func TestRecordingHLSSegmentCacheHitSurvivesDatabaseError(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	h.seedSegment(t, SegmentKey{RecordingID: "42", Generation: "7", Profile: "hd", Rendition: "video", Number: 0}, "cached-ts")
 
@@ -599,6 +608,7 @@ func TestRecordingHLSSegmentCacheHitSurvivesDatabaseError(t *testing.T) {
 }
 
 func TestRecordingHLSTrashReturns404AndStopsCache(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	h.seedSegment(t, SegmentKey{RecordingID: "42", Generation: "7", Profile: "hd", Rendition: "video", Number: 0}, "cached-ts")
 	h.store.setError(store.ErrNotFound)
@@ -635,6 +645,7 @@ func startRunningRecordingHLSTransform(t *testing.T) recordingHLSTestHarness {
 //
 // 壊し方: SegmentManager.StopRecording の stopTaskLocked の繰り返しを消す。
 func TestRecordingHLSTrashStopsRunningTransform(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("starts a child process")
 	}
@@ -664,6 +675,7 @@ func TestRecordingHLSTrashStopsRunningTransform(t *testing.T) {
 //
 // 壊し方: RecordingHLS.request の DB エラーの分岐を ErrNotFound と同じ扱いにする。
 func TestRecordingHLSDatabaseOutageKeepsRunningTransform(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("starts a child process")
 	}
@@ -686,6 +698,7 @@ func TestRecordingHLSDatabaseOutageKeepsRunningTransform(t *testing.T) {
 }
 
 func TestRecordingHLSOpenThenVerifyRejectsRemovedOriginal(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, false, false, time.Second, "")
 	h.store.setLookup(func(_ int64, call int) (store.RecordingHLSInputTarget, error) {
 		if call == 1 {
@@ -704,6 +717,7 @@ func TestRecordingHLSOpenThenVerifyRejectsRemovedOriginal(t *testing.T) {
 }
 
 func TestRecordingHLSOpenThenVerifyRejectsReplacedOriginal(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		replace func(*store.RecordingHLSInputTarget)
@@ -754,6 +768,7 @@ func TestRecordingHLSOpenThenVerifyRejectsReplacedOriginal(t *testing.T) {
 }
 
 func TestRecordingHLSCacheMissTimesOutAs503(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("starts a child process")
 	}
@@ -773,6 +788,7 @@ func TestRecordingHLSCacheMissTimesOutAs503(t *testing.T) {
 }
 
 func TestRecordingHLSOptionalSubtitleRendition(t *testing.T) {
+	t.Parallel()
 	h := newRecordingHLSTestHarness(t, true, true, time.Second, "")
 
 	master := h.get(t, recordingHLSRequestPath("main", 42, 7, "master.m3u8"))

@@ -476,6 +476,7 @@ func firstSegmentURL(t *testing.T, plURL string) string {
 // 収束する（受け入れ基準「同じサービスを 2 クライアントが見たとき、ffmpeg が
 // 1 本しか起きない」）。
 func TestLiveStreamer_SharedSession(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 	_ = ls
@@ -539,6 +540,7 @@ func TestLiveStreamer_SharedSession(t *testing.T) {
 // 壊し方: `Playlist` が `profile` をセッションの鍵に混ぜる / プロファイルごとに
 // ffmpeg を起動する。
 func TestLiveStreamer_ProfileSwitchKeepsOneSession(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	// 2 プロファイルを 1 本の ffmpeg で出す（`BuildLiveFFmpegArgs` が出力を N 本にする）。
@@ -590,6 +592,7 @@ func TestLiveStreamer_ProfileSwitchKeepsOneSession(t *testing.T) {
 // X-Mirakurun-Priority に live.tuner_priority がそのまま載ること
 // （チューナー調停の実装、issue #91 の決定 4）。
 func TestLiveStreamer_UsesConfiguredTunerPriority(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.TunerPriority = 5
@@ -1078,6 +1081,7 @@ func TestLiveStreamer_EvictionCandidate_StartingSessionNeedsStartupTimeout(t *te
 // 離脱ヒントで lastAccess を巻き戻したセッションは、別の idle セッションよりも
 // 古い候補になる。
 func TestLiveStreamer_EvictionCandidate_PrefersLeaveHint(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	readyA := make(chan struct{})
 	readyB := make(chan struct{})
@@ -1112,6 +1116,7 @@ func TestLiveStreamer_EvictionCandidate_PrefersLeaveHint(t *testing.T) {
 // baseLiveConfig の既定（idle_timeout 10s / segment_seconds 2s）はこの不成立域
 // そのもの --- ヒント後の idle は 10s-8s=2s で、候補の閾値 2×2s=4s を下回る。
 func TestLiveStreamer_EvictionCandidate_HintDoesNotQualifyBelowThreshold(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	ready := make(chan struct{})
 	close(ready)
@@ -1259,6 +1264,7 @@ func installFakeFFprobeAlwaysReportsSubtitle(t *testing.T) string {
 // いずれも 200 で、Content-Type がそれぞれ video/mp2t・text/vtt・
 // application/vnd.apple.mpegurl になる。
 func TestLiveStreamer_Segment_CaptionsEnabled_ServesVTTAndM3U8AndTS(t *testing.T) {
+	t.Parallel()
 	mirakcSrv := newFastFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.Captions = true
@@ -1311,6 +1317,7 @@ func TestLiveStreamer_Segment_CaptionsEnabled_ServesVTTAndM3U8AndTS(t *testing.T
 }
 
 func TestLiveCaptionProbeAndFFmpegWithRealBinaries(t *testing.T) {
+	t.Parallel()
 	ffmpeg, ffmpegErr := exec.LookPath("ffmpeg")
 	ffprobe, ffprobeErr := exec.LookPath("ffprobe")
 	if ffmpegErr != nil || ffprobeErr != nil {
@@ -1380,6 +1387,7 @@ func TestLiveCaptionProbeAndFFmpegWithRealBinaries(t *testing.T) {
 // しないファイルに対して即座に 404 が返り、elapsed が遅延（200ms）よりずっと
 // 短くなることで検出する。
 func TestLiveStreamer_Segment_WaitsForVariantPlaylistContent(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.Captions = true
@@ -1447,6 +1455,7 @@ func TestLiveStreamer_Segment_WaitsForVariantPlaylistContent(t *testing.T) {
 // playlist と .ts は 200 を返すことを固定する。壊し方: LiveConfig.servesFile の
 // `c.Captions ||` を消す / `.m3u8` を拒否する。
 func TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTT(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -1477,6 +1486,7 @@ func TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTT(t *testing.T) {
 }
 
 func TestLiveStreamer_UnknownProfile(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -1724,6 +1734,7 @@ func TestLiveStreamer_Playlist_NewSessionTimesOutWhenMirakcNeverResponds(t *test
 // TestLiveStreamer_MirakcPathIsComposedFromPathSegments が通す側（mirakc が
 // 実際に受け取る Request-URI）を固定するので、mirakc の挙動に依存しない。
 func TestLiveStreamer_RejectsHostileIDSegments(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -1786,6 +1797,7 @@ func TestLiveStreamer_RejectsHostileIDSegments(t *testing.T) {
 // フロントが合成していた形（issue #208）だと、この変換規則が Go と TypeScript に
 // 二重化し、URL の id 空間が一覧 API と食い違ったままになる。
 func TestLiveStreamer_MirakcPathIsComposedFromPathSegments(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -1816,6 +1828,7 @@ func TestLiveStreamer_MirakcPathIsComposedFromPathSegments(t *testing.T) {
 // writeSessionError の default 節に落ちる --- 分類の細かさは mirakc の応答に
 // 依存させない。
 func TestLiveStreamer_UpstreamRejectionBecomes503(t *testing.T) {
+	t.Parallel()
 	// 実在しない id に対する mirakc の応答を模す（404）。**mirakc が実際に
 	// 404 を返すことは測っていない**ので、ここで固定しているのは「上流が
 	// 拒否したときの Rokuban 側の振る舞い」だけである。
@@ -1839,6 +1852,7 @@ func TestLiveStreamer_UpstreamRejectionBecomes503(t *testing.T) {
 
 // site がこのプロセスの束縛サイトと一致しない要求は 404（DB を引かずパスだけで判定する）。
 func TestLiveStreamer_SiteMismatch(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -1868,6 +1882,7 @@ func TestLiveStreamer_SiteMismatch(t *testing.T) {
 // 正規表現より、期待値との完全一致の方が「セッション ID を意味する変数名か」を
 // 当てずっぽうで判定せずに済む）。
 func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	client := mirakc.NewClient(mirakcSrv.URL, nil)
 	ls := NewLive(client, testLiveSite, baseLiveConfig(t))
@@ -1946,6 +1961,7 @@ func newLiveTestServerURL(t *testing.T, r chi.Router) string {
 // 止め、mirakc 側の接続も閉じる（受け入れ基準: 「クライアントが離れたら ffmpeg
 // プロセスが実際に消える」）。
 func TestLiveStreamer_IdleGC_StopsSession(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.IdleTimeout = 30 * time.Millisecond
@@ -1995,6 +2011,7 @@ func TestLiveStreamer_IdleGC_StopsSession(t *testing.T) {
 // 止めない。片方向だけの確認では「常に止める」に反転していても気付けない
 // （テスト規律「分岐を直したら両方向で確認する」）。
 func TestLiveStreamer_IdleGC_TouchKeepsSessionAlive(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.IdleTimeout = 200 * time.Millisecond
@@ -2033,6 +2050,7 @@ func TestLiveStreamer_IdleGC_TouchKeepsSessionAlive(t *testing.T) {
 // プロセス停止（Run の ctx キャンセル）で全セッションが止まり、mirakc 側の接続も
 // 残らない（受け入れ基準: 「streamer プロセスを止めるとチューナーが解放される」）。
 func TestLiveStreamer_Run_StopsAllSessionsOnShutdown(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.IdleTimeout = time.Hour // GC では止まらない距離にしておく
@@ -2086,6 +2104,7 @@ func TestLiveStreamer_Run_StopsAllSessionsOnShutdown(t *testing.T) {
 // 「crash したら tmpfs 自体が消える」には頼れない --- 起動時（NewLive、HTTP
 // リスナーが立つ前）に live.segment_dir を掃くことで対処する。
 func TestLiveStreamer_NewLive_SweepsStaleSegmentDirAtStartup(t *testing.T) {
+	t.Parallel()
 	cfg := baseLiveConfig(t)
 
 	// 前回プロセスの残骸を模す: 生きているセッションの形をした、しかし
@@ -2125,6 +2144,7 @@ func TestLiveStreamer_NewLive_SweepsStaleSegmentDirAtStartup(t *testing.T) {
 // 見ており、「複数クライアントの共有セッションで一方だけの離脱」を踏んでいない。
 // レビューで指摘された必須 6）。
 func TestLiveStreamer_OneClientLeavingDoesNotStopTheOther(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.IdleTimeout = 120 * time.Millisecond
@@ -2237,6 +2257,7 @@ func postLeave(t *testing.T, base string, networkID, serviceID int) int {
 // touch すれば生き残る」を見るが、それは猶予が 1 秒でも 8 秒でも通ってしまう
 // （実クライアントの要求間隔を実時間で待つテストは書けない）。
 func TestLiveConfig_LeaveGrace(t *testing.T) {
+	t.Parallel()
 	profiles := func(segmentSeconds ...int) []LiveProfile {
 		var ps []LiveProfile
 		for i, s := range segmentSeconds {
@@ -2300,6 +2321,7 @@ func TestLiveConfig_LeaveGrace(t *testing.T) {
 // なったため、**猶予だけを見ていると通常の idle GC の刻みまで粗くなる**
 // （ヒントと無関係な回収が遅れる）。両方向をリテラルの期待値で固定する。
 func TestLiveStreamer_GCIntervalTakesTheEarlierDeadline(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		idleTimeout time.Duration
@@ -2343,6 +2365,7 @@ func TestLiveStreamer_GCIntervalTakesTheEarlierDeadline(t *testing.T) {
 // 偽 mirakc の応答を遅らせないと踏めないので、ここでは helper を直接見る ---
 // 3 経路とも同じ helper を通しているので、これでその 3 つを覆える。
 func TestWaitReadyTouching_KeepsTheSessionFresh(t *testing.T) {
+	t.Parallel()
 	s := &liveSession{
 		ready:      make(chan struct{}),
 		lastAccess: time.Now().Add(-time.Hour), // 十分に古い
@@ -2371,6 +2394,7 @@ func TestWaitReadyTouching_KeepsTheSessionFresh(t *testing.T) {
 // 逆方向: 起動が終わらないまま timeout すれば errStartupTimeout を返す
 // （待ちながら touch する形にしても、#189 / #286 が入れた期限は生きている）。
 func TestWaitReadyTouching_TimesOut(t *testing.T) {
+	t.Parallel()
 	s := &liveSession{ready: make(chan struct{}), lastAccess: time.Now()}
 	start := time.Now()
 	err := waitReadyTouching(context.Background(), s, 3*playlistPollInterval)
@@ -2606,6 +2630,7 @@ func TestLiveStreamer_LeaveHint_ClippedGraceIsNoOp(t *testing.T) {
 // **ヒントが延命の道具になる**（「離れた」と言うだけでチューナーを掴み続けられる）。
 // 巻き戻しだけを許すことで、最悪ケースが「何も起こらない」になる。
 func TestLiveSession_HintLeaveNeverExtendsTheDeadline(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	// 9 秒前から誰も要求していないセッション（あと 1 秒で idle GC の対象になる）。
 	s := &liveSession{lastAccess: now.Add(-9 * time.Second)}
@@ -2760,6 +2785,7 @@ func TestLiveStreamer_LeaveHint_DoesNotStopTheSession(t *testing.T) {
 // セッションを殺せることの確認 --- 「何も起きない」系のテストが空虚に成功して
 // いないことの証明）。
 func TestLiveStreamer_LeaveHint_OtherViewerKeepsSessionAlive(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
@@ -2851,6 +2877,7 @@ func TestLiveStreamer_LeaveHint_DoesNotStartASession(t *testing.T) {
 
 // site が一致しないヒントは 404（プレイリスト / セグメントと同じ判定。DB は引かない）。
 func TestLiveStreamer_LeaveHint_SiteMismatch(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -2877,6 +2904,7 @@ func TestLiveStreamer_LeaveHint_SiteMismatch(t *testing.T) {
 }
 
 func TestBuildLiveFFmpegArgs(t *testing.T) {
+	t.Parallel()
 	profiles := []LiveProfile{
 		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720, Preset: "veryfast", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
 		{Name: "h264low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, SegmentSeconds: 4, PlaylistSize: 3},
@@ -2969,6 +2997,7 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 // deinterlace が同じプロファイルの scale より前に入ることを固定する。
 // 壊し方: いずれかの経路で profile.Deinterlace を VideoFilterArgs に渡さない。
 func TestBuildLiveFFmpegArgs_Deinterlace(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		cfg        LiveConfig
@@ -3019,6 +3048,7 @@ func TestBuildLiveFFmpegArgs_Deinterlace(t *testing.T) {
 }
 
 func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
+	t.Parallel()
 	args := BuildLiveFFmpegArgs(LiveConfig{
 		Captions: true,
 		Profiles: []LiveProfile{
@@ -3062,6 +3092,7 @@ func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
 // 壊し方: `-filter:v:`+strconv.Itoa(i) を `-vf:`+strconv.Itoa(i) に、
 // `-preset:v:`+strconv.Itoa(i) を `-preset:`+strconv.Itoa(i) に戻すと落ちる。
 func TestBuildLiveFFmpegArgs_CaptionsPerStreamSpecifiersAreTyped(t *testing.T) {
+	t.Parallel()
 	args := BuildLiveFFmpegArgs(LiveConfig{
 		Captions: true,
 		Profiles: []LiveProfile{
@@ -3089,6 +3120,7 @@ func TestBuildLiveFFmpegArgs_CaptionsPerStreamSpecifiersAreTyped(t *testing.T) {
 }
 
 func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
+	t.Parallel()
 	args := BuildLiveFFmpegArgs(LiveConfig{
 		Captions: true,
 		Profiles: []LiveProfile{{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 3, PlaylistSize: 7}},
@@ -3119,6 +3151,7 @@ func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
 // 壊し方: pump が先読みしたチャンクを prefix と pipe の両方へ書くと重複し、
 // どちらかへ書かないと欠落する。位置ごとに異なる bytes.Equal が両方を検出する。
 func TestReadLiveStreamPrefix_PreservesAllBytesInOrder(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		total int
@@ -3169,6 +3202,7 @@ func (g *gatedReader) Read(p []byte) (int, error) {
 }
 
 func TestReadLiveStreamPrefix_ReturnsWhenInputIsBlocked(t *testing.T) {
+	t.Parallel()
 	gate := make(chan struct{})
 	defer func() {
 		select {
@@ -3199,6 +3233,7 @@ func TestReadLiveStreamPrefix_ReturnsWhenInputIsBlocked(t *testing.T) {
 }
 
 func TestWaitForPlaylist_MasterUsesStreamInfMarker(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "playlist.m3u8")
 	content := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nplaylist_0.m3u8\n")
 	if err := os.WriteFile(path, content, 0o644); err != nil {
@@ -3215,6 +3250,7 @@ func TestWaitForPlaylist_MasterUsesStreamInfMarker(t *testing.T) {
 // `-f mpegts -i pipe:0` より前に出ることを固定する。
 // 壊し方: 前置ブロックを入力の後ろへ移す。
 func TestBuildLiveFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
+	t.Parallel()
 	cfg := LiveConfig{
 		HWAccel: &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
 		Profiles: []LiveProfile{
@@ -3255,6 +3291,7 @@ func TestBuildLiveFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 // scaler/品質が互いに漏れないことを固定する（2 本: vaapi+qp / software+crf）。
 // 壊し方: scale の append をループの外へ出す。
 func TestBuildLiveFFmpegArgs_PerProfileScalerAndQuality(t *testing.T) {
+	t.Parallel()
 	qp := 26
 	crf := 23
 	cfg := LiveConfig{
@@ -3298,6 +3335,7 @@ func TestBuildLiveFFmpegArgs_PerProfileScalerAndQuality(t *testing.T) {
 // live.input_extra_args が -i より前、profile.extra_args が各出力の -f hls より
 // 前に来ることを固定する。壊し方: 入れ替える。
 func TestBuildLiveFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
+	t.Parallel()
 	cfg := LiveConfig{
 		InputExtraArgs: []string{"-re"},
 		Profiles: []LiveProfile{
@@ -3330,6 +3368,7 @@ func TestBuildLiveFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
 // Enabled=false のときは Mount がライブのルートを一切登録しない
 // （ffmpeg 無し環境で streamer を壊さないための、ffmpeg を一切 exec しない側の保証）。
 func TestLiveStreamer_Disabled_DoesNotMountRoutes(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.Enabled = false
@@ -3380,6 +3419,7 @@ func TestLiveStreamer_ActiveSessionsGauge(t *testing.T) {
 // （実 ffmpeg 8.1.2 で確認済み）を検出できなかった。`firstSegmentURL` を経由する
 // ことで、この経路を通るテストすべてが同じ回帰を検出できる。
 func TestLiveStreamer_PlaylistSegmentURIsResolveToServingRoute(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -3431,6 +3471,7 @@ func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
 // 「無効時にプレースホルダルートを登録する」形に将来変えると、あちらは
 // 緑のままここだけが落ちる（CLAUDE.md「壊す場所を、実際に壊れる経路の上に置く」）。
 func TestLiveMount_DisabledDoesNotFallBackToSPA(t *testing.T) {
+	t.Parallel()
 	ls := NewLive(mirakc.NewClient("http://mirakc.invalid", nil), testLiveSite, LiveConfig{
 		Enabled: false,
 		// 無効なので使われない値（有効時に必須のものを埋めても登録されないこと）
@@ -3482,6 +3523,7 @@ func TestLiveMount_DisabledDoesNotFallBackToSPA(t *testing.T) {
 //
 // 壊し方: どちらかの append を消す / -fix_sub_duration を -i の後ろへ移す。
 func TestBuildLiveFFmpegArgs_CaptionsFixSubDuration(t *testing.T) {
+	t.Parallel()
 	cfg := LiveConfig{
 		Captions: true,
 		Profiles: []LiveProfile{

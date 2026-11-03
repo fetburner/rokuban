@@ -50,6 +50,7 @@ type segmentedFixtureManifest struct {
 // JavaScript で ffmpeg の HLS 引数を組むと、製品の引数と時間軸の扱いが食い違ったまま
 // 判定だけ通りうる（先頭フレームの複製と第 1 run の時間軸のずれが、実際に正例へ入っていた）。
 func TestWriteSegmentedPlaybackFixture(t *testing.T) {
+	t.Parallel()
 	fixtureDir := os.Getenv("ROKUBAN_SEGMENTED_PLAYBACK_FIXTURE_DIR")
 	if fixtureDir == "" {
 		t.Skip("set ROKUBAN_SEGMENTED_PLAYBACK_FIXTURE_DIR to export segmented playback fixtures")
