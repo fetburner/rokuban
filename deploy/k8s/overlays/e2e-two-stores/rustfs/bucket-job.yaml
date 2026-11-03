@@ -1,9 +1,8 @@
 # 派生物の bucket（rokuban-derived）を作る Job。RustFS は起動時に bucket を作らない。
 #
-# bucket の作成は curl の SigV4（`--aws-sigv4`）で行う。専用 CLI のイメージに依存
-# せず、代わりに製品のイメージ（debian trixie の
-# curl 8.x。`--aws-sigv4` は 7.75 以降）を使い、kustomize の images（overlay の kustomization）が
-# `ghcr.io/fetburner/rokuban` を `rokuban:e2e` に置き換える。
+# bucket は curl の SigV4（`--aws-sigv4`）で作り、S3 クライアント専用のイメージには依存しない。
+# curl は製品のイメージ（debian trixie の curl 8.x。`--aws-sigv4` は 7.75 以降）のものを使い、
+# kustomize の images（overlay の kustomization）が `ghcr.io/fetburner/rokuban` を `rokuban:e2e` に置き換える。
 #
 # 409 BucketAlreadyOwnedByYou は成功として扱う（Job の再試行で二度目の PUT になるため）。
 # 資格情報は rokuban-secrets の AWS_* を env で渡す（curl の --user が SigV4 の鍵になる）。

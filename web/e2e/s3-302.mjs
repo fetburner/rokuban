@@ -572,7 +572,8 @@ async function main() {
     const vtt = Buffer.from('WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nS3 subtitle loaded\n\n00:00:05.000 --> 00:00:10.000\n302 subtitle still visible\n')
     await createBucket(GOOD_BUCKET)
     createdBuckets.push(GOOD_BUCKET)
-    // Keep the positive path's CORS policy removable: this mutation must make normal browser playback fail.
+    // 正例 bucket（動画・字幕）の CORS は E2E_S3_DISABLE_CORS=1 で外せる。外すと通常の再生判定が落ちる（変異の確認）。
+    // 字幕の負例は、CORS を掛けない BAD_BUCKET に字幕を置いて作る。正例と同じ bucket に置くと、CORS を外しても負例にならない。Origin を外す細工はしない。
     if (process.env.E2E_S3_DISABLE_CORS !== '1') await configureBucketCors(GOOD_BUCKET)
     await createBucket(BAD_BUCKET)
     createdBuckets.push(BAD_BUCKET)

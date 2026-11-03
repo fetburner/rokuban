@@ -186,7 +186,7 @@ fixture が再現するのは配信の条件である。ローカルの RustFS �
 
 判定用ページは再開位置をブラウザ内に保存し、302 の後に読み込んだ動画で再生位置を復元する。製品のプレイヤーも `recording-player.tsx` の `onLoadedMetadata` で `currentTime` に代入して位置を戻すので、ブラウザから見た経路は同じである。プレイヤーの戻し方を変えたら、このページも見直す。これはブラウザの動作の測定で、製品 API の保存契約は対象外である。
 
-正例 bucket には `http://127.0.0.1:4174` を許可する `PutBucketCors` を設定し、字幕の負例 bucket には設定しない。プロキシは Origin をそのまま転送するので、ブラウザが S3 の bucket ごとの設定を判定する。`E2E_S3_DISABLE_CORS=1` は正例 bucket の CORS 設定を省き、通常の再生判定が失敗することを確かめる。
+正例 bucket には `http://127.0.0.1:4174` を許可する `PutBucketCors` を設定し、字幕の負例 bucket には設定しない。プロキシは Origin を変えずに転送する。S3 が bucket の設定に従って応答し、ブラウザはその応答（`Access-Control-Allow-Origin` など）で読み込みの可否を決める。`E2E_S3_DISABLE_CORS=1` は正例 bucket の CORS 設定を省き、通常の再生判定が失敗することを確かめる。
 
 必要なものは Node の固定版、Go、ffmpeg、Docker である。RustFS は CI の `browser-s3-302` と同じ公式イメージで起動する。ダイジェストの権威は `.github/workflows/ci.yml` にある。
 
@@ -206,11 +206,13 @@ docker run --rm --name rokuban-s3-302-rustfs \
 ```sh
 corepack pnpm e2e:s3-302                                # 実 Chrome
 E2E_BROWSER=webkit corepack pnpm e2e:s3-302            # Playwright WebKit 診断
-E2E_S3_DISABLE_CORS=1 corepack pnpm e2e:s3-302          # 字幕の CORS を壊す負例
+E2E_S3_DISABLE_CORS=1 corepack pnpm e2e:s3-302          # 正例 bucket の CORS を外す負例
 E2E_S3_VIDEO_TTL_SECONDS=2 corepack pnpm e2e:s3-302     # 動画の署名の期限を 2 秒にする負例
 ```
 
-負例の 2 つは、どちらも非 0 で終わる。落ちる判定は、前者が字幕の cue の読み込み、後者が通常の署名 URL でのシークである。
+負例の 2 つは、どちらも非 0 で終わる。前者（`E2E_S3_DISABLE_CORS=1`）は、通常の再生で動画の metadata を待つ `waitFor` が 15 秒で時間切れになって落ちる。動画が CORS で読めず、字幕の cue の判定まで届かない。後者（`E2E_S3_VIDEO_TTL_SECONDS=2`）は、通常の署名 URL でのシークの判定（`normal signed URL seek did not complete`）で落ちる。
+
+未解決: 正例 bucket の CORS を外す変異では、字幕の cue の判定（CORS の expect）が実行されない。
 
 期限切れの判定は結果の記録で、良し悪しは決めない。結果は 3 つに分けて出力する。元の URL へ戻れば `refreshed-at-origin`、403 を受けて video が error を出せば `media-error`、403 を受けても error が無ければ `403-without-error` である。期限後の Range 要求・S3 の最終の応答・error かシークの完了のどれかが観測できないときは、失敗にする。3 つのどれにも当たらないときも失敗にする。
 

@@ -1,7 +1,11 @@
 name: CI
 
 env:
-  # Service containers cannot read the env context; this anchor shares the pin with their image fields.
+  # RustFS の公式イメージのダイジェスト。services の image は env コンテキストを読めないため、
+  # このアンカーを `*rustfs_image` で参照して同じ値を使う。判定 6 の deployment.yaml も同じ値で、
+  # 一致は deploy/k8s/two_stores_test.go が見る。
+  # RustFS を services にし、docker run の step にしない理由: service container はジョブ終了時に
+  # runner が片付けるので停止 step が要らず、job.services.rustfs.id で失敗時のログ（docker logs）を取れる。
   RUSTFS_IMAGE: &rustfs_image rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
 
 on:

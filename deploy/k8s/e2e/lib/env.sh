@@ -91,5 +91,3 @@ E2E_DIR="${E2E_ROOT}/deploy/k8s/e2e"
 # **実 AWS の資格情報ではない**。
 E2E_S3_ACCESS_KEY="rokuban"
 E2E_S3_SECRET_KEY="rokuban-e2e-secret"
-# RustFS は CI と同じ公式イメージをダイジェストで固定する。deployment.yaml と同じ値にする。
-E2E_RUSTFS_IMAGE="rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2"

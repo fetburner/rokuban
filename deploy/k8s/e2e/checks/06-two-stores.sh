@@ -34,13 +34,6 @@
 #     Service（rokuban-recording-hls-<置き場>）を直接叩く（行と Service 名の対応は stores_test.go）。
 #   - 派生物の S3 の中身。派生物の行（copy の state = active）で見る。RustFS の中は覗かない。
 #
-# **この判定は実行していない版である**（書いた環境に kind / docker が無かった）。初回の実機実行で
-# 次が合わなければ、ここを直す。
-#   - storage-transfer-reconcile の CLI（`rokuban enqueue storage-transfer-reconcile`）が未マージなら、
-#     6.3 は「enqueue に失敗」で赤くなる
-#   - bucket の SigV4 PUT（overlays/e2e-two-stores/rustfs/bucket-job.yaml）が RustFS に受理されないと、
-#     派生物の書き込みが失敗して 6.2 が赤くなる
-#   - 6.7 は overlap（32 分）の満了を待つので、判定全体で 40 分前後かかる
 set -uo pipefail
 
 E2E_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"

@@ -93,8 +93,8 @@ func TestTwoStoreOverlayDerivedIsS3OnTheRustFSService(t *testing.T) {
 	}
 }
 
-// TestTwoStoreRustFSDeploymentUsesPinnedImage は RustFS のイメージ ref が CI と判定ハーネスで
-// 同じダイジェストを使い、設定・ボリュームがイメージの実行契約と一致することを確かめる。
+// TestTwoStoreRustFSDeploymentUsesPinnedImage は RustFS のイメージ ref が ci.yml の RUSTFS_IMAGE と
+// 一致し（services の 2 ジョブも同じ値）、設定・ボリュームがイメージの実行契約と一致することを確かめる。
 func TestTwoStoreRustFSDeploymentUsesPinnedImage(t *testing.T) {
 	const overlayDir = "overlays/e2e-two-stores"
 
@@ -129,7 +129,6 @@ func TestTwoStoreRustFSDeploymentUsesPinnedImage(t *testing.T) {
 		} `yaml:"spec"`
 	}
 	readYAMLFile(t, filepath.Join(overlayDir, "rustfs", "deployment.yaml"), &dep)
-	envImage := envShellValue(t, "E2E_RUSTFS_IMAGE")
 	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {
 		t.Fatalf("reading CI workflow: %v", err)
@@ -148,8 +147,8 @@ func TestTwoStoreRustFSDeploymentUsesPinnedImage(t *testing.T) {
 		t.Fatalf("decoding CI workflow: %v", err)
 	}
 	ciImage := ci.Env.RustFSImage
-	if ciImage == "" || ciImage != envImage {
-		t.Errorf("CI RUSTFS_IMAGE = %q, want lib/env.sh E2E_RUSTFS_IMAGE %q", ciImage, envImage)
+	if ciImage == "" {
+		t.Fatal("ci.yml env.RUSTFS_IMAGE is empty")
 	}
 	for _, jobName := range []string{"browser-s3-302", "s3-conformance"} {
 		job, ok := ci.Jobs[jobName]
@@ -166,8 +165,8 @@ func TestTwoStoreRustFSDeploymentUsesPinnedImage(t *testing.T) {
 		t.Fatalf("rustfs/deployment.yaml has %d containers, want 1", len(dep.Spec.Template.Spec.Containers))
 	}
 	container := dep.Spec.Template.Spec.Containers[0]
-	if container.Image != envImage || !strings.Contains(container.Image, "@sha256:") {
-		t.Errorf("rustfs/deployment.yaml image = %q, want the digest-pinned lib/env.sh E2E_RUSTFS_IMAGE %q", container.Image, envImage)
+	if container.Image != ciImage || !strings.Contains(container.Image, "@sha256:") {
+		t.Errorf("rustfs/deployment.yaml image = %q, want the digest-pinned ci.yml RUSTFS_IMAGE %q", container.Image, ciImage)
 	}
 	if !slices.Contains(container.Args, "/data") {
 		t.Errorf("rustfs container args = %v, want /data", container.Args)
@@ -225,23 +224,4 @@ func readYAMLFile(t *testing.T, path string, v any) {
 	if err := yaml.Unmarshal(raw, v); err != nil {
 		t.Fatalf("decoding %s: %v", path, err)
 	}
-}
-
-// envShellValue は e2e/lib/env.sh の `NAME="value"` の value を返す。
-// 判定ハーネスの値はシェルの中にしかないので、Go テストはそれを行単位で読む
-// （TestE2EStoreQueuesMatchJobs と同じ方法）。
-func envShellValue(t *testing.T, name string) string {
-	t.Helper()
-	raw, err := os.ReadFile("e2e/lib/env.sh")
-	if err != nil {
-		t.Fatalf("reading e2e/lib/env.sh: %v", err)
-	}
-	prefix := name + `="`
-	for _, line := range strings.Split(string(raw), "\n") {
-		if v, ok := strings.CutPrefix(line, prefix); ok {
-			return strings.TrimSuffix(v, `"`)
-		}
-	}
-	t.Fatalf("e2e/lib/env.sh does not set %s", name)
-	return ""
 }
