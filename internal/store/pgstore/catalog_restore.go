@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path"
-	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +40,7 @@ func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options
 	}
 	defer rollback(tx)
 
-	result, err := applyDocument(ctx, tx, doc, options, s.siteNames, s.storeName)
+	result, err := applyDocument(ctx, tx, doc, options, s.siteNames)
 	if err != nil {
 		return nil, fmt.Errorf("restoring catalog: %w", mapDatabaseError(err))
 	}
@@ -81,7 +79,10 @@ func insertableSnapshot(s catalogdoc.ProgramSnapshot) bool {
 }
 
 // applyDocument は 1 つのトランザクション内で catalogdoc.Document の各表を FK 順に復元する。
-func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, options store.RestoreOptions, siteNames []string, storeName string) (*store.RestoreResult, error) {
+func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, options store.RestoreOptions, siteNames []string) (*store.RestoreResult, error) {
+	if err := validateCatalogMediaAssets(doc.MediaAssets); err != nil {
+		return nil, err
+	}
 	q := sqlcgen.New(tx)
 	res := &store.RestoreResult{}
 
@@ -139,7 +140,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 		return nil, err
 	}
 
-	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetCopyKeys, storeName); err != nil {
+	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetCopyKeys); err != nil {
 		return nil, err
 	}
 
@@ -162,13 +163,8 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 	}
 
 	// media_asset_ts_scans は media_assets を参照し、文書化された復元順で
-	// drop_positions の後に来る。旧文書にはキーが無く、原本が計測済みだったと
-	// 言えるのは drop_stats の行だけなので、そこから補う。
-	tsScans := doc.MediaAssetTSScans
-	if doc.MediaAssetTSScans == nil {
-		tsScans = legacyMediaAssetTSScans(doc)
-	}
-	if err := applyMediaAssetTSScans(ctx, q, tsScans, res); err != nil {
+	// drop_positions の後に来る。キーが無い文書は空配列として扱う。
+	if err := applyMediaAssetTSScans(ctx, q, doc.MediaAssetTSScans, res); err != nil {
 		return nil, err
 	}
 
@@ -413,58 +409,70 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 	return nil
 }
 
+// validateCatalogMediaAssets は現行 export では必須の物理コピー情報が欠けた文書を拒否する。
+func validateCatalogMediaAssets(assets []catalogdoc.MediaAsset) error {
+	for _, asset := range assets {
+		if asset.Store == "" {
+			return fmt.Errorf("media_asset %d is missing store", asset.ID)
+		}
+		if asset.Kind == "original" {
+			continue
+		}
+		if asset.DerivedGeneration == nil {
+			return fmt.Errorf("derived media_asset %d is missing derivedGeneration", asset.ID)
+		}
+		if asset.Generation == nil {
+			return fmt.Errorf("derived media_asset %d is missing generation", asset.ID)
+		}
+	}
+	return nil
+}
+
 // applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
-func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetCopyKeys map[store.MediaAssetCopyKey]struct{}, storeName string) error {
+func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetCopyKeys map[store.MediaAssetCopyKey]struct{}) error {
 	var missingAt time.Time
-	// Old catalogs can list a historical tombstone before the current copy that
-	// reused its path. Reserve paths for copies that still have files first, so
-	// input ordering cannot make the tombstone hide the live copy
-	// (TestCatalogRestorePrefersPresentCopyOverEarlierTombstone).
-	for pass := 0; pass < 2; pass++ {
-		for _, a := range assets {
-			assetStore := a.Store
-			if assetStore == "" {
-				assetStore = storeName
-			}
-			_, observedMissing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]
-			presentCopy := a.State != "deleted" && !observedMissing
-			if (pass == 0) != presentCopy {
-				continue
-			}
-			copyState, copyDeletedAt := a.State, a.DeletedAt
-			fileVerifiedMissing := observedMissing && a.State != "deleted"
-			if fileVerifiedMissing {
-				if missingAt.IsZero() {
-					if err := tx.QueryRow(ctx, "SELECT now()").Scan(&missingAt); err != nil {
-						return fmt.Errorf("reading database time for missing catalog assets: %w", err)
-					}
+	for _, a := range assets {
+		assetStore := a.Store
+		_, observedMissing := missingAssetCopyKeys[store.MediaAssetCopyKey{MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath}]
+		copyState, copyDeletedAt := a.State, a.DeletedAt
+		fileVerifiedMissing := observedMissing && a.State != "deleted"
+		if fileVerifiedMissing {
+			if missingAt.IsZero() {
+				if err := tx.QueryRow(ctx, "SELECT now()").Scan(&missingAt); err != nil {
+					return fmt.Errorf("reading database time for missing catalog assets: %w", err)
 				}
-				// Keep the historical copy and dependent statistics, but never publish
-				// an active state for a file removed since export.
-				copyState = "deleted"
-				copyDeletedAt = &missingAt
-				res.MissingMediaFiles++
 			}
-			sha256Bytes, err := decodeMediaAssetSHA256(a.SHA256)
-			if err != nil {
-				return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
-			}
-			derivedGeneration := catalogDerivedGeneration(a)
-			copyGeneration := catalogCopyGeneration(a)
-			if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
-				ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
-				SizeBytes: a.SizeBytes,
-				CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
-				DerivedGeneration: derivedGeneration, Sha256: sha256Bytes, CopyGeneration: copyGeneration,
-			}); err != nil {
-				return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
-			}
-			if err := upsertCatalogMediaAssetCopy(ctx, q, sqlcgen.UpsertMediaAssetCopyParams{
-				MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
-				Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
-			}, fileVerifiedMissing); err != nil {
-				return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
-			}
+			// Keep the historical copy and dependent statistics, but never publish
+			// an active state for a file removed since export.
+			copyState = "deleted"
+			copyDeletedAt = &missingAt
+			res.MissingMediaFiles++
+		}
+		sha256Bytes, err := decodeMediaAssetSHA256(a.SHA256)
+		if err != nil {
+			return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
+		}
+		derivedGeneration := a.DerivedGeneration
+		copyGeneration := int64(0)
+		if a.Kind != "original" {
+			copyGeneration = *a.Generation
+		}
+		if a.Kind == "original" {
+			derivedGeneration = nil
+		}
+		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
+			ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
+			SizeBytes: a.SizeBytes,
+			CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes, CopyGeneration: copyGeneration,
+		}); err != nil {
+			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
+		}
+		if err := upsertCatalogMediaAssetCopy(ctx, q, sqlcgen.UpsertMediaAssetCopyParams{
+			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
+			Generation: copyGeneration, State: copyState, CreatedAt: &a.CreatedAt, DeletedAt: copyDeletedAt,
+		}, fileVerifiedMissing); err != nil {
+			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
 		}
 	}
 	res.MediaAssets = len(assets)
@@ -604,41 +612,6 @@ func decodeMediaAssetSHA256(value *string) ([]byte, error) {
 	return decoded, nil
 }
 
-func catalogDerivedGeneration(asset catalogdoc.MediaAsset) *int64 {
-	if asset.Kind == "original" {
-		return nil
-	}
-	if asset.DerivedGeneration != nil {
-		return asset.DerivedGeneration
-	}
-	generation := legacyDerivedGeneration(asset.RelPath)
-	return &generation
-}
-
-func catalogCopyGeneration(asset catalogdoc.MediaAsset) int64 {
-	if asset.Kind == "original" {
-		return 0
-	}
-	if asset.Generation != nil {
-		return *asset.Generation
-	}
-	return legacyDerivedGeneration(asset.RelPath)
-}
-
-func legacyDerivedGeneration(relPath string) int64 {
-	name := strings.TrimSuffix(path.Base(relPath), path.Ext(relPath))
-	marker := max(strings.LastIndex(name, ".g"), strings.LastIndex(name, ".u"))
-	if marker < 0 || marker+2 == len(name) {
-		return 0
-	}
-	suffix := name[marker+2:]
-	generation, err := strconv.ParseInt(suffix, 10, 64)
-	if err != nil || generation <= 0 || strconv.FormatInt(generation, 10) != suffix {
-		return 0
-	}
-	return generation
-}
-
 // applyRecordingChapterOwnerships は recording_chapter_ownership を復元し、件数を
 // res.RecordingChapterOwnerships に書く。
 func applyRecordingChapterOwnerships(ctx context.Context, q *sqlcgen.Queries, rows []catalogdoc.RecordingChapterOwnership, res *store.RestoreResult) error {
@@ -725,29 +698,6 @@ func applyMediaAssetTSScans(ctx context.Context, q *sqlcgen.Queries, scans []cat
 	}
 	res.MediaAssetTSScans = len(scans)
 	return nil
-}
-
-// legacyMediaAssetTSScans は計測記録配列が無い旧 catalog の互換補完を作る。
-func legacyMediaAssetTSScans(doc *catalogdoc.Document) []catalogdoc.MediaAssetTSScan {
-	assetsWithStats := make(map[int64]struct{}, len(doc.DropStats))
-	for _, stat := range doc.DropStats {
-		assetsWithStats[stat.MediaAssetID] = struct{}{}
-	}
-
-	rows := make([]catalogdoc.MediaAssetTSScan, 0, len(assetsWithStats))
-	for _, asset := range doc.MediaAssets {
-		if asset.Kind != "original" {
-			continue
-		}
-		if _, ok := assetsWithStats[asset.ID]; !ok {
-			continue
-		}
-		rows = append(rows, catalogdoc.MediaAssetTSScan{
-			MediaAssetID:     asset.ID,
-			ScannedSizeBytes: asset.SizeBytes,
-		})
-	}
-	return rows
 }
 
 func upsertRule(ctx context.Context, q *sqlcgen.Queries, rule catalogdoc.Rule) error {

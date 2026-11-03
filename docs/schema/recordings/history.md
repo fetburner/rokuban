@@ -76,14 +76,12 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 -- 使われない（% の閾値は GUC pg_trgm.similarity_threshold 由来でルール単位の閾値と噛み合わない）。
 ```
 
-品質イベントのログは、録画の失敗と record 破損の履歴を持つ。スクランブル件数はドロップ統計から導けるので、ここには重ねて記録しない。旧 catalog も読み込めるため、rescue はスクランブルの異常だけを除き、他のイベント順は保つ。
+品質イベントのログは、録画の失敗と record 破損の履歴を持つ。スクランブル件数はドロップ統計から導けるので、ここには重ねて記録しない。
 
 <details><summary>根拠</summary>
 
 - 品質イベントのログ: `quality_events`（`recording.failed` / `recording.record-broken`）
 - スクランブル件数の導出元: `drop_stats.scrambled`
-- rescue が除くスクランブルの異常: `bcas_anomaly`
-- 旧 catalog のイベント順を保つことの検証: `TestRescueLegacyQualityEvents`
 
 </details>
 

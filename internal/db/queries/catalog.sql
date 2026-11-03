@@ -254,8 +254,6 @@ ON CONFLICT (site, program_id) DO UPDATE SET
 -- keep_original / encode_profiles は issue #159 で recording_encode_policy
 -- 衛星表に切り出されたので、この INSERT には含まれない
 -- （CatalogUpsertRecordingEncodePolicy 参照）。
--- 古い catalog は引き続き読めるため、復元時に旧 quality_events の bcas_anomaly
--- だけを取り除く。他の履歴要素と配列順序は保持する（TestRescueLegacyQualityEvents）。
 -- name: CatalogUpsertRecording :exec
 INSERT INTO recordings (
     id, rule_id, source, site,
@@ -274,11 +272,7 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    COALESCE((
-        SELECT jsonb_agg(event.value ORDER BY event.ordinality)
-        FROM jsonb_array_elements(sqlc.arg('quality_events')::jsonb) WITH ORDINALITY AS event(value, ordinality)
-        WHERE event.value->>'event' IS DISTINCT FROM 'bcas_anomaly'
-    ), '[]'::jsonb),
+    COALESCE(NULLIF(sqlc.arg('quality_events')::jsonb, 'null'::jsonb), '[]'::jsonb),
     $21, $22, $23, $24, $25
 )
 ON CONFLICT (id) DO UPDATE SET

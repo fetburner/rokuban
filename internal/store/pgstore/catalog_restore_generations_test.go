@@ -3,11 +3,15 @@ package pgstore
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/catalogdoc"
@@ -16,6 +20,122 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+type catalogRestorePreflightTx struct{ pgx.Tx }
+
+func (catalogRestorePreflightTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, errors.New("database accessed before catalog validation")
+}
+
+func TestApplyDocumentRejectsMissingMediaAssetFieldsBeforeDatabaseAccess(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	generation := int64(1)
+	tests := []struct {
+		name       string
+		asset      catalogdoc.MediaAsset
+		missingKey string
+	}{
+		{
+			name: "store", missingKey: "store",
+			asset: catalogdoc.MediaAsset{
+				ID: 1, Kind: "original", RelPath: "originals/missing-store.ts",
+				SizeBytes: 100, State: "active",
+			},
+		},
+		{
+			name: "derivedGeneration", missingKey: "derivedGeneration",
+			asset: catalogdoc.MediaAsset{
+				ID: 1, Kind: "thumbnail", RelPath: "thumbnails/missing-derived.g1.jpg",
+				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
+				Generation: &generation, Store: dbtest.StoreName,
+			},
+		},
+		{
+			name: "generation", missingKey: "generation",
+			asset: catalogdoc.MediaAsset{
+				ID: 1, Kind: "thumbnail", RelPath: "thumbnails/missing-copy.g1.jpg",
+				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
+				DerivedGeneration: &generation, Store: dbtest.StoreName,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := &catalogdoc.Document{MediaAssets: []catalogdoc.MediaAsset{tt.asset}}
+			if _, err := applyDocument(context.Background(), catalogRestorePreflightTx{}, doc, store.RestoreOptions{}, nil); err == nil || !strings.Contains(err.Error(), tt.missingKey) {
+				t.Fatalf("applyDocument error = %v, want missing %s before database access", err, tt.missingKey)
+			}
+		})
+	}
+}
+
+func TestCatalogRestoreRejectsMissingMediaAssetFieldsBeforeWriting(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	generation := int64(1)
+	tests := []struct {
+		name       string
+		asset      catalogdoc.MediaAsset
+		missingKey string
+	}{
+		{
+			name:       "store",
+			missingKey: "store",
+			asset: catalogdoc.MediaAsset{
+				ID: 1, RecordingID: 42, Kind: "original", RelPath: "originals/a.ts",
+				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
+			},
+		},
+		{
+			name:       "derivedGeneration",
+			missingKey: "derivedGeneration",
+			asset: catalogdoc.MediaAsset{
+				ID: 1, RecordingID: 42, Kind: "thumbnail", RelPath: "thumbnails/a.g1.jpg",
+				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
+				Generation: &generation, Store: dbtest.StoreName,
+			},
+		},
+		{
+			name:       "generation",
+			missingKey: "generation",
+			asset: catalogdoc.MediaAsset{
+				ID: 1, RecordingID: 42, Kind: "thumbnail", RelPath: "thumbnails/a.g1.jpg",
+				SizeBytes: 100, State: "active", CreatedAt: now, UpdatedAt: now,
+				DerivedGeneration: &generation, Store: dbtest.StoreName,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			ctx := context.Background()
+			doc := &catalogdoc.Document{
+				Rules: []catalogdoc.Rule{{
+					ID: 1, Name: "preflight", Description: "", Enabled: true, Priority: 1,
+					KeepOriginal: "always", EncodeProfiles: []string{}, FilenameTemplate: "",
+					Metadata: json.RawMessage(`{}`), CreatedAt: now, UpdatedAt: now,
+				}},
+				MediaAssets: []catalogdoc.MediaAsset{tt.asset},
+			}
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("beginning catalog restore: %v", err)
+			}
+			t.Cleanup(func() { _ = tx.Rollback(ctx) })
+
+			if _, err := applyDocument(ctx, tx, doc, store.RestoreOptions{}, []string{"default"}); err == nil || !strings.Contains(err.Error(), tt.missingKey) {
+				t.Fatalf("applyDocument error = %v, want missing %s", err, tt.missingKey)
+			}
+			var rules, assets int
+			if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM rules), (SELECT count(*) FROM media_assets)`).Scan(&rules, &assets); err != nil {
+				t.Fatalf("checking writes after rejected catalog: %v", err)
+			}
+			if rules != 0 || assets != 0 {
+				t.Fatalf("rows after rejected catalog = rules %d, assets %d; want no writes", rules, assets)
+			}
+		})
+	}
+}
 
 func TestCatalogRestoreKeepsCurrentGenerationOnLogicalRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -58,7 +178,7 @@ func TestCatalogRestoreKeepsCurrentGenerationOnLogicalRow(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring current and old generation copies: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -98,7 +218,7 @@ func TestCatalogRestoreKeepsCurrentGenerationOnLogicalRow(t *testing.T) {
 		t.Fatalf("beginning stale catalog restore: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), staleSnapshot, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), staleSnapshot, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring an older catalog generation: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -158,7 +278,7 @@ func TestCatalogRestoreHistoricalTombstoneKeepsRepublishedCopyActive(t *testing.
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring active copy and its historical tombstone: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -238,7 +358,7 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring reused path with another asset's tombstone: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -259,74 +379,6 @@ func TestCatalogRestoreHistoricalTombstoneAllowsPathReuseByAnotherAsset(t *testi
 	}
 	if oldAssetTombstones != 1 {
 		t.Fatalf("old asset tombstones = %d, want one after identity match", oldAssetTombstones)
-	}
-}
-
-func TestCatalogRestorePrefersPresentCopyOverEarlierTombstone(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	path := "originals/reused-in-catalog.ts"
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	oldDeletedAt := now.Add(-time.Minute)
-
-	oldRecordingID := dbtest.Recording(t, pool)
-	oldAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: oldRecordingID, Kind: "original", SizeBytes: 80,
-	})
-	if err != nil {
-		t.Fatalf("creating historical logical original: %v", err)
-	}
-	currentRecordingID := dbtest.Recording(t, pool)
-	currentAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: currentRecordingID, Kind: "original", SizeBytes: 100,
-	})
-	if err != nil {
-		t.Fatalf("creating current logical original: %v", err)
-	}
-
-	// This is an old exported order (asset IDs ascend): the historical tombstone
-	// appears before the newer copy, and the target DB has no copy rows yet.
-	assets := []catalogdoc.MediaAsset{
-		{
-			ID: oldAssetID, RecordingID: oldRecordingID, Kind: "original",
-			RelPath: path, SizeBytes: 80, State: "deleted", DeletedAt: &oldDeletedAt,
-			CreatedAt: now.Add(-time.Hour), UpdatedAt: now, Store: dbtest.StoreName,
-		},
-		{
-			ID: currentAssetID, RecordingID: currentRecordingID, Kind: "original",
-			RelPath: path, SizeBytes: 100, State: "active",
-			CreatedAt: now, UpdatedAt: now, Store: dbtest.StoreName,
-		},
-	}
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("beginning catalog restore: %v", err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback(ctx) })
-	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil, dbtest.StoreName); err != nil {
-		t.Fatalf("restoring current copy after historical tombstone: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("committing catalog restore: %v", err)
-	}
-
-	var activeAssetID int64
-	if err := pool.QueryRow(ctx, `SELECT media_asset_id FROM media_asset_copies
-		WHERE store = $1 AND rel_path = $2 AND state = 'active'`, dbtest.StoreName, path).Scan(&activeAssetID); err != nil {
-		t.Fatalf("reading restored current path owner: %v", err)
-	}
-	if activeAssetID != currentAssetID {
-		t.Fatalf("active path owner = asset %d, want current asset %d", activeAssetID, currentAssetID)
-	}
-	var tombstonePath string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies
-		WHERE media_asset_id = $1 AND store = $2 AND state = 'deleted'`, oldAssetID, dbtest.StoreName).Scan(&tombstonePath); err != nil {
-		t.Fatalf("reading preserved historical tombstone: %v", err)
-	}
-	if tombstonePath == path || len(tombstonePath) <= 1024 || strings.Contains(tombstonePath, "/") {
-		t.Fatalf("historical tombstone path = %q, want a reserved single-component path", tombstonePath)
 	}
 }
 
@@ -362,7 +414,7 @@ func TestCatalogRestoreDoesNotResurrectCopyDeletedAfterStat(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), snapshot, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), snapshot, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring active snapshot over completed deletion: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -420,7 +472,7 @@ func TestCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), snapshot, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), snapshot, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring active snapshot over moved tombstone: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -503,7 +555,7 @@ func TestCatalogRestoreKeepsConflictingTombstoneAndContinuesGeneration(t *testin
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring catalog with a conflicting tombstone: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -724,7 +776,7 @@ func applyCatalogMediaAssets(t *testing.T, pool *pgxpool.Pool, assets []catalogd
 	}
 	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 	var restoreResult store.RestoreResult
-	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil, dbtest.StoreName); err != nil {
+	if err := applyMediaAssets(ctx, tx, sqlcgen.New(tx), assets, &restoreResult, nil); err != nil {
 		t.Fatalf("restoring catalog media assets: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

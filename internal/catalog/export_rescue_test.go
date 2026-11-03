@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -69,8 +68,8 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		fixtureParams.SizeBytes = 1_000_000
 	})
 
-	// 計測サイズを原本サイズとずらす。同じ値だと drop_stats からの旧形式補完でも
-	// 一致してしまい、catalog の計測記録を使う経路を区別できない。
+	// 計測サイズを原本サイズとずらす。復元が原本サイズを計測値として使うと
+	// 一致した値で見過ごすため、catalog の計測記録を使う経路を区別する。
 	if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
 		MediaAssetID: assetID, ScannedSizeBytes: 999_000,
 	}); err != nil {
@@ -416,27 +415,14 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
+func TestRescueMissingMediaAssetTSScansDoesNotInferFromDropStats(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.NetworkID = 1
-		fixtureParams.ServiceID = 1
-		fixtureParams.EventID = 1
-		fixtureParams.ServiceName = "s"
-		fixtureParams.Channel = "1"
-		fixtureParams.Title = "legacy"
-		fixtureParams.ProgramStartAt = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-		fixtureParams.ProgramDurationMs = 60_000
+	recID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = "sites/default/scanless.m2ts"
+		params.SizeBytes = 1234
 	})
-
-	const relPath = "sites/default/legacy.m2ts"
-	assetID := dbtest.MediaAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.RelPath = relPath
-		fixtureParams.SizeBytes = 1234
-	})
-
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
 		VALUES ($1, 256, 20, 2, 0, 0, 'video')
@@ -444,76 +430,25 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 		t.Fatalf("insert drop_stats: %v", err)
 	}
 
-	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
+	catalogStore := pgstoretest.Catalog(pool, []string{"default"}...)
+	doc, err := catalogStore.Export(ctx)
 	if err != nil {
 		t.Fatalf("Catalog.Export: %v", err)
 	}
-	if len(doc.Recordings) != 1 || len(doc.MediaAssets) != 1 || len(doc.DropStats) != 1 {
-		t.Fatalf("exported rows = %d recordings / %d assets / %d drop stats, want 1/1/1",
-			len(doc.Recordings), len(doc.MediaAssets), len(doc.DropStats))
+	if len(doc.DropStats) != 1 || len(doc.MediaAssetTSScans) != 0 {
+		t.Fatalf("exported drop stats / TS scans = %d / %d, want 1 / 0", len(doc.DropStats), len(doc.MediaAssetTSScans))
 	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("marshal document: %v", err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatalf("decode document fields: %v", err)
-	}
-	delete(fields, "mediaAssetTsScans")
-	var legacyAssets []map[string]json.RawMessage
-	if err := json.Unmarshal(fields["mediaAssets"], &legacyAssets); err != nil {
-		t.Fatalf("decode legacy media assets: %v", err)
-	}
-	for _, asset := range legacyAssets {
-		delete(asset, "store")
-		delete(asset, "sha256")
-		delete(asset, "derivedGeneration")
-	}
-	fields["mediaAssets"], err = json.Marshal(legacyAssets)
-	if err != nil {
-		t.Fatalf("marshal legacy media assets: %v", err)
-	}
-	legacyJSON, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatalf("marshal legacy document: %v", err)
+	doc.MediaAssetTSScans = nil
+	if _, err := catalogStore.Restore(ctx, doc, store.RestoreOptions{}); err != nil {
+		t.Fatalf("Catalog.Restore: %v", err)
 	}
 
-	mediaDir := newTestMediaDir(t)
-	assetPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
-		t.Fatalf("create media directory: %v", err)
-	}
-	if err := os.WriteFile(assetPath, []byte("legacy asset"), 0o600); err != nil {
-		t.Fatalf("write media asset: %v", err)
-	}
-	legacyPath := filepath.Join(t.TempDir(), DocumentFilename)
-	if err := os.WriteFile(legacyPath, legacyJSON, 0o600); err != nil {
-		t.Fatalf("write legacy catalog: %v", err)
-	}
-
-	result, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, "test-store", legacyPath)
-	if err != nil {
-		t.Fatalf("RescueFile: %v", err)
-	}
-	if result.MediaAssetTSScans != 1 {
-		t.Fatalf("rescued media_asset_ts_scans = %d, want 1", result.MediaAssetTSScans)
-	}
-	var restoredStore string
-	if err := pool.QueryRow(ctx, `SELECT store FROM media_asset_copies WHERE media_asset_id = $1 AND store <> ''`, assetID).Scan(&restoredStore); err != nil {
-		t.Fatalf("query restored media asset store: %v", err)
-	}
-	if restoredStore != "test-store" {
-		t.Fatalf("legacy media asset store = %q, want marker value test-store", restoredStore)
-	}
-	var scannedSize int64
-	if err := pool.QueryRow(ctx,
-		`SELECT scanned_size_bytes FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
-	).Scan(&scannedSize); err != nil {
+	var scanCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID).Scan(&scanCount); err != nil {
 		t.Fatalf("query media_asset_ts_scans: %v", err)
 	}
-	if scannedSize != 1234 {
-		t.Fatalf("legacy scanned_size_bytes = %d, want snapshot size 1234", scannedSize)
+	if scanCount != 0 {
+		t.Fatalf("media_asset_ts_scans rows = %d, want none when the key is missing", scanCount)
 	}
 }
 

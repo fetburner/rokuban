@@ -11,25 +11,22 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func TestRescueLegacyQualityEvents(t *testing.T) {
+func TestRescueQualityEventsPreservesOrder(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := newTestMediaDir(t)
-
-	legacyEvents := json.RawMessage(`[
+	events := json.RawMessage(`[
 		{"at":"2026-07-29T12:01:00Z","event":"recording.failed","reason":{"type":"io-error","message":"disk full"}},
-		{"at":"2026-07-29T12:02:00Z","event":"bcas_anomaly"},
-		{"at":"2026-07-29T12:03:00Z","event":"recording.failed","reason":{"type":"timeout","message":"latest failure"}},
-		{"at":"2026-07-29T12:04:00Z","event":"bcas_anomaly"}
+		{"at":"2026-07-29T12:03:00Z","event":"recording.failed","reason":{"type":"timeout","message":"latest failure"}}
 	]`)
 	doc := &Document{
 		Version:    Version,
 		ExportedAt: fixedTime(),
 		Recordings: []Recording{{
 			ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1,
-			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "legacy events",
+			ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "quality events",
 			ProgramStartAt: fixedTime(), ProgramDurationMs: time.Hour.Milliseconds(), Status: "failed",
-			QualityEvents: legacyEvents, CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
+			QualityEvents: events, CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
 		}},
 	}
 	genDir, err := Write(mediaDir, doc, 1, nil)
@@ -45,8 +42,8 @@ func TestRescueLegacyQualityEvents(t *testing.T) {
 		t.Fatalf("querying rescued quality_events: %v", err)
 	}
 	var got []struct {
-		At     time.Time `json:"at"`
-		Event  string    `json:"event"`
+		At     string `json:"at"`
+		Event  string `json:"event"`
 		Reason struct {
 			Type    string `json:"type"`
 			Message string `json:"message"`
@@ -55,16 +52,19 @@ func TestRescueLegacyQualityEvents(t *testing.T) {
 	if err := json.Unmarshal(gotJSON, &got); err != nil {
 		t.Fatalf("unmarshalling rescued quality_events %s: %v", gotJSON, err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("rescued quality_events = %s, want both failure events without bcas_anomaly", gotJSON)
+	want := []struct {
+		at, message string
+	}{
+		{at: "2026-07-29T12:01:00Z", message: "disk full"},
+		{at: "2026-07-29T12:03:00Z", message: "latest failure"},
 	}
-	if got[0].Event != "recording.failed" || got[0].At.Format(time.RFC3339) != "2026-07-29T12:01:00Z" ||
-		got[0].Reason.Type != "io-error" || got[0].Reason.Message != "disk full" {
-		t.Errorf("first rescued quality event = %+v, want first failure with its original reason", got[0])
+	if len(got) != len(want) {
+		t.Fatalf("rescued quality_events = %s, want %d events", gotJSON, len(want))
 	}
-	if got[1].Event != "recording.failed" || got[1].At.Format(time.RFC3339) != "2026-07-29T12:03:00Z" ||
-		got[1].Reason.Type != "timeout" || got[1].Reason.Message != "latest failure" {
-		t.Errorf("last rescued quality event = %+v, want latest failure so home can show its reason", got[1])
+	for i, event := range got {
+		if event.Event != "recording.failed" || event.At != want[i].at || event.Reason.Message != want[i].message {
+			t.Errorf("rescued event %d = %+v, want failed at %s with message %q", i, event, want[i].at, want[i].message)
+		}
 	}
 }
 
