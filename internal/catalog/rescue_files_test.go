@@ -21,7 +21,12 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 			QualityEvents: json.RawMessage("[]"), CreatedAt: fixedTime(), UpdatedAt: fixedTime()}},
 	}
 	for i, state := range []string{"active", "deleting", "deleted"} {
-		a := MediaAsset{ID: int64(i + 1), RecordingID: 1, Kind: "encoded", RelPath: state + ".mp4", State: state, CreatedAt: fixedTime(), UpdatedAt: fixedTime()}
+		generation := int64(1)
+		a := MediaAsset{
+			ID: int64(i + 1), RecordingID: 1, Kind: "encoded", RelPath: state + ".mp4", State: state,
+			CreatedAt: fixedTime(), UpdatedAt: fixedTime(), Store: "test-store",
+			DerivedGeneration: &generation, Generation: &generation,
+		}
 		a.Profile = &state
 		if state == "deleted" {
 			at := fixedTime()
@@ -30,7 +35,12 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 		doc.MediaAssets = append(doc.MediaAssets, a)
 	}
 	profile := "present"
-	doc.MediaAssets = append(doc.MediaAssets, MediaAsset{ID: 4, RecordingID: 1, Kind: "encoded", Profile: &profile, RelPath: "present.mp4", State: "active", CreatedAt: fixedTime(), UpdatedAt: fixedTime()})
+	generation := int64(1)
+	doc.MediaAssets = append(doc.MediaAssets, MediaAsset{
+		ID: 4, RecordingID: 1, Kind: "encoded", Profile: &profile, RelPath: "present.mp4", State: "active",
+		CreatedAt: fixedTime(), UpdatedAt: fixedTime(), Store: "test-store",
+		DerivedGeneration: &generation, Generation: &generation,
+	})
 	if err := os.WriteFile(filepath.Join(mediaDir, "present.mp4"), []byte("media"), 0o644); err != nil {
 		t.Fatal(err)
 	}
