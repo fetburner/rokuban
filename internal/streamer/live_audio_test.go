@@ -35,6 +35,7 @@ import (
 // 実物でしか意味が無い）。CI は ROKUBAN_REQUIRE_FFMPEG で skip を禁じる
 // （lookPathFFmpeg）。
 func TestBuildLiveFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	in := filepath.Join(t.TempDir(), "in.ts")
 	runFFmpeg(t, ffmpeg, nil,
@@ -112,6 +113,7 @@ func TestBuildLiveFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
 // 音声 ES に主 / 副が入る」形で、主 / 副 rendition が別の音を出すことを測る。
 // 既存の L/R ステレオ fixture だけでは、入力 a:0 を複製する誤実装も通ってしまう。
 func TestBuildLiveFFmpegArgs_RealFFmpegSeparateAudioStreams(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe, err := exec.LookPath("ffprobe")
 	if err != nil {
@@ -338,6 +340,7 @@ func (r *blockingEOFReadCloser) release() {
 }
 
 func TestLiveFFmpegAudioMapsWithCaptionsAndExtraAudioES(t *testing.T) {
+	t.Parallel()
 	cfg := LiveConfig{
 		Captions: true,
 		Profiles: []LiveProfile{{Name: "hd", VideoCodec: "mpeg2video", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6}},
@@ -512,6 +515,7 @@ func runFFmpeg(t *testing.T, ffmpeg string, stdin *os.File, args ...string) {
 // TestBuildRecordingHLSFFmpegArgs_RealFFmpegAudioRenditions checks the EVENT
 // playlist emitted by the recording HLS argument builder.
 func TestBuildRecordingHLSFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	in := filepath.Join(t.TempDir(), "in.ts")
 	runFFmpeg(t, ffmpeg, nil,
@@ -599,6 +603,7 @@ func TestBuildRecordingHLSFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
 // TestBuildRecordingHLSFFmpegArgs_AudioRenditions fixes the recording HLS
 // EVENT playlist audio rendition mapping and master layout.
 func TestBuildRecordingHLSFFmpegArgs_AudioRenditions(t *testing.T) {
+	t.Parallel()
 	profiles := []LiveProfile{
 		{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
 		{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
@@ -636,6 +641,7 @@ func TestBuildRecordingHLSFFmpegArgs_AudioRenditions(t *testing.T) {
 // だけを取り直す。ここで 404 を返すと、idle GC・ffmpeg の異常終了の後に hls.js が
 // fatal で止まる（4xx は再試行しない）。
 func TestLiveStreamer_VariantPlaylistRecreatesSession(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
@@ -683,6 +689,7 @@ func TestLiveStreamer_VariantPlaylistRecreatesSession(t *testing.T) {
 // セッション（= mirakc のチューナー）を起こさないことを固定する。master を
 // `/{name}` で取る要求が 15 秒待って 504 になることもない。
 func TestLiveStreamer_UnknownPlaylistNameDoesNotStartSession(t *testing.T) {
+	t.Parallel()
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 

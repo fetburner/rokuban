@@ -220,6 +220,7 @@ func TestMeasureRecordingHLSVideoDurationWidensWhenTheWindowHasNoPacket(t *testi
 
 // ffprobe が居座っても、呼び出し元の ctx で止まる。
 func TestMeasureRecordingHLSVideoDurationStopsWithContext(t *testing.T) {
+	t.Parallel()
 	ffprobe := filepath.Join(t.TempDir(), "sleeping-ffprobe")
 	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -263,7 +264,9 @@ func TestMeasureRecordingHLSVideoDurationDoesNotShrinkWithBFrames(t *testing.T) 
 	withRecordingHLSTailWindows(t, 64<<10)
 	var previous, previousLast int64
 	steps := 0
-	for size := int64(96 << 10); size <= info.Size(); size += 1500 {
+	// 刻みは粗くする。1500 バイトごとだと ffprobe が約 940 回走り、-race で約 32 秒かかった。
+	// 12000 バイトなら、上の「壊し方」の実装は落ち、正しい実装は通る（15000 バイトでは落ちなかった）。
+	for size := int64(96 << 10); size <= info.Size(); size += 12000 {
 		got, last, err := measureRecordingHLSVideoDuration(t.Context(), ffprobe, file, size, origin)
 		if err != nil {
 			t.Fatalf("size %d: %v", size, err)

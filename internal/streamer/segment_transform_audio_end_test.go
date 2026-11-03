@@ -21,6 +21,7 @@ import (
 // 壊し方: buildSegmentTransformArgs の `audioFilter += ",apad,atrim=end=" + endSeconds` を消す。
 // 壊し方: 同じ式の endSeconds を `input.VideoDurationPTS`（起動位置を引かない）から作る。
 func TestSegmentTransformAudioRenditionsEndAtTheVideoNumberWithRealFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	path := filepath.Join(t.TempDir(), "short-audio.ts")
@@ -87,6 +88,7 @@ func mediaDurationSeconds(t *testing.T, ffprobe, path string) float64 {
 // `number == finalNumber`（映像の番号）に戻す。
 // 壊し方: 同じ式の `finalNumber >= 0` を消す（伸びる入力で ENDLIST を終端にする）。
 func TestSegmentTransformFinalIsDecidedPerRenditionOnlyForKnownLength(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		kind       store.RecordingHLSInputKind
@@ -146,6 +148,7 @@ func TestSegmentTransformFinalIsDecidedPerRenditionOnlyForKnownLength(t *testing
 }
 
 func TestBuildSegmentTransformArgsTrimsAudioAtTheVideoEndOnlyForKnownLength(t *testing.T) {
+	t.Parallel()
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	build := func(durationPTS int64, start int64) []string {
 		args, err := buildSegmentTransformArgs(
@@ -179,6 +182,7 @@ func TestBuildSegmentTransformArgsTrimsAudioAtTheVideoEndOnlyForKnownLength(t *t
 //
 // 壊し方: scanTransform の `number > videoLast` の continue を消し、isFinal の videoReached を外す。
 func TestSegmentTransformTruncatedInputDoesNotPublishSilentAudioWithRealFFmpeg(t *testing.T) {
+	t.Parallel()
 	ffmpeg := lookPathFFmpeg(t)
 	ffprobe := lookPathFFprobe(t)
 	path := filepath.Join(t.TempDir(), "short.ts")
@@ -214,6 +218,7 @@ func TestSegmentTransformTruncatedInputDoesNotPublishSilentAudioWithRealFFmpeg(t
 // 壊し方: updateCurrentNumber の `entries["video"]` を全 rendition の走査に戻す（両方のケースが 6 になる）。
 // 壊し方: 同じ関数の Glob を全 rendition の走査に戻す（音声の .tmp で 6 になる）。
 func TestSegmentTransformCurrentNumberFollowsOnlyTheVideo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		kind     store.RecordingHLSInputKind
