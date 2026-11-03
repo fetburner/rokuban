@@ -7,55 +7,18 @@ on:
     branches: ['**']
 
 jobs:
-  # arm64 は QEMU を避けてネイティブ runner でビルドし、arch ごとに SHA サフィックス付きで
-  # push、publish-manifest でまとめる。タグ付けは docker/metadata-action に委ねる。
-  publish-arch:
+  # amd64 runner 1 台で両 arch を組む。Dockerfile / Dockerfile.full の重いステージは
+  # $BUILDPLATFORM で動く（Go と JLSE はクロスコンパイル）ので、QEMU で動くのは
+  # 最終ステージの apt-get だけ。定義は docker-bake.hcl、タグは docker/metadata-action。
+  publish:
     permissions:
       contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v6
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=${{ github.sha }},suffix=-${{ matrix.arch }}
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
-
-  publish-manifest:
-    needs: publish-arch
-    permissions:
-      contents: read
-      packages: write
-    runs-on: ubuntu-slim
-    steps:
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -69,14 +32,33 @@ jobs:
           tags: |
             type=raw,value=${{ github.sha }}
             type=raw,value=latest,enable={{is_default_branch}}
-      # 各 arch イメージを 1 つの multi-arch manifest にまとめ、meta の全タグに付ける。
-      - name: Create multi-arch manifest
-        run: |
-          for tag in $TAGS; do
-            IMAGETOOLS_ARGS+=(-t "$tag")
-          done
-          docker buildx imagetools create "${IMAGETOOLS_ARGS[@]}" \
-            "ghcr.io/${{ github.repository }}:${{ github.sha }}-amd64" \
-            "ghcr.io/${{ github.repository }}:${{ github.sha }}-arm64"
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
+      # ffmpeg 入りイメージはメンテナの自宅クラスタ用の private パッケージ
+      # （docs/overview.md §イメージ戦略と配布物）。公開配布物ではないので main だけ push し、
+      # ブランチごとの SHA で private の容量を食わない。push できるのは、パッケージの
+      # 「Manage Actions access」でこのリポジトリに Write を付けてあるため。
+      # source ラベルはパッケージを紐付けたリポジトリに合わせる（既定はこのリポジトリになる）。
+      - uses: docker/metadata-action@v6
+        id: meta-full
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/rokuban-full
+          bake-target: docker-metadata-full
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/homelab-infra
+      - uses: docker/bake-action@v7
+        with:
+          source: .
+          files: |
+            ./docker-bake.hcl
+            ${{ steps.meta.outputs.bake-file }}
+            ${{ steps.meta-full.outputs.bake-file }}
+          targets: ${{ github.ref_name == github.event.repository.default_branch && 'image,full' || 'image' }}
+          push: true
+          vars: VERSION=${{ github.sha }}
+          set: |
+            image.cache-from=type=gha,scope=image
+            image.cache-to=type=gha,mode=max,scope=image
+            full.cache-from=type=gha,scope=full
+            full.cache-to=type=gha,mode=max,scope=full

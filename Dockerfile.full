@@ -4,6 +4,9 @@
 #
 #   docker build -f Dockerfile.full --build-arg BASE=ghcr.io/fetburner/rokuban:latest -t rokuban-full .
 #
+# CI は docker-bake.hcl の full ターゲットとして公式イメージと一緒に組み、メンテナ用の
+# private パッケージへ push する。公開はしない（docs/overview.md §イメージ戦略と配布物）。
+#
 # 土台（Dockerfile）は debian:trixie-slim。カット版の VAAPI GPU 経路は
 # FFmpeg 7.1 以降を推奨する（docs/configuration.md §カット版）ためで、trixie の
 # apt が 7.1.5 を持つ。libav* を trixie の名前（soname 61 系）で名指ししているので、
@@ -33,27 +36,39 @@ ARG BASE=ghcr.io/fetburner/rokuban:latest
 # JLSE command-line tools are built without the AviSynth wrapper so workers can
 # analyze original MPEG-TS files directly. Versions are pinned to source commits.
 # Upstream: tobitti0/dtvindex, chapter_exe, logoframe; yobibi/join_logo_scp v5.1.1.
-FROM debian:trixie-slim AS jls
+#
+# build platform で動かし、Debian multiarch の libav*-dev と crossbuild-essential で
+# TARGETARCH 向けにクロスコンパイルする。amd64 runner で arm64 を組むとき、C/C++ の
+# コンパイルを QEMU に載せないため。native（TARGETARCH = BUILDARCH）でも同じ手順で通る
+# （実測: arm64 ホストで linux/arm64 と linux/amd64 の両方を組み、`file` で target の ELF を確認）。
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS jls
+ARG TARGETARCH
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl build-essential pkg-config \
-      libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
+    dpkg --add-architecture "$TARGETARCH" && apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl dpkg-dev make pkg-config "crossbuild-essential-$TARGETARCH" \
+      "libavformat-dev:$TARGETARCH" "libavcodec-dev:$TARGETARCH" "libavutil-dev:$TARGETARCH" \
+      "libswscale-dev:$TARGETARCH" "libswresample-dev:$TARGETARCH"
 WORKDIR /src
 ARG DTVINDEX_SHA=196272d2e1b8d8aa0d960b4245a8f3a419debfae
 ARG CHAPTER_EXE_SHA=a32c8f06c3207f8d144b6be37110c63221d7e79a
 ARG LOGOFRAME_SHA=8185bafc281e86d847d8084de53c7ae42acfb532
 ARG JOIN_LOGO_SCP_VERSION=5.1.1
+# 上流の Makefile は CC / CXX / AR を変数で受けるので、make の引数で target 向けに差し替える。
+# pkg-config は PKG_CONFIG_LIBDIR で target の .pc だけを見せる。
 RUN set -eux; \
+    triplet="$(dpkg-architecture -a "$TARGETARCH" -q DEB_HOST_MULTIARCH)"; \
+    export PKG_CONFIG_LIBDIR="/usr/lib/$triplet/pkgconfig:/usr/share/pkgconfig"; \
+    cross="CC=$triplet-gcc CXX=$triplet-g++ AR=$triplet-ar RANLIB=$triplet-ranlib"; \
     mkdir -p dtvindex chapter_exe logoframe join_logo_scp; \
     curl -fsSL --retry 5 --retry-all-errors "https://github.com/tobitti0/dtvindex/archive/${DTVINDEX_SHA}.tar.gz" | tar -xz --strip-components=1 -C dtvindex; \
     curl -fsSL --retry 5 --retry-all-errors "https://github.com/tobitti0/chapter_exe/archive/${CHAPTER_EXE_SHA}.tar.gz" | tar -xz --strip-components=1 -C chapter_exe; \
     curl -fsSL --retry 5 --retry-all-errors "https://github.com/tobitti0/logoframe/archive/${LOGOFRAME_SHA}.tar.gz" | tar -xz --strip-components=1 -C logoframe; \
     curl -fsSL --retry 5 --retry-all-errors "https://github.com/yobibi/join_logo_scp/archive/refs/tags/v${JOIN_LOGO_SCP_VERSION}.tar.gz" | tar -xz --strip-components=1 -C join_logo_scp; \
-    make -C dtvindex build/libdtvindex.a; \
-    make -C chapter_exe/src WITH_AVISYNTH=no DTVINDEX_DIR=/src/dtvindex; \
-    make -C logoframe/src WITH_AVISYNTH=no DTVINDEX_DIR=/src/dtvindex; \
-    make -C join_logo_scp/src; \
+    make -C dtvindex $cross build/libdtvindex.a; \
+    make -C chapter_exe/src $cross WITH_AVISYNTH=no DTVINDEX_DIR=/src/dtvindex; \
+    make -C logoframe/src $cross WITH_AVISYNTH=no DTVINDEX_DIR=/src/dtvindex; \
+    make -C join_logo_scp/src $cross; \
     install -d /opt/jls/bin /opt/jls/share/rokuban/cm_detect; \
     install -m 0755 chapter_exe/src/chapter_exe /opt/jls/bin/chapter_exe; \
     install -m 0755 logoframe/src/logoframe /opt/jls/bin/logoframe; \
