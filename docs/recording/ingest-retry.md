@@ -17,8 +17,8 @@ HEAD エンドポイントは、転送せずに正確な Content-Length を取�
 <details><summary>根拠</summary>
 
 - 測定対象の pin: `mirakc 4.0.0-dev.0`
-- 完了後の Range と HEAD の Content-Length: `internal/mirakc/conformance` の `TestConformance/CompletedRecordStreamAndDelete`
-- 録画中の Range と HEAD の Content-Length=-1: `internal/mirakc/conformance` の `TestConformance/RecordingInProgress`
+- 完了後の Range / HEAD: `recordlifecycle.TestRecordLifecycle/CompletedRecordStreamAndDelete`
+- 録画中の Range / HEAD: `recordlifecycle.TestRecordLifecycle/RecordingInProgress`
 - Range を無視した 200 の扱いをソースで確認した箇所: `mirakc-core/src/web/api/recording/records/stream.rs`
 
 </details>

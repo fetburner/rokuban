@@ -1,6 +1,6 @@
 //go:build conformance
 
-package conformance
+package pathology
 
 import (
 	"context"
@@ -10,78 +10,41 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
+	"github.com/fetburner/rokuban/internal/mirakc/conformance/harness"
 	"github.com/fetburner/rokuban/internal/programid"
 )
 
-// TestBroadcastPathologies は録画を 1 件ずつ別コンテナで実行する。
-// TestConformance は 1 録画の状態遷移をサブテスト間で共有しているため、ここへ混ぜると
-// ケース間の順序依存が入り、放送病態そのものの判定にならない。
-func TestBroadcastPathologies(t *testing.T) {
-	dir := testDir(t)
-	tunerBin := buildFixtureTuner(t, dir)
+// Run は指定した放送病態を独立した mirakc コンテナで判定する。
+// ケースごとに別コンテナにする。録画のチューナー占有と EPG 状態を共有すると、
+// 前ケースの schedule / record が次の判定を汚染する。
+func Run(t *testing.T, mode string) {
+	t.Helper()
+	dir := harness.TestDir(t)
+	tunerBin := harness.BuildFixtureTuner(t, dir)
+	container := harness.StartMirakc(t, dir, tunerBin, mode)
+	client := mirakc.NewClient(container.BaseURL, nil)
+	ctx := context.Background()
+	serviceID := programid.ServiceID(fixture.NetworkID, fixture.ServiceID)
+	programID := programid.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
+	harness.WaitForService(t, ctx, client, serviceID)
 
-	cases := []struct {
-		name string
-		mode string
-	}{
-		// mirakc 4.0.0-dev.0 相当の実測: record の program は target だが、未定尺の前番組を
-		// 含むストリームが target の startAt より先に録画される（実測 lead≈7.0s）。
-		{"PrecedingProgramExtension", fixture.CasePrecedingExtension},
-		// running_status=2 の target を present に載せたケース。mirakc の録画パイプライン
-		// 開始と target event のフィルタ結果は別の時刻で、recording.startTime は startAt
-		// より前になる（実測 lead≈11.6s）。
-		{"RunningStatusStartsSoon", fixture.CaseRunningStatus},
-		// present が前番組、following が target のケース。録画パイプラインは
-		// target.startAt より先に始まる（実測 lead≈11.7〜11.9s）。
-		{"FollowingProgram", fixture.CaseFollowing},
-		// target の event_id が同じ時間帯で振り直されるケース。時刻の先行ではなく record
-		// の状態遷移（recording.failed の有無）を判定するので下で別処理にする。
-		{"EventIDReset", fixture.CaseEventIDReset},
+	var events chan mirakc.Event
+	if mode == fixture.CaseEventIDReset {
+		events = make(chan mirakc.Event, 128)
+		sseCtx, stopSSE := context.WithCancel(ctx)
+		defer stopSSE()
+		go func() { _ = client.Subscribe(sseCtx, events, nil) }()
 	}
 
-	for _, tc := range cases {
-		mode := tc.mode
-		t.Run(tc.name, func(t *testing.T) {
-			// ケースごとに別コンテナにする。録画のチューナー占有と EPG 状態を共有すると、
-			// 前ケースの schedule / record が次の判定を汚染する。
-			caseDir := testDir(t)
-			container := startMirakc(t, caseDir, tunerBin, mode)
-			client := mirakc.NewClient(container.baseURL, nil)
-			ctx := context.Background()
-			serviceID := programid.ServiceID(fixture.NetworkID, fixture.ServiceID)
-			programID := programid.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
-
-			waitForService(t, ctx, client, serviceID)
-
-			var events chan mirakc.Event
-			if mode == fixture.CaseEventIDReset {
-				events = make(chan mirakc.Event, 128)
-				sseCtx, stopSSE := context.WithCancel(ctx)
-				defer stopSSE()
-				go func() { _ = client.Subscribe(sseCtx, events, nil) }()
-			}
-
-			program, created := scheduleFreshPathologyProgram(t, ctx, client, programID)
-
-			if mode == fixture.CaseEventIDReset {
-				judgeEventIDResetWithEvents(t, ctx, client, program, events)
-				return
-			}
-
-			record := waitForPathologyRecord(t, ctx, client, programID)
-			assertRecordStartsEarly(t, record, created.Program.StartAt.Time(), 2*time.Second, 20*time.Second)
-		})
+	program, created := scheduleFreshPathologyProgram(t, ctx, client, programID)
+	if mode == fixture.CaseEventIDReset {
+		judgeEventIDResetWithEvents(t, ctx, client, program, events)
+		return
 	}
+	record := waitForPathologyRecord(t, ctx, client, programID)
+	assertRecordStartsEarly(t, record, created.Program.StartAt.Time(), 2*time.Second, 20*time.Second)
 }
 
-// waitForProgramAt は programID の program のうち、startAt がポーリング時点の現在時刻より
-// leadIn 以上先にあるものが現れるまで待つ。「leadIn 以上先」は呼び出し時ではなく毎回の
-// ポーリング時点の現在時刻で判定する（呼び出し時に 1 回だけ計算すると、EPG bootstrap の
-// 待ち時間のぶんだけ判定が古びてガードにならない）。
-//
-// deadline は呼び出し側が持つ予算をそのまま受け取る。自前の予算を持つと、リトライする
-// 呼び出し側（scheduleFreshPathologyProgram）の予算判定が「1 回の待ちが終わった後」に
-// しか効かず、実際の上限が呼び出し側の予算の 2 倍近くまで伸びてしまう。
 func waitForProgramAt(t *testing.T, ctx context.Context, client *mirakc.Client, programID int64, leadIn time.Duration, deadline time.Time) mirakc.Program {
 	t.Helper()
 	for time.Now().Before(deadline) {
@@ -125,7 +88,7 @@ func waitForProgramAt(t *testing.T, ctx context.Context, client *mirakc.Client, 
 func scheduleFreshPathologyProgram(t *testing.T, ctx context.Context, client *mirakc.Client, programID int64) (mirakc.Program, *mirakc.Schedule) {
 	t.Helper()
 	const leadIn = 5 * time.Second
-	const budget = epgBootstrapTimeout + 60*time.Second
+	const budget = harness.EPGBootstrapTimeout + 60*time.Second
 	retryDeadline := time.Now().Add(budget)
 	for {
 		program := waitForProgramAt(t, ctx, client, programID, leadIn, retryDeadline)

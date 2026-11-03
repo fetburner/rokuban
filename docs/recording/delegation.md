@@ -240,7 +240,7 @@ ARIB TR-B14 の「開始判定は following の `start_time` を使う」とい�
 <details><summary>根拠</summary>
 
 - 測定対象の pin: `mirakc 4.0.0-dev.0`
-- 放送境界の 4 病態を測る conformance: `internal/mirakc/conformance/TestBroadcastPathologies`
+- 放送境界の 4 病態を測る conformance: `internal/mirakc/conformance/pathology/{preceding,runningstatus,following,eventidreset}`
 - 前番組延長の長さ未定: `duration=0xFFFFFF`
 - 判定に使う値: `event_id` / `recording.startTime` / `startAt`
 
@@ -267,7 +267,7 @@ mirakc のイベント配信は、接続時に既存の全 record の保存イ�
 - イベント配信: `/events` SSE。再送されるのは既存全 record の `recording.record-saved`
 - 保存イベントの略称: `record-saved`
 - 判定している conformance: `internal/mirakc/conformance`
-- 接続時の再送: `TestConformance/RecordSavedResentOnConnect`
-- 同一 record への複数回配信: `TestConformance/RecordSavedFiresMultipleTimes`
+- 接続時の再送: `internal/mirakc/conformance/recordlifecycle` の `TestRecordLifecycle/RecordSavedResentOnConnect`
+- 同一 record への複数回配信: `internal/mirakc/conformance/recordlifecycle` の `TestRecordLifecycle/RecordSavedFiresMultipleTimes`
 
 </details>

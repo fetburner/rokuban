@@ -1,6 +1,6 @@
 //go:build conformance
 
-package conformance
+package liverelease
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
+	"github.com/fetburner/rokuban/internal/mirakc/conformance/harness"
 	"github.com/fetburner/rokuban/internal/programid"
 )
 
@@ -22,11 +23,11 @@ import (
 // 再要求する。再要求の成功と Close からレスポンスまでの時間を、Issue #677 の
 // LiveSession.stop（ctx cancel + done 待ち）の根拠としてログに残す。
 func TestLiveStreamReleaseUnderRecording(t *testing.T) {
-	dir := testDir(t)
-	tunerBin := buildFixtureTuner(t, dir)
-	container := startMirakcWithConfig(t, dir, tunerBin, "",
-		mirakcLiveReleaseConfigYAML("/fixtures/fixturetuner {{{channel}}}"))
-	client := mirakc.NewClient(container.baseURL, nil)
+	dir := harness.TestDir(t)
+	tunerBin := harness.BuildFixtureTuner(t, dir)
+	container := harness.StartMirakcWithConfig(t, dir, tunerBin, "",
+		harness.MirakcLiveReleaseConfigYAML("/fixtures/fixturetuner {{{channel}}}"))
+	client := mirakc.NewClient(container.BaseURL, nil)
 	ctx := context.Background()
 
 	serviceID := func(siServiceID int) int64 {
@@ -38,7 +39,7 @@ func TestLiveStreamReleaseUnderRecording(t *testing.T) {
 		targetLiveService = 103
 	)
 	for _, siServiceID := range []int{recordingService, staleLiveService, targetLiveService} {
-		waitForService(t, ctx, client, serviceID(siServiceID))
+		harness.WaitForService(t, ctx, client, serviceID(siServiceID))
 	}
 
 	tuners, err := client.ListTuners(ctx)
@@ -50,15 +51,15 @@ func TestLiveStreamReleaseUnderRecording(t *testing.T) {
 	}
 
 	recordingProgramID := programid.ComposeProgramID(fixture.NetworkID, recordingService, fixture.EventID)
-	waitForProgram(t, ctx, client, recordingProgramID)
+	harness.WaitForProgram(t, ctx, client, recordingProgramID)
 	if _, err := client.CreateSchedule(ctx, mirakc.ScheduleInput{
 		ProgramID: recordingProgramID,
 		Options:   mirakc.Options{Priority: 10},
 	}); err != nil {
 		t.Fatalf("CreateSchedule: %v", err)
 	}
-	recordID := waitForRecord(t, ctx, client, recordingProgramID)
-	waitForRecordingStatus(t, ctx, client, recordID, "recording", recordingStartTimeout)
+	recordID := harness.WaitForRecord(t, ctx, client, recordingProgramID)
+	harness.WaitForRecordingStatus(t, ctx, client, recordID, "recording", harness.RecordingStartTimeout)
 
 	stale, err := client.StreamService(ctx, serviceID(staleLiveService), 1)
 	if err != nil {

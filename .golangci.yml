@@ -214,9 +214,12 @@ linters:
         exec-role:
           # os/exec は worker/streamer が実行に使い、config は LookPath で
           # ツールの存在だけを検証する。テストの子プロセス起動は対象外。
+          # conformance/harness は複数のテストパッケージが共有するため _test.go に置けないが、
+          # conformance タグ付きでテストからしか使われない（docker / go build を起動する）。
           list-mode: lax
           files:
             - "!$test"
+            - "!${config-path}/internal/mirakc/conformance/harness/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/streamer/**"
             - "!${config-path}/internal/config/**"

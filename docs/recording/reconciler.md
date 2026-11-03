@@ -114,7 +114,7 @@ contentPath の比較は、mirakc が登録された値を正規化せずその�
 
 <details><summary>根拠</summary>
 
-- `contentPath` の往復: `internal/mirakc/conformance` の `TestConformance/ContentPathRoundTrip`
+- `contentPath` の往復: `internal/mirakc/conformance/recordlifecycle` の `TestRecordLifecycle/ContentPathRoundTrip`
 
 </details>
 

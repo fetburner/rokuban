@@ -436,83 +436,47 @@ jobs:
     steps:
       - run: test "${{ needs.test-shard.result }}" = success
 
-  # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
-  # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
-  # kind の受け入れハーネス（deploy/k8s/e2e）とは別 --- あちらは KEDA / ロール分割の
-  # 判定が目的で mirakc モックを使う。こちらは実物の mirakc を 6 コンテナ起動し、直列だと
-  # 約 4 分かかる（両方持つ理由は deploy/k8s/e2e/README.md）。Postgres は要らないので独立した job にする。
-  #
-  # 直列は意図的（helpers_test.go は PID で一意性を取るのでプロセス内の t.Parallel() は
-  # 壊れる）。そのためプロセス内ではなくランナーを分ける（matrix）。シャードの `-run` は
-  # 所要時間を均すための選び方で、最後のシャードだけ「他が選んだもの以外すべて」を `-skip`
-  # で取る。将来足されたテストは自動でそこに入る。`-run` の綴り違いは "no tests to run" で
-  # 緑になるので、各シャードが選んだ全サブテスト（`expect` の空白区切りの各名前）の
-  # `--- PASS:` が出たことを検査する。
+  # rokuban が mirakc に期待する API 挙動を実物のコンテナに対して判定する。
+  # go list のパッケージを gotestsum ci-matrix へ渡し、main の test2json 実測で 3 シャードに分ける。
+  # 各病態ケースは独立したパッケージなので、長い EventIDReset / ingest resume / TestRecordLifecycle なども
+  # パッケージ単位で分散できる。Postgres は ingestresume がどのシャードへ入っても使えるよう全てに置く。
   # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
-  mirakc-conformance-shard:
-    name: mirakc-conformance (${{ matrix.name }})
+  mirakc-conformance-matrix:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/cache/restore@v6
+        with:
+          path: timings
+          key: mirakc-conformance-timings-${{ github.run_id }}
+          restore-keys: mirakc-conformance-timings-
+      - id: plan
+        run: |
+          go list -tags conformance ./internal/mirakc/conformance/... > "$RUNNER_TEMP/packages.txt"
+          go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$RUNNER_TEMP/packages.txt" > "$RUNNER_TEMP/matrix.json"
+          echo "matrix=$(cat "$RUNNER_TEMP/matrix.json")" >> "$GITHUB_OUTPUT"
+
+  mirakc-conformance-shard:
+    name: mirakc-conformance (${{ matrix.description }})
+    needs: mirakc-conformance-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 43
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: event-id-reset
-            run: '^TestBroadcastPathologies$/^EventIDReset$'
-            expect: 'TestBroadcastPathologies/EventIDReset'
-          - name: following-preceding
-            run: '^TestBroadcastPathologies$/^(FollowingProgram|PrecedingProgramExtension)$'
-            expect: 'TestBroadcastPathologies/FollowingProgram TestBroadcastPathologies/PrecedingProgramExtension'
-          - name: running-status
-            run: '^TestBroadcastPathologies$/^RunningStatusStartsSoon$'
-            expect: 'TestBroadcastPathologies/RunningStatusStartsSoon'
-          # 残り全部。上の 3 本が選んだサブテストだけを skip する。
-          - name: rest
-            skip: '^TestBroadcastPathologies$/^(EventIDReset|FollowingProgram|PrecedingProgramExtension|RunningStatusStartsSoon)$'
-            expect: 'TestConformance TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording'
-    # -timeout の根拠（直列全体としてのコード中の named timeout の積算。TestConformance +
-    # TestBroadcastPathologies の 4 病態ケース + TestLiveStreamReleaseUnderRecording +
-    # TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording が同じテストバイナリで直列に走り、
-    # 合計 7 コンテナを起動する）。
-    #
-    # コード上の named timeout で積める分（helpers_test.go / conformance_test.go /
-    # pathology_test.go / live_release_test.go の定数から）:
-    #   コンテナ起動 ×7（waitForHTTP 30s + waitForPublishedPort 10s） ≈ 280s
-    #   TestConformance ≈ 288s（epgBootstrapTimeout 60s×2 + recordingStartTimeout 20s×2 +
-    #     RecordingInProgress の各種ポーリング ≈28s + recordingFinishTimeout 90s +
-    #     SSE 系サブテスト ≈10s）
-    #   TestBroadcastPathologies ≈ 955s（waitForService 60s×4 = 240s +
-    #     scheduleFreshPathologyProgram の retryDeadline 120s×4 = 480s [内部の
-    #     waitForProgramAt にこの deadline をそのまま渡しているので実際に包む。
-    #     waitForProgramAt が自前の予算を持つと上限がこの 2 倍近くまで伸びる] +
-    #     waitForPathologyRecord
-    #     45s×3 = 135s + EventIDReset の judgeEventIDResetWithEvents 45s +
-    #     waitForFinishedWithoutReplacement(45s 待ち + 10s settle) = 100s）
-    #   TestLiveStreamReleaseUnderRecording ≈ 295s（waitForService 60s×3 = 180s +
-    #     waitForProgram 60s + recording の開始待ち 40s [waitForRecord 20s +
-    #     waitForRecordingStatus 20s] + 容量拒否確認の failedCtx 10s +
-    #     mirakc 解放待ちループ 5s）
-    #   TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording ≈ 280s（service / program
-    #     待ち 120s + recording 開始 / 終了待ち 110s + watcher / ingest once worker の
-    #     idle timeout 50s。実バイナリのビルドと起動は named timeout が無く、別途余裕を含める）
-    #   小計 ≈ 2098s
-    #
-    # コード上に named timeout が無く積めない分（実測/見積もりであることを明示する。
-    # startMirakc の `docker run` は image pull を待ってから返るので、pull が遅ければ
-    # ここで go test の -timeout そのものを消費する --- timeout-minutes 側の余裕ではない）:
-    #   docker image pull（同一ジョブ内では 7 コンテナが同じ digest を使うので実質 1 回。
-    #     イメージサイズ ≈49MB、ローカル実測はキャッシュ済みで数秒未満。CI の初回 pull
-    #     を見積もりで 30s とする） + buildFixtureTuner ×4（ローカル実測 arm64 cross
-    #     build ≈0.6s/回、CI 変動を見て 5s/回） ≈ 50s
-    #
-    # 合計 ≈ 2148s（36 分弱）。**-timeout はこれに 132s（約 6%）の余裕を足した 2280s
-    # （38m）にする。** timeout-minutes は go test の -timeout に加えて checkout/setup-go、
-    # PostgreSQL service の起動、GH Actions 側のジョブ終了処理のぶんの余裕（300s = 5m。image pull はここに含まない、
-    # 上記のとおり go test 内で消費されるため）を足した 43m にする。
-    #
-    # シャードに分けても値は変えない。mirakc-conformance-weekly.yml は直列で回し続け、
-    # 「ここと同じ値を保つ」と決めている。各シャードの実際の積算は直列より小さいので、
-    # 同じ値は上限として安全側に倒れる。
-    timeout-minutes: 43
+      matrix: ${{ fromJSON(needs.mirakc-conformance-matrix.outputs.matrix) }}
+    # harness はコンテナ名を t.Name() と PID で一意にする。シャード内のパッケージは -p 1 で直列にし、
+    # mirakc コンテナ同時起動による時刻判定の揺れを避ける。並列化はランナーを分ける matrix が担う。
+    # -timeout は各パッケージの test binary ごとに掛かる。named wait の積算では
+    # EventIDReset が約 320s（コンテナ起動 40s + service 60s + schedule retry 120s +
+    # record 45s + finished / settle 55s）、他の最大は live release 約 295s、
+    # RecordLifecycle 約 288s、ingest resume 約 280s。38m はビルド・image pull・環境遅延にも
+    # 十分な余裕を残す保守的な上限。docker run 中の image pull も 38m を消費する。
+    # timeout-minutes 43 は setup・Postgres 起動・終了処理の 5m を加える。
     services:
       postgres:
         image: postgres:17
@@ -537,20 +501,33 @@ jobs:
       - name: Run conformance shard
         shell: bash
         env:
-          RUN: ${{ matrix.run }}
-          SKIP: ${{ matrix.skip }}
-          EXPECT: ${{ matrix.expect }}
+          PACKAGES: ${{ matrix.packages }}
+          JSONFILE: mirakc-conformance-timing-${{ matrix.id }}.json
         run: |
-          # shell: bash は -eo pipefail 付きで実行される。go test が落ちれば tee を通してもここで落ちる
-          args=()
-          [ -n "$RUN" ] && args+=(-run "$RUN")
-          [ -n "$SKIP" ] && args+=(-skip "$SKIP")
-          go test -tags conformance ./internal/mirakc/conformance/... -timeout 38m -v "${args[@]}" | tee shard.log
-          # 空振り検査: -run の綴り違いは "no tests to run" で緑になる。EXPECT は空白区切りで、全名の PASS を要求する
-          for t in $EXPECT; do
-            grep -qE "^\s*--- PASS: ${t}( |$)" shard.log \
-              || { echo "::error::shard ran no expected test: ${t}"; exit 1; }
-          done
+          read -r -a pkgs <<< "$PACKAGES"
+          go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$JSONFILE" -- -tags conformance -p 1 -count=1 -timeout 38m -v "${pkgs[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mirakc-conformance-timing-${{ matrix.id }}
+          path: mirakc-conformance-timing-${{ matrix.id }}.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  mirakc-conformance-timings:
+    needs: mirakc-conformance-shard
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mirakc-conformance-timing-*
+          merge-multiple: true
+          path: timings
+      - uses: actions/cache/save@v6
+        with:
+          path: timings
+          key: mirakc-conformance-timings-${{ github.run_id }}
 
   # 必須チェック名 mirakc-conformance を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
   mirakc-conformance:

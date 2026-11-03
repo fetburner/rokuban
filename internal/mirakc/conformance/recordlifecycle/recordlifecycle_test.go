@@ -1,12 +1,12 @@
 //go:build conformance
 
-// Package conformance は rokuban が mirakc に期待している挙動を、実物の mirakc コンテナに
+// Package recordlifecycle は rokuban が mirakc に期待している挙動を、実物の mirakc コンテナに
 // 対して internal/mirakc.Client 経由で機械判定する。生の HTTP は書かない（判定対象そのものが
 // Client の契約なので、Client を経由しない判定は何も検査したことにならない）。
 //
 // `go test ./...`（タグなし）では一切ビルドされない。`go test -tags conformance ./...` で
-// 実行する。Docker が必要（helpers_test.go の mirakcImage を起動する）。
-package conformance
+// 実行する。Docker が必要（harness.MirakcImage を起動する）。
+package recordlifecycle
 
 import (
 	"context"
@@ -21,26 +21,18 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
+	"github.com/fetburner/rokuban/internal/mirakc/conformance/harness"
 	"github.com/fetburner/rokuban/internal/programid"
 )
 
-const (
-	epgBootstrapTimeout   = 60 * time.Second
-	recordingStartTimeout = 20 * time.Second
-	// フィクスチャの番組は fixture.EventDuration（+ mirakc 既定の --end-margin=2000ms）で
-	// 自然終了する。EPG 収集にかかる時間とは独立（fixture.NewConfig のコメント参照）なので、
-	// この値は fixture.EventDuration に対してだけ余裕を持たせればよい。
-	recordingFinishTimeout = fixture.EventDuration + 60*time.Second
-)
-
-// TestConformance は 1 つの mirakc コンテナと 1 本の録画のライフサイクルを、項目 1〜5 の
+// TestRecordLifecycle は 1 つの mirakc コンテナと 1 本の録画のライフサイクルを、項目 1〜5 の
 // 全サブテストで使い回す。録画の状態遷移（scheduled → recording → finished）に沿った
 // 順序依存があるため、意図的に 1 本の関数にまとめている。
-func TestConformance(t *testing.T) {
-	dir := testDir(t)
-	tunerBin := buildFixtureTuner(t, dir)
-	container := startMirakc(t, dir, tunerBin, "")
-	client := mirakc.NewClient(container.baseURL, nil)
+func TestRecordLifecycle(t *testing.T) {
+	dir := harness.TestDir(t)
+	tunerBin := harness.BuildFixtureTuner(t, dir)
+	container := harness.StartMirakc(t, dir, tunerBin, "")
+	client := mirakc.NewClient(container.BaseURL, nil)
 	ctx := context.Background()
 
 	serviceID := programid.ServiceID(fixture.NetworkID, fixture.ServiceID)
@@ -52,14 +44,14 @@ func TestConformance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetVersion: %v", err)
 		}
-		if v.Current != mirakcVersion {
-			t.Fatalf("mirakc の版 = %q, テストの pin（helpers_test.go の mirakcVersion）は %q。"+
-				"コンテナの版とテストの pin がずれている", v.Current, mirakcVersion)
+		if v.Current != harness.MirakcVersion {
+			t.Fatalf("mirakc の版 = %q, テストの pin（harness.MirakcVersion）は %q。"+
+				"コンテナの版とテストの pin がずれている", v.Current, harness.MirakcVersion)
 		}
 	})
 
-	waitForService(t, ctx, client, serviceID)
-	waitForProgram(t, ctx, client, programID)
+	harness.WaitForService(t, ctx, client, serviceID)
+	harness.WaitForProgram(t, ctx, client, programID)
 
 	// SSE は録画開始より前に張る。接続時の既存 record 再送（項目 2 前半、後段の
 	// RecordSavedResentOnConnect で改めて検査する）とは別に、この接続で「録画中に
@@ -106,8 +98,8 @@ func TestConformance(t *testing.T) {
 		}
 	})
 
-	recordID := waitForRecord(t, ctx, client, programID)
-	waitForRecordingStatus(t, ctx, client, recordID, "recording", recordingStartTimeout)
+	recordID := harness.WaitForRecord(t, ctx, client, programID)
+	harness.WaitForRecordingStatus(t, ctx, client, recordID, "recording", harness.RecordingStartTimeout)
 
 	// 受け入れ項目 3-4「録画中」: content が定まらない間は Content-Length を返さない。
 	t.Run("RecordingInProgress", func(t *testing.T) {
@@ -217,7 +209,7 @@ func TestConformance(t *testing.T) {
 		}
 	})
 
-	waitForRecordingStatus(t, ctx, client, recordID, "finished", recordingFinishTimeout)
+	harness.WaitForRecordingStatus(t, ctx, client, recordID, "finished", harness.RecordingFinishTimeout)
 
 	// 受け入れ項目 2 後半: 同一 record の record-saved が録画中に複数回来る。
 	// SSE は録画開始前から張ってあるので、ここまでに届いたぶんを数える。
@@ -357,79 +349,6 @@ func requireContentPath(t *testing.T, label string, got *string, want string) {
 	if got == nil || *got != want {
 		t.Fatalf("%s の contentPath = %s、want %q（mirakc が正規化して返している可能性がある）", label, ptrStr(got), want)
 	}
-}
-
-func waitForService(t *testing.T, ctx context.Context, c *mirakc.Client, serviceID int64) {
-	t.Helper()
-	deadline := time.Now().Add(epgBootstrapTimeout)
-	for time.Now().Before(deadline) {
-		services, err := c.ListServices(ctx)
-		if err == nil {
-			for _, s := range services {
-				if s.ID == serviceID {
-					return
-				}
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	t.Fatalf("service id=%d が %s 以内に現れなかった（scan-services が失敗しているか、フィクスチャの SI が壊れている）",
-		serviceID, epgBootstrapTimeout)
-}
-
-func waitForProgram(t *testing.T, ctx context.Context, c *mirakc.Client, programID int64) {
-	t.Helper()
-	deadline := time.Now().Add(epgBootstrapTimeout)
-	for time.Now().Before(deadline) {
-		programs, err := c.ListPrograms(ctx)
-		if err == nil {
-			for _, p := range programs {
-				if p.ID == programID {
-					return
-				}
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	t.Fatalf("program id=%d が %s 以内に現れなかった（update-schedules が失敗しているか、フィクスチャの EIT が壊れている）",
-		programID, epgBootstrapTimeout)
-}
-
-func waitForRecord(t *testing.T, ctx context.Context, c *mirakc.Client, programID int64) string {
-	t.Helper()
-	deadline := time.Now().Add(recordingStartTimeout)
-	for time.Now().Before(deadline) {
-		records, err := c.ListRecords(ctx)
-		if err == nil {
-			for _, r := range records {
-				if r.Program.ID == programID {
-					return r.ID
-				}
-			}
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	t.Fatalf("programId=%d の record が %s 以内に現れなかった（mirakc がスケジュールどおり録画を開始していない）",
-		programID, recordingStartTimeout)
-	return ""
-}
-
-func waitForRecordingStatus(t *testing.T, ctx context.Context, c *mirakc.Client, recordID, want string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var last string
-	for time.Now().Before(deadline) {
-		rec, err := c.GetRecord(ctx, recordID)
-		if err == nil {
-			last = rec.Recording.Status
-			if last == want {
-				return
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	t.Fatalf("record %s が %s 以内に status=%q に到達しなかった（最後に見えた status=%q）",
-		recordID, timeout, want, last)
 }
 
 // drainFor は d の間だけ ch から読み続けて集める。SSE は常時接続なので終端がなく、
