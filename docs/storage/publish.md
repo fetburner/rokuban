@@ -10,7 +10,7 @@ encode は ffmpeg の前に DB で新世代の `pending` コピーを予約し�
 
 キー世代は再利用しないので、失敗後の再試行も別のキーを使う。旧世代は `storage.transfer.overlap` が過ぎるまで残す。
 
-FS 実装はキーと同じディレクトリに staging file を作る。サイズと SHA-256 を検証し、ファイル `fsync` と `Close` の成功後に no-replace hard link で公開する。最後に親ディレクトリを `fsync` する。S3 実装は multipart upload で checksum を検証し、条件付きで完了する。条件付き完了が 412 のときだけ、HEAD のサイズとアプリ保存 SHA-256 metadata で既存 object を照合し、同一内容なら成功、それ以外は失敗とする。
+FS 実装はキーと同じディレクトリに staging file を作る。サイズと SHA-256 を検証し、ファイル `fsync` と `Close` の成功後に no-replace hard link で公開する。最後に親ディレクトリを `fsync` する。S3 実装は multipart upload で checksum を検証し、条件付きで完了する。`Put` は条件付きで完了し、412 または完了の応答を失ったときは HEAD で照合する。この `Put` が付けた upload token の metadata が一致し、サイズと SHA-256 も一致したときだけ成功とし、他の書き手のオブジェクトは内容が同じでも `ErrAlreadyExists` とする。同じ digest だけで成功にすると、呼び出し元は他の書き手のキーを自分のものとみなし、後で失敗したときに消しかねないためである。
 
 置き換えは新しい世代の行を足すだけで、旧世代のコピーには触れない。旧世代のキーは、署名付き URL で再生中の視聴者がいても 404 にならないよう、削除 reconcile が `storage.transfer.overlap` の後に消す。コピー行の世代は INSERT の後に変えず、現行のコピーを選ぶ述語は `active_media_asset_copies` と `preferred_active_media_asset_copy` だけに置く（[schema](../schema/recordings/media-assets.md)）。encode は ffmpeg の前に `pending` と世代を予約する。公開前に試行が止まっても、その世代は再利用せず、次の encode は新しい世代のキーを使う。Matroska のように同じ入力でも出力のバイト列が変わる形式で、既に upload 済みのキーを別の内容で上書きしないためである。
 
