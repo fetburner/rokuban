@@ -839,21 +839,26 @@ jobs:
 
   # イメージをローカルビルドして起動を検査する自己完結ジョブ。publish に依存しないので
   # fork PR（GITHUB_TOKEN に packages:write が無く GHCR へ push できない）でも回る。
-  # amd64 の重い層は publish-sha.yml と gha キャッシュ（scope=amd64）を共有する。
+  # publish と同じ docker-bake.hcl で組むので、bake の定義が壊れたら main に入る前にここで落ちる。
+  # gha キャッシュも bake の定義が持ち、publish-sha.yml / release.yml と共有する。
+  # ただし組むのは amd64 だけで、arm64 へのクロスビルドは publish-sha.yml でしか通らない。
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
-      # migrate 用の ffmpeg 非同梱イメージ。
-      - uses: docker/build-push-action@v7
+      # rokuban:test は migrate 用の ffmpeg 非同梱イメージ。server --all は
+      # その上に ffmpeg を積んだ Dockerfile.full（rokuban:test-full）で起動する。
+      - uses: docker/bake-action@v7
         with:
-          context: .
+          source: .
+          files: ./docker-bake.hcl
+          targets: image,full
           load: true
-          tags: rokuban:test
-          cache-from: type=gha,scope=amd64
-      # server --all はその上に ffmpeg を積んだ Dockerfile.full で起動する。
-      - run: docker build -f Dockerfile.full --build-arg BASE=rokuban:test -t rokuban:test-full .
+          set: |
+            *.platform=linux/amd64
+            image.tags=rokuban:test
+            full.tags=rokuban:test-full
       - name: JLSE binaries start with their runtime libraries
         run: |
           docker run --rm --entrypoint sh rokuban:test-full -eu -c '

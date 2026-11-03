@@ -244,9 +244,14 @@ nginx は必須コンポーネントにしない。ただし、前段に置け�
 
 自分のためのビルドは再配布ではないので、GPL の遵守事務も特許プールの問題も生じない。
 
+メンテナ自身の ffmpeg 入りイメージは、CI が private パッケージへ push する。本人しか pull できないので、これも自分のためのビルドに留まる。**このパッケージを public にしてはならない。** 公開すれば ffmpeg 同梱の再配布になる。GHCR は一度 public にしたパッケージを private に戻せないので、誤って公開したら削除するしかない。
+
 <details><summary>根拠</summary>
 
 - ユーザーが自分用にビルドするファイル: `Dockerfile.full`
+- 公式イメージとの同時ビルド: `docker-bake.hcl` の `full` ターゲット
+- push 先とその条件: `.github/workflows/publish-sha.yml`
+- public から private に戻せないこと: GitHub Docs「Configuring a package's access control and visibility」
 
 </details>
 

@@ -1,5 +1,8 @@
+# Stage 1 / 2 は build platform で動かす（--platform=$BUILDPLATFORM）。
+# フロントエンドの成果物は ISA に依存せず、Go は GOARCH でクロスコンパイルするので、
+# amd64 runner で arm64 を組むときも QEMU で動くのは Stage 3 の RUN だけになる。
 # Stage 1: フロントエンドビルド
-FROM node:24.20.0 AS frontend
+FROM --platform=$BUILDPLATFORM node:24.20.0 AS frontend
 RUN corepack enable
 WORKDIR /build/web
 COPY web/package.json web/pnpm-lock.yaml ./
@@ -10,7 +13,7 @@ COPY openapi.yaml /build/
 RUN pnpm build
 
 # Stage 2: Go バイナリビルド
-FROM golang:1.27.1 AS backend
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS backend
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \

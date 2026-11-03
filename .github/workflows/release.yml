@@ -31,7 +31,7 @@ jobs:
         id: meta
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # :latest は main を追う CI（ci.yml の publish-*）が所有する。リリースは
+          # :latest は main を追う publish-sha.yml が所有する。リリースは
           # 固定用の version タグだけを publish する。
           flavor: latest=false
           tags: |
@@ -39,13 +39,14 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
 
-      - uses: docker/build-push-action@v7
+      # 公式イメージだけを組む（ffmpeg 入りの full は公開しない。docs/overview.md
+      # §イメージ戦略と配布物）。arch とキャッシュは docker-bake.hcl の image ターゲットが持つ。
+      - uses: docker/bake-action@v7
         with:
-          context: .
+          source: .
+          files: |
+            ./docker-bake.hcl
+            ${{ steps.meta.outputs.bake-file }}
+          targets: image
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          vars: VERSION=${{ steps.meta.outputs.version }}
