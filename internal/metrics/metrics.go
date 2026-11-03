@@ -636,42 +636,40 @@ var (
 		Help: "Total transfer jobs withheld because the target root is not mounted or its store marker does not match.",
 	}, []string{"store"})
 
-	// StorageSyncLastSuccess は最後に**全 root を観測できた**パスの時刻（UNIX 秒）。
+	// StorageSyncLastSuccess は store ごとに最後に**全 root を観測できた**パスの時刻（UNIX 秒）。
 	// 1 root でも失敗したパスでは進めない（部分成功を「成功」に数えない。
 	// internal/worker/storage.go の StorageSyncWorker.Work 参照）。
-	// site ラベルは持たない --- アーカイブ/スクラッチは単一で site に従属しない
-	// （StorageSyncArgs のコメント参照）。
-	StorageSyncLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
+	StorageSyncLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_storage_sync_last_success_timestamp_seconds",
-		Help: "Unix time of the last storage sync pass where every configured root was observed successfully. Use with time() to detect a degraded sync; check rokuban_storage_root_last_success_timestamp_seconds{root} for which root is stale.",
-	})
+		Help: "Unix time of the last storage sync pass where every configured root for this store was observed successfully. Use with time() to detect a degraded sync; check rokuban_storage_root_last_success_timestamp_seconds{store,root} for which root is stale.",
+	}, []string{"store"})
 
-	// StorageRootLastSuccess は root ごとに最後に観測できた時刻（UNIX 秒）。
+	// StorageRootLastSuccess は置き場と root ごとに最後に観測できた時刻（UNIX 秒）。
 	// 統計に失敗した root は更新しない（前回の値のまま残る）ので、
 	// time() との差分がその root だけ伸び続けることで壊れた root を特定できる。
 	StorageRootLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_storage_root_last_success_timestamp_seconds",
-		Help: "Unix time of the last successful statfs observation for this root. Use with time() to detect a specific root that has stopped being observed.",
-	}, []string{"root"})
+		Help: "Unix time of the last successful statfs observation for this store and root. Use with time() to detect a specific root that has stopped being observed.",
+	}, []string{"store", "root"})
 
 	// StorageRootTotalBytes / StorageRootUsedBytes / StorageRootAvailableBytes は
-	// root ごとの直近の観測バイト数。GET /api/storage を経由せずに Prometheus 側で
+	// store と root ごとの直近の観測バイト数。GET /api/storage を経由せずに Prometheus 側で
 	// 直接容量アラートを組めるようにするための対（PR #258 のレビュー指摘）。
 	// 統計に失敗した root は更新しない（前回値のまま。StorageRootLastSuccess と
 	// 同じ「警告が出ないことは保証ではない」姿勢 --- 値が古くなっていることは
 	// StorageRootLastSuccess の鮮度で判別する）。
 	StorageRootTotalBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_storage_total_bytes",
-		Help: "Total filesystem capacity of this storage root, as of the last successful observation.",
-	}, []string{"root"})
+		Help: "Total filesystem capacity of this store and root, as of the last successful observation.",
+	}, []string{"store", "root"})
 	StorageRootUsedBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_storage_used_bytes",
-		Help: "Used bytes of this storage root (total - free, counting the root-reserved region as used), as of the last successful observation.",
-	}, []string{"root"})
+		Help: "Used bytes of this store and root (total - free, counting the root-reserved region as used), as of the last successful observation.",
+	}, []string{"store", "root"})
 	StorageRootAvailableBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_storage_available_bytes",
-		Help: "Bytes an unprivileged process can actually write to this storage root (statfs Bavail), as of the last successful observation.",
-	}, []string{"root"})
+		Help: "Bytes an unprivileged process can actually write to this store and root (statfs Bavail), as of the last successful observation.",
+	}, []string{"store", "root"})
 )
 
 // ライブ視聴（HLS streamer、issue #91）のメトリクス。

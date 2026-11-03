@@ -3,21 +3,29 @@ package worker
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
 	t.Helper()
-	job := StorageSyncArgs{}
+	return runStorageSyncForStore(t, w, dbtest.StoreName)
+}
+
+func runStorageSyncForStore(t *testing.T, w *StorageSyncWorker, storeName string) error {
+	t.Helper()
+	job := StorageSyncArgs{Store: storeName}
 	return runWorkerViaJobQFake(context.Background(), w, job)
 }
 
@@ -264,6 +272,76 @@ func fakeStat(usageByPath map[string]diskUsage, failPaths map[string]bool) func(
 	}
 }
 
+// Two store-scoped workers must keep separate capacity series for the same root.
+func TestReviewRepro_STOR02_CapacityGaugesKeepEachMountedStore(t *testing.T) {
+	tokyoDir, takamatsuDir := t.TempDir(), t.TempDir()
+	for _, tc := range []struct {
+		store string
+		path  string
+		total int64
+	}{
+		{store: "review-tokyo-1718", path: tokyoDir, total: 100},
+		{store: "review-takamatsu-1718", path: takamatsuDir, total: 200},
+	} {
+		w := &StorageSyncWorker{
+			Storage:       noopStorageObservation{},
+			MediaDir:      tc.path,
+			MountedStores: []string{"review-tokyo-1718", "review-takamatsu-1718"},
+			Stat:          fakeStat(map[string]diskUsage{tc.path: {totalBytes: tc.total, usedBytes: 10, availableBytes: tc.total - 10}}, nil),
+		}
+		if err := runStorageSyncForStore(t, w, tc.store); err != nil {
+			t.Fatalf("Work(%s): %v", tc.store, err)
+		}
+	}
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(metrics.StorageRootTotalBytes)
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantByStore := map[string]float64{"review-tokyo-1718": 100, "review-takamatsu-1718": 200}
+	var mediaTotals []float64
+	gotByStore := make(map[string]float64)
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			storeName, root := "", ""
+			for _, label := range metric.GetLabel() {
+				switch label.GetName() {
+				case "store":
+					storeName = label.GetValue()
+				case "root":
+					root = label.GetValue()
+				}
+			}
+			if root == "media" {
+				if _, ok := wantByStore[storeName]; ok {
+					value := metric.GetGauge().GetValue()
+					gotByStore[storeName] = value
+					mediaTotals = append(mediaTotals, value)
+				}
+			}
+		}
+	}
+	slices.Sort(mediaTotals)
+	if !slices.Equal(mediaTotals, []float64{100, 200}) {
+		t.Fatalf("rokuban_storage_total_bytes{root=\"media\"} values = %v, want literal [100 200] (one series per mounted store)", mediaTotals)
+	}
+	for storeName, want := range wantByStore {
+		if got := gotByStore[storeName]; got != want {
+			t.Errorf("rokuban_storage_total_bytes{store=\"%s\", root=\"media\"} = %v, want %v", storeName, got, want)
+		}
+	}
+}
+
+// noopStorageObservation は storage_sync の DB 書き込みを捨てる。ほかのメソッドは埋め込み nil に任せる。
+type noopStorageObservation struct{ store.StorageObservation }
+
+func (noopStorageObservation) DeleteStorageSyncExcept(context.Context, []string) error { return nil }
+func (noopStorageObservation) UpsertStorageSync(context.Context, store.StorageObservationInput) error {
+	return nil
+}
+
 // StorageSyncLastSuccess（ジョブ全体のゲージ）は**全 root を観測できたパスだけ**
 // 進む。1 root でも失敗した部分成功では進めない --- PR #258 のレビューで指摘された
 // 欠陥（media が恒久的に壊れていても scratch が成功し続ける限りこのゲージが
@@ -273,7 +351,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 
-	before := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess)
+	before := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName))
 
 	// 部分成功（scratch だけ失敗）では進まない。
 	w := &StorageSyncWorker{
@@ -286,7 +364,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess); got != before {
+	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName)); got != before {
 		t.Errorf("StorageSyncLastSuccess = %v after partial success, want unchanged %v", got, before)
 	}
 
@@ -298,7 +376,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess); got <= before {
+	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName)); got <= before {
 		t.Errorf("StorageSyncLastSuccess = %v after full success, want > %v", got, before)
 	}
 }
@@ -323,8 +401,8 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("first Work() error: %v", err)
 	}
-	scratchLastSuccessBefore := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch"))
-	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 500 {
+	scratchLastSuccessBefore := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch"))
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 500 {
 		t.Fatalf("scratch TotalBytes = %v, want 500", got)
 	}
 
@@ -338,23 +416,23 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 		t.Fatalf("second Work() error: %v", err)
 	}
 
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got != scratchLastSuccessBefore {
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != scratchLastSuccessBefore {
 		t.Errorf("scratch StorageRootLastSuccess = %v, want unchanged %v (statfs failed this pass)", got, scratchLastSuccessBefore)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 500 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 500 {
 		t.Errorf("scratch TotalBytes = %v, want unchanged 500 (statfs failed this pass)", got)
 	}
 
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("media")); got <= scratchLastSuccessBefore {
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "media")); got <= scratchLastSuccessBefore {
 		t.Errorf("media StorageRootLastSuccess = %v, want > %v (media succeeded this pass)", got, scratchLastSuccessBefore)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("media")); got != 999 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "media")); got != 999 {
 		t.Errorf("media TotalBytes = %v, want 999 (updated this pass)", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootUsedBytes.WithLabelValues("media")); got != 111 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootUsedBytes.WithLabelValues(dbtest.StoreName, "media")); got != 111 {
 		t.Errorf("media UsedBytes = %v, want 111", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootAvailableBytes.WithLabelValues("media")); got != 888 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootAvailableBytes.WithLabelValues(dbtest.StoreName, "media")); got != 888 {
 		t.Errorf("media AvailableBytes = %v, want 888", got)
 	}
 }
@@ -377,7 +455,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("first Work() error: %v", err)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got == 0 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got == 0 {
 		t.Fatalf("scratch StorageRootLastSuccess = %v, want set (nonzero) before removal", got)
 	}
 
@@ -391,11 +469,63 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 		t.Fatalf("second Work() error: %v", err)
 	}
 
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got != 0 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch StorageRootLastSuccess = %v after removal, want 0 (DeleteLabelValues should have cleared it)", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 0 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch TotalBytes = %v after removal, want 0", got)
+	}
+}
+
+// A later pass also removes every series for a store this process no longer mounts.
+func TestStorageSyncWorker_MetricsClearedWhenStoreUnmounted(t *testing.T) {
+	storeA, storeB := "review-mounted-1718", "review-unmounted-1718"
+	dirA, dirB := t.TempDir(), t.TempDir()
+	mountedStores := []string{storeA, storeB}
+	workerA := &StorageSyncWorker{
+		Storage:       noopStorageObservation{},
+		MediaDir:      dirA,
+		MountedStores: mountedStores,
+		Stat:          fakeStat(map[string]diskUsage{dirA: {totalBytes: 100, usedBytes: 10, availableBytes: 90}}, nil),
+	}
+	workerB := &StorageSyncWorker{
+		Storage:       noopStorageObservation{},
+		MediaDir:      dirB,
+		MountedStores: mountedStores,
+		Stat:          fakeStat(map[string]diskUsage{dirB: {totalBytes: 200, usedBytes: 20, availableBytes: 180}}, nil),
+	}
+	if err := runStorageSyncForStore(t, workerA, storeA); err != nil {
+		t.Fatalf("Work(%s): %v", storeA, err)
+	}
+	if err := runStorageSyncForStore(t, workerB, storeB); err != nil {
+		t.Fatalf("Work(%s): %v", storeB, err)
+	}
+
+	workerA.MountedStores = []string{storeA}
+	if err := runStorageSyncForStore(t, workerA, storeA); err != nil {
+		t.Fatalf("Work(%s) after store removal: %v", storeA, err)
+	}
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(
+		metrics.StorageSyncLastSuccess,
+		metrics.StorageRootLastSuccess,
+		metrics.StorageRootTotalBytes,
+		metrics.StorageRootUsedBytes,
+		metrics.StorageRootAvailableBytes,
+	)
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "store" && label.GetValue() == storeB {
+					t.Errorf("stale %s series still has store=%q", family.GetName(), storeB)
+				}
+			}
+		}
 	}
 }
 
@@ -406,7 +536,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 //
 // エッジトリガー実装（既存行を SELECT して差集合だけ掃除する）だと、行を消したのが
 // 他者だったパスでラベルが取り残され、二度と掃除されない ---
-// rokuban_storage_root_last_success_timestamp_seconds{root="scratch"} が凍結した
+// rokuban_storage_root_last_success_timestamp_seconds{store="test-store",root="scratch"} が凍結した
 // まま残り、その鮮度でアラートせよと書いている docs/operations/monitoring.md の
 // 手順が Pod を再起動するまで消えない偽陽性を出し続ける。
 func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testing.T) {
@@ -424,7 +554,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("first Work() error: %v", err)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 777 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 777 {
 		t.Fatalf("scratch TotalBytes = %v, want 777 before removal", got)
 	}
 
@@ -444,21 +574,21 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 		t.Fatalf("second Work() error: %v", err)
 	}
 
-	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("scratch")); got != 0 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch TotalBytes = %v, want 0 (stale label must be cleared even when another replica deleted the row first)", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues("scratch")); got != 0 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch StorageRootLastSuccess = %v, want 0 (a frozen freshness gauge is a permanent false-positive alert)", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootUsedBytes.WithLabelValues("scratch")); got != 0 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootUsedBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch UsedBytes = %v, want 0", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootAvailableBytes.WithLabelValues("scratch")); got != 0 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootAvailableBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch AvailableBytes = %v, want 0", got)
 	}
 
 	// media 側は掃除に巻き込まれない（desired set に残っている）。
-	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues("media")); got != 100 {
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "media")); got != 100 {
 		t.Errorf("media TotalBytes = %v, want 100 (still desired, must not be swept)", got)
 	}
 }
