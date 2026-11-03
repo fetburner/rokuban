@@ -66,6 +66,7 @@ func allTuners(t *testing.T, pool *pgxpool.Pool) []sqlcgen.TunerSync {
 
 // 全量取得 → upsert → スイープの 1 パス。
 func TestTunerSyncWorker_FullSync(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
@@ -109,6 +110,7 @@ func TestTunerSyncWorker_FullSync(t *testing.T) {
 // ここでは tuner_sync に実行時状態の列が無いことと、チューナーが容量に数えられることを見る。
 // 使用中かどうかは型で表せないので、worker 側で使用中のチューナーを置くことはできない。
 func TestTunerSyncWorker_DoesNotProjectRuntimeState(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
@@ -140,6 +142,7 @@ WHERE table_name = 'tuner_sync'
 // 未知の channel_type を含むチューナーは、そのチューナーだけ捨てて同期を続行する
 // （epg_services が未知の channel_type のサービスだけ捨てるのと同じ規律）。
 func TestTunerSyncWorker_SkipsTunerWithUnknownChannelType(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
@@ -160,6 +163,7 @@ func TestTunerSyncWorker_SkipsTunerWithUnknownChannelType(t *testing.T) {
 
 // types が空のチューナーは投影する（どの cap にも数えられないだけで無害）。
 func TestTunerSyncWorker_ProjectsTunerWithoutTypes(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "設定ミスのチューナー", Types: []string{}, IsAvailable: true},
@@ -180,6 +184,7 @@ func TestTunerSyncWorker_ProjectsTunerWithoutTypes(t *testing.T) {
 // 空レスポンスでスイープを走らせない。射影が消えると容量判定が何も主張しなくなり
 // （tuner_sync が空 = 判定しない）、警告が黙って消える。
 func TestTunerSyncWorker_SkipsSweepOnEmptyResponse(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
@@ -266,6 +271,7 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 // の doc コメント参照）。モックは 200 を返す（弱いテストにしないため。issue
 // #139 のテスト規律）。
 func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
@@ -294,6 +300,7 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 // 処理されることを確認する（TestTunerSyncWorker_SiteMismatch と対になる
 // 両方向の確認）。
 func TestTunerSyncWorker_SiteMatch(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 
 	fx := &tunerFixture{tuners: []mirakc.Tuner{

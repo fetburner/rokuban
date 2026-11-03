@@ -35,6 +35,7 @@ type playbackTimelineFixtureManifest struct {
 // 作るのは、streamer / worker と同じ引数ビルダーを通すためである。JavaScript 側で
 // ffmpeg の引数を組むと、製品の挙動からずれたまま時間軸の判定だけ通りうる。
 func TestWritePlaybackTimelineFixture(t *testing.T) {
+	t.Parallel()
 	fixtureDir := os.Getenv("ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR")
 	if fixtureDir == "" {
 		t.Skip("set ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR to export browser timeline fixtures")

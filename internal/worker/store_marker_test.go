@@ -67,6 +67,7 @@ func TestIngestWorkerWithholdsWhenStoreMarkerDoesNotMatch(t *testing.T) {
 }
 
 func TestGeneratedObjectPublishDoesNotWriteWhenStoreMarkerIsMissing(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 	worker := &EncodeWorker{MediaDir: mediaDir, MediaStoreName: "tokyo"}
 	_, _, err := worker.publishEncoded(context.Background(), encodePublishInput{})
@@ -579,6 +580,7 @@ func (f *failingIngestTarget) GetRecordSyncIngestTarget(context.Context, string,
 // 起動時に probe を保留した worker は、目印の照合が通った最初の ingest で probe を走らせる。
 // probe の失敗は固定せず、次のジョブが再試行する。
 func TestIngestWorkerProbesStorageAfterMarkerCheckAndRetriesFailure(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 	if err := mediapath.WriteStoreMarker(mediaDir, "tokyo"); err != nil {
 		t.Fatal(err)
@@ -634,6 +636,7 @@ func TestIngestWorkerProbesStorageAfterMarkerCheckAndRetriesFailure(t *testing.T
 
 // 起動時に probe が成功していれば、最初の ingest で二重に走らせない。
 func TestIngestWorkerSkipsStorageProbeAlreadyDoneAtStartup(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 	if err := mediapath.WriteStoreMarker(mediaDir, "tokyo"); err != nil {
 		t.Fatal(err)

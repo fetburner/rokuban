@@ -29,6 +29,7 @@ func mustEncodedRelPath(t *testing.T, original, profile, container string, gener
 
 // 受け入れの 4 ケース、rescue 後の状態、作り直し要求だけの名前、証拠の無い名前を固定する。
 func TestCheckEncodeProfileMeaning(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -100,6 +101,7 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 }
 
 func TestCheckEncodeProfileMeaningChecksEveryActivePath(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -134,6 +136,7 @@ func TestCheckEncodeProfileMeaningChecksEveryActivePath(t *testing.T) {
 // TestEncodedRelPathPreservesProfileAndContainer は受理する profile 名をそのまま
 // パスに書き、拡張子から container を読み戻せることを固定する。
 func TestEncodedRelPathPreservesProfileAndContainer(t *testing.T) {
+	t.Parallel()
 	accepted := []string{"h264", "h264_vaapi", "cut", "e2e-slow", "x", "x.g2.hd", "x.g", "x.g0", "x.g01", "x.gz", "g", "1", "a_b", "_", "__", "_x", "x_", ".hidden", "日本語 720p"}
 	originals := []string{
 		"sites/home/20240101/120000_title_1024.m2ts",

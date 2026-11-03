@@ -13,6 +13,7 @@ import (
 )
 
 func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		kind    string

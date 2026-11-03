@@ -32,6 +32,7 @@ import (
 )
 
 func TestBuildFFmpegArgs(t *testing.T) {
+	t.Parallel()
 	crf := 23
 	p := config.EncodeProfile{
 		Name:       "h264",
@@ -100,6 +101,7 @@ func TestBuildFFmpegArgs(t *testing.T) {
 // より前に入り、-vf が 1 本だけ出ることを固定する。
 // 壊し方: BuildFFmpegArgs で profile.Deinterlace を渡さずに ScaleArgs を呼ぶ。
 func TestBuildFFmpegArgs_Deinterlace(t *testing.T) {
+	t.Parallel()
 	profile := config.EncodeProfile{
 		Name:        "h264",
 		Container:   "mp4",
@@ -129,6 +131,7 @@ func TestBuildFFmpegArgs_Deinterlace(t *testing.T) {
 }
 
 func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
 	}
@@ -144,6 +147,7 @@ func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
 // TestBuildFFmpegArgs_HWAccelBeforeInput は hwaccel ブロックが -i より前に来る
 // ことを固定する（issue #321）。壊し方: 前置ブロックの append を -i の対の後ろへ移す。
 func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name:       "h264_vaapi",
 		Container:  "mp4",
@@ -199,6 +203,7 @@ func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 // TestBuildFFmpegArgs_QP は qp が -qp として出て -crf は出ないことを固定する。
 // 壊し方: emit するフラグ名を -crf にする。
 func TestBuildFFmpegArgs_QP(t *testing.T) {
+	t.Parallel()
 	qp := 24
 	p := config.EncodeProfile{
 		Name:       "h264_vaapi",
@@ -224,6 +229,7 @@ func TestBuildFFmpegArgs_QP(t *testing.T) {
 // -i より前、extra_args が -c:v より後かつ -f/-progress より前に来ることを固定する
 // （issue #321）。壊し方: 2 つの append 先を入れ替える（罠そのものの回帰）。
 func TestBuildFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name:           "h264",
 		Container:      "mp4",
@@ -265,6 +271,7 @@ func TestBuildFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
 // アプリ所有の末尾（-f/-progress pipe:1/-loglevel error/出力パス）が動かないことを
 // 固定する。壊し方: ユーザー引数を末尾の後ろに append する。
 func TestBuildFFmpegArgs_AppOwnedTail(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name:           "h264",
 		Container:      "mp4",
@@ -303,6 +310,7 @@ func TestBuildFFmpegArgs_AppOwnedTail(t *testing.T) {
 }
 
 func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name:       "copyish",
 		Container:  "mkv",
@@ -325,6 +333,7 @@ func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
 }
 
 func TestEncodedRelPath(t *testing.T) {
+	t.Parallel()
 	got, err := EncodedRelPath("20240101/120000_title_1024.m2ts", "h264", "mp4", 0, false)
 	if err != nil {
 		t.Fatal(err)
@@ -355,6 +364,7 @@ func TestEncodedRelPath(t *testing.T) {
 }
 
 func TestParseFFmpegProgress_OutTimeMSIsMicroseconds(t *testing.T) {
+	t.Parallel()
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
 
@@ -366,6 +376,7 @@ func TestParseFFmpegProgress_OutTimeMSIsMicroseconds(t *testing.T) {
 }
 
 func TestParseFFmpegProgress_ReportsOutTime(t *testing.T) {
+	t.Parallel()
 	var got []time.Duration
 	parseFFmpegProgress(
 		strings.NewReader("out_time_ms=1000000\nprogress=continue\nout_time_us=2500000\nprogress=end\n"),
@@ -714,6 +725,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 // 存在しない名前でも）そのまま載り、River の試行回数も載る（恒久的な失敗では
 // 試行ごとに配送されるので、受け側が最終試行を見分けられるようにする）。
 func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -782,6 +794,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 // encode.failed を発火するかの判定（両方向）。Work 越しの ctx キャンセル
 // テストは notify 内の DB 読みも同時に失敗するため、この分岐だけを分離して見る。
 func TestShouldCountEncodeFailure(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("ffmpeg failed")
 	cases := []struct {
 		name   string
@@ -807,6 +820,7 @@ func TestShouldCountEncodeFailure(t *testing.T) {
 // 停止による ctx キャンセルでは発火しないこと。判定そのものは
 // TestShouldCountEncodeFailure が見る（ここは Work 越しに POST が飛ばないことの確認）。
 func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -850,6 +864,7 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 }
 
 func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
+	t.Parallel()
 	spec := EncodeJobArgs{}.Spec()
 	if spec.Queue != "encode" {
 		t.Errorf("Spec().Queue = %q, want encode", spec.Queue)
@@ -869,6 +884,7 @@ func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
 // 無しでは 11/11 cue の終了時刻が約 1193 時間になり字幕が消えない。付けると 11/11 正常。
 // 壊し方: append を消す / -i の後ろへ移す。
 func TestBuildFFmpegArgs_SubtitleFixSubDuration(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
 	}
@@ -904,6 +920,7 @@ func TestBuildFFmpegArgs_SubtitleFixSubDuration(t *testing.T) {
 }
 
 func TestProbeHasSubtitlesRequestsSubtitleStreams(t *testing.T) {
+	t.Parallel()
 	var gotName string
 	var gotArgs []string
 	hasSubtitles, err := probeHasSubtitles(context.Background(), "/tools/ffprobe", "/recording.ts",
@@ -931,6 +948,7 @@ func TestProbeHasSubtitlesRequestsSubtitleStreams(t *testing.T) {
 }
 
 func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
+	t.Parallel()
 	ffmpeg, ffmpegErr := exec.LookPath("ffmpeg")
 	ffprobe, ffprobeErr := exec.LookPath("ffprobe")
 	if ffmpegErr != nil || ffprobeErr != nil {
@@ -997,6 +1015,7 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 }
 
 func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
+	t.Parallel()
 	ffmpeg, ffmpegErr := exec.LookPath("ffmpeg")
 	ffprobe, ffprobeErr := exec.LookPath("ffprobe")
 	if ffmpegErr != nil || ffprobeErr != nil {

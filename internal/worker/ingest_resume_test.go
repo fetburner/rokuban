@@ -27,6 +27,7 @@ import (
 )
 
 func TestIngestTempFilePathEscapesIdentityAndIncludesWriterGeneration(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := ingestTempFilePath(dir, "site-a", "record/../other")
 	if filepath.Dir(path) != dir {
@@ -50,6 +51,7 @@ func TestIngestTempFilePathEscapesIdentityAndIncludesWriterGeneration(t *testing
 //
 //nolint:funlen // This integration test follows one restart through the visible pointer, catch-up, and final commit.
 func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.T) {
+	t.Parallel()
 	full := makeTSData(8)
 	cutoff := 3 * 188
 
@@ -227,6 +229,7 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 }
 
 func TestIngestWorker_RejectsSymlinkedCleanHandoff(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return

@@ -39,7 +39,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 **`node_modules` が lockfile より古いと、手元と CI で規則集合がずれる**。上記の見落としは実際にこれで起きた --- 手元は 1.75.0 のまま 2 件を表示し、CI は lockfile の 1.80.0 で 33 件を見ていた。lockfile が動く PR の後は `pnpm install` をやり直す。
 
-**`go test ./...` は Postgres を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
+**`go test ./...` は Postgres を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとにテンプレート DB を作り、テストごとにそこから専用の DB を複製する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
 **docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ。対象は `package.json` の `docs:lint` が権威）。文の長さと読点の数は違反 0 件で gate する。段落長・表のセル・節の冒頭・節の大きさ・節の太字・根拠の置き場は `scripts/textlint-rules/` のローカルルールが、ファイルごとの許容件数と実測の一致で gate する。**ファイルの大きさは許容を持たず、上限を超えたら割る**。他の規則の許容を増やすと、doc を割って移す分を除き CI（`scripts/check-allow-total.mjs`）が落ちる。規則を新設して許容を持たせる PR は、検査を通るので理由を書く。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**。
 

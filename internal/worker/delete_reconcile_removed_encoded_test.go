@@ -77,6 +77,7 @@ func setAssetState(t *testing.T, pool *pgxpool.Pool, id int64, state string) {
 // 名前付き述語 removed_encoded_assets を両方向で固定する。「desired に無い」だけでも
 // 「要求行がある」だけでも消えないこと、最後の版は消えないことを、入口クエリで見る。
 func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
@@ -126,6 +127,7 @@ func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 // 外した版は 1 パスで消え、要求行も同じ確定で消える。残す版と原本は触らず、
 // 外した版は再エンコードの候補にもならない。
 func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	f := seedRemovedEncodedRecording(t, pool, mediaDir, 9201, []string{"h265"})
@@ -177,6 +179,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 // おく。発動中は新規の削除が止まり、pending の再開だけが進む。発動していないと、否定形が
 // 誤って active に戻した行も同じパスの新規候補として消え、結果が区別できない。
 func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResumes(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
@@ -222,6 +225,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 
 // 外した版もブレーカーの 1 パス合計に入る。ごみ箱 1 件 + 外した版 2 件で閾値 2 を超える。
 func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 

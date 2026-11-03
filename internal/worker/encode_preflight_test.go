@@ -143,6 +143,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 // 章を所有していない録画に来たら、黙って飛ばさずジョブの失敗にすることを固定する。
 // 投入側が所有していない録画を除くので、来るのは想定外の状態である。失敗として見えるようにする。
 func TestEncodeWorker_OrdinaryCutJobWithoutOwnershipFails(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return

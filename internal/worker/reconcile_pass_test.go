@@ -15,6 +15,7 @@ import (
 
 // reconciler は Args.Spec で既定より長い有限の締切を持つ。
 func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
+	t.Parallel()
 	args := ReconcilePassArgs{}
 	got := args.Spec().Timeout(args)
 	if got != 10*time.Minute {
@@ -26,6 +27,7 @@ func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
 // （ロジック自体は internal/reconciler でテスト済みなので、ここでは「ジョブとして
 // 呼ばれると本当に動く」という配線だけを確認する）。
 func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -76,6 +78,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 // §3.2「ruler パスの完了」）。base が変われば mirakc に反映すべき差分が増えるため、
 // reconcile を早める。
 func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := newRecordingEnqueuer()
@@ -104,6 +107,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 // 0 件でも常に GET /api/recording/schedules を行う（reconciler.go の RunPass
 // 実装）ため、DB は空のままでよい。
 func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 
 	fake := mirakctest.New(t)
@@ -130,6 +134,7 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 // 処理されることを確認する（TestReconcilePassWorker_SiteMismatch と対になる
 // 両方向の確認）。
 func TestReconcilePassWorker_SiteMatch(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 
 	fake := mirakctest.New(t)

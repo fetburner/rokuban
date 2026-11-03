@@ -250,6 +250,7 @@ SELECT EXISTS (
 
 // ごみ箱の猶予を過ぎた録画の原本は物理削除され、行は deleted に遷移する。
 func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -429,6 +430,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 // ない。os.Remove はディレクトリに対しては ENOTEMPTY で失敗するので、この形なら
 // サイドカーの削除だけを狙って失敗させられる。
 func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDeletesEncoded(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -477,6 +479,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 // encoded の rel_path が拡張子を持たない（SubtitleRelPath がエラーを返す）場合も
 // 本体削除は進む。
 func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_StillDeletes(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -517,6 +520,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 
 // 猶予期間内のごみ箱録画は削除されない（TrashPastRetention の逆方向）。
 func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -563,6 +567,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 // 猶予をバイパスすることを確認する --- 述語の即時腕を時刻比較に戻すと
 // （deleted_at が猶予内なので）削除されず落ちる。
 func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -604,6 +609,7 @@ func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 // ケースでも 1 パス目で purged_at が立ち、recording.deleted も 1 回だけ発火し、
 // ごみ箱一覧から消えるべき。
 func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -672,6 +678,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 // （issue #135 の罠。TestDeleteReconcileWorker_TrashPastRetention_Deletes の
 // 反転）。
 func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -717,6 +724,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 // ごみ箱の録画を完全削除したら recording.deleted が 1 回だけ発火すること
 // （アセット 3 件を消しても 1 通。発火は録画単位）。
 func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Title = "テスト番組" })
@@ -770,6 +778,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 // recording.deleted が発火すること。発火条件をアセットの kind に取ると、この
 // 経路では原本が既に無いので一度も発火しない。
 func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWebhook(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -814,6 +823,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 // until_encoded の原本削除では recording.deleted を発火しない（録画は生きていて
 // encoded で再生できる。TrashPurge_FiresRecordingDeletedWebhookOnce の逆方向）。
 func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDeletedWebhook(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -856,6 +866,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 // 経路には現れずファイルは残る。recording.deleted も発火しない（録画は
 // 生きている）。
 func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -917,6 +928,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 
 // 古い FS 派生コピーの deleting 状態は、derived の置き場を S3 に切り替えた後も FS で実体を確認する。
 func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFilesystem(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -957,6 +969,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 // 戻すと、案 B（復元時に deleting を同期的に active へ戻す）を却下した理由
 // そのもの ——「active なのにファイルが無い行」を作ってしまう。
 func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -997,6 +1010,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 // アセットが 1 件でも消しきれていないうちは発火せず、次パスで最後の 1 件が
 // 消えた時点で発火すること（pending 経路からの発火も兼ねる）。
 func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
@@ -1071,6 +1085,7 @@ func (s *failDeleteObjectStore) Delete(ctx context.Context, key string) error {
 // webhook 先がハングしても削除そのものは完了すること（issue #73 の受け入れ基準
 // 「webhook 先が落ちていても本処理は完了する」の削除 reconcile 版）。
 func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1108,6 +1123,7 @@ func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 // 通知の時間予算を使い切ったら残りは捨てる（削除パス全体を webhook で
 // タイムアウトさせないための安全弁）。
 func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1143,6 +1159,7 @@ func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T
 
 // until_encoded で desired な派生物（profile + thumbnail）が揃っていれば原本を消す。
 func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1168,6 +1185,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 
 // 派生アセットの行が残っていても、deleted のサムネイル・シークタイルは完備として数えない。
 func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{store.AssetKindThumbnail, store.AssetKindSeekTiles} {
 		t.Run(kind, func(t *testing.T) {
 			pool := setupTestPool(t)
@@ -1206,6 +1224,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 }
 
 func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1242,6 +1261,7 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 // 凍結区間が requested_keep と等しくなれば、要求行が残っていても until_encoded の
 // 原本が削除対象になることを固定する（満たされた要求は原本を握らない）。
 func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -1337,6 +1357,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 }
 
 func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -1433,6 +1454,7 @@ func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
 // 恒真判定される）録画は、原本が唯一のコピーである（docs/storage.md §6）にも
 // かかわらず、修正前は削除されてしまっていた。
 func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -1467,6 +1489,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 // 形になっているはず。両方向を確認する: 空プロファイルは拒否され、プロファイルを
 // 添えれば通る。
 func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
@@ -1486,6 +1509,7 @@ func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 
 // 望ましいプロファイルの一部が欠けている間は原本を消さない（Complete の逆方向）。
 func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1509,6 +1533,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 
 // サムネイルが未生成の間は原本を消さない。
 func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1533,6 +1558,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 // シークタイルも thumbnail と同じ「再生に必要な派生物」なので、欠けている間は
 // 原本を消さない。消すとタイルを二度と作れない（原本が唯一の入力である）。
 func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1568,6 +1594,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 // untilEncodedRows の要素数が 1 のままで検出できない。recordingC も条件 2 を
 // 満たす 2 件目の完備候補として加え、ループが両方を処理することまで固定する。
 func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplete(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	profile := "h264"
@@ -1629,6 +1656,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 // 完遂でき、変異を注入した実装は通常経路がブレーカーに止められて
 // active のまま残るので FAIL する。
 func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -1709,6 +1737,7 @@ func assertUntilEncodedQualifies(t *testing.T, pool *pgxpool.Pool, assetID int64
 // 述語（until_encoded_deletable_originals）への NOT EXISTS に統一したので、
 // この経路が正しく動くことを until_encoded 側でも固定する。
 func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToActive(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -1755,6 +1784,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 // 計測記録が原本の現在サイズと合わなくなった場合も、deleting のまま止まった行を
 // active に戻す。
 func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsToActive(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -1807,6 +1837,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 // このテストが機械的に検出する —— 「〜と同条件」というコメントで揃える
 // 義務が復活していないかどうかも合わせて見る。
 func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile(filepath.Join("..", "db", "queries", "delete_reconcile.sql"))
 	if err != nil {
 		t.Fatalf("reading delete_reconcile.sql: %v", err)
@@ -1869,6 +1900,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 // "sites/tokyo/" 配下に**未登録**の古い mtime のファイルも 1 つ置き、それが
 // orphan_files に**現れること**（= true orphan を見落とさない）も確認する。
 func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -1960,6 +1992,7 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 // media_dir 自体が symlink でも実体側を走査し、登録済み資産を missing と
 // 誤報せず、未登録の古いファイルを孤児候補として記録する。
 func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMissing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	realMediaDir := t.TempDir()
 	mediaDir := filepath.Join(t.TempDir(), "media-link")
@@ -2026,6 +2059,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 // orphan_files の全件数も合わせて確認し、その変異が入っても緑にならない
 // ようにする。
 func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	realMediaDir := t.TempDir()
 	mediaDir := filepath.Join(t.TempDir(), "media-link")
@@ -2088,6 +2122,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 // "." という幻の rel_path が seenOnDisk / orphan_files に混入する経路を
 // 塞ぐため error にする。
 func TestWalkMediaFiles_MissingMediaDirIsNoopButNonDirectoryErrors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	regularFile := filepath.Join(root, "media-file")
 	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o644); err != nil {
@@ -2120,6 +2155,7 @@ func TestWalkMediaFiles_MissingMediaDirIsNoopButNonDirectoryErrors(t *testing.T)
 // seenOnDisk を返すよう変わっても、helper 単体のテストは緑のまま通り、
 // 「0 件成功に化けさせない」保証が消えてしまうため。
 func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	root := t.TempDir()
 	regularFile := filepath.Join(root, "media-file")
@@ -2204,6 +2240,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 // 壊し方: reconcileOrphanCandidates の sidecar 除外（knownSet への追加）を消すと、
 // .vtt が本当に孤児候補として orphan_files に記録されてしまい落ちる。
 func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -2249,6 +2286,7 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 
 // mtime が新しいファイルは孤児候補として記録しない。
 func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -2285,6 +2323,7 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 // link した後に commit できなかった ingest の temp は canonical と同じ inode を指す。
 // 孤児回収が古い temp を消しても、unlink はリンク数を減らすだけで canonical の中身は残る。
 func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -2338,6 +2377,7 @@ func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t
 // orphan_files へ記録して aging 回収する。ここで walk から除外すると、壊れた試行の
 // 部分ファイルが永久に残る。
 func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -2419,6 +2459,7 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 }
 
 func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGeneration(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -2498,6 +2539,7 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 // canonical orphan は公開済みか未公開かを行の欠如だけで判断できないため、
 // age を超えても孤児回収から unlink しない。
 func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -2614,6 +2656,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, old
 }
 
 func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -2916,6 +2959,7 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 }
 
 func TestDeleteReconcileWorker_StagingOrphansAreDeleted(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -2965,6 +3009,7 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeleted(t *testing.T) {
 }
 
 func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -3007,6 +3052,7 @@ func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
 }
 
 func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -3062,6 +3108,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 }
 
 func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -3131,6 +3178,7 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 // キャンセル済み ctx でも deleteOrphanFile が呼ばれてファイルが物理削除され、
 // このテストはアサーション失敗で落ちる。
 func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -3154,6 +3202,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 
 // 候補数がしきい値を超えるとサーキットブレーカーが発動し、その回では何も消さない。
 func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -3211,6 +3260,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 // markRecordingTrashed で明示する（無いと resolveUnqualifiedDeletingAsset が
 // active に戻してしまい、このテストの主張が成り立たない）。
 func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -3263,6 +3313,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 // ファイルを置いておくことで、下記の「ゼロ件観測で全損シグネチャ扱いになり
 // スキップする」安全弁を踏まないようにする（そちらは別テストで確認する）。
 func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -3289,6 +3340,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 }
 
 func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -3387,6 +3439,7 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 
 // FS に残る derived copy は、storage.derived の切替後も FS の実体として監査する。
 func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesystem(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
@@ -3660,6 +3713,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDirNoActiveAssets_DoesNotT
 // (マウント失敗の疑い)になっても消されない --- 疑わしいパスの結果で
 // 前回までの確認済み状態を上書きしない。
 func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearExistingCandidates(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -3880,6 +3934,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 // （ListAllMissingMediaAssetIDs 以降）を消す / DeleteMissingMediaAsset の
 // 呼び出しを飛ばす。どちらも最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveExists(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
@@ -3930,6 +3985,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 
 // 削除 reconcile は record_sweep と同じ理由で River 既定より長い上限を持つ。
 func TestDeleteReconcileWorker_HasGenerousTimeout(t *testing.T) {
+	t.Parallel()
 	args := DeleteReconcileArgs{}
 	got := args.Spec().Timeout(args)
 	if got <= time.Minute {
@@ -3943,6 +3999,7 @@ func TestDeleteReconcileWorker_HasGenerousTimeout(t *testing.T) {
 // 実装も同じ定数を参照しているだけなので、定数の値が何であっても常に一致して
 // しまい何も主張しない。issue #185 のレビュー指摘）。
 func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
+	t.Parallel()
 	args := DeleteReconcileArgs{}
 	if args.Kind() != "delete_reconcile" {
 		t.Errorf("Kind = %q", args.Kind())
@@ -4006,6 +4063,7 @@ func ageCurrentThumbnailCopy(t *testing.T, pool *pgxpool.Pool, thumbID int64) {
 }
 
 func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -4053,6 +4111,7 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 // 作り直した新世代のファイルが消えていれば、overlap を過ぎても旧世代を消さない。
 // 旧世代が唯一残った中身になりうるからである。
 func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -4088,6 +4147,7 @@ func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *te
 
 // 旧世代の削除も一括削除のブレーカーで数える。候補 2 件 > 上限 1 なので発動し、どれも消さない。
 func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()

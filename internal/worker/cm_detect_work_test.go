@@ -27,6 +27,7 @@ import (
 )
 
 func TestCMRangesFromCutAVSAviSynthTrimForms(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		avs  string
@@ -326,6 +327,7 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 }
 
 func TestCMDetectWorkSavesLogoWhenPreviewCannotBeRendered(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -767,6 +769,7 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 }
 
 func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -880,6 +883,7 @@ func cmPolicyGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, i
 }
 
 func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := dbtest.Recording(t, pool, cmRecordingOptions(921))
@@ -927,6 +931,7 @@ func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
 }
 
 func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
@@ -1001,6 +1006,7 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 // 古い世代の worker は、同じ attempt_count (1) を持つ新しい世代の行に触れない。
 // attempt_count だけの柵では区別できない ABA の形。
 func TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := dbtest.Recording(t, pool, cmRecordingOptions(919))
@@ -1050,6 +1056,7 @@ func TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt(t *testing.T
 // attempt_count > 1 の取り消し経路でも、古い世代の worker は同じ回数 (2) を持つ
 // 新しい世代の行に触れない。
 func TestCMDetectionOldGenerationWorkerCannotCancelNewAttempt(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := dbtest.Recording(t, pool, cmRecordingOptions(918))
@@ -1097,6 +1104,7 @@ func TestCMDetectionOldGenerationWorkerCannotCancelNewAttempt(t *testing.T) {
 }
 
 func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := dbtest.Recording(t, pool, cmRecordingOptions(923))

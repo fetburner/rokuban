@@ -610,6 +610,7 @@ func unsatisfiedRebuildCount(t *testing.T, pool *pgxpool.Pool, recordingID int64
 // TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied は、公開後も要求行が
 // 残り、凍結区間との一致で満たされたとみなされる（未充足の view から外れる）ことを固定する。
 func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -647,6 +648,7 @@ func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
 // TestEncodeWorker_PublishUsesRequestedKeepWhenChaptersChangeAfterRebuildRequest は、
 // 押した後にチャプターを編集しても、押した時点の keep で公開されることを固定する。
 func TestEncodeWorker_PublishUsesRequestedKeepWhenChaptersChangeAfterRebuildRequest(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -671,6 +673,7 @@ func TestEncodeWorker_PublishUsesRequestedKeepWhenChaptersChangeAfterRebuildRequ
 // TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain は、押し直しで requested_keep が
 // 上書きされていれば、古い keep のジョブが公開しないことを固定する。
 func TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -709,6 +712,7 @@ func TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain(t *testing.T) {
 // （公開すると編集前の版が desired を満たし、until_encoded の原本が消える）。
 // 編集が無ければ公開される（逆方向）。
 func TestEncodeWorker_InitialCutPublishChecksCurrentChapters(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		edit          bool
@@ -751,6 +755,7 @@ func TestEncodeWorker_InitialCutPublishChecksCurrentChapters(t *testing.T) {
 }
 
 func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -805,6 +810,7 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 
 // snooze（計画のやり直し）は失敗ではないので試行に数えない。
 func TestShouldCountEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
+	t.Parallel()
 	if shouldCountEncodeFailure(fmt.Errorf("wrapped: %w", jobq.Snooze(time.Second)), nil) {
 		t.Error("a snooze must not count as an encode failure")
 	}
@@ -913,6 +919,7 @@ func TestEncodeWorker_PutPrecedesActiveCommit(t *testing.T) {
 // 要求の keep を満たす版へ置き換えていたとき、公開 tx が何も公開せず、要求行にも
 // 触れない（行は残り、満たされたとみなされる）ことを固定する。
 func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return

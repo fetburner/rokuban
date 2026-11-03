@@ -176,6 +176,7 @@ func TestStorageTransferWorkerRequiresSourceMountForS3Destination(t *testing.T) 
 // TestStorageTransferReconcileRoutesS3CopiesToSourceQueue は、reconcile が FS 宛ての候補を宛先のキューに、
 // S3 宛ての候補を転送元のキューに積むことを確かめる。原本は FS 宛てにしかならない。
 func TestStorageTransferReconcileRoutesS3CopiesToSourceQueue(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	originalID := transferTestOriginal(t, pool, roots["test-store"], []byte("original to archive"))
@@ -261,6 +262,7 @@ func (s *headSHAStore) Get(ctx context.Context, key string) (io.ReadCloser, erro
 // TestExistingTransferredObjectUsesHeadSHA256 は、既存の宛先キーの照合が Head の SHA-256 があれば中身を読まず、
 // 無ければ読んで測ることを確かめる。
 func TestExistingTransferredObjectUsesHeadSHA256(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	content := []byte("wanted")
 	digest := sha256.Sum256(content)

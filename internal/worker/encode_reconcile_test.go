@@ -128,6 +128,7 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 // 転送待ちが storage.transfer.backlog_limit に達した置き場へは encode を積まず、上限に届かなければ積む（背圧）。
 // 原本のコピーは edge にだけあり desired は central なので、この録画は edge の転送待ちになる。
 func TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -257,6 +258,7 @@ func scrapeBacklogGauges(t *testing.T, pool *pgxpool.Pool, policy config.Storage
 // 止まっている置き場は、次の targeted pass で件数を数え直し、解けたらゲージと投入の両方に出る。
 // パスごとに新しい worker を作る（ScaledJob の --once はパスごとにプロセスが新しくなる）。
 func TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -292,6 +294,7 @@ func TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass(t *testing.T) {
 
 // 設定から上限を外した置き場の行は、次のパスが消し、ゲージにも出ない。
 func TestEncodeReconcile_BacklogSnapshotDroppedWhenLimitRemoved(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -317,6 +320,7 @@ func TestEncodeReconcile_BacklogSnapshotDroppedWhenLimitRemoved(t *testing.T) {
 // 候補の原本が上限の無い置き場にあり、止まっている置き場も無いパスは集計を問い合わせない。
 // 候補が上限付きの置き場にあるパスは、止めるかどうかを決めるために数える。
 func TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -355,6 +359,7 @@ func TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount(t *testing.T) {
 // 上限を設定していない構成の targeted pass は、DB の件数にも保存にも集計にも触らない。
 // 全件パスの先頭だけ、残った行の掃除のために保存を呼ぶ。
 func TestEncodeReconcile_NoLimitPassDoesNotTouchBacklogState(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -464,6 +469,7 @@ func (c *clockTransfers) RecordTransferBacklog(ctx context.Context, counts map[s
 
 // 保存する countedAt は、プロセスの時計ではなく DB の時計から取った値になる。
 func TestEncodeReconcile_CountedAtComesFromTheDatabaseClock(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -617,6 +623,7 @@ func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {
 // 消さないことを固定する。チャプターの編集・所有の欠落・満たされた状態のどれでも
 // 行は残る（消すのは api だけ）。
 func TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -703,6 +710,7 @@ func TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow(t *testing.T)
 }
 
 func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -746,6 +754,7 @@ func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing
 }
 
 func TestEncodeReconcile_RebuildsPrecedeMissingProfilesAndSortByProfile(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -797,6 +806,7 @@ func mustKeepRanges(t *testing.T, keep []chapters.Range) pgstore.KeepRanges {
 // 版の凍結区間が requested_keep と同じでも、未充足のままである（満たされた扱いにすると
 // until_encoded の原本が不可逆に消える）。
 func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -823,6 +833,7 @@ func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testin
 // TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass は、対象パスが
 // ごみ箱の録画を除外し、復元後の全件パスが不足分を投入することを固定する。
 func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -864,6 +875,7 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 // この状態でコミット済みの録画が黙ってエンコードされないままになるのが
 // issue #163 の穴で、定期パスがそれを埋めることを最後に確認する。
 func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -940,6 +952,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 // クエリから条件を落としてもジョブ数のアサーションは通ってしまう。候補集合
 // そのものを見る。
 func TestListMissingEncodeProfiles(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1070,6 +1083,7 @@ func equalMissingEncodeProfileRows(got, want []sqlcgen.ListMissingEncodeProfiles
 // 原本・ポリシー・encoded の再取得をしないことを固定する。enqueue は不足
 // プロファイルごとに残るが、読み取りは候補数に比例して増えない。
 func TestEncodeReconcileWorker_BatchesCandidateReads(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1147,6 +1161,7 @@ func poolWithQueryTracer(t *testing.T, pool *pgxpool.Pool, tracer pgx.QueryTrace
 //     残る --- 共有 view に設定の絞りを足すと、config の 1 行の編集で原本が
 //     削除可能になってしまうため
 func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1194,6 +1209,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 
 // 候補が 0 件のパスでも成功すること（通常運転はこちら）。
 func TestEncodeReconcileWorker_NoCandidates(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1320,6 +1336,7 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 }
 
 func TestEncodeReconcileWorker_ExhaustedRebuildRequestReturnsAfterRetryRequest(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1377,6 +1394,7 @@ func TestEncodeReconcileWorker_ExhaustedRebuildRequestReturnsAfterRetryRequest(t
 // TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker は、--once のように
 // パスごとに worker を作り直しても、候補窓の続きが次のジョブに渡ることを固定する。
 func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1449,6 +1467,7 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 }
 
 func TestEncodeReconcileWorker_ShortPageDoesNotContinue(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1466,6 +1485,7 @@ func TestEncodeReconcileWorker_ShortPageDoesNotContinue(t *testing.T) {
 }
 
 func TestEncodeReconcileWorker_RejectsTargetAndContinuationTogether(t *testing.T) {
+	t.Parallel()
 	w := &EncodeReconcileWorker{Enqueuer: newRecordingEnqueuer()}
 	err := w.Work(context.Background(), EncodeReconcileArgs{RecordingID: 10, AfterRecordingID: 20})
 	if !errors.Is(err, jobq.ErrDiscard) {
@@ -1474,6 +1494,7 @@ func TestEncodeReconcileWorker_RejectsTargetAndContinuationTogether(t *testing.T
 }
 
 func TestEncodeReconcileWorker_ExhaustedAttemptReturnsAfterRetryRequest(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1519,6 +1540,7 @@ func TestEncodeReconcileWorker_ExhaustedAttemptReturnsAfterRetryRequest(t *testi
 // TestEncodeReconcileWorker_RowLimitCountsRecordings は、1 録画の複数 profile が
 // RowLimit を消費せず、継続カーソルが recording_id 単位で進むことを固定する。
 func TestEncodeReconcileWorker_RowLimitCountsRecordings(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1592,6 +1614,7 @@ func TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent(t *testing.T
 
 // Enqueuer が無いときはエラーを返す（黙って no-op にすると取りこぼしの回復そのものが消える）。
 func TestEncodeReconcileWorker_Work_WithoutEnqueuer_Errors(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1605,6 +1628,7 @@ func TestEncodeReconcileWorker_Work_WithoutEnqueuer_Errors(t *testing.T) {
 // ジョブ種別名とキュー・一意化の形。期待値はリテラルで書く（実装の定数と
 // 比べると定数を変えたときに何も主張しなくなる）。
 func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
+	t.Parallel()
 	if kind := (EncodeReconcileArgs{}).Kind(); kind != "encode_reconcile" {
 		t.Errorf("Kind() = %q, want encode_reconcile", kind)
 	}
@@ -1621,6 +1645,7 @@ func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 // 作り直し要求が残っていても定期パスが encode を投入せず、復元後の全件パスで
 // 投入することを両方向で固定する。要求行は消さない。
 func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1670,6 +1695,7 @@ func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.
 // TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued は、原本が active でない
 // 録画の作り直し要求から encode を投入せず、原本が active に戻れば投入することを固定する。
 func TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return

@@ -13,6 +13,7 @@ import (
 // 「実行中を除いた状態集合」で代用はできない（river@v0.50.0 の
 // requiredV3states）。docs/data/series.md §8。
 func TestLabelRuleReconcileArgs_NotUnique(t *testing.T) {
+	t.Parallel()
 	spec := jobs.LabelRuleReconcileArgs{}.Spec()
 	if spec.Queue != "cleanup" {
 		t.Errorf("Spec().Queue = %q, want %q", spec.Queue, "cleanup")

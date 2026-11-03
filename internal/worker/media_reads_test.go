@@ -40,6 +40,7 @@ func (s *planningSpy) GetEncodedPublishState(
 // TestEncodeWorkerPreflightUsesSnapshotAndLogsReasons は、エンコード前の判定が 1 回の
 // 読み取りで得た状態を純関数に渡し、飛ばす理由を運用ログへ出すことを固定する。
 func TestEncodeWorkerPreflightUsesSnapshotAndLogsReasons(t *testing.T) {
+	t.Parallel()
 	keepA := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	keepB := []chapters.Range{{StartMs: 0, EndMs: 2000}}
 	requestedKeep, err := json.Marshal(keepA)

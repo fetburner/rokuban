@@ -11,6 +11,7 @@ import (
 )
 
 func TestProbeIngestStorage_CompletesOperationSequenceAndCleansUp(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 
 	if err := ProbeIngestStorage(mediaDir); err != nil {
@@ -34,6 +35,7 @@ func TestProbeIngestStorage_CompletesOperationSequenceAndCleansUp(t *testing.T) 
 // 効かない CSI ドライバ）で、この境界を間違えると fail-fast そのものが偽陽性で
 // worker を CrashLoop させる。
 func TestProbeIngestStorage_WritesUnderSitesNotRoot(t *testing.T) {
+	t.Parallel()
 	mediaDir := t.TempDir()
 
 	if err := ProbeIngestStorage(mediaDir); err != nil {
@@ -102,6 +104,7 @@ func TestProbeIngestStorage_UsesSharedRenameAndFsyncHooks(t *testing.T) {
 }
 
 func TestProbeIngestStorage_RejectsMissingOrNonDirectory(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "missing")
 	if err := ProbeIngestStorage(missing); err == nil {
 		t.Fatal("ProbeIngestStorage(missing) returned nil")

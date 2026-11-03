@@ -13,6 +13,7 @@ import (
 // やり直す（API の再試行が行を消して 1 から始めるのと同じ）。+1 のままだと再実行の
 // 最初の失敗がすでに上限で、1 回しか試せずに failed へ落ちる。
 func TestCMDetectionNewDesireAfterFailedStartsNewBudget(t *testing.T) {
+	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)

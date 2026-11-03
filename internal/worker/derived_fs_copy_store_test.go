@@ -99,6 +99,7 @@ func derivedS3SwitchedWorker(t *testing.T, mediaDir string, fsObjects objstore.S
 // 派生物の置き場が S3 に切り替わった後も、FS の置き場に残る encoded 本体と字幕の旧コピーは、
 // FS の置き場の Store で消す（S3 の置き場へ問い合わせず、os.Remove にも戻さない）。
 func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFilesystemStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -137,6 +138,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 
 // deleting のまま止まった旧い FS コピーの現存確認と、実体無しの監査も FS の置き場の Store の Head を通る。
 func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFilesystemStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -197,6 +199,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 // fsstore の staging ファイルは fsstore 内部のファイルで、objstore の key ではない。
 // 派生物の置き場が S3 でも、FS の置き場の古い staging は走査した root 上で消え、記録も消える。
 func TestDeleteReconcileWorker_FilesystemStagingOrphanIsRemovedWithoutAskingTheDerivedStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()

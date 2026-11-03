@@ -53,6 +53,7 @@ func cutFFmpegProfile() config.EncodeProfile {
 // 換算されていないと、区間ごとに最大半フレームぶんの系統誤差が積み、5 区間で
 // 1 フレームを超える（`ffargs.CutFilterComplex` の doc コメント参照）。
 func TestCutEncode_RealFFmpeg_LengthAndAVSync(t *testing.T) {
+	t.Parallel()
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg not installed")
@@ -205,6 +206,7 @@ func probeDurations(t *testing.T, ffprobe, path string) (video, audio, format fl
 }
 
 func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
+	t.Parallel()
 	keep := []chapters.Range{{StartMs: 0, EndMs: 60_000}}
 	tests := []struct {
 		name        string
@@ -290,6 +292,7 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 // **同じパスへ上書きすると、(store, rel_path) の一意索引と衝突し、
 // ストレージ契約の「置くのは一回」も破る。**
 func TestEncodedRelPath_Generation(t *testing.T) {
+	t.Parallel()
 	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1, true)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
@@ -318,6 +321,7 @@ func TestEncodedRelPath_Generation(t *testing.T) {
 // 固定する。`-vf` と `-filter_complex` を併用せず、`-map` はアプリが出し、
 // output_format が無いときは `-vaapi_device` を使う。
 func TestBuildFFmpegArgs_CutUsesFilterComplexNotVF(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name: "cut", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		Cut: true, Height: 480, Deinterlace: true,
@@ -360,6 +364,7 @@ func TestBuildFFmpegArgs_CutUsesFilterComplexNotVF(t *testing.T) {
 // HW decode オプションは -i より前で、-vaapi_device を使わない（filtergraph は
 // TestBuildCutFilter_UploadMatchesDecodePath が固定する）。
 func TestBuildFFmpegArgs_CutHWDecodeUsesPreInput(t *testing.T) {
+	t.Parallel()
 	p := config.EncodeProfile{
 		Name: "cut", Container: "mp4", VideoCodec: "h264_vaapi", AudioCodec: "aac",
 		Cut: true, Height: 720, Deinterlace: true, Scaler: ffargs.ScalerVAAPI,
@@ -386,6 +391,7 @@ func TestBuildFFmpegArgs_CutHWDecodeUsesPreInput(t *testing.T) {
 // TestBuildCutFilter_UploadMatchesDecodePath は production の cut filter builder を通し、
 // HW decode 経路では再 upload せず、CPU 救済経路では従来どおり upload することを固定する。
 func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
+	t.Parallel()
 	ffprobe := filepath.Join(t.TempDir(), "ffprobe")
 	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '0,video,1440,1080,\\n1,audio,,,2\\n'\n"), 0o755); err != nil {
 		t.Fatalf("write fake ffprobe: %v", err)
@@ -435,6 +441,7 @@ func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
 // TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath は明示要求による置き換えを
 // 固定する: 新しい世代のパスに置き換わり、旧パスが消え、凍結区間が差し替わる。
 func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -636,6 +643,7 @@ func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapt
 }
 
 func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -726,6 +734,7 @@ func rebuildRequestExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) b
 // TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRow は、既に
 // 要求の keep を凍結した版があるとき、ffmpeg を起動せず、要求行も消さないことを固定する。
 func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRow(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -788,6 +797,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 // ことを固定する。worker はエンコード前に、ロックを取らない読み取りで行の不在を判断し、
 // 公開 tx では要求行をロック下で読み直す。
 func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -840,6 +850,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 // ジョブが、押した後にチャプターが編集されていても取り消されず、押した時点の keep で
 // 描くことを固定する（エンコード前の判定は要求行の keep と照合し、現在の章とは比べない）。
 func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -889,6 +900,7 @@ func newCutEncodeJob(recordingID int64) jobs.EncodeJobArgs {
 // 取り返せなくなる。** cut でないプロファイルは同じ録画でも通常どおり投入される
 // （この 2 つが同じループで分岐していることが要点）。
 func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -924,6 +936,7 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 // TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile keeps a stale cut
 // asset complete while a different profile is added to desired.
 func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -989,6 +1002,7 @@ func pendingEncodeProfiles(t *testing.T, enqueuer *recordingEnqueuer, recordingI
 // cut だけの録画が凍結され、確認に再生が要り・再生に encode が要り・encode に確認が
 // 要る循環に落ちる。**
 func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1061,6 +1075,7 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 // TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive は原本 HLS が使える構成で
 // 凍結時のクランプが cut profile を落とさないことを固定する。
 func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1122,6 +1137,7 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 // 確認済みでも cut のジョブを投入しない」を固定する。投入しても observeEncodePlan が
 // "has no keep ranges" で失敗し続けるため、一部だけ切る録画だけを投入する。
 func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1166,6 +1182,7 @@ func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 // ずれが全区間で出る。source では PTS = 3.0s で映像がフラッシュし、同じ PTS で音声が
 // ビープする。keep（[0,1s) と [2s,4s)）で切った出力では、両方が 2.0s に出るはず。
 func TestCutEncode_RealFFmpeg_AudioLeadsVideo(t *testing.T) {
+	t.Parallel()
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg not installed")

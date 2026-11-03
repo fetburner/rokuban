@@ -26,6 +26,7 @@ func (f encodeProgressReporterFunc) ReportEncodeProgress(ctx context.Context, pr
 }
 
 func TestProbeEncodeDuration_TimesOutWithoutDelayingEncode(t *testing.T) {
+	t.Parallel()
 	run := func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
 		select {
 		case <-ctx.Done():
@@ -51,6 +52,7 @@ func TestProbeEncodeDuration_TimesOutWithoutDelayingEncode(t *testing.T) {
 // 確認する。stop 自体は（cancel と同じく）非同期にシグナルを送るだけなので、
 // flush の完了は timeout 付きで待つ。
 func TestEncodeProgressReporter_FlushesFinalValueOnStop(t *testing.T) {
+	t.Parallel()
 	sent := make(chan serverevent.EncodeProgressEvent, 1)
 	reporter := encodeProgressReporter{
 		recordingID: 42,
@@ -79,6 +81,7 @@ func TestEncodeProgressReporter_FlushesFinalValueOnStop(t *testing.T) {
 }
 
 func TestEncodeProgressReporter_PublishesLatestValue(t *testing.T) {
+	t.Parallel()
 	sent := make(chan serverevent.EncodeProgressEvent, 2)
 	reporter := encodeProgressReporter{
 		recordingID: 42,
@@ -114,6 +117,7 @@ func TestEncodeProgressReporter_PublishesLatestValue(t *testing.T) {
 }
 
 func TestEncodeProgressReporter_DoesNotBlockFFmpegReader(t *testing.T) {
+	t.Parallel()
 	var notifyStartedOnce sync.Once
 	notifyStarted := make(chan struct{})
 	releaseNotify := make(chan struct{})
