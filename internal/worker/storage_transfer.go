@@ -829,9 +829,9 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 
 // putDerivedMain は派生物の本体を宛先に公開し、今回作ったものを所有記録に残す。
 // 返す digest と size は完了（CompleteMediaAssetTransfer）に渡す値である。done が真なら、この試行はここで終わるので err を返す。
-// 宛先の Resumable と転送元の RangeReader は worker の契約である。どちらかが欠けたらジョブエラーを返し、
+// 宛先の Resumable と転送元の RangeReader は、この worker が満たすべき前提である。どちらかが欠けたらジョブエラーを返し、
 // 転送失敗として数えない。この worker の構成の問題であってコピーの失敗ではないので、宛先が未マウントのときと同じ扱いにする。
-// S3 宛ての宛先の不足だけは checkS3TransferWorker が事前に拒否する。転送元の RangeReader は見ない。
+// S3 宛てでは、checkS3TransferWorker が宛先の不足だけを事前に拒否する（転送元の RangeReader は見ない）。
 // SHA-256 が未知なら送る前に転送元を slice ごとに測り（measureDerivedSource）、既知なら再開できるアップロードで送る（putDerivedResumable）。
 func (w *StorageTransferWorker) putDerivedMain(
 	ctx context.Context,

@@ -164,7 +164,7 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 内容の違う既存の sidecar の衝突、source に sidecar が無いときは所有記録のある sidecar だけを消す: `TestStorageTransferWorkerEncodedSubtitleKeys`
 - SHA-256 が既知の派生物を scratch に複製せず、再開できる送信で送る: `TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch`
 - `objstore.Resumable` を満たさない宛先へ書かず、ジョブエラーを返す: `TestStorageTransferWorkerRejectsDerivedDestinationWithoutResumableSupport`
-- `objstore.RangeReader` を満たさない転送元から書かず、ジョブエラーを返す: `TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport`
+- `objstore.RangeReader` を満たさない転送元のときは宛先へ書かず、ジョブエラーを返す: `TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport`
 - 宣言サイズや SHA-256 と違う転送元は何も公開せず、転送元の不一致にする: `TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing`
 - 壊れた派生コピーのファイルと sidecar の削除、原本が無いときの保持: `TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebuild`
 - 束縛と違う置き場の転送元を deleted に確定する: 同じテスト
