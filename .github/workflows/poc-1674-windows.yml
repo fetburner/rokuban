@@ -51,7 +51,7 @@ jobs:
             -flags +ilme+ildct -x264-params tff=1 -field_order tt out/control-1080i.mp4
           printf '%s\n' '<!doctype html><meta charset="utf-8"><video muted autoplay playsinline width="640"></video>' \
             '<script>document.querySelector("video").src = new URLSearchParams(location.search).get("f")</script>' > out/control.html
-          ffprobe -v error -show_entries stream=codec_name,width,height,field_order -of compact out/*.mp4 out/synthetic.ts
+          for f in out/*.mp4 out/synthetic.ts; do ffprobe -v error -show_entries stream=codec_name,width,height,field_order -of compact "$f"; done
       - uses: actions/upload-artifact@v6
         with:
           name: poc-build
