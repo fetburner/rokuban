@@ -11,6 +11,7 @@ mirakc に繋いだ Rokuban の導入・切り替え、移行作業、障害対�
 | [runbook/nginx.md](runbook/nginx.md) | nginx 前段。TLS・Basic 認証・SSE・SPA・X-Accel-Redirect の実機確認 |
 | [runbook/k8s.md](runbook/k8s.md) | k8s。kind で中央 1 式を上げて api に到達 / `/readyz` が DB 断で 503 になることの確認 / ロール分割デプロイの受け入れ判定ハーネス（kind + KEDA） |
 | [runbook/managed-postgres.md](runbook/managed-postgres.md) | managed PostgreSQL で `btree_gist` の作成が通るかの確認手順 |
+| [runbook/cm-detection.md](runbook/cm-detection.md) | CM ロゴの実機確認。フルイメージ・専用 DB・原本録画を使い、候補採用後の再検出と採用待ちを確かめる |
 | [runbook/testing.md](runbook/testing.md) | 開発時のテスト |
 | [runbook/cutover.md](runbook/cutover.md) | 主運用の切替。出口基準チェックリスト / エンコード・ごみ箱・ブレーカー・rescue 練習の手順 / 二重録画を避ける切替順 / ロールバック |
 | [runbook/edge-store.md](runbook/edge-store.md) | エッジに置き場を持つ構成の導入。`internal_url` の網の範囲、帯域と転送待ちの上限、転送が終わるまでの原本の所在 |
@@ -22,5 +23,7 @@ mirakc に繋いだ Rokuban の導入・切り替え、移行作業、障害対�
 ## 読む順の目安
 
 初めて導入するなら setup.md から読み、詰まったら troubleshooting.md を引く。EPGStation から移るなら cutover.md を入口にし、並走の注意は shadow.md、取り込みのコマンドは import-epgstation.md を引く。nginx・k8s・ライブ視聴は、その構成を使うときだけ開く。testing.md は開発時だけ読む。
+
+CM 検出の実機確認は [runbook/cm-detection.md](runbook/cm-detection.md) を開く。
 
 UI の画面構成とルートは [frontend.md](frontend.md) を参照。
