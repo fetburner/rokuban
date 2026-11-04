@@ -1,3 +1,5 @@
+import type { CMDetection } from '@/api/generated'
+
 /**
  * cmDetectStageMessage は CM 検出の内部工程を利用者向けの一文へ変換する。
  *
@@ -27,6 +29,11 @@ export function cmDetectStageMessage(stage: string | null | undefined): string {
     default:
       return '失敗の種類が記録されていない古い試行です。'
   }
+}
+
+/** isAwaitingAdoption は worker が採用待ちの局として止めた CM 検出かを返す。採用するまで再試行では進まないので、呼び出し側は再検出を出さない。 */
+export function isAwaitingAdoption(cmDetection: Pick<CMDetection, 'state' | 'stage'>): boolean {
+  return cmDetection.state === 'failed' && cmDetection.stage === 'adopt'
 }
 
 /**
