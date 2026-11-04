@@ -326,12 +326,29 @@ function bufferedAhead() {
   return sb.buffered.end(sb.buffered.length - 1) - video.currentTime;
 }
 
+// Media times a decoder can start from (fragment.randomAccess), in order.
+// remove() also takes everything after its end up to the next of these, and
+// they can be further apart than KEEP_BEHIND_SECONDS, so a removal ending at
+// currentTime - KEEP_BEHIND_SECONDS can delete the frames about to be shown
+// and stall the playhead inside the buffered range for good. End just short
+// of a restart point instead (packages/player/src/mse.ts #evict does the same).
+let randomAccessPoints = [];
+const REMOVE_MARGIN_SECONDS = 0.001;
+
 /** Backpressure and eviction. Returns false once this generation is stale. */
 async function waitForRoom(g) {
   while (g === gen) {
     await settle();
-    if (sb && sb.buffered.length && video.currentTime - sb.buffered.start(0) > KEEP_BEHIND_SECONDS + 2) {
-      await removeRange(0, video.currentTime - KEEP_BEHIND_SECONDS);
+    const limit = video.currentTime - KEEP_BEHIND_SECONDS;
+    let stopAt = 0;
+    for (const at of randomAccessPoints) {
+      if (at > limit) break;
+      stopAt = at;
+    }
+    if (sb && sb.buffered.length && stopAt - REMOVE_MARGIN_SECONDS > sb.buffered.start(0) + 2) {
+      randomAccessPoints = randomAccessPoints.filter((at) => at >= stopAt);
+      await removeRange(0, stopAt - REMOVE_MARGIN_SECONDS);
+      log("evict", { end: round(stopAt), currentTime: round(video.currentTime) });
     }
     if (bufferedAhead() <= MAX_AHEAD_SECONDS) return true;
     await sleep(250);
@@ -384,6 +401,7 @@ async function appendAll(g, fragments) {
       log("init", { mime: f.mimeCodec, width: f.width, height: f.height, bytes: f.data.byteLength });
     } else if (f.kind === "media") {
       fragLog.push(describeFragment(f, activeSeq));
+      if (f.randomAccess) randomAccessPoints.push(f.start);
       await appendWithRoom(f.data);
       counters.media++;
       counters.lastStart = round(f.start);
@@ -522,6 +540,7 @@ function teardown() {
   rejectFirst = null;
   resolveFirst = null;
   yadifTimeline = [];
+  randomAccessPoints = [];
   fragLog = [];
   initTimescales = new Map();
 }
@@ -581,6 +600,7 @@ async function seek(sec) {
   if (g !== gen) return { superseded: true };
   await settle();
   if (sb && sb.buffered.length) await removeRange(0, Infinity);
+  randomAccessPoints = [];
   if (g !== gen) return { superseded: true };
   video.currentTime = sec;
   session = makeSession(url, current.opts.audioPid);

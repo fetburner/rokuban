@@ -27,11 +27,14 @@ LIB=/path/to/mpeg2toh264 ./build-wasm.sh                      # dist/ に WASM �
 - `measure-av-*.mjs`: 出力フラグメントの時刻と元の PTS の突き合わせ
 - `control-decoder.mjs`: PoC を通さない 1080i / 1080p の対照
 - `make-synthetic.sh`: 合成 TS（testsrc2 と sine）
+- `measure-run.mjs --convert main|worker|pool [--pool N]`: 変換を走らせる場所。`main` はメインスレッドで `Session.push` を同期に呼ぶ。`worker` は `session-worker.js` に移す。`pool` はさらに `picture-worker.js` を N 個（既定 3）立て、`pushDeferred` / `complete` で絵を分ける（同梱の player と同じ分け方）
+- `gpu-info.mjs` と `decoders.mjs`: `chrome://gpu` の要点と、各 run の最終的なデコーダ名
+- `.github/workflows/poc-1674-windows.yml`: 合成素材だけで Windows の Chrome を測る。ただし GitHub-hosted の Windows runner には GPU が無い（`Microsoft Basic Render Driver`、`Video Decode: Software only`）。そのため HW デコードの可否はこれでは判定できない
 
 ## 既知の制限
 
 測定の数字は、次の PoC 側の制限を含む。
 
-- 変換はメインスレッドで同期に走る。ライブラリ同梱の player が使うワーカーのプールは使っていない
+- 変換の既定はメインスレッドで同期（`--convert main`）。ワーカーとプールは `--convert` で選ぶ。MSE と yadif は常にメインスレッドに置く
 - シークは新しい Session の最初の GOP に着地し、目標より最大 1.2 秒手前になる。測定スクリプトはバッファ後に再シークする
 - 第 2 音声を選んでも、出力が既定の音声と同じになった。原因は未特定
