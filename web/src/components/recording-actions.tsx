@@ -40,6 +40,7 @@ import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { encodeSettingsError, keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import { encodedAssetLabel, encodedRemovalPlan } from '@/lib/encoded-removal'
 import { formatBytes } from '@/lib/format'
+import { isAwaitingAdoption } from '@/lib/cm-detect-stage'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { useCMDetectEnabled } from '@/lib/capabilities'
 import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
@@ -133,7 +134,8 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
               )}
             </DropdownMenuItem>
           )}
-          {recording.cmDetection.state === 'detected' || recording.cmDetection.state === 'failed' ? (
+          {(recording.cmDetection.state === 'detected' || recording.cmDetection.state === 'failed') &&
+          !isAwaitingAdoption(recording.cmDetection) ? (
             <DropdownMenuItem
               className={menuRow}
               // 原本が無いと再検出は 409 になる（検出は原本から読む）。押せる形で出さない。

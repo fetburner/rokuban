@@ -42,7 +42,7 @@ import {
 } from '@/lib/cm-logo-frame'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration, formatPlaybackTime } from '@/lib/format'
-import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
+import { cmDetectStageMessage, isAwaitingAdoption } from '@/lib/cm-detect-stage'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { cn } from '@/lib/utils'
 
@@ -204,11 +204,6 @@ function hasOriginalRecording(logo: CMLogoState): boolean {
   return logo.frameRecordingId > 0
 }
 
-/** isAwaitingAdoption は worker が採用待ちの局として止めた録画かを返す（再試行では進まない）。 */
-function isAwaitingAdoption(recording: Recording): boolean {
-  return recording.cmDetection.state === 'failed' && recording.cmDetection.stage === 'adopt'
-}
-
 function recordingCMState(recording: Recording): string {
   switch (recording.cmDetection.state) {
     case 'detected':
@@ -216,7 +211,7 @@ function recordingCMState(recording: Recording): string {
     case 'detecting':
       return '検出中、または再試行待ち'
     case 'failed':
-      return isAwaitingAdoption(recording) ? cmDetectStageMessage('adopt') : '3 回の試行に失敗しました'
+      return isAwaitingAdoption(recording.cmDetection) ? cmDetectStageMessage('adopt') : '3 回の試行に失敗しました'
     default:
       return '無効'
   }
@@ -955,7 +950,7 @@ function AffectedRecordings({ recordings, cmDetectEnabled }: { recordings: Recor
           {recordings.map((recording) => {
             // 失敗だけでなく、誤ったロゴで「成功」した録画の回復経路でもある。検出中は出さない。
             const canRetry =
-              !isAwaitingAdoption(recording) &&
+              !isAwaitingAdoption(recording.cmDetection) &&
               (recording.cmDetection.state === 'failed' || recording.cmDetection.state === 'detected') &&
               recording.sizeBytes !== undefined &&
               cmDetectEnabled

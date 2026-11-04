@@ -1482,16 +1482,16 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
   })
 
   it.each([
-    ['logo', true],
-    ['area', true],
-    ['match', true],
-    ['resolution', true],
-    ['adopt', true],
-    ['setup', false],
-    [undefined, false],
+    ['logo', true, true],
+    ['area', true, true],
+    ['match', true, true],
+    ['resolution', true, true],
+    ['adopt', true, false],
+    ['setup', false, true],
+    [undefined, false, true],
   ] as const)(
-    '失敗工程 %s は記録タブに説明を出し、枠の導線を工程に合わせ、やり直しは見出しメニューに置く',
-    async (stage, linkExpected) => {
+    '失敗工程 %s は記録タブに説明と枠の導線を出し、再検出は採用待ち以外で見出しメニューに置く',
+    async (stage, linkExpected, retryExpected) => {
     createFakeServer({
       recording: sampleRecording({
         sizeBytes: 1_000_000,
@@ -1513,10 +1513,27 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
     } else {
       expect(logoLink).not.toBeInTheDocument()
     }
-    await openRecordingMenu()
-    expect(screen.getByRole('menuitem', { name: 'CM 検出をやり直す' })).toBeInTheDocument()
+    const menu = await openRecordingMenu()
+    if (retryExpected) {
+      expect(within(menu).getByRole('menuitem', { name: 'CM 検出をやり直す' })).toBeInTheDocument()
+    } else {
+      // 再試行項目の不在は、メニューが開いて停止項目が見えてから確認する。
+      await within(menu).findByRole('menuitem', { name: 'CM 検出を止める' })
+      expect(within(menu).queryByRole('menuitem', { name: 'CM 検出をやり直す' })).not.toBeInTheDocument()
+    }
     },
   )
+
+  it('検出済みの録画には見出しメニューに再検出を出す', async () => {
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, cmDetection: { state: 'detected', ranges: [] } }),
+      cmDetectCapability: true,
+    })
+    renderAt('/recordings/3')
+
+    const menu = await openRecordingMenu()
+    expect(within(menu).getByRole('menuitem', { name: 'CM 検出をやり直す' })).toBeInTheDocument()
+  })
 
   it('失敗の技術的な詳細は既定で閉じ、開くと改行を保ったまま表示する', async () => {
     const user = userEvent.setup()
