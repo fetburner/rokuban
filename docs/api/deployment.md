@@ -15,6 +15,7 @@
 - ユーザーアカウント / マルチテナント
 - 共有リンク・外部公開機能
 - ユーザー単位の権限・認可
+- 同一の mirakc を複数の Rokuban で共有する構成（1 世帯は 1 つの Rokuban と複数 site で足りる。[schema/principles.md](../schema/principles.md) §非サポート）
 
 ### 帰結
 

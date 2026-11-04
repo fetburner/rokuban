@@ -30,11 +30,11 @@ mirakc の record id は同期表にだけ存在し、同期表から永続側�
 
 録画失敗の理由などの品質イベントは、履歴として価値があるので保持する。構造化した列にはせず、jsonb の自由形式ログとして持つ。システムのロジックは、その中身に依存しない。
 
-#### 未解決: 同一 mirakc を共有する複数の Rokuban
+#### 非サポート: 同一 mirakc を共有する複数の Rokuban
 
-未解決: 同一の mirakc を複数の Rokuban が共有すると、自分の予約を見分ける tag が衝突し、互いの予約と録画を自分のものと誤認して消し合う。
+同一の mirakc を複数の Rokuban で共有する構成は、スコープ外とする。1 世帯の録画は 1 つの Rokuban で足り、複数のエッジは site で分ける。1 つの mirakc を複数の Rokuban に貸す形は、世帯外への提供に近づく（[api/deployment.md](../api/deployment.md) §根拠: 法的制約がスコープを決める）。
 
-設定で tag を焼き分けても解消しない。mirakc の schedule は programId が主キーなので、複数の Rokuban が同一番組を取り合う問題が tag の手前で残る。対処は「複数共有を支持するか」の判定基準を決めてからにする。
+自分の予約を見分ける tag は、Rokuban が 1 つであることを前提にしている。2 つの Rokuban が同じ tag を焼くと、互いの予約と録画を自分のものと誤認して消し合う。設定で tag を焼き分ける案は採らない。mirakc の schedule は programId が主キーなので、同一番組を取り合う衝突が tag の手前で残る。
 
 <details><summary>根拠</summary>
 
