@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: otya128/mpeg2toh264
-          ref: 7b008c6
+          ref: 7b008c64c2ff6b5bbca54232712276c852d1e194 # 7b008c6
           path: mpeg2toh264
       - uses: pnpm/action-setup@v6
         with:
