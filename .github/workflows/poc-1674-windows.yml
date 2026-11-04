@@ -1,0 +1,114 @@
+name: PoC 1674 Windows decoder
+
+# 使い捨て（#1674 の判定用）。Windows の実 Chrome が mpeg2toh264 の出力（インターレースの
+# H.264）をどのデコーダで再生するかを、合成素材だけで測る。録画はアップロードしない。
+on:
+  push:
+    branches:
+      - poc-1674-worker
+    paths:
+      - web/e2e/mpeg2toh264-poc/**
+      - .github/workflows/poc-1674-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: otya128/mpeg2toh264
+          ref: 7b008c6
+          path: mpeg2toh264
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
+      - run: LIB="$GITHUB_WORKSPACE/mpeg2toh264" ./build-wasm.sh
+        working-directory: web/e2e/mpeg2toh264-poc
+      - name: 合成素材（MPEG-2 1080i の TS と、PoC を通さない H.264 の対照）
+        working-directory: web/e2e/mpeg2toh264-poc
+        run: |
+          ./make-synthetic.sh
+          src="-f lavfi -i testsrc2=size=1920x1080:rate=30000/1001 -t 20"
+          ffmpeg -y -hide_banner -loglevel error $src -c:v libx264 -pix_fmt yuv420p -b:v 15M out/control-1080p.mp4
+          ffmpeg -y -hide_banner -loglevel error $src -c:v libx264 -pix_fmt yuv420p -b:v 15M \
+            -flags +ilme+ildct -x264-params tff=1 -field_order tt out/control-1080i.mp4
+          printf '%s\n' '<!doctype html><meta charset="utf-8"><video muted autoplay playsinline width="640"></video>' \
+            '<script>document.querySelector("video").src = new URLSearchParams(location.search).get("f")</script>' > out/control.html
+          ffprobe -v error -show_entries stream=codec_name,width,height,field_order -of compact out/*.mp4 out/synthetic.ts
+      - uses: actions/upload-artifact@v6
+        with:
+          name: poc-build
+          path: |
+            web/e2e/mpeg2toh264-poc/dist/
+            web/e2e/mpeg2toh264-poc/out/
+
+  windows:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - uses: actions/download-artifact@v7
+        with:
+          name: poc-build
+          path: web/e2e/mpeg2toh264-poc
+      - name: 測定
+        working-directory: web/e2e/mpeg2toh264-poc
+        env:
+          NODE_PATH: ../../node_modules
+        run: |
+          mkdir -p results
+          node gpu-info.mjs results/gpu-info.json
+          node control-decoder.mjs out control-1080p.mp4 results/control-1080p.json --play 10
+          node control-decoder.mjs out control-1080i.mp4 results/control-1080i.json --play 10
+          for c in main pool; do
+            for y in no yes; do
+              yf=; [ "$y" = yes ] && yf=--yadif
+              node measure-run.mjs --out results --label "poc-$c-yadif$y" --mode file --file out/synthetic.ts \
+                --play 30 --convert "$c" $yf
+            done
+          done
+          rm -rf results/profile-*
+          {
+            echo "## Chrome の GPU 情報"
+            echo '```'
+            node -e 'const r=require("./results/gpu-info.json"); console.log(r.chromeVersion); console.log((r.featureStatus??"").slice(0,1500)); console.log((r.videoAcceleration??"").slice(0,1500))'
+            echo '```'
+            echo "## デコーダ"
+            node decoders.mjs results/control-*.json results/poc-*.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: windows-results
+          path: web/e2e/mpeg2toh264-poc/results/

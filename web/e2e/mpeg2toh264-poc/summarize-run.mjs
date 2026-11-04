@@ -25,7 +25,7 @@ function summarise(run) {
   const ws = events.find((e) => e.type === "window-start");
   const we = events.find((e) => e.type === "window-end");
   const inWin = (e) => (ws && we ? e.t >= ws.t && e.t <= we.t : false);
-  const out = { label, mode: run.mode, start: run.start, yadif: run.yadif, file: run.file, chromeVersion: run.chromeVersion };
+  const out = { label, mode: run.mode, start: run.start, yadif: run.yadif, convert: run.convert ?? "main", pool: run.pool ?? 0, file: run.file, chromeVersion: run.chromeVersion };
 
   // --- CPU: ps samples whose node time is inside the window -------------------
   const wStart = w.startMs;

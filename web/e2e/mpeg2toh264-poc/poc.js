@@ -4,7 +4,10 @@
 //
 // window.poc API
 //   ready                       Promise<true> once the WASM module is up
-//   open(url, { audioPid?, muted?, yadif? })
+//   open(url, { audioPid?, muted?, yadif?, convert?, pool? })
+//                               convert: "main" (default; Session.push on this thread),
+//                               "worker" (session-worker.js), or "pool" (the worker
+//                               plus `pool` picture workers, default 3)
 //                               resolves once the first media fragment is appended
 //   play()                      video.play()
 //   seek(sec)                   new Session anchored at the stored origin; resolves
@@ -145,13 +148,96 @@ async function alignToPacket(url, byte, size) {
   throw new Error(`no packet sync near byte ${byte}`);
 }
 
+/** Session.push on this thread, behind the same promise API as WorkerSession. */
+class MainSession {
+  constructor(originTicks, audioPid) {
+    this.inner = new Session(undefined, originTicks);
+    if (audioPid != null) this.inner.selectAudio(audioPid);
+  }
+  get originTicks() {
+    return this.inner.originTicks;
+  }
+  get dropped() {
+    return this.inner.dropped;
+  }
+  get scrambled() {
+    return this.inner.scrambled;
+  }
+  get errors() {
+    return this.inner.errors;
+  }
+  async push(bytes) {
+    const began = performance.now();
+    const out = this.inner.push(bytes);
+    convertMs += performance.now() - began;
+    return out;
+  }
+  async finish() {
+    return this.inner.finish();
+  }
+}
+
+// One session worker per page; a new open() with another configuration replaces it.
+let worker = null; // { key, w, ready: Promise<{pool}>, waiters: Map<seq, {resolve,reject}> }
+let convertMs = 0; // time the conversion took, wherever it ran (wall clock of each push)
+
+function ensureWorker(convert, pool) {
+  const key = `${convert}:${pool}`;
+  if (worker?.key === key) return worker;
+  worker?.w.terminate();
+  const w = new Worker(new URL("./session-worker.js", import.meta.url), { type: "module" });
+  const waiters = [];
+  let readyResolve;
+  const ready = new Promise((resolve) => (readyResolve = resolve));
+  w.onmessage = ({ data }) => {
+    if (data.type === "ready") return readyResolve({ pool: data.pool });
+    const waiter = waiters.shift(); // replies come back in request order
+    if (data.type === "failed") waiter.reject(new Error(data.message));
+    else waiter.resolve(data);
+  };
+  w.onerror = (e) => fail(new Error(e.message || "session worker error"), "worker");
+  w.postMessage({ type: "start", pool: convert === "pool" ? pool : 0 });
+  worker = { key, w, ready, waiters };
+  return worker;
+}
+
+/** The Session in session-worker.js. Counters are the ones the last reply carried. */
+class WorkerSession {
+  constructor(seq, originTicks, audioPid) {
+    this.seq = seq;
+    this.originTicks = originTicks;
+    this.dropped = 0;
+    this.scrambled = 0;
+    this.errors = 0;
+    worker.w.postMessage({ type: "new", seq, originTicks: originTicks ?? null, audioPid: audioPid ?? null });
+  }
+  #ask(message, transfer) {
+    return new Promise((resolve, reject) => {
+      worker.waiters.push({ resolve, reject });
+      worker.w.postMessage(message, transfer);
+    }).then((reply) => {
+      if (reply.stale) return [];
+      if (reply.originTicks != null) this.originTicks = reply.originTicks;
+      Object.assign(this, reply.counters);
+      convertMs += reply.convertMs;
+      return reply.fragments;
+    });
+  }
+  push(bytes) {
+    return this.#ask({ type: "push", seq: this.seq, bytes }, [bytes.buffer]);
+  }
+  finish() {
+    return this.#ask({ type: "finish", seq: this.seq });
+  }
+}
+
 function makeSession(url, audioPid) {
   counters.sessions++;
   activeSeq = ++sessionSeq;
   // Only the first session of a URL reports an origin; later ones pass it in.
-  const s = new Session(undefined, origins.get(url));
-  if (audioPid != null) s.selectAudio(audioPid);
-  return s;
+  const convert = current?.opts.convert ?? "main";
+  if (convert === "main") return new MainSession(origins.get(url), audioPid);
+  return new WorkerSession(activeSeq, origins.get(url), audioPid);
 }
 
 function noteOrigin(url, sess) {
@@ -383,11 +469,12 @@ async function feed(g, url, size, sess, offset, growing = false) {
       counters.bytesFed += bytes.length;
       let fragments;
       try {
-        fragments = sess.push(bytes);
+        fragments = await sess.push(bytes);
       } catch (error) {
         fail(error, "session");
         return;
       }
+      if (g !== gen) return;
       noteOrigin(url, sess);
       if (!(await appendAll(g, fragments))) return;
       await ensureDuration(url, size);
@@ -396,7 +483,7 @@ async function feed(g, url, size, sess, offset, growing = false) {
     if (g !== gen) return;
     let tail;
     try {
-      tail = sess.finish();
+      tail = await sess.finish();
     } catch (error) {
       fail(error, "session");
       return;
@@ -429,6 +516,7 @@ function teardown() {
   session = null;
   placing = false;
   counters = freshCounters();
+  convertMs = 0;
   lastError = null;
   seeks = [];
   rejectFirst = null;
@@ -460,6 +548,10 @@ async function open(url, opts = {}) {
   video.src = objectUrl;
   await opened;
   if (opts.yadif && !deinterlacer) await initYadif();
+  if ((opts.convert ?? "main") !== "main") {
+    const ready = await ensureWorker(opts.convert, opts.pool ?? 3).ready;
+    log("worker", { convert: opts.convert, pool: ready.pool });
+  }
   session = makeSession(url, opts.audioPid);
   placing = true;
   const first = new Promise((resolve, reject) => {
@@ -547,6 +639,8 @@ function state() {
     lastError,
     sessionCounters: session ? { dropped: session.dropped, scrambled: session.scrambled, errors: session.errors } : null,
     fragments: { ...counters },
+    convertMs: Math.round(convertMs),
+    convert: current?.opts.convert ?? "main",
     seeks: seeks.slice(-5),
     yadif: deinterlacer ? { enabled: deinterlacer.enabled, running: deinterlacer.running } : null,
   };

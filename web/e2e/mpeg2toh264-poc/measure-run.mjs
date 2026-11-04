@@ -2,6 +2,7 @@
 //
 //   node measure-run.mjs --out <dir> --label <name> --mode idle|file|grow
 //       [--file <ts>] [--start 0|mid] [--mid <sec>] [--play 120] [--yadif]
+//       [--convert main|worker|pool] [--pool N]
 //       [--grow-rate B/s] [--grow-lag s] [--grow-step s] [--grow-head s] [--live-back s]
 //
 // Writes <dir>/<label>.json with:
@@ -34,6 +35,8 @@ const start = opt("--start", "0");
 const mid = Number(opt("--mid", "0"));
 const playSeconds = Number(opt("--play", "120"));
 const yadif = has("--yadif");
+const convert = opt("--convert", "main");
+const pool = Number(opt("--pool", "3"));
 const growRate = Number(opt("--grow-rate", "0"));
 const growLag = Number(opt("--grow-lag", "0"));
 const growStep = Number(opt("--grow-step", "0"));
@@ -157,7 +160,7 @@ try {
     const url = `${srv.url}/media/${encodeURIComponent(basename(file))}`;
     const growUrl = `${srv.url}/grow/${encodeURIComponent(basename(file))}`;
     const openUrl = mode === "grow" ? growUrl : url;
-    const openOpts = { yadif, growing: mode === "grow" };
+    const openOpts = { yadif, growing: mode === "grow", convert, pool };
     const openBegan = now();
     extra.open = await page.evaluate(([u, o]) => window.poc.open(u, o), [openUrl, openOpts]);
     extra.openWallMs = now() - openBegan;
@@ -198,6 +201,8 @@ try {
     mode,
     start,
     yadif,
+    convert,
+    pool,
     file: file ? basename(file) : null,
     options: { playSeconds, mid, growRate, growLag, growStep, growHead, liveBack },
     chromeVersion,
