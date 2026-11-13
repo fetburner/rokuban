@@ -12,18 +12,29 @@
 # - \restrict / \unrestrict: pg_dump 17.6 以降はダンプごとにランダムな鍵を出すので、残すと毎回差分になる
 #   （17.12 で出ることを確認済み）。
 #
-# 版は PostgreSQL 17 に固定する。pg_dump の出力はメジャー版で変わるので、サーバーも pg_dump も
-# PG_IMAGE のコンテナ 1 つで動かし、CI と手元で同じ版にそろえる。要るのは Docker と Go だけ。
+# 版はマイナー版まで固定する（PG_IMAGE の digest も一緒に）。pg_dump の出力はマイナー版でも変わり
+# （17.6 以降の \restrict 等）、Docker は手元にキャッシュしたタグを pull し直さないので、タグだけだと
+# 手元と CI で版がずれる。サーバーも pg_dump も PG_IMAGE のコンテナ 1 つで動かす。上げるときは digest も
+# 一緒に変える。要るのは Docker と Go だけ。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PG_IMAGE=postgres:17
+PG_IMAGE=postgres:17.12@sha256:dbb9623d5121b5d2c2c9e2fba56e40193cbb3510d4af7f035b1ab1823aff3205
 OUT=internal/db/schema.sql
 
 cid=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1::5432 "$PG_IMAGE")
 trap 'docker rm -f "$cid" >/dev/null' EXIT
 # TCP で待つ。初期化中の一時サーバーは unix socket しか開かないので、socket で待つと再起動前に通ってしまう。
-until docker exec "$cid" pg_isready -q -h 127.0.0.1 -U postgres; do sleep 1; done
+# 起動に失敗するとコンテナは --rm で消えて docker exec が失敗し続けるので、回数で打ち切る。
+ready=0
+for _ in $(seq 60); do
+  if docker exec "$cid" pg_isready -q -h 127.0.0.1 -U postgres; then ready=1; break; fi
+  sleep 1
+done
+if [ "$ready" != 1 ]; then
+  echo "PostgreSQL コンテナが 60 秒以内に起動しなかった（image: $PG_IMAGE）" >&2
+  exit 1
+fi
 port=$(docker port "$cid" 5432/tcp | head -n1 | sed 's/.*://')
 
 go run ./internal/db/schemadump "postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable"
