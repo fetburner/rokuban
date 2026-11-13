@@ -614,21 +614,6 @@ jobs:
   # ツール版は CLAUDE.md §ビルド・テストに固定した版に合わせる（版がずれると偽陽性で赤くなる）。
   generated-diff:
     runs-on: ubuntu-latest
-    services:
-      # scripts/schemadump.sh が空の DB にマイグレーションを全て適用する。版は PG 17（CLAUDE.md）。
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: rokuban
-          POSTGRES_PASSWORD: rokuban
-          POSTGRES_DB: rokuban
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U rokuban"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -663,10 +648,8 @@ jobs:
       - run: pnpm exec orval
         working-directory: web
       # 適用後スキーマのダンプ（internal/db/schema.sql）。マイグレーションを足して再生成し忘れると
-      # 下の差分検査で落ちる。
+      # 下の差分検査で落ちる。PostgreSQL はスクリプトが自分でコンテナを起動する（版の固定もそこ）。
       - run: scripts/schemadump.sh
-        env:
-          ROKUBAN_SCHEMADUMP_ADMIN_DSN: postgres://rokuban:rokuban@localhost:5432/rokuban?sslmode=disable
       # 新規ファイル（クエリ追加で sqlcgen 配下のファイルが増える等）も検出するため
       # git add -A で拾ってから差分を見る。パスは絞らない —— 出力先を列挙すると
       # sqlc.yaml の out / oapi-codegen.yaml の output / orval.config.ts の target が
