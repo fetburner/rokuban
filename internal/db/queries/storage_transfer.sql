@@ -24,12 +24,8 @@ SELECT a.id AS media_asset_id,
        ) AS desired_store,
        COALESCE((
            SELECT source.store::text
-           FROM active_media_asset_copies(a.id, NULL) source
+           FROM active_present_media_asset_copies(a.id, NULL) source
            WHERE source.store = ANY(sqlc.arg('fs_stores')::text[])
-             AND source.generation = COALESCE(a.derived_generation, 0)
-             AND NOT EXISTS (
-                 SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source.id
-             )
            ORDER BY source.created_at DESC, source.id
            LIMIT 1
        ), '')::text AS source_store
@@ -162,17 +158,11 @@ WITH asset AS MATERIALIZED (
 ), source AS MATERIALIZED (
     SELECT source_copy.id, source_copy.store, source_copy.rel_path
     FROM asset
-    JOIN media_asset_copies source_copy ON source_copy.media_asset_id = asset.id
-    JOIN media_assets source_asset ON source_asset.id = source_copy.media_asset_id
-    WHERE source_copy.store <> sqlc.arg('target_store')
+    CROSS JOIN LATERAL active_present_media_asset_copies(asset.id, NULL::text) source_copy
+    WHERE source_copy.store <> sqlc.arg('target_store')::text
       AND source_copy.store = ANY(sqlc.arg('source_stores')::text[])
       -- 派生物の転送元は、この worker がマウントしている置き場に限る（HTTP で読む経路は原本だけ）。
       AND (asset.kind = 'original' OR source_copy.store = ANY(sqlc.arg('fs_stores')::text[]))
-      AND source_copy.state = 'active'
-      AND source_copy.generation = COALESCE(source_asset.derived_generation, 0)
-      AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source_copy.id
-      )
     -- マウントした置き場の copy を、internal_url だけで届く copy より先に選ぶ（ローカルから読めるほうを優先）。
     ORDER BY (source_copy.store = ANY(sqlc.arg('mounted_stores')::text[])) DESC,
              source_copy.created_at DESC, source_copy.id
@@ -363,13 +353,10 @@ WHERE c.id = sqlc.arg('copy_id')
   AND EXISTS (
       SELECT 1
       FROM media_assets original
-      JOIN media_asset_copies original_copy ON original_copy.media_asset_id = original.id
       WHERE original.recording_id = a.recording_id
         AND original.kind = 'original'
-        AND original_copy.state = 'active'
-        AND original_copy.generation = COALESCE(original.derived_generation, 0)
-        AND NOT EXISTS (
-            SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = original_copy.id
+        AND EXISTS (
+            SELECT 1 FROM active_present_media_asset_copies(original.id, NULL::text)
         )
   );
 

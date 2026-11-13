@@ -177,11 +177,7 @@ SELECT EXISTS (
     WHERE a.id = sqlc.arg('media_asset_id')
       AND a.kind IN ('original', 'encoded')
       AND EXISTS (
-          SELECT 1
-          FROM active_media_asset_copies(a.id, sqlc.arg('store_name')::text) c
-          WHERE NOT EXISTS (
-              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
-          )
+          SELECT 1 FROM active_present_media_asset_copies(a.id, sqlc.arg('store_name')::text)
       )
 );
 

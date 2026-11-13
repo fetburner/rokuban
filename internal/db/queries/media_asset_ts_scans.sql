@@ -9,10 +9,7 @@ SET scanned_size_bytes = EXCLUDED.scanned_size_bytes;
 -- name: GetActiveOriginalForTSScan :one
 SELECT a.id, c.rel_path, a.size_bytes
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id
- AND c.store = sqlc.arg('store_name')
- AND c.state = 'active'
+JOIN LATERAL active_present_media_asset_copies(a.id, sqlc.arg('store_name')::text) c ON true
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id = sqlc.arg('recording_id')::bigint
   AND a.kind = 'original'
@@ -21,10 +18,6 @@ WHERE a.recording_id = sqlc.arg('recording_id')::bigint
     SELECT 1
     FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_copy_id = c.id
   );
 
 -- 読み出し後に原本がまだ有効で同じサイズか、stats の置き換え前に検査する。
@@ -45,9 +38,10 @@ WHERE a.id = sqlc.arg('media_asset_id')::bigint
     FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
   )
-  AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_copy_id = c.id
+  -- 行ロックを c に掛けるため LATERAL 関数にせず、同じ述語の関数を EXISTS で引く。
+  AND EXISTS (
+    SELECT 1 FROM active_present_media_asset_copies(a.id, sqlc.arg('store_name')::text) p
+    WHERE p.id = c.id
   )
 FOR UPDATE OF a, c;
 
@@ -56,10 +50,7 @@ FOR UPDATE OF a, c;
 -- name: ListMissingTSScanRecordings :many
 SELECT DISTINCT a.recording_id
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id
- AND (sqlc.narg('store_name')::text IS NULL OR c.store = sqlc.narg('store_name'))
- AND c.state = 'active'
+JOIN LATERAL active_present_media_asset_copies(a.id, sqlc.narg('store_name')::text) c ON true
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id > sqlc.arg('after_recording_id')::bigint
   AND a.kind = 'original'
@@ -68,10 +59,6 @@ WHERE a.recording_id > sqlc.arg('after_recording_id')::bigint
     SELECT 1
     FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_copy_id = c.id
   )
 ORDER BY a.recording_id
 LIMIT sqlc.arg('row_limit');

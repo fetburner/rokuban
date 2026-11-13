@@ -598,11 +598,7 @@ SELECT EXISTS (
     WHERE a.id = $1
       AND a.kind IN ('original', 'encoded')
       AND EXISTS (
-          SELECT 1
-          FROM active_media_asset_copies(a.id, $2::text) c
-          WHERE NOT EXISTS (
-              SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
-          )
+          SELECT 1 FROM active_present_media_asset_copies(a.id, $2::text)
       )
 )
 `

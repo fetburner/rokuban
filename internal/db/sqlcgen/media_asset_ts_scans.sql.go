@@ -31,10 +31,7 @@ func (q *Queries) DeleteDropStatsForTSScan(ctx context.Context, mediaAssetID int
 const getActiveOriginalForTSScan = `-- name: GetActiveOriginalForTSScan :one
 SELECT a.id, c.rel_path, a.size_bytes
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id
- AND c.store = $1
- AND c.state = 'active'
+JOIN LATERAL active_present_media_asset_copies(a.id, $1::text) c ON true
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id = $2::bigint
   AND a.kind = 'original'
@@ -43,10 +40,6 @@ WHERE a.recording_id = $2::bigint
     SELECT 1
     FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_copy_id = c.id
   )
 `
 
@@ -72,10 +65,7 @@ func (q *Queries) GetActiveOriginalForTSScan(ctx context.Context, arg GetActiveO
 const listMissingTSScanRecordings = `-- name: ListMissingTSScanRecordings :many
 SELECT DISTINCT a.recording_id
 FROM media_assets a
-JOIN media_asset_copies c
-  ON c.media_asset_id = a.id
- AND ($1::text IS NULL OR c.store = $1)
- AND c.state = 'active'
+JOIN LATERAL active_present_media_asset_copies(a.id, $1::text) c ON true
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id > $2::bigint
   AND a.kind = 'original'
@@ -84,10 +74,6 @@ WHERE a.recording_id > $2::bigint
     SELECT 1
     FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_copy_id = c.id
   )
 ORDER BY a.recording_id
 LIMIT $3
@@ -137,9 +123,10 @@ WHERE a.id = $2::bigint
     FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
   )
-  AND NOT EXISTS (
-    SELECT 1 FROM missing_media_assets m
-    WHERE m.media_asset_copy_id = c.id
+  -- 行ロックを c に掛けるため LATERAL 関数にせず、同じ述語の関数を EXISTS で引く。
+  AND EXISTS (
+    SELECT 1 FROM active_present_media_asset_copies(a.id, $1::text) p
+    WHERE p.id = c.id
   )
 FOR UPDATE OF a, c
 `
