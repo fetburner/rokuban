@@ -524,7 +524,9 @@ func TestPresentCopies_SetRecordingCMDetectionExcludesMissingOriginal(t *testing
 		t.Errorf("SetRecordingCMDetection(present, no policy) = %d, %v; want 1, nil", rows, err)
 	}
 
-	// 方向 2: 凍結済みの policy があり cm_detect が false の録画（ON CONFLICT の経路）。
+	// 方向 2: 凍結済みの policy があり cm_detect が false の録画。frozenPresent だけが
+	// ON CONFLICT の経路を通る。frozenMissing は INSERT ... SELECT のゲートで行が出ないので
+	// ON CONFLICT には届かず、ON CONFLICT 側の WHERE が実体無しを除くことはここでは固定していない。
 	frozenPresent, _ := presentCopiesRecording(t, pool, 32678, 5168, false)
 	frozenMissing, _ := presentCopiesRecording(t, pool, 1, 1, true)
 	setPresentCopiesPolicy(t, pool, frozenPresent, "always", []string{}, false)
@@ -817,5 +819,19 @@ func TestPresentCopies_RemovedEncodedAssetsKeepsMissingAsRemaining(t *testing.T)
 		if !existsIn(t, pool, `SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1`, id) {
 			t.Errorf("%s: removed asset %d is not listed, want listed (current behavior)", name, id)
 		}
+	}
+
+	// 対照（列挙されない側）: 残る版が無い録画。原本の active コピーも残す encoded も無く、
+	// 外した版だけがある。view の「他の版が残る」EXISTS が効いていれば列挙されない。
+	alone, aloneOriginal := presentCopiesRecording(t, pool, 2, 2, false)
+	setPresentCopiesPolicy(t, pool, alone, "always", []string{}, false)
+	aloneAsset := removedAsset(alone, false)
+	requestRemoval(alone)
+	if _, err := pool.Exec(t.Context(), `
+UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, aloneOriginal); err != nil {
+		t.Fatalf("retiring the original copy: %v", err)
+	}
+	if existsIn(t, pool, `SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1`, aloneAsset) {
+		t.Errorf("removed asset %d with no remaining version is listed, want not listed", aloneAsset)
 	}
 }
