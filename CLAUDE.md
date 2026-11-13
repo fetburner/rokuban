@@ -8,6 +8,7 @@ Rokuban は EPGStation をゼロベースで再設計するクラウドネイテ
 
 ```bash
 sqlc generate                 # SQL → Go コード生成（マイグレーションからスキーマを読む）
+scripts/schemadump.sh         # 全マイグレーション適用後のスキーマを internal/db/schema.sql に書く（PG 17 を Docker で実行。現行の関数・view の定義を読むのはこれ）
 go generate ./internal/api/   # openapi.yaml → 生成ハンドラ/型。生成物はコミットする
 go build ./...
 go test ./...
