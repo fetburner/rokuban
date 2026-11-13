@@ -7,7 +7,7 @@
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:programs-view
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs programs-view
 import {
   ListProgramsResponseItem,
   ListServicesResponseItem,

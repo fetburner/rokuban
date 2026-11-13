@@ -43,7 +43,7 @@
 //
 //   cd web && pnpm build && go build -o /tmp/rokuban ./cmd/rokuban
 //   /tmp/rokuban server --roles api --config dev.local.yml
-//   pnpm e2e:programs-reservation-error
+//   node e2e/run.mjs programs-reservation-error
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
 import { ListProgramsResponseItem, ListServicesResponseItem } from '../src/api/zod.ts'

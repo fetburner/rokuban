@@ -24,7 +24,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/shots corepack pnpm e2e:recording-next-episode
+//   E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/shots node e2e/run.mjs recording-next-episode
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'

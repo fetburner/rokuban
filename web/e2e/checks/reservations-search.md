@@ -16,7 +16,7 @@ SSE の通知を 1 通も届けないまま接続だけ維持したとき、**�
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
+E2E_URL=http://localhost:4173 node e2e/run.mjs sse-refresh
 ```
 
 `badge-links.mjs` と同じ ⓪（配っている bundle と `dist/` の一致）を自分で確認する。
@@ -36,7 +36,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:reserve-visibility
+E2E_URL=http://localhost:4173 node e2e/run.mjs reserve-visibility
 ```
 
 ### 検索フォームの初画面と詳細条件（`search-mobile.mjs`）
@@ -56,8 +56,13 @@ E2E_URL=http://localhost:4173 pnpm e2e:reserve-visibility
 
 ④だけは定義上「押した後」なので、①②を測り終えてから操作する:
 
-- ④ テキスト条件に打って「検索」を押した後、件数行（`N 件`）が折り目の中にあり、`sticky` なページヘッダの下にも潜っておらず、結果の 1 件目も折り目の中にあること。変更前も結果には届いたが、実測（390px）は `scrollY=1138` まで必要だった（1280px では 948）。変更後は 390px で `scrollY=502`（1280px では 426）、件数行 y=49、1 件目 y=81 になった。検索と条件クリアは条件欄の後ろに置き、固定バーにはしない。値欄の Enter でも検索でき、送信後は結果の先頭へスクロール・フォーカスする。
-- ⑥ 長いサービス名と有料番組の `ProgramRow` で、メタ行が 1 行に収まり、行が不要に 2 行ぶん高くならないこと。メタ行・行の高さは固定値で判定する（実測は 360/390/1280px いずれも `ProgramRow` 65px・メタ行 20px、しきい値は行 72px・メタ行 24px）。`flex-wrap` を戻した変異、`py-2.5`→`py-5` の変異、名前カラムに 2 行目を足す変異のいずれでも実際に落ちる。ただし `flex-wrap` を捕まえるのは computed style の判定であって高さではない（`ProgramRow` のサービス名は `truncate` なので、折り返しを許してもメタ行は 20px のまま）。
+- ④ テキスト条件に打って「検索」を押した後、件数行（`N 件`）が折り目の中にあり、`sticky` なページヘッダの下にも潜っておらず、結果の 1 件目も折り目の中にあること。検索と条件クリアは条件欄の後ろに置き、固定バーにはしない。値欄の Enter でも検索でき、送信が決着したら「検索結果」セクションへスクロールとフォーカスを移す。
+- ⑤ セクションにフォーカスした後、Tab で件数行の「番組表で見る」リンク（URL に検索条件がある場合）へ進み、その次の Tab で先頭行の展開ボタンへ届くこと。Enter で開いた後は Tab で予約ボタンに進めること。リンクとボタンを個別に確認し、無制限に Tab を押して探さない。予約ボタンの 44×44px 以上の標的サイズは、操作列の幅遷移が終わってから測る。
+- ⑥ 長いサービス名・有料表示・「スキップ中」バッジの `ProgramRow` で、メタ行が 1 行に収まり、行全体が viewport 内にあることを確認する。
+  - サービス名から `min-w-0 truncate` を外す変異は、360/390px でメタ行 40px・行 85px となり、メタ行 24px・行 72px の上限で落ちる。1280px では落ちない。
+  - `flex-wrap` を戻す変異は、1280px では computed style の判定で落ちる。360/390px では「スキップ中」バッジを含む fixture のためメタ行 40px・行 85px となり、computed style と高さの判定で落ちる。
+  - `py-2.5` を `py-5` にする変異と名前カラムに 2 行目を足す変異は、行高 72px の上限で捕まえる。
+  - `scrollWidth <= clientWidth` と行全体の viewport 内判定で横方向のはみ出しを確認する。
 
 1280px では対象・モード・値の top がほぼ一致すること（= 同じ行にある）を見て従来のデスクトップの一行レイアウトを確認し、④と⑥も同じ条件で実行する。`sm:flex-row` を落として一行を崩す変異で実際に落ちることを確認済み。`page.route` のスタブは mirakc も DB も使わず、検索 API と番組詳細の 2 本を差し替える。
 
@@ -67,16 +72,16 @@ E2E_URL=http://localhost:4173 pnpm e2e:reserve-visibility
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:search-mobile
+E2E_URL=http://localhost:4173 node e2e/run.mjs search-mobile
 ```
 
-### 検索画面の操作位置・Enter・空の状態（`issue-1232-search.mjs`）
+### 検索画面の操作位置・Enter・空の状態（`search-form-interactions.mjs`）
 
 390px で検索・クリアのボタンが条件の後ろに続くこと、値欄の Enter が検索だけを送りルール作成を送らないこと（ルール名欄は逆）を判定する。未検索の EmptyState に走査線が無く、読み込み中の Skeleton にだけあることも判定する。`/api/**` は `page.route` で差し替えるので mirakc も DB も要らない。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:issue-1232-search
+E2E_URL=http://localhost:4173 node e2e/run.mjs search-form-interactions
 ```
 
 ### 予約一覧の副情報がシェブロンに重ならないか（`reservations-mobile.mjs`）
@@ -93,7 +98,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:issue-1232-search
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
+E2E_URL=http://localhost:4173 node e2e/run.mjs reservations-mobile
 ```
 
 ### 予約一覧のシリーズ表示（`reservations-series.mjs`）
@@ -114,7 +119,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservations-series \
-  pnpm e2e:reservations-series
+  node e2e/run.mjs reservations-series
 ```
 
 画像（`E2E_SHOT_DIR`）はリポジトリに入れない。レビュー用は `design-mocks` ブランチへ置く。
@@ -128,7 +133,7 @@ E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservations-series \
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservation-rule-shots \
-  pnpm e2e:reservations-rule-filter
+  node e2e/run.mjs reservations-rule-filter
 ```
 
 ### 予約一覧の容量確認失敗（`reservations-capacity-error.mjs`）
@@ -137,7 +142,7 @@ E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservation-rule-shots \
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:reservations-capacity-error
+E2E_URL=http://localhost:4173 node e2e/run.mjs reservations-capacity-error
 ```
 
 ### 検索欄の `/` フォーカス（`search-shortcut.mjs`）
@@ -146,5 +151,5 @@ E2E_URL=http://localhost:4173 pnpm e2e:reservations-capacity-error
 
 ```sh
 pnpm build && pnpm preview --port 40773 --strictPort &
-E2E_URL=http://localhost:40773 pnpm e2e:search-shortcut
+E2E_URL=http://localhost:40773 node e2e/run.mjs search-shortcut
 ```

@@ -18,7 +18,7 @@
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:subtitles
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs subtitles
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'

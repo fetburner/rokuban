@@ -1140,6 +1140,18 @@ function HomeThumbnail({
       }
       callbackId = video.requestVideoFrameCallback(onFrame)
     }
+    const onSeeked = () => {
+      // seeked と HAVE_CURRENT_DATA がそろい、currentTime が要求位置にあれば、対象フレームは取得済み。
+      // 停止中は requestVideoFrameCallback だけを待つと、この状態を ready にできない場合がある。
+      if (
+        !video.seeking &&
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        Math.abs(video.currentTime - resumeTargetSeconds) <= frameToleranceSeconds
+      ) {
+        window.clearTimeout(timeout)
+        setResumeState({ key: stateKey, state: 'ready' })
+      }
+    }
     const seekToResumePosition = () => {
       if (
         video.error ||
@@ -1160,12 +1172,14 @@ function HomeThumbnail({
     const onError = () => setResumeState({ key: stateKey, state: 'failed' })
 
     video.addEventListener('loadedmetadata', seekToResumePosition)
+    video.addEventListener('seeked', onSeeked)
     video.addEventListener('error', onError)
     if (video.readyState >= HTMLMediaElement.HAVE_METADATA) seekToResumePosition()
     return () => {
       cancelled = true
       window.clearTimeout(timeout)
       video.removeEventListener('loadedmetadata', seekToResumePosition)
+      video.removeEventListener('seeked', onSeeked)
       video.removeEventListener('error', onError)
       if (callbackId !== undefined) video.cancelVideoFrameCallback?.(callbackId)
     }

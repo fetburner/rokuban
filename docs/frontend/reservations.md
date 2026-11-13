@@ -614,6 +614,6 @@ URL の条件は `?only=attention` である。件数は、それぞれのチッ
 <details><summary>根拠</summary>
 
 - ヒット寸法を合わせる擬似要素: `::before`
-- 実ブラウザの検査: `e2e:design` ④-A
+- 実ブラウザの検査: `e2e/run.mjs design` ④-A
 
 </details>

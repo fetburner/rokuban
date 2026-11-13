@@ -11,7 +11,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 corepack pnpm e2e:recordings-rule-filter
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs recordings-rule-filter
 import {
   GetEncodeQueueResponse,
   GetStorageResponseItem,

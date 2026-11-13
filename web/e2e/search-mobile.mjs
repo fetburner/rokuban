@@ -19,10 +19,10 @@
 //   ④ 1280px（デスクトップ）でも入力欄の存在と、「検索」を押した後の結果（件数行・結果 1 件目）が折り目の中に
 //      見えること。①②だけだと「押しても画面が変わらず、結果を見るために
 //      下までスクロールする」状態が緑で通る（レビューで実測）
-//   ⑤ 検索結果の予約ボタンがモバイルでも 44px の標的として出て、キーボードの
-//      Enter で単発予約へ進めること
-//   ⑥ 長いサービス名と有料表示を持つ `ProgramRow` で、メタ行が 1 行に収まり、
-//      行が不要に 2 行ぶん高くならないこと（issue #712）
+//   ⑤ 検索後に「検索結果」セクションへフォーカスが移り、Tab で件数行のリンク
+//      （条件が URL にある場合）を経て展開ボタンへ届き、予約ボタンへ進めること
+//   ⑥ 長いサービス名・有料表示・スキップ中バッジがある `ProgramRow` で、メタ行が
+//      1 行に収まり、横にはみ出さず、行が不要に 2 行ぶん高くならないこと
 //
 // **①②は `page.goto` 直後、スクロールも操作も一切せずに測る** --- 「初画面」を
 // 検証する判定でスクロールしてしまうと、直したい問題自体を回避してしまう。
@@ -34,7 +34,7 @@
 // 差し替える（design.mjs と同じ手）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 node e2e/search-mobile.mjs
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs search-mobile
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
 import { SearchProgramsResponseItem } from '../src/api/zod.ts'
@@ -138,6 +138,7 @@ async function apiHandler({ path: p, json, route }) {
           durationMs: detail.durationMs,
           name: detail.name,
           isFree: detail.isFree,
+          ...(index === 1 ? { intent: 'skip' } : {}),
         }
       }),
     )
@@ -386,6 +387,7 @@ async function checkViewport(viewport) {
 async function checkSubmitFeedback(page, viewport, label) {
   await page.getByLabel('テキスト条件 1 の値').fill('ニュース')
   await page.getByRole('button', { name: '検索', exact: true }).click()
+  await page.waitForURL((url) => url.searchParams.has('cond'), { timeout: 15000 })
 
   const countRow = page.getByRole('region', { name: '検索結果' }).getByRole('status')
   try {
@@ -474,17 +476,19 @@ async function checkSubmitFeedback(page, viewport, label) {
  * 行 65px・メタ行 20px。しきい値はそれぞれ余裕を持たせた 72px・24px。
  */
 async function checkSearchResultMeta(page, label) {
-  const firstRow = firstResultRow(page)
-  const programRow = firstRow.getByTestId('program-row')
+  // 予約導線を測る先頭行は通常状態に保つ。2 件目だけに skip intent を載せ、
+  // paid + 長い局名 + shrink-0 の「スキップ中」バッジを同じメタ行で測る。
+  const fixtureRow = page.locator('[data-testid="search-results"] > li').nth(1)
+  const programRow = fixtureRow.getByTestId('program-row')
   const rowCount = await programRow.count()
   if (rowCount !== 1) {
-    ng.push(`⑥@${label}: 結果 1 件目の ProgramRow がちょうど 1 本ではない（${rowCount} 本）`)
+    ng.push(`⑥@${label}: skip fixture の ProgramRow がちょうど 1 本ではない（${rowCount} 本）`)
     return
   }
   const meta = programRow.getByTestId('program-row-meta')
   const count = await meta.count()
   if (count !== 1) {
-    ng.push(`⑥@${label}: 結果 1 件目のメタ行がちょうど 1 本ではない（${count} 本）`)
+    ng.push(`⑥@${label}: skip fixture のメタ行がちょうど 1 本ではない（${count} 本）`)
     return
   }
 
@@ -493,7 +497,10 @@ async function checkSearchResultMeta(page, label) {
   const metrics = await meta.evaluate((element) => ({
     flexWrap: getComputedStyle(element).flexWrap,
     text: element.textContent ?? '',
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
   }))
+  const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth)
 
   if (rowBox === null || metaBox === null) {
     ng.push(`⑥@${label}: ProgramRow またはメタ行の矩形が取れない`)
@@ -502,17 +509,34 @@ async function checkSearchResultMeta(page, label) {
 
   log(
     `  ⑥@${label} 結果行 height=${Math.round(rowBox.height)} / ` +
-      `メタ行 height=${Math.round(metaBox.height)} / flex-wrap=${metrics.flexWrap}`,
+      `メタ行 height=${Math.round(metaBox.height)} / flex-wrap=${metrics.flexWrap} / ` +
+      `scrollWidth=${metrics.scrollWidth} clientWidth=${metrics.clientWidth}`,
   )
 
-  if (!metrics.text.includes('ＮＨＫＢＳプレミアム４Ｋ') || !metrics.text.includes('有料')) {
-    ng.push(`⑥@${label}: 長いサービス名と「有料」の fixture が ProgramRow に出ていない`)
+  if (
+    !metrics.text.includes('ＮＨＫＢＳプレミアム４Ｋ') ||
+    !metrics.text.includes('有料') ||
+    !metrics.text.includes('スキップ中')
+  ) {
+    ng.push(`⑥@${label}: 長いサービス名・「有料」・「スキップ中」の fixture が ProgramRow に揃っていない`)
   }
   if (metrics.flexWrap !== 'nowrap') {
     ng.push(`⑥@${label}: ProgramRow のメタ行が折り返し禁止になっていない（${metrics.flexWrap}）`)
   }
   if (metaBox.height > 24) {
     ng.push(`⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, 上限=24px）`)
+  }
+  if (metrics.scrollWidth > metrics.clientWidth) {
+    ng.push(
+      `⑥@${label}: メタ行の内容が横にはみ出す` +
+        `（scrollWidth=${metrics.scrollWidth}, clientWidth=${metrics.clientWidth}）`,
+    )
+  }
+  if (rowBox.x < 0 || rowBox.x + rowBox.width > viewportWidth) {
+    ng.push(
+      `⑥@${label}: ProgramRow が viewport 内に収まらない` +
+        `（left=${rowBox.x}, right=${rowBox.x + rowBox.width}, width=${viewportWidth}）`,
+    )
   }
   // メタ行が 1 行のままでも、`py-2.5` を広げる・名前カラムに 2 行目
   // （`ProgramOverlapWarning` 相当）を足す等で結果行自体が高くなる取りこぼしを
@@ -527,7 +551,7 @@ async function checkSearchResultMeta(page, label) {
  *
  * 予約ボタンは検索結果の行本体とは別のタブ停止可能な要素であり、モバイルでも
  * 44px の標的を持つ。jsdom では実際の Tab 移動・ボタン矩形を測れないため、ここで
- * 「探し直さず、その場の行から」操作できることを固定する。
+ * 「検索結果」セクションから Tab で決めた停止点を順にたどり、行を操作できることを固定する。
  *
  * **④を測り終えた後にだけ呼ぶこと。** ここで押す `Tab` は要素にフォーカスを移し、
  * フォーカスはブラウザ既定のスクロールを起こす。④より前に置くと、④が捕まえる
@@ -545,14 +569,37 @@ async function checkResultReservation(page, label) {
     return
   }
 
-  // `ProgramRow` の操作列は展開中だけ開くため、まず行本体をキーボードで展開する。
-  // 結果セクションへ移したフォーカスからの最初の Tab はこの展開ボタンに入るはず
-  // ---それ自体をここで確認する（下の予約ボタンの Tab 判定と同じ形: NG を積んで
-  // から focus で補って先へ進む）。
+  const resultsRegion = page.getByRole('region', { name: '検索結果' })
+  const focusedRegion = await page.waitForFunction(
+    (element) => document.activeElement === element,
+    await resultsRegion.elementHandle(),
+    { timeout: 5000 },
+  ).then(() => true).catch(() => false)
+  if (!focusedRegion) {
+    ng.push(`⑤@${label}: 検索後に「検索結果」セクションへフォーカスが移らない`)
+    await resultsRegion.focus()
+  }
+
+  const hasConditionInUrl = await page.evaluate(() => new URL(location.href).searchParams.has('cond'))
+  const gridLens = resultsRegion.getByRole('link', { name: '番組表で見る', exact: true })
+  const lensCount = await gridLens.count()
+  if (lensCount !== (hasConditionInUrl ? 1 : 0)) {
+    ng.push(
+      `⑤@${label}: 件数行の「番組表で見る」リンク数が URL の条件と一致しない` +
+        `（cond=${hasConditionInUrl}, links=${lensCount}）`,
+    )
+  }
+  if (lensCount === 1) {
+    await page.keyboard.press('Tab')
+    const focusedLens = await gridLens.evaluate((element) => document.activeElement === element)
+    if (!focusedLens) ng.push(`⑤@${label}: セクションからの Tab で件数行のリンクへ届かない`)
+  }
+
+  // 条件が URL にあるときは件数行のリンクの次、無いときは最初の Tab で展開へ進む。
   await page.keyboard.press('Tab')
   const focusedToggle = await rowToggle.evaluate((element) => document.activeElement === element)
   if (!focusedToggle) {
-    ng.push(`⑤@${label}: Tab で結果行の展開ボタンへ到達できない`)
+    ng.push(`⑤@${label}: 件数行のリンク（あれば）の次の Tab で展開ボタンへ届かない`)
     await rowToggle.focus()
   }
   await page.keyboard.press('Enter')
@@ -575,6 +622,13 @@ async function checkResultReservation(page, label) {
     return
   }
 
+  const reserveWrapper = firstRow.getByTestId('program-row-reserve')
+  const expandedWidth = await page.waitForFunction(
+    (element) => Number.parseFloat(getComputedStyle(element).width) >= 80,
+    await reserveWrapper.elementHandle(),
+    { timeout: 5000 },
+  ).then(() => true).catch(() => false)
+  if (!expandedWidth) ng.push(`⑤@${label}: 予約操作列の幅アニメーションが完了しない`)
   const box = await reserveButton.boundingBox()
   if (box === null) {
     ng.push(`⑤@${label}: 結果 1 件目の「予約」ボタンの矩形が取れない`)

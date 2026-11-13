@@ -1,3 +1,4 @@
+// e2e-needs: db-state
 // 番組リストの受け入れ判定。jsdom では測れないものだけをここで見る（e2e/README.md）。
 // 合格なら exit 0、1 つでも NG なら exit 1。
 import { finish, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'

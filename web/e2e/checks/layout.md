@@ -5,8 +5,8 @@
 Go の製品ビルダーが作る目印付き MP4 から映像 track を正規化し、非カット版と `keepRanges` で連結したカット版を配る。Chromium と WebKit で、ホームの先頭に出す 1 本が frame 492 の目印を表示すること、動画を再生せず、表示中のコマが出るまで固定サムネイルを残すことを測る。動画取得が失敗したときに固定画像へ戻ることと、絵を押すと録画詳細へ移ることも見る。表示中の frame を canvas の画素で読み、`currentTime` だけを根拠にしない。`keepRanges` の写像を外す変異では、カット版の目印判定が落ちる。
 
 ```sh
-E2E_URL=http://localhost:4173 pnpm e2e:home-resume-frame
-E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:home-resume-frame
+E2E_URL=http://localhost:4173 node e2e/run.mjs home-resume-frame
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit node e2e/run.mjs home-resume-frame
 ```
 
 ffmpeg / ffprobe / Go と Chromium / WebKit を使うローカル判定である。Safari / iPhone は確認対象にしない。動く根拠は Chrome と同じ hls.js 経路を通ることで、Playwright WebKit は hls.js 経路の診断に使う。
@@ -28,9 +28,9 @@ ffmpeg / ffprobe / Go と Chromium / WebKit を使うローカル判定である
 実録画でも測るときは、`E2E_TIMELINE_REAL_HLS_URL` に localhost の HLS playlist を渡す。非 loopback の URL はスクリプトが拒否する。目印が無いので、連続再生で得たフレームの画素 fingerprint と、境界を選んだ後に表示されたフレームの fingerprint を比べる。画像や動画は保存しない。境界は `E2E_TIMELINE_REAL_HLS_BOUNDARY_SECONDS`（既定 1 秒）で選ぶ。
 
 ```sh
-E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 pnpm e2e:recording-playback-timeline
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 node e2e/run.mjs recording-playback-timeline
 E2E_URL=http://127.0.0.1:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 \
-  E2E_TIMELINE_REAL_HLS_URL=http://127.0.0.1:<port>/playlist.m3u8 pnpm e2e:recording-playback-timeline
+  E2E_TIMELINE_REAL_HLS_URL=http://127.0.0.1:<port>/playlist.m3u8 node e2e/run.mjs recording-playback-timeline
 ```
 
 **変異で落ちることを確認済み**（Chrome）。WebKit の変異は hls.js 経路では未測定である。
@@ -60,7 +60,7 @@ E2E_URL=http://127.0.0.1:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 \
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
+E2E_URL=http://localhost:4173 node e2e/run.mjs programs-bottom-nav
 ```
 
 ### 横向き端末の左右セーフエリア（`safe-area-inline.mjs`）
@@ -75,7 +75,7 @@ override が効かなかった場合（CDP メソッドの欠落など）は、�
 
 ```sh
 pnpm build && pnpm preview --host 127.0.0.1 --port 4173 --strictPort &
-E2E_URL=http://127.0.0.1:4173 pnpm e2e:safe-area-inline
+E2E_URL=http://127.0.0.1:4173 node e2e/run.mjs safe-area-inline
 ```
 
 ### 固定ヘッダーとページ内 z-10 要素の重なり（`header-stacking.mjs`）
@@ -86,7 +86,7 @@ API をスタブするため mirakc と DB は要らない。①は `PageHeader`
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:header-stacking
+E2E_URL=http://localhost:4173 node e2e/run.mjs header-stacking
 ```
 
 ### 読み込み中のレイアウトシフト（`cls.mjs`）
@@ -118,7 +118,7 @@ CLS（Cumulative Layout Shift）はレイアウトそのものの指標なので
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:cls
+E2E_URL=http://localhost:4173 node e2e/run.mjs cls
 ```
 
 ### 畳んだサイドバーの項目名（`sidebar-tooltips.mjs`）
@@ -127,5 +127,5 @@ E2E_URL=http://localhost:4173 pnpm e2e:cls
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:sidebar-tooltips
+E2E_URL=http://localhost:4173 node e2e/run.mjs sidebar-tooltips
 ```

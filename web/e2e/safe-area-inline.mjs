@@ -8,7 +8,7 @@
 // 未検証: 実機の Safari が返す inset の実値、回転時の再計算。実機確認は別 issue で扱う。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:safe-area-inline
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs safe-area-inline
 import { finish, installApiStubs, launchBrowser, log, sseKeepAlive, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'

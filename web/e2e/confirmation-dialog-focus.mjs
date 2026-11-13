@@ -4,7 +4,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 node e2e/issue-1233-dialog-focus.mjs
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs confirmation-dialog-focus
 
 import { ListRulesResponseItem } from '../src/api/zod.ts'
 import {

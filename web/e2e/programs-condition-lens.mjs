@@ -5,7 +5,7 @@
 // 混ぜ、ジャンルだけをクライアントで判定する実装も通らないようにする。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:programs-condition-lens
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs programs-condition-lens
 
 import {
   ListProgramsResponseItem,

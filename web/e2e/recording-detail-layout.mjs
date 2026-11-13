@@ -9,7 +9,7 @@
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4188 --strictPort &
 //   E2E_URL=http://localhost:4188 E2E_SHOT_DIR=/tmp/recording-detail-shots \
-//     corepack pnpm e2e:recording-detail-layout
+//     node e2e/run.mjs recording-detail-layout
 
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'

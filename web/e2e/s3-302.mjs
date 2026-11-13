@@ -1,3 +1,4 @@
+// e2e-needs: s3
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'

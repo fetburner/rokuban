@@ -11,7 +11,7 @@
 // mirakc・実チューナー・DB は不要。API は `page.route` で差し替える。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:program-row-right-padding
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs program-row-right-padding
 import { ListProgramsResponseItem, ListServicesResponseItem } from '../src/api/zod.ts'
 import {
   finish,

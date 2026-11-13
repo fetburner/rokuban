@@ -5,7 +5,7 @@
 番組リストと違い、**mirakc も実チューナーも要らない** --- HLS プレイリスト/ セグメントは `page.route` でブラウザ側から丸ごと差し替える。動的 import（hls.js のバンドル分割）・MSE への実再生・チャンネル切替時の cleanup は jsdom で原理的に測れない。`vi.mock` によるフェイクの配線検査（Vitest）でも「配線が呼ばれること」までしか見えない。手順は [docs/runbook/live.md](../../../docs/runbook/live.md) §②。
 
 ```sh
-E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
+E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 node e2e/run.mjs live
 ```
 
 `E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`** である。これは `E2E_LIVE_NETWORK_ID` と組で、DB へ投入した行の `(network_id, service_id)` そのもの。既定は `network_id=1`。
@@ -37,7 +37,7 @@ HLS の再生方式は `Hls.isSupported()` で判定する。`canPlayType()` が
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:live-boundary
+E2E_URL=http://localhost:4173 node e2e/run.mjs live-boundary
 ```
 
 実装を壊して落ちることを確かめたのは次の 3 つである。境界窓の先行取得を外すと、通常の境界・遅い回線・表示 tick が境界ちょうどの 3 ケースが落ちる。応答待ちの表示を全行空にすると、遅い回線が落ちる。応答待ちの旧窓を旧窓の時刻で判定すると、遅い回線が落ちる。タイマー遅延のケースは変異で確かめていない。

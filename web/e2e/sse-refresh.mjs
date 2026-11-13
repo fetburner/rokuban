@@ -11,7 +11,7 @@
 // 使い方（Go サーバーも Postgres も要らない。API は全部スタブする）:
 //
 //   cd web && pnpm build && pnpm exec vite preview --port 4173 --strictPort &
-//   node e2e/sse-refresh.mjs
+//   node e2e/run.mjs sse-refresh
 //
 // SSE の再接続時 invalidate はここでは見ない（実ブラウザで切断を決定的に
 // 起こす手段が無い）。単体テスト「再接続したら切断中の変更を全グループ取り直す」の担当。

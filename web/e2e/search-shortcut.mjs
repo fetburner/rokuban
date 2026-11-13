@@ -4,7 +4,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 40773 --strictPort &
-//   E2E_URL=http://localhost:40773 corepack pnpm e2e:search-shortcut
+//   E2E_URL=http://localhost:40773 node e2e/run.mjs search-shortcut
 
 import {
   finish,

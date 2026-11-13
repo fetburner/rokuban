@@ -4,7 +4,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 node e2e/recordings-selection-shortcuts.mjs
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs recordings-selection-shortcuts
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
 import {
   finish,

@@ -822,7 +822,7 @@ export function ProgramsPage() {
         {/* `PageHeader` の children に置く（`PageHeader` の外ではない）--- グリッドの
             コンテナは `--page-header-height` を高さ予算に使うので、外に置くと
             バナーの高さぶん文書がその予算からはみ出し、100dvh で組んだ画面なのに
-            ページ全体がスクロールする（`e2e:programs-reservation-error` の判定 A。
+            ページ全体がスクロールする（`e2e/run.mjs programs-reservation-error` の判定 A。
             外に出すと 1440x900 で 949px / 900px、中に入れると 900px / 900px）。
             副作用として理由表示が sticky になり、スクロールしても「なぜ押せないか」
             が画面に残る。

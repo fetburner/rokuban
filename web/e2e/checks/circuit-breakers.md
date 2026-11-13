@@ -14,5 +14,5 @@ pnpm preview --host 127.0.0.1 --port 4173 --strictPort
 別のターミナルから実行する。
 
 ```sh
-cd web && E2E_URL=http://127.0.0.1:4173 pnpm e2e:circuit-breaker-store
+cd web && E2E_URL=http://127.0.0.1:4173 node e2e/run.mjs circuit-breaker-store
 ```

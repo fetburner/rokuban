@@ -1,3 +1,4 @@
+// e2e-needs: db-state
 // シリーズ一覧の実サーバー判定: 「/rules で分類ルールを 1 本作ると、/series の棚が
 // 再評価の後に割れる」。
 //
@@ -17,7 +18,7 @@
 //   /tmp/rokuban server --roles api,worker,notifier --config e2e.yml
 //   cd web && E2E_URL=http://localhost:40799 \
 //     E2E_DATABASE_URL='postgres://localhost:5432/<サーバーと同じ DB>?sslmode=disable' \
-//     corepack pnpm e2e:shelves-split
+//     node e2e/run.mjs shelves-split
 //
 // **E2E_DATABASE_URL の DB は判定が TRUNCATE する。** 開発用 DB を指さないこと。
 import { execFileSync } from 'node:child_process'

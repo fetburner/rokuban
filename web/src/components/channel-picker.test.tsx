@@ -485,7 +485,7 @@ describe('ChannelPicker', () => {
     expect(badge).toBeInTheDocument()
     // text-muted-foreground だと bg-muted との合成後コントラストがライトで
     // 4.5 を割る（issue #308）。jsdom は色を測れないので、退行防止としては
-    // クラス名のリテラル比較まで（実測は e2e:design の担当）。
+    // クラス名のリテラル比較まで（実測は e2e/run.mjs design の担当）。
     expect(badge.className).toContain('text-foreground')
     expect(badge.className).not.toContain('text-muted-foreground')
   })

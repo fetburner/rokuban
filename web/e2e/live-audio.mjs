@@ -1,3 +1,4 @@
+// e2e-needs: webkit
 // ライブの音声切替（二重音声の主 / 副。issue #870）の受け入れ判定。jsdom では
 // 測れないものだけをここで見る（e2e/README.md）: 実ブラウザがアプリのセレクタに
 // 従って代替音声レンディションを本当に切り替えること、そして**前に聴いたトラックへ
@@ -22,7 +23,7 @@
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:live-audio
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs live-audio
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'

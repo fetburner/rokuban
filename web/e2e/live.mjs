@@ -1,3 +1,4 @@
+// e2e-needs: webkit db-state
 // ライブ視聴（M4-4、issue #92）の受け入れ判定。jsdom では測れないものだけを
 // ここで見る（e2e/README.md）。**mirakc もチューナーも不要** --- HLS プレイリスト/
 // セグメントは Playwright の page.route でブラウザ側から丸ごと差し替えるため、
@@ -19,7 +20,7 @@
 //     初回だけで、以降は `os.tmpdir()` にキャッシュされる）
 //
 // 詳しい手順・準備の SQL 例は docs/runbook/live.md §②。使い方だけ：
-//   E2E_LIVE_NETWORK_ID=1 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
+//   E2E_LIVE_NETWORK_ID=1 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 node e2e/run.mjs live
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'

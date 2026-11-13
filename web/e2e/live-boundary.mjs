@@ -16,7 +16,7 @@
 //      終わった番組の行が消える／残る瞬間がない
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:live-boundary
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs live-boundary
 import { ListProgramsResponseItem, ListServicesResponseItem } from '../src/api/zod.ts'
 import {
   finish,

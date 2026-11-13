@@ -47,7 +47,7 @@
 // `pnpm preview` でも rokuban 本体でもよい。
 //
 //   pnpm build && pnpm preview --port 4173 &
-//   E2E_URL=http://localhost:4173 pnpm e2e:design
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs design
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。判定の詳細は e2e/README.md §デザイン。
 import { mkdirSync, rmSync } from 'node:fs'
@@ -1109,7 +1109,14 @@ let checkedColorSchemeChange = false
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
-  const { pointer = 'fine', recordingView = null, reservationGrouping = null, isMobile = pointer === 'coarse', ...apiOpts } = opts
+  const {
+    pointer = 'fine',
+    recordingView = null,
+    reservationGrouping = null,
+    isMobile = pointer === 'coarse',
+    installClock = false,
+    ...apiOpts
+  } = opts
   if (pointer !== 'fine' && pointer !== 'coarse') {
     throw new Error(`未対応のポインタプロファイル: ${pointer}`)
   }
@@ -1129,7 +1136,11 @@ async function open(viewport, theme, screen, opts = {}) {
     await context.addInitScript((value) => localStorage.setItem('rokuban:reservations:group', value), reservationGrouping)
   }
   const page = await context.newPage()
-  await page.clock.setFixedTime(FIXED_NOW)
+  if (installClock) {
+    await page.clock.install({ time: FIXED_NOW })
+  } else {
+    await page.clock.setFixedTime(FIXED_NOW)
+  }
   await installApiStubs(page, apiHandler(apiOpts))
   await page.goto(URL_BASE + screen.path, { waitUntil: 'domcontentloaded' })
   // ダークは `.dark` クラスで切り替わる（index.css の @custom-variant）。
@@ -2307,7 +2318,7 @@ log(`URL      : ${URL_BASE}`)
 log(`出力先   : ${OUT_DIR}`)
 log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
 
-// CI / red-green でこの追加判定だけを実行する入口。通常の e2e:design でも
+// CI / red-green でこの追加判定だけを実行する入口。通常の e2e/run.mjs design でも
 // 同じ関数を ④-A'' として実行し、色・到達距離の既存判定と一緒に守る。
 if (process.env.E2E_TAP_TARGETS_ONLY === '1') {
   await runCoarseTapTargetChecks()
@@ -2995,6 +3006,8 @@ for (const viewport of [homeDesktop, mobile]) {
     name: 'home-ops-follow',
     path: '/?mode=ops',
   }, {
+    // SSE 後の時計購読を測るため、Date だけ固定する setFixedTime ではなく timer も進める。
+    installClock: true,
     homeModeFixture: true,
     homeOpsFixture: true,
     homeOpsSseFixture: async () => {
@@ -3039,7 +3052,7 @@ for (const viewport of [homeDesktop, mobile]) {
       markerX: marker.getBoundingClientRect().x - frameElement.getBoundingClientRect().x,
     }
   })
-  await page.clock.setFixedTime(new Date(FIXED_NOW.getTime() + 60 * 60_000))
+  await page.clock.fastForward(60 * 60_000)
   releaseSse()
   const followed = await page.waitForFunction(
     ({ expectedScrollLeft, expectedMarkerX }) => {

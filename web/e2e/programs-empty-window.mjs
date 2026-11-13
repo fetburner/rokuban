@@ -20,7 +20,7 @@
 // 自動リトライで同じ窓が複数回来ても判定が揺れないようにする。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:programs-empty-window
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs programs-empty-window
 import { ListProgramsResponseItem, ListServicesResponseItem } from '../src/api/zod.ts'
 import {
   finish,
