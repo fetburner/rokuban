@@ -647,6 +647,9 @@ jobs:
       - run: go generate ./internal/api/
       - run: pnpm exec orval
         working-directory: web
+      # 適用後スキーマのダンプ（internal/db/schema.sql）。マイグレーションを足して再生成し忘れると
+      # 下の差分検査で落ちる。PostgreSQL はスクリプトが自分でコンテナを起動する（版の固定もそこ）。
+      - run: scripts/schemadump.sh
       # 新規ファイル（クエリ追加で sqlcgen 配下のファイルが増える等）も検出するため
       # git add -A で拾ってから差分を見る。パスは絞らない —— 出力先を列挙すると
       # sqlc.yaml の out / oapi-codegen.yaml の output / orval.config.ts の target が
@@ -658,7 +661,7 @@ jobs:
         run: |
           git add -A
           git diff --cached --exit-code \
-            || { echo "::error::生成物が古い。sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) を実行してコミットしてください"; exit 1; }
+            || { echo "::error::生成物が古い。sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) / scripts/schemadump.sh を実行してコミットしてください"; exit 1; }
 
   lint:
     runs-on: ubuntu-latest
