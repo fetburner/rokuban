@@ -16,5 +16,6 @@
 
 - 生成スクリプト: `scripts/schemadump.sh`
 - 生成物: `internal/db/schema.sql`
+- 差分の検査: `.github/workflows/ci.yml` の `generated-diff` ジョブ
 
 </details>

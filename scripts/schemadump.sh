@@ -28,7 +28,7 @@ trap 'docker rm -f "$cid" >/dev/null' EXIT
 # 起動に失敗するとコンテナは --rm で消えて docker exec が失敗し続けるので、回数で打ち切る。
 ready=0
 for _ in $(seq 60); do
-  if docker exec "$cid" pg_isready -q -h 127.0.0.1 -U postgres; then ready=1; break; fi
+  if docker exec "$cid" pg_isready -q -h 127.0.0.1 -U postgres 2>/dev/null; then ready=1; break; fi
   sleep 1
 done
 if [ "$ready" != 1 ]; then
