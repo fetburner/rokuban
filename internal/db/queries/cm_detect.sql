@@ -42,14 +42,9 @@ WHERE r.id = sqlc.arg('recording_id');
 SELECT EXISTS (
     SELECT 1 FROM recordings r
     JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-    JOIN media_asset_copies copy
-      ON copy.media_asset_id = o.id
-     AND copy.state = 'active'
-     AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
     WHERE r.id = sqlc.arg('recording_id')
       AND r.deleted_at IS NULL
-      AND NOT EXISTS (SELECT 1 FROM missing_media_assets m
-                      WHERE m.media_asset_copy_id = copy.id)
+      AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, sqlc.narg('store_name')::text))
 );
 
 -- name: DeleteCMDetection :exec
@@ -215,16 +210,9 @@ SELECT r.network_id, r.service_id,
            WHERE EXISTS (
                SELECT 1
                FROM media_assets o2
-               JOIN media_asset_copies copy2
-                 ON copy2.media_asset_id = o2.id
-                AND copy2.state = 'active'
-                AND (sqlc.narg('store_name')::text IS NULL OR copy2.store = sqlc.narg('store_name'))
                WHERE o2.recording_id = r.id
                  AND o2.kind = 'original'
-                 AND NOT EXISTS (
-                     SELECT 1 FROM missing_media_assets m2
-                     WHERE m2.media_asset_copy_id = copy2.id
-                 )
+                 AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o2.id, sqlc.narg('store_name')::text))
            )
        )::bigint AS redetectable_count,
        l.coded_width AS learned_coded_width,
@@ -248,16 +236,11 @@ SELECT r.network_id, r.service_id,
        COALESCE((SELECT o2.recording_id
           FROM media_assets o2
           JOIN recordings r2 ON r2.id = o2.recording_id
-         JOIN media_asset_copies copy2
-           ON copy2.media_asset_id = o2.id
-         AND copy2.state = 'active'
-          AND (sqlc.narg('store_name')::text IS NULL OR copy2.store = sqlc.narg('store_name'))
          WHERE r2.network_id = r.network_id
            AND r2.service_id = r.service_id
            AND o2.kind = 'original'
            AND r2.deleted_at IS NULL
-           AND NOT EXISTS (SELECT 1 FROM missing_media_assets m
-         WHERE m.media_asset_copy_id = copy2.id)
+           AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o2.id, sqlc.narg('store_name')::text))
          ORDER BY r2.id DESC
          LIMIT 1), 0)::bigint AS frame_recording_id
 FROM recordings r
@@ -439,19 +422,12 @@ WHERE ca.recording_id = r.id
 DELETE FROM recording_cm_detections d
 USING recordings r
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = o.id
- AND copy.state = 'active'
- AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
 WHERE d.recording_id = r.id
   AND r.network_id = sqlc.arg('network_id')
   AND r.service_id = sqlc.arg('service_id')
   AND r.deleted_at IS NULL
   AND r.purged_at IS NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM missing_media_assets m
-      WHERE m.media_asset_copy_id = copy.id
-  );
+  AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, sqlc.narg('store_name')::text));
 
 -- name: GetCMLogoAnalysisRecording :one
 SELECT r.id, a.updated_at
@@ -459,18 +435,11 @@ FROM cm_logo_areas a
 JOIN recordings r
   ON r.network_id = a.network_id AND r.service_id = a.service_id
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = o.id
- AND copy.state = 'active'
- AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
 WHERE a.network_id = sqlc.arg('network_id')
   AND a.service_id = sqlc.arg('service_id')
   AND r.deleted_at IS NULL
   AND r.purged_at IS NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM missing_media_assets m
-      WHERE m.media_asset_copy_id = copy.id
-  )
+  AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, sqlc.narg('store_name')::text))
 ORDER BY r.id DESC
 LIMIT 1;
 
@@ -479,17 +448,10 @@ SELECT EXISTS (
     SELECT 1
     FROM recordings r
     JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-    JOIN media_asset_copies copy
-      ON copy.media_asset_id = o.id
-     AND copy.state = 'active'
-     AND (sqlc.narg('store_name')::text IS NULL OR copy.store = sqlc.narg('store_name'))
     WHERE r.id = sqlc.arg('recording_id')
       AND r.network_id = sqlc.arg('network_id')
       AND r.service_id = sqlc.arg('service_id')
       AND r.deleted_at IS NULL
       AND r.purged_at IS NULL
-      AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_copy_id = copy.id
-      )
+      AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, sqlc.narg('store_name')::text))
 );

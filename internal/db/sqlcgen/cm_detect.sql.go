@@ -179,29 +179,22 @@ const deleteCMDetectionsForStationWithActiveOriginal = `-- name: DeleteCMDetecti
 DELETE FROM recording_cm_detections d
 USING recordings r
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = o.id
- AND copy.state = 'active'
- AND ($1::text IS NULL OR copy.store = $1)
 WHERE d.recording_id = r.id
-  AND r.network_id = $2
-  AND r.service_id = $3
+  AND r.network_id = $1
+  AND r.service_id = $2
   AND r.deleted_at IS NULL
   AND r.purged_at IS NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM missing_media_assets m
-      WHERE m.media_asset_copy_id = copy.id
-  )
+  AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, $3::text))
 `
 
 type DeleteCMDetectionsForStationWithActiveOriginalParams struct {
-	StoreName *string
 	NetworkID int32
 	ServiceID int32
+	StoreName *string
 }
 
 func (q *Queries) DeleteCMDetectionsForStationWithActiveOriginal(ctx context.Context, arg DeleteCMDetectionsForStationWithActiveOriginalParams) error {
-	_, err := q.db.Exec(ctx, deleteCMDetectionsForStationWithActiveOriginal, arg.StoreName, arg.NetworkID, arg.ServiceID)
+	_, err := q.db.Exec(ctx, deleteCMDetectionsForStationWithActiveOriginal, arg.NetworkID, arg.ServiceID, arg.StoreName)
 	return err
 }
 
@@ -438,26 +431,19 @@ FROM cm_logo_areas a
 JOIN recordings r
   ON r.network_id = a.network_id AND r.service_id = a.service_id
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-JOIN media_asset_copies copy
-  ON copy.media_asset_id = o.id
- AND copy.state = 'active'
- AND ($1::text IS NULL OR copy.store = $1)
-WHERE a.network_id = $2
-  AND a.service_id = $3
+WHERE a.network_id = $1
+  AND a.service_id = $2
   AND r.deleted_at IS NULL
   AND r.purged_at IS NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM missing_media_assets m
-      WHERE m.media_asset_copy_id = copy.id
-  )
+  AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, $3::text))
 ORDER BY r.id DESC
 LIMIT 1
 `
 
 type GetCMLogoAnalysisRecordingParams struct {
-	StoreName *string
 	NetworkID int32
 	ServiceID int32
+	StoreName *string
 }
 
 type GetCMLogoAnalysisRecordingRow struct {
@@ -466,7 +452,7 @@ type GetCMLogoAnalysisRecordingRow struct {
 }
 
 func (q *Queries) GetCMLogoAnalysisRecording(ctx context.Context, arg GetCMLogoAnalysisRecordingParams) (GetCMLogoAnalysisRecordingRow, error) {
-	row := q.db.QueryRow(ctx, getCMLogoAnalysisRecording, arg.StoreName, arg.NetworkID, arg.ServiceID)
+	row := q.db.QueryRow(ctx, getCMLogoAnalysisRecording, arg.NetworkID, arg.ServiceID, arg.StoreName)
 	var i GetCMLogoAnalysisRecordingRow
 	err := row.Scan(&i.ID, &i.UpdatedAt)
 	return i, err
@@ -578,24 +564,19 @@ const getCMRetryOriginal = `-- name: GetCMRetryOriginal :one
 SELECT EXISTS (
     SELECT 1 FROM recordings r
     JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-    JOIN media_asset_copies copy
-      ON copy.media_asset_id = o.id
-     AND copy.state = 'active'
-     AND ($1::text IS NULL OR copy.store = $1)
-    WHERE r.id = $2
+    WHERE r.id = $1
       AND r.deleted_at IS NULL
-      AND NOT EXISTS (SELECT 1 FROM missing_media_assets m
-                      WHERE m.media_asset_copy_id = copy.id)
+      AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, $2::text))
 )
 `
 
 type GetCMRetryOriginalParams struct {
-	StoreName   *string
 	RecordingID int64
+	StoreName   *string
 }
 
 func (q *Queries) GetCMRetryOriginal(ctx context.Context, arg GetCMRetryOriginalParams) (bool, error) {
-	row := q.db.QueryRow(ctx, getCMRetryOriginal, arg.StoreName, arg.RecordingID)
+	row := q.db.QueryRow(ctx, getCMRetryOriginal, arg.RecordingID, arg.StoreName)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -606,35 +587,28 @@ SELECT EXISTS (
     SELECT 1
     FROM recordings r
     JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-    JOIN media_asset_copies copy
-      ON copy.media_asset_id = o.id
-     AND copy.state = 'active'
-     AND ($1::text IS NULL OR copy.store = $1)
-    WHERE r.id = $2
-      AND r.network_id = $3
-      AND r.service_id = $4
+    WHERE r.id = $1
+      AND r.network_id = $2
+      AND r.service_id = $3
       AND r.deleted_at IS NULL
       AND r.purged_at IS NULL
-      AND NOT EXISTS (
-          SELECT 1 FROM missing_media_assets m
-          WHERE m.media_asset_copy_id = copy.id
-      )
+      AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, $4::text))
 )
 `
 
 type HasCMRecordingOriginalParams struct {
-	StoreName   *string
 	RecordingID int64
 	NetworkID   int32
 	ServiceID   int32
+	StoreName   *string
 }
 
 func (q *Queries) HasCMRecordingOriginal(ctx context.Context, arg HasCMRecordingOriginalParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasCMRecordingOriginal,
-		arg.StoreName,
 		arg.RecordingID,
 		arg.NetworkID,
 		arg.ServiceID,
+		arg.StoreName,
 	)
 	var exists bool
 	err := row.Scan(&exists)
@@ -785,16 +759,9 @@ SELECT r.network_id, r.service_id,
            WHERE EXISTS (
                SELECT 1
                FROM media_assets o2
-               JOIN media_asset_copies copy2
-                 ON copy2.media_asset_id = o2.id
-                AND copy2.state = 'active'
-                AND ($1::text IS NULL OR copy2.store = $1)
                WHERE o2.recording_id = r.id
                  AND o2.kind = 'original'
-                 AND NOT EXISTS (
-                     SELECT 1 FROM missing_media_assets m2
-                     WHERE m2.media_asset_copy_id = copy2.id
-                 )
+                 AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o2.id, $1::text))
            )
        )::bigint AS redetectable_count,
        l.coded_width AS learned_coded_width,
@@ -818,16 +785,11 @@ SELECT r.network_id, r.service_id,
        COALESCE((SELECT o2.recording_id
           FROM media_assets o2
           JOIN recordings r2 ON r2.id = o2.recording_id
-         JOIN media_asset_copies copy2
-           ON copy2.media_asset_id = o2.id
-         AND copy2.state = 'active'
-          AND ($1::text IS NULL OR copy2.store = $1)
          WHERE r2.network_id = r.network_id
            AND r2.service_id = r.service_id
            AND o2.kind = 'original'
            AND r2.deleted_at IS NULL
-           AND NOT EXISTS (SELECT 1 FROM missing_media_assets m
-         WHERE m.media_asset_copy_id = copy2.id)
+           AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o2.id, $1::text))
          ORDER BY r2.id DESC
          LIMIT 1), 0)::bigint AS frame_recording_id
 FROM recordings r

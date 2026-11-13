@@ -704,13 +704,7 @@ FROM recordings r
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
 WHERE r.id = $1
   AND r.deleted_at IS NULL
-  AND EXISTS (
-      SELECT 1 FROM media_asset_copies c
-      WHERE c.media_asset_id = o.id AND c.state = 'active'
-        AND NOT EXISTS (
-            SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
-        )
-  )
+  AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, NULL::text))
 ON CONFLICT (recording_id) DO UPDATE
 SET cm_detect = true,
     cm_detect_generation = recording_encode_policy.cm_detect_generation
@@ -720,13 +714,7 @@ WHERE EXISTS (
     SELECT 1 FROM media_assets o
     WHERE o.recording_id = recording_encode_policy.recording_id
       AND o.kind = 'original'
-      AND EXISTS (
-          SELECT 1 FROM media_asset_copies c
-          WHERE c.media_asset_id = o.id AND c.state = 'active'
-            AND NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
-            )
-      )
+      AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, NULL::text))
 )
   AND EXISTS (
     SELECT 1 FROM recordings r

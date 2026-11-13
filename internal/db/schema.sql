@@ -78,6 +78,26 @@ $$;
 COMMENT ON FUNCTION public.active_media_asset_copies(p_asset_id bigint, p_store text) IS 'active_media_asset_copies は、論理資産の derived_generation と一致する active コピーを返す。original の NULL 世代は 0 として扱う。p_store が NULL なら全置き場を対象にする。';
 
 --
+-- Name: active_present_media_asset_copies(bigint, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.active_present_media_asset_copies(p_asset_id bigint, p_store text) RETURNS SETOF public.media_asset_copies
+    LANGUAGE sql STABLE
+    AS $$
+SELECT c.*
+FROM active_media_asset_copies(p_asset_id, p_store) c
+WHERE NOT EXISTS (
+    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = c.id
+)
+$$;
+
+--
+-- Name: FUNCTION active_present_media_asset_copies(p_asset_id bigint, p_store text); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.active_present_media_asset_copies(p_asset_id bigint, p_store text) IS 'active_present_media_asset_copies は、active_media_asset_copies のうち実体無しの観測（missing_media_assets）が無いコピーを返す。p_store が NULL なら全置き場を対象にする。実体無しを除く読み手はこの関数だけを読む。';
+
+--
 -- Name: array_is_canonical_set(text[]); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -284,11 +304,8 @@ CREATE FUNCTION public.media_asset_copy_prunable(p_copy_id bigint, p_original_ru
           AND retiring.desired_store IS DISTINCT FROM retiring.store
           AND EXISTS (
               SELECT 1
-              FROM active_media_asset_copies(retiring.media_asset_id, retiring.desired_store) desired
+              FROM active_present_media_asset_copies(retiring.media_asset_id, retiring.desired_store) desired
               WHERE desired.created_at <= p_overlap_cutoff
-                AND NOT EXISTS (
-                    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = desired.id
-                )
           )
     )
 $$;
@@ -493,14 +510,12 @@ CREATE FUNCTION public.storage_transfer_candidate(p_media_asset_id bigint, p_ori
       WHERE a.id = p_media_asset_id
       AND placement.desired_store IS NOT NULL
       AND NOT EXISTS (
-          SELECT 1 FROM active_media_asset_copies(a.id, placement.desired_store) target
-          WHERE NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = target.id)
+          SELECT 1 FROM active_present_media_asset_copies(a.id, placement.desired_store) target
       )
       AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(a.id, NULL) source
+          SELECT 1 FROM active_present_media_asset_copies(a.id, NULL) source
           WHERE source.store = ANY(p_fs_stores)
             AND source.store <> placement.desired_store
-            AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = source.id)
       )
       AND NOT (
           a.kind = 'original'
@@ -641,10 +656,7 @@ WHERE desired_store IS NOT NULL
             AND e.kind = 'encoded'
             AND e.profile = want.profile
             AND EXISTS (
-                SELECT 1 FROM active_media_asset_copies(e.id, desired_store) copy
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = copy.id
-                )
+                SELECT 1 FROM active_present_media_asset_copies(e.id, desired_store) copy
             )
       )
   )
@@ -654,10 +666,7 @@ WHERE desired_store IS NOT NULL
       WHERE thumbnail.recording_id = r.id
         AND thumbnail.kind = 'thumbnail'
         AND EXISTS (
-            SELECT 1 FROM active_media_asset_copies(thumbnail.id, desired_store) copy
-            WHERE NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = copy.id
-            )
+            SELECT 1 FROM active_present_media_asset_copies(thumbnail.id, desired_store) copy
         )
   )
   AND EXISTS (
@@ -666,10 +675,7 @@ WHERE desired_store IS NOT NULL
       WHERE seek_tiles.recording_id = r.id
         AND seek_tiles.kind = 'seek_tiles'
         AND EXISTS (
-            SELECT 1 FROM active_media_asset_copies(seek_tiles.id, desired_store) copy
-            WHERE NOT EXISTS (
-                SELECT 1 FROM missing_media_assets m WHERE m.media_asset_copy_id = copy.id
-            )
+            SELECT 1 FROM active_present_media_asset_copies(seek_tiles.id, desired_store) copy
         )
   )
   AND (
@@ -688,7 +694,7 @@ $$;
 -- Name: FUNCTION until_encoded_deletable_originals(desired_store text); Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON FUNCTION public.until_encoded_deletable_originals(desired_store text) IS 'until_encoded_deletable_originals は desired_store の active・実体ありの派生コピーが揃い、保持条件を満たす原本を返す。';
+COMMENT ON FUNCTION public.until_encoded_deletable_originals(desired_store text) IS 'until_encoded_deletable_originals は desired_store の active・実体ありの派生コピーが揃い、保持条件を満たす原本を返す。派生コピーの実体有無は active_present_media_asset_copies で判定する。原本自身の実体有無は見ない（実体無しの原本の削除は ErrNotExist から削除済みの確定まで進む）。';
 
 --
 -- Name: circuit_breakers; Type: TABLE; Schema: public; Owner: -
@@ -810,21 +816,6 @@ COMMENT ON COLUMN public.media_assets.derived_generation IS 'Monotonic generatio
 COMMENT ON COLUMN public.media_assets.sha256 IS 'Observed SHA-256 of the logical asset bytes, stored once for all physical copies';
 
 --
--- Name: missing_media_assets; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.missing_media_assets (
-    first_seen timestamp with time zone DEFAULT now() NOT NULL,
-    media_asset_copy_id bigint NOT NULL
-);
-
---
--- Name: TABLE missing_media_assets; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.missing_media_assets IS 'Physical media copies that a filesystem scan failed to observe';
-
---
 -- Name: recording_cm_detections; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -880,16 +871,19 @@ CREATE VIEW public.cm_detection_desired AS
  SELECT r.id AS recording_id
    FROM ((((public.recordings r
      JOIN public.recording_encode_policy p ON (((p.recording_id = r.id) AND p.cm_detect)))
-     JOIN public.media_assets original ON (((original.recording_id = r.id) AND (original.kind = 'original'::text))))
-     LEFT JOIN public.current_cm_attempts attempt ON ((attempt.recording_id = r.id)))
-     LEFT JOIN public.cm_logos logo ON (((logo.network_id = r.network_id) AND (logo.service_id = r.service_id))))
+     JOIN public.media_assets o ON (((o.recording_id = r.id) AND (o.kind = 'original'::text))))
+     LEFT JOIN public.current_cm_attempts ca ON ((ca.recording_id = r.id)))
+     LEFT JOIN public.cm_logos l ON (((l.network_id = r.network_id) AND (l.service_id = r.service_id))))
   WHERE ((r.deleted_at IS NULL) AND (EXISTS ( SELECT 1
-           FROM public.media_asset_copies copy
-          WHERE ((copy.media_asset_id = original.id) AND (copy.state = 'active'::text) AND (NOT (EXISTS ( SELECT 1
-                   FROM public.missing_media_assets missing
-                  WHERE (missing.media_asset_copy_id = copy.id))))))) AND (NOT (EXISTS ( SELECT 1
+           FROM public.active_present_media_asset_copies(o.id, NULL::text) active_present_media_asset_copies(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation))) AND (NOT (EXISTS ( SELECT 1
            FROM public.recording_cm_detections d
-          WHERE (d.recording_id = r.id)))) AND ((attempt.recording_id IS NULL) OR (attempt.state <> 'failed'::text) OR ((logo.learned_at IS NOT NULL) AND (attempt.attempted_at < logo.learned_at))));
+          WHERE (d.recording_id = r.id)))) AND ((ca.recording_id IS NULL) OR (ca.state <> 'failed'::text) OR ((l.learned_at IS NOT NULL) AND (ca.attempted_at < l.learned_at))));
+
+--
+-- Name: VIEW cm_detection_desired; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.cm_detection_desired IS 'cm_detection_desired は、cm_detect が有効で、CM 検出が未了かつ再試行の対象になる録画を表す。原本は実体の有る現行のコピーに限る（実体無しの原本は CM 検出の入力として読めないと観測されたものなので候補にしない）。';
 
 --
 -- Name: cm_logo_areas; Type: TABLE; Schema: public; Owner: -
@@ -946,10 +940,7 @@ CREATE VIEW public.cm_logo_candidate_desired AS
            FROM (public.recordings r2
              JOIN public.media_assets original ON (((original.recording_id = r2.id) AND (original.kind = 'original'::text))))
           WHERE ((r2.network_id = area.network_id) AND (r2.service_id = area.service_id) AND (r2.deleted_at IS NULL) AND (r2.purged_at IS NULL) AND (EXISTS ( SELECT 1
-                   FROM public.media_asset_copies copy
-                  WHERE ((copy.media_asset_id = original.id) AND (copy.state = 'active'::text) AND (NOT (EXISTS ( SELECT 1
-                           FROM public.missing_media_assets missing
-                          WHERE (missing.media_asset_copy_id = copy.id))))))))
+                   FROM public.active_present_media_asset_copies(original.id, NULL::text) active_present_media_asset_copies(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation))))
           ORDER BY r2.id DESC
          LIMIT 1) AS recording_id
    FROM ((public.cm_logo_areas area
@@ -959,10 +950,7 @@ CREATE VIEW public.cm_logo_candidate_desired AS
            FROM (public.recordings r
              JOIN public.media_assets original ON (((original.recording_id = r.id) AND (original.kind = 'original'::text))))
           WHERE ((r.network_id = area.network_id) AND (r.service_id = area.service_id) AND (r.deleted_at IS NULL) AND (r.purged_at IS NULL) AND (EXISTS ( SELECT 1
-                   FROM public.media_asset_copies copy
-                  WHERE ((copy.media_asset_id = original.id) AND (copy.state = 'active'::text) AND (NOT (EXISTS ( SELECT 1
-                           FROM public.missing_media_assets missing
-                          WHERE (missing.media_asset_copy_id = copy.id)))))))))));
+                   FROM public.active_present_media_asset_copies(original.id, NULL::text) active_present_media_asset_copies(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation)))))));
 
 --
 -- Name: media_asset_ts_scans; Type: TABLE; Schema: public; Owner: -
@@ -1032,7 +1020,7 @@ CREATE VIEW public.encodable_recordings AS
 -- Name: VIEW encodable_recordings; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.encodable_recordings IS 'encodable_recordings は、ごみ箱になく active な原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。';
+COMMENT ON VIEW public.encodable_recordings IS 'encodable_recordings は、ごみ箱になく active な原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。実体無しの原本も含める。単発の走査揺れで encode の入力選択を止めないため。encode の失敗は試行行に記録される。';
 
 --
 -- Name: encoded_asset_rebuild_requests; Type: TABLE; Schema: public; Owner: -
@@ -1312,6 +1300,21 @@ ALTER TABLE public.media_assets ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
 );
 
 --
+-- Name: missing_media_assets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.missing_media_assets (
+    first_seen timestamp with time zone DEFAULT now() NOT NULL,
+    media_asset_copy_id bigint NOT NULL
+);
+
+--
+-- Name: TABLE missing_media_assets; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.missing_media_assets IS 'Physical media copies that a filesystem scan failed to observe';
+
+--
 -- Name: never_scheduled_events; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1342,10 +1345,7 @@ CREATE VIEW public.old_generation_media_asset_copies AS
    FROM (public.media_asset_copies old_copy
      JOIN public.media_assets asset ON ((asset.id = old_copy.media_asset_id)))
   WHERE ((asset.kind <> 'original'::text) AND (old_copy.generation < COALESCE(asset.derived_generation, (0)::bigint)) AND (EXISTS ( SELECT 1
-           FROM public.active_media_asset_copies(old_copy.media_asset_id, NULL::text) current_copy(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation)
-          WHERE (NOT (EXISTS ( SELECT 1
-                   FROM public.missing_media_assets missing
-                  WHERE (missing.media_asset_copy_id = current_copy.id)))))));
+           FROM public.active_present_media_asset_copies(old_copy.media_asset_id, NULL::text) active_present_media_asset_copies(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation))));
 
 --
 -- Name: VIEW old_generation_media_asset_copies; Type: COMMENT; Schema: public; Owner: -
@@ -1616,6 +1616,12 @@ CREATE VIEW public.removed_encoded_assets AS
                    FROM public.active_media_asset_copies(other.id, NULL::text) active_media_asset_copies(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation)))))))));
 
 --
+-- Name: VIEW removed_encoded_assets; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.removed_encoded_assets IS 'removed_encoded_assets は、ユーザーが外した encoded 版のうち、他の版が active で残るものを表す。実体無しを除かない。削除側は unlink の ErrNotExist から削除済みの確定まで進むので、除くと実体無しの行が残り続ける。他の版の判定も実体無しを除かないため、実体無しの原本も「残る版」として数える（この判定を実体で見るべきかは未決）。';
+
+--
 -- Name: reservations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1859,7 +1865,7 @@ CREATE VIEW public.unencoded_desired_profiles AS
 -- Name: VIEW unencoded_desired_profiles; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.unencoded_desired_profiles IS 'unencoded_desired_profiles は、凍結済みの desired のうち current active encoded コピーが無い (recording_id, profile) を表す。現在の設定では絞らない。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。';
+COMMENT ON VIEW public.unencoded_desired_profiles IS 'unencoded_desired_profiles は、凍結済みの desired のうち current active encoded コピーが無い (recording_id, profile) を表す。現在の設定では絞らない。実体無しの encoded も「有る」と数える（実体無しを作り直しの根拠にしない）。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。';
 
 --
 -- Name: unsatisfied_encode_rebuilds; Type: VIEW; Schema: public; Owner: -
@@ -1881,7 +1887,7 @@ CREATE VIEW public.unsatisfied_encode_rebuilds AS
 -- Name: VIEW unsatisfied_encode_rebuilds; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.unsatisfied_encode_rebuilds IS 'unsatisfied_encode_rebuilds は、requested_keep と一致する凍結区間の active な encoded がまだ無い作り直し要求を表す。ごみ箱・原本が active でない録画は含まない。';
+COMMENT ON VIEW public.unsatisfied_encode_rebuilds IS 'unsatisfied_encode_rebuilds は、requested_keep と一致する凍結区間の active な encoded がまだ無い作り直し要求を表す。ごみ箱・原本が active でない録画は含まない。実体無しの encoded は「有る」と数える（unencoded_desired_profiles と同じ理由）。';
 
 --
 -- Name: media_asset_transfer_abandoned_uploads id; Type: DEFAULT; Schema: public; Owner: -

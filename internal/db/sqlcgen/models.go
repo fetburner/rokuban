@@ -20,6 +20,7 @@ type CircuitBreaker struct {
 	Detail    json.RawMessage
 }
 
+// cm_detection_desired は、cm_detect が有効で、CM 検出が未了かつ再試行の対象になる録画を表す。原本は実体の有る現行のコピーに限る（実体無しの原本は CM 検出の入力として読めないと観測されたものなので候補にしない）。
 type CmDetectionDesired struct {
 	RecordingID int64
 }
@@ -105,7 +106,7 @@ type DropStat struct {
 	PidType      *string
 }
 
-// encodable_recordings は、ごみ箱になく active な原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
+// encodable_recordings は、ごみ箱になく active な原本コピーがある録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。実体無しの原本も含める。単発の走査揺れで encode の入力選択を止めないため。encode の失敗は試行行に記録される。
 type EncodableRecording struct {
 	RecordingID int64
 }
@@ -473,6 +474,7 @@ type RecordingWatched struct {
 	WatchedAt   time.Time
 }
 
+// removed_encoded_assets は、ユーザーが外した encoded 版のうち、他の版が active で残るものを表す。実体無しを除かない。削除側は unlink の ErrNotExist から削除済みの確定まで進むので、除くと実体無しの行が残り続ける。他の版の判定も実体無しを除かないため、実体無しの原本も「残る版」として数える（この判定を実体で見るべきかは未決）。
 type RemovedEncodedAsset struct {
 	AssetID     int64
 	RecordingID int64
@@ -602,13 +604,14 @@ type TunerSync struct {
 	ObservedAt  time.Time
 }
 
-// unencoded_desired_profiles は、凍結済みの desired のうち current active encoded コピーが無い (recording_id, profile) を表す。現在の設定では絞らない。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。
+// unencoded_desired_profiles は、凍結済みの desired のうち current active encoded コピーが無い (recording_id, profile) を表す。現在の設定では絞らない。実体無しの encoded も「有る」と数える（実体無しを作り直しの根拠にしない）。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。
 type UnencodedDesiredProfile struct {
 	RecordingID int64
 	Profile     string
 	Ordinality  int64
 }
 
+// unsatisfied_encode_rebuilds は、requested_keep と一致する凍結区間の active な encoded がまだ無い作り直し要求を表す。ごみ箱・原本が active でない録画は含まない。実体無しの encoded は「有る」と数える（unencoded_desired_profiles と同じ理由）。
 type UnsatisfiedEncodeRebuild struct {
 	RecordingID   int64
 	Profile       string
