@@ -24,7 +24,7 @@ CREATE TABLE media_assets (
     updated_at   timestamptz NOT NULL DEFAULT now(),
 
     -- 1 録画につき original / thumbnail / seek_tiles は 1 つ、encoded はプロファイルごとに 1 つ
-    -- recording_id で引く読み手と FK の検査もこの索引の先頭列で引く。単列の索引は重複になるので張らない
+    -- recording_id で引く読み手はこの索引の先頭列で引ける。単列の索引は重複になるので張らない
     UNIQUE NULLS NOT DISTINCT (recording_id, kind, profile)
 );
 ```

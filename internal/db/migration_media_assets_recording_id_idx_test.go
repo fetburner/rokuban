@@ -2,9 +2,6 @@ package db
 
 import (
 	"context"
-	"io/fs"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -64,18 +61,9 @@ func TestDropMediaAssetsRecordingIDIndexMigration(t *testing.T) {
 		t.Fatalf("indexes leading with recording_id at latest = %v, want [media_assets_recording_id_kind_profile_key]", got)
 	}
 
-	// 番号は並行する migration と衝突すると振り直すので、ファイル名から引く。
-	matches, err := fs.Glob(migrations, "migrations/*_drop_media_assets_recording_id_idx.sql")
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("finding the migration file: %v (matches %v)", err, matches)
-	}
-	version, err := strconv.ParseInt(strings.SplitN(strings.TrimPrefix(matches[0], "migrations/"), "_", 2)[0], 10, 64)
-	if err != nil {
-		t.Fatalf("parsing migration version from %s: %v", matches[0], err)
-	}
-	migrateDownTo(t, dbURL, version-1)
+	migrateDownTo(t, dbURL, 60)
 	got = mediaAssetsIndexesLeadingRecordingID(t, dbURL)
 	if len(got) != 2 || got[0] != "media_assets_recording_id_idx" || got[1] != "media_assets_recording_id_kind_profile_key" {
-		t.Fatalf("indexes leading with recording_id before the migration (version %d) = %v, want [media_assets_recording_id_idx media_assets_recording_id_kind_profile_key]", version-1, got)
+		t.Fatalf("indexes leading with recording_id before migration 61 = %v, want [media_assets_recording_id_idx media_assets_recording_id_kind_profile_key]", got)
 	}
 }
