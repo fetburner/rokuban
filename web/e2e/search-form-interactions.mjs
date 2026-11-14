@@ -3,14 +3,15 @@
 //
 // Run with:
 //   E2E_URL=http://127.0.0.1:4173 node e2e/run.mjs search-form-interactions
-// Screenshots are written to E2E_SHOT_DIR (default: /private/tmp/rokuban-search-form-interactions-shots).
+// Screenshots are written to E2E_SHOT_DIR (default: path.join(os.tmpdir(), 'rokuban-search-form-interactions-shots')).
 import { mkdirSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://127.0.0.1:4173'
-const SHOT_DIR = process.env.E2E_SHOT_DIR ?? '/private/tmp/rokuban-search-form-interactions-shots'
+const SHOT_DIR = process.env.E2E_SHOT_DIR ?? path.join(os.tmpdir(), 'rokuban-search-form-interactions-shots')
 const SITE = 'default'
 const ng = []
 const searchRequests = []

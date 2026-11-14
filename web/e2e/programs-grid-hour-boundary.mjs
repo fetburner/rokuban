@@ -24,17 +24,19 @@ import {
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
 const HOUR = 3_600_000
+const TOKYO_OFFSET_MS = 9 * HOUR
 const FIXED_NOW = new Date('2026-08-14T12:59:35+09:00')
 const initialOrigin = new Date(FIXED_NOW)
-initialOrigin.setMinutes(0, 0, 0)
+initialOrigin.setUTCMinutes(0, 0, 0)
 const nextOrigin = initialOrigin.getTime() + HOUR
 const nextOriginISO = new Date(nextOrigin).toISOString()
 const nowAfterBoundary = new Date(nextOrigin + 20 * 60_000)
-const midnightOrigin = new Date(nextOrigin)
-midnightOrigin.setDate(midnightOrigin.getDate() + 1)
-midnightOrigin.setHours(0, 0, 0, 0)
-const midnightOriginISO = midnightOrigin.toISOString()
-const nowAfterMidnight = new Date(midnightOrigin.getTime() + 20 * 60_000)
+const tokyoWallTime = new Date(nextOrigin + TOKYO_OFFSET_MS)
+tokyoWallTime.setUTCDate(tokyoWallTime.getUTCDate() + 1)
+tokyoWallTime.setUTCHours(0, 0, 0, 0)
+const midnightOriginMs = tokyoWallTime.getTime() - TOKYO_OFFSET_MS
+const midnightOriginISO = new Date(midnightOriginMs).toISOString()
+const nowAfterMidnight = new Date(midnightOriginMs + 20 * 60_000)
 const iso = (ms) => new Date(ms).toISOString()
 const ng = []
 

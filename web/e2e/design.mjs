@@ -99,6 +99,7 @@ const SITE = 'default'
 // `/api/sites` に出さない --- 既定の全画面ショット/判定を単一サイトのまま保つため。
 const SITE2 = 'sub'
 const HOUR = 3_600_000
+const TOKYO_OFFSET_MS = 9 * HOUR
 
 const services = [
   { id: 3273601024, networkId: 32736, serviceId: 1024, name: 'NHK総合', channelType: 'GR', channel: '27', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true },
@@ -243,17 +244,19 @@ const layoutStorageRoots = {
 
 /** 予約 2 の時間帯に重ねる。琥珀の警告バッジ・帯を必ず 1 つ出すため。 */
 /**
- * nextHourBoundaryMs は与えられた時刻より後の直近の毎時 0 分（ローカル）を返す。
+ * nextHourBoundaryMs は与えられた時刻より後の直近の毎時 0 分（Asia/Tokyo）を返す。
  * 番組境界は :00 / :30 に落ちることが圧倒的に多く、不足区間の境界も同じ単位
  * （サーバー側の判定）なので、「ちょうど正時に始まる不足区間」フィクスチャを
  * ここで作る（issue #460 レビュー blocker。:34 起点の固定時刻だけでは
  * この最頻ケースを避けてしまっていた）。
  */
 function nextHourBoundaryMs(ms) {
-  const d = new Date(ms)
-  d.setMinutes(0, 0, 0)
-  if (d.getTime() <= ms) d.setHours(d.getHours() + 1)
-  return d.getTime()
+  const tokyoWallTime = new Date(ms + TOKYO_OFFSET_MS)
+  tokyoWallTime.setUTCMinutes(0, 0, 0)
+  if (tokyoWallTime.getTime() <= ms + TOKYO_OFFSET_MS) {
+    tokyoWallTime.setUTCHours(tokyoWallTime.getUTCHours() + 1)
+  }
+  return tokyoWallTime.getTime() - TOKYO_OFFSET_MS
 }
 
 const overages = [
@@ -2858,7 +2861,8 @@ for (const viewport of [homeDesktop, mobile]) {
       48 * hourPx + 64,
       { timeout: 5000 },
     ).catch(() => ng.push(`[ops-ticks/${viewport.width}px/${clock}] 窓が 48 時間でない`))
-    const expectedNowX = (now.getHours() + now.getMinutes() / 60) * hourPx
+    const [tokyoHour, tokyoMinute] = clock.split(':').map(Number)
+    const expectedNowX = (tokyoHour + tokyoMinute / 60) * hourPx
     const measured = await page.evaluate(() => {
       const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')
       const content = document.querySelector('[data-testid="home-ops-timeline-content"]')

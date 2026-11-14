@@ -422,6 +422,18 @@ describe('CMLogoStationPage', () => {
     expect(ratio).toBeCloseTo(4 / 3, 3)
   })
 
+  it('フレーム上のネイティブ dragstart を取り消し、文字選択を抑止する', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    const frame = await screen.findByTestId('cm-logo-frame')
+
+    expect(fireEvent.dragStart(frame)).toBe(false)
+    expect(frame).toHaveClass('select-none')
+  })
+
   it('ハンドルは見た目の要素で掴み、角から離れていても新しい枠を描かない。ドラッグ後は整数', async () => {
     stubApi()
     renderInRouter(<CMLogoStationPage />, {
