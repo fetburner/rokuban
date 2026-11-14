@@ -187,7 +187,7 @@ func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.M
 	outcome, err := sqlcgen.New(tx).CompleteMediaAssetTransfer(ctx, sqlcgen.CompleteMediaAssetTransferParams{
 		Sha256: sha256, MediaAssetID: transfer.MediaAssetID, OriginalRules: originalRules,
 		DerivedStore: derivedStore, TargetStore: targetStore, SizeBytes: transfer.SizeBytes,
-		Generation: &generation, CopyID: transfer.CopyID,
+		Generation: generation, CopyID: transfer.CopyID,
 	})
 	if err != nil {
 		return false, "", fmt.Errorf("activating media asset %d copy in %q: %w", transfer.MediaAssetID, targetStore, mapDatabaseError(err))

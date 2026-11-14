@@ -223,7 +223,7 @@ func TestStorageTransferS3PendingReservationIsNotObsolete(t *testing.T) {
 	f := newS3DerivedFixture(t)
 	if _, err := f.pool.Exec(context.Background(), `
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-SELECT a.id, 'cloud', a.id::text || '.mp4', COALESCE(a.derived_generation, 0), 'pending'
+SELECT a.id, 'cloud', a.id::text || '.mp4', a.derived_generation, 'pending'
 FROM media_assets a WHERE a.id = $1`, f.assetID); err != nil {
 		t.Fatalf("inserting pending S3 reservation: %v", err)
 	}

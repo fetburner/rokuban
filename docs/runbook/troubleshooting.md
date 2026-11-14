@@ -125,7 +125,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
-  "DELETE FROM media_asset_transfer_attempts t USING media_asset_copies c, media_assets a WHERE t.copy_id = c.id AND c.media_asset_id = a.id AND c.id = 12345 AND c.state = 'pending' AND c.generation = COALESCE(a.derived_generation, 0) RETURNING t.copy_id, t.attempt_count"
+  "DELETE FROM media_asset_transfer_attempts t USING media_asset_copies c, media_assets a WHERE t.copy_id = c.id AND c.media_asset_id = a.id AND c.id = 12345 AND c.state = 'pending' AND c.generation = a.derived_generation RETURNING t.copy_id, t.attempt_count"
 ```
 
 次の転送 reconcile が、同じ desired の置き場への job を投入する。失敗が続くときは、試行記録を消す前に、新しい `last_error` を調べる。

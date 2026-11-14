@@ -67,7 +67,7 @@ FROM media_asset_copies copy
 JOIN media_assets asset ON asset.id = copy.media_asset_id
 WHERE copy.media_asset_id = p_asset_id
   AND copy.state = 'active'
-  AND copy.generation = COALESCE(asset.derived_generation, 0)
+  AND copy.generation = asset.derived_generation
   AND (p_store IS NULL OR copy.store = p_store)
 $$;
 
@@ -75,7 +75,7 @@ $$;
 -- Name: FUNCTION active_media_asset_copies(p_asset_id bigint, p_store text); Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON FUNCTION public.active_media_asset_copies(p_asset_id bigint, p_store text) IS 'active_media_asset_copies は、論理資産の derived_generation と一致する active コピーを返す。original の NULL 世代は 0 として扱う。p_store が NULL なら全置き場を対象にする。';
+COMMENT ON FUNCTION public.active_media_asset_copies(p_asset_id bigint, p_store text) IS 'active_media_asset_copies は、論理資産の derived_generation と一致する active コピーを返す。原本の世代は 0。p_store が NULL なら全置き場を対象にする。';
 
 --
 -- Name: active_present_media_asset_copies(bigint, text); Type: FUNCTION; Schema: public; Owner: -
@@ -298,7 +298,7 @@ CREATE FUNCTION public.media_asset_copy_prunable(p_copy_id bigint, p_original_ru
         SELECT 1
         FROM placement retiring
         WHERE retiring.state IN ('active', 'deleting')
-          AND retiring.generation = COALESCE(retiring.derived_generation, 0)
+          AND retiring.generation = retiring.derived_generation
           AND retiring.deleted_at IS NULL
           AND retiring.desired_store IS NOT NULL
           AND retiring.desired_store IS DISTINCT FROM retiring.store
@@ -475,7 +475,7 @@ CREATE FUNCTION public.storage_transfer_attempt_count(p_media_asset_id bigint, p
     JOIN media_asset_transfer_attempts attempt ON attempt.copy_id = target.id
     WHERE target.media_asset_id = p_media_asset_id
       AND target.store = p_desired_store
-      AND target.generation = COALESCE(asset.derived_generation, 0)
+      AND target.generation = asset.derived_generation
       AND target.state <> 'deleted'
 $$;
 
@@ -581,7 +581,7 @@ CREATE FUNCTION public.storage_transfer_pending_copy_obsolete(p_copy_id bigint, 
       WHERE copy.id = p_copy_id
         AND copy.state = 'pending'
         AND (
-            copy.generation <> COALESCE(asset.derived_generation, 0)
+            copy.generation <> asset.derived_generation
             OR placement.desired_store IS DISTINCT FROM copy.store
             OR (
                 asset.kind = 'original'
@@ -787,10 +787,10 @@ CREATE TABLE public.media_assets (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     ingest_generation bigint,
-    derived_generation bigint,
+    derived_generation bigint DEFAULT 0 NOT NULL,
     sha256 bytea,
     CONSTRAINT media_assets_check CHECK (((kind = 'encoded'::text) = (profile IS NOT NULL))),
-    CONSTRAINT media_assets_derived_generation_check CHECK (((derived_generation IS NULL) OR ((kind <> 'original'::text) AND (derived_generation >= 0)))),
+    CONSTRAINT media_assets_derived_generation_check CHECK ((((kind <> 'original'::text) OR (derived_generation = 0)) AND (derived_generation >= 0))),
     CONSTRAINT media_assets_ingest_generation_kind_check CHECK (((kind = 'original'::text) OR (ingest_generation IS NULL))),
     CONSTRAINT media_assets_ingest_generation_positive_check CHECK (((ingest_generation IS NULL) OR (ingest_generation > 0))),
     CONSTRAINT media_assets_kind_check CHECK ((kind = ANY (ARRAY['original'::text, 'encoded'::text, 'thumbnail'::text, 'seek_tiles'::text]))),
@@ -807,7 +807,7 @@ COMMENT ON COLUMN public.media_assets.ingest_generation IS 'Generation of the in
 -- Name: COLUMN media_assets.derived_generation; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.media_assets.derived_generation IS 'Monotonic generation for derived output paths; NULL for original assets';
+COMMENT ON COLUMN public.media_assets.derived_generation IS 'Monotonic generation for derived output paths; originals are fixed at generation zero';
 
 --
 -- Name: COLUMN media_assets.sha256; Type: COMMENT; Schema: public; Owner: -
@@ -1341,11 +1341,11 @@ CREATE VIEW public.old_generation_media_asset_copies AS
     old_copy.generation,
     ( SELECT min(current_copy.created_at) AS min
            FROM public.media_asset_copies current_copy
-          WHERE ((current_copy.media_asset_id = old_copy.media_asset_id) AND (current_copy.generation = COALESCE(asset.derived_generation, (0)::bigint)))) AS generation_started_at
+          WHERE ((current_copy.media_asset_id = old_copy.media_asset_id) AND (current_copy.generation = asset.derived_generation))) AS generation_started_at
    FROM (public.media_asset_copies old_copy
      JOIN public.media_assets asset ON ((asset.id = old_copy.media_asset_id)))
-  WHERE ((asset.kind <> 'original'::text) AND (old_copy.generation < COALESCE(asset.derived_generation, (0)::bigint)) AND (EXISTS ( SELECT 1
-           FROM public.active_present_media_asset_copies(old_copy.media_asset_id, NULL::text) active_present_media_asset_copies(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation))));
+  WHERE ((asset.kind <> 'original'::text) AND (old_copy.generation < asset.derived_generation) AND (EXISTS ( SELECT 1
+           FROM public.active_present_media_asset_copies(old_copy.media_asset_id, NULL::text) current_copy(id, media_asset_id, store, rel_path, state, created_at, deleted_at, generation))));
 
 --
 -- Name: VIEW old_generation_media_asset_copies; Type: COMMENT; Schema: public; Owner: -

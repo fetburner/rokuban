@@ -193,8 +193,8 @@ type MediaAsset struct {
 	UpdatedAt   time.Time
 	// Generation of the ingest temp whose bytes were committed as this original
 	IngestGeneration *int64
-	// Monotonic generation for derived output paths; NULL for original assets
-	DerivedGeneration *int64
+	// Monotonic generation for derived output paths; originals are fixed at generation zero
+	DerivedGeneration int64
 	// Observed SHA-256 of the logical asset bytes, stored once for all physical copies
 	Sha256 []byte
 }

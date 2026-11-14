@@ -61,7 +61,7 @@ WITH planning AS (
         COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
         thumbnail.id AS thumbnail_media_asset_id,
         thumbnail.rel_path AS thumbnail_rel_path,
-        COALESCE(thumbnail.derived_generation, 0)::bigint AS thumbnail_generation,
+        thumbnail.derived_generation AS thumbnail_generation,
         thumbnail.seek_ms
     FROM recordings r
     LEFT JOIN LATERAL (

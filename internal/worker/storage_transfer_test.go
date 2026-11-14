@@ -137,7 +137,7 @@ func transferTestAddCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, storeN
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-SELECT a.id, $2, $3, COALESCE(a.derived_generation, 0), 'active'
+SELECT a.id, $2, $3, a.derived_generation, 'active'
 FROM media_assets a WHERE a.id = $1
 ON CONFLICT (media_asset_id, store, generation) WHERE state <> 'deleted' DO UPDATE
 SET rel_path = EXCLUDED.rel_path, state = 'active', deleted_at = NULL, created_at = now()`, assetID, storeName, relPath); err != nil {

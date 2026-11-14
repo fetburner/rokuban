@@ -7,7 +7,7 @@ JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.store = ANY(sqlc.arg('s3_stores')::text[])
   AND c.store <> sqlc.arg('derived_store')::text
   AND c.state = 'active'
-  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND c.generation = a.derived_generation
   AND a.kind <> 'original'
 GROUP BY c.store
 ORDER BY c.store;
@@ -143,7 +143,7 @@ WITH asset AS MATERIALIZED (
            a.size_bytes,
            a.kind,
            a.sha256,
-           COALESCE(a.derived_generation, 0)::bigint AS generation,
+           a.derived_generation AS generation,
            desired_media_store(
                a.kind,
                sqlc.arg('original_rules')::jsonb,
@@ -226,7 +226,7 @@ WITH observed AS (
     WHERE a.id = sqlc.arg('media_asset_id')
       AND a.recording_id = r.id
       AND r.deleted_at IS NULL
-      AND COALESCE(a.derived_generation, 0) = sqlc.arg('generation')
+      AND a.derived_generation = sqlc.arg('generation')
       AND desired_media_store(
           a.kind,
           sqlc.arg('original_rules')::jsonb,
@@ -241,7 +241,7 @@ WITH observed AS (
           WHERE c.id = sqlc.arg('copy_id')
             AND c.media_asset_id = a.id
             AND c.store = sqlc.arg('target_store')
-            AND c.generation = COALESCE(a.derived_generation, 0)
+            AND c.generation = a.derived_generation
             AND c.state = 'pending'
       )
       AND NOT (
@@ -260,7 +260,7 @@ WITH observed AS (
       AND c.media_asset_id = o.id
       AND a.id = o.id
       AND c.store = sqlc.arg('target_store')
-      AND c.generation = COALESCE(a.derived_generation, 0)
+      AND c.generation = a.derived_generation
       AND c.state = 'pending'
     RETURNING c.id
 ), cleared_missing AS (
@@ -347,7 +347,7 @@ WHERE c.id = sqlc.arg('copy_id')
   AND c.store = sqlc.arg('store')
   AND c.media_asset_id = a.id
   AND a.recording_id = sqlc.arg('recording_id')
-  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND c.generation = a.derived_generation
   AND c.state = 'active'
   AND a.kind <> 'original'
   AND EXISTS (
@@ -607,4 +607,4 @@ UPDATE media_assets a
 SET sha256 = sqlc.arg('sha256')::bytea
 WHERE a.id = sqlc.arg('media_asset_id')
   AND a.sha256 IS NULL
-  AND COALESCE(a.derived_generation, 0) = sqlc.arg('generation')::bigint;
+  AND a.derived_generation = sqlc.arg('generation')::bigint;

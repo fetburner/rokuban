@@ -47,7 +47,7 @@ func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.Pendi
 	generation := in.DerivedGeneration
 	assetID, err := q.InsertMediaAssetForPendingCopy(ctx, sqlcgen.InsertMediaAssetForPendingCopyParams{
 		RecordingID: in.RecordingID, Kind: in.Kind, Profile: in.Profile,
-		SizeBytes: in.SizeBytes, DerivedGeneration: &generation,
+		SizeBytes: in.SizeBytes, DerivedGeneration: generation,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		assetID, err = q.GetMediaAssetIDForPendingCopy(ctx, sqlcgen.GetMediaAssetIDForPendingCopyParams{

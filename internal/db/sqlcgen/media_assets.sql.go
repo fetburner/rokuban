@@ -15,7 +15,7 @@ import (
 
 const createMediaAsset = `-- name: CreateMediaAsset :one
 INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation)
-VALUES ($1, $2, $3, $4, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
+VALUES ($1, $2, $3, $4, 0)
 RETURNING id
 `
 
@@ -172,7 +172,7 @@ func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, arg GetAct
 
 const getDerivedMediaAssetGeneration = `-- name: GetDerivedMediaAssetGeneration :one
 SELECT GREATEST(
-    COALESCE(asset.derived_generation, 0),
+    asset.derived_generation,
     COALESCE(MAX(copy.generation), -1)
 )::bigint AS derived_generation
 FROM media_assets asset
@@ -201,7 +201,7 @@ func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDer
 const getEncodedMediaAssetForProfile = `-- name: GetEncodedMediaAssetForProfile :one
 SELECT a.id,
        EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, NULL)) AS active,
-       COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+       a.derived_generation
 FROM media_assets a
 WHERE a.recording_id = $1
   AND a.kind = 'encoded'
@@ -652,7 +652,7 @@ func (q *Queries) ListActiveOriginalStores(ctx context.Context, recordingIds []i
 }
 
 const lockActiveThumbnailMediaAsset = `-- name: LockActiveThumbnailMediaAsset :one
-SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+SELECT a.id, c.rel_path, s.seek_ms, a.derived_generation
 FROM media_assets a
 JOIN LATERAL preferred_active_media_asset_copy(a.id, $1::text) c ON true
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
@@ -698,7 +698,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     derived_generation = EXCLUDED.derived_generation,
     sha256     = EXCLUDED.sha256,
     updated_at = now()
-WHERE EXCLUDED.derived_generation >= COALESCE(media_assets.derived_generation, 0)
+WHERE EXCLUDED.derived_generation >= media_assets.derived_generation
 RETURNING id
 `
 
@@ -707,7 +707,7 @@ type UpsertDerivedMediaAssetParams struct {
 	Kind              string
 	Profile           *string
 	SizeBytes         int64
-	DerivedGeneration *int64
+	DerivedGeneration int64
 	Sha256            []byte
 }
 

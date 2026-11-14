@@ -584,7 +584,7 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 	profileName := profile
 	generation := testLegacyDerivedGeneration(relPath)
 	if len(generations) > 0 {
-		generation = &generations[0]
+		generation = generations[0]
 	}
 	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
 		RecordingID:       recordingID,
@@ -597,31 +597,23 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 	}
 	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath,
-		Generation: generationValue(generation), State: "active",
+		Generation: generation, State: "active",
 	}); err != nil {
 		t.Fatalf("seeding encoded media_asset copy: %v", err)
 	}
 	return assetID
 }
 
-func generationValue(generation *int64) int64 {
-	if generation == nil {
-		return 0
-	}
-	return *generation
-}
-
-func testLegacyDerivedGeneration(relPath string) *int64 {
+func testLegacyDerivedGeneration(relPath string) int64 {
 	stem := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
 	_, generation, ok := config.SplitCutGeneration(stem)
 	if !ok {
 		_, generation, ok = config.SplitUncutGeneration(stem)
 	}
 	if !ok {
-		return nil
+		return 0
 	}
-	value := int64(generation)
-	return &value
+	return int64(generation)
 }
 
 // setFrozenCuts は media_asset_cuts を直接書く（commitCutEncoded がやることの

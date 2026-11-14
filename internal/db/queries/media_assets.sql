@@ -1,6 +1,6 @@
 -- name: CreateMediaAsset :one
 INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation)
-VALUES ($1, $2, $3, $4, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
+VALUES ($1, $2, $3, $4, 0)
 RETURNING id;
 
 -- 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
@@ -76,7 +76,7 @@ WHERE recording_id = $1
 -- name: GetEncodedMediaAssetForProfile :one
 SELECT a.id,
        EXISTS (SELECT 1 FROM active_media_asset_copies(a.id, NULL)) AS active,
-       COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+       a.derived_generation
 FROM media_assets a
 WHERE a.recording_id = sqlc.arg('recording_id')
   AND a.kind = 'encoded'
@@ -97,7 +97,7 @@ WHERE a.recording_id = sqlc.arg('recording_id')
 -- Only kinds without a profile (thumbnail, seek_tiles) have a single row.
 -- name: GetDerivedMediaAssetGeneration :one
 SELECT GREATEST(
-    COALESCE(asset.derived_generation, 0),
+    asset.derived_generation,
     COALESCE(MAX(copy.generation), -1)
 )::bigint AS derived_generation
 FROM media_assets asset
@@ -148,7 +148,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     derived_generation = EXCLUDED.derived_generation,
     sha256     = EXCLUDED.sha256,
     updated_at = now()
-WHERE EXCLUDED.derived_generation >= COALESCE(media_assets.derived_generation, 0)
+WHERE EXCLUDED.derived_generation >= media_assets.derived_generation
 RETURNING id;
 
 -- thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
@@ -161,7 +161,7 @@ WHERE recording_id = $1
 -- thumbnail 差し替えの commit tx 内で論理行を直列化する。
 -- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
 -- name: LockActiveThumbnailMediaAsset :one
-SELECT a.id, c.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
+SELECT a.id, c.rel_path, s.seek_ms, a.derived_generation
 FROM media_assets a
 JOIN LATERAL preferred_active_media_asset_copy(a.id, sqlc.arg('store_name')::text) c ON true
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id

@@ -92,7 +92,7 @@ SELECT copy.id
 FROM media_asset_copies copy
 JOIN media_assets asset ON asset.id = copy.media_asset_id
 WHERE copy.media_asset_id = $1 AND copy.store = $2
-ORDER BY (copy.generation = COALESCE(asset.derived_generation, 0)) DESC,
+ORDER BY (copy.generation = asset.derived_generation) DESC,
          (copy.state = 'active') DESC,
          copy.id DESC
 LIMIT 1`, mediaAssetID, store).Scan(&copyID); err != nil {

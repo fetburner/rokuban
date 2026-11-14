@@ -63,7 +63,7 @@ INSERT INTO media_assets (
 SELECT
     r.id, $1::text, $2::text,
     $3::bigint,
-    CASE WHEN $1::text = 'original' THEN NULL
+    CASE WHEN $1::text = 'original' THEN 0
          ELSE COALESCE(media_asset_generation_from_rel_path($4::text), 0)
     END
 FROM recordings r
@@ -81,7 +81,7 @@ WHERE NOT EXISTS (
           AND live.store = $6
           AND live.state <> 'deleted'
     )
-  AND COALESCE(EXCLUDED.derived_generation, 0) = COALESCE(media_assets.derived_generation, 0)
+  AND EXCLUDED.derived_generation = media_assets.derived_generation
 RETURNING id,
     CASE WHEN kind = 'original' THEN 0
          ELSE COALESCE(media_asset_generation_from_rel_path($4::text), 0)
@@ -107,7 +107,7 @@ type UpsertInPlaceMediaAssetRow struct {
 // 論理資産が無ければ新規に作る。あれば、次の 3 つを満たすときだけ size_bytes を差し替える。
 //  1. この置き場に、その資産の生きたコピー（active / deleting / pending）が無い。
 //     あれば同じ置き場に 2 つ目の現行ファイルを足すことになる。deleting は unlink される予定のファイルである。
-//  2. パスから読む世代が現行の世代（derived_generation。original は NULL = 0）と等しい。
+//  2. パスから読む世代が現行の世代（derived_generation。original は 0）と等しい。
 //     古い世代で論理行を巻き戻すと、現行のコピーが旧世代として削除される。
 //  3. 録画がごみ箱にない（上記）。
 //
