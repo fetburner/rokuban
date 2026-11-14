@@ -76,6 +76,33 @@ func TestSchemaV1_Tables(t *testing.T) {
 	}
 }
 
+func TestMarkPurgedRecordings_IsIdempotent(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	deletedAt := time.Now().Add(-31 * 24 * time.Hour)
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = $1 WHERE id = $2`, deletedAt, recordingID); err != nil {
+		t.Fatalf("marking recording deleted: %v", err)
+	}
+
+	queries := sqlcgen.New(pool)
+	first, err := queries.MarkPurgedRecordings(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("first MarkPurgedRecordings: %v", err)
+	}
+	if len(first) != 1 || first[0].ID != recordingID {
+		t.Fatalf("first MarkPurgedRecordings() = %+v, want only recording %d", first, recordingID)
+	}
+
+	second, err := queries.MarkPurgedRecordings(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("second MarkPurgedRecordings: %v", err)
+	}
+	if len(second) != 0 {
+		t.Errorf("second MarkPurgedRecordings() = %+v, want no already-purged recordings", second)
+	}
+}
+
 // insertTestProgramSnapshot は reservations / program_intents / program_overrides
 // が参照する program_snapshots 行を作る（#27 で追加された FK の前提）。
 //

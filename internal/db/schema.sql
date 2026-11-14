@@ -2439,12 +2439,6 @@ CREATE INDEX recordings_network_id_service_id_event_id_idx ON public.recordings 
 CREATE INDEX recordings_program_start_at_id_idx ON public.recordings USING btree (program_start_at DESC, id DESC);
 
 --
--- Name: recordings_purged_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX recordings_purged_at_idx ON public.recordings USING btree (purged_at) WHERE (purged_at IS NULL);
-
---
 -- Name: recordings_rule_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2461,6 +2455,12 @@ CREATE INDEX recordings_title_trgm ON public.recordings USING gin (public.normal
 --
 
 CREATE UNIQUE INDEX recordings_unique_active_event ON public.recordings USING btree (site, network_id, service_id, event_id, program_start_at) WHERE ((deleted_at IS NULL) AND (superseded_at IS NULL));
+
+--
+-- Name: recordings_unpurged_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX recordings_unpurged_id_idx ON public.recordings USING btree (id) WHERE (purged_at IS NULL);
 
 --
 -- Name: reservations_rule_id_idx; Type: INDEX; Schema: public; Owner: -
