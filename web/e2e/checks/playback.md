@@ -82,11 +82,13 @@ hls.js は、各トラックの先頭の DTS の最小を起点にする（`node
 - 内容が壁時計に対して飛ばず、戻らず、止まらない。連続する frame callback の間で、フレーム番号の進みが表示時刻の差 × 29.97 + 3 を超えない。callback の間隔が 250 ms を超えない。境界の ±0.5 秒に 20 枚以上が描かれる。`currentTime` ごと内容が飛ぶブラウザでは、marker・`mediaTime`・`currentTime` が一致したままになるので、この判定でしか見えない
 - 境界の ±0.8 秒で、AudioWorklet が 128 サンプル（48 kHz なら約 2.7 ms）ごとの左右 RMS を全サンプルについて求め、無音が 2 回続かない。標準音声の周波数が 440 Hz / 880 Hz のままである
 - 主・副・標準の切替で、WebAudio の左右周波数が変わる
-- 遠距離シークで、seeked の位置がシーク先 ±1 フレームである。seeked 後の一時停止中に `drawImage(video)` でフレーム番号を読み、シーク先 ±1 フレームであることを確かめる。再生を始めて、シーク先 ±0.5 秒の rVFC `mediaTime` が 3 枚目までに現れ、再生時刻が進むことを確かめる。シーク先のセグメントをシーク前に要求していない（サーバーの要求ログで見る）
+- 遠距離シークで、seeked の位置がシーク先 ±1 フレームである。seeked 後の一時停止中に `drawImage(video)` でフレーム番号を最大 2 秒間、50 ms ごとに読み直す。シーク先 ±1 フレームでなければ最後の marker と読み直し回数を出して落とす。再生後、シーク先 ±0.5 秒の rVFC `mediaTime` が 3 枚目までに現れ、再生時刻が進むことも確かめる。シーク先のセグメントをシーク前に要求していない（サーバーの要求ログで見る）
 
-HTML Standard は一時停止中の video が current playback position のフレームを表すと定めている。Canvas の `drawImage(video)` も呼び出し時点のフレームを使う。そのためシーク先の内容は停止中に測る。
+HTML Standard は一時停止中の video が current playback position のフレームを表すと定めている。Canvas の `drawImage(video)` も呼び出し時点のフレームを使う。
 
-rVFC の draft は callback と描画の同期を best effort とし、callback の遅延や欠落を記述している。そのため再生 callback 内の marker と `mediaTime` の組を、シーク先フレームの判定には使わない。シーク先の marker は一時停止中に読む。
+CI の ts/direct では、9s の seeked 直後、一時停止・非 seeking・readyState 2 の状態で marker=0（黒）を読んだ測定がある。そのため seeked 直後の一度だけで内容を判定せず、一時停止中にシーク先の内容を読み直す。
+
+再生後の seek-frame 判定では、シーク先 ±0.5 秒の rVFC `mediaTime` が 3 枚目までに現れることと、再生時刻が進むことを見る。rVFC の draft は callback と映像提示の同期を best effort としているため、callback ごとの marker と `mediaTime` の組はシーク先の映像内容判定には使わない。内容は一時停止中の `drawImage(video)` で判定する。
 
 根拠: [HTML Standard: video element](https://html.spec.whatwg.org/multipage/media.html#the-video-element)、[Canvas: drawing images](https://html.spec.whatwg.org/multipage/canvas.html#drawing-images)、[requestVideoFrameCallback draft](https://wicg.github.io/video-rvfc/)。
 
