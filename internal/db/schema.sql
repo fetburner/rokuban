@@ -2385,12 +2385,6 @@ CREATE UNIQUE INDEX media_asset_copies_store_rel_path_idx ON public.media_asset_
 CREATE INDEX media_asset_transfer_abandoned_uploads_store_idx ON public.media_asset_transfer_abandoned_uploads USING btree (store, id);
 
 --
--- Name: media_assets_recording_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX media_assets_recording_id_idx ON public.media_assets USING btree (recording_id);
-
---
 -- Name: record_sync_recording_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 

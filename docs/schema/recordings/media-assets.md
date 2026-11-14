@@ -24,10 +24,9 @@ CREATE TABLE media_assets (
     updated_at   timestamptz NOT NULL DEFAULT now(),
 
     -- 1 録画につき original / thumbnail / seek_tiles は 1 つ、encoded はプロファイルごとに 1 つ
+    -- recording_id で引く読み手と FK の検査もこの索引の先頭列で引く。単列の索引は重複になるので張らない
     UNIQUE NULLS NOT DISTINCT (recording_id, kind, profile)
 );
-
-CREATE INDEX ON media_assets (recording_id);
 ```
 
 `media_assets` は論理資産の識別子、録画との関係、サイズ、SHA-256 を持つ。物理パスとライフサイクルは `media_asset_copies` だけに置き、コピー数によらずサイズと SHA-256 は論理資産に 1 つだけ持つ。`media_assets.rel_path` / `state` / `deleted_at` を消した後は、コピーの無い論理資産に物理パスを復元する元が残らない。そのため列を消す migration は、コピーの無い論理資産が残っていれば失敗する。巻き戻すときは、現行世代のコピー 1 つを旧列へ写す。旧列は論理資産ごとに 1 つのパスと状態しか持てないので、現行世代のコピーが無い資産と `pending` のコピーは拒否する。
