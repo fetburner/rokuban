@@ -24,7 +24,7 @@
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:recording-next-episode
+E2E_URL=http://localhost:4173 node e2e/run.mjs recording-next-episode
 ```
 
 ### CM 検出のロゴ位置（`cm-logo-area.mjs`）
@@ -63,7 +63,7 @@ CM 検出のロゴ画面は `/cm-logos/{networkId}/{serviceId}` を局の資源�
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:cm-logo-area
+E2E_URL=http://localhost:4173 node e2e/run.mjs cm-logo-area
 ```
 
 ### 録画一覧の絞り込みパネル（`recordings-rule-filter.mjs`）
@@ -83,7 +83,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:cm-logo-area
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:recordings-rule-filter
+E2E_URL=http://localhost:4173 node e2e/run.mjs recordings-rule-filter
 ```
 
 ### 録画一覧のツールバーと期間（`recordings-period-toolbar.mjs`）
@@ -91,12 +91,12 @@ E2E_URL=http://localhost:4173 pnpm e2e:recordings-rule-filter
 ツールバーが 1 行に並ぶか・パネルがシートとポップオーバーのどちらで出るかはレイアウトの問いなので jsdom では測れない。時計を 2026-10-07 12:00 JST に固定して測る。
 
 - 360px / 390px で検索欄と期間・絞り込み・並び順の中心 Y が揃い（期間の指定の有無とも）、3 つのボタンが 44×44px 以上で、ページが横に溢れない。期間のチップが出る
-- 390px（高さ 560px）で期間と絞り込みが画面の下端・横幅いっぱいのシートで開き、高さが 85% 以内で、末尾の要素までシート内のスクロールで届く。シートでクールを選ぶと URL の `from` / `to` が変わり、ジャンルは保たれ、シートが閉じる
+- 390px（高さ 320px）で期間と絞り込みが画面の下端・横幅いっぱいのシートで開き、高さが 85% 以内で、末尾の要素までシート内のスクロールで届く。シートでクールを選ぶと URL の `from` / `to` が変わり、ジャンルは保たれ、シートが閉じる
 - 1280px で期間ボタンに「2026 夏」が見え、期間のチップは出ない。期間と絞り込みがトリガーの直下のポップオーバーで開き、並び順が絞り込みと同じ高さ・枠・シェブロンのボタンになる
 
 直す前の実装（並び順が `<select>` のまま 2 行に折り返し、絞り込みがポップオーバーで期間のボタンが無い版）では①②が落ちる（実測: 360 / 390px で中心 Y の差 52px、絞り込みが下端に付かない）。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:recordings-period-toolbar
+E2E_URL=http://localhost:4173 node e2e/run.mjs recordings-period-toolbar
 ```

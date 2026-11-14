@@ -484,8 +484,9 @@ function CMLogoFrameEditor({
           <div
             ref={frameRef}
             data-testid="cm-logo-frame"
-            className="relative cursor-crosshair touch-none overflow-hidden rounded bg-muted ring-1 ring-border"
+            className="relative cursor-crosshair touch-none select-none overflow-hidden rounded bg-muted ring-1 ring-border"
             style={{ aspectRatio: frame ? (frame.codedWidth * frame.sampleAspectRatio) / frame.codedHeight : 16 / 9 }}
+            onDragStart={(event) => event.preventDefault()}
             onPointerDown={(event) => {
               const point = codedPoint(event)
               if (!point || !frame) return

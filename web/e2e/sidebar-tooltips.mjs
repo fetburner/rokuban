@@ -3,7 +3,7 @@
 // 展開中には出ないこと、sr-only のリンク名が維持され説明として二重に結び付かないことも見る。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:sidebar-tooltips
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs sidebar-tooltips
 import { finish, installApiStubs, launchBrowser, log, sseKeepAlive, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'

@@ -6,8 +6,8 @@
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:home-resume-frame
-//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:home-resume-frame
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs home-resume-frame
+//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit node e2e/run.mjs home-resume-frame
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'

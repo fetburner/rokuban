@@ -9,7 +9,7 @@
 pnpm build && pnpm preview --port 4173 --strictPort &
 
 # 2) 撮る + 判定する
-E2E_URL=http://localhost:4173 pnpm e2e:design
+E2E_URL=http://localhost:4173 node e2e/run.mjs design
 ```
 
 `go:embed` 経路（`rokuban server --roles api`）に `E2E_URL` を向けても動くはずだが**未検証**。API は全部差し替わるのでサーバーは静的配信しかしないという理屈だけで、実際に回してはいない。
@@ -24,7 +24,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 
 フィクスチャを orval 生成の zod スキーマ（`web/src/api/zod.ts` の `List*ResponseItem`）で `parse` し、1 件でも不一致なら他の判定を一切せず exit 1 する。これは ⓪ の `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら打ち切る」扱いである。`design.mjs` に加えて `badge-links.mjs` / `sse-refresh.mjs` / `grid-reserved.mjs` / `reservations-mobile.mjs` も自分のフィクスチャで呼ぶ。**契約を変えたら、フィクスチャを持つ各スクリプトも同じ PR で直す。**
 
-`zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる。追加のローダー（tsx・vite-node）は要らない。Node は型注釈だけを消す型ストリッピングを既定で持つ（`.node-version` の 24.20.0 で実際に import できることを確認済み）。`zod.ts` は enum・namespace・parameter properties のような変換が要る構文を持たないため、これだけで通る。`package.json` の `e2e:design` 等の各スクリプトもそのままで変更していない。
+`zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる。追加のローダー（tsx・vite-node）は要らない。Node は型注釈だけを消す型ストリッピングを既定で持つ（`.node-version` の 24.20.0 で実際に import できることを確認済み）。`zod.ts` は enum・namespace・parameter properties のような変換が要る構文を持たないため、これだけで通る。個別の実行は `node e2e/run.mjs design` のように runner へ名前を渡す。
 
 `design.mjs` は画面のテキストに欠損文字列が混ざっていないかも全ショットに掛ける ---「安いので全画面に掛ける」。見るのは `undefined` / `NaN`（単語境界 `\b`）と `[object`（前方一致）。**`null` は対象にしない** --- 番組名・ルール名に偶然「null」を含む文字列が来ると単語境界だけでは区別できず偽陽性になりうるため。
 
@@ -83,11 +83,11 @@ E2E_URL=http://localhost:4173 pnpm screenshots:readme
 
 ### フォントスケール（`font-scale.mjs`）
 
-`pnpm e2e:font-scale` は、移行した `text-xs` が実ブラウザで 12px かを測る。390px は fine と coarse（isMobile + hasTouch）の両方で /search・/recordings・/series の入力欄が 16px 以上、1280px は既定の 14px を保つことを確かめる。番組表グリッドとホームの運用時間軸では、横幅が時刻を示すラベルが 11px 以上かを測る。直値 11px を下げる変異と、モバイル入力を 16px 未満にする変異で失敗する。物理 iPhone の Safari で入力欄にフォーカスしたときの拡大は未検証で、実機確認を別途行う。
+`node e2e/run.mjs font-scale` は、移行した `text-xs` が実ブラウザで 12px かを測る。390px は fine と coarse（isMobile + hasTouch）の両方で /search・/recordings・/series の入力欄が 16px 以上、1280px は既定の 14px を保つことを確かめる。番組表グリッドとホームの運用時間軸では、横幅が時刻を示すラベルが 11px 以上かを測る。直値 11px を下げる変異と、モバイル入力を 16px 未満にする変異で失敗する。物理 iPhone の Safari で入力欄にフォーカスしたときの拡大は未検証で、実機確認を別途行う。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:font-scale
+E2E_URL=http://localhost:4173 node e2e/run.mjs font-scale
 ```
 
 ### 個人化の持続（`personalization.mjs`）
@@ -108,7 +108,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:personalization
+E2E_URL=http://localhost:4173 node e2e/run.mjs personalization
 ```
 
 ### チップの横あふれ（`chip-overflow.mjs`）
@@ -129,5 +129,5 @@ E2E_URL=http://localhost:4173 pnpm e2e:personalization
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:chip-overflow
+E2E_URL=http://localhost:4173 node e2e/run.mjs chip-overflow
 ```

@@ -16,8 +16,8 @@
 cd web
 pnpm build
 pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
-E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
+E2E_URL=http://localhost:4173 node e2e/run.mjs recording-playback-timeline
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit node e2e/run.mjs recording-playback-timeline
 ```
 
 ### LivePlayer の 503 文言・離脱ヒント（`live-player-modes.mjs`）
@@ -31,8 +31,8 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-tim
 - playlist の 503 は、ライブがチューナー案内、録画 HLS が「いま録画を再生できません。」と再試行案内を表示し、録画 HLS にライブの案内を出さない
 
 ```sh
-E2E_URL=http://localhost:4173 pnpm e2e:live-player-modes
-E2E_VALIDATE_FIXTURES_ONLY=1 node e2e/live-player-modes.mjs
+E2E_URL=http://localhost:4173 node e2e/run.mjs live-player-modes
+E2E_VALIDATE_FIXTURES_ONLY=1 node e2e/run.mjs live-player-modes
 ```
 
 `E2E_VALIDATE_FIXTURES_ONLY=1` は録画 fixture を Zod 契約で検査するだけでブラウザを起動しない。CI の `browser-e2e` ジョブが実ブラウザ判定を回す。
@@ -82,7 +82,15 @@ hls.js は、各トラックの先頭の DTS の最小を起点にする（`node
 - 内容が壁時計に対して飛ばず、戻らず、止まらない。連続する frame callback の間で、フレーム番号の進みが表示時刻の差 × 29.97 + 3 を超えない。callback の間隔が 250 ms を超えない。境界の ±0.5 秒に 20 枚以上が描かれる。`currentTime` ごと内容が飛ぶブラウザでは、marker・`mediaTime`・`currentTime` が一致したままになるので、この判定でしか見えない
 - 境界の ±0.8 秒で、AudioWorklet が 128 サンプル（48 kHz なら約 2.7 ms）ごとの左右 RMS を全サンプルについて求め、無音が 2 回続かない。標準音声の周波数が 440 Hz / 880 Hz のままである
 - 主・副・標準の切替で、WebAudio の左右周波数が変わる
-- 遠距離シークで、seeked の位置がシーク先 ±1 フレームである。再生を始めて、シーク先 ±0.5 秒のフレームが 3 枚目までに描かれる。そのうち最初のフレームの番号がシーク先 ±1 フレームで、先頭 5 枚のフレーム番号が自分の `mediaTime` と ±1 フレームで一致する。シーク先のセグメントをシーク前に要求していない（サーバーの要求ログで見る）
+- 遠距離シークで、seeked の位置がシーク先 ±1 フレームである。seeked 後の一時停止中に `drawImage(video)` でフレーム番号を最大 2 秒間、50 ms ごとに読み直す。シーク先 ±1 フレームでなければ最後の marker と読み直し回数を出して落とす。再生後、シーク先 ±0.5 秒の rVFC `mediaTime` が 3 枚目までに現れ、再生時刻が進むことも確かめる。シーク先のセグメントをシーク前に要求していない（サーバーの要求ログで見る）
+
+HTML Standard は一時停止中の video が current playback position のフレームを表すと定めている。Canvas の `drawImage(video)` も呼び出し時点のフレームを使う。
+
+CI の ts/direct では、9s の seeked 直後、一時停止・非 seeking・readyState 2 の状態で marker=0（黒）を読んだ測定がある。そのため seeked 直後の一度だけで内容を判定せず、一時停止中にシーク先の内容を読み直す。
+
+再生後の seek-frame 判定では、シーク先 ±0.5 秒の rVFC `mediaTime` が 3 枚目までに現れることと、再生時刻が進むことを見る。rVFC の draft は callback と映像提示の同期を best effort としているため、callback ごとの marker と `mediaTime` の組はシーク先の映像内容判定には使わない。内容は一時停止中の `drawImage(video)` で判定する。
+
+根拠: [HTML Standard: video element](https://html.spec.whatwg.org/multipage/media.html#the-video-element)、[Canvas: drawing images](https://html.spec.whatwg.org/multipage/canvas.html#drawing-images)、[requestVideoFrameCallback draft](https://wicg.github.io/video-rvfc/)。
 
 hls.js が non-fatal で報告する次の 4 つは、内容の欠けか停止の現れとして失敗にする。`bufferSeekOverHole`・`bufferNudgeOnStall`・`bufferStalledError`・`bufferAppendNoProgress` である。
 
@@ -101,10 +109,10 @@ hls.js が non-fatal で報告する次の 4 つは、内容の欠けか停止�
 
 ```sh
 cd web
-corepack pnpm e2e:recording-segmented-fixture   # フィクスチャだけ作る（Go の TestWriteSegmentedPlaybackFixture を呼ぶ）
-corepack pnpm e2e:recording-segmented-vod       # E2E_BROWSER=chrome（既定）
-E2E_DUMP_FRAMES=1 E2E_CASES=ts/restarted corepack pnpm e2e:recording-segmented-vod   # 境界のフレームを出す
-E2E_CASES=ts/no-offset corepack pnpm e2e:recording-segmented-vod
+node e2e/recording-segmented-fixture.mjs      # フィクスチャだけ作る（Go の TestWriteSegmentedPlaybackFixture を呼ぶ）
+node e2e/run.mjs recording-segmented-vod       # E2E_BROWSER=chrome（既定）
+E2E_DUMP_FRAMES=1 E2E_CASES=ts/restarted node e2e/run.mjs recording-segmented-vod   # 境界のフレームを出す
+E2E_CASES=ts/no-offset node e2e/run.mjs recording-segmented-vod
 ```
 
 `E2E_CASES` はカンマ区切りのケース名で、一致するケースだけを回す。一致が 0 件なら失敗にする。診断用のケースは、名前を書いたときだけ回る。
@@ -112,8 +120,8 @@ E2E_CASES=ts/no-offset corepack pnpm e2e:recording-segmented-vod
 fMP4 の比較では、製品の変換引数からコンテナと出力ファイル名だけを替える。再起動境界に `DISCONTINUITY` は付けず、`EXT-X-MAP` も切り替えない。全区間に連続版の init を使い、TS と同じ判定を回す。
 
 ```sh
-E2E_FMP4=1 corepack pnpm e2e:recording-segmented-vod  # TS と fMP4 の両方
-E2E_FMP4=1 E2E_CASES=fmp4/direct,fmp4/restarted corepack pnpm e2e:recording-segmented-vod
+E2E_FMP4=1 node e2e/run.mjs recording-segmented-vod  # TS と fMP4 の両方
+E2E_FMP4=1 E2E_CASES=fmp4/direct,fmp4/restarted node e2e/run.mjs recording-segmented-vod
 ```
 
 `E2E_FIXTURE_DIR` で生成先を変えられる。同時に実行するときは、実行ごとに別のディレクトリを渡す。同じ場所では生成中のファイルを消し合う。
@@ -145,7 +153,7 @@ Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・
 Chrome 156.0.8078.76 / hls.js 1.7.3 / ffmpeg 9.0.2 では、`event/growing` を既定の間隔で 10 回続けて回して 10 回とも通り、負例 2 つが期待した名前で落ちた。
 
 ```sh
-E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change corepack pnpm e2e:recording-segmented-vod
+E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change node e2e/run.mjs recording-segmented-vod
 ```
 
 #### アプリの URL に向ける
@@ -161,7 +169,7 @@ URL は `E2E_MASTER_URL` で渡す。
 ```sh
 E2E_MASTER_URL=http://localhost:40773/<録画の master.m3u8> \
 E2E_BROWSER=chrome E2E_SEGMENT_SECONDS=2 E2E_BOUNDARY_SECONDS=12 E2E_FAR_SEEK_SECONDS=52 \
-E2E_EVENT_ENDLIST_TIMEOUT_MS=180000 corepack pnpm e2e:recording-segmented-vod
+E2E_EVENT_ENDLIST_TIMEOUT_MS=180000 node e2e/run.mjs recording-segmented-vod
 ```
 
 - `E2E_SEGMENT_SECONDS` はセグメント長で、既定は 2 である。判定を始める位置を決める
@@ -204,10 +212,10 @@ docker run --rm --name rokuban-s3-302-rustfs \
 別のターミナルから `web/` で実行する。
 
 ```sh
-corepack pnpm e2e:s3-302                                # 実 Chrome
-E2E_BROWSER=webkit corepack pnpm e2e:s3-302            # Playwright WebKit 診断
-E2E_S3_DISABLE_CORS=1 corepack pnpm e2e:s3-302          # 正例 bucket の CORS を外す負例
-E2E_S3_VIDEO_TTL_SECONDS=2 corepack pnpm e2e:s3-302     # 動画の署名の期限を 2 秒にする負例
+node e2e/run.mjs s3-302                                # 実 Chrome
+E2E_BROWSER=webkit node e2e/run.mjs s3-302            # Playwright WebKit 診断
+E2E_S3_DISABLE_CORS=1 node e2e/run.mjs s3-302          # 正例 bucket の CORS を外す負例
+E2E_S3_VIDEO_TTL_SECONDS=2 node e2e/run.mjs s3-302     # 動画の署名の期限を 2 秒にする負例
 ```
 
 負例の 2 つは、どちらも非 0 で終わる。落ちる判定は次のとおりである。
@@ -251,7 +259,7 @@ CI の `browser-s3-302` は実 Chrome で回す。Playwright WebKit はローカ
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:seek-tiles
+E2E_URL=http://localhost:4173 node e2e/run.mjs seek-tiles
 ```
 
 <details><summary>根拠</summary>
@@ -280,7 +288,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:seek-tiles
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:chapters
+E2E_URL=http://localhost:4173 node e2e/run.mjs chapters
 ```
 
 ⑤-b の変異確認として、`timeupdate` の停止判定（`currentTime >= stopAt`）を外した。実時間の保険タイマーだけで止まる形になり、2 倍速の「境界から」が落ちる。Chrome は「⑤-b 2 倍速の「境界から」が 33 秒で止まっていない（位置 37.00 秒 paused=true）」、WebKit は同じ判定で位置 37.01 秒だった。⑤ の前後 3 秒も同時に落ちる。「境界まで」はこの変異では落ちない。保険タイマーの停止後にも境界変換のシークし直しが走り、位置が境界に戻るためである。したがって「境界まで」の 2 倍速は、停止判定そのものではなく停止位置を見ている。

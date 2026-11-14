@@ -6,7 +6,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 corepack pnpm e2e:cm-logo-area
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs cm-logo-area
 
 import { GetRecordingResponse, ListCMLogosResponseItem, ListRecordingsResponseItem } from '../src/api/zod.ts'
 import {
@@ -86,7 +86,7 @@ const recording7 = {
 }
 
 // 720x480 SAR 8:9。SAR でしか 4:3 と 16:9 を区別できない録画。
-const recording8 = { ...recording7, id: 8, title: 'e2e 720x480' }
+const recording8 = { ...recording7, id: 8, title: 'e2e 720x480', media: recordingMedia(8, []) }
 const frameHeaders = {
   7: { 'X-Coded-Width': '1440', 'X-Coded-Height': '1080', 'X-Sample-Aspect-Ratio': '4:3' },
   8: { 'X-Coded-Width': '720', 'X-Coded-Height': '480', 'X-Sample-Aspect-Ratio': '8:9' },

@@ -33,7 +33,7 @@
 // `=== 結果 ===` を出すところまでは必ず到達する（web/e2e/badge-links.mjs 等と同じ規約）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:grid-navigation
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs grid-navigation
 
 import { ListProgramsResponseItem, ListServicesResponseItem } from '../src/api/zod.ts'
 import {

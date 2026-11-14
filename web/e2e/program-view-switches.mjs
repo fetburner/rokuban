@@ -1,12 +1,12 @@
 // Display switches are classified by what the user is choosing: presentation,
 // filters, or distinct screen content. This gate checks the two controls changed
-// for issue #1229 in a rendered browser and captures both themes and widths.
+// in a rendered browser and captures both themes and widths.
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:issue-1229-switches
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs program-view-switches
 import { mkdirSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import {
   ListProgramsResponseItem,
   ListServicesResponseItem,
@@ -22,11 +22,7 @@ import {
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
-const OUT_DIR = process.env.E2E_SHOT_DIR ?? path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  'screenshots',
-  'issue-1229',
-)
+const OUT_DIR = process.env.E2E_SHOT_DIR ?? path.join(os.tmpdir(), 'rokuban-program-view-switches-shots')
 const FIXED_NOW = new Date('2026-08-14T12:00:00+09:00')
 const HOUR = 3_600_000
 const PROGRAM_VIEW_KEY = 'rokuban:programs:view'

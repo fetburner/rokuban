@@ -3,7 +3,7 @@
 //
 //   cd web && pnpm build && pnpm preview --port 40773 --strictPort &
 //   E2E_URL=http://localhost:40773 E2E_SHOT_DIR=/tmp/reservation-detail-shots \
-//     pnpm e2e:reservation-detail-layout
+//     node e2e/run.mjs reservation-detail-layout
 
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'

@@ -1,11 +1,11 @@
 // 正時に grid queryKey が変わっても、表示中の番組表とスクロール位置を保つ判定。
 //
-// API 応答を保留したまま実時刻だけ正時の先へ進め、その後の操作で ProgramsPage
-// を再レンダーさせる。時計だけ進めてもキーは変わらないため、操作を挟む。
-// jsdom は scrollTop と実レイアウトを測れないので、CI ではなく実 Chromium で見る。
+// API 応答を保留したまま Playwright clock で時刻とタイマーを正時の先へ進める。
+// `setFixedTime` は Date しか進めず、正時更新の timer は発火しないため `fastForward` を使う。
+// jsdom は scrollTop と実レイアウトを測れないので、browser-e2e の実 Chromium で測る。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-hour-boundary
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs programs-grid-hour-boundary
 import {
   ListCapacityOveragesResponseItem,
   ListProgramsResponseItem,
@@ -24,17 +24,19 @@ import {
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
 const HOUR = 3_600_000
+const TOKYO_OFFSET_MS = 9 * HOUR
 const FIXED_NOW = new Date('2026-08-14T12:59:35+09:00')
 const initialOrigin = new Date(FIXED_NOW)
-initialOrigin.setMinutes(0, 0, 0)
+initialOrigin.setUTCMinutes(0, 0, 0)
 const nextOrigin = initialOrigin.getTime() + HOUR
 const nextOriginISO = new Date(nextOrigin).toISOString()
 const nowAfterBoundary = new Date(nextOrigin + 20 * 60_000)
-const midnightOrigin = new Date(nextOrigin)
-midnightOrigin.setDate(midnightOrigin.getDate() + 1)
-midnightOrigin.setHours(0, 0, 0, 0)
-const midnightOriginISO = midnightOrigin.toISOString()
-const nowAfterMidnight = new Date(midnightOrigin.getTime() + 20 * 60_000)
+const tokyoWallTime = new Date(nextOrigin + TOKYO_OFFSET_MS)
+tokyoWallTime.setUTCDate(tokyoWallTime.getUTCDate() + 1)
+tokyoWallTime.setUTCHours(0, 0, 0, 0)
+const midnightOriginMs = tokyoWallTime.getTime() - TOKYO_OFFSET_MS
+const midnightOriginISO = new Date(midnightOriginMs).toISOString()
+const nowAfterMidnight = new Date(midnightOriginMs + 20 * 60_000)
 const iso = (ms) => new Date(ms).toISOString()
 const ng = []
 
@@ -140,7 +142,7 @@ async function apiHandler({ path, url, json, route }) {
   return json([])
 }
 
-await page.clock.setFixedTime(FIXED_NOW)
+await page.clock.install({ time: FIXED_NOW })
 await installApiStubs(page, apiHandler)
 await page.goto(`${BASE}/programs?view=grid`, { waitUntil: 'domcontentloaded' })
 
@@ -180,10 +182,10 @@ if ((await grid.count()) > 0) {
   holdBoundaryPrograms = true
   holdBoundaryOverages = true
   const clockBefore = await page.evaluate(() => Date.now())
-  await page.clock.setFixedTime(nowAfterBoundary)
+  await page.clock.fastForward(nowAfterBoundary.getTime() - FIXED_NOW.getTime())
   const clockAfter = await page.evaluate(() => Date.now())
   log(`操作前のブラウザ時計: ${iso(clockBefore)} → ${iso(clockAfter)}`)
-  // genre 操作が ProgramsPage を再レンダーさせ、Date.now() 由来の queryKey を更新する。
+  // genre 操作も挟み、時刻購読の再描画とユーザー操作後の queryKey 更新の両方を見る。
   await page.getByTestId('genre-filter-7').click()
   await Promise.all([programsRequest, overagesRequest]).catch(() => {
     ng.push('正時後の番組・超過帯の再取得が始まらない')
@@ -266,7 +268,7 @@ if ((await grid.count()) > 0) {
   const midnightOveragesRequest = page.waitForRequest(isMidnightOverages, { timeout: 10000 })
   holdMidnightPrograms = true
   holdMidnightOverages = true
-  await page.clock.setFixedTime(nowAfterMidnight)
+  await page.clock.fastForward(nowAfterMidnight.getTime() - nowAfterBoundary.getTime())
   await page.getByTestId('genre-filter-7').click()
   await Promise.all([midnightProgramsRequest, midnightOveragesRequest]).catch(() => {
     ng.push('日付変更後の番組・超過帯の再取得が始まらない')

@@ -7,7 +7,7 @@
 // sticky header がページ内の要素と重ならないことを見る。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:header-stacking
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs header-stacking
 import {
   ListCircuitBreakersResponseItem,
   GetRecordingResponse,

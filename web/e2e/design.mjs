@@ -47,7 +47,7 @@
 // `pnpm preview` でも rokuban 本体でもよい。
 //
 //   pnpm build && pnpm preview --port 4173 &
-//   E2E_URL=http://localhost:4173 pnpm e2e:design
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs design
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。判定の詳細は e2e/README.md §デザイン。
 import { mkdirSync, rmSync } from 'node:fs'
@@ -99,6 +99,7 @@ const SITE = 'default'
 // `/api/sites` に出さない --- 既定の全画面ショット/判定を単一サイトのまま保つため。
 const SITE2 = 'sub'
 const HOUR = 3_600_000
+const TOKYO_OFFSET_MS = 9 * HOUR
 
 const services = [
   { id: 3273601024, networkId: 32736, serviceId: 1024, name: 'NHK総合', channelType: 'GR', channel: '27', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true },
@@ -243,17 +244,19 @@ const layoutStorageRoots = {
 
 /** 予約 2 の時間帯に重ねる。琥珀の警告バッジ・帯を必ず 1 つ出すため。 */
 /**
- * nextHourBoundaryMs は与えられた時刻より後の直近の毎時 0 分（ローカル）を返す。
+ * nextHourBoundaryMs は与えられた時刻より後の直近の毎時 0 分（Asia/Tokyo）を返す。
  * 番組境界は :00 / :30 に落ちることが圧倒的に多く、不足区間の境界も同じ単位
  * （サーバー側の判定）なので、「ちょうど正時に始まる不足区間」フィクスチャを
  * ここで作る（issue #460 レビュー blocker。:34 起点の固定時刻だけでは
  * この最頻ケースを避けてしまっていた）。
  */
 function nextHourBoundaryMs(ms) {
-  const d = new Date(ms)
-  d.setMinutes(0, 0, 0)
-  if (d.getTime() <= ms) d.setHours(d.getHours() + 1)
-  return d.getTime()
+  const tokyoWallTime = new Date(ms + TOKYO_OFFSET_MS)
+  tokyoWallTime.setUTCMinutes(0, 0, 0)
+  if (tokyoWallTime.getTime() <= ms + TOKYO_OFFSET_MS) {
+    tokyoWallTime.setUTCHours(tokyoWallTime.getUTCHours() + 1)
+  }
+  return tokyoWallTime.getTime() - TOKYO_OFFSET_MS
 }
 
 const overages = [
@@ -1109,7 +1112,14 @@ let checkedColorSchemeChange = false
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
-  const { pointer = 'fine', recordingView = null, reservationGrouping = null, isMobile = pointer === 'coarse', ...apiOpts } = opts
+  const {
+    pointer = 'fine',
+    recordingView = null,
+    reservationGrouping = null,
+    isMobile = pointer === 'coarse',
+    installClock = false,
+    ...apiOpts
+  } = opts
   if (pointer !== 'fine' && pointer !== 'coarse') {
     throw new Error(`未対応のポインタプロファイル: ${pointer}`)
   }
@@ -1129,7 +1139,11 @@ async function open(viewport, theme, screen, opts = {}) {
     await context.addInitScript((value) => localStorage.setItem('rokuban:reservations:group', value), reservationGrouping)
   }
   const page = await context.newPage()
-  await page.clock.setFixedTime(FIXED_NOW)
+  if (installClock) {
+    await page.clock.install({ time: FIXED_NOW })
+  } else {
+    await page.clock.setFixedTime(FIXED_NOW)
+  }
   await installApiStubs(page, apiHandler(apiOpts))
   await page.goto(URL_BASE + screen.path, { waitUntil: 'domcontentloaded' })
   // ダークは `.dark` クラスで切り替わる（index.css の @custom-variant）。
@@ -2307,7 +2321,7 @@ log(`URL      : ${URL_BASE}`)
 log(`出力先   : ${OUT_DIR}`)
 log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
 
-// CI / red-green でこの追加判定だけを実行する入口。通常の e2e:design でも
+// CI / red-green でこの追加判定だけを実行する入口。通常の e2e/run.mjs design でも
 // 同じ関数を ④-A'' として実行し、色・到達距離の既存判定と一緒に守る。
 if (process.env.E2E_TAP_TARGETS_ONLY === '1') {
   await runCoarseTapTargetChecks()
@@ -2847,7 +2861,8 @@ for (const viewport of [homeDesktop, mobile]) {
       48 * hourPx + 64,
       { timeout: 5000 },
     ).catch(() => ng.push(`[ops-ticks/${viewport.width}px/${clock}] 窓が 48 時間でない`))
-    const expectedNowX = (now.getHours() + now.getMinutes() / 60) * hourPx
+    const [tokyoHour, tokyoMinute] = clock.split(':').map(Number)
+    const expectedNowX = (tokyoHour + tokyoMinute / 60) * hourPx
     const measured = await page.evaluate(() => {
       const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')
       const content = document.querySelector('[data-testid="home-ops-timeline-content"]')
@@ -2995,6 +3010,8 @@ for (const viewport of [homeDesktop, mobile]) {
     name: 'home-ops-follow',
     path: '/?mode=ops',
   }, {
+    // SSE 後の時計購読を測るため、Date だけ固定する setFixedTime ではなく timer も進める。
+    installClock: true,
     homeModeFixture: true,
     homeOpsFixture: true,
     homeOpsSseFixture: async () => {
@@ -3039,7 +3056,7 @@ for (const viewport of [homeDesktop, mobile]) {
       markerX: marker.getBoundingClientRect().x - frameElement.getBoundingClientRect().x,
     }
   })
-  await page.clock.setFixedTime(new Date(FIXED_NOW.getTime() + 60 * 60_000))
+  await page.clock.fastForward(60 * 60_000)
   releaseSse()
   const followed = await page.waitForFunction(
     ({ expectedScrollLeft, expectedMarkerX }) => {

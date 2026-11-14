@@ -257,15 +257,43 @@ const HARNESS_HTML = String.raw`<!doctype html>
           return { path: state.path, duration: video.duration }
         },
 
-        // 一時停止して seek し、seeked の位置を返す。フレームは再生を始めてから読む。
-        async seek(seconds) {
+        // 停止して seeked を待ち、再生位置と停止中の映像フレームを読む。
+        async seek(seconds, expectedFrame) {
+          state.capture = false
           video.pause()
           await new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('seeked が 10 秒以内に来ない')), 10_000)
             video.addEventListener('seeked', () => { clearTimeout(timer); resolve() }, { once: true })
             video.currentTime = seconds
           })
-          return { landing: video.currentTime }
+          // HTML Standard: a paused video represents its current-position frame, and drawImage(video) uses that frame when available.
+          // https://html.spec.whatwg.org/multipage/media.html#the-video-element
+          // https://html.spec.whatwg.org/multipage/canvas.html#drawing-images
+          // CI の ts/direct では、9s の seeked 直後に marker=0（黒）を読んだ測定がある。
+          // seeked 時の 1 回だけで内容を判定せず、一時停止中に目標 marker を読み直す。
+          const frameReadStartedAt = performance.now()
+          const frameReadDeadline = frameReadStartedAt + 2_000
+          let frame = null
+          let frameReads = 0
+          while (true) {
+            if (video.paused && !video.seeking && video.readyState >= 2) {
+              frame = decodeFrameMarker()
+              frameReads += 1
+              if (Math.abs(frame - expectedFrame) <= 1) break
+            }
+            const remainingMs = frameReadDeadline - performance.now()
+            if (remainingMs <= 0) break
+            await new Promise((resolve) => setTimeout(resolve, Math.min(50, remainingMs)))
+          }
+          return {
+            landing: video.currentTime,
+            paused: video.paused,
+            seeking: video.seeking,
+            readyState: video.readyState,
+            frame,
+            frameReads,
+            frameReadMs: performance.now() - frameReadStartedAt,
+          }
         },
 
         async start() {
@@ -761,14 +789,22 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     }
   }
 
-  // seek して再生を始め、シーク先から描かれる最初の数フレームを判定する。
+  // 停止中に seek 先の内容を読み、再生後は提示時刻の近さを別に判定する。
   // 再生を始めるまでの間に、シーク前のフレームが 1〜2 回だけ callback に出るブラウザがある
   // （mediaTime がシーク先から遠い）。それは数えず、シーク先 ±0.5 秒のフレームが出るまでの枚数を 2 枚までとする。
   const seekAndCheck = async (target, resume) => {
-    const seeked = await adapter.evaluate(async (seconds) => window.__e2e.seek(seconds), target)
     const expected = Math.round(target * FRAME_RATE)
+    const seeked = await adapter.evaluate(
+      async ([seconds, frame]) => window.__e2e.seek(seconds, frame),
+      [target, expected],
+    )
     if (!Number.isFinite(seeked.landing) || Math.abs(seeked.landing - target) > 1 / FRAME_RATE) {
       add('seek-frame', `seeked 位置が要求 ${target}s から 1 frame を超えてずれた (${seeked.landing})`)
+    }
+    if (!seeked.paused || seeked.seeking || seeked.readyState < 2 || !Number.isInteger(seeked.frame)) {
+      add('seek-frame', `${target}s への seek 後、一時停止中の映像フレームを読めない (paused=${seeked.paused}, seeking=${seeked.seeking}, readyState=${seeked.readyState}, marker=${seeked.frame}, reads=${seeked.frameReads}, wait=${seeked.frameReadMs?.toFixed(0)}ms)`)
+    } else if (Math.abs(seeked.frame - expected) > 1) {
+      add('seek-frame', `一時停止中の seek 先フレームが目標 ${target}s (frame ${expected}) と合わない: last marker=${seeked.frame}, reads=${seeked.frameReads}, wait=${seeked.frameReadMs.toFixed(0)}ms`)
     }
     await resume()
     await waitForState(adapter, (s) => !s.paused && s.currentTime >= target + 0.6, 15_000, `${target}s への seek の後の再生`)
@@ -779,13 +815,8 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
       add('seek-frame', `${target}s への seek の後にフレームが描かれない`)
     } else if (start < 0) {
       add('seek-frame', `${target}s への seek の後に、シーク先 ±0.5s のフレームが描かれない: marker=${JSON.stringify(frames.slice(0, 5).map((sample) => sample.frame))}, mediaTime=${JSON.stringify(frames.slice(0, 5).map((sample) => Number(sample.mediaTime.toFixed(3))))}`)
-    } else {
-      const first = frames.slice(start, start + 5)
-      // seek 直後は currentTime が表示中のフレームより先に進んでいることがある。フレームの内容は自分の mediaTime と比べる。
-      const bad = first.filter((sample) => Math.abs(sample.frame - Math.round(sample.mediaTime * FRAME_RATE)) > 1)
-      if (start > 2 || bad.length > 0 || Math.abs(first[0].frame - expected) > 1) {
-        add('seek-frame', `seek の後の最初のフレームが目標 ${target}s (frame ${expected}) と合わない (シーク前のフレーム ${start} 枚の後): marker=${JSON.stringify(first.map((sample) => sample.frame))}, mediaTime=${JSON.stringify(first.map((sample) => Number(sample.mediaTime.toFixed(3))))}, currentTime=${JSON.stringify(first.map((sample) => Number(sample.currentTime.toFixed(3))))}`)
-      }
+    } else if (start > 2) {
+      add('seek-frame', `再生後、シーク先 ±0.5s のフレームが ${start + 1} 回目の callback まで現れない`)
     }
   }
 

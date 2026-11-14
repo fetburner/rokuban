@@ -1,16 +1,17 @@
-// Issue #1232: search controls follow their conditions, Enter routes to the active form,
+// Search controls follow their conditions, Enter routes to the active form,
 // and EmptyState stays visually distinct from the scanlined loading skeleton.
 //
 // Run with:
-//   E2E_URL=http://127.0.0.1:4173 node e2e/issue-1232-search.mjs
-// Screenshots are written to E2E_SHOT_DIR (default: /private/tmp/rokuban-issue-1232-shots).
+//   E2E_URL=http://127.0.0.1:4173 node e2e/run.mjs search-form-interactions
+// Screenshots are written to E2E_SHOT_DIR (default: path.join(os.tmpdir(), 'rokuban-search-form-interactions-shots')).
 import { mkdirSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://127.0.0.1:4173'
-const SHOT_DIR = process.env.E2E_SHOT_DIR ?? '/private/tmp/rokuban-issue-1232-shots'
+const SHOT_DIR = process.env.E2E_SHOT_DIR ?? path.join(os.tmpdir(), 'rokuban-search-form-interactions-shots')
 const SITE = 'default'
 const ng = []
 const searchRequests = []
@@ -117,9 +118,9 @@ if (idleClassName.split(/\s+/).includes('scanlines')) {
   ng.push('未検索の EmptyState に scanlines が残っている')
 }
 await idleMessage.evaluate((element) => element.scrollIntoView({ block: 'center' }))
-await page.screenshot({ path: path.join(SHOT_DIR, 'issue-1232-search-empty-light.png'), fullPage: true })
+await page.screenshot({ path: path.join(SHOT_DIR, 'search-form-interactions-empty-light.png'), fullPage: true })
 await page.evaluate(() => document.documentElement.classList.add('dark'))
-await page.screenshot({ path: path.join(SHOT_DIR, 'issue-1232-search-empty-dark.png'), fullPage: true })
+await page.screenshot({ path: path.join(SHOT_DIR, 'search-form-interactions-empty-dark.png'), fullPage: true })
 await page.evaluate(() => document.documentElement.classList.remove('dark'))
 
 // Enter in the condition field submits Search exactly once and never saves a rule.

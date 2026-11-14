@@ -5,7 +5,7 @@
 // and for mobile form controls at a 390px viewport.
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:font-scale
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs font-scale
 //
 // The iPhone Safari focus-zoom check remains a physical-device follow-up.
 import {

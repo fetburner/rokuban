@@ -12,7 +12,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 corepack pnpm e2e:personalization
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs personalization
 import { ListRecordingsResponseItem, SearchProgramsResponseItem } from '../src/api/zod.ts'
 import {
   finish,

@@ -161,10 +161,10 @@ export function ProgramReservationSummary({
           {title ?? <div className="truncate text-base">{program.name}</div>}
           <div
             data-testid="program-row-meta"
-            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
+            className="flex flex-nowrap items-center gap-x-2 text-sm text-muted-foreground"
           >
             {siteName && <span className="shrink-0">{siteName}</span>}
-            {serviceName && <span className="truncate">{serviceName}</span>}
+            {serviceName && <span className="min-w-0 truncate">{serviceName}</span>}
             <span className="shrink-0">{formatDuration(program.durationMs)}</span>
             {!program.isFree && <span className="shrink-0">有料</span>}
             {skipIntent && (

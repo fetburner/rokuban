@@ -29,7 +29,7 @@
 // ブラウザ側から丸ごと差し替える（e2e/design.mjs と同じ手）。
 //
 //   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs programs-bottom-nav
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
 import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'

@@ -9,7 +9,7 @@
 // 実 API / mirakc / DB は要らない。API は page.route で差し替える。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:reservations-capacity-error
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs reservations-capacity-error
 import { ListCapacityOveragesResponseItem, ListReservationsResponseItem } from '../src/api/zod.ts'
 import {
   finish,

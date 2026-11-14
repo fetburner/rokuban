@@ -16,7 +16,7 @@ GR 局を足すと site の列領域が非隣接な複数の走に分かれる�
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:multi-site
+E2E_URL=http://localhost:4173 node e2e/run.mjs multi-site
 ```
 
 ### 正時をまたぐグリッド再取得（`programs-grid-hour-boundary.mjs`）
@@ -25,7 +25,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:multi-site
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-hour-boundary
+E2E_URL=http://localhost:4173 node e2e/run.mjs programs-grid-hour-boundary
 ```
 
 ### 参照バッジのリンク（`badge-links.mjs`）
@@ -38,7 +38,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-hour-boundary
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:badge-links
+E2E_URL=http://localhost:4173 node e2e/run.mjs badge-links
 ```
 
 **配っている bundle が `dist/` の現物と一致するかは、スクリプト自身が毎回 ⓪ として自動で確認する**（`verifyBundleMatches`）。不一致なら他の判定をせず即 exit 1 するので、`curl`/`ls` で手動照合する必要はない。これは実際に起きたトラブルの再発を、人の確認忘れに頼らず機械で止めるための仕組みである。そのトラブルは `--strictPort` を付けていても起きた --- 複数の worktree を並行して触っていると、別の worktree の preview が同じポートに先に居座る。すると自分の起動が何も出さずに失敗し、`E2E_URL` が無関係な古いビルドを指したまま判定が進んでしまう。ポート自体は空いているものを選ぶこと（`--strictPort` が起動を失敗させるので、選び間違えればここで気付ける）。
@@ -56,7 +56,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:badge-links
 ```sh
 E2E_URL=http://localhost:40799 \
   E2E_DATABASE_URL='postgres://localhost:5432/<サーバーと同じ DB>?sslmode=disable' \
-  pnpm e2e:shelves-split
+  node e2e/run.mjs shelves-split
 ```
 
 ### 番組表グリッドの空間ナビゲーション（`grid-navigation.mjs`）
@@ -70,7 +70,7 @@ jsdom ではレイアウト・スクロール位置・仮想化後のフォー�
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:grid-navigation
+E2E_URL=http://localhost:4173 node e2e/run.mjs grid-navigation
 ```
 
 ### 番組表グリッドの予約済み印（`grid-reserved.mjs`）
@@ -89,7 +89,7 @@ jsdom は色も要素の大きさも測れないので、ここが唯一の判�
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
+E2E_URL=http://localhost:4173 node e2e/run.mjs grid-reserved
 ```
 
 ### 番組表セルの操作モーダル（`programs-dialog.mjs`）
@@ -109,7 +109,7 @@ API は `page.route` で丸ごと差し替えるので mirakc・実チューナ�
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:programs-dialog
+E2E_URL=http://localhost:4173 node e2e/run.mjs programs-dialog
 ```
 
 ### 番組リストの空時間窓（`programs-empty-window.mjs`）
@@ -118,7 +118,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:programs-dialog
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:programs-empty-window
+E2E_URL=http://localhost:4173 node e2e/run.mjs programs-empty-window
 ```
 
 ### 予約一覧取得失敗時の番組表レイアウト（`programs-reservation-error.mjs`）
@@ -139,11 +139,11 @@ E2E_URL=http://localhost:4173 pnpm e2e:programs-empty-window
 
 `design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
-**`pnpm e2e`（`checks.mjs`）には足さない。** `checks.mjs` は判定を集約するハブではなく、番組リストの日付ジャンプだけを見る独立したスクリプト（既存の他スクリプトも `pnpm e2e` からは呼ばれていない）。したがってこのスクリプトも他と同じく独立した `package.json` スクリプトのままにする。
+`checks.mjs` は番組リストの日付ジャンプだけを見る独立した判定である。実データベース上で番組行を待つため、冒頭の `e2e-needs: db-state` で通常の CI 対象から除く。`node e2e/run.mjs checks` で個別に実行できるので、`package.json` にファイルごとの別名を増やさない。
 
 ```sh
 pnpm build && go build -o /tmp/rokuban ../cmd/rokuban && /tmp/rokuban server --roles api --config ../dev.local.yml &
-pnpm e2e:programs-reservation-error
+node e2e/run.mjs programs-reservation-error
 ```
 
 ### 番組表の表示形式（`programs-view.mjs`）
@@ -152,16 +152,16 @@ pnpm e2e:programs-reservation-error
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:programs-view
+E2E_URL=http://localhost:4173 node e2e/run.mjs programs-view
 ```
 
-### 表示切替の形（`issue-1229-switches.mjs`）
+### 表示切替の形（`program-view-switches.mjs`）
 
 Programs のリスト / 番組表が 1 つの segmented control に見えることと、Home の見る / 管理が無彩の下線付き tabs になることを、Chromium の実画面で確認する。URL と localStorage による両方の選択状態も確認し、ライト / ダークと 1280px / 390px の画面を PNG に保存する。API はブラウザ内スタブで差し替える。
 
 ```sh
 pnpm build && pnpm preview --host 127.0.0.1 --port 4173 --strictPort &
-E2E_URL=http://127.0.0.1:4173 E2E_SHOT_DIR=/tmp/rokuban-switch-shots pnpm e2e:issue-1229-switches
+E2E_URL=http://127.0.0.1:4173 E2E_SHOT_DIR=/tmp/rokuban-switch-shots node e2e/run.mjs program-view-switches
 ```
 
 ### 番組表の短い番組選択（`programs-grid-zoom.mjs`）
@@ -176,5 +176,5 @@ E2E_URL=http://127.0.0.1:4173 E2E_SHOT_DIR=/tmp/rokuban-switch-shots pnpm e2e:is
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-zoom
+E2E_URL=http://localhost:4173 node e2e/run.mjs programs-grid-zoom
 ```

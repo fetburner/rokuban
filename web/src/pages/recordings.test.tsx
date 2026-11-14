@@ -1164,7 +1164,7 @@ describe('録画の出自ラベル', () => {
  * 状態色の適用。**色そのものは jsdom では測れない**（Tailwind のクラスは
  * 解決されないし oklch も計算されない）ので、ここで見るのは「どのトークンの
  * クラスが当たっているか」だけ。実際の画素での判定は `web/e2e/design.mjs`
- * （`pnpm e2e:design`）が持つ。
+ * （`node e2e/run.mjs design`）が持つ。
  *
  * それでもここに置くのは、`bg-tally` を `bg-primary/10` に戻すような差し替えを
  * 実ブラウザを起動せずに止められるため（docs/frontend/design.md）。

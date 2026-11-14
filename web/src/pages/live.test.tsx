@@ -879,7 +879,7 @@ describe('LivePage', () => {
     // 情報欄バッジは <span>（見出しは <p>）。text-muted-foreground だと
     // bg-muted との合成後コントラストがライトで 4.5 を割る（issue #308）。
     // jsdom は色を測れないので、退行防止としてはクラス名のリテラル比較まで
-    // （実測は e2e:design の担当）。
+    // （実測は e2e/run.mjs design の担当）。
     const badge = matches.find((el) => el.tagName === 'SPAN')
     expect(badge).toBeDefined()
     expect(badge!.className).toContain('text-foreground')
@@ -894,7 +894,7 @@ describe('LivePage', () => {
 
     const link = await screen.findByRole('link', { name: /チャンネル A/ })
     // jsdom は色を測れないので、退行防止としてはクラス名のリテラル比較まで
-    // （実測は e2e:design の担当）。
+    // （実測は e2e/run.mjs design の担当）。
     const badge = within(link).getByText('3')
     expect(badge.className).toContain('text-foreground')
     expect(badge.className).not.toContain('text-muted-foreground')

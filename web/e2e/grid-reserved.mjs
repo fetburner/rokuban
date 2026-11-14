@@ -19,7 +19,7 @@
 // 他 PR がそこを編集している可能性があるため（reserve-visibility.mjs と同じ理由）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs grid-reserved
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
 import {

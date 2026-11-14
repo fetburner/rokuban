@@ -566,6 +566,26 @@ describe('ProgramRow の操作列の開閉配線（issue #310 / #755）', () => 
     expect(within(reserveWrapper).getByRole('button', { name: '予約' })).toBeInTheDocument()
   })
 
+  it('番組の時刻・局・長さ・有料のメタ行は折り返さない', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program({ isFree: false })}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+        serviceName="長い局名"
+      />,
+    )
+
+    const meta = await screen.findByTestId('program-row-meta')
+    expect(meta).toHaveClass('flex-nowrap')
+    expect(meta).not.toHaveClass('flex-wrap')
+    expect(within(meta).getByText('長い局名')).toHaveClass('min-w-0', 'truncate')
+  })
+
   it('予約済みの行でも「取消」ボタンが同じ wrapper（program-row-reserve）に入る', async () => {
     stubFetch()
     renderInRouter(

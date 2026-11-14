@@ -112,7 +112,7 @@ curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind
 想定する形は、SCE 2 つと `channel_configuration=2` の組み合わせである。手元で測ったのは次の 2 つである。
 
 - 実バイナリ + 偽 mirakc + 実 ffmpeg で、合成した二重音声（440Hz / 880Hz のモノラル AAC 2 本を 1 フレームに継いだ TS）を流した。`hd.1`（標準）は L 440 / R 880、`hd.2`（主）は 440 / 440、`hd.3`（副）は 880 / 880 だった（HTTP 越しにデコードして左右の周波数を測った）
-- ブラウザ側の切替は `pnpm e2e:live-audio`（下記 ②）
+- ブラウザ側の切替は `node e2e/run.mjs live-audio`（下記 ②）
 
 実放送では、番組表で「二か国語」「副音声」の番組を選んで次を確かめる。
 
@@ -252,7 +252,7 @@ pnpm exec playwright install chromium webkit
 ```sh
 cd web && pnpm build
 pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:live-audio
+E2E_URL=http://localhost:4173 node e2e/run.mjs live-audio
 ```
 
 変異で落ちることを確かめてある。ffmpeg の引数から再生時刻の埋め込み（PDT）を外すと ① の「標準へ戻る」で落ちる。プレーヤーの hls.js への適用を外すと主 / 副で落ちる。② は 11 回中 1 回、副を選んでも `audioTracks` が揃わず落ちた（原因は未特定。PDT の有無とは無関係だった）。落ちたら 10 秒後の `enabled` の並びが出る。

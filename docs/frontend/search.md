@@ -178,7 +178,7 @@ mirakc-arib のサービス scanner は、音声映像サービスでない種�
 
 - 値入力の Enter キーヒント: `enterKeyHint="search"`
 - 結果の先頭へ移る: `検索結果` セクション
-- 実ブラウザの検索フォームの確認: `web/e2e/issue-1232-search.mjs`、`pnpm e2e:issue-1232-search`
+- 実ブラウザの検索フォームの確認: `web/e2e/search-form-interactions.mjs`、`node e2e/run.mjs search-form-interactions`
 - 入力と送信の実装: `components/condition-fields.tsx`
 
 </details>

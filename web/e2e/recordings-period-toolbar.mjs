@@ -6,7 +6,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 corepack pnpm e2e:recordings-period-toolbar
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs recordings-period-toolbar
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
 import {
   finish,
@@ -145,8 +145,9 @@ for (const width of [360, 390]) {
 
 log('\n=== ② 390px: 期間と絞り込みが下からのシートで開き、末尾までシート内で届く ===')
 {
-  // 844px では中身が 85% に収まりスクロールが起きない。スクロールの経路を通すため低くする。
-  const height = 560
+  // 390x560 では本体が 244px に収まり、スクロール判定が空になる。85dvh の上限が
+  // 本体を確実に縮める高さにして、シート内スクロールの経路を測る。
+  const height = 320
   const { context, page } = await open({ width: 390, height }, SUMMER)
   for (const [buttonName, title, last] of [
     ['2026 夏', '期間', (dialog) => dialog.getByLabel('終了日（この日を含む）')],

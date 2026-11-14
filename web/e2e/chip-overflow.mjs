@@ -13,7 +13,7 @@
 // 使い方（Go サーバーも Postgres も要らない。API は全部スタブする）:
 //
 //   cd web && pnpm build && pnpm exec vite preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:chip-overflow
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs chip-overflow
 import { finish, launchBrowser, log, sseKeepAlive, verifyBundleMatchesOrExit } from './lib.mjs'
 
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'

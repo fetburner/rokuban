@@ -38,48 +38,20 @@ jobs:
       - run: pnpm test
         working-directory: web
       # E2E のフィクスチャ契約だけを検証する。E2E_VALIDATE_FIXTURES_ONLY=1 で各スクリプトは
-      # ブラウザを起動せず終了する。実ブラウザ判定の軽量セットは browser-e2e job で実行する。
+      # ブラウザを起動せず終了する。実ブラウザ判定は browser-e2e job で実行する。
       - run: pnpm e2e:fixtures
         working-directory: web
 
-  # 実バイナリが go:embed した web/dist を配り、DB readiness を通る実 HTTP サーバーに
-  # Chromium からアクセスする。18 本とも Playwright 内で /api/** をスタブするため mirakc は不要。
-  # recordings-selection は実ブラウザ判定の前に 20 件の録画 fixture を Zod 契約で検査する。
-  #
-  # 回すのは web/e2e/*.mjs の判定スクリプト（共有部品を除く）のうち 18 本。
-  # recording-playback-timeline は録画詳細とライブ画面の API HLS 世代切替を Chromium で回す。
-  # 選定基準は次の 3 つを全部満たすこと。
-  #   - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり・実画素コントラスト・計算済み文字サイズ・キー操作によるネイティブのスクロール・safe-area inset の解決・`navigator.sendBeacon` の実送信・実メディアの `currentTime`）
-  #   - /api/** を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
-  #   - webkit と DB への直接書き込みを要らず、Chromium だけで軽く終わる。ffmpeg は短い fixture の生成に限って使ってよい
-  # 回さない判定スクリプトの理由は 3 類型。
-  #   - webkit が要る: webkit でしか測れない判定を持つ live / live-audio。
-  #     E2E_BROWSER=webkit を任意で受けるだけのスクリプトは Chromium で回るのでここに入れない
-  #   - 実 DB の状態が要る: checks（既定の pnpm e2e）は API をスタブせず実 EPG の番組行を待ち、
-  #     live は epg_services に実サービスの行が要り、shelves-split は E2E_DATABASE_URL の DB を TRUNCATE する
-  #   - API スタブで載せられるが所要時間を測っていない（PR ごとに払う価値をまだ判断していない）
-  #       - 画面別判定（番組表・予約・検索など）
-  #       - ffmpeg で fixture を作るもの
-  #           - 録画 HLS の実ブラウザ再生と世代切替: recording-playback-timeline（Go も要る）
-  #           - そのほか: home-resume-frame / seek-tiles / subtitles / recording-next-episode
-  #       - design: 63 枚のショットを撮るぶん重い
-  # safe-area-inline は CDP で非ゼロの左右 inset を与え、横向き 844px のサイドバーと 700px のボトムタブが inset の内側に入る寸法を測る。
-  # home-timeline-keyboard は 1280×800 の時間軸にフォーカスしたときの左右矢印スクロールを測る。
-  # font-scale は 390 / 767 / 768 / 1280px のフォーム文字サイズと、画面内の例外文字サイズを測る。
-  # search-shortcut は録画一覧・シリーズ・番組検索で `/` が検索欄へ移ることと、入力欄・IME・録画詳細のプレイヤー表示中では横取りしないことを測る。
-  # issue-1233-dialog-focus は確認ダイアログを開いた直後の初期フォーカスと Tab / Return / Escape の行き先を測る。
-  # design のルールカード判定（`E2E_RULE_CARD_ONLY`）は 360 / 390px でルールカードの縦積みと補助導線の muted 色・アイコン位置を測る。
-  # live-player-modes はライブの pagehide と visibilitychange の離脱ヒント（jsdom には sendBeacon が無く fetch に落ちる）、ライブと録画 HLS の 503 文言、ffmpeg で作った実メディアの再生を測る。
-  # chapters は録画ファイルと LivePlayer の録画 HLS の境界再生が、停止保険後も続くことを実測し、録画 HLS が再生位置で止まることも実測する。所要時間は手元の実測で約 125 秒（2026-11-03）。CI での所要時間は未計測。
-  # recording-playback-timeline は録画詳細とライブ画面の世代付き HLS、実メディア再生、410 後の位置復元を測る。
-  # reservations-series は 360px での行全体リンクと内側リンクの当たり判定・折り返しを、
-  # reservation-detail-layout は詳細の欄の折り返しと viewport への収まりを測る。どちらも jsdom には測れない。
-  # 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
-  # 誰も見ない赤い定期ジョブは PR ごとに回す 18 本より信号として弱いため。
-  # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
-  browser-e2e:
+  # 要件宣言の無い判定を browser-e2e の対象にする。語彙と意味は web/e2e/README.md に置く。
+  # 必須チェック名 `browser-e2e` は下の集約ジョブが担う。
+  browser-e2e-shard:
+    name: browser-e2e-shard (${{ matrix.shard }}/5)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     services:
       postgres:
         image: postgres:17
@@ -148,68 +120,25 @@ jobs:
           echo "::error::Rokuban did not become ready at ${E2E_URL}; server log follows"
           cat "${server_log}"
           exit 1
-      # 1 本が落ちても残りを走らせ、1 回の実行で全部の結果を見えるようにする。
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:cls
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:safe-area-inline
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:chip-overflow
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:programs-condition-lens
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:recordings-selection
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:recordings-rule-filter
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:recording-detail-layout
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:reservations-series
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:circuit-breaker-store
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:reservation-detail-layout
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:home-timeline-keyboard
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:font-scale
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:search-shortcut
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:issue-1233-dialog-focus
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: E2E_RULE_CARD_ONLY=1 pnpm e2e:design
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:live-player-modes
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:chapters
-        working-directory: web
-      - if: ${{ !cancelled() }}
-        run: pnpm e2e:recording-playback-timeline
+      - name: Run browser E2E
+        if: ${{ !cancelled() }}
+        run: node e2e/run.mjs --shard ${{ matrix.shard }}/5
         working-directory: web
       - name: Show API server log
         if: failure()
         run: cat "${RUNNER_TEMP}/rokuban-e2e-server.log"
 
-  # S3 の署名付き URL への 302 を実 Chrome で測る（`web/e2e/s3-302.mjs`）。`browser-e2e` と別ジョブにしている
-  # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）が要り、`browser-e2e` の選定基準
-  # 「Chromium だけで軽く終わる」を満たさないため。実 Safari の測定は macOS のローカルで行い、CI には載せない。
+  # 必須チェック名 `browser-e2e` を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
+  browser-e2e:
+    needs: browser-e2e-shard
+    if: always()
+    runs-on: ubuntu-slim
+    steps:
+      - run: test "${{ needs.browser-e2e-shard.result }}" = success
+
+  # S3 の署名付き URL への 302 を実 Chrome で測る。`browser-e2e` と別ジョブにしている
+  # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）を用意するため。
+  # 実 Safari の測定は macOS のローカルで行い、CI には載せない。
   browser-s3-302:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -277,7 +206,7 @@ jobs:
             sleep 1
           done
           exit 1
-      - run: pnpm e2e:s3-302
+      - run: node e2e/run.mjs --needs s3
         working-directory: web
         env:
           E2E_S3_URL: http://127.0.0.1:9000
@@ -684,9 +613,7 @@ jobs:
         working-directory: web
       - run: pnpm lint
         working-directory: web
-      # トークン外の生の色値の検出（docs/frontend/design.md）。実ブラウザは
-      # 要らないのでここで回す。全体のコントラスト判定は `pnpm e2e:design`（ローカル）、
-      # モバイルのルールカードの縦積みと補助導線の判定（`E2E_RULE_CARD_ONLY`）は browser-e2e job で実行する。
+      # トークン外の生の色値の検出（docs/frontend/design.md）。実ブラウザを要しないのでここで回す。
       - run: pnpm check:colors
         working-directory: web
       # go.mod より古い Go でビルドされた golangci-lint は起動を拒む。v2.12.2 は

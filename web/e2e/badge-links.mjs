@@ -27,7 +27,7 @@
 // `page.clock.setFixedTime` で固定する。
 //
 //   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:badge-links
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs badge-links
 //
 // ⓪（配っている bundle と dist/ の一致確認）は e2e/lib.mjs の
 // verifyBundleMatchesOrExit に委ねる（不一致の事故の経緯もそちらのコメント）。

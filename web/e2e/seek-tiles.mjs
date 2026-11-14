@@ -29,7 +29,7 @@
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 corepack pnpm e2e:seek-tiles
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs seek-tiles
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'

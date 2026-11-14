@@ -484,6 +484,52 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(seekTarget).toBe(230)
   })
 
+  it('停止中のカット版は seeked と取得済みフレームで再開位置を表示する', async () => {
+    const continuation = recording(48, '停止中シークの主役', 'finished', {
+      resumePositionMs: 16_432,
+      encodedAssets: [{
+        profile: 'cut',
+        cut: true,
+        keepRanges: [
+          { startMs: 0, endMs: 5_400 },
+          { startMs: 10_800, endMs: 22_000 },
+        ],
+        sizeBytes: 100,
+      }],
+    })
+    stubApi({ continueWatching: [continuation] })
+    renderHome('/?mode=watch')
+
+    const video = await screen.findByTestId('home-hero-resume-video')
+    expect(video).toHaveProperty('paused', true)
+    let seekTarget = 0
+    Object.defineProperty(video, 'duration', { configurable: true, value: 16.6166 })
+    Object.defineProperty(video, 'readyState', {
+      configurable: true,
+      value: HTMLMediaElement.HAVE_CURRENT_DATA,
+    })
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => seekTarget,
+      set: (value: number) => { seekTarget = value },
+    })
+    // 停止中に requestVideoFrameCallback のコールバックが届かない状態を再現する。
+    Object.defineProperty(video, 'requestVideoFrameCallback', { configurable: true, value: () => 1 })
+
+    act(() => fireEvent.loadedMetadata(video))
+    expect(seekTarget).toBe(11.032)
+    expect(video).toHaveAttribute('data-resume-state', 'waiting')
+
+    seekTarget = 0
+    act(() => fireEvent.seeked(video))
+    expect(video).toHaveAttribute('data-resume-state', 'waiting')
+
+    seekTarget = 11.032
+    act(() => fireEvent.seeked(video))
+    expect(video).toHaveAttribute('data-resume-state', 'ready')
+    expect(video).toHaveStyle({ opacity: '1' })
+  })
+
   it('保存位置のフレームを表示した後は timeout fallback に戻らない', async () => {
     const recordingWithResume = recording(47, '表示後も維持する', 'finished', {
       resumePositionMs: 330_000,

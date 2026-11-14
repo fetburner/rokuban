@@ -3,7 +3,7 @@
 //
 //   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservation-rule-shots \
-//     pnpm e2e:reservations-rule-filter
+//     node e2e/run.mjs reservations-rule-filter
 
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'

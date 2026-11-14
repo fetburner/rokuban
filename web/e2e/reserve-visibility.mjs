@@ -53,7 +53,7 @@
 // （design.mjs / live.mjs と同じ手）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 node e2e/reserve-visibility.mjs
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs reserve-visibility
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
 import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'

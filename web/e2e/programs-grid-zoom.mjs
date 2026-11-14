@@ -5,7 +5,7 @@
 // 5 分セルが 10px のままでズーム段階も無いため、縮尺の判定と選択判定が落ちる。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-zoom
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs programs-grid-zoom
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
 import { ListProgramsResponseItem, ListServicesResponseItem } from '../src/api/zod.ts'

@@ -2,8 +2,8 @@
 // fixture は Go のテストが製品の HLS 引数ビルダーで作る。
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
-//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
+//   E2E_URL=http://localhost:4173 node e2e/run.mjs recording-playback-timeline
+//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit node e2e/run.mjs recording-playback-timeline
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'

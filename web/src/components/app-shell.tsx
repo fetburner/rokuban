@@ -140,7 +140,7 @@ function isActive(pathname: string, to: string): boolean {
  * 絞り込みシートに揃える。`ToolbarPanel` とは変更理由が異なるため共有しない。
  *
  * 固定されたボトムバーの上に重なるため、シートが画面下端に接するかは jsdom では
- * 測れない。実ブラウザでの合否は `e2e/issue-1224-sheet.mjs` が担う。
+ * 測れない。実ブラウザでの合否は `e2e/channel-and-more-sheet.mjs` が担う。
  *
  * トリガー自身のアクティブ表示は、配下の項目（予約・ライブ・検索・ルール・CM ロゴ）の
  * いずれかが現在地のときに立てる。個々のリンクは自身のページに居るときだけ
