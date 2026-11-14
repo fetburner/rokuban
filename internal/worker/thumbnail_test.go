@@ -666,7 +666,7 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	if _, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID:       recordingID,
 		SizeBytes:         int64(len(tinyJPEG)),
-		DerivedGeneration: &generation,
+		DerivedGeneration: generation,
 	}); err != nil {
 		t.Fatalf("UpsertDerivedMediaAsset(thumbnail) over existing active row: %v", err)
 	}

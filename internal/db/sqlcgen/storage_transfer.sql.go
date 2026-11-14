@@ -108,7 +108,7 @@ WITH observed AS (
     WHERE a.id = $2
       AND a.recording_id = r.id
       AND r.deleted_at IS NULL
-      AND COALESCE(a.derived_generation, 0) = $5
+      AND a.derived_generation = $5
       AND desired_media_store(
           a.kind,
           $6::jsonb,
@@ -123,7 +123,7 @@ WITH observed AS (
           WHERE c.id = $1
             AND c.media_asset_id = a.id
             AND c.store = $3
-            AND c.generation = COALESCE(a.derived_generation, 0)
+            AND c.generation = a.derived_generation
             AND c.state = 'pending'
       )
       AND NOT (
@@ -142,7 +142,7 @@ WITH observed AS (
       AND c.media_asset_id = o.id
       AND a.id = o.id
       AND c.store = $3
-      AND c.generation = COALESCE(a.derived_generation, 0)
+      AND c.generation = a.derived_generation
       AND c.state = 'pending'
     RETURNING c.id
 ), cleared_missing AS (
@@ -178,7 +178,7 @@ type CompleteMediaAssetTransferParams struct {
 	MediaAssetID  int64
 	TargetStore   string
 	Sha256        []byte
-	Generation    *int64
+	Generation    int64
 	OriginalRules json.RawMessage
 	DerivedStore  string
 	SizeBytes     int64
@@ -661,7 +661,7 @@ JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.store = ANY($1::text[])
   AND c.store <> $2::text
   AND c.state = 'active'
-  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND c.generation = a.derived_generation
   AND a.kind <> 'original'
 GROUP BY c.store
 ORDER BY c.store
@@ -1067,7 +1067,7 @@ WHERE c.id = $1
   AND c.store = $3
   AND c.media_asset_id = a.id
   AND a.recording_id = $4
-  AND c.generation = COALESCE(a.derived_generation, 0)
+  AND c.generation = a.derived_generation
   AND c.state = 'active'
   AND a.kind <> 'original'
   AND EXISTS (
@@ -1217,7 +1217,7 @@ WITH asset AS MATERIALIZED (
            a.size_bytes,
            a.kind,
            a.sha256,
-           COALESCE(a.derived_generation, 0)::bigint AS generation,
+           a.derived_generation AS generation,
            desired_media_store(
                a.kind,
                $1::jsonb,
@@ -1376,7 +1376,7 @@ UPDATE media_assets a
 SET sha256 = $1::bytea
 WHERE a.id = $2
   AND a.sha256 IS NULL
-  AND COALESCE(a.derived_generation, 0) = $3::bigint
+  AND a.derived_generation = $3::bigint
 `
 
 type RecordObservedMediaAssetSHA256Params struct {

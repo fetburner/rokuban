@@ -430,7 +430,7 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 		RecordingID:       recordingID,
 		Profile:           &profile,
 		SizeBytes:         1,
-		DerivedGeneration: &generation,
+		DerivedGeneration: generation,
 	})
 	if err != nil {
 		t.Fatalf("UpsertDerivedMediaAsset: %v", err)

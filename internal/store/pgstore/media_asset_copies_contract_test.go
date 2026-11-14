@@ -699,7 +699,7 @@ func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 	}
 
 	encodedID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
-		RecordingID: recordingID, Profile: &profile, SizeBytes: 10, DerivedGeneration: &generation,
+		RecordingID: recordingID, Profile: &profile, SizeBytes: 10, DerivedGeneration: generation,
 	})
 	if err != nil {
 		t.Fatalf("creating encoded asset: %v", err)
@@ -708,7 +708,7 @@ func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 	setDigest(encodedID, oldDigest)
 	generation = 1
 	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
-		RecordingID: recordingID, Profile: &profile, SizeBytes: 11, Sha256: newDigest, DerivedGeneration: &generation,
+		RecordingID: recordingID, Profile: &profile, SizeBytes: 11, Sha256: newDigest, DerivedGeneration: generation,
 	}); err != nil {
 		t.Fatalf("replacing encoded asset: %v", err)
 	}
@@ -717,7 +717,7 @@ func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 
 	generation = 0
 	thumbnailID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
-		RecordingID: recordingID, SizeBytes: 10, DerivedGeneration: &generation,
+		RecordingID: recordingID, SizeBytes: 10, DerivedGeneration: generation,
 	})
 	if err != nil {
 		t.Fatalf("creating thumbnail asset: %v", err)
@@ -726,7 +726,7 @@ func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 	setDigest(thumbnailID, oldDigest)
 	generation = 1
 	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
-		RecordingID: recordingID, SizeBytes: 11, Sha256: newDigest, DerivedGeneration: &generation,
+		RecordingID: recordingID, SizeBytes: 11, Sha256: newDigest, DerivedGeneration: generation,
 	}); err != nil {
 		t.Fatalf("recreating thumbnail asset: %v", err)
 	}
@@ -735,7 +735,7 @@ func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 	setDigest(thumbnailID, newDigest)
 	generation = 2
 	if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
-		RecordingID: recordingID, Kind: "thumbnail", SizeBytes: 12, Sha256: latestDigest, DerivedGeneration: &generation,
+		RecordingID: recordingID, Kind: "thumbnail", SizeBytes: 12, Sha256: latestDigest, DerivedGeneration: generation,
 	}); err != nil {
 		t.Fatalf("replacing thumbnail path: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 
 	generation = 0
 	seekTilesID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "seek_tiles",
-		RecordingID: recordingID, SizeBytes: 10, DerivedGeneration: &generation,
+		RecordingID: recordingID, SizeBytes: 10, DerivedGeneration: generation,
 	})
 	if err != nil {
 		t.Fatalf("creating seek tiles asset: %v", err)
@@ -753,7 +753,7 @@ func TestDerivedMediaAssetReplacementsWriteNewSHA256(t *testing.T) {
 	setDigest(seekTilesID, oldDigest)
 	generation = 1
 	replacedSeekTilesID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "seek_tiles",
-		RecordingID: recordingID, SizeBytes: 11, Sha256: newDigest, DerivedGeneration: &generation,
+		RecordingID: recordingID, SizeBytes: 11, Sha256: newDigest, DerivedGeneration: generation,
 	})
 	if err != nil {
 		t.Fatalf("recreating seek tiles asset: %v", err)
@@ -1002,12 +1002,12 @@ VALUES ($1, 'seek_tiles', 9, 9)`, recordingID); err != nil {
 		{Kind: "thumbnail"},
 		{Kind: "seek_tiles"},
 	} {
-		p.RecordingID, p.SizeBytes, p.DerivedGeneration = recordingID, 4, &lowerGeneration
+		p.RecordingID, p.SizeBytes, p.DerivedGeneration = recordingID, 4, lowerGeneration
 		if _, err := q.UpsertDerivedMediaAsset(ctx, p); !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatalf("%s upsert at generation 4 below the logical 9: error = %v, want pgx.ErrNoRows (0 rows)", p.Kind, err)
 		}
 	}
-	rows, err := pool.Query(ctx, `SELECT kind, COALESCE(derived_generation, 0) FROM media_assets WHERE recording_id = $1 ORDER BY kind`, recordingID)
+	rows, err := pool.Query(ctx, `SELECT kind, derived_generation FROM media_assets WHERE recording_id = $1 ORDER BY kind`, recordingID)
 	if err != nil {
 		t.Fatalf("reading logical derived generations after upsert: %v", err)
 	}
@@ -1035,7 +1035,7 @@ func TestUpsertDerivedMediaAssetGenerationGuard(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	upsert := func(gen int64) (int64, error) {
 		return q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
-			Kind: "thumbnail", RecordingID: recordingID, SizeBytes: 1, DerivedGeneration: &gen,
+			Kind: "thumbnail", RecordingID: recordingID, SizeBytes: 1, DerivedGeneration: gen,
 		})
 	}
 	id, err := upsert(5)

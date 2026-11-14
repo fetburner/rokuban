@@ -501,7 +501,7 @@ func TestStorageTransferWorkerDoesNotRecordSHA256AfterGenerationChanges(t *testi
 	args.PolicyFingerprint = fingerprint
 	// 測定の最初の読みの直前に、論理資産の世代を進める。
 	f.source(t).beforeGetFrom = func() {
-		if _, err := f.pool.Exec(context.Background(), `UPDATE media_assets SET derived_generation = COALESCE(derived_generation, 0) + 1 WHERE id = $1`, f.assetID); err != nil {
+		if _, err := f.pool.Exec(context.Background(), `UPDATE media_assets SET derived_generation = derived_generation + 1 WHERE id = $1`, f.assetID); err != nil {
 			t.Errorf("advancing derived generation: %v", err)
 		}
 	}

@@ -276,7 +276,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		Kind:              "encoded",
 		Profile:           &in.Profile,
 		SizeBytes:         in.SizeBytes,
-		DerivedGeneration: &derivedGeneration,
+		DerivedGeneration: derivedGeneration,
 		Sha256:            in.SHA256,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -423,7 +423,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		derivedGeneration := in.DerivedGeneration
 		assetID, err = q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
 			RecordingID: in.RecordingID, Kind: "thumbnail", SizeBytes: in.SizeBytes,
-			DerivedGeneration: &derivedGeneration, Sha256: in.SHA256,
+			DerivedGeneration: derivedGeneration, Sha256: in.SHA256,
 		})
 		if err != nil {
 			return false, fmt.Errorf("upserting thumbnail media asset: %w", mapStaleDerivedGeneration(err))
@@ -462,7 +462,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		derivedGeneration := in.DerivedGeneration
 		if _, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
 			RecordingID: in.RecordingID, Kind: "thumbnail", SizeBytes: in.SizeBytes,
-			DerivedGeneration: &derivedGeneration, Sha256: in.SHA256,
+			DerivedGeneration: derivedGeneration, Sha256: in.SHA256,
 		}); err != nil {
 			return false, fmt.Errorf("updating thumbnail media asset: %w", mapStaleDerivedGeneration(err))
 		}
@@ -530,7 +530,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 	derivedGeneration := in.DerivedGeneration
 	assetID, err := q.UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{
 		RecordingID: in.RecordingID, Kind: "seek_tiles", SizeBytes: in.SizeBytes,
-		DerivedGeneration: &derivedGeneration, Sha256: in.SHA256,
+		DerivedGeneration: derivedGeneration, Sha256: in.SHA256,
 	})
 	if err != nil {
 		return false, fmt.Errorf("upserting seek tiles media asset: %w", mapStaleDerivedGeneration(err))

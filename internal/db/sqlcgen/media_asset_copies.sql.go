@@ -223,7 +223,7 @@ type InsertMediaAssetForPendingCopyParams struct {
 	Kind              string
 	Profile           *string
 	SizeBytes         int64
-	DerivedGeneration *int64
+	DerivedGeneration int64
 }
 
 // S3 の置き場は、PUT の前に pending のコピー行を commit する。コピー行は論理行を必要とするので、

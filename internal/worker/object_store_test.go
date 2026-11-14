@@ -1177,7 +1177,7 @@ func TestObjectEncodeRetryAfterInterruptedPublishUsesNewGeneration(t *testing.T)
 	var generation int64
 	var sum []byte
 	if err := env.pool.QueryRow(ctx,
-		`SELECT COALESCE(derived_generation, 0), sha256 FROM media_assets WHERE recording_id = $1 AND kind = 'encoded'`,
+		`SELECT derived_generation, sha256 FROM media_assets WHERE recording_id = $1 AND kind = 'encoded'`,
 		recordingID).Scan(&generation, &sum); err != nil {
 		t.Fatalf("loading encoded asset: %v", err)
 	}

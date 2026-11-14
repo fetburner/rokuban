@@ -37,7 +37,7 @@ SELECT copy.store, copy.rel_path, copy.state
 FROM media_asset_copies copy
 JOIN media_assets asset ON asset.id = copy.media_asset_id
 WHERE copy.media_asset_id = $1 AND copy.store = $2
-  AND copy.generation = COALESCE(asset.derived_generation, 0)
+  AND copy.generation = asset.derived_generation
   AND copy.state = 'active'`, assetID, dbtest.StoreName,
 	).Scan(&gotStore, &gotRelPath, &gotState); err != nil {
 		t.Fatalf("reading media asset copy %d in store %q: %v", assetID, dbtest.StoreName, err)
@@ -314,7 +314,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	generation := int64(0)
 	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID: id, SizeBytes: int64(len(prior)),
-		DerivedGeneration: &generation,
+		DerivedGeneration: generation,
 	})
 	if err != nil {
 		t.Fatal(err)

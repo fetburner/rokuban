@@ -13,8 +13,8 @@ CREATE TABLE media_assets (
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
     size_bytes   bigint NOT NULL,
     sha256       bytea,                -- 作り手が公開の transaction で書く内容の SHA-256。in-place 登録の行は NULL。コピー数によらず 1 回だけ持つ
-    derived_generation bigint,         -- 派生物のパスに最後に採った世代。original は NULL
-    CHECK (derived_generation IS NULL OR (kind <> 'original' AND derived_generation >= 0)),
+    derived_generation bigint NOT NULL DEFAULT 0, -- 派生物のパスに最後に採った世代。original は 0
+    CHECK ((kind <> 'original' OR derived_generation = 0) AND derived_generation >= 0),
     CHECK (sha256 IS NULL OR octet_length(sha256) = 32),
     ingest_generation bigint,         -- kind = 'original' のみ: 原本にした temp の世代
     CHECK (ingest_generation IS NULL OR ingest_generation > 0),
@@ -94,7 +94,9 @@ CREATE TABLE media_asset_transfer_objects (
 
 派生物の世代は、論理行のカウンターとコピーごとの値の 2 つで持つ。公開と登録の書き手が守る規則を、ここにまとめる。
 
-`derived_generation` は派生物の次回採番に使う論理カウンターで、現行のコピーを決める値でもある。削除済みの行を再生成するときも進め、減らさない。派生物の公開は、世代が現行以上のときだけ論理行を更新する。同じ世代の再試行は通り、低い世代は 0 行になって公開が失敗する。低い世代を通して `derived_generation` が下がると、上の世代のコピーは `generation < derived_generation` の旧世代に入らないので削除されず、現行でもなくなるので配信から見えなくなる。配置先に現行世代のコピーが無いときも、カウンターは論理行から読み、書き手の置き場のコピーを根拠にしない。
+`derived_generation` は派生物の次回採番に使う論理カウンターで、現行のコピーを決める値でもある。原本は世代 0 に固定する。原本を NULL にすると現行コピーの述語に COALESCE が残り、COALESCE を書き忘れた述語では NULL の原本のコピーが見えなくなる。派生物の世代は削除済みの行を再生成するときも進め、減らさない。
+
+派生物の公開は、世代が現行以上のときだけ論理行を更新する。同じ世代の再試行は通り、低い世代は 0 行になって公開が失敗する。低い世代を通して `derived_generation` が下がると、上の世代のコピーは `generation < derived_generation` の旧世代に入らないので削除されず、現行でもなくなるので配信から見えなくなる。配置先に現行世代のコピーが無いときも、カウンターは論理行から読み、書き手の置き場のコピーを根拠にしない。
 
 コピーの `generation` は、移行が既存のコピーのパスから読んで埋める（original と印の無いパスは 0）。論理カウンターは移行では触らない。旧版の in-place 登録は世代の印付きのパスでもカウンターを 0 にしたので、移行の直後はコピーの世代がカウンターを上回り、現行にも旧世代にも入らない資産がありうる。
 
@@ -112,7 +114,7 @@ S3 の置き場への公開は、PUT の前に `pending` のコピー行を新�
 
 in-place 登録は、パスの状態と世代、録画の状態を確かめてから資産を公開する。
 
-論理資産が既にあるときは、次の 3 つを満たす場合だけ通す。この置き場に生きたコピー（`active` / `deleting` / `pending`）が無い。パスの世代が `COALESCE(derived_generation, 0)` と等しい。録画がごみ箱にない。満たさなければ `ErrConflict` で拒否し、論理資産が無ければ新規に登録する。パスの世代が古いファイルを受け付けると、登録したファイル自体が旧世代として overlap の後に消える。新しいファイルを受け付けると、そのコピーは現行にも旧世代にもならず、配信も削除もされない。論理行の世代は in-place 登録では動かさない。生きたコピーがある置き場へ足すと、配信が選ぶ行が決まらない。
+論理資産が既にあるときは、次の 3 つを満たす場合だけ通す。この置き場に生きたコピー（`active` / `deleting` / `pending`）が無い。パスの世代が `derived_generation` と等しい。録画がごみ箱にない。満たさなければ `ErrConflict` で拒否し、論理資産が無ければ新規に登録する。パスの世代が古いファイルを受け付けると、登録したファイル自体が旧世代として overlap の後に消える。新しいファイルを受け付けると、そのコピーは現行にも旧世代にもならず、配信も削除もされない。論理行の世代は in-place 登録では動かさない。生きたコピーがある置き場へ足すと、配信が選ぶ行が決まらない。
 
 同じパスの `active` な行が既にあれば、何も変えずに通す。`deleting` / `pending` / tombstone は拒否する。削除済みのファイルを戻すときは、移動または改名すると新しいパスで登録できる。全体一意索引が状態を問わず 1 パス 1 行に保つ。
 

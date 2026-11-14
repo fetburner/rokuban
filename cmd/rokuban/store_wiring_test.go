@@ -120,7 +120,7 @@ func TestStoreScopedDeleteReconcileDeletesNonDesiredCopyAfterOverlap(t *testing.
 	// desired の archive コピーは overlap より古い。non-desired の test-store コピーは dbtest が作った active 行。
 	if _, err := pool.Exec(ctx, `
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at)
-SELECT a.id, 'archive', $2, COALESCE(a.derived_generation, 0), 'active', now() - interval '3 hours'
+SELECT a.id, 'archive', $2, a.derived_generation, 'active', now() - interval '3 hours'
 FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		t.Fatalf("adding archive copy: %v", err)
 	}
@@ -199,7 +199,7 @@ WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
 	for _, copy := range []struct{ name, relPath string }{{"s3-a", oldRelPath}, {"s3-b", newRelPath}} {
 		if _, err := pool.Exec(ctx, `
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at)
-SELECT a.id, $2, $3, COALESCE(a.derived_generation, 0), 'active', now() - interval '3 hours'
+SELECT a.id, $2, $3, a.derived_generation, 'active', now() - interval '3 hours'
 FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != nil {
 			t.Fatalf("adding active copy in %s: %v", copy.name, err)
 		}
