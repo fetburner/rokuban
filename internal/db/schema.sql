@@ -2397,12 +2397,6 @@ CREATE INDEX media_assets_recording_id_idx ON public.media_assets USING btree (r
 CREATE INDEX record_sync_recording_id_idx ON public.record_sync USING btree (recording_id);
 
 --
--- Name: record_sync_status_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX record_sync_status_idx ON public.record_sync USING btree (status);
-
---
 -- Name: recording_playback_positions_updated_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 

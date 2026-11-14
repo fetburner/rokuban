@@ -24,7 +24,6 @@ CREATE TABLE record_sync (
 );
 
 CREATE INDEX ON record_sync (recording_id);
-CREATE INDEX ON record_sync (status);
 ```
 
 <details><summary>根拠</summary>
