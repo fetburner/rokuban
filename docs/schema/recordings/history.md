@@ -70,7 +70,7 @@ CREATE INDEX ON recordings (network_id, service_id, program_start_at);  -- 視�
 CREATE INDEX ON recordings (network_id, service_id, event_id);
 CREATE INDEX ON recordings (rule_id) WHERE rule_id IS NOT NULL;  -- rules 削除・重複排除・ruleId 絞り込み
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
-CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一覧の絞り込み
+CREATE INDEX ON recordings (id) WHERE purged_at IS NULL;  -- purge 判定（削除 reconcile）
 -- 履歴ベース重複排除は title の trgm 類似度で判定するが、GIN は張っていない。
 -- gin_trgm_ops が加速するのは % / <% / LIKE / 正規表現で、similarity() の関数呼び出しには
 -- 使われない（% の閾値は GUC pg_trgm.similarity_threshold 由来でルール単位の閾値と噛み合わない）。
