@@ -865,6 +865,7 @@ CREATE TABLE public.recordings (
     purged_at timestamp with time zone,
     genre_lv1 smallint[] GENERATED ALWAYS AS (public.genre_lv1_of(genres)) STORED,
     series_key text GENERATED ALWAYS AS (public.series_key(title)) STORED,
+    failure_reported boolean DEFAULT false NOT NULL,
     CONSTRAINT recordings_channel_type_check CHECK ((channel_type = ANY (ARRAY['GR'::text, 'BS'::text, 'CS'::text, 'SKY'::text]))),
     CONSTRAINT recordings_purged_requires_deleted CHECK (((purged_at IS NULL) OR (deleted_at IS NOT NULL))),
     CONSTRAINT recordings_source_check CHECK ((source = ANY (ARRAY['rule'::text, 'manual'::text, 'unattributed'::text]))),

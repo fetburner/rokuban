@@ -498,6 +498,7 @@ func recordingFromRow(r sqlcgen.Recording) catalogdoc.Recording {
 		StartedAt:         r.StartedAt,
 		EndedAt:           r.EndedAt,
 		QualityEvents:     r.QualityEvents,
+		FailureReported:   &r.FailureReported,
 		DeletedAt:         r.DeletedAt,
 		SupersededAt:      r.SupersededAt,
 		PurgedAt:          r.PurgedAt,

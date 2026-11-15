@@ -84,6 +84,7 @@ func RunRecordObservations(t *testing.T, newStore NewRecordObservationStore) {
 	t.Run("same record observations serialize", func(t *testing.T) { runRecordSerialization(t, checkedStore) })
 	t.Run("record sync rolls back with recording conflict", func(t *testing.T) { runRecordConflictRollback(t, checkedStore) })
 	t.Run("success supersedes failed recording", func(t *testing.T) { runSuccessSupersedesFailure(t, checkedStore) })
+	t.Run("SSE failure suppresses sweeps including changed reasons", func(t *testing.T) { runFailedSSEThenSweep(t, checkedStore) })
 	t.Run("failed quality observation is idempotent", func(t *testing.T) { runFailedQualityIdempotency(t, checkedStore) })
 	t.Run("failed schedule is deduplicated and typed skip is returned", func(t *testing.T) { runFailedSchedule(t, checkedStore) })
 	t.Run("failed event returns its recording id", func(t *testing.T) { runFailedEventRecordingID(t, checkedStore) })
@@ -794,6 +795,9 @@ func runFailedQualityIdempotency(t *testing.T, newStore NewRecordObservationStor
 	observation := f.NewObservation("failed-quality", "failed")
 	observation.FailedReason = []byte(`{"type":"signal-loss"}`)
 	for i := range 3 {
+		if i == 2 {
+			observation.FailedReason = []byte(`{"type":"other"}`)
+		}
 		result, err := f.Store.ProcessRecord(ctx, observation)
 		if err != nil {
 			t.Fatalf("ProcessRecord(failed, pass %d) = %v", i, err)
@@ -805,6 +809,38 @@ func runFailedQualityIdempotency(t *testing.T, newStore NewRecordObservationStor
 	got := observedRecordings(t, f, observation)
 	if len(got) != 1 || len(got[0].QualityEventNames) != 1 {
 		t.Fatalf("recordings after repeated failed observation = %s, want one with 1 quality event", describeRecordings(got))
+	}
+}
+
+func runFailedSSEThenSweep(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	observation := f.NewObservation("sse-then-sweep", "failed")
+	observation.FailedReason = []byte(`{"type":"signal-loss"}`)
+	f.SeedReservation(t, observation)
+	if _, _, err := f.Store.RecordFailedRecording(ctx, store.FailedRecordingObservation{Site: observation.Site, ProgramID: observation.ProgramID, Snapshot: observation.Snapshot, Reason: observation.FailedReason}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		result, err := f.Store.ProcessRecord(ctx, observation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.FailedQualityEventAdded {
+			t.Fatal("record sweep added failure after SSE")
+		}
+		result, err = f.Store.ProcessFailedSchedule(ctx, store.FailedScheduleObservation{Site: observation.Site, ProgramID: observation.ProgramID, Snapshot: observation.Snapshot, Reason: observation.FailedReason})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.FailedQualityEventAdded {
+			t.Fatal("schedule sweep added failure after SSE")
+		}
+		observation.FailedReason = []byte(`{"type":"other"}`)
+	}
+	got := observedRecordings(t, f, observation)
+	if len(got) != 1 || len(got[0].QualityEventNames) != 1 {
+		t.Fatalf("after SSE and sweeps = %s, want one failure", describeRecordings(got))
 	}
 }
 

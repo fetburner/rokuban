@@ -42,6 +42,8 @@ CREATE TABLE recordings (
     -- 品質イベントログ（recording.failed / record-broken の理由。§8 参照）
     -- mirakc の reason を jsonb のまま保持し、構造化カラムにはしない（不変条件 7）
     quality_events    jsonb NOT NULL DEFAULT '[]',
+    -- この録画に失敗イベントを追記済みか。理由には依存せず sweep の重複追記を防ぐ。
+    failure_reported  boolean NOT NULL DEFAULT false,
 
     -- 「本物の record が推論に必ず勝つ」ために追加。この行が同一 active-event の
     -- 枠を明け渡した不可逆な事実だけを持つ（§「同一イベントの重複防止」参照）。
@@ -76,6 +78,8 @@ CREATE INDEX ON recordings (id) WHERE purged_at IS NULL;  -- purge 判定（削�
 -- gin_trgm_ops が加速するのは % / <% / LIKE / 正規表現で、similarity() の関数呼び出しには
 -- 使われない（% の閾値は GUC pg_trgm.similarity_threshold 由来でルール単位の閾値と噛み合わない）。
 ```
+
+`failure_reported` は mirakc の理由ではなく、毎パス作り直せない「失敗を追記した」事実を持つ（不変条件 7・9）。脊椎の書き手である watcher が書き、録画行と同時に生まれて同時に死ぬため、本体に置く（不変条件 12・13）。
 
 品質イベントのログは、録画の失敗と record 破損の履歴を持つ。スクランブル件数はドロップ統計から導けるので、ここには重ねて記録しない。
 
