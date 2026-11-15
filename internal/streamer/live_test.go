@@ -1968,6 +1968,7 @@ func TestLiveStreamer_IdleGC_StopsSession(t *testing.T) {
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
 	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, 42, "h264"))
+	accessedAt := time.Now()
 
 	if got := state.requestCount(); got != 1 {
 		t.Fatalf("mirakc requests = %d, want 1", got)
@@ -1978,9 +1979,8 @@ func TestLiveStreamer_IdleGC_StopsSession(t *testing.T) {
 		t.Fatalf("session dir should exist while active: %v", err)
 	}
 
-	// idle timeout を過ぎるまで待ってから GC を回す。
-	time.Sleep(60 * time.Millisecond)
-	ls.reapIdle()
+	// スケジューラの遅延に左右されないよう、アクセス後の時刻から期限を進める。
+	ls.reapIdleAt(accessedAt.Add(cfg.IdleTimeout + time.Millisecond))
 
 	select {
 	case sid := <-state.disconnected:
@@ -2007,8 +2007,9 @@ func TestLiveStreamer_IdleGC_StopsSession(t *testing.T) {
 	}
 }
 
-// idle GC の逆方向: セグメント要求（touch）が続いていれば idle timeout を過ぎても
-// 止めない。片方向だけの確認では「常に止める」に反転していても気付けない
+// idle GC の逆方向: 以前のアクセスから IdleTimeout を過ぎていても、セグメント要求
+// （touch）の後から IdleTimeout 以内なら止めない。
+// 片方向だけの確認では「常に止める」に反転していても気付けない
 // （テスト規律「分岐を直したら両方向で確認する」）。
 func TestLiveStreamer_IdleGC_TouchKeepsSessionAlive(t *testing.T) {
 	t.Parallel()
@@ -2019,17 +2020,19 @@ func TestLiveStreamer_IdleGC_TouchKeepsSessionAlive(t *testing.T) {
 
 	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, 7, "h264"))
 
-	// idle timeout より短い間隔でセグメントを要求し続け、GC が走っても消えないことを見る。
-	deadline := time.Now().Add(400 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		segResp, err := http.Get(segURL)
-		if err != nil {
-			t.Fatalf("GET segment: %v", err)
-		}
-		_ = segResp.Body.Close()
-		ls.reapIdle()
-		time.Sleep(50 * time.Millisecond)
+	// 実時間の待機では負荷次第で期限を越えるため、古いアクセスを明示してから touch する。
+	previousAccess := time.Now().Add(-2 * cfg.IdleTimeout)
+	setLiveSessionLastAccess(t, ls, 7, previousAccess)
+	resp, err := http.Get(segURL)
+	if err != nil {
+		t.Fatalf("GET segment: %v", err)
 	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("segment status = %d, want 200", resp.StatusCode)
+	}
+	touchedAt := time.Now()
+	ls.reapIdleAt(touchedAt.Add(cfg.IdleTimeout / 2))
 
 	select {
 	case sid := <-state.disconnected:
@@ -2152,51 +2155,25 @@ func TestLiveStreamer_OneClientLeavingDoesNotStopTheOther(t *testing.T) {
 
 	const serviceID = 55
 
-	// クライアント A: 最初にプレイリストを取得してセッションを起こすが、その後は
-	// 何も要求せず離脱する。ffmpeg の起動（偽物でもプロセス起動コストがある）が
-	// idle timeout に対して遅いことがあるため、この 1 回目の取得時間そのものを
-	// idle 判定の基準にしない --- 直後に 1 回セグメントを取り直して lastAccess を
-	// 「今」に揃えてから idle 判定ループへ入る。
+	// 実時間の sleep で A の離脱と B の持続を作ると、負荷で B の要求間隔が
+	// IdleTimeout を超え、B がいるのに共有セッションが回収される。
+	// そのため A の古いアクセスは lastAccess を巻き戻して作り、GC には仮想の時刻を渡す。
 	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, serviceID, "h264"))
-	if resp, err := http.Get(segURL); err == nil {
-		_ = resp.Body.Close()
-	}
+	aAccess := time.Now().Add(-2 * cfg.IdleTimeout)
+	setLiveSessionLastAccess(t, ls, serviceID, aAccess)
 
-	// クライアント B: 同じサービスを見続ける（idle timeout より短い間隔でセグメントを
-	// 取り続ける）。
-	stopB := make(chan struct{})
-	bDone := make(chan struct{})
-	go func() {
-		defer close(bDone)
-		for {
-			select {
-			case <-stopB:
-				return
-			default:
-			}
-			resp, err := http.Get(segURL)
-			if err == nil {
-				_ = resp.Body.Close()
-			}
-			time.Sleep(30 * time.Millisecond)
-		}
-	}()
-	t.Cleanup(func() {
-		select {
-		case <-stopB:
-		default:
-			close(stopB)
-		}
-		<-bDone
-	})
-
-	// A は離脱済み（何もしない）。B だけが持続する間、idle GC を何度回しても
-	// セッションは生き続けなければならない。
-	deadline := time.Now().Add(400 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		ls.reapIdle()
-		time.Sleep(40 * time.Millisecond)
+	// B は同じ URL を要求する。touch は time.Now() を書くので、基準は要求後に読む。
+	resp, err := http.Get(segURL)
+	if err != nil {
+		t.Fatalf("GET segment (B): %v", err)
 	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("segment status (B) = %d, want 200", resp.StatusCode)
+	}
+	bAccess := time.Now()
+	// A の期限は過ぎ、B の期限はまだ過ぎていない。
+	ls.reapIdleAt(bAccess.Add(cfg.IdleTimeout / 2))
 
 	select {
 	case sid := <-state.disconnected:
@@ -2214,12 +2191,10 @@ func TestLiveStreamer_OneClientLeavingDoesNotStopTheOther(t *testing.T) {
 		t.Errorf("status = %d, want 200 (B keeps the shared session alive after A left)", finalResp.StatusCode)
 	}
 
-	// B も離脱すれば最終的に GC される（逆方向の確認。片方向だけでは
-	// 「常に生き続ける」に壊れていても気付けない）。
-	close(stopB)
-	<-bDone
-	time.Sleep(150 * time.Millisecond) // B 離脱後、idle timeout を超えさせる
-	ls.reapIdle()
+	// 最後の確認要求も touch するため、その後の時刻から B の期限を進める。
+	// 逆方向も確認し、「常に生き続ける」への退行を検出する。
+	bAccess = time.Now()
+	ls.reapIdleAt(bAccess.Add(cfg.IdleTimeout + time.Millisecond))
 	select {
 	case sid := <-state.disconnected:
 		if sid != serviceID {
