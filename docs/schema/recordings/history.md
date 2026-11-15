@@ -8,7 +8,7 @@
 
 **この表に新しく列を足してよいのは、試行の帰結を観測する書き手が書く列だけである**（不変条件 13）。録画履歴は試行の観測だけを持つ脊椎で、別の状態機械が書く列は衛星表に置く。メディアアセット（[media-assets.md](media-assets.md) §6）も衛星表で、判定基準と境界は [invariants.md](../../invariants.md) §13 にある。
 
-原本の保持方針とエンコードプロファイルは、予約オプションの効力スナップショットなので、同じ基準で衛星表に切り出してある。ingest worker が凍結し、api が追記する（[satellites.md](satellites.md)「recording_encode_policy — 原本保持ポリシーの凍結」参照）。「今すぐ完全削除してほしい」というユーザーの要求も、api が立てて api が取り消すので衛星表にある（下記「recording_purge_requests — 即時完全削除の要求（衛星表）」を参照）。
+原本保持・エンコード・CM 検出の処理方針は衛星表に持つ。ingest worker が初期値を確定し、api がプロファイルの追加・削除、保持方針の変更、CM 検出の切り替えを書く。catalog は保存済みの方針を復元する（[satellites.md](satellites.md)「recording_processing_policy — 録画の処理方針」参照）。「今すぐ完全削除してほしい」というユーザーの要求も、api が立てて api が取り消すので衛星表にある（下記「recording_purge_requests — 即時完全削除の要求（衛星表）」を参照）。
 
 「隣に削除の列があるから」は、本体に置く根拠にならない。削除の列と枠明け渡しの列が本体にあるのは、部分一意索引の述語が参照するからである。既存のテナントであることを根拠にすると、間借りが次の間借りを正当化する。
 
@@ -231,7 +231,7 @@ CREATE TABLE encoded_asset_removal_requests (
 
 <details><summary>根拠</summary>
 
-- 残すと決めたプロファイルの一覧: `recording_encode_policy.encode_profiles`
+- 残すと決めたプロファイルの一覧: `recording_processing_policy.encode_profiles`
 - 2 つを組み合わせた view: `removed_encoded_assets`
 - エンコード結果の削除確定の状態: `deleted`
 

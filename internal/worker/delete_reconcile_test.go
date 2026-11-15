@@ -128,7 +128,7 @@ func (r *webhookRecorder) reset() {
 	r.events = nil
 }
 
-// markRecordingUntilEncoded は recording_encode_policy 衛星表（issue #159）に
+// markRecordingUntilEncoded は recording_processing_policy 衛星表（issue #159）に
 // keep_original='until_encoded' の行を作る/上書きするテスト用フィクスチャ。
 // ingest の resolveAndSnapshotEncodePolicy が原本コミットと同一 tx で凍結する
 // 内容を模す（reservations.sql は #52 並走中につき、この目的のためだけの
@@ -150,14 +150,14 @@ func markRecordingUntilEncoded(t *testing.T, pool *pgxpool.Pool, recordingID int
 		t.Fatalf("marking original as scanned: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
 		 VALUES ($1, 'until_encoded', $2)
 		 ON CONFLICT (recording_id) DO UPDATE SET
 		   keep_original   = EXCLUDED.keep_original,
 		   encode_profiles = EXCLUDED.encode_profiles,
 		   updated_at      = now()`,
 		recordingID, profiles); err != nil {
-		t.Fatalf("setting recording_encode_policy: %v", err)
+		t.Fatalf("setting recording_processing_policy: %v", err)
 	}
 }
 
@@ -1411,8 +1411,8 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 	}
 }
 
-// dropUntilEncodedRequiresProfilesCheck は recording_encode_policy の CHECK 制約
-// recording_encode_policy_check（issue #159 で recordings 側の CHECK から
+// dropUntilEncodedRequiresProfilesCheck は recording_processing_policy の CHECK 制約
+// recording_processing_policy_check（issue #159 で recordings 側の CHECK から
 // 移設）を一時的に外す。encode_profiles が
 // 空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
 // 削除クエリ側ガード（until_encoded_deletable_originals 関数の
@@ -1424,7 +1424,7 @@ func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx,
-		"ALTER TABLE recording_encode_policy DROP CONSTRAINT recording_encode_policy_check"); err != nil {
+		"ALTER TABLE recording_processing_policy DROP CONSTRAINT recording_processing_policy_check"); err != nil {
 		t.Fatalf("dropping check constraint: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1432,16 +1432,16 @@ func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
 		// テスト本体が作った違反行（keep_original='until_encoded' かつ
 		// encode_profiles が空）が残ったままだと ADD CONSTRAINT 自体が失敗する。
 		// 次のテストは TRUNCATE で行ごと消えるが、この関数はその前に走るので
-		// 先に直しておく（recording_encode_policy_check の前身である recordings
+		// 先に直しておく（recording_processing_policy_check の前身である recordings
 		// 側の同種 CHECK を足したときの Up が既存行にしているのと同じ
 		// 「安全側に倒す」処理）。
 		if _, err := pool.Exec(cleanupCtx,
-			"UPDATE recording_encode_policy SET keep_original = 'always' "+
+			"UPDATE recording_processing_policy SET keep_original = 'always' "+
 				"WHERE keep_original = 'until_encoded' AND cardinality(encode_profiles) = 0"); err != nil {
 			t.Fatalf("fixing up rows before restoring check constraint: %v", err)
 		}
 		if _, err := pool.Exec(cleanupCtx,
-			"ALTER TABLE recording_encode_policy ADD CONSTRAINT recording_encode_policy_check "+
+			"ALTER TABLE recording_processing_policy ADD CONSTRAINT recording_processing_policy_check "+
 				"CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0)"); err != nil {
 			t.Fatalf("restoring check constraint: %v", err)
 		}
@@ -1466,7 +1466,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 
 	dropUntilEncodedRequiresProfilesCheck(t, pool)
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', '{}')",
+		"INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', '{}')",
 		recordingID); err != nil {
 		t.Fatalf("setting keep_original with empty encode_profiles: %v", err)
 	}
@@ -1483,7 +1483,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 	}
 }
 
-// recording_encode_policy の CHECK 自体が効いていることの確認（issue #104 の
+// recording_processing_policy の CHECK 自体が効いていることの確認（issue #104 の
 // 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」。recordings 側の CHECK
 // から issue #159 でこの衛星表へ移設）。until_encoded に切り替えるときだけプロファイルを要求する
 // 形になっているはず。両方向を確認する: 空プロファイルは拒否され、プロファイルを
@@ -1495,13 +1495,13 @@ func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', '{}')",
+		"INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', '{}')",
 		recordingID); err == nil {
 		t.Fatal("expected a CHECK violation for until_encoded with empty encode_profiles, got no error")
 	}
 
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', $2)",
+		"INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', $2)",
 		recordingID, []string{"h264"}); err != nil {
 		t.Fatalf("expected until_encoded with a non-empty profile list to be allowed, got error: %v", err)
 	}

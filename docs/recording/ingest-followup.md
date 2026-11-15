@@ -49,7 +49,7 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 定期パスは、期待するエンコード結果から実際にある結果を引いた不足分だけを投入する。対象は原本がコミット済みで、ごみ箱に入っていない録画に限る。
 
-専用クエリが desired（`recording_encode_policy.encode_profiles`）から observed（active な `encoded` の `media_assets`）を引いた不足分を、一括で取得する。取得するのは不足している `(recording_id, profile)` であり、それを queue に投入する。権威は DB の状態であって、「ヒントが飛んだかどうか」ではない（不変条件 5）。
+専用クエリが desired（`recording_processing_policy.encode_profiles`）から observed（active な `encoded` の `media_assets`）を引いた不足分を、一括で取得する。取得するのは不足している `(recording_id, profile)` であり、それを queue に投入する。権威は DB の状態であって、「ヒントが飛んだかどうか」ではない（不変条件 5）。
 
 ここでの原本は、`kind='original'` が active でコミット済みの行である。ingest 未完了の録画とユーザーが捨てた録画は、掘り起こさない。エンコードの候補照合は全 site の録画を対象にするため、このジョブは record_sweep のような site 単位でなく、全体で 1 本になる。
 
@@ -59,7 +59,7 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 **繰り返すパスは「投入しても必ず失敗する仕事」を作ってはならない。** ヒントは一度きりなので、設定から消えたプロファイルを投入して失敗させるのは、運用者への通知として妥当である。15 分ごとに同じことをすると、失敗を無限に作り続ける。
 
-定期パスは、desired を現在の `encode.profiles` に存在する名前だけに絞る。落とした録画は数えて出す（`rokuban_encode_reconcile_unsatisfiable`）。プロファイルを改名すると、その名前で凍結済みの過去録画が一斉にここへ落ちる。
+定期パスは、desired を現在の `encode.profiles` に存在する名前だけに絞る。落とした録画は数えて出す（`rokuban_encode_reconcile_unsatisfiable`）。プロファイルを改名すると、その名前が desired に残る過去録画が一斉にここへ落ちる。
 
 <details><summary>根拠</summary>
 

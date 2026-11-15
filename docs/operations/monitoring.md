@@ -76,13 +76,13 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 | `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数 |
 | `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻 |
 | `rokuban_encode_reconcile_candidates` | Gauge | 直近パスの候補窓に入った、不足プロファイルか満たされていない作り直しがある録画数 |
-| `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 凍結済みの desired が現在のプロファイルに無い録画数 |
+| `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 録画単位の現在の desired が現在のプロファイルに無い録画数 |
 
 `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。thumbnail reconcile の最終完走時刻は、投入停止を `time() -` で検出するために使う。不足録画数が数えるのは poster のぶんだけである。シークタイルは別の窓で数えるが、同じパスが埋めるので、鮮度はこの 1 本で足りる。不足録画数が行上限に張り付くときは、バックログが上限以上ある。
 
 encode reconcile のパスは、ヒントを落とした録画を拾うバックストップである。止まっても症状が目立たないので、最終完走時刻を見る（[ingest](../recording/ingest-followup.md) §5.5）。
 
-凍結済みの desired が現在の `encode.profiles` に無い録画が非ゼロなら、プロファイルの改名や削除で、その名前の過去録画が永久にエンコードされない。投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている。
+録画単位の現在の desired が現在の `encode.profiles` に無い録画が非ゼロなら、プロファイルの改名や削除で、その名前の過去録画が永久にエンコードされない。投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている。
 
 #### 予約同期のメトリクス
 

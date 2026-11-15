@@ -386,7 +386,7 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 
 fulfilled 削除は観測された事実（ingest 完了）に基づく確定的な寿命終了で、EPG 欠損に起因する導出削除ではない。したがって `program_investments`（record 意図・overrides）や EPG 射影の残存に依存しない。大量削除サーキットブレーカーの対象にもならない。
 
-ingest は原本 `media_asset` の INSERT と同じ transaction で `recording_encode_policy` を凍結する。そのためこの削除が走るのは凍結の lookup より後になる（凍結との競合は生じない）。
+ingest は原本 `media_asset` の INSERT と同じ transaction で `recording_processing_policy` を凍結する。そのためこの削除が走るのは凍結の lookup より後になる（凍結との競合は生じない）。
 
 録画が finished でも原本がまだ無い録画（ingest 待ち・転送中）と欠測（`never_scheduled_events`）は fulfilled ではない。これらは従来どおり予約に残し、要確認に含める。
 

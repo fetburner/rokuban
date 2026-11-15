@@ -862,7 +862,7 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 // TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord は issue #163 の
 // 回帰テスト。塞いだ穴そのものを端から端まで再現する:
 //
-//  1. ingest は成功してコミットする（原本 media_asset + recording_encode_policy）
+//  1. ingest は成功してコミットする（原本 media_asset + recording_processing_policy）
 //  2. しかし encode 投入のヒントは飛ばない（enqueueEncodeReconcileFromContext は
 //     Enqueuer が無いと黙って return する。ここでは worker に Enqueuer を注入せず
 //     その状態を作る。「ヒント投入に失敗して

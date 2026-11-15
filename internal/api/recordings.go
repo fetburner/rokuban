@@ -598,13 +598,13 @@ func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestOb
 	return PurgeRecording204Response{}, nil
 }
 
-// AddRecordingEncodeProfiles は凍結済み encode_profiles への「事後追加」（issue
-// #133、凍結の例外。docs/storage.md §6「原本 TS の保持ポリシー」・
-// docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
+// AddRecordingEncodeProfiles は録画単位の方針変更として encode_profiles を追加する。
+// docs/storage/retention.md §6「録画単位の方針変更」・
+// docs/recording/reservation-model.md §4.5「録画開始後の編集」を参照。
 //
 // AppendRecordingEncodeProfiles で追加専用（union + dedup）に書き、全置換は
 // しない --- 誤って他プロファイルの指定を消す事故を避けるため（issue #133
-// 「決めること 3」）。recording_encode_policy（issue #159）に行が無い（未凍結）
+// 「決めること 3」）。recording_processing_policy（issue #159）に行が無い（未凍結）
 // 録画（internal/inplace.Register 経由で作られた原本など、ingest の
 // resolveAndSnapshotEncodePolicy を通らなかったもの）でも、原本が active なら
 // このクエリが既定値 'always' で行を新規に作る --- 「原本が active なのに
@@ -658,8 +658,9 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	return AddRecordingEncodeProfiles204Response{}, nil
 }
 
-// RemoveRecordingEncodedAsset はエンコード版を 1 本だけ外す（凍結の 3 つ目の例外。
-// docs/storage/retention.md §6）。encode_profiles から profile を外し、外した要求の
+// RemoveRecordingEncodedAsset はエンコード版を 1 本だけ外す。
+// docs/storage/retention.md §6「版を 1 本ずつ減らす」を参照。
+// encode_profiles から profile を外し、外した要求の
 // 行を入れる。ファイルは消さない。削除 reconcile が名前付き述語
 // removed_encoded_assets で拾って unlink する。
 //
@@ -748,7 +749,7 @@ const wantKeepOriginalUntilEncodedMessage = "cannot set keepOriginal=until_encod
 // SetRecordingEncodePolicy は録画後の原本保持・CM 検出方針を上書きする。
 //
 // 各フィールドは独立した任意指定。keepOriginal の変更は凍結済み
-// recording_encode_policy のみを更新し、未凍結の録画では always が既定のため
+// recording_processing_policy のみを更新し、未凍結の録画では always が既定のため
 // no-op、until_encoded は desired な encode_profiles が無ければ 409 になる。
 // cmDetect=true は active な原本を適用時に再確認し、未凍結なら既定の保持方針と
 // 空の encode_profiles で policy を作る。false は未凍結 policy を作らない。

@@ -153,7 +153,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 - 締切後に再試行する回収処理: `JobRescuer`
 - 締切を保存する場所: `args`
 - 死亡した試行を数える列: `recording_encode_attempts.attempt_count`
-- エンコード方針の保存先: `recording_encode_policy`
+- エンコード方針の保存先: `recording_processing_policy`
 
 </details>
 

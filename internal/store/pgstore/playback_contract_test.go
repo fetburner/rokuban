@@ -77,7 +77,7 @@ func newContractRecording(t *testing.T, pool *pgxpool.Pool, options contracttest
 
 	if options.CMDetectionEnabled {
 		if _, err := pool.Exec(context.Background(), `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', '{}', true)`, id); err != nil {
 			t.Fatalf("enabling CM detection: %v", err)
 		}

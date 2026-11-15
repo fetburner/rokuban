@@ -63,7 +63,7 @@ SELECT id, size_bytes FROM media_assets WHERE id = $1`, originalID); err != nil 
 					t.Fatalf("seeding original TS scan marker: %v", err)
 				}
 				if _, err := pool.Exec(context.Background(), `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 					t.Fatalf("seeding until_encoded policy: %v", err)
 				}
@@ -103,7 +103,7 @@ VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
 				recordingID := newRecording(t)
 				newAsset(t, recordingID, store.AssetKindOriginal, nil)
 				if _, err := pool.Exec(context.Background(), `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', '{}', false)`, recordingID); err != nil {
 					t.Fatalf("seeding policy without the removed profile: %v", err)
 				}

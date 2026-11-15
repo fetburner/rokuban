@@ -1113,8 +1113,8 @@ export const PatchProgramOverridesBody = zod.object({
   "priority": zod.int().optional().describe('mirakc の schedule に反映される（reconciler が DELETE + POST で\nschedule を再作成する）。ただし録画開始後の recorder には\n効かない可能性が高い（docs/recording.md §4.5）。\n'),
   "contentPath": zod.string().optional().describe('明示指定した値は既存の schedule にも反映される（reconciler が\nDELETE + POST で張り替える）。ただし録画が始まった schedule には\n反映されない（docs/recording.md §4.5）。空文字は 400（override を\n消すのは `reset`。消しても既存 schedule のパスは変わらない）。\n'),
   "filenameTemplate": zod.string().optional().describe('Go text/template のテンプレート文字列。既存の schedule には\n反映されず、まだ schedule が作られていない予約にだけ効く\n（docs/recording.md §4.5）。`contentPath` を明示指定すればそちらは\n既存の schedule にも反映される（このフィールドとの違い）。\n'),
-  "keepOriginal": zod.enum(['always', 'until_encoded']).optional().describe('ingest が原本をコミットする tx の中で recording_encode_policy 行の\nINSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、\n放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の\n変更はこの録画には反映されない（docs/recording/reservation-model.md\n§4.5）。\n\n**「ingest 完了より前なら必ず反映される」ではない** --- 凍結の導出元\n（program_snapshots と CASCADE で連なる予約系の表）は放送終了 +\n`epg.retention_grace`（既定 24h）で GC されるため、エッジに record が\n滞留して ingest がそれを超えて遅れると、指定は効かず既定値\n（keepOriginal=always / encodeProfiles=[]）で凍結される（原本は残る\nがエンコードは投入されない。docs/storage/retention.md §6「凍結が\n依存する寿命と、エッジの滞留の交点」）。\n'),
-  "encodeProfiles": zod.array(zod.string()).optional().describe('ingest が原本をコミットする tx の中で recording_encode_policy 行の\nINSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、\n放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の\n変更はこの録画には反映されない（docs/recording/reservation-model.md\n§4.5）。\n\n**「ingest 完了より前なら必ず反映される」ではない** --- 凍結の導出元\n（program_snapshots と CASCADE で連なる予約系の表）は放送終了 +\n`epg.retention_grace`（既定 24h）で GC されるため、エッジに record が\n滞留して ingest がそれを超えて遅れると、指定は効かず既定値\n（keepOriginal=always / encodeProfiles=[]）で凍結される（原本は残る\nがエンコードは投入されない。docs/storage/retention.md §6「凍結が\n依存する寿命と、エッジの滞留の交点」）。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).optional().describe('ingest が原本をコミットする tx の中で recording_processing_policy 行の\nINSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、\n放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の\n変更はこの録画には反映されない（docs/recording/reservation-model.md\n§4.5）。\n\n**「ingest 完了より前なら必ず反映される」ではない** --- 凍結の導出元\n（program_snapshots と CASCADE で連なる予約系の表）は放送終了 +\n`epg.retention_grace`（既定 24h）で GC されるため、エッジに record が\n滞留して ingest がそれを超えて遅れると、指定は効かず既定値\n（keepOriginal=always / encodeProfiles=[]）で凍結される（原本は残る\nがエンコードは投入されない。docs/storage/retention.md §6「凍結が\n依存する寿命と、エッジの滞留の交点」）。\n'),
+  "encodeProfiles": zod.array(zod.string()).optional().describe('ingest が原本をコミットする tx の中で recording_processing_policy 行の\nINSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、\n放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の\n変更はこの録画には反映されない（docs/recording/reservation-model.md\n§4.5）。\n\n**「ingest 完了より前なら必ず反映される」ではない** --- 凍結の導出元\n（program_snapshots と CASCADE で連なる予約系の表）は放送終了 +\n`epg.retention_grace`（既定 24h）で GC されるため、エッジに record が\n滞留して ingest がそれを超えて遅れると、指定は効かず既定値\n（keepOriginal=always / encodeProfiles=[]）で凍結される（原本は残る\nがエンコードは投入されない。docs/storage/retention.md §6「凍結が\n依存する寿命と、エッジの滞留の交点」）。\n'),
   "reset": zod.array(zod.enum(['priority', 'contentPath', 'filenameTemplate', 'keepOriginal', 'encodeProfiles'])).optional().describe('指定したフィールドの override を削除する（フィールド単位の\n「ルールに戻す」）。値を書いたフィールドと重複して指定すると 400。\n')
 }).describe('PATCH /api/sites/{site}/programs/{programId}/overrides のボディ。\n値を書いたフィールドは override を設定し、`reset` に名前を挙げた\nフィールドは override を削除する。どちらにも現れないフィールドは\n変更しない。同じフィールドを値と `reset` の両方に書いたら 400、\n`reset` に未知のフィールド名があっても 400（docs/recording.md §4.2）。\n')
 
@@ -1254,7 +1254,7 @@ export const ListRecordingsResponseItem = zod.object({
   "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_processing_policy.keep_original` に保存された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
   "cmDetection": zod.object({
   "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
   "ranges": zod.array(zod.object({
@@ -1279,7 +1279,7 @@ export const ListRecordingsResponseItem = zod.object({
 })).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
 })).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
-  "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
+  "encodeProfiles": zod.array(zod.string()).optional().describe('現在の「望ましい」エンコードプロファイル一覧（desired。\nrecording_processing_policy.encode_profiles）。ingest 完了時に初期値を確定し、\n`POST /api/recordings/{id}/encode-profiles` で追加できる。\n`DELETE /api/recordings/{id}/encoded/{profile}` で版を外すと一覧からも除かれる。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),
   "state": zod.enum(['queued', 'running', 'failed', 'awaiting_review']).describe('**サーバー側で recording_encode_attempts（衛星表）から毎回導出する**\n（列に焼いた値ではない）。River の river_job は直接露出しない\n（docs/schema.md の recording_encode_attempts の節を参照。\ndocs/recording/ingest-followup.md §5.6 と共通なのは「river_job を露出しない」\nことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に\nこの表は区別する）。\n\n- `queued`: まだ 1 度も試行が始まっていない（試行行が無い状態）。\n  **一度 `running`/`failed` を書いた行は成功するまで消えないので、\n  失敗後に `queued` へ戻ることはない**。「来る根拠」の無い\n  `queued` は出さない --- ごみ箱の録画（ジョブが二度と投入されない）\n  と、api が現在の設定にあるプロファイル一覧を知っていて、かつ\n  そのプロファイルが設定から消えていて試行行も無い場合は、この\n  プロファイルの要素自体が省略される\n- `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを\n  確認していない（`recording_chapter_ownership` の行が無い）。\n  **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、\n  `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を\n  表す。encode_reconcile の候補 query (`ListMissingEncodeProfiles`)\n  がこの条件で候補から外しているので、\n  確認するまでこの状態のままになる。確認後に次の投入パスが拾う\n- `running`: いま ffmpeg が走っている\n- `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の\n  断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ\n  上限（25 回。上書きしていない）まで再実行され、その各試行の先頭で\n  `running` に戻る。上限に達した後も、encoded 資産が無い状態が続く\n  限り EncodeReconcileWorker が 15 分ごとに再投入する。例外は設定\n  から消えたプロファイルで、これは EncodeReconcileWorker の既知\n  プロファイル絞り込みが投入対象から外すため、リトライ上限に達した\n  ところで `failed` に留まる（**`failed` に固定されるのはリトライを\n  使い切った後で、最初の失敗の時点ではない**）\n')
@@ -1426,7 +1426,7 @@ export const ListContinueWatchingResponseItem = zod.object({
   "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_processing_policy.keep_original` に保存された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
   "cmDetection": zod.object({
   "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
   "ranges": zod.array(zod.object({
@@ -1451,7 +1451,7 @@ export const ListContinueWatchingResponseItem = zod.object({
 })).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
 })).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
-  "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
+  "encodeProfiles": zod.array(zod.string()).optional().describe('現在の「望ましい」エンコードプロファイル一覧（desired。\nrecording_processing_policy.encode_profiles）。ingest 完了時に初期値を確定し、\n`POST /api/recordings/{id}/encode-profiles` で追加できる。\n`DELETE /api/recordings/{id}/encoded/{profile}` で版を外すと一覧からも除かれる。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),
   "state": zod.enum(['queued', 'running', 'failed', 'awaiting_review']).describe('**サーバー側で recording_encode_attempts（衛星表）から毎回導出する**\n（列に焼いた値ではない）。River の river_job は直接露出しない\n（docs/schema.md の recording_encode_attempts の節を参照。\ndocs/recording/ingest-followup.md §5.6 と共通なのは「river_job を露出しない」\nことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に\nこの表は区別する）。\n\n- `queued`: まだ 1 度も試行が始まっていない（試行行が無い状態）。\n  **一度 `running`/`failed` を書いた行は成功するまで消えないので、\n  失敗後に `queued` へ戻ることはない**。「来る根拠」の無い\n  `queued` は出さない --- ごみ箱の録画（ジョブが二度と投入されない）\n  と、api が現在の設定にあるプロファイル一覧を知っていて、かつ\n  そのプロファイルが設定から消えていて試行行も無い場合は、この\n  プロファイルの要素自体が省略される\n- `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを\n  確認していない（`recording_chapter_ownership` の行が無い）。\n  **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、\n  `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を\n  表す。encode_reconcile の候補 query (`ListMissingEncodeProfiles`)\n  がこの条件で候補から外しているので、\n  確認するまでこの状態のままになる。確認後に次の投入パスが拾う\n- `running`: いま ffmpeg が走っている\n- `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の\n  断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ\n  上限（25 回。上書きしていない）まで再実行され、その各試行の先頭で\n  `running` に戻る。上限に達した後も、encoded 資産が無い状態が続く\n  限り EncodeReconcileWorker が 15 分ごとに再投入する。例外は設定\n  から消えたプロファイルで、これは EncodeReconcileWorker の既知\n  プロファイル絞り込みが投入対象から外すため、リトライ上限に達した\n  ところで `failed` に留まる（**`failed` に固定されるのはリトライを\n  使い切った後で、最初の失敗の時点ではない**）\n')
@@ -1535,7 +1535,7 @@ export const GetRecordingResponse = zod.object({
   "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_processing_policy.keep_original` に保存された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
   "cmDetection": zod.object({
   "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
   "ranges": zod.array(zod.object({
@@ -1560,7 +1560,7 @@ export const GetRecordingResponse = zod.object({
 })).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
 })).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生の URL は `Recording.media.encoded[].url` を使う（`profile` で対応づける）。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
-  "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
+  "encodeProfiles": zod.array(zod.string()).optional().describe('現在の「望ましい」エンコードプロファイル一覧（desired。\nrecording_processing_policy.encode_profiles）。ingest 完了時に初期値を確定し、\n`POST /api/recordings/{id}/encode-profiles` で追加できる。\n`DELETE /api/recordings/{id}/encoded/{profile}` で版を外すと一覧からも除かれる。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),
   "state": zod.enum(['queued', 'running', 'failed', 'awaiting_review']).describe('**サーバー側で recording_encode_attempts（衛星表）から毎回導出する**\n（列に焼いた値ではない）。River の river_job は直接露出しない\n（docs/schema.md の recording_encode_attempts の節を参照。\ndocs/recording/ingest-followup.md §5.6 と共通なのは「river_job を露出しない」\nことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に\nこの表は区別する）。\n\n- `queued`: まだ 1 度も試行が始まっていない（試行行が無い状態）。\n  **一度 `running`/`failed` を書いた行は成功するまで消えないので、\n  失敗後に `queued` へ戻ることはない**。「来る根拠」の無い\n  `queued` は出さない --- ごみ箱の録画（ジョブが二度と投入されない）\n  と、api が現在の設定にあるプロファイル一覧を知っていて、かつ\n  そのプロファイルが設定から消えていて試行行も無い場合は、この\n  プロファイルの要素自体が省略される\n- `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを\n  確認していない（`recording_chapter_ownership` の行が無い）。\n  **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、\n  `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を\n  表す。encode_reconcile の候補 query (`ListMissingEncodeProfiles`)\n  がこの条件で候補から外しているので、\n  確認するまでこの状態のままになる。確認後に次の投入パスが拾う\n- `running`: いま ffmpeg が走っている\n- `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の\n  断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ\n  上限（25 回。上書きしていない）まで再実行され、その各試行の先頭で\n  `running` に戻る。上限に達した後も、encoded 資産が無い状態が続く\n  限り EncodeReconcileWorker が 15 分ごとに再投入する。例外は設定\n  から消えたプロファイルで、これは EncodeReconcileWorker の既知\n  プロファイル絞り込みが投入対象から外すため、リトライ上限に達した\n  ところで `failed` に留まる（**`failed` に固定されるのはリトライを\n  使い切った後で、最初の失敗の時点ではない**）\n')
@@ -1720,11 +1720,10 @@ export const PurgeRecordingResponse = zod.void()
 
 
 /**
- * `recording_encode_policy.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値
- * だが（docs/storage.md §6「原本 TS の保持ポリシー」）、ユーザー起点の事後
- * 追加だけは凍結の例外として認める（issue #133）。**追加専用**（union +
- * dedup）で書き、全置換にはしない --- 誤って他プロファイルの指定を消す事故を
- * 避けるため。
+ * 録画の処理方針にプロファイルを追加する。初期値は ingest 完了時に確定し、
+ * その後は録画単位の API で変更できる。この操作は追加専用（union + dedup）で、
+ * 既存の指定を誤って消さないよう全置換はしない。
+ * 版の削除は `DELETE /api/recordings/{id}/encoded/{profile}` を使う。
  *
  * 原本の現行コピー（active かつ現行世代）がどの置き場にも無い録画には 409 を返す。
  * これは次のいずれかに当たる --- 本当に削除済み（`keep_original=until_encoded`
@@ -1750,7 +1749,7 @@ export const AddRecordingEncodeProfilesParams = zod.object({
 
 
 export const AddRecordingEncodeProfilesBody = zod.object({
-  "profiles": zod.array(zod.string()).min(1).describe('追加したいエンコードプロファイル名（config.encode.profiles に定義された\n名前のみ許可。未知名は 400）。既存の recording_encode_policy.encode_profiles には\n**追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の\n指定を消す事故を避けるため。空配列は 400。\n')
+  "profiles": zod.array(zod.string()).min(1).describe('追加したいエンコードプロファイル名（config.encode.profiles に定義された\n名前のみ許可。未知名は 400）。既存の recording_processing_policy.encode_profiles には\n**追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の\n指定を消す事故を避けるため。空配列は 400。\n')
 })
 
 export const AddRecordingEncodeProfilesResponse = zod.void()
@@ -1824,7 +1823,7 @@ export const ReencodeRecordingProfileResponse = zod.void()
  * `cm_detect.enabled` が false のデプロイでは `cmDetect: true` も 409 にする。
  * `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
  * プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
- * `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード
+ * `recording_processing_policy` 行が無い場合は 409 を返すので、先に事後エンコード
  * 追加を依頼すること。`always` への変更は原本の状態を検査せず、削除
  * reconcile が保持ポリシーを適用の瞬間に再評価する。
  *
@@ -2259,7 +2258,7 @@ export const PreviewCapacityOveragesResponse = zod.array(PreviewCapacityOverages
 
 
 /**
- * 現在の desired（凍結したエンコードポリシー）で、active な encoded がまだ無い
+ * 現在の desired（録画の処理方針）で、active な encoded がまだ無い
  * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
  * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
  * encoded があっても待機列に含める。`awaitingReview` は確認待ちの cut を持つ録画数で、

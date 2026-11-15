@@ -307,12 +307,12 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 		})
 		seedOriginalAsset(t, pool, mediaDir, ids[i], fmt.Sprintf("cm/%d.ts", ids[i]), []byte("ts"))
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+			INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 			VALUES ($1, 'always', '{}', true)`, ids[i]); err != nil {
 			t.Fatalf("enabling CM detection for %d: %v", ids[i], err)
 		}
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recording_encode_policy SET cm_detect = false WHERE recording_id = $1`, ids[1]); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE recording_processing_policy SET cm_detect = false WHERE recording_id = $1`, ids[1]); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, ids[2]); err != nil {
@@ -404,7 +404,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 		})
 		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+			INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 			VALUES ($1, 'always', '{}', true)`, id); err != nil {
 			t.Fatal(err)
 		}
@@ -503,7 +503,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
 		t.Fatal(err)
 	}

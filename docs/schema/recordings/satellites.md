@@ -1,43 +1,48 @@
 > [docs/schema.md](../../schema.md)（索引）の分割本文。節番号は分割前のまま（§5 の後半）。索引から辿る。
 
-### recording_encode_policy — 原本保持ポリシーの凍結（衛星表）
+### recording_processing_policy — 録画の処理方針（衛星表）
 
-原本の保持方針とエンコードプロファイルは、録画を指す衛星表に持ち、行の存在が「凍結済み」を表す。取り込み worker が原本をコミットするトランザクションの中で凍結し、API は追記方向にだけ書く。録画履歴の本体には置かない。
-
-この 2 つは予約オプションの効力スナップショットである。
+原本の保持・エンコード・CM 検出の方針を、録画を指す衛星表に持つ。行の存在は処理方針の初期値が確定したことを表す。「凍結」は取り込み時の予約オプションの確定を指し、その後の API による変更を禁じる意味ではない。
 
 ```sql
-CREATE TABLE recording_encode_policy (
+CREATE TABLE recording_processing_policy (
     recording_id    bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
     keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles text[] NOT NULL,
     cm_detect       boolean NOT NULL DEFAULT false,
-    cm_detect_generation bigint NOT NULL DEFAULT 0, -- 切り替えごとに +1
+    cm_detect_generation bigint NOT NULL DEFAULT 0, -- 値が切り替わるときに +1
     CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 ```
 
-**行の存在そのものが「凍結済み」を意味する**（不変条件 10）。凍結前はこの録画に対応する行が無い。列の既定値では、「まだ凍結されていない」と「空として凍結された」を区別できなかった。これは録画履歴の本体にあった旧列の問題そのものである。凍結後の行は、空のプロファイルであっても必ず INSERT される。
+原本をコミットする ingest worker が初期値を確定する。api はプロファイルの追加・削除、保持方針の変更、CM 検出の切り替えを書く。catalog の復元は保存済みの方針を取り込む。復旧した実体に方針が無い場合、API が初期値を確定する経路もある。
 
-書き手は脊椎（watcher と reconciler）ではない。ingest worker が、原本のメディアアセットをコミットするトランザクションの中で凍結する。api（`POST /api/recordings/{id}/encode-profiles`）は追記方向にだけ書き換える。詳細は [storage.md](../../storage.md) §6「原本 TS の保持ポリシー」参照。
+行が無ければ、初期値はまだ確定していない。空のプロファイルでも、確定時は必ず行を INSERT する（不変条件 10）。列の既定値だけで表すと、「未確定」と「空で確定」を区別できない。
 
-録画 ID は脊椎の主キーへの FK で、録画履歴と同時に生まれて同時に死ぬ（不変条件 12）。「エンコード完了まで原本を残す」で空のプロファイルを選ぶ組み合わせは、CHECK が表現不可能にする。
+行は `recordings.id` への FK で録画を指し、方針の初期値を確定するときに生まれ、録画の削除で CASCADE して死ぬ。書き手は脊椎の watcher / reconciler ではないので、録画履歴の本体でなく衛星表に置く（不変条件 12、13）。
 
-既存録画への backfill は、原本のメディアアセットの有無で「凍結済みか」を判定して行を作る。列の値そのものは判定に使わない（不変条件 9）。
+複数の書き手は不変条件 12 が示す分割の兆候に当たる。ただし、どの書き手も同じ録画の永続的な desired state を書く。CM worker が観測する試行状態は別表にあり、方針の寿命は検出の開始・終了で区切らない。概念だけを理由に CM 方針を分割すると、原本コミット時の初期値の確定を別々に管理することになる。
 
-CM 検出の要求は、取り込み時のデプロイ設定または録画単位の API が宣言した値である。保持ポリシーと同じく録画ごとに凍結し、worker はこの値と active original の両方を満たす行だけを処理する。
+`cm_detect_generation` は切り替えを記録する世代で、現在の試行を選ぶために使う。現在の有効・無効から切り替え履歴は作り直せないため、導出値ではなく保存する事実である（不変条件 9）。
+
+CM worker は方針が有効で、active な原本もある録画だけを処理する。
+
+プロファイルを最後の 1 本まで外すと保持方針を `always` に戻し、空のプロファイルと `until_encoded` の組み合わせは CHECK でも禁じる。
+
+表名は CM 検出も含む処理方針を表す。
+
+API のパス `encode-policy` と `encode-profiles`、catalog の JSON キー `recordingEncodePolicies` は互換性のため維持する。Go の型名 `RecordingEncodePolicy` とクエリ名 `FreezeRecordingEncodePolicy` なども従来の名前を使う。
 
 <details><summary>根拠</summary>
 
-- 保持方針とプロファイル: `keep_original` / `encode_profiles`、衛星表 `recording_encode_policy`
-- 旧列の既定値: `keep_original NOT NULL DEFAULT 'always'`
-- 空のプロファイルで凍結した行: `encode_profiles = '{}'`
-- 凍結する関数: `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`
+- 方針の契約テスト: `TestEncodePolicyContract` / `TestCMDetectionContract`
+- 保持方針とプロファイル: `keep_original` / `encode_profiles`、衛星表 `recording_processing_policy`
+- 空のプロファイルで初期値を確定した行: `encode_profiles = '{}'`
+- 初期値の保存: `internal/store/pgstore/mediapublish.go` の `CommitOriginal`
 - 脊椎の主キー: `recordings.id`
 - 空のプロファイルを禁じる CHECK の対象: `until_encoded`
-- backfill の判定: 原本のメディアアセット `kind = 'original'`
 - CM 検出の要求: `cm_detect`
 
 </details>
@@ -64,7 +69,7 @@ CM worker は実尺に基づくタイムアウトを返し、停止・異常終�
 - 失敗工程の列と値: `stage`、`setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save`、ほかに `stopped` / `resolution` / `match` / `adopt`
 - 実尺に基づくタイムアウト: `Timeout()`
 - フェンシング値: `attempt_count`、`policy_generation`
-- 現在の試行: `current_cm_attempts`、`recording_encode_policy.cm_detect_generation`
+- 現在の試行: `current_cm_attempts`、`recording_processing_policy.cm_detect_generation`
 
 </details>
 
@@ -308,7 +313,7 @@ API は River の内部表を読まない。encode のプロセス死回収は R
 
 <details><summary>根拠</summary>
 
-- 残すと決めたプロファイル: `recording_encode_policy.encode_profiles`
+- 残すと決めたプロファイル: `recording_processing_policy.encode_profiles`
 - 書き手: `EncodeWorker`（`internal/worker/encode.go`）
 - 試行の列: `error` / `attempted_at` / `attempt_count`
 - 複合の主キー: `(recording_id, profile)`

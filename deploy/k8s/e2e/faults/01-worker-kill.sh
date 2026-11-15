@@ -70,7 +70,7 @@ if ! psql_q "WITH assets AS (
                      END,
                      0, 'active'
               FROM assets" >/dev/null ||
-   ! psql_q "INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+   ! psql_q "INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
               VALUES (${recording_id}, 'until_encoded', ARRAY['${profile}'])" >/dev/null ||
    ! psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
               VALUES ('available', 'encode', 'encode',

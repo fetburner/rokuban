@@ -2014,7 +2014,7 @@ SELECT id, size_bytes FROM media_assets WHERE id = $1`, originalID); err != nil 
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatal(err)
 	}

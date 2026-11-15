@@ -80,7 +80,7 @@ func getRecordingKeepOriginal(t *testing.T, pool *pgxpool.Pool, id int64) string
 	t.Helper()
 	var keepOriginal string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT keep_original FROM recording_encode_policy WHERE recording_id = $1`, id,
+		`SELECT keep_original FROM recording_processing_policy WHERE recording_id = $1`, id,
 	).Scan(&keepOriginal); err != nil {
 		t.Fatalf("loading keep_original for recording %d: %v", id, err)
 	}
@@ -90,7 +90,7 @@ func getRecordingKeepOriginal(t *testing.T, pool *pgxpool.Pool, id int64) string
 func setRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64, profiles []string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`UPDATE recording_encode_policy SET encode_profiles = $2 WHERE recording_id = $1`, id, profiles,
+		`UPDATE recording_processing_policy SET encode_profiles = $2 WHERE recording_id = $1`, id, profiles,
 	); err != nil {
 		t.Fatalf("setting encode_profiles for recording %d: %v", id, err)
 	}
@@ -129,7 +129,7 @@ func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	}
 }
 
-// getRecordingEncodeProfiles は recording_encode_policy 衛星表（issue #159）を
+// getRecordingEncodeProfiles は recording_processing_policy 衛星表（issue #159）を
 // 読む。行が無い（未凍結。原本 media_asset がまだコミットされていない）場合は
 // 空のプロファイル一覧を返す --- このテストファイルの呼び出し元はいずれも
 // seedIngested 後（原本コミット後。resolveAndSnapshotEncodePolicy が既定値でも
@@ -139,7 +139,7 @@ func getRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64) []st
 	t.Helper()
 	var profiles []string
 	err := pool.QueryRow(context.Background(),
-		`SELECT encode_profiles FROM recording_encode_policy WHERE recording_id = $1`, id,
+		`SELECT encode_profiles FROM recording_processing_policy WHERE recording_id = $1`, id,
 	).Scan(&profiles)
 	if err == nil {
 		return profiles
@@ -358,7 +358,7 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 }
 
 // until_encoded は desired なプロファイルが空なら 409 を返し、ポリシーを
-// 変更しない。recording_encode_policy 行が無い場合も同じ扱いにする（issue #697）。
+// 変更しない。recording_processing_policy 行が無い場合も同じ扱いにする（issue #697）。
 func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)})
@@ -396,7 +396,7 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 	}
 	var policyRows int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, noPolicyID,
+		`SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1`, noPolicyID,
 	).Scan(&policyRows); err != nil {
 		t.Fatalf("counting policy rows after 409: %v", err)
 	}
@@ -405,8 +405,8 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 	}
 }
 
-// 未 ingest（原本 media_asset も recording_encode_policy 行も無い）録画への
-// PATCH は 204（no-op）で、recording_encode_policy 行を作らないこと（issue #697
+// 未 ingest（原本 media_asset も recording_processing_policy 行も無い）録画への
+// PATCH は 204（no-op）で、recording_processing_policy 行を作らないこと（issue #697
 // レビューのブロッカー: SetRecordingKeepOriginal が旧 ON CONFLICT の INSERT
 // だった頃はここで行を作ってしまい、後続の ingest が呼ぶ
 // FreezeRecordingEncodePolicy（ON CONFLICT 無しの素の INSERT）が PK 衝突して
@@ -429,7 +429,7 @@ func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *test
 
 	var policyRows int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, id,
+		`SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1`, id,
 	).Scan(&policyRows); err != nil {
 		t.Fatalf("counting policy rows after 204: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *test
 }
 
 // purge 済み（purged_at が立った tombstone）の録画への PATCH は 404 で、
-// recording_encode_policy を書かないこと（issue #697 レビュー: GetRecordingByID
+// recording_processing_policy を書かないこと（issue #697 レビュー: GetRecordingByID
 // は述語なしで ingest worker と共有するため緩められないが、GET
 // /api/recordings/{id}（RecordingQuery.Get（purged_at IS NULL））との非対称を
 // このハンドラで埋める）。
@@ -594,7 +594,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 	originalID := seedIngested(t, pool, id, 1000, nil)
 	setRecordingEncodeProfiles(t, pool, id, []string{"h264"})
 	if _, err := pool.Exec(context.Background(),
-		`UPDATE recording_encode_policy SET keep_original = 'until_encoded' WHERE recording_id = $1`, id,
+		`UPDATE recording_processing_policy SET keep_original = 'until_encoded' WHERE recording_id = $1`, id,
 	); err != nil {
 		t.Fatalf("setting initial until_encoded policy: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 }
 
 // 予約が無い録画（mirakc に直接起こされた手動録画などを模す）でも事後追加が
-// 成功し、recording_encode_policy.encode_profiles に追加専用（union + dedup）で反映され、
+// 成功し、recording_processing_policy.encode_profiles に追加専用（union + dedup）で反映され、
 // encode_reconcile ヒントジョブが同一トランザクションで投入されること
 // （issue #133 の受け入れ 1 個目）。
 func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
@@ -753,7 +753,7 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	}
 }
 
-// recording_encode_policy に行が無い（未凍結）まま原本 media_asset だけが
+// recording_processing_policy に行が無い（未凍結）まま原本 media_asset だけが
 // active な録画（internal/inplace.Register → internal/catalog/rescue_scan.go
 // の rescueStorage、catalog を 1 世代も持たない状態からの災害復旧が作る形。
 // resolveAndSnapshotEncodePolicy を経由しないので凍結されない）への事後追加が
@@ -781,7 +781,7 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "災害復旧で復元", time.Now().Truncate(time.Second), "finished", 301
 	})
-	// seedIngested は使わない --- あれは recording_encode_policy 行も一緒に
+	// seedIngested は使わない --- あれは recording_processing_policy 行も一緒に
 	// 作ってしまう（実運用の ingest を模したフィクスチャなので）。ここでは
 	// inplace.Register が実際に作る形（原本 media_asset のみ、policy 行なし）を
 	// 直接再現する。
@@ -802,7 +802,7 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	}
 	var keepOriginal string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT keep_original FROM recording_encode_policy WHERE recording_id = $1`, id,
+		`SELECT keep_original FROM recording_processing_policy WHERE recording_id = $1`, id,
 	).Scan(&keepOriginal); err != nil {
 		t.Fatalf("loading keep_original for recording %d: %v", id, err)
 	}

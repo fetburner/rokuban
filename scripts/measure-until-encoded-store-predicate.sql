@@ -77,7 +77,7 @@ SELECT n, 'rule', 'tokyo', 1, 1, n, 'svc', 'GR', 'ch',
        CASE WHEN n > 19500 THEN now() - interval '40 days' END
 FROM generate_series(1, 20000) AS n;
 
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 SELECT id, 'always', ARRAY['h264']::text[], id % 5 = 0
 FROM recordings;
 
@@ -181,7 +181,7 @@ AS $fn$
     SELECT a.id AS asset_id, a.recording_id, a.rel_path, a.size_bytes, a.state
     FROM media_assets a
     JOIN recordings r ON r.id = a.recording_id
-    JOIN recording_encode_policy p ON p.recording_id = r.id
+    JOIN recording_processing_policy p ON p.recording_id = r.id
     WHERE a.kind = 'original'
       AND p.keep_original = 'until_encoded'
       AND r.deleted_at IS NULL
@@ -230,7 +230,7 @@ AS $fn$
     SELECT a.id AS asset_id, a.recording_id, a.rel_path, a.size_bytes, a.state
     FROM media_assets a
     JOIN recordings r ON r.id = a.recording_id
-    JOIN recording_encode_policy p ON p.recording_id = r.id
+    JOIN recording_processing_policy p ON p.recording_id = r.id
     WHERE a.kind = 'original'
       AND p.keep_original = 'until_encoded'
       AND r.deleted_at IS NULL
@@ -285,7 +285,7 @@ AS $fn$
     SELECT a.id AS asset_id, a.recording_id, a.rel_path, a.size_bytes, a.state
     FROM media_assets a
     JOIN recordings r ON r.id = a.recording_id
-    JOIN recording_encode_policy p ON p.recording_id = r.id
+    JOIN recording_processing_policy p ON p.recording_id = r.id
     WHERE a.kind = 'original'
       AND p.keep_original = 'until_encoded'
       AND r.deleted_at IS NULL
@@ -338,7 +338,7 @@ AS $fn$
     SELECT a.id AS asset_id, a.recording_id, a.rel_path, a.size_bytes, a.state
     FROM media_assets a
     JOIN recordings r ON r.id = a.recording_id
-    JOIN recording_encode_policy p ON p.recording_id = r.id
+    JOIN recording_processing_policy p ON p.recording_id = r.id
     WHERE a.kind = 'original'
       AND p.keep_original = 'until_encoded'
       AND r.deleted_at IS NULL
@@ -485,10 +485,10 @@ $b$;
 
 CREATE FUNCTION pg_temp.set_pct(p int) RETURNS void LANGUAGE plpgsql AS $b$
 BEGIN
-    UPDATE recording_encode_policy
+    UPDATE recording_processing_policy
     SET keep_original = CASE WHEN abs(hashtextextended(recording_id::text, 1616) % 100) < p
                              THEN 'until_encoded' ELSE 'always' END;
-    ANALYZE recording_encode_policy;
+    ANALYZE recording_processing_policy;
 END
 $b$;
 
@@ -540,7 +540,7 @@ SELECT (SELECT count(*) FROM until_encoded_deletable_originals WHERE state = 'ac
 -- 測定。until_encoded の割合ごとに、view と、関数（索引・書き方の候補）を測る。
 -- 消費側（delete_reconcile.sql の 3 クエリ）は view と、関数の 4 形（部分索引つき）で測る。
 -- ---------------------------------------------------------------------------
-VACUUM (ANALYZE) recording_encode_policy;
+VACUUM (ANALYZE) recording_processing_policy;
 DO $m$
 DECLARE pct int := 100;
 BEGIN
@@ -559,7 +559,7 @@ BEGIN
     PERFORM pg_temp.bench_set(pct, 'fn_compose_storefirst', 'until_encoded_deletable_originals($1) v', false);
 END $m$;
 
-VACUUM (ANALYZE) recording_encode_policy;
+VACUUM (ANALYZE) recording_processing_policy;
 DO $m$
 DECLARE pct int := 50;
 BEGIN
@@ -580,7 +580,7 @@ BEGIN
     PERFORM pg_temp.bench_set(pct, 'fn_compose_storefirst', 'until_encoded_deletable_originals($1) v', false);
 END $m$;
 
-VACUUM (ANALYZE) recording_encode_policy;
+VACUUM (ANALYZE) recording_processing_policy;
 DO $m$
 DECLARE pct int := 20;
 BEGIN
@@ -606,7 +606,7 @@ WHERE kind = 'original' AND state = 'deleting'
   AND id NOT IN (SELECT id FROM media_assets WHERE kind = 'original' AND state = 'deleting' AND recording_id <= 17750 ORDER BY id LIMIT 10)
   AND id NOT IN (SELECT id FROM media_assets WHERE kind = 'original' AND state = 'deleting' AND recording_id BETWEEN 19001 AND 19250 ORDER BY id LIMIT 10);
 VACUUM (ANALYZE) media_assets;
-VACUUM (ANALYZE) recording_encode_policy;
+VACUUM (ANALYZE) recording_processing_policy;
 DO $m$
 DECLARE pct int := 100;
 BEGIN
@@ -619,7 +619,7 @@ BEGIN
     PERFORM pg_temp.bench_neg(pct, 'fn_count_del20', 'pg_temp.until_encoded_count_form($1) v');
 END $m$;
 
-VACUUM (ANALYZE) recording_encode_policy;
+VACUUM (ANALYZE) recording_processing_policy;
 DO $m$
 DECLARE pct int := 50;
 BEGIN
@@ -641,10 +641,10 @@ FROM recordings WHERE id <= 17000;
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at)
 SELECT id, 'tokyo', format('tokyo/%s', rel_path), 'active', timestamptz '2026-01-01+00'
 FROM media_assets WHERE profile = 'h265';
-UPDATE recording_encode_policy SET encode_profiles = ARRAY['h264', 'h265']::text[];
+UPDATE recording_processing_policy SET encode_profiles = ARRAY['h264', 'h265']::text[];
 VACUUM (ANALYZE) media_assets;
 VACUUM (ANALYZE) media_asset_copies;
-VACUUM (ANALYZE) recording_encode_policy;
+VACUUM (ANALYZE) recording_processing_policy;
 DO $m$
 BEGIN
     PERFORM pg_temp.set_pct(50);

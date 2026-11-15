@@ -35,7 +35,7 @@ SELECT COALESCE(p.cm_detect, false)::boolean AS cm_detect,
            SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = r.id
        ) AS owned
 FROM recordings r
-LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+LEFT JOIN recording_processing_policy p ON p.recording_id = r.id
 WHERE r.id = sqlc.arg('recording_id')
   AND r.purged_at IS NULL;
 

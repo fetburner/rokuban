@@ -229,7 +229,7 @@ func seedRecordingQueryReadbackFields(t *testing.T, ctx context.Context, pool *p
 			keepOriginal = "always"
 		}
 		if _, err := pool.Exec(ctx, `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
 VALUES ($1, $2, $3)`, id, keepOriginal, options.EncodeProfiles); err != nil {
 			t.Fatalf("creating fixture encode policy: %v", err)
 		}

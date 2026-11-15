@@ -8,7 +8,7 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 | §3 §3.5 §3.6 §3.7 | desired: `reservations` / `program_intents`・`program_overrides` / `circuit_breakers` / `program_snapshots` | [schema/reservations.md](schema/reservations.md) |
 | §4 | observed: `schedule_sync` / `schedule_sync_snapshots` / `ruler_pass_snapshots` / `record_sweep_snapshots` | [schema/schedule-sync.md](schema/schedule-sync.md) |
 | §5 | 永続資産: `recordings`（行の作られ方・status・ごみ箱・重複防止）/ `never_scheduled_events` / `recording_purge_requests` / `encoded_asset_removal_requests` | [schema/recordings/history.md](schema/recordings/history.md) |
-| §5 | 永続資産（衛星表）: `recording_encode_policy` / `recording_ingest_progress` / `recording_ingest_checkpoints` / `recording_encode_attempts` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
+| §5 | 永続資産（衛星表）: `recording_processing_policy` / `recording_ingest_progress` / `recording_ingest_checkpoints` / `recording_encode_attempts` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
 | §5 | 永続資産（衛星表）: `recording_cm_detections` / `recording_cm_attempts` / `cm_logos` / `cm_logo_areas` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
 | §5 | 永続資産（衛星表）: `recording_chapter_ownership` / `recording_chapter_spans` / `recording_playback_positions` / `recording_watched` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
 | §6 | 永続資産: `media_assets` / `media_asset_cuts` / `media_asset_thumbnail_seeks` | [schema/recordings/media-assets.md](schema/recordings/media-assets.md) |
@@ -32,11 +32,11 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 
 永続資産の衛星表は、録画履歴かメディアアセットを指す小さな表である。主なものは録画履歴の節（§5）にあり、メディアアセットの節（§6）にもある。行の存在そのものが 1 つの事実を表すものが多い。
 
-録画履歴の節の主なものは、原本保持ポリシーの凍結、転送の途中経過、即時完全削除の要求、外したエンコード結果の要求、encode ジョブの直近の試行状態、世帯共有の再開位置、世帯共有の視聴済み印などである。
+録画履歴の節の主なものは、録画の処理方針、転送の途中経過、即時完全削除の要求、外したエンコード結果の要求、encode ジョブの直近の試行状態、世帯共有の再開位置、世帯共有の視聴済み印などである。
 
 <details><summary>根拠</summary>
 
-- 原本保持ポリシーの凍結: `recording_encode_policy`
+- 録画の処理方針: `recording_processing_policy`
 - 転送の途中経過: `recording_ingest_progress`
 - ingest writer の lease と clean handoff: `recording_ingest_checkpoints`
 - 即時完全削除の要求: `recording_purge_requests`
@@ -67,7 +67,7 @@ erDiagram
     program_snapshots ||--o| program_overrides : "(site, program_id) FK, ON DELETE CASCADE"
     recordings ||--o{ record_sync : "recording_id (observed)"
     recordings ||--o{ media_assets : "recording_id"
-    recordings ||--o| recording_encode_policy : "recording_id (凍結。衛星表、ON DELETE CASCADE)"
+    recordings ||--o| recording_processing_policy : "recording_id (処理方針。衛星表、ON DELETE CASCADE)"
     recordings ||--o| recording_ingest_progress : "recording_id (転送中。衛星表)"
     recordings ||--o| recording_ingest_checkpoints : "recording_id (ingest writer lease と再開点。衛星表)"
     recordings ||--o| recording_purge_requests : "recording_id (即時削除の要求。衛星表)"
@@ -97,13 +97,13 @@ observed は mirakc の観測で、短命で使い捨てである。schedule 全
 
 ### 衛星表の読み方
 
-衛星表の多くは、行の存在が 1 つの事実を表す。実体無しの観測は、削除の走査が毎回作り直せるので、メディアアセットの列にしない（不変条件 13）。行が表す事実は、凍結済み、原本を転送中、完全削除の要求、版を外した、encode ジョブが実行中か失敗、のいずれかである。世帯共有の再開位置と視聴済み印は、API が書くユーザーの状態で、値を持つ。
+衛星表の多くは、行の存在が 1 つの事実を表す。実体無しの観測は、削除の走査が毎回作り直せるので、メディアアセットの列にしない（不変条件 13）。行が表す事実は、処理方針の初期値が確定済み、原本を転送中、完全削除の要求、版を外した、encode ジョブが実行中か失敗、のいずれかである。世帯共有の再開位置と視聴済み印は、API が書くユーザーの状態で、値を持つ。
 
 実体無しの観測は削除 reconcile が毎パス作り直す。この表を根拠に自動削除する経路は無い（[storage/missing-assets.md](storage/missing-assets.md)）。同じ削除 reconcile の帳簿でも、まだメディアアセットに無いファイルを追う表は、外部キーも衛星関係も持たないので、この図には現れない。
 
 <details><summary>根拠</summary>
 
-- 凍結済み（行の存在）: `recording_encode_policy`。`recordings` の削除で CASCADE
+- 処理方針の初期値が確定済み（行の存在）: `recording_processing_policy`。`recordings` の削除で CASCADE
 - 原本を転送中（コミット・破棄で消える）: `recording_ingest_progress`
 - ingest writer の lease と clean handoff（原本のコミットで消える。破棄では世代を進めて残す）: `recording_ingest_checkpoints`
 - ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）: `recording_purge_requests`

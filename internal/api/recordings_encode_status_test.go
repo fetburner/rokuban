@@ -31,13 +31,13 @@ func seedEncodeAttempt(t *testing.T, pool *pgxpool.Pool, recordingID int64, prof
 	}
 }
 
-// setEncodeProfiles は recording_encode_policy.encode_profiles（desired）を
+// setEncodeProfiles は recording_processing_policy.encode_profiles（desired）を
 // 上書きする。seedIngested が既定 '{}' で凍結した行を、テストが望む desired
 // 一覧に書き換える。
 func setEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64, profiles []string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`UPDATE recording_encode_policy SET encode_profiles = $2 WHERE recording_id = $1`,
+		`UPDATE recording_processing_policy SET encode_profiles = $2 WHERE recording_id = $1`,
 		recordingID, profiles); err != nil {
 		t.Fatalf("updating encode_profiles: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 }
 
 // TestEncodeJobStatusesFromFields_PreservesDesiredOrder は encodeStatus の
-// 並びが desired（recording_encode_policy.encode_profiles）の並びであることを固定する
+// 並びが desired（recording_processing_policy.encode_profiles）の並びであることを固定する
 // （上の表テストは結果を map に潰すので順序を主張していない）。
 //
 // 落ち方: 試行行の map（attempts）を回して組み立てる実装に差し替えると、Go の

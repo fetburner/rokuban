@@ -269,7 +269,7 @@ func TestRemoveRecordingEncodedAsset_UntilEncodedClampsToAlways(t *testing.T) {
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	if _, err := pool.Exec(context.Background(),
-		`UPDATE recording_encode_policy SET keep_original = 'until_encoded' WHERE recording_id = $1`, id); err != nil {
+		`UPDATE recording_processing_policy SET keep_original = 'until_encoded' WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -530,7 +530,7 @@ func policyRowCount(t *testing.T, pool *pgxpool.Pool, id int64) int {
 	t.Helper()
 	var n int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&n); err != nil {
+		`SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1`, id).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -549,7 +549,7 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowFreezesAndRemoves(t *testing.T) 
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	if _, err := pool.Exec(context.Background(),
-		`DELETE FROM recording_encode_policy WHERE recording_id = $1`, id); err != nil {
+		`DELETE FROM recording_processing_policy WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -583,7 +583,7 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowLastCopyRollsBackFreeze(t *testi
 	seedEncodedVersions(t, pool, id, "h264")
 	markOriginalDeleted(t, pool, originalID)
 	if _, err := pool.Exec(context.Background(),
-		`DELETE FROM recording_encode_policy WHERE recording_id = $1`, id); err != nil {
+		`DELETE FROM recording_processing_policy WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 

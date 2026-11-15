@@ -77,7 +77,7 @@ func (f *encodePolicyContractDB) newAsset(t *testing.T, recordingID int64, kind 
 func (f *encodePolicyContractDB) setDesired(t *testing.T, recordingID int64, profiles []string) {
 	t.Helper()
 	if _, err := f.pool.Exec(context.Background(), `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', $2, false)
 ON CONFLICT (recording_id) DO UPDATE SET
     keep_original = 'always', encode_profiles = EXCLUDED.encode_profiles`, recordingID, profiles); err != nil {
@@ -177,7 +177,7 @@ func (f *encodePolicyContractDB) beginPolicyUpdate(t *testing.T, recordingID int
 	if _, err := sqlcgen.New(tx).LockRecordingEncodePolicy(ctx, recordingID); err != nil {
 		t.Fatalf("locking encode policy in update fixture: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE recording_encode_policy SET encode_profiles = $2 WHERE recording_id = $1`, recordingID, profiles); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE recording_processing_policy SET encode_profiles = $2 WHERE recording_id = $1`, recordingID, profiles); err != nil {
 		t.Fatalf("updating desired profiles in fixture: %v", err)
 	}
 	return func() {
@@ -250,7 +250,7 @@ func (f *encodePolicyContractDB) tryPolicyLock(t *testing.T, recordingID int64) 
 		t.Fatalf("beginning policy lock probe: %v", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM recording_encode_policy WHERE recording_id = $1 FOR UPDATE NOWAIT`, recordingID); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM recording_processing_policy WHERE recording_id = $1 FOR UPDATE NOWAIT`, recordingID); err != nil {
 		t.Fatalf("policy row was locked before recording row: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -263,7 +263,7 @@ func (f *encodePolicyContractDB) waitRecordingLock(t *testing.T) {
 }
 
 func (f *encodePolicyContractDB) waitPolicyLock(t *testing.T) {
-	waitForEncodePolicyLockWaiter(t, f.pool, "%recording_encode_policy%")
+	waitForEncodePolicyLockWaiter(t, f.pool, "%recording_processing_policy%")
 }
 
 func waitForEncodePolicyLockWaiter(t *testing.T, pool *pgxpool.Pool, queryPattern string) {

@@ -104,7 +104,7 @@ func getChapters(t *testing.T, url string) RecordingChapters {
 func enableCMDetect(t *testing.T, pool *pgxpool.Pool, id int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', '{}', true)
 ON CONFLICT (recording_id) DO UPDATE SET cm_detect = true`, id); err != nil {
 		t.Fatalf("enabling CM detection: %v", err)

@@ -67,7 +67,7 @@ func seedCMDetectionContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 		fixtureParams.SizeBytes = 1000
 	})
 	if _, err := pool.Exec(ctx, `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', '{}', true)`, id); err != nil {
 		t.Fatalf("enabling CM detection: %v", err)
 	}
@@ -211,7 +211,7 @@ SELECT EXISTS (
 func advanceCMDetectionPolicyGeneration(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
-UPDATE recording_encode_policy SET cm_detect_generation = cm_detect_generation + 1
+UPDATE recording_processing_policy SET cm_detect_generation = cm_detect_generation + 1
 WHERE recording_id = $1`, recordingID); err != nil {
 		t.Fatalf("advancing CM detection generation: %v", err)
 	}

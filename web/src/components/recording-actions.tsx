@@ -450,9 +450,9 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
 
 /**
  * AddEncodeProfilesAction は録画完了後に事後的にエンコードを追加依頼するボタン
- * （issue #133、凍結の例外。docs/storage.md §6「凍結の例外: 事後追加」）。
+ * （docs/storage/retention.md §6「録画単位の方針変更」）。
  *
- * `GET /api/encode-profiles` の一覧から、この録画の `encodeProfiles`（凍結された
+ * `GET /api/encode-profiles` の一覧から、この録画の `encodeProfiles`（現在の
  * desired。pending なジョブのぶんも含む）に無いものだけを選択肢にする ---
  * 既に追加済み/完了済みのプロファイルを選ばせない（罠: `UniqueOpts` が二重投入を
  * 黙って握りつぶすため、UI 側で「追加済み」を出して二重依頼に見せない）。

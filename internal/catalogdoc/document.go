@@ -187,7 +187,7 @@ type Recording struct {
 	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
-// RecordingEncodePolicy は recording_encode_policy の 1 行（issue #159。凍結済み
+// RecordingEncodePolicy は recording_processing_policy の 1 行（issue #159。凍結済み
 // 「この録画の望ましい最終状態」）。
 //
 // **行の有無そのものが意味を持つ**（不変条件 10）。この録画の RecordingID が

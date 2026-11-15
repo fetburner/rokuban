@@ -76,13 +76,13 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Fatalf("UpsertMediaAssetTSScan: %v", err)
 	}
 
-	// recording_encode_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
+	// recording_processing_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
 	// した状態を模す。resolveAndSnapshotEncodePolicy 相当）。
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'until_encoded', ARRAY['h265'], true)
 	`, recID); err != nil {
-		t.Fatalf("seeding recording_encode_policy: %v", err)
+		t.Fatalf("seeding recording_processing_policy: %v", err)
 	}
 
 	// 未凍結の録画（原本 media_asset を持たない）。行が無いことがそのまま
@@ -204,7 +204,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if len(doc.ProgramIntents) != 1 {
 		t.Fatalf("exported program_intents = %d, want 1", len(doc.ProgramIntents))
 	}
-	// recording_encode_policy（issue #159）: 凍結済みの recID だけが載り、
+	// recording_processing_policy（issue #159）: 凍結済みの recID だけが載り、
 	// 未凍結の unfrozenRecID は載らない（行の有無そのものが意味を持つ。
 	// 不変条件 10）。
 	if len(doc.RecordingEncodePolicies) != 1 {
@@ -214,7 +214,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	p := doc.RecordingEncodePolicies[0]
 	if p.RecordingID != recID || p.KeepOriginal != "until_encoded" ||
 		len(p.EncodeProfiles) != 1 || p.EncodeProfiles[0] != "h265" || !p.CMDetect {
-		t.Fatalf("exported recording_encode_policy = %+v, want recordingId=%d keepOriginal=until_encoded profiles=[h265]",
+		t.Fatalf("exported recording_processing_policy = %+v, want recordingId=%d keepOriginal=until_encoded profiles=[h265]",
 			p, recID)
 	}
 
@@ -285,30 +285,30 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Errorf("recording id/title = %d/%q, want %d/ニュース", gotRecID, gotTitle, recID)
 	}
 
-	// recording_encode_policy が値そのまま復元され、未凍結の録画には行が
+	// recording_processing_policy が値そのまま復元され、未凍結の録画には行が
 	// 作られていないこと。
 	var gotKeepOriginal string
 	var gotProfiles []string
 	var gotCMDetect bool
 	if err := pool.QueryRow(ctx,
-		`SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1`, recID,
+		`SELECT keep_original, encode_profiles, cm_detect FROM recording_processing_policy WHERE recording_id = $1`, recID,
 	).Scan(&gotKeepOriginal, &gotProfiles, &gotCMDetect); err != nil {
-		t.Fatalf("query recording_encode_policy: %v", err)
+		t.Fatalf("query recording_processing_policy: %v", err)
 	}
 	if gotKeepOriginal != "until_encoded" || len(gotProfiles) != 1 || gotProfiles[0] != "h265" {
-		t.Errorf("rescued recording_encode_policy = %q/%v, want until_encoded/[h265]", gotKeepOriginal, gotProfiles)
+		t.Errorf("rescued recording_processing_policy = %q/%v, want until_encoded/[h265]", gotKeepOriginal, gotProfiles)
 	}
 	if !gotCMDetect {
-		t.Errorf("rescued recording_encode_policy.cm_detect = false, want true (exported as true)")
+		t.Errorf("rescued recording_processing_policy.cm_detect = false, want true (exported as true)")
 	}
 	var unfrozenPolicyCount int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, unfrozenRecID,
+		`SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1`, unfrozenRecID,
 	).Scan(&unfrozenPolicyCount); err != nil {
-		t.Fatalf("query recording_encode_policy for unfrozen: %v", err)
+		t.Fatalf("query recording_processing_policy for unfrozen: %v", err)
 	}
 	if unfrozenPolicyCount != 0 {
-		t.Errorf("unfrozen recording gained a recording_encode_policy row (count=%d), want 0", unfrozenPolicyCount)
+		t.Errorf("unfrozen recording gained a recording_processing_policy row (count=%d), want 0", unfrozenPolicyCount)
 	}
 	var gotDeletedAt *time.Time
 	if err := pool.QueryRow(ctx, `SELECT deleted_at FROM recordings WHERE id = $1`, recID).
@@ -400,11 +400,11 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Errorf("recordings after second rescue = %d, want 2 (増殖しない)", recCount)
 	}
 	var policyCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_encode_policy`).Scan(&policyCount); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_processing_policy`).Scan(&policyCount); err != nil {
 		t.Fatal(err)
 	}
 	if policyCount != 1 {
-		t.Errorf("recording_encode_policy after second rescue = %d, want 1 (増殖しない)", policyCount)
+		t.Errorf("recording_processing_policy after second rescue = %d, want 1 (増殖しない)", policyCount)
 	}
 	var assetCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets`).Scan(&assetCount); err != nil {

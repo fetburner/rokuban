@@ -26,7 +26,7 @@ import (
 //
 // 順序: 再評価ロック → rules（+ 子）→ label_rules → program_snapshots →
 // program_intents / program_overrides → recordings → recording_purge_requests →
-// recording_watched → recording_encode_policy → media_assets → チャプター所有 2 表 →
+// recording_watched → recording_processing_policy → media_assets → チャプター所有 2 表 →
 // drop_stats → drop_positions → media_asset_ts_scans → 分類ルールの全件再評価 →
 // ID シーケンスのリセット → ruler 入力の版の更新。
 // 全部 1 トランザクションで、途中失敗なら何も残さない。
@@ -133,7 +133,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 		return nil, err
 	}
 
-	// recording_encode_policy は recordings への FK を持つので recordings の
+	// recording_processing_policy は recordings への FK を持つので recordings の
 	// upsert より後に書く。doc.RecordingEncodePolicies に載っていない録画には
 	// 何も書かない --- 「未凍結」は行の不在そのものが意味を持つ（不変条件 10）。
 	if err := applyRecordingEncodePolicies(ctx, q, doc.RecordingEncodePolicies, res); err != nil {
@@ -386,7 +386,7 @@ func applyRecordingWatched(ctx context.Context, q *sqlcgen.Queries, rows []catal
 	return nil
 }
 
-// applyRecordingEncodePolicies は recording_encode_policy を復元し、件数を
+// applyRecordingEncodePolicies は recording_processing_policy を復元し、件数を
 // res.RecordingEncodePolicies に書く。
 func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, policies []catalogdoc.RecordingEncodePolicy, res *store.RestoreResult) error {
 	for _, p := range policies {
@@ -402,7 +402,7 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 			UpdatedAt:      p.UpdatedAt,
 			CmDetect:       p.CMDetect,
 		}); err != nil {
-			return fmt.Errorf("upserting recording_encode_policy %d: %w", p.RecordingID, err)
+			return fmt.Errorf("upserting recording_processing_policy %d: %w", p.RecordingID, err)
 		}
 	}
 	res.RecordingEncodePolicies = len(policies)

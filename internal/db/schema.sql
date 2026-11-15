@@ -628,7 +628,7 @@ CREATE FUNCTION public.until_encoded_deletable_originals(desired_store text) RET
 SELECT a.id, a.recording_id
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
-JOIN recording_encode_policy p ON p.recording_id = r.id
+JOIN recording_processing_policy p ON p.recording_id = r.id
 WHERE desired_store IS NOT NULL
   AND a.kind = 'original'
   AND p.keep_original = 'until_encoded'
@@ -743,10 +743,10 @@ CREATE TABLE public.recording_cm_attempts (
 );
 
 --
--- Name: recording_encode_policy; Type: TABLE; Schema: public; Owner: -
+-- Name: recording_processing_policy; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.recording_encode_policy (
+CREATE TABLE public.recording_processing_policy (
     recording_id bigint NOT NULL,
     keep_original text NOT NULL,
     encode_profiles text[] NOT NULL,
@@ -754,8 +754,8 @@ CREATE TABLE public.recording_encode_policy (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     cm_detect boolean DEFAULT false NOT NULL,
     cm_detect_generation bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT recording_encode_policy_check CHECK (((keep_original <> 'until_encoded'::text) OR (cardinality(encode_profiles) > 0))),
-    CONSTRAINT recording_encode_policy_keep_original_check CHECK ((keep_original = ANY (ARRAY['always'::text, 'until_encoded'::text])))
+    CONSTRAINT recording_processing_policy_check CHECK (((keep_original <> 'until_encoded'::text) OR (cardinality(encode_profiles) > 0))),
+    CONSTRAINT recording_processing_policy_keep_original_check CHECK ((keep_original = ANY (ARRAY['always'::text, 'until_encoded'::text])))
 );
 
 --
@@ -771,7 +771,7 @@ CREATE VIEW public.current_cm_attempts AS
     ca.attempt_count,
     ca.policy_generation
    FROM (public.recording_cm_attempts ca
-     JOIN public.recording_encode_policy p ON ((p.recording_id = ca.recording_id)))
+     JOIN public.recording_processing_policy p ON ((p.recording_id = ca.recording_id)))
   WHERE (p.cm_detect AND (ca.policy_generation = p.cm_detect_generation));
 
 --
@@ -870,7 +870,7 @@ CREATE TABLE public.recordings (
 CREATE VIEW public.cm_detection_desired AS
  SELECT r.id AS recording_id
    FROM ((((public.recordings r
-     JOIN public.recording_encode_policy p ON (((p.recording_id = r.id) AND p.cm_detect)))
+     JOIN public.recording_processing_policy p ON (((p.recording_id = r.id) AND p.cm_detect)))
      JOIN public.media_assets o ON (((o.recording_id = r.id) AND (o.kind = 'original'::text))))
      LEFT JOIN public.current_cm_attempts ca ON ((ca.recording_id = r.id)))
      LEFT JOIN public.cm_logos l ON (((l.network_id = r.network_id) AND (l.service_id = r.service_id))))
@@ -1609,7 +1609,7 @@ CREATE VIEW public.removed_encoded_assets AS
     a.recording_id
    FROM ((public.media_assets a
      JOIN public.encoded_asset_removal_requests q ON (((q.recording_id = a.recording_id) AND (q.profile = a.profile))))
-     JOIN public.recording_encode_policy p ON ((p.recording_id = a.recording_id)))
+     JOIN public.recording_processing_policy p ON ((p.recording_id = a.recording_id)))
   WHERE ((a.kind = 'encoded'::text) AND (NOT (a.profile = ANY (p.encode_profiles))) AND (EXISTS ( SELECT 1
            FROM public.media_assets other
           WHERE ((other.recording_id = a.recording_id) AND (((other.kind = 'original'::text) AND (EXISTS ( SELECT 1
@@ -1858,7 +1858,7 @@ CREATE VIEW public.unencoded_desired_profiles AS
  SELECT p.recording_id,
     want.profile,
     want.ordinality
-   FROM (public.recording_encode_policy p
+   FROM (public.recording_processing_policy p
      CROSS JOIN LATERAL unnest(p.encode_profiles) WITH ORDINALITY want(profile, ordinality))
   WHERE (NOT (EXISTS ( SELECT 1
            FROM public.media_assets e
@@ -2145,13 +2145,6 @@ ALTER TABLE ONLY public.recording_encode_attempts
     ADD CONSTRAINT recording_encode_attempts_pkey PRIMARY KEY (recording_id, profile);
 
 --
--- Name: recording_encode_policy recording_encode_policy_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.recording_encode_policy
-    ADD CONSTRAINT recording_encode_policy_pkey PRIMARY KEY (recording_id);
-
---
 -- Name: recording_ingest_checkpoints recording_ingest_checkpoints_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2171,6 +2164,13 @@ ALTER TABLE ONLY public.recording_ingest_progress
 
 ALTER TABLE ONLY public.recording_playback_positions
     ADD CONSTRAINT recording_playback_positions_pkey PRIMARY KEY (recording_id);
+
+--
+-- Name: recording_processing_policy recording_processing_policy_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.recording_processing_policy
+    ADD CONSTRAINT recording_processing_policy_pkey PRIMARY KEY (recording_id);
 
 --
 -- Name: recording_purge_requests recording_purge_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2727,13 +2727,6 @@ ALTER TABLE ONLY public.recording_encode_attempts
     ADD CONSTRAINT recording_encode_attempts_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
 
 --
--- Name: recording_encode_policy recording_encode_policy_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.recording_encode_policy
-    ADD CONSTRAINT recording_encode_policy_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
-
---
 -- Name: recording_ingest_checkpoints recording_ingest_checkpoints_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2753,6 +2746,13 @@ ALTER TABLE ONLY public.recording_ingest_progress
 
 ALTER TABLE ONLY public.recording_playback_positions
     ADD CONSTRAINT recording_playback_positions_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
+
+--
+-- Name: recording_processing_policy recording_processing_policy_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.recording_processing_policy
+    ADD CONSTRAINT recording_processing_policy_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
 
 --
 -- Name: recording_purge_requests recording_purge_requests_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

@@ -1071,7 +1071,7 @@ func TestEncodedPublishStateActiveRequiresCurrentGenerationCopy(t *testing.T) {
 		p.Profile = &profile
 		p.RelPath = "encoded/h264.mp4"
 	})
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatalf("seeding encode policy: %v", err)
 	}

@@ -225,7 +225,7 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 		})
 		dbtest.MediaAsset(t, pool, id)
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'always', $2::text[])`,
+			`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'always', $2::text[])`,
 			id, profiles); err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 func seedDesiredEncodeProfiles(t *testing.T, pool *pgxpool.Pool, ctx context.Context, id int64, profiles string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'always', $2::text[])`,
+		`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'always', $2::text[])`,
 		id, profiles); err != nil {
 		t.Fatal(err)
 	}

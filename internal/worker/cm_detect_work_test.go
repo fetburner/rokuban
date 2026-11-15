@@ -238,7 +238,7 @@ func seedCMDetectionState(t *testing.T, pool *pgxpool.Pool, mediaDir string, id 
 	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 	markOriginalTSScanComplete(t, pool, assetID)
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -781,7 +781,7 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -872,11 +872,11 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	}
 }
 
-// cmPolicyGeneration は recording_encode_policy の cm_detect_generation を読む。
+// cmPolicyGeneration は recording_processing_policy の cm_detect_generation を読む。
 func cmPolicyGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) int64 {
 	t.Helper()
 	var generation int64
-	if err := pool.QueryRow(ctx, `SELECT cm_detect_generation FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&generation); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT cm_detect_generation FROM recording_processing_policy WHERE recording_id = $1`, id).Scan(&generation); err != nil {
 		t.Fatal(err)
 	}
 	return generation
