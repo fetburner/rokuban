@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -339,6 +340,23 @@ func applyRecordings(ctx context.Context, q *sqlcgen.Queries, recordings []catal
 		if len(qe) == 0 || bytes.Equal(bytes.TrimSpace(qe), []byte("null")) {
 			qe = []byte("[]")
 		}
+		// failureReported のない旧形式の catalog の読み込み時だけ、品質イベントの配列から列を埋める。
+		reported := r.FailureReported
+		if reported == nil {
+			var events []struct {
+				Event string `json:"event"`
+			}
+			if err := json.Unmarshal(qe, &events); err != nil {
+				return fmt.Errorf("migrating recording %d failure report: %w", r.ID, err)
+			}
+			value := false
+			for _, event := range events {
+				if event.Event == "recording.failed" {
+					value = true
+				}
+			}
+			reported = &value
+		}
 		if err := q.CatalogUpsertRecording(ctx, sqlcgen.CatalogUpsertRecordingParams{
 			ID:                r.ID,
 			RuleID:            r.RuleID,
@@ -361,6 +379,7 @@ func applyRecordings(ctx context.Context, q *sqlcgen.Queries, recordings []catal
 			StartedAt:         r.StartedAt,
 			EndedAt:           r.EndedAt,
 			QualityEvents:     qe,
+			FailureReported:   *reported,
 			DeletedAt:         r.DeletedAt,
 			SupersededAt:      r.SupersededAt,
 			PurgedAt:          r.PurgedAt,

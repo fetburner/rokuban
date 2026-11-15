@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -37,19 +38,24 @@ func TestQualityEventAtIsAlwaysDBClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateFailedRecording: %v", err)
 	}
-	if _, err := q.AppendQualityEventsIfMissing(ctx, sqlcgen.AppendQualityEventsIfMissingParams{ID: id, Events: events(`{"n":2}`)}); err != nil {
+	sweepID := dbtest.Recording(t, pool)
+	if _, err := q.AppendQualityEventsIfMissing(ctx, sqlcgen.AppendQualityEventsIfMissingParams{ID: sweepID, Events: events(`{"n":2}`)}); err != nil {
 		t.Fatalf("AppendQualityEventsIfMissing: %v", err)
 	}
 	if err := q.AppendQualityEvents(ctx, sqlcgen.AppendQualityEventsParams{ID: id, Events: events(`{"n":3}`)}); err != nil {
 		t.Fatalf("AppendQualityEvents: %v", err)
 	}
-	var raw json.RawMessage
-	if err := pool.QueryRow(ctx, `SELECT quality_events FROM recordings WHERE id = $1`, id).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
 	var got []db.QualityEvent
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatal(err)
+	for _, recordingID := range []int64{id, sweepID} {
+		var raw json.RawMessage
+		if err := pool.QueryRow(ctx, `SELECT quality_events FROM recordings WHERE id = $1`, recordingID).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var events []db.QualityEvent
+		if err := json.Unmarshal(raw, &events); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, events...)
 	}
 	if len(got) != 3 {
 		t.Fatalf("quality events = %d, want 3", len(got))

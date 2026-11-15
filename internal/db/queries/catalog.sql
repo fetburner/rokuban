@@ -264,7 +264,7 @@ INSERT INTO recordings (
     extended, genres, is_free,
     program_start_at, program_duration_ms,
     status, started_at, ended_at,
-    quality_events,
+    quality_events, failure_reported,
     deleted_at, superseded_at, purged_at, created_at, updated_at
 ) OVERRIDING SYSTEM VALUE
 VALUES (
@@ -274,7 +274,7 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    sqlc.arg('quality_events')::jsonb,
+    sqlc.arg('quality_events')::jsonb, sqlc.arg('failure_reported'),
     $21, $22, $23, $24, $25
 )
 ON CONFLICT (id) DO UPDATE SET
@@ -298,6 +298,7 @@ ON CONFLICT (id) DO UPDATE SET
     started_at          = EXCLUDED.started_at,
     ended_at            = EXCLUDED.ended_at,
     quality_events      = EXCLUDED.quality_events,
+    failure_reported    = EXCLUDED.failure_reported,
     deleted_at          = EXCLUDED.deleted_at,
     -- superseded_at を落とすと、復旧時に superseded 行が live に戻って
     -- recordings_unique_active_event に衝突する（issue #129 症状 2）。

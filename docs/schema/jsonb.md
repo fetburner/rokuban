@@ -38,6 +38,10 @@ jsonb 内は camelCase（Go と JSON の規約）、SQL のカラムは snake_ca
 
 品質イベントは、録画の失敗と record 破損の履歴を、追記だけの配列で持つ。理由は mirakc のペイロードをそのまま格納する。
 
+失敗を追記済みかどうかは `recordings.failure_reported` で判定し、品質イベントの配列の中身は読まない。移行時に一度だけ品質イベントの配列を読み、この列を埋める。
+
+catalog は `failureReported` を書き出し、復旧後もこの列の値を保つ。`failureReported` を持たない旧形式の catalog を読み込むときだけ、品質イベントの配列からこの列を埋める（移行と同じ一度きりの読み取り）。
+
 ```jsonc
 [
   {

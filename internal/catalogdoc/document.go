@@ -181,6 +181,8 @@ type Recording struct {
 	StartedAt         *time.Time      `json:"startedAt,omitempty"`
 	EndedAt           *time.Time      `json:"endedAt,omitempty"`
 	QualityEvents     json.RawMessage `json:"qualityEvents"`
+	// FailureReported は失敗報告済みの事実。nil は旧 catalog 形式を表す。
+	FailureReported *bool `json:"failureReported,omitempty"`
 	// 欠測は never_scheduled_events 表が持ち、recordings は観測された試行だけを
 	// 持つ。欠測は過去番組の観測なので、放送 + 猶予で消える snapshots や復旧後の
 	// 未来予約とは無関係であり、catalog の対象にしない。

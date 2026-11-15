@@ -40,15 +40,9 @@ SET quality_events = r.quality_events || COALESCE((
         SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
         FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS e(value, ordinality)
     ), '[]'::jsonb),
+    failure_reported = true,
     updated_at = now()
-WHERE r.id = $2
-  AND NOT EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(r.quality_events) AS existing_event
-      CROSS JOIN jsonb_array_elements($1::jsonb) AS incoming_event
-      WHERE existing_event->>'event' = incoming_event->>'event'
-        AND existing_event->'reason' = incoming_event->'reason'
-  )
+WHERE r.id = $2 AND NOT r.failure_reported
 `
 
 type AppendQualityEventsIfMissingParams struct {
@@ -56,10 +50,7 @@ type AppendQualityEventsIfMissingParams struct {
 	ID     int64
 }
 
-// 同じ失敗理由を records/schedules sweep が繰り返し観測しても品質イベントを
-// 増殖させない。event と reason の組を同一録画内の観測識別子として扱う。
-// record-broken など SSE のイベント履歴は既存の AppendQualityEvents でそのまま
-// 追記するので、mirakc から同じイベントが複数回届いた事実は失わない。
+// sweep は録画ごとの最初の失敗報告だけを記録する。SSE の履歴は常に追記する。
 func (q *Queries) AppendQualityEventsIfMissing(ctx context.Context, arg AppendQualityEventsIfMissingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, appendQualityEventsIfMissing, arg.Events, arg.ID)
 	if err != nil {
@@ -144,7 +135,7 @@ INSERT INTO recordings (
     channel_type, channel, title, description,
     extended, genres, is_free,
     program_start_at, program_duration_ms,
-    status, quality_events
+    status, quality_events, failure_reported
 ) VALUES (
     $1, $2, $3,
     $4, $5, $6, $7,
@@ -154,12 +145,13 @@ INSERT INTO recordings (
     'failed', COALESCE((
         SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
         FROM jsonb_array_elements($17::jsonb) WITH ORDINALITY AS e(value, ordinality)
-    ), '[]'::jsonb)
+    ), '[]'::jsonb), true
 )
 ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
     WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
+    failure_reported = true,
     updated_at     = now()
 RETURNING id
 `

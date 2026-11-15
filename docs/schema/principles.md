@@ -30,6 +30,8 @@ mirakc の record id は同期表にだけ存在し、同期表から永続側�
 
 録画失敗の理由などの品質イベントは、履歴として価値があるので保持する。構造化した列にはせず、jsonb の自由形式ログとして持つ。システムのロジックは、その中身に依存しない。
 
+失敗を追記済みかどうかは、[録画履歴](recordings/history.md)の `failure_reported` で判定する。
+
 #### 非サポート: 同一 mirakc を共有する複数の Rokuban
 
 同一の mirakc を複数の Rokuban で共有する構成は、スコープ外とする。1 世帯の録画は 1 つの Rokuban で足り、複数のエッジは site で分ける。1 つの mirakc を複数の Rokuban に貸す形は、世帯外への提供に近づく（[api/deployment.md](../api/deployment.md) §根拠: 法的制約がスコープを決める）。

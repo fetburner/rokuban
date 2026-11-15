@@ -331,29 +331,34 @@ func runCatalogConcurrentExport(t *testing.T, newStore NewCatalogStore) {
 }
 
 func runCatalogRoundTrip(t *testing.T, newStore NewCatalogStore) {
-	f := newStore(t)
-	ctx := context.Background()
-	seed := roundTripCatalogDocument()
-	if _, err := f.Store.Restore(ctx, seed, store.RestoreOptions{}); err != nil {
-		t.Fatalf("seeding catalog through Restore: %v", err)
-	}
-	exported, err := f.Store.Export(ctx)
-	if err != nil {
-		t.Fatalf("Export before reset: %v", err)
-	}
-	assertCatalogExportReadbacks(t, exported, seed)
-	f.Reset(t)
-	if _, err := f.Store.Restore(ctx, exported, store.RestoreOptions{}); err != nil {
-		t.Fatalf("Restore into empty database: %v", err)
-	}
-	reexported, err := f.Store.Export(ctx)
-	if err != nil {
-		t.Fatalf("Export after restore: %v", err)
-	}
-	exported.ExportedAt = time.Time{}
-	reexported.ExportedAt = time.Time{}
-	if !reflect.DeepEqual(reexported, exported) {
-		t.Fatalf("document after restore differs from exported document:\n got: %#v\nwant: %#v", reexported, exported)
+	for _, reported := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failureReported=%t", reported), func(t *testing.T) {
+			f := newStore(t)
+			ctx := context.Background()
+			seed := roundTripCatalogDocument()
+			seed.Recordings[0].FailureReported = &reported
+			if _, err := f.Store.Restore(ctx, seed, store.RestoreOptions{}); err != nil {
+				t.Fatalf("seeding catalog through Restore: %v", err)
+			}
+			exported, err := f.Store.Export(ctx)
+			if err != nil {
+				t.Fatalf("Export before reset: %v", err)
+			}
+			assertCatalogExportReadbacks(t, exported, seed)
+			f.Reset(t)
+			if _, err := f.Store.Restore(ctx, exported, store.RestoreOptions{}); err != nil {
+				t.Fatalf("Restore into empty database: %v", err)
+			}
+			reexported, err := f.Store.Export(ctx)
+			if err != nil {
+				t.Fatalf("Export after restore: %v", err)
+			}
+			exported.ExportedAt = time.Time{}
+			reexported.ExportedAt = time.Time{}
+			if !reflect.DeepEqual(reexported, exported) {
+				t.Fatalf("document after restore differs from exported document:\n got: %#v\nwant: %#v", reexported, exported)
+			}
+		})
 	}
 }
 
@@ -407,6 +412,15 @@ func assertCatalogExportReadbacks(t *testing.T, got, want *catalogdoc.Document) 
 	}
 	for i := range got.Recordings {
 		actual, expected := got.Recordings[i], want.Recordings[i]
+		if expected.FailureReported == nil {
+			t.Fatalf("fixture recording %d must specify failureReported", i)
+		}
+		if actual.FailureReported == nil {
+			t.Fatalf("exported recording %d lost failureReported", i)
+		}
+		if *actual.FailureReported != *expected.FailureReported {
+			t.Errorf("Catalog.Export.Recordings[%d].FailureReported = %t, want %t", i, *actual.FailureReported, *expected.FailureReported)
+		}
 		actual.CreatedAt, actual.UpdatedAt = actual.CreatedAt.UTC(), actual.UpdatedAt.UTC()
 		actual.ProgramStartAt = actual.ProgramStartAt.UTC()
 		actual.StartedAt, actual.EndedAt = catalogUTC(actual.StartedAt), catalogUTC(actual.EndedAt)
@@ -545,6 +559,7 @@ func roundTripCatalogDocument() *catalogdoc.Document {
 	description := "round trip description"
 	profile, deletedProfile, pidType, elapsed := "h264", "h265", "video", int64(1500)
 	zeroGeneration := int64(0)
+	failureReported := false
 	return &catalogdoc.Document{
 		Version: catalogdoc.Version, ExportedAt: at,
 		Rules: []catalogdoc.Rule{{
@@ -569,7 +584,7 @@ func roundTripCatalogDocument() *catalogdoc.Document {
 			EventID: 701, ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "round trip",
 			Description: &description, Extended: []byte(`{"episode":1}`), Genres: []byte(`[1,2]`), IsFree: true,
 			ProgramStartAt: started, ProgramDurationMs: 120_000, Status: "finished", StartedAt: &started,
-			EndedAt: &ended, QualityEvents: []byte(`[{"at":"2026-01-02T03:09:05Z","event":"broken","reason":{"type":"io-error"}}]`),
+			EndedAt: &ended, FailureReported: &failureReported, QualityEvents: []byte(`[{"at":"2026-01-02T03:09:05Z","event":"broken","reason":{"type":"io-error"}}]`),
 			DeletedAt: &deletedAt, SupersededAt: &supersededAt, PurgedAt: &purgedAt, CreatedAt: at, UpdatedAt: at,
 		}},
 		RecordingPurgeRequests: []catalogdoc.RecordingPurgeRequest{{RecordingID: 30, RequestedAt: purgeRequestedAt}},

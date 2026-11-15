@@ -384,6 +384,7 @@ type Recording struct {
 	PurgedAt          *time.Time
 	GenreLv1          []int16
 	SeriesKey         *string
+	FailureReported   bool
 }
 
 type RecordingChapterOwnership struct {

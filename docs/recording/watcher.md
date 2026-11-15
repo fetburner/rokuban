@@ -40,13 +40,16 @@ record の反映と、録画済み record の取り込み漏れは、3 つの仕
 
 「コンテンツが無い」record が API に見えても、そこから record 破損が何回起きたかを推測して品質イベントを作らない。
 
-失敗の録画行は、削除・置換されていない録画行を放送イベントごとに 1 行とする一意制約により、イベント配信と突き合わせのどちらが先でも 1 行に収束する。突き合わせが同じ失敗を次回以降も観測しても、同じイベントと理由の品質イベントは 1 度だけ追記する。一方、イベント配信で届く record 破損や繰り返しの録画失敗は、観測したイベントの履歴として既存の追記経路に残す。
+失敗の録画行は、削除・置換されていない録画行を放送イベントごとに 1 行とする一意制約により、イベント配信と突き合わせのどちらが先でも 1 行に収束する。突き合わせが同じ失敗を次回以降も観測しても、録画行に失敗を追記済みと記録してあるので、品質イベントは最初の 1 度だけ追記する。理由が変わっても、突き合わせから追加の失敗イベントは作らない。理由の違いは失敗が再発した証拠にならず、突き合わせからは失敗の履歴を再現できないからである。一方、イベント配信で届く record 破損や繰り返しの録画失敗は、観測したイベントの履歴として既存の追記経路に残す。
 
 <details><summary>根拠</summary>
 
 - 冪等投入: River unique job
 - 常駐の購読と処理: `Watcher.Run` の SSE 購読 + `handleEvent`
 - (c) のジョブ: `internal/worker.RecordSweepWorker`（`record_sweep`）が `Watcher.Sweep` を呼ぶ
+- 繰り返し観測と別理由の抑制: `TestRecordObservationsContract/failed quality observation is idempotent`
+- イベント配信後の観測: `TestRecordObservationsContract/SSE failure suppresses sweeps including changed reasons`
+- イベント履歴の時刻: `TestRecordObservationsContract/quality events carry a readable time`
 - 品質イベント: `recording.failed` / `recording.record-broken`。接続時に再送されるのは `record-saved` だけ
 - 経路 1 の取得元: `GET /api/recording/schedules` の `state=failed` と `failedReason`。作るのは `recordings.status=failed` と `quality_events`
 - 経路 2 の取得元: `GET /api/recording/records` の `recording.status=failed` と `recording.failedReason`。反映先は `record_sync` / `recordings`

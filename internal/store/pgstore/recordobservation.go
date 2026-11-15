@@ -112,7 +112,7 @@ func (s *Recordings) ProcessRecord(ctx context.Context, observation store.Record
 	}
 
 	// records API に残った failed record は recording.failed の SSE を失った後でも
-	// 失敗理由を持つ。event + reason の組で重複を判定するので、同じ record を
+	// 失敗理由を持つ。録画ごとの報告済み事実で重複を判定するので、同じ record を
 	// sweep するたびに quality_events やメトリクスが増殖しない。
 	if recordingID != nil && len(observation.FailedReason) > 0 {
 		added, err := appendQualityEventIfMissing(ctx, q, *recordingID, "recording.failed", observation.FailedReason)
