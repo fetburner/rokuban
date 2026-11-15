@@ -227,7 +227,18 @@ if ((await recoveryPage.getByTestId('program-list-sentinel').count()) !== 0) {
   ng.push('① 最初の空窓に自動読み込みの番兵が残っている')
 }
 
+// 要求数がそろった時点では、まだ取得中でボタン名が「読み込み中…」のことがある。
+// 対象窓の応答が完了して「読み込み中…」が消えるのを待ち、ボタンが残るかはそのあとで判定する。
+const recoveryWindowResponse = recoveryPage.waitForResponse((response) => {
+  const url = new URL(response.url())
+  return url.pathname === '/api/sites/default/programs'
+    && Date.parse(url.searchParams.get('start') ?? '') === nowMs + WINDOW
+})
 await nextWindowButton.click()
+await (await recoveryWindowResponse).finished()
+await recoveryPage
+  .getByRole('button', { name: '読み込み中…' })
+  .waitFor({ state: 'detached', timeout: 15_000 })
 await waitForWindowCount(recoveryApi.requests, 2, '① 2 番目の窓')
 await emptyState.waitFor()
 if (distinctWindows(recoveryApi.requests).length !== 2) {
