@@ -50,6 +50,7 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs design
   未フォーカスの sr-only スキップリンクは既存の Tab 後計測で扱う。日付セル・チャンネル候補・行主操作・ライブチャンネルは別途 44px 高、モバイルナビは幅44px・高さ56pxを、#729 のトースト action は 32px、close は 28px を個別に固定する。全面リンク等の意図的な重なりがあるため、間隔に全画面一律の閾値は置かず、配置の意味は `docs/frontend/reservations.md` に従う
 - モバイルの「その他」ポップオーバー（`components/app-shell.tsx` の `MoreMenu`）を開いた状態の判定。固定されたボトムバーの上に浮くオーバーレイなので、はみ出し・重なりは jsdom（`app-shell.test.tsx`）では原理的に測れない。ここで実測するのは 3 点: ボトムタブが常に 4 個か / 開いたポップオーバーがビューポート内に収まるか / ポップオーバーがトリガーの上端より上に出るか（バーの下に隠れていないか）。開いた状態のショットも `more-menu-open-*.png` として出る
 - `prefers-reduced-motion: reduce` で主要な動きが縮退し、既定（`no-preference`）では従来どおり動くこと。主要な動きは Skeleton の `animate-pulse`・ポップオーバーの `slide-in-from-*`/`zoom-in-95`・共通 `Button` の `translate` 遷移である。**両方向**を見る --- 縮退側だけの判定は、動きを恒久的に殺した実装も通してしまう。Playwright の `reducedMotion` コンテキストオプションで OS 設定をエミュレートする。そのうえで実要素の `getComputedStyle().animationDuration` / `transitionDuration` を実測する。jsdom は matchMedia も CSS の適用も測れない
+- ホーム管理モードの時間軸では「いま」の位置と目盛りの切れを午前を含む時刻と複数のスクロール位置で実測する。目盛りを隠す判定に使った枠の `scrollLeft` / `clientWidth` は、目盛りの visibility と同じ描画で `data-tick-*` 属性に出す。検査はこの属性の値が枠の実際の値と一致するまで待ってから切れを測る。スクロール直後は scroll イベントが届いて再描画されるまで、目盛りが実際に切れて見える。そのため固定時間の待ちはフレーム生成が遅い runner で NG を拾い、待ちを延ばしてもタイミング依存が残る。タイムアウトも NG にする。タイムアウトを握り潰すと、state がスクロールに追従しない実装でも判定が空虚に通る。目盛りを隠す条件を外すと切れの NG が出て、onScroll の state 更新を外すと待ちの NG が出ることを確認した。
 
 判定の設計で外してはいけない点が 2 つある。
 

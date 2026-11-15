@@ -2894,20 +2894,34 @@ for (const viewport of [homeDesktop, mobile]) {
         const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')
         if (frame) frame.scrollLeft = x
       }, scrollLeft)
-      await page.waitForTimeout(100)
-      const cut = await page.evaluate(() => {
-        const frameElement = document.querySelector('[data-testid="home-ops-timeline-frame"]')
-        if (!frameElement) return ['時間軸の枠が無い']
-        const frame = frameElement.getBoundingClientRect()
-        return [...document.querySelectorAll('[data-testid="home-timeline-tick"]')]
-          .filter((tick) => getComputedStyle(tick).visibility !== 'hidden')
-          .map((tick) => ({ text: tick.textContent, rect: tick.getBoundingClientRect() }))
-          .filter(({ rect }) => rect.right > frame.x && rect.x < frame.right)
-          .filter(({ rect }) => rect.x < frame.x - 0.5 || rect.right > frame.right + 0.5)
-          .map(({ text }) => text)
-      })
-      if (cut.length > 0) {
-        ng.push(`[ops-ticks/${viewport.width}px/${clock}/scrollLeft=${scrollLeft}] 見える範囲の境界で目盛りが切れて見える（${cut.join(',')}）`)
+      let viewportSynced = false
+      try {
+        // scroll 直後は state の再描画前に目盛りが切れて見えるため、固定時間ではなく判定値の反映を待つ。
+        await page.waitForFunction(() => {
+          const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')
+          if (!frame) return false
+          return Number(frame.getAttribute('data-tick-scroll-left')) === frame.scrollLeft &&
+            Number(frame.getAttribute('data-tick-client-width')) === frame.clientWidth
+        }, undefined, { timeout: 5000 })
+        viewportSynced = true
+      } catch (error) {
+        ng.push(`[ops-ticks/${viewport.width}px/${clock}/scrollLeft=${scrollLeft}] 目盛り判定に使う枠の位置が DOM に反映されない（${error.message}）`)
+      }
+      if (viewportSynced) {
+        const cut = await page.evaluate(() => {
+          const frameElement = document.querySelector('[data-testid="home-ops-timeline-frame"]')
+          if (!frameElement) return ['時間軸の枠が無い']
+          const frame = frameElement.getBoundingClientRect()
+          return [...document.querySelectorAll('[data-testid="home-timeline-tick"]')]
+            .filter((tick) => getComputedStyle(tick).visibility !== 'hidden')
+            .map((tick) => ({ text: tick.textContent, rect: tick.getBoundingClientRect() }))
+            .filter(({ rect }) => rect.right > frame.x && rect.x < frame.right)
+            .filter(({ rect }) => rect.x < frame.x - 0.5 || rect.right > frame.right + 0.5)
+            .map(({ text }) => text)
+        })
+        if (cut.length > 0) {
+          ng.push(`[ops-ticks/${viewport.width}px/${clock}/scrollLeft=${scrollLeft}] 見える範囲の境界で目盛りが切れて見える（${cut.join(',')}）`)
+        }
       }
       // 「いま」の pill（z-20）の下に隠れる目盛りは出さない。
       const underPill = await page.evaluate(() => {
