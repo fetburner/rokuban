@@ -45,7 +45,7 @@ VALUES ($1, 'always', '{}', true)`, id); err != nil {
 				}
 			}
 			if options.Purged {
-				if _, err := pool.Exec(ctx, `UPDATE recordings SET purged_at = now() WHERE id = $1`, id); err != nil {
+				if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = COALESCE(deleted_at, now()), purged_at = now() WHERE id = $1`, id); err != nil {
 					t.Fatalf("purging recording: %v", err)
 				}
 			}

@@ -866,6 +866,7 @@ CREATE TABLE public.recordings (
     genre_lv1 smallint[] GENERATED ALWAYS AS (public.genre_lv1_of(genres)) STORED,
     series_key text GENERATED ALWAYS AS (public.series_key(title)) STORED,
     CONSTRAINT recordings_channel_type_check CHECK ((channel_type = ANY (ARRAY['GR'::text, 'BS'::text, 'CS'::text, 'SKY'::text]))),
+    CONSTRAINT recordings_purged_requires_deleted CHECK (((purged_at IS NULL) OR (deleted_at IS NOT NULL))),
     CONSTRAINT recordings_source_check CHECK ((source = ANY (ARRAY['rule'::text, 'manual'::text, 'unattributed'::text]))),
     CONSTRAINT recordings_status_check CHECK ((status = ANY (ARRAY['recording'::text, 'finished'::text, 'canceled'::text, 'failed'::text])))
 );
