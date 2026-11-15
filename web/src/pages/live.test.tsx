@@ -2189,6 +2189,7 @@ describe('LivePage / 番組境界の再取得', () => {
     otherChannelNextProgramName = '他局の次の番組',
     initialNowMs = boundary - 90_500,
     queryGcTimeMs,
+    holdCrossingWindow = false,
   }: {
     nextProgramStartAt?: number
     nextProgramName?: string
@@ -2198,6 +2199,7 @@ describe('LivePage / 番組境界の再取得', () => {
     otherChannelNextProgramName?: string
     initialNowMs?: number
     queryGcTimeMs?: number
+    holdCrossingWindow?: boolean
   } = {}) {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.setSystemTime(initialNowMs)
@@ -2243,8 +2245,12 @@ describe('LivePage / 番組境界の再取得', () => {
       const programs = (await response.json() as ProgramListItem[])
         .filter((p) => Date.parse(p.startAt) < end && Date.parse(p.endAt) > start)
       await new Promise((resolve) => setTimeout(resolve, 50))
-      // 一覧の窓と、選択中チャンネルの詳細の窓（境界の 6 時間前から）の両方を保留する。
-      if (holdBoundaryWindow && (start === boundary || start === boundary - 6 * 60 * 60_000)) {
+      // holdCrossingWindow は境界を含む 60 秒の一覧窓をすべて保留する。
+      // holdBoundaryWindow は境界起点の一覧窓と、境界の 6 時間前からの詳細窓を保留する。
+      if (
+        (holdCrossingWindow && start <= boundary && boundary < end && end - start === 60_000)
+        || (holdBoundaryWindow && (start === boundary || start === boundary - 6 * 60 * 60_000))
+      ) {
         await new Promise<void>((resolve) => {
           releaseBoundaryWindows.push(resolve)
         })
@@ -2426,6 +2432,26 @@ describe('LivePage / 番組境界の再取得', () => {
     act(() => releaseBoundaryWindow())
     expect(await screen.findByLabelText('番組表の予定: 他局の次の番組')).toBeInTheDocument()
     expect(screen.getByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
+  })
+
+  it('現在の窓の応答待ちでも旧窓の番組は境界ちょうどに消える', async () => {
+    boundary = Date.parse('2026-10-11T06:10:30.000Z')
+    // 起点を 06:09:00 にし、先行取得した [06:10:00, 06:11:00) が
+    // 境界をまたいで保留される経路を通す。
+    const { releaseBoundaryWindow } = await renderBeforeBoundary({
+      initialNowMs: boundary - 89_500,
+      holdCrossingWindow: true,
+      longProgramOnFirstChannel: true,
+      otherChannelNextProgramStartAt: boundary,
+    })
+    expect(screen.getByLabelText('番組表の予定: 他局の前の番組')).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(boundary - 100 - Date.now()) })
+    await act(async () => { vi.advanceTimersByTime(100) })
+    expect(screen.getByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
+    expect(screen.queryByLabelText('番組表の予定: 他局の前の番組')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('番組表の予定: 他局の次の番組')).not.toBeInTheDocument()
+    act(() => releaseBoundaryWindow())
+    expect(await screen.findByLabelText('番組表の予定: 他局の次の番組')).toBeInTheDocument()
   })
 
   // 窓の期限（アンカー + 60 秒）を過ぎても全局が放送中なら窓を保つ。毎回追いつくと、全 site の

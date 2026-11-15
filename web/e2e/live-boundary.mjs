@@ -9,8 +9,10 @@
 //   a. 通常の境界: 境界の前に境界窓が 1 回だけ取得され、境界をまたぐ 3 秒間に番組の行が
 //      消えず、境界後に次の番組が出る。境界窓への要求は合計 1 回（修正前は境界後 0.9 秒に
 //      約 60 回の再取得が出た）
-//   b. 遅い回線: 境界窓の応答を保留したまま境界を越える。続いている局 A の行は残り、
-//      局 B の終了済み番組は出ない。応答が届くと局 B の次の番組が出る
+//   b. 遅い回線: 境界窓だけの保留では別の窓から次の番組が届くため、境界を含む全要求を保留する。
+//      初回描画が fake 06:09:00 以後だと [06:10:00, 06:11:00) を先行取得するので、runner の
+//      速さで経路が変わらないよう描画前に fake 時計を止め、06:09:00 の前後の両配置を通す。
+//      局 A の行は残り、局 B の終了済み番組も次の番組も出ない。応答後に次の番組が出る。
 //   c. タイマー遅延: 時計を境界の 3 分後へ一度に飛ばしても、その時点の放送中番組が出る
 //   d. 表示 tick が境界ちょうどに来る配置: 境界の前後 3 秒を 1ms 刻みで見ても、
 //      終わった番組の行が消える／残る瞬間がない
@@ -98,9 +100,10 @@ const browser = await launchBrowser()
  * まで進める。`leadMs` の端数が、1 秒刻みの表示 tick の位相を決める（境界の 0.5 秒後に
  * tick が来る配置なら 10_500、境界ちょうどなら 10_000）。
  * 窓の取得は `windowRequests`（全局一覧窓の開始時刻を要求順に積む）に記録する。
- * `hold` を true にすると、境界窓（start が boundary の全局一覧）の応答を `release()` まで保留する。
+ * 初回描画前に時計を initialMs で止め、runner の速度によらず窓の起点を固定する。
+ * `hold` は局指定を問わず start <= boundary < end の全応答を `release()` まで保留する。
  */
-async function openScenario(fixtures, { leadMs, hold = false }) {
+async function openScenario(fixtures, { leadMs, hold = false, initialMs = boundary - 90_500 }) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
     locale: 'ja-JP',
@@ -110,7 +113,9 @@ async function openScenario(fixtures, { leadMs, hold = false }) {
   page.on('pageerror', (error) => ng.push(`ページ例外: ${error.message}`))
   const windowRequests = []
   const holds = []
-  await page.clock.install({ time: boundary - 90_500 })
+  let released = false
+  await page.clock.install({ time: initialMs })
+  await page.clock.pauseAt(initialMs)
   await installApiStubs(page, async ({ path: p, url, json }) => {
     if (p === '/api/sites') return json(['default'])
     if (p === '/api/capabilities') return json({ live: true })
@@ -120,7 +125,7 @@ async function openScenario(fixtures, { leadMs, hold = false }) {
       const end = Date.parse(url.searchParams.get('end') ?? '')
       const serviceFilter = url.searchParams.getAll('service').map(Number)
       if (serviceFilter.length === 0) windowRequests.push(start)
-      if (hold && serviceFilter.length === 0 && start === boundary) {
+      if (hold && !released && start <= boundary && boundary < end) {
         await new Promise((resolve) => holds.push(resolve))
       }
       return json(
@@ -136,16 +141,20 @@ async function openScenario(fixtures, { leadMs, hold = false }) {
   })
   await page.goto(URL_BASE + '/live', { waitUntil: 'domcontentloaded' })
   await rows(page, 2, '初回表示')
-  // 描画後の時計を止め、leadMs の位置へ一度に飛ぶ。飛んだ先で期限の来ていた tick は 1 回だけ
+  if (windowRequests[0] !== Math.floor(initialMs / MIN) * MIN) {
+    ng.push(`初回の窓の起点が不正（${JSON.stringify(windowRequests)}）`)
+  }
+  // leadMs の位置へ一度に飛ぶ。飛んだ先で期限の来ていた tick は 1 回だけ
   // その時刻に走るので、以後の tick は飛んだ先から 1 秒刻みになる（位相が leadMs で決まる）。
-  const now = await page.evaluate(() => Date.now())
-  await page.clock.pauseAt(now + 1_000)
-  await page.clock.fastForward(boundary - leadMs - (now + 1_000))
+  await page.clock.fastForward(boundary - leadMs - await page.evaluate(() => Date.now()))
   return {
     context,
     page,
     windowRequests,
-    release: () => holds.forEach((resolve) => resolve()),
+    release: () => {
+      released = true
+      holds.splice(0).forEach((resolve) => resolve())
+    },
   }
 }
 
@@ -158,11 +167,16 @@ function rowNames(page) {
   )
 }
 
-/** rows は予定の行が `count` 個になるまで実時間で待つ。 */
+/**
+ * rows は予定の行が `count` 個になるまで実時間で待ち、fake 時計も毎回 1ms 進める。
+ * runFor を外した実行では、全ケースで 15 秒待っても「初回表示: 予定の行が 2 個にならない（[]）」
+ * となったため、初回表示に必要な時計の進行をここで行う。
+ */
 async function rows(page, count, label) {
   const deadline = Date.now() + 15_000
   let names = []
   while (Date.now() < deadline) {
+    await page.clock.runFor(1)
     names = await rowNames(page)
     if (names.length === count) return names
     await page.waitForTimeout(50)
@@ -229,11 +243,12 @@ const boundaryRequests = (windowRequests) => windowRequests.filter((start) => st
 }
 
 // --- b. 遅い回線（境界窓の応答が間に合わない） ---
-{
-  log('\n=== b. 遅い回線 ===')
+for (const initialMs of [boundary - 90_500, boundary - 89_500]) {
+  log(`\n=== b. 遅い回線（初回 ${iso(initialMs)}） ===`)
   const { context, page, windowRequests, release } = await openScenario(NORMAL, {
     leadMs: 10_500,
     hold: true,
+    initialMs,
   })
   await page.clock.runFor(10_500 - 1_500)
   await settle(page)
