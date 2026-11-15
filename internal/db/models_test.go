@@ -442,11 +442,9 @@ func TestSchemaV1_RecordSyncFK(t *testing.T) {
 		t.Fatalf("insert record_sync: %v", err)
 	}
 
-	// recording 行を物理削除すると record_sync.recording_id は NULL になる（ON DELETE SET NULL）
+	// tombstone の親を削除しても、同期表の参照を黙って失わない。
 	_, err = pool.Exec(ctx, `DELETE FROM recordings WHERE id = $1`, recID)
-	if err != nil {
-		t.Fatalf("delete recording: %v", err)
-	}
+	assertPgError(t, err, "23503")
 
 	var recordingID *int64
 	err = pool.QueryRow(ctx,
@@ -455,8 +453,12 @@ func TestSchemaV1_RecordSyncFK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select record_sync: %v", err)
 	}
-	if recordingID != nil {
-		t.Errorf("expected NULL recording_id after parent delete, got %d", *recordingID)
+	if recordingID == nil || *recordingID != recID {
+		t.Errorf("recording_id = %v, want preserved reference to %d", recordingID, recID)
+	}
+	// 未対応の観測は NULL を許す。NO ACTION は nullable の契約を変えない。
+	if _, err := pool.Exec(ctx, `UPDATE record_sync SET recording_id = NULL WHERE recording_id = $1`, recID); err != nil {
+		t.Fatal(err)
 	}
 }
 

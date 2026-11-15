@@ -12,7 +12,7 @@ record の観測表は、mirakc の全 record を写し、外部産の record �
 CREATE TABLE record_sync (
     site           text   NOT NULL,
     record_id      text   NOT NULL,             -- mirakc の 32 桁 hex（site 単位のスコープ）
-    recording_id   bigint REFERENCES recordings (id) ON DELETE SET NULL,  -- NULL = 外部産 record（触らない）
+    recording_id   bigint REFERENCES recordings (id) ON DELETE NO ACTION,  -- NULL = 録画履歴への対応なし
     program_id     bigint NOT NULL,
     status         text   NOT NULL,             -- mirakc の recordingStatus そのまま
     content_path   text,
@@ -40,12 +40,13 @@ CREATE INDEX ON record_sync (recording_id);
 
 この表は mirakc の全 record を写す。watcher が変えるのは Rokuban の録画行を指すかどうかだけで、外部産 record（Rokuban の印が無い record）も行を作って観測だけする。友人の手動録画や他ツールの録画を消さないための区切りであり、印の判定が単独で保証する。観測表のスキーマや、録画 id の NULL には依存しない。
 
-録画 id が NULL の record は ingest の対象外である。判別の根拠は tags の印で、録画 id の NULL は、外部産と「録画履歴が物理削除された」を区別しない。
+録画 id が NULL の record は ingest の対象外である。NULL は録画履歴への対応がないことを表し、外部産の判別には tags の印を使う。録画履歴は tombstone として残し、参照中の親行の DELETE は NO ACTION で拒否する。
 
 <details><summary>根拠</summary>
 
 - 外部産の判定: `IsOurs`（tag 判定。`mirakc.IsOurs`）。判別の根拠は `tags`
-- 外部産の行: `recording_id IS NULL`。物理削除でも NULL になる（`ON DELETE SET NULL`）
+- 外部産の行: `recording_id IS NULL`。NULL 自体は外部産の判別根拠にしない
+- 親の DELETE の拒否と参照の保持: `TestSchemaV1_RecordSyncFK`
 
 </details>
 

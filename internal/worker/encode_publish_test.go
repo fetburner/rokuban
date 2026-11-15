@@ -729,6 +729,12 @@ func TestEncodeWorker_InitialCutPublishChecksCurrentChapters(t *testing.T) {
 			ctx := context.Background()
 			sc := newRebuildPublishScene(t, pool, "initial-"+tc.name)
 			// 初回のジョブ: active な encoded も要求行も無い。
+			if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, sc.assetID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `DELETE FROM media_asset_cuts WHERE media_asset_id = $1`, sc.assetID); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := pool.Exec(ctx, `DELETE FROM media_assets WHERE id = $1`, sc.assetID); err != nil {
 				t.Fatal(err)
 			}

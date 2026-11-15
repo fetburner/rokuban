@@ -189,7 +189,7 @@ API は `DELETE /api/recordings/{id}` / `POST .../restore` / `POST .../purge` / 
 
 ```sql
 CREATE TABLE recording_purge_requests (
-    recording_id bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    recording_id bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE NO ACTION,
     requested_at timestamptz NOT NULL DEFAULT now()
 );
 ```
@@ -220,7 +220,7 @@ CREATE TABLE recording_purge_requests (
 
 ```sql
 CREATE TABLE encoded_asset_removal_requests (
-    recording_id bigint NOT NULL REFERENCES recordings (id) ON DELETE CASCADE,
+    recording_id bigint NOT NULL REFERENCES recordings (id) ON DELETE NO ACTION,
     profile      text NOT NULL,
     requested_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (recording_id, profile)

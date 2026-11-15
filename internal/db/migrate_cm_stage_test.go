@@ -6,6 +6,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pressly/goose/v3"
+
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 )
 
 // TestMigrateDown_CMStageResolutionMatch は、新しい工程 resolution / match を持つ試行が
@@ -26,13 +28,13 @@ func TestMigrateDown_CMStageResolutionMatch(t *testing.T) {
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
-	// recordings の必須列に依存しないよう、この接続だけ FK 検査を外して試行行を直接作る。
-	if _, err := conn.Exec(ctx, "SET session_replication_role = replica"); err != nil {
-		t.Fatalf("disable fk checks: %v", err)
-	}
-	if _, err := conn.Exec(ctx, `INSERT INTO recording_cm_attempts (recording_id, state, stage, policy_generation)
-		VALUES (1, 'failed', 'resolution', 0), (2, 'failed', 'match', 0), (3, 'failed', 'logo', 0)`); err != nil {
-		t.Fatalf("insert attempts: %v", err)
+	// FK の張り直しでも整合性を保つよう、試行は実在する録画を参照する。
+	for _, stage := range []string{"resolution", "match", "logo"} {
+		recordingID := dbtest.Recording(t, conn)
+		if _, err := conn.Exec(ctx, `INSERT INTO recording_cm_attempts (recording_id, state, stage, policy_generation)
+   VALUES ($1, 'failed', $2, 0)`, recordingID, stage); err != nil {
+			t.Fatalf("insert %s attempt: %v", stage, err)
+		}
 	}
 
 	// 後続のマイグレーションが増えても 00019 を確実に戻すため、版 18 まで戻す。

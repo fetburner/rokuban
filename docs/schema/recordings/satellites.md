@@ -6,7 +6,7 @@
 
 ```sql
 CREATE TABLE recording_processing_policy (
-    recording_id    bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    recording_id    bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE NO ACTION,
     keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles text[] NOT NULL,
     cm_detect       boolean NOT NULL DEFAULT false,
@@ -21,7 +21,7 @@ CREATE TABLE recording_processing_policy (
 
 行が無ければ、初期値はまだ確定していない。空のプロファイルでも、確定時は必ず行を INSERT する（不変条件 10）。列の既定値だけで表すと、「未確定」と「空で確定」を区別できない。
 
-行は `recordings.id` への FK で録画を指し、方針の初期値を確定するときに生まれ、録画の削除で CASCADE して死ぬ。書き手は脊椎の watcher / reconciler ではないので、録画履歴の本体でなく衛星表に置く（不変条件 12、13）。
+行は `recordings.id` への FK で録画を指し、方針の初期値を確定するときに生まれる。確定後に削除経路はなく、録画履歴と同じく永続する（不変条件 12）。書き手は脊椎の watcher / reconciler ではないので、録画履歴の本体でなく衛星表に置く（不変条件 13）。
 
 複数の書き手は不変条件 12 が示す分割の兆候に当たる。ただし、どの書き手も同じ録画の永続的な desired state を書く。CM worker が観測する試行状態は別表にあり、方針の寿命は検出の開始・終了で区切らない。概念だけを理由に CM 方針を分割すると、原本コミット時の初期値の確定を別々に管理することになる。
 
@@ -81,7 +81,7 @@ CM worker は実尺に基づくタイムアウトを返し、停止・異常終�
 CREATE EXTENSION IF NOT EXISTS btree_gist;  -- bigint の = を GiST に載せるため
 
 CREATE TABLE recording_chapter_ownership (   -- 行があること = ユーザーが所有（= 確認済み）
-    recording_id bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    recording_id bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE NO ACTION,
     adopted_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE recording_chapter_spans (
@@ -119,7 +119,7 @@ PUT は、下書きの基にした層の版を必須で受け取る。版は列�
 
 **ロゴと枠の単位は局で、映像サイズでは割らない。** 学習済みロゴは作成時の映像サイズを持ち、検出前に録画の映像サイズと比べて、違えばロゴを使わずに失敗として残す。
 
-局ロゴは、ネットワークとサービスの組で一意に保持する。LGD は次回以降の検出に使うバイナリで、PNG preview は任意の表示用データである。学習元の列は、最初にロゴを学習した録画を指し、録画削除後も局ロゴは残る。管理画面から削除すると、次の検出で再学習される。ロゴが失敗した録画より後に学習された場合、その失敗は再投入可能になる。
+局ロゴは、ネットワークとサービスの組で一意に保持する。LGD は次回以降の検出に使うバイナリで、PNG preview は任意の表示用データである。学習元の列は、最初にロゴを学習した録画を指し、録画ファイルの削除後も局ロゴは残る。管理画面から削除すると、次の検出で再学習される。ロゴが失敗した録画より後に学習された場合、その失敗は再投入可能になる。
 
 同じ service_id のまま映像フォーマットを切り替える運用は、地上波・BS の運用規定が認めている（ARIB TR-B14 第七編 8.2.2、TR-B15 第三編 7.2.3）。実際に NHK 総合はマルチ編成の間、主サービスごと 480i になる。それでも割らないのは、測った範囲で主サービスの映像サイズが混ざったのは、CM の無い NHK だけだったからである。
 
@@ -199,7 +199,7 @@ CREATE TABLE cm_logo_areas (
 
 ```sql
 CREATE TABLE recording_ingest_progress (
-    recording_id   bigint      PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    recording_id   bigint      PRIMARY KEY REFERENCES recordings (id) ON DELETE NO ACTION,
     written_bytes  bigint      NOT NULL CHECK (written_bytes >= 0),
     expected_bytes bigint      CHECK (expected_bytes IS NULL OR expected_bytes >= 0),
     temp_rel_path  text        NOT NULL,
@@ -222,7 +222,6 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 転送していない（temp を持っていない）ことを表す行は作らない。行が消えるのは次の場合だけである。
 
 - 原本のメディアアセットを INSERT するトランザクション（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）
-- 録画行の削除（FK の CASCADE）
 - temp を捨てるとき（record の cancel / fail、サイズ・ハッシュ不一致など）
 - 別経路の登録などで原本が既にコミット済みと分かったとき（取り残された行の掃除）
 
@@ -236,7 +235,6 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 
 - 書き手の実装: `internal/worker/ingest_progress.go`
 - 転送中を表す行: `recording_ingest_progress`
-- 録画行の削除で消える仕組み: `ON DELETE CASCADE`、`recordings`
 - 書き込みバイト数: `written_bytes`
 - 期待バイト数のコピー元: `expected_bytes`、`record_sync.content_length`
 - 観測時刻: `observed_at`
@@ -254,7 +252,7 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 
 ```sql
 CREATE TABLE recording_ingest_checkpoints (
-    recording_id     bigint      PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    recording_id     bigint      PRIMARY KEY REFERENCES recordings (id) ON DELETE NO ACTION,
     lease_owner      uuid        NOT NULL,
     lease_expires_at timestamptz NOT NULL,
     writer_generation bigint     NOT NULL CHECK (writer_generation > 0),
@@ -265,7 +263,7 @@ CREATE TABLE recording_ingest_checkpoints (
 );
 ```
 
-slice の終わりは temp の fsync と close の後に lease を照合して offset と hash state を保存する。再開時は通常ファイルのサイズが offset と一致し、hash state を復元できる場合だけ Range を続ける。条件を満たさない temp は新しい writer 世代の別 path に Range 0 から作り直す。行が消えるのは原本の commit と record 削除（CASCADE）だけである。破棄では行を消さず、writer 世代を進めて lease を切る。次の writer が、破棄した世代と同じ temp 名を使わないためである。全量を書き終えた後は、link の前に同じ内容を保存する（最終 handoff）。
+slice の終わりは temp の fsync と close の後に lease を照合して offset と hash state を保存する。再開時は通常ファイルのサイズが offset と一致し、hash state を復元できる場合だけ Range を続ける。条件を満たさない temp は新しい writer 世代の別 path に Range 0 から作り直す。行が消えるのは、ingest worker が原本を commit するトランザクションだけである。破棄では行を消さず、writer 世代を進めて lease を切る。次の writer が、破棄した世代と同じ temp 名を使わないためである。全量を書き終えた後は、link の前に同じ内容を保存する（最終 handoff）。
 
 <details><summary>根拠</summary>
 
@@ -285,7 +283,7 @@ slice の終わりは temp の fsync と close の後に lease を照合して o
 
 **行の存在が、実行中か失敗かのどちらかの主張を意味する**（不変条件 10）。待機中は行を作らず、desired にあって行が無いことから導出する。失敗理由は運用者が直接読むもので、API は配らない。
 
-残すと決めたプロファイルと実在するエンコード結果の差だけでは、「まだ来ていない」としか言えず、実行中と失敗後の再試行待ちを区別できない。この表はその区別だけを持つ。書き手は encode worker だけである。
+残すと決めたプロファイルと実在するエンコード結果の差だけでは、「まだ来ていない」としか言えず、実行中と失敗後の再試行待ちを区別できない。この表はその区別だけを持つ。試行の開始・失敗・成功と停止・snooze 時の復元は encode worker が書き、利用者の再要求では API が失敗行を消す。
 
 試行を始める前は行を作らないため、試行回数は 1 から数え、0 の行は作らない。初期値と下限は CM 検出と揃える。上限判定の `encode_attempts_exhausted` は、試行回数をそのまま `attempt_limit` と比較する。
 
@@ -296,16 +294,15 @@ stateDiagram-v2
     none --> running: 実行開始
     running --> failed: 失敗（回数・理由を残す）
     failed --> running: 再投入
-    running --> none: 成功、または停止による未計上の試行を戻す
-    failed --> none: 録画行の削除（CASCADE）
-    running --> none: 録画行の削除（CASCADE）
+    running --> none: 成功、または停止・snooze による未計上の試行を戻す
+    failed --> none: API が利用者の再要求で試行を戻す
 ```
 
 待機中（queued）を表す行は作らない。queued は API 側で「desired にあって行が無い」として導出する。承認待ちの状態は、所有の行から導出する（カットするプロファイルで、所有の行が無い）。この表には持たない。待機中（ジョブが来る）とは別の主張で、投入側も実際に候補から外している（[storage/retention.md](../../storage/retention.md) §7）。行が無いことと「来ない」ことは別なので、待機中と混ぜない。
 
 書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。転送の途中経過と同じ判断）。主キーが録画 ID とプロファイルの複合なのは、1 録画に複数のプロファイルを事後追加できるからである。
 
-行が消えるのは、成功時、停止による未計上の試行を戻す時、または録画行の削除（CASCADE）である。失敗は回数・理由を残す。成功公開後に古い試行が遅れて戻っても、自分の attempt token が一致しなければ、この行を消せない。
+行が消えるのは、encode worker の成功時、停止・snooze で未計上の試行を戻す時、API が利用者の再要求で失敗した試行を戻す時だけである。再要求はプロファイルの追加とカットの再作成要求で受け付ける。通常の失敗は回数・理由を残す。成功公開後に古い試行が遅れて戻っても、自分の attempt token が一致しなければ、この行を消せない。
 
 API は River の内部表を読まない。encode のプロセス死回収は River の JobRescuer が担い、アプリ側は River の試行回数を参照しない。試行回数は、失敗とプロセス死を含むドメイン試行数で、公開時には fencing token として現在の試行を照合する。プロファイル設定から消えた名前は、定期投入の対象から外す。入力ファイルの破損など録画単位の恒久失敗は、desired が残る限り 15 分ごとに再投入される。
 
@@ -314,7 +311,11 @@ API は River の内部表を読まない。encode のプロセス死回収は R
 <details><summary>根拠</summary>
 
 - 残すと決めたプロファイル: `recording_processing_policy.encode_profiles`
-- 書き手: `EncodeWorker`（`internal/worker/encode.go`）
+- 試行の書き手: `EncodeWorker`（`internal/worker/encode.go`）。再要求時の削除は API
+- 成功と停止時の復元: `TestEncodeWorker_AttemptRow_ClearedOnSuccess` / `TestEncodeWorker_AttemptRow_CtxCanceledRollsBack`
+- snooze を試行に数えない判定: `TestShouldCountEncodeFailure_SnoozeIsNotAFailure`
+- 再要求による失敗行の削除: `AppendProfiles` / `RequestCutRebuild`（`internal/store/pgstore/encodepolicy.go`）
+- 再要求で running 行を消さないこと: `TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly`
 - 試行の列: `error` / `attempted_at` / `attempt_count`
 - 複合の主キー: `(recording_id, profile)`
 - 承認待ちの導出: `awaiting_review`、`cut: true`、`recording_chapter_ownership`

@@ -61,6 +61,16 @@ mirakc の record id は同期表にだけ存在し、同期表から永続側�
 
 物理削除の後もメタデータの行は残す。ドロップ統計・録画履歴・重複排除は、削除後も機能する。
 
+親のメタデータを残す契約を基準に、`recordings` と `media_assets` を指す外部キーはすべて NO ACTION とし、誤った DELETE による衛星行の消失を防ぐ。NULL を許す参照も、親の削除で参照を失う理由がないため同じ扱いにする。
+
+<details><summary>根拠</summary>
+
+- FK の統一: `TestTombstoneForeignKeysUseNoAction`
+- DELETE の拒否と衛星行の保持: `TestTombstoneDeletePreservesSatellite`
+- NULL を許す参照: `record_sync.recording_id` / `cm_logos.learned_from` / `cm_logo_candidates.recording_id`
+
+</details>
+
 ### 原則 5: 識別子と存在のスコープ
 
 mirakc が指すものは 2 種類ある。record id はインスタンス単位で採番される識別子で、取り違えると別の録画を指す。programId は放送そのものから合成される値で、存在のスコープしか持たない。この区別が、site 列と API の資源同定を決める。
