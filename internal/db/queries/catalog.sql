@@ -79,7 +79,9 @@ SELECT * FROM drop_stats ORDER BY media_asset_id, pid;
 SELECT * FROM drop_positions ORDER BY media_asset_id, byte_offset;
 
 -- name: CatalogListMediaAssetTSScans :many
-SELECT * FROM media_asset_ts_scans ORDER BY media_asset_id;
+SELECT s.* FROM media_asset_ts_scans s
+JOIN media_assets a ON a.id = s.media_asset_id AND a.content_revision = s.content_revision
+ORDER BY s.media_asset_id;
 
 -- 意図・上書きの FK 先。
 -- name: CatalogListProgramSnapshots :many
@@ -344,6 +346,7 @@ ON CONFLICT (recording_id) DO UPDATE SET watched_at = EXCLUDED.watched_at;
 -- 「この行は現行の世代か」の判定は copy_generation = GREATEST(既存, EXCLUDED) の 1 つで、
 -- size_bytes / sha256 はその判定で切り替える（original は copy_generation と世代が 0 で常に真）。
 -- name: CatalogUpsertMediaAsset :exec
+WITH published AS (
 INSERT INTO media_assets (
     id, recording_id, kind, profile, size_bytes,
     created_at, updated_at, derived_generation, sha256
@@ -353,6 +356,7 @@ VALUES (
     $6, $7, $8, $9
 )
 ON CONFLICT (id) DO UPDATE SET
+    content_revision = media_assets.content_revision + 1,
     recording_id = EXCLUDED.recording_id,
     kind         = EXCLUDED.kind,
     profile      = EXCLUDED.profile,
@@ -367,7 +371,11 @@ ON CONFLICT (id) DO UPDATE SET
     END,
     sha256       = CASE WHEN sqlc.arg('copy_generation')::bigint = GREATEST(
         media_assets.derived_generation, EXCLUDED.derived_generation
-    ) THEN EXCLUDED.sha256 ELSE media_assets.sha256 END;
+    ) THEN EXCLUDED.sha256 ELSE media_assets.sha256 END
+RETURNING id, kind, content_revision
+)
+DELETE FROM media_asset_ts_scans s USING published p
+WHERE s.media_asset_id = p.id AND p.kind = 'original' AND p.content_revision > 0;
 
 -- name: CatalogUpsertDropStat :exec
 INSERT INTO drop_stats (

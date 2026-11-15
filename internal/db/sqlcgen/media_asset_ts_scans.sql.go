@@ -29,7 +29,7 @@ func (q *Queries) DeleteDropStatsForTSScan(ctx context.Context, mediaAssetID int
 }
 
 const getActiveOriginalForTSScan = `-- name: GetActiveOriginalForTSScan :one
-SELECT a.id, c.rel_path, a.size_bytes
+SELECT a.id, c.rel_path, a.size_bytes, a.content_revision
 FROM media_assets a
 JOIN LATERAL active_present_media_asset_copies(a.id, $1::text) c ON true
 JOIN recordings r ON r.id = a.recording_id
@@ -49,16 +49,22 @@ type GetActiveOriginalForTSScanParams struct {
 }
 
 type GetActiveOriginalForTSScanRow struct {
-	ID        int64
-	RelPath   string
-	SizeBytes int64
+	ID              int64
+	RelPath         string
+	SizeBytes       int64
+	ContentRevision int64
 }
 
 // 読み出し前にこの置き場の active な原本コピーのパスと期待サイズを取る。
 func (q *Queries) GetActiveOriginalForTSScan(ctx context.Context, arg GetActiveOriginalForTSScanParams) (GetActiveOriginalForTSScanRow, error) {
 	row := q.db.QueryRow(ctx, getActiveOriginalForTSScan, arg.StoreName, arg.RecordingID)
 	var i GetActiveOriginalForTSScanRow
-	err := row.Scan(&i.ID, &i.RelPath, &i.SizeBytes)
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.ContentRevision,
+	)
 	return i, err
 }
 
@@ -116,6 +122,7 @@ JOIN media_asset_copies c
  AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.id = $2::bigint
+  AND a.content_revision = $3::bigint
   AND a.kind = 'original'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
@@ -132,33 +139,35 @@ FOR UPDATE OF a, c
 `
 
 type LockActiveOriginalForTSScanParams struct {
-	StoreName    string
-	MediaAssetID int64
+	StoreName       string
+	MediaAssetID    int64
+	ContentRevision int64
 }
 
-// 読み出し後に原本がまだ有効で同じサイズか、stats の置き換え前に検査する。
+// 読み出し時の内容のリビジョンが現在も有効か、stats の置き換え前に検査する。
 // 長い TS 読み出しの間に in-place 更新や削除があった結果を記録しない。
 func (q *Queries) LockActiveOriginalForTSScan(ctx context.Context, arg LockActiveOriginalForTSScanParams) (int64, error) {
-	row := q.db.QueryRow(ctx, lockActiveOriginalForTSScan, arg.StoreName, arg.MediaAssetID)
+	row := q.db.QueryRow(ctx, lockActiveOriginalForTSScan, arg.StoreName, arg.MediaAssetID, arg.ContentRevision)
 	var size_bytes int64
 	err := row.Scan(&size_bytes)
 	return size_bytes, err
 }
 
 const upsertMediaAssetTSScan = `-- name: UpsertMediaAssetTSScan :exec
-INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
-VALUES ($1, $2)
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes, content_revision)
+SELECT a.id, $1::bigint, a.content_revision
+FROM media_assets a WHERE a.id = $2
 ON CONFLICT (media_asset_id) DO UPDATE
-SET scanned_size_bytes = EXCLUDED.scanned_size_bytes
+SET scanned_size_bytes = EXCLUDED.scanned_size_bytes, content_revision = EXCLUDED.content_revision
 `
 
 type UpsertMediaAssetTSScanParams struct {
-	MediaAssetID     int64
 	ScannedSizeBytes int64
+	MediaAssetID     int64
 }
 
 // 原本 TS の計測記録（計測したサイズ）を書く。計測済みの定義は view current_ts_scanned_originals にある。
 func (q *Queries) UpsertMediaAssetTSScan(ctx context.Context, arg UpsertMediaAssetTSScanParams) error {
-	_, err := q.db.Exec(ctx, upsertMediaAssetTSScan, arg.MediaAssetID, arg.ScannedSizeBytes)
+	_, err := q.db.Exec(ctx, upsertMediaAssetTSScan, arg.ScannedSizeBytes, arg.MediaAssetID)
 	return err
 }

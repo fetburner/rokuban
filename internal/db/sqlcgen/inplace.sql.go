@@ -57,6 +57,7 @@ func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, arg GetInPlaceAs
 }
 
 const upsertInPlaceMediaAsset = `-- name: UpsertInPlaceMediaAsset :one
+WITH published AS (
 INSERT INTO media_assets (
     recording_id, kind, profile, size_bytes, derived_generation
 )
@@ -72,6 +73,7 @@ WHERE r.id = $5
   AND r.purged_at IS NULL
 ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
+    content_revision = media_assets.content_revision + 1,
     size_bytes = EXCLUDED.size_bytes,
     sha256     = NULL,
     updated_at = now()
@@ -82,10 +84,15 @@ WHERE NOT EXISTS (
           AND live.state <> 'deleted'
     )
   AND EXCLUDED.derived_generation = media_assets.derived_generation
-RETURNING id,
+RETURNING id, kind, content_revision,
     CASE WHEN kind = 'original' THEN 0
          ELSE COALESCE(media_asset_generation_from_rel_path($4::text), 0)
     END::bigint AS generation
+), invalidated AS (
+    DELETE FROM media_asset_ts_scans s USING published p
+    WHERE s.media_asset_id = p.id AND p.kind = 'original' AND p.content_revision > 0
+)
+SELECT id, generation FROM published
 `
 
 type UpsertInPlaceMediaAssetParams struct {
@@ -113,6 +120,8 @@ type UpsertInPlaceMediaAssetRow struct {
 //
 // derived_generation は変えない。並行する 2 本の登録は
 // media_asset_copies_asset_store_generation_idx が直列化する。
+// 更新時だけ内容のリビジョンを進め、同じ文で原本の計測記録を取り消す。
+// 新規 INSERT はリビジョン 0、WHERE で拒否した更新は published に行を返さない。
 func (q *Queries) UpsertInPlaceMediaAsset(ctx context.Context, arg UpsertInPlaceMediaAssetParams) (UpsertInPlaceMediaAssetRow, error) {
 	row := q.db.QueryRow(ctx, upsertInPlaceMediaAsset,
 		arg.Kind,

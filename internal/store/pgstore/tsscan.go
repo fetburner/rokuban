@@ -14,14 +14,14 @@ import (
 const tsScanBatchSize = 500
 
 // GetActiveOriginalForTSScan は計測が必要な active 原本を返す。
-func (s *Media) GetActiveOriginalForTSScan(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
+func (s *Media) GetActiveOriginalForTSScan(ctx context.Context, recordingID int64) (store.TSScanSource, error) {
 	row, err := sqlcgen.New(s.pool).GetActiveOriginalForTSScan(ctx, sqlcgen.GetActiveOriginalForTSScanParams{
 		RecordingID: recordingID, StoreName: s.storeName,
 	})
 	if err != nil {
-		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original for TS scan on recording %d", recordingID))
+		return store.TSScanSource{}, mediaQueryError(err, fmt.Sprintf("loading active original for TS scan on recording %d", recordingID))
 	}
-	return store.MediaAsset{ID: row.ID, Store: s.storeName, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+	return store.TSScanSource{MediaAsset: store.MediaAsset{ID: row.ID, Store: s.storeName, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, ContentRevision: row.ContentRevision}, nil
 }
 
 // ListMissingTSScanRecordings は計測記録の無い、またはサイズが古い原本をページ単位で返す。
@@ -37,8 +37,9 @@ func (s *Media) ListMissingTSScanRecordings(ctx context.Context, afterRecordingI
 	return rows, nil
 }
 
-// ReplaceScan は現在も有効でサイズが一致する原本の計測値と計測サイズを 1 tx で置き換える。
-func (s *Media) ReplaceScan(ctx context.Context, assetID, scannedSizeBytes int64, stats []store.RecordingDropStat, positions []store.RecordingDropPosition) (bool, error) {
+// ReplaceScan は読んだ内容のリビジョン・サイズが現在も一致する原本の計測値を 1 tx で置き換える。
+func (s *Media) ReplaceScan(ctx context.Context, source store.TSScanSource, scannedSizeBytes int64, stats []store.RecordingDropStat, positions []store.RecordingDropPosition) (bool, error) {
+	assetID := source.ID
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("beginning TS scan replacement for media asset %d: %w", assetID, err)
@@ -47,7 +48,7 @@ func (s *Media) ReplaceScan(ctx context.Context, assetID, scannedSizeBytes int64
 	q := sqlcgen.New(tx)
 
 	currentSize, err := q.LockActiveOriginalForTSScan(ctx, sqlcgen.LockActiveOriginalForTSScanParams{
-		MediaAssetID: assetID, StoreName: s.storeName,
+		MediaAssetID: assetID, StoreName: s.storeName, ContentRevision: source.ContentRevision,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -57,8 +58,7 @@ func (s *Media) ReplaceScan(ctx context.Context, assetID, scannedSizeBytes int64
 	}
 	if currentSize != scannedSizeBytes {
 		// 読んでいる間に in-place 登録がファイルを差し替えうる。書かずに成功扱いにする。
-		// 古い観測を残しても marker のサイズが現在のサイズとずれたままなので、
-		// 次の reconcile が拾い直す。
+		// TestTSScanRejectsInFlightInPlaceReplacement が差し替え前後を検査する。
 		return false, nil
 	}
 

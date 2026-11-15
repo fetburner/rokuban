@@ -59,7 +59,7 @@ func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 	metrics.TSScanScrambledPackets.Add(float64(counter.TotalScrambled()))
 
 	stats, positions := scanResults(counter)
-	if _, err := w.Media.ReplaceScan(ctx, asset.ID, size, stats, positions); err != nil {
+	if _, err := w.Media.ReplaceScan(ctx, asset, size, stats, positions); err != nil {
 		return fmt.Errorf("replacing TS scan for media asset %d: %w", asset.ID, err)
 	}
 	result = "success"

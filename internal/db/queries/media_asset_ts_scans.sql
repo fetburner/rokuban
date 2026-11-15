@@ -1,13 +1,14 @@
 -- 原本 TS の計測記録（計測したサイズ）を書く。計測済みの定義は view current_ts_scanned_originals にある。
 -- name: UpsertMediaAssetTSScan :exec
-INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
-VALUES (sqlc.arg('media_asset_id'), sqlc.arg('scanned_size_bytes'))
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes, content_revision)
+SELECT a.id, sqlc.arg('scanned_size_bytes')::bigint, a.content_revision
+FROM media_assets a WHERE a.id = sqlc.arg('media_asset_id')
 ON CONFLICT (media_asset_id) DO UPDATE
-SET scanned_size_bytes = EXCLUDED.scanned_size_bytes;
+SET scanned_size_bytes = EXCLUDED.scanned_size_bytes, content_revision = EXCLUDED.content_revision;
 
 -- 読み出し前にこの置き場の active な原本コピーのパスと期待サイズを取る。
 -- name: GetActiveOriginalForTSScan :one
-SELECT a.id, c.rel_path, a.size_bytes
+SELECT a.id, c.rel_path, a.size_bytes, a.content_revision
 FROM media_assets a
 JOIN LATERAL active_present_media_asset_copies(a.id, sqlc.arg('store_name')::text) c ON true
 JOIN recordings r ON r.id = a.recording_id
@@ -20,7 +21,7 @@ WHERE a.recording_id = sqlc.arg('recording_id')::bigint
     WHERE s.media_asset_id = a.id
   );
 
--- 読み出し後に原本がまだ有効で同じサイズか、stats の置き換え前に検査する。
+-- 読み出し時の内容のリビジョンが現在も有効か、stats の置き換え前に検査する。
 -- 長い TS 読み出しの間に in-place 更新や削除があった結果を記録しない。
 -- name: LockActiveOriginalForTSScan :one
 SELECT a.size_bytes
@@ -31,6 +32,7 @@ JOIN media_asset_copies c
  AND c.state = 'active'
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.id = sqlc.arg('media_asset_id')::bigint
+  AND a.content_revision = sqlc.arg('content_revision')::bigint
   AND a.kind = 'original'
   AND r.deleted_at IS NULL
   AND NOT EXISTS (

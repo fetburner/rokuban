@@ -302,7 +302,9 @@ func (q *Queries) CatalogListLabelRules(ctx context.Context) ([]CatalogListLabel
 }
 
 const catalogListMediaAssetTSScans = `-- name: CatalogListMediaAssetTSScans :many
-SELECT media_asset_id, scanned_size_bytes FROM media_asset_ts_scans ORDER BY media_asset_id
+SELECT s.media_asset_id, s.scanned_size_bytes, s.content_revision FROM media_asset_ts_scans s
+JOIN media_assets a ON a.id = s.media_asset_id AND a.content_revision = s.content_revision
+ORDER BY s.media_asset_id
 `
 
 func (q *Queries) CatalogListMediaAssetTSScans(ctx context.Context) ([]MediaAssetTsScan, error) {
@@ -314,7 +316,7 @@ func (q *Queries) CatalogListMediaAssetTSScans(ctx context.Context) ([]MediaAsse
 	var items []MediaAssetTsScan
 	for rows.Next() {
 		var i MediaAssetTsScan
-		if err := rows.Scan(&i.MediaAssetID, &i.ScannedSizeBytes); err != nil {
+		if err := rows.Scan(&i.MediaAssetID, &i.ScannedSizeBytes, &i.ContentRevision); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1012,6 +1014,7 @@ func (q *Queries) CatalogUpsertLabelRule(ctx context.Context, arg CatalogUpsertL
 }
 
 const catalogUpsertMediaAsset = `-- name: CatalogUpsertMediaAsset :exec
+WITH published AS (
 INSERT INTO media_assets (
     id, recording_id, kind, profile, size_bytes,
     created_at, updated_at, derived_generation, sha256
@@ -1021,6 +1024,7 @@ VALUES (
     $6, $7, $8, $9
 )
 ON CONFLICT (id) DO UPDATE SET
+    content_revision = media_assets.content_revision + 1,
     recording_id = EXCLUDED.recording_id,
     kind         = EXCLUDED.kind,
     profile      = EXCLUDED.profile,
@@ -1036,6 +1040,10 @@ ON CONFLICT (id) DO UPDATE SET
     sha256       = CASE WHEN $10::bigint = GREATEST(
         media_assets.derived_generation, EXCLUDED.derived_generation
     ) THEN EXCLUDED.sha256 ELSE media_assets.sha256 END
+RETURNING id, kind, content_revision
+)
+DELETE FROM media_asset_ts_scans s USING published p
+WHERE s.media_asset_id = p.id AND p.kind = 'original' AND p.content_revision > 0
 `
 
 type CatalogUpsertMediaAssetParams struct {

@@ -52,11 +52,14 @@ rescue は、同じトランザクションの末尾で全件を再評価して�
 
 TS 計測記録は、原本ごとに TS 計測時のサイズを記録する。計測記録の無い原本は未計測のまま復元し、復旧後の TS 計測ジョブが読み直す。
 
+内容のリビジョンはこの DB の中だけの値なので文書には出さず、export は現在のリビジョンと一致する計測記録だけを出す。復元は、同じ文書から戻した計測記録に現在のリビジョンを付ける。
+
 <details><summary>根拠</summary>
 
 - 書き込み順: `recordings → media_assets → チャプターの所有 2 表 → drop_stats → drop_positions → media_asset_ts_scans`
 - 2 回目の受け方: `ON CONFLICT DO NOTHING`
 - 計測時のサイズの記録: `media_asset_ts_scans`
+- 古いリビジョンの計測記録の除外: `TestCatalogExportExcludesStaleContentScan`
 
 </details>
 

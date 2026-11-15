@@ -12,6 +12,7 @@ CREATE TABLE media_assets (
     profile      text,                -- kind = 'encoded' のみ: エンコードプロファイル名
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
     size_bytes   bigint NOT NULL,
+    content_revision bigint NOT NULL DEFAULT 0, -- 内容を差し替える書き手が進め、計測記録の照合に使う、この DB の中だけの値。catalog 文書には出さない
     sha256       bytea,                -- 作り手が公開の transaction で書く内容の SHA-256。in-place 登録の行は NULL。コピー数によらず 1 回だけ持つ
     derived_generation bigint NOT NULL DEFAULT 0, -- 派生物のパスに最後に採った世代。original は 0
     CHECK ((kind <> 'original' OR derived_generation = 0) AND derived_generation >= 0),

@@ -789,6 +789,7 @@ CREATE TABLE public.media_assets (
     ingest_generation bigint,
     derived_generation bigint DEFAULT 0 NOT NULL,
     sha256 bytea,
+    content_revision bigint DEFAULT 0 NOT NULL,
     CONSTRAINT media_assets_check CHECK (((kind = 'encoded'::text) = (profile IS NOT NULL))),
     CONSTRAINT media_assets_derived_generation_check CHECK ((((kind <> 'original'::text) OR (derived_generation = 0)) AND (derived_generation >= 0))),
     CONSTRAINT media_assets_ingest_generation_kind_check CHECK (((kind = 'original'::text) OR (ingest_generation IS NULL))),
@@ -814,6 +815,12 @@ COMMENT ON COLUMN public.media_assets.derived_generation IS 'Monotonic generatio
 --
 
 COMMENT ON COLUMN public.media_assets.sha256 IS 'Observed SHA-256 of the logical asset bytes, stored once for all physical copies';
+
+--
+-- Name: COLUMN media_assets.content_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.media_assets.content_revision IS 'ContentRevision は、内容を差し替える書き手が進め、TS 解析の保存と計測記録の照合に使う局所のリビジョンである。catalog 文書には含めない。';
 
 --
 -- Name: recording_cm_detections; Type: TABLE; Schema: public; Owner: -
@@ -959,6 +966,7 @@ CREATE VIEW public.cm_logo_candidate_desired AS
 CREATE TABLE public.media_asset_ts_scans (
     media_asset_id bigint NOT NULL,
     scanned_size_bytes bigint NOT NULL,
+    content_revision bigint DEFAULT 0 NOT NULL,
     CONSTRAINT media_asset_ts_scans_scanned_size_bytes_check CHECK ((scanned_size_bytes >= 0))
 );
 
@@ -971,13 +979,13 @@ CREATE VIEW public.current_ts_scanned_originals AS
    FROM public.media_assets a
   WHERE ((kind = 'original'::text) AND (size_bytes = ( SELECT s.scanned_size_bytes
            FROM public.media_asset_ts_scans s
-          WHERE (s.media_asset_id = a.id))));
+          WHERE ((s.media_asset_id = a.id) AND (s.content_revision = a.content_revision)))));
 
 --
 -- Name: VIEW current_ts_scanned_originals; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.current_ts_scanned_originals IS 'CurrentTsScannedOriginal は、計測サイズが現在のコミット済みサイズと一致する原本を表す。state は削除済み原本の drop summary を保つため条件に含めず、active 限定が必要な呼び出し側で絞る。';
+COMMENT ON VIEW public.current_ts_scanned_originals IS 'CurrentTsScannedOriginal は、内容のリビジョンと計測サイズが現在の原本に一致する計測記録を持つ原本を表す。内容の書き手は同じ文で計測記録を取り消す。コピーの state は削除済み原本の drop summary を保つため条件に含めず、active 限定が必要な呼び出し側で絞る。';
 
 --
 -- Name: drop_positions; Type: TABLE; Schema: public; Owner: -
