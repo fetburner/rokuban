@@ -908,8 +908,12 @@ func TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim(t *testing.
 				).Scan(&copyID); err != nil {
 					return fmt.Errorf("loading pending copy before Put: %w", err)
 				}
+				// 作成時刻を十分過去に固定し、DB と Go の時計差を除いて pending 回収を検証する。
+				if _, err := env.pool.Exec(putCtx, `UPDATE media_asset_copies SET created_at = '2000-01-01T00:00:00Z'::timestamptz WHERE id = $1`, copyID); err != nil {
+					return fmt.Errorf("aging pending copy before reclaim: %w", err)
+				}
 				var err error
-				reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now().Add(time.Second), func() error { return nil })
+				reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error { return nil })
 				return err
 			case companionKey:
 				return companionErr
@@ -979,8 +983,12 @@ func TestObjectPublishCleanupDoesNotDeleteNewerThumbnailGeneration(t *testing.T)
 			).Scan(&copyID); err != nil {
 				return fmt.Errorf("loading pending replacement before reclaim: %w", err)
 			}
+			// 作成時刻を十分過去に固定し、DB と Go の時計差を除いて pending 回収を検証する。
+			if _, err := env.pool.Exec(putCtx, `UPDATE media_asset_copies SET created_at = '2000-01-01T00:00:00Z'::timestamptz WHERE id = $1`, copyID); err != nil {
+				return fmt.Errorf("aging pending copy before reclaim: %w", err)
+			}
 			var err error
-			reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now().Add(time.Second), func() error {
+			reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
 				return env.objects.Delete(putCtx, keyA)
 			})
 			return err
