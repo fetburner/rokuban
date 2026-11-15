@@ -2476,6 +2476,12 @@ CREATE INDEX recordings_unpurged_id_idx ON public.recordings USING btree (id) WH
 CREATE INDEX reservations_rule_id_idx ON public.reservations USING btree (rule_id);
 
 --
+-- Name: rules_epgstation_rule_id_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX rules_epgstation_rule_id_unique ON public.rules USING btree ((((metadata -> 'epgstation'::text) ->> 'ruleId'::text))) WHERE (((metadata -> 'epgstation'::text) ->> 'ruleId'::text) IS NOT NULL);
+
+--
 -- Name: circuit_breakers circuit_breakers_notify; Type: TRIGGER; Schema: public; Owner: -
 --
 

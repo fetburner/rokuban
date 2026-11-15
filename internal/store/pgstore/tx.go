@@ -59,9 +59,13 @@ func lockProgramSnapshot(ctx context.Context, q *sqlcgen.Queries, site string, p
 }
 
 // mapDatabaseError は一意違反と排他制約違反を store.ErrConflict に写す。
+// EPGStation 移行キーの一意違反には専用エラーも付ける。
 func mapDatabaseError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && (pgErr.Code == "23505" || pgErr.Code == "23P01") {
+		if pgErr.Code == "23505" && pgErr.ConstraintName == "rules_epgstation_rule_id_unique" {
+			return errors.Join(store.ErrEPGStationRuleIDConflict, store.ErrConflict, err)
+		}
 		return errors.Join(store.ErrConflict, err)
 	}
 	return err

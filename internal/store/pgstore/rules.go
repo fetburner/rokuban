@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -207,7 +208,7 @@ func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 
-	existing, err := q.FindRuleByMetadata(ctx, metadata)
+	existing, err := q.FindRuleByEPGStationRuleID(ctx, strconv.FormatInt(epgstationRuleID, 10))
 	var row sqlcgen.Rule
 	created := false
 	var oldSites []string

@@ -96,13 +96,25 @@ CREATE TABLE rules (
 
 ルールの行トリガーが、トピック rules で SSE ヒントを通知する。
 
-メタデータには、予約済みのキーが 1 つある。EPGStation 側のルール id を持ち、EPGStation からの移行コマンドが冪等キーとして使う。内容でクエリする以上、型付き列にする原則からは外れる。だが 1 用途だけの一過性キーに列を割くほどではないという判断である。他の用途でこのキーを上書きしない。
+メタデータの予約済みキー `epgstation.ruleId` は EPGStation 側のルール id を持ち、EPGStation からの移行コマンドが冪等キーとして使う。EPGStation の移行キーは式の部分一意索引で制約し、固有の列を永続表へ追加しない不変条件 7 を原則 8 より優先する。式の索引なら、列を追加せずに一意性と索引を使う検索を得られるからである。
+
+このキーは移行時の同定にしか使わないので、原則 8 の例外をこのキーに限る。他の用途でこのキーを上書きしない。
+
+値が NULL でないキーに一意性を要求し、キーを持たない行と値が JSON null の行は複数行で許す。検索と一意性の判定は同じテキスト抽出式で比較するため、数値と同じ表記の文字列も同じキーとして扱う。検索に ORDER BY と LIMIT は置かない。
+
+既に重複している行があっても自動では削除せず、索引の作成を失敗させる。運用者が残すルールを選び、他の行のキーを削除または訂正してから再適用する。catalog は重複があると document 全体を拒否し、途中の書き込みもロールバックする。
 
 <details><summary>根拠</summary>
 
+- 一意索引: `rules_epgstation_rule_id_unique`
+- 一意性: `TestRulesEPGStationKeyUnique`
+- 移行キーの一意索引違反に限った API の 409 応答: `TestRulesEPGStationKeyConflict`
+- catalog の重複拒否と全体ロールバック: `TestCatalogDuplicateEPGStationKey`
+- 取り込みの冪等性: `TestRulesContract/EPGStation_import_uses_stable_identity_atomically`
+- 文字列のキーを持つ行への取り込み: `TestImportEPGStationRuleStringKey`
 - 行トリガー: `rules_notify`。トピックは `rules`
 - 予約済みキー: `metadata.epgstation.ruleId`。移行コマンドは `rokuban import epgstation --rules`
-- 引き方: `metadata @> '{"epgstation":{"ruleId": N}}'`
+- 引き方: `metadata->'epgstation'->>'ruleId' = $1::text`
 
 </details>
 
