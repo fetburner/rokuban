@@ -23,7 +23,7 @@ CREATE TABLE recording_processing_policy (
 
 行は `recordings.id` への FK で録画を指し、方針の初期値を確定するときに生まれる。確定後に削除経路はなく、録画履歴と同じく永続する（不変条件 12）。書き手は脊椎の watcher / reconciler ではないので、録画履歴の本体でなく衛星表に置く（不変条件 13）。
 
-複数の書き手は不変条件 12 が示す分割の兆候に当たる。ただし、どの書き手も同じ録画の永続的な desired state を書く。CM worker が観測する試行状態は別表にあり、方針の寿命は検出の開始・終了で区切らない。概念だけを理由に CM 方針を分割すると、原本コミット時の初期値の確定を別々に管理することになる。
+初期値は処理方針の現在値を初期化するために使う。公開・削除の判定、API・UI、catalog ダンプはいずれも現在値を読み、API で上書きした後に初期値を読む者はいないため、不変条件 12 による分割は不要である。CM 検出の試行状態は別表 `recording_cm_attempts` に置く。
 
 `cm_detect_generation` は切り替えを記録する世代で、現在の試行を選ぶために使う。現在の有効・無効から切り替え履歴は作り直せないため、導出値ではなく保存する事実である（不変条件 9）。
 
@@ -37,6 +37,10 @@ API のパス `encode-policy` と `encode-profiles`、catalog の JSON キー `r
 
 <details><summary>根拠</summary>
 
+- 公開判定の読者: `GetRecordingEncodePolicy` / `GetRecordingEncodeProfilesForShare`
+- 方針変更・API 射影・ダンプの読者: `LockRecordingEncodePolicy`、`recordingquery.go`、`CatalogListRecordingEncodePolicies`
+- エンコード・削除の判定: `unencoded_desired_profiles` / `until_encoded_deletable_originals` / `removed_encoded_assets`
+- CM 検出の判定: `cm_detection_desired` / `current_cm_attempts`
 - 方針の契約テスト: `TestEncodePolicyContract` / `TestCMDetectionContract`
 - 保持方針とプロファイル: `keep_original` / `encode_profiles`、衛星表 `recording_processing_policy`
 - 空のプロファイルで初期値を確定した行: `encode_profiles = '{}'`
@@ -225,7 +229,7 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 - temp を捨てるとき（record の cancel / fail、サイズ・ハッシュ不一致など）
 - 別経路の登録などで原本が既にコミット済みと分かったとき（取り残された行の掃除）
 
-書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。あちらは mirakc 側の観測で書き手は watcher、こちらは Rokuban 側のファイルに何バイト書けたかで、1 表 2 書き手になる（不変条件 12）。
+書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。同期行は全量観測に record が無いと削除され、転送進捗は原本コミット時や temp の破棄時に消すため、同じ行では必要な値まで消してしまう（不変条件 12）。
 
 書き込みバイト数は、単調に増えない。clean handoff の Range 再開では値が続き、unclean restart では新 writer の進捗が旧い表示中の offset に達するまで旧 path と offset を保つ。追いついた後は新 path の offset に切り替わる。サイズや SHA-256 の不一致、record の cancel / fail で進捗を捨てると、次の進捗は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。これは現在表示中の temp の書き込み量の観測であり、累積の転送実績ではない。
 
