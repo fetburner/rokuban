@@ -486,7 +486,7 @@ RETURNING c.rel_path;
 -- Progress rows follow the pending copy: the caller deletes them in the same
 -- transaction that makes the copy active, deleted, or reclaimed.
 -- name: InsertMediaAssetTransferProgressIfAbsent :execrows
-INSERT INTO media_asset_copy_transfer_progress (copy_id, lease_owner, lease_expires_at, generation, handed_off, offset_bytes, hash_state)
+INSERT INTO media_asset_copy_transfer_progress (copy_id, lease_owner, lease_expires_at, writer_generation, handed_off, offset_bytes, hash_state)
 SELECT c.id, sqlc.arg('owner')::uuid, now() + make_interval(secs => sqlc.arg('ttl_seconds')::double precision), 1, false, 0, NULL
 FROM media_asset_copies c
 WHERE c.id = sqlc.arg('copy_id')
@@ -497,7 +497,7 @@ FOR SHARE OF c
 ON CONFLICT (copy_id) DO NOTHING;
 
 -- name: LockMediaAssetTransferProgress :one
-SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
+SELECT p.writer_generation, p.handed_off, p.offset_bytes, p.hash_state,
        p.upload_store, p.upload_state, p.verifying_source,
        (p.lease_expires_at > now())::boolean AS lease_live
 FROM media_asset_copy_transfer_progress p
@@ -508,7 +508,7 @@ FOR UPDATE;
 UPDATE media_asset_copy_transfer_progress p
 SET lease_owner = sqlc.arg('owner')::uuid,
     lease_expires_at = now() + make_interval(secs => sqlc.arg('ttl_seconds')::double precision),
-    generation = sqlc.arg('generation'),
+    writer_generation = sqlc.arg('writer_generation'),
     handed_off = false,
     offset_bytes = sqlc.arg('offset_bytes'),
     hash_state = sqlc.narg('hash_state')::bytea
@@ -523,7 +523,7 @@ SET handed_off = true,
     lease_expires_at = now()
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid
-  AND p.generation = sqlc.arg('generation')
+  AND p.writer_generation = sqlc.arg('writer_generation')
   AND p.lease_expires_at > now();
 
 -- name: ReleaseMediaAssetTransferProgress :exec
@@ -533,8 +533,8 @@ SET lease_expires_at = now(),
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid;
 
--- name: GetMediaAssetTransferProgressGeneration :one
-SELECT p.generation
+-- name: GetMediaAssetTransferProgressWriterGeneration :one
+SELECT p.writer_generation
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = sqlc.arg('copy_id');
 
@@ -549,7 +549,7 @@ SELECT p.upload_store, p.upload_state
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid
-  AND p.generation = sqlc.arg('generation')
+  AND p.writer_generation = sqlc.arg('writer_generation')
   AND p.lease_expires_at > now()
 FOR UPDATE;
 
@@ -566,7 +566,7 @@ SET upload_store = sqlc.arg('upload_store')::text,
     handed_off = false
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid
-  AND p.generation = sqlc.arg('generation')
+  AND p.writer_generation = sqlc.arg('writer_generation')
   AND p.lease_expires_at > now();
 
 -- name: ListAbandonedMediaAssetTransferUploads :many
@@ -588,7 +588,7 @@ SET verifying_source = true,
     hash_state = NULL
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid
-  AND p.generation = sqlc.arg('generation')
+  AND p.writer_generation = sqlc.arg('writer_generation')
   AND p.lease_expires_at > now();
 
 -- name: EndMediaAssetTransferSourceVerification :execrows
@@ -598,7 +598,7 @@ SET verifying_source = false,
     hash_state = NULL
 WHERE p.copy_id = sqlc.arg('copy_id')
   AND p.lease_owner = sqlc.arg('owner')::uuid
-  AND p.generation = sqlc.arg('generation')
+  AND p.writer_generation = sqlc.arg('writer_generation')
   AND p.lease_expires_at > now();
 
 -- 転送の観測で NULL の SHA-256 を埋める。世代が変わった論理資産や、既に値のある行には書かない。

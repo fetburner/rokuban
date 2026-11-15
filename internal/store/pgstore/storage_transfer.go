@@ -610,7 +610,7 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 		if err := tx.Commit(ctx); err != nil {
 			return store.TransferProgress{}, false, fmt.Errorf("committing transfer progress acquisition: %w", mapDatabaseError(err))
 		}
-		return store.TransferProgress{Generation: 1}, true, nil
+		return store.TransferProgress{WriterGeneration: 1}, true, nil
 	}
 	cur, err := q.LockMediaAssetTransferProgress(ctx, copyID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -623,11 +623,11 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 	if !cur.HandedOff && cur.LeaseLive {
 		return store.TransferProgress{}, false, nil
 	}
-	progress := store.TransferProgress{PrevGeneration: cur.Generation, Generation: cur.Generation + 1}
+	progress := store.TransferProgress{PrevWriterGeneration: cur.WriterGeneration, WriterGeneration: cur.WriterGeneration + 1}
 	if cur.HandedOff {
 		// 前の slice が保存して lease を切った。世代と保存状態をそのまま引き継ぐ。
 		progress = store.TransferProgress{
-			PrevGeneration: cur.Generation, Generation: cur.Generation, Resumed: true,
+			PrevWriterGeneration: cur.WriterGeneration, WriterGeneration: cur.WriterGeneration, Resumed: true,
 			Offset: cur.OffsetBytes, HashState: cur.HashState,
 		}
 		if cur.UploadStore != nil {
@@ -639,7 +639,7 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 	progress.VerifyingSource = cur.VerifyingSource
 	if _, err := q.ClaimMediaAssetTransferProgress(ctx, sqlcgen.ClaimMediaAssetTransferProgressParams{
 		CopyID: copyID, Owner: ownerID, TtlSeconds: ttlSeconds,
-		Generation: progress.Generation, OffsetBytes: progress.Offset, HashState: progress.HashState,
+		WriterGeneration: progress.WriterGeneration, OffsetBytes: progress.Offset, HashState: progress.HashState,
 	}); err != nil {
 		return store.TransferProgress{}, false, fmt.Errorf("claiming transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
 	}
@@ -652,7 +652,7 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 // SaveMediaAssetTransferProgress は slice の終わりの状態を保存し、lease を切る。
 func (s *Media) SaveMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID, generation, offset int64, hashState, uploadState []byte) error {
 	n, err := sqlcgen.New(s.pool).SaveMediaAssetTransferProgress(ctx, sqlcgen.SaveMediaAssetTransferProgressParams{
-		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, Generation: generation,
+		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, WriterGeneration: generation,
 		OffsetBytes: offset, HashState: hashState, UploadState: uploadState,
 	})
 	if err != nil {
@@ -675,7 +675,7 @@ func (s *Media) ReplaceMediaAssetTransferUpload(ctx context.Context, copyID int6
 	q := sqlcgen.New(tx)
 	ownerID := pgtype.UUID{Bytes: owner, Valid: true}
 	cur, err := q.LockLeasedMediaAssetTransferProgress(ctx, sqlcgen.LockLeasedMediaAssetTransferProgressParams{
-		CopyID: copyID, Owner: ownerID, Generation: generation,
+		CopyID: copyID, Owner: ownerID, WriterGeneration: generation,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.ErrTransferLeaseLost
@@ -694,7 +694,7 @@ func (s *Media) ReplaceMediaAssetTransferUpload(ctx context.Context, copyID int6
 		}
 	}
 	n, err := q.ReplaceMediaAssetTransferUpload(ctx, sqlcgen.ReplaceMediaAssetTransferUploadParams{
-		CopyID: copyID, Owner: ownerID, Generation: generation,
+		CopyID: copyID, Owner: ownerID, WriterGeneration: generation,
 		UploadStore: uploadStore, UploadState: uploadState,
 	})
 	if err != nil {
@@ -712,7 +712,7 @@ func (s *Media) ReplaceMediaAssetTransferUpload(ctx context.Context, copyID int6
 // BeginMediaAssetTransferSourceVerification は、lease を持つ試行が原本の照合を始める。
 func (s *Media) BeginMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error {
 	n, err := sqlcgen.New(s.pool).BeginMediaAssetTransferSourceVerification(ctx, sqlcgen.BeginMediaAssetTransferSourceVerificationParams{
-		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, Generation: generation,
+		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, WriterGeneration: generation,
 	})
 	if err != nil {
 		return fmt.Errorf("beginning source verification for copy %d: %w", copyID, mapDatabaseError(err))
@@ -726,7 +726,7 @@ func (s *Media) BeginMediaAssetTransferSourceVerification(ctx context.Context, c
 // EndMediaAssetTransferSourceVerification は、lease を持つ試行が原本の照合を終える。
 func (s *Media) EndMediaAssetTransferSourceVerification(ctx context.Context, copyID int64, owner uuid.UUID, generation int64) error {
 	n, err := sqlcgen.New(s.pool).EndMediaAssetTransferSourceVerification(ctx, sqlcgen.EndMediaAssetTransferSourceVerificationParams{
-		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, Generation: generation,
+		CopyID: copyID, Owner: pgtype.UUID{Bytes: owner, Valid: true}, WriterGeneration: generation,
 	})
 	if err != nil {
 		return fmt.Errorf("ending source verification for copy %d: %w", copyID, mapDatabaseError(err))
@@ -781,9 +781,9 @@ func (s *Media) ReleaseMediaAssetTransferProgress(ctx context.Context, copyID in
 	return nil
 }
 
-// GetMediaAssetTransferProgressGeneration は、コピーの進捗が指す世代を返す。
-func (s *Media) GetMediaAssetTransferProgressGeneration(ctx context.Context, copyID int64) (int64, bool, error) {
-	generation, err := sqlcgen.New(s.pool).GetMediaAssetTransferProgressGeneration(ctx, copyID)
+// GetMediaAssetTransferProgressWriterGeneration は、コピーの転送進捗に記録された書き手の世代を返す。
+func (s *Media) GetMediaAssetTransferProgressWriterGeneration(ctx context.Context, copyID int64) (int64, bool, error) {
+	generation, err := sqlcgen.New(s.pool).GetMediaAssetTransferProgressWriterGeneration(ctx, copyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}

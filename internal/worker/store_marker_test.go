@@ -212,7 +212,7 @@ func (s *markerTestStorageObservation) DeleteMissingMediaAsset(context.Context, 
 	s.missingDeleteCalls++
 	return nil
 }
-func (s *markerTestStorageObservation) GetMediaAssetTransferProgressGeneration(context.Context, int64) (int64, bool, error) {
+func (s *markerTestStorageObservation) GetMediaAssetTransferProgressWriterGeneration(context.Context, int64) (int64, bool, error) {
 	return 0, false, nil
 }
 

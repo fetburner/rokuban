@@ -286,11 +286,19 @@ k8s の構成で、旧 worker を止めてから再開するまでの手順で�
    3. 実行中の Job は完了した。その後 16 秒（polling 3 周期分）の間、Job 数は 1 のまま、追加した行は `available` のままだった。
    4. pause を外すと Job がもう 1 つ作られ、最終状態は `completed:2`、queue は 0 になった。
 
-#### パスの全体一意索引を入れる版への更新
+#### 旧 worker を先に止める版への更新
 
 tombstone も含む全体の一意索引へ広げる migration を含む版では、旧 worker を先に止めなければならない。止めないと、旧 worker による tombstone のパスへの INSERT が失敗し続ける。
 
 旧 worker を「旧 worker の停止と再開（k8s）」の手順で止めてから migration を適用し、新版を起動する。旧 worker が新版の前提（パスの予約、rel_path の lock）を知らないまま動くと壊れる更新でも、同じ手順で旧 worker を止める。単一プロセス構成では、migration の前に旧プロセスを正常停止する。
+
+転送の書き手の世代の列名を変える更新でも、この順序を守る。旧 worker を止めないと、そのクエリが旧列名 `generation` を参照して失敗する。列の改名には旧 worker との互換期間を設けない。lease の有無によらず旧 worker の終了を待ち、移行後は新版だけを起動する。転送の進捗行や temp は削除しない。
+
+<details><summary>根拠</summary>
+
+- 既存行の保持: `TestTransferWriterGenerationMigrationPreservesProgress`
+
+</details>
 
 
 ## 定期ジョブの周期とヒント

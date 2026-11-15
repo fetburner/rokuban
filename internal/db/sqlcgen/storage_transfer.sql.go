@@ -20,19 +20,19 @@ SET verifying_source = true,
     hash_state = NULL
 WHERE p.copy_id = $1
   AND p.lease_owner = $2::uuid
-  AND p.generation = $3
+  AND p.writer_generation = $3
   AND p.lease_expires_at > now()
 `
 
 type BeginMediaAssetTransferSourceVerificationParams struct {
-	CopyID     int64
-	Owner      pgtype.UUID
-	Generation int64
+	CopyID           int64
+	Owner            pgtype.UUID
+	WriterGeneration int64
 }
 
 // 原本の照合は、lease を持つ試行だけが始めて終える。照合中は offset_bytes / hash_state が転送元の読み直しの位置を表す。
 func (q *Queries) BeginMediaAssetTransferSourceVerification(ctx context.Context, arg BeginMediaAssetTransferSourceVerificationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, beginMediaAssetTransferSourceVerification, arg.CopyID, arg.Owner, arg.Generation)
+	result, err := q.db.Exec(ctx, beginMediaAssetTransferSourceVerification, arg.CopyID, arg.Owner, arg.WriterGeneration)
 	if err != nil {
 		return 0, err
 	}
@@ -43,7 +43,7 @@ const claimMediaAssetTransferProgress = `-- name: ClaimMediaAssetTransferProgres
 UPDATE media_asset_copy_transfer_progress p
 SET lease_owner = $1::uuid,
     lease_expires_at = now() + make_interval(secs => $2::double precision),
-    generation = $3,
+    writer_generation = $3,
     handed_off = false,
     offset_bytes = $4,
     hash_state = $5::bytea
@@ -51,19 +51,19 @@ WHERE p.copy_id = $6
 `
 
 type ClaimMediaAssetTransferProgressParams struct {
-	Owner       pgtype.UUID
-	TtlSeconds  float64
-	Generation  int64
-	OffsetBytes int64
-	HashState   []byte
-	CopyID      int64
+	Owner            pgtype.UUID
+	TtlSeconds       float64
+	WriterGeneration int64
+	OffsetBytes      int64
+	HashState        []byte
+	CopyID           int64
 }
 
 func (q *Queries) ClaimMediaAssetTransferProgress(ctx context.Context, arg ClaimMediaAssetTransferProgressParams) (int64, error) {
 	result, err := q.db.Exec(ctx, claimMediaAssetTransferProgress,
 		arg.Owner,
 		arg.TtlSeconds,
-		arg.Generation,
+		arg.WriterGeneration,
 		arg.OffsetBytes,
 		arg.HashState,
 		arg.CopyID,
@@ -451,18 +451,18 @@ SET verifying_source = false,
     hash_state = NULL
 WHERE p.copy_id = $1
   AND p.lease_owner = $2::uuid
-  AND p.generation = $3
+  AND p.writer_generation = $3
   AND p.lease_expires_at > now()
 `
 
 type EndMediaAssetTransferSourceVerificationParams struct {
-	CopyID     int64
-	Owner      pgtype.UUID
-	Generation int64
+	CopyID           int64
+	Owner            pgtype.UUID
+	WriterGeneration int64
 }
 
 func (q *Queries) EndMediaAssetTransferSourceVerification(ctx context.Context, arg EndMediaAssetTransferSourceVerificationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, endMediaAssetTransferSourceVerification, arg.CopyID, arg.Owner, arg.Generation)
+	result, err := q.db.Exec(ctx, endMediaAssetTransferSourceVerification, arg.CopyID, arg.Owner, arg.WriterGeneration)
 	if err != nil {
 		return 0, err
 	}
@@ -530,17 +530,17 @@ func (q *Queries) GetMediaAssetTransferCopyState(ctx context.Context, arg GetMed
 	return state, err
 }
 
-const getMediaAssetTransferProgressGeneration = `-- name: GetMediaAssetTransferProgressGeneration :one
-SELECT p.generation
+const getMediaAssetTransferProgressWriterGeneration = `-- name: GetMediaAssetTransferProgressWriterGeneration :one
+SELECT p.writer_generation
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = $1
 `
 
-func (q *Queries) GetMediaAssetTransferProgressGeneration(ctx context.Context, copyID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, getMediaAssetTransferProgressGeneration, copyID)
-	var generation int64
-	err := row.Scan(&generation)
-	return generation, err
+func (q *Queries) GetMediaAssetTransferProgressWriterGeneration(ctx context.Context, copyID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getMediaAssetTransferProgressWriterGeneration, copyID)
+	var writer_generation int64
+	err := row.Scan(&writer_generation)
+	return writer_generation, err
 }
 
 const insertAbandonedMediaAssetTransferUpload = `-- name: InsertAbandonedMediaAssetTransferUpload :exec
@@ -559,7 +559,7 @@ func (q *Queries) InsertAbandonedMediaAssetTransferUpload(ctx context.Context, a
 }
 
 const insertMediaAssetTransferProgressIfAbsent = `-- name: InsertMediaAssetTransferProgressIfAbsent :execrows
-INSERT INTO media_asset_copy_transfer_progress (copy_id, lease_owner, lease_expires_at, generation, handed_off, offset_bytes, hash_state)
+INSERT INTO media_asset_copy_transfer_progress (copy_id, lease_owner, lease_expires_at, writer_generation, handed_off, offset_bytes, hash_state)
 SELECT c.id, $1::uuid, now() + make_interval(secs => $2::double precision), 1, false, 0, NULL
 FROM media_asset_copies c
 WHERE c.id = $3
@@ -962,15 +962,15 @@ SELECT p.upload_store, p.upload_state
 FROM media_asset_copy_transfer_progress p
 WHERE p.copy_id = $1
   AND p.lease_owner = $2::uuid
-  AND p.generation = $3
+  AND p.writer_generation = $3
   AND p.lease_expires_at > now()
 FOR UPDATE
 `
 
 type LockLeasedMediaAssetTransferProgressParams struct {
-	CopyID     int64
-	Owner      pgtype.UUID
-	Generation int64
+	CopyID           int64
+	Owner            pgtype.UUID
+	WriterGeneration int64
 }
 
 type LockLeasedMediaAssetTransferProgressRow struct {
@@ -981,7 +981,7 @@ type LockLeasedMediaAssetTransferProgressRow struct {
 // Upload states are replaced inside one transaction: the lease is locked first,
 // so a stale holder cannot retire a state that a newer holder is writing.
 func (q *Queries) LockLeasedMediaAssetTransferProgress(ctx context.Context, arg LockLeasedMediaAssetTransferProgressParams) (LockLeasedMediaAssetTransferProgressRow, error) {
-	row := q.db.QueryRow(ctx, lockLeasedMediaAssetTransferProgress, arg.CopyID, arg.Owner, arg.Generation)
+	row := q.db.QueryRow(ctx, lockLeasedMediaAssetTransferProgress, arg.CopyID, arg.Owner, arg.WriterGeneration)
 	var i LockLeasedMediaAssetTransferProgressRow
 	err := row.Scan(&i.UploadStore, &i.UploadState)
 	return i, err
@@ -999,7 +999,7 @@ func (q *Queries) LockMediaAssetForStorageTransfer(ctx context.Context, mediaAss
 }
 
 const lockMediaAssetTransferProgress = `-- name: LockMediaAssetTransferProgress :one
-SELECT p.generation, p.handed_off, p.offset_bytes, p.hash_state,
+SELECT p.writer_generation, p.handed_off, p.offset_bytes, p.hash_state,
        p.upload_store, p.upload_state, p.verifying_source,
        (p.lease_expires_at > now())::boolean AS lease_live
 FROM media_asset_copy_transfer_progress p
@@ -1008,21 +1008,21 @@ FOR UPDATE
 `
 
 type LockMediaAssetTransferProgressRow struct {
-	Generation      int64
-	HandedOff       bool
-	OffsetBytes     int64
-	HashState       []byte
-	UploadStore     *string
-	UploadState     []byte
-	VerifyingSource bool
-	LeaseLive       bool
+	WriterGeneration int64
+	HandedOff        bool
+	OffsetBytes      int64
+	HashState        []byte
+	UploadStore      *string
+	UploadState      []byte
+	VerifyingSource  bool
+	LeaseLive        bool
 }
 
 func (q *Queries) LockMediaAssetTransferProgress(ctx context.Context, copyID int64) (LockMediaAssetTransferProgressRow, error) {
 	row := q.db.QueryRow(ctx, lockMediaAssetTransferProgress, copyID)
 	var i LockMediaAssetTransferProgressRow
 	err := row.Scan(
-		&i.Generation,
+		&i.WriterGeneration,
 		&i.HandedOff,
 		&i.OffsetBytes,
 		&i.HashState,
@@ -1421,16 +1421,16 @@ SET upload_store = $1::text,
     handed_off = false
 WHERE p.copy_id = $3
   AND p.lease_owner = $4::uuid
-  AND p.generation = $5
+  AND p.writer_generation = $5
   AND p.lease_expires_at > now()
 `
 
 type ReplaceMediaAssetTransferUploadParams struct {
-	UploadStore string
-	UploadState []byte
-	CopyID      int64
-	Owner       pgtype.UUID
-	Generation  int64
+	UploadStore      string
+	UploadState      []byte
+	CopyID           int64
+	Owner            pgtype.UUID
+	WriterGeneration int64
 }
 
 func (q *Queries) ReplaceMediaAssetTransferUpload(ctx context.Context, arg ReplaceMediaAssetTransferUploadParams) (int64, error) {
@@ -1439,7 +1439,7 @@ func (q *Queries) ReplaceMediaAssetTransferUpload(ctx context.Context, arg Repla
 		arg.UploadState,
 		arg.CopyID,
 		arg.Owner,
-		arg.Generation,
+		arg.WriterGeneration,
 	)
 	if err != nil {
 		return 0, err
@@ -1456,17 +1456,17 @@ SET handed_off = true,
     lease_expires_at = now()
 WHERE p.copy_id = $4
   AND p.lease_owner = $5::uuid
-  AND p.generation = $6
+  AND p.writer_generation = $6
   AND p.lease_expires_at > now()
 `
 
 type SaveMediaAssetTransferProgressParams struct {
-	OffsetBytes int64
-	HashState   []byte
-	UploadState []byte
-	CopyID      int64
-	Owner       pgtype.UUID
-	Generation  int64
+	OffsetBytes      int64
+	HashState        []byte
+	UploadState      []byte
+	CopyID           int64
+	Owner            pgtype.UUID
+	WriterGeneration int64
 }
 
 func (q *Queries) SaveMediaAssetTransferProgress(ctx context.Context, arg SaveMediaAssetTransferProgressParams) (int64, error) {
@@ -1476,7 +1476,7 @@ func (q *Queries) SaveMediaAssetTransferProgress(ctx context.Context, arg SaveMe
 		arg.UploadState,
 		arg.CopyID,
 		arg.Owner,
-		arg.Generation,
+		arg.WriterGeneration,
 	)
 	if err != nil {
 		return 0, err

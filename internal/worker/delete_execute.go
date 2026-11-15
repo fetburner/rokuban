@@ -295,7 +295,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 	fsStores := w.StorageTransferPolicy.FSStoreNames()
 	// temp は copy ID と世代で識別する。進捗の行が無ければ、この回収が消す temp は無い。
 	tempPath := ""
-	generation, hasProgress, err := w.StorageTransfer.GetMediaAssetTransferProgressGeneration(ctx, candidate.CopyID)
+	generation, hasProgress, err := w.StorageTransfer.GetMediaAssetTransferProgressWriterGeneration(ctx, candidate.CopyID)
 	if err != nil {
 		log.Error("delete_reconcile: reading transfer progress before pending reclaim", "err", err)
 		return
@@ -725,7 +725,7 @@ func (w *DeleteReconcileWorker) deleteOrphanTransferTemp(path, relPath string, m
 	}
 	lookupCtx, cancel := context.WithTimeout(context.Background(), deleteOrphanCleanupTimeout)
 	defer cancel()
-	current, hasProgress, err := w.Storage.GetMediaAssetTransferProgressGeneration(lookupCtx, copyID)
+	current, hasProgress, err := w.Storage.GetMediaAssetTransferProgressWriterGeneration(lookupCtx, copyID)
 	if err != nil {
 		log.Error("delete_reconcile: reading transfer progress generation before temp cleanup", "err", err)
 		return

@@ -162,7 +162,7 @@ func prepareAdoptedTransferTemp(t *testing.T, media *pgstore.Media, cfg config.S
 	if err != nil || !acquired {
 		t.Fatalf("acquiring progress for the previous attempt = (%+v, %t, %v)", progress, acquired, err)
 	}
-	tempPath := transferTempPath(targetPath, assetID, transfer.CopyID, progress.Generation)
+	tempPath := transferTempPath(targetPath, assetID, transfer.CopyID, progress.WriterGeneration)
 	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 		t.Fatalf("acquiring progress for saved slice = (%+v, %t, %v)", progress, acquired, err)
 	}
 	targetPath := filepath.Join(root, filepath.FromSlash(transfer.RelPath))
-	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
+	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.WriterGeneration)
 	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 		t.Fatal(err)
 	}
 	if err := fsink.SaveCheckpoint(file, int64(len(partial)), hasher, func(c fsink.Checkpoint) error {
-		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.Generation, c.Offset, c.HashState, nil)
+		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.WriterGeneration, c.Offset, c.HashState, nil)
 	}); err != nil {
 		t.Fatalf("saving transfer progress: %v", err)
 	}
@@ -833,7 +833,7 @@ func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *tes
 	if err != nil || !acquired {
 		t.Fatalf("acquiring progress = (%+v, %t, %v)", progress, acquired, err)
 	}
-	tempPath := transferTempPath(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)), assetID, transfer.CopyID, progress.Generation)
+	tempPath := transferTempPath(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)), assetID, transfer.CopyID, progress.WriterGeneration)
 	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1885,7 +1885,7 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("acquiring transfer progress = (%+v, %t, %v)", progress, acquired, err)
 	}
-	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
+	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.WriterGeneration)
 	if err := os.WriteFile(tempPath, []byte("source-original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2430,7 +2430,7 @@ func TestTransferTempOrphanCleanupFollowsProgressGeneration(t *testing.T) {
 	for want := int64(1); want <= 3; want++ {
 		owner := uuid.New()
 		progress, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, transfer.CopyID, owner, time.Minute)
-		if err != nil || !acquired || progress.Generation != want {
+		if err != nil || !acquired || progress.WriterGeneration != want {
 			t.Fatalf("acquire #%d = (%+v, %t, %v), want generation %d", want, progress, acquired, err, want)
 		}
 		if err := media.ReleaseMediaAssetTransferProgress(ctx, transfer.CopyID, owner); err != nil {

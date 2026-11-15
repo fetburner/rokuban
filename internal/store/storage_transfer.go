@@ -32,10 +32,10 @@ const (
 
 // TransferProgress は、転送の slice の開始時に取った進捗の状態である。
 type TransferProgress struct {
-	// Generation は、この試行が書く temp の世代である。
-	Generation int64
-	// PrevGeneration は、取る前の世代である。行が無かったときは 0。
-	PrevGeneration int64
+	// WriterGeneration は、この試行が書く temp の世代である。
+	WriterGeneration int64
+	// PrevWriterGeneration は、取る前の世代である。行が無かったときは 0。
+	PrevWriterGeneration int64
 	// Resumed は、前の slice が保存した状態を引き継いだかを表す（きれいな引き継ぎ）。
 	Resumed bool
 	// Offset は、Resumed のとき temp に書き終えている長さである。
@@ -188,8 +188,8 @@ type StorageTransfer interface {
 	// ReleaseMediaAssetTransferProgress は失敗で抜ける試行の lease を切る。次の試行は世代を上げる。
 	// lease を持たなければ何もしない。
 	ReleaseMediaAssetTransferProgress(ctx context.Context, copyID int64, owner uuid.UUID) error
-	// GetMediaAssetTransferProgressGeneration は、コピーの進捗が今どの世代を指すかを返す。行が無ければ ok=false。
-	GetMediaAssetTransferProgressGeneration(ctx context.Context, copyID int64) (generation int64, ok bool, err error)
+	// GetMediaAssetTransferProgressWriterGeneration は、コピーの転送進捗に記録された書き手の世代を返す。行が無ければ ok=false。
+	GetMediaAssetTransferProgressWriterGeneration(ctx context.Context, copyID int64) (generation int64, ok bool, err error)
 	// PrepareMediaAssetTransfer は行をロックし、現在も desired な宛先コピーを pending にする。
 	// sourceStores は転送元にできる置き場（マウント済み ∪ internal_url を持つ置き場）、fsStores はマウント済みの FS 置き場。
 	// 派生物の転送元は fsStores に限る。mountedStores は、この worker がマウントしている置き場で、転送元の優先に使う。
