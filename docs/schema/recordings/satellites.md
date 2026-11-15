@@ -204,7 +204,7 @@ CREATE TABLE recording_ingest_progress (
 );
 ```
 
-`temp_rel_path` は media root からの相対パスで、`temp_store` は一時ファイルがある置き場を示す。`temp_store` が空の行は移行前の行で、`storage adopt <store-name>` が埋める。`temp_store` が空の行が残る間、worker は起動を拒む。
+`temp_rel_path` は media root からの相対パスで、`temp_store` は一時ファイルがある置き場を示す。`temp_store` はコピー表と同じ名前の CHECK を持ち、既定値は無い。空文字の行が残る DB は中継版で adopt してから更新する（[導入手順](../../runbook/setup.md#空文字を持つ旧-db)）。
 
 `temp_generation` は `ingest_temp_generation_seq` から採番する。HLS が配るバイト列の同一性を表し、writer lease の世代とは別である。
 

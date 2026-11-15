@@ -164,22 +164,10 @@ WHERE id = sqlc.arg('copy_id')
 -- name: StoreHasMediaAssetCopies :one
 SELECT EXISTS (SELECT 1 FROM media_asset_copies WHERE store = sqlc.arg('store'));
 
--- name: AdoptUnassignedIngestTemps :exec
-UPDATE recording_ingest_progress SET temp_store = sqlc.arg('store') WHERE temp_store = '';
-
--- name: AdoptUnassignedOrphans :exec
-UPDATE orphan_files SET store = sqlc.arg('store') WHERE store = '';
-
--- name: AdoptUnassignedStorageSync :exec
-UPDATE storage_sync SET store = sqlc.arg('store') WHERE store = '';
-
 -- A worker must not start while any migrated row still lacks its physical store.
 -- name: CountUnassignedStorageRows :one
 SELECT
     (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
         SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
     ))
-  + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
-  + (SELECT count(*) FROM orphan_files WHERE store = '')
-  + (SELECT count(*) FROM storage_sync WHERE store = '')
   + (SELECT count(*) FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile') AS count;

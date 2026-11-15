@@ -113,8 +113,9 @@ RETURNING id`, recordingID, fixture.kind, fixture.profile, fixture.path, fixture
 		}
 	}
 
-	// The unchanged observation tables retain their legacy conflict targets.
-	// missing_media_assets no longer does: issue #1652 keys it by physical copy.
+	// At version 39, orphan_files and storage_sync still accept legacy conflict
+	// targets and omitted stores. Later migrations drop those targets and defaults;
+	// this check covers only the old schema before observation adoption.
 	legacyOrphanPath := fmt.Sprintf("legacy-writer-%d.m2ts", assets[0].id)
 	for range 2 {
 		if _, err := pool.Exec(ctx, `INSERT INTO orphan_files (rel_path) VALUES ($1) ON CONFLICT (rel_path) DO NOTHING`, legacyOrphanPath); err != nil {
@@ -139,6 +140,11 @@ ON CONFLICT (root) DO UPDATE SET path = EXCLUDED.path`); err != nil {
 
 	if err := adoptLegacyMediaAssetsForTest(ctx, pool); err != nil {
 		t.Fatalf("adopting legacy media asset copies before dropping their source columns: %v", err)
+	}
+	// Complete the preceding release's observation adoption before the name CHECKs.
+	if _, err := pool.Exec(ctx, `UPDATE orphan_files SET store = 'migration-test' WHERE store = '';
+UPDATE storage_sync SET store = 'migration-test' WHERE store = ''`); err != nil {
+		t.Fatalf("assigning legacy observations before migration: %v", err)
 	}
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("applying the migration that drops media_assets.rel_path / state / deleted_at: %v", err)

@@ -1361,14 +1361,15 @@ COMMENT ON VIEW public.old_generation_media_asset_copies IS 'old_generation_medi
 CREATE TABLE public.orphan_files (
     rel_path text NOT NULL,
     first_seen timestamp with time zone DEFAULT now() NOT NULL,
-    store text DEFAULT ''::text NOT NULL
+    store text NOT NULL,
+    CONSTRAINT orphan_files_store_check CHECK ((store ~ '^[a-z0-9-]+$'::text))
 );
 
 --
 -- Name: COLUMN orphan_files.store; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.orphan_files.store IS 'Store where the orphan path was observed; empty until storage adopt';
+COMMENT ON COLUMN public.orphan_files.store IS 'Store where the orphan path was observed';
 
 --
 -- Name: program_intents; Type: TABLE; Schema: public; Owner: -
@@ -1521,9 +1522,10 @@ CREATE TABLE public.recording_ingest_progress (
     observed_at timestamp with time zone DEFAULT now() NOT NULL,
     temp_rel_path text NOT NULL,
     temp_generation bigint NOT NULL,
-    temp_store text DEFAULT ''::text NOT NULL,
+    temp_store text NOT NULL,
     CONSTRAINT recording_ingest_progress_expected_bytes_check CHECK (((expected_bytes IS NULL) OR (expected_bytes >= 0))),
     CONSTRAINT recording_ingest_progress_temp_generation_check CHECK ((temp_generation > 0)),
+    CONSTRAINT recording_ingest_progress_temp_store_check CHECK ((temp_store ~ '^[a-z0-9-]+$'::text)),
     CONSTRAINT recording_ingest_progress_written_bytes_check CHECK ((written_bytes >= 0))
 );
 
@@ -1811,15 +1813,16 @@ CREATE TABLE public.storage_sync (
     used_bytes bigint NOT NULL,
     available_bytes bigint NOT NULL,
     observed_at timestamp with time zone DEFAULT now() NOT NULL,
-    store text DEFAULT ''::text NOT NULL,
-    CONSTRAINT storage_sync_root_check CHECK ((root = ANY (ARRAY['media'::text, 'scratch'::text])))
+    store text NOT NULL,
+    CONSTRAINT storage_sync_root_check CHECK ((root = ANY (ARRAY['media'::text, 'scratch'::text]))),
+    CONSTRAINT storage_sync_store_check CHECK ((store ~ '^[a-z0-9-]+$'::text))
 );
 
 --
 -- Name: COLUMN storage_sync.store; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.storage_sync.store IS 'Store whose filesystem root was observed; empty until storage adopt';
+COMMENT ON COLUMN public.storage_sync.store IS 'Store whose filesystem root was observed';
 
 --
 -- Name: transfer_backlog_snapshots; Type: TABLE; Schema: public; Owner: -

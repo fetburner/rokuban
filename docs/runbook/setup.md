@@ -148,29 +148,57 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 `storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は `storage.stores` に定義した FS 置き場の名前だけを受け付ける。既存の同名の目印は成功として扱う。2 つ目以降の置き場も、その置き場の root をマウントして同じ手順で `adopt <名前>` を実行する。
 
-旧版から更新する構成では、既存のコピー行を持つ置き場を先に `adopt` し、完了を待ってから、ほかの置き場を `adopt` する。`adopt` は置き場が空の行（どの置き場にも属さない行）を自分の置き場へ割り当てる。並行に `adopt` したときに、その行がどの置き場に割り当てられるかは実行の順序で決まりうる。並行実行の結果は未検証である。
+空文字の置き場が残る DB は、中継版で `adopt` してから更新する（「空文字を持つ旧 DB」の節）。既存のコピー行を持つ置き場を先に `adopt` し、完了を待ってから、ほかの置き場を `adopt` する。並行に `adopt` したときに、空文字の行がどの置き場に割り当てられるかは実行の順序で決まりうる。並行実行の結果は未検証である。
 
 置き場の名前は変えられない。名前を変えるときは、新しい置き場として導入し直す。
 
 <details><summary>根拠</summary>
 
-- 単独の adopt が空の行を割り当てる: `TestAdoptUnassignedStoreRows`（並行に adopt したときの割り当ては見ていない）
+- 単独の adopt が範囲の空のブレーカーを割り当てる: `TestAdoptUnassignedStoreRowsAssignsLegacyDeleteReconcileBreaker`（並行に adopt したときの割り当ては見ていない）
 - スキーマが最新でなければ adopt は失敗する: `TestStorageAdoptRequiresCurrentSchema`
 
 </details>
 
 ### 旧版からの更新
 
-コピー世代を持たない版から、録画を持つ構成を更新する順序と、構成ごとの操作を示す。
+コピーを持ち、観測行・進捗行の置き場が割り当て済みの DB からは、直接更新できる。空文字の置き場を受け付ける版からは、次の「空文字を持つ旧 DB」の処理を先に行う。
 
 1. 旧 worker をすべて停止する（k8s の止め方は「旧 worker の停止と再開（k8s）」の節）
 2. `rokuban migrate up` で DB を移行する
 3. `rokuban storage adopt <store-name>` を実行する。media root と設定ファイルは worker と同じ構成にし、DB にも接続できるようにする
 4. 新しい worker を起動する
 
-新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。
+新しい worker は、コピーの無い論理資産が 1 件でもあるか、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。
 
-コピー世代を持たない版からは、2 回に分けて更新する。`media_assets.rel_path` / `state` / `deleted_at` を消す migration を含む版は、コピーの無い論理資産が残っていると停止するからである。1 回目は、コピー表とコピー世代を持ち、`storage adopt` がコピーを作る版を入れて、上の手順 1 から 4 を済ませる。2 回目で、その列を消す migration を含む版へ更新する。
+#### 空文字を持つ旧 DB
+
+空文字の置き場が残る構成は、中継版で割り当ててから新版へ更新する。自動移行より前に、書き手の停止と割り当てを済ませる。
+
+空文字を拒む制約の導入直前の版を中継版として使う。制約を含む版のリポジトリで履歴を取得し、次のコマンドで migration を追加したコミットの親の SHA と中継版のイメージを引く。イメージの SHA タグは [publish-sha.yml](../../.github/workflows/publish-sha.yml) が公開する。
+
+```sh
+store_names_commit=$(git log -1 --diff-filter=A --format=%H -- 'internal/db/migrations/*_storage_store_names.sql')
+bridge_sha=$(git rev-parse "${store_names_commit}^")
+printf 'ghcr.io/fetburner/rokuban:%s\n' "$bridge_sha"
+```
+
+それより古い版からはまずその版の更新手順を済ませる。コピー世代を持たない版からは、コピーを作る移行用コマンドがある版を先に通す必要がある。コピーの無い論理資産は、物理列を消す migration が拒むからである。
+
+中継版のバイナリとイメージは、更新を終えるまで保存する。新版の `adopt` は最新スキーマを要求するので、migration が失敗した旧 DB の修復には使えない。新版の標準 compose / k8s の自動 migrate を動かす前に、次の操作を終える。
+
+1. 旧 worker と書き込みを行うプロセスを停止し、DB をバックアップする
+2. 中継版の `rokuban migrate up` を実行する
+3. 中継版の `rokuban storage adopt <store-name>` を実行する。既存コピーのある置き場を先にし、同じ media root と設定をマウントする
+4. 次の SQL がすべて 0 件であることを確認する。残る場合は、割り当て先とマウントを調べる。行の削除や仮の名前で埋める操作はしない
+5. 新版の `rokuban migrate up`、新版の `rokuban storage adopt <store-name>`、worker の起動の順で進む
+
+```sql
+SELECT count(*) FROM orphan_files WHERE store = '';
+SELECT count(*) FROM storage_sync WHERE store = '';
+SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '';
+```
+
+新版の migration は、空文字や不正な名前の行が残れば失敗し、その migration の変更をロールバックする。失敗した場合は worker を停止したまま、中継版の `adopt` と確認をやり直す。不正な非空の名前は実際の置き場を確認して明示的に修正する。
 
 更新の前に、設定へ `storage.stores` / `originals` / `derived` を書く。旧キー `storage.media_store_name` は廃止した。設定は厳密に読むので、残したまま新しい版を起動すると、全ロールで設定の読み込みが失敗する。`media_store_name: X` を持つ構成は、それを消して `X` を置き場の名前にする。持たない構成は、worker が使う FS 置き場の名前を決めて書く。どちらも下の形になる。`transfer.overlap` は置き場が 1 つでも、旧世代の削除の猶予として効く。省略すると 48 時間になるので、`cleanup.missing_asset_age` を延ばしているときだけ書く。
 
@@ -191,6 +219,12 @@ storage:
 ```
 
 compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。
+
+<details><summary>根拠</summary>
+
+- 空文字を持つ DB の移行拒否とロールバック: `TestStorageStoreNamesMigrationRefusesUnassignedRows`
+
+</details>
 
 #### 構成ごとの移行手順
 

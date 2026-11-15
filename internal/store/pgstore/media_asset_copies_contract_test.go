@@ -80,26 +80,25 @@ func TestAdoptUnassignedStoreRows(t *testing.T) {
 		t.Fatalf("assigning fixture copy to tokyo: %v", err)
 	}
 
-	unassigned := NewMedia(pool, "", "")
-	if err := unassigned.UpsertIngestProgress(ctx, store.IngestProgress{
+	if err := media.UpsertIngestProgress(ctx, store.IngestProgress{
 		RecordingID: recordingID, WrittenBytes: 10, TempRelPath: "sites/default/.rokuban-ingest-test", TempGeneration: 1,
 	}); err != nil {
 		t.Fatalf("seeding ingest progress: %v", err)
 	}
-	if err := unassigned.UpsertOrphanFile(ctx, "sites/default/orphan.m2ts"); err != nil {
+	if err := media.UpsertOrphanFile(ctx, "sites/default/orphan.m2ts"); err != nil {
 		t.Fatalf("seeding orphan observation: %v", err)
 	}
 	missingCopyID := dbtest.MediaAssetCopyID(t, pool, syncedAssetID, "tokyo")
 	if err := media.UpsertMissingMediaAsset(ctx, missingCopyID); err != nil {
 		t.Fatalf("seeding missing asset observation: %v", err)
 	}
-	if err := unassigned.UpsertStorageSync(ctx, store.StorageObservationInput{
+	if err := media.UpsertStorageSync(ctx, store.StorageObservationInput{
 		Root: "media", Path: "/media", TotalBytes: 100, UsedBytes: 25, AvailableBytes: 75,
 	}); err != nil {
 		t.Fatalf("seeding storage observation: %v", err)
 	}
 	if err := media.RequireAdoptedStoreRows(ctx); err == nil {
-		t.Fatal("RequireAdoptedStoreRows succeeded while blank-store or copyless rows remained")
+		t.Fatal("RequireAdoptedStoreRows succeeded while copyless rows remained")
 	}
 
 	if err := media.AdoptUnassignedStoreRows(ctx); err != nil {

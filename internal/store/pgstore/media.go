@@ -98,8 +98,8 @@ func mediaStoreNameArg(storeName string) *string {
 	return &storeName
 }
 
-// AdoptUnassignedStoreRows は置き場が空の観測行・進捗行をこの置き場へ割り当てる
-// （TestAdoptUnassignedStoreRows）。コピー行は作らない。
+// AdoptUnassignedStoreRows は範囲が空の delete_reconcile ブレーカーをこの置き場へ割り当てる
+// （TestAdoptUnassignedStoreRowsAssignsLegacyDeleteReconcileBreaker）。コピー行は作らない。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
@@ -110,15 +110,6 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	if err := q.AdoptUnassignedIngestTemps(ctx, s.storeName); err != nil {
-		return fmt.Errorf("assigning unowned ingest temps: %w", err)
-	}
-	if err := q.AdoptUnassignedOrphans(ctx, s.storeName); err != nil {
-		return fmt.Errorf("assigning unowned orphan observations: %w", err)
-	}
-	if err := q.AdoptUnassignedStorageSync(ctx, s.storeName); err != nil {
-		return fmt.Errorf("assigning unowned storage observations: %w", err)
-	}
 	if err := q.AdoptUnassignedDeleteReconcileBreaker(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned delete_reconcile breaker: %w", err)
 	}

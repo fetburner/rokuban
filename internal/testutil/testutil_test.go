@@ -24,7 +24,7 @@ func TestSetupDB_ParallelTestsDoNotShareRows(t *testing.T) {
 		t.Parallel()
 		pool := SetupDB(t)
 		ctx := context.Background()
-		if _, err := pool.Exec(ctx, `INSERT INTO storage_sync (root, path, total_bytes, used_bytes, available_bytes) VALUES ('media', 'writer', 1, 0, 0)`); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO storage_sync (store, root, path, total_bytes, used_bytes, available_bytes) VALUES ('test-store', 'media', 'writer', 1, 0, 0)`); err != nil {
 			t.Fatalf("inserting marker: %v", err)
 		}
 		close(written)
@@ -86,7 +86,7 @@ func TestSetupDB_SecondCallStartsEmpty(t *testing.T) {
 	t.Parallel()
 	first := SetupDB(t)
 	ctx := context.Background()
-	if _, err := first.Exec(ctx, `INSERT INTO storage_sync (root, path, total_bytes, used_bytes, available_bytes) VALUES ('media', 'first', 1, 0, 0)`); err != nil {
+	if _, err := first.Exec(ctx, `INSERT INTO storage_sync (store, root, path, total_bytes, used_bytes, available_bytes) VALUES ('test-store', 'media', 'first', 1, 0, 0)`); err != nil {
 		t.Fatalf("inserting row: %v", err)
 	}
 

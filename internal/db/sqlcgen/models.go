@@ -294,7 +294,7 @@ type OldGenerationMediaAssetCopy struct {
 type OrphanFile struct {
 	RelPath   string
 	FirstSeen time.Time
-	// Store where the orphan path was observed; empty until storage adopt
+	// Store where the orphan path was observed
 	Store string
 }
 
@@ -585,7 +585,7 @@ type StorageSync struct {
 	UsedBytes      int64
 	AvailableBytes int64
 	ObservedAt     time.Time
-	// Store whose filesystem root was observed; empty until storage adopt
+	// Store whose filesystem root was observed
 	Store string
 }
 
