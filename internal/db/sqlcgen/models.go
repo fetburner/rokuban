@@ -475,7 +475,7 @@ type RecordingWatched struct {
 	WatchedAt   time.Time
 }
 
-// removed_encoded_assets は、ユーザーが外した encoded 版のうち、他の版が active で残るものを表す。実体無しを除かない。削除側は unlink の ErrNotExist から削除済みの確定まで進むので、除くと実体無しの行が残り続ける。他の版の判定も実体無しを除かないため、実体無しの原本も「残る版」として数える（この判定を実体で見るべきかは未決）。
+// removed_encoded_assets は、ユーザーが外した encoded 版のうち、他の版に active・実体ありのコピーが残るものを表す。他の版は active_present_media_asset_copies で判定し、実体無しの観測を最後の版を消さない根拠にする。外す encoded 自身は実体無しでも除かない。削除側は unlink の ErrNotExist から削除済みの確定まで進むので、除くと実体無しの行が残り続ける。
 type RemovedEncodedAsset struct {
 	AssetID     int64
 	RecordingID int64

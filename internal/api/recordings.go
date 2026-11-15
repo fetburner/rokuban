@@ -681,7 +681,7 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 	}
 	if errors.Is(err, store.ErrLastViewableCopy) {
 		return RemoveRecordingEncodedAsset409JSONResponse{
-			Error: "this is the last viewable copy (no active original and no other encoded version); move the recording to trash instead",
+			Error: "this is the last viewable copy (no active, physically present copy of an original or another encoded version); move the recording to trash instead",
 		}, nil
 	}
 	if err != nil {

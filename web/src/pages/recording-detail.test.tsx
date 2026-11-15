@@ -3222,7 +3222,7 @@ describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
     const dialog = await openRemoveDialog(user, 'h264')
     await user.click(within(dialog).getByRole('button', { name: '削除する' }))
     expect(
-      await screen.findByText('最後の版なので削除できませんでした。録画ごと消すときはごみ箱へ移してください。'),
+      await screen.findByText('外すと再生できる版が残らないため削除できませんでした。録画ごと消すときはごみ箱へ移してください。'),
     ).toBeInTheDocument()
     expect(screen.queryByText(/last viewable copy/)).not.toBeInTheDocument()
   })
