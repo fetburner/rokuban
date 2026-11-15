@@ -406,27 +406,26 @@ export function LivePage() {
       },
     })),
   })
-  const sitePrograms = useMemo(() => sites.flatMap((site, index) =>
-    (unwrap(siteProgramQueries[index]?.data) ?? []).map((program) => ({ ...program, site })),
-  ), [siteProgramQueries, sites])
   // 現在の窓の応答待ちの間は、その site の旧窓の番組を現在の時計で絞って出す。続いている番組の
   // 行は残り、境界で始まる番組の行だけが応答まで空になる。全行を空にすると遅い回線で一覧が縮む。
-  const scheduledPrograms = useMemo(() => sites.flatMap((site, index) => {
+  // 境界 wake も表示に使う旧窓から求める。放送中に絞る前なら、開始予定も落とさない。
+  const displayPrograms = useMemo(() => sites.flatMap((site, index) => {
     const data = unwrap(siteProgramQueries[index]?.data)
       ?? latestCachedWindowData(queryClient, site, programWindowAnchor, (params, startMs, endMs) =>
         params.service === undefined && endMs - startMs === programWindowMs)
       ?? []
-    return data
-      .filter((program) => isAiring(program.startAt, program.endAt, clockNowMs))
-      .map((program) => ({ ...program, site }))
-  }), [clockNowMs, programWindowAnchor, queryClient, siteProgramQueries, sites])
+    return data.map((program) => ({ ...program, site }))
+  }), [programWindowAnchor, queryClient, siteProgramQueries, sites])
+  const scheduledPrograms = useMemo(() => displayPrograms.filter(
+    (program) => isAiring(program.startAt, program.endAt, clockNowMs),
+  ), [displayPrograms, clockNowMs])
   const programByService = useMemo(() => new Map(scheduledPrograms.map((program) => [
     siteServiceKey(program.site, program.networkId, program.serviceId),
     program,
   ])), [scheduledPrograms])
   const nextRefresh = useMemo(
-    () => nextProgramRefreshMs(sitePrograms, clockNowMs, Date.parse(window_.end)),
-    [clockNowMs, sitePrograms, window_.end],
+    () => nextProgramRefreshMs(displayPrograms, clockNowMs, Date.parse(window_.end)),
+    [clockNowMs, displayPrograms, window_.end],
   )
   const nowMs = useNow({ intervalMs: scheduleClockTickMs, wakeAtMs: nextRefresh })
   const selectedServiceSite = selectedService?.site
