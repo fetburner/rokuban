@@ -420,16 +420,6 @@ type RecordingEncodeAttempt struct {
 	AttemptCount int32
 }
 
-type RecordingEncodePolicy struct {
-	RecordingID        int64
-	KeepOriginal       string
-	EncodeProfiles     []string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	CmDetect           bool
-	CmDetectGeneration int64
-}
-
 type RecordingIngestCheckpoint struct {
 	RecordingID      int64
 	LeaseOwner       pgtype.UUID
@@ -458,6 +448,16 @@ type RecordingPlaybackPosition struct {
 	RecordingID int64
 	PositionMs  int64
 	UpdatedAt   time.Time
+}
+
+type RecordingProcessingPolicy struct {
+	RecordingID        int64
+	KeepOriginal       string
+	EncodeProfiles     []string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CmDetect           bool
+	CmDetectGeneration int64
 }
 
 type RecordingPurgeRequest struct {

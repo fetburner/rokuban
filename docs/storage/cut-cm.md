@@ -29,6 +29,6 @@ worker はエンコード前に、公開と同じ判定をロックを取らな�
 
 `keepOriginal: until_encoded` の録画は、満たされていない作り直しがある間、原本を削除対象にしない。要求行はカタログに含めない。
 
-`until_encoded_deletable_originals` は、`recording_encode_policy.cm_detect` が true の録画について、CM 検出結果か現在の世代の最終失敗も要求する。結果表の行があれば CM が 0 区間でも検出完了である。試行表の `failed` は 3 回の自動試行を終えたことを示し、`running` / `retrying` は削除を許可しない。CM 検出を無効化して再び有効にすると世代が進み、前の世代の失敗では原本を消さない。`failed` で削除を許した後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。
+`until_encoded_deletable_originals` は、`recording_processing_policy.cm_detect` が true の録画について、CM 検出結果か現在の世代の最終失敗も要求する。結果表の行があれば CM が 0 区間でも検出完了である。試行表の `failed` は 3 回の自動試行を終えたことを示し、`running` / `retrying` は削除を許可しない。CM 検出を無効化して再び有効にすると世代が進み、前の世代の失敗では原本を消さない。`failed` で削除を許した後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。
 
 この学習による再検出が有効なのは、原本が残っている場合（`keep_original=always` や削除 reconcile の前）に限る。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。ただし、`stage = 'adopt'` は諦めた状態を表さず、候補の採用待ちを表す。採用待ちの局があると、その局の `until_encoded` の原本は消えない。削除エンジンに容量トリガーは無く、ディスク残量の警告で気付く。

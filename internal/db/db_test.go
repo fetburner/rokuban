@@ -196,13 +196,13 @@ func TestNewPool(t *testing.T) {
 	err = pool.QueryRow(ctx, `
 		SELECT pg_get_constraintdef(oid)
 		FROM pg_constraint
-		WHERE conname = 'recording_encode_policy_recording_id_fkey'
+		WHERE conname = 'recording_processing_policy_recording_id_fkey'
 	`).Scan(&constraintDefinition)
 	if err != nil {
-		t.Fatalf("checking recording_encode_policy FK: %v", err)
+		t.Fatalf("checking recording_processing_policy FK: %v", err)
 	}
 	if !strings.Contains(constraintDefinition, "ON DELETE CASCADE") {
-		t.Errorf("recording_encode_policy FK = %q, want ON DELETE CASCADE", constraintDefinition)
+		t.Errorf("recording_processing_policy FK = %q, want ON DELETE CASCADE", constraintDefinition)
 	}
 
 	var ruleIndexExists bool

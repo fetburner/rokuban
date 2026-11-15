@@ -586,7 +586,7 @@ if [ "$setup_enc_ok" != 1 ]; then
 else
   sj_enc="$(scaledjob_for_queue "encode_${E2E_STORE_A}")"
   sj_thumb="$(scaledjob_for_queue "thumbnail_${E2E_STORE_A}")"
-  # encode の公開判定は desired（recording_encode_policy.encode_profiles）に入っているプロファイルだけを作る。
+  # encode の公開判定は desired（recording_processing_policy.encode_profiles）に入っているプロファイルだけを作る。
   # 手動の録画は予約を経由しないので desired が空で、そのままだと PlanEncodedPublish が
   # desired_profile_excluded で飛ばす（実機で確かめた）。製品の経路で desired を足す:
   # POST /api/recordings/{id}/encode-profiles（追加専用。原本が active なら 204）。

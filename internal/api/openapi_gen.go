@@ -1022,7 +1022,7 @@ func (e ListRecordingsParamsOrder) Valid() bool {
 // AddEncodeProfilesInput defines model for AddEncodeProfilesInput.
 type AddEncodeProfilesInput struct {
 	// Profiles 追加したいエンコードプロファイル名（config.encode.profiles に定義された
-	// 名前のみ許可。未知名は 400）。既存の recording_encode_policy.encode_profiles には
+	// 名前のみ許可。未知名は 400）。既存の recording_processing_policy.encode_profiles には
 	// **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
 	// 指定を消す事故を避けるため。空配列は 400。
 	Profiles []string `json:"profiles"`
@@ -1821,7 +1821,7 @@ type ProgramOverridesInput struct {
 	// 消すのは `reset`。消しても既存 schedule のパスは変わらない）。
 	ContentPath *string `json:"contentPath,omitempty"`
 
-	// EncodeProfiles ingest が原本をコミットする tx の中で recording_encode_policy 行の
+	// EncodeProfiles ingest が原本をコミットする tx の中で recording_processing_policy 行の
 	// INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
 	// 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
 	// 変更はこの録画には反映されない（docs/recording/reservation-model.md
@@ -1842,7 +1842,7 @@ type ProgramOverridesInput struct {
 	// 既存の schedule にも反映される（このフィールドとの違い）。
 	FilenameTemplate *string `json:"filenameTemplate,omitempty"`
 
-	// KeepOriginal ingest が原本をコミットする tx の中で recording_encode_policy 行の
+	// KeepOriginal ingest が原本をコミットする tx の中で recording_processing_policy 行の
 	// INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
 	// 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
 	// 変更はこの録画には反映されない（docs/recording/reservation-model.md
@@ -1867,7 +1867,7 @@ type ProgramOverridesInput struct {
 	Reset *[]ProgramOverridesInputReset `json:"reset,omitempty"`
 }
 
-// ProgramOverridesInputKeepOriginal ingest が原本をコミットする tx の中で recording_encode_policy 行の
+// ProgramOverridesInputKeepOriginal ingest が原本をコミットする tx の中で recording_processing_policy 行の
 // INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
 // 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
 // 変更はこの録画には反映されない（docs/recording/reservation-model.md
@@ -1954,10 +1954,10 @@ type Recording struct {
 	DropSummary *DropSummary `json:"dropSummary,omitempty"`
 	DurationMs  int64        `json:"durationMs"`
 
-	// EncodeProfiles 凍結された「望ましい」エンコードプロファイル一覧（desired。
-	// recording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
-	// `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
-	// docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
+	// EncodeProfiles 現在の「望ましい」エンコードプロファイル一覧（desired。
+	// recording_processing_policy.encode_profiles）。ingest 完了時に初期値を確定し、
+	// `POST /api/recordings/{id}/encode-profiles` で追加できる。
+	// `DELETE /api/recordings/{id}/encoded/{profile}` で版を外すと一覧からも除かれる。
 	// `encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して
 	// いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
 	// 判定するのに使う。空配列は省略可。
@@ -1998,7 +1998,7 @@ type Recording struct {
 	Id          int64                  `json:"id"`
 	Ingest      *IngestProgress        `json:"ingest,omitempty"`
 
-	// KeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+	// KeepOriginal `recording_processing_policy.keep_original` に保存された、この録画の原本保持
 	// ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 	// `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
 	// `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
@@ -2072,7 +2072,7 @@ type Recording struct {
 // RecordingChannelType defines model for Recording.ChannelType.
 type RecordingChannelType string
 
-// RecordingKeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+// RecordingKeepOriginal `recording_processing_policy.keep_original` に保存された、この録画の原本保持
 // ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 // `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
 // `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする

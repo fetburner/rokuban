@@ -22,7 +22,7 @@ import (
 // 作った原本アセットの ID を返す。
 //
 // 実運用の ingest（internal/worker/ingest.go の commit）は原本 media_asset の
-// INSERT と同一 tx で recording_encode_policy を必ず凍結する（issue #159。
+// INSERT と同一 tx で recording_processing_policy を必ず凍結する（issue #159。
 // 解決に失敗しても既定値で凍結する。resolveAndSnapshotEncodePolicy の doc
 // コメント参照）。この関数は本物の ingest ワーカーを経由しないテスト用
 // フィクスチャなので、同じ事後条件（原本コミット済みなら凍結済み）を
@@ -38,9 +38,9 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	})
 
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
 		 VALUES ($1, 'always', '{}')`, recordingID); err != nil {
-		t.Fatalf("seeding recording_encode_policy: %v", err)
+		t.Fatalf("seeding recording_processing_policy: %v", err)
 	}
 	params := make([]sqlcgen.InsertDropStatParams, 0, len(stats))
 	for pid, s := range stats {

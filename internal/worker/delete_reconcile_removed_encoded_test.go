@@ -42,9 +42,9 @@ func seedRemovedEncodedRecording(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 	f.h264Path = filepath.Join(mediaDir, dir, "h264.mp4")
 	f.h265Path = filepath.Join(mediaDir, dir, "h265.mp4")
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
 		 VALUES ($1, 'always', $2)`, recordingID, profiles); err != nil {
-		t.Fatalf("seeding recording_encode_policy: %v", err)
+		t.Fatalf("seeding recording_processing_policy: %v", err)
 	}
 	return f
 }

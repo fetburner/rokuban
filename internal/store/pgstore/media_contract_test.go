@@ -251,7 +251,7 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 			profiles = []string{}
 		}
 		if _, err := pool.Exec(context.Background(), `
-			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+			INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 			VALUES ($1, 'always', $2::text[], false)
 			ON CONFLICT (recording_id) DO UPDATE SET encode_profiles = EXCLUDED.encode_profiles`, recordingID, profiles); err != nil {
 			t.Fatalf("setting desired encode profiles for recording %d: %v", recordingID, err)

@@ -1994,7 +1994,8 @@ describe('RecordingDetailPage サイズが取れない資産（値札、issue #2
   })
 })
 
-// 事後追加のエンコード依頼（issue #133、凍結の例外）。原本の有無 / 追加済みの
+// 録画単位の方針変更によるエンコード追加依頼。
+// docs/storage/retention.md §6「録画単位の方針変更」を参照。原本の有無 / 追加済みの
 // 除外 / 409 翻訳 / ごみ箱で出さない、をそれぞれ固定する（送信成功は上の
 // 「事後エンコードを依頼すると…」で確認済み）。
 describe('RecordingDetailPage 事後エンコード追加 (AddEncodeProfilesAction)', () => {

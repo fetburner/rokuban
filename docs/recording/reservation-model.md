@@ -102,7 +102,7 @@ contentPath には、ルール側に対応するフィールドが無い。明�
 
 filenameTemplate は、schedule の初回作成時の contentPath（mirakc に渡すファイル名）の生成に使う。`contentPath` と両方が指定されたら `contentPath` が勝つ。既存の schedule には反映されない。`contentPath` と違い、展開結果が EPG の番組名で動くためである。Rokuban が保存する原本のパスはこの contentPath の basename だけを使うので、テンプレートのディレクトリ部分は保存先に残らない（[contentpath.md](contentpath.md)）。
 
-encodeProfiles と keepOriginal は、ingest が原本をコミットするトランザクションの中で、`recording_encode_policy` 行として焼かれる（凍結される）瞬間まで効く（§4.5）。
+encodeProfiles と keepOriginal は、ingest が原本をコミットするトランザクションの中で、`recording_processing_policy` 行として焼かれる（凍結される）瞬間まで効く（§4.5）。
 
 #### overrides API の形
 
@@ -175,7 +175,7 @@ jsonb にした `overrides` は、`program_overrides` 自身のロジックで�
 | `rules` | 型付き列 + 子テーブル | する（ユーザーが編集し UI が一覧・フィルタ） |
 | `reservations.base` | jsonb | しない |
 | `program_overrides.overrides` | jsonb | しない |
-| `recording_encode_policy.keep_original` / `encode_profiles`（`recordings` を指す衛星表） | 型付き列 | する（プロファイル別の録画一覧） |
+| `recording_processing_policy.keep_original` / `encode_profiles`（`recordings` を指す衛星表） | 型付き列 | する（プロファイル別の録画一覧） |
 | `schedule_sync.options` | jsonb | しない（mirakc 固有。不変条件 7） |
 
 「オプションの組」を独立したテーブルに正規化することは採らない。`base` と `overrides` を判別子付きの 1 表に寄せることは、上記の STI をやり直すことに等しい（base は完全、overrides は疎で、書き手が ruler と api で、寿命も違う）。繰り返し現れる実体は Go の型 `reservation.Options` で、マージ点も `Effective()` の 1 箇所に既に正規化されている。
@@ -387,7 +387,7 @@ api が行を直接消さない理由は、ruler 側の GC ロジックと同じ
 
 <details><summary>根拠</summary>
 
-- 凍結の実体: `recording_encode_policy` 行の INSERT
+- 凍結の実体: `recording_processing_policy` 行の INSERT
 - 凍結の対象: ingest が原本 `media_asset` をコミットするトランザクション
 
 </details>
@@ -402,7 +402,7 @@ api が行を直接消さない理由は、ruler 側の GC ロジックと同じ
 
 凍結の設計の権威は、[ストレージ](../storage.md) §6「原本 TS の保持ポリシー」にある。ingest コミット時に凍結する理由は、導出元の短命な表への依存を断つためである。参照のまま依存させると、原本削除と再エンコードが正しく動かなくなる。
 
-導出元は `reservations` / `program_intents` / `program_overrides` で、放送終了 + 猶予後に GC される。衛星表 `recording_encode_policy`（行の存在 = 凍結済み）の設計も、同 §6 にある。凍結の例外（事後追加・保持ポリシーの上書き・版を 1 本ずつ減らす）も同 §6 にある。
+導出元は `reservations` / `program_intents` / `program_overrides` で、放送終了 + 猶予後に GC される。衛星表 `recording_processing_policy`（行の存在 = 処理方針の初期値が確定済み）の設計も、同 §6 にある。録画単位の方針変更（プロファイルの追加・版の削除・保持方針の上書き・CM 検出の切り替え）も同 §6 にある。
 
 ### 4.6 スコープ外
 

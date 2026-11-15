@@ -2,11 +2,11 @@
   "file": "docs/schema/recordings/satellites.md",
   "questions": [
     {
-      "heading": "recording_encode_policy — 原本保持ポリシーの凍結（衛星表）",
-      "question": "原本の保持方針とエンコードプロファイルは録画履歴の列か。誰がいつ凍結するか。",
+      "heading": "recording_processing_policy — 録画の処理方針（衛星表）",
+      "question": "録画の処理方針はどこに持ち、誰が初期値を確定し、その後は誰が変更するか。",
       "points": [
-        "列ではなく衛星表に持ち、行の存在が凍結済みを表す",
-        "取り込みの worker が原本をコミットするトランザクションの中で凍結し、API は追記方向にだけ書く"
+        "録画を指す衛星表に持ち、行の存在が初期値の確定済みを表す。空のプロファイルでも確定時には行を作る",
+        "ingest worker が原本コミット時に初期値を確定し、API がプロファイルの追加・削除、保持方針の変更、CM 検出の切り替えを書く。catalog は保存済みの方針を復元する"
       ]
     },
     {

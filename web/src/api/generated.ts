@@ -92,7 +92,7 @@ export interface LiveProfileSummary {
 export interface AddEncodeProfilesInput {
   /**
      * 追加したいエンコードプロファイル名（config.encode.profiles に定義された
-     * 名前のみ許可。未知名は 400）。既存の recording_encode_policy.encode_profiles には
+     * 名前のみ許可。未知名は 400）。既存の recording_processing_policy.encode_profiles には
      * **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
      * 指定を消す事故を避けるため。空配列は 400。
      * @minItems 1
@@ -598,7 +598,7 @@ export const RecordingStatus = {
 } as const;
 
 /**
- * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+ * `recording_processing_policy.keep_original` に保存された、この録画の原本保持
  * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
  * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
  * `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
@@ -947,7 +947,7 @@ export interface Recording {
   durationMs: number;
   status: RecordingStatus;
   /**
-     * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+     * `recording_processing_policy.keep_original` に保存された、この録画の原本保持
      * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
      * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
      * `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
@@ -983,10 +983,10 @@ export interface Recording {
      */
   encodedAssets?: EncodedAsset[];
   /**
-     * 凍結された「望ましい」エンコードプロファイル一覧（desired。
-     * recording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
-     * `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
-     * docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
+     * 現在の「望ましい」エンコードプロファイル一覧（desired。
+     * recording_processing_policy.encode_profiles）。ingest 完了時に初期値を確定し、
+     * `POST /api/recordings/{id}/encode-profiles` で追加できる。
+     * `DELETE /api/recordings/{id}/encoded/{profile}` で版を外すと一覧からも除かれる。
      * `encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して
      * いない pending なジョブのプロファイルも含む --- UI が「追加済み」を
      * 判定するのに使う。空配列は省略可。
@@ -1107,7 +1107,7 @@ export interface ProgramIntentInput {
 }
 
 /**
- * ingest が原本をコミットする tx の中で recording_encode_policy 行の
+ * ingest が原本をコミットする tx の中で recording_processing_policy 行の
  * INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
  * 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
  * 変更はこの録画には反映されない（docs/recording/reservation-model.md
@@ -1169,7 +1169,7 @@ export interface ProgramOverridesInput {
      */
   filenameTemplate?: string;
   /**
-     * ingest が原本をコミットする tx の中で recording_encode_policy 行の
+     * ingest が原本をコミットする tx の中で recording_processing_policy 行の
      * INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
      * 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
      * 変更はこの録画には反映されない（docs/recording/reservation-model.md
@@ -1185,7 +1185,7 @@ export interface ProgramOverridesInput {
      */
   keepOriginal?: ProgramOverridesInputKeepOriginal;
   /**
-     * ingest が原本をコミットする tx の中で recording_encode_policy 行の
+     * ingest が原本をコミットする tx の中で recording_processing_policy 行の
      * INSERT として焼かれる（凍結される）瞬間まで効く。録画開始後の変更でも、
      * 放送終了・ingest 完了より前ならこの録画に反映されるが、ingest 完了後の
      * 変更はこの録画には反映されない（docs/recording/reservation-model.md
@@ -7169,11 +7169,10 @@ export const getAddRecordingEncodeProfilesUrl = (id: number,) => {
 }
 
 /**
- * `recording_encode_policy.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値
- * だが（docs/storage.md §6「原本 TS の保持ポリシー」）、ユーザー起点の事後
- * 追加だけは凍結の例外として認める（issue #133）。**追加専用**（union +
- * dedup）で書き、全置換にはしない --- 誤って他プロファイルの指定を消す事故を
- * 避けるため。
+ * 録画の処理方針にプロファイルを追加する。初期値は ingest 完了時に確定し、
+ * その後は録画単位の API で変更できる。この操作は追加専用（union + dedup）で、
+ * 既存の指定を誤って消さないよう全置換はしない。
+ * 版の削除は `DELETE /api/recordings/{id}/encoded/{profile}` を使う。
  *
  * 原本の現行コピー（active かつ現行世代）がどの置き場にも無い録画には 409 を返す。
  * これは次のいずれかに当たる --- 本当に削除済み（`keep_original=until_encoded`
@@ -7562,7 +7561,7 @@ export const getSetRecordingEncodePolicyUrl = (id: number,) => {
  * `cm_detect.enabled` が false のデプロイでは `cmDetect: true` も 409 にする。
  * `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
  * プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
- * `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード
+ * `recording_processing_policy` 行が無い場合は 409 を返すので、先に事後エンコード
  * 追加を依頼すること。`always` への変更は原本の状態を検査せず、削除
  * reconcile が保持ポリシーを適用の瞬間に再評価する。
  *
@@ -9159,7 +9158,7 @@ export const getGetEncodeQueueUrl = () => {
 }
 
 /**
- * 現在の desired（凍結したエンコードポリシー）で、active な encoded がまだ無い
+ * 現在の desired（録画の処理方針）で、active な encoded がまだ無い
  * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
  * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
  * encoded があっても待機列に含める。`awaitingReview` は確認待ちの cut を持つ録画数で、

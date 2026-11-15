@@ -258,7 +258,7 @@ LEFT JOIN media_assets a
           AND ($1::text IS NULL OR copy.store = $1)
           AND copy.state <> 'deleted'
     )
-LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+LEFT JOIN recording_processing_policy p ON p.recording_id = r.id
 -- 方針変更より前の試行は reconcile が削除するまで残ることがある。
 -- 現在の世代の試行だけを view 越しに射影する。
 LEFT JOIN current_cm_attempts ca ON ca.recording_id = r.id

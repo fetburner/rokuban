@@ -74,7 +74,7 @@ WITH cleared_removal_requests AS (
     WHERE recording_id = $1
       AND profile = ANY ($2::text[])
 )
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES (
     $1,
     'always',
@@ -84,7 +84,7 @@ VALUES (
 ON CONFLICT (recording_id) DO UPDATE SET
     encode_profiles = (
         SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}')
-        FROM unnest(recording_encode_policy.encode_profiles || excluded.encode_profiles) AS p
+        FROM unnest(recording_processing_policy.encode_profiles || excluded.encode_profiles) AS p
     ),
     updated_at = now()
 `
@@ -94,8 +94,9 @@ type AppendRecordingEncodeProfilesParams struct {
 	Profiles []string
 }
 
-// 凍結の例外としての事後追加（issue #133、docs/storage.md §6「原本 TS の
-// 保持ポリシー」・docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
+// 録画単位の方針変更としてのプロファイル追加。
+// docs/storage/retention.md §6「録画単位の方針変更」・
+// docs/recording/reservation-model.md §4.5「録画開始後の編集」を参照。
 // **追加専用**（union + dedup）。全置換にすると、ユーザーが既存のプロファイル
 // 指定を誤って消せてしまう（keep_original='until_encoded' のまま
 // encode_profiles を空にする事故。CHECK 制約は守られるが、意図しない
@@ -106,7 +107,7 @@ type AppendRecordingEncodeProfilesParams struct {
 // ON CONFLICT (recording_id) DO UPDATE にしてある --- 行が無い（未凍結）
 // ケースを INSERT で埋める。resolveAndSnapshotEncodePolicy（ingest）を経由
 // しない原本（internal/inplace.Register の災害復旧経路。issue #159 レビューで
-// 発見）は recording_encode_policy 行を作らないため、「原本が active なら
+// 発見）は recording_processing_policy 行を作らないため、「原本が active なら
 // 行が必ずある」は不変条件ではない。ここで 0 行をエラーにすると、原本ありの
 // 録画への事後追加依頼そのものが失敗する（issue #133 が解こうとした問題の
 // 再発）。行が無い場合は「原本が active = この録画は凍結済みとみなす」を
@@ -122,7 +123,7 @@ func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendR
 }
 
 const clearRecordingCMDetection = `-- name: ClearRecordingCMDetection :exec
-UPDATE recording_encode_policy
+UPDATE recording_processing_policy
 SET cm_detect = false,
     cm_detect_generation = cm_detect_generation + CASE WHEN cm_detect THEN 1 ELSE 0 END,
     updated_at = now()
@@ -429,7 +430,7 @@ func (q *Queries) DeleteRecordingWatchedForEvent(ctx context.Context, recordingI
 }
 
 const freezeRecordingEncodePolicy = `-- name: FreezeRecordingEncodePolicy :exec
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, $2, $3::text[], $4)
 `
 
@@ -441,7 +442,7 @@ type FreezeRecordingEncodePolicyParams struct {
 }
 
 // ingest が原本 media_asset のコミットと同じ tx で焼く「この録画の望ましい
-// 最終状態」（M3-14、issue #103）。issue #159 で recording_encode_policy 衛星表に
+// 最終状態」（M3-14、issue #103）。issue #159 で recording_processing_policy 衛星表に
 // 切り出されたため、凍結 = この行の INSERT（不変条件 3「コミット = DB 行」・
 // 不変条件 10「意味を持たない行を作らない」: 行が無い = 未凍結、行がある =
 // 凍結済み。既定値との区別不能が構造的に消える）。ON CONFLICT を付けない ---
@@ -468,7 +469,7 @@ func (q *Queries) FreezeRecordingEncodePolicy(ctx context.Context, arg FreezeRec
 }
 
 const freezeRecordingEncodePolicyIfMissing = `-- name: FreezeRecordingEncodePolicyIfMissing :exec
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', '{}', false)
 ON CONFLICT (recording_id) DO NOTHING
 `
@@ -483,7 +484,7 @@ func (q *Queries) FreezeRecordingEncodePolicyIfMissing(ctx context.Context, reco
 }
 
 const getRecordingEncodePolicy = `-- name: GetRecordingEncodePolicy :one
-SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1
+SELECT keep_original, encode_profiles, cm_detect FROM recording_processing_policy WHERE recording_id = $1
 `
 
 type GetRecordingEncodePolicyRow struct {
@@ -493,7 +494,7 @@ type GetRecordingEncodePolicyRow struct {
 }
 
 // POST /api/recordings/{id}/encode-profiles が現在の desired
-// （recording_encode_policy.encode_profiles）を読むためのクエリ。行が無い
+// （recording_processing_policy.encode_profiles）を読むためのクエリ。行が無い
 // （未凍結）録画は pgx.ErrNoRows になるので、呼び出し側は「既存プロファイルなし」
 // として扱う。AppendRecordingEncodeProfiles が既定値 'always' で行を作る。
 func (q *Queries) GetRecordingEncodePolicy(ctx context.Context, recordingID int64) (GetRecordingEncodePolicyRow, error) {
@@ -504,7 +505,7 @@ func (q *Queries) GetRecordingEncodePolicy(ctx context.Context, recordingID int6
 }
 
 const getRecordingEncodeProfilesForShare = `-- name: GetRecordingEncodeProfilesForShare :one
-SELECT encode_profiles FROM recording_encode_policy WHERE recording_id = $1 FOR SHARE
+SELECT encode_profiles FROM recording_processing_policy WHERE recording_id = $1 FOR SHARE
 `
 
 // encode の公開判定 (c) が tx 内で desired を読み直す。FOR SHARE で版を外す
@@ -634,7 +635,7 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 
 const lockRecordingEncodePolicy = `-- name: LockRecordingEncodePolicy :one
 SELECT keep_original, encode_profiles
-FROM recording_encode_policy
+FROM recording_processing_policy
 WHERE recording_id = $1
 FOR UPDATE
 `
@@ -644,7 +645,8 @@ type LockRecordingEncodePolicyRow struct {
 	EncodeProfiles []string
 }
 
-// 凍結の 3 つ目の例外（ユーザー起点で 1 本ずつ減らす）の直列化点。同じ録画の
+// 版を 1 本ずつ減らす操作の直列化点。
+// docs/storage/retention.md §6「版を 1 本ずつ減らす」を参照。同じ録画の
 // 版を同時に外す 2 本の tx が、互いに外す前の状態を見て両方 0 コピー検査を
 // 通らないよう、policy 行を先に取る。
 func (q *Queries) LockRecordingEncodePolicy(ctx context.Context, recordingID int64) (LockRecordingEncodePolicyRow, error) {
@@ -671,7 +673,7 @@ func (q *Queries) RecordingExistsForPlaybackState(ctx context.Context, recording
 }
 
 const removeRecordingEncodeProfile = `-- name: RemoveRecordingEncodeProfile :exec
-UPDATE recording_encode_policy
+UPDATE recording_processing_policy
 SET encode_profiles = array_remove(encode_profiles, $1::text),
     keep_original = CASE
         WHEN keep_original = 'until_encoded'
@@ -689,7 +691,7 @@ type RemoveRecordingEncodeProfileParams struct {
 }
 
 // desired から 1 つ外す（全置換ではない）。until_encoded で desired が空に
-// なるなら always に倒す（recording_encode_policy の CHECK。ingest のクランプと
+// なるなら always に倒す（recording_processing_policy の CHECK。ingest のクランプと
 // 同じ向き）。版を外しても原本の削除は早まらない: until_encoded は全プロファイル
 // 揃いが条件なので、揃っている 1 本を外しても成否は変わらない。
 func (q *Queries) RemoveRecordingEncodeProfile(ctx context.Context, arg RemoveRecordingEncodeProfileParams) error {
@@ -698,7 +700,7 @@ func (q *Queries) RemoveRecordingEncodeProfile(ctx context.Context, arg RemoveRe
 }
 
 const setRecordingCMDetection = `-- name: SetRecordingCMDetection :execrows
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect, cm_detect_generation)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect, cm_detect_generation)
 SELECT r.id, 'always', '{}', true, 1
 FROM recordings r
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
@@ -707,18 +709,18 @@ WHERE r.id = $1
   AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, NULL::text))
 ON CONFLICT (recording_id) DO UPDATE
 SET cm_detect = true,
-    cm_detect_generation = recording_encode_policy.cm_detect_generation
-        + CASE WHEN recording_encode_policy.cm_detect THEN 0 ELSE 1 END,
+    cm_detect_generation = recording_processing_policy.cm_detect_generation
+        + CASE WHEN recording_processing_policy.cm_detect THEN 0 ELSE 1 END,
     updated_at = now()
 WHERE EXISTS (
     SELECT 1 FROM media_assets o
-    WHERE o.recording_id = recording_encode_policy.recording_id
+    WHERE o.recording_id = recording_processing_policy.recording_id
       AND o.kind = 'original'
       AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, NULL::text))
 )
   AND EXISTS (
     SELECT 1 FROM recordings r
-    WHERE r.id = recording_encode_policy.recording_id AND r.deleted_at IS NULL
+    WHERE r.id = recording_processing_policy.recording_id AND r.deleted_at IS NULL
 )
 `
 
@@ -736,7 +738,7 @@ func (q *Queries) SetRecordingCMDetection(ctx context.Context, recordingID int64
 }
 
 const setRecordingKeepOriginal = `-- name: SetRecordingKeepOriginal :execrows
-UPDATE recording_encode_policy
+UPDATE recording_processing_policy
 SET keep_original = $1,
     updated_at = now()
 WHERE recording_id = $2
@@ -756,7 +758,7 @@ type SetRecordingKeepOriginalParams struct {
 // （不変条件 10「意味を持たない行を作らない」）。
 //
 // cardinality の述語を UPDATE 自身の WHERE に置くことで、判定を Go 側に
-// 持ち出さずに CHECK 違反（recording_encode_policy_check）を防ぐ。
+// 持ち出さずに CHECK 違反（recording_processing_policy_check）を防ぐ。
 func (q *Queries) SetRecordingKeepOriginal(ctx context.Context, arg SetRecordingKeepOriginalParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setRecordingKeepOriginal, arg.KeepOriginal, arg.RecordingID)
 	if err != nil {

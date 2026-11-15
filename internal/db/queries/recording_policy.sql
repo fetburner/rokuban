@@ -1,4 +1,4 @@
--- ingest が recording_encode_policy 衛星表（issue #159。旧 recordings.keep_original /
+-- ingest が recording_processing_policy 衛星表（issue #159。旧 recordings.keep_original /
 -- encode_profiles）を焼くために読む実効オプション（M3-14、issue #103）。
 -- reservations.sql は #52（M2 出口基準の並走）の間は触らない方針のため、
 -- 読み取り専用のこのクエリを新規ファイルに切る（CLAUDE.md「クエリファイルは

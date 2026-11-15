@@ -32,7 +32,7 @@ SELECT r.id, r.network_id, r.service_id, copy.rel_path,
                                             WHERE m.media_asset_copy_id = copy.id)), true)::boolean AS original_missing,
        EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS detected
 FROM recordings r
-LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+LEFT JOIN recording_processing_policy p ON p.recording_id = r.id
 LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
 -- preferred_active_media_asset_copy が返す現行の原本コピーを 1 件選ぶ。
 LEFT JOIN LATERAL preferred_active_media_asset_copy(o.id, sqlc.narg('store_name')::text) copy ON true
@@ -68,7 +68,7 @@ WHERE NOT EXISTS (
 INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at, attempt_count, policy_generation)
 VALUES (
     sqlc.arg('recording_id'), 'running', NULL, now(), 1,
-    COALESCE((SELECT p.cm_detect_generation FROM recording_encode_policy p
+    COALESCE((SELECT p.cm_detect_generation FROM recording_processing_policy p
               WHERE p.recording_id = sqlc.arg('recording_id')), 0)
 )
 ON CONFLICT (recording_id) DO UPDATE

@@ -23,7 +23,7 @@ const (
 	encodeReconcileRowLimit = 1000
 )
 
-// EncodeReconcileWorker は desired（recording_encode_policy.encode_profiles）−
+// EncodeReconcileWorker は desired（recording_processing_policy.encode_profiles）−
 // observed（active な encoded media_assets）の差分を定期的に埋める queue worker
 // （issue #163）。
 //

@@ -110,7 +110,7 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 	var cmDetect bool
 	if err := pool.QueryRow(context.Background(), `
 		SELECT keep_original, encode_profiles, cm_detect
-		FROM recording_encode_policy WHERE recording_id = $1`, activeID,
+		FROM recording_processing_policy WHERE recording_id = $1`, activeID,
 	).Scan(&keepOriginal, &profiles, &cmDetect); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 		t.Fatalf("enable without original status = %d, want 409", resp.StatusCode)
 	}
 	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, noOriginalID).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1`, noOriginalID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -137,7 +137,7 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("disable before ingest status = %d, want 204", resp.StatusCode)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, noOriginalID).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1`, noOriginalID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -170,7 +170,7 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 				fixtureParams.SizeBytes = 1000
 			})
 			if _, err := pool.Exec(ctx, `
-				INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+				INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 				VALUES ($1, 'always', '{}', true)`, id); err != nil {
 				t.Fatal(err)
 			}
@@ -205,7 +205,7 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 			}
 			var disabled bool
 			var generation int64
-			if err := pool.QueryRow(ctx, `SELECT NOT cm_detect, cm_detect_generation FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&disabled, &generation); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT NOT cm_detect, cm_detect_generation FROM recording_processing_policy WHERE recording_id = $1`, id).Scan(&disabled, &generation); err != nil {
 				t.Fatal(err)
 			}
 			if !disabled || generation != 1 {
@@ -235,7 +235,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 		fixtureParams.SizeBytes = 1000
 	})
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'always', '{}', true)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ロゴ管理", time.Now().Truncate(time.Second), "finished", 983
 	})
 	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'always', '{}', true)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "方針変更前の CM 失敗", time.Now().Truncate(time.Second), "finished", 984
 	})
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'always', '{}', true)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 		fixtureParams.SizeBytes = 1000
 	})
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'always', '{}', true)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +644,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	}
 	for _, id := range []int64{id1, id2, failedRecording} {
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+			INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 			VALUES ($1, 'always', '{}', true)`, id); err != nil {
 			t.Fatal(err)
 		}
@@ -860,7 +860,7 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 		t.Fatalf("cmDetect=true status = %d, want 409", resp.StatusCode)
 	}
 	var policies int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&policies); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1`, id).Scan(&policies); err != nil {
 		t.Fatal(err)
 	}
 	if policies != 0 {

@@ -6,25 +6,25 @@
 
 ### 設計
 
-原本は、凍結した desired を満たす派生物のコミットを reconcile が観測してから消す。対象は保持ポリシーが「エンコードしたら原本を消す」録画だけである。消す契機はエンコードの完了ではない。定期的に状態を見直すループが、条件を観測して消す。
+原本は、現在の desired を満たす派生物のコミットを reconcile が観測してから消す。対象は保持ポリシーが「エンコードしたら原本を消す」録画だけである。消す契機はエンコードの完了ではない。定期的に状態を見直すループが、条件を観測して消す。
 
 #### 保持ポリシーの凍結
 
-保持ポリシーと望ましい派生物の組は、取り込みが原本をコミットするトランザクションの中で、録画ごとに一度だけ凍結する。予約確定時でも録画開始時でもない。
+保持ポリシーと望ましい派生物の初期値は、取り込みが原本をコミットするトランザクションの中で確定する。ここでいう凍結は予約オプションの効力の区切りであり、以後の録画単位の API による方針変更を禁じない。予約確定時でも録画開始時でもない。
 
 ルール（または個別予約）が保持ポリシー `keepOriginal: always / until_encoded` を持つ。
 
-実効値（ルールの base + 予約単位の overrides）は、2 列へスナップショットされる。対象は `recording_encode_policy.keep_original` と `recording_encode_policy.encode_profiles` である。これは「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる。`recording_encode_policy` は `recordings` を `recording_id` で指す衛星表で、行の存在そのものが「凍結済み」を意味する（[スキーマ](../schema.md) §5 参照）。
+実効値（ルールの base + 予約単位の overrides）は、2 列へスナップショットされる。対象は `recording_processing_policy.keep_original` と `recording_processing_policy.encode_profiles` である。これは「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる。`recording_processing_policy` は `recordings` を `recording_id` で指す衛星表で、行の存在そのものが「処理方針の初期値が確定済み」を意味する（[スキーマ](../schema.md) §5 参照）。
 
 導出元の `reservations` / `program_overrides` / `program_intents` は、放送終了後の猶予期間で GC される。一方、`recordings` は永続資産である（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。毎回の再導出に頼ると、EPG から番組が消えて導出元が GC された時に desired が空になる。エンコード未完了の原本を削除できず、再エンコードも投入できなくなる。
 
-凍結した行は `recordings` 行と同時に生まれ、同時に死ぬため、別表に置いても行の寿命は混ざらない。衛星表として分けることは「行の寿命が同じ」ことと矛盾しない（不変条件 13）。
+方針の行は初期値の確定時に生まれ、`recordings` 行とともに死ぬ。録画に属する永続的な寿命を持つため、別表に置いても行の寿命は混ざらない。衛星表として分けることは「行の寿命が同じ」ことと矛盾しない（不変条件 13）。
 
 ingest 完了後の override 変更は、その録画には反映されない。この境界を越えて変更するのは、録画単位の API を明示的に呼んだ場合だけである（[録画エンジン](../recording.md) §4.5）。
 
 <details><summary>根拠</summary>
 
-- ingest 完了 tx での凍結: `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`
+- ingest 完了 tx での凍結: `internal/store/pgstore/mediapublish.go` の `CommitOriginal`
 - `recordings` と satellite row の寿命: 不変条件 12、13
 
 </details>
@@ -77,11 +77,11 @@ retention reconcile ループ（worker の cleanup 系ジョブ）が定期的�
 
 命令的なジョブチェーン（最後のエンコードジョブが削除ジョブを投入）は採らない。複数プロファイル時の「全部終わったら」の fan-in・途中失敗・再実行で正しく動かなくなりやすいからである。レベルトリガーなら「観測された派生物の集合 >= 望ましい集合」を毎回評価するだけで、どこで落ちても収束する。
 
-「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは凍結済み `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記の 2 つ目が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る。ただし原本を残したまま再実行するケースしか測っておらず、チェックが原本を開く前に走ることそのものは未検証。
+「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは現在の `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記の 2 つ目が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る。ただし原本を残したまま再実行するケースしか測っておらず、チェックが原本を開く前に走ることそのものは未検証。
 
-desired を縮める経路があっても、この整理は保たれる。縮める経路はコミット済みの版を 1 本外すもの（§6「凍結の 3 つ目の例外」）だけで、外す API はその版の有効なエンコード結果が無ければ 404 を返す。外す前から上記の 2 つ目はその版で満たされているので、外しても成否は変わらない。外した版の積み残しのジョブは守られなくなるが、その出力は公開されない。コミット前の版を外せる経路ができれば、既に積まれたジョブが上記の 2 つ目の外に出てこの整理は成り立たなくなる。
+desired を縮める経路があっても、この整理は保たれる。縮める経路はコミット済みの版を 1 本外すもの（§6「版を 1 本ずつ減らす」）だけで、外す API はその版の有効なエンコード結果が無ければ 404 を返す。外す前から上記の 2 つ目はその版で満たされているので、外しても成否は変わらない。外した版の積み残しのジョブは守られなくなるが、その出力は公開されない。コミット前の版を外せる経路ができれば、既に積まれたジョブが上記の 2 つ目の外に出てこの整理は成り立たなくなる。
 
-上記の desired な派生物は凍結時点の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなったプロファイルを、まだエンコードしていない録画がある。この録画は `until_encoded` でも原本を保持し続ける。満たせない desired に対して原本を捨てないのが仕様で、設定の 1 行の編集で原本という不可逆な資産が削除可能になる事態を避けるためである。`rokuban_encode_reconcile_unsatisfiable` はプロファイル名別の該当録画数を出すが、`keep_original` を問わず数える（`always` の録画も含む）ため、この保持件数そのものとは一致しない。
+上記の desired な派生物は録画単位の現在の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなったプロファイルを、まだエンコードしていない録画がある。この録画は `until_encoded` でも原本を保持し続ける。満たせない desired に対して原本を捨てないのが仕様で、設定の 1 行の編集で原本という不可逆な資産が削除可能になる事態を避けるためである。`rokuban_encode_reconcile_unsatisfiable` はプロファイル名別の該当録画数を出すが、`keep_original` を問わず数える（`always` の録画も含む）ため、この保持件数そのものとは一致しない。
 
 揃っているかは encode と共有する view `unencoded_desired_profiles` で判定し、設定では絞らない。
 
@@ -134,7 +134,7 @@ encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で�
 
 `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。この 2 段（GC → `unattributed` → Info）は、根拠欄の 2 テストの合成である（パッケージ境界を跨ぐので通しでは測っていない）。
 
-事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest-followup.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles` が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
+事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「録画単位の方針変更」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest-followup.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles` が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
 
 <details><summary>根拠</summary>
 
@@ -180,9 +180,9 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 冪等性について。`FreezeRecordingEncodePolicy` は `ON CONFLICT` を持たない素の INSERT で、既存の派生物の有無を見て分岐しない。これは「この tx は録画ごとに 1 回しか実行されない」という別の不変（`internal/worker/ingest.go` の `Work` が転送開始前に原本 media_asset の有無で冪等性チェックする）に依っている。一部のエンコードが既に完了しているからといって、desired を空に戻す分岐を作らない。
 
-`EncodeProfiles` の nil について。`reservation.Options.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_encode_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` にまとめる。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない。
+`EncodeProfiles` の nil について。`reservation.Options.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_processing_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` にまとめる。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない。
 
-クランプについて。ルールと override はそれぞれ自分の表の中では、`keepOriginal='until_encoded'` に `encodeProfiles` が空という組み合わせを禁止する CHECK を満たしている。それでも `EffectiveOptions` のマージ結果としてこのドリフトが生成されうる。`recording_encode_policy` にも同じ組み合わせを禁止する CHECK（下記「条件 2 の『全プロファイル完備』」参照）がある。実効値をそのまま書くと、この INSERT は CHECK 違反でロールバックする。
+クランプについて。ルールと override はそれぞれ自分の表の中では、`keepOriginal='until_encoded'` に `encodeProfiles` が空という組み合わせを禁止する CHECK を満たしている。それでも `EffectiveOptions` のマージ結果としてこのドリフトが生成されうる。`recording_processing_policy` にも同じ組み合わせを禁止する CHECK（下記「条件 2 の『全プロファイル完備』」参照）がある。実効値をそのまま書くと、この INSERT は CHECK 違反でロールバックする。
 
 原本 media_asset の INSERT と同一 tx なので、そのロールバックは録画そのものの消失に直結する（不変条件 3「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、書く直前に `always` へ直す。実効的な `encodeProfiles` が空で `keepOriginal` が `until_encoded` なら、`always` にしてから書く。ユーザーの意図（override の値そのもの）は `program_overrides` 側に残るので失われない。失われるのはこの録画のスナップショットにおける効力だけで、次にルールがプロファイルを持てば別の録画では正しく `until_encoded` になる。
 
@@ -192,9 +192,9 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 エッジの record 削除は ingest コミット後である（[録画エンジン](../recording.md) 参照）。エンコードが恒久的に失敗すれば、条件 2 が満たされず原本は自然に保持され続ける（+ アラート対象）。
 
-条件 2 の「全プロファイル完備」は、`encode_profiles` が空でないことも要求する。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしている（下記「UI / 運用」）。だがそれを回避して、`until_encoded` かつ `encode_profiles = '{}'` の組が `recording_encode_policy` に焼かれることがある。この場合「全称量化された条件が空集合に対して自明に真になる」ため、対策なしでは即座に原本が消える。
+条件 2 の「全プロファイル完備」は、`encode_profiles` が空でないことも要求する。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしている（下記「UI / 運用」）。だがそれを回避して、`until_encoded` かつ `encode_profiles = '{}'` の組が `recording_processing_policy` に焼かれることがある。この場合「全称量化された条件が空集合に対して自明に真になる」ため、対策なしでは即座に原本が消える。
 
-`cardinality(encode_profiles) > 0` を要求するガードがある（同じ条件を `recording_encode_policy` テーブル自身の CHECK にも持つ）。このガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製しない。代わりに名前付き述語 `until_encoded_deletable_originals`（§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この述語を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に適用される。
+`cardinality(encode_profiles) > 0` を要求するガードがある（同じ条件を `recording_processing_policy` テーブル自身の CHECK にも持つ）。このガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製しない。代わりに名前付き述語 `until_encoded_deletable_originals`（§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この述語を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に適用される。
 
 削除プロトコルも冪等である。アセット行を deleting にマーク → unlink → deleted にマークの順で、どこで落ちても reconcile が拾い直す。公開前を示す予約名の残骸は孤児回収が拾う。
 
@@ -214,25 +214,25 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 確認前に `recording_hls.enabled` を無効にすると、原本が残っていても「チャプターの確認待ち」から進めない。録画 HLS を戻すか、`POST /api/recordings/{id}/encode-profiles` で cut でないプロファイルを追加すると復旧できる。
 
-### 凍結の例外: 事後追加と保持ポリシー変更
+### 録画単位の方針変更
 
-凍結は取り込み完了時に一度だけ焼き込む。ただし、利用者の操作によるエンコードプロファイルの追加は、凍結の例外として認める。原本を残すかどうかも、録画単位で後から上書きできる。
+取り込み時に確定した方針は、利用者が録画単位の API で変更できる。プロファイルの追加・版の削除、保持方針の上書き、CM 検出の切り替えが対象である。
 
-`recording_encode_policy.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値だが、ユーザー起点の追加方向の書き換えだけは凍結の例外として認める。予約が無い録画（mirakc に直接起こされた手動録画等）は、`encode_profiles = '{}'` のまま永久に凍結されてエンコードを依頼する手段が無かった。この問題と、録画完了後に「もう 1 つプロファイルを足したい」という要求に応える。
+`encode_profiles` の初期値は ingest 完了時に確定する。利用者は追加 API で増やし、版を外す API で減らせる。予約が無い録画（mirakc に直接起こされた手動録画等）は、`encode_profiles = '{}'` のまま永久に凍結されてエンコードを依頼する手段が無かった。この問題と、録画完了後に「もう 1 つプロファイルを足したい」という要求に応える。
 
-この API による `keep_original` の上書きは、事後の `encode_profiles` 追加に続く凍結の 2 つ目の例外である。凍結の基本設計（ingest 完了時に desired を焼き込むこと）と、物理削除を reconcile に委ねる境界は変えない。この例外を経ても「ingest 完了時点で確定した最終状態」という設計そのものは変わらない。凍結後の変更は、`encode_profiles` の事後追加と、この API による `keep_original` の明示的な上書きと、下記の版の削除に限る。
+ingest 完了時に desired の初期値を確定する凍結の基本設計と、物理削除を reconcile に委ねる境界は、これらの変更でも変えない。
 
 #### 事後追加の API
 
-事後追加の API は、追加のみを受け付け、全置換の手段は用意しない。原本が有効でない録画には 409 を返す。未凍結の録画でも、原本が有効なら追加できる。
+事後追加の API は、追加のみを受け付け、全置換の手段は用意しない。原本が有効でない録画には 409 を返す。初期値が未確定の録画でも、原本が有効なら追加できる。
 
 `POST /api/recordings/{id}/encode-profiles` の実装は `internal/api/recordings.go` の `AddRecordingEncodeProfiles` である。書き込みは `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）が行う。union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消すミスにつながるため、その経路自体を用意しない。
 
 原本が active でなければ追加できない。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画には 409 を返す。該当するのは、原本削除済みか `state = 'deleting'` か、そもそも ingest が完了しておらず `kind='original'` の行自体が無い場合である。`state = 'deleting'` は unlink 待ちの状態を指す。一覧の射影は `state <> 'deleted'` なので、UI 上は「原本あり」に見える。ここで明示的に検査し、後段の reconcile が何もしない場合に 204 を返さない。
 
-`recording_encode_policy` に行が無い（未凍結）録画でも、原本が active なら追加できる。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は、`resolveAndSnapshotEncodePolicy` を経由しない。この関数は `internal/worker/ingest.go` にある。そのため `recording_encode_policy` 行が無いまま、原本だけが active な録画が存在しうる。
+`recording_processing_policy` に行が無い（初期値が未確定）録画でも、原本が active なら追加できる。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は、`Media.CommitOriginal` を経由しない。このメソッドは `internal/store/pgstore/mediapublish.go` にある。そのため `recording_processing_policy` 行が無いまま、原本だけが active な録画が存在しうる。
 
-`AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書く。行が無ければ「原本が active = 凍結済みとみなす」を適用して、`keep_original = 'always'`（安全側の既定値）で新規に凍結する。行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない。原本が active でなければ、手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっていて、この INSERT に到達する時点で「原本 active」は保証されている。
+`AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書く。行が無ければ原本が active であることを確認して、`keep_original = 'always'`（安全側の既定値）で初期値を確定する。行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない。原本が active でなければ、手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっていて、この INSERT に到達する時点で「原本 active」は保証されている。
 
 実行経路について。store が `encode_profiles` の更新を commit した後、api は対象録画を指定した `encode_reconcile` をヒントとして投入する。投入に失敗しても成功応答は変えず、定期 reconcile が DB の desired から不足分を拾う。対象限定パスと定期パスは同じ候補 query を使い、不足分の判定を二重に持たない。ごみ箱の録画も desired は更新できるが、候補 query が除外する。復元すれば定期パスが反映する。
 
@@ -240,15 +240,15 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 原本を残すかどうかは、録画単位で後から上書きできる。上書きしても物理削除はせず、削除 reconcile が条件を観測して消すので、最大で定期パスの間隔（既定 15 分）だけ遅れる。
 
-`PATCH /api/recordings/{id}/encode-policy` は `keep_original` だけを上書きし、`encode_profiles` には触れない。この API は新しい `recording_encode_policy` 行を凍結しない。`SetRecordingKeepOriginal` は UPDATE のみ（INSERT アームを持たない）で書く。未凍結の録画は既に `always` と同じ扱いなので、`always` への変更は 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409 にする。
+`PATCH /api/recordings/{id}/encode-policy` の保持方針の指定は `keep_original` を上書きし、`encode_profiles` には触れない。保持方針だけの変更では、新しい `recording_processing_policy` 行を作らない。CM 検出も指定した場合は、同じ transaction でその切り替えを適用する。`SetRecordingKeepOriginal` は UPDATE のみ（INSERT アームを持たない）で書く。初期値が未確定の録画は既に `always` と同じ扱いなので、`always` への変更は 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409 にする。
 
 「desired プロファイルが 1 つ以上あるか」の判定は、事前に読み取って行わない。この UPDATE 自身の WHERE（`cardinality(encode_profiles) > 0`）が、適用の瞬間に再評価する。`always` 方向では原本の状態を検査しないので、原本が `deleting` の間でも次の reconcile パスで条件が再評価され、ファイルが残っていれば `active` に戻せる。
 
 保持ポリシーの変更は物理削除しない。River のヒントジョブも投入せず、削除 reconcile のレベルトリガーに任せる。定期パスは既定 15 分間隔なので、条件を満たす原本の削除には最大 15 分かかる。これは追加された desired を直ちに encode queue へ反映する事後追加 API とは意図的に非対称である。
 
-この表の api 側の書き手は、ingest と同じくユーザーが宣言した desired state を書く。観測を複数ループで更新する脊椎表ではないため、`recording_encode_policy` は分割しない。
+複数の書き手は不変条件 12 が示す分割の兆候に当たる。ただし、この表の api 側の書き手は、ingest と同じくユーザーが宣言した desired state を書く。観測を複数ループで更新する脊椎表ではないため、`recording_processing_policy` は分割しない。
 
-### 凍結の 3 つ目の例外: 版を 1 本ずつ減らす
+### 版を 1 本ずつ減らす
 
 容量が厳しいとき、利用者はエンコードした版を 1 つずつ外して消せる。全置換の API は作らない。
 
@@ -298,7 +298,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 | 公開前と分かる孤児 | mtime 猶予 + エイジング | temp / staging の回収 |
 | canonical 名の孤児 | エイジング後に報告 | 公開済みファイルの保持と調査 |
 
-原本の保持ポリシーによる削除は、ごみ箱を経由しない。原本はサイズが支配的で、経由させるとストレージ節約が猶予期間ぶん遅延する。安全条件は派生物完備で既に保証している。外したエンコード版の削除も、ごみ箱を経由しない（§6「凍結の 3 つ目の例外」）。公開前と分かる孤児は、予約名の temp / staging を回収する。canonical 名の孤児は、DB 喪失後も公開済みファイルを保持して調査するために、報告だけにする。
+原本の保持ポリシーによる削除は、ごみ箱を経由しない。原本はサイズが支配的で、経由させるとストレージ節約が猶予期間ぶん遅延する。安全条件は派生物完備で既に保証している。外したエンコード版の削除も、ごみ箱を経由しない（§6「版を 1 本ずつ減らす」）。公開前と分かる孤児は、予約名の temp / staging を回収する。canonical 名の孤児は、DB 喪失後も公開済みファイルを保持して調査するために、報告だけにする。
 
 一括削除サーキットブレーカーの閾値は、件数 / ライブラリ比率 / 総バイト数である（例: 5% or 100 GB）。孤児回収を含む物理削除が閾値を超えたら停止してアラートを出す。報告だけの canonical orphan は削除数に含めない。
 
@@ -349,7 +349,7 @@ TS の計測済み判定は、主キー `media_asset_id` で引くスカラー�
 
 ここでの「終端」は、削除側が待つのをやめる条件である。処理が今後動かないという意味ではない。CM 検出は現在世代の最終失敗で待ちを終えるが、その後のロゴ学習で再び desired になることがある。`stage = 'adopt'` の扱いも含め、CM 検出の終端は [cut-cm.md](cut-cm.md) §7 にある。
 
-`cardinality(encode_profiles) > 0` は削除述語に残す。削除述語は、`cm_detect = false` なら CM 検出を待たないが、`encode_profiles` が空なら原本を消さない。`until_encoded` と空の `encode_profiles` の組は `recording_encode_policy` の CHECK 制約が禁じており、述語のガードはこれを二重に防ぐ。
+`cardinality(encode_profiles) > 0` は削除述語に残す。削除述語は、`cm_detect = false` なら CM 検出を待たないが、`encode_profiles` が空なら原本を消さない。`until_encoded` と空の `encode_profiles` の組は `recording_processing_policy` の CHECK 制約が禁じており、述語のガードはこれを二重に防ぐ。
 
 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetCopyToActive`）は、これらの述語への `NOT EXISTS` で書く。旧世代の unlink が失敗して次の pass に持ち越された場合も、overlap と現行世代の存在を再評価してから削除する。
 

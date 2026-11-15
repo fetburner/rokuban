@@ -437,13 +437,13 @@ func seedEncodePolicy(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 	if len(profiles) == 0 {
 		return
 	}
-	// recording_encode_policy 衛星表（issue #159）。keep_original は
+	// recording_processing_policy 衛星表（issue #159）。keep_original は
 	// 定期 reconcile 候補 query が active encoded を完了扱いにするので
 	// 'always' で十分 --- desired プロファイルの有無だけがテストの関心。
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
 		 VALUES ($1, 'always', $2)`, recordingID, profiles); err != nil {
-		t.Fatalf("seeding recording_encode_policy: %v", err)
+		t.Fatalf("seeding recording_processing_policy: %v", err)
 	}
 }
 

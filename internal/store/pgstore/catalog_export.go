@@ -246,11 +246,11 @@ func exportRecordingWatched(ctx context.Context, q *sqlcgen.Queries) ([]catalogd
 	return out, nil
 }
 
-// exportRecordingEncodePolicies は recording_encode_policy を文書の型付き行に変換する。
+// exportRecordingEncodePolicies は recording_processing_policy を文書の型付き行に変換する。
 func exportRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.RecordingEncodePolicy, error) {
 	rows, err := q.CatalogListRecordingEncodePolicies(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing recording_encode_policy: %w", err)
+		return nil, fmt.Errorf("listing recording_processing_policy: %w", err)
 	}
 	out := make([]catalogdoc.RecordingEncodePolicy, 0, len(rows))
 	for _, p := range rows {

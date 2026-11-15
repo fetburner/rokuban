@@ -503,7 +503,7 @@ func (q *Queries) CatalogListProgramSnapshots(ctx context.Context) ([]ProgramSna
 
 const catalogListRecordingEncodePolicies = `-- name: CatalogListRecordingEncodePolicies :many
 SELECT recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect
-FROM recording_encode_policy
+FROM recording_processing_policy
 ORDER BY recording_id
 `
 
@@ -516,7 +516,7 @@ type CatalogListRecordingEncodePoliciesRow struct {
 	CmDetect       bool
 }
 
-// recording_encode_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
+// recording_processing_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
 // 正しい --- rescue 側もこのリストに現れなかった recordings.id には何も書かない
 // ので、「凍結済み」と「未凍結」の区別がそのまま往復する。
 func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context) ([]CatalogListRecordingEncodePoliciesRow, error) {
@@ -1267,7 +1267,7 @@ type CatalogUpsertRecordingParams struct {
 	QualityEvents     json.RawMessage
 }
 
-// keep_original / encode_profiles は issue #159 で recording_encode_policy
+// keep_original / encode_profiles は issue #159 で recording_processing_policy
 // 衛星表に切り出されたので、この INSERT には含まれない
 // （CatalogUpsertRecordingEncodePolicy 参照）。
 func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertRecordingParams) error {
@@ -1303,7 +1303,7 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 }
 
 const catalogUpsertRecordingEncodePolicy = `-- name: CatalogUpsertRecordingEncodePolicy :exec
-INSERT INTO recording_encode_policy (
+INSERT INTO recording_processing_policy (
     recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect
 ) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (recording_id) DO UPDATE SET
@@ -1323,7 +1323,7 @@ type CatalogUpsertRecordingEncodePolicyParams struct {
 	CmDetect       bool
 }
 
-// recording_encode_policy 衛星表の rescue（issue #159）。凍結 = 行の INSERT
+// recording_processing_policy 衛星表の rescue（issue #159）。凍結 = 行の INSERT
 // という意味論を rescue でも保つ --- doc.RecordingEncodePolicies に載っている
 // （= export 時点で凍結済みだった）録画だけ upsert する。載っていない録画には
 // 何もしない（recordings 側の upsert より後に呼ぶので、行が無い = 未凍結と
@@ -1356,7 +1356,7 @@ type CatalogUpsertRecordingPurgeRequestParams struct {
 // rescue でも保つ --- doc.RecordingPurgeRequests に載っている録画だけ INSERT し、
 // 載っていない録画には何もしない（**空 DB からの復元では**、行が無い = 要求なし
 // のまま復元される）。rescue は upsert only で DELETE しないので、live DB に対して
-// 実行するとダンプに無い要求行はそのまま残る --- recording_encode_policy と同じ
+// 実行するとダンプに無い要求行はそのまま残る --- recording_processing_policy と同じ
 // 制約（rescue が上書きするものの粒度は docs/operations/database.md
 // §バックアップ）。rescue は DB を失った後にだけ使う操作なので実装は変えない。
 func (q *Queries) CatalogUpsertRecordingPurgeRequest(ctx context.Context, arg CatalogUpsertRecordingPurgeRequestParams) error {

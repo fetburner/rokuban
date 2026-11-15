@@ -66,7 +66,7 @@ func observePresentCopyMissing(t *testing.T, pool *pgxpool.Pool, assetID int64, 
 func setPresentCopiesPolicy(t *testing.T, pool *pgxpool.Pool, recordingID int64, keep string, profiles []string, cmDetect bool) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, $2, $3, $4)`, recordingID, keep, profiles, cmDetect); err != nil {
 		t.Fatalf("freezing encode policy: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestPresentCopies_SetRecordingCMDetectionExcludesMissingOriginal(t *testing
 	if rows, err := q.SetRecordingCMDetection(t.Context(), missing); err != nil || rows != 0 {
 		t.Errorf("SetRecordingCMDetection(missing, no policy) = %d, %v; want 0, nil", rows, err)
 	}
-	if existsIn(t, pool, `SELECT 1 FROM recording_encode_policy WHERE recording_id = $1`, missing) {
+	if existsIn(t, pool, `SELECT 1 FROM recording_processing_policy WHERE recording_id = $1`, missing) {
 		t.Errorf("missing recording got an encode policy row, want none")
 	}
 	if rows, err := q.SetRecordingCMDetection(t.Context(), present); err != nil || rows != 1 {
@@ -534,13 +534,13 @@ func TestPresentCopies_SetRecordingCMDetectionExcludesMissingOriginal(t *testing
 	if rows, err := q.SetRecordingCMDetection(t.Context(), frozenMissing); err != nil || rows != 0 {
 		t.Errorf("SetRecordingCMDetection(missing, frozen) = %d, %v; want 0, nil", rows, err)
 	}
-	if existsIn(t, pool, `SELECT 1 FROM recording_encode_policy WHERE recording_id = $1 AND cm_detect`, frozenMissing) {
+	if existsIn(t, pool, `SELECT 1 FROM recording_processing_policy WHERE recording_id = $1 AND cm_detect`, frozenMissing) {
 		t.Errorf("missing recording with frozen policy got cm_detect = true, want false")
 	}
 	if rows, err := q.SetRecordingCMDetection(t.Context(), frozenPresent); err != nil || rows != 1 {
 		t.Errorf("SetRecordingCMDetection(present, frozen) = %d, %v; want 1, nil", rows, err)
 	}
-	if !existsIn(t, pool, `SELECT 1 FROM recording_encode_policy WHERE recording_id = $1 AND cm_detect`, frozenPresent) {
+	if !existsIn(t, pool, `SELECT 1 FROM recording_processing_policy WHERE recording_id = $1 AND cm_detect`, frozenPresent) {
 		t.Errorf("present recording with frozen policy did not get cm_detect = true")
 	}
 }

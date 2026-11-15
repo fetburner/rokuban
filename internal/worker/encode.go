@@ -66,7 +66,7 @@ import (
 //     (b) 行が active で（カット版なら）凍結区間がこの試行の keep と一致する（誰かが
 //     既に commit した）。各試行は異なる世代キーへ Put するので、遅い試行が active
 //     copy のバイト列を上書きできない。
-//     (c) profile が desired（recording_encode_policy.encode_profiles）に無い。
+//     (c) profile が desired（recording_processing_policy.encode_profiles）に無い。
 //     ユーザーが外した版を、外す前に積まれたジョブが公開して復活させるのを止める。
 //     (d) 作り直し要求に由来するジョブで、要求行が無いか keep が上書き済み。または
 //     要求に由来しないカット版ジョブで、章を所有していないか現在の keep と違う。

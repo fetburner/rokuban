@@ -3096,7 +3096,7 @@ func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, progr
 }
 
 // setReservationBase は ruler が書く reservations.base を模したテスト用フィクスチャ。
-// internal/worker/encode_test.go が recording_encode_policy.encode_profiles を raw SQL で
+// internal/worker/encode_test.go が recording_processing_policy.encode_profiles を raw SQL で
 // 直接作るのと同じ規律（reservations.sql は #52 並走中につき、この目的のためだけの
 // 書き込みクエリを新設しない）。
 func setReservationBase(t *testing.T, pool *pgxpool.Pool, programID int64, base string) {
@@ -3250,7 +3250,7 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	}
 }
 
-// encodePolicyOfRecording は recording_encode_policy 衛星表（issue #159）を読む。
+// encodePolicyOfRecording は recording_processing_policy 衛星表（issue #159）を読む。
 // 行が無い（未凍結）場合は既定値 "always" / [] を返す --- resolveAndSnapshotEncodePolicy
 // が解決に失敗した場合や、予約が無く一度も呼ばれない場合はこの表に行自体が
 // 作られない（不変条件 10「意味を持たない行を作らない」）。既存テストの
@@ -3259,7 +3259,7 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 func encodePolicyOfRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) (keepOriginal string, profiles []string) {
 	t.Helper()
 	err := pool.QueryRow(context.Background(),
-		"SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1", recordingID,
+		"SELECT keep_original, encode_profiles FROM recording_processing_policy WHERE recording_id = $1", recordingID,
 	).Scan(&keepOriginal, &profiles)
 	if err == nil {
 		return keepOriginal, profiles
@@ -3271,7 +3271,7 @@ func encodePolicyOfRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64
 	return "", nil
 }
 
-// encodePolicyRowExists は recording_encode_policy に行そのものがあるかを見る。
+// encodePolicyRowExists は recording_processing_policy に行そのものがあるかを見る。
 // encodePolicyOfRecording は ErrNoRows を既定値に潰すため「行がある + 既定値」と
 // 「行が無い」を区別できない --- resolveAndSnapshotEncodePolicy が解決に失敗
 // しても凍結する（issue #159 の中心的な設計判断。doc コメント「解決に失敗しても
@@ -3281,7 +3281,7 @@ func encodePolicyRowExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) 
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1", recordingID,
+		"SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1", recordingID,
 	).Scan(&count); err != nil {
 		t.Fatalf("counting recording encode policy rows: %v", err)
 	}
@@ -3305,7 +3305,7 @@ func countEncodeJobsForRecording(t *testing.T, enqueuer *recordingEnqueuer, reco
 
 // TestIngestWorker_SnapshotsEncodePolicyFromRuleBase は issue #103 の受け入れ基準
 // 「ルールに encodeProfiles を設定して録画 → ingest 完了後に
-// recording_encode_policy.encode_profiles が一致し、対象 reconcile が投入されて
+// recording_processing_policy.encode_profiles が一致し、対象 reconcile が投入されて
 // reconcile 実行後に encode ジョブが投入される」を確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	t.Parallel()
@@ -3682,7 +3682,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 
 	// 凍結そのものはスキップされない（issue #159）。行はあり、値が既定値になる。
 	if !encodePolicyRowExists(t, pool, recordingID) {
-		t.Error("recording_encode_policy に行が無い。解決に失敗しても既定値で凍結する契約（issue #159）が破れている")
+		t.Error("recording_processing_policy に行が無い。解決に失敗しても既定値で凍結する契約（issue #159）が破れている")
 	}
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" {
@@ -3871,7 +3871,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	// 「原本 media_asset を持つ録画は凍結済み」という判定基準と issue #133 の
 	// 事後追加（AppendRecordingEncodeProfiles が「行が既にある」前提で書けること）が破れる。
 	if !encodePolicyRowExists(t, pool, recordingID) {
-		t.Fatalf("recording_encode_policy row missing for recording %d; resolveAndSnapshotEncodePolicy must freeze defaults even when the lookup fails", recordingID)
+		t.Fatalf("recording_processing_policy row missing for recording %d; resolveAndSnapshotEncodePolicy must freeze defaults even when the lookup fails", recordingID)
 	}
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" || len(profiles) != 0 {
@@ -3938,7 +3938,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 	// source='rule' の対応テストと同じ理由で、行の有無そのものを確認する
 	// （encodePolicyOfRecording は ErrNoRows を既定値に潰すため使えない）。
 	if !encodePolicyRowExists(t, pool, recordingID) {
-		t.Fatalf("recording_encode_policy row missing for recording %d; resolveAndSnapshotEncodePolicy must freeze defaults even when the lookup fails", recordingID)
+		t.Fatalf("recording_processing_policy row missing for recording %d; resolveAndSnapshotEncodePolicy must freeze defaults even when the lookup fails", recordingID)
 	}
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" || len(profiles) != 0 {

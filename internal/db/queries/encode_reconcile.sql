@@ -48,7 +48,7 @@
 -- 候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。
 --
 -- 条件の意味:
---   * recording_encode_policy に行がある = エンコードポリシーが凍結済み
+--   * recording_processing_policy に行がある = エンコードポリシーが凍結済み
 --     （行が無い = 未凍結。不変条件 10。unencoded_desired_profiles に行が出ない）。
 --     desired が空なら不足の行も無いので候補にならない
 --   * encodable_recordings = ごみ箱でなく、原本 media_assets が active（ingest

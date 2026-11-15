@@ -238,7 +238,7 @@ ffmpeg の存在検査は、その ffmpeg を使うロールが起動すると�
 
 CM 区間の検出は既定で無効で、有効にすると取り込み時にこの設定が録画ごとに凍結される。無効のデプロイでは、API が録画ごとの有効化と再検出の要求を 409 で断る。
 
-`cm_detect.enabled` の既定は `false` である。有効にすると、ingest がこの値を録画単位の `recording_encode_policy.cm_detect` に凍結し、worker が 15 分ごとに必要な検出を投入する。録画詳細の PATCH で個別に有効化できるが、`enabled: false` のデプロイでは API が `cmDetect: true` と再検出を 409 で断る。誰もジョブを積まず、`until_encoded` の原本が結果を待って残り続けるためである。
+`cm_detect.enabled` の既定は `false` である。有効にすると、ingest がこの値を録画単位の `recording_processing_policy.cm_detect` に凍結し、worker が 15 分ごとに必要な検出を投入する。録画詳細の PATCH で個別に有効化できるが、`enabled: false` のデプロイでは API が `cmDetect: true` と再検出を 409 で断る。誰もジョブを積まず、`until_encoded` の原本が結果を待って残り続けるためである。
 
 worker 起動時に、`cm_detect.binary_dir` の 3 コマンドと ffprobe（原本の実尺を読む）と固定ルール `/usr/local/share/rokuban/cm_detect/JL_標準.txt` を検査する。これらは `Dockerfile.full` にだけ含まれ、公式イメージには含まれないため、JLSE 対応には full イメージを使う。
 
