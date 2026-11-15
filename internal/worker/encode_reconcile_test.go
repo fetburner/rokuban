@@ -593,7 +593,7 @@ func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {
 		p.Kind, p.Profile = "encoded", &cut
 	})
 	attempted := newRecording("attempted", []string{"cut"}, true)
-	exec(`INSERT INTO recording_encode_attempts (recording_id, profile, state) VALUES ($1, 'cut', 'failed')`, attempted)
+	exec(`INSERT INTO recording_encode_attempts (recording_id, profile, state, attempt_count) VALUES ($1, 'cut', 'failed', 1)`, attempted)
 	rebuilding := newRecording("rebuilding", []string{"cut"}, true)
 	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, rebuilding)

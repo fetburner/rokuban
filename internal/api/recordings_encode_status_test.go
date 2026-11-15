@@ -24,8 +24,8 @@ import (
 func seedEncodeAttempt(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile, state string, encodeErr *string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO recording_encode_attempts (recording_id, profile, state, error)
-		 VALUES ($1, $2, $3, $4)`,
+		`INSERT INTO recording_encode_attempts (recording_id, profile, state, error, attempt_count)
+		 VALUES ($1, $2, $3, $4, 1)`,
 		recordingID, profile, state, encodeErr); err != nil {
 		t.Fatalf("seeding recording_encode_attempts: %v", err)
 	}

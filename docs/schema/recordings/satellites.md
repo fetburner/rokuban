@@ -282,17 +282,7 @@ slice の終わりは temp の fsync と close の後に lease を照合して o
 
 残すと決めたプロファイルと実在するエンコード結果の差だけでは、「まだ来ていない」としか言えず、実行中と失敗後の再試行待ちを区別できない。この表はその区別だけを持つ。書き手は encode worker だけである。
 
-```sql
-CREATE TABLE recording_encode_attempts (
-    recording_id bigint      NOT NULL REFERENCES recordings (id) ON DELETE CASCADE,
-    profile      text        NOT NULL,
-    state        text        NOT NULL CHECK (state IN ('running', 'failed')),
-    error        text,
-    attempt_count integer     NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    attempted_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (recording_id, profile)
-);
-```
+試行を始める前は行を作らないため、試行回数は 1 から数え、0 の行は作らない。初期値と下限は CM 検出と揃える。上限判定の `encode_attempts_exhausted` は、試行回数をそのまま `attempt_limit` と比較する。
 
 ```mermaid
 stateDiagram-v2
