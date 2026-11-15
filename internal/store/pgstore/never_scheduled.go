@@ -22,13 +22,13 @@ func NewNeverScheduledEvents(pool *pgxpool.Pool) *NeverScheduledEvents {
 	return &NeverScheduledEvents{pool: pool}
 }
 
-// RecordNeverScheduled は放送イベントの欠測を記録し、新しい行を作ったとき true を返す。
-func (s *NeverScheduledEvents) RecordNeverScheduled(ctx context.Context, site string, event store.BroadcastEventKey) (bool, error) {
+// RecordNeverScheduled は放送イベントと番組開始時刻の欠測を記録し、新しい行を作ったとき true を返す。
+func (s *NeverScheduledEvents) RecordNeverScheduled(ctx context.Context, site string, event store.BroadcastEventKey, programStartAt time.Time) (bool, error) {
 	rows, err := sqlcgen.New(s.pool).CreateNeverScheduledEvent(ctx, sqlcgen.CreateNeverScheduledEventParams{
-		Site: site, NetworkID: event.NetworkID, ServiceID: event.ServiceID, EventID: event.EventID,
+		Site: site, NetworkID: event.NetworkID, ServiceID: event.ServiceID, EventID: event.EventID, ProgramStartAt: programStartAt,
 	})
 	if err != nil {
-		return false, fmt.Errorf("recording never-scheduled event %s/%d/%d/%d: %w", site, event.NetworkID, event.ServiceID, event.EventID, err)
+		return false, fmt.Errorf("recording never-scheduled event %s/%d/%d/%d at %s: %w", site, event.NetworkID, event.ServiceID, event.EventID, programStartAt.Format(time.RFC3339Nano), err)
 	}
 	return rows > 0, nil
 }

@@ -1,9 +1,14 @@
 package reconciler_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"net/http"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -20,7 +25,7 @@ import (
 // 列自体を削除済み）。除外条件を予約 id で引くと、EPG フリッカーやルール編集で
 // 予約行が作り直された瞬間に「never-scheduled 行が無い」ことになり、終了済み
 // 予約が毎パス desired に戻り続ける（容量需要にも数え続ける）。宛先のキーは
-// 放送イベント (site, network_id, service_id, event_id) でなければならない
+// 放送イベントと番組開始時刻 (site, network_id, service_id, event_id, program_start_at) でなければならない
 // （不変条件 9 の identity: 導出器が作るキーを宛先にしない）。
 func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -280,5 +285,257 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Error("ごみ箱操作後の desired = 1, want 0 —— 同期除外が recordings の状態に依存してしまっている")
+	}
+}
+
+func insertNeverScheduledAtStart(t *testing.T, ctx context.Context, q *sqlcgen.Queries, eventID int32, startAt time.Time) {
+	t.Helper()
+	rows, err := q.CreateNeverScheduledEvent(ctx, sqlcgen.CreateNeverScheduledEventParams{
+		Site: "default", NetworkID: 10000, ServiceID: 5000, EventID: eventID, ProgramStartAt: startAt,
+	})
+	if err != nil {
+		t.Fatalf("CreateNeverScheduledEvent: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("CreateNeverScheduledEvent rows = %d, want 1", rows)
+	}
+}
+
+func hasNeverScheduledAtStart(t *testing.T, ctx context.Context, pool *pgxpool.Pool, eventID int32, startAt time.Time) bool {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM never_scheduled_events
+    WHERE site = 'default' AND network_id = 10000 AND service_id = 5000 AND event_id = $1
+      AND program_start_at = $2
+)`, eventID, startAt).Scan(&exists); err != nil {
+		t.Fatalf("checking never-scheduled event at program start: %v", err)
+	}
+	return exists
+}
+
+func assertProgramIDs(t *testing.T, name string, got, want []int64) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s program IDs = %v, want %v", name, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s program IDs = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// 同じ放送イベントでも番組開始時刻が違えば別の欠測 identity として扱う。
+// A の欠測行は A 自身を除外し、B には表示・同期・容量・重なり・プレビューの
+// いずれでも影響しない。7 つの読者すべてを実 DB に対して通す。
+func TestNeverScheduledReadersScopeByProgramStartAt(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	startA := time.Now().UTC().Truncate(time.Microsecond).Add(-3 * time.Hour)
+	startB := startA.Add(10 * time.Minute)
+	const eventID int32 = 4321
+	const programIDA int64 = 704321
+	const programIDB int64 = 804321
+	const programIDCandidate int64 = 904321
+
+	resA := createReservation(t, ctx, q, programIDA, "旧番組 A", startA)
+	resB := createReservation(t, ctx, q, programIDB, "新番組 B", startB)
+	insertNeverScheduledAtStart(t, ctx, q, eventID, startA)
+
+	syncRows, err := q.ListReservationsForSyncEvaluation(ctx, "default")
+	if err != nil {
+		t.Fatalf("ListReservationsForSyncEvaluation: %v", err)
+	}
+	var syncIDs []int64
+	for _, row := range syncRows {
+		syncIDs = append(syncIDs, row.Reservation.ProgramID)
+	}
+	assertProgramIDs(t, "ListReservationsForSyncEvaluation", syncIDs, []int64{resB.ProgramID})
+
+	fullRows, err := q.ListReservationsFull(ctx)
+	if err != nil {
+		t.Fatalf("ListReservationsFull: %v", err)
+	}
+	if len(fullRows) != 2 {
+		t.Fatalf("ListReservationsFull rows = %d, want 2", len(fullRows))
+	}
+	fullNeverRecorded := make(map[int64]bool, len(fullRows))
+	for _, row := range fullRows {
+		fullNeverRecorded[row.Reservation.ProgramID] = row.NeverRecorded
+	}
+	if !fullNeverRecorded[resA.ProgramID] || fullNeverRecorded[resB.ProgramID] {
+		t.Fatalf("ListReservationsFull never_recorded = %v, want A=true and B=false", fullNeverRecorded)
+	}
+
+	for _, test := range []struct {
+		name string
+		id   int64
+		want bool
+	}{{"A", resA.ProgramID, true}, {"B", resB.ProgramID, false}} {
+		row, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+			Site: "default", ProgramID: test.id,
+		})
+		if err != nil {
+			t.Fatalf("GetReservationFullBySiteAndProgramID(%s): %v", test.name, err)
+		}
+		if row.NeverRecorded != test.want {
+			t.Errorf("GetReservationFullBySiteAndProgramID(%s).never_recorded = %t, want %t", test.name, row.NeverRecorded, test.want)
+		}
+	}
+
+	demandRows, err := q.ListCapacityDemand(ctx, "default")
+	if err != nil {
+		t.Fatalf("ListCapacityDemand: %v", err)
+	}
+	if len(demandRows) != 1 || !demandRows[0].ProgramStartAt.Equal(startB) {
+		t.Fatalf("ListCapacityDemand rows = %+v, want only B at %s", demandRows, startB)
+	}
+
+	demandAllRows, err := q.ListCapacityDemandAllSites(ctx)
+	if err != nil {
+		t.Fatalf("ListCapacityDemandAllSites: %v", err)
+	}
+	if len(demandAllRows) != 1 || !demandAllRows[0].ProgramStartAt.Equal(startB) {
+		t.Fatalf("ListCapacityDemandAllSites rows = %+v, want only B at %s", demandAllRows, startB)
+	}
+
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel)
+VALUES ('default', 10000, 5000, 1, 0, 1, 'テスト局', 'GR', '27')`); err != nil {
+		t.Fatalf("inserting EPG service for preview: %v", err)
+	}
+	startCandidate := time.Now().UTC().Truncate(time.Microsecond).Add(24 * time.Hour)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO epg_programs (site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at)
+VALUES ('default', $1, 10000, 5000, $2, $3::timestamptz, 1800000, $3::timestamptz + interval '30 minutes')`,
+		programIDCandidate, eventID, startCandidate); err != nil {
+		t.Fatalf("inserting EPG preview candidate: %v", err)
+	}
+	previewRows, err := q.ListCapacityPreviewCandidates(ctx, sqlcgen.ListCapacityPreviewCandidatesParams{
+		Sites: []string{"default"}, ProgramIds: []int64{programIDCandidate},
+	})
+	if err != nil {
+		t.Fatalf("ListCapacityPreviewCandidates: %v", err)
+	}
+	if len(previewRows) != 1 || previewRows[0].ProgramID != programIDCandidate {
+		t.Fatalf("ListCapacityPreviewCandidates rows = %+v, want candidate %d", previewRows, programIDCandidate)
+	}
+
+	overlapRows, err := q.ListOverlappingReservations(ctx, sqlcgen.ListOverlappingReservationsParams{
+		Site: "default", TargetProgramID: 999999,
+		WindowStart: startA.Add(-time.Minute), WindowEnd: startB.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("ListOverlappingReservations: %v", err)
+	}
+	var overlapIDs []int64
+	for _, row := range overlapRows {
+		overlapIDs = append(overlapIDs, row.Reservation.ProgramID)
+	}
+	assertProgramIDs(t, "ListOverlappingReservations", overlapIDs, []int64{resB.ProgramID})
+}
+
+// snapshot の start_at を渡す書き手が、同じ event_id の B について別の欠測行を
+// 作り、実際に新規行を作ったときだけ B のログを出すことを確認する。
+func TestReconciler_RecordsReusedEventIDAtSnapshotStartAndLogs(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	startA := time.Now().UTC().Truncate(time.Microsecond).Add(-3 * time.Hour)
+	startB := startA.Add(10 * time.Minute)
+	const eventID int32 = 5432
+	const programIDA int64 = 705432
+	const programIDB int64 = 805432
+
+	createReservation(t, ctx, q, programIDA, "旧番組 A", startA)
+	resB := createReservation(t, ctx, q, programIDB, "新番組 B", startB)
+	insertNeverScheduledAtStart(t, ctx, q, eventID, startA)
+	fullB, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
+		Site: "default", ProgramID: resB.ProgramID,
+	})
+	if err != nil {
+		t.Fatalf("GetReservationFullBySiteAndProgramID(B before reconcile): %v", err)
+	}
+	if fullB.NeverRecorded {
+		t.Fatal("B.never_recorded = true before B's own observation, want false")
+	}
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	mock := mirakctest.New(t)
+	if err := newReconciler(mirakc.NewClient(mock.URL(), nil), pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+	if !hasNeverScheduledAtStart(t, ctx, pool, eventID, startA) ||
+		!hasNeverScheduledAtStart(t, ctx, pool, eventID, startB) {
+		t.Fatal("expected separate never-scheduled rows for A and B at their snapshot start times")
+	}
+	if !bytes.Contains(logs.Bytes(), []byte("program_id=805432")) ||
+		!bytes.Contains(logs.Bytes(), []byte("recorded never-scheduled outcome")) {
+		t.Errorf("expected B's new never-scheduled observation in the log, got:\n%s", logs.String())
+	}
+	if calls := scheduleCallIDs(mock, http.MethodPost); len(calls) != 0 {
+		t.Errorf("POST schedule calls = %v, want none for ended B", calls)
+	}
+}
+
+// snapshot start_at は終了後も更新されうる。古い開始時刻の欠測は新しい snapshot に
+// 一度だけ一致しなくなるが、終了済みガードが schedule POST を止め、同じパスで
+// 新しい開始時刻の欠測を記録する。次の同期評価では予約が再び除外される。
+func TestReconciler_NeverScheduledSnapshotStartChangeIsReobservedWithoutSchedulePost(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	startA := time.Now().UTC().Truncate(time.Microsecond).Add(-4 * time.Hour)
+	startB := startA.Add(time.Hour)
+	const programID int64 = 706543
+	const eventID int32 = 6543
+
+	res := createReservation(t, ctx, q, programID, "開始時刻変更後も終了済みの番組", startA)
+	insertNeverScheduledAtStart(t, ctx, q, eventID, startA)
+	rows, err := q.ListReservationsForSyncEvaluation(ctx, "default")
+	if err != nil {
+		t.Fatalf("ListReservationsForSyncEvaluation before snapshot update: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("precondition candidates = %d, want 0", len(rows))
+	}
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site: "default", ProgramID: res.ProgramID, Title: "開始時刻変更後も終了済みの番組",
+		StartAt: startB, DurationMs: 1800000, NetworkID: 10000, ServiceID: 5000,
+		ChannelType: "GR", Channel: "27", EventID: eventID, ServiceName: "テスト局",
+	}); err != nil {
+		t.Fatalf("updating program snapshot start_at: %v", err)
+	}
+	rows, err = q.ListReservationsForSyncEvaluation(ctx, "default")
+	if err != nil {
+		t.Fatalf("ListReservationsForSyncEvaluation after snapshot update: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Reservation.ProgramID != res.ProgramID {
+		t.Fatalf("candidate after snapshot update = %+v, want the ended reservation to be reconsidered", rows)
+	}
+
+	mock := mirakctest.New(t)
+	if err := newReconciler(mirakc.NewClient(mock.URL(), nil), pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after snapshot update: %v", err)
+	}
+	if calls := scheduleCallIDs(mock, http.MethodPost); len(calls) != 0 {
+		t.Fatalf("POST schedule calls = %v, want none for ended reservation", calls)
+	}
+	if !hasNeverScheduledAtStart(t, ctx, pool, eventID, startA) ||
+		!hasNeverScheduledAtStart(t, ctx, pool, eventID, startB) {
+		t.Fatal("expected the old and updated snapshot start times to retain separate observations")
+	}
+	rows, err = q.ListReservationsForSyncEvaluation(ctx, "default")
+	if err != nil {
+		t.Fatalf("ListReservationsForSyncEvaluation after reobservation: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("candidates after reobservation = %d, want 0", len(rows))
 	}
 }

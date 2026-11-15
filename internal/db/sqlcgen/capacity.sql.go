@@ -31,18 +31,21 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
       SELECT 1 FROM never_scheduled_events nse
-      -- 宛先のキーは**放送イベント**であって reservations 行ではない。reservations は
-      -- program_snapshots への FK が ON DELETE CASCADE なので、スナップショットが
-      -- GC された瞬間に一緒に消える。never_scheduled_events は program_snapshots への
-      -- FK を持たないので program_snapshots の GC と同時には消えない。ただし
-      -- EPG の放送地平を超えた観測は別の GC で刈る。reservations 行に依存すると、
-      -- GC された瞬間に「never-scheduled 行が無い」ことになり、終了済み予約が
-      -- 毎パス desired に戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が
-      -- 作るキーを宛先にしない、と同じ族）。
+      -- 宛先のキーは、放送イベントと snapshot の
+      -- 開始時刻である。reservations 行は使わない。
+      -- reservations は snapshot の GC 時に
+      -- ON DELETE CASCADE で消えるが、欠測行は
+      -- 同時には消えない。欠測表は snapshot に FK を
+      -- 持たず、放送地平を超えた観測は別の GC で刈る。
+      -- reservations 行を使うと GC 後に欠測行が無いと
+      -- 誤認され、終了済み予約が毎パス desired に戻る。
+      -- 導出器が作るキーを宛先にしない
+      -- （CLAUDE.md 不変条件 9 の identity）。
       WHERE nse.site = r.site
         AND nse.network_id = s.network_id
         AND nse.service_id = s.service_id
         AND nse.event_id = s.event_id
+        AND nse.program_start_at = s.start_at
   )
 ORDER BY s.start_at
 `
@@ -67,14 +70,20 @@ type ListCapacityDemandRow struct {
 // program_snapshots に焼き付けたチャンネル識別列（channel_type / channel）を JOIN して読む。
 //
 // 絞り込みの分担:
-//   - never-scheduled 除外: reconciler が「番組終了かつ schedule 非観測」と
-//     一度判定して never_scheduled_events 表に欠測行を作った予約は、以後
-//     schedule を作らない（= 需要にならない）ので落とす。述語は放送イベント
-//     キーで引く NOT EXISTS に一本化し、ListReservationsForSyncEvaluation
-//     （internal/db/queries/reservations.sql）と全く同じ。mirakc 由来の途中失敗は
-//     recordings にだけ現れるので除外されず、再試行経路を壊さない。これ以上の
-//     フィルタに使ってはならない（docs/schema.md §3。active / detached は
-//     どちらも同期対象）
+//   - never-scheduled 除外: reconciler が
+//     「番組終了かつ schedule 非観測」と
+//     一度判定して欠測行を作った放送イベントと
+//     snapshot 開始時刻の組は、以後 schedule を
+//     作らない（= 需要にならない）ので落とす。
+//     放送イベントと program_snapshots.start_at の
+//     組で引く NOT EXISTS に一本化し、
+//     ListReservationsForSyncEvaluation
+//     （internal/db/queries/reservations.sql）と
+//     全く同じ述語を使う。mirakc 由来の途中失敗は
+//     recordings にだけ現れるので除外されず、
+//     再試行経路を壊さない。これ以外の条件を
+//     フィルタに使ってはならない（docs/schema.md §3。
+//     active / detached はどちらも同期対象）
 //   - `channel_type IS NOT NULL AND channel IS NOT NULL` という絞り込みは持たない
 //     --- issue #101 で program_snapshots のチャンネル・イベント識別 6 列が
 //     NOT NULL 化され、NULL になる状態自体が表現不可能になったため（起きない
@@ -140,6 +149,7 @@ WHERE NOT EXISTS (
         AND nse.network_id = s.network_id
         AND nse.service_id = s.service_id
         AND nse.event_id = s.event_id
+        AND nse.program_start_at = s.start_at
   )
 ORDER BY r.site, s.start_at
 `
@@ -230,6 +240,7 @@ WHERE i.action IS DISTINCT FROM 'skip'
         AND nse.network_id = p.network_id
         AND nse.service_id = p.service_id
         AND nse.event_id = p.event_id
+        AND nse.program_start_at = p.start_at
   )
 ORDER BY p.site, p.start_at, p.program_id
 `
@@ -255,6 +266,8 @@ type ListCapacityPreviewCandidatesRow struct {
 // 仮想的に外して再計算するので、その予約は候補に残す。放送済み（終了 <= now()）の番組は
 // epg_programs が retention_grace の間残していても録れないので除く。skip 意図は残さない
 // が record 意図は dedupe の skip を覆せるので action ごと返す。
+// 新規候補には program_snapshots が無い場合がある。
+// 欠測の開始時刻は同じ射影行の p.start_at と照合する。
 // ::timestamptz の明示キャストが必要（上の ListCapacityDemand と同じ理由）。
 func (q *Queries) ListCapacityPreviewCandidates(ctx context.Context, arg ListCapacityPreviewCandidatesParams) ([]ListCapacityPreviewCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, listCapacityPreviewCandidates, arg.Sites, arg.ProgramIds, arg.RuleID)

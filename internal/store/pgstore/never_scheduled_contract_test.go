@@ -17,12 +17,14 @@ func TestNeverScheduledEventsContract(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		return contracttest.NeverScheduledFixture{
 			Store: NewNeverScheduledEvents(pool),
-			AgeObservation: func(t *testing.T, site string, event store.BroadcastEventKey, age time.Duration) {
+			AgeObservation: func(t *testing.T, site string, event store.BroadcastEventKey, programStartAt time.Time, age time.Duration) {
 				t.Helper()
 				if _, err := pool.Exec(context.Background(),
-					`UPDATE never_scheduled_events SET observed_at = now() - $5::interval
-					 WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4`,
+					`UPDATE never_scheduled_events SET observed_at = now() - $6::interval
+					 WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
+					   AND program_start_at = $5`,
 					site, event.NetworkID, event.ServiceID, event.EventID,
+					programStartAt,
 					pgtype.Interval{Microseconds: age.Microseconds(), Valid: true}); err != nil {
 					t.Fatalf("aging never-scheduled observation: %v", err)
 				}

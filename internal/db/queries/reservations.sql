@@ -34,16 +34,17 @@ RETURNING *;
 -- 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
 -- あるので必ず存在する（INNER JOIN）。
 --
--- never_recorded は orphaned_at の代わりに読むたび導出する列（CLAUDE.md
--- 不変条件 9）。放送イベントキーで never_scheduled_events 表を引き、欠測行が
--- あり、かつそのイベントに本物の recordings 行が 1 つも無いときだけ true。
+-- never_recorded は orphaned_at の代わりに読むたび導出する列
+-- （CLAUDE.md 不変条件 9）。放送イベントと snapshot の開始時刻で
+-- never_scheduled_events 表を引き、欠測行があり、かつそのイベントに
+-- 本物の recordings 行が 1 つも無いときだけ true。
 --
 -- recordings の照合は live 限定にしない --- 限定すると、後から本物の record が
 -- 来たときに never-scheduled 擬似行を永久に supersede してしまい、ごみ箱操作後も
 -- orphaned に戻らなくなる。同じ意味を `NOT EXISTS(recordings)` で保つ（#59
--- 「録れたのに orphaned のまま」の再発を防ぐ）。同期除外は recordings の有無を
--- 見ず、一度欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語
--- である。
+-- 「録れたのに orphaned のまま」の再発を防ぐ）。同期除外は
+-- recordings の有無を見ず、一度欠測と書いた放送イベントと
+-- snapshot 開始時刻の組を対象に戻さない。表示とは意図的に別の述語である。
 --
 -- 宛先は (site, program_id)（issue #99）。書き込み側
 -- （program_intents / program_overrides、issue #29）は既にこのキーに寄っており、
@@ -58,6 +59,7 @@ SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS o
              AND nse.network_id = s.network_id
              AND nse.service_id = s.service_id
              AND nse.event_id = s.event_id
+             AND nse.program_start_at = s.start_at
        ) AND NOT EXISTS (
            SELECT 1 FROM recordings rec
            WHERE rec.site = r.site
@@ -87,6 +89,7 @@ SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS o
              AND nse.network_id = s.network_id
              AND nse.service_id = s.service_id
              AND nse.event_id = s.event_id
+             AND nse.program_start_at = s.start_at
        ) AND NOT EXISTS (
            SELECT 1 FROM recordings rec
            WHERE rec.site = r.site
@@ -135,12 +138,14 @@ ORDER BY r.site, s.start_at;
 -- 番組の開始時刻・尺（reconciler の開始遅延検出に使う）は program_snapshots に
 -- 移設された（#27）ので JOIN する。FK があるので必ず存在する。
 --
--- 欠測除外の述語は never_scheduled_events 表を放送イベントキーで引く NOT EXISTS
--- で、overlaps.sql の ListOverlappingReservations / capacity.sql の
--- ListCapacityDemand と全く同じ。表示用の never_recorded（このファイルの
--- GetReservationFull 等）が本物の recordings 行の不在も条件にする意図的に別の
--- 述語であることと対比すること --- 同期除外は recordings の有無を見ず、一度
--- 欠測と判定された放送イベントを、その後本物の record が来ても対象に戻さない。
+-- 欠測除外は、放送イベントと snapshot の開始時刻で
+-- never_scheduled_events 表を引く NOT EXISTS。
+-- overlaps.sql の ListOverlappingReservations / capacity.sql の
+-- ListCapacityDemand と全く同じ述語を使う。表示用の never_recorded
+-- （このファイルの GetReservationFull 等）は、本物の recordings 行が
+-- 無いことも条件にする別の述語である。同期除外は recordings の
+-- 有無を見ず、一度欠測と判定された放送イベントと snapshot 開始時刻の
+-- 組を、本物の record が後から来ても対象に戻さない。
 -- name: ListReservationsForSyncEvaluation :many
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
@@ -150,25 +155,29 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
       SELECT 1 FROM never_scheduled_events nse
-      -- 宛先のキーは**放送イベント**であって reservations 行ではない。reservations は
-      -- program_snapshots への FK が ON DELETE CASCADE なので、スナップショットが
-      -- GC された瞬間に一緒に消える。never_scheduled_events は program_snapshots への
-      -- FK を持たないので program_snapshots の GC と同時には消えない。ただし
-      -- EPG の放送地平を超えた観測は別の GC で刈る。reservations 行に依存すると、
-      -- GC された瞬間に「欠測行が無い」ことになり、終了済み予約が毎パス desired
-      -- に戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを宛先に
-      -- しない、と同じ族）。
+      -- 宛先のキーは、放送イベントと snapshot の
+      -- 開始時刻である。reservations 行は使わない。
+      -- reservations は snapshot の GC 時に
+      -- ON DELETE CASCADE で消えるが、欠測行は
+      -- 同時には消えない。欠測表は snapshot に FK を
+      -- 持たず、放送地平を超えた観測は別の GC で刈る。
+      -- reservations 行を使うと GC 後に欠測行が無いと
+      -- 誤認され、終了済み予約が毎パス desired に戻る。
+      -- 導出器が作るキーを宛先にしない
+      -- （CLAUDE.md 不変条件 9 の identity）。
       WHERE nse.site = r.site
         AND nse.network_id = s.network_id
         AND nse.service_id = s.service_id
         AND nse.event_id = s.event_id
+        AND nse.program_start_at = s.start_at
   )
 ORDER BY s.start_at;
 
 -- 「番組終了時点で schedule が一度も観測されなかった」欠測を記録する
 -- （issue #318。旧 CreateNeverScheduledRecording を置き換える）。書き手は
--- reconciler.recordNeverScheduled だけ。行の存在＝欠測なので、宛先は放送
--- イベント (site, network_id, service_id, event_id) の PK。
+-- reconciler.recordNeverScheduled だけ。行の存在＝欠測なので、
+-- 宛先は放送イベントと番組開始時刻の組を主キーにする。
+-- (site, network_id, service_id, event_id, program_start_at)
 --
 -- 書き込み条件は「その放送イベントに生きている recordings 行が無いこと」。
 -- live の定義は recordings_unique_active_event の部分述語と同じ
@@ -178,8 +187,8 @@ ORDER BY s.start_at;
 -- :execrows で実際に INSERT できたか（1）条件不成立/既存か（0）を呼び出し側が
 -- 区別できる。
 -- name: CreateNeverScheduledEvent :execrows
-INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
-SELECT sqlc.arg('site'), sqlc.arg('network_id'), sqlc.arg('service_id'), sqlc.arg('event_id')
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
+SELECT sqlc.arg('site'), sqlc.arg('network_id'), sqlc.arg('service_id'), sqlc.arg('event_id'), sqlc.arg('program_start_at')
 WHERE NOT EXISTS (
     SELECT 1 FROM recordings rec
     WHERE rec.site = sqlc.arg('site')
@@ -189,7 +198,7 @@ WHERE NOT EXISTS (
       AND rec.deleted_at IS NULL
       AND rec.superseded_at IS NULL
 )
-ON CONFLICT (site, network_id, service_id, event_id) DO NOTHING;
+ON CONFLICT (site, network_id, service_id, event_id, program_start_at) DO NOTHING;
 
 -- EPG の放送地平を十分に超えた欠測観測を刈る。program_snapshots への FK を
 -- 持たないため、番組スナップショットの GC とは別に寿命を管理する。

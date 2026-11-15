@@ -1760,8 +1760,9 @@ func setReservationDetached(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 func seedNeverScheduledEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
-VALUES ('default', 10000, 5000, $1)`, res.ProgramID%100000); err != nil {
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
+SELECT site, network_id, service_id, event_id, start_at
+FROM program_snapshots WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("seeding never-scheduled event: %v", err)
 	}
 }
@@ -2082,10 +2083,11 @@ func TestCreateNeverScheduledEvent_IdempotentOnDirectRetry(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	params := sqlcgen.CreateNeverScheduledEventParams{
-		Site:      "default",
-		NetworkID: 10000,
-		ServiceID: 5000,
-		EventID:   19240,
+		Site:           "default",
+		NetworkID:      10000,
+		ServiceID:      5000,
+		EventID:        19240,
+		ProgramStartAt: time.Date(2026, time.November, 15, 12, 0, 0, 0, time.UTC),
 	}
 	rows, err := q.CreateNeverScheduledEvent(ctx, params)
 	if err != nil {
