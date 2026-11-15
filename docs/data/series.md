@@ -209,27 +209,19 @@ rescue は、分類ルールを録画より前に書く。INSERT トリガーが
 
 #### 自動キーの関数を変えるマイグレーション
 
-自動キーの関数を変えると、録画の既存行の生成列は自動では再計算されないので、ビューと列を落として作り直す。EPG 側は、次の同期で値が入れ替わるので、この手順は要らない。
+関数を差し替えるときは、同じトランザクション内で録画・EPG 番組・分類ルールの入力列を全行で自分自身の値に SET し直し、生成列を再計算する。この更新で、録画の通知は全行ぶん発火する。分類ルールの値が新定義で NULL になる場合は CHECK が移行を中断するので、マイグレーションの作成者が関数の定義を見直す。
 
-タイトルを SET 句に含まない UPDATE では、生成列は再計算されない。`REINDEX` でも直らない。
-
-列を作り直す順序は次の通り。
-
-1. `DROP VIEW recording_series`
-2. `DROP COLUMN`
-3. `ADD COLUMN`
-4. `CREATE VIEW`
-
-録画の自動キーの列に、索引は張らない（読み手がいないので落とした）。ビューが列を参照しているので、列だけは落とせない。関数を変えたら列も変わることを、マイグレーションのテストで確かめる。
-
-EPG 側は、この手順が要らない。同期の `ON CONFLICT DO UPDATE` が番組名を毎回 SET するので、次の同期で値が入れ替わる。
+EPG 同期が UPDATE するのは mirakc の番組一覧から返された番組だけで、未観測チャンネルの保持猶予内の行は削除もされない。そのため再取得だけでは全行を新定義に揃えられず、EPG 番組も再同期を待たずに入力列を同じ値で SET し直す。
 
 <details><summary>根拠</summary>
 
-- 自動キーの関数と列: `series_key` / `recordings.series_key`
-- 手順の対象のビュー: `recording_series`
-- 再計算されない UPDATE の条件: `title` を SET 句に含まない
-- EPG 側の列: `epg_programs.series_key`。同期が毎回 SET する列は `name`
+- 同値 UPDATE する入力と生成列: `recordings.title` → `series_key`、`epg_programs.name` → `series_key`、`label_rules.value` → `value_key`
+- 移行後の全行の保存値と関数値の一致: `TestSeriesKeyMigrations_RecomputeStoredValues`
+- NULL になる分類ルールの拒否: `label_rules_value_key_check`。テストは `TestLabelRules_ValueThatNormalizesToNullIsRejected`
+- 通知: `recordings_notify`。同値 UPDATE で当たりを書き直さない条件は `TestRecordingsLabelRuleTrigger_SkipsUpdatesThatKeepTheTitle`
+- 同期とスイープの条件: `internal/db/queries/epg.sql` の `UpsertEpgProgram` / `DeleteStaleEpgProgramsForServices`
+- 保持猶予と GC: 同ファイルの `PruneEpgPrograms`、`internal/worker/epg.go`
+- 未観測チャンネルの保持と保持猶予: `TestEpgSyncWorker_SweepIsPerChannel` / `TestEpgSyncWorker_PrunesAiredPrograms`
 
 </details>
 
