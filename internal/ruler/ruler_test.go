@@ -1322,11 +1322,11 @@ VALUES ($1, $2)`,
 // insertNeverScheduledEvent は observed_at を狙って欠測観測を作る。通常の
 // reconciler 経路では observed_at に DB の now() が入るため、GC の寿命境界を
 // 固定したいテストだけがこのヘルパーを使う。
-func insertNeverScheduledEvent(t *testing.T, pool *pgxpool.Pool, ctx context.Context, eventID int32, observedAt time.Time) {
+func insertNeverScheduledEvent(t *testing.T, pool *pgxpool.Pool, ctx context.Context, eventID int32, programStartAt, observedAt time.Time) {
 	t.Helper()
 	_, err := pool.Exec(ctx, `
-INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, observed_at)
-VALUES ($1, $2, $3, $4, $5)`, testSite, testNetworkID, testServiceID, eventID, observedAt)
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at, observed_at)
+VALUES ($1, $2, $3, $4, $5, $6)`, testSite, testNetworkID, testServiceID, eventID, programStartAt, observedAt)
 	if err != nil {
 		t.Fatalf("inserting never-scheduled event fixture: %v", err)
 	}
@@ -1517,8 +1517,10 @@ func TestRunPass_GC_DeletesStaleNeverScheduledEvents(t *testing.T) {
 	ctx := context.Background()
 
 	grace := time.Hour
-	insertNeverScheduledEvent(t, pool, ctx, 20001, time.Now().Add(-31*24*time.Hour))
-	insertNeverScheduledEvent(t, pool, ctx, 20002, time.Now().Add(-29*24*time.Hour))
+	oldObservedAt := time.Now().Add(-31 * 24 * time.Hour)
+	newObservedAt := time.Now().Add(-29 * 24 * time.Hour)
+	insertNeverScheduledEvent(t, pool, ctx, 20001, oldObservedAt, oldObservedAt)
+	insertNeverScheduledEvent(t, pool, ctx, 20002, newObservedAt, newObservedAt)
 
 	r := newRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
@@ -1559,8 +1561,10 @@ func TestRunPass_GC_NeverScheduledHorizonFollowsRetentionGraceInDays(t *testing.
 	ctx := context.Background()
 
 	grace := 3 * 24 * time.Hour // horizon = grace + 30d = 33d
-	insertNeverScheduledEvent(t, pool, ctx, 40001, time.Now().Add(-31*24*time.Hour))
-	insertNeverScheduledEvent(t, pool, ctx, 40002, time.Now().Add(-34*24*time.Hour))
+	oldObservedAt := time.Now().Add(-31 * 24 * time.Hour)
+	newObservedAt := time.Now().Add(-34 * 24 * time.Hour)
+	insertNeverScheduledEvent(t, pool, ctx, 40001, oldObservedAt, oldObservedAt)
+	insertNeverScheduledEvent(t, pool, ctx, 40002, newObservedAt, newObservedAt)
 
 	r := newRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
@@ -1598,7 +1602,7 @@ func TestRunPass_GC_AllowsStaleNeverScheduledReservationBackIntoSyncEvaluation(t
 	const programID = 20003
 	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
 	insertReservationDirect(t, pool, ctx, programID, "欠測 GC 後に同期候補へ戻る番組", start)
-	insertNeverScheduledEvent(t, pool, ctx, 1, time.Now().Add(-31*24*time.Hour))
+	insertNeverScheduledEvent(t, pool, ctx, 1, start, time.Now().Add(-31*24*time.Hour))
 
 	q := sqlcgen.New(pool)
 	before, err := q.ListReservationsForSyncEvaluation(ctx, testSite)

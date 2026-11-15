@@ -57,12 +57,12 @@ INSERT INTO reservations (site, program_id) VALUES ('default', $1)`,
 // する API 層の挙動を確認するための直接 INSERT（reconciler パスは回さない）。
 func seedNeverScheduledEvent(
 	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
-	site string, networkID, serviceID, eventID int32,
+	site string, networkID, serviceID, eventID int32, programStartAt time.Time,
 ) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
-VALUES ($1, $2, $3, $4)`, site, networkID, serviceID, eventID); err != nil {
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
+VALUES ($1, $2, $3, $4, $5)`, site, networkID, serviceID, eventID, programStartAt); err != nil {
 		t.Fatalf("seeding never-scheduled event: %v", err)
 	}
 }
@@ -163,7 +163,7 @@ func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	seedEpgProgram(t, pool, 231, 32678, 5168, 2, "never-scheduled になる番組", base.Add(30*time.Minute), false)
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 231)
-	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2)
+	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2, base.Add(30*time.Minute))
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 230), &got)
@@ -189,7 +189,7 @@ func TestGetProgramOverlaps_NeverScheduledExclusionWinsOverRecording(t *testing.
 	seedEpgProgram(t, pool, 233, 32678, 5168, 2, "never-scheduled 後に録画された番組", base.Add(30*time.Minute), false)
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 233)
-	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2)
+	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2, base.Add(30*time.Minute))
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "never-scheduled 後に録画された番組", base.Add(30*time.Minute), "finished", 2
 	})

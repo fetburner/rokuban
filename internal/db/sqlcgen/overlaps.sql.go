@@ -22,18 +22,21 @@ WHERE r.site = $1
   AND r.program_id <> $2::bigint
   AND NOT EXISTS (
       SELECT 1 FROM never_scheduled_events nse
-      -- 宛先のキーは**放送イベント**であって reservations 行ではない。reservations は
-      -- program_snapshots への FK が ON DELETE CASCADE なので、スナップショットが
-      -- GC された瞬間に一緒に消える。never_scheduled_events は program_snapshots への
-      -- FK を持たないので program_snapshots の GC と同時には消えない。ただし
-      -- EPG の放送地平を超えた観測は別の GC で刈る。reservations 行に依存すると、
-      -- GC された瞬間に「never-scheduled 行が無い」ことになり、終了済み予約が
-      -- 毎パス desired に戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が
-      -- 作るキーを宛先にしない、と同じ族）。
+      -- 宛先のキーは、放送イベントと snapshot の
+      -- 開始時刻である。reservations 行は使わない。
+      -- reservations は snapshot の GC 時に
+      -- ON DELETE CASCADE で消えるが、欠測行は
+      -- 同時には消えない。欠測表は snapshot に FK を
+      -- 持たず、放送地平を超えた観測は別の GC で刈る。
+      -- reservations 行を使うと GC 後に欠測行が無いと
+      -- 誤認され、終了済み予約が毎パス desired に戻る。
+      -- 導出器が作るキーを宛先にしない
+      -- （CLAUDE.md 不変条件 9 の identity）。
       WHERE nse.site = r.site
         AND nse.network_id = s.network_id
         AND nse.service_id = s.service_id
         AND nse.event_id = s.event_id
+        AND nse.program_start_at = s.start_at
   )
   AND s.start_at < $3::timestamptz
   AND s.start_at + (s.duration_ms * interval '1 millisecond') > $4::timestamptz
@@ -67,9 +70,12 @@ type ListOverlappingReservationsRow struct {
 // program_overrides との JOIN は ListReservationsFull
 // (internal/db/queries/reservations.sql) と同じ形。
 //
-// 欠測除外の述語は never_scheduled_events 表を放送イベントキーで引く NOT EXISTS
-// で、ListReservationsForSyncEvaluation (internal/db/queries/reservations.sql) /
-// ListCapacityDemand (internal/db/queries/capacity.sql) と全く同じ。
+// 欠測除外は、放送イベントと snapshot の開始時刻で
+// never_scheduled_events 表を引く NOT EXISTS。
+// ListReservationsForSyncEvaluation
+// (internal/db/queries/reservations.sql) と
+// ListCapacityDemand (internal/db/queries/capacity.sql)
+// で使う述語と全く同じ。
 // 理由は internal/db/queries/reservations.sql のコメント参照。
 func (q *Queries) ListOverlappingReservations(ctx context.Context, arg ListOverlappingReservationsParams) ([]ListOverlappingReservationsRow, error) {
 	rows, err := q.db.Query(ctx, listOverlappingReservations,

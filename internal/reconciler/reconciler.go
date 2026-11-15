@@ -770,8 +770,9 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 
 // recordNeverScheduled は「番組終了後に schedule が観測されなかった」予約に
 // ついて、never_scheduled_events 表に欠測の行を作る（issue #318）。欠測は試行
-// ではなく観測の不在なので、recordings（観測された試行の脊椎）ではなく放送
-// イベントを主キーにした専用表の「行の存在」で表す（CLAUDE.md 不変条件 10・12）。
+// ではなく観測の不在なので、recordings（観測された試行の脊椎）ではなく
+// 放送イベントと snapshot の開始時刻を主キーにした
+// 専用表の「行の存在」で表す（CLAUDE.md 不変条件 9・10・12）。
 //
 // now は RunPass の作成ループが使ったものをそのまま受け取る —— 判定式だけで
 // なく判定の瞬間まで揃える（別々に取ると、パス中に終了時刻を跨いだ番組が
@@ -811,7 +812,7 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 			NetworkID: snap.NetworkID,
 			ServiceID: snap.ServiceID,
 			EventID:   snap.EventID,
-		})
+		}, snap.StartAt)
 		if err != nil {
 			return fmt.Errorf("recording never-scheduled outcome for program %d: %w", res.ProgramID, err)
 		}

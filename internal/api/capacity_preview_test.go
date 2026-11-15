@@ -101,8 +101,9 @@ WHERE site = 'default' AND program_id = $1`, program.ID, program.ServiceID, prog
 		t.Fatalf("updating preview snapshot event identity: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(), `
-INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
-VALUES ('default', 32736, $1, $2)`, program.ServiceID, program.EventID); err != nil {
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
+SELECT site, network_id, service_id, event_id, start_at
+FROM program_snapshots WHERE site = 'default' AND program_id = $1`, program.ID); err != nil {
 		t.Fatalf("inserting never-scheduled event: %v", err)
 	}
 }

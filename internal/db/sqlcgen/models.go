@@ -270,11 +270,12 @@ type MissingMediaAsset struct {
 }
 
 type NeverScheduledEvent struct {
-	Site       string
-	NetworkID  int32
-	ServiceID  int32
-	EventID    int32
-	ObservedAt time.Time
+	Site           string
+	NetworkID      int32
+	ServiceID      int32
+	EventID        int32
+	ObservedAt     time.Time
+	ProgramStartAt time.Time
 }
 
 // old_generation_media_asset_copies は、論理資産の derived_generation より古い派生コピーのうち、実体無しでない現行の active コピーがどこかの置き場にあるものを返す。generation_started_at は現行世代の最初のコピー行の created_at で、呼び出し側が overlap の猶予を判定する。

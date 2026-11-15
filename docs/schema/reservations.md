@@ -123,16 +123,16 @@ base と overrides は同形の jsonb ドキュメントである（§8）。rul
 
 **状態を列に焼いてはならない。** 導出値と不可逆な観測を 1 列に混ぜる形になり、実装は式では書かず前パスからの遷移を書くことになり、片側の分岐しか持たなくなる。状態は API が読むたびに計算して返す（[invariants.md](../invariants.md) §9「式」）。
 
-active と detached は、勝者ルールと base から導出する。orphaned は、この予約の放送イベントに欠測行があり、同じイベントの録画履歴の行が 1 つも無いことから導出する。
+active と detached は、勝者ルールと base から導出する。orphaned は、この予約の放送イベントと `program_snapshots.start_at` に一致する欠測行があり、同じイベントの録画履歴の行が 1 つも無いことから導出する。
 
-「schedule が観測されなかった」は、最終観測時刻のようなタイムスタンプからは導出できない。観測側が事実として欠測行を書く必要がある。予約行の結合には、放送イベントのキーを使う。不安定な導出 id は使わない。これは不変条件 9 の identity であり、予約クエリファイルのコメントが権威である。
+「schedule が観測されなかった」は、最終観測時刻のようなタイムスタンプからは導出できない。観測側が事実として欠測行を書く必要がある。予約行の結合には、放送イベントのキーと snapshot の開始時刻を使う。不安定な導出 id は使わない。これは不変条件 9 の identity であり、予約クエリファイルのコメントが権威である。
 
 <details><summary>根拠</summary>
 
 - active / detached の導出元: `(rule_id, base)`
 - 欠測行: `never_scheduled_events`。判定は `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列
 - 導出しきれないタイムスタンプ: `epg_last_seen_at`
-- 放送イベントのキー: `(site, network_id, service_id, event_id)`
+- 欠測のキー: `(site, network_id, service_id, event_id, program_start_at)`
 - 権威のコメント: `internal/db/queries/reservations.sql`
 
 </details>
@@ -149,9 +149,9 @@ active は勝者ルールを持つ通常の予約、detached はルールが外�
 
 active は、勝者ルールを持つ通常の予約である（ルールの無い手動予約も含む）。detached は、ルールがマッチしなくなったが、record 意図または上書きがある行である。base は凍結され、実質手動予約として動く。意図がスキップなら、録画しない detached になる。
 
-orphaned は、この予約に対応する放送イベントについて、一度も schedule が観測されなかった欠測行があり、本物の録画試行は 1 行も無い予約である。mirakc 由来の途中失敗は欠測表に入らない（再試行経路を壊さない）。即削除せず残して、「録れなかった」を説明可能にする。
+orphaned は、この予約に対応する放送イベントと開始時刻について、一度も schedule が観測されなかった欠測行があり、本物の録画試行は 1 行も無い予約である。mirakc 由来の途中失敗は欠測表に入らない（再試行経路を壊さない）。即削除せず残して、「録れなかった」を説明可能にする。
 
-orphaned の判定は、欠測表の EXISTS と、同じ放送イベントの録画履歴全体に対する NOT EXISTS の積である。録画履歴は live 限定にしないので、本物の録画をごみ箱に入れても orphaned に戻らない。放送イベントのキーは、番組スナップショットを経由して引く。予約行の導出 id を結合先にしてはならない（[invariants.md](../invariants.md) §9「identity」）。
+orphaned の判定は、放送イベントと snapshot の開始時刻が一致する欠測表の EXISTS と、同じ放送イベントの録画履歴全体に対する NOT EXISTS の積である。録画履歴は live 限定にしないので、本物の録画をごみ箱に入れても orphaned に戻らない。放送イベントのキーと開始時刻は、番組スナップショットを経由して引く。予約行の導出 id を結合先にしてはならない（[invariants.md](../invariants.md) §9「identity」）。
 
 <details><summary>根拠</summary>
 
@@ -183,14 +183,14 @@ orphaned の判定は、欠測表の EXISTS と、同じ放送イベントの録
 
 #### 同期対象のフィルタ
 
-同期対象かの判定に使ってよいのは、放送イベントに欠測行が無いことだけである。active や detached は表示用の派生値なので、フィルタに使ってはならない。次の 4 点がその範囲になる。
+同期対象かの判定に使ってよいのは、放送イベントと開始時刻の組に欠測行が無いことだけである。active や detached は表示用の派生値なので、フィルタに使ってはならない。次の 4 点がその範囲になる。
 
 1. active / detached をフィルタにしてはならない。どちらも UI 表示用の派生値で、同期の可否を決めるのは実効値のスキップである。導出値を同期フィルタに使うと、ルールが外れた手動予約が気づかないうちに録画されなくなる（[invariants.md](../invariants.md) §9）。
-2. 同期除外は、欠測表の行の存在だけを見る。一度欠測と判定された放送イベントは、本物の record が後から来ても、行が寿命内にある限り同期対象に戻らない。終了済み予約を再び schedule しないためである。
+2. 同期除外は、欠測表の行の存在だけを見る。照合キーは放送イベントと `program_snapshots.start_at` の組である。同じ放送イベントでも開始時刻が違えば別番組として扱う。同じ開始時刻の欠測行が寿命内にある限り、本物の record が後から来ても予約は同期対象に戻らない。終了済み予約を再び schedule しないためである。
 3. 表示は、欠測行に加えて、本物の録画履歴の行が無いことも見る。record が来たら orphaned は消えるが、欠測行は寿命内では残る。録画履歴の照合は live 限定にしないので、ごみ箱操作で orphaned に戻らない。
 4. どちらも、mirakc 由来の途中失敗だけでは成立しない。failed 試行は録画履歴にだけ入り欠測表には入らないので、再試行経路を壊さない。
 
-欠測行を保持猶予 + 30 日まで残しても、通常は読者から観測されない。この表の読者は予約行を経由し、予約行は番組終了 + 保持猶予で先に GC されるからである。ただし、`program_id` の再利用で同じ放送イベントのキーから新番組が到達可能になる経路は、この限りではない（§3.7 の未解決の窓）。
+欠測行を保持猶予 + 30 日まで残しても、通常は読者から観測されない。この表の読者は予約行を経由し、予約行は番組終了 + 保持猶予で先に GC されるからである。`program_id` が再利用されても、開始時刻が異なる番組の予約は旧番組の欠測行に一致しない。
 
 <details><summary>根拠</summary>
 
@@ -485,21 +485,26 @@ API は、意図・上書きの作成時に射影から番組を引く。ruler �
 
 ### program_id 再利用による付け替え窓
 
-**未解決: 番組 ID の再利用で、スナップショットや欠測行が新番組に付け替わる窓がある。** identity は変更せず、検出器で実測を試みる。検出器はスナップショットが生きている窓しか観測できず、カウンタ 0 は再利用が無い根拠にならない。
+**未解決: 番組 ID の再利用で、スナップショットが新番組に付け替わる窓がある。**
 
 EPG の放送地平を約 8 日とし、旧番組 A と新番組 B が同時には射影されないと仮定する。
 
-窓は 2 つある。(a) 番組スナップショットは A の終了 + 保持猶予まで残る。そのため B の開始が A の終了から 8 日を超えて 8 日 + 保持猶予以内の約 1 日幅で、A のスナップショットが B に上書きされる。(b) 欠測表の A の欠測行は、保持猶予 + 30 日生きる。そのため B の開始が A の終了から 8 日を超えて既定の 31 日以内なら、約 23 日幅で、B が A の欠測として扱われる。
+窓 (a) では、番組スナップショットが A の終了 + 保持猶予まで残る。そのため B の開始が A の終了から 8 日を超えて 8 日 + 保持猶予以内の約 1 日幅で、A のスナップショットが B に上書きされる。
 
-検出器は、番組スナップショットと EPG 射影の結合を引く以上、観測できるのは A のスナップショットがまだ生きている窓 (a) だけである。窓 (b) は、スナップショットが先に GC された後の話なので、検出器には原理的に映らない。したがって、カウンタが 0 でも「再利用が起きていない」ことの根拠にはならず、「窓 (a) では観測されなかった」ことしか意味しない。
+欠測行は放送イベントと開始時刻の組で識別するので、開始時刻の異なる B の予約は A の欠測行に一致しない。
+
+検出器は、番組スナップショットと EPG 射影の結合を引くため、A のスナップショットが残る窓 (a) の再利用だけを観測する。カウンタ 0 が示すのは、この窓 (a) で再利用が観測されなかったことだけである。
+
+欠測を記録したあとで終了済み番組の snapshot の開始時刻が変わると、予約は同期評価の候補に一度戻る。終了判定が schedule の POST を止め、同じパスで reconciler が新しい開始時刻の欠測を記録する。
 
 <details><summary>根拠</summary>
 
 - 再利用される番号: `program_id`
 - 窓 (a) の対象: `program_snapshots`（A の終了 + `retention_grace` まで残る。幅は `8日 + retention_grace` 以内）
-- 窓 (b) の対象: `never_scheduled_events`（`retention_grace + 30日`）
+- 欠測の識別: `never_scheduled_events`（放送イベントと `program_start_at`、保持期間は `retention_grace + 30日`）
 - 検出器: `ListProgramIDReusesBySite` / `rokuban_ruler_program_id_reuse_total`
 - 検出器が引く結合: `program_snapshots ⋈ epg_programs`
+- 開始時刻の更新後の再観測と POST 抑止: `TestReconciler_NeverScheduledSnapshotStartChangeIsReobservedWithoutSchedulePost`
 
 </details>
 
@@ -516,7 +521,7 @@ Mirakurun 互換の programId は、ネットワーク・サービス・イベ�
 - 合成規則: `NID*10^10 + SID*10^5 + EID`
 - 素直に引く列: `network_id` / `service_id` / `channel_type` / `channel`
 - 読む側: reconciler の contentPath 生成。需要単位は `(channel_type, channel)`
-- 欠測を書く側: `reconciler.recordNeverScheduled` が `never_scheduled_events` に書く。識別は `(network_id, service_id, event_id)`
+- 欠測を書く側: `reconciler.recordNeverScheduled` が `never_scheduled_events` に書く。識別は `(network_id, service_id, event_id, program_start_at)`
 - 表示名: watcher が `recordings` を作るときの `service_name`。`event_id` は `epg_programs.event_id` から引く
 
 </details>

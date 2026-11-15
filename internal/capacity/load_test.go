@@ -66,13 +66,13 @@ VALUES ($1, $2, $3)`,
 // seedNeverScheduledEvent は reconciler.recordNeverScheduled が実際に書く
 // never_scheduled_events 行を模す。ListCapacityDemand がこの行の存在を
 // 「schedule を作らない予約」として除外することを確認するための直接 INSERT。
-func seedNeverScheduledEvent(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32) {
+func seedNeverScheduledEvent(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, eventID int32, programStartAt time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `
-INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
-VALUES ($1, $2, $3, $4)`,
-		testSite, networkID, serviceID, eventID); err != nil {
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
+VALUES ($1, $2, $3, $4, $5)`,
+		testSite, networkID, serviceID, eventID, programStartAt); err != nil {
 		t.Fatalf("seeding never-scheduled event: %v", err)
 	}
 }
@@ -184,7 +184,7 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 			name: "never-scheduled の欠測行がある",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
 				seedReservation(t, pool, 101, "GR", "25", start, duration, "")
-				seedNeverScheduledEvent(t, pool, 32678, 5168, int32(101%100000))
+				seedNeverScheduledEvent(t, pool, 32678, 5168, int32(101%100000), start)
 			},
 		},
 		{

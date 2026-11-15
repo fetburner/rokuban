@@ -1323,7 +1323,8 @@ CREATE TABLE public.never_scheduled_events (
     network_id integer NOT NULL,
     service_id integer NOT NULL,
     event_id integer NOT NULL,
-    observed_at timestamp with time zone DEFAULT now() NOT NULL
+    observed_at timestamp with time zone DEFAULT now() NOT NULL,
+    program_start_at timestamp with time zone NOT NULL
 );
 
 --
@@ -2061,7 +2062,7 @@ ALTER TABLE ONLY public.missing_media_assets
 --
 
 ALTER TABLE ONLY public.never_scheduled_events
-    ADD CONSTRAINT never_scheduled_events_pkey PRIMARY KEY (site, network_id, service_id, event_id);
+    ADD CONSTRAINT never_scheduled_events_pkey PRIMARY KEY (site, network_id, service_id, event_id, program_start_at);
 
 --
 -- Name: orphan_files orphan_files_pkey; Type: CONSTRAINT; Schema: public; Owner: -

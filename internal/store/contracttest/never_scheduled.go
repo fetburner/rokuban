@@ -12,7 +12,7 @@ import (
 type NeverScheduledFixture struct {
 	Store store.NeverScheduledEvents
 	// AgeObservation は記録済みの観測行の observed_at を、実装の時計で age だけ過去へ動かす。
-	AgeObservation func(t *testing.T, site string, event store.BroadcastEventKey, age time.Duration)
+	AgeObservation func(t *testing.T, site string, event store.BroadcastEventKey, programStartAt time.Time, age time.Duration)
 }
 
 // NewNeverScheduledStore は契約テスト用の欠測観測 store を作る。
@@ -26,33 +26,43 @@ func RunNeverScheduled(t *testing.T, newStore NewNeverScheduledStore) {
 	ctx := context.Background()
 	const site, otherSite = "contract-never-scheduled", "contract-never-scheduled-other"
 	event := store.BroadcastEventKey{NetworkID: 32678, ServiceID: 5168, EventID: 12345}
-	created, err := s.RecordNeverScheduled(ctx, site, event)
+	startAtA := time.Date(2026, time.November, 15, 10, 0, 0, 0, time.UTC)
+	startAtB := startAtA.Add(24 * time.Hour)
+	created, err := s.RecordNeverScheduled(ctx, site, event, startAtA)
 	if err != nil || !created {
 		t.Fatalf("RecordNeverScheduled(first) = (%t, %v), want (true, nil)", created, err)
 	}
-	created, err = s.RecordNeverScheduled(ctx, site, event)
+	created, err = s.RecordNeverScheduled(ctx, site, event, startAtA)
 	if err != nil || created {
 		t.Fatalf("RecordNeverScheduled(retry) = (%t, %v), want (false, nil)", created, err)
 	}
-	created, err = s.RecordNeverScheduled(ctx, otherSite, event)
+	created, err = s.RecordNeverScheduled(ctx, site, event, startAtB)
+	if err != nil || !created {
+		t.Fatalf("RecordNeverScheduled(same event, different program start) = (%t, %v), want (true, nil)", created, err)
+	}
+	created, err = s.RecordNeverScheduled(ctx, site, event, startAtB)
+	if err != nil || created {
+		t.Fatalf("RecordNeverScheduled(different program start retry) = (%t, %v), want (false, nil)", created, err)
+	}
+	created, err = s.RecordNeverScheduled(ctx, otherSite, event, startAtA)
 	if err != nil || !created {
 		t.Fatalf("RecordNeverScheduled(other site) = (%t, %v), want (true, nil)", created, err)
 	}
-	created, err = s.RecordNeverScheduled(ctx, otherSite, event)
+	created, err = s.RecordNeverScheduled(ctx, otherSite, event, startAtA)
 	if err != nil || created {
 		t.Fatalf("RecordNeverScheduled(other site retry) = (%t, %v), want (false, nil)", created, err)
 	}
 
-	f.AgeObservation(t, site, event, 2*time.Hour)
+	f.AgeObservation(t, site, event, startAtA, 2*time.Hour)
 	deleted, err := s.PruneNeverScheduled(ctx, time.Hour)
 	if err != nil || deleted != 1 {
 		t.Fatalf("PruneNeverScheduled(1h) = (%d, %v), want (1, nil)", deleted, err)
 	}
-	created, err = s.RecordNeverScheduled(ctx, otherSite, event)
+	created, err = s.RecordNeverScheduled(ctx, site, event, startAtB)
 	if err != nil || created {
 		t.Fatalf("RecordNeverScheduled(row newer than horizon) = (%t, %v), want (false, nil): row must survive", created, err)
 	}
-	created, err = s.RecordNeverScheduled(ctx, site, event)
+	created, err = s.RecordNeverScheduled(ctx, site, event, startAtA)
 	if err != nil || !created {
 		t.Fatalf("RecordNeverScheduled(row older than horizon) = (%t, %v), want (true, nil): row must be deleted", created, err)
 	}
