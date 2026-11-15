@@ -44,7 +44,7 @@ INSERT INTO recordings (source, site, network_id, service_id, event_id, service_
                         channel_type, channel, title, program_start_at, program_duration_ms, status,
                         deleted_at, purged_at)
 VALUES ('manual', 'default', 1, 1, $1, 'test', 'GR', '27', $2, now(), 1000, 'finished',
-        CASE WHEN $1 % 2 = 0 THEN now() END, CASE WHEN $1 % 3 = 0 THEN now() END)`, i+1, title); err != nil {
+        CASE WHEN $1 % 2 = 0 THEN now() END, CASE WHEN $1 % 2 = 0 AND $1 % 3 = 0 THEN now() END)`, i+1, title); err != nil {
 			t.Fatalf("seeding recording %q: %v", title, err)
 		}
 		if _, err := pool.Exec(ctx, `

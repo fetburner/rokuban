@@ -59,6 +59,7 @@ CREATE TABLE recordings (
     -- 残っていない録画に一度だけ立てる。ごみ箱一覧（GET /api/recordings?trash=true）は
     -- この列も IS NULL であることを要求するので、purge が完了した録画は
     -- ごみ箱一覧から外れる（[storage.md](../../storage.md) §7）
+    -- purged_at が立っていて deleted_at が NULL の行は、CHECK が拒む。
     purged_at         timestamptz,
 
     created_at        timestamptz NOT NULL DEFAULT now(),
