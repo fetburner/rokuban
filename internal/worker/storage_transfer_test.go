@@ -2219,6 +2219,10 @@ func TestStorageTransferDeletionSerializesPolicySwitches(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
 		t.Fatal(err)
 	}
+	// 作成時刻を十分過去に固定し、DB と Go の時計差を除いて削除印の直列化を検証する。
+	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = '2000-01-01T00:00:00Z'::timestamptz WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatal(err)
+	}
 	archive := store.MediaAssetCopyDeleteCandidate{CopyID: transferTestCopyID(t, pool, assetID, "archive"), MediaAssetID: assetID, Store: "archive", RelPath: "sites/default/policy-switch/source.ts"}
 	cold := store.MediaAssetCopyDeleteCandidate{CopyID: transferTestCopyID(t, pool, assetID, "cold"), MediaAssetID: assetID, Store: "cold", RelPath: "sites/default/policy-switch/source.ts"}
 
