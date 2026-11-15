@@ -54,7 +54,7 @@ func TestTransferWriterGenerationMigrationPreservesProgress(t *testing.T) {
 			t.Errorf("TRUNCATE recordings CASCADE left copies=%t progress=%t; want both empty", hasCopies, hasProgress)
 		}
 	})
-	migrateDownTo(t, dbURL, 68)
+	migrateDownTo(t, dbURL, 70)
 	pool, err = pgxpool.New(ctx, dbURL)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ WHERE conrelid = 'media_asset_copy_transfer_progress'::regclass
 			t.Fatalf("constraint violation = %v; want 23514", err)
 		}
 	}
-	migrateDownTo(t, dbURL, 68)
+	migrateDownTo(t, dbURL, 70)
 	if err := pool.QueryRow(ctx, `SELECT generation FROM media_asset_copy_transfer_progress WHERE copy_id=$1`, copyID).Scan(&generation); err != nil {
 		t.Fatal(err)
 	}
