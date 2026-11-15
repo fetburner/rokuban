@@ -46,10 +46,15 @@ flowchart TD
 
 値が正規化で NULL になるルールは作らせない（CHECK）。何も主張しないルールになるからである（不変条件 10）。
 
+`label_rules.key` は不変条件 11 の資源同定の例外には当たらないが、既に `LabelRule` の必須応答フィールドとして公開しているため残す。列を落とすと、必須応答フィールドが消え、`key` のない catalog document を古いバイナリで復元できなくなる。残すコストは CHECK で定数に固定した列だけなので、落とすより安い。
+
 <details><summary>根拠</summary>
 
 - 自動キーの関数: `series_key(title)`
 - 分類ルールの表: `label_rules`
+- 分類軸を固定する制約: `label_rules_key_check`
+- 必須応答フィールド: `openapi.yaml` の `LabelRule.required`
+- catalog の読み込みと復元: `internal/catalog/write.go` の `Load`、`internal/store/pgstore/catalog_restore.go` の `applyLabelRules`
 - 勝者の順序: `priority DESC, id ASC`
 - 短い値の例: `ドラマ`
 
