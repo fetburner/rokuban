@@ -564,6 +564,9 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	if _, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32678, ServiceID: 5168}); err == nil {
 		t.Error("the taught area still exists after DELETE")
 	}
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, id); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM media_assets WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}

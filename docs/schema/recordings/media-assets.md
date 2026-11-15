@@ -39,7 +39,7 @@ CREATE TABLE media_assets (
 ```sql
 CREATE TABLE media_asset_copies (
     id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    media_asset_id bigint NOT NULL REFERENCES media_assets (id) ON DELETE CASCADE,
+    media_asset_id bigint NOT NULL REFERENCES media_assets (id) ON DELETE NO ACTION,
     store          text   NOT NULL CHECK (store ~ '^[a-z0-9-]+$'),
     rel_path       text   NOT NULL,
     generation     bigint NOT NULL, -- この物理ファイルの世代。INSERT 後は不変
@@ -167,7 +167,7 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 
 ```sql
 CREATE TABLE media_asset_cuts (
-    media_asset_id bigint PRIMARY KEY REFERENCES media_assets (id) ON DELETE CASCADE,
+    media_asset_id bigint PRIMARY KEY REFERENCES media_assets (id) ON DELETE NO ACTION,
     keep_ranges    int8multirange NOT NULL CHECK (NOT isempty(keep_ranges))
 );
 ```
@@ -200,7 +200,7 @@ CREATE TABLE media_asset_cuts (
 
 ```sql
 CREATE TABLE media_asset_thumbnail_seeks (
-    media_asset_id bigint PRIMARY KEY REFERENCES media_assets (id) ON DELETE CASCADE,
+    media_asset_id bigint PRIMARY KEY REFERENCES media_assets (id) ON DELETE NO ACTION,
     seek_ms        bigint NOT NULL CHECK (seek_ms >= 0)
 );
 ```

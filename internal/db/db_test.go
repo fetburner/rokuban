@@ -192,17 +192,17 @@ func TestNewPool(t *testing.T) {
 		t.Error("schema_info still exists")
 	}
 
-	var constraintDefinition string
+	var deleteAction string
 	err = pool.QueryRow(ctx, `
-		SELECT pg_get_constraintdef(oid)
+		SELECT confdeltype::text
 		FROM pg_constraint
 		WHERE conname = 'recording_processing_policy_recording_id_fkey'
-	`).Scan(&constraintDefinition)
+	`).Scan(&deleteAction)
 	if err != nil {
 		t.Fatalf("checking recording_processing_policy FK: %v", err)
 	}
-	if !strings.Contains(constraintDefinition, "ON DELETE CASCADE") {
-		t.Errorf("recording_processing_policy FK = %q, want ON DELETE CASCADE", constraintDefinition)
+	if deleteAction != "a" {
+		t.Errorf("recording_processing_policy delete action = %q, want NO ACTION (a)", deleteAction)
 	}
 
 	var ruleIndexExists bool

@@ -978,6 +978,12 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	// (d) ingest 未完了（policy はあるが原本 media_asset が無い）→ 候補にしない。
 	incomplete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/incomplete.m2ts", []string{"h265"}, []byte("x"))
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_ts_scans WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM media_assets WHERE recording_id = $1`, incomplete); err != nil {
 		t.Fatal(err)
 	}

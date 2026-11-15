@@ -2564,14 +2564,14 @@ ALTER TABLE ONLY public.cm_logo_candidates
 --
 
 ALTER TABLE ONLY public.cm_logo_candidates
-    ADD CONSTRAINT cm_logo_candidates_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE SET NULL;
+    ADD CONSTRAINT cm_logo_candidates_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: cm_logos cm_logos_learned_from_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.cm_logos
-    ADD CONSTRAINT cm_logos_learned_from_fkey FOREIGN KEY (learned_from) REFERENCES public.recordings(id) ON DELETE SET NULL;
+    ADD CONSTRAINT cm_logos_learned_from_fkey FOREIGN KEY (learned_from) REFERENCES public.recordings(id);
 
 --
 -- Name: drop_positions drop_positions_media_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -2592,14 +2592,14 @@ ALTER TABLE ONLY public.drop_stats
 --
 
 ALTER TABLE ONLY public.encoded_asset_rebuild_requests
-    ADD CONSTRAINT encoded_asset_rebuild_requests_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT encoded_asset_rebuild_requests_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: encoded_asset_removal_requests encoded_asset_removal_requests_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.encoded_asset_removal_requests
-    ADD CONSTRAINT encoded_asset_removal_requests_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT encoded_asset_removal_requests_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: label_rule_hits label_rule_hits_label_rule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -2613,14 +2613,14 @@ ALTER TABLE ONLY public.label_rule_hits
 --
 
 ALTER TABLE ONLY public.label_rule_hits
-    ADD CONSTRAINT label_rule_hits_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT label_rule_hits_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: media_asset_copies media_asset_copies_media_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.media_asset_copies
-    ADD CONSTRAINT media_asset_copies_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id) ON DELETE CASCADE;
+    ADD CONSTRAINT media_asset_copies_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id);
 
 --
 -- Name: media_asset_copy_transfer_progress media_asset_copy_transfer_progress_copy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -2634,14 +2634,14 @@ ALTER TABLE ONLY public.media_asset_copy_transfer_progress
 --
 
 ALTER TABLE ONLY public.media_asset_cuts
-    ADD CONSTRAINT media_asset_cuts_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id) ON DELETE CASCADE;
+    ADD CONSTRAINT media_asset_cuts_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id);
 
 --
 -- Name: media_asset_thumbnail_seeks media_asset_thumbnail_seeks_media_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.media_asset_thumbnail_seeks
-    ADD CONSTRAINT media_asset_thumbnail_seeks_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id) ON DELETE CASCADE;
+    ADD CONSTRAINT media_asset_thumbnail_seeks_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id);
 
 --
 -- Name: media_asset_transfer_attempts media_asset_transfer_attempts_copy_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -2662,7 +2662,7 @@ ALTER TABLE ONLY public.media_asset_transfer_objects
 --
 
 ALTER TABLE ONLY public.media_asset_ts_scans
-    ADD CONSTRAINT media_asset_ts_scans_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id) ON DELETE CASCADE;
+    ADD CONSTRAINT media_asset_ts_scans_media_asset_id_fkey FOREIGN KEY (media_asset_id) REFERENCES public.media_assets(id);
 
 --
 -- Name: media_assets media_assets_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -2697,14 +2697,14 @@ ALTER TABLE ONLY public.program_overrides
 --
 
 ALTER TABLE ONLY public.record_sync
-    ADD CONSTRAINT record_sync_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE SET NULL;
+    ADD CONSTRAINT record_sync_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_chapter_ownership recording_chapter_ownership_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.recording_chapter_ownership
-    ADD CONSTRAINT recording_chapter_ownership_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_chapter_ownership_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_chapter_spans recording_chapter_spans_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -2718,35 +2718,35 @@ ALTER TABLE ONLY public.recording_chapter_spans
 --
 
 ALTER TABLE ONLY public.recording_cm_attempts
-    ADD CONSTRAINT recording_cm_attempts_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_cm_attempts_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_cm_detections recording_cm_detections_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.recording_cm_detections
-    ADD CONSTRAINT recording_cm_detections_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_cm_detections_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_encode_attempts recording_encode_attempts_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.recording_encode_attempts
-    ADD CONSTRAINT recording_encode_attempts_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_encode_attempts_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_ingest_checkpoints recording_ingest_checkpoints_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.recording_ingest_checkpoints
-    ADD CONSTRAINT recording_ingest_checkpoints_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_ingest_checkpoints_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_ingest_progress recording_ingest_progress_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.recording_ingest_progress
-    ADD CONSTRAINT recording_ingest_progress_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_ingest_progress_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_playback_positions recording_playback_positions_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -2760,14 +2760,14 @@ ALTER TABLE ONLY public.recording_playback_positions
 --
 
 ALTER TABLE ONLY public.recording_processing_policy
-    ADD CONSTRAINT recording_processing_policy_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_processing_policy_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_purge_requests recording_purge_requests_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.recording_purge_requests
-    ADD CONSTRAINT recording_purge_requests_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id) ON DELETE CASCADE;
+    ADD CONSTRAINT recording_purge_requests_recording_id_fkey FOREIGN KEY (recording_id) REFERENCES public.recordings(id);
 
 --
 -- Name: recording_watched recording_watched_recording_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

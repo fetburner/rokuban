@@ -67,7 +67,7 @@ erDiagram
     program_snapshots ||--o| program_overrides : "(site, program_id) FK, ON DELETE CASCADE"
     recordings ||--o{ record_sync : "recording_id (observed)"
     recordings ||--o{ media_assets : "recording_id"
-    recordings ||--o| recording_processing_policy : "recording_id (処理方針。衛星表、ON DELETE CASCADE)"
+    recordings ||--o| recording_processing_policy : "recording_id (処理方針。衛星表)"
     recordings ||--o| recording_ingest_progress : "recording_id (転送中。衛星表)"
     recordings ||--o| recording_ingest_checkpoints : "recording_id (ingest writer lease と再開点。衛星表)"
     recordings ||--o| recording_purge_requests : "recording_id (即時削除の要求。衛星表)"
@@ -103,7 +103,7 @@ observed は mirakc の観測で、短命で使い捨てである。schedule 全
 
 <details><summary>根拠</summary>
 
-- 処理方針の初期値が確定済み（行の存在）: `recording_processing_policy`。`recordings` の削除で CASCADE
+- 処理方針の初期値が確定済み（行の存在）: `recording_processing_policy`。初期値の確定後に削除経路はなく、録画履歴と同じく永続する（不変条件 12）
 - 原本を転送中（コミット・破棄で消える）: `recording_ingest_progress`
 - ingest writer の lease と clean handoff（原本のコミットで消える。破棄では世代を進めて残す）: `recording_ingest_checkpoints`
 - ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）: `recording_purge_requests`

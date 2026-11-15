@@ -1760,6 +1760,9 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 
 	// その後サムネイルが失われる（記録・ファイルとも）。もう
 	// until_encoded_deletable_originals の述語を満たさない。
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, thumbID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, "DELETE FROM media_assets WHERE id = $1", thumbID); err != nil {
 		t.Fatalf("removing thumbnail asset row: %v", err)
 	}
