@@ -778,7 +778,7 @@ func TestPresentCopies_UnsatisfiedEncodeRebuildsCountsMissingEncodedAsPresent(t 
 	}
 }
 
-func TestPresentCopies_RemovedEncodedAssetsKeepsMissingAsRemaining(t *testing.T) {
+func TestPresentCopies_RemovedEncodedAssetsExcludesMissingRemaining(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	keep := "p2"
 	removed := "p1"
@@ -805,20 +805,23 @@ func TestPresentCopies_RemovedEncodedAssetsKeepsMissingAsRemaining(t *testing.T)
 	presentCopiesDerived(t, pool, selfMissing, "encoded", &keep, presentCopiesDerivedStore, false)
 	requestRemoval(selfMissing)
 
-	// 残る版が実体無しの原本だけ。現状は実体無しの原本も「残る版」として数える。
+	// 残る版が実体無しの原本だけなら、最後の実体を消さない。
 	originalOnly, _ := presentCopiesRecording(t, pool, 2, 2, true)
 	setPresentCopiesPolicy(t, pool, originalOnly, "always", []string{}, false)
 	originalOnlyAsset := removedAsset(originalOnly, false)
 	requestRemoval(originalOnly)
 
 	for name, id := range map[string]int64{
-		"control (both present)":             controlAsset,
-		"removed version missing":            selfMissingAsset,
-		"only remaining is missing original": originalOnlyAsset,
+		"control (both present)":  controlAsset,
+		"removed version missing": selfMissingAsset,
 	} {
 		if !existsIn(t, pool, `SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1`, id) {
-			t.Errorf("%s: removed asset %d is not listed, want listed (current behavior)", name, id)
+			t.Errorf("%s: removed asset %d is not listed, want listed", name, id)
 		}
+	}
+
+	if existsIn(t, pool, `SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1`, originalOnlyAsset) {
+		t.Error("removed asset with only a missing original is listed, want not listed")
 	}
 
 	// 対照（列挙されない側）: 残る版が無い録画。原本の active コピーも残す encoded も無く、

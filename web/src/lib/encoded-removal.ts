@@ -12,6 +12,7 @@ export function encodedAssetLabel(asset: EncodedAsset): string {
  *
  * 最後の版かどうかはサーバー（`DELETE /api/recordings/{id}/encoded/{profile}` の 409）が
  * 外した後の状態で決める。ここは表示用の近似で、原本が削除処理中でも「原本あり」に見える。
+ * 実体無しの観測は射影に出ないため、「残る版」に数えた版があってもサーバーが 409 を返しうる。
  */
 export function encodedRemovalPlan(recording: Recording, profile: string) {
   const assets = recording.encodedAssets ?? []

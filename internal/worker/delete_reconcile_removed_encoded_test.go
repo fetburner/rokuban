@@ -267,3 +267,38 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 		t.Errorf("breaker pending = %d, want 3", cb.Pending)
 	}
 }
+
+// TestRemovedEncodedAssets_PresentCopies は他の版の実体と削除対象自身の実体を区別する。
+func TestRemovedEncodedAssets_PresentCopies(t *testing.T) {
+	for _, tc := range []struct {
+		name                                         string
+		originalMissing, otherMissing, targetMissing bool
+		want                                         bool
+	}{
+		{"only missing original remains", true, true, false, false},
+		{"present encoded remains", true, false, false, true},
+		{"missing target with present encoded", true, false, true, true},
+		{"missing target with present original", false, true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := setupTestPool(t)
+			ctx := context.Background()
+			f := seedRemovedEncodedRecording(t, pool, t.TempDir(), 9801, []string{"h265"})
+			requestEncodedRemoval(t, pool, f.recordingID, "h264")
+			for id, missing := range map[int64]bool{f.originalID: tc.originalMissing, f.h265ID: tc.otherMissing, f.h264ID: tc.targetMissing} {
+				if missing {
+					if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_copy_id) SELECT id FROM media_asset_copies WHERE media_asset_id = $1`, id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var got bool
+			if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1)`, f.h264ID).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("removed encoded candidate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
