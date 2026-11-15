@@ -215,7 +215,7 @@ CREATE FUNCTION public.encode_attempts_exhausted(rec_id bigint, profile_name tex
         WHERE a.recording_id = rec_id
           AND a.profile = profile_name
           AND a.state = 'failed'
-          AND GREATEST(a.attempt_count, 1) >= attempt_limit
+          AND a.attempt_count >= attempt_limit
     )
 $$;
 
@@ -223,7 +223,7 @@ $$;
 -- Name: FUNCTION encode_attempts_exhausted(rec_id bigint, profile_name text, attempt_limit integer); Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON FUNCTION public.encode_attempts_exhausted(rec_id bigint, profile_name text, attempt_limit integer) IS 'encode_attempts_exhausted は (recording_id, profile) の failed 試行が attempt_limit に達したかを返す。recording_encode_attempts.attempt_count が 0 の旧行は 1 回と数え、running 行は除外しない。';
+COMMENT ON FUNCTION public.encode_attempts_exhausted(rec_id bigint, profile_name text, attempt_limit integer) IS 'encode_attempts_exhausted は (recording_id, profile) の failed 試行が attempt_limit に達したかを返す。running 行は除外しない。';
 
 --
 -- Name: genre_lv1_of(jsonb); Type: FUNCTION; Schema: public; Owner: -
@@ -1487,8 +1487,8 @@ CREATE TABLE public.recording_encode_attempts (
     state text NOT NULL,
     error text,
     attempted_at timestamp with time zone DEFAULT now() NOT NULL,
-    attempt_count integer DEFAULT 0 NOT NULL,
-    CONSTRAINT recording_encode_attempts_attempt_count_check CHECK ((attempt_count >= 0)),
+    attempt_count integer DEFAULT 1 NOT NULL,
+    CONSTRAINT recording_encode_attempts_attempt_count_check CHECK ((attempt_count >= 1)),
     CONSTRAINT recording_encode_attempts_state_check CHECK ((state = ANY (ARRAY['running'::text, 'failed'::text])))
 );
 

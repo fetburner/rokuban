@@ -185,8 +185,8 @@ type ListEncodeQueueRow struct {
 // ある印（行は queued と running の分割になる）。active な encoded が既にある、
 // ごみ箱、設定から消えた profile の running 行は pending_profiles か述語で落ちるので
 // 数えない。`encode_attempts_exhausted` は ListMissingEncodeProfiles と同じ判定を
-// 共有し、上限に達した failed 行だけを両方から落とす。旧 worker の attempt_count = 0
-// は 1 回と数える。再要求で failed 行が消えると両方の集合に戻る。
+// 共有し、上限に達した failed 行だけを両方から落とす。再要求で failed 行が消えると
+// 両方の集合に戻る。
 func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams) ([]ListEncodeQueueRow, error) {
 	rows, err := q.db.Query(ctx, listEncodeQueue, arg.AttemptLimit, arg.KnownProfiles, arg.CutProfiles)
 	if err != nil {
