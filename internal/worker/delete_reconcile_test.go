@@ -2557,11 +2557,11 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	}
 
 	q := sqlcgen.New(pool)
-	if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: "", RelPath: relPath}); err != nil {
+	if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath}); err != nil {
 		t.Fatalf("seeding orphan record: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = q.DeleteOrphanFile(context.Background(), sqlcgen.DeleteOrphanFileParams{Store: "", RelPath: relPath})
+		_ = q.DeleteOrphanFile(context.Background(), sqlcgen.DeleteOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath})
 	})
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
@@ -2685,7 +2685,7 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatal(err)
 		}
-		if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: "", RelPath: relPath}); err != nil {
+		if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath}); err != nil {
 			t.Fatalf("seeding %s orphan: %v", relPath, err)
 		}
 		w.deleteOrphanFile(relPath, time.Hour)

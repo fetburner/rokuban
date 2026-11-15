@@ -43,33 +43,6 @@ func (q *Queries) ActivatePendingMediaAssetCopy(ctx context.Context, arg Activat
 	return result.RowsAffected(), nil
 }
 
-const adoptUnassignedIngestTemps = `-- name: AdoptUnassignedIngestTemps :exec
-UPDATE recording_ingest_progress SET temp_store = $1 WHERE temp_store = ''
-`
-
-func (q *Queries) AdoptUnassignedIngestTemps(ctx context.Context, store string) error {
-	_, err := q.db.Exec(ctx, adoptUnassignedIngestTemps, store)
-	return err
-}
-
-const adoptUnassignedOrphans = `-- name: AdoptUnassignedOrphans :exec
-UPDATE orphan_files SET store = $1 WHERE store = ''
-`
-
-func (q *Queries) AdoptUnassignedOrphans(ctx context.Context, store string) error {
-	_, err := q.db.Exec(ctx, adoptUnassignedOrphans, store)
-	return err
-}
-
-const adoptUnassignedStorageSync = `-- name: AdoptUnassignedStorageSync :exec
-UPDATE storage_sync SET store = $1 WHERE store = ''
-`
-
-func (q *Queries) AdoptUnassignedStorageSync(ctx context.Context, store string) error {
-	_, err := q.db.Exec(ctx, adoptUnassignedStorageSync, store)
-	return err
-}
-
 const catalogHasDeletedMediaAssetCopy = `-- name: CatalogHasDeletedMediaAssetCopy :one
 SELECT EXISTS (
     SELECT 1 FROM media_asset_copies copy
@@ -130,9 +103,6 @@ SELECT
     (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
         SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
     ))
-  + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
-  + (SELECT count(*) FROM orphan_files WHERE store = '')
-  + (SELECT count(*) FROM storage_sync WHERE store = '')
   + (SELECT count(*) FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile') AS count
 `
 

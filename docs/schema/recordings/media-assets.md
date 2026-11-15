@@ -83,11 +83,11 @@ CREATE TABLE media_asset_transfer_objects (
 
 未解決: `Store.Put` の成功後、所有記録を commit する前にプロセスが止まるか、所有記録の書き込みがエラーになると、そのキーは未記録のまま残り、回収されない。内容だけを見て他の書き手のキーと区別することはしない。
 
-書き手は論理資産とコピー行を同じ tx で作り、列を消す migration はコピーの無い論理資産が残っていれば止まる。`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行や、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` などの観測表と `recording_ingest_progress.temp_store` は、旧 worker が列を指定せずに INSERT するので、空の既定値を残す。
+書き手は論理資産とコピー行を同じ tx で作り、列を消す migration はコピーの無い論理資産が残っていれば止まる。`store` が空のコピー行は CHECK が拒む（不変条件 10）。worker は起動時に、コピーの無い論理資産が 1 件でもあるか、範囲が空の `delete_reconcile` のブレーカーの行が 1 件でもあれば、起動を拒む。`orphan_files` / `storage_sync` の `store` と `recording_ingest_progress.temp_store` もコピー表と同じ CHECK を持ち、既定値は無い。空文字が残る DB は migration が拒む。
 
-`storage adopt <store-name>` はコピー行を作らない。観測表と進捗行の空の `store`、範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移す。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
+`storage adopt <store-name>` はコピー行を作らない。範囲が空の `delete_reconcile` のブレーカーを指定した置き場へ移す。ブレーカーの `scope` は site も表すため、置き場名の CHECK は適用しない。削除の停止を黙って解除しないため、範囲が空なら worker の起動を拒み、adopt で指定した置き場へ停止を引き継ぐ。実行の順序は [runbook/setup.md](../../runbook/setup.md) の「置き場の目印」にある。
 
-旧 worker の `ON CONFLICT` を保つため、移行中は単一列の一意キーを残す。対象は `orphan_files(rel_path)` と `storage_sync(root)` である。新しい複合キーと並存するので、同じ `rel_path` を 2 つの置き場の孤児として記録できず、同じ `root` は 2 つの置き場の観測にならない。旧 worker を退役した後に単一列キーを外す。
+観測行の一意性は置き場を含む複合キーで決める。`orphan_files(rel_path)` と `storage_sync(root)` の単一列の一意キーは無い。同じパスや root を別の置き場でも観測できるようにするためである。置き場を指定しない INSERT は NOT NULL 制約が拒み、旧 worker との互換性は持たない。
 
 ### 世代と書き手
 
@@ -144,7 +144,11 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 複製しない列: コピーの `rel_path` と論理資産の `kind`
 - 走査時の状態: `media_asset_copies.state = 'active'`
 - 移行時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations`
-- worker 起動時のコピー必須検査と adopt の割り当て: `TestAdoptUnassignedStoreRows`
+- 観測行・進捗行の名前制約: `TestStorageStoreNames`
+- 空文字を持つ DB の移行拒否: `TestStorageStoreNamesMigrationRefusesUnassignedRows`
+- 置き場をまたぐ観測の一意性: `TestStorageSyncAllowsSameRootAcrossStores` / `TestOrphanFileAllowsSamePathAcrossStores`
+- worker 起動時のコピー必須検査: `TestAdoptUnassignedStoreRows`
+- adopt のブレーカー割り当て: `TestAdoptUnassignedStoreRowsAssignsLegacyDeleteReconcileBreaker`
 - adopt が派生世代を変えないこと: `TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent`
 - 列削除の拒否: `TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets`
 - 巻き戻しの代表コピー: `TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy`

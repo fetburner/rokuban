@@ -29,7 +29,9 @@ func newStorageAdoptCmd() *cobra.Command {
 		Short: "置き場の目印を書き、既存行を割り当てる",
 		Args:  cobra.ExactArgs(1),
 		Long: `置き場の root（storage.stores.<name>.root、無ければ media_dir）に .rokuban-store を作成し、置き場名を書き込む。
-store が空の観測行と取り込み進捗行をこの置き場へ割り当てる。コピー行は作らない。
+範囲が空の delete_reconcile ブレーカーをこの置き場へ割り当てる。コピー行は作らない。
+空文字の観測行・進捗行が残る DB は、中継版で adopt してから更新する。
+中継版の特定方法と更新手順は docs/runbook/setup.md の「空文字を持つ旧 DB」を参照する。
 
 目印が無い root に新しく目印を作る前に、DB にこの置き場のコピー行が
 あるかを確かめる。あれば、マウント漏れか別のボリュームの可能性があるので

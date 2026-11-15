@@ -338,7 +338,7 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		t.Helper()
 		if err := sqlcgen.New(pool).UpsertRecordingIngestProgress(context.Background(), sqlcgen.UpsertRecordingIngestProgressParams{
 			RecordingID: recordingID, WrittenBytes: written, ExpectedBytes: expected,
-			TempRelPath: fmt.Sprintf("sites/%s/.rokuban-ingest-contract", store.DefaultSite), TempGeneration: 1,
+			TempRelPath: fmt.Sprintf("sites/%s/.rokuban-ingest-contract", store.DefaultSite), TempGeneration: 1, TempStore: "tokyo",
 		}); err != nil {
 			t.Fatalf("seeding ingest progress for recording %d: %v", recordingID, err)
 		}
