@@ -1670,6 +1670,18 @@ CREATE TABLE public.rule_genres (
 );
 
 --
+-- Name: rule_import_keys; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rule_import_keys (
+    rule_id bigint NOT NULL,
+    source text NOT NULL,
+    external_id text NOT NULL,
+    CONSTRAINT rule_import_keys_external_id_check CHECK ((external_id <> ''::text)),
+    CONSTRAINT rule_import_keys_source_check CHECK ((source = 'epgstation'::text))
+);
+
+--
 -- Name: rule_services; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2224,6 +2236,20 @@ ALTER TABLE ONLY public.rule_genres
     ADD CONSTRAINT rule_genres_pkey PRIMARY KEY (rule_id, genre_lv1);
 
 --
+-- Name: rule_import_keys rule_import_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rule_import_keys
+    ADD CONSTRAINT rule_import_keys_pkey PRIMARY KEY (rule_id);
+
+--
+-- Name: rule_import_keys rule_import_keys_source_external_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rule_import_keys
+    ADD CONSTRAINT rule_import_keys_source_external_id_key UNIQUE (source, external_id);
+
+--
 -- Name: rule_services rule_services_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2474,12 +2500,6 @@ CREATE INDEX recordings_unpurged_id_idx ON public.recordings USING btree (id) WH
 --
 
 CREATE INDEX reservations_rule_id_idx ON public.reservations USING btree (rule_id);
-
---
--- Name: rules_epgstation_rule_id_unique; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX rules_epgstation_rule_id_unique ON public.rules USING btree ((((metadata -> 'epgstation'::text) ->> 'ruleId'::text))) WHERE (((metadata -> 'epgstation'::text) ->> 'ruleId'::text) IS NOT NULL);
 
 --
 -- Name: circuit_breakers circuit_breakers_notify; Type: TRIGGER; Schema: public; Owner: -
@@ -2817,6 +2837,13 @@ ALTER TABLE ONLY public.rule_channel_types
 
 ALTER TABLE ONLY public.rule_genres
     ADD CONSTRAINT rule_genres_rule_id_fkey FOREIGN KEY (rule_id) REFERENCES public.rules(id) ON DELETE CASCADE;
+
+--
+-- Name: rule_import_keys rule_import_keys_rule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rule_import_keys
+    ADD CONSTRAINT rule_import_keys_rule_id_fkey FOREIGN KEY (rule_id) REFERENCES public.rules(id) ON DELETE CASCADE;
 
 --
 -- Name: rule_services rule_services_rule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

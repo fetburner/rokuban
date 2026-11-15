@@ -15,7 +15,7 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 | §7 | observed: `record_sync` / `drop_stats` / `drop_positions` | [schema/record-sync.md](schema/record-sync.md) |
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
 | §9 §9.5 §9.6 | 使い捨てキャッシュ: `epg_services` / `epg_programs` / `tuner_sync` / `transfer_backlog_snapshots` | [schema/projections.md](schema/projections.md) |
-| — | 永続資産: `rules` と条件の子テーブル 6 つ | [schema/rules.md](schema/rules.md) |
+| — | 永続資産: `rules` と条件の子テーブル・取り込みキー | [schema/rules.md](schema/rules.md) |
 | §10 | マイグレーションの権威の所在 | [schema/future.md](schema/future.md) |
 
 コードコメントの「schema.md §3.5」などは、この表で該当ファイルを引ける。設計根拠は [データ層](data.md)・[メディアストレージ](storage.md)、および [invariants.md](invariants.md) にある。
@@ -61,6 +61,7 @@ erDiagram
     rules ||--o{ rule_genres : "rule_id"
     rules ||--o{ rule_times : "rule_id"
     rules ||--o{ rule_sites : "rule_id"
+    rules ||--o| rule_import_keys : "rule_id"
     rules ||--o{ reservations : "rule_id (勝者ルール)"
     program_snapshots ||--o| reservations : "(site, program_id) FK, ON DELETE CASCADE"
     program_snapshots ||--o| program_intents : "(site, program_id) FK, ON DELETE CASCADE"

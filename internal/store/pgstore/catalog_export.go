@@ -43,6 +43,14 @@ func (s *Catalog) Export(ctx context.Context) (*catalogdoc.Document, error) {
 	if doc.Rules, err = exportRules(ctx, q); err != nil {
 		return nil, err
 	}
+	keys, err := q.CatalogListRuleImportKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing rule import keys: %w", err)
+	}
+	doc.RuleImportKeys = make([]catalogdoc.RuleImportKey, 0, len(keys))
+	for _, key := range keys {
+		doc.RuleImportKeys = append(doc.RuleImportKeys, catalogdoc.RuleImportKey{RuleID: key.RuleID, Source: key.Source, ExternalID: key.ExternalID})
+	}
 	if doc.LabelRules, err = exportLabelRules(ctx, q); err != nil {
 		return nil, err
 	}

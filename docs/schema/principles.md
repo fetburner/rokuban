@@ -195,8 +195,6 @@ jsonb を許すのは、そのテーブル自身のロジックが中身を一�
 
 不透明なペイロードには、内容を検査する CHECK も置かない。「クエリはしないが制約はする」という中途半端な状態を作らない。同じ理由で、マージは SQL で行わず、Go 側で型付きに行う。
 
-上のクエリと制約の規律の例外は rules の EPGStation 移行キーである。不変条件 7 を優先して汎用 metadata に保持する。式の部分一意索引で同じキーを持つ行の重複を拒否し、検索も同じ式で行う（[rules](rules.md)「SSE ヒントと予約済みキー」）。
-
 まだやりがちな違反は、録画の品質イベント（jsonb）の中身への EXISTS を、core ロジックの WHERE 軸にすることである。欠測の判定軸は専用表の行の存在にし、録画の表は観測された試行だけを持つ（[recordings/history.md](recordings/history.md)「never_scheduled_events」）。
 
 <details><summary>根拠</summary>

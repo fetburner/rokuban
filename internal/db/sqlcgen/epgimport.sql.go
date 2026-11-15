@@ -9,14 +9,19 @@ import (
 	"context"
 )
 
-const findRuleByEPGStationRuleID = `-- name: FindRuleByEPGStationRuleID :one
-SELECT id, name, description, enabled, priority, is_free, duration_min_ms, duration_max_ms, period_start_at, period_end_at, dedupe_enabled, dedupe_threshold, dedupe_window, keep_original, encode_profiles, filename_template, metadata, created_at, updated_at FROM rules
-WHERE metadata->'epgstation'->>'ruleId' = $1::text
+const findRuleByImportKey = `-- name: FindRuleByImportKey :one
+SELECT r.id, r.name, r.description, r.enabled, r.priority, r.is_free, r.duration_min_ms, r.duration_max_ms, r.period_start_at, r.period_end_at, r.dedupe_enabled, r.dedupe_threshold, r.dedupe_window, r.keep_original, r.encode_profiles, r.filename_template, r.metadata, r.created_at, r.updated_at FROM rules r
+JOIN rule_import_keys k ON k.rule_id = r.id
+WHERE k.source = $1 AND k.external_id = $2
 `
 
-// EPGStation 移行キーは検索も部分一意索引と同じテキスト抽出式で比較する。
-func (q *Queries) FindRuleByEPGStationRuleID(ctx context.Context, ruleID string) (Rule, error) {
-	row := q.db.QueryRow(ctx, findRuleByEPGStationRuleID, ruleID)
+type FindRuleByImportKeyParams struct {
+	Source     string
+	ExternalID string
+}
+
+func (q *Queries) FindRuleByImportKey(ctx context.Context, arg FindRuleByImportKeyParams) (Rule, error) {
+	row := q.db.QueryRow(ctx, findRuleByImportKey, arg.Source, arg.ExternalID)
 	var i Rule
 	err := row.Scan(
 		&i.ID,
@@ -40,4 +45,19 @@ func (q *Queries) FindRuleByEPGStationRuleID(ctx context.Context, ruleID string)
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertRuleImportKey = `-- name: InsertRuleImportKey :exec
+INSERT INTO rule_import_keys (rule_id, source, external_id) VALUES ($1, $2, $3)
+`
+
+type InsertRuleImportKeyParams struct {
+	RuleID     int64
+	Source     string
+	ExternalID string
+}
+
+func (q *Queries) InsertRuleImportKey(ctx context.Context, arg InsertRuleImportKeyParams) error {
+	_, err := q.db.Exec(ctx, insertRuleImportKey, arg.RuleID, arg.Source, arg.ExternalID)
+	return err
 }

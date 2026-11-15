@@ -3080,15 +3080,10 @@ export type createRuleResponse400 = {
   status: 400
 }
 
-export type createRuleResponse409 = {
-  data: ErrorResponse
-  status: 409
-}
-
 export type createRuleResponseSuccess = (createRuleResponse201) & {
   headers: Headers;
 };
-export type createRuleResponseError = (createRuleResponse400 | createRuleResponse409) & {
+export type createRuleResponseError = (createRuleResponse400) & {
   headers: Headers;
 };
 
@@ -3317,15 +3312,10 @@ export type updateRuleResponse404 = {
   status: 404
 }
 
-export type updateRuleResponse409 = {
-  data: ErrorResponse
-  status: 409
-}
-
 export type updateRuleResponseSuccess = (updateRuleResponse200) & {
   headers: Headers;
 };
-export type updateRuleResponseError = (updateRuleResponse400 | updateRuleResponse404 | updateRuleResponse409) & {
+export type updateRuleResponseError = (updateRuleResponse400 | updateRuleResponse404) & {
   headers: Headers;
 };
 

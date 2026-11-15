@@ -272,10 +272,7 @@ func runRuleImport(t *testing.T, newFixture NewRulesFixture) {
 	dedupeWindow := int64(86400)
 	keepOriginal := "until_encoded"
 	encodeProfiles := []string{"h264"}
-	metadata := rows[0].Metadata
-	if _, ok := metadata["epgstation"]; !ok {
-		t.Fatalf("metadata after import = %v, want EPGStation identity", metadata)
-	}
+	metadata := map[string]any{"manual": "preserved"}
 	if _, err := f.Store.Update(ctx, rows[0].ID, store.RuleInput{
 		Name: rows[0].Name, Description: &description, Priority: &priority,
 		DedupeEnabled: &dedupeEnabled, DedupeThreshold: &dedupeThreshold, DedupeWindowSeconds: &dedupeWindow,
@@ -293,6 +290,9 @@ func runRuleImport(t *testing.T, newFixture NewRulesFixture) {
 		t.Fatalf("List(after manual field preservation) = %d, %v, want one rule", len(rows), err)
 	}
 	got := rows[0]
+	if got.Metadata["manual"] != "preserved" {
+		t.Fatalf("metadata after import = %v, want manual value preserved", got.Metadata)
+	}
 	if got.Description != description || got.Priority != priority || !got.DedupeEnabled ||
 		got.DedupeThreshold == nil || *got.DedupeThreshold != dedupeThreshold ||
 		got.DedupeWindowSeconds == nil || *got.DedupeWindowSeconds != dedupeWindow ||

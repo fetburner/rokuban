@@ -7141,20 +7141,6 @@ func (response CreateRule400JSONResponse) VisitCreateRuleResponse(w http.Respons
 	return err
 }
 
-type CreateRule409JSONResponse ErrorResponse
-
-func (response CreateRule409JSONResponse) VisitCreateRuleResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(409)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type DeleteRuleRequestObject struct {
 	Id int64 `json:"id"`
 }
@@ -7274,20 +7260,6 @@ func (response UpdateRule404JSONResponse) VisitUpdateRuleResponse(w http.Respons
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type UpdateRule409JSONResponse ErrorResponse
-
-func (response UpdateRule409JSONResponse) VisitUpdateRuleResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }

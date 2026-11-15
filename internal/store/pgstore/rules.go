@@ -197,10 +197,6 @@ func (s *Rules) Delete(ctx context.Context, id int64) (store.RuleDeleteResult, e
 
 // ImportEPGStationRule は EPGStation rule ID のルールを作成または更新し、子条件を全置換する。
 func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64, in store.RuleInput) (bool, error) {
-	metadata, err := json.Marshal(map[string]any{"epgstation": map[string]any{"ruleId": epgstationRuleID}})
-	if err != nil {
-		return false, fmt.Errorf("marshalling metadata for epgstation rule %d: %w", epgstationRuleID, err)
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("beginning epgstation rule import: %w", err)
@@ -208,12 +204,21 @@ func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 
-	existing, err := q.FindRuleByEPGStationRuleID(ctx, strconv.FormatInt(epgstationRuleID, 10))
+	existing, err := q.FindRuleByImportKey(ctx, sqlcgen.FindRuleByImportKeyParams{Source: "epgstation", ExternalID: strconv.FormatInt(epgstationRuleID, 10)})
 	var row sqlcgen.Rule
 	created := false
 	var oldSites []string
 	switch {
 	case err == nil:
+		// API の更新を待った場合も、ロック取得後の metadata を保持する（TestRuleImportPreservesConcurrentMetadata）。
+		if _, err := q.LockRuleForUpdate(ctx, existing.ID); err != nil {
+			return false, fmt.Errorf("locking imported rule: %w", err)
+		}
+		existing, err = q.GetRule(ctx, existing.ID)
+		if err != nil {
+			return false, fmt.Errorf("reloading imported rule: %w", err)
+		}
+
 		params, err := ruleUpdateParams(existing.ID, in)
 		if err != nil {
 			return false, err
@@ -225,7 +230,7 @@ func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64
 		params.DedupeWindow = existing.DedupeWindow
 		params.KeepOriginal = existing.KeepOriginal
 		params.EncodeProfiles = existing.EncodeProfiles
-		params.Metadata = metadata
+		params.Metadata = existing.Metadata
 		row, err = q.UpdateRule(ctx, params)
 		if err != nil {
 			return false, fmt.Errorf("updating imported epgstation rule %d: %w", epgstationRuleID, mapDatabaseError(err))
@@ -240,10 +245,12 @@ func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64
 		if err != nil {
 			return false, err
 		}
-		params.Metadata = metadata
 		row, err = q.CreateRule(ctx, params)
 		if err != nil {
 			return false, fmt.Errorf("creating imported epgstation rule %d: %w", epgstationRuleID, mapDatabaseError(err))
+		}
+		if err := q.InsertRuleImportKey(ctx, sqlcgen.InsertRuleImportKeyParams{RuleID: row.ID, Source: "epgstation", ExternalID: strconv.FormatInt(epgstationRuleID, 10)}); err != nil {
+			return false, fmt.Errorf("creating rule import key: %w", mapDatabaseError(err))
 		}
 	default:
 		return false, fmt.Errorf("looking up epgstation rule %d: %w", epgstationRuleID, err)

@@ -1,4 +1,4 @@
-> [docs/schema.md](../schema.md)（索引）の分割本文。`rules` 一式（`rules` + 条件の子テーブル 6 つ）。DDL の権威は `internal/db/migrations`（`rules` テーブル定義。dedupe の値域 CHECK も同定義内）。エンジン側の意味論（評価・重複排除・サイトの扱い）は [録画エンジン](../recording.md) §3・§3.1。
+> [docs/schema.md](../schema.md)（索引）の分割本文。`rules` 一式（`rules` + 条件の子テーブル + 取り込みキーの衛星表）。DDL の権威は `internal/db/migrations`（`rules` テーブル定義。dedupe の値域 CHECK も同定義内）。エンジン側の意味論（評価・重複排除・サイトの扱い）は [録画エンジン](../recording.md) §3・§3.1。
 
 ## rules — 録画ルール（永続資産）
 
@@ -92,29 +92,48 @@ CREATE TABLE rules (
 
 </details>
 
-### SSE ヒントと予約済みキー
+### SSE ヒント
 
 ルールの行トリガーが、トピック rules で SSE ヒントを通知する。
 
-メタデータの予約済みキー `epgstation.ruleId` は EPGStation 側のルール id を持ち、EPGStation からの移行コマンドが冪等キーとして使う。EPGStation の移行キーは式の部分一意索引で制約し、固有の列を永続表へ追加しない不変条件 7 を原則 8 より優先する。式の索引なら、列を追加せずに一意性と索引を使う検索を得られるからである。
+<details><summary>根拠</summary>
 
-このキーは移行時の同定にしか使わないので、原則 8 の例外をこのキーに限る。他の用途でこのキーを上書きしない。
+- 行トリガー: `rules_notify`。トピックは `rules`
 
-値が NULL でないキーに一意性を要求し、キーを持たない行と値が JSON null の行は複数行で許す。検索と一意性の判定は同じテキスト抽出式で比較するため、数値と同じ表記の文字列も同じキーとして扱う。検索に ORDER BY と LIMIT は置かない。
+</details>
 
-既に重複している行があっても自動では削除せず、索引の作成を失敗させる。運用者が残すルールを選び、他の行のキーを削除または訂正してから再適用する。catalog は重複があると document 全体を拒否し、途中の書き込みもロールバックする。
+### rule_import_keys — 取り込み元の同定
+
+取り込み元の同定は、ルールの条件とは書き手が異なるため衛星表に置く。取り込み元と外部 ID の汎用的な組にすることで、外部製品の概念を rules 本体に持ち込まず、型付き列だけで検索と一意性を保証する。
+
+行の存在は、そのルールが取り込みに由来することを表す。書き手は取り込みと catalog の復元だけで、API はこの表を読み書きしない。ルールの削除では他の子表と同じく連動して消える。
+
+```sql
+CREATE TABLE rule_import_keys (
+    rule_id bigint PRIMARY KEY REFERENCES rules(id) ON DELETE CASCADE,
+    source text NOT NULL CHECK (source IN ('epgstation')),
+    external_id text NOT NULL CHECK (external_id <> ''),
+    UNIQUE (source, external_id)
+);
+```
+
+metadata は不透明な利用者データで、取り込みの同定には使わない。取り込みを更新するときも既存の metadata を保持する。
+
+この表を作る前の rules.metadata にあったキーのうち、JSON の number で int64 の範囲に収まる整数値だけを衛星表へ移し、metadata から除く。それ以外は以前の取り込み検索でも一致しなかったため、そのまま残す。重複は自動で削除せず、移行を失敗させる。
+
+catalog の書き出しは、キーが無くても空の配列を出力する。復元は、この配列を持たない旧形式の文書に限って、metadata のキーのうち JSON の number で int64 に収まる整数値を衛星表へ移す。新形式の文書では metadata を不透明なまま保つ。重複を含む文書の復元は全体をロールバックする。
 
 <details><summary>根拠</summary>
 
-- 一意索引: `rules_epgstation_rule_id_unique`
-- 一意性: `TestRulesEPGStationKeyUnique`
-- 移行キーの一意索引違反に限った API の 409 応答: `TestRulesEPGStationKeyConflict`
-- catalog の重複拒否と全体ロールバック: `TestCatalogDuplicateEPGStationKey`
-- 取り込みの冪等性: `TestRulesContract/EPGStation_import_uses_stable_identity_atomically`
-- 文字列のキーを持つ行への取り込み: `TestImportEPGStationRuleStringKey`
-- 行トリガー: `rules_notify`。トピックは `rules`
-- 予約済みキー: `metadata.epgstation.ruleId`。移行コマンドは `rokuban import epgstation --rules`
-- 引き方: `metadata->'epgstation'->>'ruleId' = $1::text`
+- 同定: `rule_import_keys(source, external_id)` の UNIQUE と `FindRuleByImportKey` の JOIN
+- 一意性と削除の連動: `TestRuleImportKeysConstraints`
+- 冪等性と metadata 保持: `TestRulesContract/EPGStation_import_uses_stable_identity_atomically`
+- 並行更新の metadata 保持: `TestRuleImportPreservesConcurrentMetadata`
+- API の metadata と取り込みの独立性: `TestRulesMetadataDoesNotIdentifyImport`
+- 作成とキーの原子性: `TestRuleImportCreationRollsBackKey`
+- データ移行: `TestRuleImportKeysMigration` / `TestRuleImportKeysMigrationRejectsDuplicates`
+- catalog の往復・旧形式・重複拒否: `TestCatalogRuleImportKeys` / `TestCatalogEmptyRuleImportKeys`
+- 旧形式の変換: `TestNormalizeRuleImportKeys`
 
 </details>
 

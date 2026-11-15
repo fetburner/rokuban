@@ -1,4 +1,7 @@
--- EPGStation 移行キーは検索も部分一意索引と同じテキスト抽出式で比較する。
--- name: FindRuleByEPGStationRuleID :one
-SELECT * FROM rules
-WHERE metadata->'epgstation'->>'ruleId' = sqlc.arg(rule_id)::text;
+-- name: FindRuleByImportKey :one
+SELECT r.* FROM rules r
+JOIN rule_import_keys k ON k.rule_id = r.id
+WHERE k.source = sqlc.arg(source) AND k.external_id = sqlc.arg(external_id);
+
+-- name: InsertRuleImportKey :exec
+INSERT INTO rule_import_keys (rule_id, source, external_id) VALUES ($1, $2, $3);

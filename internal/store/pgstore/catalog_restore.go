@@ -34,6 +34,11 @@ func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options
 	if doc == nil {
 		return nil, fmt.Errorf("catalog document is nil")
 	}
+	normalized, err := normalizeRuleImportKeys(doc)
+	if err != nil {
+		return nil, fmt.Errorf("normalizing rule import keys: %w", err)
+	}
+	doc = normalized
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning catalog restore: %w", err)
@@ -100,6 +105,17 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 	// 分類ルールは recordings より前に書く。recordings の INSERT トリガーが
 	// その時点のルール集合で当たりを評価するので、後に書くと新規行の当たりが
 	// 全件再評価（下）まで空になる。
+	// 対象ルールのキーを先に外し、同じ document の復元を冪等にする。
+	for _, rule := range doc.Rules {
+		if err := q.CatalogDeleteRuleImportKey(ctx, rule.ID); err != nil {
+			return nil, fmt.Errorf("deleting rule import key: %w", err)
+		}
+	}
+	for _, key := range doc.RuleImportKeys {
+		if err := q.InsertRuleImportKey(ctx, sqlcgen.InsertRuleImportKeyParams{RuleID: key.RuleID, Source: key.Source, ExternalID: key.ExternalID}); err != nil {
+			return nil, fmt.Errorf("restoring rule import key: %w", err)
+		}
+	}
 	if err := applyLabelRules(ctx, q, doc.LabelRules, res); err != nil {
 		return nil, err
 	}

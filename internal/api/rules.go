@@ -65,9 +65,6 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 
 	row, err := h.ruleStore.Create(ctx, ruleInputFromAPI(*req.Body))
 	if err != nil {
-		if errors.Is(err, store.ErrEPGStationRuleIDConflict) {
-			return CreateRule409JSONResponse{Error: "EPGStation migration rule ID conflicts with an existing rule"}, nil
-		}
 		return nil, err
 	}
 	h.enqueueRulerPassHintsForRuleSites(ctx, row.Sites)
@@ -112,9 +109,6 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 
 	row, err := h.ruleStore.Update(ctx, req.Id, ruleInputFromAPI(*req.Body))
 	if err != nil {
-		if errors.Is(err, store.ErrEPGStationRuleIDConflict) {
-			return UpdateRule409JSONResponse{Error: "EPGStation migration rule ID conflicts with an existing rule"}, nil
-		}
 		if errors.Is(err, store.ErrNotFound) {
 			return UpdateRule404JSONResponse{Error: "rule not found"}, nil
 		}
