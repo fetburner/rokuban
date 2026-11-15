@@ -48,7 +48,7 @@ func TestTransferProgressFreshRowStartsGenerationOne(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("Acquire = (acquired=%t, %v), want acquired", acquired, err)
 	}
-	if got.Generation != 1 || got.PrevGeneration != 0 || got.Resumed || got.Offset != 0 || got.HashState != nil {
+	if got.WriterGeneration != 1 || got.PrevWriterGeneration != 0 || got.Resumed || got.Offset != 0 || got.HashState != nil {
 		t.Fatalf("Acquire progress = %+v, want generation 1 with no previous generation", got)
 	}
 }
@@ -83,7 +83,7 @@ func TestTransferProgressCleanHandoffResumesSavedState(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("Acquire after handoff = (acquired=%t, %v), want acquired", acquired, err)
 	}
-	if !got.Resumed || got.Generation != 1 || got.PrevGeneration != 1 || got.Offset != 5 || !bytes.Equal(got.HashState, state) {
+	if !got.Resumed || got.WriterGeneration != 1 || got.PrevWriterGeneration != 1 || got.Offset != 5 || !bytes.Equal(got.HashState, state) {
 		t.Fatalf("Acquire after handoff = %+v, want resumed generation 1 at offset 5 with the saved state", got)
 	}
 }
@@ -101,7 +101,7 @@ func TestTransferProgressExpiredLeaseStartsNewGeneration(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("Acquire after expiry = (acquired=%t, %v), want acquired", acquired, err)
 	}
-	if got.Resumed || got.Generation != 2 || got.PrevGeneration != 1 || got.Offset != 0 || got.HashState != nil {
+	if got.Resumed || got.WriterGeneration != 2 || got.PrevWriterGeneration != 1 || got.Offset != 0 || got.HashState != nil {
 		t.Fatalf("Acquire after expiry = %+v, want generation 2 from the start", got)
 	}
 }
@@ -132,13 +132,13 @@ func TestTransferProgressRowIsDeletedWithPendingCopy(t *testing.T) {
 	if _, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, copyID, uuid.New(), time.Minute); err != nil || !acquired {
 		t.Fatalf("Acquire = (acquired=%t, %v), want acquired", acquired, err)
 	}
-	if _, ok, err := media.GetMediaAssetTransferProgressGeneration(ctx, copyID); err != nil || !ok {
+	if _, ok, err := media.GetMediaAssetTransferProgressWriterGeneration(ctx, copyID); err != nil || !ok {
 		t.Fatalf("progress before discard = (ok=%t, %v), want a row", ok, err)
 	}
 	if err := media.DiscardPendingMediaAssetCopy(ctx, copyID); err != nil {
 		t.Fatalf("Discard: %v", err)
 	}
-	if _, ok, err := media.GetMediaAssetTransferProgressGeneration(ctx, copyID); err != nil || ok {
+	if _, ok, err := media.GetMediaAssetTransferProgressWriterGeneration(ctx, copyID); err != nil || ok {
 		t.Fatalf("progress after discard = (ok=%t, %v), want no row", ok, err)
 	}
 }

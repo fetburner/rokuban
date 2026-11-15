@@ -354,7 +354,7 @@ type transferAttempt struct {
 func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, src transferSource, targetRoot, targetPath string, owner uuid.UUID, progress store.TransferProgress, log *slog.Logger) (retErr error) {
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
 	defer cancelSlice()
-	att := &transferAttempt{owner: owner, generation: progress.Generation, slice: sliceCtx}
+	att := &transferAttempt{owner: owner, generation: progress.WriterGeneration, slice: sliceCtx}
 	defer func() {
 		if att.saved {
 			return
@@ -619,7 +619,7 @@ func (w *StorageTransferWorker) measureDerivedSource(ctx context.Context, transf
 	}
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
 	defer cancelSlice()
-	att := &transferAttempt{owner: owner, generation: progress.Generation, slice: sliceCtx}
+	att := &transferAttempt{owner: owner, generation: progress.WriterGeneration, slice: sliceCtx}
 	defer func() {
 		if att.saved {
 			return
@@ -663,13 +663,13 @@ type transferSlice struct {
 // 前の試行が保存していない（lease が切れただけの）ときは、ここでは何も数えず、世代を上げて先頭から書く。
 func (w *StorageTransferWorker) openTransferSlice(transfer store.MediaAssetTransfer, progress store.TransferProgress, targetPath string) (slice transferSlice, mismatch string, err error) {
 	if progress.Resumed {
-		path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
+		path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.WriterGeneration)
 		resumed, reason, err := resumeTransferTemp(path, progress)
 		if err != nil {
 			return transferSlice{}, "", err
 		}
 		if reason == "" {
-			resumed.generation = progress.Generation
+			resumed.generation = progress.WriterGeneration
 			return resumed, "", nil
 		}
 		// きれいな引き継ぎなのに続けられないのは、「fsync してから保存する」順序が破れたことを示す。
@@ -677,11 +677,11 @@ func (w *StorageTransferWorker) openTransferSlice(transfer store.MediaAssetTrans
 		return transferSlice{}, reason, nil
 	}
 	// 前の試行が保存せずに抜けた（lease が切れた）ときは、Acquire が世代を上げている。ここでは数えない。
-	path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.Generation)
-	if progress.PrevGeneration > 0 && progress.PrevGeneration != progress.Generation {
+	path := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.WriterGeneration)
+	if progress.PrevWriterGeneration > 0 && progress.PrevWriterGeneration != progress.WriterGeneration {
 		// 前の世代の temp は、この試行が引き継がないので消す。前の世代の書き手は lease を失っていて、
 		// 書いても別世代の temp にしか影響しない。
-		superseded := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevGeneration)
+		superseded := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevWriterGeneration)
 		if err := os.Remove(superseded); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return transferSlice{}, "", fmt.Errorf("removing superseded transfer temp: %w", err)
 		}
@@ -690,7 +690,7 @@ func (w *StorageTransferWorker) openTransferSlice(transfer store.MediaAssetTrans
 	if err != nil {
 		return transferSlice{}, "", fmt.Errorf("creating transfer temp: %w", err)
 	}
-	return transferSlice{file: file, path: path, generation: progress.Generation, hasher: sha256.New()}, "", nil
+	return transferSlice{file: file, path: path, generation: progress.WriterGeneration, hasher: sha256.New()}, "", nil
 }
 
 // resumeTransferTemp は保存された状態から temp を開く。続けられないときは、理由を空でない reason に返す（error は返さない）。
@@ -988,7 +988,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 			metrics.RecordObjectStoreError("put", startErr)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("starting derived upload: %w", startErr))
 		}
-		if replaceErr := w.Storage.ReplaceMediaAssetTransferUpload(ctx, transfer.CopyID, owner, progress.Generation, args.Store, fresh); replaceErr != nil {
+		if replaceErr := w.Storage.ReplaceMediaAssetTransferUpload(ctx, transfer.CopyID, owner, progress.WriterGeneration, args.Store, fresh); replaceErr != nil {
 			// 行に記録できなかった送信状態は、どの行も指さないのでここで捨てる。
 			abortCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if _, abortErr := dest.AbortUpload(abortCtx, fresh); abortErr != nil {
@@ -1020,7 +1020,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 		case sendErr == nil:
 			// 全部送り終えた。保存せずに、続けて完了する。
 		case sliceEnded:
-			if err := w.saveDerivedProgress(transfer.CopyID, owner, progress.Generation, state, offset); err != nil {
+			if err := w.saveDerivedProgress(transfer.CopyID, owner, progress.WriterGeneration, state, offset); err != nil {
 				if errors.Is(err, store.ErrTransferLeaseLost) {
 					return false, true, jobq.Snooze(storageTransferLockSnooze)
 				}
@@ -1034,11 +1034,11 @@ func (w *StorageTransferWorker) putDerivedResumable(
 			return false, true, w.handleTransferMismatch(ctx, transfer, log)
 		case errors.Is(sendErr, objstore.ErrUploadInvalid):
 			// 続けられない送信状態を掃除待ちに移せるよう保存してから、defer で lease を切る（saved は偽のまま）。
-			w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("continuing derived upload: %w", sendErr))
 		default:
 			metrics.RecordObjectStoreError("put", sendErr)
-			saved = w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			saved = w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("copying derived transfer source: %w", sendErr))
 		}
 	}
@@ -1051,11 +1051,11 @@ func (w *StorageTransferWorker) putDerivedResumable(
 		case errors.Is(completeErr, objstore.ErrChecksumMismatch):
 			return false, true, w.handleTransferMismatch(ctx, transfer, log)
 		case errors.Is(completeErr, objstore.ErrUploadInvalid):
-			w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+			w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("completing derived upload: %w", completeErr))
 		}
 		metrics.RecordObjectStoreError("put", completeErr)
-		saved = w.keepDerivedProgress(transfer, owner, progress.Generation, state, offset, log)
+		saved = w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 		return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", completeErr))
 	}
 	return true, false, nil
@@ -1353,7 +1353,7 @@ func storageTransferLeaseTTL() time.Duration {
 }
 
 // adoptExistingDestination は宛先が既にあるとき、採用するか、SHA-256 を測るか、照合へ入るかを決める。
-// progress.PrevGeneration の temp が宛先と同じ inode なら、採用と同時に片付ける。
+// progress.PrevWriterGeneration の temp が宛先と同じ inode なら、採用と同時に片付ける。
 func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath string, src transferSource, progress store.TransferProgress, log *slog.Logger) (bool, error) {
 	info, err := os.Lstat(targetPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1368,8 +1368,8 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, at
 	// link 済み・commit 前に落ちた転送は、宛先と前の世代の temp が同じ inode を指す。その temp は
 	// 採用と同時に片付ける。他人の宛先を採用するときは temp に触れない。
 	ownedTempPath := ""
-	if progress.PrevGeneration > 0 {
-		tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevGeneration)
+	if progress.PrevWriterGeneration > 0 {
+		tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.PrevWriterGeneration)
 		owned, err := pendingTransferDestinationOwnedByTemp(targetPath, tempPath)
 		if err != nil {
 			return true, w.recordTransferFailure(ctx, transfer, log, err)

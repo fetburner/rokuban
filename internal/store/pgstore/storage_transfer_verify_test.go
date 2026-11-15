@@ -118,7 +118,7 @@ func TestTransferSourceVerificationRequiresLiveLease(t *testing.T) {
 	if !verifyingFlag(t, media, copyID) || !next.VerifyingSource {
 		t.Fatalf("verification after an unclean handoff = (row %t, progress %t), want still verifying", verifyingFlag(t, media, copyID), next.VerifyingSource)
 	}
-	if err := media.EndMediaAssetTransferSourceVerification(ctx, copyID, nextOwner, next.Generation); err != nil {
+	if err := media.EndMediaAssetTransferSourceVerification(ctx, copyID, nextOwner, next.WriterGeneration); err != nil {
 		t.Fatalf("End by the new owner: %v", err)
 	}
 	if verifyingFlag(t, media, copyID) {
@@ -144,7 +144,7 @@ func TestTransferSourceVerificationSurvivesHandoffs(t *testing.T) {
 
 	second := uuid.New()
 	got := acquireLive(t, media, copyID, second)
-	if !got.Resumed || !got.VerifyingSource || got.Offset != 7 || string(got.HashState) != "h7" || got.Generation != 1 {
+	if !got.Resumed || !got.VerifyingSource || got.Offset != 7 || string(got.HashState) != "h7" || got.WriterGeneration != 1 {
 		t.Fatalf("clean handoff = %+v, want resumed verification at offset 7 in generation 1", got)
 	}
 	if err := media.SaveMediaAssetTransferProgress(ctx, copyID, second, 1, 9, []byte("h9"), nil); err != nil {
@@ -159,7 +159,7 @@ func TestTransferSourceVerificationSurvivesHandoffs(t *testing.T) {
 	// 3 つめの持ち主は保存せずに止まる（lease だけが切れる）。次の試行はきれいでない引き継ぎになる。
 	expireProgressLease(t, pool, copyID)
 	got = acquireLive(t, media, copyID, uuid.New())
-	if got.Resumed || !got.VerifyingSource || got.Offset != 0 || got.HashState != nil || got.Generation != 2 {
+	if got.Resumed || !got.VerifyingSource || got.Offset != 0 || got.HashState != nil || got.WriterGeneration != 2 {
 		t.Fatalf("unclean handoff = %+v, want an unresumed verification from 0 in generation 2", got)
 	}
 	var offset int64

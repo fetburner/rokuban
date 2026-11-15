@@ -1194,17 +1194,17 @@ CREATE TABLE public.media_asset_copy_transfer_progress (
     copy_id bigint NOT NULL,
     lease_owner uuid NOT NULL,
     lease_expires_at timestamp with time zone NOT NULL,
-    generation bigint NOT NULL,
+    writer_generation bigint NOT NULL,
     handed_off boolean DEFAULT false NOT NULL,
     offset_bytes bigint DEFAULT 0 NOT NULL,
     hash_state bytea,
     upload_store text,
     upload_state bytea,
     verifying_source boolean DEFAULT false NOT NULL,
-    CONSTRAINT media_asset_copy_transfer_progress_generation_check CHECK ((generation > 0)),
     CONSTRAINT media_asset_copy_transfer_progress_offset_bytes_check CHECK ((offset_bytes >= 0)),
     CONSTRAINT media_asset_copy_transfer_progress_upload_pair CHECK (((upload_store IS NULL) = (upload_state IS NULL))),
-    CONSTRAINT media_asset_copy_transfer_progress_verifying_exclusive CHECK ((NOT (verifying_source AND (upload_state IS NOT NULL))))
+    CONSTRAINT media_asset_copy_transfer_progress_verifying_exclusive CHECK ((NOT (verifying_source AND (upload_state IS NOT NULL)))),
+    CONSTRAINT media_asset_copy_transfer_progress_writer_generation_check CHECK ((writer_generation > 0))
 );
 
 --

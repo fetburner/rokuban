@@ -215,16 +215,16 @@ type MediaAssetCopy struct {
 }
 
 type MediaAssetCopyTransferProgress struct {
-	CopyID          int64
-	LeaseOwner      pgtype.UUID
-	LeaseExpiresAt  time.Time
-	Generation      int64
-	HandedOff       bool
-	OffsetBytes     int64
-	HashState       []byte
-	UploadStore     *string
-	UploadState     []byte
-	VerifyingSource bool
+	CopyID           int64
+	LeaseOwner       pgtype.UUID
+	LeaseExpiresAt   time.Time
+	WriterGeneration int64
+	HandedOff        bool
+	OffsetBytes      int64
+	HashState        []byte
+	UploadStore      *string
+	UploadState      []byte
+	VerifyingSource  bool
 }
 
 type MediaAssetCut struct {
