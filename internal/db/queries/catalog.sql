@@ -420,3 +420,9 @@ SELECT setval(
     pg_get_serial_sequence('media_assets', 'id'),
     GREATEST(COALESCE((SELECT MAX(id) FROM media_assets), 1), 1)
 );
+
+-- name: CatalogListRuleImportKeys :many
+SELECT * FROM rule_import_keys ORDER BY rule_id;
+
+-- name: CatalogDeleteRuleImportKey :exec
+DELETE FROM rule_import_keys WHERE rule_id = $1;

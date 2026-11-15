@@ -11,8 +11,8 @@ import (
 // api.d.ts の Rule / AddRuleOption / RuleSearchOption / RuleReserveOption /
 // ReserveSaveOption）を GitHub 上のソースから直接確認して起こした。
 type Rule struct {
-	// ID は EPGStation 内部のルール id。rokuban 側は rules.metadata に
-	// {"epgstation":{"ruleId": ID}} として持ち、再実行時の冪等キーにする。
+	// ID は EPGStation 内部のルール id。rokuban 側は rule_import_keys に
+	// source と external_id を持ち、再実行時の冪等キーにする。
 	ID int64 `json:"id"`
 	// IsTimeSpecification が true の時刻指定ルールは programId を持たない予約を
 	// 作るため rokuban では機能ごと落とす（docs/recording/reference.md）。

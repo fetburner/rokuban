@@ -527,6 +527,12 @@ type RuleGenre struct {
 	GenreLv1 int16
 }
 
+type RuleImportKey struct {
+	RuleID     int64
+	Source     string
+	ExternalID string
+}
+
 type RuleService struct {
 	RuleID    int64
 	NetworkID int32

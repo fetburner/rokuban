@@ -1670,6 +1670,18 @@ CREATE TABLE public.rule_genres (
 );
 
 --
+-- Name: rule_import_keys; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rule_import_keys (
+    rule_id bigint NOT NULL,
+    source text NOT NULL,
+    external_id text NOT NULL,
+    CONSTRAINT rule_import_keys_external_id_check CHECK ((external_id <> ''::text)),
+    CONSTRAINT rule_import_keys_source_check CHECK ((source = 'epgstation'::text))
+);
+
+--
 -- Name: rule_services; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2222,6 +2234,20 @@ ALTER TABLE ONLY public.rule_channel_types
 
 ALTER TABLE ONLY public.rule_genres
     ADD CONSTRAINT rule_genres_pkey PRIMARY KEY (rule_id, genre_lv1);
+
+--
+-- Name: rule_import_keys rule_import_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rule_import_keys
+    ADD CONSTRAINT rule_import_keys_pkey PRIMARY KEY (rule_id);
+
+--
+-- Name: rule_import_keys rule_import_keys_source_external_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rule_import_keys
+    ADD CONSTRAINT rule_import_keys_source_external_id_key UNIQUE (source, external_id);
 
 --
 -- Name: rule_services rule_services_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2811,6 +2837,13 @@ ALTER TABLE ONLY public.rule_channel_types
 
 ALTER TABLE ONLY public.rule_genres
     ADD CONSTRAINT rule_genres_rule_id_fkey FOREIGN KEY (rule_id) REFERENCES public.rules(id) ON DELETE CASCADE;
+
+--
+-- Name: rule_import_keys rule_import_keys_rule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rule_import_keys
+    ADD CONSTRAINT rule_import_keys_rule_id_fkey FOREIGN KEY (rule_id) REFERENCES public.rules(id) ON DELETE CASCADE;
 
 --
 -- Name: rule_services rule_services_rule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

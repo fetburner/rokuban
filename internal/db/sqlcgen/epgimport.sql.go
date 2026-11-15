@@ -7,25 +7,21 @@ package sqlcgen
 
 import (
 	"context"
-	"encoding/json"
 )
 
-const findRuleByMetadata = `-- name: FindRuleByMetadata :one
-SELECT id, name, description, enabled, priority, is_free, duration_min_ms, duration_max_ms, period_start_at, period_end_at, dedupe_enabled, dedupe_threshold, dedupe_window, keep_original, encode_profiles, filename_template, metadata, created_at, updated_at FROM rules WHERE metadata @> $1::jsonb ORDER BY id LIMIT 1
+const findRuleByImportKey = `-- name: FindRuleByImportKey :one
+SELECT r.id, r.name, r.description, r.enabled, r.priority, r.is_free, r.duration_min_ms, r.duration_max_ms, r.period_start_at, r.period_end_at, r.dedupe_enabled, r.dedupe_threshold, r.dedupe_window, r.keep_original, r.encode_profiles, r.filename_template, r.metadata, r.created_at, r.updated_at FROM rules r
+JOIN rule_import_keys k ON k.rule_id = r.id
+WHERE k.source = $1 AND k.external_id = $2
 `
 
-// rokuban import epgstation（issue #72）専用のクエリ。
-// ルールの冪等キーは rules.metadata の jsonb containment（
-// {"epgstation":{"ruleId": N}}）。rules に EPGStation 固有の列は足さない
-// （不変条件 7: mirakc/EPGStation 固有の概念を永続テーブルの列に持ち込まない。
-// metadata は既存の汎用 jsonb 列を使うだけで新しい形を固定しない。
-// 予約するキーは docs/schema/rules.md に 1 行残す）。
-//
-// ORDER BY + LIMIT 1: 同じ epgstation ruleId を持つ行が万一 2 つ以上でき
-// ても（手で metadata を編集した等）結果が実行のたびに変わらないように
-// しておく。id 昇順（最初に作られた行）を選ぶ。
-func (q *Queries) FindRuleByMetadata(ctx context.Context, metadata json.RawMessage) (Rule, error) {
-	row := q.db.QueryRow(ctx, findRuleByMetadata, metadata)
+type FindRuleByImportKeyParams struct {
+	Source     string
+	ExternalID string
+}
+
+func (q *Queries) FindRuleByImportKey(ctx context.Context, arg FindRuleByImportKeyParams) (Rule, error) {
+	row := q.db.QueryRow(ctx, findRuleByImportKey, arg.Source, arg.ExternalID)
 	var i Rule
 	err := row.Scan(
 		&i.ID,
@@ -49,4 +45,19 @@ func (q *Queries) FindRuleByMetadata(ctx context.Context, metadata json.RawMessa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertRuleImportKey = `-- name: InsertRuleImportKey :exec
+INSERT INTO rule_import_keys (rule_id, source, external_id) VALUES ($1, $2, $3)
+`
+
+type InsertRuleImportKeyParams struct {
+	RuleID     int64
+	Source     string
+	ExternalID string
+}
+
+func (q *Queries) InsertRuleImportKey(ctx context.Context, arg InsertRuleImportKeyParams) error {
+	_, err := q.db.Exec(ctx, insertRuleImportKey, arg.RuleID, arg.Source, arg.ExternalID)
+	return err
 }

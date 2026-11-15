@@ -45,6 +45,10 @@ type Document struct {
 	ExportedAt time.Time `json:"exportedAt"`
 
 	Rules []Rule `json:"rules"`
+	// RuleImportKeys は取り込み元の同定。配列の追加では Version を上げない。
+	// 旧バイナリではキーが失われてもルールと録画は復元できる。
+	// nil は旧形式として int64 に収まる整数値の metadata キーを移し、空配列は新形式として扱う。
+	RuleImportKeys []RuleImportKey `json:"ruleImportKeys"`
 	// LabelRules はシリーズ分類ルール（ユーザーが書いた、作り直せない設定）。
 	// **この配列を増やしても Version は上げない** —— 古いバイナリが新ダンプを読むと
 	// 黙って無視され、分類ルールは失われるが、録画本体・アセットは残り、
@@ -73,6 +77,13 @@ type Document struct {
 	// 指すので、rescue はこの順に書く）。
 	RecordingChapterOwnerships []RecordingChapterOwnership `json:"recordingChapterOwnerships"`
 	RecordingChapterSpans      []RecordingChapterSpan      `json:"recordingChapterSpans"`
+}
+
+// RuleImportKey は rule_import_keys の 1 行。
+type RuleImportKey struct {
+	RuleID     int64  `json:"ruleId"`
+	Source     string `json:"source"`
+	ExternalID string `json:"externalId"`
 }
 
 // LabelRule は label_rules の 1 行。生成列（value_key / keyword_key）は

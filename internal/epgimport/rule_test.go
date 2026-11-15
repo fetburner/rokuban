@@ -127,7 +127,7 @@ func TestImportRules_AREIncompatibleRegexWarns(t *testing.T) {
 	// "and the rule is silently imported as a catch-all". A rule with zero
 	// narrowing conditions left must not be enabled.
 	var enabled bool
-	if err := pool.QueryRow(ctx, `SELECT enabled FROM rules WHERE metadata @> '{"epgstation":{"ruleId":2}}'`).Scan(&enabled); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT enabled FROM rules r JOIN rule_import_keys k ON k.rule_id = r.id WHERE k.source = 'epgstation' AND k.external_id = '2'`).Scan(&enabled); err != nil {
 		t.Fatal(err)
 	}
 	if enabled {
@@ -157,7 +157,7 @@ func TestImportRules_NoConditionsFromEPGStation_ImportsDisabled(t *testing.T) {
 	}
 
 	var enabled bool
-	if err := pool.QueryRow(ctx, `SELECT enabled FROM rules WHERE metadata @> '{"epgstation":{"ruleId":5}}'`).Scan(&enabled); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT enabled FROM rules r JOIN rule_import_keys k ON k.rule_id = r.id WHERE k.source = 'epgstation' AND k.external_id = '5'`).Scan(&enabled); err != nil {
 		t.Fatal(err)
 	}
 	if enabled {
@@ -189,7 +189,7 @@ func TestImportRules_IsFreeFalseIsNotAFilter(t *testing.T) {
 	}
 
 	var isFree *bool
-	if err := pool.QueryRow(ctx, `SELECT is_free FROM rules WHERE metadata @> '{"epgstation":{"ruleId":8}}'`).Scan(&isFree); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT is_free FROM rules r JOIN rule_import_keys k ON k.rule_id = r.id WHERE k.source = 'epgstation' AND k.external_id = '8'`).Scan(&isFree); err != nil {
 		t.Fatal(err)
 	}
 	if isFree != nil {
@@ -221,7 +221,7 @@ func TestImportRules_UnsupportedTemplateVariableWarns(t *testing.T) {
 	}
 
 	var filenameTemplate string
-	if err := pool.QueryRow(ctx, `SELECT filename_template FROM rules WHERE metadata @> '{"epgstation":{"ruleId":3}}'`).
+	if err := pool.QueryRow(ctx, `SELECT filename_template FROM rules r JOIN rule_import_keys k ON k.rule_id = r.id WHERE k.source = 'epgstation' AND k.external_id = '3'`).
 		Scan(&filenameTemplate); err != nil {
 		t.Fatal(err)
 	}

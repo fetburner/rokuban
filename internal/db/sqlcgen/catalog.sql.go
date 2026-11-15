@@ -31,6 +31,15 @@ func (q *Queries) CatalogDeleteRuleGenres(ctx context.Context, ruleID int64) err
 	return err
 }
 
+const catalogDeleteRuleImportKey = `-- name: CatalogDeleteRuleImportKey :exec
+DELETE FROM rule_import_keys WHERE rule_id = $1
+`
+
+func (q *Queries) CatalogDeleteRuleImportKey(ctx context.Context, ruleID int64) error {
+	_, err := q.db.Exec(ctx, catalogDeleteRuleImportKey, ruleID)
+	return err
+}
+
 const catalogDeleteRuleServices = `-- name: CatalogDeleteRuleServices :exec
 DELETE FROM rule_services WHERE rule_id = $1
 `
@@ -692,6 +701,30 @@ func (q *Queries) CatalogListRuleGenres(ctx context.Context) ([]RuleGenre, error
 	for rows.Next() {
 		var i RuleGenre
 		if err := rows.Scan(&i.RuleID, &i.GenreLv1); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const catalogListRuleImportKeys = `-- name: CatalogListRuleImportKeys :many
+SELECT rule_id, source, external_id FROM rule_import_keys ORDER BY rule_id
+`
+
+func (q *Queries) CatalogListRuleImportKeys(ctx context.Context) ([]RuleImportKey, error) {
+	rows, err := q.db.Query(ctx, catalogListRuleImportKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RuleImportKey
+	for rows.Next() {
+		var i RuleImportKey
+		if err := rows.Scan(&i.RuleID, &i.Source, &i.ExternalID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
