@@ -11,6 +11,9 @@
 # - SET 行・set_config・pg_dump の版番号ヘッダ: 版ごとに変わるだけで定義を表さない。
 # - \restrict / \unrestrict: pg_dump 17.6 以降はダンプごとにランダムな鍵を出すので、残すと毎回差分になる
 #   （17.12 で出ることを確認済み）。
+# - 連続する空行: 1 行だけ残す。行ごとに直前が空行だったかを覚える awk で詰め、cat -s は使わない。
+#   CI の ubuntu-26.04 の cat は uutils coreutils 0.10.0 で、その cat -s は前の read が行の途中で終わり、
+#   次の read がその行を終える改行で始まると、それを空行と数えて直後の空行を落とす（0.10.0 で再現を確認済み。上流は uutils/coreutils#15655）。
 #
 # 版はマイナー版まで固定する（PG_IMAGE の digest も一緒に）。pg_dump の出力はマイナー版でも変わり
 # （17.6 以降の \restrict 等）、Docker は手元にキャッシュしたタグを pull し直さないので、タグだけだと
@@ -41,5 +44,5 @@ go run ./internal/db/schemadump "postgres://postgres@127.0.0.1:${port}/postgres?
 docker exec "$cid" pg_dump -U postgres --schema-only --no-owner --no-privileges \
   --exclude-table=goose_db_version postgres \
   | grep -v -E '^(SET |SELECT pg_catalog\.set_config|-- Dumped (from|by) |\\(un)?restrict )' \
-  | cat -s > "$OUT"
+  | awk '!($0 == "" && blank) { print } { blank = ($0 == "") }' > "$OUT"
 echo "wrote $OUT ($(wc -l < "$OUT" | tr -d " ") lines)"
