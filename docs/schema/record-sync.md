@@ -100,7 +100,9 @@ CREATE TABLE drop_stats (
 
 #### 書き手と PID 種別
 
-原本のコミット後に、解析ジョブが書く。解析記録は計測時のサイズを持ち、保持エンジンは、原本の現在サイズと一致する解析記録を要求する。
+原本のコミット後に、解析ジョブが書く。解析記録は計測時のサイズと内容のリビジョンを持ち、保持エンジンは、その両方が現在の原本と一致する記録を要求する。
+
+SHA-256 は NULL のことも後から埋まることもあり、ingest 世代は in-place 登録で変わらないため、どちらも同一性の鍵にしない。内容を差し替える書き手がリビジョンを進め、同じ文で計測記録を取り消す。取り消しだけで済ませず view でもリビジョンを照合するのは、取り消しが文のスナップショットで動き、並行してコミットされた計測記録を取り逃しうるためである。サイズの照合も残し、計測サイズが現在のサイズと食い違う記録（既存 DB に残る行や、復元した文書の行）を解析済みに数えない。
 
 PID 種別に CHECK は置かない。値の権威は Go 側の公開定数で、ブレーカー名と同じ理由、つまり分類の追加をマイグレーションなしでできるようにするためである。値は、映像・音声・その他・固定 PID 名・PMT の PID に分かれる。その他は PMT に載っているが映像でも音声でもない ES で、字幕・文字スーパー・データ放送はすべてここに入る。**分類できなかった PID は NULL にする。** 空文字は永続化しない。
 
@@ -109,6 +111,11 @@ PID 種別に CHECK は置かない。値の権威は Go 側の公開定数で�
 - 値の権威: `internal/tsstat` の公開 const。同じ理由の例は `circuit_breakers.name`
 - 値集合: `video` / `audio` / `other` / 固定 PID 名 `pat` `cat` `nit` `sdt` `eit` `tot` / `pmt`（PAT が PMT の在り処として指した PID）
 - 対象の列: `pid_type`
+- 差し替えによる記録の取り消し: `TestInPlaceOriginalInvalidatesTSScan`
+- 解析中の差し替えの拒否: `TestTSScanRejectsInFlightInPlaceReplacement`
+- 復元時のリビジョンとサイズの照合: `TestCatalogRestoresCurrentContentScan`
+- 復元による記録の取り消し: `TestCatalogRestoreRemovesAbsentTSScan`
+- 解析中の復元の拒否: `TestTSScanRejectsInFlightCatalogRestore`
 
 </details>
 
@@ -149,11 +156,11 @@ CREATE TABLE drop_positions (
 
 #### 位置の残り方
 
-統計は、原本が残っている間は解析を再実行して作り直せる。エンコード後に原本を消す設定での原本の削除は、現在のサイズと一致する計測記録を待つので、原本の削除後も位置は解析時の観測として残る。エンコード後の出力からは欠落位置を復元できない。デコーダの error concealment が、隠蔽の跡を残さないためである。
+統計は、原本が残っている間は解析を再実行して作り直せる。エンコード後に原本を消す設定での原本の削除は、内容のリビジョンとサイズが現在の原本と一致する計測記録を待つので、原本の削除後も位置は解析時の観測として残る。エンコード後の出力からは欠落位置を復元できない。デコーダの error concealment が、隠蔽の跡を残さないためである。
 
 <details><summary>根拠</summary>
 
-- 削除の待ち条件: `until_encoded` の削除は、現在の `media_assets.size_bytes` と一致する計測記録を待つ
+- 削除の待ち条件: `until_encoded` の削除は、現在の `media_assets.content_revision` と `media_assets.size_bytes` の両方が一致する計測記録を待つ
 
 </details>
 

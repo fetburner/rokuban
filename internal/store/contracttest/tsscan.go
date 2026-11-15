@@ -121,8 +121,9 @@ func runTSScanReplacementRejectsEncodedAsset(t *testing.T, newStore NewTSScanSto
 	f := newStore(t)
 	ctx := context.Background()
 	_, assetID := f.NewEncodedOnlyRecording(t)
+	source := store.TSScanSource{MediaAsset: store.MediaAsset{ID: assetID}}
 
-	applied, err := f.Store.ReplaceScan(ctx, assetID, 1,
+	applied, err := f.Store.ReplaceScan(ctx, source, 1,
 		[]store.RecordingDropStat{{Pid: 256, Packets: 3, Drops: 1}},
 		[]store.RecordingDropPosition{{Pid: 256, ByteOffset: 188}},
 	)
@@ -146,6 +147,10 @@ func runTSScanReplacement(t *testing.T, newStore NewTSScanStore) {
 	f := newStore(t)
 	ctx := context.Background()
 	recordingID, assetID := f.NewOriginal(t, 6, false)
+	source, sourceErr := f.Store.GetActiveOriginalForTSScan(ctx, recordingID)
+	if sourceErr != nil {
+		t.Fatal(sourceErr)
+	}
 
 	oldStats := []store.RecordingDropStat{{Pid: 700, Packets: 9, Drops: 2, Errors: 1, Scrambled: 3}}
 	oldPositions := []store.RecordingDropPosition{{Pid: 700, ByteOffset: 8}}
@@ -155,7 +160,7 @@ func runTSScanReplacement(t *testing.T, newStore NewTSScanStore) {
 	elapsed := int64(1234)
 	wantStats := []store.RecordingDropStat{{Pid: 256, Packets: 3, Drops: 1, PidType: &pidType}}
 	wantPositions := []store.RecordingDropPosition{{Pid: 256, ByteOffset: 188, ElapsedMs: &elapsed}}
-	applied, err := f.Store.ReplaceScan(ctx, assetID, 6, wantStats, wantPositions)
+	applied, err := f.Store.ReplaceScan(ctx, source, 6, wantStats, wantPositions)
 	if err != nil {
 		t.Fatalf("ReplaceScan: %v", err)
 	}
@@ -166,7 +171,7 @@ func runTSScanReplacement(t *testing.T, newStore NewTSScanStore) {
 	assertCurrentTSScanMarker(t, f, recordingID, 6)
 
 	f.SetAssetSize(t, assetID, 7)
-	updated, err := f.Store.ReplaceScan(ctx, assetID, 6, wantStats, wantPositions)
+	updated, err := f.Store.ReplaceScan(ctx, source, 6, wantStats, wantPositions)
 	if err != nil {
 		t.Fatalf("ReplaceScan after original size changed: %v", err)
 	}
@@ -181,6 +186,10 @@ func runTSScanReplacementAfterStateChange(t *testing.T, newStore NewTSScanStore)
 	f := newStore(t)
 	ctx := context.Background()
 	recordingID, assetID := f.NewOriginal(t, 6, false)
+	source, sourceErr := f.Store.GetActiveOriginalForTSScan(ctx, recordingID)
+	if sourceErr != nil {
+		t.Fatal(sourceErr)
+	}
 	before := TSScanSnapshot{
 		Stats:            []store.RecordingDropStat{{Pid: 700, Packets: 9, Drops: 2, Errors: 1, Scrambled: 3}},
 		Positions:        []store.RecordingDropPosition{{Pid: 700, ByteOffset: 8}},
@@ -199,7 +208,7 @@ func runTSScanReplacementAfterStateChange(t *testing.T, newStore NewTSScanStore)
 	}
 	resultCh := make(chan replaceResult, 1)
 	go func() {
-		applied, err := f.Store.ReplaceScan(ctx, assetID, 6,
+		applied, err := f.Store.ReplaceScan(ctx, source, 6,
 			[]store.RecordingDropStat{{Pid: 256, Packets: 3, Drops: 1}},
 			[]store.RecordingDropPosition{{Pid: 256, ByteOffset: 188}},
 		)
@@ -230,6 +239,10 @@ func runTSScanReplacementRollback(t *testing.T, newStore NewTSScanStore) {
 	f := newStore(t)
 	ctx := context.Background()
 	recordingID, assetID := f.NewOriginal(t, 6, false)
+	source, sourceErr := f.Store.GetActiveOriginalForTSScan(ctx, recordingID)
+	if sourceErr != nil {
+		t.Fatal(sourceErr)
+	}
 
 	oldStats := []store.RecordingDropStat{{Pid: 700, Packets: 9, Drops: 2, Errors: 1, Scrambled: 3}}
 	oldPositions := []store.RecordingDropPosition{{Pid: 700, ByteOffset: 8}}
@@ -238,7 +251,7 @@ func runTSScanReplacementRollback(t *testing.T, newStore NewTSScanStore) {
 
 	pidType := "video"
 	elapsed := int64(1234)
-	_, err := f.Store.ReplaceScan(ctx, assetID, 6,
+	_, err := f.Store.ReplaceScan(ctx, source, 6,
 		[]store.RecordingDropStat{{Pid: 256, Packets: 3, Drops: 1, PidType: &pidType}},
 		[]store.RecordingDropPosition{
 			{Pid: 256, ByteOffset: 188, ElapsedMs: &elapsed},

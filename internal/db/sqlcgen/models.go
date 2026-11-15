@@ -84,7 +84,7 @@ type CurrentCmAttempt struct {
 	PolicyGeneration int64
 }
 
-// CurrentTsScannedOriginal は、計測サイズが現在のコミット済みサイズと一致する原本を表す。state は削除済み原本の drop summary を保つため条件に含めず、active 限定が必要な呼び出し側で絞る。
+// CurrentTsScannedOriginal は、内容のリビジョンと計測サイズが現在の原本に一致する計測記録を持つ原本を表す。内容の書き手は同じ文で計測記録を取り消す。コピーの state は削除済み原本の drop summary を保つため条件に含めず、active 限定が必要な呼び出し側で絞る。
 type CurrentTsScannedOriginal struct {
 	MediaAssetID int64
 }
@@ -197,6 +197,8 @@ type MediaAsset struct {
 	DerivedGeneration int64
 	// Observed SHA-256 of the logical asset bytes, stored once for all physical copies
 	Sha256 []byte
+	// ContentRevision は、内容を差し替える書き手が進め、TS 解析の保存と計測記録の照合に使う局所のリビジョンである。catalog 文書には含めない。
+	ContentRevision int64
 }
 
 // Physical copies of logical media assets; an asset without a copy row has not been assigned by storage adopt
@@ -261,6 +263,7 @@ type MediaAssetTransferObject struct {
 type MediaAssetTsScan struct {
 	MediaAssetID     int64
 	ScannedSizeBytes int64
+	ContentRevision  int64
 }
 
 // Physical media copies that a filesystem scan failed to observe
