@@ -782,10 +782,13 @@ function HomeOpsTimeline({
                   )
                 })}
               </div>
+              {/* 目盛りの visibility と同じ描画で枠の判定値を出し、E2E はこの属性で追従を待つ。 */}
               <div
                 ref={frameRef}
                 className="min-w-0 overflow-x-auto overflow-y-hidden pb-3 [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-foreground/30"
                 data-testid="home-ops-timeline-frame"
+                data-tick-scroll-left={frameViewport.scrollLeft}
+                data-tick-client-width={frameViewport.clientWidth}
                 role="region"
                 aria-label="時間軸。横にスクロールできます"
                 tabIndex={0}
