@@ -40,7 +40,7 @@ CREATE INDEX ON reservations (rule_id);
 
 ### 書き手と表に入れないもの
 
-予約の表に残るのは ruler の 1 パスの出力という 1 つの寿命だけである（不変条件 12）。番組の事実と不可逆な観測は別の表が持ち、1 行に同居させない。
+予約の表に残るのは ruler の 1 パスの出力だけで、行はその出力と同じ 1 つの寿命を持つ（不変条件 12）。番組の事実と不可逆な観測は別の表が持ち、1 行に同居させない。
 
 出力とは、勝者ルール・導出した予約オプション・重複排除の根拠 2 列である。番組の事実は番組スナップショット（§3.7）が持ち、不可逆な観測は録画履歴の試行行（[recordings/history.md](recordings/history.md) §5）が持つ。**この 3 つを 1 行に同居させてはならない**（[invariants.md](../invariants.md) §12）。
 
@@ -62,7 +62,7 @@ CREATE INDEX ON reservations (rule_id);
 
 ルールの削除は、ユーザーの投資が無い予約行を、ルール削除と同じトランザクションで同期削除する。DELETE 文が投資の有無を適用の瞬間に再評価するので、並行して書き込まれる手動予約を誤って消さない。
 
-消すのは ruler の次のパスも導出削除する行だけで、読者（ingest の `GetReservationEncodePolicyByEvent`）は予約行が無い場合をもともと扱う。そのため、削除前の値を前提に読む者はいない（不変条件 12）。
+同期削除が消すのは ruler の次パスも導出削除する行だけで、読者（ingest `GetReservationEncodePolicyByEvent`）は予約行の無い場合を元々扱うので、削除前の値を前提に読む者はいない（不変条件 12）。
 
 ルール削除（`DELETE /api/rules/{id}`）と ruler の DELETE 文は、いずれも WHERE で意図と上書きの有無を適用の瞬間に再評価する。そのため、導出の判定と適用の間に並行して書き込まれる手動予約を誤って消す窓（[invariants.md](../invariants.md) §9「適用の瞬間」）は生じない。同期を選んだ理由は [録画エンジン](../recording.md) §4.4「取消は `PUT .../intent {action: skip}`」に詳しい。
 
