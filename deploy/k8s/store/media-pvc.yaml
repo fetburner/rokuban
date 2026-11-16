@@ -9,12 +9,13 @@
 # kind の既定 StorageClass（rancher.io/local-path）は RWX を拒否する
 # （`NodePath only supports ReadWriteOnce`）。そのため e2e overlay は RWO に落としている。
 #
-# **未解決: マウントの所有権。** `/mnt/media` の所有者と mode は、PVC のマウント元の
+# **マウントの所有権。** `/mnt/media` の所有者と mode は、PVC のマウント元の
 # ストレージが決める。PVC には named volume の copy-up が無いためである。
 # `fsGroup: 65534`（media をマウントする Pod の securityContext）は、CSI ドライバが
-# `fsGroupPolicy: File` を宣言するとき、または RWO のときだけ効く補助である。RWX の
-# media PVC では既定ポリシーのドライバで効かない。ストレージ別の決まり方と手当ては
-# docs/operations/k8s.md の「PVC マウントの所有権」節を見る。
+# `fsGroupPolicy: File` を宣言するとき、または既定の `ReadWriteOnceWithFSType` で
+# RWO かつ fsType 指定のときに効く補助である。RWX の media PVC では既定ポリシーの
+# ドライバで効かない。ストレージ別の決まり方と手当ては docs/operations/k8s.md の
+# 「PVC マウントの所有権」節を見る。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

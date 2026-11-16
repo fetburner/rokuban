@@ -94,9 +94,9 @@ compose 運用の設定は 2 箇所に分かれる。環境ごとに変わる値
 
 既定では、録画ファイルは Docker が管理する named volume に置かれる。実ディスクや NAS に置くには、bind mount に差し替え、ホスト側のディレクトリを uid/gid 65534 で書き込めるようにしておく。
 
-named volume `media` は、コンテナの `/mnt/media`（`storage.media_dir`）にマウントされる。bind mount にするには、`docker-compose.yml` の `rokuban` サービスの volume 行を差し替える。
-
 copy-up が所有権を引き継ぐのは compose の named volume だけで、k8s の PVC には無い。PVC の所有権は [k8s 運用](../operations/k8s.md) の「PVC マウントの所有権」節を見る。
+
+named volume `media` は、コンテナの `/mnt/media`（`storage.media_dir`）にマウントされる。bind mount にするには、`docker-compose.yml` の `rokuban` サービスの volume 行を差し替える。
 
 ```yaml
     volumes:
