@@ -1155,25 +1155,7 @@ func TestSegmentTransformGracefulStopDoesNotCacheInterruptedTail(t *testing.T) {
 
 			task := taskForRecording(t, manager, "recording")
 			// 止めて位置を確定させてから終わらせる。進行中のままだと、末尾が 1 つ先へ動く。
-			if err := task.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
-				t.Fatalf("stopping transform: %v", err)
-			}
-			time.Sleep(200 * time.Millisecond)
-			tail, stable := stoppedSegmentTail(t, task)
-			for retry := 0; !stable && retry < 20; retry++ {
-				if err := task.cmd.Process.Signal(syscall.SIGCONT); err != nil {
-					t.Fatal(err)
-				}
-				time.Sleep(10 * time.Millisecond)
-				if err := task.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
-					t.Fatal(err)
-				}
-				time.Sleep(20 * time.Millisecond)
-				tail, stable = stoppedSegmentTail(t, task)
-			}
-			if !stable {
-				t.Fatal("transform never reached a stable stopped state")
-			}
+			tail := stopAtStableSegmentTail(t, manager, task)
 			if tail <= key.Number {
 				t.Fatalf("tail segment %d is not past the requested segment %d", tail, key.Number)
 			}
@@ -1249,6 +1231,134 @@ func TestStoppedSegmentTailRejectsFinalizationWindow(t *testing.T) {
 	}
 }
 
+// stopAtStableSegmentTail は変換を SIGSTOP で止め、確定途中の窓を抜けるまで上限付きで止め直してから、止まったディスクの状態で決めた末尾を返す。
+// 安定状態の判定は TestStoppedSegmentTailRejectsFinalizationWindow で検証する。
+func stopAtStableSegmentTail(t *testing.T, manager *SegmentManager, task *segmentTransformTask) int64 {
+	t.Helper()
+	signal := func(sig syscall.Signal, reason transformPauseReason) {
+		t.Helper()
+		manager.mu.Lock()
+		defer manager.mu.Unlock()
+		if err := task.cmd.Process.Signal(sig); err != nil {
+			t.Fatal(err)
+		}
+		task.pauseReason = reason
+	}
+	signal(syscall.SIGSTOP, transformPausedAhead)
+	time.Sleep(20 * time.Millisecond)
+	for retry := 0; retry <= 20; retry++ {
+		if tail, stable := stoppedSegmentTail(t, task); stable {
+			return tail
+		}
+		if retry == 20 {
+			break
+		}
+		signal(syscall.SIGCONT, transformRunning)
+		time.Sleep(10 * time.Millisecond)
+		signal(syscall.SIGSTOP, transformPausedAhead)
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("transform never reached a stable stopped state")
+	return 0
+}
+
+// waitForStoppedSegmentTail は、走査が currentNumber を停止中の末尾 tail まで進めるのを待つ。tail を越えたら失敗させる。
+// 古い currentNumber から tail まで待つことは TestWaitForStoppedSegmentTailWaitsForStaleScan で検証する。
+func waitForStoppedSegmentTail(t *testing.T, manager *SegmentManager, task *segmentTransformTask, tail int64) int64 {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		manager.mu.Lock()
+		current := task.currentNumber
+		manager.mu.Unlock()
+		if current == tail {
+			return current
+		}
+		if current > tail || time.Now().After(deadline) {
+			t.Fatalf("stopped scan position = %d, want tail %d", current, tail)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestWaitForStoppedSegmentTailWaitsForStaleScan は走査間隔を長くして currentNumber が停止中の末尾より古い状態を作り、waitForStoppedSegmentTail が末尾まで待つことを確かめる。
+// 前提が成り立たないときは上限付きで止め直す。
+func TestWaitForStoppedSegmentTailWaitsForStaleScan(t *testing.T) {
+	t.Parallel()
+	ffmpeg := lookPathFFmpeg(t)
+	path := filepath.Join(t.TempDir(), "long.ts")
+	writeAlignedTestTS(t, ffmpeg, path, 60)
+	origin := firstPacketPTS(t, lookPathFFprobe(t), path)
+	manager := newRealSegmentManagerPolling(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20, 0, time.Second)
+	defer closeSegmentManager(t, manager)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	firstCtx, firstCancel := context.WithCancel(ctx)
+	defer firstCancel()
+	firstDone := startSegmentGet(manager, firstCtx, SegmentKey{"recording", "generation-1", "test", "video", 1}, testSegmentInput(path, origin))
+	waitForTransformCount(t, manager, 1)
+	task := taskForRecording(t, manager, "recording")
+	key := SegmentKey{"recording", "generation-1", "test", "video", 9}
+	done := startSegmentGet(manager, ctx, key, testSegmentInput(path, origin))
+	waitForSegmentWaiter(t, manager, task, key, time.Second)
+	firstCancel()
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("initial request did not finish after cancel")
+	}
+	var tail, before int64
+	minimum := int64(0)
+	for retry := 0; ; retry++ {
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			segments, _, err := readSegmentPlaylist(filepath.Join(task.workDir, "test.0.m3u8"), "test", "0")
+			if err == nil && len(segments) > 0 && segments[len(segments)-1] >= minimum {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no segment >= %d on disk before deadline (retry=%d)", minimum, retry)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		tail = stopAtStableSegmentTail(t, manager, task)
+		manager.mu.Lock()
+		before = task.currentNumber
+		manager.mu.Unlock()
+		if before < tail {
+			break
+		}
+		if retry == 5 {
+			t.Fatalf("stale scan prerequisite failed after 5 retries: current=%d tail=%d", before, tail)
+		}
+		t.Logf("retry stale scan prerequisite: retry=%d current=%d tail=%d", retry+1, before, tail)
+		minimum = tail
+		manager.mu.Lock()
+		err := task.cmd.Process.Signal(syscall.SIGCONT)
+		if err == nil {
+			task.pauseReason = transformRunning
+		}
+		manager.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := waitForStoppedSegmentTail(t, manager, task, tail)
+	if got != tail {
+		t.Fatalf("wait returned %d, want tail %d (before=%d)", got, tail, before)
+	}
+	t.Logf("scan caught up: before=%d tail=%d got=%d", before, tail, got)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("pending request after cancel = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending request did not finish after cancel")
+	}
+}
+
 // stoppedSegmentTail は停止中の全 rendition と映像 playlist から末尾を判定する。
 // -hls_flags temp_file では書きかけはメモリにあり、N を切るときに N.ts.tmp → rename → playlist 記載と進む。
 // この窓の N は完成済みなので、currentNumber (= N) を末尾にすると誤る。停止中のディスクから判定する。
@@ -1306,6 +1416,20 @@ func newRealSegmentManagerPrefetch(
 	prefetch int,
 ) *SegmentManager {
 	t.Helper()
+	return newRealSegmentManagerPolling(t, ffmpeg, scratch, concurrency, cacheBytes, maxSegmentBytes, prefetch, 2*time.Millisecond)
+}
+
+func newRealSegmentManagerPolling(
+	t *testing.T,
+	ffmpeg string,
+	scratch string,
+	concurrency int,
+	cacheBytes int64,
+	maxSegmentBytes int64,
+	prefetch int,
+	poll time.Duration,
+) *SegmentManager {
+	t.Helper()
 	profile := LiveProfile{
 		Name: "test", VideoCodec: "libx264", AudioCodec: "aac",
 		Preset: "ultrafast", SegmentSeconds: 2, PlaylistSize: 0,
@@ -1318,7 +1442,7 @@ func newRealSegmentManagerPrefetch(
 		MaxConcurrent:    concurrency,
 		PrefetchSegments: prefetch,
 		IdleTimeout:      2 * time.Minute,
-		PollInterval:     2 * time.Millisecond,
+		PollInterval:     poll,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1801,22 +1925,24 @@ func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
 		t.Fatalf("transform position = %d, request start = %d", current, task.requestStart)
 	}
 
+	initial := current
+	initialTail, initialStable := stoppedSegmentTail(t, task)
+	t.Logf("before resume: current=%d stoppedSegmentTail=(%d, %v)", initial, initialTail, initialStable)
 	nextKey := key
 	nextKey.Number = current + 2
 	nextContext, nextCancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer nextCancel()
 	nextDone := startSegmentGet(manager, nextContext, nextKey, testSegmentInput(inputPath, originPTS))
 	waitForSegmentWaiter(t, manager, task, nextKey, 2*time.Second)
-	manager.mu.Lock()
-	if task.pauseReason == transformRunning {
-		if err := task.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
-			manager.mu.Unlock()
-			t.Fatalf("pausing transform after registering future waiter: %v", err)
-		}
-		task.pauseReason = transformPausedAhead
+	tail := stopAtStableSegmentTail(t, manager, task)
+	playlist, readErr := os.ReadFile(filepath.Join(task.workDir, "test.0.m3u8"))
+	entries, dirErr := os.ReadDir(filepath.Join(task.workDir, "segments"))
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
 	}
-	current = task.currentNumber
-	manager.mu.Unlock()
+	t.Logf("stopped: initial=%d tail=%d playlist=%s (err=%v) files=%v (err=%v)", initial, tail, playlist, readErr, names, dirErr)
+	current = waitForStoppedSegmentTail(t, manager, task, tail)
 
 	var publishers []*segmentLease
 	for _, rendition := range segmentRenditions {
@@ -1833,10 +1959,17 @@ func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
 		}
 		publishers = append(publishers, lease)
 	}
+	manager.mu.Lock()
+	positionAfterCache := task.currentNumber
+	manager.mu.Unlock()
+	t.Logf("after cache: currentNumber=%d tail=%d", positionAfterCache, tail)
 	select {
 	case <-task.done:
 	case <-time.After(3 * time.Second):
-		t.Fatal("transform did not stop at the cached next segment")
+		manager.mu.Lock()
+		position := task.currentNumber
+		manager.mu.Unlock()
+		t.Fatalf("transform did not stop at the cached next segment: initial=%d tail=%d cached=%d currentNumber=%d", initial, tail, current, position)
 	}
 	manager.mu.Lock()
 	stopped := task.stopping
