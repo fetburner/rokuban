@@ -34,6 +34,32 @@ River の `InsertTx` のように同じ tx でジョブを投入すると、DB �
 
 一意違反・排他制約違反は `ErrConflict`、対象が無いときは `ErrNotFound` に写す。DB 固有のエラーコードや `pgx.ErrNoRows` を呼び出し側へ漏らすと、別の実装が同じ契約を満たせなくなる。
 
+### 述語の置き場
+
+述語は、DB で評価する必要があるかどうかで置き場を決める。DB で評価する必要が無い述語は Go の純粋関数に置き、各方言の store 実装がそれを呼ぶ。こうすると実装は全方言で 1 つになる。
+
+次の 2 つの問いで決める。
+
+1. その述語を DB で評価する必要があるか。集合の絞り込み・件数・ページング・ロックを取った同じ文の中での判定が該当する。必要が無ければ Go に置く。cut の keep は `internal/chapters` が Go で導出する。SQL に写すと導出が 2 か所になるからである。
+2. DB で評価するなら、その述語を使う store のメソッドが 2 つ以上あるか。1 つならそのメソッドのクエリに直接書く。2 つ以上なら、方言ごとに 1 つの定義から引く。定義の形は方言が選ぶ。Postgres は view や関数に置く。MySQL には表を返す関数も配列引数も無いので、view や SQL 断片の定数などに置く。
+
+SQL で評価する述語は、view に置いてもクエリに直接書いても方言の数だけ実装される。view が防ぐのは、方言の中で片方のクエリにだけ条件を書き足す失敗である。方言の間の一致は守らない。
+
+一致は契約テストで守る。述語を共有するメソッドの組が同じ集合を返すことは、`internal/store/contracttest` の `Run*` 関数で確かめる。各方言の `*_contract_test.go` から回す（Postgres は `internal/store/pgstore`）。
+
+`internal/api` や `internal/worker` のテストに置くと、Postgres でしか回らない。前例は `internal/store/contracttest/media_reader.go` の `runAwaitingReviewRecordingIDs` である。
+
+未解決: 待機列と encode 投入の一致は `internal/api` と `internal/worker` のテストだけが見ており、方言ごとに回らない。
+
+<details><summary>根拠</summary>
+
+- Go に置く前例（keep の導出）: `internal/chapters.KeepRanges`
+- Postgres の view: `encodable_recordings` と `unencoded_desired_profiles`（`internal/db/schema.sql`）
+- Postgres の関数: `encodable_profile` と `awaiting_review_profiles`（`internal/db/schema.sql`）
+- 一致の前例: `runAwaitingReviewRecordingIDs`（`internal/store/contracttest/media_reader.go`）。`RunMedia`（`internal/store/contracttest/media.go`）から呼ばれ、`internal/store/pgstore/media_contract_test.go` が回す
+
+</details>
+
 ### 時刻
 
 時刻は、比べる相手を書いた時計に合わせる。
