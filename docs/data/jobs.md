@@ -284,7 +284,7 @@ ffmpeg の `out_time` を実入力 duration に対する割合にして、最大
 
 ブラウザへの SSE 配送の担い手は notifier ロールで、api ロールは担わない。api ロールは mirakc にもファイルシステムにも依存せず（不変条件 1）、長寿命接続の LISTEN セッションも持たない。
 
-配送のエンドポイントは `/api/events` である。サーバーレス（scale-to-zero）に載せるためには、常駐前提の LISTEN を api に置けない。notifier は「Postgres を LISTEN してブラウザへ配り直すだけ」の小さな常駐プロセスとして分離してある。
+配送のエンドポイントは `/api/events` である。サーバーレス（scale-to-zero）に載せるためには、常駐前提の LISTEN を api に置けない。notifier は Postgres を LISTEN してブラウザへ配り直す常駐プロセスとして api から分離してある。k8s では同じプロセスが worker ロールも兼ね（購読する実キューは ruler）、その常駐 River client が回収と昇格も担う。障害範囲は配送に限らない（[運用の k8s 節](../operations/k8s.md) §スケーラのクエリと回収）。形は `deploy/k8s/base/notifier.yaml` にある。
 
 ### notifier の多重化
 

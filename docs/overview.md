@@ -157,7 +157,7 @@ nginx は構成図上の「箱」に描かない。推奨デプロイパター�
 - `rokuban server --all`: 全ロールを 1 プロセスで動かす（自宅向け。Docker Compose で Postgres と 2 コンテナ）
 - k8s ではロールごとに Deployment を分割する。api は水平スケール、worker はキュー長で 0〜N（KEDA）、watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
 
-単一レプリカで配置できること、複数レプリカへ水平スケールできること、scale-to-zero できることは、別の保証である。単一レプリカの配置は、monolithic / distributed の形の選択である。水平スケールは、ロールごとの DB・メディア・接続・排他条件を満たす場合に選べる。scale-to-zero は、長寿命接続を持たない api の DB-only なリクエスト経路に限る。notifier / watcher / streamer は接続を保持するため常駐が必要で、worker はキューが空なら 0 にできるが、ジョブ実行中は資源を保持する。いずれも api のリクエスト単位の scale-to-zero とは意味が異なる。
+単一レプリカで配置できること、複数レプリカへ水平スケールできること、scale-to-zero できることは、別の保証である。単一レプリカの配置は、monolithic / distributed の形の選択である。水平スケールは、ロールごとの DB・メディア・接続・排他条件を満たす場合に選べる。scale-to-zero は、長寿命接続を持たない api の DB-only なリクエスト経路に限る。notifier / watcher / streamer は接続を保持するため常駐が必要で、worker はキューが空なら 0 にできるが、ジョブ実行中は資源を保持する。その 0 は、回収と昇格を担う常駐 client が別のプロセス（k8s では notifier）に居ることを条件にする（後述）。いずれも api のリクエスト単位の scale-to-zero とは意味が異なる。
 
 ### ロール分類の基準: ソケットを持ち続けるか
 
@@ -189,17 +189,20 @@ flowchart TD
 
 #### 基準の帰結
 
-この基準から、キュー駆動の仕事はすべて worker に集まり、周期実行はロールの根拠にならない。SSE を扱うことはロールの根拠になるが、SSE を 1 つのロールに集約する理由は無い。
+この基準から、キュー駆動の仕事はすべて worker に集まり、周期実行はロールの根拠にならない。SSE を扱うことはロールの根拠になるが、SSE を 1 つのロールに集約する理由は無い。回収と昇格を担う常駐 client は新しいロールにせず、常駐する既存ロールに相乗りさせる。
 
 キュー駆動で 0〜N の形をした仕事はすべて worker ロールである。どのキューを引くかはデプロイ時のパラメータで、ロールの軸ではない。ルール評価（ruler）、reconciler の同期パス、watcher の定期全量突き合わせ（record_sweep）もここに含まれる。キューごとにロールを増やすと、取り込み・エンコード・サムネイルごとのロールが際限なく増える。
 
 周期実行は、ロールの根拠にならない。「定期的に動く」はスケジューラの仕事で、Docker では River の定期ジョブ、k8s では CronJob が投入する。同じジョブ本体が両方から呼ばれる（[data.md](data.md) §2）。
+
+死んだジョブの回収と、再試行待ちのジョブを実行可能に戻す昇格（retryable から available への遷移）は、River の常駐 client が担う。この client はソケットを持ち続けないので、基準の上では worker のままである。基準は増やさない。要るのは「どこかに常駐している」ことだけなので、別の理由で既に常駐するロールに相乗りすれば足り、新しいプロセスの形を生まない。載せ先の notifier は常時起動し、api（0 にできる）でなく、site にも束縛されない（[運用の k8s 節](operations/k8s.md) §スケーラのクエリと回収）。常駐 client が無いと、死んだジョブは回収されず、同じ kind × site の投入が既存行に合流して消える。
 
 SSE を扱うことは、ソケットを持ち続けるので、ロールの根拠になる。ただし SSE だからといって、1 つのロールに集約する理由は無い。notifier（ブラウザへ送る）と watcher（mirakc から受ける）は、機構が同じでも、相手・向き・障害時の影響範囲が無関係である。そのため別ロールのまま置く（[api.md](api.md) §SSE）。
 
 <details><summary>根拠</summary>
 
 - 周期実行を投入する River の機構: `PeriodicJobs`
+- 常駐 client の載せ先（notifier Pod の `--roles notifier,worker`）: `deploy/k8s/base/notifier.yaml`。回収の担い手（リーダーだけが動かす `JobRescuer`）: `cmd/rokuban/server.go`
 - キューごとにロールを増やした場合に生まれる名前: `ingester` / `encoder` / `thumbnailer`
 
 </details>

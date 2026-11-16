@@ -209,6 +209,8 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
+notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送・ruler の常時購読・回収・昇格が同時に止まる（ruler の ScaledJob は残る）。1 つの Pod だけが落ちた場合は、残りのレプリカが回収と昇格を続け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
+
 実行中のまま死んだジョブは、回収されるまで同じ種類・同じサイトの投入を飲み込む。その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は気づかないうちに無かったことになる）。
 
 - 通常の既定は `worker.rescue_stuck_jobs_after: 6m` で、client のジョブ timeout（既定 1 分）より長い。worker 固有の timeout が設定値より長ければ、その長い時間を rescue 判定に使う。
