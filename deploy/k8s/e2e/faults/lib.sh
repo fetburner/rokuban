@@ -22,7 +22,9 @@ fault_enqueue() {
     out="$(tb_rokuban enqueue "$cli_name" 2>&1)" || return 1
   fi
   id="$(printf '%s\n' "$out" | sed -n 's/^inserted job .*(id=\([0-9][0-9]*\)).*$/\1/p' | head -1)"
-  if [ -z "$id" ] && printf '%s\n' "$out" | grep -q 'already pending'; then
+  # CLI は挿入時に id を出さない（cmd/rokuban/enqueue.go は `inserted job "<名>"` だけ）。
+  # 挿入の結果も既存行への合流も、同じ条件で DB の行を引いて id を得る。
+  if [ -z "$id" ] && printf '%s\n' "$out" | grep -q -e 'already pending' -e 'inserted job'; then
     id="$(psql_q "SELECT COALESCE(max(id)::text, '') FROM river_job
                    WHERE kind = '${kind}'
                      AND ('${site}' = '' OR args->>'site' = '${site}')

@@ -151,13 +151,17 @@ kind クラスタ rokuban-e2e / 名前空間 rokuban-e2e
 | F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻る |
 | F3 | mirakc mock の `/api/tuners` を止めて `tuner_sync` を取らせ、その worker Pod を force-delete。CronJob は止めない | 締切（`max(worker.rescue_stuck_jobs_after, Timeout)`）+ 300 秒以内に River の JobRescuer が rescue し（F3.3）、再実行が completed になる（F3.4）。rescue の時刻、そのときの leader、kill からの秒数をログに出す |
 
+### F3 の判定
+
+常駐の leader が rescue したことを、Pod の argv と所有者で確かめる判定である。
+
 F3.1 は CronJob を動かしたまま、notifier Deployment の常駐 River client 設定を確認し、toolbox に手動起動した worker client がないことも実行プロセスから確認する。client は `--roles notifier,worker --queues ruler --sites=` で起動し、`--once` は付けない。
 
 Ruler は site 非依存で DB のみを使う。既存の ruler ScaledJob も同じ queue を引き、River が job claim を調停する。
 
 `overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。
 
-F3.3 は rescue の時刻・leader・kill からの秒数を記録し、**rescue 時点の leader が `rokuban-notifier-*` の Pod でなければ FAIL にする**。 `--once` の Pod が leader になって rescue した場合は、常駐 client の回収と数えない。
+F3.3 は rescue の時刻・leader・kill からの秒数を記録する。**rescue 時点の leader の Pod を、ID から引いて argv と所有者で判定し、常駐 worker の Deployment の Pod でなければ FAIL にする**。leader の名前の接頭辞（`rokuban-notifier-*` など）では決めない。常駐は notifier の Deployment と、reconciler を引く watcher の Deployment のどちらもありうる。`--once` の Job Pod が leader になって rescue した場合は、所有者が Job なので常駐の回収と数えない。leader の Pod が判定の後に消えていると `no-such-pod` で FAIL になる。
 
 F3.4 は再実行の completed を見る。
 
@@ -211,7 +215,7 @@ API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの
 
 **上の変異はすべて実際に注入して、期待どおり判定が赤くなることを確認してある。** 実測値（件数）は環境と対にして `docs/runbook/k8s.md` §受け入れ判定ハーネス に置いてある。ここには書かない（両方に書いたら片方だけ古くなった）。
 
-**機能することを確かめていない判定が 2 つある。** どちらも「変異表に無い」ことがそのまま意味なので、ここに明記しておく。
+**変異表で確かめていない判定が 3 つある。** どれも「変異表に無い」ことがそのまま意味なので、ここに明記しておく。
 
 - **判定 3.2（待ち行列が空になっても殺されない）には変異が無い。** ScaledJob の意味論上、KEDA はキューが空になっても実行中の Job を消さない。身代わりを壊して赤くする方法が思い付かなかった（3.3 と 3.4 は確かめてある）
 - **判定 1.8 も変異表には無い。** 常駐 client の `--queues` を `ruler` に替えて手で注入した。すると「`reconciler_<site>` を `--queues` で引く常駐 client が無い」で FAIL した（ScaledJob の経路だけの遅延は 8〜9 秒）。変異表に入れていないので、`--oracles` では確かめられない。
