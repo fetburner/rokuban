@@ -51,8 +51,6 @@ SQL で評価する述語は、view に置いてもクエリに直接書いて�
 
 `internal/api` や `internal/worker` のテストに置くと、Postgres でしか回らない。
 
-未解決: 待機列と encode 投入の一致は `internal/api` と `internal/worker` のテストだけが見ており、方言ごとに回らない。
-
 <details><summary>根拠</summary>
 
 - Go に置く前例（keep の導出）: `internal/chapters.KeepRanges`

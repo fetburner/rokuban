@@ -3,6 +3,7 @@ package contracttest
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 
@@ -132,6 +133,20 @@ func runAwaitingReviewRecordingIDs(t *testing.T, newFixture NewMediaFixture) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("awaiting review recording IDs = %v, want %v (excluded no-original=%d trash=%d confirmed=%d encoded=%d attempted=%d rebuilding=%d removed-cut=%d)",
 			got, want, noOriginal, trashed, confirmed, encoded, attempted, rebuilding, removedCut)
+	}
+
+	// 件数（メトリクス）は同じ録画単位の述語を、プロファイルごとに数える。cut と cut2 の両方を持つ
+	// 録画は、件数では cut と cut2 に 1 つずつ、ID では 1 回になる。
+	counts, err := f.Reconcile.ListCutAwaitingReview(ctx, []string{"cut", "cut2"})
+	if err != nil {
+		t.Fatalf("ListCutAwaitingReview: %v", err)
+	}
+	gotCounts := map[string]int64{}
+	for _, c := range counts {
+		gotCounts[c.Profile] = c.Recordings
+	}
+	if wantCounts := map[string]int64{"cut": 2, "cut2": 1}; !maps.Equal(gotCounts, wantCounts) {
+		t.Fatalf("ListCutAwaitingReview = %v, want %v (must agree with the awaiting review recording IDs %v)", gotCounts, wantCounts, want)
 	}
 }
 
