@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -504,129 +505,155 @@ func TestNotifier_MultipleReplicasNotSingleton(t *testing.T) {
 }
 
 // 同一トピックの連続通知が合流されること（トリガーは行単位で発火するため）。
+// 以下の 3 テストは合流窓を手動で閉じる。実時間の窓は長くしても、送信の途中で
+// テストが止まる可能性を排除できず、余分な通知の確認も遅くなる。窓を閉じる前と後は
+// synctest.Wait で送信の処理と Publish の完了を待ってから調べる。
 func TestEventHub_Coalesce(t *testing.T) {
-	hub := NewEventHub()
-	sub, unsubscribe := hub.Subscribe()
-	defer unsubscribe()
+	synctest.Test(t, func(t *testing.T) {
+		hub := NewEventHub()
+		flush := make(chan time.Time)
+		hub.after = func(time.Duration) <-chan time.Time { return flush }
+		sub, unsubscribe := hub.Subscribe()
+		defer unsubscribe()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	topics := make(chan string)
-	waitErr := make(chan error, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = hub.coalesce(ctx, topics, waitErr)
-	}()
+		topics := make(chan string)
+		waitErr := make(chan error, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = hub.coalesce(ctx, topics, waitErr)
+		}()
 
-	// 同じトピックを 5 回、別のトピックを 1 回、窓の中で送る
-	for range 5 {
-		topics <- "recordings"
-	}
-	topics <- "reservations"
+		// 同じトピックを 5 回、別のトピックを 1 回、窓の中で送る
+		for range 5 {
+			topics <- "recordings"
+		}
+		topics <- "reservations"
 
-	got := map[string]int{}
-	deadline := time.After(2 * time.Second)
-	for len(got) < 2 {
+		synctest.Wait()
+		flush <- time.Now()
+		synctest.Wait()
+
+		got := map[string]int{}
+		deadline := time.After(2 * time.Second)
+		for len(got) < 2 {
+			select {
+			case topic := <-sub:
+				got[topic]++
+			case <-deadline:
+				t.Fatalf("timed out; got %v", got)
+			}
+		}
+
+		// 窓が閉じた後に余分な通知が来ないこと
 		select {
 		case topic := <-sub:
-			got[topic]++
-		case <-deadline:
-			t.Fatalf("timed out; got %v", got)
+			t.Errorf("unexpected extra notification for %q (got %v)", topic, got)
+		default:
 		}
-	}
 
-	// 窓が閉じた後に余分な通知が来ないこと
-	select {
-	case topic := <-sub:
-		t.Errorf("unexpected extra notification for %q (got %v)", topic, got)
-	case <-time.After(2 * coalesceWindow):
-	}
+		if got["recordings"] != 1 || got["reservations"] != 1 {
+			t.Errorf("coalesced counts = %v, want each exactly 1", got)
+		}
 
-	if got["recordings"] != 1 || got["reservations"] != 1 {
-		t.Errorf("coalesced counts = %v, want each exactly 1", got)
-	}
-
-	cancel()
-	<-done
+		cancel()
+		<-done
+	})
 }
 
 func TestEventHub_CoalescesEncodeProgressByRecordingAndProfile(t *testing.T) {
-	hub := NewEventHub()
-	sub, unsubscribe := hub.Subscribe()
-	defer unsubscribe()
+	synctest.Test(t, func(t *testing.T) {
+		hub := NewEventHub()
+		flush := make(chan time.Time)
+		hub.after = func(time.Duration) <-chan time.Time { return flush }
+		sub, unsubscribe := hub.Subscribe()
+		defer unsubscribe()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	topics := make(chan string)
-	waitErr := make(chan error, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = hub.coalesce(ctx, topics, waitErr)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		topics := make(chan string)
+		waitErr := make(chan error, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = hub.coalesce(ctx, topics, waitErr)
+		}()
 
-	first := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
-	latest := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.75}`
-	topics <- first
-	topics <- latest
+		first := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
+		latest := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.75}`
+		topics <- first
+		topics <- latest
+		synctest.Wait()
+		flush <- time.Now()
+		synctest.Wait()
 
-	select {
-	case got := <-sub:
-		if got != latest {
-			t.Errorf("progress = %q, want latest %q", got, latest)
+		select {
+		case got := <-sub:
+			if got != latest {
+				t.Errorf("progress = %q, want latest %q", got, latest)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for progress")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for progress")
-	}
-	select {
-	case extra := <-sub:
-		t.Errorf("unexpected stale progress %q", extra)
-	case <-time.After(2 * coalesceWindow):
-	}
+		select {
+		case extra := <-sub:
+			t.Errorf("unexpected stale progress %q", extra)
+		default:
+		}
 
-	cancel()
-	<-done
+		cancel()
+		<-done
+	})
 }
 
 func TestEventHub_DoesNotMixEncodeProgressProfiles(t *testing.T) {
-	hub := NewEventHub()
-	sub, unsubscribe := hub.Subscribe()
-	defer unsubscribe()
+	synctest.Test(t, func(t *testing.T) {
+		hub := NewEventHub()
+		flush := make(chan time.Time)
+		hub.after = func(time.Duration) <-chan time.Time { return flush }
+		sub, unsubscribe := hub.Subscribe()
+		defer unsubscribe()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	topics := make(chan string)
-	waitErr := make(chan error, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = hub.coalesce(ctx, topics, waitErr)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		topics := make(chan string)
+		waitErr := make(chan error, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = hub.coalesce(ctx, topics, waitErr)
+		}()
 
-	topics <- `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
-	topics <- `{"type":"encode-progress","recordingId":42,"profile":"desktop","progress":0.5}`
+		topics <- `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
+		topics <- `{"type":"encode-progress","recordingId":42,"profile":"desktop","progress":0.5}`
 
-	profiles := map[string]bool{}
-	for len(profiles) < 2 {
-		select {
-		case payload := <-sub:
-			var event serverevent.EncodeProgressEvent
-			if err := json.Unmarshal([]byte(payload), &event); err != nil {
-				t.Fatal(err)
+		synctest.Wait()
+		flush <- time.Now()
+		synctest.Wait()
+
+		profiles := map[string]bool{}
+		for len(profiles) < 2 {
+			select {
+			case payload := <-sub:
+				var event serverevent.EncodeProgressEvent
+				if err := json.Unmarshal([]byte(payload), &event); err != nil {
+					t.Fatal(err)
+				}
+				profiles[event.Profile] = true
+			case <-time.After(2 * time.Second):
+				t.Fatalf("timed out; profiles = %v", profiles)
 			}
-			profiles[event.Profile] = true
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out; profiles = %v", profiles)
 		}
-	}
-	if !profiles["mobile"] || !profiles["desktop"] {
-		t.Fatalf("profiles = %v, want mobile and desktop", profiles)
-	}
+		if !profiles["mobile"] || !profiles["desktop"] {
+			t.Fatalf("profiles = %v, want mobile and desktop", profiles)
+		}
 
-	cancel()
-	<-done
+		cancel()
+		<-done
+	})
 }
 
 // バッファが埋まったクライアントがいても Publish が詰まらないこと。
