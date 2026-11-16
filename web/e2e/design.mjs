@@ -2960,9 +2960,16 @@ log('\n=== ホーム管理モード: 0 時をまたぐ録画 ===')
     }, { homeModeFixture: true, homeOpsFixture: true, extraOpsRecordings: crossing })
     await page.clock.setFixedTime(midnight)
     await page.reload({ waitUntil: 'domcontentloaded' })
-    await page.getByTestId('home-ops-timeline-frame').waitFor({ timeout: 5000 }).catch(() => {})
+    try {
+      for (const title of ['日またぎの映画', '日またぎの完了']) {
+        await page.locator(`[data-testid="home-timeline-block"][title="${title}"]`).waitFor({ timeout: 5000 })
+      }
+    } catch (error) {
+      ng.push(`[ops-midnight/${viewport.width}px] 日またぎの録画ブロックが期限内に描画されない（${error.message}）`)
+      await context.close()
+      continue
+    }
     await page.evaluate(() => document.fonts.ready)
-    await page.waitForTimeout(300)
     const blocks = await page.evaluate(() => {
       const content = document.querySelector('[data-testid="home-ops-timeline-content"]')?.getBoundingClientRect()
       return [...document.querySelectorAll('[data-testid="home-timeline-block"]')].map((block) => {
