@@ -163,7 +163,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_delete_reconcile_deleted_total{source}` | Counter | 物理削除したアセット件数 |
 | `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻（プロセス内。ScaledJob では scrape できない） |
-| `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | Gauge | 置き場ごとの削除 reconcile の完走時刻を DB から読んだ値（0 は未完走）。ブレーカーで止めたパスも含む。FS の置き場だけ |
+| `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | Gauge | 置き場ごとの削除 reconcile の完走時刻を DB から読んだ値（0 は未完走）。ブレーカーで止めたパスも含む。FS の置き場と派生物用の S3 の置き場が対象 |
 | `rokuban_media_assets_missing{kind}` | Gauge | 実体ファイルが無いと確認できた media_asset 数 |
 | `rokuban_orphan_files_unresolved` | Gauge | 登録されないまま残っている canonical file の数 |
 | `rokuban_object_store_errors_total{operation}` | Counter | S3 の置き場の操作（put / head / get / list / delete / presign）の失敗回数 |
@@ -177,6 +177,16 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_storage_root_observed_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最後の観測時刻を `storage_sync` から DB で読んだ値。観測できていない置き場は `root="media"` が 0。ScaledJob でも使える |
 | `rokuban_reconcile_marker_scrape_errors_total{source}` | Counter | 完走時刻と観測時刻の読み取りに失敗した回数（`source` は `reconcile_pass` / `delete_reconcile` / `storage_sync`）。読めなかった表の系列は出さず、0 にも置き換えない |
 | `rokuban_storage_total_bytes{store,root}` / `rokuban_storage_used_bytes{store,root}` / `rokuban_storage_available_bytes{store,root}` | Gauge | 置き場と root ごとの直近観測バイト数 |
+
+派生物の置き場が S3 のとき、その削除パスを走らせるのは、FS 置き場を名前順に並べた先頭の置き場（所有者）の worker だけである。所有者の worker が動いていない場合も、S3 のパスが失敗し続ける場合も、S3 の置き場名の系列は消えず、古い値のまま進まなくなる。完走時刻の行は DB に残り、collector は設定にある置き場ごとに系列を出すためである。初回の完走までは 0 が出る。式は [アラート式の集約と初回パス](monitoring-scaled-jobs.md#アラート式の集約と初回パス) を参照する。
+
+<details><summary>根拠</summary>
+
+- `TestReconcileMarkerS3Series`: 保存済み時刻と未完走の 0、削除と storage の集合の分離
+- `TestNewReconcileMarkerCollectorS3Series`: 設定から削除系列を作る配線
+- `TestStoreScopedS3DeleteMarkersOnlyOwner`: 非所有者は S3 の完走時刻を進めない
+
+</details>
 
 `rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
 

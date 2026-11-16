@@ -274,10 +274,15 @@ ingest 完了時に desired の初期値を確定する凍結の基本設計と�
 
 派生物の置き場が S3 のときは、独立した削除パスで消す。このパスを走らせるのは、FS 置き場を名前の昇順に並べた先頭の置き場（以下、所有者）の削除ジョブだけである。所有者の削除ジョブは、自分の FS 置き場に加えて、S3 の置き場のコピーと、S3 の置き場名で区切ったブレーカーも扱う。別々の置き場の削除ジョブが同時に走っても、S3 の全体 List と削除候補の処理は所有者のキューでだけ行い、他のキューは FS の削除を続ける。同じ置き場の削除ジョブは実行中のものも含めて 1 件に合流するので、所有者のキューの中でも S3 のパスは並走しない。派生物の置き場が FS のときは独立したパスを作らず、その FS 置き場の削除経路を使う。
 
-専用の S3 キューや DB ロックを足さずに、既存の置き場別キューで重複を避けられるので、この形を選ぶ。所有者の `original_{store}` を処理する worker が動いていないと、S3 のパスは走らない。名前順で所有者より前に来る FS 置き場を足すと所有者が移るので、足した置き場の worker を稼働させないと S3 のパスが止まる。未解決: S3 のパスが止まっても検知できない（`rokuban_delete_reconcile_last_pass_timestamp_seconds` は FS のパスだけが進める）。
+専用の S3 キューや DB ロックを足さずに、既存の置き場別キューで重複を避けられるので、この形を選ぶ。所有者の `original_{store}` を処理する worker が動いていないと、S3 のパスは走らない。名前順で所有者より前に来る FS 置き場を足すと所有者が移るので、足した置き場の worker を稼働させないと S3 のパスが止まる。止まったことは、S3 の置き場名で記録した完走時刻が古いまま進まないことで検知する（[監視](../operations/monitoring-scaled-jobs.md)）。
+
+S3 のパスが完走したときだけ、`delete_reconcile_snapshots` の S3 の置き場名の行を更新する。削除ジョブは ScaledJob の短命な Pod で走るので、完走時刻を DB に置いて常駐 Pod から読めるようにする。パスが失敗したときは更新しない。完走時刻を書き込めなかったときもエラーを返す。S3 のパスが失敗しても、FS の置き場の削除は続ける。
+
+ブレーカーで止めたパスも完走として記録する。止める前に孤児の監査と pending の再開を終えており、止まっていることは `rokuban_circuit_breaker_tripped{breaker="delete_reconcile"}` のラッチが置き場名で知らせるためである。S3 の孤児は報告だけして残す。
 
 <details><summary>根拠</summary>
 
+- `TestS3DeleteMarkers`: S3 の成功・失敗・ブレーカー停止と FS の独立した完走記録
 - `TestStoreScopedS3DeletePassHasSingleOwner`: FS 置き場が 2 つある場合も、S3 の独立パスは名前順で先頭の 1 つにだけ載る
 - `TestJobArgsSpecAndPhysicalQueue`: delete_reconcile のジョブは合流する
 - `TestMakeInsertOptsQueueAndUnique`: 合流するジョブの一意判定は実行中（running）を含む
