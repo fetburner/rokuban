@@ -2,8 +2,11 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -154,19 +157,33 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 		_, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		t.Fatalf("rescue finished (err=%v) while the re-evaluation lock was held", err)
-	case <-time.After(1500 * time.Millisecond):
+	// 負荷下では rescue がロック待ちに入るまでの時間が読めないので、
+	// 待ちが pg_locks に現れるまで期限付きでポーリングする。
+	deadline := time.Now().Add(5 * time.Second)
+	var waiterPID int
+	for time.Now().Before(deadline) {
+		err := pool.QueryRow(ctx, `
+SELECT pid FROM pg_locks
+WHERE locktype = 'advisory' AND NOT granted
+  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&waiterPID)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("finding the backend waiting for the advisory lock: %v", err)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("rescue finished (err=%v) while the re-evaluation lock was held", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if waiterPID == 0 {
+		t.Fatal("rescue did not wait for the advisory lock within 5 seconds")
 	}
 	// ロック待ちの時点で、rescue の backend は label_rules / recordings に何も
 	// 触れていない（リレーションロックを持たない）。途中で取ると、upsert のトリガーが
 	// label_rule_hits の行ロックを持ったまま待ち、ジョブとデッドロックしうる。
-	var waiterPID int
-	if err := pool.QueryRow(ctx,
-		`SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&waiterPID); err != nil {
-		t.Fatalf("finding the backend waiting for the advisory lock: %v", err)
-	}
 	var held int
 	if err := pool.QueryRow(ctx, `
 SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
