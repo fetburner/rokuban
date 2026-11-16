@@ -68,11 +68,11 @@ worker は実行時に、ジョブの置き場をマウントしているかを�
 
 #### PVC マウントの所有権
 
-イメージの所有者が働くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有者と mode はマウント元のストレージが決める。
+イメージが焼いた所有者が効くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有者と mode はマウント元のストレージが決める。
 
 | ストレージ | 所有権の決まり方 | 手当て | 確認 |
 |---|---|---|---|
-| local-path（rancher.io/local-path） | provisioner が `mkdir -m 0777` で作る（PV は hostPath）。fsGroup は適用されない | 無し | kind v0.32.0 で実測。root は `root:root drwxrwxrwx`、setgid 無し |
+| local-path（rancher.io/local-path） | provisioner が `mkdir -m 0777` で作る（PV は hostPath） | 無し | kind v0.32.0 で実測。root は `root:root drwxrwxrwx`、setgid 無し |
 | hostPath PV | ディレクトリの所有者と mode で決まる。fsGroup は適用されない | ノード側でディレクトリを uid 65534 が書けるようにする | コードの読み。kind の local-path（hostPath PV）で、適用されないことを実測 |
 | local PV（既存のディレクトリ） | ディレクトリの所有者と mode で決まる。fsGroup は適用される見込み | hostPath と同じ。fsGroup も補助として効く見込み | コードの読み。未実測 |
 | NFS（所有者を squash で固定する NAS） | NAS 側の所有者と mode で決まる。csi-driver-nfs（`fsGroupPolicy: File`）は chown を試みるが、NAS が上書きする | NAS 側で uid 65534 が書ける所有者と mode にする | 本番で観測。root は `1024:100` / `2777` のまま |
@@ -88,7 +88,7 @@ local-path は RWX を拒否するので、kind の e2e は media PVC を RWO �
 - CSI ドライバが `fsGroupPolicy: File` を宣言している
 - 既定の `ReadWriteOnceWithFSType` で、RWO かつ fsType 指定である
 
-`fsGroupChangePolicy: OnRootMismatch` も対で書く。既定の `Always` は Pod を起こす前にボリューム全体を再帰的に chown する。ScaledJob はキューアイテムごとに Pod を作るので、数 TB のアーカイブでは毎回それを待つことになる。
+`fsGroupChangePolicy: OnRootMismatch` も対で書く。既定の `Always` は Pod を起こす前にボリューム全体を再帰的に chown する。ScaledJob はキューアイテムごとに Pod を作るので、数 TB のアーカイブでは毎回それを待つことになる。kind では出ない（ボリュームが空なので一瞬で終わる）。
 
 採らないもの:
 
