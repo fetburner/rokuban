@@ -360,7 +360,7 @@ api が行を直接消さない理由は、ruler 側の GC ロジックと同じ
 1. 要求は、§4.3 の「削除 API は内訳（削除 N 件・detached M 件）を返す」である。DELETE 自体のロウカウントが要るのは deleted 側だけで、detached 側は削除前の別 COUNT（`CountReservationsByRuleWithIntent`）から得る
 2. 非同期化は採らない。削除前の COUNT だけ返し、実削除は ruler の次パスに委ねる形である。「削除 API は成功を返したのに一覧にまだ残っている」窓が生まれ、その削除が大量削除サーキットブレーカーの導出削除カウントに合流してしまう
 3. 明示操作は同期で、ブレーカー対象外という既存の線に乗る（[breaker.md](breaker.md)「大量削除サーキットブレーカー」が明示操作を対象にしない理由と同じ側）
-4. 1 つの表に書き手が 2 人いる形（不変条件 12 の兆候）である。だが `DeleteReservationsByRuleWithoutIntent` の WHERE 句は、`program_investments`（intent / overrides）を DELETE 実行の瞬間に再評価する。そのため「適用の瞬間の窓」（並行して書き込まれる手動予約を消してしまう）は生じない。詳細は `internal/db/queries/rules.sql` の同クエリのコメントを参照
+4. 同期削除が消すのは ruler の次パスも導出削除する行だけで、読者（ingest `GetReservationEncodePolicyByEvent`）は予約行の無い場合を元々扱うので、削除前の値を前提に読む者はいない（不変条件 12）。`DeleteReservationsByRuleWithoutIntent` の WHERE 句は、`program_investments`（intent / overrides）を DELETE 実行の瞬間に再評価する。そのため「適用の瞬間の窓」（並行して書き込まれる手動予約を消してしまう）は生じない。詳細は `internal/db/queries/rules.sql` の同クエリのコメントを参照
 
 ##### 意図を捨てる操作
 
