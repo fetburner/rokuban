@@ -221,7 +221,7 @@ watcher Deployment の常駐 client も worker ロールを持つので全 kind 
 
 ##### reconciler を常駐 client に引かせる
 
-常駐 client を watcher に同居させ、reconciler の待ちを ScaledJob の Pod 起動から外した。
+reconciler の待ちに ScaledJob の Pod 起動を挟まないよう、常駐 client を watcher に同居させる。
 
 reconciler の `reconciler_<site>` は、site ごとの watcher Deployment に同居させた常駐 client が引く。起動形は `--roles watcher,worker --sites <site> --queues reconciler --stores=` で、`--once` は付けない。watcher は mirakc に届く場所に常駐する。そのため reconcile パスは KEDA のポーリングと Pod 起動を待たずに起きられる。
 
@@ -233,11 +233,11 @@ watcher Deployment は 2 レプリカでも worker ロールが両方で動く�
 
 判定 1.8（kind の e2e。ScaledJob の `pollingInterval` は 10 秒）で、常駐経路の PUT から mirakc の schedule までは 0〜1 秒だった（3 番組、2 周。閾値 3 秒）。同じ判定を常駐の無い構成（ScaledJob だけ）で回した値は 7〜11 秒である。常駐の経路が ScaledJob の Pod 起動より速いことの根拠は、この 2 つの分布が重ならないことだけである。本番の値は未検証。
 
-##### 同居の帰結（プールと drain）
+##### 同居で変わるプールの上限
 
-同居でプールの上限と drain の扱いが変わる。結論は次のとおり。
+worker を同居させると、watcher Pod のプール上限が変わる。
 
-同居で変わるのはプールの上限である。プール上限は roles から決まり（`internal/db` の `roleConnBudget`）、watcher 単独の 3 から watcher と worker を合わせた 12 になる。これは上限であって実接続数ではない。Postgres の `max_connections` に効くのは実接続数なので、レプリカ数と掛けた値を見ること。実接続数は未測定である。
+プール上限は roles から決まり（`internal/db` の `roleConnBudget`）、watcher 単独の 3 から watcher と worker を合わせた 12 になる。これは上限であって実接続数ではない。Postgres の `max_connections` に効くのは実接続数なので、レプリカ数と掛けた値を見ること。実接続数は未測定である。
 
 ##### record_sweep を常駐化しない理由
 
@@ -249,7 +249,7 @@ watcher Deployment は 2 レプリカでも worker ロールが両方で動く�
 
 同じ Pod に同居させたときの drain の扱いは、両方に同じように効く。10 分の締切と 5 秒の soft stop は `reconcile_pass` と `record_sweep` で同じである。
 
-ロールアウトで実行中のジョブが ctx を切られた場合の帰結は、「実行中のジョブを打ち切る条件」の実測に従う想定である。その実測では、猶予 5 秒で ctx が切られたジョブは `available` に戻り、`attempt` も `errors` も残らなかった。`reconcile_pass` は次の CronJob の投入（1 分以内）と、再起動後の client の claim で再走する想定である。ただし実際の再走までの時間は未測定である。
+ロールアウトで ctx を切られた実行中のジョブは、「実行中のジョブを打ち切る条件」で実測したとおりに扱われる想定である。その実測では、猶予 5 秒で ctx が切られたジョブは `available` に戻り、`attempt` も `errors` も残らなかった。`reconcile_pass` は次の CronJob の投入（1 分以内）と、再起動後の client の claim で再走する想定である。ただし実際の再走までの時間は未測定である。
 
 notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送と ruler の常時購読が止まる（ruler の ScaledJob は残る）。回収と昇格は、watcher Deployment の常駐 client が leader になっていれば続く。notifier を落としたときに leader がどの client へ移るかは未検証である。1 つの Pod だけが落ちた場合は、残りのレプリカが SSE クライアントを受け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
 
