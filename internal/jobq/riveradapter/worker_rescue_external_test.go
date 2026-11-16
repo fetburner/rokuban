@@ -17,8 +17,10 @@ import (
 )
 
 type encodeRescueExecution struct {
-	ctx     context.Context
-	attempt int
+	ctx         context.Context
+	attempt     int
+	remaining   time.Duration
+	previousErr error
 }
 
 type encodeRescueTestWorker struct {
@@ -26,6 +28,8 @@ type encodeRescueTestWorker struct {
 	timeout    time.Duration
 	executions chan encodeRescueExecution
 	release    <-chan struct{}
+	previous   context.Context
+	mu         sync.Mutex
 }
 
 func (w *encodeRescueTestWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
@@ -33,17 +37,29 @@ func (w *encodeRescueTestWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Du
 }
 
 func (w *encodeRescueTestWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) error {
-	w.executions <- encodeRescueExecution{ctx: ctx, attempt: job.Attempt}
+	deadline, ok := ctx.Deadline()
+	remaining := time.Duration(0)
+	if ok {
+		remaining = time.Until(deadline)
+	}
+	w.mu.Lock()
+	var previousErr error
+	if w.previous != nil {
+		previousErr = w.previous.Err()
+	}
+	w.previous = ctx
+	w.mu.Unlock()
+	w.executions <- encodeRescueExecution{ctx: ctx, attempt: job.Attempt, remaining: remaining, previousErr: previousErr}
 	<-w.release // Deliberately ignore ctx cancellation until the test releases this attempt.
 	return nil
 }
 
-// TestEncodeWorker_RiverRescuesAfterWorkerTimeout checks River's public per-worker
-// Timeout contract with a live PostgreSQL client. RescueStuckJobsAfter is shorter than
-// the worker timeout, so an early second execution means River ignored the override.
+// TestEncodeWorker_RiverRescuesAfterWorkerTimeout checks that Work's deadline comes
+// from the per-worker Timeout and that a retry starts after the previous deadline,
+// using a live PostgreSQL client.
 func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	const workerTimeout = 1500 * time.Millisecond
+	const workerTimeout = 5 * time.Second
 	executions := make(chan encodeRescueExecution, 2)
 	release := make(chan struct{})
 	worker := &encodeRescueTestWorker{
@@ -100,15 +116,8 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 		t.Fatalf("first River attempt = %d, want 1", first.attempt)
 	}
 
-	// RescueStuckJobsAfter elapsed, but the per-worker Timeout has not. The running
-	// Work intentionally ignores cancellation so only the rescuer can start attempt 2.
-	select {
-	case next := <-executions:
-		t.Fatalf("River started attempt %d before worker timeout %s", next.attempt, workerTimeout)
-	case <-time.After(500 * time.Millisecond):
-	}
-	if err := first.ctx.Err(); err != nil {
-		t.Fatalf("first Work context ended before its worker timeout: %v", err)
+	if first.remaining <= time.Second || first.remaining > workerTimeout {
+		t.Fatalf("Work deadline remaining = %s, want (1s, %s]", first.remaining, workerTimeout)
 	}
 
 	select {
@@ -116,7 +125,7 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 		if !errors.Is(first.ctx.Err(), context.DeadlineExceeded) {
 			t.Fatalf("first Work context error = %v, want DeadlineExceeded", first.ctx.Err())
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("River did not cancel first Work after its worker timeout %s", workerTimeout)
 	}
 
@@ -124,6 +133,10 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 	// Allow two intervals for leadership startup and the next rescue tick.
 	select {
 	case next := <-executions:
+		// 未検証: 早すぎる救出をどこまで検出できるかは、非公開の rescuer 周期に依存する。
+		if !errors.Is(next.previousErr, context.DeadlineExceeded) {
+			t.Fatalf("retry before previous timeout: %v", next.previousErr)
+		}
 		if next.attempt < 2 {
 			t.Fatalf("rescued River attempt = %d, want at least 2", next.attempt)
 		}

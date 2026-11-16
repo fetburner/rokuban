@@ -28,6 +28,8 @@ var beforeRulerWriteTx func()
 
 // Config は Ruler の設定。
 type Config struct {
+	// Now は ruler の判定に使う時計。nil は time.Now を使う。
+	Now func() time.Time
 	// MaxDeletesPerPass は 1 サイト・1 パスあたりの導出削除許容数。
 	MaxDeletesPerPass int
 	// RetentionGrace は番組終了後、予約と意図を GC するまでの猶予。
@@ -64,7 +66,11 @@ func New(
 	programSearch store.ProgramSearch,
 ) *Ruler {
 	c := defaultConfig()
+	c.Now = time.Now
 	if cfg != nil {
+		if cfg.Now != nil {
+			c.Now = cfg.Now
+		}
 		if cfg.MaxDeletesPerPass > 0 {
 			c.MaxDeletesPerPass = cfg.MaxDeletesPerPass
 		}
@@ -133,7 +139,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		if mismatches == 0 {
 			// snapshot 追従（ApplyPass）より前に観測する。後だと追従が旧値を上書きして
 			// 検出材料が消える。検出の失敗はパスを止めない。
-			observeProgramIDReuses(ctx, r.passes, site, time.Now())
+			observeProgramIDReuses(ctx, r.passes, site, r.cfg.Now())
 		}
 
 		changed, applyErr, err := r.runPassForSiteAttempt(ctx, site, inputRevision)
@@ -159,7 +165,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 // runPassForSiteAttempt は 1 回分の評価と書き込みを行う。入力の版が変わっていて読み直すべきときは
 // changed を返す。このとき applyErr は、ApplyPass が版の照合まで進めず失敗した場合の元のエラーである。
 func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRevision int64) (changed bool, applyErr error, err error) {
-	evaluationNow := time.Now()
+	evaluationNow := r.cfg.Now()
 
 	tripped, err := r.observeDeleteBreaker(ctx, site)
 	if err != nil {
@@ -197,7 +203,7 @@ func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRev
 		return false, nil, err
 	}
 
-	applyNow := time.Now()
+	applyNow := r.cfg.Now()
 	if beforeRulerWriteTx != nil {
 		beforeRulerWriteTx()
 	}
@@ -438,7 +444,7 @@ func keys(values map[int64]struct{}) []int64 {
 // runGC は終了時刻に保持猶予を足した cutoff より古い番組と、古い欠測観測を削除する。
 // GC は導出削除のブレーカー対象ではなく、ブレーカーが発動中でも実行する。
 func (r *Ruler) runGC(ctx context.Context) error {
-	cutoff := time.Now().Add(-r.cfg.RetentionGrace)
+	cutoff := r.cfg.Now().Add(-r.cfg.RetentionGrace)
 	deletedSnapshots, err := r.passes.PruneEndedSnapshots(ctx, cutoff)
 	if err != nil {
 		return fmt.Errorf("deleting ended program snapshots: %w", err)

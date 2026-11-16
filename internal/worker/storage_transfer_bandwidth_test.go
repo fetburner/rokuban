@@ -12,7 +12,7 @@ import (
 
 // 転送の帯域上限は転送元の置き場ごとに掛かり、上限の無い置き場は絞られない。
 // 上限を持つ置き場（edge）の読みは 4000 B を 8000 B/s で読むので約 500ms かかり、
-// 上限の無い置き場（central）は即座に読み終わる。
+// central は帯域制限ラッパーを持たないことを検査する。
 func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
 	t.Parallel()
 	w := &StorageTransferWorker{Config: config.StorageConfig{Transfer: config.StorageTransferConfig{
@@ -35,17 +35,17 @@ func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
 		{
 			name:        "central",
 			sourceStore: "central",
-			check: func(t *testing.T, elapsed time.Duration) {
-				if elapsed >= 100*time.Millisecond {
-					t.Fatalf("central read took %v, want under 100ms: a store without a bandwidth entry must not be throttled", elapsed)
-				}
-			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reader, err := w.transferSourceReader(context.Background(), tc.sourceStore, bytes.NewReader(make([]byte, 4000)))
 			if err != nil {
 				t.Fatalf("transferSourceReader: %v", err)
+			}
+			if tc.sourceStore == "central" {
+				if _, ok := reader.(*storageTransferContextReader); !ok {
+					t.Fatalf("central reader = %T, want context reader without rate limit", reader)
+				}
 			}
 			start := time.Now()
 			copied, err := io.Copy(io.Discard, reader)
@@ -56,7 +56,9 @@ func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
 			if copied != 4000 {
 				t.Fatalf("copied %d bytes, want 4000", copied)
 			}
-			tc.check(t, elapsed)
+			if tc.check != nil {
+				tc.check(t, elapsed)
+			}
 		})
 	}
 }

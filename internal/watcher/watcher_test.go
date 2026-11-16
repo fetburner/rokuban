@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -746,15 +745,18 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
-	var eventsCalls int32
+	eventHandled := make(chan struct{}, 1)
 	fake := mirakctest.New(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events", func(rw http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&eventsCalls, 1)
 		rw.Header().Set("Content-Type", "text/event-stream")
 		flusher, ok := rw.(http.Flusher)
 		if !ok {
 			t.Fatal("ResponseWriter is not Flusher")
+		}
+		if _, err := fmt.Fprint(rw, "event: recording.record-saved\ndata: {\"recordId\":\"sweep-barrier\"}\n\n"); err != nil {
+			t.Errorf("writing SSE event: %v", err)
+			return
 		}
 		flusher.Flush()
 		<-r.Context().Done()
@@ -762,6 +764,14 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/events" {
 			mux.ServeHTTP(rw, r)
+			return
+		}
+		if r.URL.Path == "/api/recording/records/sweep-barrier" {
+			select {
+			case eventHandled <- struct{}{}:
+			default:
+			}
+			http.NotFound(rw, r)
 			return
 		}
 		fake.ServeHTTP(rw, r)
@@ -775,15 +785,15 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- w.Run(runCtx) }()
 
-	// SSE 接続が確立するまで少し待ってから、Run が自発的に全量突き合わせを
-	// 呼んでいないことを確認する。
-	deadline := time.After(500 * time.Millisecond)
-	for atomic.LoadInt32(&eventsCalls) == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for SSE connection")
-		case <-time.After(10 * time.Millisecond):
-		}
+	// SSE イベントの個別 GET 到達を、Run が購読して定常状態に入った目印にする。
+	// 接続直後に cancel せず、この目印を待ってから終了させる。
+	defer runCancel()
+	select {
+	case <-eventHandled:
+	case err := <-done:
+		t.Fatalf("Run returned before handling SSE: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for SSE event handling")
 	}
 
 	runCancel()
