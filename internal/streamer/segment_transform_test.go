@@ -1159,9 +1159,7 @@ func TestSegmentTransformGracefulStopDoesNotCacheInterruptedTail(t *testing.T) {
 				t.Fatalf("stopping transform: %v", err)
 			}
 			time.Sleep(200 * time.Millisecond)
-			manager.mu.Lock()
-			tail := task.currentNumber
-			manager.mu.Unlock()
+			tail := restopUntilSegmentTailStable(t, task)
 			if tail <= key.Number {
 				t.Fatalf("tail segment %d is not past the requested segment %d", tail, key.Number)
 			}
@@ -1176,18 +1174,185 @@ func TestSegmentTransformGracefulStopDoesNotCacheInterruptedTail(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("transform did not finish after the signal")
 			}
-			for number := tail; number <= tail+2; number++ {
-				cached := key
-				cached.Number = number
-				if lease, ok, err := manager.cache.acquire(cached); err != nil || ok {
-					if lease != nil {
-						_ = lease.file.Close()
-					}
-					t.Fatalf("interrupted tail %#v cached = (%v, %v), want absent", cached, ok, err)
-				}
-			}
+			assertInterruptedTailNotCached(t, manager, key, tail)
 		})
 	}
+}
+
+func TestSegmentTransformGracefulStopDuringFinalization(t *testing.T) {
+	t.Parallel()
+	for _, signal := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
+		t.Run(signal.String(), func(t *testing.T) {
+			t.Parallel()
+			ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
+			ffprobe := lookPathFFprobe(t)
+			inputPath := filepath.Join(t.TempDir(), "long.ts")
+			writeAlignedTestTS(t, ffmpeg, inputPath, 20)
+			originPTS := firstPacketPTS(t, ffprobe, inputPath)
+			// 20 秒入力（2 秒/segment）を最後まで監視できるよう、先読み20で製品の先読み停止を避ける。
+			manager := newRealSegmentManagerPrefetch(t, ffmpeg, t.TempDir(), 1, 256<<20, 2<<20, 20)
+			defer closeSegmentManager(t, manager)
+			input := testSegmentInput(inputPath, originPTS)
+			key := SegmentKey{"recording", "generation-1", "test", "video", 2}
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			// Get(3) は 4 のファイル出現後に返るため、監視が間に合うよう 2 を要求する。
+			started := time.Now()
+			getCtx, cancelGet := context.WithTimeout(ctx, 12*time.Second)
+			file, err := manager.Get(getCtx, key, input)
+			cancelGet()
+			t.Logf("Get(%d) returned after %s", key.Number, time.Since(started))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = file.Close()
+
+			task := taskForRecording(t, manager, "recording")
+			stopCtx, cancelStop := context.WithTimeout(ctx, 30*time.Second)
+			defer cancelStop()
+			stopped := make(chan error, 1)
+			go func() {
+				for number := key.Number + 1; ; {
+					select {
+					case <-stopCtx.Done():
+						stopped <- stopCtx.Err()
+						return
+					default:
+					}
+					path := filepath.Join(task.workDir, "segments", fmt.Sprintf("%s.%s_seg%05d.ts",
+						task.profile.Name, segmentVariantForRendition["video"], number))
+					if _, err := os.Stat(path + ".tmp"); err == nil {
+						seenAt := time.Since(started)
+						if err := task.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+							stopped <- err
+							return
+						}
+						t.Logf("saw tmp %d after %s", number, seenAt)
+						time.Sleep(20 * time.Millisecond)
+						// 観測から停止までに窓を逃した場合は、判定ヘルパーを使わず同じパスで確認する。
+						if _, err := os.Stat(path + ".tmp"); err == nil {
+							stopped <- nil
+							return
+						} else if !errors.Is(err, os.ErrNotExist) {
+							stopped <- err
+							return
+						}
+						t.Logf("missed tmp %d after SIGSTOP at %s", number, time.Since(started))
+						if err := task.cmd.Process.Signal(syscall.SIGCONT); err != nil {
+							stopped <- err
+							return
+						}
+					} else if !errors.Is(err, os.ErrNotExist) {
+						stopped <- err
+						return
+					}
+					if _, err := os.Stat(path); err == nil {
+						t.Logf("passed segment %d at %s; watching next", number, time.Since(started))
+						number++
+					} else if !errors.Is(err, os.ErrNotExist) {
+						stopped <- err
+						return
+					}
+					runtime.Gosched()
+				}
+			}()
+			if err := <-stopped; err != nil {
+				t.Fatalf("stopping at finalization: %v", err)
+			}
+			time.Sleep(200 * time.Millisecond)
+			if _, stable := stoppedSegmentTail(t, task); stable {
+				// 確定窓を受け入れた結果をキャッシュ検査でも示すため、t.Fatal で止めない。
+				t.Error("finalization window was accepted as stable")
+			}
+			tail := restopUntilSegmentTailStable(t, task)
+			if tail <= key.Number {
+				t.Fatalf("tail segment %d is not past the requested segment %d", tail, key.Number)
+			}
+			if err := task.cmd.Process.Signal(signal); err != nil {
+				t.Fatalf("sending %v: %v", signal, err)
+			}
+			if err := task.cmd.Process.Signal(syscall.SIGCONT); err != nil {
+				t.Fatalf("continuing transform: %v", err)
+			}
+			select {
+			case <-task.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("transform did not finish after the signal")
+			}
+			assertInterruptedTailNotCached(t, manager, key, tail)
+		})
+	}
+}
+
+func restopUntilSegmentTailStable(t *testing.T, task *segmentTransformTask) int64 {
+	t.Helper()
+	if tail, stable := stoppedSegmentTail(t, task); stable {
+		return tail
+	}
+	for retry := 0; retry < 20; retry++ {
+		if err := task.cmd.Process.Signal(syscall.SIGCONT); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+		if err := task.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+		if tail, stable := stoppedSegmentTail(t, task); stable {
+			return tail
+		}
+	}
+	t.Fatal("transform never reached a stable stopped state")
+	return 0
+}
+
+func assertInterruptedTailNotCached(t *testing.T, manager *SegmentManager, key SegmentKey, tail int64) {
+	t.Helper()
+	for number := tail; number <= tail+2; number++ {
+		cached := key
+		cached.Number = number
+		if lease, ok, err := manager.cache.acquire(cached); err != nil || ok {
+			if lease != nil {
+				_ = lease.file.Close()
+			}
+			t.Fatalf("interrupted tail %#v cached = (%v, %v), want absent", cached, ok, err)
+		}
+	}
+}
+
+// stoppedSegmentTail は停止中の全 rendition と映像 playlist から末尾を判定する。
+// -hls_flags temp_file では書きかけはメモリにあり、N を切るときに N.ts.tmp → rename → playlist 記載と進む。
+// この窓の N は完成済みなので、currentNumber (= N) を末尾にすると誤る。停止中のディスクから判定する。
+// 手元の ffmpeg 9.0.2 に製品引数を渡し、segments/ を 6 秒ポーリングした測定では、
+// 最大番号が完成済み .ts だったのは 404,645 回、.ts.tmp は 13 回だった。
+// 確定途中の除外は TestSegmentTransformGracefulStopDuringFinalization で検証する。
+func stoppedSegmentTail(t *testing.T, task *segmentTransformTask) (int64, bool) {
+	t.Helper()
+	variant := segmentVariantForRendition["video"]
+	segments, _, err := readSegmentPlaylist(filepath.Join(task.workDir, task.profile.Name+"."+variant+".m3u8"), task.profile.Name, variant)
+	if err != nil || len(segments) == 0 {
+		t.Fatalf("reading stopped video playlist: segments=%v err=%v", segments, err)
+	}
+	last := segments[len(segments)-1]
+	entries, err := os.ReadDir(filepath.Join(task.workDir, "segments"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".ts.tmp") {
+			return 0, false
+		}
+		if !strings.HasSuffix(name, ".ts") {
+			continue
+		}
+		for _, variant := range segmentVariantForRendition {
+			if number, ok := parseOutputSegmentNumber(name, task.profile.Name, variant); ok && number > last {
+				return 0, false
+			}
+		}
+	}
+	return last + 1, true
 }
 
 func newRealSegmentManager(
