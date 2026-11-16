@@ -538,7 +538,8 @@ func TestServerCmd_RejectsEncodeProfileWithChangedMeaning(t *testing.T) {
 //
 // 検査が読む表をテスト側の tx で ACCESS EXCLUSIVE に握り、検査をその場で止める。
 // 止まっていることを pg_locks で確かめてから（検査に到達していない空虚な成功を
-// 防ぐ）、その間に待ち受けのポートへ繋がらないことを見る。
+// 防ぐ）、その間に待ち受けのポートへ繋がらないことを見る。ロックを保持したまま
+// キャンセルし、context.Canceled で戻ったことを確かめてからロックを解放する。
 func TestServerCmd_EncodeProfileMeaningCheckRunsBeforeListening(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	path, addr := writeCutProfileConfig(t, true)
@@ -584,12 +585,19 @@ func TestServerCmd_EncodeProfileMeaningCheckRunsBeforeListening(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	// 検査は ctx を渡した ListEncodedMeaningEvidence のエラーを wrap して返す。
+	// 戻り値を受け取るまでロックを保持し、検査の完了とキャンセルの競争を防ぐ。
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("api shutdown while holding the lock = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("canceling the api did not unblock the encode profile meaning check waiting on the lock within 10s")
+	}
 	if err := tx.Rollback(bg); err != nil {
 		t.Fatalf("releasing the lock: %v", err)
-	}
-	cancel()
-	if err := <-errCh; !errors.Is(err, context.Canceled) {
-		t.Errorf("api shutdown after releasing the lock = %v, want context.Canceled", err)
 	}
 }
 
