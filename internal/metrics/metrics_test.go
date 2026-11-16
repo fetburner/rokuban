@@ -51,6 +51,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	ReconcileSchedules.WithLabelValues("recreated").Inc()
 	ReconcileCircuitBreakerTrips.Add(1)
 	ReconcileScheduleLost.Add(1)
+	ReconcileWriteWithheld.WithLabelValues("delete", "gone").Inc()
 	ReconcileLastPass.SetToCurrentTime()
 	ReconcileStartDelayed.WithLabelValues(testSite).Set(0)
 	ReconcileStartDelayErrors.WithLabelValues(testSite).Inc()
@@ -108,6 +109,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_reconcile_schedules_total",
 		"rokuban_reconcile_circuit_breaker_trips_total",
 		"rokuban_reconcile_schedule_lost_total",
+		"rokuban_reconcile_write_withheld_total",
 		"rokuban_reconcile_last_pass_timestamp_seconds",
 		"rokuban_reconcile_start_delayed",
 		"rokuban_reconcile_start_delay_errors_total",

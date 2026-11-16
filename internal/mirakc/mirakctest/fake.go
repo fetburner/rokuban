@@ -235,10 +235,12 @@ func (f *Fake) createSchedule(w http.ResponseWriter, r *http.Request) {
 		Options: input.Options,
 		Tags:    input.Tags,
 	}
+	// 実物の mirakc は同じ programId の schedule が既にあれば上書きせず AlreadyExists（400）を返す
+	// （conformance の TestRecordLifecycle/DuplicateCreateRejected）。上書きすると、並走する
+	// reconciler パスの後着 POST が先着を黙って置き換え、実物と逆の帰結をテストに見せる。
 	for i := range f.schedules {
 		if f.schedules[i].Program.ID == input.ProgramID {
-			f.schedules[i] = schedule
-			writeJSON(w, http.StatusCreated, schedule)
+			http.Error(w, "schedule already exists", http.StatusBadRequest)
 			return
 		}
 	}
@@ -252,14 +254,16 @@ func (f *Fake) deleteSchedule(w http.ResponseWriter, path string) {
 		http.Error(w, "invalid programId", http.StatusBadRequest)
 		return
 	}
-	kept := f.schedules[:0]
-	for _, schedule := range f.schedules {
-		if schedule.Program.ID != programID {
-			kept = append(kept, schedule)
+	// 実物の mirakc は無い schedule の DELETE に 404 を返す
+	// （conformance の TestRecordLifecycle/DeleteMissingScheduleNotFound）。
+	for i := range f.schedules {
+		if f.schedules[i].Program.ID == programID {
+			f.schedules = append(f.schedules[:i], f.schedules[i+1:]...)
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 	}
-	f.schedules = kept
-	w.WriteHeader(http.StatusOK)
+	http.Error(w, "no such schedule", http.StatusNotFound)
 }
 
 func (f *Fake) getSchedule(w http.ResponseWriter, r *http.Request) {

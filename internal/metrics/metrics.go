@@ -228,10 +228,34 @@ var (
 	// まだ開始していない番組には recordings 行が存在しないため書き込めない
 	// （internal/reconciler.Reconciler.recreateSchedule のコメント参照）。
 	// 0 以外はアラート対象。
+	//
+	// 並走するパスが DELETE と POST の間に schedule を作った場合も、POST が既存として
+	// 拒まれるので数える。このとき schedule は残っている（偽陽性。
+	// TestReconciler_ConcurrentRecreate_CreateBetweenDeleteAndPostCountsFalseLoss）。
 	ReconcileScheduleLost = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_schedule_lost_total",
 		Help: "Times a schedule recreate's DELETE succeeded but the following POST failed, leaving the schedule missing until the next pass. Non-zero indicates a recording may be missed before then.",
 	})
+
+	// ReconcileWriteWithheld は、DELETE の直前の観測し直しで DELETE / POST を見送った件数。
+	//
+	// 冒頭の観測からパス内の書き込みまでに schedule が変わったことを、理由別に数える。
+	// 並走するパスや観測後の録画開始が実際に起きているかを測るため（並走の帰結の分類は
+	// docs/recording/reconciler.md §観測から書き込みまでの遷移）。
+	// 見送りは recreated / deleted に数えず、ReconcilePendingDiff にも含めない。
+	//
+	// action:
+	//   - "delete": desired から外れた schedule の DELETE を見送った
+	//   - "recreate": 予約オプション差分の再作成（DELETE→POST）を見送った（POST しない）
+	// reason:
+	//   - "gone": 観測し直しが 404（既に無い）
+	//   - "state": 観測し直した state では削除・再作成してはいけない
+	//   - "converged": 所有でない、または差分が消えた
+	//   - "error": 観測し直しが失敗した（5xx・締切切れ等）
+	ReconcileWriteWithheld = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_reconcile_write_withheld_total",
+		Help: "Schedule DELETEs and recreates the reconciler withheld after re-observing the schedule just before the write, by action and reason.",
+	}, []string{"action", "reason"})
 
 	// ReconcileLastPass は最後に完走したパスの時刻（UNIX 秒）。
 	//
@@ -844,6 +868,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		ReconcileSchedules,
 		ReconcileCircuitBreakerTrips,
 		ReconcileScheduleLost,
+		ReconcileWriteWithheld,
 		ReconcileLastPass,
 		ReconcileStartDelayed,
 		ReconcileStartDelayErrors,

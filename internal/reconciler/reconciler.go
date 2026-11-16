@@ -13,8 +13,10 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -54,13 +56,22 @@ type Config struct {
 	// 実際の異常と区別するには、正常系の遅れを上回る猶予が要る。
 	// 0 なら既定値（3 分）を使う。
 	StartDelayGrace time.Duration
+
+	// ObserveAndDeleteTimeout は、DELETE の直前の schedule の観測（GET）と
+	// DELETE の両方を包む締切。締切が切れたら DELETE を送らず見送る。
+	//
+	// 締切が要る理由: mirakc は GET と DELETE の間で録画を始めうる。GET から
+	// DELETE までの窓を、ジョブの Timeout（10 分）まで広げないために上限を切る。
+	// 0 なら既定値（5 秒）を使う。
+	ObserveAndDeleteTimeout time.Duration
 }
 
 func defaultConfig() Config {
 	return Config{
-		MaxRecreatesPerPass: 20,
-		DefaultPriority:     schedulesync.DefaultPriority,
-		StartDelayGrace:     3 * time.Minute,
+		MaxRecreatesPerPass:     20,
+		DefaultPriority:         schedulesync.DefaultPriority,
+		StartDelayGrace:         3 * time.Minute,
+		ObserveAndDeleteTimeout: 5 * time.Second,
 	}
 }
 
@@ -90,6 +101,9 @@ func New(site string, mc *mirakc.Client, scheduleSync store.ScheduleSync, breake
 		}
 		if cfg.StartDelayGrace > 0 {
 			c.StartDelayGrace = cfg.StartDelayGrace
+		}
+		if cfg.ObserveAndDeleteTimeout > 0 {
+			c.ObserveAndDeleteTimeout = cfg.ObserveAndDeleteTimeout
 		}
 	}
 	return &Reconciler{
@@ -277,14 +291,86 @@ func (r *Reconciler) deleteSchedules(ctx context.Context, toDelete []mirakc.Sche
 	}
 	var deleted int
 	for _, s := range toDelete {
-		if err := r.mirakc.DeleteSchedule(ctx, s.Program.ID); err != nil {
-			slog.Error("reconciler: deleting schedule", "program_id", s.Program.ID, "err", err)
+		if !r.deleteIfStillDeletable(ctx, s.Program.ID) {
 			continue
 		}
 		deleted++
 		metrics.ReconcileSchedules.WithLabelValues("deleted").Inc()
 	}
 	return deleted
+}
+
+// 見送りの理由（metrics.ReconcileWriteWithheld の reason）と操作（action）。
+const (
+	withheldGone      = "gone"
+	withheldState     = "state"
+	withheldConverged = "converged"
+	withheldError     = "error"
+
+	actionDelete   = "delete"
+	actionRecreate = "recreate"
+)
+
+// countWithheld は DELETE / POST を見送った件数を理由別に数える。
+func countWithheld(action, reason string) {
+	metrics.ReconcileWriteWithheld.WithLabelValues(action, reason).Inc()
+}
+
+// deleteIfStillDeletable は DELETE の直前に schedule を観測し直し、削除の判定を観測し直した値で
+// 再評価してから DELETE する。削除したら true を返す。見送りと DELETE の失敗は false を返す。
+//
+// 冒頭の観測からこの呼び出しまでに、並走するパスや mirakc の録画開始で state が変わりうる。
+// 録画中の schedule への DELETE は mirakc が録画を止めるので、判定は GET の値で行う。
+// 残る窓は GET の応答から DELETE の到着までで、mirakc に条件付き DELETE が無いため原子的には
+// 閉じられない。ctx の締切（ObserveAndDeleteTimeout）で窓の上限を切る。
+//
+// 判定は desired を読み直さない。desired から外れたという判断は冒頭の観測で済ませたもので、
+// ここで確かめるのは「まだ所有する schedule で、削除してよい state か」だけである。
+func (r *Reconciler) deleteIfStillDeletable(ctx context.Context, programID int64) bool {
+	ctx, cancel := context.WithTimeout(ctx, r.cfg.ObserveAndDeleteTimeout)
+	defer cancel()
+
+	fresh, ok := r.observeForWrite(ctx, actionDelete, programID)
+	if !ok {
+		return false
+	}
+	if !mirakc.IsOurs(fresh.Tags) {
+		countWithheld(actionDelete, withheldConverged)
+		slog.Info("reconciler: schedule no longer ours before delete; withholding", "program_id", programID)
+		return false
+	}
+	if !schedulesync.IsDeleteAllowed(fresh.State) {
+		countWithheld(actionDelete, withheldState)
+		slog.Info("reconciler: schedule state changed before delete; withholding", "program_id", programID, "state", fresh.State)
+		return false
+	}
+	if err := r.mirakc.DeleteSchedule(ctx, programID); err != nil {
+		slog.Error("reconciler: deleting schedule", "program_id", programID, "err", err)
+		return false
+	}
+	return true
+}
+
+// observeForWrite は DELETE の直前に programID の schedule を観測し直す。ctx は呼び出し側が
+// 締切付きで渡すもので、GET と後続の DELETE が同じ締切に入る。
+//
+// 404 は「既に無い」（gone）。それ以外の失敗（5xx・締切切れを含む）は error として見送る。
+// ok=false のときは見送りをここで数えてログも出すので、呼び出し側は何も送らずに戻ればよい。
+// 新しい観測が取れない限り DELETE しない、というのが見送りの理由である。
+func (r *Reconciler) observeForWrite(ctx context.Context, action string, programID int64) (mirakc.Schedule, bool) {
+	fresh, err := r.mirakc.GetSchedule(ctx, programID)
+	if err == nil {
+		return *fresh, true
+	}
+	var apiErr *mirakc.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		countWithheld(action, withheldGone)
+		slog.Info("reconciler: schedule gone before write; withholding", "action", action, "program_id", programID)
+		return mirakc.Schedule{}, false
+	}
+	countWithheld(action, withheldError)
+	slog.Error("reconciler: observing schedule before write; withholding", "action", action, "program_id", programID, "err", err)
+	return mirakc.Schedule{}, false
 }
 
 // recordNeverScheduledOutcome は作成ループと同じ瞬間を渡す（同じ式だけでなく同じ材料にする）。
@@ -685,9 +771,13 @@ func (r *Reconciler) recreateChanged(
 			limitCarriedOver++
 			continue
 		}
-		if err := r.recreateSchedule(ctx, c.d, c.observed, c.reason); err != nil {
+		done, err := r.recreateSchedule(ctx, c.d, c.reason)
+		if err != nil {
 			slog.Error("reconciler: recreating schedule",
 				"program_id", c.d.res.ProgramID, "err", err)
+			continue
+		}
+		if !done {
 			continue
 		}
 		recreated++
@@ -697,40 +787,76 @@ func (r *Reconciler) recreateChanged(
 	return recreated, updateDiff, stateGuarded, limitCarriedOver
 }
 
-// recreateSchedule は 1 件の schedule を DELETE→POST で再作成する。
+// recreateSchedule は 1 件の schedule を DELETE→POST で再作成する。戻り値 done は POST まで
+// 完了したかを表す。観測し直した結果で差分が消えた・state が変わった・schedule が無くなった
+// ときは何も送らずに見送る（done=false, err=nil）。
+//
 // mirakc に schedule の更新 API がない（GET/POST/GET{id}/DELETE{id} の 4 つだけ）
-// ための回避策で、その間 schedule が存在しない窓ができる。
+// ための回避策で、その間 schedule が存在しない窓ができる。DELETE の直前に schedule を
+// 観測し直し、再作成の判定と contentPath の引き継ぎは観測し直した値で行う（窓の扱いは
+// deleteIfStillDeletable のコメント参照）。
+//
+// 見送りの後に POST しないのは、別のパスが DELETE と POST の間に schedule を作っている
+// 可能性があるため。その場合の作成は次のパスが行う。
 //
 // contentPath の決定は 3 分岐で、順序が意味を持つ:
 //  1. 明示 override（overrides.contentPath）があればそれが最優先。
 //     schedulesync.ExplicitContentPath 経由にすることで、テンプレート再生成（resolveContentPath
 //     が先に buildContentPath を通す）には絶対に落ちない — テンプレートが壊れて
 //     いても、明示指定がある限り再作成が失敗しないことが経路として担保される。
-//  2. 無ければ observed の contentPath を引き継ぐ（従来どおり。base に書き戻す
-//     経路は無いので、これがテンプレート再生成を避ける唯一の手段）。
-//  3. observed も nil・空文字なら、初回作成と同じ生成経路にフォールバックする。
-func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation, observed mirakc.Schedule, reason string) error {
+//  2. 無ければ観測し直した contentPath を引き継ぐ（base に書き戻す経路は無いので、
+//     これがテンプレート再生成を避ける唯一の手段）。
+//  3. それも nil・空文字なら、初回作成と同じ生成経路にフォールバックする。
+//
+// POST は呼び出し元の ctx で送る。締切付きの ctx で送ると、締切切れで POST が落ちて
+// schedule が消えたままになる。
+func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation, reason string) (bool, error) {
 	res, opts := d.res, d.opts
+
+	wctx, cancel := context.WithTimeout(ctx, r.cfg.ObserveAndDeleteTimeout)
+	defer cancel()
+
+	fresh, ok := r.observeForWrite(wctx, actionRecreate, res.ProgramID)
+	if !ok {
+		return false, nil
+	}
+	diff, owned := schedulesync.CompareOptions(
+		res.ProgramID,
+		opts,
+		r.cfg.DefaultPriority,
+		fresh.Options,
+		fresh.Tags,
+	)
+	if !owned || !diff.Any() {
+		countWithheld(actionRecreate, withheldConverged)
+		slog.Info("reconciler: schedule no longer needs recreate; withholding", "program_id", res.ProgramID)
+		return false, nil
+	}
+	if !schedulesync.IsRecreateAllowed(fresh.State) {
+		countWithheld(actionRecreate, withheldState)
+		slog.Info("reconciler: schedule state changed before recreate; withholding", "program_id", res.ProgramID, "state", fresh.State)
+		return false, nil
+	}
 
 	var contentPath string
 	if cp, ok := schedulesync.ExplicitContentPath(opts); ok {
 		contentPath = cp
-	} else if observed.Options.ContentPath != nil && *observed.Options.ContentPath != "" {
+	} else if fresh.Options.ContentPath != nil && *fresh.Options.ContentPath != "" {
 		// SanitizeContentPath を通すのは、mirakc 側を直接触られていた場合の保険
 		// （安いので）。
-		contentPath = contentpath.SanitizeContentPath(*observed.Options.ContentPath)
+		contentPath = contentpath.SanitizeContentPath(*fresh.Options.ContentPath)
 	} else {
 		cp, err := resolveContentPath(res, d.snap, opts)
 		if err != nil {
-			return err
+			return false, err
 		}
 		contentPath = cp
 	}
 
 	priority := schedulesync.EffectivePriority(r.cfg.DefaultPriority, opts)
 
-	if err := r.mirakc.DeleteSchedule(ctx, res.ProgramID); err != nil {
-		return fmt.Errorf("DELETE schedule for recreate: %w", err)
+	if err := r.mirakc.DeleteSchedule(wctx, res.ProgramID); err != nil {
+		return false, fmt.Errorf("DELETE schedule for recreate: %w", err)
 	}
 
 	input := mirakc.ScheduleInput{
@@ -756,7 +882,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 		slog.Error("reconciler: schedule lost — DELETE succeeded but recreate POST failed; "+
 			"next pass will recreate it (level-triggered), but the program may start before that",
 			"program_id", res.ProgramID, "err", err)
-		return fmt.Errorf("POST schedule after delete: %w", err)
+		return false, fmt.Errorf("POST schedule after delete: %w", err)
 	}
 
 	slog.Info("reconciler: recreated schedule",
@@ -765,7 +891,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 		"content_path", contentPath,
 		"reason", reason,
 	)
-	return nil
+	return true, nil
 }
 
 // recordNeverScheduled は「番組終了後に schedule が観測されなかった」予約に

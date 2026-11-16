@@ -220,6 +220,35 @@ func TestFakeRecordStreamUsesRangeOffsetAndRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+// 実物の mirakc と同じく、既存 schedule への POST は上書きせず 400、無い schedule への
+// DELETE は 404 を返す（conformance の TestRecordLifecycle/DuplicateCreateRejected と
+// DeleteMissingScheduleNotFound）。
+func TestFakeRejectsDuplicateCreateAndMissingDelete(t *testing.T) {
+	fake := New(t)
+	ctx := context.Background()
+	client := mirakc.NewClient(fake.URL(), nil)
+	if _, err := client.CreateSchedule(ctx, mirakc.ScheduleInput{ProgramID: 21, Options: mirakc.Options{Priority: 1}}); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+
+	_, err := client.CreateSchedule(ctx, mirakc.ScheduleInput{ProgramID: 21, Options: mirakc.Options{Priority: 2}})
+	var apiErr *mirakc.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate CreateSchedule error = %v, want HTTP 400", err)
+	}
+	if got := fake.Schedules()[21].Options.Priority; got != 1 {
+		t.Fatalf("priority after rejected duplicate = %d, want 1", got)
+	}
+
+	err = client.DeleteSchedule(ctx, 22)
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("DeleteSchedule(missing) error = %v, want HTTP 404", err)
+	}
+	if _, ok := fake.Schedules()[21]; !ok {
+		t.Fatal("DeleteSchedule(missing) removed another schedule")
+	}
+}
+
 func stringPtr(value string) *string { return &value }
 
 func formatInt(value int64) string {
