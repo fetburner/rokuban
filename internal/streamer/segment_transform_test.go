@@ -1159,9 +1159,21 @@ func TestSegmentTransformGracefulStopDoesNotCacheInterruptedTail(t *testing.T) {
 				t.Fatalf("stopping transform: %v", err)
 			}
 			time.Sleep(200 * time.Millisecond)
-			manager.mu.Lock()
-			tail := task.currentNumber
-			manager.mu.Unlock()
+			tail, stable := stoppedSegmentTail(t, task)
+			for retry := 0; !stable && retry < 20; retry++ {
+				if err := task.cmd.Process.Signal(syscall.SIGCONT); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				if err := task.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(20 * time.Millisecond)
+				tail, stable = stoppedSegmentTail(t, task)
+			}
+			if !stable {
+				t.Fatal("transform never reached a stable stopped state")
+			}
 			if tail <= key.Number {
 				t.Fatalf("tail segment %d is not past the requested segment %d", tail, key.Number)
 			}
@@ -1188,6 +1200,88 @@ func TestSegmentTransformGracefulStopDoesNotCacheInterruptedTail(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStoppedSegmentTailRejectsFinalizationWindow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		playlistLast int64
+		files        []string
+		wantTail     int64
+		wantStable   bool
+	}{
+		{"stable", 4, []string{"test.0_seg00004.ts", "test.1_seg00004.ts", "test.2_seg00004.ts", "test.3_seg00004.ts"}, 5, true},
+		{"video_tmp", 3, []string{"test.0_seg00004.ts.tmp"}, 0, false},
+		{"video_renamed_before_playlist", 3, []string{"test.0_seg00004.ts"}, 0, false},
+		{"audio_ahead_of_video_playlist", 3, []string{"test.0_seg00004.ts.tmp", "test.1_seg00004.ts", "test.2_seg00004.ts", "test.3_seg00004.ts"}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			workDir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(workDir, "segments"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// 手元の ffmpeg が出力した playlist の形式を使い、停止中なので ENDLIST は付けない。
+			playlist := "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
+			for number := int64(0); number <= tc.playlistLast; number++ {
+				playlist += fmt.Sprintf("#EXTINF:2.000000,\nsegments/test.0_seg%05d.ts\n", number)
+				for _, variant := range segmentVariantForRendition {
+					path := filepath.Join(workDir, "segments", fmt.Sprintf("test.%s_seg%05d.ts", variant, number))
+					if err := os.WriteFile(path, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := os.WriteFile(filepath.Join(workDir, "test.0.m3u8"), []byte(playlist), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range tc.files {
+				if err := os.WriteFile(filepath.Join(workDir, "segments", name), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			task := &segmentTransformTask{workDir: workDir, profile: LiveProfile{Name: "test"}}
+			if tail, stable := stoppedSegmentTail(t, task); tail != tc.wantTail || stable != tc.wantStable {
+				t.Errorf("stoppedSegmentTail = (%d, %v), want (%d, %v)", tail, stable, tc.wantTail, tc.wantStable)
+			}
+		})
+	}
+}
+
+// stoppedSegmentTail は停止中の全 rendition と映像 playlist から末尾を判定する。
+// -hls_flags temp_file では書きかけはメモリにあり、N を切るときに N.ts.tmp → rename → playlist 記載と進む。
+// この窓の N は完成済みなので、currentNumber (= N) を末尾にすると誤る。停止中のディスクから判定する。
+// 手元の ffmpeg 9.0.2 に製品引数を渡し、segments/ を 6 秒ポーリングした測定では、
+// 最大番号が完成済み .ts だったのは 404,645 回、.ts.tmp は 13 回だった。
+// 確定途中の除外は TestStoppedSegmentTailRejectsFinalizationWindow で検証する。
+func stoppedSegmentTail(t *testing.T, task *segmentTransformTask) (int64, bool) {
+	t.Helper()
+	variant := segmentVariantForRendition["video"]
+	segments, _, err := readSegmentPlaylist(filepath.Join(task.workDir, task.profile.Name+"."+variant+".m3u8"), task.profile.Name, variant)
+	if err != nil || len(segments) == 0 {
+		t.Fatalf("reading stopped video playlist: segments=%v err=%v", segments, err)
+	}
+	last := segments[len(segments)-1]
+	entries, err := os.ReadDir(filepath.Join(task.workDir, "segments"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".ts.tmp") {
+			return 0, false
+		}
+		if !strings.HasSuffix(name, ".ts") {
+			continue
+		}
+		for _, variant := range segmentVariantForRendition {
+			if number, ok := parseOutputSegmentNumber(name, task.profile.Name, variant); ok && number > last {
+				return 0, false
+			}
+		}
+	}
+	return last + 1, true
 }
 
 func newRealSegmentManager(
