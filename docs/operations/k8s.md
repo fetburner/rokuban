@@ -68,13 +68,38 @@ worker は実行時に、ジョブの置き場をマウントしているかを�
 
 #### PVC マウントの所有権
 
-media をマウントする Pod には、securityContext で所有グループを指定する。
+イメージに所有者を焼き込んでも、PVC では効かない。焼いた所有者が働くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有者と mode はマウント元のストレージが決める。書けるかどうかも、そこで決まる。
 
-イメージは `/mnt/media` を実行ユーザー（uid/gid `65534`）所有で焼いてある。ただしこれが働くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有権を与えないと `permission denied` になる。
+ストレージの種類ごとの決まり方は次の通り。
 
-参照実装は media をマウントする Pod に `securityContext.fsGroup: 65534` を書いている。対象は streamer と、ingest / encode / thumbnail / cleanup / storage の worker である。kind（rancher.io/local-path）では実際に書けることを確認した。受け入れ判定ハーネスの判定 3 が実際にエンコードを 1 件走らせて media に書く。`fsGroup` を尊重しない CSI ドライバでは足りない（そちらの手当ては未検証）。
+| ストレージ | 所有権の決まり方 | 手当て | 確認 |
+|---|---|---|---|
+| ローカル FS（local-path） | provisioner が `mkdir -m 0777` で作る。fsGroup は適用されない | 無し。0777 に頼っている | kind v0.32.0 で実測。root は `root:root drwxrwxrwx`、setgid 無し |
+| NFS（所有者を squash で固定する NAS） | NAS が所有者と mode を決める。csi-driver-nfs（`fsGroupPolicy: File`）は chown を試みるが、NAS が上書きする | NAS 側で uid 65534 が書ける所有者と mode にする | 本番で観測。root は `1024:100` / `2777` のまま。uid 65534 の access check は成功 |
+| NFS（squash しない export）で `File` 宣言のドライバ | kubelet の chown が効く見込み | 未検証 | 未検証 |
+| in-tree nfs / nfs-subdir-external-provisioner | in-tree の `SetUpAt` は fsGroup を適用しない。provisioner の uid/gid 設定で決まる | provisioner の uid/gid を 65534 にする | コードの読みだけ。未実測 |
+| JuiceFS | 未検証 | 未検証 | 未検証 |
+
+local-path は RWX を拒否する（`NodePath only supports ReadWriteOnce`）。そのため kind の e2e は media PVC を RWO に落としている（[e2e の README](../../deploy/k8s/e2e/README.md)）。kind の e2e が書けるのは 0777 のおかげで、fsGroup の検証にはなっていない。
+
+`securityContext.fsGroup: 65534` は、マニフェストに残す。効くのは次の場合だけである（kubelet のコードの読み。未実測）。
+
+- CSI ドライバが `fsGroupPolicy: File` を宣言している
+- 既定の `ReadWriteOnceWithFSType` で、RWO かつ fsType 指定である
+
+media PVC は RWX なので、既定ポリシーのドライバでは効かない。効いても、ストレージが chown を受け入れるときに限る補助である。
 
 `fsGroupChangePolicy: OnRootMismatch` も対で書く。既定の `Always` は Pod を起こす前にボリューム全体を再帰的に chown する。ScaledJob はキューアイテムごとに Pod を作るので、数 TB のアーカイブでは毎回それを待つことになる。kind では出ない（ボリュームが空なので一瞬で終わる）。
+
+採らないもの:
+
+- initContainer の `chown -R`: root_squash の NFS では失敗する見込み（未検証）。数 TB のアーカイブを毎回たどるので、Pod の起動が毎回待つ。
+- イメージで `/mnt/media` を 0777 にする: 所有権を権限で覆うだけで、local-path で偶然動いている今と同じ穴になる。
+
+書けないときの症状:
+
+- `/healthz` は落ちない。判定は `river_job` の `catalog_export` ジョブが `completed` になるかで行う。
+- 導入時には `storage adopt` Job が落ちる見込み（未検証）。この Job は置き場の root に `.rokuban-store` を新規作成する（`internal/mediapath` の `WriteStoreMarker`、`O_CREATE|O_EXCL`）。目印が既にあれば書かずに成功する。root に書けない初回の導入では、`permission denied` で落ちる見込みである（コードの読み。実クラスタでは未確認）。
 
 ### マニフェストの配布形式: 素の kustomize
 

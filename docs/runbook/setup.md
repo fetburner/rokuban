@@ -96,6 +96,8 @@ compose 運用の設定は 2 箇所に分かれる。環境ごとに変わる値
 
 named volume `media` は、コンテナの `/mnt/media`（`storage.media_dir`）にマウントされる。bind mount にするには、`docker-compose.yml` の `rokuban` サービスの volume 行を差し替える。
 
+copy-up が所有権を引き継ぐのは compose の named volume だけで、k8s の PVC には無い。PVC の所有権は [k8s 運用](../operations/k8s.md) の「PVC マウントの所有権」節を見る。
+
 ```yaml
     volumes:
       - ./config.compose.yml:/config.yml:ro
