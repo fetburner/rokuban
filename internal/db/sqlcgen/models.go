@@ -89,6 +89,11 @@ type CurrentTsScannedOriginal struct {
 	MediaAssetID int64
 }
 
+type DeleteReconcileSnapshot struct {
+	Store         string
+	LastSuccessAt time.Time
+}
+
 type DropPosition struct {
 	MediaAssetID int64
 	ByteOffset   int64
@@ -335,6 +340,11 @@ type ProgramSnapshot struct {
 	UpdatedAt   time.Time
 	EventID     int32
 	ServiceName string
+}
+
+type ReconcilePassSnapshot struct {
+	Pass          string
+	LastSuccessAt time.Time
 }
 
 type RecordSweepSnapshot struct {
