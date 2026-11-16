@@ -116,7 +116,7 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 並走や入力の変化でおかしくなりうるものと、その扱いは次の通りである。
 
 1. ruler: パス開始時に入力の版を読む。書き込み tx の最後に同じ site の版をロックして照合する。版が一致しなければロールバックして読み直す。3 回続けて一致しなければエラーを返す。
-2. reconciler: 並走を検出しない。各パスは冒頭の観測と desired に基づいて mirakc に書く。後着の POST は mirakc が拒否するので、先着の作成を上書きしない。多くの食い違いは次のパスで収束する。収束する前に録画を落としうるものが 2 つ残る（[reconciler](../recording/reconciler.md) §観測から書き込みまでの遷移）。
+2. reconciler: 並走を検出しない。各パスは冒頭の観測と desired に基づいて書くが、DELETE の直前に schedule を観測し直して判定を再評価する。後着の POST は mirakc が拒否するので、先着の作成を上書きしない。多くの食い違いは次のパスで収束する。収束する前に録画を落としうるものは残る。観測し直しから DELETE までの窓は縮めたが閉じておらず、古い priority の固定は未解決である（[reconciler](../recording/reconciler.md) §観測から書き込みまでの遷移）。
 
 <details><summary>根拠</summary>
 
@@ -127,6 +127,7 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 - 新旧パスの競合テスト: `TestRunPass_StalePassCannotOverwriteNewerPass`
 - 照合上限のテスト: `TestRunPass_InputRevisionMismatchLimit`
 - reconciler の並走を割り込ませるテスト: `internal/reconciler/concurrent_pass_test.go`
+- 観測し直しで並走の再作成が 1 組に収まること: `TestReconciler_ConcurrentRecreate_ReobservedAfterPeerRecreateIsWithheld`
 - 後着の POST の拒否: `TestReconciler_StaleRecreatePostAfterNewerCreate_IsRejected`
 
 </details>

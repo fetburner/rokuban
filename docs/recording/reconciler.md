@@ -124,7 +124,7 @@ contentPath の比較は、mirakc が登録された値を正規化せずその�
 
 時刻の閾値で開始直前の再作成を見送ると、チューナーの奪い合いに勝つための priority の変更が mirakc に反映されず、番組をまるごと失いうる。一方、再作成の途中で作成に失敗して失うのは冒頭の数十秒である（後述の「DELETE 成功 → POST 失敗」）。損の小さい方を取り、時刻の閾値は入れない。
 
-具体的には、`state == "scheduled"` のときだけ再作成する。blocklist（「`tracking` / `recording` の予約は触らない」）は採らない。理由は 2 つある。`rescheduling`（延長追従中）も `finished` / `failed` も、削除して作り直してよい状態ではない。また、mirakc が将来状態を増やしたとき、blocklist は未知の状態を「触ってよい」ものとして扱ってしまう。allowlist は未知の状態を触らない。
+具体的には、`state == "scheduled"` のときだけ再作成する。判定は DELETE の直前に観測し直した state で行う（後述の「観測から書き込みまでの遷移」）。blocklist（「`tracking` / `recording` の予約は触らない」）は採らない。理由は 2 つある。`rescheduling`（延長追従中）も `finished` / `failed` も、削除して作り直してよい状態ではない。また、mirakc が将来状態を増やしたとき、blocklist は未知の状態を「触ってよい」ものとして扱ってしまう。allowlist は未知の状態を触らない。
 
 state の文字列は `internal/mirakc` に定数として置く。持ち越した件数はログに出す。気づかないうちに落とすと「収束しない」の原因が見えなくなる。
 
@@ -135,6 +135,8 @@ desired に無い自分の schedule は、許可した状態のときだけ DELE
 状態の名前では、`scheduled` と終端の `finished` / `failed` を許可する。`tracking` / `recording` / `rescheduling` と未知 state は次のパスへ持ち越す。
 
 削除用 allowlist は再作成用と別にする。終端 schedule は片付けとして DELETE できるが、オプション差分を反映する再作成には使えない。`IsDeleteAllowed` と `IsRecreateAllowed` は別々の集合を定義する。
+
+判定は DELETE の直前に観測し直した state と所有で行う（後述の「観測から書き込みまでの遷移」）。
 
 持ち越した件数は `rokuban_reconcile_pending_diff{action="delete_deferred"}` とログに出す。state で見送った schedule は `delete` として数えず、全損ブレーカーの削除候補にも含めない。開始時刻を過ぎても `scheduled` のままの schedule（開始遅延）は allowlist に入るので、desired から外れれば DELETE する（録画はまだ動いていない）。
 
@@ -165,23 +167,50 @@ upstream への要望として、`priority` の部分更新 API があれば、�
 
 #### 観測から書き込みまでの遷移
 
-**パスは冒頭の観測と desired で DELETE / POST を決め、書き込むまでの変化を見ない。** state のガードも観測時点の判定である。そのため、観測の後に録画へ遷移した schedule にも DELETE が届く。mirakc はこの DELETE で録画を止める。再作成なら続く POST が途中から録り直し、録画が 2 本に割れる。
+**DELETE の直前に schedule を観測し直し、削除と再作成のガードを観測し直した値で再評価する。** 観測し直しより前に録画が始まった schedule には、DELETE も再作成も送らない。録画中の schedule への DELETE は、mirakc が録画を止めるからである。
 
-窓は観測から書き込みまでの時間で、単独のパスにもある。並走すると広がる。rescue の後も止まらない旧パスは、ctx の期限（ジョブの Timeout）まで古い観測と desired で書けるからである。並走の帰結は次の通りである。
+観測し直しが失敗したら、何も送らずに見送る。失敗には 404（既に無い）・5xx・締切切れを含む。再作成は見送った後に POST しない。別のパスが DELETE と POST の間に作っている可能性があり、その作成は次のパスに任せる。見送りは `rokuban_reconcile_write_withheld_total` を `action` と `reason` で数える。
 
-- 同じ desired で両方が再作成すると、DELETE → POST が 2 組飛ぶ。schedule の無い窓は増えるが収束する
-- 後着の POST は、mirakc が既存の schedule として拒否する。新しい desired の作成が残る。拒まれた側は「DELETE 成功 → POST 失敗」として `rokuban_reconcile_schedule_lost_total` を進めるが、schedule は残っている
-- 古い desired の DELETE が新しいパスの観測の後に届くと、次のパスまで schedule が無い。失う上限は「DELETE 成功 → POST 失敗」と同じである
-- 古い desired の再作成が新しい再作成の後に届くと、古い priority が残る。次のパスより前に `scheduled` を抜けると、再作成のガードが差分を持ち越し続ける。録画は古い priority のまま走る
+観測し直した結果は `schedule_sync` に書かない。その表は冒頭の観測の全量置換で保つので、途中の観測を混ぜない。差分ゲージと全損ブレーカーの判定は、冒頭の観測のまま数える。
 
-未解決: 観測後に録画へ遷移した schedule への DELETE と、古い priority の固定。どちらも録画を落としうる。
+観測し直しと DELETE の間には窓が残る。GET の応答から DELETE の到着までは、mirakc に条件付き DELETE が無いので閉じられない。観測し直しの締切（`ObserveAndDeleteTimeout`、既定 5 秒）は、窓の上限を切るだけである。
+
+並走の帰結は次の通りである。
+
+- 同じ desired で両方が再作成すると、後のパスは観測し直しで差分の消えた schedule を見て見送る。DELETE → POST は 1 組に収まる。
+- 後着の POST は、mirakc が既存の schedule として拒否する。新しい desired の作成が残る。拒まれた側は「DELETE 成功 → POST 失敗」として `rokuban_reconcile_schedule_lost_total` を進めるが、schedule は残っている。観測し直しは DELETE の前にしか効かないので、この偽陽性は残る。
+- 古い desired の DELETE は、観測し直しでは止まらない（desired は読み直さない）。新しいパスの観測の後に届くと、次のパスまで schedule が無い。失う上限は「DELETE 成功 → POST 失敗」と同じである。
+- 古い desired の再作成が新しい再作成の後に届くと、古い priority が残る。
+
+未解決: 観測し直しから DELETE の到着までの窓。観測の後に録画へ遷移した schedule には、この窓で DELETE が届く。録画を落としうる。原子的に閉じるには、mirakc 側の条件付き DELETE が要る。
+
+未解決: 古い priority の固定。次の 4 条件が同時に要る。録画は古い priority のまま走り、チューナーの取り合いで負けうる。
+
+- パスの並走
+- 2 つの desired の読みの間の priority 変更
+- 次のパスより前の `scheduled` の離脱
+- priority で負けるチューナー競合
 
 <details><summary>根拠</summary>
 
-- 並走の割り込み: `internal/reconciler/concurrent_pass_test.go`
-- 録画中の DELETE が録画を止め、POST が録画を割ること: conformance の `TestDeleteRecordingScheduleStopsRecorder`
+- 削除の見送り（録画への遷移）: `TestReconciler_DeleteWithheldWhenScheduleStartsRecordingBeforeReobservation`
+- 再作成の見送り（録画への遷移）: `TestReconciler_RecreateWithheldWhenScheduleStartsRecordingBeforeReobservation`
+- 削除の見送り（所有の喪失）: `TestReconciler_DeleteWithheldWhenReobservedScheduleIsNotOurs`
+- 削除の見送り（404）: `TestReconciler_DeleteWithheldWhenReobservedScheduleIsGone`
+- 再作成の見送り（404）: `TestReconciler_RecreateWithheldWhenReobservedScheduleIsGone`
+- 観測し直しの失敗（5xx）: `TestReconciler_ReobservationErrorWithholdsWrite`
+- 観測し直しの締切（GET）: `TestReconciler_ReobservationDeadlineWithholdsWrite`
+- 締切の内側の DELETE（DELETE が締切を超えたら届かない）: `TestReconciler_DeleteBeyondDeadlineIsNotSent`
+- 締切の外側の POST（POST は締切を超えても完了する）: `TestReconciler_PostIsNotBoundByObservationDeadline`
+- 観測し直した contentPath の引き継ぎ: `TestReconciler_RecreateInheritsContentPathFromReobservation`
+- 並走の再作成が 1 組に収まること: `TestReconciler_ConcurrentRecreate_ReobservedAfterPeerRecreateIsWithheld`
+- 残る窓（観測し直しの後の遷移に DELETE が届く）: `TestReconciler_RecreateStillDeletesScheduleThatStartsRecordingInResidualWindow`
+- 並走の偽陽性: `TestReconciler_ConcurrentRecreate_CreateBetweenDeleteAndPostCountsFalseLoss`
+- 後着の POST の拒否: `TestReconciler_StaleRecreatePostAfterNewerCreate_IsRejected`
+- 古い desired の DELETE: `TestReconciler_StaleDeleteAfterNewerObservation_LeavesDesiredUnscheduledUntilNextPass`
+- 古い priority の固定: `TestReconciler_StaleRecreateAfterNewerRecreate_LeavesStalePriority`
+- 録画中の DELETE が録画を止めること: conformance の `TestDeleteRecordingScheduleStopsRecorder`
 - 後着の POST の拒否: conformance の `TestRecordLifecycle/DuplicateCreateRejected`
 - 無い schedule への DELETE の 404: conformance の `TestRecordLifecycle/DeleteMissingScheduleNotFound`
-- 古い priority の固定: `TestReconciler_StaleRecreateAfterNewerRecreate_LeavesStalePriority`
 
 </details>

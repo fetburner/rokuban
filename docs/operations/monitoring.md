@@ -93,6 +93,7 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 | `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数 |
 | `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
 | `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功後に POST が失敗した回数 |
+| `rokuban_reconcile_write_withheld_total{action,reason}` | Counter | DELETE の直前の観測し直しで DELETE / POST を見送った回数（理由別） |
 | `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動回数 |
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | いま止まっているか（1 = 発動中） |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
@@ -535,6 +536,7 @@ flowchart TD
 | `rokuban_reconcile_pending_diff{action="update_deferred"}` | 差分はあるが schedule の state が `scheduled` でないため、意図的に触らなかった件数 |
 | `rokuban_reconcile_schedules_total{action="recreated"}` | 予約オプションの差分反映で DELETE → POST の再作成が成功した件数 |
 | `rokuban_reconcile_schedule_lost_total` | 再作成で DELETE には成功したが POST が失敗した回数 |
+| `rokuban_reconcile_write_withheld_total{action="delete"\|"recreate",reason}` | DELETE の直前の観測し直しで見送った回数。並走や観測後の録画開始で非ゼロになりうる。カウンタなので収束は見ず、アラートにはしない |
 
 `delete` は、削除 allowlist の `scheduled` / `finished` / `failed` だけを数える。`delete_deferred` は、録画中・追従中または未知 state なら非ゼロが正常なので、アラートしない。
 
