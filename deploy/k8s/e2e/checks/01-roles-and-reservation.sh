@@ -219,15 +219,17 @@ fi
 # 秒数を測る。録画を保証するのは番組終了前に mirakc へ同期できた予約だけなので、
 # この遅延がそのまま保証の幅になる（docs/recording/reconciler.md §起動契機）。
 #
-# **各 PUT の前に、reconciler の Job が実行中でなく、その番組の予約がまだ無い
-# ことを待つ（cold_before_put）。** 保証の幅を決めるのは、ヒントを引く client が
-# 居ない冷えた経路（KEDA のポーリング + Pod 起動）である。待たないと、次の 2 つで
-# PUT と無関係に速く届く。
-#   - CronJob の滞留で KEDA が起こした Pod が、仕事を掴めずに `--once-idle-timeout`
-#     まで待っていて、ヒントを即座に claim する
-#   - 前の周回の意図から作られた予約を、定期の reconcile が先に mock へ戻している
-# 実測では、待たない形の 1.8 は ScaledJob 構成でも 0〜1s を出して通った。
-# 常駐 client が引く構成でも条件は同じなので、同じ判定のまま測れる。
+# **測るのは常駐 client の経路である。** reconciler_<site> を引く常駐 client は
+# watcher Deployment に居る（deploy/k8s/site/watcher.yaml）。ScaledJob の Job が
+# 同じ行を claim すると、常駐の速さを測ったことにならない。そこで 2 つを確かめる。
+#   - 常駐 client が `--queues reconciler --sites <site>` で居ることを argv で見る
+#     （無ければ 1.8 は FAIL。ScaledJob だけで通った速さを常駐の速さと読まない）
+#   - 各 PUT の前に、reconciler の ScaledJob の Job が実行中でなく、その番組の予約が
+#     まだ無いことを待つ（cold_before_put）。空の Job が claim の窓を奪わないように
+#     する。待たないと次の 2 つで PUT と無関係に速く届く。
+#       - CronJob の滞留で KEDA が起こした Pod が、仕事を掴めずに `--once-idle-timeout`
+#         まで待っていて、ヒントを即座に claim する
+#       - 前の周回の意図から作られた予約を、定期の reconcile が先に mock へ戻している
 #
 # 3 番組ぶん測って最大を見る。分解能はポーリングの 1 秒 + toolbox への exec ぶん。
 latency_max="${E2E_RECONCILE_LATENCY_MAX:-3}"
@@ -253,9 +255,9 @@ schedule_arrived() {
 
 elapsed_all=""
 max_elapsed=0
-# cold_before_put <program_id> --- 冷えた経路を測れる状態か。reconciler の
-# ScaledJob が起こした Job に実行中のものが無く、この番組の予約が DB にも
-# mock にも無いこと。**予約が既にあると、PUT と無関係に届いた時刻を測ってしまう。**
+# cold_before_put <program_id> --- 測れる状態か。reconciler の ScaledJob が起こした
+# Job に実行中のものが無く（空の Job が claim の窓を奪わない）、この番組の予約が
+# DB にも mock にも無いこと。**予約が既にあると、PUT と無関係に届いた時刻を測ってしまう。**
 cold_before_put() {
   local active n
   active="$(k get jobs -l "scaledjob.keda.sh/name=${reconciler_scaledjob}" \
@@ -265,6 +267,16 @@ cold_before_put() {
   [ "$n" = "0" ] || return 1
   ! schedule_arrived "$1"
 }
+
+# 常駐 client の所在。1.8 の判定材料であって 1.7 の前提ではない（1.7 は ScaledJob
+# だけでも通るので、欠けても 1.7 は進め、1.8 だけを落とす）。
+resident_reconciler="$(deployments_consuming_queue reconciler "$E2E_SITE_A")"
+resident_problem=""
+if discovery_is_unusable "$resident_reconciler"; then
+  resident_problem="常駐 client を判定対象にできない（$(discovery_detail "$resident_reconciler")）"
+elif [ -z "$resident_reconciler" ]; then
+  resident_problem="reconciler_${E2E_SITE_A} を --queues で引く常駐 client が無い（測っているのは ScaledJob の経路だけ）"
+fi
 
 for program_id in $program_ids; do
   # Job は `--once-idle-timeout` の 30 秒で終わり、残った予約は毎分の
@@ -297,9 +309,11 @@ done
 pass "1.7" "PUT した ${samples} 番組の予約が mirakc（モック）に反映された"
 polling="$(k get scaledjob "$reconciler_scaledjob" -o jsonpath='{.spec.pollingInterval}' 2>/dev/null)"
 detail="意図の PUT から mirakc の schedule まで ${elapsed_all}（最大 ${max_elapsed}s、閾値 ${latency_max}s。reconciler の ScaledJob ${reconciler_scaledjob} の pollingInterval=${polling:-?}s）"
-if [ "$max_elapsed" -le "$latency_max" ]; then
-  pass "1.8" "$detail"
+if [ -n "$resident_problem" ]; then
+  fail "1.8" "$resident_problem --- $detail"
+elif [ "$max_elapsed" -le "$latency_max" ]; then
+  pass "1.8" "常駐 ${resident_reconciler} 経由: $detail"
 else
-  fail "1.8" "$detail"
+  fail "1.8" "常駐 ${resident_reconciler} 経由: $detail"
 fi
 exit 0

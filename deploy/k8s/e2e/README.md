@@ -88,13 +88,19 @@ Ingress controller は kind に無いので、6.5 は Ingress の行き先の Se
 
 | | 見るもの | 対象 |
 |---|---|---|
-| 1 | 全ロールが上がり、番組表が見えて予約が mirakc に反映される | api / notifier / watcher / streamer の Deployment、`epg_<site>` と `reconciler_<site>` の ScaledJob |
+| 1 | 全ロールが上がり、番組表が見えて予約が mirakc に反映される。反映までの遅延を測る（判定 1.8） | api / notifier / watcher / streamer の Deployment、`epg_<site>` と `reconciler_<site>` の ScaledJob、`reconciler_<site>` を `--queues` で引く常駐 client（watcher Deployment） |
 | 2 | worker 0 でも CronJob が投入し続け、KEDA が Job を起こして消化する（0 → 1 → 0） | `epg-sync --site A` の CronJob、`epg_A` の ScaledJob |
 | 3 | 実行中の encode Job がスケールインで殺されない | `encode` の ScaledJob（実物のエンコードを 1 件走らせる。下記 producer） |
 | 4 | watcher を 2 レプリカにしても二重に動かない（advisory lock の実効） | site A の watcher Deployment |
 | 5 | サイト B の滞留でサイト A の Job が起きない | `epg_A` / `epg_B` の ScaledJob |
 
 この表は判定を足したり対象を変えたりする人が更新する。**実測の結果はここに書かない** --- 環境と対にして [docs/runbook/k8s.md](../../../docs/runbook/k8s.md) §受け入れ判定ハーネス に置いてある（両方に書くと片方だけ古くなる）。
+
+判定 1.8 は、意図の PUT から mirakc（モック）の schedule までの秒数を番組 3 件について測り、最大を閾値（`E2E_RECONCILE_LATENCY_MAX`、既定 3 秒）と比べる。測るのは `reconciler_<site>` を引く**常駐 client の経路**である。
+
+常駐の所在は argv で探す（`deployments_consuming_queue`）。`--roles` に worker を含み、`--queues` にキュー名、`--sites` にサイト名を持つ Deployment を引く。見つからない・複数あるときは FAIL にする。ScaledJob だけで通った速さを、常駐の速さと読まないためである。
+
+各 PUT の前には、reconciler の ScaledJob の Job が実行中でないこと、その番組の予約が DB にも mock にも無いことを待つ（`cold_before_put`）。待たないと、空の Job が claim の窓を奪うか、前の周回の予約が定期の reconcile で戻る。どちらでも速く届いて見える。
 
 判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側をそれぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に入った状態で 1.7 が「作っていないのに誤動作している」に化ける（同じ ScaledJob が両方に一致する構成でも通る。どうまとめるかは判定側で決めない）。
 
@@ -208,6 +214,7 @@ API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの
 **機能することを確かめていない判定が 2 つある。** どちらも「変異表に無い」ことがそのまま意味なので、ここに明記しておく。
 
 - **判定 3.2（待ち行列が空になっても殺されない）には変異が無い。** ScaledJob の意味論上、KEDA はキューが空になっても実行中の Job を消さない。身代わりを壊して赤くする方法が思い付かなかった（3.3 と 3.4 は確かめてある）
+- **判定 1.8 も変異表には無い。** 常駐 client の `--queues` を `ruler` に替えて手で注入した。すると「`reconciler_<site>` を `--queues` で引く常駐 client が無い」で FAIL した（ScaledJob の経路だけの遅延は 8〜9 秒）。変異表に入れていないので、`--oracles` では確かめられない。
 - **判定 1.6 / 1.7（番組表が見える / 予約が mirakc に反映される）には変異が無い**。 製品の worker が入ったので、両方とも実際に緑になることは確認済み（`run.sh` の実測）。それ以前は「緑になったことも赤になったこともない判定」だった。ただし**壊して赤くなることは確かめていない**。 判定 4 が本物のイメージで身代わりを立てているのと同じやり方（`fixtures/watcher.yaml`）で、`epg_sync` と `reconcile_pass` を消化する身代わりを足せば、ここも変異まで通せる
 
 変異イメージは**リポジトリの複製**（rsync したツリー）に当てて焼く。`git stash` は使わない --- ワークツリーは他の作業と共有されうるし、隔離 worktree と併用すると stash が互いに干渉する。変異は**コンパイルが通る形**で入れる（未使用変数でビルドが落ちると、判定が「FAIL になった」ではなく「イメージが無い」で赤くなる）。
