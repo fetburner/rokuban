@@ -190,12 +190,14 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 クラウドで原本を置く先は、ローカル FS が第一候補で、JuiceFS と条件を満たす NFS も対象にする。FUSE S3 は原本にも派生物にも使わない。JuiceFS のメタデータストアに Postgres を使うなら、Rokuban とは別のインスタンスにする（推奨）。
 
-| 選択肢 | 特徴 |
-|---|---|
-| ローカル FS | file fsync / Close / atomic rename / 親 directory fsync を通常の POSIX 意味論で満たす。第一候補 |
-| JuiceFS（対象内） | メタデータを DB に、データを S3 に置く FS。atomic rename を含む POSIX 意味論を信頼できる構成で使う。hard link の動作は未検証。メタデータストアに PostgreSQL を使う場合は別インスタンスを推奨 |
-| NFS（対象内） | export は `sync`、client mount は `hard` を推奨。ingest の公開に `RENAME_NOREPLACE` は使わず、link の誤った戻り値は `SameFile` で回収する。`.nfsXXXX` の silly rename が canonical orphan として報告される場合は、file を閉じた後に状態を確認する。自動削除はしない |
-| k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本・派生物の置き場には使わない。派生物の S3 利用は API から行う |
+契約を満たすことと、そのままマウントして書けることは別である。下の「所有権」の列は後者を決めるものを示す。
+
+| 選択肢 | 特徴 | 所有権 |
+|---|---|---|
+| ローカル FS | file fsync / Close / atomic rename / 親 directory fsync を通常の POSIX 意味論で満たす。第一候補 | マウント元の所有者と mode で決まる（[k8s 運用](../operations/k8s.md)の「PVC マウントの所有権」） |
+| JuiceFS（対象内） | メタデータを DB に、データを S3 に置く FS。atomic rename を含む POSIX 意味論を信頼できる構成で使う。hard link の動作は未検証。メタデータストアに PostgreSQL を使う場合は別インスタンスを推奨 | 未検証 |
+| NFS（対象内） | export は `sync`、client mount は `hard` を推奨。ingest の公開に `RENAME_NOREPLACE` は使わず、link の誤った戻り値は `SameFile` で回収する。`.nfsXXXX` の silly rename が canonical orphan として報告される場合は、file を閉じた後に状態を確認する。自動削除はしない | NAS 側の所有者と mode で決まる。fsGroup では変えられない（[k8s 運用](../operations/k8s.md)） |
+| k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本・派生物の置き場には使わない。派生物の S3 利用は API から行う | — |
 
 **注意**: JuiceFS のメタデータストアに Rokuban と同じ Postgres インスタンスを使うと、DB 障害がストレージ障害に連鎖し「DB が詰まっても仕事は失われない」の前提を成り立たなくする。使うなら別インスタンスを明記すること。
 
