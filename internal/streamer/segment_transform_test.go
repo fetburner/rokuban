@@ -815,18 +815,25 @@ func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
 	_ = file.Close()
 
 	task := waitForTaskPause(t, manager, transformPausedAhead, 20*time.Second)
+	// 製品の停止を検査するので stopAtStableSegmentTail で止め直さない。
+	// 確定途中なら位置の主張だけを見送り、キャッシュと再開の検査は続ける。
+	tail, stable := stoppedSegmentTail(t, task)
 	manager.mu.Lock()
-	current, requested := task.currentNumber, task.maxRequested
+	requested := task.maxRequested
 	manager.mu.Unlock()
-	// 止まる位置は「要求済みの最大 + 先読み数」の 1 つ先を書き始めた時点に等しい。
 	bound := requested + 3
-	if current != bound+1 {
-		t.Fatalf("paused at segment %d for request %d with prefetch 3, want exactly %d", current, requested, bound+1)
-	}
-	// 止まった後の scan で、先読みの範囲がキャッシュに入る。先頭から連続して入っている最後の番号は
-	// bound か bound-1 である。ffmpeg は次のセグメントを書き始めた時点では直前のセグメントを
-	// playlist に載せていないことがあり、そのとき止めると最後の 1 本は載らないまま止まる。
-	// bound の次は、どの場合でもキャッシュに無い。
+	// この paced 入力では bound+1 を初めて観測した tick で停止する。
+	// 停止までに bound+1 が確定して playlist に載れば末尾は bound+2、載る前なら bound+1 を期待する。
+	// TestPrefetchStoppedTailWaitsForFinalizedScan で両境界と確定途中の継続を検証する。
+	current := waitForPrefetchStoppedTail(t, manager, task, tail, bound, stable)
+	// 先頭から連続してキャッシュに入る最後の番号は bound か bound-1 である。
+	// scanTransform は playlist 記載済みの number を、次の .ts か .ts.tmp があれば公開する。
+	// 安定した末尾が bound+1 なら次のファイルが無いため最後は bound-1、
+	// bound+2 なら bound+1.ts があるため最後は bound である。
+	// 確定途中でも、bound+1 の .ts.tmp か playlist 未記載の bound+1.ts があれば、scanTransform は bound まで公開する。
+	// 次を書き始めても直前のセグメントが playlist に未記載なら、その1本は公開されない。
+	// キャッシュの上限は currentNumber ではなく要求 + 先読み数である。
+	// 停止の直前に bound+1 が playlist に載っても、走査は bound+1 を公開しない。
 	cached := func(number int64) bool {
 		key := firstKey
 		key.Number = number
@@ -1226,6 +1233,98 @@ func TestStoppedSegmentTailRejectsFinalizationWindow(t *testing.T) {
 			task := &segmentTransformTask{workDir: workDir, profile: LiveProfile{Name: "test"}}
 			if tail, stable := stoppedSegmentTail(t, task); tail != tc.wantTail || stable != tc.wantStable {
 				t.Errorf("stoppedSegmentTail = (%d, %v), want (%d, %v)", tail, stable, tc.wantTail, tc.wantStable)
+			}
+		})
+	}
+}
+
+// waitForPrefetchStoppedTail は安定した停止後の走査を待ち、末尾が bound+1 か bound+2 であることを検査する。
+// 確定前後の両方を TestPrefetchStoppedTailWaitsForFinalizedScan で検証する。
+func waitForPrefetchStoppedTail(t *testing.T, manager *SegmentManager, task *segmentTransformTask, tail, bound int64, stable bool) int64 {
+	t.Helper()
+	if !stable {
+		t.Logf("product paused during finalization; omitting position assertion, continuing cache and resume checks")
+		manager.mu.Lock()
+		current := task.currentNumber
+		manager.mu.Unlock()
+		return current
+	}
+	current := waitForStoppedSegmentTail(t, manager, task, tail)
+	if current != bound+1 && current != bound+2 {
+		t.Fatalf("paused at segment %d, want %d or %d", current, bound+1, bound+2)
+	}
+	return current
+}
+
+// TestPrefetchStoppedTailWaitsForFinalizedScan は安定した末尾 bound+1 の受け入れと、確定途中での継続を検証する。
+// また、waitForPrefetchStoppedTail が playlist の確定後の次の走査まで待つことを、実 ffmpeg の短い確定窓に頼らずに検証する。
+func TestPrefetchStoppedTailWaitsForFinalizedScan(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		last       int64
+		writeTmp   bool
+		wantStable bool
+	}{
+		{"stable_bound_plus_1", 4, false, true},
+		{"stable_bound_plus_2", 5, true, true},
+		{"finalizing", 4, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			last := tc.last
+			manager := newRealSegmentManagerPolling(t, lookPathFFmpeg(t), t.TempDir(), 1, 64<<20, 2<<20, 3, time.Second)
+			defer closeSegmentManager(t, manager)
+			workDir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(workDir, "segments"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			playlist := fmt.Sprintf("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:%d\n#EXTINF:2.000000,\nsegments/test.0_seg%05d.ts\n", last, last)
+			if err := os.WriteFile(filepath.Join(workDir, "test.0.m3u8"), []byte(playlist), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// writeTmp のケースは bound=4 を越えた 5.ts.tmp を走査が見た直後に、5 が playlist に載るまでの窓を作る。
+			task := &segmentTransformTask{workDir: workDir, profile: LiveProfile{Name: "test"}, maxRequested: 1, pauseReason: transformPausedAhead}
+			tmp := filepath.Join(workDir, "segments", "test.0_seg00005.ts.tmp")
+			if tc.writeTmp {
+				if err := os.WriteFile(tmp, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			manager.updateCurrentNumber(task, map[string][]int64{"video": {4}})
+			if task.currentNumber != 5 {
+				t.Fatalf("pre-finalization scan = %d, want 5", task.currentNumber)
+			}
+			// last=5 は rename 後に playlist へ載った状態、last=4 で tmp があれば確定途中の状態。
+			// last=4 で tmp が無ければ、5 のファイルも無い安定状態であり、走査を待たずに返る。
+			if last == 5 {
+				if err := os.Rename(tmp, strings.TrimSuffix(tmp, ".tmp")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tail, stable := stoppedSegmentTail(t, task)
+			if stable != tc.wantStable || (stable && tail != last+1) {
+				t.Fatalf("fixture tail=(%d, %v), want stable=%v and stable tail=%d", tail, stable, tc.wantStable, last+1)
+			}
+			done := make(chan error, 1)
+			go func() {
+				ticker := time.NewTicker(manager.pollInterval)
+				defer ticker.Stop()
+				<-ticker.C
+				done <- manager.scanTransform(task, false)
+			}()
+			continued := false
+			t.Cleanup(func() {
+				if !continued {
+					t.Error("position check skipped subsequent cache and resume checks")
+				}
+			})
+			got := waitForPrefetchStoppedTail(t, manager, task, tail, 4, stable)
+			continued = true
+			if got != last+1 {
+				t.Errorf("current = %d, want %d", got, last+1)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
