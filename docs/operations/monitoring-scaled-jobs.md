@@ -40,6 +40,10 @@ flowchart TD
 
 ruler と record_sweep については、この既存ゲージを互換性のために残したまま、DB-backed の site ラベル付きメトリクスを追加した。`ruler_pass` と `record_sweep` は、成功したパスの最後に site 単位の衛星表を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
 
+予約同期（reconcile）の鮮度には、この実測を踏まえて、DB-backed の `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。常駐 Pod や別の worker が scrape しても、同じ DB の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot からの経過時間として見える。
+
+`rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い、または 0 のときは、「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐構成と ScaledJob 構成の収集元・復旧条件は、[アラート設計](alerts.md) にまとめる。
+
 全件パスの reconcile（encode / thumbnail / ts_scan）と、置き場ごとの削除 reconcile も同じ作りにした。完走の記録は `reconcile_pass_snapshots` と `delete_reconcile_snapshots` に持つ。storage sync は表を足さず、既存の `storage_sync.observed_at` を読む。どの Pod が scrape しても、同じ DB の値が出る。
 
 完走の記録には次の規則がある。
@@ -49,10 +53,6 @@ ruler と record_sweep については、この既存ゲージを互換性のた
 - thumbnail は、シークタイルの一覧を取れなかったパスでは記録しない。
 - 削除 reconcile は、大量削除のサーキットブレーカーで止めたパスも完走として記録する。
 - 候補ごとの投入の失敗では、記録を止めない。
-
-予約同期（reconcile）の鮮度には、この実測を踏まえて、DB-backed の `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。常駐 Pod や別の worker が scrape しても、同じ DB の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot からの経過時間として見える。
-
-`rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い、または 0 のときは、「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐構成と ScaledJob 構成の収集元・復旧条件は、[アラート設計](alerts.md) にまとめる。
 
 #### アラート式の集約と初回パス
 
@@ -66,9 +66,11 @@ time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾�
 
 storage は root ごとに系列を持つので、`min by (store)` で置き場の中で最も古い root を見る。片方の root だけが止まっても、その置き場の系列が閾値を超える。
 
-新しい表は導入直後は空である。初回のパスが完走するまで、系列は 0 を出す。0 は「一度も完走していない」であって、止まった時刻ではない。`time() - 0` は閾値を超えるので、0 の系列を式から外すか（`> 0` を条件に足す）、導入して初回のパスを待ってからアラートを有効にする。0 のまま続くときは、投入元（CronJob）を確認する。
+新しい表は導入直後は空である。導入直後は、初回のパスが完走するまで系列が 0 を出す。0 は「一度も完走していない」であって、止まった時刻ではない。アラートは、導入して 1 周期待ってから有効にする。
 
-継続を持つパス（encode / thumbnail）は、候補が多いとページごとに完走時刻を書く。値の意味は「定期パスが回っている」であり、「全候補を見終えた」ではない。候補の残りは、継続ジョブのログで確認する。
+それ以降も 0 が続くなら、未投入として扱う。0 のまま続くことは「CronJob を最初から忘れた」状態そのものなので、式から 0 の系列を外さない。投入元（CronJob）を確認する。
+
+継続を持つパス（encode / thumbnail / ts_scan）は、候補が多いとページごとに完走時刻を書く。値の意味は「定期パスが回っている」であり、「全候補を見終えた」ではない。候補の残りは、継続ジョブのログで確認する。
 
 #### CronJob による定期投入
 

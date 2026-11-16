@@ -70,17 +70,17 @@ func NewReconcileMarkerCollector(passes store.ReconcilePassMarkers, deletes stor
 		stores:  names,
 		encode: prometheus.NewDesc(
 			"rokuban_encode_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last encode reconcile pass that completed for the whole library. Zero means no full pass has completed yet. The value is also set when a pass that continues across pages finishes a page, so it means the pass is running, not that every candidate was seen.",
+			"Unix time (database clock) of the last completed page of a full (non-targeted) encode reconcile pass. A pass that continues across pages writes this at the end of every page, so it means the pass is running, not that every candidate was seen. Zero means no full pass has completed yet.",
 			nil, nil,
 		),
 		thumbnail: prometheus.NewDesc(
 			"rokuban_thumbnail_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last thumbnail reconcile pass that completed for the whole library, including the seek tiles list. Zero means no full pass has completed yet. Like the encode value, it means the pass is running.",
+			"Unix time (database clock) of the last completed page of a full (non-targeted) thumbnail reconcile pass, written only when the seek tiles list also succeeded. A pass that continues across pages writes this at the end of every page, so it means the pass is running, not that every candidate was seen. Zero means no full pass has completed yet.",
 			nil, nil,
 		),
 		tsScan: prometheus.NewDesc(
 			"rokuban_ts_scan_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last ts-scan reconcile pass that completed. Zero means no pass has completed yet. Like the encode value, it means the pass is running.",
+			"Unix time (database clock) of the last completed page of a full (non-targeted) ts-scan reconcile pass. A pass that continues across pages writes this at the end of every page, so it means the pass is running, not that every candidate was seen. Zero means no full pass has completed yet.",
 			nil, nil,
 		),
 		deleteDesc: prometheus.NewDesc(

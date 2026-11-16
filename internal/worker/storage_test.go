@@ -491,8 +491,8 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 // エッジトリガー実装（既存行を SELECT して差集合だけ掃除する）だと、行を消したのが
 // 他者だったパスでラベルが取り残され、二度と掃除されない ---
 // rokuban_storage_root_last_success_timestamp_seconds{store="test-store",root="scratch"} が凍結した
-// まま残り、その鮮度でアラートせよと書いている docs/operations/monitoring.md の
-// 手順が Pod を再起動するまで消えない偽陽性を出し続ける。
+// まま残り、その鮮度を判断材料に挙げる docs/operations/monitoring.md の
+// 読み方が Pod を再起動するまで消えない偽陽性を出し続ける。
 func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
