@@ -341,3 +341,19 @@ curl -s "$MIRAKC_URL/api/tuners" | jq '.[] | {name, isAvailable, users}'
 ```
 
 EPGStation のライブ視聴・EPG 収集・別チャンネルの録画がチューナーを取っていないか確認する。
+
+### ライブ視聴が始まらない・セッションが残る・複数 Pod で切れる
+
+ライブの症状は資源の上限、回収、前段の振り分けの順に切り分ける。実再生の確認手順は [live.md](live.md) に置く。
+
+- チューナー枯渇: HTTP ステータス 503 の本文と `rokuban_live_active_sessions{kind="live"}` を [同時視聴数の上限](live.md#同時視聴数の上限) に照らす。プロセスの上限と mirakc のチューナー不足を分けて確認する
+- セッションが残る: [離脱ヒントと回収時間](live.md#離脱ヒントと回収時間) で、ヒントの到達と idle GC を見る。他の視聴者が同じチャンネルを見ていないかも確認する
+- 複数 Pod で切れる: playlist とセグメントの到達先を調べ、[シャード鍵の決定](../operations/k8s-streamer.md#ライブ視聴は-mirakc-の隣シャード鍵はサービスの同定子) に照らす。sticky や URL へのセッション ID 追加で対処しない。既定は 1 replica であり、増設前に同節の判定基準を確認する
+
+### SSE が切れる・SPA のディープリンクが 404・accel のファイル名が壊れる
+
+前段の症状は [nginx の受け入れ確認](nginx.md#受け入れ確認) から対応する検査を引く。CDN 固有の構成は [保証の範囲](../overview.md#保証する構成と機能の範囲) の外である。
+
+- SSE が切れる: [SSE の長時間接続](nginx.md#sse-の長時間接続) を確認する
+- SPA のディープリンクが 404: [TLS・Basic 認証・SPA](nginx.md#tlsbasic-認証spa) の直接アクセスを確認する
+- accel でファイル名が壊れる: [録画の Range と X-Accel-Redirect](nginx.md#録画の-range-と-x-accel-redirect) でヘッダーと保存名を確認する
