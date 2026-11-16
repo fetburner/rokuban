@@ -72,9 +72,11 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 | `rokuban_thumbnail_jobs_total{result}` | Counter | thumbnail の成功・失敗件数 |
 | `rokuban_seek_tiles_duration_seconds` | Histogram | シークプレビュー用タイル 1 件の所要時間 |
 | `rokuban_seek_tiles_jobs_total{result}` | Counter | シークタイルの成功・失敗件数 |
-| `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail / シークタイルの reconcile の最終完走時刻 |
+| `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail / シークタイルの reconcile の最終完走時刻（プロセス内。ScaledJob では scrape できない） |
+| `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` | Gauge | thumbnail / シークタイルの全件パスの完走時刻を DB から読んだ値（0 は未完走）。ScaledJob でも使える |
 | `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数 |
-| `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻 |
+| `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻（プロセス内。ScaledJob では scrape できない） |
+| `rokuban_encode_reconcile_last_success_timestamp_seconds` | Gauge | encode reconcile の全件パスの完走時刻を DB から読んだ値（0 は未完走）。ScaledJob でも使える |
 | `rokuban_encode_reconcile_candidates` | Gauge | 直近パスの候補窓に入った、不足プロファイルか満たされていない作り直しがある録画数 |
 | `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 録画単位の現在の desired が現在のプロファイルに無い録画数 |
 
@@ -160,7 +162,8 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 |---|---|---|
 | `rokuban_delete_reconcile_deleted_total{source}` | Counter | 物理削除したアセット件数 |
 | `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
-| `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
+| `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻（プロセス内。ScaledJob では scrape できない） |
+| `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | Gauge | 置き場ごとの削除 reconcile の完走時刻を DB から読んだ値（0 は未完走）。ブレーカーで止めたパスも含む。FS の置き場だけ |
 | `rokuban_media_assets_missing{kind}` | Gauge | 実体ファイルが無いと確認できた media_asset 数 |
 | `rokuban_orphan_files_unresolved` | Gauge | 登録されないまま残っている canonical file の数 |
 | `rokuban_object_store_errors_total{operation}` | Counter | S3 の置き場の操作（put / head / get / list / delete / presign）の失敗回数 |
@@ -170,7 +173,9 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
 | `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
 | `rokuban_storage_sync_last_success_timestamp_seconds{store}` | Gauge | 置き場の全 root を観測できたパスの時刻 |
-| `rokuban_storage_root_last_success_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最終観測時刻 |
+| `rokuban_storage_root_last_success_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最終観測時刻（プロセス内。ScaledJob では scrape できない） |
+| `rokuban_storage_root_observed_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最後の観測時刻を `storage_sync` から DB で読んだ値。観測できていない置き場は `root="media"` が 0。ScaledJob でも使える |
+| `rokuban_reconcile_marker_scrape_errors_total{source}` | Counter | 完走時刻と観測時刻の読み取りに失敗した回数（`source` は `reconcile_pass` / `delete_reconcile` / `storage_sync`）。読めなかった表の系列は出さず、0 にも置き換えない |
 | `rokuban_storage_total_bytes{store,root}` / `rokuban_storage_used_bytes{store,root}` / `rokuban_storage_available_bytes{store,root}` | Gauge | 置き場と root ごとの直近観測バイト数 |
 
 `rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
@@ -184,6 +189,10 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 非ゼロは調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
 
 `rokuban_missing_asset_scan_suspected_storage_failure_total` は、`storage.stores` に FS 置き場が無い構成でだけ進む。走査でファイルを 1 件も観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
+
+#### 観測の鮮度と集約
+
+置き場の観測は、root ごとの鮮度と置き場ごとの容量で読む。
 
 `rokuban_storage_sync_last_success_timestamp_seconds{store}` は、その置き場の全 root を観測できたパスの時刻で、1 root でも失敗した部分成功では進まない。`rokuban_storage_root_last_success_timestamp_seconds{store,root}` と対で見る。root（`media` / `scratch`）ごとの鮮度は、その置き場で片方だけ恒久的に動かなくなったケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。
 
@@ -230,7 +239,11 @@ FS 置き場間の転送のメトリクスと、その見方は [FS 置き場間
 
 ゲージは値が凍結する。`pending_diff` や `epg_programs_projected` だけでは、「収束した」と「ループが動いていない」を区別できない。シングルトンがロックを取れていない場合や、定期ジョブが投入されなくなった場合は、`time() - <last_*_timestamp> > 閾値` で検出する。実際に定期ジョブの一意性の設定ミスで EPG の定期同期がワンショット化していたトラブルがあり、この指標があれば気づけた。
 
-ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は、DB 側の 5 本である。対象は、前掲の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）である。加えて、`rokuban_ruler_last_success_timestamp_seconds{site}` と `rokuban_sweep_last_success_timestamp_seconds{site}` を使う。プロセス内ゲージの `rokuban_reconcile_pending_diff` は、reconciler のジョブを実行した Pod でしか値を持たない。その Pod は `--once` で終了するため、scrape 窓が無い（「ジョブ化されたループの監視」）。
+ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は、DB から読んで出す系列だけである。判定の基準は、どの Pod が scrape しても同じ DB の値を出すことである。
+
+例は、前掲の `rokuban_presync_pending` 系列と、完走時刻の系列（ruler / sweep / 全件パスの reconcile）である。系列の見分け方は [ジョブ化されたループの監視](monitoring-scaled-jobs.md) にある。
+
+プロセス内ゲージの `rokuban_reconcile_pending_diff` は、reconciler のジョブを実行した Pod でしか値を持たない。その Pod は `--once` で終了するため、scrape 窓が無い（「ジョブ化されたループの監視」）。
 
 reconcile 差分数はゲージにする。カウンタ（`rokuban_reconcile_schedules_total`）は単調増加なので、「収束しているか」を表せない。ゼロに戻らないまま続くのは、reconcile が収束できていないということである。例は、mirakc が作成を拒否し続ける場合と、サーキットブレーカーが削除を止めている場合である。アラートはゲージ側で取る。
 
@@ -270,110 +283,7 @@ reconcile 差分数はゲージにする。カウンタ（`rokuban_reconcile_sch
 
 ### ジョブ化されたループの監視
 
-ループの停止は、ジョブが投入されて完走しているかで検出する。ロックが取れているかは見ない。最後に成功した時刻からの経過時間が、周期を大きく超えたら止まっていると判断する。
-
-ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期全量突き合わせ）は River のジョブである。advisory lock が取れているかは、停止の検出に使わない。
-
-```mermaid
-flowchart TD
-  A[ループの停止を検出したい] --> B{KEDA ScaledJob で動かしているか}
-  B -- はい --> C[DB に確定した site 単位の成功時刻を見る]
-  B -- いいえ --> D[プロセス内の最終パス時刻でも見られる]
-  C --> E[現在時刻との差が周期を大きく超えたら止まっている]
-  D --> E
-```
-
-#### 停止を見分けるメトリクスと症状
-
-止まり方ごとに、見るものが違う。
-
-| 見るもの | 意味 |
-|---|---|
-| `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`） | `time() - この値` が周期を大きく超えたら止まっている。KEDA ScaledJob の構成では使えない |
-| `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` | DB に確定した site 単位の成功時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
-| `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
-| `river_job` の ingest キューで `state='running'` が上限に張り付き、`available` が滞留している | ingest の枠不足。`ingest.concurrency` が録画数に対して小さく、UI では取り込み待ちが続く |
-| `river_job` が増えない | **投入自体が止まっている。** `worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
-
-最後の行が k8s 特有の注意点である。k8s は `worker.periodic_jobs: false` で出荷しており、投入元は CronJob だけである（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
-
-#### 常駐 Pod のゲージが使えない理由
-
-プロセス内の最終パス時刻は、ScaledJob 構成では scrape できず、常駐 Pod の値も成功時刻を表さない。成功時刻は、DB に確定した値で見る。
-
-`rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は、プロセス内のゲージである。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、値は成功時刻を表さない。
-
-ruler と record_sweep については、この既存ゲージを互換性のために残したまま、DB-backed の site ラベル付きメトリクスを追加した。`ruler_pass` と `record_sweep` は、成功したパスの最後に site 単位の衛星表を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。各 marker は常駐プロセスの scrape から読めるため、`time() - <metric> > 閾値` を ScaledJob 構成の停止検出に使える。
-
-予約同期（reconcile）の鮮度には、この実測を踏まえて、DB-backed の `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。常駐 Pod や別の worker が scrape しても、同じ DB の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot からの経過時間として見える。
-
-`rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い、または 0 のときは、「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐構成と ScaledJob 構成の収集元・復旧条件は、[アラート設計](alerts.md) にまとめる。
-
-<details><summary>根拠</summary>
-
-- 成功 marker を upsert する衛星表の書き手: `ruler_pass` / `record_sweep`
-
-</details>
-
-#### CronJob による定期投入
-
-定期投入を切った構成（k8s の出荷形）では、定期ジョブの投入元は CronJob だけである。手動で走らせたいときも、同じ投入コマンドを使う。
-
-切るのは `worker.periodic_jobs: false` の設定である。
-
-手動で走らせたいときは `rokuban enqueue <job>` を使う。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全である。
-
-ジョブが site と置き場のどちらに束縛されるかで、投入する引数と CronJob の立て方が変わる。
-
-| 種別 | ジョブ | `--site` / `--store` | CronJob の立て方 |
-|---|---|---|---|
-| site 束縛 | `rokuban enqueue --help` の「site 束縛ジョブ」 | 多サイトでは必須（1 site なら省略可） | サイトごとに 1 本（`--site tokyo` 等） |
-| 置き場ごと | 同「置き場ごとのジョブ」 | FS 置き場が複数なら必須（1 つなら省略可） | FS 置き場ごとに 1 本 |
-| site 非依存 | 同「site 非依存ジョブ」 | どちらも付けない | 全体で 1 本 |
-
-site に束縛しないことは、全体で 1 回という意味ではない。置き場ごとのジョブは FS 置き場ごとに投入する。全体で 1 回投入するのは `--site` も `--store` も取らないジョブだけである。フラグの要否と各分類のジョブ一覧は `rokuban enqueue --help` が権威である。
-
-site 非依存ジョブを site ごと（または置き場ごと）の CronJob から叩くと N 回投入される。River の一意制約で 1 本に合流はするが、CronJob の意図が読めなくなる。
-
-<details><summary>根拠</summary>
-
-- `rokuban enqueue --help` における範囲の一覧: `cmd/rokuban/enqueue.go` の `RequiresSite` / `RequiresStore`
-- site / store の引数解決: `TestResolveEnqueueJobScope`
-
-</details>
-
-#### CronJob を忘れたときの症状
-
-投入元を CronJob だけにする構成では、CronJob を忘れると、そのジョブが一度も投入されない。症状と検出に使うメトリクスは、ジョブごとに違う。
-
-対象は `worker.periodic_jobs: false` の構成である。
-
-`storage-sync` の CronJob を忘れると、`storage_sync` が一度も投入されない。`GET /api/storage` が永遠に空配列を返す。
-
-`encode-reconcile` と `thumbnail-reconcile` を忘れた場合の症状は、目立たない。ヒントを落とした録画だけが、派生物を持たないまま残る（[ingest](../recording/ingest-followup.md) §5.5）。検出は、`rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。thumbnail とシークプレビュー用タイルは同じパスが埋めるので、`rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
-
-`ts-scan-reconcile` を忘れた場合は、scan 記録のない原本が残る。検出は、`rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` の鮮度で行う。投入を忘れれば値が進まない。`rokuban_ts_scan_jobs_total` は ingest のヒントでも増えるので、投入停止の検出には使わない。
-
-thumbnail reconcile の候補から除外される既知の原本欠落は、`rokuban_media_assets_missing{kind="original"}` で確認する。これは、ファイルが復旧して delete reconcile がマーカーを消すまで、定期パスが同じ失敗を作り続けないためのガードである。
-
-#### record_sweep の起動契機
-
-record_sweep の起動契機は、定期投入だけである。既定間隔は 5 分で、ruler / reconciler と違って前倒し投入のヒント経路はない。
-
-`rokuban_sweep_last_success_timestamp_seconds{site}` を監視する。record_sweep が DB marker を更新するのは、schedules と records の一覧取得に成功し、failed schedule と record の突き合わせも全件成功したときだけである。サービス一覧の取得失敗はこの条件に含めない。前回のキャッシュで続行し、キャッシュに無いサービスは failed schedule の突き合わせの失敗として現れるからである。
-
-そのため、決定的に失敗する record が 1 件あるだけで marker は止まり、`rokuban_sweep_last_success_timestamp_seconds{site}` のアラートが鳴る。原因の record は `sweep: processing record` ログの `record_id` で特定する。失敗したパスは再試行せず、次の定期投入が再試行である。原因を取り除けば、次のパスで marker が進む。
-
-前倒し投入のヒント経路がないことは、[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」にある。取りこぼしの大半は SSE の (a)(b) が吸収する。record_sweep は定期パスとして収束させる保険という位置づけで、5 分間隔で十分と判断している。
-
-SSE 再接続をヒントにする案は採らない。mirakc クライアントの SSE 購読が再接続を内部に隠しているため、呼び出し側へ再接続を通知できないためである。
-
-<details><summary>根拠</summary>
-
-- `record_sweep` の間隔: `cmd/rokuban/workerspec.go` の `newWorkerSpec`
-- SSE 再接続を呼び出し側へ通知できない: `internal/mirakc.Client.Subscribe`
-
-</details>
+ループの停止の検出と、KEDA ScaledJob 構成での見方は [ジョブ化されたループの監視](monitoring-scaled-jobs.md) にある。停止を見分けるメトリクス、完走時刻の記録の規則、CronJob の忘れの症状、record_sweep の起動契機はそちらにまとめる。
 
 ### ruler
 
@@ -504,7 +414,8 @@ SHA-256 待ちは、同じ River job を snooze し、結果の 3 値と duratio
 | `rokuban_ts_scan_dropped_packets_total` | scan 中に観測したドロップパケットの累計 |
 | `rokuban_ts_scan_error_packets_total` | scan 中に観測した transport error の累計 |
 | `rokuban_ts_scan_scrambled_packets_total` | scan 中に観測したスクランブルパケットの累計 |
-| `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` | ts_scan reconcile の最終完走時刻。投入停止は `time() -` で検出 |
+| `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | ts_scan reconcile の全件パスの完走時刻を DB から読んだ値（0 は未完走）。投入停止は `time() -` で検出。ScaledJob でも使える |
+| `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` | 同じ完走時刻のプロセス内ゲージ。ScaledJob では scrape できない |
 
 各 scan の成否は、`rokuban_ts_scan_jobs_total` と River のジョブ状態で確認する。
 
@@ -640,8 +551,8 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 
 | 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
-| `GET /api/storage` に root が載っている | 最新の観測とは限らない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{store,root}` |
-| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない | `rokuban_store_marker_mismatch_total{store}`（置き場名が空なら `rokuban_missing_asset_scan_suspected_storage_failure_total`）が増えていないこと、かつ `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること |
+| `GET /api/storage` に root が載っている | 最新の観測とは限らない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_observed_timestamp_seconds{store,root}` |
+| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない | `rokuban_store_marker_mismatch_total{store}`（置き場名が空なら `rokuban_missing_asset_scan_suspected_storage_failure_total`）が増えていないこと、かつ `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` が進んでいること |
 
 1 root の statfs が失敗すると、前回の観測行をそのまま残す。そのため、行の存在だけでは観測が続いていることを保証しない。
 
