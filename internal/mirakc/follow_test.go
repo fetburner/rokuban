@@ -391,6 +391,58 @@ func TestRecordFollowReader404HookMustConfirmCommittedEnd(t *testing.T) {
 
 var errFollowTestIncomplete = errors.New("incomplete committed original")
 
+// TestRecordFollowReaderExplicitStallFire は明示的な発火で本文を閉じて再試行する経路を検査する。
+func TestRecordFollowReaderExplicitStallFire(t *testing.T) {
+	body := newBlockingFollowBody()
+	clock := &followStallClock{}
+	client := &followTestClient{
+		responses: []followTestResponse{followBody(-1), {err: ErrRangeNotSatisfiable}},
+		records:   []followTestRecord{{status: "finished"}},
+	}
+	reader := NewRecordFollowReader(context.Background(), client, "record", 0, body, RecordFollowOptions{
+		StallTimeout: 20 * time.Millisecond, StallAfterFunc: clock.afterFunc,
+		RetryDelay: func(int) time.Duration { return time.Nanosecond },
+	})
+	defer func() { _ = reader.Close() }()
+	type result struct {
+		data string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(reader)
+		done <- result{data: string(data), err: err}
+	}()
+	select {
+	case <-body.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("body Read did not start")
+	}
+	if got := clock.fire(); got != 1 {
+		t.Fatalf("fired stall timers = %d, want 1", got)
+	}
+	select {
+	case <-body.closed:
+	default:
+		t.Fatal("stall did not close body")
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("io.ReadAll() error = %v", got.err)
+		}
+		if got.data != "tail" {
+			t.Fatalf("read data = %q, want tail", got.data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stall did not retry")
+	}
+	offsets, _ := client.snapshot()
+	if !equalInt64s(offsets, []int64{0, 4, 4}) {
+		t.Fatalf("Range offsets = %v, want [0 4 4]", offsets)
+	}
+}
+
 func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 	t.Run("blocked body is retried", func(t *testing.T) {
 		body := newTimedFollowBody(300 * time.Millisecond)
@@ -426,6 +478,8 @@ func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 
 	t.Run("time before Read is not a stall", func(t *testing.T) {
 		body := newGatedFollowBody("head")
+		clock := &followStallClock{}
+		defer body.release()
 		client := &followTestClient{
 			responses: []followTestResponse{
 				{err: ErrRangeNotSatisfiable},
@@ -434,9 +488,15 @@ func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 			records: []followTestRecord{{status: "finished"}},
 		}
 		reader := NewRecordFollowReader(context.Background(), client, "record", 0, body, RecordFollowOptions{
-			StallTimeout: 100 * time.Millisecond,
+			StallTimeout:   100 * time.Millisecond,
+			StallAfterFunc: clock.afterFunc,
 		})
-		time.Sleep(50 * time.Millisecond)
+		if got := clock.created(); got != 0 {
+			t.Fatalf("created stall timers before Read = %d, want 0", got)
+		}
+		if got := clock.fire(); got != 0 {
+			t.Fatalf("armed stall timers = %d, want 0", got)
+		}
 		select {
 		case <-body.closed:
 			t.Fatal("reader closed the initial body before Read started")
@@ -455,6 +515,9 @@ func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 		case <-body.readStarted:
 		case <-time.After(time.Second):
 			t.Fatal("Read did not reach the initial body")
+		}
+		if got := clock.created(); got != 1 {
+			t.Fatalf("created stall timers during Read = %d, want 1", got)
 		}
 		body.release()
 		select {
@@ -475,14 +538,17 @@ func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 
 	t.Run("slow consumer is not a stall", func(t *testing.T) {
 		body := newTrackedFollowBody("headtail")
+		clock := &followStallClock{}
 		client := &followTestClient{
 			responses: []followTestResponse{{err: ErrRangeNotSatisfiable}},
 			records:   []followTestRecord{{status: "finished"}},
 		}
 		reader := NewRecordFollowReader(context.Background(), client, "record", 0, body, RecordFollowOptions{
-			StallTimeout: 20 * time.Millisecond,
+			StallTimeout:   20 * time.Millisecond,
+			StallAfterFunc: clock.afterFunc,
 		})
 		writer := newBlockingFollowWriter()
+		defer writer.release()
 		result := make(chan struct {
 			data string
 			err  error
@@ -501,7 +567,9 @@ func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 			_ = reader.Close()
 			t.Fatal("consumer Write did not start")
 		}
-		time.Sleep(50 * time.Millisecond)
+		if got := clock.fire(); got != 0 {
+			t.Fatalf("armed stall timers = %d, want 0", got)
+		}
 		select {
 		case <-body.closed:
 			writer.release()
@@ -906,4 +974,51 @@ func TestRecordFollowOptionsOverridePacing(t *testing.T) {
 			t.Errorf("retryDelay(0) = %v, want 200ms", got)
 		}
 	})
+}
+
+// followStallClock keeps callbacks pending until fire explicitly advances them.
+type followStallClock struct {
+	mu     sync.Mutex
+	timers []*followStallTimer
+}
+
+type followStallTimer struct {
+	armed    bool
+	callback func()
+}
+
+func (c *followStallClock) afterFunc(_ time.Duration, f func()) func() bool {
+	c.mu.Lock()
+	timer := &followStallTimer{armed: true, callback: f}
+	c.timers = append(c.timers, timer)
+	c.mu.Unlock()
+	return func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		wasArmed := timer.armed
+		timer.armed = false
+		return wasArmed
+	}
+}
+
+func (c *followStallClock) created() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.timers)
+}
+
+func (c *followStallClock) fire() int {
+	c.mu.Lock()
+	var callbacks []func()
+	for _, timer := range c.timers {
+		if timer.armed {
+			timer.armed = false
+			callbacks = append(callbacks, timer.callback)
+		}
+	}
+	c.mu.Unlock()
+	for _, callback := range callbacks {
+		callback()
+	}
+	return len(callbacks)
 }
