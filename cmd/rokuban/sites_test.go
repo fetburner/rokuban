@@ -463,3 +463,34 @@ func TestResolveSiteFlag(t *testing.T) {
 		}
 	})
 }
+
+func TestNewReconcileMarkerCollectorS3Series(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	for _, derived := range []string{"s3-a", "fs-a"} {
+		t.Run(derived, func(t *testing.T) {
+			cfg := config.StorageConfig{Stores: map[string]config.StoreConfig{"fs-a": {Kind: "fs"}, "s3-a": {Kind: "s3"}}, Derived: derived}
+			reg := prometheus.NewPedanticRegistry()
+			reg.MustRegister(newReconcileMarkerCollector(pool, cfg))
+			families, err := reg.Gather()
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := map[string]bool{}
+			for _, f := range families {
+				if f.GetName() != "rokuban_delete_reconcile_last_success_timestamp_seconds" {
+					continue
+				}
+				for _, m := range f.Metric {
+					for _, l := range m.Label {
+						if l.GetName() == "store" {
+							seen[l.GetValue()] = true
+						}
+					}
+				}
+			}
+			if !seen["fs-a"] || seen["s3-a"] != (derived == "s3-a") {
+				t.Fatalf("delete marker stores = %v, derived %s", seen, derived)
+			}
+		})
+	}
+}

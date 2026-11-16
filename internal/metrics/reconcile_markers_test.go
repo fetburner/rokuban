@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -92,7 +93,7 @@ func descName(t *testing.T, desc string) string {
 
 func TestReconcileMarkerCollector_ZeroBeforeAnyPass(t *testing.T) {
 	t.Parallel()
-	c := NewReconcileMarkerCollector(&fakeReconcileMarkers{}, &fakeReconcileMarkers{}, &fakeReconcileMarkers{}, []string{"fs-b", "fs-a"})
+	c := NewReconcileMarkerCollector(&fakeReconcileMarkers{}, &fakeReconcileMarkers{}, &fakeReconcileMarkers{}, []string{"fs-b", "fs-a"}, []string{"fs-b", "fs-a"})
 	got := collectReconcileSeries(t, c)
 
 	want := map[string]float64{
@@ -133,7 +134,7 @@ func TestReconcileMarkerCollector_ReportsSavedTimesOfConfiguredStoresOnly(t *tes
 		{Store: "fs-a", Root: "scratch", ObservedAt: scratchAt},
 		{Store: "s3-x", Root: "media", ObservedAt: mediaAt.Add(time.Hour)},
 	}}
-	c := NewReconcileMarkerCollector(passes, deletes, storage, []string{"fs-a", "fs-b"})
+	c := NewReconcileMarkerCollector(passes, deletes, storage, []string{"fs-a", "fs-b"}, []string{"fs-a", "fs-b"})
 	got := collectReconcileSeries(t, c)
 
 	want := map[string]float64{
@@ -191,7 +192,7 @@ func TestReconcileMarkerCollector_ReadFailureDropsOnlyItsSeries(t *testing.T) {
 				storage: []store.StorageSync{{Store: "fs-a", Root: "media", ObservedAt: at}},
 				err:     map[string]error{tc.source: errBoom},
 			}
-			c := NewReconcileMarkerCollector(fake, fake, fake, []string{"fs-a"})
+			c := NewReconcileMarkerCollector(fake, fake, fake, []string{"fs-a"}, []string{"fs-a"})
 			got := collectReconcileSeries(t, c)
 
 			for _, name := range tc.failed {
@@ -244,5 +245,34 @@ func assertSeries(t *testing.T, got, want map[string]float64) {
 		if _, ok := want[key]; !ok && !strings.Contains(key, "scrape_errors_total") {
 			t.Errorf("unexpected series %q = %v", key, got[key])
 		}
+	}
+}
+
+func TestReconcileMarkerS3Series(t *testing.T) {
+	for _, s3 := range []bool{false, true} {
+		t.Run(fmt.Sprint(s3), func(t *testing.T) {
+			deletes := []string{"fs-a"}
+			if s3 {
+				deletes = append(deletes, "s3-a")
+			}
+			fake := &fakeReconcileMarkers{stores: map[string]time.Time{"s3-a": time.Unix(123, 0)}}
+			c := NewReconcileMarkerCollector(fake, fake, fake, []string{"fs-a"}, deletes)
+			for _, want := range []float64{123, 0} {
+				if want == 0 {
+					delete(fake.stores, "s3-a")
+				}
+				got := collectReconcileSeries(t, c)
+				value, ok := got["rokuban_delete_reconcile_last_success_timestamp_seconds{store=s3-a}"]
+				if ok != s3 || (ok && value != want) {
+					t.Fatalf("S3 delete series = %v, present %v; want %v, present %v", value, ok, want, s3)
+				}
+				if _, ok := got["rokuban_storage_root_observed_timestamp_seconds{root=media,store=s3-a}"]; ok {
+					t.Fatal("S3 has filesystem storage series")
+				}
+				if _, ok := got["rokuban_delete_reconcile_last_success_timestamp_seconds{store=fs-a}"]; !ok {
+					t.Fatal("FS series missing")
+				}
+			}
+		})
 	}
 }
