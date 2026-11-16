@@ -6,8 +6,9 @@
 #
 # **RWX を満たす CSI の同定はここではしない**（storageClassName を書いていないので
 # クラスタの既定が使われる）。実体の検証は別タスク（`docs/operations.md` §4）。
-# kind の既定 StorageClass（rancher.io/local-path）は RWX を拒否する
-# （`NodePath only supports ReadWriteOnce`）。そのため e2e overlay は RWO に落としている。
+# kind の既定 StorageClass（rancher.io/local-path）は RWX を拒否する（provisioning が
+# `NodePath only supports ReadWriteOnce and ReadWriteOncePod` で失敗する）。そのため
+# e2e overlay は RWO に落としている。
 #
 # **マウントの所有権。** `/mnt/media` の所有者と mode は、PVC のマウント元の
 # ストレージが決める。PVC には named volume の copy-up が無いためである。

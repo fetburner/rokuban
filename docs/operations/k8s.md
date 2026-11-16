@@ -68,30 +68,27 @@ worker は実行時に、ジョブの置き場をマウントしているかを�
 
 #### PVC マウントの所有権
 
-イメージに所有者を焼き込んでも、PVC では効かない。焼いた所有者が働くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有者と mode はマウント元のストレージが決める。
-
-ストレージの種類ごとの決まり方は次の通り。
+イメージの所有者が働くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有者と mode はマウント元のストレージが決める。
 
 | ストレージ | 所有権の決まり方 | 手当て | 確認 |
 |---|---|---|---|
-| local-path（rancher.io/local-path） | provisioner が `mkdir -m 0777` で作る。fsGroup は適用されない | 無し（provisioner の既定に頼る） | kind v0.32.0 で実測。root は `root:root drwxrwxrwx`、setgid 無し |
-| hostPath / local PV（既存のディレクトリ） | ディレクトリの所有者と mode で決まる。in-tree hostPath は fsGroup を適用しない | ノード側でディレクトリを uid 65534 が書けるようにする（compose の bind mount と同じ扱い） | コードの読み。未実測 |
-| NFS（所有者を squash で固定する NAS） | NAS 側の所有者と mode で決まる。csi-driver-nfs（`fsGroupPolicy: File`）は chown を試みるが、NAS が上書きする | NAS 側で uid 65534 が書ける所有者と mode にする | 本番で観測。root は `1024:100` / `2777` のまま。uid 65534 の access check は成功 |
-| NFS（squash しない export）で `File` 宣言のドライバ | kubelet の chown が効く見込み | 未検証 | 未検証 |
+| local-path（rancher.io/local-path） | provisioner が `mkdir -m 0777` で作る（PV は hostPath）。fsGroup は適用されない | 無し | kind v0.32.0 で実測。root は `root:root drwxrwxrwx`、setgid 無し |
+| hostPath PV | ディレクトリの所有者と mode で決まる。fsGroup は適用されない | ノード側でディレクトリを uid 65534 が書けるようにする | コードの読み。kind の local-path（hostPath PV）で、適用されないことを実測 |
+| local PV（既存のディレクトリ） | ディレクトリの所有者と mode で決まる。fsGroup は適用される見込み | hostPath と同じ。fsGroup も補助として効く見込み | コードの読み。未実測 |
+| NFS（所有者を squash で固定する NAS） | NAS 側の所有者と mode で決まる。csi-driver-nfs（`fsGroupPolicy: File`）は chown を試みるが、NAS が上書きする | NAS 側で uid 65534 が書ける所有者と mode にする | 本番で観測。root は `1024:100` / `2777` のまま |
+| NFS（squash しない export）で `File` 宣言のドライバ | kubelet の chown が効く見込み | マニフェストの fsGroup のままで足りる見込み | 未検証 |
 | in-tree nfs（静的 PV） | export 側のディレクトリの所有者と mode で決まる。in-tree の `SetUpAt` は fsGroup を適用しない | export 側のディレクトリを uid 65534 が書けるようにする | コードの読み。未実測 |
 | nfs-subdir-external-provisioner | provisioner がサブディレクトリを作るときの uid/gid 設定で決まる | provisioner の uid/gid 設定を 65534 にする | コードの読み。未実測 |
 | JuiceFS | 未検証 | 未検証 | 未検証 |
 
 local-path は RWX を拒否するので、kind の e2e は media PVC を RWO に落としている（[e2e の README](../../deploy/k8s/e2e/README.md)）。e2e が書けるのは 0777 のおかげで、fsGroup の検証にはなっていない。
 
-`securityContext.fsGroup: 65534` は、media をマウントする Pod に書いてあり、マニフェストに残す。効くのは次の場合だけである（kubelet のコードの読み。未実測）。
+`securityContext.fsGroup: 65534` は、media をマウントする Pod に書いてあり、マニフェストに残す。media PVC は RWX なので、既定ポリシーのドライバでは効かない。効くのは次の場合だけである（kubelet のコードの読み。未実測）。
 
 - CSI ドライバが `fsGroupPolicy: File` を宣言している
 - 既定の `ReadWriteOnceWithFSType` で、RWO かつ fsType 指定である
 
-media PVC は RWX なので、既定ポリシーのドライバでは効かない。
-
-`fsGroupChangePolicy: OnRootMismatch` も対で書く。既定の `Always` は Pod を起こす前にボリューム全体を再帰的に chown する。ScaledJob はキューアイテムごとに Pod を作るので、数 TB のアーカイブでは毎回それを待つことになる。kind では出ない（ボリュームが空なので一瞬で終わる）。
+`fsGroupChangePolicy: OnRootMismatch` も対で書く。既定の `Always` は Pod を起こす前にボリューム全体を再帰的に chown する。ScaledJob はキューアイテムごとに Pod を作るので、数 TB のアーカイブでは毎回それを待つことになる。
 
 採らないもの:
 
@@ -100,8 +97,8 @@ media PVC は RWX なので、既定ポリシーのドライバでは効かな�
 
 書けないときの症状:
 
+- `storage adopt` Job は初回に置き場の root へ目印を新規作成する。root に書けなければ導入時にこの Job が落ちる（コードの読み。実クラスタでは未確認）。
 - `/healthz` は落ちない。判定は `river_job` の `catalog_export` ジョブが `completed` になるかで行う。
-- 導入時には `storage adopt` Job が、初回に置き場の root へ目印を新規作成するので、root に書けなければここで落ちる（コードの読み。実クラスタでは未確認）。
 
 ### マニフェストの配布形式: 素の kustomize
 
