@@ -229,10 +229,7 @@ spec:
 # `reconciler_<site>` を引かせているが、両方の client が同じキューを claim する
 # （ruler と同じ形。docs/operations/k8s.md §スケーラのクエリと回収）。常駐側が落ちた
 # （ロールアウト・ノード退避・設定誤り）あいだの回収をこちらが受ける。滞留を数えるのは
-# 通常時にも Job は起きる。実測（kind の e2e、約 8 分、sitea の ScaledJob のみ観測）:
-# Job は 1 件起き、0 件を claim して終わった。同じ期間に常駐の watcher が sitea で 16 件、
-# siteb で 16 件の reconcile_pass を claim した。siteb の ScaledJob の Job は数えていない。
-# 本番での頻度は未検証。
+# 通常時にも Job は起きる（実測と範囲は docs/operations/k8s.md §スケーラのクエリと回収）。
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
 metadata:

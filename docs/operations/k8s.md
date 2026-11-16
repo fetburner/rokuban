@@ -209,9 +209,13 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 常駐 River client の 1 つは notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。
 
-JobRescuer と JobScheduler は leader だけが動かす。river@v0.50.0 の client.go は、保守サービスを「leader である場合に起動する」として組んでいる（1098 行付近）。watcher Deployment の常駐 client も worker ロールを持つので全 kind を登録し（`internal/worker/worker.go` の `NewWorkers`）、leader になりうる。
+JobRescuer と JobScheduler は leader だけが動かす。`river.Config.LeaderElectionDisabled` の doc も、stuck job rescue を leader 側の仕事として書いている。
 
-回収の締切は両者とも同じ ConfigMap の `worker.rescue_stuck_jobs_after` を読む（`cmd/rokuban/server.go` の `RescueStuckJobsAfter`）。JobRescuer は queue で絞らない（river@v0.50.0 の `internal/maintenance/job_rescuer.go` に queue の条件が無い）。したがって、どちらの client が leader でも同じ kind・同じ締切で rescue する。この同等性は読んだコードからの導出で、leader の交代を跨いだ実測はしていない。
+watcher Deployment の常駐 client も worker ロールを持つので全 kind を登録し（`internal/worker/worker.go` の `NewWorkers`）、leader になりうる。
+
+回収の締切は両者とも同じ ConfigMap の `worker.rescue_stuck_jobs_after` を読む。`cmd/rokuban/server.go` がそれを `river.Config.RescueStuckJobsAfter` に渡す。`river.Config.FetchOnlyKnownKinds` の doc は、leader の rescuer が queue に関係なく stuck job を扱うと書く。
+
+両者とも全 kind を登録している。したがって、どちらの client が leader でも、同じ締切で同じ kind を rescue すると読める。leader の交代を跨いだ挙動は実測していない（未検証）。
 
 `ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
@@ -239,9 +243,9 @@ watcher Deployment は 2 レプリカでも worker ロールが両方で動く�
 
 保証の幅の経路の外にある record_sweep は、常駐化しない。
 
-`record_sweep`（`watcher_<site>`）は常駐化しない。理由は 2 つで、どちらも `reconcile_pass` にも `record_sweep` にも同じように当てはまるものではない。
-- 予約から mirakc への反映（保証の幅）の経路に無い。5 分間隔の CronJob が積む定期の全量突き合わせで、SSE が落とした録画を補う経路である。`reconcile_pass` は予約の反映そのものなので、同じ扱いにできない。
-- 投入の CronJob だけで 1 site あたり 1 日 288 個の Pod が立つ（5 分間隔）。ScaledJob の Pod も加わる。これは churn の費用であり、正しさには効かない。常駐化して churn を減らす効果は未測定である。
+`record_sweep`（`watcher_<site>`）は予約から mirakc への反映の経路に無い。5 分間隔の CronJob が積む定期の全量突き合わせで、SSE が落とした録画を補う。このため、拾われるまでの遅延は保証の幅に効かない。
+
+常駐化して得られるのは ScaledJob の Pod が減ることだけで、その量は未測定である。投入の CronJob の Pod は常駐化しても残る。
 
 同じ Pod に同居させたときの drain の扱いは、両方に同じように効く。10 分の締切と 5 秒の soft stop は `reconcile_pass` と `record_sweep` で同じである。
 
