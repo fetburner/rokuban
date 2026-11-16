@@ -34,6 +34,34 @@ River の `InsertTx` のように同じ tx でジョブを投入すると、DB �
 
 一意違反・排他制約違反は `ErrConflict`、対象が無いときは `ErrNotFound` に写す。DB 固有のエラーコードや `pgx.ErrNoRows` を呼び出し側へ漏らすと、別の実装が同じ契約を満たせなくなる。
 
+### 述語の置き場
+
+DB で評価しなくてよい述語は Go に置く。DB で評価する述語は、それを使う store のメソッドの数で置き場を決める。方言の間の一致は契約テストで守る。
+
+次の 2 つの問いで決める。
+
+1. その述語を使う読み手のうち、1 つでも DB で評価する必要があるか。集合の絞り込み・件数・ページング・ロックを取った同じ文の中での判定が該当する。必要が無ければ Go に置く。各方言の store 実装が同じ関数を呼ぶので、実装は全方言で 1 つで済む。呼び方は [ロック後の判断](#ロック後の判断) と同じである。
+2. DB で評価するなら、その述語を使う store のメソッドが 2 つ以上あるか。1 つならそのメソッドのクエリに直接書く。2 つ以上なら、方言ごとに 1 つの定義から引く。定義の形は方言が選ぶ。Postgres は view や関数に置く。MySQL には表を返す関数も配列引数も無いので、view や SQL 断片の定数などに置く。
+
+Go に置くと、DB で評価する読み手には述語が届かない。cut の keep がその例である。reconcile は `internal/chapters` で keep を導出し、空の keep は投入しない。待機列は SQL だけで数えるので、keep が空の cut を数え続ける。この差は [エンコード待機列](jobs.md#エンコード待機列) で受け入れている。
+
+SQL で評価する述語は、view に置いてもクエリに直接書いても方言の数だけ実装される。view が防ぐのは、方言の中で片方のクエリにだけ条件を書き足す失敗である。方言の間の一致は守らない。
+
+一致は契約テストで守る。述語を共有するメソッドの組が同じ集合を返すことは、`internal/store/contracttest` の `Run*` 関数で確かめ、各方言の `*_contract_test.go` から回す。前例は、同じ絞り込み条件で `Shelves` の件数と `List` の行数が一致するかを見る `runRecordingQueryShelves` である。
+
+`internal/api` や `internal/worker` のテストに置くと、Postgres でしか回らない。
+
+未解決: 待機列と encode 投入の一致は `internal/api` と `internal/worker` のテストだけが見ており、方言ごとに回らない。
+
+<details><summary>根拠</summary>
+
+- Go に置く前例（keep の導出）: `internal/chapters.KeepRanges`
+- Postgres の view: `encodable_recordings` と `unencoded_desired_profiles`（`internal/db/schema.sql`）
+- Postgres の関数: `encodable_profile` と `awaiting_review_profiles`（`internal/db/schema.sql`）
+- 一致の前例（Shelves の件数と List の行数）: `runRecordingQueryShelves`（`internal/store/contracttest/recordingquery.go`）。`RunRecordingQuery` から呼ばれ、`internal/store/pgstore/recordingquery_contract_test.go` が回す
+
+</details>
+
 ### 時刻
 
 時刻は、比べる相手を書いた時計に合わせる。
