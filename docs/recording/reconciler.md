@@ -40,7 +40,8 @@ ruler パスの完了は、パス完了時に ruler_pass ワーカーが投入�
 api は reconcile を直接投入しない。ルール、意図、上書きの書き込みでは、store の commit 後に `ruler_pass` を投入し、失敗はログに残す。ruler パスの完了が reconcile へのヒントになるので、予約の変更が mirakc へ反映されるまでは、定期の最大 30 秒を待たない。待ちの大きさは起動形態で違うので、形態ごとに分けて書く。
 
 - monolith（in-process の worker が LISTEN で引く）: 未検証。
-- k8s（site の watcher Deployment に同居した常駐 client が引く）: 判定 1.8 の実測で、PUT から mirakc の schedule まで 0〜1 秒だった（3 番組、2 周。最大 1 秒）。閾値は 3 秒。測った構成の ScaledJob の `pollingInterval` は 10 秒（e2e overlay の値）である。本番の値（30 秒）でも同じ待ちになるかは未検証である。
+- 常駐 client 経路（watcher Deployment の client）: 判定 1.8（kind）で PUT から schedule まで 0〜1 秒（3 番組、2 周。最大 1 秒、閾値 3 秒）。本番での値は未検証である。
+- k8s の ScaledJob 経路（常駐が無いとき、または止まっているとき）: KEDA のポーリングと Pod 起動を待つ。同じ判定を常駐の無い構成で回した値は 7〜11 秒（e2e overlay の ScaledJob `pollingInterval` は 10 秒）。本番の `pollingInterval`（30 秒）での値は未検証である。
 
 常駐が引けない（ロールアウト中・停止中）ときの待ちは、ScaledJob の経路になる。変更前に同じ判定で測った値は 7〜11 秒（KEDA のポーリングと Pod 起動を含む）。
 

@@ -194,7 +194,13 @@ River の `PeriodicJobs` は、リーダーに選出されたクライアント�
 
 k8s の CronJob は、insert-only クライアントで 1 件投入して即終了する。`PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする。両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが、意図が曖昧になる。副次的な利点として、k8s では何がいつ走るかが CronJob の spec に一元化される。Go のコードと YAML に散らない。
 
-**k8s の JobRescuer / JobScheduler は notifier Deployment の常駐 River client が担う。** client は全 kind を登録する。購読するのは site 非依存の `ruler` queue だけである。Ruler は DB 完結なので中央で実行できる。`worker.periodic_jobs: false` は維持するため、定期ジョブの投入元は引き続き CronJob である。載せ先と queue の判断は [k8s 運用](../operations/k8s.md) §5 にある。
+**k8s の JobRescuer / JobScheduler は、leader になった常駐 River client が担う。**
+
+常駐 client は notifier Deployment と watcher Deployment にある。
+
+notifier の client は全 kind を登録する。購読するのは site 非依存の `ruler` queue だけである。watcher の client も全 kind を登録する。購読するのは `reconciler_<site>` だけである。
+
+Ruler は DB 完結なので中央で実行できる。`worker.periodic_jobs: false` は維持する。そのため定期ジョブの投入元は引き続き CronJob である。載せ先と queue の判断は [k8s 運用](../operations/k8s.md) §5 にある。
 
 ### River のジョブ一意性の注意
 
@@ -284,7 +290,7 @@ ffmpeg の `out_time` を実入力 duration に対する割合にして、最大
 
 ブラウザへの SSE 配送の担い手は notifier ロールで、api ロールは担わない。api ロールは mirakc にもファイルシステムにも依存せず（不変条件 1）、長寿命接続の LISTEN セッションも持たない。
 
-配送のエンドポイントは `/api/events` である。サーバーレス（scale-to-zero）に載せるためには、常駐前提の LISTEN を api に置けない。notifier は Postgres を LISTEN してブラウザへ配り直す常駐プロセスとして api から分離してある。k8s では同じプロセスが worker ロールも兼ね（購読する実キューは ruler）、その常駐 River client が回収と昇格も担う。障害範囲は配送に限らない（[運用の k8s 節](../operations/k8s.md) §スケーラのクエリと回収）。形は `deploy/k8s/base/notifier.yaml` にある。
+配送のエンドポイントは `/api/events` である。サーバーレス（scale-to-zero）に載せるためには、常駐前提の LISTEN を api に置けない。notifier は Postgres を LISTEN してブラウザへ配り直す常駐プロセスとして api から分離してある。k8s では同じプロセスが worker ロールも兼ね（購読する実キューは ruler）、その常駐 River client は回収と昇格の leader にもなりうる。watcher の常駐 client も同様である（[運用の k8s 節](../operations/k8s.md) §スケーラのクエリと回収）。障害範囲は配送に限らない。形は `deploy/k8s/base/notifier.yaml` にある。
 
 ### notifier の多重化
 

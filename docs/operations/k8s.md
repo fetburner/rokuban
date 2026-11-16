@@ -203,28 +203,51 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 #### スケーラのクエリと回収
 
-スケーラは待機中と再試行待ちのジョブを数え、回収は notifier の常駐 River client が担う。
+スケーラは待機中と再試行待ちのジョブを数え、回収は leader になった常駐 River client が担う。常駐 client は notifier Deployment と watcher Deployment の 2 箇所にある。
 
 常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。定期パスは `retryable` にならないが、ingest / encode など定期パス以外の kind は backoff 中も数えられるので、claim できない job のために Pod が起きうる。空振り Pod は `--once-idle-timeout` で終了する。
 
-JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
+常駐 River client の 1 つは notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。
+
+JobRescuer と JobScheduler は leader だけが動かす。river@v0.50.0 の client.go は、保守サービスを「leader である場合に起動する」として組んでいる（1098 行付近）。watcher Deployment の常駐 client も worker ロールを持つので全 kind を登録し（`internal/worker/worker.go` の `NewWorkers`）、leader になりうる。
+
+回収の締切は両者とも同じ ConfigMap の `worker.rescue_stuck_jobs_after` を読む（`cmd/rokuban/server.go` の `RescueStuckJobsAfter`）。JobRescuer は queue で絞らない（river@v0.50.0 の `internal/maintenance/job_rescuer.go` に queue の条件が無い）。したがって、どちらの client が leader でも同じ kind・同じ締切で rescue する。この同等性は読んだコードからの導出で、leader の交代を跨いだ実測はしていない。
+
+`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
+
+##### reconciler を常駐 client に引かせる
+
+常駐 client を watcher に同居させ、reconciler の待ちを ScaledJob の Pod 起動から外した。
 
 reconciler の `reconciler_<site>` は、site ごとの watcher Deployment に同居させた常駐 client が引く。起動形は `--roles watcher,worker --sites <site> --queues reconciler --stores=` で、`--once` は付けない。watcher は mirakc に届く場所に常駐する。そのため reconcile パスは KEDA のポーリングと Pod 起動を待たずに起きられる。
 
-ScaledJob の reconciler は残す。ruler と同じく両 client が同じキューを claim する。常駐が止まっている間（ロールアウト・ノード退避・設定誤り）の回収を受けるためである。通常の滞留は常駐が先に claim する想定なので、ScaledJob の Job が起きるのは例外的になる（想定。Job が起きる頻度は未計測）。
+ScaledJob の reconciler は残す。ruler と同じく両 client が同じキューを claim する。常駐が止まっている間（ロールアウト・ノード退避・設定誤り）の回収を受けるためである。
+
+通常時にも ScaledJob の Job は起きる。判定の e2e で、約 8 分に sitea の ScaledJob が 1 件の Job を起こした。その Job は 0 件を claim して終わった（空振り）。同じ期間に常駐 client の watcher が sitea で 16 件、siteb で 16 件の `reconcile_pass` を claim した。siteb の ScaledJob の Job は数えていない。本番での頻度は未検証である。
 
 watcher Deployment は 2 レプリカでも worker ロールが両方で動く。リーダー選出が止めるのは watcher ロールだけだからである。並走は River の claim（1 件を 1 client にだけ渡す）と `reconcile_pass` の一意制約（サイト単位。待機中と実行中を含む）が防ぐ。
 
 判定 1.8（kind の e2e。ScaledJob の `pollingInterval` は 10 秒）で、常駐経路の PUT から mirakc の schedule までは 0〜1 秒だった（3 番組、2 周。閾値 3 秒）。同じ判定を常駐の無い構成（ScaledJob だけ）で回した値は 7〜11 秒である。常駐の経路が ScaledJob の Pod 起動より速いことの根拠は、この 2 つの分布が重ならないことだけである。本番の値は未検証。
 
+##### 同居の帰結（プールと drain）
+
+同居でプールの上限と drain の扱いが変わる。結論は次のとおり。
+
 同居で変わるのはプールの上限である。プール上限は roles から決まり（`internal/db` の `roleConnBudget`）、watcher 単独の 3 から watcher と worker を合わせた 12 になる。これは上限であって実接続数ではない。Postgres の `max_connections` に効くのは実接続数なので、レプリカ数と掛けた値を見ること。実接続数は未測定である。
 
-`record_sweep`（`watcher_<site>`）は常駐化しない。理由は 3 つで、どれも決定の根拠として書いている。
-- 定期の全量突き合わせで、予約から mirakc への反映の遅延（保証の幅）には入らない。5 分間隔の CronJob が積み、SSE が落とした録画を補う経路である。
-- 1 件の上限は 10 分である。watcher Pod の drain は soft stop 5 秒なので、ロールアウトのたびに途中で打ち切られうる。打ち切られたあとの後始末は未検証である。
-- 投入の CronJob だけで 1 site あたり 1 日 288 個の Pod が立つ（5 分間隔）。ScaledJob の Pod も加わる。この churn は正しさには効かない。移すなら、watcher Pod の drain 予算を sweep の長さに合わせて別に決める必要がある。
+##### record_sweep を常駐化しない理由
 
-notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送・ruler の常時購読・回収・昇格が同時に止まる（ruler の ScaledJob は残る）。1 つの Pod だけが落ちた場合は、残りのレプリカが回収と昇格を続け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
+保証の幅の経路の外にある record_sweep は、常駐化しない。
+
+`record_sweep`（`watcher_<site>`）は常駐化しない。理由は 2 つで、どちらも `reconcile_pass` にも `record_sweep` にも同じように当てはまるものではない。
+- 予約から mirakc への反映（保証の幅）の経路に無い。5 分間隔の CronJob が積む定期の全量突き合わせで、SSE が落とした録画を補う経路である。`reconcile_pass` は予約の反映そのものなので、同じ扱いにできない。
+- 投入の CronJob だけで 1 site あたり 1 日 288 個の Pod が立つ（5 分間隔）。ScaledJob の Pod も加わる。これは churn の費用であり、正しさには効かない。常駐化して churn を減らす効果は未測定である。
+
+同じ Pod に同居させたときの drain の扱いは、両方に同じように効く。10 分の締切と 5 秒の soft stop は `reconcile_pass` と `record_sweep` で同じである。
+
+ロールアウトで実行中のジョブが ctx を切られた場合の帰結は、「実行中のジョブを打ち切る条件」の実測に従う想定である。その実測では、猶予 5 秒で ctx が切られたジョブは `available` に戻り、`attempt` も `errors` も残らなかった。`reconcile_pass` は次の CronJob の投入（1 分以内）と、再起動後の client の claim で再走する想定である。ただし実際の再走までの時間は未測定である。
+
+notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送と ruler の常時購読が止まる（ruler の ScaledJob は残る）。回収と昇格は、watcher Deployment の常駐 client が leader になっていれば続く。notifier を落としたときに leader がどの client へ移るかは未検証である。1 つの Pod だけが落ちた場合は、残りのレプリカが SSE クライアントを受け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
 
 実行中のまま死んだジョブは、回収されるまで同じ種類・同じサイトの投入を飲み込む。その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は気づかないうちに無かったことになる）。
 
@@ -330,7 +353,7 @@ drain の猶予は `--soft-stop-timeout`（既定 5 秒）である。SIGTERM �
 
 `terminationGracePeriodSeconds` の経過後に SIGKILL が来るため、これが真の上限である。drain の猶予が `terminationGracePeriodSeconds` を超えると、SIGKILL が先に来て実行中の job は `running` のまま残る。
 
-ingest は有限 Timeout と JobRescuer が回収する。encode は enqueue 時に保存した締切の後、notifier Deployment の常駐 River client の JobRescuer が再試行する。cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が lock 解放後に代替ジョブを投入する。その他の job も JobRescuer に委ねる。
+ingest は有限 Timeout と JobRescuer が回収する。encode は enqueue 時に保存した締切の後、leader の常駐 client が再試行する（notifier / watcher のどちらもありうる）。cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が lock 解放後に代替ジョブを投入する。その他の job も JobRescuer に委ねる。
 
 Work が ctx cancellation に従わない待ちは締切後も残りうるため、k8s の liveness probe でプロセスを終了させる。猶予内に止めれば、プロセス自身が job を `available` に戻す。
 
