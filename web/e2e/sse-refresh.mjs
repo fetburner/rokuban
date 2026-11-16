@@ -31,6 +31,14 @@ import {
   recordingMedia,
 } from './lib.mjs'
 
+// dayOrigin / nextHourBoundary はローカル正時を使うため、ページも UTC に揃える。
+// 12:20 起点なら、壁時計を戻す番組表の各 1 分と、戻さないストレージの
+// 計 10 分が正時・日付境界をまたがない。予約は翌日の番組として扱う。
+// 実ブラウザ計測では、正時 30 秒前の 12:59:30 起点で CI と同じ 2 件が NG、
+// 12:20 起点では全 check が OK だった。
+const clockStart = Date.parse('2026-08-13T12:20:00.000Z')
+const timezoneId = 'UTC'
+
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 /** 運用状態の周期（src/lib/events.ts の operationalRefreshIntervalMs と同じ値をリテラルで書く）。 */
 const operationalMs = 60_000
@@ -76,7 +84,7 @@ const breaker = {
   site: 'tokyo',
   store: '',
   name: 'ruler_deletes',
-  trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
+  trippedAt: new Date(clockStart - 3_600_000).toISOString(),
   pending: 3,
   threshold: 20,
   detail: { total: 3, programs: [] },
@@ -92,16 +100,14 @@ const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
   serviceId: 1024,
   eventId: i + 1,
   title: `録画 ${i + 1}`,
-  startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+  startAt: new Date(clockStart - (i + 1) * 3_600_000).toISOString(),
   durationMs: 1_800_000,
   status: 'finished',
   keepOriginal: 'always', media: recordingMedia(i + 1, []), hlsPlayback: [], cmDetection: { state: 'disabled' },
-  createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+  createdAt: new Date(clockStart - (i + 1) * 3_600_000).toISOString(),
 }))
-// observedAt は実行時刻から 1 分前にする。`page.clock.install()` は実時刻を初期値に
-// するので、固定日付を書くと storage-forecast.ts の observationStaleAfterMs（1 時間）を
-// 必ず超え、「観測が古い可能性」の表示を測ることになる。判定はリクエスト数だけなので
-// 合否は変わらないが、正常な観測が載っている画面を測る。
+// observedAt は仮想時計の起点から 1 分前にし、10 分進めても観測の有効期間
+// （storage-forecast.ts の observationStaleAfterMs: 1 時間）内に収める。
 const storageItem = {
   store: 'takamatsu',
   root: 'media',
@@ -109,7 +115,7 @@ const storageItem = {
   totalBytes: 1_000_000_000_000,
   usedBytes: 400_000_000_000,
   availableBytes: 600_000_000_000,
-  observedAt: new Date(Date.now() - 60_000).toISOString(),
+  observedAt: new Date(clockStart - 60_000).toISOString(),
 }
 
 // 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
@@ -139,7 +145,7 @@ const browser = await launchBrowser()
  */
 async function openStubbed(pathname, label, overrides = {}) {
   counts = new Map()
-  const p = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  const p = await browser.newPage({ timezoneId, viewport: { width: 1280, height: 800 } })
   p.on('pageerror', (e) => {
     log(`NG  ページ例外（${label}）:`, e.message)
     ng.push(`pageerror（${label}）`)
@@ -165,10 +171,31 @@ async function openStubbed(pathname, label, overrides = {}) {
     await route.fulfill({ status: 200, headers: { 'content-type': 'application/json' }, body })
   })
   // 時計を握ってから開く。10 分を実時間で待たない
-  await p.clock.install()
+  await p.clock.install({ time: clockStart })
   await p.goto(BASE + pathname, { waitUntil: 'networkidle' })
   await p.waitForTimeout(500)
   return p
+}
+
+/**
+ * advanceAndWaitForResponses は周期を進め、対象レスポンスの本文受信まで待つ。
+ * 番組表・予約詳細・ストレージで同じ着弾待ちを使い、固定待ちによる不足を避ける。
+ * route 入口を 600ms 遅らせた実ブラウザ計測では、固定 500ms 待ちは各判定で
+ * 1 回不足し、この着弾待ちでは不足しなかった。
+ * 期待総数まではポーリングせず、回数の厳密比較は呼び出し側で行う。
+ */
+async function advanceAndWaitForResponses(targetPage, elapsedMs, paths) {
+  const responses = paths.map((expectedPath) =>
+    targetPage.waitForResponse(
+      (response) => new URL(response.url()).pathname === expectedPath,
+      { timeout: 2000 },
+    ).then(async (response) => {
+      const error = await response.finished()
+      if (error !== null) throw error
+    }),
+  )
+  await targetPage.clock.runFor(elapsedMs)
+  await Promise.all(responses)
 }
 
 // 番組リスト（EPG）と予約・ブレーカー（運用状態）が同じ画面から出る
@@ -197,19 +224,7 @@ const programsWallTime = await page.evaluate(() => Date.now())
  * timeout または最後の厳密比較に不足として現れる。
  */
 async function advanceOneOperationalCycle() {
-  const responses = ['/api/reservations', '/api/breakers'].map((expectedPath) =>
-    page
-      .waitForResponse(
-        (response) => new URL(response.url()).pathname === expectedPath,
-        { timeout: 2000 },
-      )
-      .then(async (response) => {
-        const error = await response.finished()
-        if (error !== null) throw error
-      }),
-  )
-  await page.clock.runFor(operationalMs)
-  await Promise.all(responses)
+  await advanceAndWaitForResponses(page, operationalMs, ['/api/reservations', '/api/breakers'])
   await page.clock.setSystemTime(programsWallTime)
 }
 
@@ -229,12 +244,14 @@ check('60 秒後: 番組リスト（まだ増えない）', count(programs), 1)
 
 // 10 分でちょうど EPG の 1 周。運用状態はこの間にさらに 9 回（計 10 回）。
 // まとめて runFor せず 1 周期ずつ settle する理由は advanceOneOperationalCycle 参照
-for (let i = 0; i < epgMs / operationalMs - 1; i++) {
+for (let i = 0; i < epgMs / operationalMs - 2; i++) {
   await advanceOneOperationalCycle()
 }
-// 最後の 1 周期で EPG（programs / services）も 1 回だけ発火する。固定待ちは
-// EPG の着弾ぶんだけで、期待総数まではポーリングしない
-await page.waitForTimeout(500)
+// 最後の周期は EPG も対象に含め、運用状態だけの完了で数え始めない。
+await advanceAndWaitForResponses(page, operationalMs, [
+  '/api/reservations', '/api/breakers', programs, services,
+])
+await page.clock.setSystemTime(programsWallTime)
 check('10 分後: 番組リスト', count(programs), 2)
 check('10 分後: サービス一覧', count(services), 2)
 check('10 分後: 予約', count('/api/reservations'), 1 + epgMs / operationalMs)
@@ -249,8 +266,7 @@ const detailPage = await openStubbed('/reservations/tokyo/300000', '予約詳細
 const detail = '/api/sites/tokyo/programs/300000/reservation'
 log('初回ロード後:', Object.fromEntries([...counts.entries()].sort()))
 check('初回: 予約詳細', count(detail), 1)
-await detailPage.clock.runFor(operationalMs)
-await detailPage.waitForTimeout(500)
+await advanceAndWaitForResponses(detailPage, operationalMs, [detail])
 check('60 秒後: 予約詳細（運用状態グループ）', count(detail), 2)
 
 // ストレージ残高（components/storage-balance.tsx。設置先は pages/recordings.tsx の
@@ -265,12 +281,10 @@ const storagePage = await openStubbed('/recordings', '録画一覧 / ストレ�
 log('初回ロード後:', Object.fromEntries([...counts.entries()].sort()))
 check('初回: ストレージ', count('/api/storage'), 1)
 
-await storagePage.clock.runFor(storageMs)
-await storagePage.waitForTimeout(500)
+await advanceAndWaitForResponses(storagePage, storageMs, ['/api/storage'])
 check('5 分後: ストレージ', count('/api/storage'), 2)
 
-await storagePage.clock.runFor(storageMs)
-await storagePage.waitForTimeout(500)
+await advanceAndWaitForResponses(storagePage, storageMs, ['/api/storage'])
 check('10 分後: ストレージ', count('/api/storage'), 3)
 
 // 接続断バナー（components/connection-banner.tsx、issue #456）。
@@ -287,7 +301,7 @@ check('10 分後: ストレージ', count('/api/storage'), 3)
 log('\n=== 接続断バナー（/recordings）===')
 {
   let sseUp = false
-  const bannerPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  const bannerPage = await browser.newPage({ timezoneId, viewport: { width: 1280, height: 800 } })
   bannerPage.on('pageerror', (e) => {
     log('NG  ページ例外（接続断バナー）:', e.message)
     ng.push('pageerror（接続断バナー）')
@@ -322,7 +336,7 @@ log('\n=== 接続断バナー（/recordings）===')
     await route.fulfill({ status: 200, headers: { 'content-type': 'application/json' }, body })
   })
   // タイマーを握ってから開く（disconnectedBannerDelayMs を実時間で待たない）
-  await bannerPage.clock.install()
+  await bannerPage.clock.install({ time: clockStart })
   await bannerPage.goto(BASE + '/recordings', { waitUntil: 'networkidle' })
   // スクロールして両方を sticky の「張り付いた」状態にする
   await bannerPage.mouse.wheel(0, 2000)
