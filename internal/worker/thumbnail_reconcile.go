@@ -56,6 +56,9 @@ type ThumbnailReconcileWorker struct {
 	// Media はサムネイル・シークタイルの列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。
 	Media    store.MediaReconcile
 	RowLimit int32
+
+	// Markers は全件パスの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
+	Markers store.ReconcilePassMarkers
 }
 
 // enqueueThumbnail は原本のコピーがある置き場（storeName。無ければ空）のキューへ thumbnail を積む。
@@ -144,7 +147,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		}
 	}
 
-	seekTilesFailed, seekTilesAfter, seekTilesWindowFull, seekTilesDone := w.enqueueMissingSeekTiles(
+	seekTilesFailed, seekTilesAfter, seekTilesWindowFull, seekTilesDone, seekTilesListed := w.enqueueMissingSeekTiles(
 		ctx, w.Enqueuer, rowLimit, args.AfterSeekTilesRecordingID, args.SeekTilesDone, targetID,
 	)
 	failed += seekTilesFailed
@@ -195,7 +198,14 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 				"after_reselect_recording_id", nextReselectAfter,
 				"after_seek_tiles_recording_id", seekTilesAfter)
 		}
-	} else if len(rows) > 0 || len(reselectRows) > 0 || failed > 0 {
+		// シークタイルの一覧を取れなかったパスは、完走として記録しない。取れていれば、
+		// 個々の投入が失敗しても記録する（候補ごとの失敗で止めない、というプロセス内ゲージと同じ扱い）。
+		if !seekTilesListed {
+			return nil
+		}
+		return markReconcilePass(ctx, w.Markers, store.ReconcilePassThumbnail)
+	}
+	if len(rows) > 0 || len(reselectRows) > 0 || failed > 0 {
 		slog.Info("thumbnail_reconcile: targeted pass complete",
 			"recording_id", recordingID, "missing_candidates", len(rows),
 			"reselection_candidates", len(reselectRows), "failed", failed)
@@ -205,7 +215,9 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 
 // enqueueMissingSeekTiles は seek_tiles の desired−observed ギャップを埋める。
 // thumbnail と同じ窓の形（keyset pagination）だが、全件パスでは再開位置を独立に
-// 持つ。戻り値は投入失敗数、次のカーソル、満杯かどうか、チェーン内で完了したか。
+// 持つ。戻り値は投入失敗数、次のカーソル、満杯かどうか、チェーン内で完了したか、
+// 候補の一覧（と原本の置き場）を取得できたか。一覧を取れなかったときは listed が偽になる。
+// 既にチェーン内で完了している窓は、このパスで一覧を取る必要が無いので listed は真になる。
 func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 	ctx context.Context,
 	enqueuer jobq.Enqueuer,
@@ -213,9 +225,9 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 	after int64,
 	done bool,
 	targetID *int64,
-) (failed int, nextAfter int64, windowFull bool, nextDone bool) {
+) (failed int, nextAfter int64, windowFull bool, nextDone bool, listed bool) {
 	if done {
-		return 0, 0, false, true
+		return 0, 0, false, true, true
 	}
 	rows, err := w.Media.ListMissingSeekTilesRecordings(ctx, store.MediaReconcilePage{
 		AfterRecordingID: after,
@@ -225,13 +237,13 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 	if err != nil {
 		// DB 取得に失敗したパスは完走していないので、再開位置を変えない。
 		slog.Error("thumbnail_reconcile: listing missing seek tiles failed", "err", err)
-		return 1, after, false, false
+		return 1, after, false, false, false
 	}
 
 	tileStores, err := originalStoresOf(ctx, w.Media, rows)
 	if err != nil {
 		slog.Error("thumbnail_reconcile: locating originals for seek tiles failed", "err", err)
-		return 1, after, false, false
+		return 1, after, false, false, false
 	}
 	for _, recordingID := range rows {
 		var err error
@@ -262,5 +274,5 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 		slog.Info("thumbnail_reconcile: targeted seek tiles pass complete",
 			"recording_id", *targetID, "candidates", len(rows), "failed", failed)
 	}
-	return failed, nextAfter, windowFull, nextDone
+	return failed, nextAfter, windowFull, nextDone, true
 }

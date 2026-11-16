@@ -53,7 +53,7 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 ここでの原本は、`kind='original'` が active でコミット済みの行である。ingest 未完了の録画とユーザーが捨てた録画は、掘り起こさない。エンコードの候補照合は全 site の録画を対象にするため、このジョブは record_sweep のような site 単位でなく、全体で 1 本になる。
 
-`worker.periodic_jobs: false` の構成では、`rokuban enqueue encode-reconcile` を CronJob から叩く。一覧は [operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧にある。
+`worker.periodic_jobs: false` の構成では、`rokuban enqueue encode-reconcile` を CronJob から叩く。一覧は [operations/monitoring-scaled-jobs.md](../operations/monitoring-scaled-jobs.md) の CronJob の立て方の表にある。
 
 #### 失敗する仕事を作らない規律
 

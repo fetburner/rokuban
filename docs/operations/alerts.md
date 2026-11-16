@@ -110,7 +110,7 @@ DB 接続と `reservations` の中身を確認する。このブレーカーの�
 
 aging を超えて未登録の canonical file が残っているときは、候補を DB で確認し、登録漏れなら正式な経路で回復する。不要と確認できたファイルだけを手動で整理する。canonical file は自動削除されない。
 
-`rokuban_orphan_files_unresolved > 0` がこの状態を表す。このゲージは削除 reconcile の通常パスで更新されるため、最終完走時刻も併せて見る。
+`rokuban_orphan_files_unresolved > 0` がこの状態を表す。このゲージは削除 reconcile の通常パスで更新されるため、最終完走時刻も併せて見る。ScaledJob 構成では、DB から読む `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` を使う。`max by (store)` で集約する（[ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
 
 `SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で候補を確認する。対象ファイルと `media_asset_copies` を照合し、DB 復旧後の登録漏れや公開失敗の残骸かを調べる。ファイルが無くなるか、`storage.stores` の FS 置き場のコピーとして登録されると、次の reconcile で候補が消える。
 
