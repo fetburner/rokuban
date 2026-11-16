@@ -230,7 +230,7 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 - temp を捨てるとき（record の cancel / fail、サイズ・ハッシュ不一致など）
 - 別経路の登録などで原本が既にコミット済みと分かったとき（取り残された行の掃除）
 
-書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。同期行は全量観測に record が無いと `DeleteStaleRecordSyncs` で消えるが、原本の行は commit のとき進捗行から temp の世代を写す。進捗を同じ行に置くと、同期行の削除が commit がまだ読む進捗を消す（不変条件 12）。
+書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。同期行は全量観測に record が無いと `DeleteStaleRecordSyncs` で消える。原本の行は commit のとき進捗行から temp の世代を写す。進捗を同じ行に置くと、commit がまだ読む進捗を、同期行の削除が消す（不変条件 12）。
 
 書き込みバイト数は、単調に増えない。clean handoff の Range 再開では値が続き、unclean restart では新 writer の進捗が旧い表示中の offset に達するまで旧 path と offset を保つ。追いついた後は新 path の offset に切り替わる。サイズや SHA-256 の不一致、record の cancel / fail で進捗を捨てると、次の進捗は 0 から始まる（[recording/ingest-retry.md](../../recording/ingest-retry.md) §5.3 の層 2）。これは現在表示中の temp の書き込み量の観測であり、累積の転送実績ではない。
 
