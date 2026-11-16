@@ -194,9 +194,9 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 置き場の観測は、root ごとの鮮度と置き場ごとの容量で読む。
 
-`rokuban_storage_sync_last_success_timestamp_seconds{store}` は、その置き場の全 root を観測できたパスの時刻で、1 root でも失敗した部分成功では進まない。これと `rokuban_storage_root_last_success_timestamp_seconds{store,root}` は、どちらもプロセス内のゲージである。常駐 Pod の scrape で値が凍結しうるので、ScaledJob 構成でアラートに使ってはいけない。
+`rokuban_storage_sync_last_success_timestamp_seconds{store}` は、その置き場の全 root を観測できたパスの時刻で、1 root でも失敗した部分成功では進まない。これと `rokuban_storage_root_last_success_timestamp_seconds{store,root}` は、どちらもプロセス内のゲージである。ScaledJob 構成では使えない。ジョブを走らせた Pod は `--once` で 1 件処理して終了するので scrape できる窓がなく、常駐 Pod はそのジョブを走らせないので値を持たない（理由は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
 
-ScaledJob 構成では、DB の `storage_sync` から読む `rokuban_storage_root_observed_timestamp_seconds{store,root}` を使う。`time() - min by (store) (...) > 閾値` で、置き場の中で最も古い root を見る（式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。どの root が止まっているかは、root ラベルの系列で確かめる。常駐構成では、プロセス内のゲージでも root ごとの特定はできるが、警告が出ないことは保証ではない。
+ScaledJob 構成では、DB の `storage_sync` から読む `rokuban_storage_root_observed_timestamp_seconds{store,root}` を使う。`time() - min by (store) (...) > 閾値` で、置き場の中で最も古い root を見る（式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。どの root が止まっているかは、root ラベルの系列で確かめる。常駐構成（`worker.periodic_jobs: true`）では、プロセス内のゲージでもアラートを組める（「警告が出ないことは保証ではない」）。
 
 容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。
 
