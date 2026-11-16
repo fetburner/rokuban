@@ -212,10 +212,11 @@ func newTransferBacklogCollector(pool *pgxpool.Pool, storage config.StorageConfi
 }
 
 // newReconcileMarkerCollector は全件パスの完走時刻と FS の置き場の観測時刻を出す collector を作る。
+// 削除パスを書く worker がある置き場は全 FS と所有者が走らせる派生物用 S3 なので、削除の集合は TransferDestinationStoreNames と一致する。
 // 読むのは DB の表だけなので、api を含むどのロールでも scrape できる。
 func newReconcileMarkerCollector(pool *pgxpool.Pool, storage config.StorageConfig) prometheus.Collector {
 	markers := pgstore.NewReservations(pool)
-	return metrics.NewReconcileMarkerCollector(markers, markers, pgstore.NewMediaWithStores(pool, "", "", ""), storage.FSStoreNames())
+	return metrics.NewReconcileMarkerCollector(markers, markers, pgstore.NewMediaWithStores(pool, "", "", ""), storage.FSStoreNames(), storage.TransferDestinationStoreNames())
 }
 
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。

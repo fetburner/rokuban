@@ -94,7 +94,7 @@ func (w *DeleteReconcileWorker) objectStorePass(
 		return err
 	}
 	if stop {
-		return nil
+		return w.markDeleteReconcile(ctx, w.DerivedObjectStoreName)
 	}
 	for _, copy := range c.trash {
 		w.deleteObjectCopy(ctx, copy, "trash")
@@ -108,7 +108,7 @@ func (w *DeleteReconcileWorker) objectStorePass(
 	for _, copy := range c.agedPending {
 		w.reclaimPendingObjectCopy(ctx, copy, pendingBefore)
 	}
-	return nil
+	return w.markDeleteReconcile(ctx, w.DerivedObjectStoreName)
 }
 
 // reconcileObjectOrphans は、DB のコピー行に無い key を孤児候補として記録し、報告だけして残す。

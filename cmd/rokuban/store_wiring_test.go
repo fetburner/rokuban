@@ -363,3 +363,41 @@ func TestStoreScopedS3DeletePassHasSingleOwner(t *testing.T) {
 		t.Fatalf("S3 derived delete pass owners = %v, want [takamatsu]", owners)
 	}
 }
+
+func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	objects, err := fsstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Storage: config.StorageConfig{Stores: map[string]config.StoreConfig{"fs-a": {Kind: "fs"}, "fs-b": {Kind: "fs"}, "s3-a": {Kind: "s3"}}, Derived: "s3-a"}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
+	markers := pgstore.NewReservations(pool)
+	// 非所有者を先に実行し、所有者がまだ動いていない状態でも S3 を記録しないことを見る。
+	for _, name := range []string{"fs-b", "fs-a", "fs-b"} {
+		dir := t.TempDir()
+		if err := mediapath.WriteStoreMarker(dir, name); err != nil {
+			t.Fatal(err)
+		}
+		deps := newStoreScopedDeps(pool, cfg, &worker.Deps{}, name, dir, objects)
+		w := &worker.DeleteReconcileWorker{MediaDir: dir, MediaStoreName: name, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: deps.DerivedObjects, DerivedObjectStoreName: deps.DerivedObjectStoreName, DerivedMediaDelete: deps.DerivedMediaDelete, DerivedStorage: deps.DerivedStorage, DerivedPendingReclaim: deps.DerivedPendingReclaim, Markers: markers}
+		before, err := markers.ReadDeleteReconcileMarkers(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := markers.ReadDeleteReconcileMarkers(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "fs-a" {
+			if after["s3-a"].IsZero() {
+				t.Fatal("owner did not write S3 marker")
+			}
+		} else if !after["s3-a"].Equal(before["s3-a"]) {
+			t.Fatal("non-owner advanced S3 marker")
+		}
+	}
+}

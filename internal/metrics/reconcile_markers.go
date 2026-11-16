@@ -30,17 +30,17 @@ const (
 // 完走時刻を保存した表（reconcile_pass_snapshots / delete_reconcile_snapshots）と、
 // 既存の storage_sync.observed_at を読んで、どの Pod からも同じ値を出す。
 //
-// 置き場の集合は storage.stores の FS の置き場に限る。削除パスと storage sync を書くのは
-// マウントした FS の置き場の worker だけなので、S3 の置き場の系列はそのままでは 0 のまま凍る。
+// 削除の集合は削除パスを書く worker がある置き場、容量観測の集合は FS の置き場とする。
 // 設定から外れた置き場の行は出さない。
 //
 // 3 つの読み取りは独立に扱う。失敗した読み取りの系列だけを落とし、0 に置き換えずに
 // reconcileMarkerScrapeErrors を進める（LoopPassCollector と同じ方針）。
 type ReconcileMarkerCollector struct {
-	passes  store.ReconcilePassMarkers
-	deletes store.DeleteReconcileMarkers
-	storage store.StorageSyncReader
-	stores  []string
+	passes       store.ReconcilePassMarkers
+	deletes      store.DeleteReconcileMarkers
+	storage      store.StorageSyncReader
+	stores       []string
+	deleteStores []string
 
 	encode     *prometheus.Desc
 	thumbnail  *prometheus.Desc
@@ -51,8 +51,8 @@ type ReconcileMarkerCollector struct {
 }
 
 // NewReconcileMarkerCollector は全件パスの完走時刻と FS の置き場の観測時刻を出す collector を作る。
-// stores は設定された FS の置き場の名前（cfg.Storage.FSStoreNames）。
-func NewReconcileMarkerCollector(passes store.ReconcilePassMarkers, deletes store.DeleteReconcileMarkers, storage store.StorageSyncReader, stores []string) *ReconcileMarkerCollector {
+// stores は FS の置き場、deleteStores は削除パスを書く worker がある置き場の名前。
+func NewReconcileMarkerCollector(passes store.ReconcilePassMarkers, deletes store.DeleteReconcileMarkers, storage store.StorageSyncReader, stores []string, deleteStores []string) *ReconcileMarkerCollector {
 	names := slices.Clone(stores)
 	slices.Sort(names)
 	readErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -64,10 +64,11 @@ func NewReconcileMarkerCollector(passes store.ReconcilePassMarkers, deletes stor
 		readErrors.WithLabelValues(source)
 	}
 	return &ReconcileMarkerCollector{
-		passes:  passes,
-		deletes: deletes,
-		storage: storage,
-		stores:  names,
+		passes:       passes,
+		deletes:      deletes,
+		storage:      storage,
+		stores:       names,
+		deleteStores: slices.Clone(deleteStores),
 		encode: prometheus.NewDesc(
 			"rokuban_encode_reconcile_last_success_timestamp_seconds",
 			"Unix time (database clock) of the last completed page of a full (non-targeted) encode reconcile pass. A pass that continues across pages writes this at the end of every page, so it means the pass is running, not that every candidate was seen. Zero means no full pass has completed yet.",
@@ -142,7 +143,7 @@ func (c *ReconcileMarkerCollector) collectDeletes(ctx context.Context, ch chan<-
 		c.recordError(reconcileMarkerSourceDelete, err)
 		return
 	}
-	for _, name := range c.stores {
+	for _, name := range c.deleteStores {
 		ch <- prometheus.MustNewConstMetric(c.deleteDesc, prometheus.GaugeValue, unixSecondsOrZero(saved[name]), name)
 	}
 }
