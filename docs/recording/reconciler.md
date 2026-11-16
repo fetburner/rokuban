@@ -43,8 +43,6 @@ api は reconcile を直接投入しない。ルール、意図、上書きの�
 - 常駐 client 経路（watcher Deployment の client）: 判定 1.8（kind）で PUT から schedule まで 0〜1 秒（3 番組、2 周。最大 1 秒、閾値 3 秒）。本番での値は未検証である。
 - k8s の ScaledJob 経路（常駐が無いとき、または止まっているとき）: KEDA のポーリングと Pod 起動を待つ。同じ判定を常駐の無い構成で回した値は 7〜11 秒（e2e overlay の ScaledJob `pollingInterval` は 10 秒）。本番の `pollingInterval`（30 秒）での値は未検証である。
 
-常駐が引けない（ロールアウト中・停止中）ときの待ちは、ScaledJob の経路になる。変更前に同じ判定で測った値は 7〜11 秒（KEDA のポーリングと Pod 起動を含む）。
-
 ルール・意図・上書きのヒントを失っても、定期の ruler パスが永続状態から予約を再計算する。投入に成功すれば、次の定期パスを待たずに ruler が起動する。
 
 #### 予約オプションの差分反映

@@ -228,7 +228,7 @@ spec:
 # reconciler の ScaledJob は残す。`site/watcher.yaml` の watcher Pod に常駐 client が
 # `reconciler_<site>` を引かせているが、両方の client が同じキューを claim する
 # （ruler と同じ形。docs/operations/k8s.md §スケーラのクエリと回収）。常駐側が落ちた
-# （ロールアウト・ノード退避・設定誤り）あいだの回収をこちらが受ける。滞留を数えるのは
+# （ロールアウト・ノード退避・設定誤り）あいだの回収をこちらが受ける。
 # 通常時にも Job は起きる（実測と範囲は docs/operations/k8s.md §スケーラのクエリと回収）。
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
