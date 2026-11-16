@@ -28,21 +28,21 @@ func (f encodeProgressReporterFunc) ReportEncodeProgress(ctx context.Context, pr
 func TestProbeEncodeDuration_TimesOutWithoutDelayingEncode(t *testing.T) {
 	t.Parallel()
 	run := func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-			return []byte("4.0\n"), nil
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("probe context has no deadline")
 		}
+		if remaining := time.Until(deadline); remaining > 20*time.Millisecond {
+			t.Fatalf("probe deadline is %s away, want <= 20ms", remaining)
+		}
+		// 値を返すタイマーと競わせず、締切による終了を確認する。
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 
-	started := time.Now()
 	_, err := probeEncodeDuration(context.Background(), "ffprobe", "input.ts", 20*time.Millisecond, run)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("probe error = %v, want deadline exceeded", err)
-	}
-	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
-		t.Fatalf("probe took %s; telemetry must time out before delaying encode", elapsed)
 	}
 }
 
