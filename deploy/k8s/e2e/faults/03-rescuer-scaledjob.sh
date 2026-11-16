@@ -130,8 +130,11 @@ case "$river_job_id" in
     exit 0 ;;
 esac
 
-# River の client ID は `<hostname>_<起動時刻>`（river@v0.50.0 client.go の
-# defaultClientIDWithHost）。hostname は Pod 名なので、attempted_by から掴んだ Pod を引ける。
+# attempted_by から掴んだ client ID から Pod を引く。
+# 契約: `river.Config.ID` の doc は「未指定ならランダムな識別子が生成される」とだけ書く。
+# `<hostname>_<起動時刻>` という形は契約外の前提である。hostname が Pod 名であることは k8s の
+# 既定の性質に頼っている（契約外・未検証の前提）。形が変わると、この判定は FAIL する
+# （unparseable-id か no-such-pod になる。偽の緑にはならない）。
 running_pod=""
 job_claimed() {
   local client
@@ -212,10 +215,10 @@ log_step "leader at rescue: ${leader_at_rescue:-unknown}; leader samples (distin
 # resident_client_of_leader <leader_id> --- leader の ID から Pod を引き、常駐 worker か
 # を argv と所有者で判定する。戻り値は `resident:<Pod 名>` か、理由（判定できない・常駐でない）。
 #
-# River の既定の client ID は `<hostname>_<起動時刻>`（river@v0.50.0 client.go の
-# defaultClientIDWithHost）で、Pod の hostname は Pod 名である。`--once` の Job Pod は
+# client ID の形は冒頭の注記（river.Config.ID）のとおり契約外の前提である。`--once` の Job Pod は
 # Job が所有し、常駐の Deployment は ReplicaSet が所有する。判定に使うのは所有者と
 # argv だけで、名前の接頭辞は見ない。
+# 契約注記: 上の client ID 注記（river.Config.ID）と同じ。
 # 観測の限界: leader の Pod が判定の後に消えていると `no-such-pod` になる（この判定は
 # 残っている Pod でしか裏を取れない）。
 resident_client_of_leader() {

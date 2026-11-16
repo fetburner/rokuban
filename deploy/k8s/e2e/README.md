@@ -161,7 +161,9 @@ Ruler は site 非依存で DB のみを使う。既存の ruler ScaledJob も�
 
 `overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。
 
-F3.3 は rescue の時刻・leader・kill からの秒数を記録する。**rescue 時点の leader の Pod を、ID から引いて argv と所有者で判定し、常駐 worker の Deployment の Pod でなければ FAIL にする**。leader の名前の接頭辞（`rokuban-notifier-*` など）では決めない。常駐は notifier の Deployment と、reconciler を引く watcher の Deployment のどちらもありうる。`--once` の Job Pod が leader になって rescue した場合は、所有者が Job なので常駐の回収と数えない。leader の Pod が判定の後に消えていると `no-such-pod` で FAIL になる。
+F3.3 は rescue の時刻・leader・kill からの秒数を記録する。**rescue 時点の leader の Pod を、ID から引いて argv と所有者で判定し、常駐 worker の Deployment の Pod でなければ FAIL にする**。leader の名前の接頭辞（`rokuban-notifier-*` など）では決めない。leader ID から Pod 名を引くことは、River の契約（`river.Config.ID` の doc は既定の形を約束しない）の外の前提である。形が変わると F3.3 は `unparseable-id` / `no-such-pod` で FAIL する。
+
+常駐は notifier の Deployment と、reconciler を引く watcher の Deployment のどちらもありうる。`--once` の Job Pod が leader になって rescue した場合は、所有者が Job なので常駐の回収と数えない。leader の Pod が判定の後に消えていると `no-such-pod` で FAIL になる。
 
 F3.4 は再実行の completed を見る。
 
