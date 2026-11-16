@@ -245,12 +245,12 @@ River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true`
 
 ### Postgres 構成で Redis を既定にしない理由
 
-理由は 2 つである。ステートフル基盤が増えること、そしてスループットが要らないことである。
+Postgres 構成では River を既定にし、Redis は置かない。理由は、ステートフル基盤が増えることと、スループットが要らないことである。
 
 1. ステートフル基盤が増える: ミニ PC にはコンテナ 1 つ、クラウドにはマネージド Redis が 1 つ増え、バックアップ・監視・障害モードが 2 系統になる。
 2. スループットが要らない: このシステムの負荷は「1 日数十件、1 件数十分」のジョブである。DB キューの弱点である数千 jobs/sec での vacuum・ロック競合には遠く及ばない。
 
-dual-write は理由にならない。ジョブ投入は commit 後のヒントであり、消えたヒントは定期 reconcile が拾う（[store 契約](store-contracts.md) §ジョブ投入）。River の `InsertTx` で同じ tx の投入に戻すと、DB の外のキュー（Redis など）を使う構成が契約を満たせなくなる。
+dual-write は理由にならない。ジョブ投入は commit 後のヒントであり、消えたヒントは定期 reconcile が拾う。同じ tx で投入しない理由も [store 契約](store-contracts.md) §ジョブ投入にある。
 
 ## 3. イベント通知: LISTEN/NOTIFY
 
