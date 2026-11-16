@@ -167,13 +167,13 @@ desired から外れた後も River に残るジョブは、待機列に数え�
 - desired の不足（設定では絞らない）: view `unencoded_desired_profiles`
 - 録画単位の述語（ごみ箱でない・原本が active）: view `encodable_recordings`
 - プロファイル単位の述語（設定にある・cut なら確認済み）: 関数 `encodable_profile`
-- 待機列と投入の集合の一致: `TestEncodeReconcileAndQueueAgreeOnPendingSet`
+- 待機列と投入の集合の一致: `runEncodePendingAgreement`（`internal/store/contracttest/encode_agreement.go`）
 - 実行中と待機中の区分: `running` と `queued`
 - 使わない River の API: `JobList`
 - 待機列の分割・上限・observed の除外・cut の所有条件: `TestGetEncodeQueueSummaryFromDomainState`
-- 待機列と `encodeState` 絞り込みの一致: `TestListRecordingsEncodeStateMatchesQueueCounts`
-- 確認待ちの絞り込みと件数が録画単位の同じ述語を使う: `TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate`
-- 確認待ちのメトリクスが同じ述語を使う: `TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate`
+- `encodeState` 絞り込みは `ListEncodeQueue` の行を再利用する: `TestListRecordingsEncodeStateMatchesQueueCounts`
+- 確認待ちの絞り込みと件数はハンドラの配線: `TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate`。件数と ID の一致は `runAwaitingReviewRecordingIDs`（`internal/store/contracttest/media_reader.go`）
+- 確認待ちのメトリクスはワーカーの配線: `TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate`。件数の一致は `runAwaitingReviewRecordingIDs`
 - encode キューが埋まっても reconcile が実行される: `TestEncodeReconcileRunsWhileEncodeQueueIsFull`
 
 </details>

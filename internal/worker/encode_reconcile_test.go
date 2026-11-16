@@ -554,6 +554,13 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate は、worker が確認待ちのゲージを
+// store の ListCutAwaitingReview の結果から、設定の cut profile だけについて作ることを固定する。
+//
+// 述語そのもの（ごみ箱・原本・所有・試行・作り直しの除外）と、ListCutAwaitingReview と
+// ListAwaitingReviewRecordingIDs の一致は contracttest（runAwaitingReviewRecordingIDs）が
+// 方言ごとに見る。ここに残すのは worker の配線だけ。設定に無い profile（removed）は
+// CutProfileNames から外れるのでラベルが立たない。
 func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -563,46 +570,16 @@ func TestEncodeReconcileReportAwaitingReviewUsesSharedPredicate(t *testing.T) {
 	metrics.CutAwaitingReview.Reset()
 	t.Cleanup(metrics.CutAwaitingReview.Reset)
 
-	newRecording := func(title string, profiles []string, original bool) int64 {
+	newRecording := func(title string, profiles []string) {
 		t.Helper()
 		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Title = title })
 		seedEncodePolicy(t, pool, id, profiles)
-		if original {
-			dbtest.MediaAsset(t, pool, id)
-		}
-		return id
-	}
-	exec := func(sql string, args ...any) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatalf("%s: %v", sql, err)
-		}
+		dbtest.MediaAsset(t, pool, id)
 	}
 
-	newRecording("one cut", []string{"cut"}, true)
-	newRecording("two cuts", []string{"cut", "cut2"}, true)
-	newRecording("removed cut profile", []string{"removed"}, true)
-	newRecording("missing original", []string{"cut"}, false)
-	trashed := newRecording("trash", []string{"cut"}, true)
-	exec(`UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed)
-	confirmed := newRecording("confirmed", []string{"cut"}, true)
-	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, confirmed)
-	encoded := newRecording("encoded", []string{"cut"}, true)
-	cut := "cut"
-	dbtest.MediaAsset(t, pool, encoded, func(p *dbtest.MediaAssetParams) {
-		p.Kind, p.Profile = "encoded", &cut
-	})
-	attempted := newRecording("attempted", []string{"cut"}, true)
-	exec(`INSERT INTO recording_encode_attempts (recording_id, profile, state, attempt_count) VALUES ($1, 'cut', 'failed', 1)`, attempted)
-	rebuilding := newRecording("rebuilding", []string{"cut"}, true)
-	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
-		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, rebuilding)
-	reverted := newRecording("reverted", []string{"cut"}, true)
-	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, reverted)
-	dbtest.MediaAsset(t, pool, reverted, func(p *dbtest.MediaAssetParams) {
-		p.Kind, p.Profile = "encoded", &cut
-	})
-	exec(`DELETE FROM recording_chapter_ownership WHERE recording_id = $1`, reverted)
+	newRecording("one cut", []string{"cut"})
+	newRecording("two cuts", []string{"cut", "cut2"})
+	newRecording("removed cut profile", []string{"removed"})
 
 	profiles := encodeConfigWith("cut", "cut2")
 	for i := range profiles.Profiles {

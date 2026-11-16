@@ -217,6 +217,10 @@ func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	}
 }
 
+// TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate は、GET /api/encode-queue の
+// awaitingReview と録画一覧の encodeState=awaiting_review が、handler で同じ録画 ID の集合から
+// 作られることを固定する（api の配線）。ListAwaitingReviewRecordingIDs と ListCutAwaitingReview の
+// 一致は contracttest の runAwaitingReviewRecordingIDs が見る。
 func TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -318,6 +322,9 @@ func TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate(t *testing.T) {
 
 }
 
+// TestListRecordingsEncodeStateMatchesQueueCounts は、録画一覧の encodeState=queued / running が
+// 待機列の行を handler で録画 ID に写すことを固定する（api の配線）。待機列の述語そのものは
+// contracttest の runEncodePendingAgreement が見る（running の印も同じ契約で確かめる）。
 func TestListRecordingsEncodeStateMatchesQueueCounts(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	wantQueued, wantRunning := encodeQueueFixture(t, pool)
@@ -355,6 +362,11 @@ func TestListRecordingsRejectsUnknownEncodeState(t *testing.T) {
 // cmd/rokuban/server.go と同じ ProfileNames / CutProfileNames）。各録画の desired は
 // 1 つなので、録画の集合の一致は (recording_id, profile) の集合の一致と同じになる
 // （queued + running の件数で確かめる）。
+//
+// store の 2 メソッド（ListMissingEncodeProfiles と ListEncodeQueue）だけの一致は、
+// contracttest の runEncodePendingAgreement が方言ごとに見る。ここに残すのは配線である。
+// 設定から組み立てた ProfileNames / CutProfileNames が worker と handler の両方に届くこと、
+// worker の Go 側の除外（全区間カット）が待機列との差としてだけ現れること。
 //
 // フィクスチャは除外の軸を 1 つずつ持つ録画を並べ、期待する集合もリテラルで書く
 // （両経路が同じ向きにずれても落とす）。残る非対称は全区間カットで keep が空の
