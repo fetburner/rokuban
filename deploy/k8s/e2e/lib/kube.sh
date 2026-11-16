@@ -138,6 +138,53 @@ for item in doc.get("items", []):
   printf '%s' "$matches"
 }
 
+# deployments_consuming_queue <論理キュー名> <site> --- 常駐の worker client が
+# `--queues <キュー>` を `--sites <site>` で引いている Deployment を argv で引く。
+#
+# ScaledJob と違い、キューを引く役は共通のラベルを持たない（watcher Deployment は
+# component=watcher のまま worker ロールも名乗る）ので、ラベルでは引けない。
+# 名前でも引かない（deployment_for_component_site と同じ理由）。
+# 戻り値の約束は scaledjob_for_queue と同じ（一意なら名前 / 0 件なら空 /
+# 複数一致なら AMBIGUOUS）。**一致の判定は要素単位**で、論理名の部分一致はしない
+# （`reconciler` が `reconciler2` に当たらないように）。
+deployments_consuming_queue() {
+  local queue="$1" site="$2" json matches count
+  if ! json="$(k get deployments ${E2E_FIXTURE_SCOPE:+-l rokuban-e2e/fixture=true} -o json 2>/dev/null)" || [ -z "$json" ]; then
+    printf '%s%s' "$discoveryUnreadablePrefix" "Deployment を引けない（キュー ${queue}）"
+    return 0
+  fi
+  matches="$(printf '%s' "$json" | python3 -c '
+import json, sys
+queue, site = sys.argv[1], sys.argv[2]
+
+def values(argv, name):
+    # --name v と --name=v のどちらも、カンマ区切りを展開して返す（StringSlice）。
+    out = []
+    for i, a in enumerate(argv):
+        if a == "--" + name and i + 1 < len(argv):
+            out.append(argv[i + 1])
+        elif a.startswith("--" + name + "="):
+            out.append(a[len(name) + 3:])
+    return [v for x in out for v in x.split(",")]
+
+for item in json.load(sys.stdin).get("items", []):
+    for c in item["spec"]["template"]["spec"].get("containers", []):
+        argv = c.get("command", []) + c.get("args", [])
+        if "worker" not in values(argv, "roles"):
+            continue
+        if queue in values(argv, "queues") and site in values(argv, "sites"):
+            print(item["metadata"]["name"])
+            break
+' "$queue" "$site" | tr '\n' ' ')"
+  matches="${matches% }"
+  count="$(printf '%s' "$matches" | wc -w | tr -d ' ')"
+  if [ "$count" -gt 1 ]; then
+    printf '%s%s' "$discoveryAmbiguousPrefix" "$matches"
+    return 0
+  fi
+  printf '%s' "$matches"
+}
+
 # keda_installed --- KEDA の CRD が入っているか。
 keda_installed() {
   kall get crd scaledjobs.keda.sh >/dev/null 2>&1

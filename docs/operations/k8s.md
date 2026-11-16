@@ -203,13 +203,55 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 #### スケーラのクエリと回収
 
-スケーラは待機中と再試行待ちのジョブを数え、回収は notifier の常駐 River client が担う。
+スケーラは待機中と再試行待ちのジョブを数え、回収は leader になった常駐 River client が担う。常駐 client は notifier Deployment と watcher Deployment の 2 箇所にある。
 
 常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。定期パスは `retryable` にならないが、ingest / encode など定期パス以外の kind は backoff 中も数えられるので、claim できない job のために Pod が起きうる。空振り Pod は `--once-idle-timeout` で終了する。
 
-JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
+常駐 River client の 1 つは notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。
 
-notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送・ruler の常時購読・回収・昇格が同時に止まる（ruler の ScaledJob は残る）。1 つの Pod だけが落ちた場合は、残りのレプリカが回収と昇格を続け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
+JobRescuer と JobScheduler は leader だけが動かす。`river.Config.LeaderElectionDisabled` の doc も、stuck job rescue を leader 側の仕事として書いている。
+
+watcher Deployment の常駐 client も worker ロールを持つので全 kind を登録し（`internal/worker/worker.go` の `NewWorkers`）、leader になりうる。
+
+回収の締切は両者とも同じ ConfigMap の `worker.rescue_stuck_jobs_after` を読む。`cmd/rokuban/server.go` がそれを `river.Config.RescueStuckJobsAfter` に渡す。`river.Config.FetchOnlyKnownKinds` の doc は、leader の rescuer が queue に関係なく stuck job を扱うと書く。
+
+両者とも全 kind を登録している。したがって、どちらの client が leader でも、同じ締切で同じ kind を rescue すると読める。leader の交代を跨いだ挙動は実測していない（未検証）。
+
+`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
+
+##### reconciler を常駐 client に引かせる
+
+reconciler の待ちに ScaledJob の Pod 起動を挟まないよう、常駐 client を watcher に同居させる。
+
+reconciler の `reconciler_<site>` は、site ごとの watcher Deployment に同居させた常駐 client が引く。起動形は `--roles watcher,worker --sites <site> --queues reconciler --stores=` で、`--once` は付けない。watcher は mirakc に届く場所に常駐する。そのため reconcile パスは KEDA のポーリングと Pod 起動を待たずに起きられる。
+
+ScaledJob の reconciler は残す。ruler と同じく両 client が同じキューを claim する。常駐が止まっている間（ロールアウト・ノード退避・設定誤り）の回収を受けるためである。
+
+通常時にも ScaledJob の Job は起きる。判定の e2e で、約 8 分に sitea の ScaledJob が 1 件の Job を起こした。その Job は 0 件を claim して終わった（空振り）。同じ期間に常駐 client の watcher が sitea で 16 件、siteb で 16 件の `reconcile_pass` を claim した。siteb の ScaledJob の Job は数えていない。本番での頻度は未検証である。
+
+watcher Deployment は 2 レプリカでも worker ロールが両方で動く。リーダー選出が止めるのは watcher ロールだけだからである。並走は River の claim（1 件を 1 client にだけ渡す）と `reconcile_pass` の一意制約（サイト単位。待機中と実行中を含む）が防ぐ。
+
+判定 1.8（kind の e2e。ScaledJob の `pollingInterval` は 10 秒）で、常駐経路の PUT から mirakc の schedule までは 0〜1 秒だった（3 番組、2 周。閾値 3 秒）。同じ判定を常駐の無い構成（ScaledJob だけ）で回した値は 7〜11 秒である。常駐の経路が ScaledJob の Pod 起動より速いことの根拠は、この 2 つの分布が重ならないことだけである。本番の値は未検証。
+
+##### 同居で変わるプールの上限
+
+worker を同居させると、watcher Pod のプール上限が変わる。
+
+プール上限は roles から決まり（`internal/db` の `roleConnBudget`）、watcher 単独の 3 から watcher と worker を合わせた 12 になる。これは上限であって実接続数ではない。Postgres の `max_connections` に効くのは実接続数なので、レプリカ数と掛けた値を見ること。実接続数は未測定である。
+
+##### record_sweep を常駐化しない理由
+
+保証の幅の経路の外にある record_sweep は、常駐化しない。
+
+`record_sweep`（`watcher_<site>`）は予約から mirakc への反映の経路に無い。5 分間隔の CronJob が積む定期の全量突き合わせで、SSE が落とした録画を補う。このため、拾われるまでの遅延は保証の幅に効かない。
+
+常駐化して得られるのは ScaledJob の Pod が減ることだけで、その量は未測定である。投入の CronJob の Pod は常駐化しても残る。
+
+同じ Pod に同居させたときの drain の扱いは、両方に同じように効く。10 分の締切と 5 秒の soft stop は `reconcile_pass` と `record_sweep` で同じである。
+
+ロールアウトで ctx を切られた実行中のジョブは、「実行中のジョブを打ち切る条件」で実測したとおりに扱われる想定である。その実測では、猶予 5 秒で ctx が切られたジョブは `available` に戻り、`attempt` も `errors` も残らなかった。`reconcile_pass` は次の CronJob の投入（1 分以内）と、再起動後の client の claim で再走する想定である。ただし実際の再走までの時間は未測定である。
+
+notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送と ruler の常時購読が止まる（ruler の ScaledJob は残る）。回収と昇格は、watcher Deployment の常駐 client が leader になっていれば続く。notifier を落としたときに leader がどの client へ移るかは未検証である。1 つの Pod だけが落ちた場合は、残りのレプリカが SSE クライアントを受け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
 
 実行中のまま死んだジョブは、回収されるまで同じ種類・同じサイトの投入を飲み込む。その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は気づかないうちに無かったことになる）。
 
@@ -315,7 +357,7 @@ drain の猶予は `--soft-stop-timeout`（既定 5 秒）である。SIGTERM �
 
 `terminationGracePeriodSeconds` の経過後に SIGKILL が来るため、これが真の上限である。drain の猶予が `terminationGracePeriodSeconds` を超えると、SIGKILL が先に来て実行中の job は `running` のまま残る。
 
-ingest は有限 Timeout と JobRescuer が回収する。encode は enqueue 時に保存した締切の後、notifier Deployment の常駐 River client の JobRescuer が再試行する。cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が lock 解放後に代替ジョブを投入する。その他の job も JobRescuer に委ねる。
+ingest は有限 Timeout と JobRescuer が回収する。encode は enqueue 時に保存した締切の後、leader の常駐 client が再試行する（notifier / watcher のどちらもありうる）。cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が lock 解放後に代替ジョブを投入する。その他の job も JobRescuer に委ねる。
 
 Work が ctx cancellation に従わない待ちは締切後も残りうるため、k8s の liveness probe でプロセスを終了させる。猶予内に止めれば、プロセス自身が job を `available` に戻す。
 
@@ -399,7 +441,7 @@ flowchart LR
 
 watcher はシングルトンロールで、DB のアドバイザリロックでリーダーを選出する。レプリカ数 1 は既定であって要件ではない。2 レプリカにしても問題ない。
 
-ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
+ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。watcher Deployment の worker ロールは、リーダー選出の対象外として両レプリカで動く（§スケーラのクエリと回収）。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
 
 2 レプリカでも、負けた側は待機したまま mirakc に繋がない（既定は `deploy/k8s/site/watcher.yaml` の `replicas: 1`）。これは推測でなく kind での実測である。受け入れ判定ハーネスの判定 4 が、2 レプリカのあいだ mirakc モックの `/events` の同時接続数を数えている（`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。最大値は 1 だった。
 

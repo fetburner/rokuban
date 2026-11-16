@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Fault 3: kill a worker that owns a finite-timeout job while CronJobs and the
-# resident notifier River client are running; require JobRescuer to recover it.
+# resident River clients are running; require JobRescuer to recover it.
+#
+# 常駐 client は notifier Deployment（ruler）と、reconciler を引く watcher Deployment
+# の 2 種類ある。JobRescuer は leader だけが動かし、leader は River の leader 選出で
+# どの client にも移りうる。したがって「rescue した主体が常駐か」は **rescue 時点の
+# leader の Pod を argv と所有者で見る**（名前の接頭辞では決めない）。
 set -uo pipefail
 
 E2E_FAULT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,7 +20,7 @@ rescued_error="Stuck job rescued by JobRescuer"
 # tuner_sync の Timeout()（internal/worker/tuner.go の tunerSyncTimeout）。
 # rescue はこれと worker.rescue_stuck_jobs_after の長い方を待つ。
 job_timeout_seconds=60
-# 締切を越えてから rescue までの観測窓。常駐 notifier client の保守ループ
+# 締切を越えてから rescue までの観測窓。常駐 client の保守ループ
 # （JobRescuer の既定間隔は River 側）が数分のうちに 1 回は回る。
 rescue_window_seconds=300
 leader_log="$(mktemp)"
@@ -125,8 +130,11 @@ case "$river_job_id" in
     exit 0 ;;
 esac
 
-# River の client ID は `<hostname>_<起動時刻>`（river@v0.50.0 client.go の
-# defaultClientIDWithHost）。hostname は Pod 名なので、attempted_by から掴んだ Pod を引ける。
+# attempted_by から掴んだ client ID から Pod を引く。
+# 契約: `river.Config.ID` の doc は「未指定ならランダムな識別子が生成される」とだけ書く。
+# `<hostname>_<起動時刻>` という形は契約外の前提である。hostname が Pod 名であることは k8s の
+# 既定の性質に頼っている（契約外・未検証の前提）。形が変わると、この判定は FAIL する
+# （unparseable-id か no-such-pod になる。偽の緑にはならない）。
 running_pod=""
 job_claimed() {
   local client
@@ -204,13 +212,53 @@ rescued_hms="$(psql_q "SELECT to_char('${rescued_at}'::timestamptz, 'HH24:MI:SS'
 leader_at_rescue="$(awk -v t="$rescued_hms" '$1 <= t {l = $2} END {print l}' "$leader_log")"
 log_step "rescue timing: ${timing} (attempted_at=${attempted_at}, killed_at=${killed_at}, rescued_at=${rescued_at})"
 log_step "leader at rescue: ${leader_at_rescue:-unknown}; leader samples (distinct): $(awk '{print $2}' "$leader_log" | uniq | tr '\n' ' ')"
-case "$leader_at_rescue" in
-  rokuban-notifier-*) ;;
+# resident_client_of_leader <leader_id> --- leader の ID から Pod を引き、常駐 worker か
+# を argv と所有者で判定する。戻り値は `resident:<Pod 名>` か、理由（判定できない・常駐でない）。
+#
+# client ID の形は冒頭の注記（river.Config.ID）のとおり契約外の前提である。`--once` の Job Pod は
+# Job が所有し、常駐の Deployment は ReplicaSet が所有する。判定に使うのは所有者と
+# argv だけで、名前の接頭辞は見ない。
+# 契約注記: 上の client ID 注記（river.Config.ID）と同じ。
+# 観測の限界: leader の Pod が判定の後に消えていると `no-such-pod` になる（この判定は
+# 残っている Pod でしか裏を取れない）。
+resident_client_of_leader() {
+  printf '%s' "$1" | python3 -c '
+import json, re, sys
+leader = sys.stdin.read().strip()
+m = re.match(r"^(.+)_\d{4}_\d{2}_\d{2}T\d{2}_\d{2}_\d{2}_\d{6}$", leader)
+if not m:
+    print("unparseable-id"); sys.exit(0)
+host = m.group(1)
+pods = json.loads(sys.argv[1]).get("items", [])
+pod = next((p for p in pods if p["metadata"]["name"] == host), None)
+if pod is None:
+    print("no-such-pod"); sys.exit(0)
+if not any(o.get("kind") == "ReplicaSet" for o in pod["metadata"].get("ownerReferences", [])):
+    print("not-a-deployment-pod"); sys.exit(0)
+for c in pod["spec"]["containers"]:
+    argv = c.get("command", []) + c.get("args", [])
+    if "server" not in argv or any(a == "--once" or a.startswith("--once=") for a in argv):
+        continue
+    roles = []
+    for i, a in enumerate(argv):
+        if a == "--roles" and i + 1 < len(argv):
+            roles += argv[i + 1].split(",")
+        elif a.startswith("--roles="):
+            roles += a.split("=", 1)[1].split(",")
+    if "worker" in roles:
+        print("resident:" + host); sys.exit(0)
+print("not-resident-worker")
+' "$(k get pods -o json 2>/dev/null)" 2>/dev/null || printf '%s' "unreadable-pods"
+}
+
+leader_kind="$(resident_client_of_leader "${leader_at_rescue:-}")"
+case "$leader_kind" in
+  resident:*) ;;
   *)
-    fail_from "F3.3" "rescue 時点の leader が notifier の常駐 client ではない（leader=${leader_at_rescue:-unknown}）。--once の Pod などが leader になって rescue した可能性があり、常駐 client による回収とは言えない"
+    fail_from "F3.3" "rescue 時点の leader が常駐 client の Pod ではない（leader=${leader_at_rescue:-unknown}、判定=${leader_kind}）。--once の Pod などが leader になって rescue した可能性があり、常駐 client による回収とは言えない"
     exit 0 ;;
 esac
-pass "F3.3" "JobRescuer が job ${river_job_id} を rescue した（${timing}、leader=${leader_at_rescue:-unknown}）"
+pass "F3.3" "JobRescuer が job ${river_job_id} を rescue した（${timing}、leader=${leader_kind#resident:}）"
 
 # rescue は retryable にするだけで、available に戻すのも leader の保守ループ
 # （JobScheduler）である。再実行が完了するまでを回収と見なす。

@@ -341,6 +341,55 @@ func TestNotifierRunsResidentRescuerClient(t *testing.T) {
 	}
 }
 
+// TestWatcherRunsResidentReconcilerClient fixes the resident client that
+// reconciler_<site> subscribes to. The host is the per-site watcher Deployment:
+// it already reaches that site's mirakc, and the watcher role's leader lock does
+// not gate the worker role, so the client runs on every replica.
+//
+// **`--once` must stay absent.** `--once` requires the worker role alone, so a
+// resident host with it is refused at startup; this test fails first and says why.
+func TestWatcherRunsResidentReconcilerClient(t *testing.T) {
+	var watcher *workload
+	for _, w := range loadWorkloads(t) {
+		if w.id() == "Deployment/rokuban-watcher" {
+			wCopy := w
+			watcher = &wCopy
+			break
+		}
+	}
+	if watcher == nil {
+		t.Fatal("Deployment/rokuban-watcher not found")
+	}
+	args := argsOf(soleContainer(t, *watcher))
+
+	roles, ok := flagValue(args, "roles")
+	if !ok || !slices.Equal(strings.Split(roles, ","), []string{"watcher", "worker"}) {
+		t.Errorf("watcher --roles = %q, want watcher,worker so the reconciler client starts", roles)
+	}
+	var queues []string
+	for i, arg := range args {
+		if arg == "--queues" && i+1 < len(args) {
+			queues = append(queues, args[i+1])
+		} else if value, ok := strings.CutPrefix(arg, "--queues="); ok {
+			queues = append(queues, value)
+		}
+	}
+	if !slices.Equal(queues, []string{"reconciler"}) {
+		t.Errorf("watcher --queues = %v, want exactly [reconciler] (the resident client must not claim other queues)", queues)
+	}
+	if sites, ok := flagValue(args, "sites"); !ok || sites != baseSiteName {
+		t.Errorf("watcher --sites = %q (present=%v), want %q (reconciler_<site> is site-bound)", sites, ok, baseSiteName)
+	}
+	if stores, ok := flagValue(args, "stores"); !ok || stores != "" {
+		t.Errorf("watcher --stores = %q (present=%v), want explicit empty (the reconciler does not touch media)", stores, ok)
+	}
+	for _, arg := range args {
+		if arg == "--once" || strings.HasPrefix(arg, "--once=") {
+			t.Error("watcher resident client must not use --once")
+		}
+	}
+}
+
 // someJobUsesTheDefaultQueue は `internal/jobs` のどれかの `InsertOpts` が
 // `river.QueueDefault` を使っているかを見る。
 //

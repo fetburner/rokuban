@@ -112,9 +112,10 @@ const (
 // 短いと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**
 // 打ち切る。しかもその打ち切りは ctx の cancel ですらない（プロセスが終わる
 // だけ）ので、行は `running` のまま残り、回収は `JobRescuer`（リーダーだけが
-// 動かす保守サービス）に委ねることになる --- ロール分割構成では常駐 client
-// （notifier Deployment）が rescue するが、締切は `rescue_stuck_jobs_after`
-// （River 既定 1h）で、その間その行は running のまま残る。一方、プロセスが
+// 動かす保守サービス）に委ねることになる --- ロール分割構成では、常駐 client
+// （notifier / watcher の Deployment のどちらか。leader である方）が rescue
+// するが、締切は `rescue_stuck_jobs_after` （River 既定 1h）で、その間その行は
+// running のまま残る。一方、プロセスが
 // 自分でエスカレートして畳めば行は `available` に戻り、次に起きた worker が
 // すぐ引き直せる。**「試行を 1 つ潰す」と「回収まで待たされる」の差**である。
 //

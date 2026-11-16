@@ -19,7 +19,7 @@ source "$E2E_LIB/kube.sh"
 
 log_section "判定 1: 全ロールが上がり、番組表が見えて予約が mirakc に反映される"
 
-plan "1.1" "1.2" "1.3" "1.4" "1.5" "1.6" "1.7"
+plan "1.1" "1.2" "1.3" "1.4" "1.5" "1.6" "1.7" "1.8"
 
 api_get() {
   tb_curl -H 'Host: rokuban.local' "http://rokuban-api:40773$1"
@@ -108,6 +108,7 @@ reconciler_scaledjob="$(scaledjob_for_queue "$reconciler_queue")"
 if discovery_is_unusable "$epg_scaledjob"; then
   fail "1.6" "キュー ${epg_queue} を判定対象にできない（$(discovery_detail "$epg_scaledjob")）--- 複数一致か、読み取り失敗"
   fail "1.7" "同上"
+  fail "1.8" "1.7 と同じ理由で遅延を測っていない"
   exit 0
 fi
 # **1.7 の対象が曖昧でも 1.6 は測れる。** 鍵を分けた理由（片方の欠落で
@@ -119,13 +120,16 @@ fi
 if [ -z "$epg_scaledjob" ]; then
   todo "1.6" "番組表: キュー ${epg_queue} を引く KEDA ScaledJob がまだ無い（epg_sync を消化する worker が居ない）"
   todo "1.7" "予約の mirakc 反映: 番組表が無いので予約する番組を選べない"
+  todo "1.8" "1.7 と同じ理由で遅延を測っていない"
   exit 0
 fi
 if [ -n "$reconciler_ambiguous" ]; then
   fail "1.7" "$reconciler_ambiguous"
+  fail "1.8" "1.7 と同じ理由で遅延を測っていない"
   reconciler_missing=1
 elif [ -z "$reconciler_scaledjob" ]; then
   todo "1.7" "予約の mirakc 反映: キュー ${reconciler_queue} を引く KEDA ScaledJob がまだ無い（reconcile_pass を消化する worker が居ない）"
+  todo "1.8" "1.7 と同じ理由で遅延を測っていない"
   reconciler_missing=1
 fi
 
@@ -133,6 +137,26 @@ fi
 # EPG 射影も mirakc モックの予約も残っている。消さないと、今回 epg_sync も
 # reconcile_pass も一度も走らなくても 1.6 / 1.7 が緑になる（判定が
 # 「前回の残骸が見える」ことを主張するだけになる）。
+# **前の周回の録画意図も消す。** 番組 ID はモックが毎回同じ値で作るので、
+# 意図が残っていると定期の reconcile が予約を mock へ戻してしまい、1.8 の PUT の時点で
+# schedule が既にある（実測で 0〜1s になった）。消すのは api の DELETE で、
+# 製品と同じく ruler へのヒントが積まれ、予約が引き取られる。
+log_step "clearing the previous round's intents on ${E2E_SITE_A}"
+clear_intents() {
+  local pid ids
+  ids="$(psql_q "SELECT program_id FROM program_intents WHERE site = '${E2E_SITE_A}'")" || return 1
+  for pid in $ids; do
+    tb_curl -f -X DELETE -H 'Host: rokuban.local' \
+      "http://rokuban-api:40773/api/sites/${E2E_SITE_A}/programs/${pid}/intent" >/dev/null 2>&1 || return 1
+  done
+}
+if ! clear_intents; then
+  fail "1.6" "測定前の掃除（前回の録画意図）に失敗した --- 前回の残骸を見てしまうので測らない"
+  fail "1.7" "同上"
+  fail "1.8" "同上"
+  exit 0
+fi
+
 log_step "clearing the EPG projection and the mock's schedules"
 if ! psql_q "DELETE FROM epg_programs WHERE site = '${E2E_SITE_A}'" >/dev/null ||
    ! psql_q "DELETE FROM epg_services WHERE site = '${E2E_SITE_A}'" >/dev/null ||
@@ -140,6 +164,7 @@ if ! psql_q "DELETE FROM epg_programs WHERE site = '${E2E_SITE_A}'" >/dev/null |
   # 掃除に失敗したまま測ると、前回の残骸を見て緑になる。
   fail "1.6" "測定前の掃除（EPG 射影 / モックの予約）に失敗した --- 前回の残骸を見てしまうので測らない"
   fail "1.7" "同上"
+  fail "1.8" "1.7 と同じ理由で遅延を測っていない"
   exit 0
 fi
 
@@ -148,6 +173,7 @@ if ! tb_rokuban enqueue epg-sync --site "$E2E_SITE_A" >/dev/null 2>&1; then
   # ここを握ると、下のメッセージ「投入したが番組表が空」が嘘になる。
   fail "1.6" "epg-sync を投入できない（rokuban enqueue が失敗）"
   todo "1.7" "投入できていないので予約の反映を観測していない"
+  todo "1.8" "1.7 と同じ理由で遅延を測っていない"
   exit 0
 fi
 
@@ -175,25 +201,47 @@ if retry_until 240 "EPG projection to fill" programs_count; then
   pass "1.6" "番組表が見える（$(programs_count) 件）"
 else
   fail "1.6" "epg-sync を投入したが番組表が空のまま --- backlog=$(river_backlog "$epg_queue") jobs=$(jobs_owned_by_scaledjob "$epg_scaledjob")"
-  [ -n "${reconciler_missing:-}" ] || todo "1.7" "予約の mirakc 反映: 番組表が空なので予約する番組を選べない"
+  if [ -z "${reconciler_missing:-}" ]; then
+    todo "1.7" "予約の mirakc 反映: 番組表が空なので予約する番組を選べない"
+    todo "1.8" "1.7 と同じ理由で遅延を測っていない"
+  fi
   exit 0
 fi
 
 if [ -n "${reconciler_missing:-}" ]; then
-  # 1.7 は上で TODO 済み。ここから先は 1.7 のためだけの手順なので打たない。
+  # 1.7 / 1.8 は上で記録済み。ここから先は 1.7 / 1.8 のためだけの手順なので打たない。
   exit 0
 fi
 
-program_id="$(printf '%s' "$programs_json" | python3 -c '
+# ---- 1.7 / 1.8: 予約の反映と、その遅延 -----------------------------------
+#
+# 1.8 は「意図の書き込み（PUT の発行）から mirakc モックが schedule を持つまで」の
+# 秒数を測る。録画を保証するのは番組終了前に mirakc へ同期できた予約だけなので、
+# この遅延がそのまま保証の幅になる（docs/recording/reconciler.md §起動契機）。
+#
+# **測るのは常駐 client の経路である。** reconciler_<site> を引く常駐 client は
+# watcher Deployment に居る（deploy/k8s/site/watcher.yaml）。ScaledJob の Job が
+# 同じ行を claim すると、常駐の速さを測ったことにならない。そこで 2 つを確かめる。
+#   - 常駐 client が `--queues reconciler --sites <site>` で居ることを argv で見る
+#     （無ければ 1.8 は FAIL。ScaledJob だけで通った速さを常駐の速さと読まない）
+#   - 各 PUT の前に、reconciler の ScaledJob の Job が実行中でなく、その番組の予約が
+#     まだ無いことを待つ（cold_before_put）。空の Job が claim の窓を奪わないように
+#     する。待たないと次の 2 つで PUT と無関係に速く届く。
+#       - CronJob の滞留で KEDA が起こした Pod が、仕事を掴めずに `--once-idle-timeout`
+#         まで待っていて、ヒントを即座に claim する
+#       - 前の周回の意図から作られた予約を、定期の reconcile が先に mock へ戻している
+#
+# 3 番組ぶん測って最大を見る。分解能はポーリングの 1 秒 + toolbox への exec ぶん。
+latency_max="${E2E_RECONCILE_LATENCY_MAX:-3}"
+samples=3
+program_ids="$(printf '%s' "$programs_json" | python3 -c '
 import json, sys
-print(json.load(sys.stdin)[0]["programId"])
+for p in json.load(sys.stdin)[:'"$samples"']:
+    print(p["programId"])
 ')"
-
-log_step "PUT intent record for program ${program_id}"
-if ! tb_curl -f -X PUT -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
-  -d '{"action":"record"}' \
-  "http://rokuban-api:40773/api/sites/${E2E_SITE_A}/programs/${program_id}/intent" >/dev/null 2>&1; then
-  fail "1.7" "録画意図の PUT が失敗した（api が 2xx を返さない）"
+if [ "$(printf '%s\n' "$program_ids" | grep -c .)" -lt "$samples" ]; then
+  fail "1.7" "番組表に ${samples} 件ない --- 測定に足りない"
+  fail "1.8" "同上"
   exit 0
 fi
 
@@ -201,13 +249,71 @@ fi
 # programId で照合する）。件数だと、別の番組の予約が 1 件でもあれば緑になる。
 schedule_arrived() {
   tb_curl -o /dev/null -w '%{http_code}' \
-    "http://mirakc-${E2E_SITE_A}:40772/api/recording/schedules/${program_id}" 2>/dev/null \
+    "http://mirakc-${E2E_SITE_A}:40772/api/recording/schedules/$1" 2>/dev/null \
     | grep -qx 200
 }
 
-if retry_until 240 "mirakc mock to receive the schedule" schedule_arrived; then
-  pass "1.7" "PUT した番組 ${program_id} の予約が mirakc（モック）に反映された"
+elapsed_all=""
+max_elapsed=0
+# cold_before_put <program_id> --- 測れる状態か。reconciler の ScaledJob が起こした
+# Job に実行中のものが無く（空の Job が claim の窓を奪わない）、この番組の予約が
+# DB にも mock にも無いこと。**予約が既にあると、PUT と無関係に届いた時刻を測ってしまう。**
+cold_before_put() {
+  local active n
+  active="$(k get jobs -l "scaledjob.keda.sh/name=${reconciler_scaledjob}" \
+    -o jsonpath='{.items[*].status.active}')" || return 1
+  [ -z "$(printf '%s' "$active" | tr -d ' 0')" ] || return 1
+  n="$(psql_q "SELECT count(*) FROM reservations WHERE site = '${E2E_SITE_A}' AND program_id = $1")" || return 1
+  [ "$n" = "0" ] || return 1
+  ! schedule_arrived "$1"
+}
+
+# 常駐 client の所在。1.8 の判定材料であって 1.7 の前提ではない（1.7 は ScaledJob
+# だけでも通るので、欠けても 1.7 は進め、1.8 だけを落とす）。
+resident_reconciler="$(deployments_consuming_queue reconciler "$E2E_SITE_A")"
+resident_problem=""
+if discovery_is_unusable "$resident_reconciler"; then
+  resident_problem="常駐 client を判定対象にできない（$(discovery_detail "$resident_reconciler")）"
+elif [ -z "$resident_reconciler" ]; then
+  resident_problem="reconciler_${E2E_SITE_A} を --queues で引く常駐 client が無い（測っているのは ScaledJob の経路だけ）"
+fi
+
+for program_id in $program_ids; do
+  # Job は `--once-idle-timeout` の 30 秒で終わり、残った予約は毎分の
+  # reconcile が mock から消すので、180 秒あれば冷えた状態になる。
+  if ! retry_until 180 "cold path for program ${program_id}" cold_before_put "$program_id"; then
+    fail "1.7" "180 秒待っても冷えた状態にならない（${reconciler_scaledjob} の実行中 Job か、番組 ${program_id} の既存の予約が残る）--- 測らない"
+    fail "1.8" "同上"
+    exit 0
+  fi
+  log_step "PUT intent record for program ${program_id}"
+  t0=$SECONDS
+  if ! tb_curl -f -X PUT -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
+    -d '{"action":"record"}' \
+    "http://rokuban-api:40773/api/sites/${E2E_SITE_A}/programs/${program_id}/intent" >/dev/null 2>&1; then
+    fail "1.7" "録画意図の PUT が失敗した（api が 2xx を返さない）"
+    fail "1.8" "同上"
+    exit 0
+  fi
+  if ! retry_until 240 "mirakc mock to receive the schedule" schedule_arrived "$program_id"; then
+    fail "1.7" "予約が mirakc（モック）に届かない --- schedules=$(mock_stat "$E2E_SITE_A" schedules) reservations=$(psql_q 'SELECT count(*) FROM reservations')"
+    fail "1.8" "届かないので遅延を測れない"
+    exit 0
+  fi
+  elapsed=$((SECONDS - t0))
+  log_step "program ${program_id}: ${elapsed}s from PUT to the mock's schedule"
+  elapsed_all="${elapsed_all:+$elapsed_all, }${elapsed}s"
+  [ "$elapsed" -le "$max_elapsed" ] || max_elapsed=$elapsed
+done
+
+pass "1.7" "PUT した ${samples} 番組の予約が mirakc（モック）に反映された"
+polling="$(k get scaledjob "$reconciler_scaledjob" -o jsonpath='{.spec.pollingInterval}' 2>/dev/null)"
+detail="意図の PUT から mirakc の schedule まで ${elapsed_all}（最大 ${max_elapsed}s、閾値 ${latency_max}s。reconciler の ScaledJob ${reconciler_scaledjob} の pollingInterval=${polling:-?}s）"
+if [ -n "$resident_problem" ]; then
+  fail "1.8" "$resident_problem --- $detail"
+elif [ "$max_elapsed" -le "$latency_max" ]; then
+  pass "1.8" "常駐 ${resident_reconciler} 経由: $detail"
 else
-  fail "1.7" "予約が mirakc（モック）に届かない --- schedules=$(mock_stat "$E2E_SITE_A" schedules) reservations=$(psql_q 'SELECT count(*) FROM reservations')"
+  fail "1.8" "常駐 ${resident_reconciler} 経由: $detail"
 fi
 exit 0
