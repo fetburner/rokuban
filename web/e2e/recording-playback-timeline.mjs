@@ -293,7 +293,7 @@ log(`\n=== 実ブラウザ: ${engine} ===`)
 const browser = engine === 'chrome'
   ? await launchBrowser('chromium', { channel: 'chrome' })
   : await launchBrowser(engine)
-const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' })
+const context = await newTimelineContext()
 const recordingHlsRequests = []
 const recordingHls410Requests = []
 const recordingHlsApiResponses = []
@@ -318,86 +318,91 @@ function growingPlaylist(text, segmentLimit = INITIAL_HLS_SEGMENTS) {
   return out.join('\n') + '\n'
 }
 
-await context.addInitScript((markerPixels) => {
-  window.__displayedMarkerSlot = () => {
-    const video = document.querySelector('video')
-    const canvas = document.createElement('canvas')
-    canvas.width = 64
-    canvas.height = 36
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })
-    if (!video || !ctx) return -2
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    return markerPixels.findIndex(([x, y]) => {
-      const pixel = ctx.getImageData(x, y, 1, 1).data
-      return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
-    })
-  }
-  window.__videoFrameFingerprint = () => {
-    const video = document.querySelector('video')
-    const canvas = document.createElement('canvas')
-    canvas.width = 64
-    canvas.height = 36
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })
-    if (!video || !ctx) return null
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data
-    let hash = 2_166_136_261
-    for (const pixel of pixels) hash = Math.imul(hash ^ pixel, 16_777_619)
-    return (hash >>> 0).toString(16).padStart(8, '0')
-  }
-  window.__timelineMarks = []
-  window.__timelineCaptureError = null
-  window.__timelineCapture = null
-  window.__startTimelineCapture = (sessionOffsetSeconds) => {
-    const video = document.querySelector('video')
-    if (!video || typeof video.requestVideoFrameCallback !== 'function') {
-      window.__timelineCaptureError = 'video or requestVideoFrameCallback is unavailable'
-      return false
+// newTimelineContext は、この e2e のページに必要な設定と計測用関数を揃える。
+async function newTimelineContext() {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' })
+  await context.addInitScript((markerPixels) => {
+    window.__displayedMarkerSlot = () => {
+      const video = document.querySelector('video')
+      const canvas = document.createElement('canvas')
+      canvas.width = 64
+      canvas.height = 36
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (!video || !ctx) return -2
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      return markerPixels.findIndex(([x, y]) => {
+        const pixel = ctx.getImageData(x, y, 1, 1).data
+        return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
+      })
     }
-    const previous = window.__timelineCapture
-    if (previous?.video && previous.callbackId !== undefined) {
-      previous.video.cancelVideoFrameCallback?.(previous.callbackId)
+    window.__videoFrameFingerprint = () => {
+      const video = document.querySelector('video')
+      const canvas = document.createElement('canvas')
+      canvas.width = 64
+      canvas.height = 36
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (!video || !ctx) return null
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+      let hash = 2_166_136_261
+      for (const pixel of pixels) hash = Math.imul(hash ^ pixel, 16_777_619)
+      return (hash >>> 0).toString(16).padStart(8, '0')
     }
-    const canvas = document.createElement('canvas')
-    canvas.width = 64
-    canvas.height = 36
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })
-    const capture = { video, callbackId: undefined }
-    window.__timelineCaptureComplete = false
+    window.__timelineMarks = []
     window.__timelineCaptureError = null
-    const onFrame = (_now, metadata) => {
-      try {
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-          const markerSlot = markerPixels.findIndex(([x, y]) => {
-            const pixel = ctx.getImageData(x, y, 1, 1).data
-            return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
-          })
-          if (markerSlot >= 0) {
-            window.__timelineMarks.push({
-              markerSlot,
-              sessionOffsetSeconds,
-              mediaTime: metadata.mediaTime,
-              presentedFrames: metadata.presentedFrames,
+    window.__timelineCapture = null
+    window.__startTimelineCapture = (sessionOffsetSeconds) => {
+      const video = document.querySelector('video')
+      if (!video || typeof video.requestVideoFrameCallback !== 'function') {
+        window.__timelineCaptureError = 'video or requestVideoFrameCallback is unavailable'
+        return false
+      }
+      const previous = window.__timelineCapture
+      if (previous?.video && previous.callbackId !== undefined) {
+        previous.video.cancelVideoFrameCallback?.(previous.callbackId)
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = 64
+      canvas.height = 36
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      const capture = { video, callbackId: undefined }
+      window.__timelineCaptureComplete = false
+      window.__timelineCaptureError = null
+      const onFrame = (_now, metadata) => {
+        try {
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && ctx) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+            const markerSlot = markerPixels.findIndex(([x, y]) => {
+              const pixel = ctx.getImageData(x, y, 1, 1).data
+              return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
             })
-            window.__timelineCaptureComplete = true
-            video.pause()
+            if (markerSlot >= 0) {
+              window.__timelineMarks.push({
+                markerSlot,
+                sessionOffsetSeconds,
+                mediaTime: metadata.mediaTime,
+                presentedFrames: metadata.presentedFrames,
+              })
+              window.__timelineCaptureComplete = true
+              video.pause()
+            }
           }
+        } catch (err) {
+          window.__timelineCaptureError = String(err)
         }
-      } catch (err) {
-        window.__timelineCaptureError = String(err)
+        if (window.__timelineCapture === capture && !window.__timelineCaptureComplete && !window.__timelineCaptureError) {
+          capture.callbackId = video.requestVideoFrameCallback(onFrame)
+        }
       }
-      if (window.__timelineCapture === capture && !window.__timelineCaptureComplete && !window.__timelineCaptureError) {
-        capture.callbackId = video.requestVideoFrameCallback(onFrame)
-      }
+      window.__timelineCapture = capture
+      video.muted = true
+      capture.callbackId = video.requestVideoFrameCallback(onFrame)
+      void video.play().catch((err) => { window.__timelineCaptureError = String(err) })
+      return true
     }
-    window.__timelineCapture = capture
-    video.muted = true
-    capture.callbackId = video.requestVideoFrameCallback(onFrame)
-    void video.play().catch((err) => { window.__timelineCaptureError = String(err) })
-    return true
-  }
-}, MARKER_PIXELS)
+  }, MARKER_PIXELS)
+  return context
+}
 
 async function timelineHandler({ path: requestPath, json, route }) {
   const method = route.request().method()
@@ -560,10 +565,10 @@ async function stubRecordingEventSource(page) {
 }
 
 async function runRecordingApiHlsCheck() {
-  // 録画開始は実行時に決める。時間軸の右端は録画済み時間なので、CI の起動の遅れで長くなると
-  // 1 px が 1 フレームより長くなり、途中シークで窓に入る整数 px が無くなる。EVENT playlist の
-  // seekable（約 10 秒）より 2 秒以上長ければ足りる。
-  const apiHlsStartedAtNow = new Date(Date.now() - 13_000).toISOString()
+  // 13 秒は seekable 10.01 秒より 2 秒以上長く、幅 1032px で 1px=12.6ms が窓 21.4ms に収まる
+  // （Chrome / WebKit 実測）。起動待ちで軸が伸びると pick が axisMax 次第で外れるため、遷移前に固定する。
+  const timelineAsOf = Date.now()
+  const apiHlsStartedAtNow = new Date(timelineAsOf - 13_000).toISOString()
   const apiHlsLiveRecording = {
     ...apiHlsRecording,
     startAt: apiHlsStartedAtNow,
@@ -577,7 +582,12 @@ async function runRecordingApiHlsCheck() {
     hlsPlayback: [],
   }
   recordingHlsRequests.length = 0
-  const page = await context.newPage()
+  // 固定時計を後続の復旧チェックへ漏らさないため、この判定専用の context に閉じ込める。
+  const recordingContext = await newTimelineContext()
+  const page = await recordingContext.newPage()
+  // setFixedTime は Date だけを固定し、timer は動かす契約。遷移前に適用して初回描画から
+  // 同じ録画済み時間を使う（https://playwright.dev/docs/api/class-clock#clock-set-fixed-time）。
+  await page.clock.setFixedTime(new Date(timelineAsOf))
   await installApiStubs(page, timelineHandler)
   await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
@@ -593,7 +603,7 @@ async function runRecordingApiHlsCheck() {
   const pendingRefreshSucceeded = await pendingRefreshed.then((response) => response.ok()).catch(() => false)
   if (!pendingRefreshSucceeded) {
     ng.push('pending から録画 API HLS への recordings SSE 後に詳細 API を取り直せない')
-    await page.close()
+    await recordingContext.close()
     return
   }
   log('\n=== 録画 API HLS: pending から recordings SSE で v1 を選び直す ===')
@@ -607,7 +617,7 @@ async function runRecordingApiHlsCheck() {
   }, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
   if (!v1Started) {
     ng.push('pending から v1 へ替わった後、実ブラウザで currentTime が進まない')
-    await page.close()
+    await recordingContext.close()
     return
   }
 
@@ -617,15 +627,9 @@ async function runRecordingApiHlsCheck() {
   }, undefined, { timeout: 20000 }).then(() => true).catch(() => false)
   if (!mediaReady) {
     ng.push(`録画 API HLS の映像データが届かない (requests=${JSON.stringify(recordingHlsRequests)})`)
-    await page.close()
+    await recordingContext.close()
     return
   }
-
-  // max は Date.now() - startedAt なので、複数の中間位置を調べる間も 1 秒ごとに
-  // 伸びる。メディア準備後の同じ時点で browser / Node の基準時刻を固定し、座標の
-  // 算出とシーク後の検査で px → 秒の対応を保つ。timer は進むので再生待ちには影響しない。
-  const timelineAsOf = Date.now()
-  await page.clock.setFixedTime(new Date(timelineAsOf))
 
   const slider = page.getByRole('slider', { name: 'シークバー' })
   const timelineSeconds = Number(await slider.getAttribute('aria-valuemax'))
@@ -650,7 +654,7 @@ async function runRecordingApiHlsCheck() {
 
   // 途中の位置へのシーク: 時間軸を整数 px でクリックし、currentTime が録画開始からの秒になり、
   // 表示中のフレームがその秒のフレーム（目印）であることを測る。WebKit は mouse.click の座標を
-  // 整数 px に切り捨て、1 px が 1 フレーム以上（35 ms 前後）なので、小数座標で 1 フレームを狙えない。
+  // 整数 px に切り捨てるため、小数座標で窓の中央を狙う形にはしない。
   // そこで、整数 px のうち、アプリが代入する秒 (x - box.x) / width * axisMax が目印フレームの窓
   // （HLS fixture の目印フレームの時刻から 1 フレーム。hlsFixtureMarkerSeconds）の中に入るものを選ぶ。
   // 秒の計算は Chrome と WebKit で同じで、encoded には依存しない。
@@ -658,12 +662,16 @@ async function runRecordingApiHlsCheck() {
   const box = await slider.boundingBox()
   const axisMax = Number(await slider.getAttribute('aria-valuemax'))
   const frameSeconds = 1 / SOURCE_FRAME_RATE
-  // 窓の端を避ける余白。時間軸が 1 秒ごとに伸びて axisMax が変わる分を、上下とも同じ幅で吸収する。
+  // 窓の両端から 6ms ずつを除く余白。判定を緩めないよう残す。
   const margin = 0.006
+  const secondsPerPixel = axisMax / box.width
+  const windowSeconds = frameSeconds - 2 * margin
+  if (!(secondsPerPixel < windowSeconds)) {
+    ng.push(`時間軸の解像度が不足し、整数 px が目印の窓に入る保証がない (secondsPerPixel=${secondsPerPixel}, windowSeconds=${windowSeconds}, width=${box.width}, axisMax=${axisMax})`)
+  }
+  const targetMarkers = markerTimes.filter((marker) => marker.expectedSeconds < mediaState.seekableEnd - 1).slice(0, 2)
   const picks = []
-  for (const marker of markerTimes) {
-    if (picks.length === 2) break
-    if (!(marker.expectedSeconds < mediaState.seekableEnd - 1)) continue
+  for (const marker of targetMarkers) {
     for (let x = Math.ceil(box.x); x < box.x + box.width; x += 1) {
       const seconds = (x - box.x) / box.width * axisMax
       if (seconds >= marker.expectedSeconds + margin && seconds < marker.expectedSeconds + frameSeconds - margin) {
@@ -672,9 +680,8 @@ async function runRecordingApiHlsCheck() {
       }
     }
   }
-  // 1 px が 1 フレームより長い（CI は起動が遅く時間軸が 50 秒近くなり、約 47 ms）と、窓に入る px が無い
-  // 目印がある。seekable 内の 4 つの目印のうち 1 つでも見つかれば判定できる。
-  if (picks.length < 1) ng.push(`途中シークの判定に使える整数 px が見つからない (picks=${picks.length}, width=${box.width}, axisMax=${axisMax})`)
+  // 解像度の前提が満たされれば、対象の先頭 2 目印は両方とも整数 px で選べる。
+  if (targetMarkers.length === 0 || picks.length !== targetMarkers.length) ng.push(`途中シークの対象目印をすべて pick できない (picks=${picks.length}, expected=${targetMarkers.length}, width=${box.width}, axisMax=${axisMax})`)
   for (const { marker, x, seconds } of picks) {
     await page.mouse.click(x, box.y + box.height / 2)
     const landed = await page.waitForFunction(({ slot, from, to }) => {
@@ -753,7 +760,7 @@ async function runRecordingApiHlsCheck() {
   }
 
   await page.evaluate(() => localStorage.clear())
-  await page.close()
+  await recordingContext.close()
 }
 
 async function runRecordingApiHlsRecoveryCheck() {
