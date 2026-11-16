@@ -228,6 +228,10 @@ var (
 	// まだ開始していない番組には recordings 行が存在しないため書き込めない
 	// （internal/reconciler.Reconciler.recreateSchedule のコメント参照）。
 	// 0 以外はアラート対象。
+	//
+	// 並走するパスが DELETE と POST の間に schedule を作った場合も、POST が既存として
+	// 拒まれるので数える。このとき schedule は残っている（偽陽性。
+	// TestReconciler_ConcurrentRecreate_CreateBetweenDeleteAndPostCountsFalseLoss）。
 	ReconcileScheduleLost = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_schedule_lost_total",
 		Help: "Times a schedule recreate's DELETE succeeded but the following POST failed, leaving the schedule missing until the next pass. Non-zero indicates a recording may be missed before then.",

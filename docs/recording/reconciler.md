@@ -162,3 +162,26 @@ desired に無い自分の schedule は、許可した状態のときだけ DELE
 観測には専用のカウンタメトリクスと `slog.Error` を使う。`quality_events` には書けない。それは `recordings` テーブルの列で、まだ開始していない番組には recordings 行が存在しないことがある。
 
 upstream への要望として、`priority` の部分更新 API があれば、再作成の窓ごと消える。`RecordingOptions` 全体を差し替える汎用 PUT より通りやすく、mirakc 側が触る内部状態（スケジューラのキュー）も小さい。priority は開始前の schedule に対して mirakc のスケジューラが素直に扱える性質のフィールドでもある（予約オプション一覧表のとおり、録画開始後は効かない可能性が高い・未測定）。
+
+#### 観測から書き込みまでの遷移
+
+**パスは冒頭の観測と desired で DELETE / POST を決め、書き込むまでの変化を見ない。** state のガードも観測時点の判定である。そのため、観測の後に録画へ遷移した schedule にも DELETE が届く。mirakc はこの DELETE で録画を止める。再作成なら続く POST が途中から録り直し、録画が 2 本に割れる。
+
+窓は観測から書き込みまでの時間で、単独のパスにもある。並走すると広がる。rescue の後も止まらない旧パスは、ctx の期限（ジョブの Timeout）まで古い観測と desired で書けるからである。並走の帰結は次の通りである。
+
+- 同じ desired で両方が再作成すると、DELETE → POST が 2 組飛ぶ。schedule の無い窓は増えるが収束する
+- 後着の POST は、mirakc が既存の schedule として拒否する。新しい desired の作成が残る。拒まれた側は「DELETE 成功 → POST 失敗」として `rokuban_reconcile_schedule_lost_total` を進めるが、schedule は残っている
+- 古い desired の DELETE が新しいパスの観測の後に届くと、次のパスまで schedule が無い。失う上限は「DELETE 成功 → POST 失敗」と同じである
+- 古い desired の再作成が新しい再作成の後に届くと、古い priority が残る。次のパスより前に `scheduled` を抜けると、再作成のガードが差分を持ち越し続ける。録画は古い priority のまま走る
+
+未解決: 観測後に録画へ遷移した schedule への DELETE と、古い priority の固定。どちらも録画を落としうる。
+
+<details><summary>根拠</summary>
+
+- 並走の割り込み: `internal/reconciler/concurrent_pass_test.go`
+- 録画中の DELETE が録画を止め、POST が録画を割ること: conformance の `TestDeleteRecordingScheduleStopsRecorder`
+- 後着の POST の拒否: conformance の `TestRecordLifecycle/DuplicateCreateRejected`
+- 無い schedule への DELETE の 404: conformance の `TestRecordLifecycle/DeleteMissingScheduleNotFound`
+- 古い priority の固定: `TestReconciler_StaleRecreateAfterNewerRecreate_LeavesStalePriority`
+
+</details>

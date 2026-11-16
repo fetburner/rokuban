@@ -113,10 +113,10 @@ ruler と reconciler をジョブにするのは、定期・冪等・パスを�
 
 worker の最大並列数はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。
 
-並走や入力の変化でおかしくなりうるものと、その扱いは次の通りである。reconciler の項目は、コード読解による推定で、並走を起こしての確認はしていない。
+並走や入力の変化でおかしくなりうるものと、その扱いは次の通りである。
 
 1. ruler: パス開始時に入力の版を読む。書き込み tx の最後に同じ site の版をロックして照合する。版が一致しなければロールバックして読み直す。3 回続けて一致しなければエラーを返す。
-2. reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違いうる。まだ対策を持たない。
+2. reconciler: 並走を検出しない。各パスは冒頭の観測と desired に基づいて mirakc に書く。後着の POST は mirakc が拒否するので、先着の作成を上書きしない。多くの食い違いは次のパスで収束する。収束する前に録画を落としうるものが 2 つ残る（[reconciler](../recording/reconciler.md) §観測から書き込みまでの遷移）。
 
 <details><summary>根拠</summary>
 
@@ -126,6 +126,8 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 - 編集を反映するテスト: `TestRunPass_RuleEditDuringPassReevaluates`
 - 新旧パスの競合テスト: `TestRunPass_StalePassCannotOverwriteNewerPass`
 - 照合上限のテスト: `TestRunPass_InputRevisionMismatchLimit`
+- reconciler の並走を割り込ませるテスト: `internal/reconciler/concurrent_pass_test.go`
+- 後着の POST の拒否: `TestReconciler_StaleRecreatePostAfterNewerCreate_IsRejected`
 
 </details>
 

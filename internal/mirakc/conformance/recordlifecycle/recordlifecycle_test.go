@@ -98,6 +98,28 @@ func TestRecordLifecycle(t *testing.T) {
 		}
 	})
 
+	// 並走する reconciler パスの後着 POST は既存の schedule を上書きせず失敗する。mirakctest の
+	// fake はこの挙動に合わせてある（docs/data/jobs.md §重複抑止と並走の限界）。
+	t.Run("DuplicateCreateRejected", func(t *testing.T) {
+		_, err := client.CreateSchedule(ctx, mirakc.ScheduleInput{
+			ProgramID: programID,
+			Options:   mirakc.Options{ContentPath: strPtr("conformance/duplicate.ts"), Priority: 2},
+		})
+		requireAPIStatus(t, "既存 schedule への CreateSchedule", err, 400)
+		got, err := client.GetSchedule(ctx, programID)
+		if err != nil {
+			t.Fatalf("GetSchedule: %v", err)
+		}
+		if got.Options.Priority != 1 {
+			t.Fatalf("拒否された CreateSchedule の後の priority = %d、元の 1 のはず（上書きされている）", got.Options.Priority)
+		}
+	})
+
+	t.Run("DeleteMissingScheduleNotFound", func(t *testing.T) {
+		missing := programid.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.FollowingEventID)
+		requireAPIStatus(t, "無い schedule への DeleteSchedule", client.DeleteSchedule(ctx, missing), 404)
+	})
+
 	recordID := harness.WaitForRecord(t, ctx, client, programID)
 	harness.WaitForRecordingStatus(t, ctx, client, recordID, "recording", harness.RecordingStartTimeout)
 
@@ -332,7 +354,78 @@ func TestRecordLifecycle(t *testing.T) {
 	})
 }
 
+// TestDeleteRecordingScheduleStopsRecorder は、録画中の schedule を DeleteSchedule すると録画が
+// 止まり、続く CreateSchedule は別の record として途中から録り直すことを判定する。reconciler の
+// 再作成（DELETE → POST）が、観測後に録画へ遷移した schedule に届いたときの帰結そのものである
+// （docs/recording/reconciler.md §観測から書き込みまでの遷移）。TestRecordLifecycle の録画を
+// 途中で止めるので、コンテナを分ける。
+func TestDeleteRecordingScheduleStopsRecorder(t *testing.T) {
+	dir := harness.TestDir(t)
+	tunerBin := harness.BuildFixtureTuner(t, dir)
+	container := harness.StartMirakc(t, dir, tunerBin, "")
+	client := mirakc.NewClient(container.BaseURL, nil)
+	ctx := context.Background()
+
+	serviceID := programid.ServiceID(fixture.NetworkID, fixture.ServiceID)
+	programID := programid.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
+	harness.WaitForService(t, ctx, client, serviceID)
+	harness.WaitForProgram(t, ctx, client, programID)
+
+	input := mirakc.ScheduleInput{
+		ProgramID: programID,
+		Options:   mirakc.Options{ContentPath: strPtr("conformance/delete-while-recording.ts"), Priority: 1},
+	}
+	if _, err := client.CreateSchedule(ctx, input); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	firstID := harness.WaitForRecord(t, ctx, client, programID)
+	harness.WaitForRecordingStatus(t, ctx, client, firstID, "recording", harness.RecordingStartTimeout)
+
+	if err := client.DeleteSchedule(ctx, programID); err != nil {
+		t.Fatalf("録画中の DeleteSchedule: %v", err)
+	}
+	// 番組の残り（EventDuration の大半）より十分短い時間で止まることを見る。自然終了を
+	// 待って finished になったのでは、止まったことの判定にならない。
+	harness.WaitForRecordingStatus(t, ctx, client, firstID, "canceled", 10*time.Second)
+
+	contentPath := "conformance/recreated-while-recording.ts"
+	input.Options.ContentPath = &contentPath
+	if _, err := client.CreateSchedule(ctx, input); err != nil {
+		t.Fatalf("放送中の番組への CreateSchedule（再作成の POST）: %v", err)
+	}
+	deadline := time.Now().Add(harness.RecordingStartTimeout)
+	for {
+		records, err := client.ListRecords(ctx)
+		if err != nil {
+			t.Fatalf("ListRecords: %v", err)
+		}
+		var ids []string
+		for _, r := range records {
+			if r.Program.ID == programID {
+				ids = append(ids, r.ID)
+			}
+		}
+		if len(ids) >= 2 {
+			t.Logf("同じ番組の record = %v（再作成で録画が 2 本に割れた）", ids)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("再作成の POST から %s 以内に 2 本目の record が現れなかった（record = %v）", harness.RecordingStartTimeout, ids)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
 func strPtr(s string) *string { return &s }
+
+// requireAPIStatus は err が status の *mirakc.APIError であることを求める。
+func requireAPIStatus(t *testing.T, label string, err error, status int) {
+	t.Helper()
+	var apiErr *mirakc.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != status {
+		t.Fatalf("%s のエラー = %v、HTTP %d の *mirakc.APIError のはず", label, err, status)
+	}
+}
 
 // ptrStr は *T を人が読める文字列にする。nil ならそう書く。%v をポインタに直接渡すと
 // （非 nil のスカラー型ポインタの場合）中身ではなく 16 進アドレスが出る
