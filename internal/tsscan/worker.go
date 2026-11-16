@@ -73,6 +73,8 @@ type ReconcileWorker struct {
 	// Locator は原本のコピーがある置き場を返し、スキャンを積む物理キューの置き場を決める。
 	Locator  store.OriginalLocator
 	RowLimit int32
+	// Markers は全件パスの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
+	Markers store.ReconcilePassMarkers
 }
 
 // Work enqueues one bounded window and persists the next page in a continuation job.
@@ -116,6 +118,11 @@ func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
 	if len(rows) > 0 {
 		slog.Info("ts_scan_reconcile: pass complete", "candidates", len(rows),
 			"row_limit", rowLimit, "continuation_after", continuationAfter)
+	}
+	if w.Markers != nil {
+		if err := w.Markers.MarkReconcilePass(ctx, store.ReconcilePassTSScan); err != nil {
+			return fmt.Errorf("TS scan reconcile: marking completed pass: %w", err)
+		}
 	}
 	return nil
 }

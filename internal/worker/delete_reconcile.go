@@ -112,6 +112,21 @@ type DeleteReconcileWorker struct {
 
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
 	Webhook *webhook.Client
+
+	// Markers は FS の置き場ごとの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
+	Markers store.DeleteReconcileMarkers
+}
+
+// markDeleteReconcile は、この置き場の FS の削除 reconcile が完走したことを記録する。
+// ブレーカーで止めたパスも完走として扱う（今のプロセス内ゲージと同じ）。S3 の置き場のパスとは独立。
+func (w *DeleteReconcileWorker) markDeleteReconcile(ctx context.Context) error {
+	if w.Markers == nil {
+		return nil
+	}
+	if err := w.Markers.MarkDeleteReconcile(ctx, w.MediaStoreName); err != nil {
+		return fmt.Errorf("delete reconcile: marking completed pass for store %q: %w", w.MediaStoreName, err)
+	}
+	return nil
 }
 
 // Work は 1 パス分の削除 reconcile を実行する。
@@ -286,7 +301,7 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	}
 	if stop {
 		metrics.DeleteReconcileLastPass.SetToCurrentTime()
-		return nil
+		return w.markDeleteReconcile(ctx)
 	}
 	w.deleteCandidates(ctx, candidates, orphanMTimeGrace)
 
@@ -302,7 +317,7 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	purgedRecordings = purged
 
 	metrics.DeleteReconcileLastPass.SetToCurrentTime()
-	return nil
+	return w.markDeleteReconcile(ctx)
 }
 
 // afterDeleteCandidatesCollected は候補収集の後・ブレーカー判定と削除の前に置くテスト用の同期点。

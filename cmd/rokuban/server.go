@@ -576,6 +576,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newTransferBacklogCollector(pool, cfg.Storage))
+	metricCollectors = append(metricCollectors, newReconcileMarkerCollector(pool, cfg.Storage))
 	tunerStore := pgstore.NewTuners(pool)
 	analysisStore := pgstore.NewAnalysis(pool, "")
 	recordingStore := pgstore.NewRecordings(pool, "")
@@ -834,6 +835,8 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		MirakcClients:            mirakcClients,
 		RulerPass:                reservationStore,
 		LoopMarkers:              reservationStore,
+		ReconcilePassMarkers:     reservationStore,
+		DeleteReconcileMarkers:   reservationStore,
 		Breakers:                 breakersStore,
 		NeverScheduled:           neverScheduledStore,
 		ScheduleSync:             scheduleSyncStore,
