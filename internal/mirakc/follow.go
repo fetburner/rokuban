@@ -21,7 +21,7 @@ type RecordFollowClient interface {
 }
 
 // RecordFollowOptions は RecordFollowReader の callback と、待ち時間（PollMin / PollMax /
-// RetryDelay）の上書きを設定する。
+// RetryDelay）と stall タイマー生成の上書きを設定する。
 type RecordFollowOptions struct {
 	// StallTimeout は Read 1 回が止まる時間を制限する。消費側が Read を呼んで
 	// いない間は timer が動かないため、遅い writer を mirakc の stall と誤認しない。
@@ -49,6 +49,13 @@ type RecordFollowOptions struct {
 	PollMin    time.Duration
 	PollMax    time.Duration
 	RetryDelay func(attempt int) time.Duration
+
+	// StallAfterFunc は time.AfterFunc 相当のタイマーを作り、その Stop 相当の関数を返す。
+	// 停止関数は発火を防げた場合に true、それ以外は false を返す。
+	// nil なら time.AfterFunc を使う。実時間の待ちを払いたくないテストのための口で、
+	// 本番の呼び出し側は設定しない。
+	// TestRecordFollowReaderStallAndConsumerBackpressure が生成と停止の境界を検査する。
+	StallAfterFunc func(time.Duration, func()) func() bool
 }
 
 // RecordFollowReader は有限の Range 応答をつなぎ、1 本の長命な reader として公開する。
@@ -87,6 +94,7 @@ type RecordFollowReader struct {
 	pollMax        time.Duration
 	failures       int
 	retryDelay     func(attempt int) time.Duration
+	stallAfterFunc func(time.Duration, func()) func() bool
 	pendingBody    *recordFollowBody
 	pendingBodyErr error
 }
@@ -133,6 +141,9 @@ func NewRecordFollowReader(ctx context.Context, client RecordFollowClient, recor
 		retryDelay: RetryDelay,
 		pollMin:    recordFollowPollMin,
 		pollMax:    recordFollowPollMax,
+		stallAfterFunc: func(d time.Duration, f func()) func() bool {
+			return time.AfterFunc(d, f).Stop
+		},
 	}
 	if options.PollMin > 0 {
 		reader.pollMin = options.PollMin
@@ -142,6 +153,9 @@ func NewRecordFollowReader(ctx context.Context, client RecordFollowClient, recor
 	}
 	if options.RetryDelay != nil {
 		reader.retryDelay = options.RetryDelay
+	}
+	if options.StallAfterFunc != nil {
+		reader.stallAfterFunc = options.StallAfterFunc
 	}
 	if initialBody != nil {
 		reader.body = &recordFollowBody{body: initialBody}
@@ -238,13 +252,13 @@ func (r *RecordFollowReader) readBody(body *recordFollowBody, p []byte) (int, er
 
 	fired := make(chan struct{})
 	var stalled atomic.Bool
-	timer := time.AfterFunc(r.options.StallTimeout, func() {
+	stop := r.stallAfterFunc(r.options.StallTimeout, func() {
 		stalled.Store(true)
 		_ = body.close()
 		close(fired)
 	})
 	n, err := body.body.Read(p)
-	if !timer.Stop() {
+	if !stop() {
 		<-fired
 	}
 	return n, err, stalled.Load()
