@@ -192,6 +192,16 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 | `run.sh --oracles` | `PASS 19 / FAIL 0` | 0 | 約 40 分（同上） |
 | `run.sh --only 3` | `PASS 9 / FAIL 0 / TODO 0` | 2（部分実行のため仕様どおり） | 未計測 |
 
+判定 1.8（常駐 client の遅延）の実測は次のとおり。環境は kind、Colima 4 CPU / 8 GB である。e2e overlay の reconciler ScaledJob の `pollingInterval` は 10 秒、閾値は 3 秒。
+
+| 構成 | 意図の PUT から mirakc の schedule まで | 判定 |
+|---|---|---|
+| 常駐 client（watcher Deployment に同居）。`run.sh --only 1 --no-build` を 2 回 | 0 / 1 / 0 秒、0 / 0 / 0 秒（最大 1 秒） | PASS |
+| 常駐の `--queues` を `ruler` に替えた注入（手で 1 回） | 9 / 8 / 8 秒。常駐が無い理由で FAIL | FAIL |
+| 常駐の無い構成（ScaledJob だけ。変更前） | 7〜11 秒（前段の計測。同じ判定、閾値 3 秒で FAIL） | FAIL |
+
+常駐の経路が ScaledJob の経路より速いことの根拠は、この分布が重ならないことだけである。本番の `pollingInterval`（30 秒）で ScaledJob 側がどの速さになるかは未測定である。
+
 `--oracles` は長い。判定 2 は CronJob の自然な発火（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。変異のたびにその待ちを通るので、短縮できない。
 
 製品のワークロードが入ってからさらに伸びた。O1 の変異（api の Service セレクタを外す）で判定 1.6 / 1.7 が実際に走るようになったためである。到達できない api を 240 秒ずつ待つ経路が増えた（それ以前は対象が無くて即 TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`。

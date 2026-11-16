@@ -209,6 +209,21 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
+reconciler の `reconciler_<site>` は、site ごとの watcher Deployment に同居させた常駐 client が引く。起動形は `--roles watcher,worker --sites <site> --queues reconciler --stores=` で、`--once` は付けない。watcher は mirakc に届く場所に常駐する。そのため reconcile パスは KEDA のポーリングと Pod 起動を待たずに起きられる。
+
+ScaledJob の reconciler は残す。ruler と同じく両 client が同じキューを claim する。常駐が止まっている間（ロールアウト・ノード退避・設定誤り）の回収を受けるためである。通常の滞留は常駐が先に claim する想定なので、ScaledJob の Job が起きるのは例外的になる（想定。Job が起きる頻度は未計測）。
+
+watcher Deployment は 2 レプリカでも worker ロールが両方で動く。リーダー選出が止めるのは watcher ロールだけだからである。並走は River の claim（1 件を 1 client にだけ渡す）と `reconcile_pass` の一意制約（サイト単位。待機中と実行中を含む）が防ぐ。
+
+判定 1.8（kind の e2e。ScaledJob の `pollingInterval` は 10 秒）で、常駐経路の PUT から mirakc の schedule までは 0〜1 秒だった（3 番組、2 周。閾値 3 秒）。同じ判定を常駐の無い構成（ScaledJob だけ）で回した値は 7〜11 秒である。常駐の経路が ScaledJob の Pod 起動より速いことの根拠は、この 2 つの分布が重ならないことだけである。本番の値は未検証。
+
+同居で変わるのはプールの上限である。プール上限は roles から決まり（`internal/db` の `roleConnBudget`）、watcher 単独の 3 から watcher と worker を合わせた 12 になる。これは上限であって実接続数ではない。Postgres の `max_connections` に効くのは実接続数なので、レプリカ数と掛けた値を見ること。実接続数は未測定である。
+
+`record_sweep`（`watcher_<site>`）は常駐化しない。理由は 3 つで、どれも決定の根拠として書いている。
+- 定期の全量突き合わせで、予約から mirakc への反映の遅延（保証の幅）には入らない。5 分間隔の CronJob が積み、SSE が落とした録画を補う経路である。
+- 1 件の上限は 10 分である。watcher Pod の drain は soft stop 5 秒なので、ロールアウトのたびに途中で打ち切られうる。打ち切られたあとの後始末は未検証である。
+- 投入の CronJob だけで 1 site あたり 1 日 288 個の Pod が立つ（5 分間隔）。ScaledJob の Pod も加わる。この churn は正しさには効かない。移すなら、watcher Pod の drain 予算を sweep の長さに合わせて別に決める必要がある。
+
 notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送・ruler の常時購読・回収・昇格が同時に止まる（ruler の ScaledJob は残る）。1 つの Pod だけが落ちた場合は、残りのレプリカが回収と昇格を続け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
 
 実行中のまま死んだジョブは、回収されるまで同じ種類・同じサイトの投入を飲み込む。その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は気づかないうちに無かったことになる）。
@@ -399,7 +414,7 @@ flowchart LR
 
 watcher はシングルトンロールで、DB のアドバイザリロックでリーダーを選出する。レプリカ数 1 は既定であって要件ではない。2 レプリカにしても問題ない。
 
-ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
+ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。watcher Deployment の worker ロールは、リーダー選出の対象外として両レプリカで動く（§スケーラのクエリと回収）。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
 
 2 レプリカでも、負けた側は待機したまま mirakc に繋がない（既定は `deploy/k8s/site/watcher.yaml` の `replicas: 1`）。これは推測でなく kind での実測である。受け入れ判定ハーネスの判定 4 が、2 レプリカのあいだ mirakc モックの `/events` の同時接続数を数えている（`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。最大値は 1 だった。
 

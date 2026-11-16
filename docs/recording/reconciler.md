@@ -37,7 +37,12 @@ reconciler は ruler と同じ形の River ジョブで、シングルトンに�
 
 ruler パスの完了は、パス完了時に ruler_pass ワーカーが投入する。base が変われば mirakc に反映すべき差分が増えるためである。ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。
 
-api は reconcile を直接投入しない。ルール、意図、上書きの書き込みでは、store の commit 後に `ruler_pass` を投入し、失敗はログに残す。ruler パスの完了が reconcile へのヒントになるので、予約の変更が mirakc へ反映されるまでの待ちは ruler パス 1 回ぶんの秒オーダーで済み、定期の最大 30 秒を待たない。
+api は reconcile を直接投入しない。ルール、意図、上書きの書き込みでは、store の commit 後に `ruler_pass` を投入し、失敗はログに残す。ruler パスの完了が reconcile へのヒントになるので、予約の変更が mirakc へ反映されるまでは、定期の最大 30 秒を待たない。待ちの大きさは起動形態で違うので、形態ごとに分けて書く。
+
+- monolith（in-process の worker が LISTEN で引く）: 未検証。
+- k8s（site の watcher Deployment に同居した常駐 client が引く）: 判定 1.8 の実測で、PUT から mirakc の schedule まで 0〜1 秒だった（3 番組、2 周。最大 1 秒）。閾値は 3 秒。測った構成の ScaledJob の `pollingInterval` は 10 秒（e2e overlay の値）である。本番の値（30 秒）でも同じ待ちになるかは未検証である。
+
+常駐が引けない（ロールアウト中・停止中）ときの待ちは、ScaledJob の経路になる。変更前に同じ判定で測った値は 7〜11 秒（KEDA のポーリングと Pod 起動を含む）。
 
 ルール・意図・上書きのヒントを失っても、定期の ruler パスが永続状態から予約を再計算する。投入に成功すれば、次の定期パスを待たずに ruler が起動する。
 
