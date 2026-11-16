@@ -773,6 +773,34 @@ func TestLiveStreamer_SessionLimit_EvictsStaleSessionAndRetries(t *testing.T) {
 	}
 }
 
+// waitLiveSessionReadyWaiters は serviceID のセッションの起動を待つ要求の数が
+// want になるまで、期限を付けて待つ。
+// holdFailureUntil で失敗を止めている間に、1 本目が作ったセッションを取り出す。
+// 取り出したポインターを保持し、同じセッションを待つ要求の数を調べる。
+func waitLiveSessionReadyWaiters(t *testing.T, ls *LiveStreamer, serviceID int64, want int32) {
+	t.Helper()
+	ls.mu.Lock()
+	s, ok := ls.getSessionLocked(serviceID)
+	ls.mu.Unlock()
+	if !ok {
+		t.Fatal("first request's placeholder session is missing")
+	}
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.readyWaiters.Load() == want {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("waiting for %d ready waiters on first request's session (service %d): got %d", want, s.serviceID, s.readyWaiters.Load())
+		case <-ticker.C:
+		}
+	}
+}
+
 // 同じ serviceID を待っている同時要求が全員が同じ起動失敗を受け取っても、候補が
 // 1 本しか無ければ退避は 1 回だけになる。**この形は idle 候補が 1 本のときは
 // takeIdleSessionForRetry 自身の原子性（選択と削除を同じロックで行う）だけでも
@@ -780,17 +808,15 @@ func TestLiveStreamer_SessionLimit_EvictsStaleSessionAndRetries(t *testing.T) {
 // （TestLiveStreamer_UpstreamFailure_ConcurrentRequestsDoNotEvictAnUnrelatedIdleSession
 // 参照。無関係な 2 本目の候補を巻き込まないことを固定する）。
 //
-// **2 本目の要求を holdFailureUntil で意図的に足止めしてから起こす。** 素朴に
-// 2 つの goroutine から同時に http.Get するだけだと、既定 MaxSessions=2 かつ
-// 事前に存在するセッションが stale の 1 本だけなので、target の失敗セッションが
-// map から自己清掃した直後に一時的な空きができる --- 2 本目の要求がこの空きを
-// 使って（退避を経由せず）独立に新しいセッションを作り直し、たまたま mirakc が
-// もう拒否しない（failuresLeft を使い切っている）ため退避無しで成功してしまう
-// ことがあった（実際に flaky を確認した）。これは相乗りではない別の独立成功経路
-// で、この関数が固定したい性質を検証しない。holdFailureUntil で 1 本目の失敗を
-// 意図的に足止めし、1 本目の失敗セッション（placeholder）がまだ map に残っている
-// 間に 2 本目を起こすことで、2 本目が必ず「既存セッション」経路に collapse する
-// ことを保証する。
+// 2 つの goroutine から同時に http.Get するだけだと、1 本目の失敗セッションが
+// map から消えた空きに 2 本目が独立に新しいセッションを作り、退避を経由せずに
+// 成功することがある（flaky を確認した）。そこで holdFailureUntil で 1 本目の
+// 失敗を止め、同じセッションを待つ要求が 2 本になったことを確かめてから失敗を
+// 解放する。これで 2 本目が 1 本目の失敗セッションに collapse したことを保証する。
+// この確認を固定時間の待ちに置き換えると、遅れて着いた 2 本目が復旧済みの
+// セッションを使い、失敗を共有する経路を通らずにテストが通る。相乗りのチェック
+// （alreadyRecovered）を外して 2 本目を 300ms 遅らせると、固定時間で待つテストは
+// この退行を見逃して通った。
 func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsEvictOnlyOnce(t *testing.T) {
 	setShortLiveMirakcReleaseWait(t, 50*time.Millisecond)
 	const staleServiceID, targetServiceID = 1, 2
@@ -803,6 +829,14 @@ func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsEvictOnlyOnce(t *testing
 		holdEntered:      make(chan struct{}),
 	}
 	ls, srv := newTestLiveStreamerWithClient(t, client, cfg)
+
+	t.Cleanup(func() {
+		select {
+		case <-client.holdFailureUntil:
+		default:
+			close(client.holdFailureUntil)
+		}
+	})
 
 	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, staleServiceID, "h264"))
 	setLiveSessionLastAccess(t, ls, staleServiceID,
@@ -829,16 +863,12 @@ func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsEvictOnlyOnce(t *testing
 	wg.Add(1)
 	go requestTarget(0)
 	<-client.holdEntered // 1 本目の失敗セッションが map に placeholder として存在する
-	// 2 本目の goroutine を起こしてから、それが実際に「既存セッション」の
-	// waitReadyTouching まで到達するのを確実に待つ確定的な手段が無い（HTTP
-	// ラウンドトリップの内部到達点を観測するフックが無い）。ここは production
-	// コードではなくテストの足並み合わせなので、十分に余裕を持った待ちで
-	// 到達を待ってから hold を解く（holdFailureUntil を早く解きすぎると、2 本目が
-	// まだ map を見る前に 1 本目の失敗セッションが自己清掃してしまい、2 本目が
-	// 独立に新しいセッションを作ってしまう --- 実際に確認した）。
+	// 1 本目の失敗を止めている間に、そのセッションを待つ要求が 2 本になったことを
+	// 確かめてから、失敗を解放する。1 本目も自分で作ったセッションを awaitSessionReady
+	// から待つので、1 本になっただけでは 2 本目が着いたとは言えない。
 	wg.Add(1)
 	go requestTarget(1) // 必ず 1 本目の既存セッションに collapse する
-	time.Sleep(100 * time.Millisecond)
+	waitLiveSessionReadyWaiters(t, ls, targetServiceID, 2)
 	close(client.holdFailureUntil)
 	wg.Wait()
 
@@ -889,10 +919,9 @@ func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsEvictOnlyOnce(t *testing
 // **MaxSessions=3 にして target の初回試行が必ず upstream を経由するようにする。**
 // 既定の 2 のままだと collateral+stale の 2 本で既に埋まっており、target の初回
 // 試行が先に session_limit を経由してしまい、この関数が検証したい「upstream 1 回
-// を複数の同時要求が共有する」形にならない。**2 本目を holdFailureUntil で足止め
-// してから起こすのも同じ理由**（ConcurrentRequestsEvictOnlyOnce の doc コメント
-// 参照。素朴な同時 http.Get だと、1 本目の失敗セッションが自己清掃した空きに
-// 2 本目が独立に収まり、退避を経由せず静かに成功することがあった）。
+// を複数の同時要求が共有する」形にならない。holdFailureUntil で 1 本目の失敗を
+// 止め、同じセッションを待つ要求が 2 本になってから解放するのも同じ理由である
+// （ConcurrentRequestsEvictOnlyOnce の doc コメント参照）。
 func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsDoNotEvictAnUnrelatedIdleSession(t *testing.T) {
 	setShortLiveMirakcReleaseWait(t, 50*time.Millisecond)
 	const collateralServiceID, staleServiceID, targetServiceID = 3, 1, 2
@@ -906,6 +935,14 @@ func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsDoNotEvictAnUnrelatedIdl
 		holdEntered:      make(chan struct{}),
 	}
 	ls, srv := newTestLiveStreamerWithClient(t, client, cfg)
+
+	t.Cleanup(func() {
+		select {
+		case <-client.holdFailureUntil:
+		default:
+			close(client.holdFailureUntil)
+		}
+	})
 
 	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, collateralServiceID, "h264"))
 	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, staleServiceID, "h264"))
@@ -931,16 +968,12 @@ func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsDoNotEvictAnUnrelatedIdl
 	wg.Add(1)
 	go requestTarget()
 	<-client.holdEntered // 1 本目の失敗セッションが map に placeholder として存在する
-	// 2 本目の goroutine を起こしてから、それが実際に「既存セッション」の
-	// waitReadyTouching まで到達するのを確実に待つ確定的な手段が無い（HTTP
-	// ラウンドトリップの内部到達点を観測するフックが無い）。ここは production
-	// コードではなくテストの足並み合わせなので、十分に余裕を持った待ちで
-	// 到達を待ってから hold を解く（holdFailureUntil を早く解きすぎると、2 本目が
-	// まだ map を見る前に 1 本目の失敗セッションが自己清掃してしまい、2 本目が
-	// 独立に新しいセッションを作ってしまう --- 実際に確認した）。
+	// 1 本目の失敗を止めている間に、そのセッションを待つ要求が 2 本になったことを
+	// 確かめてから、失敗を解放する。1 本目も自分で作ったセッションを awaitSessionReady
+	// から待つので、1 本になっただけでは 2 本目が着いたとは言えない。
 	wg.Add(1)
 	go requestTarget() // 必ず 1 本目の既存セッションに collapse する
-	time.Sleep(100 * time.Millisecond)
+	waitLiveSessionReadyWaiters(t, ls, targetServiceID, 2)
 	close(client.holdFailureUntil)
 	wg.Wait()
 
