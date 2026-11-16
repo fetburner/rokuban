@@ -5,6 +5,10 @@
 # `processRecord` は冪等化済みである（docs/operations.md §5「シングルトンロール」、
 # internal/role/leader.go）。**2 レプリカにしても壊れない** --- `pg_try_advisory_lock`
 # のリーダー選出があるので、負けた側は待機したまま mirakc に繋がない。
+# リーダー選出が止めるのは watcher ロールだけで、worker ロールは両方の
+# レプリカで動く。`reconciler_<site>` は River の claim（`FOR UPDATE SKIP LOCKED`）が
+# 1 件を 1 つの client にだけ渡し、`reconcile_pass` の一意制約（サイト単位・待機中と
+# 実行中を含む）が同じ site の 2 本目を積ませないので、並走しない。
 # これは受け入れ判定ハーネスの判定 4 が kind で実測している
 # （`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。
 #
@@ -45,10 +49,9 @@ spec:
     spec:
       enableServiceLinks: false
       automountServiceAccountToken: false
-      # watcher は River クライアントを Start しない（insert 専用。
-      # docs/operations.md §5「ロールとキュー購読の関係」）ので、drain の項は
-      # 乗らない。**`--soft-stop-timeout` を argv に書くと起動エラーになる**
-      # （worker ロールが無いプロセスでの指定は効かないので弾かれる）。
+      # worker ロールを同居させるので River クライアントが Start する。既定の
+      # `--soft-stop-timeout`（5s）と preStop 無しで、drain は 10s + 5s + 10s = 25s。
+      # 猶予 30s はその上に載る（TestWorkerGraceCoversTheSoftStop が固定する）。
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -62,8 +65,15 @@ spec:
           # ffmpeg もアーカイブへの書き込みも要らない（書くのは ingest の worker）。
           image: ghcr.io/fetburner/rokuban:latest
           # **argv の 5 番目（index 4）が site 名。** overlay の patch がここを
-          # 指す（site/kustomization.yaml のコメント）。
-          args: ["server", "--roles", "watcher", "--sites", "default", "--config", "/etc/rokuban/config.yml"]
+          # 指す（site/kustomization.yaml のコメント）。`--sites` を index 4 に
+          # 残すために、`--queues` は後ろに置く。
+          #
+          # `worker` を同居させて `reconciler_<site>` を常駐 client に引かせる。
+          # **`--once` は付けない**（1 件消化モードは worker 単独に限る）。キューは
+          # argv だけで絞る（config.yml に `worker.queues` を書くと、この Pod を含む
+          # 全 worker が起動エラーになる）。`--stores=` は notifier と同じく明示的な
+          # 空（置き場を触らない）。
+          args: ["server", "--roles", "watcher,worker", "--sites", "default", "--queues", "reconciler", "--stores=", "--config", "/etc/rokuban/config.yml"]
           ports:
             - name: http
               containerPort: 40773
