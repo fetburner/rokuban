@@ -84,6 +84,8 @@ type EventHub struct {
 	clients map[chan string]struct{}
 
 	retryInterval time.Duration
+	// after は合流窓のタイマーを作る。テストが窓を手動で閉じるために差し替える。
+	after func(time.Duration) <-chan time.Time
 
 	// listening は Source が購読確立を知らせた合図。
 	// 確立前に発行された通知は届かないことがあるため、通知を期待する側が
@@ -97,6 +99,7 @@ func NewEventHub() *EventHub {
 	return &EventHub{
 		clients:       make(map[chan string]struct{}),
 		retryInterval: listenRetryInterval,
+		after:         time.After,
 		listening:     make(chan struct{}),
 	}
 }
@@ -220,7 +223,7 @@ func (h *EventHub) coalesce(ctx context.Context, topics <-chan string, waitErr <
 			event := decodeNotification(payload)
 			pending[event.coalesceKey] = payload
 			if flushAt == nil {
-				flushAt = time.After(coalesceWindow)
+				flushAt = h.after(coalesceWindow)
 			}
 
 		case err := <-waitErr:
