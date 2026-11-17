@@ -60,15 +60,16 @@ func scheduleItemPath(programID int64) string {
 	return fmt.Sprintf("/api/recording/schedules/%d", programID)
 }
 
-// slowClient は match に一致するリクエストを、ctx が切れるまで（または d 経つまで）止める。
+// slowClient は match に一致するリクエストを、ctx が切れるまで（または slow 経つまで）止める。
 // 締切より長く遅らせて締切が効くことを見る。ctx が先に切れたら fake には届かない。
-func slowClient(fake *mirakctest.Fake, match func(*http.Request) bool, d time.Duration) *mirakc.Client {
+func slowClient(fake *mirakctest.Fake, match func(*http.Request) bool) *mirakc.Client {
+	const slow = 2 * time.Second
 	return mirakc.NewClient(fake.URL(), &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		if match(req) {
 			select {
 			case <-req.Context().Done():
 				return nil, req.Context().Err()
-			case <-time.After(d):
+			case <-time.After(slow):
 			}
 		}
 		return http.DefaultTransport.RoundTrip(req)
@@ -477,12 +478,11 @@ func TestReconciler_ReobservationErrorWithholdsWrite(t *testing.T) {
 // かかったら、DELETE を送らずに見送る。締切は親の ctx ではない。
 func TestReconciler_ReobservationDeadlineWithholdsWrite(t *testing.T) {
 	cfg := &reconciler.Config{ObserveAndDeleteTimeout: 50 * time.Millisecond}
-	const slow = 2 * time.Second
 
 	t.Run("delete", func(t *testing.T) {
 		f := newStaleDeleteFixture(t, 100000500017661, 100000500017662)
 		withheldBefore := withheldCount("delete", "error")
-		mc := slowClient(f.fake, scheduleGetRequest(f.res.ProgramID), slow)
+		mc := slowClient(f.fake, scheduleGetRequest(f.res.ProgramID))
 
 		if err := newReconciler(mc, f.pool, cfg).RunPass(f.ctx); err != nil {
 			t.Fatalf("RunPass: %v", err)
@@ -499,7 +499,7 @@ func TestReconciler_ReobservationDeadlineWithholdsWrite(t *testing.T) {
 		f := newConcurrentFixture(t, 100000500017663)
 		setPriorityOverride(t, f.ctx, f.q, f.res, 77)
 		withheldBefore := withheldCount("recreate", "error")
-		mc := slowClient(f.fake, scheduleGetRequest(f.res.ProgramID), slow)
+		mc := slowClient(f.fake, scheduleGetRequest(f.res.ProgramID))
 
 		if err := newReconciler(mc, f.pool, cfg).RunPass(f.ctx); err != nil {
 			t.Fatalf("RunPass: %v", err)
@@ -540,11 +540,10 @@ func TestReconciler_RecreateInheritsContentPathFromReobservation(t *testing.T) {
 // 再作成なら POST もしない。締切は DELETE まで包む、という判定を固定する。
 func TestReconciler_DeleteBeyondDeadlineIsNotSent(t *testing.T) {
 	cfg := &reconciler.Config{ObserveAndDeleteTimeout: 50 * time.Millisecond}
-	const slow = 2 * time.Second
 
 	t.Run("delete", func(t *testing.T) {
 		f := newStaleDeleteFixture(t, 100000500017670, 100000500017671)
-		mc := slowClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID), slow)
+		mc := slowClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID))
 
 		if err := newReconciler(mc, f.pool, cfg).RunPass(f.ctx); err != nil {
 			t.Fatalf("RunPass: %v", err)
@@ -560,7 +559,7 @@ func TestReconciler_DeleteBeyondDeadlineIsNotSent(t *testing.T) {
 	t.Run("recreate", func(t *testing.T) {
 		f := newConcurrentFixture(t, 100000500017672)
 		setPriorityOverride(t, f.ctx, f.q, f.res, 77)
-		mc := slowClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID), slow)
+		mc := slowClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID))
 
 		if err := newReconciler(mc, f.pool, cfg).RunPass(f.ctx); err != nil {
 			t.Fatalf("RunPass: %v", err)
@@ -575,14 +574,27 @@ func TestReconciler_DeleteBeyondDeadlineIsNotSent(t *testing.T) {
 	})
 }
 
-// POST は観測し直しの締切の外で送る。締切（200ms）を超えて POST を遅らせても、再作成は完了し、
-// 新しい priority の schedule が残る。締切付き ctx で POST すると、締切切れで schedule が消える。
+// POST は観測し直しの締切の外で送る。締切付き ctx で POST すると、締切切れで schedule が消える。
+// POST を観測用 ctx が終わる（締切の 5s が過ぎる）まで止めてから送らせるので、毎回 5s 待つ。
 func TestReconciler_PostIsNotBoundByObservationDeadline(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017673)
 	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
 	lostBefore := promtestutil.ToFloat64(metrics.ReconcileScheduleLost)
-	cfg := &reconciler.Config{ObserveAndDeleteTimeout: 200 * time.Millisecond}
-	mc := slowClient(f.fake, scheduleRequest(http.MethodPost, f.res.ProgramID), 400*time.Millisecond)
+	cfg := &reconciler.Config{ObserveAndDeleteTimeout: 5 * time.Second}
+	var observation context.Context
+	mc := mirakc.NewClient(f.fake.URL(), &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if scheduleGetRequest(f.res.ProgramID)(req) {
+			observation = req.Context()
+		}
+		if scheduleRequest(http.MethodPost, f.res.ProgramID)(req) {
+			if observation == nil {
+				t.Errorf("POST without observation")
+				return nil, fmt.Errorf("POST without observation")
+			}
+			<-observation.Done()
+		}
+		return http.DefaultTransport.RoundTrip(req)
+	})})
 
 	if err := newReconciler(mc, f.pool, cfg).RunPass(f.ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)

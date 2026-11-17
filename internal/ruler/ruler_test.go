@@ -2708,10 +2708,11 @@ func TestRunPass_RetractGrace_UsesTimeAtApplyAfterSlowEvaluation(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-slow-evaluation", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "遅延評価対象")
 
+	now := time.Now()
 	reservations := pgstoretest.Reservations(pool)
 	search := &gatedProgramSearch{ProgramSearch: pgstoretest.EPG(pool)}
 	r := ruler.New([]string{testSite}, reservations, pgstoretest.Breakers(pool),
-		pgstoretest.NeverScheduledEvents(pool), reservations, &ruler.Config{RetractGrace: time.Second}, search)
+		pgstoretest.NeverScheduledEvents(pool), reservations, &ruler.Config{RetractGrace: time.Second, Now: func() time.Time { return now }}, search)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2719,7 +2720,7 @@ func TestRunPass_RetractGrace_UsesTimeAtApplyAfterSlowEvaluation(t *testing.T) {
 		t.Fatal("reservation should be created before the delayed pass")
 	}
 
-	start := time.Now().Add(1500 * time.Millisecond)
+	start := now.Add(2 * time.Second)
 	retractGraceUnmatch(t, pool, ctx, programID, "遅延評価で非マッチ", start)
 	search.entered = make(chan struct{})
 	search.resume = make(chan struct{})
@@ -2741,11 +2742,9 @@ func TestRunPass_RetractGrace_UsesTimeAtApplyAfterSlowEvaluation(t *testing.T) {
 		t.Fatal("timed out waiting for rule matching to start")
 	}
 
-	// ルール評価を止めたまま、番組開始まで 800ms になってから適用を進める。
-	// 評価開始時の時刻では猶予外だが、適用時刻では猶予内になる。
-	if wait := time.Until(start.Add(-800 * time.Millisecond)); wait > 0 {
-		time.Sleep(wait)
-	}
+	// 評価開始時の時計は開始 2s 前で、猶予 1s の外にある。
+	// 評価を止めている間に開始 500ms 前へ進め、適用時刻を猶予内にする。
+	now = start.Add(-500 * time.Millisecond)
 	close(search.resume)
 	select {
 	case err := <-done:
