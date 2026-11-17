@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
@@ -72,6 +73,11 @@ type liveSession struct {
 	done  chan struct{} // ffmpeg プロセスが完全に終了したら閉じる
 
 	startErr error // ready が閉じた後にだけ読む
+
+	// readyWaiters はこのセッションで実行中の waitReadyTouching の数。
+	// テストが、2 本目の要求が同じセッションに着いたことを観測するために使う。
+	// 退避・collapse・idle の判定には使わない。
+	readyWaiters atomic.Int32
 
 	cancel context.CancelFunc
 
@@ -133,6 +139,8 @@ func (s *liveSession) hintLeave(now time.Time, grace, idleTimeout time.Duration)
 // 終われば自動的に通常の idle 判定に戻る --- 待ちは playlistStartupTimeout で
 // 上限が付いているので、これで延命できるのも高々その時間である。
 func waitReadyTouching(ctx context.Context, s *liveSession, timeout time.Duration) error {
+	s.readyWaiters.Add(1)
+	defer s.readyWaiters.Add(-1)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(playlistPollInterval)
