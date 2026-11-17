@@ -343,28 +343,53 @@ async function seek(seconds) {
   await page.waitForTimeout(300)
 }
 
-/** playFor は ms ミリ秒ぶん再生して、その間の再生位置の推移を返す。 */
-async function playFor(ms) {
+/** waitForPosition は位置（必要なら停止も）を最大 30 秒待ち、未到達を NG にする。 */
+async function waitForPosition(targetVideo, seconds, label, stopped = false) {
+  const state = await targetVideo.evaluate((v, { seconds, stopped }) => new Promise((resolve) => {
+    const read = () => ({ seconds: v.currentTime, paused: v.paused, rate: v.playbackRate })
+    const finish = (timedOut) => {
+      clearTimeout(timer)
+      v.removeEventListener('timeupdate', check)
+      v.removeEventListener('pause', check)
+      const state = { ...read(), timedOut }
+      resolve(state)
+    }
+    const check = () => {
+      if (v.currentTime >= seconds && (!stopped || v.paused)) finish(false)
+    }
+    const timer = setTimeout(() => finish(true), 30000)
+    v.addEventListener('timeupdate', check)
+    v.addEventListener('pause', check)
+    check()
+  }), { seconds, stopped })
+  if (state.timedOut) ng.push(`${label}: 30 秒以内に ${seconds} 秒${stopped ? 'での停止' : 'への到達'}を確認できない（${JSON.stringify(state)}）`)
+  return state
+}
+
+/** playUntil は実時間ではなく指定位置への到達を待って止める。 */
+async function playUntil(seconds, label) {
+  // 到達監視を play より先に登録し、開始後の遅延中も観測する。
+  const reached = waitForPosition(video, seconds, label)
   await video.evaluate((v) => {
     v.muted = true
     return v.play()
   })
-  await page.waitForTimeout(ms)
-  const current = await video.evaluate((v) => v.currentTime)
+  const state = await reached
   await video.evaluate((v) => v.pause())
-  return current
+  // 未到達の NG は上で報告済み。後段の位置比較で同じ失敗を重ねて報告しない。
+  return state.timedOut ? Number.NaN : state.seconds
 }
 
-/** resumeAndRead は動画を再開して ms 待ち、止める前の再生位置と paused を読む。読んだ後に一時停止する。 */
-async function resumeAndRead(targetVideo, targetPage, ms) {
+/** resumeAndRead は通常速度で再開し、停止保険の終端を越えるまで待つ。 */
+async function resumeAndRead(targetVideo, label) {
+  const reached = waitForPosition(targetVideo, 34, label)
   await targetVideo.evaluate((v) => {
     v.muted = true
-    // 直前の判定の速度（2 倍速）が残っていると、停止位置を越えるまでの時間が測れない。
+    // 停止保険後の再開を通常速度で確認し、直前の速度設定に判定条件を依存させない。
     v.playbackRate = 1
     return v.play()
   })
-  await targetPage.waitForTimeout(ms)
-  const state = await targetVideo.evaluate((v) => ({ seconds: v.currentTime, paused: v.paused, rate: v.playbackRate }))
+  const state = await reached
   await targetVideo.evaluate((v) => v.pause())
   return state
 }
@@ -509,21 +534,50 @@ try {
 }
 
 log('\n=== ② 通常の再生で cut 区間の先頭に差し掛かると終端へ飛ぶ ===')
-// 区間の手前 2 秒から再生する。飛ばなければ 4 秒後は 32 秒付近にとどまる。
+// 区間の手前 2 秒（28 秒）から再生し、終端 40 秒への到達を待つ。
 await seek(28)
-const afterPlayback = await playFor(4000)
-if (afterPlayback < 39) {
-  ng.push(`② Cut 区間に入っても飛ばない（4 秒後の位置 ${afterPlayback.toFixed(1)} 秒。期待 40 秒以降）`)
+const afterPlayback = await video.evaluate(async (v) => {
+  const reached = new Promise((resolve) => {
+    let previous = v.currentTime
+    let jumped = false
+    const onSeeking = () => {
+      if (!v.paused && previous < 39 && v.currentTime >= 39) jumped = true
+    }
+    const finish = (timedOut) => {
+      clearTimeout(timer)
+      v.removeEventListener('seeking', onSeeking)
+      v.removeEventListener('timeupdate', check)
+      v.removeEventListener('seeked', check)
+      resolve({ seconds: v.currentTime, jumped, timedOut })
+    }
+    const check = () => {
+      // seeking 中はシーク前のサンプルを保持し、seeking の記録より先に完了しない。
+      if (v.seeking) return
+      if (v.currentTime >= 40) finish(false)
+      previous = v.currentTime
+    }
+    const timer = setTimeout(() => finish(true), 30000)
+    v.addEventListener('seeking', onSeeking)
+    v.addEventListener('timeupdate', check)
+    v.addEventListener('seeked', check)
+  })
+  v.muted = true
+  await v.play()
+  return reached
+})
+await video.evaluate((v) => v.pause())
+if (afterPlayback.timedOut) {
+  ng.push(`②: 30 秒以内に終端 40 秒へ到達しない（${JSON.stringify(afterPlayback)}）`)
+} else if (!afterPlayback.jumped) {
+  ng.push(`②: 再生中に 39 秒未満から終端付近への seeking が無い（${JSON.stringify(afterPlayback)}）`)
 }
 
 log('\n=== ③ 手動のシークで区間の中に入ったときは飛ばない ===')
-// cut 区間の中（35 秒）へシークして再生する。飛ばすなら 4 秒後は 40 秒以降になる。
+// cut 内の 35 秒から 38 秒への到達を待つ。終端へ飛んでいれば上限判定で NG。
 await seek(35)
-const insideCut = await playFor(3000)
+const insideCut = await playUntil(38, '③ 手動シーク')
 if (insideCut >= 39.5) {
   ng.push(`③ シークで入った cut 区間から追い出された（位置 ${insideCut.toFixed(1)} 秒）`)
-} else if (insideCut < 36) {
-  ng.push(`③ シーク後に再生が進んでいない（位置 ${insideCut.toFixed(1)} 秒）--- 判定が空虚に通っている`)
 }
 // **再生したまま**（pause しない）区間の手前から中へシークしても追い出されない。
 // シークの処理順は seeking → timeupdate → seeked なので、seeked で直前位置を更新する
@@ -536,26 +590,26 @@ await video.evaluate((v) => {
 await video.evaluate((v) => {
   v.currentTime = 25
 })
-await page.waitForTimeout(1500)
-const beforeLiveSeek = await video.evaluate((v) => v.currentTime)
+const beforeLiveSeekState = await waitForPosition(video, 26, '③ シーク前')
+const beforeLiveSeek = beforeLiveSeekState.seconds
 await video.evaluate((v) => {
   v.currentTime = 35
 })
-await page.waitForTimeout(3000)
-const afterLiveSeek = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
+const liveSeekState = await waitForPosition(video, 38, '③ 再生中シーク')
+const afterLiveSeek = { t: liveSeekState.seconds, paused: liveSeekState.paused }
 await video.evaluate((v) => v.pause())
-if (beforeLiveSeek < 25 || beforeLiveSeek >= 30) {
+if (!beforeLiveSeekState.timedOut && beforeLiveSeek >= 30) {
   ng.push(`③ 再生中シークの前提が崩れている（シーク前の位置 ${beforeLiveSeek.toFixed(1)} 秒。期待 25〜30 秒）`)
-} else if (afterLiveSeek.t >= 40) {
-  ng.push(`③ 再生したままのシークで cut 区間から追い出された（3 秒後の位置 ${afterLiveSeek.t.toFixed(1)} 秒。期待 40 秒未満）`)
-} else if (afterLiveSeek.t < 36 || afterLiveSeek.paused) {
+} else if (!liveSeekState.timedOut && afterLiveSeek.t >= 40) {
+  ng.push(`③ 再生したままのシークで cut 区間から追い出された（到達時の位置 ${afterLiveSeek.t.toFixed(1)} 秒。期待 40 秒未満）`)
+} else if (!liveSeekState.timedOut && afterLiveSeek.paused) {
   ng.push(`③ 再生したままのシーク後に再生が進んでいない（位置 ${afterLiveSeek.t.toFixed(1)} 秒）--- 判定が空虚に通っている`)
 }
 // ラベル付き（cut でない）区間は、通常の再生で入っても飛ばない。
 await seek(58)
-const throughOp = await playFor(4000)
-if (throughOp < 61 || throughOp >= 70) {
-  ng.push(`③ Cut でない区間（OP）で再生位置が飛んだ（4 秒後の位置 ${throughOp.toFixed(1)} 秒。期待 62 秒付近）`)
+const throughOp = await playUntil(62, '③ OP')
+if (throughOp >= 70) {
+  ng.push(`③ Cut でない区間（OP）で再生位置が飛んだ（到達時の位置 ${throughOp.toFixed(1)} 秒。期待 62 秒付近）`)
 }
 
 log('\n=== ④ 境界の「前後 3 秒」 ===')
@@ -568,39 +622,35 @@ if ((await firstBoundary.count()) !== 1) ng.push('④ 30 秒の境界が filmstr
 else await firstBoundary.click()
 await seek(100)
 await page.getByRole('button', { name: '選択中の境界の前後3秒を再生' }).click()
-// まず開始位置を見る。境界の 3 秒手前（27 秒）から始まり、1 秒後に 28 秒付近に居る。
-// 境界そのもの（30 秒）から始めていれば 31 秒付近になるので、ここで区別できる。
-const afterOneSecond = await playFor(1000)
-if (afterOneSecond < 27 || afterOneSecond > 29.5) {
+// 28 秒への到達を待ち、開始が境界（30 秒）以降なら上限判定で区別する。
+const afterOneSecond = await playUntil(28, '④ 開始位置')
+if (afterOneSecond > 29.5) {
   ng.push(
-    `④ 前後 3 秒が 30 秒の手前 3 秒から始まっていない（1 秒後の位置 ${afterOneSecond.toFixed(2)} 秒。期待 27〜29.5 秒）`,
+    `④ 前後 3 秒が 30 秒の手前 3 秒から始まっていない（到達時の位置 ${afterOneSecond.toFixed(2)} 秒。期待 27〜29.5 秒）`,
   )
 }
-// そのまま境界を跨ぐ。**前後再生の間は自動スキップを止める**ので、跨いでも
-// 40 秒へ飛ばされない（3.5 秒後に 31 秒付近）。
-const afterBoundary = await playFor(3500)
+// 31 秒への到達を待ち、終端へ飛んでいないことを見る。
+// 未解決: 編集中は chapterSpans が空なので、前後再生中のスキップ抑止を外す変異は検出しない。
+const afterBoundary = await playUntil(31, '④ 境界通過')
 if (afterBoundary >= 35) {
   ng.push(`④ 前後 3 秒の再生中に境界で自動スキップが働いた（位置 ${afterBoundary.toFixed(2)} 秒）`)
-} else if (afterBoundary < 29) {
-  ng.push(`④ 前後 3 秒の再生が進んでいない（位置 ${afterBoundary.toFixed(2)} 秒）--- 判定が空虚に通っている`)
 }
 
 log('\n=== ⑤ 前後 3 秒は再生速度に追従して境界の 3 秒後で止まる ===')
-// 2 倍速では境界の 3 秒後（33 秒）まで実時間 3 秒で届く。実時間 6 秒のタイマーで
-// 止める実装だと 4.5 秒後もまだ再生中で 36 秒付近まで進む。
+// 32 秒以降での停止を待ち、33 秒付近で止まったことを判定する。
 await video.evaluate((v) => {
   v.playbackRate = 2
 })
 await seek(100)
 await firstBoundary.click()
 await page.getByRole('button', { name: '選択中の境界の前後3秒を再生' }).click()
-await page.waitForTimeout(4500)
-const fast = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
+const fastState = await waitForPosition(video, 32, '⑤', true)
+const fast = { t: fastState.seconds, paused: fastState.paused }
 await video.evaluate((v) => {
   v.pause()
   v.playbackRate = 1
 })
-if (!fast.paused || fast.t < 32 || fast.t > 34.5) {
+if (!fastState.timedOut && (!fast.paused || fast.t > 34.5)) {
   ng.push(
     `⑤ 2 倍速の前後 3 秒が境界の 3 秒後（33 秒）で止まっていない（位置 ${fast.t.toFixed(2)} 秒 paused=${fast.paused}）`,
   )
@@ -619,13 +669,13 @@ for (const mode of [
   await seek(100)
   await firstBoundary.click()
   await page.getByRole('button', { name: mode.button }).click()
-  await page.waitForTimeout(4500)
-  const fastMode = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
+  const fastState = await waitForPosition(video, mode.min, `⑤-b ${mode.name}`, true)
+  const fastMode = { t: fastState.seconds, paused: fastState.paused }
   await video.evaluate((v) => {
     v.pause()
     v.playbackRate = 1
   })
-  if (!fastMode.paused || fastMode.t < mode.min || fastMode.t > mode.max) {
+  if (!fastState.timedOut && (!fastMode.paused || fastMode.t > mode.max)) {
     ng.push(
       `⑤-b 2 倍速の「${mode.name}」が ${mode.want}で止まっていない（位置 ${fastMode.t.toFixed(2)} 秒 paused=${fastMode.paused}）`,
     )
@@ -1146,9 +1196,43 @@ if (ratesWhileEditing.normal !== '1.5' || ratesWhileEditing.editing !== '2') {
   ng.push(`#1123: 編集中の速度保存先が分離されていない（${JSON.stringify(ratesWhileEditing)}）`)
 }
 await seek(15)
-const editRateProgress = await playFor(1200)
-if (editRateProgress < 16.6 || editRateProgress > 19.2) {
-  ng.push(`#1123: 編集中の 2x で再生位置が 2 倍に進まない（1.2 秒後 ${editRateProgress.toFixed(2)} 秒、開始 15 秒）`)
+// timeupdate の連続した進行サンプル間だけを積算する。開始待ち・停止・seek は除く。
+const editRateProgress = await video.evaluate(async (v) => {
+  const measurement = new Promise((resolve) => {
+    let previous
+    let elapsed = 0
+    let progress = 0
+    const reset = () => { previous = undefined }
+    const finish = (timedOut) => {
+      clearTimeout(timer)
+      v.removeEventListener('timeupdate', sample)
+      for (const event of ['waiting', 'seeking', 'pause']) v.removeEventListener(event, reset)
+      resolve({ ratio: progress / elapsed, elapsed, progress, timedOut })
+      v.pause()
+    }
+    const sample = () => {
+      const now = { wall: performance.now() / 1000, media: v.currentTime }
+      if (v.seeking || v.paused) { reset(); return }
+      if (previous && now.media > previous.media) {
+        elapsed += now.wall - previous.wall
+        progress += now.media - previous.media
+      }
+      previous = now
+      if (elapsed >= 1.2) finish(false)
+    }
+    const timer = setTimeout(() => finish(true), 30000)
+    v.addEventListener('timeupdate', sample)
+    for (const event of ['waiting', 'seeking', 'pause']) v.addEventListener(event, reset)
+  })
+  v.muted = true
+  await v.play()
+  return measurement
+})
+// 期待 2.0 に ±20% の余裕。1x を除外しつつサンプル通知時刻の揺れを許容する。
+// ローカル Chromium: 通常 3 回と CPU 4 倍スロットリング 2 回で比 1.99996〜2.00033（elapsed 1.328 秒）。
+// 再生速度を 1.5 倍にする変異は比 1.5002 で NG。
+if (editRateProgress.timedOut || editRateProgress.ratio < 1.6 || editRateProgress.ratio > 2.4) {
+  ng.push(`#1123: 編集中の 2x で再生位置が 2 倍に進まない（30 秒以内に進行区間 1.2 秒を測定: ${JSON.stringify(editRateProgress)}）`)
 }
 await seek(51.5)
 const editHeader = page.locator('header h1').last()
@@ -1439,9 +1523,9 @@ await page.getByRole('button', { name: '全体', exact: true }).click()
 log('\n=== #1019 編集中の自動スキップ抑止 ===')
 await page.setViewportSize({ width: 1280, height: 800 })
 await seek(28)
-const editPlayback = await playFor(4000)
-if (editPlayback >= 40 || editPlayback < 31) {
-  ng.push(`#1019: 編集画面の再生で自動スキップが抑止されない、または再生が進まない（${editPlayback.toFixed(1)}秒）`)
+const editPlayback = await playUntil(32, '#1019 編集中')
+if (editPlayback >= 40) {
+  ng.push(`#1019: 編集画面の再生で自動スキップが抑止されない（${editPlayback.toFixed(1)}秒）`)
 }
 
 log('\n=== #1019 filmstrip: timestamp → x ===')
@@ -1784,9 +1868,9 @@ if ((await stalledFileBoundary.count()) !== 1) {
       ng.push(`⑩ 録画ファイルの一時停止中に再生位置が動いた（${pausedAt.toFixed(2)} 秒 → ${state.seconds.toFixed(2)} 秒）`)
     }
     // 編集モードのまま再生する。タイマーが状態を解除していれば 33 秒を越えて進み、残っていれば 33 秒で止まる。
-    const resumedInEdit = await resumeAndRead(video, page, 10000)
+    const resumedInEdit = await resumeAndRead(video, '⑩ 再開')
     log(`  ⑩ 一時停止 ${pausedAt.toFixed(2)} 秒 → 編集中の再生 ${resumedInEdit.seconds.toFixed(2)} 秒 paused=${resumedInEdit.paused} rate=${resumedInEdit.rate}`)
-    if (resumedInEdit.seconds < 34 || resumedInEdit.paused) {
+    if (!resumedInEdit.timedOut && resumedInEdit.paused) {
       ng.push(`⑩ 停止保険の後、編集中の録画ファイルが 33 秒を越えて再生を続けない（${JSON.stringify(resumedInEdit)}）`)
     }
   }
@@ -1858,9 +1942,9 @@ if (hlsReady) {
     if (!state.paused || Math.abs(state.seconds - pausedAt) > 0.2) {
       ng.push(`⑫ LivePlayer の録画 HLS 一時停止中に再生位置が動いた（${pausedAt.toFixed(2)} 秒 → ${state.seconds.toFixed(2)} 秒）`)
     }
-    const resumedInEdit = await resumeAndRead(hlsVideo, hlsPage, 10000)
+    const resumedInEdit = await resumeAndRead(hlsVideo, '⑫ 再開')
     log(`  ⑫ 一時停止 ${pausedAt.toFixed(2)} 秒 → 編集中の再生 ${resumedInEdit.seconds.toFixed(2)} 秒 paused=${resumedInEdit.paused}`)
-    if (resumedInEdit.seconds < 34 || resumedInEdit.paused) {
+    if (!resumedInEdit.timedOut && resumedInEdit.paused) {
       ng.push(`⑫ 停止保険の後、編集中の LivePlayer の録画 HLS が 33 秒を越えて再生を続けない（${JSON.stringify(resumedInEdit)}）`)
     }
   }
