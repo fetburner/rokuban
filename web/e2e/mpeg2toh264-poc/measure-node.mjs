@@ -4,7 +4,7 @@
 //
 //   loadLib()                      -> { Session, firstTimestamp, lastTimestamp }
 //   runSession(lib, opts)          -> { originTicks, fragments: [...] }
-//     opts: { file, size?, startByte?, origin?, audioPid?, passthrough?, untilSec?, chunk? }
+//     opts: { file, size?, startByte?, origin?, audioPid?, passthrough?, untilSec?, chunk?, openGopRecovery? }
 //     fragment: { kind, start?, mimeCodec?, tracks?: [{ trackId, timescale, pres: [sec...] }] }
 //     pres = presentation time (seconds, session timeline) of each sample.
 //   byteForPts(lib, file, size, origin, sec) -> byte offset whose first PES timestamp is at or before sec
@@ -73,7 +73,7 @@ export async function byteForPts(lib, file, size, origin, sec, probeBytes = 512 
 export async function runSession(lib, opts) {
   const { file, startByte = 0, audioPid, passthrough = false, untilSec = Infinity, chunk = 3 * 1024 * 1024 } = opts;
   const size = opts.size ?? (await stat(file)).size;
-  const sess = new lib.Session(undefined, opts.origin ?? undefined, undefined, undefined, undefined, passthrough);
+  const sess = new lib.Session(undefined, opts.origin ?? undefined, undefined, undefined, undefined, passthrough, opts.openGopRecovery);
   if (audioPid != null) sess.selectAudio(audioPid);
   const fragments = [];
   const fh = await open(file, "r");

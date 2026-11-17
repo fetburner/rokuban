@@ -28,7 +28,7 @@ LIB=/path/to/mpeg2toh264 ./build-wasm.sh                      # dist/ に WASM �
 - `control-decoder.mjs`: PoC を通さない 1080i / 1080p の対照
 - `make-synthetic.sh`: 合成 TS（testsrc2 と sine）
 - `measure-run.mjs --convert main|worker|pool [--pool N]`: 変換を走らせる場所。`main` はメインスレッドで `Session.push` を同期に呼ぶ。`worker` は `session-worker.js` に移す。`pool` はさらに `picture-worker.js` を N 個（既定 3）立て、`pushDeferred` / `complete` で絵を分ける（同梱の player と同じ分け方）
-- `measure-run.mjs --gop idr|recovery-point`: Session の `openGopRecovery`。既定はライブラリの既定の `idr` で、周期のランダムアクセス点ごとに IDR とその複製の 2 サンプルを足す。Chrome はこの 2 枚を `droppedVideoFrames` に数える。`recovery-point` は絵を足さない
+- `measure-run.mjs --gop idr|recovery-point`: Session の `openGopRecovery`。既定はライブラリの既定の `idr` で、周期のランダムアクセス点ごとに IDR とその複製の 2 サンプルを足す。Chrome はこの 2 枚を `droppedVideoFrames` に数える。`recovery-point` は絵を足さない。`measure-boundaries.mjs` と `measure-av-chrome.mjs` も `--gop` を受け、変換はワーカーで行う。`measure-av-node.mjs` は 6 番目の引数で受ける
 - `measure-run.mjs --yadif-double`: yadif をフィールドごとに 1 枚出す（`doubleRate`）。集計の `yadif.late` は表示されなかったフィールドの絵の数
 - 集計の `contentFrames.missing`: rVFC の `mediaTime` の飛びから数えた、画面に出なかった元のフレームの数。`presented` と `callbacks` が等しいときだけ有効
 - `measure-run.mjs --window-at-seek`: シークの直後から測る（再開の立ち上がりを含める）

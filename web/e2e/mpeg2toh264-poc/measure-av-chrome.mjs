@@ -44,7 +44,7 @@ try {
   await page.waitForFunction(() => Boolean(window.poc), null, { timeout: 30_000 });
   await page.evaluate(() => window.poc.ready);
   const url = `${srv.url}/media/${encodeURIComponent(basename(file))}`;
-  const opened = await page.evaluate(([u, o]) => window.poc.open(u, o), [url, { audioPid: audioPid === null ? undefined : Number(audioPid), muted: true }]);
+  const opened = await page.evaluate(([u, o]) => window.poc.open(u, o), [url, { audioPid: audioPid === null ? undefined : Number(audioPid), muted: true, convert: "worker", openGopRecovery: opt("--gop") }]);
   out.open = opened;
   const sampler = setInterval(async () => {
     try {

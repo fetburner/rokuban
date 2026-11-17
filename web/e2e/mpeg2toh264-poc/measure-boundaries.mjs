@@ -1,7 +1,7 @@
 // Chapter-boundary seek check in one headed Chrome (measurement, not product code).
 //
 //   node measure-boundaries.mjs --file <m2ts> --F <first video PTS ticks> --boundaries 2302,276243,...
-//       --out <dir> --label <name> [--audio-pid 273] [--settle 0.05]
+//       --out <dir> --label <name> [--audio-pid 273] [--settle 0.05] [--gop idr|recovery-point]
 //
 // For each chapter boundary b (ms, frame 0 = first video frame F), target time in the
 // Session timeline is  t = b/1000 + (F - originTicks)/90000, where originTicks is what the
@@ -49,7 +49,7 @@ try {
   await page.evaluate(() => window.poc.ready);
 
   const url = `${srv.url}/media/${encodeURIComponent(basename(file))}`;
-  const opened = await page.evaluate(([u, o]) => window.poc.open(u, o), [url, { audioPid: audioPid === null ? undefined : Number(audioPid), muted: true }]);
+  const opened = await page.evaluate(([u, o]) => window.poc.open(u, o), [url, { audioPid: audioPid === null ? undefined : Number(audioPid), muted: true, convert: "worker", openGopRecovery: opt("--gop") }]);
   result.open = opened;
   result.originTicks = opened.originTicks;
   const origin = opened.originTicks;
