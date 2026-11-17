@@ -7,9 +7,15 @@ CLAUDE.md から退避した規律。**タスク分解・docs の大きな編集
 **タスク分解を頼まれたら、マイルストーンごとにエピック 1 本 + サブ issue に分ける。** 形式は `.github/ISSUE_TEMPLATE/` の 2 つのテンプレート（`epic` / `sub-issue`）に従う。既存の issue を読んで形式を真似る必要はない。
 
 ```console
-$ gh issue create --template epic --title 'M5 タスク分解: ...'
-$ gh issue create --template sub-issue --title 'M5-1 ...' --label area:worker
+$ gh issue create --template epic --title '[E5] ...'
+$ gh issue create --template sub-issue --title '[E5-1] ...' --label area:worker
 ```
+
+- **エピックは `[E<n>]`、サブ issue は `[E<n>-<m>]` の連番にする。** 文字の略号は覚えにくく、重複を確かめる手間がかかるうえ、実際に同じ略号を 2 本のエピックに使った。次の番号は、既存の最大値に 1 を足す。最大値を引くコマンドは次のとおり。
+
+  ```console
+  $ gh issue list --label epic --state all --limit 1000 --json title --jq '.[].title' | grep -oE '^\[E[0-9]+\]' | sort -V | tail -1
+  ```
 
 - **サブ issue は自己完結させる。** 分割の目的は「実装する人が余計な文書を読まずに済むこと」であって、進捗管理ではない。**エピックや他のサブ issue を読まないと実装できないサブ issue は分割が失敗している。** エピックの「着手前の前提」で決めた共通事項は、参照させずに必要な行を転記する
 - **「読む文書」は節名まで絞る。** 挙げなかった文書は開かせない。不変条件は番号で参照してよい（CLAUDE.md は毎セッション読まれるため）
