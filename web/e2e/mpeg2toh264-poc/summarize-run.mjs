@@ -25,7 +25,7 @@ function summarise(run) {
   const ws = events.find((e) => e.type === "window-start");
   const we = events.find((e) => e.type === "window-end");
   const inWin = (e) => (ws && we ? e.t >= ws.t && e.t <= we.t : false);
-  const out = { label, mode: run.mode, start: run.start, yadif: run.yadif, convert: run.convert ?? "main", pool: run.pool ?? 0, file: run.file, chromeVersion: run.chromeVersion };
+  const out = { label, mode: run.mode, start: run.start, yadif: run.yadif, convert: run.convert ?? "main", gop: run.openGopRecovery ?? "idr", pool: run.pool ?? 0, file: run.file, chromeVersion: run.chromeVersion };
 
   // --- CPU: ps samples whose node time is inside the window -------------------
   const wStart = w.startMs;
@@ -54,6 +54,16 @@ function summarise(run) {
   const qs = q(near(wStart));
   const qe = q(near(wEnd));
   out.frames = qs && qe ? { dropped: qe.droppedVideoFrames - qs.droppedVideoFrames, total: qe.totalVideoFrames - qs.totalVideoFrames } : null;
+  // yadif's onStats counters are cumulative: take the difference across the window.
+  const ys = near(wStart)?.yadif?.stats;
+  const ye = near(wEnd)?.yadif?.stats;
+  if (ye) {
+    const d = (k) => (ye[k] ?? 0) - (ys?.[k] ?? 0);
+    const fps = samples.filter((s) => s.t >= wStart && s.t <= wEnd && s.yadif?.stats).map((s) => s.yadif.stats.fps);
+    out.yadif = { doubleRate: run.yadifDouble ?? false, filtered: d("filtered"), missed: d("missed"), late: d("late"), degraded: d("degraded"), resynced: d("resynced"), fpsMean: mean(fps), fpsMin: fps.length ? round(Math.min(...fps)) : null };
+  }
+  const cf = run.extra?.contentFrames;
+  out.contentFrames = cf ? { missing: cf.missing, presented: cf.presented, callbacks: cf.callbacks, gaps: cf.gaps.slice(0, 10) } : null;
   out.framesTotalSinceOpen = qe ? { dropped: qe.droppedVideoFrames, total: qe.totalVideoFrames } : null;
 
   // --- stalls -----------------------------------------------------------------

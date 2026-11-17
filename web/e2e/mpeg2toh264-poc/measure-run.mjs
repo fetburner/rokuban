@@ -2,7 +2,9 @@
 //
 //   node measure-run.mjs --out <dir> --label <name> --mode idle|file|grow
 //       [--file <ts>] [--start 0|mid] [--mid <sec>] [--play 120] [--yadif]
-//       [--convert main|worker|pool] [--pool N]
+//       [--convert main|worker|pool] [--pool N] [--gop idr|recovery-point|discard]
+//       [--yadif-double]     yadif with doubleRate (implies --yadif)
+//       [--window-at-seek]   open the window as soon as seek() returns (counts the restart)
 //       [--grow-rate B/s] [--grow-lag s] [--grow-step s] [--grow-head s] [--live-back s]
 //
 // Writes <dir>/<label>.json with:
@@ -34,9 +36,12 @@ const file = opt("--file") ? resolve(opt("--file")) : null;
 const start = opt("--start", "0");
 const mid = Number(opt("--mid", "0"));
 const playSeconds = Number(opt("--play", "120"));
-const yadif = has("--yadif");
+const yadifDouble = has("--yadif-double");
+const yadif = has("--yadif") || yadifDouble;
 const convert = opt("--convert", "main");
 const pool = Number(opt("--pool", "3"));
+const windowAtSeek = has("--window-at-seek");
+const openGopRecovery = opt("--gop"); // undefined = the library default ("idr")
 const growRate = Number(opt("--grow-rate", "0"));
 const growLag = Number(opt("--grow-lag", "0"));
 const growStep = Number(opt("--grow-step", "0"));
@@ -160,7 +165,7 @@ try {
     const url = `${srv.url}/media/${encodeURIComponent(basename(file))}`;
     const growUrl = `${srv.url}/grow/${encodeURIComponent(basename(file))}`;
     const openUrl = mode === "grow" ? growUrl : url;
-    const openOpts = { yadif, growing: mode === "grow", convert, pool };
+    const openOpts = { yadif, yadifDouble, growing: mode === "grow", convert, pool, openGopRecovery };
     const openBegan = now();
     extra.open = await page.evaluate(([u, o]) => window.poc.open(u, o), [openUrl, openOpts]);
     extra.openWallMs = now() - openBegan;
@@ -175,7 +180,7 @@ try {
     }
     // Window opens once the playhead is past the seek target (or immediately from the start).
     const want = start === "mid" || mode === "grow" ? (extra.seekTarget ?? mid) : null;
-    if (want != null) {
+    if (want != null && !windowAtSeek) {
       const deadline = Date.now() + 45_000;
       while (Date.now() < deadline) {
         const st = await page.evaluate(() => window.poc.state());
@@ -184,7 +189,10 @@ try {
       }
     }
     windowStart = now();
-    await page.evaluate(() => window.poc.events.push({ type: "window-start", t: Math.round(performance.now() - window.poc.clock0) }));
+    await page.evaluate(() => {
+      window.poc.watchFrames();
+      window.poc.events.push({ type: "window-start", t: Math.round(performance.now() - window.poc.clock0) });
+    });
     await sleep(playSeconds * 1000);
   }
   windowEnd = now();
@@ -193,6 +201,7 @@ try {
   timers = [];
   await sleep(600); // let in-flight samples land
   extra.final = await page.evaluate(() => window.poc.state());
+  extra.contentFrames = await page.evaluate(() => window.poc.frames());
   extra.clock0 = await page.evaluate(() => window.poc.clock0);
   const events = await page.evaluate(() => window.poc.events);
   const pageNow = await page.evaluate(() => performance.now());
@@ -201,8 +210,10 @@ try {
     mode,
     start,
     yadif,
+    yadifDouble,
     convert,
     pool,
+    openGopRecovery: openGopRecovery ?? "idr",
     file: file ? basename(file) : null,
     options: { playSeconds, mid, growRate, growLag, growStep, growHead, liveBack },
     chromeVersion,

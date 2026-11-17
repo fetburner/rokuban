@@ -5,7 +5,7 @@
 //
 // Requests (from poc.js)
 //   { type: "start", pool }                       compile the module, start `pool` picture workers
-//   { type: "new", seq, originTicks, audioPid }    replace the session; older seqs are dropped
+//   { type: "new", seq, originTicks, audioPid, openGopRecovery }    replace the session; older seqs are dropped
 //   { type: "push", seq, bytes } | { type: "finish", seq }
 // Replies
 //   { type: "ready", pool }                        pool = workers actually running
@@ -102,7 +102,7 @@ async function step(first) {
 async function handle(data) {
   if (data.type === "new") {
     session?.free();
-    session = new Session(undefined, data.originTicks ?? undefined);
+    session = new Session(undefined, data.originTicks ?? undefined, undefined, undefined, undefined, undefined, data.openGopRecovery);
     if (data.audioPid != null) session.selectAudio(data.audioPid);
     return;
   }

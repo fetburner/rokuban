@@ -4,16 +4,21 @@
 //
 // window.poc API
 //   ready                       Promise<true> once the WASM module is up
-//   open(url, { audioPid?, muted?, yadif?, convert?, pool? })
+//   open(url, { audioPid?, muted?, yadif?, yadifDouble?, convert?, pool?, openGopRecovery? })
 //                               convert: "main" (default; Session.push on this thread),
 //                               "worker" (session-worker.js), or "pool" (the worker
 //                               plus `pool` picture workers, default 3)
+//                               yadifDouble: yadif with doubleRate (a picture per field)
+//                               openGopRecovery: Session's 7th argument ("idr" is the
+//                               library default; "recovery-point" adds no pictures)
 //                               resolves once the first media fragment is appended
 //   play()                      video.play()
 //   seek(sec)                   new Session anchored at the stored origin; resolves
 //                               with { target, byte, probes, achieved, lookupMs }
 //   state()                     plain object snapshot (see below)
 //   capture(w=320, h=180)       PNG dataURL of the presented frame + mediaTime + meanLuma
+//   watchFrames()               restart the rVFC count of content frames never shown
+//   frames()                    { callbacks, presented, missing, gaps } since watchFrames()
 //   events                      timestamped log array
 //
 // Timeline: fragment.start and the fMP4 timing are presentation seconds measured
@@ -31,6 +36,9 @@ const PROBE_BYTES = 512 * 1024;
 const MAX_AHEAD_SECONDS = 20; // stop converting this far past the playhead
 const KEEP_BEHIND_SECONDS = 10; // evict media this far behind the playhead
 const SEEK_TOLERANCE_SECONDS = 2.5;
+// Start (and resume after a seek) only with this much ahead. Playing from the
+// first fragment (~0.5 s) lost 1-2 frames at the start while the decoder warmed up.
+const START_AHEAD_SECONDS = 2;
 const FIRST_MEDIA_TIMEOUT_MS = 60_000;
 
 const video = document.getElementById("v");
@@ -71,6 +79,7 @@ let seeks = [];
 let rejectFirst = null;
 let resolveFirst = null;
 let deinterlacer = null;
+let yadifStats = null; // the last onStats report; its counters are cumulative
 let yadifTimeline = [];
 // Measurement only: one entry per Fragment, with the session that produced it.
 let fragLog = [];
@@ -150,8 +159,8 @@ async function alignToPacket(url, byte, size) {
 
 /** Session.push on this thread, behind the same promise API as WorkerSession. */
 class MainSession {
-  constructor(originTicks, audioPid) {
-    this.inner = new Session(undefined, originTicks);
+  constructor(originTicks, audioPid, openGopRecovery) {
+    this.inner = new Session(undefined, originTicks, undefined, undefined, undefined, undefined, openGopRecovery);
     if (audioPid != null) this.inner.selectAudio(audioPid);
   }
   get originTicks() {
@@ -203,13 +212,13 @@ function ensureWorker(convert, pool) {
 
 /** The Session in session-worker.js. Counters are the ones the last reply carried. */
 class WorkerSession {
-  constructor(seq, originTicks, audioPid) {
+  constructor(seq, originTicks, audioPid, openGopRecovery) {
     this.seq = seq;
     this.originTicks = originTicks;
     this.dropped = 0;
     this.scrambled = 0;
     this.errors = 0;
-    worker.w.postMessage({ type: "new", seq, originTicks: originTicks ?? null, audioPid: audioPid ?? null });
+    worker.w.postMessage({ type: "new", seq, originTicks: originTicks ?? null, audioPid: audioPid ?? null, openGopRecovery });
   }
   #ask(message, transfer) {
     return new Promise((resolve, reject) => {
@@ -236,8 +245,9 @@ function makeSession(url, audioPid) {
   activeSeq = ++sessionSeq;
   // Only the first session of a URL reports an origin; later ones pass it in.
   const convert = current?.opts.convert ?? "main";
-  if (convert === "main") return new MainSession(origins.get(url), audioPid);
-  return new WorkerSession(activeSeq, origins.get(url), audioPid);
+  const gop = current?.opts.openGopRecovery;
+  if (convert === "main") return new MainSession(origins.get(url), audioPid, gop);
+  return new WorkerSession(activeSeq, origins.get(url), audioPid, gop);
 }
 
 function noteOrigin(url, sess) {
@@ -354,6 +364,13 @@ async function waitForRoom(g) {
     await sleep(250);
   }
   return false;
+}
+
+/** Play once START_AHEAD_SECONDS are buffered (or the stream has ended). */
+async function playWhenBuffered(g) {
+  while (g === gen && bufferedAhead() < START_AHEAD_SECONDS && ms?.readyState === "open") await sleep(50);
+  if (g !== gen) return;
+  await video.play().catch((error) => log("play-rejected", { message: String(error.message ?? error) }));
 }
 
 function placeAtMedia() {
@@ -545,12 +562,12 @@ function teardown() {
   initTimescales = new Map();
 }
 
-async function initYadif() {
+async function initYadif(doubleRate) {
   const mod = await import("./dist/yadif/index.js");
-  deinterlacer = new mod.Deinterlacer(video);
+  deinterlacer = new mod.Deinterlacer(video, { doubleRate, onStats: (stats) => (yadifStats = stats) });
   deinterlacer.start();
   deinterlacer.enabled = true;
-  log("yadif", { on: true });
+  log("yadif", { on: true, doubleRate });
 }
 
 async function open(url, opts = {}) {
@@ -566,7 +583,7 @@ async function open(url, opts = {}) {
   objectUrl = URL.createObjectURL(ms);
   video.src = objectUrl;
   await opened;
-  if (opts.yadif && !deinterlacer) await initYadif();
+  if ((opts.yadif || opts.yadifDouble) && !deinterlacer) await initYadif(Boolean(opts.yadifDouble));
   if ((opts.convert ?? "main") !== "main") {
     const ready = await ensureWorker(opts.convert, opts.pool ?? 3).ready;
     log("worker", { convert: opts.convert, pool: ready.pool });
@@ -581,7 +598,7 @@ async function open(url, opts = {}) {
   feed(g, url, size, session, 0, growing); // deliberately not awaited
   const timer = setTimeout(() => fail(new Error("no media fragment within timeout"), "timeout"), FIRST_MEDIA_TIMEOUT_MS);
   await first.finally(() => clearTimeout(timer));
-  video.play().catch((error) => log("play-rejected", { message: String(error.message ?? error) }));
+  await playWhenBuffered(g);
   return { size, firstMediaMs: Math.round(performance.now() - started), originTicks: origins.get(url) ?? null };
 }
 
@@ -602,6 +619,8 @@ async function seek(sec) {
   if (sb && sb.buffered.length) await removeRange(0, Infinity);
   randomAccessPoints = [];
   if (g !== gen) return { superseded: true };
+  const resume = !video.paused;
+  video.pause();
   video.currentTime = sec;
   session = makeSession(url, current.opts.audioPid);
   placing = true;
@@ -616,6 +635,7 @@ async function seek(sec) {
   seeks.push(record);
   log("seek", { target: sec, byte, probes: found.probes.length });
   feed(g, url, size, session, byte, growing); // not awaited
+  if (resume) playWhenBuffered(g); // not awaited
   return record;
 }
 
@@ -662,9 +682,36 @@ function state() {
     convertMs: Math.round(convertMs),
     convert: current?.opts.convert ?? "main",
     seeks: seeks.slice(-5),
-    yadif: deinterlacer ? { enabled: deinterlacer.enabled, running: deinterlacer.running } : null,
+    yadif: deinterlacer ? { enabled: deinterlacer.enabled, running: deinterlacer.running, doubleRate: deinterlacer.doubleRate, stats: yadifStats } : null,
   };
 }
+
+// Measurement only. droppedVideoFrames also counts samples that are not
+// content (the IDR and its clone that "idr" recovery inserts), so count the
+// content frames that never reached the screen instead: consecutive rVFC
+// mediaTimes more than one frame apart. Valid while presented == callbacks
+// (no callback was skipped); a seek inside the window shows up as a gap.
+const FRAME_SECONDS = 1001 / 30000;
+let frameWatch = null;
+function watchFrames() {
+  const w = { callbacks: 0, firstPresented: null, presented: 0, last: null, missing: 0, gaps: [] };
+  frameWatch = w;
+  const tick = (_now, meta) => {
+    if (frameWatch !== w) return;
+    w.callbacks++;
+    w.firstPresented ??= meta.presentedFrames;
+    w.presented = meta.presentedFrames - w.firstPresented + 1;
+    const skipped = w.last == null ? 0 : Math.round((meta.mediaTime - w.last) / FRAME_SECONDS) - 1;
+    if (skipped > 0) {
+      w.missing += skipped;
+      if (w.gaps.length < 100) w.gaps.push({ at: round(meta.mediaTime), skipped });
+    }
+    w.last = meta.mediaTime;
+    video.requestVideoFrameCallback(tick);
+  };
+  video.requestVideoFrameCallback(tick);
+}
+const frames = () => (frameWatch ? { callbacks: frameWatch.callbacks, presented: frameWatch.presented, missing: frameWatch.missing, gaps: frameWatch.gaps } : null);
 
 /** PNG of the presented frame. mediaTime is the frame's own time, from rVFC. */
 function capture(w = 320, h = 180) {
@@ -704,6 +751,8 @@ window.poc = {
   play: () => video.play().then(() => true, (error) => String(error.message ?? error)),
   state,
   capture,
+  watchFrames,
+  frames,
   events,
   clock0: t0, // performance.now() origin of events[].t
   get fragLog() {
