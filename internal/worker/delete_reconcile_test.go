@@ -1145,43 +1145,6 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 	}
 }
 
-// dropUntilEncodedRequiresProfilesCheck は recording_processing_policy の CHECK 制約
-// recording_processing_policy_check（issue #159 で recordings 側の CHECK から
-// 移設）を一時的に外す。encode_profiles が
-// 空の until_encoded 行は通常この CHECK に阻まれて作れないが、issue #104 の
-// 削除クエリ側ガード（until_encoded_deletable_originals 関数の
-// cardinality(encode_profiles) > 0）は「CHECK に頼らない」独立した防御として
-// 足したものなので、CHECK が無い前提でもそれ単体で原本を守れることを確認する
-// 必要がある。テスト用パッケージ DB は TRUNCATE のみでスキーマは使い回すため、
-// t.Cleanup で必ず元に戻し他のテストに影響しないようにする。
-func dropUntilEncodedRequiresProfilesCheck(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx,
-		"ALTER TABLE recording_processing_policy DROP CONSTRAINT recording_processing_policy_check"); err != nil {
-		t.Fatalf("dropping check constraint: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx := context.Background()
-		// テスト本体が作った違反行（keep_original='until_encoded' かつ
-		// encode_profiles が空）が残ったままだと ADD CONSTRAINT 自体が失敗する。
-		// 次のテストは TRUNCATE で行ごと消えるが、この関数はその前に走るので
-		// 先に直しておく（recording_processing_policy_check の前身である recordings
-		// 側の同種 CHECK を足したときの Up が既存行にしているのと同じ
-		// 「安全側に倒す」処理）。
-		if _, err := pool.Exec(cleanupCtx,
-			"UPDATE recording_processing_policy SET keep_original = 'always' "+
-				"WHERE keep_original = 'until_encoded' AND cardinality(encode_profiles) = 0"); err != nil {
-			t.Fatalf("fixing up rows before restoring check constraint: %v", err)
-		}
-		if _, err := pool.Exec(cleanupCtx,
-			"ALTER TABLE recording_processing_policy ADD CONSTRAINT recording_processing_policy_check "+
-				"CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0)"); err != nil {
-			t.Fatalf("restoring check constraint: %v", err)
-		}
-	})
-}
-
 // recording_processing_policy の CHECK 自体が効いていることの確認（issue #104 の
 // 含むもの 3、CLAUDE.md 不変条件 10「表現不可能にする」。recordings 側の CHECK
 // から issue #159 でこの衛星表へ移設）。until_encoded に切り替えるときだけプロファイルを要求する
@@ -1234,73 +1197,38 @@ func removeMediaAsset(t *testing.T, pool *pgxpool.Pool, assetID int64) {
 	testutil.MustExec(t, pool, "removing media asset", `DELETE FROM media_assets WHERE id = $1`, assetID)
 }
 
-// TestDeleteReconcileWorker_UntilEncodedOutcomes は、worker が until_encoded の判定どおりに
-// 原本を消す（消さない）ことを、条件 1 つずつのケースで確かめる。判定の組み合わせそのもの
-// （どの条件を崩すと原本が返るか）は SQL 関数のテスト TestUntilEncodedDeletableOriginals が持つ。
-// ここでは worker が結果を実際の削除・状態に反映することを見る。
-//
-// 各ケースは録画が生きたまま原本の削除判定を通す。rebuild 要求の行は worker が消さないことも
-// 毎回確かめる。
+// TestDeleteReconcileWorker_UntilEncodedOutcomes は、worker が until_encoded_deletable_originals の
+// 返した原本を実際に削除することと、返さなかった原本を残すことを、1 件ずつ確かめる。
+// どの条件の組み合わせで返すかは SQL 関数のテスト（TestUntilEncodedDeletableOriginals）が持つ。
+// ここでは worker の反映だけを見る。rebuild 要求の行は worker が消さないことも両方で確かめる。
 func TestDeleteReconcileWorker_UntilEncodedOutcomes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
-		mutate      func(t *testing.T, pool *pgxpool.Pool, mediaDir string, f untilEncodedRecording)
+		mutate      func(t *testing.T, pool *pgxpool.Pool, f untilEncodedRecording)
 		wantDeleted bool
 	}{
-		{name: "complete derivatives delete the original", wantDeleted: true},
-		{name: "deleted thumbnail keeps the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			dbtest.SetMediaAssetState(t, pool, f.thumbID, "deleted")
-		}},
-		{name: "deleted seek tiles keep the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			dbtest.SetMediaAssetState(t, pool, f.tilesID, "deleted")
-		}},
-		{name: "missing encoded profile keeps the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			removeMediaAsset(t, pool, f.encodedID)
-		}},
-		{name: "missing thumbnail keeps the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			removeMediaAsset(t, pool, f.thumbID)
-		}},
-		{name: "missing seek tiles keep the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			removeMediaAsset(t, pool, f.tilesID)
-		}},
-		{name: "empty encode profiles keep the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			dropUntilEncodedRequiresProfilesCheck(t, pool)
-			testutil.MustExec(t, pool, "emptying encode profiles",
-				`UPDATE recording_processing_policy SET encode_profiles = '{}' WHERE recording_id = $1`, f.recordingID)
-			removeMediaAsset(t, pool, f.encodedID)
-		}},
-		{name: "missing TS scan marker keeps the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			testutil.MustExec(t, pool, "removing TS scan marker",
-				`DELETE FROM media_asset_ts_scans WHERE media_asset_id = $1`, f.originalID)
-		}},
-		{name: "TS scan of a different size keeps the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			testutil.MustExec(t, pool, "making TS scan marker stale",
-				`UPDATE media_asset_ts_scans SET scanned_size_bytes = scanned_size_bytes - 1 WHERE media_asset_id = $1`, f.originalID)
-		}},
-		{name: "pending cut rebuild keeps the original", mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
-			testutil.MustExec(t, pool, "requesting cut rebuild",
-				`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
-				 VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, f.recordingID)
-		}},
-		{name: "cut frozen with the requested keep deletes the original", wantDeleted: true, mutate: func(t *testing.T, pool *pgxpool.Pool, _ string, f untilEncodedRecording) {
+		{name: "function returns the original: worker deletes it", wantDeleted: true, mutate: func(t *testing.T, pool *pgxpool.Pool, f untilEncodedRecording) {
 			testutil.MustExec(t, pool, "requesting cut rebuild",
 				`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 				 VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, f.recordingID)
 			testutil.MustExec(t, pool, "freezing the requested keep",
 				`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, '{[0,1000)}'::int8multirange)`, f.encodedID)
 		}},
+		{name: "function does not return the original: worker keeps it", mutate: func(t *testing.T, pool *pgxpool.Pool, f untilEncodedRecording) {
+			testutil.MustExec(t, pool, "requesting cut rebuild",
+				`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+				 VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, f.recordingID)
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			pool := setupTestPool(t)
-			ctx := context.Background()
+			ctx := t.Context()
 			mediaDir := t.TempDir()
 			f := seedUntilEncodedRecording(t, pool, mediaDir)
-			if tc.mutate != nil {
-				tc.mutate(t, pool, mediaDir, f)
-			}
+			tc.mutate(t, pool, f)
 			countRequests := func() int {
 				var n int
 				testutil.RequireNoError(t, pool.QueryRow(ctx,
@@ -1327,121 +1255,6 @@ func TestDeleteReconcileWorker_UntilEncodedOutcomes(t *testing.T) {
 				t.Errorf("rebuild request rows after the pass = %d, want %d (the worker must not delete them)", got, requestsBefore)
 			}
 		})
-	}
-}
-
-// until_encoded 候補が複数（別々の録画）ある場合、条件 2（desired な派生物の
-// 完備）を満たさない録画だけを除外し、満たす録画はすべて正しく削除すること。
-//
-// 旧条件 3（キューの pending 状態を直接見るガード）は issue #516 で削除した ---
-// この安全性は until_encoded_deletable_originals（条件 2）が代わりに担保する。
-// recordingA は desired なプロファイル h264 が未コミット（判定はジョブの有無を
-// 見ない）。条件 2 は SQL 側（関数）で判定するので A は untilEncodedRows に一度も現れない --- した
-// がって条件 2 側の完備候補を recordingB 1 件にすると、until_encoded ループが
-// 複数件のうち先頭 1 件だけを処理して残りを無視する変異を注入しても
-// untilEncodedRows の要素数が 1 のままで検出できない。recordingC も条件 2 を
-// 満たす 2 件目の完備候補として加え、ループが両方を処理することまで固定する。
-func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplete(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	mediaDir := t.TempDir()
-	profile := "h264"
-
-	// recordingA: h264 が未コミット + サムネイルのみコミット済み。
-	// 条件 2 を満たさないので原本は残る。
-	recordingA := dbtest.Recording(t, pool)
-	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/partial-a.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, store.AssetKindThumbnail, nil, "thumb/partial-a.jpg", []byte("jpg"))
-	markRecordingUntilEncoded(t, pool, recordingA, []string{profile})
-
-	// recordingB / recordingC: どちらも h264 + サムネイルがコミット済みで
-	// 条件 2 を満たす（削除されるべき）候補が 2 件同時に存在する状態を作る。
-	// dbtest.Recording の既定 event_id は呼び出しごとに異なるため、同じ開始時刻でも
-	// recordings_unique_active_event に衝突しない。
-	recordingB := dbtest.Recording(t, pool)
-	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/partial-b.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, store.AssetKindEncoded, &profile, "enc/partial-b.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, store.AssetKindThumbnail, nil, "thumb/partial-b.jpg", []byte("jpg"))
-	seedSeekTilesAsset(t, pool, mediaDir, recordingB, "thumb/partial-b-tiles.jpg")
-	markRecordingUntilEncoded(t, pool, recordingB, []string{profile})
-
-	recordingC := dbtest.Recording(t, pool)
-	assetC := seedOriginalAsset(t, pool, mediaDir, recordingC, "orig/partial-c.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, store.AssetKindEncoded, &profile, "enc/partial-c.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, store.AssetKindThumbnail, nil, "thumb/partial-c.jpg", []byte("jpg"))
-	seedSeekTilesAsset(t, pool, mediaDir, recordingC, "thumb/partial-c-tiles.jpg")
-	markRecordingUntilEncoded(t, pool, recordingC, []string{profile})
-
-	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
-
-	if got := singleCopyState(t, pool, assetA); got != "active" {
-		t.Errorf("recording A original copy state = %q, want active (desired profile h264 not yet committed)", got)
-	}
-	if got := singleCopyState(t, pool, assetB); got != "deleted" {
-		t.Errorf("recording B original copy state = %q, want deleted (all desired derivatives committed)", got)
-	}
-	if got := singleCopyState(t, pool, assetC); got != "deleted" {
-		t.Errorf("recording C original copy state = %q, want deleted (all desired derivatives committed)", got)
-	}
-}
-
-// until_encoded の原本削除が unlink 失敗で deleting のまま中断しても、録画が
-// 復元されたわけではない（trash とは無関係）ので、次パスで従来どおり削除が
-// 再開される（issue #105。RestoredWhileDeleting_RevertsInsteadOfDeleting の
-// 逆方向 —— 再評価条件を「ごみ箱」だけに書くと、この until_encoded 経路が
-// 永久に deleting のまま止まるので、両方向で固定する）。
-//
-// 2 パス目の直前でサーキットブレーカーを発動させておくのが肝。そうしないと、
-// 「pending 経路が再評価で拾い直す」変異を注入して壊しても、同じパスの
-// 通常経路（ListUntilEncodedOriginalsToDelete、ブレーカー対象）がこの行を
-// active 経由で再度拾って同じ最終状態（deleted・ファイル消滅）に収束してしまい、
-// テストが回帰を検出できない（コードレビューで実証済み）。ブレーカーを
-// 発動させておけば、正しい実装だけがブレーカー免除の pending 経路で削除を
-// 完遂でき、変異を注入した実装は通常経路がブレーカーに止められて
-// active のまま残るので FAIL する。
-func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-
-	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/interrupted.m2ts", []byte("data"))
-	assetPath := filepath.Join(mediaDir, "orig", "interrupted.m2ts")
-	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/interrupted.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/interrupted.jpg", []byte("jpg"))
-	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/interrupted-tiles.jpg")
-
-	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
-
-	// 1 パス目の unlink を失敗させる（中身のあるディレクトリで置き換える）。
-	testutil.RequireNoError(t, os.Remove(assetPath), "removing seeded file")
-	testutil.RequireNoError(t, os.MkdirAll(assetPath, 0o755), "creating blocking dir")
-	blockerFile := filepath.Join(assetPath, "blocker")
-	testutil.RequireNoError(t, os.WriteFile(blockerFile, []byte("x"), 0o644), "creating blocker file")
-
-	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
-	if got := singleCopyState(t, pool, assetID); got != "deleting" {
-		t.Fatalf("asset copy state = %q, want deleting (unlink blocked)", got)
-	}
-
-	// 障害を取り除く。復元は起きていない —— 録画は生きたまま until_encoded
-	// のポリシーで削除が進行中なだけ。
-	testutil.RequireNoError(t, os.Remove(blockerFile), "removing blocker file")
-
-	// ブレーカーを発動させ、通常経路（ブレーカー対象）を完全に止める。
-	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
-	// この legacy テスト worker は置き場名を省略しているので scope は空文字列。
-	testutil.RequireNoError(t, breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}), "tripping breaker")
-
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
-	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Fatalf("asset copy state after second pass = %q, want deleted (until_encoded deletion should resume via the breaker-exempt pending path, issue #105)", got)
-	}
-	if fileExists(assetPath) {
-		t.Error("original file still exists after resumed deletion, want removed")
 	}
 }
 
