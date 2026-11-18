@@ -197,7 +197,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 置き場の観測は、root ごとの鮮度と置き場ごとの容量で読む。
 
-置き場の鮮度は `rokuban_storage_root_observed_timestamp_seconds{store,root}` を `min by (store)` で読む。置き場の中で最も古い root を見るには、`time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾値` と書く。式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)。どの root が止まっているかは、root ラベルの系列で確かめる。
+置き場の鮮度は、置き場の中で最も古い root の観測時刻で読む。`time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾値` と書く。1 つの root が止まると置き場の最小値は進まなくなり、前の同期ゲージと同じ性質になる。式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)。どの root が止まっているかは、root ラベルの系列で確かめる。
 
 容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。
 

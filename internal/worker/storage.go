@@ -114,9 +114,9 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 	// 取り残されたラベルは「凍結した容量ゲージ」になり、Pod を再起動するまで
 	// 古い容量を示し続ける。
 	//
-	// 置き場単位の系列は掃除しない。置き場の集合は --stores でプロセスの寿命の間
-	// 固定されていて、再起動すると Prometheus のレジストリは空から始まるので、
-	// 担当しなくなった置き場の系列はプロセス内に残らない。
+	// 担当しなくなった置き場の store ラベルは掃除しない。置き場の集合は --stores で
+	// プロセスの寿命の間固定されていて、再起動すると Prometheus のレジストリは空から
+	// 始まるので、そうした store のラベルはプロセス内に残らない。
 	for _, r := range allRoots {
 		if slices.Contains(desired, r.name) {
 			continue
@@ -133,11 +133,11 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 		if err != nil {
 			// 1 root の statfs 失敗でパス全体を失敗させない --- media と scratch は
 			// 別々のマウントであることが多く、片方の一時的な不調（アンマウント等）
-			// でもう片方の観測まで止める理由がない。前回の観測行・
-			// バイト数ゲージはそのまま残す（更新しない）。observed_at だけが
-			// 「観測が止まっている」ことを伝える手がかりになる（M7-6 で UI がこの鮮度を出せるように
-			// なる想定。metrics.TunerSyncLastSuccess と同じ「警告が出ないことは保証ではない」
-			// 姿勢）。
+			// でもう片方の観測まで止める理由がない。前回の観測行・バイト数ゲージは
+			// そのまま残す（更新しない）。observed_at だけが「観測が止まっている」
+			// ことを伝える手がかりになる（M7-6 で UI がこの鮮度を出せるようになる
+			// 想定。metrics.TunerSyncLastSuccess と同じ「警告が出ないことは保証では
+			// ない」姿勢）。
 			slog.Warn("storage sync: statfs failed, keeping previous observation",
 				"store", storeName, "root", r.name, "path", r.path, "err", err)
 			continue
