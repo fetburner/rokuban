@@ -28,6 +28,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func int64ptr(value int64) *int64 { return &value }
@@ -89,9 +90,7 @@ func TestCutEncode_RealFFmpeg_LengthAndAVSync(t *testing.T) {
 	}
 
 	filter, err := ffargs.CutFilterComplex(keep, 0, 1, ffargs.ScalerSoftware, 0, false, false)
-	if err != nil {
-		t.Fatalf("CutFilterComplex: %v", err)
-	}
+	testutil.RequireNoError(t, err, "CutFilterComplex")
 	args := BuildFFmpegArgs(cutFFmpegProfile(), src, out, false, &filter)
 	enc := exec.CommandContext(context.Background(), ffmpeg, args...)
 	enc.Env = append(os.Environ(), "PATH="+filepath.Dir(ffmpeg)+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -278,9 +277,7 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 				t.Fatalf("plan = {skip:%v generation:%d}, want generation %d", plan.skip, plan.generation, tc.want)
 			}
 			got, err := EncodedRelPath("20240101/a.m2ts", tc.input.Profile, "mp4", int(plan.generation), tc.input.Cut)
-			if err != nil {
-				t.Fatalf("EncodedRelPath: %v", err)
-			}
+			testutil.RequireNoError(t, err, "EncodedRelPath")
 			if got != tc.wantRelPath {
 				t.Errorf("EncodedRelPath = %q, want %q", got, tc.wantRelPath)
 			}
@@ -294,24 +291,18 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 func TestEncodedRelPath_Generation(t *testing.T) {
 	t.Parallel()
 	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1, true)
-	if err != nil {
-		t.Fatalf("EncodedRelPath: %v", err)
-	}
+	testutil.RequireNoError(t, err, "EncodedRelPath")
 	if want := "20240101/a_cut.g1.mp4"; got != want {
 		t.Errorf("EncodedRelPath = %q, want %q", got, want)
 	}
 	got2, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 2, true)
-	if err != nil {
-		t.Fatalf("EncodedRelPath: %v", err)
-	}
+	testutil.RequireNoError(t, err, "EncodedRelPath")
 	if got2 == got {
 		t.Errorf("generation 2 produced the same path as generation 1 (%q)", got2)
 	}
 	// generation 0 は従来のパス（cut でないプロファイル）。
 	plain, err := EncodedRelPath("20240101/a.m2ts", "h264", "mp4", 0, false)
-	if err != nil {
-		t.Fatalf("EncodedRelPath: %v", err)
-	}
+	testutil.RequireNoError(t, err, "EncodedRelPath")
 	if want := "20240101/a_h264.mp4"; plain != want {
 		t.Errorf("EncodedRelPath(generation 0) = %q, want %q", plain, want)
 	}
@@ -393,9 +384,7 @@ func TestBuildFFmpegArgs_CutHWDecodeUsesPreInput(t *testing.T) {
 func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
 	t.Parallel()
 	ffprobe := filepath.Join(t.TempDir(), "ffprobe")
-	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '0,video,1440,1080,\\n1,audio,,,2\\n'\n"), 0o755); err != nil {
-		t.Fatalf("write fake ffprobe: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '0,video,1440,1080,\\n1,audio,,,2\\n'\n"), 0o755), "write fake ffprobe")
 	w := &EncodeWorker{FFprobe: ffprobe}
 	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	cases := []struct {
@@ -425,9 +414,7 @@ func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			filter, err := w.buildCutFilter(context.Background(), c.profile, "/in.m2ts", keep)
-			if err != nil {
-				t.Fatalf("buildCutFilter: %v", err)
-			}
+			testutil.RequireNoError(t, err, "buildCutFilter")
 			if !strings.Contains(filter.FilterComplex, c.wantChain) {
 				t.Errorf("filter chain = %s, want %s", filter.FilterComplex, c.wantChain)
 			}
@@ -473,9 +460,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 	// 番組の尺を素材に合わせる（Derive のタイムラインの終端は
 	// program_duration_ms と既知の区間の終端の大きい方）。
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 2000 WHERE id = $1`, recordingID); err != nil {
-		t.Fatalf("setting program duration: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting program duration", `UPDATE recordings SET program_duration_ms = 2000 WHERE id = $1`, recordingID)
 
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
@@ -493,10 +478,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	// 所有の行を作る（cut は確認済みを前提にする）。
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatalf("adopting chapters: %v", err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
 	// keep 区間 = 0..1 秒 と 1.5..2 秒（1 秒ぶんを切る）。境界は Derive の量子化を
 	// 通るので、期待値も同じ関数で作る（リテラルで書くと粒度を変えたときに
 	// テストの意味が変わる）。
@@ -504,15 +486,9 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 		{StartMs: 0, EndMs: chapters.QuantizeMs(1000)},
 		{StartMs: chapters.QuantizeMs(1500), EndMs: 2000},
 	}
-	for _, s := range []chapters.Span{
-		{StartMs: 1000, EndMs: 1500, Label: "CM", Cut: true},
-	} {
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO recording_chapter_spans (recording_id, span, label, cut)
-			 VALUES ($1, int8range($2, $3), $4, $5)`, recordingID, s.StartMs, s.EndMs, s.Label, s.Cut); err != nil {
-			t.Fatalf("seeding chapter span: %v", err)
-		}
-	}
+	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) {
+		p.StartMs, p.EndMs = 1000, 1500
+	})
 
 	// 旧世代のパスにファイルと行を置く（置き換えの前状態）。
 	oldRel := "cut/replace_cut.g1.mp4"
@@ -521,28 +497,20 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", oldRel)
-	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 2000}}); err != nil {
-		t.Fatalf("setFrozenCuts: %v", err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 2000}}), "setFrozenCuts")
 
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestedKeep
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work")
 
 	profileName := "cut"
 	row, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID, Profile: &profileName,
 	})
-	if err != nil {
-		t.Fatalf("loading encoded row: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading encoded row")
 	var relPath string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM active_media_asset_copies($1, NULL)`, row.ID).Scan(&relPath); err != nil {
-		t.Fatalf("loading the current copy: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT rel_path FROM active_media_asset_copies($1, NULL)`, row.ID).Scan(&relPath), "loading the current copy")
 	if relPath != "cut/replace_cut.g2.mp4" || row.DerivedGeneration != 2 {
 		t.Errorf("current copy = %q generation %d, want cut/replace_cut.g2.mp4 generation 2", relPath, row.DerivedGeneration)
 	}
@@ -555,23 +523,17 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 	// 凍結した区間も差し替わる。
 	current, err := frozenKeepRanges(ctx, pool, recordingID, "cut")
-	if err != nil {
-		t.Fatalf("frozenKeepRanges: %v", err)
-	}
+	testutil.RequireNoError(t, err, "frozenKeepRanges")
 	if !slices.Equal(current, keep) {
 		t.Errorf("media_asset_cuts ranges = %v, want %v", current, keep)
 	}
 
 	// 2 回目は冪等にスキップする（凍結区間が一致しているので作り直さない）。
-	if err := runWorkerViaJobQFake(ctx, w, newCutEncodeJob(recordingID)); err != nil {
-		t.Fatalf("second Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, newCutEncodeJob(recordingID)), "second Work")
 	again, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID, Profile: &profileName,
 	})
-	if err != nil {
-		t.Fatalf("loading encoded row: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading encoded row")
 	if again.DerivedGeneration != row.DerivedGeneration {
 		t.Errorf("a no-op re-run advanced the generation: %d -> %d", row.DerivedGeneration, again.DerivedGeneration)
 	}
@@ -592,9 +554,7 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 		SizeBytes:         1,
 		DerivedGeneration: generation,
 	})
-	if err != nil {
-		t.Fatalf("seeding encoded media_asset: %v", err)
-	}
+	testutil.RequireNoError(t, err, "seeding encoded media_asset")
 	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath,
 		Generation: generation, State: "active",
@@ -642,21 +602,17 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	}
 	ctx := context.Background()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/unrequested-replacement.m2ts", []string{"cut"}, []byte("original"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatalf("adopting chapters: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(400000, 800000), 'CM', true)`, recordingID); err != nil {
-		t.Fatalf("seeding current chapter span: %v", err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) {
+		p.StartMs, p.EndMs = 400000, 800000
+	})
 	currentKeep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(currentKeep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", currentKeep, owned, err)
 	}
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/stale_cut.mp4")
 	oldKeep := []chapters.Range{{StartMs: 0, EndMs: 200000}, {StartMs: 300000, EndMs: 1800000}}
-	if err := setFrozenCuts(t, pool, assetID, oldKeep); err != nil {
-		t.Fatalf("seeding frozen cut ranges: %v", err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, oldKeep), "seeding frozen cut ranges")
 	if _, err := sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
 		RecordingID: recordingID,
 		Profile:     "cut",
@@ -665,9 +621,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	}
 
 	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", &cutContext{keep: currentKeep})
-	if err != nil {
-		t.Fatalf("observing stale encoded asset: %v", err)
-	}
+	testutil.RequireNoError(t, err, "observing stale encoded asset")
 	if !observed.skip || observed.skipReason != store.EncodedPublishSkipActiveCutProtected {
 		t.Fatalf("observed plan = %+v, want an ordinary cut to skip an active asset", observed)
 	}
@@ -683,9 +637,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 		Cut:                true,
 		KeepRanges:         currentKeep,
 	}, func() error { publishedCalls++; return nil })
-	if err != nil {
-		t.Fatalf("publishing ordinary cut encode: %v", err)
-	}
+	testutil.RequireNoError(t, err, "publishing ordinary cut encode")
 	if published || publishedCalls != 0 {
 		t.Fatalf("publish = %v callback calls = %d; active cut must not be replaced without a rebuild request", published, publishedCalls)
 	}
@@ -701,9 +653,7 @@ func seedEncodedAssetRebuildRequest(t *testing.T, pool *pgxpool.Pool, recordingI
 		t.Fatalf("seeding encoded asset rebuild request: %v", err)
 	}
 	requestedKeep, err := json.Marshal(keep)
-	if err != nil {
-		t.Fatalf("encoding rebuild keep ranges: %v", err)
-	}
+	testutil.RequireNoError(t, err, "encoding rebuild keep ranges")
 	return requestedKeep
 }
 
@@ -734,21 +684,14 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/noop.m2ts", []string{"cut"}, []byte("original"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID)
 	keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/noop_cut.mp4")
-	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
-		t.Fatalf("freezing current keep ranges: %v", err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, keep), "freezing current keep ranges")
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
@@ -766,9 +709,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestedKeep
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work")
 	if !rebuildRequestExists(t, pool, recordingID) {
 		t.Fatal("satisfied rebuild request is missing; want it kept (only api removes it)")
 	}
@@ -797,9 +738,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/gone.m2ts", []string{"cut"}, []byte("original"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
 	keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
@@ -849,21 +788,14 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 	}
 	ctx := context.Background()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/edited.m2ts", []string{"cut"}, []byte("original"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID)
 	requestedKeep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(requestedKeep) == 0 {
 		t.Fatalf("initial currentCutKeep = %v, owned %v, err %v", requestedKeep, owned, err)
 	}
 	requestJSON := seedEncodedAssetRebuildRequest(t, pool, recordingID, requestedKeep)
-	if _, err := pool.Exec(ctx, `UPDATE recording_chapter_spans SET span = int8range(500000, 900000) WHERE recording_id = $1`, recordingID); err != nil {
-		t.Fatalf("editing chapters after request: %v", err)
-	}
+	testutil.MustExec(t, pool, "editing chapters after request", `UPDATE recording_chapter_spans SET span = int8range(500000, 900000) WHERE recording_id = $1`, recordingID)
 	currentKeep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || chapters.SameRanges(currentKeep, requestedKeep) {
 		t.Fatalf("edited currentKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
@@ -897,7 +829,6 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cut/review.m2ts",
 		[]string{"cut", "h264"}, []byte("payload"))
@@ -914,10 +845,7 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	}
 
 	// 確認した: cut も投入される。
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatalf("adopting chapters: %v", err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
 	enqueuer.Reset()
 	runEncodeReconcilePass(t, w)
 	if got := pendingEncodeProfiles(t, enqueuer, recordingID); !slices.Equal(got, []string{"cut", "h264"}) {
@@ -937,29 +865,18 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cut/add-profile-stale.m2ts",
 		[]string{"cut", "h264"}, []byte("payload"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatalf("adopting chapters: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
-		t.Fatalf("inserting initial chapter span: %v", err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID)
 	cutAssetID := seedEncodedAsset(t, pool, recordingID, "cut", "cut/add-profile_stale_cut.g1.mp4")
 	frozen, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("deriving initial keep ranges: %v", err)
-	}
-	if err := setFrozenCuts(t, pool, cutAssetID, frozen); err != nil {
-		t.Fatalf("seeding frozen ranges: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(1200000, 1300000), 'CM2', true)`, recordingID); err != nil {
-		t.Fatalf("editing chapter spans: %v", err)
-	}
+	testutil.RequireNoError(t, err, "deriving initial keep ranges")
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, cutAssetID, frozen), "seeding frozen ranges")
+	label := "CM2"
+	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) {
+		p.StartMs, p.EndMs, p.Label = 1200000, 1300000, &label
+	})
 	current, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("deriving edited keep ranges: %v", err)
-	}
+	testutil.RequireNoError(t, err, "deriving edited keep ranges")
 	if slices.Equal(frozen, current) {
 		t.Fatal("test setup did not make the active cut asset stale")
 	}
@@ -1046,9 +963,7 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only"}
 	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" {
@@ -1115,9 +1030,7 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"}
 	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
 
 	_, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if len(profiles) != 1 || profiles[0] != "cut" {
@@ -1141,15 +1054,11 @@ func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 1800000 WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
-			t.Fatal(err)
-		}
+		dbtest.AdoptChapters(t, pool, id)
 		for _, s := range spans {
-			if _, err := pool.Exec(ctx,
-				`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range($2, $3), $4, true)`,
-				id, s.StartMs, s.EndMs, "CM"); err != nil {
-				t.Fatal(err)
-			}
+			dbtest.ChapterSpan(t, pool, id, func(p *dbtest.ChapterSpanParams) {
+				p.StartMs, p.EndMs = s.StartMs, s.EndMs
+			})
 		}
 		return id
 	}
@@ -1229,9 +1138,7 @@ func TestCutEncode_RealFFmpeg_AudioLeadsVideo(t *testing.T) {
 		keep[i].EndMs = chapters.QuantizeMs(keep[i].EndMs)
 	}
 	filter, err := ffargs.CutFilterComplex(keep, vIdx, aIdx, ffargs.ScalerSoftware, 0, false, false)
-	if err != nil {
-		t.Fatalf("CutFilterComplex: %v", err)
-	}
+	testutil.RequireNoError(t, err, "CutFilterComplex")
 	args := BuildFFmpegArgs(cutFFmpegProfile(), src, out, false, &filter)
 	enc := exec.Command(ffmpeg, args...)
 	enc.Env = append(os.Environ(), "PATH="+filepath.Dir(ffmpeg)+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1263,9 +1170,7 @@ func TestCutEncode_RealFFmpeg_AudioLeadsVideo(t *testing.T) {
 	// 出力の音声: 最初に振幅が立つサンプルの時刻。
 	araw, err := exec.Command(ffmpeg, "-v", "error", "-i", out, "-map", "0:a:0",
 		"-ac", "1", "-ar", "48000", "-f", "s16le", "-").Output()
-	if err != nil {
-		t.Fatalf("decoding audio: %v", err)
-	}
+	testutil.RequireNoError(t, err, "decoding audio")
 	beep := -1.0
 	for i := 0; i+2 <= len(araw); i += 2 {
 		v := int16(uint16(araw[i]) | uint16(araw[i+1])<<8)
