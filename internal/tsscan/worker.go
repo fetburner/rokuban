@@ -114,7 +114,6 @@ func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
 			[]any{"after_recording_id", continuationAfter},
 			[]any{"row_limit", rowLimit})
 	}
-	metrics.TSScanReconcileLastPass.SetToCurrentTime()
 	if len(rows) > 0 {
 		slog.Info("ts_scan_reconcile: pass complete", "candidates", len(rows),
 			"row_limit", rowLimit, "continuation_after", continuationAfter)

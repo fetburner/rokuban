@@ -15,12 +15,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
@@ -187,21 +185,6 @@ func listIngestEnqueues(t *testing.T, watcher *Watcher) []jobqtestutil.EnqueueCa
 	return enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
 }
 
-func seedSweepLastPassMetric(t *testing.T) float64 {
-	t.Helper()
-	previous := promtestutil.ToFloat64(metrics.SweepLastPass)
-	const sentinel = 12345
-	metrics.SweepLastPass.Set(sentinel)
-	t.Cleanup(func() { metrics.SweepLastPass.Set(previous) })
-	return sentinel
-}
-
-func requireSweepLastPassMetric(t *testing.T, want float64) {
-	t.Helper()
-	if got := promtestutil.ToFloat64(metrics.SweepLastPass); got != want {
-		t.Errorf("SweepLastPass = %v, want unchanged %v", got, want)
-	}
-}
 func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
@@ -476,7 +459,6 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	fake := newWatcherMirakcFake(t, nil, nil, records)
 	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerBefore := seedRecordSweepMarker(t, pool)
-	lastPass := seedSweepLastPassMetric(t)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -499,9 +481,6 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	if !markerAt.After(markerBefore) {
 		t.Errorf("record sweep marker = %s, want a time after %s", markerAt, markerBefore)
 	}
-	if got := promtestutil.ToFloat64(metrics.SweepLastPass); got <= lastPass {
-		t.Errorf("SweepLastPass = %v, want a value after %v", got, lastPass)
-	}
 }
 func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
 	w, pool := setupTest(t)
@@ -521,7 +500,6 @@ func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
 	fake := newWatcherMirakcFake(t, nil, nil, records)
 	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerAt := seedRecordSweepMarker(t, pool)
-	lastPass := seedSweepLastPassMetric(t)
 
 	err := w.Sweep(ctx)
 	if err == nil || !strings.Contains(err.Error(), failingRecordID) {
@@ -539,7 +517,6 @@ func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
 		t.Errorf("DeleteStaleRecordSyncs live IDs = %v, want %v", liveIDs, wantIDs)
 	}
 	requireRecordSweepMarker(t, pool, markerAt)
-	requireSweepLastPassMetric(t, lastPass)
 }
 
 func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
@@ -552,7 +529,6 @@ func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
 	fake.FailNext(http.MethodGet, "/api/recording/schedules", 1, http.StatusInternalServerError)
 	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerAt := seedRecordSweepMarker(t, pool)
-	lastPass := seedSweepLastPassMetric(t)
 
 	err := w.Sweep(ctx)
 	if err == nil || !strings.Contains(err.Error(), "listing schedules") {
@@ -566,7 +542,6 @@ func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
 		t.Errorf("ListRecords calls = %d, want 1 after schedule-list failure", calls)
 	}
 	requireRecordSweepMarker(t, pool, markerAt)
-	requireSweepLastPassMetric(t, lastPass)
 }
 
 func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
@@ -590,7 +565,6 @@ func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
 	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, []mirakc.Record{record})
 	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerAt := seedRecordSweepMarker(t, pool)
-	lastPass := seedSweepLastPassMetric(t)
 
 	err := w.Sweep(ctx)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("program_id %d", failedProgramID)) {
@@ -602,7 +576,6 @@ func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
 		t.Errorf("Sweep store call order = %v, want %v", calls, wantCalls)
 	}
 	requireRecordSweepMarker(t, pool, markerAt)
-	requireSweepLastPassMetric(t, lastPass)
 }
 
 func TestSweep_ConvertsFailedSchedule(t *testing.T) {

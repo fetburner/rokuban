@@ -10,14 +10,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
-	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -97,16 +95,21 @@ func TestScanWorker_SizeMismatchFailsWithoutWriting(t *testing.T) {
 	}
 }
 
-// TestReconcileWorker_RecordsLastPass: a completed pass sets the freshness gauge.
+// TestReconcileWorker_RecordsLastPass: a completed pass saves the ts_scan marker in loop_success_markers.
 func TestReconcileWorker_RecordsLastPass(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	metrics.TSScanReconcileLastPass.Set(0)
+	markers := pgstoretest.Reservations(pool)
+	ctx := context.Background()
 	args := ReconcileArgs{}
-	if err := runWorkerViaJobQFake(context.Background(), (&ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool)}), args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, (&ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool), Markers: markers}), args); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
-	if got := promtestutil.ToFloat64(metrics.TSScanReconcileLastPass); got < float64(time.Now().Add(-time.Minute).Unix()) {
-		t.Errorf("last pass gauge = %v, want a current timestamp", got)
+	saved, err := markers.ReadLoopMarkers(ctx, store.LoopReconcilePass)
+	if err != nil {
+		t.Fatalf("ReadLoopMarkers: %v", err)
+	}
+	if at := saved[store.ReconcilePassTSScan]; at.Before(time.Now().Add(-time.Minute)) {
+		t.Errorf("ts_scan pass marker = %v, want a current time", at)
 	}
 }
 

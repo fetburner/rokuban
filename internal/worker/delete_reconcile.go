@@ -9,7 +9,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -300,7 +299,6 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 		return err
 	}
 	if stop {
-		metrics.DeleteReconcileLastPass.SetToCurrentTime()
 		return w.markDeleteReconcile(ctx, w.MediaStoreName)
 	}
 	w.deleteCandidates(ctx, candidates, orphanMTimeGrace)
@@ -316,7 +314,6 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	}
 	purgedRecordings = purged
 
-	metrics.DeleteReconcileLastPass.SetToCurrentTime()
 	return w.markDeleteReconcile(ctx, w.MediaStoreName)
 }
 

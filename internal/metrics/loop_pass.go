@@ -19,9 +19,8 @@ const loopPassQueryTimeout = 5 * time.Second
 // 読み直す。ScaledJob の --once で処理した後も、常駐プロセスの /metrics から同じ
 // site の成功鮮度を観測できる。
 //
-// RulerLastPass / SweepLastPass は既存のプロセス内ゲージとして互換性のため残す。
-// それらを DB-backed の値で置き換えず、ScaledJob の停止検出にはこの collector が
-// 出す site ラベル付きメトリクスを使う。
+// ScaledJob の停止検出はこの collector が出す site ラベル付きメトリクスを使う。
+// プロセス内の最終パス時刻ゲージは、常駐 Pod でしか読めず値が成功時刻を表さないため持たない。
 type LoopPassCollector struct {
 	markers store.LoopMarkers
 	site    string

@@ -108,15 +108,14 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 	}
 
 	metrics.ThumbnailReconcileCandidates.Set(19)
-	metrics.ThumbnailReconcileLastPass.Set(29)
 	t.Cleanup(func() {
 		metrics.ThumbnailReconcileCandidates.Set(0)
-		metrics.ThumbnailReconcileLastPass.Set(0)
 	})
 	// RowLimit 1 にすると、first の対象パスでは missing と seek_tiles、target の対象パスでは
 	// 再選択と seek_tiles の窓が満杯になる。窓が満杯になる条件でなければ、対象パスが
 	// 継続を積まないことは固定にならない。
-	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), RowLimit: 1}
+	markers := pgstoretest.Reservations(pool)
+	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), RowLimit: 1, Markers: markers}
 
 	runThumbnailReconcilePassArgs(t, w, ThumbnailReconcileArgs{RecordingID: first})
 	for _, tc := range []struct {
@@ -153,8 +152,13 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 	if got := promtestutil.ToFloat64(metrics.ThumbnailReconcileCandidates); got != 19 {
 		t.Errorf("candidate gauge = %v, want unchanged 19", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.ThumbnailReconcileLastPass); got != 29 {
-		t.Errorf("last-pass gauge = %v, want unchanged 29", got)
+	// 対象パスは全件パスの完走（loop_success_markers の thumbnail）を記録しない。
+	saved, err := markers.ReadLoopMarkers(context.Background(), store.LoopReconcilePass)
+	if err != nil {
+		t.Fatalf("ReadLoopMarkers: %v", err)
+	}
+	if at, ok := saved[store.ReconcilePassThumbnail]; ok {
+		t.Errorf("targeted pass recorded a full thumbnail pass at %v, want none", at)
 	}
 }
 

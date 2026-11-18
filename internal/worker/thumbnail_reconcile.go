@@ -154,7 +154,6 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 
 	if recordingID == 0 {
 		metrics.ThumbnailReconcileCandidates.Set(float64(len(rows) + len(reselectRows)))
-		metrics.ThumbnailReconcileLastPass.SetToCurrentTime()
 
 		var nextAfter int64
 		missingWindowFull := !args.MissingDone && int32(len(rows)) >= rowLimit
@@ -199,7 +198,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 				"after_seek_tiles_recording_id", seekTilesAfter)
 		}
 		// シークタイルの一覧を取れなかったパスは、完走として記録しない。取れていれば、
-		// 個々の投入が失敗しても記録する（候補ごとの失敗で止めない、というプロセス内ゲージと同じ扱い）。
+		// 個々の投入が失敗しても記録する（候補ごとの失敗でパスを止めない）。
 		if !seekTilesListed {
 			return nil
 		}

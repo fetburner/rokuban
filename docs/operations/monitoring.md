@@ -72,10 +72,8 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 | `rokuban_thumbnail_jobs_total{result}` | Counter | thumbnail の成功・失敗件数 |
 | `rokuban_seek_tiles_duration_seconds` | Histogram | シークプレビュー用タイル 1 件の所要時間 |
 | `rokuban_seek_tiles_jobs_total{result}` | Counter | シークタイルの成功・失敗件数 |
-| `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail / シークタイルの reconcile の最終完走時刻（プロセス内。ScaledJob では scrape できない） |
 | `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` | Gauge | thumbnail / シークタイルの全件パスの完走時刻を DB から読んだ値（0 は未完走）。ScaledJob でも使える |
 | `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数 |
-| `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻（プロセス内。ScaledJob では scrape できない） |
 | `rokuban_encode_reconcile_last_success_timestamp_seconds` | Gauge | encode reconcile の全件パスの完走時刻を DB から読んだ値（0 は未完走）。ScaledJob でも使える |
 | `rokuban_encode_reconcile_candidates` | Gauge | 直近パスの候補窓に入った、不足プロファイルか満たされていない作り直しがある録画数 |
 | `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 録画単位の現在の desired が現在のプロファイルに無い録画数 |
@@ -130,9 +128,7 @@ ruler と record_sweep は、パスの所要時間と作成・削除の件数を
 | `rokuban_ruler_reservations_total{action}` | Counter | ruler が作成・更新・削除した予約数 |
 | `rokuban_ruler_program_id_reuse_total` | Counter | 番組 ID の再利用を疑った観測件数 |
 | `rokuban_ruler_circuit_breaker_trips_total` | Counter | 大量削除ブレーカーの発動遷移回数 |
-| `rokuban_ruler_last_pass_timestamp_seconds` | Gauge | 最後に成功した ruler パスの時刻 |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` | Gauge（DB） | `ruler_pass` が site 単位で成功した最後の時刻 |
-| `rokuban_sweep_last_pass_timestamp_seconds` | Gauge | 最後に成功した record_sweep パスの時刻 |
 | `rokuban_sweep_last_success_timestamp_seconds{site}` | Gauge（DB） | `record_sweep` が site 単位で成功した最後の時刻 |
 | `rokuban_loop_pass_marker_scrape_errors_total{site}` | Counter（DB） | 成功 marker を scrape できなかった回数 |
 
@@ -162,7 +158,6 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 |---|---|---|
 | `rokuban_delete_reconcile_deleted_total{source}` | Counter | 物理削除したアセット件数 |
 | `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
-| `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻（プロセス内。ScaledJob では scrape できない） |
 | `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | Gauge | 置き場ごとの削除 reconcile の完走時刻を DB から読んだ値（0 は未完走）。ブレーカーで止めたパスも含む。FS の置き場と派生物用の S3 の置き場が対象 |
 | `rokuban_media_assets_missing{kind}` | Gauge | 実体ファイルが無いと確認できた media_asset 数 |
 | `rokuban_orphan_files_unresolved` | Gauge | 登録されないまま残っている canonical file の数 |
@@ -305,7 +300,7 @@ ruler の削除は、ルールに合わなくなったことによるものと�
 
 #### ruler のメトリクス
 
-ruler の停止はパス時刻のゲージで、書き込みの異常は予約数のカウンタで見る。
+ruler の停止は最終成功時刻の系列で、書き込みの異常は予約数のカウンタで見る。
 
 | メトリクス | 説明 |
 |---|---|
@@ -314,10 +309,9 @@ ruler の停止はパス時刻のゲージで、書き込みの異常は予約�
 | `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行の観測件数（読み方は下の節） |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | 1 の間は導出削除が一切走らない（手動再開まで止まるラッチ）。いま止まっているかに答える |
-| `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` | DB に確定した site 単位の最終成功時刻。ScaledJob ではこちらで停止を検出する |
 
-最終パス時刻を使うのは、ゲージが凍る問題への対策である。ブレーカーのゲージは、カウンタと違って「いま止まっているか」に答える。
+最終成功時刻を使うのは、ゲージが凍る問題への対策である。ブレーカーのゲージは、カウンタと違って「いま止まっているか」に答える。
 
 #### 予約の action の値
 
@@ -427,7 +421,6 @@ SHA-256 待ちは、同じ River job を snooze し、結果の 3 値と duratio
 | `rokuban_ts_scan_error_packets_total` | scan 中に観測した transport error の累計 |
 | `rokuban_ts_scan_scrambled_packets_total` | scan 中に観測したスクランブルパケットの累計 |
 | `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | ts_scan reconcile の全件パスの完走時刻を DB から読んだ値（0 は未完走）。投入停止は `time() -` で検出。ScaledJob でも使える |
-| `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` | 同じ完走時刻のプロセス内ゲージ。ScaledJob では scrape できない |
 
 各 scan の成否は、`rokuban_ts_scan_jobs_total` と River のジョブ状態で確認する。
 
