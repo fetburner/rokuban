@@ -15,6 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // tunerFixture は mirakc の /api/tuners のレスポンスを差し替え可能に保持する。
@@ -51,17 +52,13 @@ func newTunerSyncWorker(t *testing.T, pool *pgxpool.Pool, fx *tunerFixture) *Tun
 func runTunerSync(t *testing.T, w *TunerSyncWorker) {
 	t.Helper()
 	job := TunerSyncArgs{Site: testSite}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 }
 
 func allTuners(t *testing.T, pool *pgxpool.Pool) []sqlcgen.TunerSync {
 	t.Helper()
 	rows, err := sqlcgen.New(pool).ListTunerSync(context.Background(), testSite)
-	if err != nil {
-		t.Fatalf("ListTunerSync: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListTunerSync")
 	return rows
 }
 
@@ -129,12 +126,10 @@ func TestTunerSyncWorker_DoesNotProjectRuntimeState(t *testing.T) {
 	}
 	// 実行時状態を保持する列は存在しない（存在したら投影される経路ができてしまう）。
 	var count int
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT count(*) FROM information_schema.columns
 WHERE table_name = 'tuner_sync'
-  AND column_name IN ('users', 'is_free', 'is_using', 'command', 'pid')`).Scan(&count); err != nil {
-		t.Fatalf("querying tuner_sync columns: %v", err)
-	}
+  AND column_name IN ('users', 'is_free', 'is_using', 'command', 'pid')`).Scan(&count), "querying tuner_sync columns")
 	if count != 0 {
 		t.Errorf("tuner_sync has %d runtime-state columns, want 0", count)
 	}
@@ -225,7 +220,6 @@ func TestTunerSyncWorker_SetsCapacityOverageGauge(t *testing.T) {
 	// GR 1 本に対して別チャンネル 2 予約 → 1 区間が超過。
 	// #27 で番組の事実のスナップショットが program_snapshots に抽出され、
 	// reservations への FK が張られたため、予約行より先に program_snapshots を作る。
-	ctx := context.Background()
 	for i, channel := range []string{"27", "25"} {
 		programID := int64(900 + i)
 		dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
@@ -237,11 +231,9 @@ func TestTunerSyncWorker_SetsCapacityOverageGauge(t *testing.T) {
 			p.ServiceID = 5168
 			p.Channel = channel
 		})
-		if _, err := pool.Exec(ctx, `
+		testutil.MustExec(t, pool, "inserting reservation", `
 INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
-			testSite, programID); err != nil {
-			t.Fatalf("inserting reservation: %v", err)
-		}
+			testSite, programID)
 	}
 
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
@@ -322,9 +314,7 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 	}
 
 	rows, err := sqlcgen.New(pool).ListTunerSync(context.Background(), "site-a")
-	if err != nil {
-		t.Fatalf("ListTunerSync: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListTunerSync")
 	if len(rows) != 1 {
 		t.Errorf("tuner_sync rows for site-a = %d, want 1", len(rows))
 	}

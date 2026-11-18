@@ -19,14 +19,10 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 	mediaDir := t.TempDir()
 
 	worker := &CatalogExportWorker{Store: pgstoretest.Catalog(pool, []string{"default"}...), MediaDir: mediaDir}
-	if err := runWorkerViaJobQFake(ctx, worker, CatalogExportArgs{}); err != nil {
-		t.Fatalf("CatalogExportWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, worker, CatalogExportArgs{}), "CatalogExportWorker.Work")
 
 	entries, err := os.ReadDir(catalog.Dir(mediaDir))
-	if err != nil {
-		t.Fatalf("reading catalog dir: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading catalog dir")
 	if len(entries) != 1 {
 		t.Fatalf("catalog entries = %d, want 1", len(entries))
 	}
@@ -43,9 +39,7 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 
 	// JSON が読めて version が載っていること。
 	doc, err := catalog.Load(filepath.Join(genDir, catalog.DocumentFilename))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	testutil.RequireNoError(t, err, "Load")
 	if doc.Version != catalog.Version {
 		t.Errorf("version = %d, want %d", doc.Version, catalog.Version)
 	}

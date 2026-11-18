@@ -42,14 +42,12 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	media := pgstoretest.Media(pool)
 	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "sites/default/new-workers-precheck.m2ts", []byte("x"))
-	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
+	testutil.RequireNoError(t, media.UpsertIngestProgress(context.Background(), store.IngestProgress{
 		RecordingID:    recordingID,
 		WrittenBytes:   32,
 		TempRelPath:    "sites/default/.rokuban-ingest-precheck",
 		TempGeneration: 1,
-	}); err != nil {
-		t.Fatalf("seeding ingest progress: %v", err)
-	}
+	}), "seeding ingest progress")
 
 	fake := mirakctest.New(t)
 	fake.SetRecords([]mirakc.Record{{ID: recordID}})
@@ -66,9 +64,7 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 			IngestStallTimeout: time.Second,
 		}},
 	})
-	if err := registry.Work(context.Background(), jobs.IngestJobArgs{Site: store.DefaultSite, RecordID: recordID}); err != nil {
-		t.Fatalf("registered ingest worker Work(): %v", err)
-	}
+	testutil.RequireNoError(t, registry.Work(context.Background(), jobs.IngestJobArgs{Site: store.DefaultSite, RecordID: recordID}), "registered ingest worker Work()")
 	if _, ok := readIngestProgress(t, pool, recordingID); ok {
 		t.Error("registered ingest worker did not clear stale progress")
 	}
@@ -164,17 +160,13 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 		Store:         pgstoretest.EPG(pool),
 		RulerInput:    pgstoretest.Reservations(pool),
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, EpgSyncArgs{Site: testSite}); err != nil {
-		t.Fatalf("EpgSyncWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, EpgSyncArgs{Site: testSite}), "EpgSyncWorker.Work")
 	hints := enqueuedArgs[jobs.RulerPassArgs](enqueuer, "ruler_pass")
 	if len(hints) != 1 || hints[0].Site != testSite {
 		t.Fatalf("enqueued ruler_pass hints = %+v, want one hint for site %q", hints, testSite)
 	}
 	var revision int64
-	if err := pool.QueryRow(context.Background(), `SELECT revision FROM ruler_input_revisions WHERE site = $1`, testSite).Scan(&revision); err != nil {
-		t.Fatalf("reading ruler input revision: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT revision FROM ruler_input_revisions WHERE site = $1`, testSite).Scan(&revision), "reading ruler input revision")
 	if revision != 1 {
 		t.Fatalf("ruler input revision = %d, want 1 after EPG sync", revision)
 	}

@@ -28,14 +28,10 @@ func TestCMDetectionNewDesireAfterFailedStartsNewBudget(t *testing.T) {
 		}
 		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, step.state, nil, nil)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+	testutil.MustExec(t, pool, "aging the attempt", `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, id)
+	testutil.RequireNoError(t, q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}), "q.UpsertCMLogo")
 	if desired, err := q.IsCMDetectionDesired(ctx, id); err != nil || !desired {
 		t.Fatalf("IsCMDetectionDesired = %v, %v; want true after a newly learned logo", desired, err)
 	}
@@ -49,9 +45,7 @@ func TestCMDetectionNewDesireAfterFailedStartsNewBudget(t *testing.T) {
 	markCMDetectionTestFailure(t, ctx, pool, q, id, attempt.AttemptCount, "retrying", nil, nil)
 	var state string
 	var count int32
-	if err := pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &count); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &count), "reading attempt state")
 	if state != "retrying" || count != 1 {
 		t.Errorf("after the first failure of the new run: state = %q, count = %d; want retrying, 1", state, count)
 	}

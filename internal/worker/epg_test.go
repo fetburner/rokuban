@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/programid"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 const testSite = "default"
@@ -96,9 +97,7 @@ func testProgram(networkID, serviceID, eventID int, name string, start time.Time
 func runEpgSync(t *testing.T, w *EpgSyncWorker) {
 	t.Helper()
 	job := EpgSyncArgs{Site: testSite}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 }
 
 // allPrograms は site の全番組を program_id 昇順で返す。
@@ -109,9 +108,7 @@ func allPrograms(t *testing.T, pool *pgxpool.Pool) []sqlcgen.EpgProgram {
 		WindowStart: time.Now().Add(-100 * 24 * time.Hour),
 		WindowEnd:   time.Now().Add(100 * 24 * time.Hour),
 	})
-	if err != nil {
-		t.Fatalf("ListEpgPrograms: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgPrograms")
 	slices.SortFunc(rows, func(a, b sqlcgen.EpgProgram) int { return int(a.ProgramID - b.ProgramID) })
 	return rows
 }
@@ -141,9 +138,7 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 	ctx := context.Background()
 
 	services, err := q.ListEpgServices(ctx, testSite)
-	if err != nil {
-		t.Fatalf("ListEpgServices: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgServices")
 	if len(services) != 2 {
 		t.Fatalf("services = %d, want 2", len(services))
 	}
@@ -187,30 +182,22 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 
 	// jsonb 詳細ペイロードが往復すること
 	var extended map[string]string
-	if err := json.Unmarshal(news.Extended, &extended); err != nil {
-		t.Fatalf("unmarshalling extended: %v", err)
-	}
+	testutil.RequireNoError(t, json.Unmarshal(news.Extended, &extended), "unmarshalling extended")
 	if extended["出演者"] != "テスト太郎" {
 		t.Errorf("extended = %v", extended)
 	}
 	var video mirakc.VideoInfo
-	if err := json.Unmarshal(news.Video, &video); err != nil {
-		t.Fatalf("unmarshalling video: %v", err)
-	}
+	testutil.RequireNoError(t, json.Unmarshal(news.Video, &video), "unmarshalling video")
 	if video.Resolution == nil || *video.Resolution != "1080i" {
 		t.Errorf("video = %+v", video)
 	}
 	var audios []mirakc.AudioInfo
-	if err := json.Unmarshal(news.Audios, &audios); err != nil {
-		t.Fatalf("unmarshalling audios: %v", err)
-	}
+	testutil.RequireNoError(t, json.Unmarshal(news.Audios, &audios), "unmarshalling audios")
 	if len(audios) != 1 || audios[0].SamplingRate != 48000 {
 		t.Errorf("audios = %+v", audios)
 	}
 	var genres []mirakc.Genre
-	if err := json.Unmarshal(news.Genres, &genres); err != nil {
-		t.Fatalf("unmarshalling genres: %v", err)
-	}
+	testutil.RequireNoError(t, json.Unmarshal(news.Genres, &genres), "unmarshalling genres")
 	if len(genres) != 1 || genres[0].LV1 != 7 || genres[0].UN1 != 15 {
 		t.Errorf("genres = %+v", genres)
 	}
@@ -278,9 +265,7 @@ func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 	}
 
 	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	if err != nil {
-		t.Fatalf("ListEpgServices: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgServices")
 	if len(services) != 1 || services[0].Name != "ＮＨＫ総合・改" {
 		t.Errorf("services = %+v", services)
 	}
@@ -325,9 +310,7 @@ func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
 	}
 
 	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	if err != nil {
-		t.Fatalf("ListEpgServices: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgServices")
 	if len(services) != 1 || services[0].Name != "残るサービス" {
 		t.Errorf("services = %+v", services)
 	}
@@ -363,9 +346,7 @@ func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 		t.Errorf("programs = %d, want 2 — 空レスポンスでプロジェクションが消えた", got)
 	}
 	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	if err != nil {
-		t.Fatalf("ListEpgServices: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgServices")
 	if len(services) != 1 {
 		t.Errorf("services = %d, want 1 — 空レスポンスでサービスが消えた", len(services))
 	}
@@ -563,9 +544,7 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 	runEpgSync(t, w)
 
 	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	if err != nil {
-		t.Fatalf("ListEpgServices: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgServices")
 	if len(services) != 1 || services[0].ServiceID != 1024 {
 		t.Errorf("services = %+v, want only the GR service", services)
 	}
@@ -652,9 +631,7 @@ func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
 
 	// サービスは全件投影する（空列を隠すのは UI の関心事 = S3）
 	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	if err != nil {
-		t.Fatalf("ListEpgServices: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgServices")
 	if len(services) != 3 {
 		t.Errorf("services = %d, want 3 — サービスは影のサブサービスも投影する", len(services))
 	}
@@ -685,9 +662,7 @@ func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
 	runEpgSync(t, w)
 
 	count, err := sqlcgen.New(pool).CountEpgPrograms(context.Background(), testSite)
-	if err != nil {
-		t.Fatalf("CountEpgPrograms: %v", err)
-	}
+	testutil.RequireNoError(t, err, "CountEpgPrograms")
 	if count != total {
 		t.Errorf("count = %d, want %d", count, total)
 	}
@@ -729,9 +704,7 @@ func TestListEpgPrograms_WindowAndServiceFilter(t *testing.T) {
 		WindowStart: base.Add(45 * time.Minute),
 		WindowEnd:   base.Add(75 * time.Minute),
 	})
-	if err != nil {
-		t.Fatalf("ListEpgPrograms: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgPrograms")
 	names := make([]string, len(rows))
 	for i, r := range rows {
 		names[i] = r.Name
@@ -747,9 +720,7 @@ func TestListEpgPrograms_WindowAndServiceFilter(t *testing.T) {
 		WindowStart: base.Add(time.Hour),
 		WindowEnd:   base.Add(2 * time.Hour),
 	})
-	if err != nil {
-		t.Fatalf("ListEpgPrograms: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgPrograms")
 	for _, r := range rows {
 		if r.Name == "A-1" {
 			t.Error("A-1 should not overlap [01:00, 02:00)")
@@ -764,9 +735,7 @@ func TestListEpgPrograms_WindowAndServiceFilter(t *testing.T) {
 		WindowEnd:   base.Add(3 * time.Hour),
 		ServiceID:   &svcID,
 	})
-	if err != nil {
-		t.Fatalf("ListEpgPrograms: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgPrograms")
 	if len(rows) != 2 {
 		t.Fatalf("service-filtered rows = %d, want 2", len(rows))
 	}
@@ -824,9 +793,7 @@ func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 	}
 
 	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), "site-a")
-	if err != nil {
-		t.Fatalf("ListEpgServices: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEpgServices")
 	if len(services) != 1 {
 		t.Errorf("services projected for site-a = %d, want 1", len(services))
 	}

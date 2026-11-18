@@ -54,18 +54,14 @@ esac
 			return ""
 		}},
 		{"original path escapes the media dir", "setup", func(t *testing.T, _ cmToolset, _ string, id int64) string {
-			if _, err := pool.Exec(ctx, `
+			testutil.MustExec(t, pool, "setting the copy path outside the media dir", `
 UPDATE media_asset_copies copy SET rel_path = '../escape.ts'
-FROM media_assets a WHERE copy.media_asset_id = a.id AND a.recording_id = $1`, id); err != nil {
-				t.Fatal(err)
-			}
+FROM media_assets a WHERE copy.media_asset_id = a.id AND a.recording_id = $1`, id)
 			return ""
 		}},
 		{"scratch root cannot be created", "setup", func(t *testing.T, _ cmToolset, mediaDir string, _ int64) string {
 			blocker := filepath.Join(mediaDir, "blocker")
-			if err := os.WriteFile(blocker, nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, os.WriteFile(blocker, nil, 0o600), "writing test file")
 			return blocker
 		}},
 		{"result row cannot be saved", "save", func(t *testing.T, _ cmToolset, _ string, _ int64) string {
@@ -73,9 +69,7 @@ FROM media_assets a WHERE copy.media_asset_id = a.id AND a.recording_id = $1`, i
 				`CREATE OR REPLACE FUNCTION cm_stage_test_reject() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'rejected'; END $$`,
 				`CREATE TRIGGER cm_stage_test_reject BEFORE INSERT ON recording_cm_detections FOR EACH ROW EXECUTE FUNCTION cm_stage_test_reject()`,
 			} {
-				if _, err := pool.Exec(ctx, stmt); err != nil {
-					t.Fatal(err)
-				}
+				testutil.MustExec(t, pool, "installing the reject trigger", stmt)
 			}
 			t.Cleanup(func() {
 				_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS cm_stage_test_reject ON recording_cm_detections`)
@@ -98,9 +92,7 @@ FROM media_assets a WHERE copy.media_asset_id = a.id AND a.recording_id = $1`, i
 			var state string
 			var stage *string
 			var attemptCount int32
-			if err := pool.QueryRow(ctx, `SELECT state, stage, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &attemptCount); err != nil {
-				t.Fatalf("attempt row: %v", err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, stage, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &attemptCount), "attempt row")
 			if state != "retrying" || stage == nil || *stage != tt.stage || attemptCount != 1 {
 				t.Errorf("attempt = %q / %v / %d, want retrying / %q / 1", state, stage, attemptCount, tt.stage)
 			}
@@ -122,9 +114,7 @@ func TestBeginCMDetectionAttemptClearsStage(t *testing.T) {
 		t.Fatalf("second attempt count = %d, want 2", got)
 	}
 	var got *string
-	if err := pool.QueryRow(ctx, `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&got); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&got), "reading attempt stage")
 	if got != nil {
 		t.Errorf("stage after running = %q, want NULL", *got)
 	}
