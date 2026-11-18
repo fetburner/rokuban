@@ -21,7 +21,7 @@ flowchart TD
 
 | 見るもの | 意味 |
 |---|---|
-| `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`） | プロセス内のゲージ。`time() - この値` が周期を大きく超えたら止まっている。KEDA ScaledJob の構成では使えない |
+| `rokuban_reconcile_last_pass_timestamp_seconds` | プロセス内のゲージ。`time() - この値` が周期を大きく超えたら止まっている。KEDA ScaledJob の構成では使えない |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` | DB に保存された site 単位の成功時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
 | `rokuban_encode_reconcile_last_success_timestamp_seconds` / `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` / `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | DB に保存された全件パスの完走時刻。ScaledJob でも止まっているかを検出できる |
 | `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | DB に保存された置き場ごとの削除 reconcile の完走時刻 |
@@ -36,9 +36,9 @@ flowchart TD
 
 プロセス内の最終パス時刻は、ScaledJob 構成では scrape できず、常駐 Pod の値も成功時刻を表さない。成功時刻は、DB に保存された値で見る。
 
-`rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は、プロセス内のゲージである。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、値は成功時刻を表さない。
+`rokuban_reconcile_last_pass_timestamp_seconds` は、プロセス内のゲージである。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、値は成功時刻を表さない。
 
-ruler と record_sweep については、この既存ゲージを互換性のために残したまま、DB-backed の site ラベル付きメトリクスを追加した。`ruler_pass` と `record_sweep` は、成功したパスの最後に `loop_success_markers` に site の行を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
+ruler / record_sweep / 全件パスの reconcile（encode / thumbnail / ts_scan）/ 削除 reconcile のプロセス内の最終パス時刻ゲージは削除した。代わりは、上の表の DB に保存された系列である。ScaledJob の停止検出でこれらを参照しているアラートは、系列が消えて「データなし」になるので、置き換えが必要である。`ruler_pass` と `record_sweep` は、成功したパスの最後に `loop_success_markers` に site の行を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
 
 予約同期（reconcile）の鮮度には、この実測を踏まえて、DB-backed の `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。常駐 Pod や別の worker が scrape しても、同じ DB の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot からの経過時間として見える。
 

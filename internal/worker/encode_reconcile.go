@@ -260,7 +260,6 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 
 	if recordingID == 0 {
 		metrics.EncodeReconcileCandidates.Set(float64(len(candidates)))
-		metrics.EncodeReconcileLastPass.SetToCurrentTime()
 
 		// 上限まで候補を見たページは、最後の recording_id を引数に継続ジョブを積む。
 		// 続きが無い場合も追加 query をせず次ページを 1 回だけ走らせ、0 件なら連鎖を止める。

@@ -123,9 +123,6 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 	}
 
 	metrics.RulerPassDuration.Observe(time.Since(start).Seconds())
-	if firstErr == nil {
-		metrics.RulerLastPass.SetToCurrentTime()
-	}
 	return firstErr
 }
 

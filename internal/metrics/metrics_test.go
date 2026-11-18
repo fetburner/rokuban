@@ -41,7 +41,6 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	TSScanScrambledPackets.Add(1)
 	TSScanDuration.Observe(1)
 	TSScanJobs.WithLabelValues("success").Inc()
-	TSScanReconcileLastPass.SetToCurrentTime()
 	EncodeDuration.Observe(1)
 	EncodeJobs.WithLabelValues("success").Inc()
 	ReconcilePendingDiff.WithLabelValues("create").Set(0)
@@ -58,7 +57,6 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	RulerProgramIDReuses.Inc()
 	RecordingsFailed.WithLabelValues("need-rescheduling").Inc()
 	RecordsBroken.WithLabelValues("io-error").Inc()
-	SweepLastPass.SetToCurrentTime()
 	EpgSyncDuration.Observe(1)
 	EpgProgramsProjected.Set(1)
 	EpgChannelsWithoutPrograms.Set(0)
@@ -72,10 +70,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	LiveIdleGCReclaimed.Add(1)
 	LiveLeaveHints.WithLabelValues("deadline_shortened").Inc()
 	LiveIdleGCLastPass.SetToCurrentTime()
-	EncodeReconcileLastPass.SetToCurrentTime()
 	EncodeReconcileCandidates.Set(0)
 	EncodeReconcileUnsatisfiable.WithLabelValues("h264").Set(0)
-	ThumbnailReconcileLastPass.SetToCurrentTime()
 	ThumbnailReconcileCandidates.Set(0)
 	MediaAssetsMissing.WithLabelValues("original").Set(0)
 	OrphanFilesUnresolved.Set(0)
@@ -115,7 +111,6 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_reconcile_start_delay_errors_total",
 		"rokuban_recordings_failed_total",
 		"rokuban_records_broken_total",
-		"rokuban_sweep_last_pass_timestamp_seconds",
 		"rokuban_epg_sync_duration_seconds",
 		"rokuban_epg_programs_projected",
 		"rokuban_epg_channels_without_programs",
@@ -141,10 +136,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		// issue #163: encode の desired−observed 定期パス。バックストップ自身が
 		// 黙って止まる / 窓に張り付く / 設定から消えたプロファイルで落とす、の
 		// 3 通りの黙り方に対応する（internal/worker/encode_reconcile.go）。
-		"rokuban_encode_reconcile_last_pass_timestamp_seconds",
 		"rokuban_encode_reconcile_candidates",
 		"rokuban_encode_reconcile_unsatisfiable",
-		"rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
 		"rokuban_thumbnail_reconcile_candidates",
 		// issue #343: active な media_asset の実体無し検出。
 		// docs/operations/monitoring.md がこの 2 本を対で読む運用を約束して
@@ -162,9 +155,17 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_ingest_dropped_packets_total",
 		"rokuban_ingest_error_packets_total",
 		"rokuban_ingest_scrambled_packets_total",
+		// プロセス内の最終パス時刻は DB の印（loop_success_markers）に置き換えた。
+		// ScaledJob では scrape できず、常駐 Pod では成功時刻を表さないため登録しない。
+		"rokuban_ruler_last_pass_timestamp_seconds",
+		"rokuban_sweep_last_pass_timestamp_seconds",
+		"rokuban_ts_scan_reconcile_last_pass_timestamp_seconds",
+		"rokuban_encode_reconcile_last_pass_timestamp_seconds",
+		"rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
+		"rokuban_delete_reconcile_last_pass_timestamp_seconds",
 	} {
 		if got[name] {
-			t.Errorf("removed ingest TS metric %q is still registered", name)
+			t.Errorf("removed metric %q is still registered", name)
 		}
 	}
 

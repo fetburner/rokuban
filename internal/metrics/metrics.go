@@ -80,12 +80,6 @@ var (
 		Name: "rokuban_ts_scan_jobs_total",
 		Help: "TS scan jobs by result.",
 	}, []string{"result"})
-	// TSScanReconcileLastPass は最後に完走した ts_scan reconcile パスの時刻（UNIX 秒）。
-	// CronJob / PeriodicJobs の投入停止を検知するために使う。
-	TSScanReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_ts_scan_reconcile_last_pass_timestamp_seconds",
-		Help: "Unix time of the last completed ts-scan-reconcile pass. Use with time() to detect a stalled pass.",
-	})
 )
 
 // encode（M3-3）のメトリクス。
@@ -263,6 +257,9 @@ var (
 	// 「収束した」と「reconciler が動いていない」を区別できない。
 	// シングルトンのロックを取れていない・ループが死んでいる場合を
 	// time() - この値 で検出する。
+	//
+	// schedule snapshot の確定（schedule_snapshot_last_success）はパスの先頭で
+	// 起きるので、この値とは一致しない。snapshot だけ進んでパスが後段で失敗しうる。
 	ReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_reconcile_last_pass_timestamp_seconds",
 		Help: "Unix time of the last completed reconcile pass. Use with time() to detect a stalled reconciler.",
@@ -348,15 +345,6 @@ var (
 		Name: "rokuban_ruler_circuit_breaker_trips_total",
 		Help: "Times the bulk-delete circuit breaker transitioned into the tripped state for a ruler site. Use rokuban_circuit_breaker_tripped to see whether it is currently latched.",
 	})
-
-	// RulerLastPass はこのプロセスで最後に（全サイトとも）成功したパスの時刻
-	// （UNIX 秒）。reconciler.ReconcileLastPass と同じ理由でゲージの凍結対策として
-	// 持つ。DB-backed の site 単位メトリクスは LoopPassCollector が別名で公開する。
-	// この in-process ゲージは既存の scrape 契約を壊さないため併存させる。
-	RulerLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_ruler_last_pass_timestamp_seconds",
-		Help: "Unix time of the last successful ruler pass. Use with time() to detect a stalled ruler.",
-	})
 )
 
 // watcher（M1-3）のメトリクス。
@@ -375,16 +363,6 @@ var (
 		Name: "rokuban_records_broken_total",
 		Help: "mirakc record-broken events by reason.",
 	}, []string{"reason"})
-
-	// SweepLastPass はこのプロセスで最後に成功した record_sweep パス（3 段構えの
-	// (c)、docs/recording.md §3.3）の時刻（UNIX 秒）。ReconcileLastPass /
-	// RulerLastPass / EpgSyncLastSuccess と同じ理由（ゲージの凍結対策）で持つ
-	// （M2-18）。DB-backed の site 単位メトリクスは LoopPassCollector が別名で
-	// 公開する。この in-process ゲージは既存の scrape 契約を壊さないため併存させる。
-	SweepLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_sweep_last_pass_timestamp_seconds",
-		Help: "Unix time of the last successful record_sweep pass. Use with time() to detect a stalled sweep.",
-	})
 )
 
 // EPG プロジェクション（M1-6）のメトリクス。
@@ -470,13 +448,6 @@ var (
 		Help: "Bytes freed by physical deletion, by source.",
 	}, []string{"source"})
 
-	// DeleteReconcileLastPass は最後に成功した削除 reconcile パスの時刻（UNIX 秒）。
-	// EpgSyncLastSuccess と同じ理由（ゲージの凍結対策）で持つ。
-	DeleteReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_delete_reconcile_last_pass_timestamp_seconds",
-		Help: "Unix time of the last successful delete-reconcile pass. Use with time() to detect a stalled pass.",
-	})
-
 	// MediaAssetsMissing は state='active' なのに実体ファイルが無いと確認できた
 	// media_asset の件数（kind 別。issue #343）。「確認できた」は
 	// missing_media_assets の first_seen が MissingAssetAge を超えて連続して
@@ -534,13 +505,6 @@ var (
 // なので、**パス自身が止まったこと・見切れたことも黙って起きうる**。2 つのゲージは
 // その 2 通りの黙り方に 1 対 1 で対応する。
 var (
-	// EncodeReconcileLastPass は最後に完走した encode reconcile パスの時刻（UNIX 秒）。
-	// DeleteReconcileLastPass と同じ理由（ゲージの凍結対策）で持つ。
-	EncodeReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_encode_reconcile_last_pass_timestamp_seconds",
-		Help: "Unix time of the last completed encode-reconcile pass. Use with time() to detect a stalled pass.",
-	})
-
 	// EncodeReconcileCandidates は直近の encode reconcile ページが見た候補件数
 	// （desired なのに active な encoded が無い録画）。
 	//
@@ -588,13 +552,6 @@ var (
 // thumbnail の desired−observed 定期 reconcile（internal/worker/thumbnail_reconcile.go）
 // のメトリクス。
 var (
-	// ThumbnailReconcileLastPass は最後に完走した thumbnail reconcile パスの時刻
-	// （UNIX 秒）。CronJob / PeriodicJobs の投入停止を検知するために使う。
-	ThumbnailReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
-		Help: "Unix time of the last completed thumbnail-reconcile pass. Use with time() to detect a stalled pass.",
-	})
-
 	// ThumbnailReconcileCandidates は直近のパスが見た候補件数。上限に張り付く
 	// ときは後続候補が窓の先に残っている可能性がある。
 	ThumbnailReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -784,7 +741,7 @@ var (
 
 	// LiveIdleGCLastPass は最後に完走した idle GC パスの時刻（UNIX 秒）。
 	//
-	// DeleteReconcileLastPass / EpgSyncLastSuccess と同じ理由（ゲージの凍結対策。
+	// EpgSyncLastSuccess と同じ理由（ゲージの凍結対策。
 	// docs/operations.md の「ゲージには最後に成功した時刻を対で持つ」規律）。
 	// LiveActiveSessions は idle GC ループが止まっても直近の値のまま凍結するため、
 	// それだけでは「セッションが本当にゼロになった」のか「GC ループが死んでいて
@@ -851,7 +808,6 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		TSScanScrambledPackets,
 		TSScanDuration,
 		TSScanJobs,
-		TSScanReconcileLastPass,
 
 		CMDetectDuration,
 		EncodeDuration,
@@ -877,11 +833,9 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		RulerReservations,
 		RulerProgramIDReuses,
 		RulerCircuitBreakerTrips,
-		RulerLastPass,
 
 		RecordingsFailed,
 		RecordsBroken,
-		SweepLastPass,
 
 		EpgSyncDuration,
 		EpgProgramsProjected,
@@ -894,7 +848,6 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 
 		DeleteReconcileDeleted,
 		DeleteReconcileBytes,
-		DeleteReconcileLastPass,
 		MediaAssetsMissing,
 		OrphanFilesUnresolved,
 		ObjectStoreErrors,
@@ -902,11 +855,9 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		ObjectStoreOrphansUnresolved,
 		MissingAssetScanSuspectedStorageFailure,
 
-		EncodeReconcileLastPass,
 		EncodeReconcileCandidates,
 		EncodeReconcileUnsatisfiable,
 		CutAwaitingReview,
-		ThumbnailReconcileLastPass,
 		ThumbnailReconcileCandidates,
 
 		StorageSyncLastSuccess,

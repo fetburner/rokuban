@@ -87,17 +87,16 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 	third := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "targeted/third.m2ts", []string{"h265"}, []byte("x"))
 
 	metrics.EncodeReconcileCandidates.Set(17)
-	metrics.EncodeReconcileLastPass.Set(23)
 	metrics.EncodeReconcileUnsatisfiable.WithLabelValues("removed-profile").Set(31)
 	metrics.CutAwaitingReview.WithLabelValues("cut").Set(37)
 	t.Cleanup(func() {
 		metrics.EncodeReconcileCandidates.Set(0)
-		metrics.EncodeReconcileLastPass.Set(0)
 		metrics.EncodeReconcileUnsatisfiable.WithLabelValues("removed-profile").Set(0)
 		metrics.CutAwaitingReview.WithLabelValues("cut").Set(0)
 	})
 
-	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), RowLimit: 1, Media: pgstoretest.Media(pool)}
+	markers := pgstoretest.Reservations(pool)
+	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), RowLimit: 1, Media: pgstoretest.Media(pool), Markers: markers}
 	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: target})
 
 	for _, tc := range []struct {
@@ -114,8 +113,13 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 17 {
 		t.Errorf("candidate gauge = %v, want unchanged 17", got)
 	}
-	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got != 23 {
-		t.Errorf("last-pass gauge = %v, want unchanged 23", got)
+	// 対象パスは候補を見ただけで、全件パスの完走（loop_success_markers の encode）を記録しない。
+	saved, err := markers.ReadLoopMarkers(context.Background(), store.LoopReconcilePass)
+	if err != nil {
+		t.Fatalf("ReadLoopMarkers: %v", err)
+	}
+	if at, ok := saved[store.ReconcilePassEncode]; ok {
+		t.Errorf("targeted pass recorded a full encode pass at %v, want none", at)
 	}
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileUnsatisfiable.WithLabelValues("removed-profile")); got != 31 {
 		t.Errorf("unsatisfiable gauge = %v, want unchanged 31", got)
@@ -1271,7 +1275,8 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 		{Name: "h265", Container: "mp4", VideoCodec: "libx265", AudioCodec: "aac"},
 		{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 	}}
-	w := &EncodeReconcileWorker{Profiles: profiles, RowLimit: 2, Media: pgstoretest.Media(pool)}
+	markers := pgstoretest.Reservations(pool)
+	w := &EncodeReconcileWorker{Profiles: profiles, RowLimit: 2, Media: pgstoretest.Media(pool), Markers: markers}
 	runEncodeReconcilePass(t, w)
 
 	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 1 {
@@ -1308,13 +1313,16 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 			t.Errorf("third rebuild keep = %s, want %s", thirdJob.RequestedCutKeep, thirdRequested)
 		}
 	}
-	// 最後に完走したパスの時刻が更新されること（TestEncodeReconcileWorker_
+	// 最後に完走したパスの時刻が DB の印に残ること（TestEncodeReconcileWorker_
 	// RowLimitLeavesLaterRecordingsUnreached が固定していたアサーションを移設。
-	// これが無いと EncodeReconcileLastPass.SetToCurrentTime の呼び出しを消しても
-	// パッケージ全体のテストが green のまま通ってしまい、停止したパスが
-	// 検出できなくなる）。
-	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got == 0 {
-		t.Error("last-pass gauge was not set; a stalled pass would be undetectable")
+	// これが無いと完走の記録を消しても パッケージ全体のテストが green のまま通ってしまい、
+	// 停止したパスが検出できなくなる）。
+	saved, err := markers.ReadLoopMarkers(context.Background(), store.LoopReconcilePass)
+	if err != nil {
+		t.Fatalf("ReadLoopMarkers: %v", err)
+	}
+	if _, ok := saved[store.ReconcilePassEncode]; !ok {
+		t.Error("encode pass marker was not recorded; a stalled pass would be undetectable")
 	}
 }
 

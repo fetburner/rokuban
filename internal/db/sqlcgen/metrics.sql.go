@@ -44,7 +44,7 @@ type GetUningestedRecordBacklogRow struct {
 //     'finished' への更新が復帰後になるので下の WHERE に掛からない
 //
 // のどちらも数に入らず、**断のあいだこの値は平らなまま**になる。
-// 回線断の検知は滞留量ではなく rokuban_sweep_last_pass_timestamp_seconds /
+// 回線断の検知は滞留量ではなく rokuban_sweep_last_success_timestamp_seconds /
 // rokuban_epg_sync_last_success_timestamp_seconds の停滞で行う
 // （docs/operations.md §4。断が epg.retention_grace を超えると encode 意図が
 // 落ちる交点も同節）。

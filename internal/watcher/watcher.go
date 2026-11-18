@@ -203,7 +203,6 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 		return fmt.Errorf("marking record sweep success: %w", err)
 	}
 	slog.Info("watcher sweep complete", "records", len(records), "stale", stale)
-	metrics.SweepLastPass.SetToCurrentTime()
 	return nil
 }
 
