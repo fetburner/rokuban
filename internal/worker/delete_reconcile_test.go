@@ -35,6 +35,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -42,12 +43,8 @@ import (
 func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string, content []byte) int64 {
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(full, content, 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(full), 0o755), "mkdir")
+	testutil.RequireNoError(t, os.WriteFile(full, content, 0o644), "write")
 	id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = int64(len(content))
@@ -60,12 +57,8 @@ func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, record
 func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, kind string, profile *string, relPath string, content []byte) int64 {
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(full, content, 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(full), 0o755), "mkdir")
+	testutil.RequireNoError(t, os.WriteFile(full, content, 0o644), "write")
 	id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = kind
 		fixtureParams.Profile = profile
@@ -261,9 +254,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
 		"past/retention_h264.mp4", []byte("encoded"))
 	subtitlePath := filepath.Join(mediaDir, "past", "retention_h264.vtt")
-	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\n"), 0o644); err != nil {
-		t.Fatalf("writing subtitle sidecar: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(subtitlePath, []byte("WEBVTT\n\n"), 0o644), "writing subtitle sidecar")
 
 	past := time.Now().Add(-40 * 24 * time.Hour)
 	if _, err := pool.Exec(context.Background(),
@@ -279,9 +270,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("asset copy state = %q, want deleted", got)
@@ -305,9 +294,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	recordingID := dbtest.Recording(t, pool)
 	profile := "h264"
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
@@ -315,9 +302,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 	oldPath := filepath.Join(mediaDir, "generation", "h264.mp4")
 	newRelPath := "generation/h264.g1.mp4"
 	newPath := filepath.Join(mediaDir, filepath.FromSlash(newRelPath))
-	if err := os.WriteFile(newPath, []byte("current generation"), 0o644); err != nil {
-		t.Fatalf("writing current-generation file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(newPath, []byte("current generation"), 0o644), "writing current-generation file")
 	currentCopyCreatedAt := time.Now().Add(-30 * time.Minute)
 	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: newRelPath,
@@ -326,16 +311,12 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 		t.Fatalf("inserting current-generation copy: %v", err)
 	}
 	var currentCopyID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, assetID, dbtest.StoreName, newRelPath).Scan(&currentCopyID); err != nil {
-		t.Fatalf("reading current copy ID: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, assetID, dbtest.StoreName, newRelPath).Scan(&currentCopyID), "reading current copy ID")
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID); err != nil {
 		t.Fatalf("advancing logical asset generation: %v", err)
 	}
 	var oldCopyID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND rel_path = 'generation/h264.mp4'`, assetID).Scan(&oldCopyID); err != nil {
-		t.Fatalf("reading old copy ID: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND rel_path = 'generation/h264.mp4'`, assetID).Scan(&oldCopyID), "reading old copy ID")
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = $2 WHERE id = $1`, oldCopyID, time.Now().Add(-3*time.Hour)); err != nil {
 		t.Fatalf("aging old copy row: %v", err)
 	}
@@ -380,9 +361,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 				t.Fatal("delete reconcile did not reach the simulated crash point")
 			}
 		}()
-		if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
-			t.Fatalf("Work before simulated crash: %v", err)
-		}
+		testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work before simulated crash")
 	}()
 	beforeMediaAssetUnlink = previousHook
 	copyState := func(copyID int64) string {
@@ -400,9 +379,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 		t.Fatal("old-generation file disappeared before unlink after simulated crash")
 	}
 
-	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("retrying delete reconcile: %v", err)
-	}
+	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "retrying delete reconcile")
 	if got := copyState(oldCopyID); got != "deleted" {
 		t.Errorf("old copy state after retry = %q, want deleted", got)
 	}
@@ -440,12 +417,8 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
 		"sidecarfail/retention_h264.mp4", []byte("encoded"))
 	subtitlePath := filepath.Join(mediaDir, "sidecarfail", "retention_h264.vtt")
-	if err := os.MkdirAll(subtitlePath, 0o755); err != nil {
-		t.Fatalf("creating subtitle sidecar path as a directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("populating subtitle sidecar directory: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(subtitlePath, 0o755), "creating subtitle sidecar path as a directory")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644), "populating subtitle sidecar directory")
 
 	past := time.Now().Add(-40 * 24 * time.Hour)
 	if _, err := pool.Exec(context.Background(),
@@ -461,9 +434,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
 		t.Errorf("encoded asset copy state = %q, want deleted (sidecar failure must not block it)", got)
@@ -506,9 +477,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
 		t.Errorf("encoded asset copy state = %q, want deleted (extensionless rel_path must not block it)", got)
@@ -542,9 +511,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (not yet past retention)", got)
@@ -592,9 +559,7 @@ func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("asset copy state = %q, want deleted (an immediate purge request should bypass retention even though deleted_at is recent)", got)
@@ -640,9 +605,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		Webhook: client,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := purgedAt(t, pool, recordingID); got == nil {
 		t.Fatal("purged_at not set for a recording with zero media_assets")
@@ -664,9 +627,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	// 2 パス目では既に purged_at が立っているので二度と候補に上がらず、
 	// webhook も再発火しない（冪等）。
 	rec.reset()
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() second pass error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("webhook fired again on the second pass: %+v", events)
 	}
@@ -686,16 +647,10 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 	// unlink を失敗させる: rel_path を空でないディレクトリに置き換える。
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purged/stuck.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "purged", "stuck.m2ts")
-	if err := os.Remove(assetPath); err != nil {
-		t.Fatalf("removing seeded file: %v", err)
-	}
-	if err := os.MkdirAll(assetPath, 0o755); err != nil {
-		t.Fatalf("creating blocking dir: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(assetPath), "removing seeded file")
+	testutil.RequireNoError(t, os.MkdirAll(assetPath, 0o755), "creating blocking dir")
 	blockerFile := filepath.Join(assetPath, "blocker")
-	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
-		t.Fatalf("creating blocker file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(blockerFile, []byte("x"), 0o644), "creating blocker file")
 	markRecordingTrashed(t, pool, recordingID)
 
 	w := &DeleteReconcileWorker{
@@ -706,9 +661,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
 		t.Fatalf("asset copy state = %q, want deleting (unlink blocked)", got)
@@ -745,9 +698,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 		TrashRetention: 30 * 24 * time.Hour,
 		Webhook:        client,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Fatalf("asset copy state = %q, want deleted", got)
@@ -786,9 +737,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 	// 原本は until_encoded で既に物理削除済み（行は deleted で残る）。
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/gone.m2ts", []byte("data"))
 	dbtest.SetMediaAssetState(t, pool, originalID, "deleted")
-	if err := os.Remove(filepath.Join(mediaDir, "webhook", "gone.m2ts")); err != nil {
-		t.Fatalf("removing original file: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(filepath.Join(mediaDir, "webhook", "gone.m2ts")), "removing original file")
 
 	profile := "h264"
 	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("mp4"))
@@ -804,9 +753,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 		TrashRetention: 30 * 24 * time.Hour,
 		Webhook:        client,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
 		t.Fatalf("encoded copy state = %q, want deleted", got)
@@ -844,9 +791,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		Webhook: client,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Fatalf("original copy state = %q, want deleted", got)
@@ -874,16 +819,10 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 	// 原本 1 件だけ。unlink を 1 パス目だけ失敗させる（中身のあるディレクトリ）。
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/restore/original.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "webhook", "restore", "original.m2ts")
-	if err := os.Remove(assetPath); err != nil {
-		t.Fatalf("removing seeded file: %v", err)
-	}
-	if err := os.MkdirAll(assetPath, 0o755); err != nil {
-		t.Fatalf("creating blocking dir: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(assetPath), "removing seeded file")
+	testutil.RequireNoError(t, os.MkdirAll(assetPath, 0o755), "creating blocking dir")
 	blockerFile := filepath.Join(assetPath, "blocker")
-	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
-		t.Fatalf("creating blocker file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(blockerFile, []byte("x"), 0o644), "creating blocker file")
 	markRecordingTrashed(t, pool, recordingID)
 
 	rec, client := newWebhookRecorder(t)
@@ -896,9 +835,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 		TrashRetention: 30 * 24 * time.Hour,
 		Webhook:        client,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
 		t.Fatalf("asset copy state = %q, want deleting", got)
 	}
@@ -907,14 +844,10 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 	if _, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID); err != nil {
 		t.Fatalf("restoring recording: %v", err)
 	}
-	if err := os.Remove(blockerFile); err != nil {
-		t.Fatalf("removing blocker file: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(blockerFile), "removing blocker file")
 	rec.reset()
 
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() second pass error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Fatalf("asset copy state after second pass = %q, want active (restored recordings must not be deleted, issue #105)", got)
 	}
@@ -932,9 +865,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 	ctx := context.Background()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	recordingID := dbtest.Recording(t, pool)
 	profile := "h264"
 	const relPath = "encoded/old-filesystem-copy.mp4"
@@ -951,9 +882,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 		DerivedObjects:         testFilesystemObjectStore(t, t.TempDir()),
 		DerivedObjectStoreName: objectStoreName,
 	}
-	if err := worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName); err != nil {
-		t.Fatalf("restoring unqualified deleting copies: %v", err)
-	}
+	testutil.RequireNoError(t, worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoring unqualified deleting copies")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Fatalf("filesystem derived copy state = %q, want active", got)
@@ -980,9 +909,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 
 	// 前パスで unlink までは成功したがプロセスが落ち、MarkMediaAssetDeleted が
 	// コミットされなかった状態を直接作る（deleting のままファイルだけが無い）。
-	if err := os.Remove(assetPath); err != nil {
-		t.Fatalf("simulating a completed unlink: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(assetPath), "simulating a completed unlink")
 	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// ここでユーザーがごみ箱から復元する。
@@ -998,9 +925,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Fatalf("asset copy state = %q, want deleted (file already gone; reverting to active would create an active row with no file)", got)
@@ -1039,9 +964,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 		TrashRetention:         30 * 24 * time.Hour,
 		Webhook:                client,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, blockedID); got != "deleting" {
 		t.Fatalf("blocked asset copy state = %q, want deleting", got)
@@ -1052,9 +975,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 
 	// Store.Delete が復旧した次パスの pending 経路が拾い直し、そこで初めて発火する。
 	rec.reset()
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() second pass error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
 
 	if got := singleCopyState(t, pool, blockedID); got != "deleted" {
 		t.Fatalf("blocked asset copy state after second pass = %q, want deleted", got)
@@ -1174,9 +1095,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("original copy state = %q, want deleted", got)
@@ -1210,9 +1129,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 
 			w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 				DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-			if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-				t.Fatalf("Work() error: %v", err)
-			}
+			testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 			if got := singleCopyState(t, pool, assetID); got != "active" {
 				t.Fatalf("original copy state = %q, want active (%s is deleted)", got, kind)
 			}
@@ -1246,9 +1163,7 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 	if got := singleCopyState(t, pool, originalID); got != "active" {
 		t.Fatalf("original copy state with pending cut rebuild = %q, want active", got)
 	}
@@ -1290,9 +1205,7 @@ func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) 
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 	if got := singleCopyState(t, pool, originalID); got != "deleted" {
 		t.Errorf("original copy state with satisfied rebuild = %q, want deleted", got)
 	}
@@ -1345,9 +1258,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 	if got := singleCopyState(t, pool, originalID); got != "active" {
 		t.Fatalf("original copy state after concurrent rebuild request = %q, want active", got)
 	}
@@ -1398,9 +1309,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 	for _, tc := range []struct {
 		assetID int64
 		want    string
@@ -1473,9 +1382,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("original copy state = %q, want active "+
@@ -1522,9 +1429,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("original copy state = %q, want active (encoded profile missing)", got)
@@ -1546,9 +1451,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("original copy state = %q, want active (thumbnail missing)", got)
@@ -1573,9 +1476,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("original copy state = %q, want active (seek_tiles missing)", got)
@@ -1626,9 +1527,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetA); got != "active" {
 		t.Errorf("recording A original copy state = %q, want active (desired profile h264 not yet committed)", got)
@@ -1671,42 +1570,28 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	// 1 パス目の unlink を失敗させる（中身のあるディレクトリで置き換える）。
-	if err := os.Remove(assetPath); err != nil {
-		t.Fatalf("removing seeded file: %v", err)
-	}
-	if err := os.MkdirAll(assetPath, 0o755); err != nil {
-		t.Fatalf("creating blocking dir: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(assetPath), "removing seeded file")
+	testutil.RequireNoError(t, os.MkdirAll(assetPath, 0o755), "creating blocking dir")
 	blockerFile := filepath.Join(assetPath, "blocker")
-	if err := os.WriteFile(blockerFile, []byte("x"), 0o644); err != nil {
-		t.Fatalf("creating blocker file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(blockerFile, []byte("x"), 0o644), "creating blocker file")
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
 		t.Fatalf("asset copy state = %q, want deleting (unlink blocked)", got)
 	}
 
 	// 障害を取り除く。復元は起きていない —— 録画は生きたまま until_encoded
 	// のポリシーで削除が進行中なだけ。
-	if err := os.Remove(blockerFile); err != nil {
-		t.Fatalf("removing blocker file: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(blockerFile), "removing blocker file")
 
 	// ブレーカーを発動させ、通常経路（ブレーカー対象）を完全に止める。
 	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
 	// この legacy テスト worker は置き場名を省略しているので scope は空文字列。
-	if err := breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
-		t.Fatalf("tripping breaker: %v", err)
-	}
+	testutil.RequireNoError(t, breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}), "tripping breaker")
 
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() second pass error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Fatalf("asset copy state after second pass = %q, want deleted (until_encoded deletion should resume via the breaker-exempt pending path, issue #105)", got)
 	}
@@ -1771,9 +1656,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Fatalf("original copy state = %q, want active "+
@@ -1819,9 +1702,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Fatalf("original copy state = %q, want active "+
@@ -1922,12 +1803,8 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	// のような変異で）丸ごと除外していないかを検出するための正例。
 	const trueOrphanRel = "sites/tokyo/orphan.dat"
 	trueOrphanPath := filepath.Join(mediaDir, filepath.FromSlash(trueOrphanRel))
-	if err := os.MkdirAll(filepath.Dir(trueOrphanPath), 0o755); err != nil {
-		t.Fatalf("mkdir for true orphan: %v", err)
-	}
-	if err := os.WriteFile(trueOrphanPath, []byte("nobody references this"), 0o644); err != nil {
-		t.Fatalf("writing true orphan file: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(trueOrphanPath), 0o755), "mkdir for true orphan")
+	testutil.RequireNoError(t, os.WriteFile(trueOrphanPath, []byte("nobody references this"), 0o644), "writing true orphan file")
 
 	// mtime を古くする。orphan 候補判定は mtime が新しい間はスキップするため
 	// （TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered 参照）、
@@ -1954,9 +1831,7 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, legacyAssetID); got != "active" {
 		t.Errorf("legacy (unprefixed) asset copy state = %q, want active (must survive orphan sweep)", got)
@@ -1999,9 +1874,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 	pool := setupTestPool(t)
 	realMediaDir := t.TempDir()
 	mediaDir := filepath.Join(t.TempDir(), "media-link")
-	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
-		t.Fatalf("creating media dir symlink: %v", err)
-	}
+	testutil.RequireNoError(t, os.Symlink(realMediaDir, mediaDir), "creating media dir symlink")
 
 	recordingID := dbtest.Recording(t, pool)
 	assetID := seedOriginalAsset(t, pool, realMediaDir, recordingID,
@@ -2009,16 +1882,10 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 
 	const orphanRel = "orphan/unregistered.m2ts"
 	orphanPath := filepath.Join(realMediaDir, filepath.FromSlash(orphanRel))
-	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
-		t.Fatalf("mkdir for orphan: %v", err)
-	}
-	if err := os.WriteFile(orphanPath, []byte("orphan data"), 0o644); err != nil {
-		t.Fatalf("writing orphan: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(orphanPath), 0o755), "mkdir for orphan")
+	testutil.RequireNoError(t, os.WriteFile(orphanPath, []byte("orphan data"), 0o644), "writing orphan")
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(orphanPath, old, old); err != nil {
-		t.Fatalf("making orphan mtime old: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(orphanPath, old, old), "making orphan mtime old")
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
@@ -2028,9 +1895,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("registered asset copy state = %q, want active", got)
@@ -2066,22 +1931,14 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 	pool := setupTestPool(t)
 	realMediaDir := t.TempDir()
 	mediaDir := filepath.Join(t.TempDir(), "media-link")
-	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
-		t.Fatalf("creating media dir symlink: %v", err)
-	}
+	testutil.RequireNoError(t, os.Symlink(realMediaDir, mediaDir), "creating media dir symlink")
 
 	const catalogRel = "catalog/generation.json"
 	catalogPath := filepath.Join(realMediaDir, filepath.FromSlash(catalogRel))
-	if err := os.MkdirAll(filepath.Dir(catalogPath), 0o755); err != nil {
-		t.Fatalf("mkdir for catalog: %v", err)
-	}
-	if err := os.WriteFile(catalogPath, []byte("catalog metadata"), 0o644); err != nil {
-		t.Fatalf("writing catalog file: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(catalogPath), 0o755), "mkdir for catalog")
+	testutil.RequireNoError(t, os.WriteFile(catalogPath, []byte("catalog metadata"), 0o644), "writing catalog file")
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(catalogPath, old, old); err != nil {
-		t.Fatalf("making catalog mtime old: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(catalogPath, old, old), "making catalog mtime old")
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
@@ -2091,9 +1948,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	var orphanCount int
 	if err := pool.QueryRow(context.Background(),
@@ -2128,9 +1983,7 @@ func TestWalkMediaFiles_MissingMediaDirIsNoopButNonDirectoryErrors(t *testing.T)
 	t.Parallel()
 	root := t.TempDir()
 	regularFile := filepath.Join(root, "media-file")
-	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o644); err != nil {
-		t.Fatalf("writing regular file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(regularFile, []byte("not a directory"), 0o644), "writing regular file")
 
 	t.Run("missing", func(t *testing.T) {
 		var visited []string
@@ -2162,9 +2015,7 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 	pool := setupTestPool(t)
 	root := t.TempDir()
 	regularFile := filepath.Join(root, "media-file")
-	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o644); err != nil {
-		t.Fatalf("writing regular file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(regularFile, []byte("not a directory"), 0o644), "writing regular file")
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: regularFile}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
@@ -2188,16 +2039,10 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 
 	orphanRelPath := "orphan/original.m2ts"
 	orphanPath := filepath.Join(mediaDir, filepath.FromSlash(orphanRelPath))
-	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
-		t.Fatalf("creating orphan directory: %v", err)
-	}
-	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
-		t.Fatalf("writing orphan file: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(orphanPath), 0o755), "creating orphan directory")
+	testutil.RequireNoError(t, os.WriteFile(orphanPath, []byte("orphan"), 0o644), "writing orphan file")
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(orphanPath, old, old); err != nil {
-		t.Fatalf("aging orphan file: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(orphanPath, old, old), "aging orphan file")
 
 	var walks int
 	originalHook := beforeWalkMediaFiles
@@ -2212,9 +2057,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 	if walks != 1 {
 		t.Fatalf("walkMediaFiles calls = %d, want 1", walks)
 	}
@@ -2253,14 +2096,10 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 		"subs/program_h264.mp4", []byte("encoded"))
 	subtitleRel := "subs/program_h264.vtt"
 	subtitlePath := filepath.Join(mediaDir, filepath.FromSlash(subtitleRel))
-	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\n"), 0o644); err != nil {
-		t.Fatalf("writing subtitle sidecar: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(subtitlePath, []byte("WEBVTT\n\n"), 0o644), "writing subtitle sidecar")
 	// 孤児候補の mtime 猶予を確実に超えさせる。
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(subtitlePath, old, old); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(subtitlePath, old, old), "chtimes")
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
@@ -2270,9 +2109,7 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
@@ -2294,9 +2131,7 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 	mediaDir := t.TempDir()
 
 	orphanPath := filepath.Join(mediaDir, "unregistered-recent.dat")
-	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
-		t.Fatalf("writing orphan file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(orphanPath, []byte("orphan"), 0o644), "writing orphan file")
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
@@ -2306,9 +2141,7 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
@@ -2358,16 +2191,12 @@ func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "first Work() error")
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1", tempRel, time.Now().Add(-20*24*time.Hour)); err != nil {
 		t.Fatalf("aging ingest temp orphan row: %v", err)
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("second Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "second Work() error")
 	if fileExists(tempPath) {
 		t.Fatal("aged linked ingest temp still exists")
 	}
@@ -2386,16 +2215,10 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 
 	const relPath = "sites/default/test/.rokuban-ingest-default-process-dead-g1"
 	tempPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-		t.Fatalf("creating temp parent directory: %v", err)
-	}
-	if err := os.WriteFile(tempPath, []byte("partial"), 0o644); err != nil {
-		t.Fatalf("writing ingest temp: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(tempPath), 0o755), "creating temp parent directory")
+	testutil.RequireNoError(t, os.WriteFile(tempPath, []byte("partial"), 0o644), "writing ingest temp")
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(tempPath, old, old); err != nil {
-		t.Fatalf("making ingest temp old: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(tempPath, old, old), "making ingest temp old")
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
@@ -2406,9 +2229,7 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "first Work() error")
 	if !fileExists(tempPath) {
 		t.Fatal("ingest temp was deleted before orphan aging completed")
 	}
@@ -2426,29 +2247,19 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 		relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
 		t.Fatalf("aging ingest temp orphan row: %v", err)
 	}
-	if err := os.Chtimes(tempPath, time.Now(), time.Now()); err != nil {
-		t.Fatalf("refreshing ingest temp activity time: %v", err)
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() with recent temp error: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(tempPath, time.Now(), time.Now()), "refreshing ingest temp activity time")
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() with recent temp error")
 	if !fileExists(tempPath) {
 		t.Fatal("temp was deleted while its mtime was inside the grace period")
 	}
-	if err := os.Chtimes(tempPath, old, old); err != nil {
-		t.Fatalf("aging ingest temp after retained pass: %v", err)
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() rediscovering old ingest temp error: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(tempPath, old, old), "aging ingest temp after retained pass")
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() rediscovering old ingest temp error")
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1",
 		relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
 		t.Fatalf("re-aging rediscovered ingest temp orphan row: %v", err)
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("final Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "final Work() error")
 	if fileExists(tempPath) {
 		t.Fatal("aged ingest temp still exists")
 	}
@@ -2518,18 +2329,14 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 			RecordingID: recordingID, WrittenBytes: written, TempRelPath: newRelPath, TempGeneration: 23,
 		}, newOwner, checkpoint.WriterGeneration, time.Minute)
 	}
-	if err := writeProgress(0); err != nil {
-		t.Fatalf("starting new writer progress: %v", err)
-	}
+	testutil.RequireNoError(t, writeProgress(0), "starting new writer progress")
 	w := &DeleteReconcileWorker{Storage: media, MediaDir: mediaDir, MediaStoreName: "local"}
 	w.deleteOrphanFile(oldRelPath, 24*time.Hour)
 	w.deleteOrphanFile(newRelPath, 24*time.Hour)
 	if !fileExists(oldPath) || !fileExists(newPath) {
 		t.Fatal("orphan cleanup removed a visible old temp or the current writer temp before catch-up")
 	}
-	if err := writeProgress(100); err != nil {
-		t.Fatalf("switching visible progress after catch-up: %v", err)
-	}
+	testutil.RequireNoError(t, writeProgress(100), "switching visible progress after catch-up")
 	w.deleteOrphanFile(oldRelPath, 24*time.Hour)
 	if fileExists(oldPath) {
 		t.Fatal("superseded writer generation remained after the visible pointer switched")
@@ -2548,21 +2355,13 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	ctx := context.Background()
 	relPath := "orphan/canonical-" + filepath.Base(mediaDir) + ".m2ts"
 	orphanPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
-		t.Fatalf("creating orphan parent directory: %v", err)
-	}
-	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
-		t.Fatalf("writing orphan file: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(orphanPath), 0o755), "creating orphan parent directory")
+	testutil.RequireNoError(t, os.WriteFile(orphanPath, []byte("orphan"), 0o644), "writing orphan file")
 	old := time.Now().Add(-48 * time.Hour)
-	if err := os.Chtimes(orphanPath, old, old); err != nil {
-		t.Fatalf("making orphan old: %v", err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(orphanPath, old, old), "making orphan old")
 
 	q := sqlcgen.New(pool)
-	if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath}); err != nil {
-		t.Fatalf("seeding orphan record: %v", err)
-	}
+	testutil.RequireNoError(t, q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath}), "seeding orphan record")
 	t.Cleanup(func() {
 		_ = q.DeleteOrphanFile(context.Background(), sqlcgen.DeleteOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath})
 	})
@@ -2605,9 +2404,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, old
 	// 別の録画の temp。公開の commit がこれを oldPath へ link しようとする。
 	newRecordingID := dbtest.Recording(t, pool)
 	tempPath := filepath.Join(filepath.Dir(oldPath), ".rokuban-ingest-republish")
-	if err := os.WriteFile(tempPath, []byte(republishedContent), 0o644); err != nil {
-		t.Fatalf("writing republish temp: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(tempPath, []byte(republishedContent), 0o644), "writing republish temp")
 	seedIngestTempForCommit(t, pool, newRecordingID, mediaDir, tempPath)
 
 	var commitErr error
@@ -2848,12 +2645,8 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	for _, relPath := range relPaths {
 		orphanPath := filepath.Join(mediaDir, relPath)
-		if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
-			t.Fatalf("writing orphan file: %v", err)
-		}
-		if err := os.Chtimes(orphanPath, old, old); err != nil {
-			t.Fatalf("chtimes: %v", err)
-		}
+		testutil.RequireNoError(t, os.WriteFile(orphanPath, []byte("orphan"), 0o644), "writing orphan file")
+		testutil.RequireNoError(t, os.Chtimes(orphanPath, old, old), "chtimes")
 		// エイジング窓を過ぎた記録として直接投入する（14 日待たずに検証するため）。
 		if _, err := pool.Exec(context.Background(),
 			"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)",
@@ -2872,9 +2665,7 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 		OrphanMTimeGrace:  7 * 24 * time.Hour,
 		OrphanAge:         14 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	for _, relPath := range relPaths {
 		if !fileExists(filepath.Join(mediaDir, relPath)) {
@@ -2893,9 +2684,7 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 		t.Errorf("OrphanFilesUnresolved = %v, want 2", got)
 	}
 	var breakerCount int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM circuit_breakers WHERE name = $1`, breaker.DeleteReconcile).Scan(&breakerCount); err != nil {
-		t.Fatalf("querying delete-reconcile breaker: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM circuit_breakers WHERE name = $1`, breaker.DeleteReconcile).Scan(&breakerCount), "querying delete-reconcile breaker")
 	if breakerCount != 0 {
 		t.Errorf("delete-reconcile breaker count = %d, want 0 (reported canonical orphans are not delete candidates)", breakerCount)
 	}
@@ -2944,9 +2733,7 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
 
 	logged := logBuf.String()
 	if got := strings.Count(logged, "aged canonical orphan needs review"); got != orphanFileLogBudget {
@@ -2994,9 +2781,7 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeleted(t *testing.T) {
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work(): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
 	for _, relPath := range paths {
 		if fileExists(filepath.Join(mediaDir, filepath.FromSlash(relPath))) {
 			t.Errorf("aged staging file %q still exists", relPath)
@@ -3084,9 +2869,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() before rescue: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() before rescue")
 	if _, err := inplace.Register(ctx, pgstoretest.Media(pool), mediaDir, inplace.Input{
 		Recording: inplace.Recording{
 			Source: "manual", Site: "default", NetworkID: 1, ServiceID: 2,
@@ -3152,12 +2935,8 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() while asset insert is uncommitted: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("committing media_asset: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() while asset insert is uncommitted")
+	testutil.RequireNoError(t, tx.Commit(ctx), "committing media_asset")
 	if got, err := os.ReadFile(path); err != nil || string(got) != string(content) {
 		t.Fatalf("canonical after insert commit = %q, %v; want file preserved", got, err)
 	}
@@ -3187,9 +2966,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 
 	relPath := mediapath.GeneratedAssetTempFilePrefix + "canceled-ctx"
 	orphanPath := filepath.Join(mediaDir, relPath)
-	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
-		t.Fatalf("writing orphan file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(orphanPath, []byte("orphan"), 0o644), "writing orphan file")
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
@@ -3231,9 +3008,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 		TrashRetention:    30 * 24 * time.Hour,
 		MaxDeletesPerPass: 2, // 候補は 3 件 > 2 なので発動するはず
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	for _, id := range assetIDs {
 		if got := singleCopyState(t, pool, id); got != "active" {
@@ -3286,9 +3061,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 
 	// ブレーカーを発動させておく（新規候補はゼロなので影響しないはず）。
 	// この legacy test worker は置き場名を省略しているので scope は空文字列。
-	if err := breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
-		t.Fatalf("tripping breaker: %v", err)
-	}
+	testutil.RequireNoError(t, breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}), "tripping breaker")
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
@@ -3298,9 +3071,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		TrashRetention: 30 * 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("stuck asset copy state = %q, want deleted (should resume regardless of breaker)", got)
@@ -3325,9 +3096,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (file is present, must not be touched)", got)
@@ -3352,12 +3121,8 @@ func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 	copyRelPath := "copies/test-store/original.m2ts"
 	legacyPath := filepath.Join(mediaDir, filepath.FromSlash(legacyRelPath))
 	copyPath := filepath.Join(mediaDir, filepath.FromSlash(copyRelPath))
-	if err := os.MkdirAll(filepath.Dir(copyPath), 0o755); err != nil {
-		t.Fatalf("creating copy path directory: %v", err)
-	}
-	if err := os.Rename(legacyPath, copyPath); err != nil {
-		t.Fatalf("moving physical file to the copy path: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(copyPath), 0o755), "creating copy path directory")
+	testutil.RequireNoError(t, os.Rename(legacyPath, copyPath), "moving physical file to the copy path")
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET rel_path = 'stale/logical-path.m2ts' WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("making logical path stale: %v", err)
 	}
@@ -3370,16 +3135,10 @@ func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 		RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir,
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 	var orphanCount, missingCount int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM orphan_files WHERE store = 'test-store' AND rel_path = $1`, copyRelPath).Scan(&orphanCount); err != nil {
-		t.Fatalf("checking copy path was not recorded as an orphan: %v", err)
-	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.store = 'test-store' AND c.media_asset_id = $1`, assetID).Scan(&missingCount); err != nil {
-		t.Fatalf("checking active copy was not recorded missing: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM orphan_files WHERE store = 'test-store' AND rel_path = $1`, copyRelPath).Scan(&orphanCount), "checking copy path was not recorded as an orphan")
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.store = 'test-store' AND c.media_asset_id = $1`, assetID).Scan(&missingCount), "checking active copy was not recorded missing")
 	if orphanCount != 0 || missingCount != 0 {
 		t.Fatalf("orphan/missing observations = %d/%d, want 0/0 for a present active store copy", orphanCount, missingCount)
 	}
@@ -3417,12 +3176,8 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 		MissingAssetAge: 24 * time.Hour,
 		MediaStoreName:  dbtest.StoreName,
 	}
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
@@ -3445,9 +3200,7 @@ func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesyst
 	t.Parallel()
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	recordingID := dbtest.Recording(t, pool)
 	profile := "h264"
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
@@ -3510,9 +3263,7 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
@@ -3567,9 +3318,7 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 1 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
@@ -3621,9 +3370,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() (pass 1) error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() (pass 1) error")
 	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 1 {
 		t.Fatalf("MediaAssetsMissing{kind=original} after pass 1 = %v, want 1 (aged candidate must be reported)", got)
 	}
@@ -3637,9 +3384,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 		t.Fatal(err)
 	}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() (pass 2) error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() (pass 2) error")
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
@@ -3672,9 +3417,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active", got)
@@ -3703,9 +3446,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDirNoActiveAssets_DoesNotT
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure); got != before {
 		t.Errorf("MissingAssetScanSuspectedStorageFailure changed from %v to %v, want unchanged (no active media_assets rows means nothing to be suspicious about)", before, got)
@@ -3736,9 +3477,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 	// このパスはゼロ件観測になり全損シグネチャでスキップされるはず。
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
@@ -3798,9 +3537,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure); got != suspectedBefore+1 {
 		t.Fatalf("MissingAssetScanSuspectedStorageFailure = %v, want %v (this pass must be suspected — empty mediaDir with an active asset)", got, suspectedBefore+1)
@@ -3821,9 +3558,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 
 	presentRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, presentRecordingID, "present/original.m2ts", []byte("data"))
@@ -3858,9 +3593,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 		MissingAssetAge: 24 * time.Hour,
 		MediaStoreName:  dbtest.StoreName,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	logged := logBuf.String()
 	if got := strings.Count(logged, "active media asset copy has no file on disk"); got != missingAssetLogBudget {
@@ -3917,9 +3650,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 0 {
 		t.Errorf("MediaAssetsMissing{kind=original} = %v, want 0 (the asset is no longer active, must not be reported as a missing-file candidate)", got)
@@ -3972,9 +3703,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MissingAssetAge: 24 * time.Hour,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	if err := pool.QueryRow(context.Background(),
@@ -4070,9 +3799,7 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	thumbID, oldPath, newPath := replaceThumbnailForOldGeneration(t, pool, mediaDir, "sites/default/rebuild.m2ts")
 	media := pgstoretest.Media(pool)
 	w := &DeleteReconcileWorker{
@@ -4083,18 +3810,14 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	}
 
 	// 作り直した直後は overlap の内側なので、旧世代のファイルを消さない。
-	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work inside the overlap window: %v", err)
-	}
+	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work inside the overlap window")
 	if !fileExists(oldPath) {
 		t.Fatal("old-generation file was removed inside the overlap window")
 	}
 
 	// 新世代のコピーが overlap より古くなると、旧世代だけが消える。
 	ageCurrentThumbnailCopy(t, pool, thumbID)
-	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work after the overlap window: %v", err)
-	}
+	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work after the overlap window")
 	if fileExists(oldPath) {
 		t.Error("old-generation file remains after the overlap window")
 	}
@@ -4118,14 +3841,10 @@ func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *te
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	thumbID, oldPath, newPath := replaceThumbnailForOldGeneration(t, pool, mediaDir, "sites/default/missing-current.m2ts")
 	ageCurrentThumbnailCopy(t, pool, thumbID)
-	if err := os.Remove(newPath); err != nil {
-		t.Fatalf("removing current-generation file: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(newPath), "removing current-generation file")
 	media := pgstoretest.Media(pool)
 	w := &DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, RecordingPurge: pgstoretest.Recordings(pool),
@@ -4133,9 +3852,7 @@ func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *te
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), TransferOverlap: time.Hour,
 		MediaStoreName: dbtest.StoreName,
 	}
-	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work with a missing current-generation file: %v", err)
-	}
+	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work with a missing current-generation file")
 	if !fileExists(oldPath) {
 		t.Fatal("old-generation file was removed while the current-generation copy is missing")
 	}
@@ -4154,9 +3871,7 @@ func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	var oldPaths []string
 	for _, rel := range []string{"sites/default/breaker-a.m2ts", "sites/default/breaker-b.m2ts"} {
 		thumbID, oldPath, _ := replaceThumbnailForOldGeneration(t, pool, mediaDir, rel)
@@ -4170,9 +3885,7 @@ func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), TransferOverlap: time.Hour,
 		MediaStoreName: dbtest.StoreName, MaxDeletesPerPass: 1,
 	}
-	if err := w.Work(ctx, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work")
 	for _, p := range oldPaths {
 		if !fileExists(p) {
 			t.Errorf("old-generation file %s was removed although the breaker should have withheld deletes", p)
