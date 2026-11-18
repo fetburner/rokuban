@@ -11,12 +11,6 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// reservationChannelTypeResp は channelType だけを見るデコード用型。
-type reservationChannelTypeResp struct {
-	Id          int64  `json:"id"`
-	ChannelType string `json:"channelType"`
-}
-
 // insertReservationWithChannelType は program_snapshots.channel_type を指定して
 // program_snapshots + reservations 行を直接作る（ruler を経由しない）。
 func insertReservationWithChannelType(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, channelType string) {
@@ -60,14 +54,14 @@ func TestReservation_ChannelTypeExposed(t *testing.T) {
 	insertReservationWithChannelType(t, pool, ctx, programID, "BS")
 
 	t.Run("(site, programId) 読み取り", func(t *testing.T) {
-		got := api.GetJSON[reservationChannelTypeResp](t, srv.URL+reservationPath(programID))
+		got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 		if got.ChannelType != "BS" {
 			t.Errorf("channelType = %q, want %q（未設定なら空文字が返る）", got.ChannelType, "BS")
 		}
 	})
 
 	t.Run("一覧", func(t *testing.T) {
-		got := api.GetJSON[[]reservationChannelTypeResp](t, srv.URL+"/api/reservations")
+		got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}

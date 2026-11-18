@@ -11,17 +11,9 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// reservationSourceResp は本ファイルの回帰テストで確認したい source フィールド
-// だけを持つ。reservationResp（reservations_overrides_test.go）は source を含めて
-// いないため、ここでは別に最小のデコード用型を定義する。
-type reservationSourceResp struct {
-	Id     int64  `json:"id"`
-	Source string `json:"source"`
-}
-
-func getReservationJSON(t *testing.T, srv *httptest.Server, programID int64) reservationSourceResp {
+func getReservationJSON(t *testing.T, srv *httptest.Server, programID int64) api.Reservation {
 	t.Helper()
-	got := api.GetJSON[reservationSourceResp](t, srv.URL+reservationPath(programID))
+	got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 	return got
 }
 

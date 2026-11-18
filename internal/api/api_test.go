@@ -242,20 +242,7 @@ func TestJSONBodyLimitAndExcludedRoutes(t *testing.T) {
 func TestHealthz(t *testing.T) {
 	srv := NewTestServer(t, nil)
 
-	resp, err := http.Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[HealthResponse](t, srv.URL+"/healthz")
 	if body.Status != "ok" {
 		t.Errorf("status = %q, want %q", body.Status, "ok")
 	}
@@ -264,20 +251,7 @@ func TestHealthz(t *testing.T) {
 func TestGetVersion(t *testing.T) {
 	srv := NewTestServer(t, nil)
 
-	resp, err := http.Get(srv.URL + "/api/version")
-	if err != nil {
-		t.Fatalf("GET /api/version: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body VersionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[VersionResponse](t, srv.URL+"/api/version")
 	if body.Version == "" {
 		t.Error("version is empty")
 	}
@@ -900,19 +874,7 @@ func TestSPA_APITakesPrecedence(t *testing.T) {
 		c.DistFS = newTestDistFS()
 	})
 
-	resp, err := http.Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	var body HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[HealthResponse](t, srv.URL+"/healthz")
 	if body.Status != "ok" {
 		t.Errorf("API /healthz should still work with SPA enabled, got status=%q", body.Status)
 	}

@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -28,24 +27,12 @@ func TestListCircuitBreakers_ReturnsStoreScopes(t *testing.T) {
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "s3main", "delete_reconcile", 11, 20, `{"total":11}`)
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "tokyo", "ruler_deletes", 12, 30, `{"total":12}`)
 
-	resp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/breakers status = %d, want 200", resp.StatusCode)
-	}
-
-	var got []circuitBreakerResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 	if len(got) != 3 {
 		t.Fatalf("len(got) = %d, want 3: %+v", len(got), got)
 	}
-	byStore := make(map[string]circuitBreakerResp, 2)
-	var siteBreaker *circuitBreakerResp
+	byStore := make(map[string]api.CircuitBreaker, 2)
+	var siteBreaker *api.CircuitBreaker
 	for i := range got {
 		switch got[i].Name {
 		case "delete_reconcile":

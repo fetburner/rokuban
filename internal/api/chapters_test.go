@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -80,23 +79,7 @@ func putChaptersWithVersion(t *testing.T, url, version string, spans []ChapterSp
 
 func getChapters(t *testing.T, url string) RecordingChapters {
 	t.Helper()
-	resp, err := doChapters(http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("GET %s status = %d, reading error body: %v", url, resp.StatusCode, err)
-		}
-		t.Fatalf("GET %s status = %d, want 200; body=%s", url, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var out RecordingChapters
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatalf("decoding GET %s: %v", url, err)
-	}
-	return out
+	return GetJSON[RecordingChapters](t, url)
 }
 
 // enableCMDetect は録画の policy 行を作り cm_detect を立てる。

@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -38,19 +37,7 @@ func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 	insertStorageSyncFixture(t, pool, ctx, "media", "/mnt/media", 1000, 400, 600)
 	insertStorageSyncFixture(t, pool, ctx, "scratch", "/var/tmp/rokuban", 100, 10, 90)
 
-	resp, err := http.Get(srv.URL + "/api/storage")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-
-	var got []api.StorageRoot
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.StorageRoot](t, srv.URL+"/api/storage")
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2", len(got))
 	}

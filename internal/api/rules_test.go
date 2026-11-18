@@ -57,13 +57,8 @@ func TestRulesCRUD(t *testing.T) {
 	}
 
 	// Get
-	resp, err = http.Get(srv.URL + "/api/rules/" + itoa(created.Id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("get status = %d", resp.StatusCode)
+	if status := GetStatus(t, srv.URL+"/api/rules/"+itoa(created.Id)); status != http.StatusOK {
+		t.Fatalf("get status = %d", status)
 	}
 
 	// Invalid regex (unbalanced paren — POSIX ARE 非互換)
@@ -227,13 +222,8 @@ func TestRulesCRUD(t *testing.T) {
 		t.Fatalf("delete id = %d", del.Id)
 	}
 
-	resp, err = http.Get(srv.URL + "/api/rules/" + itoa(created.Id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("get after delete = %d", resp.StatusCode)
+	if status := GetStatus(t, srv.URL+"/api/rules/"+itoa(created.Id)); status != http.StatusNotFound {
+		t.Fatalf("get after delete = %d", status)
 	}
 }
 

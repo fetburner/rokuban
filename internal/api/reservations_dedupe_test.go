@@ -22,23 +22,15 @@ import (
 // （base + overrides + program_intents.action）で、根拠 2 列は ruler が毎パス
 // 作り直す導出列をそのまま出す。
 
-// reservationDedupeResp は本ファイルで確認したいフィールドだけを持つ。
-// dedup 2 列と skip は他のテストのデコード用型に含まれていないので別に定義する。
-type reservationDedupeResp struct {
-	Skip                  bool     `json:"skip"`
-	DedupMatchRecordingId *int64   `json:"dedupMatchRecordingId"`
-	DedupSimilarity       *float32 `json:"dedupSimilarity"`
-}
-
-func getReservationDedupeJSON(t *testing.T, srv *httptest.Server, programID int64) reservationDedupeResp {
+func getReservationDedupeJSON(t *testing.T, srv *httptest.Server, programID int64) api.Reservation {
 	t.Helper()
-	got := api.GetJSON[reservationDedupeResp](t, srv.URL+reservationPath(programID))
+	got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 	return got
 }
 
-func listReservationsDedupeJSON(t *testing.T, srv *httptest.Server) []reservationDedupeResp {
+func listReservationsDedupeJSON(t *testing.T, srv *httptest.Server) []api.Reservation {
 	t.Helper()
-	got := api.GetJSON[[]reservationDedupeResp](t, srv.URL+"/api/reservations")
+	got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 	return got
 }
 

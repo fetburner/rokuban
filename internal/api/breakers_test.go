@@ -77,22 +77,6 @@ func existsCircuitBreakerForSite(t *testing.T, pool *pgxpool.Pool, ctx context.C
 	return n > 0
 }
 
-// circuitBreakerResp は GET /api/breakers のレスポンス要素から確認に要る部分だけを持つ。
-type circuitBreakerResp struct {
-	Site      string `json:"site"`
-	Store     string `json:"store"`
-	Name      string `json:"name"`
-	Pending   int    `json:"pending"`
-	Threshold int    `json:"threshold"`
-	Detail    struct {
-		Total    int `json:"total"`
-		Programs []struct {
-			ProgramID int64  `json:"programId"`
-			Title     string `json:"title"`
-		} `json:"programs"`
-	} `json:"detail"`
-}
-
 // 1. 発動しているブレーカーが一覧に現れ、detail の中身（total と programs）が読める。
 func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -103,19 +87,7 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 	detail := `{"total":42,"programs":[{"programId":1234,"title":"テスト番組"}]}`
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 42, 50, detail)
 
-	resp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-
-	var got []circuitBreakerResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 	if len(got) != 1 {
 		t.Fatalf("len(got) = %d, want 1", len(got))
 	}
@@ -129,8 +101,11 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 	if b.Detail.Total != 42 {
 		t.Errorf("detail.total = %d, want 42", b.Detail.Total)
 	}
-	if len(b.Detail.Programs) != 1 || b.Detail.Programs[0].ProgramID != 1234 || b.Detail.Programs[0].Title != "テスト番組" {
-		t.Errorf("detail.programs = %+v, want [{1234 テスト番組}]", b.Detail.Programs)
+	if b.Detail.Programs == nil || len(*b.Detail.Programs) != 1 {
+		t.Fatalf("detail.programs = %+v, want one program", b.Detail.Programs)
+	}
+	if p := (*b.Detail.Programs)[0]; p.ProgramId != 1234 || p.Title == nil || *p.Title != "テスト番組" {
+		t.Errorf("detail.programs = %+v, want [{1234 テスト番組}]", *b.Detail.Programs)
 	}
 }
 
@@ -158,7 +133,7 @@ func TestListCircuitBreakers_EmptyWhenNoneTripped(t *testing.T) {
 		t.Errorf("body = %q, want literal empty array (not null)", body)
 	}
 
-	var got []circuitBreakerResp
+	var got []api.CircuitBreaker
 	if err := json.Unmarshal(bodyBytes, &got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
@@ -346,10 +321,10 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			insertCircuitBreakerFixtureForSite(t, pool, ctx, scope, name, 7, 10, `{"total":7}`)
 
 			// 発動中として一覧に出る。
-			got := api.GetJSON[[]circuitBreakerResp](t, srv.URL+"/api/breakers")
+			got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 			found := false
 			for _, b := range got {
-				if b.Name == name {
+				if string(b.Name) == name {
 					found = true
 					break
 				}
@@ -406,26 +381,13 @@ func TestListCircuitBreakers_PassesThroughNameNotInEnumInsteadOfFailingWholeList
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 	insertCircuitBreakerFixture(t, pool, ctx, "not_a_declared_breaker", 1, 1, `{"total":1}`)
 
-	resp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, body)
-	}
-
-	var got []circuitBreakerResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2 (both breakers should be visible): %+v", len(got), got)
 	}
 	names := map[string]bool{}
 	for _, b := range got {
-		names[b.Name] = true
+		names[string(b.Name)] = true
 	}
 	if !names["ruler_deletes"] {
 		t.Error("ruler_deletes missing from response — an unrelated enum-unknown row should not hide it")

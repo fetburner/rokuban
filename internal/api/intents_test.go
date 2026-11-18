@@ -182,9 +182,7 @@ func TestDeleteEndedProgramIntents(t *testing.T) {
 // jsonb は Postgres 側で正規化されるので文字列比較はしない。
 func overridesPriority(t *testing.T, raw []byte) int {
 	t.Helper()
-	var m struct {
-		Priority *int `json:"priority"`
-	}
+	var m api.ProgramOverridesInput
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("unmarshalling overrides %s: %v", raw, err)
 	}

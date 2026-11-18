@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -88,24 +87,12 @@ func removalRequests(t *testing.T, pool *pgxpool.Pool, id int64) []string {
 
 func listedEncodedProfiles(t *testing.T, base string, id int64) []string {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", base, id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET recording status = %d", resp.StatusCode)
-	}
-	var rec struct {
-		EncodedAssets []struct {
-			Profile string `json:"profile"`
-		} `json:"encodedAssets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&rec); err != nil {
-		t.Fatalf("decoding recording: %v", err)
-	}
+	rec := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", base, id))
 	profiles := []string{}
-	for _, a := range rec.EncodedAssets {
+	if rec.EncodedAssets == nil {
+		return profiles
+	}
+	for _, a := range *rec.EncodedAssets {
 		profiles = append(profiles, a.Profile)
 	}
 	return profiles

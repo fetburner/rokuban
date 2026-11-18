@@ -9,12 +9,6 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// reservationSiteResp は site フィールドだけを見るデコード用型。
-type reservationSiteResp struct {
-	Id   int64  `json:"id"`
-	Site string `json:"site"`
-}
-
 // TestReservation_SiteExposed は API が予約の site を返すことを確認する。
 //
 // 容量超過の判定はサイトごとに独立している（docs/data.md §6.5）ため、予約一覧の
@@ -36,14 +30,14 @@ func TestReservation_SiteExposed(t *testing.T) {
 	insertReservationDirect(t, pool, ctx, programID, nil, 11500, 1150)
 
 	t.Run("単体取得", func(t *testing.T) {
-		got := api.GetJSON[reservationSiteResp](t, srv.URL+reservationPath(programID))
+		got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 		if got.Site != store.DefaultSite {
 			t.Errorf("site = %q, want %q（未設定なら空文字が返る）", got.Site, store.DefaultSite)
 		}
 	})
 
 	t.Run("一覧", func(t *testing.T) {
-		got := api.GetJSON[[]reservationSiteResp](t, srv.URL+"/api/reservations")
+		got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}

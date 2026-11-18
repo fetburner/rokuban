@@ -23,11 +23,6 @@ import (
 )
 
 // postLabelRule は分類ルールを作り、応答を返す。
-// labelValueKeyWire は value-key 応答の valueKey だけを、JSON のフィールド名のまま検査する型。
-type labelValueKeyWire struct {
-	ValueKey string `json:"valueKey"`
-}
-
 func postLabelRule(t *testing.T, srvURL string, body map[string]any) (*http.Response, LabelRule) {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -684,12 +679,12 @@ func TestLabelRule_ValueKeyIsTheTruncatedShelfKey(t *testing.T) {
 	}
 
 	q := url.Values{"value": {"ドラマ「半沢直樹」"}}
-	preview := GetJSON[labelValueKeyWire](t, srv.URL+"/api/label-rule-value-key?"+q.Encode())
+	preview := GetJSON[GetLabelRuleValueKey200JSONResponse](t, srv.URL+"/api/label-rule-value-key?"+q.Encode())
 	if preview.ValueKey != "ドラマ" {
 		t.Errorf("preview valueKey = %q, want %q", preview.ValueKey, "ドラマ")
 	}
 	q = url.Values{"value": {"【】"}}
-	preview = GetJSON[labelValueKeyWire](t, srv.URL+"/api/label-rule-value-key?"+q.Encode())
+	preview = GetJSON[GetLabelRuleValueKey200JSONResponse](t, srv.URL+"/api/label-rule-value-key?"+q.Encode())
 	if preview.ValueKey != "" {
 		t.Errorf("preview valueKey for symbols only = %q, want empty", preview.ValueKey)
 	}

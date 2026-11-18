@@ -573,15 +573,7 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	}
 	queued := func() int64 {
 		t.Helper()
-		var got api.EncodeQueueSummary
-		resp, err := http.Get(srv.URL + "/api/encode-queue")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatal(err)
-		}
+		got := api.GetJSON[api.EncodeQueueSummary](t, srv.URL+"/api/encode-queue")
 		return got.Queued + got.Running
 	}
 	if got := queued(); got != 0 {
@@ -636,15 +628,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	dbtest.SetRecordingMediaAssetState(t, pool, id, "original", "deleting")
 	queued := func() int64 {
 		t.Helper()
-		var got api.EncodeQueueSummary
-		resp, err := http.Get(srv.URL + "/api/encode-queue")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatal(err)
-		}
+		got := api.GetJSON[api.EncodeQueueSummary](t, srv.URL+"/api/encode-queue")
 		return got.Queued + got.Running
 	}
 	if got := queued(); got != 0 {
