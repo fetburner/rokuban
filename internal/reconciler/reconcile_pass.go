@@ -24,6 +24,8 @@ type PassWorker struct {
 	ScheduleSync   store.ScheduleSync
 	Breakers       store.Breakers
 	NeverScheduled store.NeverScheduledEvents
+	// LoopMarkers はパスの完走時刻を loop_success_markers に記録する（reconciler の行）。
+	LoopMarkers store.LoopMarkers
 
 	// StartDelayGrace は開始遅延検出器の猶予（reconciler.Config.StartDelayGrace）。
 	// 0 なら reconciler 側の既定値を使う（config.yml の
@@ -49,7 +51,7 @@ func (w *PassWorker) Work(ctx context.Context, args jobs.ReconcilePassArgs) erro
 		return err
 	}
 
-	rec := New(args.Site, client, w.ScheduleSync, w.Breakers, w.NeverScheduled, &Config{
+	rec := New(args.Site, client, w.ScheduleSync, w.Breakers, w.NeverScheduled, w.LoopMarkers, &Config{
 		StartDelayGrace: w.StartDelayGrace,
 	})
 	return rec.RunPass(ctx)

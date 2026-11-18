@@ -59,6 +59,7 @@ func TestPassWorker_CreatesSchedule(t *testing.T) {
 		ScheduleSync:   pgstoretest.ScheduleSync(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
+		LoopMarkers:    pgstoretest.Reservations(pool),
 	}
 	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.ReconcilePassArgs{Site: testSite}); err != nil {
 		t.Fatalf("PassWorker.Work: %v", err)
@@ -86,6 +87,7 @@ func TestPassWorker_SiteMismatch(t *testing.T) {
 		ScheduleSync:   pgstoretest.ScheduleSync(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
+		LoopMarkers:    pgstoretest.Reservations(pool),
 	}
 
 	job := jobs.ReconcilePassArgs{Site: "site-b"}
@@ -112,6 +114,7 @@ func TestPassWorker_SiteMatch(t *testing.T) {
 		ScheduleSync:   pgstoretest.ScheduleSync(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
+		LoopMarkers:    pgstoretest.Reservations(pool),
 	}
 
 	job := jobs.ReconcilePassArgs{Site: "site-a"}

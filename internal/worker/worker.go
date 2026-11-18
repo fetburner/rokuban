@@ -238,6 +238,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		ScheduleSync:    deps.ScheduleSync,
 		Breakers:        deps.Breakers,
 		NeverScheduled:  deps.NeverScheduled,
+		LoopMarkers:     deps.LoopMarkers,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
 	})
 	riveradapter.Register(workers, &watcher.SweepWorker{

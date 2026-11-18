@@ -96,7 +96,7 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 | `rokuban_reconcile_write_withheld_total{action,reason}` | Counter | DELETE の直前の観測し直しで DELETE / POST を見送った回数（理由別） |
 | `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動回数 |
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | いま止まっているか（1 = 発動中） |
-| `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
+| `rokuban_reconcile_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約同期（reconciler）のパスが site 単位で完走した最後の時刻（0 は未完走）。ScaledJob でもこの系列で停止を検出する |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | 開始時刻を過ぎたのに録画が始まっていない予約数 |
 | `rokuban_reconcile_start_delay_errors_total{site}` | Counter | 開始遅延の検出に失敗した回数 |
 | `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前から録画中の、未収束の予約数 |
@@ -130,9 +130,9 @@ ruler と record_sweep は、パスの所要時間と作成・削除の件数を
 | `rokuban_ruler_circuit_breaker_trips_total` | Counter | 大量削除ブレーカーの発動遷移回数 |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` | Gauge（DB） | `ruler_pass` が site 単位で成功した最後の時刻 |
 | `rokuban_sweep_last_success_timestamp_seconds{site}` | Gauge（DB） | `record_sweep` が site 単位で成功した最後の時刻 |
-| `rokuban_loop_pass_marker_scrape_errors_total{site}` | Counter（DB） | 成功 marker を scrape できなかった回数 |
+| `rokuban_loop_pass_marker_scrape_errors_total{site}` | Counter（DB） | ruler / record_sweep / reconciler の成功 marker を scrape できなかった回数 |
 
-DB を引く 2 つの時刻は、marker 未確立なら 0 になる。`rokuban_ruler_program_id_reuse_total` が数えるのは、終了済み snapshot と EPG の開始時刻が 24 時間超ずれた `program_id` の観測件数である。再利用を検出しても挙動は変えない。
+DB を引く時刻は、marker 未確立なら 0 になる。`rokuban_ruler_program_id_reuse_total` が数えるのは、終了済み snapshot と EPG の開始時刻が 24 時間超ずれた `program_id` の観測件数である。再利用を検出しても挙動は変えない。
 
 #### EPG とチューナーのメトリクス
 

@@ -74,9 +74,9 @@ CREATE TABLE schedule_sync_snapshots (
 
 ループの成功時刻は 1 つの衛星表に持つ。行は、ループの種類と scope の組ごとに、最後に成功した時刻を表す。
 
-loop は ruler・record_sweep・reconcile_pass・delete_reconcile のどれかである。scope は loop ごとに決まる。ruler と record_sweep はサイト、delete_reconcile は置き場の名前、reconcile_pass は全件パスの名前（encode / thumbnail / ts_scan）である。
+loop は ruler・record_sweep・reconciler・reconcile_pass・delete_reconcile のどれかである。scope は loop ごとに決まる。ruler・record_sweep・reconciler はサイトである。reconciler は予約同期のパスで、全件パスの reconcile_pass とは別の loop である。delete_reconcile は置き場の名前、reconcile_pass は全件パスの名前（encode / thumbnail / ts_scan）である。
 
-書き手は、そのループのパスが完了した後だけ書く。行は次の成功で上書きされ、行数は scope の数で頭打ちになる。4 つの loop の行は同じ寿命なので、1 つの表にまとめる（不変条件 12）。置き場を持たない全件パスは、scope に pass の名前を入れる。空の値を番兵にして同じ表の別の意味に使うことはしない。
+書き手は、そのループのパスが完了した後だけ書く。行は次の成功で上書きされ、行数は scope の数で頭打ちになる。すべての loop の行は同じ寿命なので、1 つの表にまとめる（不変条件 12）。置き場を持たない全件パスは、scope に pass の名前を入れる。空の値を番兵にして同じ表の別の意味に使うことはしない。
 
 行の存在は「その scope が一度は成功した」だけを主張する。未成功の scope には行を作らない。ループの鮮度を、予約・record の観測・録画履歴の行の有無から推測しないための表である。
 

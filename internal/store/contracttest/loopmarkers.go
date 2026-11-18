@@ -35,7 +35,7 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 		deleteStore = "contract-loop-markers-store"
 		pass        = store.ReconcilePassEncode
 	)
-	allLoops := []string{store.LoopRuler, store.LoopRecordSweep, store.LoopReconcilePass, store.LoopDeleteReconcile}
+	allLoops := []string{store.LoopRuler, store.LoopRecordSweep, store.LoopReconcilePass, store.LoopDeleteReconcile, store.LoopReconciler}
 
 	// assertScopes は loop に記録された scope の集合が want と一致することを見る。
 	assertScopes := func(t *testing.T, f LoopMarkerFixture, loop string, want ...string) {
@@ -83,11 +83,21 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 	assertScopes(t, f, store.LoopDeleteReconcile, deleteStore)
 	assertScopes(t, f, store.LoopReconcilePass, pass)
 
+	if err := f.Store.MarkReconciler(ctx, site); err != nil {
+		t.Fatalf("MarkReconciler(%q): %v", site, err)
+	}
+	assertScopes(t, f, store.LoopReconciler, site)
+	assertScopes(t, f, store.LoopRuler, site, otherSite)
+	assertScopes(t, f, store.LoopRecordSweep, site)
+	assertScopes(t, f, store.LoopReconcilePass, pass)
+	assertScopes(t, f, store.LoopDeleteReconcile, deleteStore)
+
 	for _, m := range []struct{ loop, scope string }{
 		{store.LoopRuler, site},
 		{store.LoopRecordSweep, site},
 		{store.LoopReconcilePass, pass},
 		{store.LoopDeleteReconcile, deleteStore},
+		{store.LoopReconciler, site},
 	} {
 		got, err := f.Store.ReadLoopMarkers(ctx, m.loop)
 		if err != nil {
@@ -110,6 +120,7 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 	}{
 		{store.LoopRecordSweep, site, func() error { return f.Store.MarkRecordSweep(ctx, site) }},
 		{store.LoopReconcilePass, pass, func() error { return f.Store.MarkReconcilePass(ctx, pass) }},
+		{store.LoopReconciler, site, func() error { return f.Store.MarkReconciler(ctx, site) }},
 	} {
 		first, err := f.Store.ReadLoopMarkers(ctx, m.loop)
 		if err != nil {

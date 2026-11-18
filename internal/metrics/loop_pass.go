@@ -15,7 +15,7 @@ import (
 // Prometheus の scrape timeout（既定 10 秒）より短くする。
 const loopPassQueryTimeout = 5 * time.Second
 
-// LoopPassCollector は ruler / record_sweep の成功 marker を scrape ごとに DB から
+// LoopPassCollector は ruler / record_sweep / reconciler の成功 marker を scrape ごとに DB から
 // 読み直す。ScaledJob の --once で処理した後も、常駐プロセスの /metrics から同じ
 // site の成功鮮度を観測できる。
 //
@@ -25,12 +25,13 @@ type LoopPassCollector struct {
 	markers store.LoopMarkers
 	site    string
 
-	ruler  *prometheus.Desc
-	sweep  *prometheus.Desc
-	errors prometheus.Counter
+	ruler      *prometheus.Desc
+	sweep      *prometheus.Desc
+	reconciler *prometheus.Desc
+	errors     prometheus.Counter
 }
 
-// NewLoopPassCollector は 1 サイト分の ruler / record_sweep collector を作る。
+// NewLoopPassCollector は 1 サイト分の ruler / record_sweep / reconciler collector を作る。
 func NewLoopPassCollector(markers store.LoopMarkers, site string) *LoopPassCollector {
 	labels := prometheus.Labels{"site": site}
 	return &LoopPassCollector{
@@ -46,9 +47,14 @@ func NewLoopPassCollector(markers store.LoopMarkers, site string) *LoopPassColle
 			"Unix time of the last successful record_sweep pass for this site. Zero means no pass has completed.",
 			nil, labels,
 		),
+		reconciler: prometheus.NewDesc(
+			"rokuban_reconcile_last_success_timestamp_seconds",
+			"Unix time of the last completed reconciler pass for this site. Zero means no pass has completed.",
+			nil, labels,
+		),
 		errors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name:        "rokuban_loop_pass_marker_scrape_errors_total",
-			Help:        "Failures while querying ruler or record_sweep success markers during a scrape.",
+			Help:        "Failures while querying ruler, record_sweep or reconciler success markers during a scrape.",
 			ConstLabels: labels,
 		}),
 	}
@@ -58,6 +64,7 @@ func NewLoopPassCollector(markers store.LoopMarkers, site string) *LoopPassColle
 func (c *LoopPassCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.ruler
 	ch <- c.sweep
+	ch <- c.reconciler
 	c.errors.Describe(ch)
 }
 
@@ -78,12 +85,14 @@ func (c *LoopPassCollector) Collect(ch chan<- prometheus.Metric) {
 
 	ch <- prometheus.MustNewConstMetric(c.ruler, prometheus.GaugeValue, result.rulerAt)
 	ch <- prometheus.MustNewConstMetric(c.sweep, prometheus.GaugeValue, result.sweepAt)
+	ch <- prometheus.MustNewConstMetric(c.reconciler, prometheus.GaugeValue, result.reconcilerAt)
 	c.errors.Collect(ch)
 }
 
 type loopPassResult struct {
-	rulerAt float64
-	sweepAt float64
+	rulerAt      float64
+	sweepAt      float64
+	reconcilerAt float64
 }
 
 func (c *LoopPassCollector) read(ctx context.Context) (loopPassResult, error) {
@@ -95,9 +104,14 @@ func (c *LoopPassCollector) read(ctx context.Context) (loopPassResult, error) {
 	if err != nil {
 		return loopPassResult{}, fmt.Errorf("reading record sweep markers: %w", err)
 	}
+	reconcilers, err := c.markers.ReadLoopMarkers(ctx, store.LoopReconciler)
+	if err != nil {
+		return loopPassResult{}, fmt.Errorf("reading reconciler markers: %w", err)
+	}
 
 	return loopPassResult{
-		rulerAt: unixSecondsOrZero(rulers[c.site]),
-		sweepAt: unixSecondsOrZero(sweeps[c.site]),
+		rulerAt:      unixSecondsOrZero(rulers[c.site]),
+		sweepAt:      unixSecondsOrZero(sweeps[c.site]),
+		reconcilerAt: unixSecondsOrZero(reconcilers[c.site]),
 	}, nil
 }

@@ -83,6 +83,7 @@ type Reconciler struct {
 	scheduleSync   store.ScheduleSync
 	breakers       store.Breakers
 	neverScheduled store.NeverScheduledEvents
+	markers        store.LoopMarkers
 	cfg            Config
 }
 
@@ -90,7 +91,7 @@ type Reconciler struct {
 //
 // 呼び出し元の PassWorker はジョブ引数のサイト 1 つに
 // 対して 1 個の Reconciler を作る（ジョブの排他がサイト単位のため）。
-func New(site string, mc *mirakc.Client, scheduleSync store.ScheduleSync, breakers store.Breakers, neverScheduled store.NeverScheduledEvents, cfg *Config) *Reconciler {
+func New(site string, mc *mirakc.Client, scheduleSync store.ScheduleSync, breakers store.Breakers, neverScheduled store.NeverScheduledEvents, markers store.LoopMarkers, cfg *Config) *Reconciler {
 	c := defaultConfig()
 	if cfg != nil {
 		if cfg.MaxRecreatesPerPass > 0 {
@@ -112,6 +113,7 @@ func New(site string, mc *mirakc.Client, scheduleSync store.ScheduleSync, breake
 		scheduleSync:   scheduleSync,
 		breakers:       breakers,
 		neverScheduled: neverScheduled,
+		markers:        markers,
 		cfg:            c,
 	}
 }
@@ -164,6 +166,12 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 	startDelayed := r.observeStartDelays(ctx, reservations)
 	r.observePendingDiff(missing, len(toDelete), deleteDeferred, updateDiff, stateGuarded)
 	r.logCarriedOver(deleteDeferred, stateGuarded, limitCarriedOver, endGuarded)
+
+	// 完走の印は、パスの末尾でだけ書く。listDesired より前（snapshot の確定まで）で書くと、
+	// 途中で失敗したパスが完走として見えてしまう。
+	if err := r.markers.MarkReconciler(ctx, r.site); err != nil {
+		return fmt.Errorf("marking reconciler pass: %w", err)
+	}
 
 	slog.Info("reconciler: pass complete",
 		"desired", len(reservations),
@@ -408,7 +416,6 @@ func (r *Reconciler) observeStartDelays(ctx context.Context, reservations []desi
 // 「ゼロに戻らない = 異常」というこのゲージの読み方が壊れる
 // （metrics.ReconcilePendingDiff のコメント参照）。
 func (r *Reconciler) observePendingDiff(missing, stale, deleteDeferred, updateDiff, stateGuarded int) {
-	metrics.ReconcileLastPass.SetToCurrentTime()
 	metrics.ReconcilePendingDiff.WithLabelValues("create").Set(float64(missing))
 	metrics.ReconcilePendingDiff.WithLabelValues("delete").Set(float64(stale))
 	metrics.ReconcilePendingDiff.WithLabelValues("delete_deferred").Set(float64(deleteDeferred))
