@@ -756,7 +756,9 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work = %v, want nil (skip without running ffmpeg)")
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
+		t.Fatalf("Work = %v, want nil (skip without running ffmpeg)", err)
+	}
 	if _, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     stringPtr("cut"),
