@@ -15,6 +15,12 @@ import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
 import { programsQueryKeyPrefix } from '@/lib/events'
 import { routeTree } from '@/routes'
+import {
+  type ApiRequest,
+  type ApiRouteBodies,
+  type ApiRoutes,
+  stubApi,
+} from '@/test/api-stub'
 
 /**
  * 「今」を昼間の安定した瞬間に固定する（issue #274）。
@@ -204,17 +210,6 @@ function overage(
   }
 }
 
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
-}
-
-function noContentResponse(): Response {
-  return new Response(null, { status: 204 })
-}
-
 function errorResponse(status: number, message: string): Response {
   return new Response(JSON.stringify({ error: message }), {
     status,
@@ -239,136 +234,79 @@ function deferred<T>() {
 const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
 
 /**
- * stubApi は番組・サービス・予約・容量超過を URL で振り分ける。
+ * programsRoutes は programs のテストが共通に使う応答。ページ固有の近似（局・
+ * 予約・超過・プロファイルの既定値）はここに置く。
  *
- * `/api/sites/default/programs` は時間窓と serviceId で実際に絞る。絞り込みが
- * サーバー側に移ったので、`serviceId` を無視するスタブにすると「選ぶと他局の
- * 番組が消える」という実装の主張をテストが検証できない（クライアント側には
- * もう適用点が無い）。`serviceId` は複数指定可（`getAll`）で、未指定なら
- * 絞り込みなし。
- *
- * 予約 / 取消は `PUT /api/sites/default/programs/{id}/intent` を叩く
- * （issue #29。reservations 行は同期的に作らない）。テストは常に成功させる。
- * 番組表の重なり警告は `/api/reservations` から導出するため、番組別 overlaps
- * エンドポイントはスタブせず、誤って行ごとに取得するとテストが失敗するようにする。
- *
- * `programs` は絞り込み対象の番組集合（既定は `allPrograms`）。日付ジャンプの
- * テストは絶対時刻で配置した専用の番組を渡す。`onProgramsCall` は
- * `/api/sites/default/programs` への何回目の呼び出しかを受け取り、Response を
- * 返せばそれで応答を差し替える（続きの読み込み失敗のテスト用）。
- *
- * `overridesPatchResponse` は `PATCH /api/sites/default/programs/{id}/overrides`
- * の応答を差し替える（issue #132 の「PATCH が失敗しても予約は成立する」テスト用）。
- * 未指定なら常に 204。
- *
- * `extraServices` は `services`（固定 2 局）に追加で載せるサービス（既定は
- * 追加無し）。ピッカーの定義域テスト（issue #231 のレビュー must-fix）だけが
- * `hasPrograms: false` の局を注入するために使う。
- *
- * `intentPutResponse` は `PUT /api/sites/default/programs/{id}/intent`
- * （予約 / 予約取消）の応答を差し替える（issue #457 のサーバー本文つき失敗テスト用）。
- * 未指定なら常に 204。
- *
- * 予約状態不明時の表示・操作停止・再試行のテストは、`stubApi()` が返す
- * `fetchMock` に `mockImplementation` で `/api/reservations` だけを差し替える
- * イディオムを使う（「/api/sites の失敗を…」テスト等と同じ形。位置引数を
- * 増やすより、必要なテストだけがその場で差し替える方が読める）。
- *
+ * 予約 / 取消（PUT・DELETE の intent）と overrides の PATCH は、既定では 204
+ * No Content（値 undefined）を返す。失敗させるテストは同じキーを関数で上書きする。
  */
-function stubApi(
-  reservations: Reservation[] = [],
-  overages: CapacityOverage[] = [],
-  programs: ProgramListItem[] = allPrograms,
-  onProgramsCall?: (callIndex: number) => Response | undefined,
-  overridesPatchResponse?: () => Response,
-  extraServices: Service[] = [],
-  intentPutResponse?: () => Response,
-  onSearchCall?: (request: unknown, callIndex: number) => Response | Promise<Response>,
-  servicesResponse?: () => Response | Promise<Response>,
+const programsRoutes = {
+  'GET /api/sites': ['default'],
+  'GET /api/sites/default/services': services,
+  'GET /api/reservations': [],
+  'GET /api/capacity/overages': [],
+  'GET /api/encode-profiles': encodeProfiles,
+  // AppShell が live ナビの出し分けに読む。programs のテストは live を前提にする。
+  'GET /api/capabilities': { live: true, cmDetect: false },
+  'POST /api/programs/search': [],
+  'PATCH /api/sites/default/programs/:programId/overrides': undefined,
+  'PUT /api/sites/default/programs/:programId/intent': undefined,
+  'DELETE /api/sites/default/programs/:programId/intent': undefined,
+  ...programRoutes(allPrograms),
+} satisfies ApiRoutes
+
+/**
+ * programRoutes は番組集合 `programs` に対する一覧と単体取得の応答を作る。
+ *
+ * 一覧は時間窓（`start` / `end`）と serviceId（複数指定可、未指定なら絞り込み
+ * なし）で実際に絞る。絞り込みをサーバーに移したあとも、クライアントの窓と局の
+ * 組み立てをテストで検証できるように、近似をここに置く。`onCall` は一覧の何回目の
+ * 呼び出し（1 始まり）かを受け取る。2xx は一覧の body を、非 2xx は Response を返す。
+ * 返した値でその呼び出しの応答を差し替える（続きの読み込み失敗のテスト用）。
+ */
+function programRoutes(
+  programs: ProgramListItem[],
+  onCall?: (
+    callIndex: number,
+  ) => ProgramListItem[] | Response | Promise<ProgramListItem[] | Response> | undefined,
 ) {
-  let programsCallIndex = 0
-  let searchCallIndex = 0
-  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input), 'http://localhost')
-    if (url.pathname === '/api/programs/search' && init?.method === 'POST') {
-      const request = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
-      const response = onSearchCall?.(request, ++searchCallIndex) ?? jsonResponse([])
-      return Promise.resolve(response)
-    }
-    // ページが GET /api/sites を解決する
-    // （issue #184 M4-12）。ページを本物の routeTree（`RouterProvider`）越しに
-    // 描く（`useSearch`/`useNavigate` を使うため）ようになったので必要になった
-    // （`routes.test.tsx` の '/search' テストと同じ理由）。
-    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
-    if (url.pathname === '/api/sites/default/services') {
-      if (servicesResponse !== undefined) return Promise.resolve(servicesResponse())
-      return Promise.resolve(jsonResponse([...services, ...extraServices]))
-    }
-    // AppShell がナビゲーションの出し分けに読む（issue #209）。未 stub でも
-    // react-query が飲み込んで緑になる（`useLiveEnabled` が fail-closed で false
-    // に倒れる）が、明示的に返しておく
-    if (url.pathname === '/api/capabilities') {
-      return Promise.resolve(jsonResponse({ live: true }))
-    }
-    // AppShell が全ページの手前でサーキットブレーカーの有無を読む
-    // （`pages/recordings.test.tsx` の fetchMock と同じ stub）
-    if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
-    if (url.pathname === '/api/reservations') {
-      return Promise.resolve(jsonResponse(reservations))
-    }
-    if (url.pathname === '/api/capacity/overages') {
-      return Promise.resolve(jsonResponse(overages))
-    }
-    if (url.pathname === '/api/encode-profiles') {
-      return Promise.resolve(jsonResponse(encodeProfiles))
-    }
-    // 行を展開すると ProgramDetail（program-row.tsx）が単体取得を叩く
-    // （段階的開示。issue #132 のテストで行を展開するので必要になった）。
-    const singleProgramMatch = /^\/api\/sites\/default\/programs\/(\d+)$/.exec(url.pathname)
-    if (singleProgramMatch) {
-      const found = programs.find((p) => p.programId === Number(singleProgramMatch[1]))
-      return Promise.resolve(
-        found ? jsonResponse(found) : new Response(null, { status: 404 }),
-      )
-    }
-    if (/^\/api\/sites\/default\/programs\/\d+\/intent$/.test(url.pathname) && init?.method === 'PUT') {
-      return Promise.resolve(intentPutResponse?.() ?? noContentResponse())
-    }
-    // ルール由来の Undo（DELETE .../intent。「意見を取り下げてルール評価に
-    // 戻す」）は常に成功させる --- 失敗経路は PUT 側（手動予約の Undo）で
-    // 確認済みで、同じ onError を共有する。
-    if (
-      /^\/api\/sites\/default\/programs\/\d+\/intent$/.test(url.pathname) &&
-      init?.method === 'DELETE'
-    ) {
-      return Promise.resolve(noContentResponse())
-    }
-    if (
-      /^\/api\/sites\/default\/programs\/\d+\/overrides$/.test(url.pathname) &&
-      init?.method === 'PATCH'
-    ) {
-      return Promise.resolve(overridesPatchResponse?.() ?? noContentResponse())
-    }
-    if (url.pathname === '/api/sites/default/programs') {
-      programsCallIndex++
-      const override = onProgramsCall?.(programsCallIndex)
-      if (override) return Promise.resolve(override)
+  let callIndex = 0
+  return {
+    'GET /api/sites/default/programs': ({ url }: ApiRequest) => {
+      const override = onCall?.(++callIndex)
+      if (override) return override
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
       const serviceIds = url.searchParams.getAll('service').map(Number)
-      const matched = programs.filter(
+      return programs.filter(
         (p) =>
           new Date(p.endAt).getTime() > start &&
           new Date(p.startAt).getTime() < end &&
-          (serviceIds.length === 0 ||
-            serviceIds.includes(p.networkId * 100_000 + p.serviceId)),
+          (serviceIds.length === 0 || serviceIds.includes(p.networkId * 100_000 + p.serviceId)),
       )
-      return Promise.resolve(jsonResponse(matched))
-    }
-    throw new Error(`unexpected fetch: ${url.pathname}`)
-  })
-  globalThis.fetch = fetchMock as unknown as typeof fetch
-  return fetchMock
+    },
+    'GET /api/sites/default/programs/:programId': ({ params }: ApiRequest) =>
+      programs.find((p) => p.programId === Number(params.programId)) ??
+      new Response(null, { status: 404 }),
+  }
+}
+
+/**
+ * searchRoute は `POST /api/programs/search` の応答。`onCall` は要求の本文と
+ * 何回目の検索か（1 始まり）を受け取る。2xx は body をそのまま返し、非 2xx と
+ * 遅延は Response / Promise<Response> で返す。
+ */
+function searchRoute(
+  onCall: (
+    request: unknown,
+    callIndex: number,
+  ) =>
+    | ApiRouteBodies['POST /api/programs/search']
+    | Response
+    | Promise<ApiRouteBodies['POST /api/programs/search'] | Response>,
+) {
+  let callIndex = 0
+  return ({ body }: ApiRequest) => onCall(body, ++callIndex)
 }
 
 /**
@@ -469,22 +407,21 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 
 describe('ProgramsPage の表示形式', () => {
   it('条件なし・空 cond では全件検索 API を呼ばない', async () => {
-    const fetchMock = stubApi()
+    const { calls } = stubApi(programsRoutes)
     renderPage(`/programs?cond=${encodeURIComponent('{}')}`)
 
     await screen.findByText(soon.name)
-    expect(
-      fetchMock.mock.calls.filter(
-        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/programs/search',
-      ),
-    ).toHaveLength(0)
+    expect(calls.filter((call) => call.url.pathname === '/api/programs/search')).toHaveLength(0)
   })
 
   it('条件チップを解除すると URL の cond を消し、その後は一致検索を追加しない', async () => {
     const searchRequests: unknown[] = []
-    const fetchMock = stubApi([], [], allPrograms, undefined, undefined, [], undefined, (request) => {
-      searchRequests.push(request)
-      return jsonResponse([])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'POST /api/programs/search': searchRoute((request) => {
+        searchRequests.push(request)
+        return []
+      }),
     })
     const { router } = renderPage(
       `/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
@@ -496,11 +433,7 @@ describe('ProgramsPage の表示形式', () => {
 
     expect(searchRequests).toEqual([{ genres: [7] }])
     expect(screen.queryByTestId('condition-lens')).not.toBeInTheDocument()
-    expect(
-      fetchMock.mock.calls.filter(
-        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/programs/search',
-      ),
-    ).toHaveLength(1)
+    expect(calls.filter((call) => call.url.pathname === '/api/programs/search')).toHaveLength(1)
   })
 
   it('凡例のジャンルは URL 条件になり、API 応答だけが一致セルを決める', async () => {
@@ -517,9 +450,13 @@ describe('ProgramsPage の表示形式', () => {
       isFree: true,
     }
     const searchRequests: unknown[] = []
-    stubApi([], [], [animeFromApi, animeOmittedByApi], undefined, undefined, [], undefined, (request) => {
-      searchRequests.push(request)
-      return jsonResponse([match])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([animeFromApi, animeOmittedByApi]),
+      'POST /api/programs/search': searchRoute((request) => {
+        searchRequests.push(request)
+        return [match]
+      }),
     })
     stubMatchMedia(true)
     const { router } = renderPage('/programs?view=grid')
@@ -554,12 +491,16 @@ describe('ProgramsPage の表示形式', () => {
       isFree: true,
     }
     let fail = true
-    stubApi([], [], [first, second], undefined, undefined, [], undefined, () => {
-      if (fail) {
-        fail = false
-        return errorResponse(500, '検索に失敗')
-      }
-      return jsonResponse([match])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([first, second]),
+      'POST /api/programs/search': searchRoute(() => {
+        if (fail) {
+          fail = false
+          return errorResponse(500, '検索に失敗')
+        }
+        return [match]
+      }),
     })
     stubMatchMedia(true)
     renderPage(`/programs?view=grid&cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`)
@@ -588,14 +529,18 @@ describe('ProgramsPage の表示形式', () => {
       name: first.name,
       isFree: true,
     }
-    let release: (response: Response) => void = () => {}
-    stubApi([], [], [first, second], undefined, undefined, [], undefined, (_request, callIndex) =>
-      callIndex === 1
-        ? jsonResponse([match])
-        : new Promise<Response>((resolve) => {
-            release = resolve
-          }),
-    )
+    let release: (body: ProgramSearchMatch[]) => void = () => {}
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([first, second]),
+      'POST /api/programs/search': searchRoute((_request, callIndex) =>
+        callIndex === 1
+          ? [match]
+          : new Promise<ProgramSearchMatch[]>((resolve) => {
+              release = resolve
+            }),
+      ),
+    })
     stubMatchMedia(true)
     const { queryClient } = renderPage(
       `/programs?view=grid&cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
@@ -613,7 +558,7 @@ describe('ProgramsPage の表示形式', () => {
     )
     expect(secondCell).toHaveAttribute('data-condition-match', 'false')
     expect(screen.getByText('1 件一致')).toBeInTheDocument()
-    release(jsonResponse([match]))
+    release([match])
   })
 
   it('バックグラウンド再取得中も、リストは非一致番組を再表示しない', async () => {
@@ -629,14 +574,18 @@ describe('ProgramsPage の表示形式', () => {
       name: first.name,
       isFree: true,
     }
-    let release: (response: Response) => void = () => {}
-    stubApi([], [], [first, second], undefined, undefined, [], undefined, (_request, callIndex) =>
-      callIndex === 1
-        ? jsonResponse([match])
-        : new Promise<Response>((resolve) => {
-            release = resolve
-          }),
-    )
+    let release: (body: ProgramSearchMatch[]) => void = () => {}
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([first, second]),
+      'POST /api/programs/search': searchRoute((_request, callIndex) =>
+        callIndex === 1
+          ? [match]
+          : new Promise<ProgramSearchMatch[]>((resolve) => {
+              release = resolve
+            }),
+      ),
+    })
     const { queryClient } = renderPage(
       `/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
     )
@@ -651,7 +600,7 @@ describe('ProgramsPage の表示形式', () => {
     )
     expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
     expect(screen.getByText('1 件一致')).toBeInTheDocument()
-    release(jsonResponse([match]))
+    release([match])
   })
 
   it('一致件数はチャンネル絞り込みの外の番組を数えない', async () => {
@@ -668,9 +617,11 @@ describe('ProgramsPage の表示形式', () => {
       isFree: true,
     })
     const cond = encodeURIComponent(JSON.stringify({ genres: [7] }))
-    stubApi([], [], [first, second], undefined, undefined, [], undefined, () =>
-      jsonResponse([toMatch(first), toMatch(second)]),
-    )
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([first, second]),
+      'POST /api/programs/search': searchRoute(() => [toMatch(first), toMatch(second)]),
+    })
     stubMatchMedia(true)
     const narrowed = renderPage(`/programs?view=grid&service=3273601024&cond=${cond}`)
     await screen.findByText('1 件一致')
@@ -699,11 +650,12 @@ describe('ProgramsPage の表示形式', () => {
       () => new Promise<Response>(() => {}),
       () => errorResponse(500, 'サービス一覧に失敗'),
     ]) {
-      stubApi(
-        [], [], [first], undefined, undefined, [], undefined,
-        () => jsonResponse([match]),
-        servicesResponse,
-      )
+      stubApi({
+        ...programsRoutes,
+        ...programRoutes([first]),
+        'POST /api/programs/search': searchRoute(() => [match]),
+        'GET /api/sites/default/services': servicesResponse,
+      })
       const view = renderPage(`/programs?service=3273601024&cond=${cond}`)
       await screen.findByText('1 件一致')
       expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('1件')
@@ -724,9 +676,11 @@ describe('ProgramsPage の表示形式', () => {
       name: animeFromApi.name,
       isFree: true,
     }
-    stubApi([], [], [animeFromApi, animeOmittedByApi], undefined, undefined, [], undefined, () =>
-      jsonResponse([match]),
-    )
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([animeFromApi, animeOmittedByApi]),
+      'POST /api/programs/search': searchRoute(() => [match]),
+    })
     renderPage(`/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`)
 
     expect(await screen.findByText('一致するアニメ')).toBeInTheDocument()
@@ -748,9 +702,11 @@ describe('ProgramsPage の表示形式', () => {
       name: laterMatch.name,
       isFree: true,
     }
-    stubApi([], [], [first, second, laterMatch], undefined, undefined, [], undefined, () =>
-      jsonResponse([match]),
-    )
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([first, second, laterMatch]),
+      'POST /api/programs/search': searchRoute(() => [match]),
+    })
     renderPage(`/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`)
 
     expect(
@@ -762,21 +718,23 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('番組リストの録画中番組から対応する録画詳細を開ける', async () => {
-    const fetchMock = stubApi([], [], [airingSoon])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([airingSoon]),
+    })
     renderPage()
 
     const row = await screen.findByTestId('program-row')
     const link = await within(row).findByRole('link', { name: 'ニュース7の録画を開く' })
     expect(link).toHaveAttribute('href', '/recordings/42')
-    expect(
-      fetchMock.mock.calls.some(
-        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/recordings',
-      ),
-    ).toBe(false)
+    expect(calls.some((call) => call.url.pathname === '/api/recordings')).toBe(false)
   })
 
   it('番組表の番組ダイアログからも対応する録画詳細を開ける', async () => {
-    stubApi([], [], [airingSoon])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([airingSoon]),
+    })
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
 
@@ -790,10 +748,13 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('予約一覧から重なり警告を導出し、番組別 overlaps API を取得しない', async () => {
-    const fetchMock = stubApi([
-      reservation(soon.programId, 'ニュース7'),
-      reservation(alsoSoon.programId, '手話ニュース'),
-    ])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [
+        reservation(soon.programId, 'ニュース7'),
+        reservation(alsoSoon.programId, '手話ニュース'),
+      ],
+    })
     const { queryClient } = renderPage()
 
     await reservationsSettled(queryClient)
@@ -807,27 +768,18 @@ describe('ProgramsPage の表示形式', () => {
       within(reservedRow).getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
     ).toBeInTheDocument()
 
-    expect(
-      fetchMock.mock.calls.filter((call) =>
-        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overlaps'),
-      ),
-    ).toHaveLength(0)
+    expect(calls.filter((call) => call.url.pathname.endsWith('/overlaps'))).toHaveLength(0)
   })
 
   it('取消後は reservations の invalidate によって重なり警告も更新される', async () => {
     const reservations = [reservation(alsoSoon.programId, '手話ニュース')]
-    const fetchMock = stubApi(
-      reservations,
-      [],
-      allPrograms,
-      undefined,
-      undefined,
-      [],
-      () => {
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': reservations,
+      'PUT /api/sites/default/programs/:programId/intent': () => {
         reservations.length = 0
-        return noContentResponse()
       },
-    )
+    })
     const { queryClient } = renderPage()
 
     await reservationsSettled(queryClient)
@@ -839,11 +791,7 @@ describe('ProgramsPage の表示形式', () => {
     await waitFor(() => {
       expect(screen.queryByText(/同じ時間帯に1件の予約があります/)).not.toBeInTheDocument()
     })
-    expect(
-      fetchMock.mock.calls.filter((call) =>
-        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overlaps'),
-      ),
-    ).toHaveLength(0)
+    expect(calls.filter((call) => call.url.pathname.endsWith('/overlaps'))).toHaveLength(0)
   })
 
   it('予約一覧が未取得の間は重なり警告を出さない', async () => {
@@ -851,19 +799,14 @@ describe('ProgramsPage の表示形式', () => {
     // 区別しない（docs/frontend/programs.md）。ここで固定したいのは実際に
     // 保証していること --- 未取得の間は（後で重なりが分かるとしても）
     // 警告を描かない、という 1 点。
-    let resolveReservations!: (response: Response) => void
-    const pending = new Promise<Response>((resolve) => {
+    let resolveReservations!: (body: Reservation[]) => void
+    const pending = new Promise<Reservation[]>((resolve) => {
       resolveReservations = resolve
     })
-    const fetchMock = stubApi()
-    const implementation = fetchMock.getMockImplementation()!
     let reservationCalls = 0
-    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.pathname === '/api/reservations' && ++reservationCalls === 1) {
-        return pending
-      }
-      return implementation(input, init)
+    stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': () => (++reservationCalls === 1 ? pending : []),
     })
     renderPage()
 
@@ -875,7 +818,7 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.getByText('予約状態を確認中…')).toBeInTheDocument()
     expect(screen.queryByText(/同じ時間帯に.*件の予約があります/)).not.toBeInTheDocument()
 
-    resolveReservations(jsonResponse([reservation(alsoSoon.programId, '手話ニュース')]))
+    resolveReservations([reservation(alsoSoon.programId, '手話ニュース')])
 
     // 予約一覧が届けば、同じ画面のまま警告が現れる（未取得を恒久的に
     // 「描かない」へ倒したわけではないことの確認）。
@@ -885,15 +828,11 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('予約一覧の取得に失敗すると状態を知らせ、再試行まで未予約行を操作できない', async () => {
-    const fetchMock = stubApi()
-    const implementation = fetchMock.getMockImplementation()!
     let reservationCalls = 0
-    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.pathname === '/api/reservations' && ++reservationCalls === 1) {
-        return Promise.resolve(errorResponse(500, 'reservations unavailable'))
-      }
-      return implementation(input, init)
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': () =>
+        ++reservationCalls === 1 ? errorResponse(500, 'reservations unavailable') : [],
     })
     renderPage()
 
@@ -904,11 +843,7 @@ describe('ProgramsPage の表示形式', () => {
 
     await userEvent.click(reserveButton)
     expect(
-      fetchMock.mock.calls.filter(
-        (call) =>
-          new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
-          (call[1] as RequestInit | undefined)?.method === 'PUT',
-      ),
+      calls.filter((call) => call.url.pathname.endsWith('/intent') && call.method === 'PUT'),
     ).toHaveLength(0)
 
     await userEvent.click(screen.getByRole('button', { name: '再試行' }))
@@ -918,25 +853,17 @@ describe('ProgramsPage の表示形式', () => {
     await userEvent.click((await screen.findAllByRole('button', { name: '予約' }))[0]!)
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(
-          (call) =>
-            new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
-            (call[1] as RequestInit | undefined)?.method === 'PUT',
-        ),
+        calls.some((call) => call.url.pathname.endsWith('/intent') && call.method === 'PUT'),
       ).toBe(true)
     })
   })
 
   it('/api/sites の失敗を永久スケルトンにせず、再試行で一覧を復旧する', async () => {
-    const fetchMock = stubApi()
-    const implementation = fetchMock.getMockImplementation()!
     let sitesCalls = 0
-    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.pathname === '/api/sites' && ++sitesCalls === 1) {
-        return Promise.resolve(errorResponse(500, 'registry down'))
-      }
-      return implementation(input, init)
+    stubApi({
+      ...programsRoutes,
+      'GET /api/sites': () =>
+        ++sitesCalls === 1 ? errorResponse(500, 'registry down') : ['default'],
     })
     renderPage()
 
@@ -950,13 +877,7 @@ describe('ProgramsPage の表示形式', () => {
     // `enabled: sites.length > 0` でクエリが無効化されたまま `isPending: true`
     // が続くので、`isError` に畳まないと ListSkeleton が永久に出続ける
     // （旧 site-gate.tsx が持っていた「空配列を弾く」分岐の再発）。
-    const fetchMock = stubApi()
-    const implementation = fetchMock.getMockImplementation()!
-    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse([]))
-      return implementation(input, init)
-    })
+    stubApi({ ...programsRoutes, 'GET /api/sites': [] })
     renderPage()
 
     expect(await screen.findByText('番組の取得に失敗しました')).toBeInTheDocument()
@@ -964,15 +885,11 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('グリッドの再試行は services の失敗も取り直す', async () => {
-    const fetchMock = stubApi()
-    const implementation = fetchMock.getMockImplementation()!
     let serviceCalls = 0
-    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.pathname === '/api/sites/default/services' && ++serviceCalls === 1) {
-        return Promise.resolve(errorResponse(500, 'services down'))
-      }
-      return implementation(input, init)
+    stubApi({
+      ...programsRoutes,
+      'GET /api/sites/default/services': () =>
+        ++serviceCalls === 1 ? errorResponse(500, 'services down') : services,
     })
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
@@ -984,7 +901,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('lg 未満ではグリッドを出さず、切り替えも見せない', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(false)
     renderPage()
 
@@ -997,7 +914,7 @@ describe('ProgramsPage の表示形式', () => {
 
   it('localStorage に保存済みの表示形式（grid）を、URL に view が無い素の /programs で復元する', async () => {
     localStorage.setItem(viewKey, 'grid')
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -1010,7 +927,7 @@ describe('ProgramsPage の表示形式', () => {
 
   it('リストを選んだ後にナビの /programs へ戻っても保存値どおりリストのまま', async () => {
     localStorage.setItem(viewKey, 'grid')
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     const { router } = renderPage()
 
@@ -1031,7 +948,7 @@ describe('ProgramsPage の表示形式', () => {
 
   it('URL の view=list は保存済みの番組表より優先される', async () => {
     localStorage.setItem(viewKey, 'grid')
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage('/programs?view=list')
 
@@ -1041,7 +958,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('lg 以上では切り替えが出て、番組表を選ぶとグリッドになる', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -1058,7 +975,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('グリッドの時間軸を 3 段階で拡大し、セルの高さも同じ倍率になる', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
 
@@ -1085,7 +1002,7 @@ describe('ProgramsPage の表示形式', () => {
 
   it('保存済みの時間軸の縮尺をグリッドの初期値として復元する', async () => {
     localStorage.setItem(gridScaleKey, '480')
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
 
@@ -1100,7 +1017,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('ジャンル凡例はグリッドだけに出て、リストへ戻すと消える', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -1120,7 +1037,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('番組表を選んだあとに画面が狭くなるとリストへ戻る', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     const media = stubMatchMedia(true)
     renderPage()
 
@@ -1140,7 +1057,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('グリッドは 24 時間ぶんを 1 回で取る（リストの窓では見えない番組が出る）', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -1155,7 +1072,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('日付・サービスの選択は表示形式を切り替えても保持される', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -1192,7 +1109,10 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('予約状態がリストとグリッドで一致する', async () => {
-    stubApi([reservation(soon.programId, 'ニュース7')])
+    stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [reservation(soon.programId, 'ニュース7')],
+    })
     stubMatchMedia(true)
     renderPage()
 
@@ -1210,7 +1130,10 @@ describe('ProgramsPage の表示形式', () => {
 
   it('予約行が消えた skip 意図を番組リストから解除できる', async () => {
     const skipped = { ...soon, name: 'スキップ中の番組', intent: 'skip' as const }
-    const fetchMock = stubApi([], [], [skipped])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([skipped]),
+    })
     const { queryClient } = renderPage()
 
     await reservationsSettled(queryClient)
@@ -1224,11 +1147,10 @@ describe('ProgramsPage の表示形式', () => {
     await userEvent.click(within(row).getByRole('button', { name: '解除' }))
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some((call) => {
-          const url = new URL(String(call[0]), 'http://localhost')
+        calls.some((call) => {
           return (
-            url.pathname === `/api/sites/default/programs/${skipped.programId}/intent` &&
-            (call[1] as RequestInit | undefined)?.method === 'DELETE'
+            call.url.pathname === `/api/sites/default/programs/${skipped.programId}/intent` &&
+            call.method === 'DELETE'
           )
         }),
       ).toBe(true)
@@ -1240,15 +1162,11 @@ describe('ProgramsPage の表示形式', () => {
     // `actions.reservationStateUnknown` を渡していないと、この行だけボタンの
     // 既定値（false）で描かれ、予約状態不明でも PUT .../intent が飛ぶ
     // （issue #710 の穴の再発防止）。
-    const fetchMock = stubApi()
-    const implementation = fetchMock.getMockImplementation()!
     let reservationCalls = 0
-    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.pathname === '/api/reservations' && ++reservationCalls === 1) {
-        return Promise.resolve(errorResponse(500, 'reservations unavailable'))
-      }
-      return implementation(input, init)
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': () =>
+        ++reservationCalls === 1 ? errorResponse(500, 'reservations unavailable') : [],
     })
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
@@ -1262,11 +1180,7 @@ describe('ProgramsPage の表示形式', () => {
 
     await userEvent.click(button)
     expect(
-      fetchMock.mock.calls.filter(
-        (call) =>
-          new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
-          (call[1] as RequestInit | undefined)?.method === 'PUT',
-      ),
+      calls.filter((call) => call.url.pathname.endsWith('/intent') && call.method === 'PUT'),
     ).toHaveLength(0)
   })
 
@@ -1274,15 +1188,11 @@ describe('ProgramsPage の表示形式', () => {
     // TanStack Query v5 は初回成功後の再取得失敗でも直前の data を保持する。
     // `isPending || isError` で止めていた旧実装だと、この 1 回の再取得失敗で
     // 全行の予約が止まっていた（レビュー指摘）。
-    const fetchMock = stubApi()
-    const implementation = fetchMock.getMockImplementation()!
     let reservationCalls = 0
-    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input), 'http://localhost')
-      if (url.pathname === '/api/reservations' && ++reservationCalls === 2) {
-        return Promise.resolve(errorResponse(500, 'reservations unavailable'))
-      }
-      return implementation(input, init)
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': () =>
+        ++reservationCalls === 2 ? errorResponse(500, 'reservations unavailable') : [],
     })
     const { queryClient } = renderPage()
 
@@ -1302,11 +1212,7 @@ describe('ProgramsPage の表示形式', () => {
     await userEvent.click(reserveButtonAfter)
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(
-          (call) =>
-            new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
-            (call[1] as RequestInit | undefined)?.method === 'PUT',
-        ),
+        calls.some((call) => call.url.pathname.endsWith('/intent') && call.method === 'PUT'),
       ).toBe(true)
     })
   })
@@ -1315,7 +1221,10 @@ describe('ProgramsPage の表示形式', () => {
     // 現在サイト（default）には予約が無く、同じ programId の予約は別サイト
     // （other）にだけある。programId は放送イベントから決まるので 2 サイトで
     // 一致するが、別サイトの予約を現在サイトの番組表に重ねてはいけない。
-    stubApi([reservation(soon.programId, 'ニュース7', 'other')])
+    stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [reservation(soon.programId, 'ニュース7', 'other')],
+    })
     stubMatchMedia(false)
     const { queryClient } = renderPage()
     await reservationsSettled(queryClient)
@@ -1326,7 +1235,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('グリッドのセルを押すと、リスト chrome の無い予約パネルから予約できる', async () => {
-    const fetchMock = stubApi()
+    const { calls } = stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -1355,17 +1264,13 @@ describe('ProgramsPage の表示形式', () => {
     await userEvent.click(reserveButton)
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(
-          (call) =>
-            new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
-            (call[1] as RequestInit | undefined)?.method === 'PUT',
-        ),
+        calls.some((call) => call.url.pathname.endsWith('/intent') && call.method === 'PUT'),
       ).toBe(true)
     })
   })
 
   it('モーダルを Escape で閉じると、クリック元のセルへフォーカスを戻す', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
 
@@ -1382,7 +1287,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('モーダルの overlay をクリックすると閉じる', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage('/programs?view=grid')
 
@@ -1404,11 +1309,12 @@ describe('ProgramsPage の表示形式', () => {
     // `onOpenChange` を発火せずただ閉じるだけなので `selectedProgramId` が
     // 古いまま残る。番組が一覧へ戻ってきたときに、そのままではモーダルが
     // 勝手に再オープンしてフォーカスを閉じ込めてしまう。
-    stubApi(undefined, undefined, undefined, (callIndex) =>
-      callIndex === 2
-        ? jsonResponse(allPrograms.filter((p) => p.programId !== soon.programId))
-        : undefined,
-    )
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes(allPrograms, (callIndex) =>
+        callIndex === 2 ? allPrograms.filter((p) => p.programId !== soon.programId) : undefined,
+      ),
+    })
     stubMatchMedia(true)
     const { queryClient } = renderPage('/programs?view=grid')
 
@@ -1446,10 +1352,13 @@ describe('ProgramsPage の表示形式', () => {
     // 渡し忘れても検出できなかった（リスト表示のテストしかなかった）。
     // リスト側のテスト（「予約一覧から重なり警告を導出し…」）と同じ組み合わせ
     // （soon と alsoSoon の両方が予約済みの状態で soon を選択）をグリッド経由で確認する。
-    stubApi([
-      reservation(soon.programId, 'ニュース7'),
-      reservation(alsoSoon.programId, '手話ニュース'),
-    ])
+    stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [
+        reservation(soon.programId, 'ニュース7'),
+        reservation(alsoSoon.programId, '手話ニュース'),
+      ],
+    })
     stubMatchMedia(true)
     renderPage()
 
@@ -1478,7 +1387,10 @@ describe('ProgramsPage の容量超過の帯', () => {
 
   it('超過区間を同時刻の番組セルと同じ位置に描く', async () => {
     // 1 時間後から 2 時間後（同じ時間帯に soon / alsoSoon がある）
-    stubApi([], [overage(1, 2)])
+    stubApi({
+      ...programsRoutes,
+      'GET /api/capacity/overages': [overage(1, 2)],
+    })
     stubMatchMedia(true)
     renderPage()
     await openGrid()
@@ -1493,7 +1405,10 @@ describe('ProgramsPage の容量超過の帯', () => {
   })
 
   it('表示中の列に存在しない site の超過区間は別 site の列へ描かない', async () => {
-    stubApi([], [overage(1, 2, { site: 'other' })])
+    stubApi({
+      ...programsRoutes,
+      'GET /api/capacity/overages': [overage(1, 2, { site: 'other' })],
+    })
     stubMatchMedia(true)
     const { queryClient } = renderPage()
     await openGrid()
@@ -1503,7 +1418,7 @@ describe('ProgramsPage の容量超過の帯', () => {
   })
 
   it('超過区間が無ければ帯を出さない（沈黙を肯定にしない）', async () => {
-    stubApi([], [])
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     const { queryClient } = renderPage()
     await openGrid()
@@ -1515,14 +1430,17 @@ describe('ProgramsPage の容量超過の帯', () => {
   })
 
   it('グリッドの窓と同じ範囲を問い合わせる', async () => {
-    const fetchMock = stubApi([], [overage(1, 2)])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/capacity/overages': [overage(1, 2)],
+    })
     stubMatchMedia(true)
     const { queryClient } = renderPage()
     await openGrid()
     await overagesSettled(queryClient)
 
-    const asked = fetchMock.mock.calls
-      .map((call) => new URL(String(call[0]), 'http://localhost'))
+    const asked = calls
+      .map((call) => call.url)
       .filter((url) => url.pathname === '/api/capacity/overages')
     // 軸の外の区間を持っていても帯にできないので、窓は軸と一致させる
     expect(asked.at(-1)?.searchParams.get('start')).toBe(new Date(origin).toISOString())
@@ -1532,7 +1450,7 @@ describe('ProgramsPage の容量超過の帯', () => {
   })
 
   it('購読者 0 の間に時間が経ってから開いても、古い時刻の窓を要求しない', async () => {
-    const fetchMock = stubApi()
+    const { calls } = stubApi(programsRoutes)
     stubMatchMedia(true)
     vi.setSystemTime(origin - 2 * 3_600_000)
     const first = renderPage('/programs?view=grid')
@@ -1541,13 +1459,14 @@ describe('ProgramsPage の容量超過の帯', () => {
 
     // 時計の購読者がいない画面に 2 時間いてから、番組表を開き直す。
     vi.setSystemTime(origin)
-    fetchMock.mockClear()
+    // ここまでの記録を捨てる（以前の `fetchMock.mockClear()` と同じ）
+    calls.splice(0)
     renderPage('/programs?view=grid')
     await screen.findByTestId('program-grid')
 
     const windowsOf = (pathname: string) =>
-      fetchMock.mock.calls
-        .map((call) => new URL(String(call[0]), 'http://localhost'))
+      calls
+        .map((call) => call.url)
         .filter((url) => url.pathname === pathname)
         .map((url) => `${url.searchParams.get('start')}|${url.searchParams.get('end')}`)
     const freshWindow = `${new Date(origin).toISOString()}|${new Date(origin + 24 * 3_600_000).toISOString()}`
@@ -1578,38 +1497,42 @@ describe('ProgramsPage の容量超過の帯', () => {
       shortfall: 1,
       jammedTypes: ['BS'] as CapacityOverage['jammedTypes'],
     }
-    const fetchMock = stubApi([], [currentOverage], [boundaryProgram])
-    const originalFetch = fetchMock.getMockImplementation()
-    expect(originalFetch).toBeDefined()
-
-    const pendingPrograms = deferred<Response>()
-    const pendingOverages = deferred<Response>()
-    const pendingMidnightPrograms = deferred<Response>()
-    const pendingMidnightOverages = deferred<Response>()
+    const pendingPrograms = deferred<ProgramListItem[]>()
+    const pendingOverages = deferred<CapacityOverage[]>()
+    const pendingMidnightPrograms = deferred<ProgramListItem[]>()
+    const pendingMidnightOverages = deferred<CapacityOverage[]>()
     let programsPending = false
     let overagesPending = false
     let midnightProgramsPending = false
     let midnightOveragesPending = false
-    fetchMock.mockImplementation((input, init) => {
-      const url = new URL(String(input), 'http://localhost')
-      const start = url.searchParams.get('start')
-      if (url.pathname === '/api/sites/default/programs' && start === midnightOriginISO) {
-        midnightProgramsPending = true
-        return pendingMidnightPrograms.promise
-      }
-      if (url.pathname === '/api/capacity/overages' && start === midnightOriginISO) {
-        midnightOveragesPending = true
-        return pendingMidnightOverages.promise
-      }
-      if (url.pathname === '/api/sites/default/programs' && start === nextOriginISO) {
-        programsPending = true
-        return pendingPrograms.promise
-      }
-      if (url.pathname === '/api/capacity/overages' && start === nextOriginISO) {
-        overagesPending = true
-        return pendingOverages.promise
-      }
-      return originalFetch!(input, init)
+    const boundary = programRoutes([boundaryProgram])
+    stubApi({
+      ...programsRoutes,
+      ...boundary,
+      'GET /api/sites/default/programs': (req) => {
+        const start = req.url.searchParams.get('start')
+        if (start === midnightOriginISO) {
+          midnightProgramsPending = true
+          return pendingMidnightPrograms.promise
+        }
+        if (start === nextOriginISO) {
+          programsPending = true
+          return pendingPrograms.promise
+        }
+        return boundary['GET /api/sites/default/programs'](req)
+      },
+      'GET /api/capacity/overages': (req) => {
+        const start = req.url.searchParams.get('start')
+        if (start === midnightOriginISO) {
+          midnightOveragesPending = true
+          return pendingMidnightOverages.promise
+        }
+        if (start === nextOriginISO) {
+          overagesPending = true
+          return pendingOverages.promise
+        }
+        return [currentOverage]
+      },
     })
 
     stubMatchMedia(true)
@@ -1650,9 +1573,7 @@ describe('ProgramsPage の容量超過の帯', () => {
       expect(screen.getAllByTestId('program-grid-tick')[0]).toHaveTextContent('13:00')
       expect(screen.getByTestId('program-grid-now-line')).toBeInTheDocument()
       expect(screen.getByTestId('program-grid-now-time')).toHaveTextContent('13:20')
-      const nowLineTop = Number.parseFloat(
-        screen.getByTestId('program-grid-now-line').style.top,
-      )
+      const nowLineTop = Number.parseFloat(screen.getByTestId('program-grid-now-line').style.top)
       expect(nowLineTop).toBeGreaterThanOrEqual(40)
       expect(nowLineTop).toBeLessThan(42)
       expect(
@@ -1662,8 +1583,8 @@ describe('ProgramsPage の容量超過の帯', () => {
       ).toHaveAttribute('data-ended', 'true')
       expect(screen.getByTestId('capacity-band')).toBeInTheDocument()
 
-      pendingPrograms.resolve(jsonResponse([boundaryProgram]))
-      pendingOverages.resolve(jsonResponse([currentOverage]))
+      pendingPrograms.resolve([boundaryProgram])
+      pendingOverages.resolve([currentOverage])
       await waitFor(() => {
         const gridQuery = queryClient
           .getQueryCache()
@@ -1708,8 +1629,8 @@ describe('ProgramsPage の容量超過の帯', () => {
           ?.getAttribute('aria-label'),
       ).toMatch(/^8月15日\(土\)(?:,|$)/)
 
-      pendingMidnightPrograms.resolve(jsonResponse([]))
-      pendingMidnightOverages.resolve(jsonResponse([]))
+      pendingMidnightPrograms.resolve([])
+      pendingMidnightOverages.resolve([])
       await waitFor(() => {
         const gridQuery = queryClient
           .getQueryCache()
@@ -1726,16 +1647,16 @@ describe('ProgramsPage の容量超過の帯', () => {
         expect(overageQuery?.state.status).toBe('success')
       })
     } finally {
-      pendingPrograms.resolve(jsonResponse([boundaryProgram]))
-      pendingOverages.resolve(jsonResponse([currentOverage]))
-      pendingMidnightPrograms.resolve(jsonResponse([]))
-      pendingMidnightOverages.resolve(jsonResponse([]))
+      pendingPrograms.resolve([boundaryProgram])
+      pendingOverages.resolve([currentOverage])
+      pendingMidnightPrograms.resolve([])
+      pendingMidnightOverages.resolve([])
       vi.setSystemTime(pinnedNow)
     }
   })
 
   it('予約すると超過を取り直す（帯は予約集合からの導出値）', async () => {
-    const fetchMock = stubApi([], [])
+    const { calls } = stubApi(programsRoutes)
     stubMatchMedia(true)
     const { queryClient } = renderPage()
     await openGrid()
@@ -1751,9 +1672,7 @@ describe('ProgramsPage の容量超過の帯', () => {
       expect(currentOverageQuery?.state.status).toBe('success')
     })
 
-    const before = fetchMock.mock.calls.filter(
-      (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/capacity/overages',
-    ).length
+    const before = calls.filter((call) => call.url.pathname === '/api/capacity/overages').length
 
     const cell = document.querySelector(`[data-program-id="${soon.programId}"]`)
     await userEvent.click(cell as HTMLElement)
@@ -1761,24 +1680,24 @@ describe('ProgramsPage の容量超過の帯', () => {
 
     // 取り直さないと「予約したのに不足が出ない / 消えない」状態が残る
     await waitFor(() => {
-      const after = fetchMock.mock.calls.filter(
-        (call) =>
-          new URL(String(call[0]), 'http://localhost').pathname === '/api/capacity/overages',
-      ).length
+      const after = calls.filter((call) => call.url.pathname === '/api/capacity/overages').length
       expect(after).toBeGreaterThan(before)
     })
   })
 
   it('リストのままなら超過を問い合わせない（帯を描く場所がない）', async () => {
-    const fetchMock = stubApi([], [overage(1, 2)])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/capacity/overages': [overage(1, 2)],
+    })
     stubMatchMedia(false)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(0))
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0))
 
-    const asked = fetchMock.mock.calls
-      .map((call) => new URL(String(call[0]), 'http://localhost'))
+    const asked = calls
+      .map((call) => call.url)
       .filter((url) => url.pathname === '/api/capacity/overages')
     expect(asked).toHaveLength(0)
   })
@@ -1786,7 +1705,7 @@ describe('ProgramsPage の容量超過の帯', () => {
 
 describe('ProgramsPage のリスト（回帰）', () => {
   it('日付の選択、チャンネル絞り込みのトリガー、続きの読み込みが出る', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -1801,7 +1720,7 @@ describe('ProgramsPage のリスト（回帰）', () => {
   })
 
   it('続きを読み込むと次の窓の番組が増える', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -1815,7 +1734,7 @@ describe('ProgramsPage のリスト（回帰）', () => {
   })
 
   it('日付の選択肢は横スクロールする容器に入っていない', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -1824,7 +1743,7 @@ describe('ProgramsPage のリスト（回帰）', () => {
   })
 
   it('チャンネルを選ぶとトリガーにその名前が出る（項目を押しただけでは閉じない）', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -1849,7 +1768,7 @@ describe('ProgramsPage のリスト（回帰）', () => {
   })
 
   it('チャンネル絞り込みのトリガーはリスト表示でもグリッド表示でも存在する', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -1865,7 +1784,7 @@ describe('ProgramsPage のリスト（回帰）', () => {
 
 describe('ProgramsPage のチャンネル複数選択', () => {
   it('残りの局を加えると全候補へ正規化され、両方の番組が出る', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -1900,7 +1819,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
   })
 
   it('1 局を選んだ状態でもピッカーの候補が減らない（filterableServices の回帰）', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -1926,7 +1845,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
   })
 
   it('「すべて」を押すと選択が空に戻り、全局の番組が出る', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -1952,13 +1871,13 @@ describe('ProgramsPage のチャンネル複数選択', () => {
   })
 
   it('チャンネルを選ぶと API に service（合成 id）が付く', async () => {
-    const fetchMock = stubApi()
+    const { calls } = stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
 
-    const callsBeforeSelection = fetchMock.mock.calls.length
+    const callsBeforeSelection = calls.length
 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
@@ -1981,9 +1900,9 @@ describe('ProgramsPage のチャンネル複数選択', () => {
 
     // 選択より前のリクエスト（初期表示時の絞り込みなし取得）を含めると
     // `.every` が必ず失敗するので、選択後のリクエストだけを見る
-    const requestsAfterSelection = fetchMock.mock.calls
+    const requestsAfterSelection = calls
       .slice(callsBeforeSelection)
-      .map((call) => new URL(String(call[0]), 'http://localhost'))
+      .map((call) => call.url)
       .filter((url) => url.pathname === '/api/sites/default/programs')
     expect(requestsAfterSelection.length).toBeGreaterThan(0)
     expect(
@@ -2011,14 +1930,14 @@ describe('ProgramsPage のチャンネル複数選択', () => {
       name: 'CS 101',
       channelType: 'CS',
     }
-    stubApi(
-      [],
-      [],
-      [program(101, 101, 1, 'BS の番組', 4), program(102, 101, 1, 'CS の番組', 6)],
-      undefined,
-      undefined,
-      [bs, cs],
-    )
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([
+        program(101, 101, 1, 'BS の番組', 4),
+        program(102, 101, 1, 'CS の番組', 6),
+      ]),
+      'GET /api/sites/default/services': [...services, bs, cs],
+    })
     stubMatchMedia(true)
     renderPage('/programs?service=400101&service=600101')
 
@@ -2034,7 +1953,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
   })
 
   it('グリッド表示で、選んだ局だけが列になる', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage()
 
@@ -2069,7 +1988,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
  */
 describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）', () => {
   it('?service= 付きの URL で開くと、絞り込み済みの番組表がピッカーの表示と一致して開く', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage('/programs?service=3273601024')
 
     // NHK総合（1024）に絞り込んだ状態で開く。ピッカーのラベルは URL の解決だけで
@@ -2082,7 +2001,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
   })
 
   it('チャンネルを選ぶと URL の厳密な ?service= に反映される（history を汚さず replace）', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     const { router } = renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -2103,7 +2022,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
   })
 
   it('選択済み URL に残りの候補を足すと全局に正規化する', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     const { router } = renderPage('/programs?service=3273601024')
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -2117,7 +2036,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
   })
 
   it('不正な値（?service=abc）は絞り込みなしに落ちて開ける（壊れたリンクを踏んでも画面は開く）', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage('/programs?service=abc')
 
     expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
@@ -2141,7 +2060,10 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
  */
 describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー must-fix）', () => {
   it('filterableServices に無い局（hasPrograms: false）への深いリンクでも「すべて」に見えず、個別に解除できる', async () => {
-    stubApi([], [], allPrograms, undefined, undefined, [subService])
+    stubApi({
+      ...programsRoutes,
+      'GET /api/sites/default/services': [...services, subService],
+    })
     renderPage('/programs?service=3273601040')
 
     // サブサービスは番組を持たないので一覧は空になる。だが「絞り込みで全部
@@ -2162,7 +2084,7 @@ describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー 
   })
 
   it('services にも実在しない id への深いリンク（削除された局・壊れた共有リンク）は「チャンネル #<id>」で示され、個別に解除できる', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     renderPage('/programs?service=3273609999')
 
     expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
@@ -2181,7 +2103,7 @@ describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー 
 
 describe('ProgramsPage の進行方向の無限スクロール', () => {
   it('計測できない環境（jsdom）では IntersectionObserver を作らず、ボタンだけを受け皿にする', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     // jsdom には IntersectionObserver が無い。もし実装が `domLayoutMeasurable()`
     // のガードを外して常に IntersectionObserver を作るようになったら、
     // ここで検知する（このテストを「壊す」には該当ガードを消せばよい）。
@@ -2209,9 +2131,12 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
   })
 
   it('続きの読み込みが失敗すると、エラー表示のままボタンが残り、自動では再試行しない', async () => {
-    const fetchMock = stubApi([], [], allPrograms, (callIndex) =>
-      callIndex === 2 ? new Response(null, { status: 500 }) : undefined,
-    )
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes(allPrograms, (callIndex) =>
+        callIndex === 2 ? new Response(null, { status: 500 }) : undefined,
+      ),
+    })
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -2222,9 +2147,7 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
     expect(screen.getByRole('button', { name: 'さらに読み込む' })).toBeInTheDocument()
 
     const programsCallsAfterFailure = () =>
-      fetchMock.mock.calls.filter(
-        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
-      ).length
+      calls.filter((call) => call.url.pathname === '/api/sites/default/programs').length
     const callsRightAfterFailure = programsCallsAfterFailure()
 
     // 何もしなくても自動で再試行が走らないこと（QueryClient は retry: false
@@ -2240,18 +2163,18 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
 
   it('空の時間窓でも次の時間帯へ進め、取得失敗後の再試行で番組へ到達できる', async () => {
     const recovery = program(683001, 1024, 13, '空窓の先の番組')
-    const fetchMock = stubApi([], [], [recovery], (callIndex) => {
-      if (callIndex <= 2) return jsonResponse([])
-      if (callIndex === 3) return errorResponse(500, 'window unavailable')
-      return undefined
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([recovery], (callIndex) => {
+        if (callIndex <= 2) return []
+        if (callIndex === 3) return errorResponse(500, 'window unavailable')
+        return undefined
+      }),
     })
     renderPage()
 
     const programRequests = () =>
-      fetchMock.mock.calls.filter(
-        (call) =>
-          new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
-      ).length
+      calls.filter((call) => call.url.pathname === '/api/sites/default/programs').length
 
     expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
     expect(screen.queryByTestId('program-list-sentinel')).not.toBeInTheDocument()
@@ -2277,16 +2200,14 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
     const firstWindow = Array.from({ length: 24 }, (_, index) =>
       program(683100 + index, 1024, index / 4, `先に表示された番組${index}`),
     )
-    const fetchMock = stubApi([], [], firstWindow, (callIndex) =>
-      callIndex === 2 ? jsonResponse([]) : undefined,
-    )
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes(firstWindow, (callIndex) => (callIndex === 2 ? [] : undefined)),
+    })
     renderPage()
 
     const programRequests = () =>
-      fetchMock.mock.calls.filter(
-        (call) =>
-          new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
-      ).length
+      calls.filter((call) => call.url.pathname === '/api/sites/default/programs').length
 
     expect(await screen.findByText('先に表示された番組0')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'さらに読み込む' })).toBeInTheDocument()
@@ -2300,14 +2221,14 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
   })
 
   it('最終時間窓が空なら次の時間帯ボタンを消し、追加取得をしない', async () => {
-    const fetchMock = stubApi([], [], [])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([]),
+    })
     renderPage('/programs?day=2026-08-21')
 
     const programRequests = () =>
-      fetchMock.mock.calls.filter(
-        (call) =>
-          new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
-      ).length
+      calls.filter((call) => call.url.pathname === '/api/sites/default/programs').length
 
     expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '次の時間帯を見る' })).toBeInTheDocument()
@@ -2335,7 +2256,10 @@ describe('ProgramsPage の選択日の URL 化', () => {
   )
 
   it('/programs?day=2026-08-16 で選択日と取得窓を復元する', async () => {
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     renderPage('/programs?day=2026-08-16')
 
     expect(await screen.findByText('URL で選んだ日の番組')).toBeInTheDocument()
@@ -2346,7 +2270,10 @@ describe('ProgramsPage の選択日の URL 化', () => {
   })
 
   it('DayStrip の選択を URL に replace し、今日へ戻すと day を省略する', async () => {
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     const { router } = renderPage('/programs?service=3273601024')
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -2381,7 +2308,10 @@ describe('ProgramsPage の選択日の URL 化', () => {
       midnight.getTime() + 3_600_000,
       '明日の番組',
     )
-    const fetchMock = stubApi([], [], [...allPrograms, tomorrowProgram])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, tomorrowProgram]),
+    })
     const { router } = renderPage('/programs?view=grid')
     try {
       await screen.findByTestId('program-grid')
@@ -2401,8 +2331,8 @@ describe('ProgramsPage の選択日の URL 化', () => {
         .toMatch(/^8月15日/)
       expect(router.state.location.search.day).toBe('2026-08-15')
 
-      const starts = fetchMock.mock.calls
-        .map(([input]) => new URL(String(input), 'http://localhost'))
+      const starts = calls
+        .map((call) => call.url)
         .filter((url) => url.pathname === '/api/sites/default/programs')
         .map((url) => url.searchParams.get('start'))
       expect(starts).toContain(new Date(2026, 7, 15, 0, 0, 0, 0).toISOString())
@@ -2414,7 +2344,10 @@ describe('ProgramsPage の選択日の URL 化', () => {
 
   it('day と at が矛盾するときは at の日を表示し、どちらも URL から消さない', async () => {
     const at = dayTwoOriginMs + 3_600_000
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     const { router } = renderPage(`/programs?day=2026-08-15&at=${at}`)
 
     expect(await screen.findByText('URL で選んだ日の番組')).toBeInTheDocument()
@@ -2443,7 +2376,10 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
     )
     // 区別のため、実際にジャンプ先の日に始まる番組も置く
     const insideWindow = programAtAbsolute(211, 1024, targetOriginMs + 1_800_000, '窓内の番組')
-    stubApi([], [], [...allPrograms, overlapping, insideWindow])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, overlapping, insideWindow]),
+    })
     renderPage()
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
@@ -2489,7 +2425,10 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   const dayTwoProgram = programAtAbsolute(220, 1024, targetMs, '容量バッジ導線の番組')
 
   it('lg 未満では、view=grid があってもグリッドを出さずに at が属する日へ日付ジャンプする', async () => {
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     stubMatchMedia(false)
     renderPage(`/programs?view=grid&at=${targetMs}`)
 
@@ -2506,7 +2445,10 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   })
 
   it('view=grid が URL にあれば、lg 以上ではグリッド表示になる', async () => {
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     stubMatchMedia(true)
     renderPage(`/programs?view=grid&at=${targetMs}`)
 
@@ -2525,7 +2467,10 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   it('at だけでは（view=grid が無ければ）lg 以上でもグリッドにならない', async () => {
     // `view` を URL に持つ（issue #437）ので `at` の存在からグリッド表示を
     // 推論することはしない。`at` 単独ではリストのまま。
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     stubMatchMedia(true)
     renderPage(`/programs?at=${targetMs}`)
 
@@ -2534,7 +2479,10 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   })
 
   it('グリッドからユーザーがリストへ戻すと URL の view も更新され、画面幅の再評価だけではグリッドに戻らない', async () => {
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     const media = stubMatchMedia(true)
     const { router } = renderPage(`/programs?view=grid&at=${targetMs}`)
 
@@ -2571,7 +2519,10 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   // 戻したときに now へスクロールし直す」というスクロール位置そのものの主張は
   // jsdom では測れないため e2e の担当。
   it('at がある状態でも別の日を選べば、その日の内容に切り替わる（at が現在地を固定しない）', async () => {
-    stubApi([], [], [...allPrograms, dayTwoProgram])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([...allPrograms, dayTwoProgram]),
+    })
     stubMatchMedia(true)
     renderPage(`/programs?view=grid&at=${targetMs}`)
 
@@ -2597,7 +2548,7 @@ describe('ProgramsPage の at パラメータ（容量バッジからの導線�
   // いないことまで確認する --- 単体関数のテストだけでは「呼び出し側で
   // 本当に守られているか」までは分からない。
   it('Date の time value の定義域を超える at を踏んでもエラー境界に落ちない（壊れたリンクでも画面は開く）', async () => {
-    stubApi()
+    stubApi(programsRoutes)
     stubMatchMedia(true)
     renderPage('/programs?at=1e30')
 
@@ -2652,7 +2603,10 @@ describe('ProgramsPage の日付ハイライト（深夜、起点 + 1 時間の�
       nightOrigin.getTime() + 3_600_000,
       '深夜またぎの番組',
     )
-    stubApi([], [], [nightSoon])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([nightSoon]),
+    })
     renderPage()
 
     expect(await screen.findByText('深夜またぎの番組')).toBeInTheDocument()
@@ -2676,13 +2630,16 @@ describe('ProgramsPage の日付ハイライト（深夜、起点 + 1 時間の�
  * （`web/e2e/`）の担当（issue コメント参照）。ここで固定するのは
  * fetch に飛んだ引数までとする。
  *
- * 各テストは `stubApi([], [], [soon])` で番組を 1 件に絞る --- 複数番組が
+ * 各テストは `programRoutes([soon])` で番組を 1 件に絞る --- 複数番組が
  * 並ぶと行ごとに同じ accessible name（「予約」）のボタンが並び、どの行を
  * 押したか一意に決められなくなるため。
  */
 describe('ProgramsPage から予約時にエンコード設定を指定できる（issue #132）', () => {
   it('行を展開すると、まだ予約されていない番組にもエンコード設定欄が出る（予約詳細画面へ遷移しない）', async () => {
-    stubApi([], [], [soon])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([soon]),
+    })
     renderPage()
 
     const title = await screen.findByText('ニュース7')
@@ -2692,13 +2649,14 @@ describe('ProgramsPage から予約時にエンコード設定を指定できる
     expect(await screen.findByRole('checkbox', { name: /h264/ })).toBeInTheDocument()
     // 「予約」を押すまで反映されない、という注意も出す（保存だけで録画される
     // という誤解を避ける。issue #132 の罠）
-    expect(
-      screen.getByText(/「予約」を押した時点で反映されます/),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/「予約」を押した時点で反映されます/)).toBeInTheDocument()
   })
 
   it('展開しても既定のまま予約すると、overrides の PATCH は送らない（意味の無い override 行を作らない。CLAUDE.md 不変条件 10）', async () => {
-    const fetchMock = stubApi([], [], [soon])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([soon]),
+    })
     renderPage()
 
     const title = await screen.findByText('ニュース7')
@@ -2711,24 +2669,22 @@ describe('ProgramsPage から予約時にエンコード設定を指定できる
     // （クエリが解決する前に判定すると空虚な成功になるため、成功を先に待つ）
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(
+        calls.some(
           (call) =>
-            new URL(String(call[0]), 'http://localhost').pathname ===
-              `/api/sites/default/programs/${soon.programId}/intent` &&
-            (call[1] as RequestInit | undefined)?.method === 'PUT',
+            call.url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+            call.method === 'PUT',
         ),
       ).toBe(true)
     })
 
-    expect(
-      fetchMock.mock.calls.some((call) =>
-        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overrides'),
-      ),
-    ).toBe(false)
+    expect(calls.some((call) => call.url.pathname.endsWith('/overrides'))).toBe(false)
   })
 
   it('エンコード設定を変えてから予約すると、intent の PUT と overrides の PATCH が正しい引数で両方飛ぶ', async () => {
-    const fetchMock = stubApi([], [], [soon])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([soon]),
+    })
     renderPage()
 
     const title = await screen.findByText('ニュース7')
@@ -2741,42 +2697,36 @@ describe('ProgramsPage から予約時にエンコード設定を指定できる
 
     const overridesUrl = `/api/sites/default/programs/${soon.programId}/overrides`
     await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          (call) => new URL(String(call[0]), 'http://localhost').pathname === overridesUrl,
-        ),
-      ).toBe(true)
+      expect(calls.some((call) => call.url.pathname === overridesUrl)).toBe(true)
     })
 
-    const overridesCall = fetchMock.mock.calls.find(
-      (call) => new URL(String(call[0]), 'http://localhost').pathname === overridesUrl,
-    )
-    const overridesInit = overridesCall?.[1] as RequestInit
-    expect(overridesInit.method).toBe('PATCH')
-    expect(JSON.parse(String(overridesInit.body))).toEqual({
+    const overridesCall = calls.find((call) => call.url.pathname === overridesUrl)
+    expect(overridesCall?.method).toBe('PATCH')
+    expect(overridesCall?.body).toEqual({
       keepOriginal: 'always',
       encodeProfiles: ['h264'],
     })
 
     // 予約作成（PUT .../intent）自体は action のみのまま変更しない（issue #29
     // の決定を維持。overrides は別リクエストのまま）
-    const intentCall = fetchMock.mock.calls.find(
+    const intentCall = calls.find(
       (call) =>
-        new URL(String(call[0]), 'http://localhost').pathname ===
-          `/api/sites/default/programs/${soon.programId}/intent` &&
-        (call[1] as RequestInit | undefined)?.method === 'PUT',
+        call.url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+        call.method === 'PUT',
     )
     expect(intentCall).toBeDefined()
-    const intentInit = intentCall?.[1] as RequestInit
-    expect(JSON.parse(String(intentInit.body))).toEqual({
+    expect(intentCall?.body).toEqual({
       action: 'record',
     })
   })
 
   it('overrides の PATCH が失敗しても、予約（intent）自体は成立している', async () => {
-    const fetchMock = stubApi([], [], [soon], undefined, () =>
-      errorResponse(400, 'program not found in the EPG projection'),
-    )
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([soon]),
+      'PATCH /api/sites/default/programs/:programId/overrides': () =>
+        errorResponse(400, 'program not found in the EPG projection'),
+    })
     renderPage()
 
     const title = await screen.findByText('ニュース7')
@@ -2793,11 +2743,10 @@ describe('ProgramsPage から予約時にエンコード設定を指定できる
     // それでも intent の PUT は届いている（予約自体は成立する）
     await waitFor(() => {
       expect(
-        fetchMock.mock.calls.some(
+        calls.some(
           (call) =>
-            new URL(String(call[0]), 'http://localhost').pathname ===
-              `/api/sites/default/programs/${soon.programId}/intent` &&
-            (call[1] as RequestInit | undefined)?.method === 'PUT',
+            call.url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+            call.method === 'PUT',
         ),
       ).toBe(true)
     })
@@ -2809,9 +2758,11 @@ describe('ProgramsPage から予約時にエンコード設定を指定できる
 // `programs.tsx` の `reserve` / `cancel` を固定する。
 describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #457）', () => {
   it('予約が失敗すると、汎用文言にサーバー本文を付けたトーストが出る', async () => {
-    stubApi([], [], allPrograms, undefined, undefined, [], () =>
-      errorResponse(409, 'overlaps with another reservation'),
-    )
+    stubApi({
+      ...programsRoutes,
+      'PUT /api/sites/default/programs/:programId/intent': () =>
+        errorResponse(409, 'overlaps with another reservation'),
+    })
     renderPage()
 
     await userEvent.click((await screen.findAllByRole('button', { name: '予約' }))[0])
@@ -2822,9 +2773,12 @@ describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #45
   })
 
   it('予約取消が失敗すると、汎用文言にサーバー本文を付けたトーストが出る', async () => {
-    stubApi([reservation(soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
-      errorResponse(409, 'reservation already cleared'),
-    )
+    stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [reservation(soon.programId, 'ニュース7')],
+      'PUT /api/sites/default/programs/:programId/intent': () =>
+        errorResponse(409, 'reservation already cleared'),
+    })
     renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
@@ -2835,9 +2789,12 @@ describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #45
   })
 
   it('本文の無い失敗（ネットワーク断相当）では末尾に「: 」を残さない', async () => {
-    stubApi([reservation(soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
-      new Response(null, { status: 500 }),
-    )
+    stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [reservation(soon.programId, 'ニュース7')],
+      'PUT /api/sites/default/programs/:programId/intent': () =>
+        new Response(null, { status: 500 }),
+    })
     renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
@@ -2863,9 +2820,13 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     // 楽観状態由来なのかサーバー値由来なのか区別できず、「Undo 成功時にも
     // 楽観状態を消す」退行（catch ではなく finally で消す等）を検出できない。
     const reservations = [reservation(soon.programId, 'ニュース7')]
-    const fetchMock = stubApi(reservations, [], [soon], undefined, undefined, [], () => {
-      reservations.length = 0
-      return noContentResponse()
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': reservations,
+      ...programRoutes([soon]),
+      'PUT /api/sites/default/programs/:programId/intent': () => {
+        reservations.length = 0
+      },
     })
     renderPage()
 
@@ -2874,8 +2835,8 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     // 取消は楽観的に反映されるので、直後は「予約」ボタンに戻っている
     expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
 
-    const reservationsCallsBeforeUndo = fetchMock.mock.calls.filter(
-      (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
+    const reservationsCallsBeforeUndo = calls.filter(
+      (call) => call.url.pathname === '/api/reservations',
     ).length
 
     await userEvent.click(screen.getByRole('button', { name: '元に戻す' }))
@@ -2886,13 +2847,11 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
 
     await waitFor(() => {
-      const reviveCall = fetchMock.mock.calls.find((call) => {
-        const url = new URL(String(call[0]), 'http://localhost')
-        const init = call[1] as RequestInit | undefined
+      const reviveCall = calls.find((call) => {
         return (
-          url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
-          init?.method === 'PUT' &&
-          JSON.parse(String(init.body)).action === 'record'
+          call.url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+          call.method === 'PUT' &&
+          (call.body as { action?: string } | undefined)?.action === 'record'
         )
       })
       expect(reviveCall).toBeDefined()
@@ -2904,9 +2863,7 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     // finally（成功時にも消す）に動かすと、再取得後に一旦「予約」へ
     // ちらつき戻る退行をこの待ち合わせが捉える
     await waitFor(() => {
-      const after = fetchMock.mock.calls.filter(
-        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
-      ).length
+      const after = calls.filter((call) => call.url.pathname === '/api/reservations').length
       expect(after).toBeGreaterThan(reservationsCallsBeforeUndo)
     })
     expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument()
@@ -2920,20 +2877,17 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     // 同じ「取消」ボタンが出てしまい、巻き戻しの有無をテストが区別できない。
     const reservations = [reservation(soon.programId, 'ニュース7')]
     let putCalls = 0
-    stubApi(
-      reservations,
-      [],
-      [soon],
-      undefined,
-      undefined,
-      [],
-      () => {
+    stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': reservations,
+      ...programRoutes([soon]),
+      'PUT /api/sites/default/programs/:programId/intent': () => {
         putCalls++
         if (putCalls === 1) reservations.length = 0
         // 1 回目（取消）は成功させ、2 回目（Undo）だけ失敗させる
-        return putCalls === 2 ? new Response(null, { status: 500 }) : noContentResponse()
+        return putCalls === 2 ? new Response(null, { status: 500 }) : undefined
       },
-    )
+    })
     renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
@@ -2959,7 +2913,11 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
   // `.mutate` のままでも緑のまま通っていた。ここでは実際にページを
   // アンマウントしてから Undo を押す。
   it('取消後に別ページへ遷移しても、トーストの「元に戻す」で予約が復帰する（ページをまたいだ Undo）', async () => {
-    const fetchMock = stubApi([reservation(soon.programId, 'ニュース7')], [], [soon])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [reservation(soon.programId, 'ニュース7')],
+      ...programRoutes([soon]),
+    })
     const { router } = renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
@@ -2975,20 +2933,21 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     await userEvent.click(await screen.findByRole('button', { name: '元に戻す' }))
     expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
 
-    const reviveCall = fetchMock.mock.calls.find((call) => {
-      const url = new URL(String(call[0]), 'http://localhost')
-      const init = call[1] as RequestInit | undefined
+    const reviveCall = calls.find((call) => {
       return (
-        url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
-        init?.method === 'PUT' &&
-        JSON.parse(String(init.body)).action === 'record'
+        call.url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+        call.method === 'PUT' &&
+        (call.body as { action?: string } | undefined)?.action === 'record'
       )
     })
     expect(reviveCall).toBeDefined()
   })
 
   it('予約成功トーストに「取消」と「設定」が並び、「設定」で予約詳細へ遷移する', async () => {
-    stubApi([], [], [soon])
+    stubApi({
+      ...programsRoutes,
+      ...programRoutes([soon]),
+    })
     const { router } = renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '予約' }))
@@ -3000,9 +2959,7 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     await userEvent.click(within(toast).getByRole('button', { name: '設定' }))
 
     await waitFor(() =>
-      expect(router.state.location.pathname).toBe(
-        `/reservations/default/${soon.programId}`,
-      ),
+      expect(router.state.location.pathname).toBe(`/reservations/default/${soon.programId}`),
     )
   })
 
@@ -3012,7 +2969,10 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
   // 「取消 → 別ページへ移動 → やっぱり戻す」だけが直って「予約 → 別ページへ
   // 移動 → やっぱり取消す」は無音のまま、という非対称が残ってしまう）。
   it('予約後に別ページへ遷移しても、トーストの「取消」で予約が取り消される（ページをまたいだ取消）', async () => {
-    const fetchMock = stubApi([], [], [soon])
+    const { calls } = stubApi({
+      ...programsRoutes,
+      ...programRoutes([soon]),
+    })
     const { router } = renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '予約' }))
@@ -3024,13 +2984,11 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
     expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
 
-    const cancelCall = fetchMock.mock.calls.find((call) => {
-      const url = new URL(String(call[0]), 'http://localhost')
-      const init = call[1] as RequestInit | undefined
+    const cancelCall = calls.find((call) => {
       return (
-        url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
-        init?.method === 'PUT' &&
-        JSON.parse(String(init.body)).action === 'skip'
+        call.url.pathname === `/api/sites/default/programs/${soon.programId}/intent` &&
+        call.method === 'PUT' &&
+        (call.body as { action?: string } | undefined)?.action === 'skip'
       )
     })
     expect(cancelCall).toBeDefined()
@@ -3041,11 +2999,13 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
   // （`internal/api/handler.go` の source 導出）。厳密な逆操作は
   // `DELETE .../intent`（意見を取り下げてルール評価に戻す）。
   it('ルール由来の予約の Undo は DELETE .../intent を送る（PUT ではない）', async () => {
-    const fetchMock = stubApi(
-      [reservation(soon.programId, 'ニュース7', 'default', { source: 'rule', ruleId: 7 })],
-      [],
-      [soon],
-    )
+    const { calls } = stubApi({
+      ...programsRoutes,
+      'GET /api/reservations': [
+        reservation(soon.programId, 'ニュース7', 'default', { source: 'rule', ruleId: 7 }),
+      ],
+      ...programRoutes([soon]),
+    })
     renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
@@ -3053,18 +3013,12 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
 
     await waitFor(() => {
-      const intentCalls = fetchMock.mock.calls.filter(
-        (call) =>
-          new URL(String(call[0]), 'http://localhost').pathname ===
-          `/api/sites/default/programs/${soon.programId}/intent`,
+      const intentCalls = calls.filter(
+        (call) => call.url.pathname === `/api/sites/default/programs/${soon.programId}/intent`,
       )
-      const reviveCall = intentCalls.find(
-        (call) => (call[1] as RequestInit | undefined)?.method === 'DELETE',
-      )
+      const reviveCall = intentCalls.find((call) => call.method === 'DELETE')
       expect(reviveCall).toBeDefined()
-      expect(
-        intentCalls.filter((call) => (call[1] as RequestInit | undefined)?.method === 'PUT'),
-      ).toHaveLength(1)
+      expect(intentCalls.filter((call) => call.method === 'PUT')).toHaveLength(1)
     })
   })
 })
