@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // callRecordingStore は Head / Delete の key を記録する objstore.Store。
@@ -83,9 +84,7 @@ func contains(keys []string, want string) bool {
 // FS の置き場には旧い派生物のコピーが残る。
 func derivedS3SwitchedWorker(t *testing.T, mediaDir string, fsObjects objstore.Store, pool store.MediaDelete, storage store.StorageObservation) *DeleteReconcileWorker {
 	t.Helper()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	return &DeleteReconcileWorker{
 		MediaDelete: pool, Storage: storage,
 		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
@@ -108,9 +107,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 	const relPath = "encoded/old-copy.mp4"
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("encoded"))
 	const subtitleRelPath = "encoded/old-copy.vtt"
-	if err := os.WriteFile(filepath.Join(mediaDir, filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(mediaDir, filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\n"), 0o644), "os.WriteFile")
 	markRecordingTrashed(t, pool, recordingID)
 
 	recorder := &callRecordingStore{Store: testFilesystemObjectStore(t, mediaDir)}
@@ -118,9 +115,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 	w := derivedS3SwitchedWorker(t, mediaDir, recorder, media, media)
 	w.RecordingPurge = pgstoretest.Recordings(pool)
 	w.Breakers = pgstoretest.Breakers(pool)
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work(): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("filesystem derived copy state = %q, want deleted", got)
@@ -156,9 +151,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 		t.Fatalf("reconcileMissingAssets: %v", err)
 	}
 	var missing int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM missing_media_assets").Scan(&missing); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM missing_media_assets").Scan(&missing), "reading missing_media_assets count")
 	if missing != 0 {
 		t.Errorf("missing_media_assets = %d, want 0 (the filesystem store has the key)", missing)
 	}
@@ -168,12 +161,8 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 
 	recorder.reset()
 	// 巻き戻し判定: deleting にして条件から外れた行は、FS の置き場の Head で現存を確かめて active に戻る。
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName); err != nil {
-		t.Fatalf("restoreUnqualifiedDeletingAssets: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting the copy to deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
+	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoreUnqualifiedDeletingAssets")
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("copy state after revert = %q, want active", got)
 	}
@@ -182,15 +171,9 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	}
 
 	// FS の置き場から実体が消えていれば、巻き戻しではなく deleted に確定する（Head の ErrNotFound を不在として扱う）。
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(mediaDir, filepath.FromSlash(relPath))); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName); err != nil {
-		t.Fatalf("restoreUnqualifiedDeletingAssets (absent): %v", err)
-	}
+	testutil.MustExec(t, pool, "setting the copy to deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
+	testutil.RequireNoError(t, os.Remove(filepath.Join(mediaDir, filepath.FromSlash(relPath))), "os.Remove")
+	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoreUnqualifiedDeletingAssets (absent)")
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("copy state after revert with the key absent = %q, want deleted", got)
 	}
@@ -205,32 +188,22 @@ func TestDeleteReconcileWorker_FilesystemStagingOrphanIsRemovedWithoutAskingTheD
 	mediaDir := t.TempDir()
 	const relPath = mediapath.GeneratedAssetTempFilePrefix + "leftover"
 	full := filepath.Join(mediaDir, relPath)
-	if err := os.WriteFile(full, []byte("staged"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(full, []byte("staged"), 0o644), "os.WriteFile")
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(full, old, old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, "INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ($1, $2, $3)", dbtest.StoreName, relPath, old); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.Chtimes(full, old, old), "os.Chtimes")
+	testutil.MustExec(t, pool, "inserting the orphan_files row", "INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ($1, $2, $3)", dbtest.StoreName, relPath, old)
 	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, objectStoreName)
 	w := derivedS3SwitchedWorker(t, mediaDir, testFilesystemObjectStore(t, mediaDir), media, media)
 	w.RecordingPurge = pgstoretest.Recordings(pool)
 	w.Breakers = pgstoretest.Breakers(pool)
 	w.OrphanMTimeGrace = 7 * 24 * time.Hour
 	w.OrphanAge = 14 * 24 * time.Hour
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work(): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
 	if _, err := os.Lstat(full); !os.IsNotExist(err) {
 		t.Errorf("aged staging file stat error = %v, want not-exist", err)
 	}
 	var count int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count), "reading orphan_files count")
 	if count != 0 {
 		t.Errorf("orphan_files rows for the staging file = %d, want 0", count)
 	}
@@ -252,15 +225,11 @@ func (*putCommitPublisher) PublishEncoded(_ context.Context, _ store.EncodedPubl
 // beforeEncodeObjectPut は本体の Put の前に 1 回だけ呼ぶ。字幕の Put と commit の前では呼ばない。
 func TestPublishEncodedCallsBeforeEncodeObjectPutOnlyBeforeTheBodyPut(t *testing.T) {
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, "tokyo"); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "tokyo"), "mediapath.WriteStoreMarker")
 	scratch := filepath.Join(t.TempDir(), "out.mp4")
 	subtitle := filepath.Join(t.TempDir(), "out.vtt")
 	for path, body := range map[string]string{scratch: "data", subtitle: "WEBVTT\n\n"} {
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, os.WriteFile(path, []byte(body), 0o600), "os.WriteFile")
 	}
 	w := &EncodeWorker{
 		Objects: testFSObjectStore(mediaDir), ObjectPublisher: &putCommitPublisher{},
