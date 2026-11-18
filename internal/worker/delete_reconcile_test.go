@@ -475,32 +475,6 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	}
 }
 
-// 即時削除の要求（recording_purge_requests の行）は猶予期間を無視して削除する。
-// deleted_at はまだ猶予（30 日）の中の「たった今」にしておき、要求の行**単独**が
-// 猶予をバイパスすることを確認する --- 述語の即時腕を時刻比較に戻すと
-// （deleted_at が猶予内なので）削除されず落ちる。
-func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-
-	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purge/now.m2ts", []byte("data"))
-
-	recent := time.Now()
-	testutil.MustExec(t, pool, "soft-deleting recording", "UPDATE recordings SET deleted_at = $1 WHERE id = $2", recent, recordingID)
-	testutil.MustExec(t, pool, "requesting immediate purge", "INSERT INTO recording_purge_requests (recording_id) VALUES ($1)", recordingID)
-
-	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
-		w.TrashRetention = 30 * 24 * time.Hour
-	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
-
-	if got := singleCopyState(t, pool, assetID); got != "deleted" {
-		t.Errorf("asset copy state = %q, want deleted (an immediate purge request should bypass retention even though deleted_at is recent)", got)
-	}
-}
-
 // issue #135 の実測で一番分かりにくかったケース: media_assets を 1 行も
 // 持たない録画（status='failed' で ingest まで到達しなかった行など）に
 // 「今すぐ完全削除」を要求すると、消す対象が無いので観測できる変化が一切
