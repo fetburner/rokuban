@@ -154,16 +154,12 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: "rec-001"}
 
 	err := runWorkerViaJobQFake(context.Background(), w, job)
-	if err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, err, "Work() error")
 
 	var relPath string
-	if err := pool.QueryRow(context.Background(), `SELECT c.rel_path
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT c.rel_path
 		FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id
-		WHERE a.recording_id = $1 AND a.kind = 'original'`, recordingID).Scan(&relPath); err != nil {
-		t.Fatalf("reading committed original rel_path: %v", err)
-	}
+		WHERE a.recording_id = $1 AND a.kind = 'original'`, recordingID).Scan(&relPath), "reading committed original rel_path")
 	if !strings.HasPrefix(relPath, "sites/default/") || filepath.Base(relPath) != "recording.m2ts" {
 		t.Fatalf("original rel_path = %q, want sites/default/<entropy>/recording.m2ts", relPath)
 	}
@@ -176,9 +172,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	}
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file")
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
@@ -336,9 +330,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	// rel_path には args.Site（ここでは "site-a"）が前置される（issue #186 M4-14）。
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file")
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
@@ -506,16 +498,12 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: "rec-partial"}
 
 	err := runWorkerViaJobQFake(context.Background(), w, job)
-	if err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, err, "Work() error")
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file")
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
@@ -613,14 +601,10 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-follow")
-	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-follow"}); err != nil {
-		t.Fatalf("Work(): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-follow"}), "Work()")
 	path := filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading committed file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading committed file")
 	if !bytes.Equal(got, full) {
 		t.Fatalf("committed bytes differ from the two Range segments")
 	}
@@ -715,10 +699,8 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 
 	// 録画中なので commit していない。
 	var assets int
-	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assets); err != nil {
-		t.Fatalf("counting media_assets: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assets), "counting media_assets")
 	if assets != 0 {
 		t.Errorf("media_assets rows = %d, want 0 (nothing may commit while recording)", assets)
 	}
@@ -797,13 +779,9 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-catchup")
-	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-catchup"}); err != nil {
-		t.Fatalf("Work(): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-catchup"}), "Work()")
 	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
-	if err != nil {
-		t.Fatalf("reading committed file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading committed file")
 	if !bytes.Equal(got, full) {
 		t.Fatalf("committed bytes = %d, want %d (追い付きの後で伸びたぶんが欠けている)", len(got), len(full))
 	}
@@ -895,21 +873,17 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 			}
 
 			var progressRows int
-			if err := pool.QueryRow(context.Background(),
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 				"SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID,
-			).Scan(&progressRows); err != nil {
-				t.Fatalf("counting recording_ingest_progress: %v", err)
-			}
+			).Scan(&progressRows), "counting recording_ingest_progress")
 			if progressRows != 0 {
 				t.Errorf("recording_ingest_progress rows = %d, want 0 (stale progress row must be cleared on cancel/fail)", progressRows)
 			}
 
 			var assetRows int
-			if err := pool.QueryRow(context.Background(),
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 				"SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'original'", recordingID,
-			).Scan(&assetRows); err != nil {
-				t.Fatalf("counting media_assets: %v", err)
-			}
+			).Scan(&assetRows), "counting media_assets")
 			if assetRows != 0 {
 				t.Errorf("media_assets rows = %d, want 0 (must not commit a partial recording)", assetRows)
 			}
@@ -995,9 +969,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 		t.Fatalf("Work() = %v, want nil（204 と 206/0 は接続失敗ではない）", err)
 	}
 	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
-	if err != nil {
-		t.Fatalf("reading committed file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading committed file")
 	if !bytes.Equal(got, full) {
 		t.Fatalf("committed bytes = %d, want %d", len(got), len(full))
 	}
@@ -1096,11 +1068,9 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 	var observedAt time.Time
 	var expected *int64
 	var written int64
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT observed_at, expected_bytes, written_bytes FROM recording_ingest_progress WHERE recording_id = $1`, recordingID,
-	).Scan(&observedAt, &expected, &written); err != nil {
-		t.Fatalf("reading progress row: %v", err)
-	}
+	).Scan(&observedAt, &expected, &written), "reading progress row")
 	if !observedAt.After(firstObservedAt) {
 		t.Errorf("observed_at = %s, want > %s（追い付いたまま古びている。UI は 60 秒で「停滞」と読む）",
 			observedAt, firstObservedAt)
@@ -1184,9 +1154,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 		t.Fatalf("Work() = %v, want nil（未知の status はジョブ内で再試行する）", err)
 	}
 	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
-	if err != nil {
-		t.Fatalf("reading committed file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading committed file")
 	if !bytes.Equal(got, full) {
 		t.Fatalf("committed bytes = %d, want %d", len(got), len(full))
 	}
@@ -1344,11 +1312,9 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	}
 
 	var assetCount int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-	).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media_assets after hash mismatch: %v", err)
-	}
+	).Scan(&assetCount), "counting media_assets after hash mismatch")
 	if assetCount != 0 {
 		t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
 	}
@@ -1540,20 +1506,16 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	}
 	tempPath := ingestTestTempFilePath(t, pool, mediaDir, recordingID, "default", recordID)
 	firstTemp, err := os.ReadFile(tempPath)
-	if err != nil {
-		t.Fatalf("reading temp after first slice: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading temp after first slice")
 	if len(firstTemp) == 0 || len(firstTemp) >= len(data) {
 		t.Fatalf("first slice temp size = %d, want a nonempty partial transfer of %d bytes", len(firstTemp), len(data))
 	}
 	var handedOff bool
 	var checkpointOffset int64
 	var hashState []byte
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT handed_off, offset_bytes, hash_state
-FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&handedOff, &checkpointOffset, &hashState); err != nil {
-		t.Fatalf("reading DB checkpoint after first slice: %v", err)
-	}
+FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&handedOff, &checkpointOffset, &hashState), "reading DB checkpoint after first slice")
 	if !handedOff || checkpointOffset != int64(len(firstTemp)) || len(hashState) == 0 {
 		t.Fatalf("DB checkpoint after first slice = (handed_off=%t, offset=%d, hash state %d bytes), want clean handoff at %d", handedOff, checkpointOffset, len(hashState), len(firstTemp))
 	}
@@ -1562,9 +1524,7 @@ FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&h
 		t.Fatal("ingest temp state was not recorded after the first transfer slice")
 	}
 	wantFirstTempRelPath, err := ingestTempRelPath(mediaDir, tempPath)
-	if err != nil {
-		t.Fatalf("building expected first temp_rel_path: %v", err)
-	}
+	testutil.RequireNoError(t, err, "building expected first temp_rel_path")
 	if firstTempRelPath != wantFirstTempRelPath {
 		t.Errorf("temp_rel_path after first slice = %q, want %q", firstTempRelPath, wantFirstTempRelPath)
 	}
@@ -1590,19 +1550,15 @@ FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&h
 		t.Fatal("same job did not complete within five resumed slices")
 	}
 	var committedGeneration int64
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
-		recordingID).Scan(&committedGeneration); err != nil {
-		t.Fatalf("reading committed original ingest generation: %v", err)
-	}
+		recordingID).Scan(&committedGeneration), "reading committed original ingest generation")
 	if committedGeneration != firstTempGeneration {
 		t.Fatalf("committed ingest_generation = %d, want the same byte generation %d across clean handoff", committedGeneration, firstTempGeneration)
 	}
 	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	got, err := os.ReadFile(canonicalPath)
-	if err != nil {
-		t.Fatalf("reading committed canonical file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading committed canonical file")
 	if !bytes.Equal(got, data) {
 		t.Fatal("committed file differs from the single source byte stream")
 	}
@@ -1619,9 +1575,7 @@ FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&h
 		t.Errorf("DeleteRecord attempts = %d, want 1 after final commit", got)
 	}
 	var checkpointRows int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&checkpointRows); err != nil {
-		t.Fatalf("counting DB checkpoints after commit: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&checkpointRows), "counting DB checkpoints after commit")
 	if checkpointRows != 0 {
 		t.Errorf("DB checkpoint rows after commit = %d, want 0", checkpointRows)
 	}
@@ -1725,9 +1679,7 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResul
 	}
 	tempPath := ingestTestTempFilePath(t, run.pool, run.mediaDir, run.recordingID, "default", run.recordID)
 	info, err := os.Stat(tempPath)
-	if err != nil {
-		t.Fatalf("stating temp during SHA-256 wait: %v", err)
-	}
+	testutil.RequireNoError(t, err, "stating temp during SHA-256 wait")
 	gotOffsets := run.offsets()
 	if first {
 		run.firstOffsets = gotOffsets
@@ -1750,9 +1702,7 @@ func (run *lateSHA256IngestRun) complete(t *testing.T, tc lateSHA256IngestCase) 
 	} else {
 		tempPath := ingestTestTempFilePath(t, run.pool, run.mediaDir, run.recordingID, "default", run.recordID)
 		oldTime := time.Now().Add(-2 * time.Minute)
-		if err := os.Chtimes(tempPath, oldTime, oldTime); err != nil {
-			t.Fatalf("aging temp mtime past SHA-256 deadline: %v", err)
-		}
+		testutil.RequireNoError(t, os.Chtimes(tempPath, oldTime, oldTime), "aging temp mtime past SHA-256 deadline")
 	}
 	return runWorkerViaJobQFake(context.Background(), run.worker, run.job())
 }
@@ -1778,9 +1728,7 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 		t.Errorf("hash mismatch counter after late SHA-256 decision = %v, want %v", got, mismatchesBefore+wantMismatchDelta)
 	}
 	var assetCount int
-	if err := run.pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", run.recordingID).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media_assets after resume: %v", err)
-	}
+	testutil.RequireNoError(t, run.pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", run.recordingID).Scan(&assetCount), "counting media_assets after resume")
 	if assetCount != tc.wantAssets {
 		t.Errorf("media_assets rows after resume = %d, want %d", assetCount, tc.wantAssets)
 	}
@@ -1801,19 +1749,15 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 	if tc.wantAssets == 1 {
 		// timeout_skipped で commit する経路も、待ちの間と同じ世代を原本へ写す。
 		var committedGeneration int64
-		if err := run.pool.QueryRow(context.Background(),
+		testutil.RequireNoError(t, run.pool.QueryRow(context.Background(),
 			`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
-			run.recordingID).Scan(&committedGeneration); err != nil {
-			t.Fatalf("reading committed ingest generation: %v", err)
-		}
+			run.recordingID).Scan(&committedGeneration), "reading committed ingest generation")
 		if committedGeneration != run.waitGeneration {
 			t.Errorf("committed ingest_generation = %d, want the generation held during the SHA-256 wait (%d)", committedGeneration, run.waitGeneration)
 		}
 		canonicalPath := filepath.Join(run.mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, run.pool, run.recordingID)))
 		committed, err := os.ReadFile(canonicalPath)
-		if err != nil {
-			t.Fatalf("reading committed canonical file: %v", err)
-		}
+		testutil.RequireNoError(t, err, "reading committed canonical file")
 		if !bytes.Equal(committed, run.tsData) {
 			t.Error("committed canonical file differs from the transfer bytes")
 		}
@@ -1825,9 +1769,7 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID int64, fake *mirakctest.Fake, mediaDir, recordID string, wantTempSize int64) int64 {
 	t.Helper()
 	var assetCount int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media_assets while waiting: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount), "counting media_assets while waiting")
 	if assetCount != 0 {
 		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
@@ -1900,11 +1842,9 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 					t.Fatalf("Work() error = %v, want hash mismatch", err)
 				}
 				var assetCount int
-				if err := pool.QueryRow(context.Background(),
+				testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-				).Scan(&assetCount); err != nil {
-					t.Fatalf("counting media_assets after hash mismatch: %v", err)
-				}
+				).Scan(&assetCount), "counting media_assets after hash mismatch")
 				if assetCount != 0 {
 					t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
 				}
@@ -1913,15 +1853,11 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("Work() error: %v", err)
-			}
+			testutil.RequireNoError(t, err, "Work() error")
 			var assetCount int
-			if err := pool.QueryRow(context.Background(),
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-			).Scan(&assetCount); err != nil {
-				t.Fatalf("counting media_assets: %v", err)
-			}
+			).Scan(&assetCount), "counting media_assets")
 			if assetCount != 1 {
 				t.Errorf("media_assets rows = %d, want 1", assetCount)
 			}
@@ -1973,9 +1909,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
 	t.Cleanup(func() { slog.SetDefault(originalLogger) })
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work")
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs = %q, want late hash verified in the same job", logOutput.String())
 	}
@@ -1983,9 +1917,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 		t.Errorf("logs = %q, unexpected pending state after hash arrived during sync", logOutput.String())
 	}
 	var assetCount int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media_assets: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount), "counting media_assets")
 	if assetCount != 1 {
 		t.Errorf("media_assets rows = %d, want 1", assetCount)
 	}
@@ -2046,9 +1978,7 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
 	t.Cleanup(func() { slog.SetDefault(originalLogger) })
 	job := IngestJobArgs{Site: "default", RecordID: "rec-unknown-head-length"}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work with unknown HEAD length: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work with unknown HEAD length")
 	if !strings.Contains(logOutput.String(), "sha256_verification=timeout_skipped") {
 		t.Errorf("logs = %q, want timeout_skipped without waiting", logOutput.String())
 	}
@@ -2056,9 +1986,7 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 		t.Errorf("logs = %q, unexpected SHA-256 wait with unknown HEAD length", logOutput.String())
 	}
 	var assetCount int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media_assets: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount), "counting media_assets")
 	if assetCount != 1 {
 		t.Errorf("media_assets rows = %d, want 1", assetCount)
 	}
@@ -2144,9 +2072,7 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 
 	eventsMu.Lock()
 	gotEvents := slices.Clone(events)
@@ -2223,11 +2149,9 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				t.Fatal("first Work() error = nil, want injected durability failure")
 			}
 			var assetCount int
-			if err := pool.QueryRow(context.Background(),
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-			).Scan(&assetCount); err != nil {
-				t.Fatalf("counting media_assets after failed Work(): %v", err)
-			}
+			).Scan(&assetCount), "counting media_assets after failed Work()")
 			if assetCount != 0 {
 				t.Errorf("media_assets rows after failed Work() = %d, want 0", assetCount)
 			}
@@ -2238,23 +2162,17 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			// 再試行では実装本来の opener に戻す。失敗した試行とは別の writer temp へ
 			// Range 0 から取り直して、正しい原本を公開できることを確認する。
 			openIngestFile = originalOpenFile
-			if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-				t.Fatalf("retry Work() error: %v", err)
-			}
+			testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "retry Work() error")
 
 			fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 			gotData, err := os.ReadFile(fullPath)
-			if err != nil {
-				t.Fatalf("reading retried output file: %v", err)
-			}
+			testutil.RequireNoError(t, err, "reading retried output file")
 			if !bytes.Equal(gotData, tsData) {
 				t.Errorf("retried file content differs from the edge original")
 			}
-			if err := pool.QueryRow(context.Background(),
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-			).Scan(&assetCount); err != nil {
-				t.Fatalf("counting media_assets after retry: %v", err)
-			}
+			).Scan(&assetCount), "counting media_assets after retry")
 			if assetCount != 1 {
 				t.Errorf("media_assets rows after retry = %d, want 1", assetCount)
 			}
@@ -2348,16 +2266,12 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: "rec-stall"}
 
 	err := runWorkerViaJobQFake(context.Background(), w, job)
-	if err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, err, "Work() error")
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file")
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
@@ -2463,16 +2377,14 @@ func assertRecordSyncProgramMatchesRecording(t *testing.T, pool *pgxpool.Pool, h
 func insertTestRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordID string) {
 	t.Helper()
 	q := sqlcgen.New(pool)
-	if err := q.UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
+	testutil.RequireNoError(t, q.UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
 		Site:        "default",
 		RecordID:    recordID,
 		RecordingID: &recordingID,
 		ProgramID:   noProgramRecordSyncProgramID,
 		Status:      "finished",
 		Tags:        []string{},
-	}); err != nil {
-		t.Fatalf("inserting test record_sync: %v", err)
-	}
+	}), "inserting test record_sync")
 
 	assertRecordSyncProgramMatchesRecording(t, pool, "insertTestRecordSync", "default", recordingID, noProgramRecordSyncProgramID)
 }
@@ -2558,24 +2470,14 @@ func (e *linkedIngestEnv) reserveCanonicalPath(t *testing.T) {
 	}
 	client := e.w.MirakcClients["default"]
 	record, err := client.GetRecord(ctx, e.recordID)
-	if err != nil {
-		t.Fatalf("getting fake mirakc record: %v", err)
-	}
+	testutil.RequireNoError(t, err, "getting fake mirakc record")
 	relPath, err := e.w.determineRelPath(jobs.IngestJobArgs{Site: "default", RecordID: e.recordID}, record)
-	if err != nil {
-		t.Fatalf("determining test rel_path: %v", err)
-	}
+	testutil.RequireNoError(t, err, "determining test rel_path")
 	relPath, err = e.w.Publisher.ReserveIngestRelPath(ctx, e.recordingID, owner, relPath)
-	if err != nil {
-		t.Fatalf("reserving test rel_path: %v", err)
-	}
-	if err := e.w.Publisher.ReleaseIngestCheckpoint(ctx, e.recordingID, owner); err != nil {
-		t.Fatalf("releasing test writer lease: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reserving test rel_path")
+	testutil.RequireNoError(t, e.w.Publisher.ReleaseIngestCheckpoint(ctx, e.recordingID, owner), "releasing test writer lease")
 	e.fullPath = filepath.Join(e.mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(e.fullPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(e.fullPath), 0o755), "os.MkdirAll")
 }
 
 func (e *linkedIngestEnv) run() error {
@@ -2585,9 +2487,7 @@ func (e *linkedIngestEnv) run() error {
 func (e *linkedIngestEnv) assetCount(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := e.pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", e.recordingID).Scan(&n); err != nil {
-		t.Fatalf("counting media assets: %v", err)
-	}
+	testutil.RequireNoError(t, e.pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", e.recordingID).Scan(&n), "counting media assets")
 	return n
 }
 
@@ -2615,13 +2515,9 @@ func TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent(t *testing
 	t.Parallel()
 	env := newLinkedIngestEnv(t, "rec-foreign-canonical", "test/foreign.m2ts")
 	foreign := bytes.Repeat([]byte{0xAA}, len(env.tsData))
-	if err := os.WriteFile(env.fullPath, foreign, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(env.fullPath, foreign, 0o644), "os.WriteFile")
 	before, err := os.Stat(env.fullPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.Stat")
 
 	err = env.run()
 	if !errors.Is(err, fsink.ErrForeignDestination) || !errors.Is(err, os.ErrExist) {
@@ -2650,13 +2546,9 @@ func TestIngestWorker_RefusesCanonicalWithSameSizeButDifferentContent(t *testing
 func TestIngestWorker_AdoptsMatchingCanonicalWithDifferentInode(t *testing.T) {
 	t.Parallel()
 	env := newLinkedIngestEnv(t, "rec-matching-canonical", "test/matching.m2ts")
-	if err := os.WriteFile(env.fullPath, env.tsData, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(env.fullPath, env.tsData, 0o644), "os.WriteFile")
 	before, err := os.Stat(env.fullPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.Stat")
 
 	if err := env.run(); err != nil {
 		t.Fatalf("Work() error = %v, want matching existing canonical to be adopted", err)
@@ -2686,25 +2578,19 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 		t.Fatal("first Work() succeeded, want the injected commit failure")
 	}
 	first, err := os.Stat(env.fullPath)
-	if err != nil {
-		t.Fatalf("canonical missing after the linked-but-uncommitted attempt: %v", err)
-	}
+	testutil.RequireNoError(t, err, "canonical missing after the linked-but-uncommitted attempt")
 	if n := env.assetCount(t); n != 0 {
 		t.Fatalf("media_assets rows after failed commit = %d, want 0", n)
 	}
 	// 公開の前に全量の最終 handoff が保存されていて、失敗後も残る。
 	var handedOff bool
 	var offset int64
-	if err := env.pool.QueryRow(context.Background(), `SELECT handed_off, offset_bytes FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff, &offset); err != nil {
-		t.Fatalf("reading DB writer checkpoint after failed commit: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(context.Background(), `SELECT handed_off, offset_bytes FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff, &offset), "reading DB writer checkpoint after failed commit")
 	if !handedOff || offset != int64(len(env.tsData)) {
 		t.Fatalf("writer checkpoint after failed commit = (handed_off %v, offset %d), want final handoff (true, %d)", handedOff, offset, len(env.tsData))
 	}
 	var reservedRelPath string
-	if err := env.pool.QueryRow(context.Background(), `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&reservedRelPath); err != nil {
-		t.Fatalf("reading reserved canonical path after failed commit: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(context.Background(), `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&reservedRelPath), "reading reserved canonical path after failed commit")
 	getsAfterFirst := env.streamGets()
 
 	if err := env.run(); err != nil {
@@ -2714,9 +2600,7 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 		t.Errorf("media_assets rows = %d, want 1", n)
 	}
 	var committedRelPath string
-	if err := env.pool.QueryRow(context.Background(), `SELECT c.rel_path FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id WHERE a.recording_id = $1 AND a.kind = 'original'`, env.recordingID).Scan(&committedRelPath); err != nil {
-		t.Fatalf("reading committed canonical path: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(context.Background(), `SELECT c.rel_path FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id WHERE a.recording_id = $1 AND a.kind = 'original'`, env.recordingID).Scan(&committedRelPath), "reading committed canonical path")
 	if committedRelPath != reservedRelPath {
 		t.Errorf("committed rel_path = %q, want retry to reuse reserved path %q", committedRelPath, reservedRelPath)
 	}
@@ -2729,9 +2613,7 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	}
 	assertNoIngestTempFiles(t, env.mediaDir)
 	var checkpointRows int
-	if err := env.pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&checkpointRows); err != nil {
-		t.Fatalf("counting DB checkpoints after retry: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&checkpointRows), "counting DB checkpoints after retry")
 	if checkpointRows != 0 {
 		t.Errorf("DB checkpoint rows after retry = %d, want 0", checkpointRows)
 	}
@@ -2751,9 +2633,7 @@ func TestIngestWorker_ReservesCanonicalPathOnFirstWorkAndReusesItAfterPublicatio
 		t.Fatal("first Work() succeeded, want the injected publication failure")
 	}
 	var reservedRelPath string
-	if err := env.pool.QueryRow(context.Background(), `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&reservedRelPath); err != nil {
-		t.Fatalf("reading first Work canonical path reservation: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(context.Background(), `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&reservedRelPath), "reading first Work canonical path reservation")
 	if reservedRelPath == "" || !strings.HasPrefix(reservedRelPath, "sites/default/") || filepath.Base(reservedRelPath) != "actual-name.m2ts" {
 		t.Fatalf("reserved canonical path = %q, want a sites/default path based on mirakc Content.Path", reservedRelPath)
 	}
@@ -2765,9 +2645,7 @@ func TestIngestWorker_ReservesCanonicalPathOnFirstWorkAndReusesItAfterPublicatio
 		t.Fatalf("second Work() error = %v, want commit-only retry", err)
 	}
 	var committedRelPath string
-	if err := env.pool.QueryRow(context.Background(), `SELECT c.rel_path FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id WHERE a.recording_id = $1 AND a.kind = 'original'`, env.recordingID).Scan(&committedRelPath); err != nil {
-		t.Fatalf("reading committed original path: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(context.Background(), `SELECT c.rel_path FROM media_asset_copies c JOIN media_assets a ON a.id = c.media_asset_id WHERE a.recording_id = $1 AND a.kind = 'original'`, env.recordingID).Scan(&committedRelPath), "reading committed original path")
 	if committedRelPath != reservedRelPath {
 		t.Fatalf("committed rel_path = %q, want first Work's reservation %q", committedRelPath, reservedRelPath)
 	}
@@ -2783,15 +2661,11 @@ func TestIngestWorker_LinkedRetryCommitsReceivedSHA256WithoutReadingCanonical(t 
 	}
 	// 同じ大きさのまま 1 バイトだけ壊す。canonical と temp は同じ inode なので両方に効く。
 	f, err := os.OpenFile(env.fullPath, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.OpenFile")
 	if _, err := f.WriteAt([]byte{env.tsData[0] ^ 0xFF}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, f.Close(), "f.Close")
 	getsAfterFirst := env.streamGets()
 
 	if err := env.run(); err != nil {
@@ -2826,9 +2700,7 @@ func TestIngestWorker_ResumesFinalHandoffWhenPublicationFailedBeforeLink(t *test
 	}
 	var handedOff bool
 	var offset int64
-	if err := env.pool.QueryRow(context.Background(), `SELECT handed_off, offset_bytes FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff, &offset); err != nil {
-		t.Fatalf("reading DB writer checkpoint after pre-link failure: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(context.Background(), `SELECT handed_off, offset_bytes FROM recording_ingest_checkpoints WHERE recording_id = $1`, env.recordingID).Scan(&handedOff, &offset), "reading DB writer checkpoint after pre-link failure")
 	if !handedOff || offset != int64(len(env.tsData)) {
 		t.Fatalf("writer checkpoint = (handed_off %v, offset %d), want final handoff (true, %d)", handedOff, offset, len(env.tsData))
 	}
@@ -2898,16 +2770,12 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	// 1 回目: 転送・コミットは成功するが、DeleteRecord は失敗する。
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "first Work() error")
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	firstData, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading output file after first Work(): %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file after first Work()")
 	if len(firstData) != len(tsData) {
 		t.Fatalf("file size after first Work() = %d, want %d", len(firstData), len(tsData))
 	}
@@ -2916,14 +2784,12 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	// 再実行時に掃除されることを検証する。最初の commit 自身が progress を消すため、
 	// ここで作らないと handleAlreadyCommittedIngest の ClearIngestProgress を通らない。
 	media := pgstoretest.Media(pool)
-	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
+	testutil.RequireNoError(t, media.UpsertIngestProgress(context.Background(), store.IngestProgress{
 		RecordingID:    recordingID,
 		WrittenBytes:   10,
 		TempRelPath:    "sites/default/.rokuban-ingest-stale",
 		TempGeneration: 1,
-	}); err != nil {
-		t.Fatalf("seeding stale ingest progress: %v", err)
-	}
+	}), "seeding stale ingest progress")
 	if _, ok := readIngestProgress(t, pool, recordingID); !ok {
 		t.Fatal("stale ingest progress row was not seeded")
 	}
@@ -2938,9 +2804,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	}
 
 	secondData, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading output file after second Work(): %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file after second Work()")
 	if len(secondData) != len(tsData) {
 		// (c) ファイルが切り詰められていない
 		t.Errorf("file size after second Work() = %d, want %d (file must not be truncated)",
@@ -2958,11 +2822,9 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	}
 
 	var mediaAssetCount int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-	).Scan(&mediaAssetCount); err != nil {
-		t.Fatalf("counting media_assets: %v", err)
-	}
+	).Scan(&mediaAssetCount), "counting media_assets")
 	if mediaAssetCount != 1 {
 		// (b) media_assets が 1 行のまま
 		t.Errorf("media_assets rows = %d, want 1", mediaAssetCount)
@@ -3066,7 +2928,7 @@ func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, progr
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+	testutil.RequireNoError(t, q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
 		Site:        "default",
 		ProgramID:   programID,
 		Title:       title,
@@ -3078,16 +2940,12 @@ func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, progr
 		Channel:     "27",
 		EventID:     int32(programID % 100000),
 		ServiceName: "テスト局",
-	}); err != nil {
-		t.Fatalf("upserting program snapshot: %v", err)
-	}
+	}), "upserting program snapshot")
 	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site:      "default",
 		ProgramID: programID,
 	})
-	if err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
+	testutil.RequireNoError(t, err, "creating reservation")
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_snapshots WHERE site = $1 AND program_id = $2", "default", programID)
@@ -3101,10 +2959,7 @@ func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, progr
 // 書き込みクエリを新設しない）。
 func setReservationBase(t *testing.T, pool *pgxpool.Pool, programID int64, base string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE reservations SET base = $2 WHERE site = 'default' AND program_id = $1", programID, base); err != nil {
-		t.Fatalf("setting reservation base: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting reservation base", "UPDATE reservations SET base = $2 WHERE site = 'default' AND program_id = $1", programID, base)
 }
 
 // commit 済みの再配送では、canonical と同じ inode の temp だけを消す。同名でも別の inode の temp は残す。
@@ -3125,9 +2980,7 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 			fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 			tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
 			if linked {
-				if err := os.Link(fullPath, tempPath); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.Link(fullPath, tempPath), "os.Link")
 			} else if err := os.WriteFile(tempPath, []byte("another attempt"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -3202,26 +3055,19 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
-		t.Fatalf("inserting initial chapter span: %v", err)
-	}
+	dbtest.ChapterSpan(t, pool, recordingID)
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "already-committed/stale-cut.g1.mp4")
 	frozen, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("deriving initial keep ranges: %v", err)
-	}
-	if err := setFrozenCuts(t, pool, assetID, frozen); err != nil {
-		t.Fatalf("seeding frozen ranges: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(1200000, 1300000), 'CM2', true)`, recordingID); err != nil {
-		t.Fatalf("editing chapter spans: %v", err)
-	}
+	testutil.RequireNoError(t, err, "deriving initial keep ranges")
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, frozen), "seeding frozen ranges")
+	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) {
+		p.StartMs = 1200000
+		p.EndMs = 1300000
+		label := "CM2"
+		p.Label = &label
+	})
 	current, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("deriving edited keep ranges: %v", err)
-	}
+	testutil.RequireNoError(t, err, "deriving edited keep ranges")
 	if slices.Equal(frozen, current) {
 		t.Fatal("test setup did not make the active cut asset stale")
 	}
@@ -3280,11 +3126,9 @@ func encodePolicyOfRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64
 func encodePolicyRowExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
 	t.Helper()
 	var count int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM recording_processing_policy WHERE recording_id = $1", recordingID,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting recording encode policy rows: %v", err)
-	}
+	).Scan(&count), "counting recording encode policy rows")
 	return count == 1
 }
 
@@ -3341,9 +3185,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 
 	w.Enqueuer = newRecordingEnqueuer()
 	ctx := context.Background()
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "until_encoded" {
@@ -3423,9 +3265,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 
 	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "until_encoded" {
@@ -3512,9 +3352,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 
 	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" {
@@ -3563,9 +3401,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 
 	w.Enqueuer = newRecordingEnqueuer()
 	ctx := context.Background()
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" {
@@ -3630,19 +3466,14 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 
 	// 放送は 48 時間前に終わったことにする（insertProgramSnapshotAndReservation は
 	// start_at = now() で作る）。GC の cutoff は epg.retention_grace = 24h 相当。
-	if _, err := pool.Exec(ctx,
-		"UPDATE program_snapshots SET start_at = now() - interval '48 hours' WHERE site = $1 AND program_id = $2",
+	testutil.MustExec(t, pool, "aging program snapshot", "UPDATE program_snapshots SET start_at = now() - interval '48 hours' WHERE site = $1 AND program_id = $2",
 		"default", programID,
-	); err != nil {
-		t.Fatalf("aging program snapshot: %v", err)
-	}
+	)
 
 	// ruler の GC 本体（internal/ruler.runGC が呼ぶのと同じクエリ）。FK CASCADE で
 	// reservations / program_intents / program_overrides も一緒に落ちる。
 	deleted, err := q.DeleteEndedProgramSnapshots(ctx, time.Now().Add(-24*time.Hour))
-	if err != nil {
-		t.Fatalf("running GC: %v", err)
-	}
+	testutil.RequireNoError(t, err, "running GC")
 	if deleted != 1 {
 		t.Fatalf("DeleteEndedProgramSnapshots deleted %d rows, want 1 "+
 			"（未 ingest の record_sync（program_id=%d）があるスナップショットも刈るのが issue #214 の決定。"+
@@ -3650,11 +3481,9 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 			deleted, programID)
 	}
 	var reservations int
-	if err := pool.QueryRow(ctx,
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
 		"SELECT count(*) FROM reservations WHERE site = $1 AND program_id = $2", "default", programID,
-	).Scan(&reservations); err != nil {
-		t.Fatalf("counting reservations: %v", err)
-	}
+	).Scan(&reservations), "counting reservations")
 	if reservations != 0 {
 		t.Fatalf("reservations after GC = %d, want 0 (FK CASCADE で一緒に落ちるはず)", reservations)
 	}
@@ -3676,9 +3505,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"}
 
 	w.Enqueuer = newRecordingEnqueuer()
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 
 	// 凍結そのものはスキップされない（issue #159）。行はあり、値が既定値になる。
 	if !encodePolicyRowExists(t, pool, recordingID) {
@@ -3740,9 +3567,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site: "default", ProgramID: programID,
 	})
-	if err != nil {
-		t.Fatalf("re-materializing reservation: %v", err)
-	}
+	testutil.RequireNoError(t, err, "re-materializing reservation")
 	// ruler は再実体化のたびに射影から base を書き直す。テストではその 1 パスを
 	// 模して同じ base を新しい行に立て直す（setReservationBase 参照）。
 	setReservationBase(t, pool, res2.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
@@ -3765,9 +3590,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 
 	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "until_encoded" {
@@ -3839,9 +3662,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
 
 	logText := logBuf.String()
 	if !strings.Contains(logText, "level=WARN") {
@@ -3917,9 +3738,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
 
 	logText := logBuf.String()
 	if !strings.Contains(logText, "level=INFO") {
@@ -3974,21 +3793,14 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-manual-gced", programID)
 
 	// program_snapshots の削除は reservations / program_intents を CASCADE する。
-	if _, err := pool.Exec(ctx,
-		"DELETE FROM program_snapshots WHERE site = $1 AND program_id = $2", "default", programID); err != nil {
-		t.Fatalf("running snapshot GC: %v", err)
-	}
+	testutil.MustExec(t, pool, "running snapshot GC", "DELETE FROM program_snapshots WHERE site = $1 AND program_id = $2", "default", programID)
 	var intents, reservations int
-	if err := pool.QueryRow(ctx,
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
 		"SELECT count(*) FROM program_intents WHERE site = $1 AND program_id = $2", "default", programID,
-	).Scan(&intents); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx,
+	).Scan(&intents), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
 		"SELECT count(*) FROM reservations WHERE site = $1 AND program_id = $2", "default", programID,
-	).Scan(&reservations); err != nil {
-		t.Fatal(err)
-	}
+	).Scan(&reservations), "pool.QueryRow")
 	if intents != 0 || reservations != 0 {
 		t.Fatalf("GC left intent/reservation rows: intents=%d reservations=%d", intents, reservations)
 	}
@@ -4012,9 +3824,7 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 
 	logText := logBuf.String()
 	if !strings.Contains(logText, "level=WARN") {
@@ -4064,15 +3874,11 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000101)
 
 	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 
 	q := sqlcgen.New(pool)
 	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
-	if err != nil {
-		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
-	}
+	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
 	assertIngestRelPath(t, asset.RelPath, "tokyo", "prog.m2ts")
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(asset.RelPath))
 	if _, err := os.Stat(fullPath); err != nil {
@@ -4113,15 +3919,11 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000102)
 
 	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 
 	q := sqlcgen.New(pool)
 	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
-	if err != nil {
-		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
-	}
+	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
 	assertIngestRelPath(t, asset.RelPath, "tokyo", "plain.m2ts")
 }
 
@@ -4241,9 +4043,7 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 	jobA := IngestJobArgs{Site: "default", RecordID: "rec-collide-a"}
 	jobB := IngestJobArgs{Site: "default", RecordID: "rec-collide-b"}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, jobA); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, jobA), "first Work() error")
 	w.MirakcClients["default"] = mirakc.NewClient(fakeB.URL(), nil)
 	if err := runWorkerViaJobQFake(context.Background(), w, jobB); err != nil {
 		t.Fatalf("second Work() error: %v (same filename %q must get a fresh path)", err, filepath.Base(sharedContentPath))
@@ -4251,13 +4051,9 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 
 	q := sqlcgen.New(pool)
 	assetA, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDA})
-	if err != nil {
-		t.Fatalf("GetActiveOriginalMediaAsset(first recording): %v", err)
-	}
+	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset(first recording)")
 	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDB})
-	if err != nil {
-		t.Fatalf("GetActiveOriginalMediaAsset(second recording): %v", err)
-	}
+	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset(second recording)")
 	if assetA.RelPath == assetB.RelPath {
 		t.Fatalf("both recordings committed the same rel_path %q", assetA.RelPath)
 	}
@@ -4265,16 +4061,12 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 	assertIngestRelPath(t, assetB.RelPath, "default", "recording.m2ts")
 
 	dataA, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(assetA.RelPath)))
-	if err != nil {
-		t.Fatalf("reading first output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading first output file")
 	if len(dataA) != len(tsDataA) {
 		t.Errorf("first file size = %d, want %d", len(dataA), len(tsDataA))
 	}
 	dataB, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(assetB.RelPath)))
-	if err != nil {
-		t.Fatalf("reading second output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading second output file")
 	if len(dataB) != len(tsDataB) {
 		t.Errorf("second file size = %d, want %d", len(dataB), len(tsDataB))
 	}
@@ -4355,12 +4147,8 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		t.Fatalf("test fixture bug: existingContent must be 21 bytes, got %d", len(existingContent))
 	}
 	conflictFullPath := filepath.Join(mediaDir, "sites", "default", "shared", "conflict.m2ts")
-	if err := os.MkdirAll(filepath.Dir(conflictFullPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(conflictFullPath, existingContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(conflictFullPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(conflictFullPath, existingContent, 0o644), "os.WriteFile")
 
 	// 新規: checkpoint に衝突する canonical path が保存された別の録画。
 	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -4395,9 +4183,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 	// 核心のアサーション: 先行の実ファイルは中身まで元のままである
 	// （サイズが同じだけでは truncate → 途中まで書いた場合を見逃す）。
 	gotContent, err := os.ReadFile(conflictFullPath)
-	if err != nil {
-		t.Fatalf("reading pre-existing file after failed Work(): %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading pre-existing file after failed Work()")
 	if !bytes.Equal(gotContent, existingContent) {
 		t.Errorf("pre-existing file was modified: got %q, want unchanged %q", gotContent, existingContent)
 	}
@@ -4410,22 +4196,18 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 
 	// 新規録画側は media_asset がコミットされていない。
 	var newAssetCount int
-	if err := pool.QueryRow(ctx,
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
 		"SELECT count(*) FROM media_assets WHERE recording_id = $1", newRecordingID,
-	).Scan(&newAssetCount); err != nil {
-		t.Fatalf("counting media_assets for new recording: %v", err)
-	}
+	).Scan(&newAssetCount), "counting media_assets for new recording")
 	if newAssetCount != 0 {
 		t.Errorf("media_assets rows for new recording = %d, want 0 (must not commit on conflict)", newAssetCount)
 	}
 
 	// 先行録画側の行は変わらず 1 のまま。
 	var existingAssetCount int
-	if err := pool.QueryRow(ctx,
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
 		"SELECT count(*) FROM media_assets WHERE recording_id = $1", existingRecordingID,
-	).Scan(&existingAssetCount); err != nil {
-		t.Fatalf("counting media_assets for existing recording: %v", err)
-	}
+	).Scan(&existingAssetCount), "counting media_assets for existing recording")
 	if existingAssetCount != 1 {
 		t.Errorf("media_assets rows for existing recording = %d, want 1 (untouched)", existingAssetCount)
 	}
@@ -4482,17 +4264,13 @@ func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
 	}
 
 	asset, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: newRecordingID})
-	if err != nil {
-		t.Fatalf("GetActiveOriginalMediaAsset: %v", err)
-	}
+	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
 	if asset.RelPath == reusedRelPath {
 		t.Fatalf("new media_asset reused tombstoned rel_path %q", reusedRelPath)
 	}
 	assertIngestRelPath(t, asset.RelPath, "default", "reused.m2ts")
 	data, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(asset.RelPath)))
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file")
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}

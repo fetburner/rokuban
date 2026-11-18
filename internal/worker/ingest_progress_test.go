@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // ingestProgressRow は recording_ingest_progress の 1 行（無ければ ok=false）。
@@ -33,17 +34,13 @@ func readIngestProgress(t *testing.T, pool *pgxpool.Pool, recordingID int64) (in
 	rows, err := pool.Query(context.Background(),
 		`SELECT written_bytes, expected_bytes FROM recording_ingest_progress WHERE recording_id = $1`,
 		recordingID)
-	if err != nil {
-		t.Fatalf("querying recording_ingest_progress: %v", err)
-	}
+	testutil.RequireNoError(t, err, "querying recording_ingest_progress")
 	defer rows.Close()
 	if !rows.Next() {
 		return ingestProgressRow{}, false
 	}
 	var row ingestProgressRow
-	if err := rows.Scan(&row.written, &row.expected); err != nil {
-		t.Fatalf("scanning recording_ingest_progress: %v", err)
-	}
+	testutil.RequireNoError(t, rows.Scan(&row.written, &row.expected), "scanning recording_ingest_progress")
 	return row, true
 }
 
@@ -51,11 +48,8 @@ func readIngestProgress(t *testing.T, pool *pgxpool.Pool, recordingID int64) (in
 // （進捗の分母）。
 func setRecordSyncContentLength(t *testing.T, pool *pgxpool.Pool, recordID string, length int64) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`UPDATE record_sync SET content_length = $1 WHERE site = 'default' AND record_id = $2`,
-		length, recordID); err != nil {
-		t.Fatalf("setting record_sync.content_length: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting record_sync.content_length", `UPDATE record_sync SET content_length = $1 WHERE site = 'default' AND record_id = $2`,
+		length, recordID)
 }
 
 // TestIngestProgressReporter_ThrottlesContinuedWrites は、最初の進捗を記録した後の
@@ -240,19 +234,15 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 
 	// コミット前は原本 media_asset がまだ無い（コミット = DB 行。不変条件 3）。
 	var assets int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
-		recordingID).Scan(&assets); err != nil {
-		t.Fatalf("counting media_assets: %v", err)
-	}
+		recordingID).Scan(&assets), "counting media_assets")
 	if assets != 0 {
 		t.Errorf("media_assets during transfer = %d, want 0", assets)
 	}
 
 	close(release)
-	if err := <-done; err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, <-done, "Work() error")
 
 	// コミットの tx が進捗行を消す --- 「原本があるのに取り込み中」を読者に
 	// 見せない。
@@ -363,11 +353,9 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		t.Fatal("first Range retry was not observed")
 	}
 	var finalObservedAt time.Time
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT observed_at FROM recording_ingest_progress WHERE recording_id = $1`,
-		recordingID).Scan(&finalObservedAt); err != nil {
-		t.Fatalf("reading observed_at after zero-byte retries: %v", err)
-	}
+		recordingID).Scan(&finalObservedAt), "reading observed_at after zero-byte retries")
 	if !finalObservedAt.Equal(firstRetryObservedAt) {
 		t.Errorf("zero-byte retries refreshed observed_at: before=%s after=%s",
 			firstRetryObservedAt, finalObservedAt)

@@ -8,20 +8,17 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func TestProbeIngestStorage_CompletesOperationSequenceAndCleansUp(t *testing.T) {
 	t.Parallel()
 	mediaDir := t.TempDir()
 
-	if err := ProbeIngestStorage(mediaDir); err != nil {
-		t.Fatalf("ProbeIngestStorage: %v", err)
-	}
+	testutil.RequireNoError(t, ProbeIngestStorage(mediaDir), "ProbeIngestStorage")
 
 	entries, err := os.ReadDir(filepath.Join(mediaDir, "sites"))
-	if err != nil {
-		t.Fatalf("reading probe directory: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading probe directory")
 	for _, entry := range entries {
 		if mediapath.IsIngestTempFile(entry.Name()) {
 			t.Errorf("probe left temporary file %q", entry.Name())
@@ -38,14 +35,10 @@ func TestProbeIngestStorage_WritesUnderSitesNotRoot(t *testing.T) {
 	t.Parallel()
 	mediaDir := t.TempDir()
 
-	if err := ProbeIngestStorage(mediaDir); err != nil {
-		t.Fatalf("ProbeIngestStorage: %v", err)
-	}
+	testutil.RequireNoError(t, ProbeIngestStorage(mediaDir), "ProbeIngestStorage")
 
 	rootEntries, err := os.ReadDir(mediaDir)
-	if err != nil {
-		t.Fatalf("reading media_dir: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading media_dir")
 	for _, entry := range rootEntries {
 		if mediapath.IsIngestTempFile(entry.Name()) {
 			t.Errorf("probe left temporary file directly under media_dir root: %q", entry.Name())
@@ -113,9 +106,7 @@ func TestProbeIngestStorage_RejectsMissingOrNonDirectory(t *testing.T) {
 	}
 
 	filePath := filepath.Join(t.TempDir(), "media-file")
-	if err := os.WriteFile(filePath, []byte("not a directory"), 0o644); err != nil {
-		t.Fatalf("writing non-directory probe target: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(filePath, []byte("not a directory"), 0o644), "writing non-directory probe target")
 	if err := ProbeIngestStorage(filePath); err == nil {
 		t.Fatal("ProbeIngestStorage(file) returned nil")
 	} else if !strings.Contains(err.Error(), "not a directory") {

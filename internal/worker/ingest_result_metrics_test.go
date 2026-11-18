@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // このファイルは IngestWorker.Work の結果分類を固定する。実行コンテキストの
@@ -60,9 +61,7 @@ func assertIngestResultDeltas(t *testing.T, before map[string]float64, want map[
 func ingestDurationSamples(t *testing.T) uint64 {
 	t.Helper()
 	var m dto.Metric
-	if err := metrics.IngestDuration.Write(&m); err != nil {
-		t.Fatalf("reading IngestDuration: %v", err)
-	}
+	testutil.RequireNoError(t, metrics.IngestDuration.Write(&m), "reading IngestDuration")
 	return m.GetHistogram().GetSampleCount()
 }
 
@@ -121,9 +120,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	jobq.Register(registry, snoozeResultCapturingIngestWorker{worker: w, result: workResult})
 	queue := jobqfake.New(registry, jobqfake.Config{SnoozeDelay: &delay})
 	w.Enqueuer = queue
-	if err := queue.Start(context.Background()); err != nil {
-		t.Fatalf("queue.Start: %v", err)
-	}
+	testutil.RequireNoError(t, queue.Start(context.Background()), "queue.Start")
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -135,9 +132,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	beforeResults := ingestJobResults()
 	durationBefore := ingestDurationSamples(t)
 	_, err := queue.Enqueue(context.Background(), jobs.IngestJobArgs{Site: "default", RecordID: recordID})
-	if err != nil {
-		t.Fatalf("inserting ingest job: %v", err)
-	}
+	testutil.RequireNoError(t, err, "inserting ingest job")
 	deadline := time.Now().Add(30 * time.Second)
 	for len(queue.Deliveries()) < 1 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -148,9 +143,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	}
 	waitCtx, cancelWait := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelWait()
-	if err := queue.WaitIdle(waitCtx); err != nil {
-		t.Fatalf("queue.WaitIdle: %v", err)
-	}
+	testutil.RequireNoError(t, queue.WaitIdle(waitCtx), "queue.WaitIdle")
 	result := <-workResult
 	if got, ok := jobq.SnoozeDelay(result); !ok || got != 30*time.Second {
 		t.Fatalf("IngestWorker.Work snooze = %v, %v; want 30s while content.sha256 is null", got, ok)
@@ -161,9 +154,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	}
 
 	var assetCount int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media_assets while waiting: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount), "counting media_assets while waiting")
 	if assetCount != 0 {
 		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
@@ -171,9 +162,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
 	}
 	var progressRows int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID).Scan(&progressRows); err != nil {
-		t.Fatalf("counting progress rows while waiting: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), "SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID).Scan(&progressRows), "counting progress rows while waiting")
 	if progressRows != 1 {
 		t.Errorf("recording_ingest_progress rows while waiting = %d, want 1 (kept until commit)", progressRows)
 	}
@@ -184,11 +173,9 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	var handedOff bool
 	var offset int64
 	var hashState []byte
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT handed_off, offset_bytes, hash_state
-FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&handedOff, &offset, &hashState); err != nil {
-		t.Fatalf("reading DB SHA-256 checkpoint while waiting: %v", err)
-	}
+FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&handedOff, &offset, &hashState), "reading DB SHA-256 checkpoint while waiting")
 	if !handedOff || offset != int64(len(tsData)) || len(hashState) == 0 {
 		t.Errorf("DB SHA-256 checkpoint while waiting = (handed_off=%t, offset=%d, state bytes=%d), want clean checkpoint at %d", handedOff, offset, len(hashState), len(tsData))
 	}

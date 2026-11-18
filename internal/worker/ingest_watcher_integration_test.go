@@ -111,9 +111,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	}
 	waitForIngestLifecycleDeliveries(t, queue, 2)
 	waitForIngestLifecycleQueue(t, queue)
-	if err := <-workResults; err != nil {
-		t.Fatalf("ingest result after late SHA-256 arrived: %v", err)
-	}
+	testutil.RequireNoError(t, <-workResults, "ingest result after late SHA-256 arrived")
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs after the second job = %q, want verified SHA-256 commit", logOutput.String())
 	}
@@ -122,16 +120,13 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 
 func seedIngestLifecycleReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
-	ctx := context.Background()
 	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
 		p.Title = "SHA-256 lifecycle"
 		p.StartAt = time.Now()
 		p.DurationMs = 3600000
 		p.EventID = 100
 	})
-	if _, err := pool.Exec(ctx, "INSERT INTO reservations (site, program_id) VALUES ('default', $1)", programID); err != nil {
-		t.Fatalf("creating reservation fixture: %v", err)
-	}
+	testutil.MustExec(t, pool, "creating reservation fixture", "INSERT INTO reservations (site, program_id) VALUES ('default', $1)", programID)
 }
 
 func ingestLifecycleRecord(programID int64) (mirakc.Record, string) {
@@ -292,9 +287,7 @@ func newIngestLifecycleQueue(t *testing.T, ingestWorker *worker.IngestWorker, wo
 	delay := time.Duration(0)
 	queue := jobqfake.New(registry, jobqfake.Config{SnoozeDelay: &delay})
 	ingestWorker.Enqueuer = queue
-	if err := queue.Start(context.Background()); err != nil {
-		t.Fatalf("starting jobqfake queue: %v", err)
-	}
+	testutil.RequireNoError(t, queue.Start(context.Background()), "starting jobqfake queue")
 	return queue
 }
 
@@ -336,11 +329,9 @@ func waitForIngestLifecycleRecordSync(t *testing.T, pool *pgxpool.Pool, recordID
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		var committed bool
-		if err := pool.QueryRow(context.Background(),
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 			"SELECT EXISTS (SELECT 1 FROM record_sync WHERE site = 'default' AND record_id = $1 AND recording_id IS NOT NULL)", recordID,
-		).Scan(&committed); err != nil {
-			t.Fatalf("checking committed record_sync: %v", err)
-		}
+		).Scan(&committed), "checking committed record_sync")
 		if committed {
 			return
 		}
@@ -353,18 +344,14 @@ func waitForIngestLifecycleQueue(t *testing.T, queue *jobqfake.Queue) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := queue.WaitIdle(ctx); err != nil {
-		t.Fatalf("jobqfake.WaitIdle: %v", err)
-	}
+	testutil.RequireNoError(t, queue.WaitIdle(ctx), "jobqfake.WaitIdle")
 }
 
 func assertIngestLifecycleWaited(t *testing.T, pool *pgxpool.Pool, deleteAttempts int32, mediaDir, recordID string, wantTempSize int64) {
 	t.Helper()
 	ctx := context.Background()
 	var assetCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount); err != nil {
-		t.Fatalf("counting original media assets while waiting: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount), "counting original media assets while waiting")
 	if assetCount != 0 {
 		t.Errorf("original media assets while waiting = %d, want 0", assetCount)
 	}
@@ -372,9 +359,7 @@ func assertIngestLifecycleWaited(t *testing.T, pool *pgxpool.Pool, deleteAttempt
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", deleteAttempts)
 	}
 	var canonicalRelPath string
-	if err := pool.QueryRow(ctx, `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = (SELECT recording_id FROM record_sync WHERE site = 'default' AND record_id = $1)`, recordID).Scan(&canonicalRelPath); err != nil {
-		t.Fatalf("reading reserved canonical path while waiting: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT canonical_rel_path FROM recording_ingest_checkpoints WHERE recording_id = (SELECT recording_id FROM record_sync WHERE site = 'default' AND record_id = $1)`, recordID).Scan(&canonicalRelPath), "reading reserved canonical path while waiting")
 	tempName := mediapath.IngestTempFilePrefix + "default-" + strings.ReplaceAll(recordID, "-", "%2D") + "-g1"
 	tempPath := filepath.Join(mediaDir, filepath.Dir(filepath.FromSlash(canonicalRelPath)), tempName)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != wantTempSize {
@@ -386,9 +371,7 @@ func assertIngestLifecycleCommitted(t *testing.T, pool *pgxpool.Pool, mediaDir, 
 	t.Helper()
 	ctx := context.Background()
 	var assetCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount); err != nil {
-		t.Fatalf("counting committed original media assets: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount), "counting committed original media assets")
 	if assetCount != 1 {
 		t.Fatalf("committed original media assets = %d, want 1", assetCount)
 	}
@@ -396,14 +379,10 @@ func assertIngestLifecycleCommitted(t *testing.T, pool *pgxpool.Pool, mediaDir, 
 		t.Errorf("DeleteRecord attempts after verified commit = %d, want 1", deleteAttempts)
 	}
 	var canonicalRelPath string
-	if err := pool.QueryRow(ctx, `SELECT copy.rel_path FROM media_assets asset JOIN media_asset_copies copy ON copy.media_asset_id = asset.id WHERE asset.kind = 'original' AND asset.recording_id = (SELECT recording_id FROM record_sync WHERE site = 'default' AND record_id = $1)`, recordID).Scan(&canonicalRelPath); err != nil {
-		t.Fatalf("reading committed canonical path: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT copy.rel_path FROM media_assets asset JOIN media_asset_copies copy ON copy.media_asset_id = asset.id WHERE asset.kind = 'original' AND asset.recording_id = (SELECT recording_id FROM record_sync WHERE site = 'default' AND record_id = $1)`, recordID).Scan(&canonicalRelPath), "reading committed canonical path")
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(canonicalRelPath))
 	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading committed media file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading committed media file")
 	if !bytes.Equal(data, tsData) {
 		t.Error("committed media file differs from the downloaded TS data")
 	}

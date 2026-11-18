@@ -227,16 +227,9 @@ func runCanonicalOrphanSurvives(
 	const content = "canonical bytes after the failed commit"
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-db-disconnect")
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		t.Fatalf("creating commit directory: %v", err)
-	}
-	if err := os.WriteFile(tempPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("writing commit temp: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, now())", relPath); err != nil {
-		t.Fatalf("seeding orphan record: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755), "creating commit directory")
+	testutil.RequireNoError(t, os.WriteFile(tempPath, []byte(content), 0o644), "writing commit temp")
+	testutil.MustExec(t, pool, "seeding orphan record", "INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, now())", relPath)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM orphan_files WHERE rel_path = $1", relPath)
 	})
@@ -283,10 +276,8 @@ func runCanonicalOrphanSurvives(
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	cleanup.deleteOrphanFile(relPath, 0)
 	var orphanCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount); err != nil {
-		t.Fatalf("querying orphan record while commit is paused: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount), "querying orphan record while commit is paused")
 	if orphanCount != 1 {
 		t.Fatalf("orphan record count while commit is paused = %d, want 1", orphanCount)
 	}
@@ -309,9 +300,7 @@ func runCanonicalOrphanSurvives(
 		t.Fatal("commit succeeded although its publication or database session failed")
 	}
 	got, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading canonical file after commit failure: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading canonical file after commit failure")
 	if string(got) != content {
 		t.Errorf("canonical file after commit failure = %q, want %q", got, content)
 	}
@@ -322,10 +311,8 @@ func runCanonicalOrphanSurvives(
 	if _, err := os.Stat(fullPath); err != nil {
 		t.Errorf("canonical file after report-only cleanup: %v", err)
 	}
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount); err != nil {
-		t.Fatalf("querying orphan record after deferred cleanup: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount), "querying orphan record after deferred cleanup")
 	if orphanCount != 1 {
 		t.Errorf("orphan record count after report-only cleanup = %d, want 1", orphanCount)
 	}
@@ -436,9 +423,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			fullPath := filepath.Join(mediaDir, filepath.FromSlash(canonicalRelPath))
 			if tt.canonicalOnError {
 				got, err := os.ReadFile(fullPath)
-				if err != nil {
-					t.Fatalf("reading orphan canonical file: %v", err)
-				}
+				testutil.RequireNoError(t, err, "reading orphan canonical file")
 				if !bytes.Equal(got, tsData) {
 					t.Errorf("orphan canonical file differs from transferred bytes")
 				}
@@ -447,9 +432,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			}
 			tempPath := ingestTestTempFilePath(t, pool, mediaDir, recordingID, "default", recordID)
 			got, err := os.ReadFile(tempPath)
-			if err != nil {
-				t.Fatalf("reading preserved ingest temp: %v", err)
-			}
+			testutil.RequireNoError(t, err, "reading preserved ingest temp")
 			if !bytes.Equal(got, tsData) {
 				t.Errorf("preserved ingest temp differs from transferred bytes")
 			}
@@ -458,17 +441,13 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			}
 
 			restoreHooks()
-			if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-				t.Fatalf("retry Work() error: %v", err)
-			}
+			testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "retry Work() error")
 			assertIngestAssetCount(t, pool, recordingID, 1)
 			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord calls after retry = %d, want 1", got)
 			}
 			got, err = os.ReadFile(fullPath)
-			if err != nil {
-				t.Fatalf("reading retried canonical file: %v", err)
-			}
+			testutil.RequireNoError(t, err, "reading retried canonical file")
 			if !bytes.Equal(got, tsData) {
 				t.Errorf("retried canonical file differs from transferred bytes")
 			}
@@ -503,9 +482,7 @@ func assertNoIngestTempFiles(t *testing.T, mediaDir string) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking media dir for ingest temps: %v", err)
-	}
+	testutil.RequireNoError(t, err, "walking media dir for ingest temps")
 	if len(paths) != 0 {
 		t.Errorf("ingest temporary files remain: %v", paths)
 	}
