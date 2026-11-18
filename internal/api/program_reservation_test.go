@@ -2,9 +2,7 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -12,7 +10,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -56,9 +53,7 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090011234
 	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9001)
@@ -72,18 +67,7 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 
 	path := srv.URL + programReservationPath(programID)
 
-	resp1, err := http.Get(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp1.Body.Close() }()
-	if resp1.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp1.StatusCode)
-	}
-	var got1 api.Reservation
-	if err := json.NewDecoder(resp1.Body).Decode(&got1); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got1 := api.GetJSON[api.Reservation](t, path)
 	if got1.ProgramId != programID {
 		t.Fatalf("programId = %d, want %d (initial reservation)", got1.ProgramId, programID)
 	}
@@ -103,18 +87,7 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 	// 核心: 同じ URL（(site, programId) 宛先）でもう一度引くと、再実体化された
 	// 予約が 200 で返る。複合キー以外を宛先にしていれば、ここは
 	// 404（旧 id はもう存在しない）になっていたはずの経路。
-	resp2, err := http.Get(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp2.Body.Close() }()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("再実体化後の status = %d, want 200（(site, programId) は変わらないはず）", resp2.StatusCode)
-	}
-	var got2 api.Reservation
-	if err := json.NewDecoder(resp2.Body).Decode(&got2); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got2 := api.GetJSON[api.Reservation](t, path)
 	if got2.ProgramId != programID {
 		t.Errorf("programId = %d, want %d", got2.ProgramId, programID)
 	}
@@ -125,9 +98,7 @@ func TestGetProgramReservation_NoReservation_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090021234
 	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9002)
@@ -148,9 +119,7 @@ func TestGetProgramReservation_UnknownSite_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090031234
 	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9003)

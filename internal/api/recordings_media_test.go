@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -17,10 +15,9 @@ import (
 // コピーが無ければ原本とコマの URL は省く。
 func TestRecordingMediaURLsUseTheStoreHoldingTheOriginal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		RecordingQuery: pgstore.NewRecordings(pool, ""), // api は置き場に束ねない
-	}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RecordingQuery = pgstore.NewRecordings(pool, "") // api は置き場に束ねない
+	})
 
 	moved := dbtest.Recording(t, pool)
 	assetID := seedIngested(t, pool, moved, 123, nil)
@@ -29,10 +26,7 @@ func TestRecordingMediaURLsUseTheStoreHoldingTheOriginal(t *testing.T) {
 	}
 	noOriginal := dbtest.Recording(t, pool)
 
-	var detail Recording
-	if resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, moved), &detail); resp.StatusCode != http.StatusOK {
-		t.Fatalf("detail status = %d", resp.StatusCode)
-	}
+	detail := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, moved))
 	wantOriginal := fmt.Sprintf("/api/media/stores/takamatsu/recordings/%d/file", moved)
 	wantFrame := fmt.Sprintf("/api/media/stores/takamatsu/recordings/%d/frame", moved)
 	if detail.Media.OriginalUrl == nil || *detail.Media.OriginalUrl != wantOriginal {
@@ -48,10 +42,7 @@ func TestRecordingMediaURLsUseTheStoreHoldingTheOriginal(t *testing.T) {
 		t.Errorf("seekTilesUrl = %q, want %q", detail.Media.SeekTilesUrl, want)
 	}
 
-	var none Recording
-	if resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, noOriginal), &none); resp.StatusCode != http.StatusOK {
-		t.Fatalf("detail status = %d", resp.StatusCode)
-	}
+	none := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, noOriginal))
 	if none.Media.OriginalUrl != nil || none.Media.FrameUrl != nil {
 		t.Errorf("a recording without an original has originalUrl/frameUrl = %v/%v, want both omitted", none.Media.OriginalUrl, none.Media.FrameUrl)
 	}

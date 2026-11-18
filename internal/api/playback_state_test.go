@@ -43,7 +43,7 @@ func playbackRequest(t *testing.T, method, url string, body any) *http.Response 
 
 func TestPlaybackPositionAndWatchedAPI(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	start := time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC)
@@ -98,11 +98,7 @@ func TestPlaybackPositionAndWatchedAPI(t *testing.T) {
 		t.Fatalf("marking one row cleared duplicate's position: count=%d, want 1", positionCount)
 	}
 
-	var rows []Recording
-	resp = getJSON(t, srv.URL+"/api/recordings", &rows)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list recordings status = %d", resp.StatusCode)
-	}
+	rows := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	for _, id := range []int64{one, duplicate} {
 		found := false
 		for _, row := range rows {
@@ -153,7 +149,7 @@ func TestPlaybackPositionAndWatchedAPI(t *testing.T) {
 
 func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -216,11 +212,7 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 		t.Fatalf("mark sibling watched: %v", err)
 	}
 
-	var got []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings/continue-watching", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("continue watching status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings/continue-watching")
 	if len(got) != 6 {
 		t.Fatalf("continue watching rows = %d, want 6", len(got))
 	}

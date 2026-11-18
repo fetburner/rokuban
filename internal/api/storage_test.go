@@ -2,17 +2,14 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -28,47 +25,24 @@ VALUES ('test-store', $1, $2, $3, $4, $5)`, root, path, total, used, available);
 	}
 }
 
-// storageRootResp は GET /api/storage のレスポンス要素。
-type storageRootResp struct {
-	Root           string    `json:"root"`
-	Path           string    `json:"path"`
-	TotalBytes     int64     `json:"totalBytes"`
-	UsedBytes      int64     `json:"usedBytes"`
-	AvailableBytes int64     `json:"availableBytes"`
-	ObservedAt     time.Time `json:"observedAt"`
-}
-
+// api.StorageRoot は GET /api/storage のレスポンス要素。
 // 1. 観測済みの root が一覧に現れ、バイト数と observedAt が読める。
 func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, StorageObservation: pgstoretest.Media(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	before := time.Now().Add(-time.Second)
 	insertStorageSyncFixture(t, pool, ctx, "media", "/mnt/media", 1000, 400, 600)
 	insertStorageSyncFixture(t, pool, ctx, "scratch", "/var/tmp/rokuban", 100, 10, 90)
 
-	resp, err := http.Get(srv.URL + "/api/storage")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-
-	var got []storageRootResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.StorageRoot](t, srv.URL+"/api/storage")
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2", len(got))
 	}
 
-	byRoot := map[string]storageRootResp{}
+	byRoot := map[api.StorageRootRoot]api.StorageRoot{}
 	for _, r := range got {
 		byRoot[r.Root] = r
 	}
@@ -98,9 +72,7 @@ func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 func TestGetStorage_EmptyWhenNoObservation(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, StorageObservation: pgstoretest.Media(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	resp, err := http.Get(srv.URL + "/api/storage")
 	if err != nil {

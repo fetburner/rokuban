@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"testing"
@@ -144,33 +143,18 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 		[]string{"待機と実行"}
 }
 
-func newEncodeQueueServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		RecordingQuery:     pgstoretest.Recordings(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "h265", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
-	return srv
+// withEncodeQueueProfiles は待機列テストの encode プロファイル名（cut は cut 扱い）を与える。
+func withEncodeQueueProfiles(c *RouterConfig) {
+	c.EncodeProfileNames = []string{"h264", "h265", "cut"}
+	c.CutProfileNames = []string{"cut"}
 }
 
 func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	queuedTitles, runningTitles := encodeQueueFixture(t, pool)
-	srv := newEncodeQueueServer(t, pool)
+	srv := NewTestServer(t, pool, withEncodeQueueProfiles)
 
-	var got struct {
-		Queued         int64 `json:"queued"`
-		Running        int64 `json:"running"`
-		AwaitingReview int64 `json:"awaitingReview"`
-	}
-	resp := getJSON(t, srv.URL+"/api/encode-queue", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[EncodeQueueSummary](t, srv.URL+"/api/encode-queue")
 	if got.Queued != 7 || got.Running != 1 || got.AwaitingReview != 1 {
 		t.Errorf("encode queue summary = queued %d, running %d, awaitingReview %d; want queued 7, running 1, awaitingReview 1", got.Queued, got.Running, got.AwaitingReview)
 	}
@@ -202,16 +186,11 @@ func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	})
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264"})
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping,
-		RecordingQuery: pgstoretest.Recordings(pool), MediaReader: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264"}}))
-	t.Cleanup(srv.Close)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodeProfileNames = []string{"h264"}
+	})
 
-	var got struct {
-		Queued         int64 `json:"queued"`
-		Running        int64 `json:"running"`
-		AwaitingReview int64 `json:"awaitingReview"`
-	}
-	getJSON(t, srv.URL+"/api/encode-queue", &got)
+	got := GetJSON[EncodeQueueSummary](t, srv.URL+"/api/encode-queue")
 	if got.Queued != 1 || got.Running != 0 || got.AwaitingReview != 0 {
 		t.Errorf("encode queue = queued %d, running %d, awaitingReview %d; want queued 1, running 0, awaitingReview 0", got.Queued, got.Running, got.AwaitingReview)
 	}
@@ -270,31 +249,17 @@ func TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate(t *testing.T) {
 	})
 	exec(`DELETE FROM recording_chapter_ownership WHERE recording_id = $1`, reverted)
 
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		RecordingQuery:     pgstoretest.Recordings(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut", "cut2"},
-		CutProfileNames:    []string{"cut", "cut2"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodeProfileNames = []string{"h264", "cut", "cut2"}
+		c.CutProfileNames = []string{"cut", "cut2"}
+	})
 
-	var summary struct {
-		AwaitingReview int64 `json:"awaitingReview"`
-	}
-	resp := getJSON(t, srv.URL+"/api/encode-queue", &summary)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
-	}
+	summary := GetJSON[EncodeQueueSummary](t, srv.URL+"/api/encode-queue")
 	if summary.AwaitingReview != 2 {
 		t.Errorf("awaitingReview = %d, want 2 recordings (two cut profiles on one recording count once)", summary.AwaitingReview)
 	}
 
-	var recordings []Recording
-	resp = getJSON(t, srv.URL+"/api/recordings?encodeState=awaiting_review", &recordings)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/recordings?encodeState=awaiting_review status = %d, want 200", resp.StatusCode)
-	}
+	recordings := GetJSON[[]Recording](t, srv.URL+"/api/recordings?encodeState=awaiting_review")
 	if len(recordings) != int(summary.AwaitingReview) {
 		t.Errorf("awaiting_review rows = %d, count = %d; want equal", len(recordings), summary.AwaitingReview)
 	}
@@ -328,7 +293,7 @@ func TestAwaitingReviewCountAndFilterUseRecordingLevelPredicate(t *testing.T) {
 func TestListRecordingsEncodeStateMatchesQueueCounts(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	wantQueued, wantRunning := encodeQueueFixture(t, pool)
-	srv := newEncodeQueueServer(t, pool)
+	srv := NewTestServer(t, pool, withEncodeQueueProfiles)
 
 	for state, want := range map[string][]string{"queued": wantQueued, "running": wantRunning} {
 		got := getRecordingsTitles(t, srv.URL, url.Values{"encodeState": {state}})
@@ -342,11 +307,11 @@ func TestListRecordingsEncodeStateMatchesQueueCounts(t *testing.T) {
 
 func TestListRecordingsRejectsUnknownEncodeState(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
-	resp := getJSON(t, srv.URL+"/api/recordings?encodeState=finished", nil)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("encodeState=finished status = %d, want 400", resp.StatusCode)
+	status := GetStatus(t, srv.URL+"/api/recordings?encodeState=finished")
+	if status != http.StatusBadRequest {
+		t.Errorf("encodeState=finished status = %d, want 400", status)
 	}
 }
 
@@ -484,27 +449,17 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 
 func assertEncodeQueueMatchesReconcile(t *testing.T, pool *pgxpool.Pool, profiles config.EncodeConfig, reconciled map[string]bool) {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		RecordingQuery:     pgstoretest.Recordings(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: profiles.ProfileNames(),
-		CutProfileNames:    profiles.CutProfileNames(),
-	}))
-	t.Cleanup(srv.Close)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodeProfileNames = profiles.ProfileNames()
+		c.CutProfileNames = profiles.CutProfileNames()
+	})
 	queued := map[string]bool{}
 	for _, state := range []string{"queued", "running"} {
 		for _, title := range getRecordingsTitles(t, srv.URL, url.Values{"encodeState": {state}}) {
 			queued[title] = true
 		}
 	}
-	var summary struct {
-		Queued  int64 `json:"queued"`
-		Running int64 `json:"running"`
-	}
-	if resp := getJSON(t, srv.URL+"/api/encode-queue", &summary); resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
-	}
+	summary := GetJSON[EncodeQueueSummary](t, srv.URL+"/api/encode-queue")
 	if got := summary.Queued + summary.Running; got != int64(len(queued)) {
 		t.Errorf("encode queue rows = %d, recordings in the queue = %d; want one pending profile per recording", got, len(queued))
 	}
@@ -549,24 +504,16 @@ func TestChapterEditsRemoveRecordingFromAwaitingReview(t *testing.T) {
 	})
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"cut"})
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		ChapterStore:       pgstoretest.Analysis(pool),
-		RecordingQuery:     pgstoretest.Recordings(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.ChapterStore = pgstoretest.Analysis(pool)
+		c.EncodeProfileNames = []string{"cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 
 	observe := func() (int64, int) {
 		t.Helper()
-		var summary struct {
-			AwaitingReview int64 `json:"awaitingReview"`
-		}
-		getJSON(t, srv.URL+"/api/encode-queue", &summary)
-		var rows []Recording
-		getJSON(t, srv.URL+"/api/recordings?encodeState=awaiting_review", &rows)
+		summary := GetJSON[EncodeQueueSummary](t, srv.URL+"/api/encode-queue")
+		rows := GetJSON[[]Recording](t, srv.URL+"/api/recordings?encodeState=awaiting_review")
 		return summary.AwaitingReview, len(rows)
 	}
 	if count, rows := observe(); count != 1 || rows != 1 {

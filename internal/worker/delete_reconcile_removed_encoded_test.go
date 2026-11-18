@@ -41,11 +41,7 @@ func seedRemovedEncodedRecording(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 	f.h265ID = seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &h265, dir+"/h265.mp4", []byte("h265"))
 	f.h264Path = filepath.Join(mediaDir, dir, "h264.mp4")
 	f.h265Path = filepath.Join(mediaDir, dir, "h265.mp4")
-	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
-		 VALUES ($1, 'always', $2)`, recordingID, profiles); err != nil {
-		t.Fatalf("seeding recording_processing_policy: %v", err)
-	}
+	dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) { p.EncodeProfiles = profiles })
 	return f
 }
 

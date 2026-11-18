@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -55,7 +53,7 @@ func setEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64, prof
 //   - 試行行があるプロファイルはその state（running/failed）をそのまま出す
 func TestListRecordingsEncodeStatus(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	// h264: 完了済み（active な encoded） / h265: running / aac: 試行行なし（queued）
@@ -98,10 +96,7 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	})
 	seedIngested(t, pool, none, 4000, nil)
 
-	var got []Recording
-	if resp := getJSON(t, srv.URL+"/api/recordings", &got); resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	byID := map[int64]Recording{}
 	for _, r := range got {
 		byID[r.Id] = r
@@ -154,10 +149,7 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 
 	// 単体 GET は一覧要素と同形（openapi.yaml の getRecording）。射影が
 	// 一覧側にしか足されていない drift をここで捕まえる。
-	var single Recording
-	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(mixed), &single); resp.StatusCode != http.StatusOK {
-		t.Fatalf("single status = %d", resp.StatusCode)
-	}
+	single := GetJSON[Recording](t, srv.URL+"/api/recordings/"+itoa(mixed))
 	if single.EncodeStatus == nil || len(*single.EncodeStatus) != 2 {
 		t.Fatalf("single: encodeStatus = %+v, want exactly 2 entries", single.EncodeStatus)
 	}
@@ -172,7 +164,7 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 // --- api は worker の状態を問い合わせない。不変条件 1）。
 func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -195,10 +187,7 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
 	}
 
-	var trash []Recording
-	if resp := getJSON(t, srv.URL+"/api/recordings?trash=true", &trash); resp.StatusCode != http.StatusOK {
-		t.Fatalf("trash list status = %d", resp.StatusCode)
-	}
+	trash := GetJSON[[]Recording](t, srv.URL+"/api/recordings?trash=true")
 	if len(trash) != 1 || trash[0].Id != id {
 		t.Fatalf("trash = %+v, want id=%d", trash, id)
 	}
@@ -209,10 +198,7 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 		t.Errorf("trash: encodedAssets = %+v, want omitted (nil)", *trash[0].EncodedAssets)
 	}
 
-	var single Recording
-	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(id), &single); resp.StatusCode != http.StatusOK {
-		t.Fatalf("single status = %d", resp.StatusCode)
-	}
+	single := GetJSON[Recording](t, srv.URL+"/api/recordings/"+itoa(id))
 	if single.EncodeStatus != nil {
 		t.Errorf("single (trash): encodeStatus = %+v, want omitted (nil)", *single.EncodeStatus)
 	}
@@ -232,9 +218,9 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 // そのまま出す --- それは断定ではなく観測なので規律の対象外。
 func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping,
-		RecordingQuery: pgstoretest.Recordings(pool), EncodeProfileNames: []string{"h264"}}))
-	t.Cleanup(srv.Close)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodeProfileNames = []string{"h264"}
+	})
 	base := time.Now().Truncate(time.Second)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -244,10 +230,7 @@ func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testi
 	setEncodeProfiles(t, pool, id, []string{"h264", "vp9"})
 	seedEncodeAttempt(t, pool, id, "vp9", "failed", nil)
 
-	var rec Recording
-	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(id), &rec); resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	rec := GetJSON[Recording](t, srv.URL+"/api/recordings/"+itoa(id))
 	if rec.EncodeStatus == nil {
 		t.Fatalf("encodeStatus is nil, want h264=queued, vp9=failed")
 	}
@@ -271,10 +254,7 @@ func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testi
 		`DELETE FROM recording_encode_attempts WHERE recording_id = $1 AND profile = 'vp9'`, id); err != nil {
 		t.Fatalf("clearing vp9 attempt: %v", err)
 	}
-	rec = Recording{}
-	if resp := getJSON(t, srv.URL+"/api/recordings/"+itoa(id), &rec); resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	rec = GetJSON[Recording](t, srv.URL+"/api/recordings/"+itoa(id))
 	if rec.EncodeStatus == nil || len(*rec.EncodeStatus) != 1 {
 		t.Fatalf("encodeStatus = %+v, want exactly 1 entry (h264 only)", rec.EncodeStatus)
 	}

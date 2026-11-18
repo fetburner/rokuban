@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -29,13 +28,13 @@ func TestRouterRecoversPanicAsJSONError(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
-		r.Get("/api/test-panic", func(http.ResponseWriter, *http.Request) {
-			panic("test panic")
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.Mounter = testMounter(func(r chi.Router) {
+			r.Get("/api/test-panic", func(http.ResponseWriter, *http.Request) {
+				panic("test panic")
+			})
 		})
-	})})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	})
 
 	resp, err := http.Get(srv.URL + "/api/test-panic")
 	if err != nil {
@@ -58,13 +57,13 @@ func TestRouterRecoversPanicAsJSONError(t *testing.T) {
 }
 
 func TestRouterPanicNilReturnsJSONError(t *testing.T) {
-	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
-		r.Get("/api/test-panic-nil", func(http.ResponseWriter, *http.Request) {
-			panic(nil)
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.Mounter = testMounter(func(r chi.Router) {
+			r.Get("/api/test-panic-nil", func(http.ResponseWriter, *http.Request) {
+				panic(nil)
+			})
 		})
-	})})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	})
 
 	resp, err := http.Get(srv.URL + "/api/test-panic-nil")
 	if err != nil {
@@ -88,24 +87,24 @@ func TestRouterPanicNilReturnsJSONError(t *testing.T) {
 // クライアントへ届くことで確かめる。
 func TestRouterPanicAfterHeaderSentAbortsConnection(t *testing.T) {
 	release := make(chan struct{})
-	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
-		r.Get("/api/test-partial", func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("PARTIAL"))
-			w.(http.Flusher).Flush()
-			panic("boom after header")
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.Mounter = testMounter(func(r chi.Router) {
+			r.Get("/api/test-partial", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("PARTIAL"))
+				w.(http.Flusher).Flush()
+				panic("boom after header")
+			})
+			r.Get("/api/test-flush", func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("first"))
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					panic(err)
+				}
+				<-release
+				_, _ = w.Write([]byte("second"))
+			})
 		})
-		r.Get("/api/test-flush", func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte("first"))
-			if err := http.NewResponseController(w).Flush(); err != nil {
-				panic(err)
-			}
-			<-release
-			_, _ = w.Write([]byte("second"))
-		})
-	})})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	})
 
 	resp, err := http.Get(srv.URL + "/api/test-partial")
 	if err != nil {
@@ -141,19 +140,19 @@ func TestRouterPanicAfterHeaderSentAbortsConnection(t *testing.T) {
 // ヘッダー送信済みの判定は WriteHeader 以外の書き込み経路でも立つ。
 // 暗黙の 200 を送る Write と、sendfile を保つための ReadFrom が対象。
 func TestRouterPanicAfterImplicitHeaderAbortsConnection(t *testing.T) {
-	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
-		r.Get("/api/test-write", func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte("PARTIAL"))
-			panic("boom after implicit header")
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.Mounter = testMounter(func(r chi.Router) {
+			r.Get("/api/test-write", func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("PARTIAL"))
+				panic("boom after implicit header")
+			})
+			r.Get("/api/test-readfrom", func(w http.ResponseWriter, _ *http.Request) {
+
+				_, _ = w.(io.ReaderFrom).ReadFrom(strings.NewReader("PARTIAL"))
+				panic("boom after ReadFrom")
+			})
 		})
-		r.Get("/api/test-readfrom", func(w http.ResponseWriter, _ *http.Request) {
-			// http.ServeContent は io.Copy 経由でこのインタフェースを使う。
-			_, _ = w.(io.ReaderFrom).ReadFrom(strings.NewReader("PARTIAL"))
-			panic("boom after ReadFrom")
-		})
-	})})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	})
 
 	for _, path := range []string{"/api/test-write", "/api/test-readfrom"} {
 		t.Run(path, func(t *testing.T) {
@@ -176,9 +175,9 @@ func TestRouterPanicAfterImplicitHeaderAbortsConnection(t *testing.T) {
 
 func TestJSONBodyLimitAndExcludedRoutes(t *testing.T) {
 	largeBody := io.MultiReader(strings.NewReader(`{"name":"`), strings.NewReader(strings.Repeat("x", int(maxJSONBodyBytes))), strings.NewReader(`"}`))
-	router := NewRouter(RouterConfig{
-		MetricsRegistry: prometheus.NewRegistry(),
-		Mounter: testMounter(func(r chi.Router) {
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.MetricsRegistry = prometheus.NewRegistry()
+		c.Mounter = testMounter(func(r chi.Router) {
 			r.Post("/api/media/test", func(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.Copy(io.Discard, r.Body)
 				w.WriteHeader(http.StatusNoContent)
@@ -187,10 +186,8 @@ func TestJSONBodyLimitAndExcludedRoutes(t *testing.T) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
 			})
-		}),
+		})
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/rules", largeBody)
 	if err != nil {
@@ -243,57 +240,27 @@ func TestJSONBodyLimitAndExcludedRoutes(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
-	resp, err := http.Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[HealthResponse](t, srv.URL+"/healthz")
 	if body.Status != "ok" {
 		t.Errorf("status = %q, want %q", body.Status, "ok")
 	}
 }
 
 func TestGetVersion(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
-	resp, err := http.Get(srv.URL + "/api/version")
-	if err != nil {
-		t.Fatalf("GET /api/version: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body VersionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[VersionResponse](t, srv.URL+"/api/version")
 	if body.Version == "" {
 		t.Error("version is empty")
 	}
 }
 
 func TestAllowedHosts_ValidHost(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"localhost"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"localhost"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/healthz", nil)
 	if err != nil {
@@ -313,9 +280,9 @@ func TestAllowedHosts_ValidHost(t *testing.T) {
 }
 
 func TestAllowedHosts_InvalidHost(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"localhost"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"localhost"}
+	})
 
 	// /healthz と /metrics は allowlist を免除しているので、
 	// 検証が効いていることはデータ側のエンドポイントで確かめる。
@@ -342,9 +309,9 @@ func TestAllowedHosts_InvalidHost(t *testing.T) {
 // allowlist の比較には "rokuban.local" だけが渡って一致し、
 // allowlist を素通りする（issue #344）。
 func TestAllowedHosts_NonNumericPortRejected(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -367,9 +334,10 @@ func TestAllowedHosts_NonNumericPortRejected(t *testing.T) {
 // （非数値ポートで allowlist を欺く経路は Host 単体には限らない。実際に
 // 転送経路側の穴が起きた事例がある。issue #216）。
 func TestAllowedHosts_ForwardedHostNonNumericPortRejected(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -391,9 +359,9 @@ func TestAllowedHosts_ForwardedHostNonNumericPortRejected(t *testing.T) {
 
 // 正当な数値ポート付きの Host は従来どおり通す（fail-closed 化の回帰確認）。
 func TestAllowedHosts_NumericPortStillAllowed(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -443,9 +411,10 @@ func TestStripPort(t *testing.T) {
 // が allowlist 内なら r.Host が allowlist 外（プロキシのホスト名）でも通す
 // （docs/api.md §リバースプロキシ・フレンドリー要件、issue #89 / #216）。
 func TestAllowedHosts_ForwardedHostValidPassesEvenIfHostInvalid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -470,9 +439,10 @@ func TestAllowedHosts_ForwardedHostValidPassesEvenIfHostInvalid(t *testing.T) {
 // 外なら r.Host の値に関わらず 400 にする（プロキシが外来のヘッダーを
 // 上書きする前提の構成なので、ここに来る値はプロキシ自身が付けた値）。
 func TestAllowedHosts_ForwardedHostInvalidRejectsEvenIfHostValid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -496,9 +466,9 @@ func TestAllowedHosts_ForwardedHostInvalidRejectsEvenIfHostValid(t *testing.T) {
 // X-Forwarded-Host ヘッダーが無いリクエストは従来通り r.Host で検証する
 // （前段にリバースプロキシが居ない直接アクセス構成の回帰確認）。
 func TestAllowedHosts_NoForwardedHostFallsBackToHost(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -525,9 +495,10 @@ func TestAllowedHosts_NoForwardedHostFallsBackToHost(t *testing.T) {
 // 意図せず通ってしまう（レビュー指摘）。先頭カンマ要素を切り出してから
 // stripPort する実装であることを確認する。
 func TestAllowedHosts_ForwardedHostCommaSeparatedWithPortUsesFirstElement(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -554,9 +525,10 @@ func TestAllowedHosts_ForwardedHostCommaSeparatedWithPortUsesFirstElement(t *tes
 // 要素であっても一致せず 400 になっていた（ポートの有無で結果が変わる
 // 一貫性の無さそのもの）。
 func TestAllowedHosts_ForwardedHostCommaSeparatedNoPortUsesFirstElement(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -580,9 +552,10 @@ func TestAllowedHosts_ForwardedHostCommaSeparatedNoPortUsesFirstElement(t *testi
 // allowlist 内の値が含まれていても拒否する。「いずれかの要素が一致すれば通す」
 // という誤った実装（更なる抜け道）になっていないことを確認する。
 func TestAllowedHosts_ForwardedHostCommaSeparatedRejectsWhenFirstElementInvalid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -605,9 +578,10 @@ func TestAllowedHosts_ForwardedHostCommaSeparatedRejectsWhenFirstElementInvalid(
 // X-Forwarded-Host が複数のヘッダー行に分かれて送られた場合も、最初の行を
 // 権威として使う（複数行は連結した1つの値と等価に扱う。RFC 9110 §5.3）。
 func TestAllowedHosts_ForwardedHostMultipleHeaderLinesUsesFirstLine(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -631,9 +605,10 @@ func TestAllowedHosts_ForwardedHostMultipleHeaderLinesUsesFirstLine(t *testing.T
 // 上のテストの行の順序を逆にすると結果も反転すること（最初の行が権威である
 // ことの両方向確認）。
 func TestAllowedHosts_ForwardedHostMultipleHeaderLinesRejectsWhenFirstLineInvalid(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -660,9 +635,10 @@ func TestAllowedHosts_ForwardedHostMultipleHeaderLinesRejectsWhenFirstLineInvali
 // X-Forwarded-Host: localhost を送るだけで allowlist を素通りできてしまう
 // バグ（レビュー指摘）の回帰を防ぐ。
 func TestAllowedHosts_ForwardedHostLocalhostDoesNotBypassAllowlist(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -686,9 +662,9 @@ func TestAllowedHosts_ForwardedHostLocalhostDoesNotBypassAllowlist(t *testing.T)
 // r.Host が直接 localhost の場合（前段にプロキシが居ない直接アクセス）は
 // 従来通り常時許可する（回帰確認）。
 func TestAllowedHosts_DirectLocalhostStillBypassesAllowlist(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -709,9 +685,7 @@ func TestAllowedHosts_DirectLocalhostStillBypassesAllowlist(t *testing.T) {
 }
 
 func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
 	req, err := http.NewRequest("GET", srv.URL+"/healthz", nil)
 	if err != nil {
@@ -737,9 +711,9 @@ func TestAllowedHosts_EmptyAllowsAll(t *testing.T) {
 // allowlist を素通りできてしまう（issue #216）。r.Host には DNS rebinding
 // された攻撃者ドメインが来る想定。
 func TestAllowedHosts_UntrustedForwardedHostDoesNotBypassAllowlist(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -765,9 +739,10 @@ func TestAllowedHosts_UntrustedForwardedHostDoesNotBypassAllowlist(t *testing.T)
 // （プロキシが外来の X-Forwarded-Host を上書きする）では、従来どおり
 // X-Forwarded-Host を検証対象にして通す（上のテストとの両方向確認）。
 func TestAllowedHosts_TrustedForwardedHostStillPasses(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -797,9 +772,9 @@ func newTestDistFS() fstest.MapFS {
 }
 
 func TestSPA_IndexHTML(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/")
 	if err != nil {
@@ -816,9 +791,9 @@ func TestSPA_IndexHTML(t *testing.T) {
 }
 
 func TestSPA_HashedAssetImmutable(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/assets/index-Ab1.js")
 	if err != nil {
@@ -836,9 +811,9 @@ func TestSPA_HashedAssetImmutable(t *testing.T) {
 }
 
 func TestSPA_FallbackToIndex(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/some/client/route")
 	if err != nil {
@@ -855,9 +830,9 @@ func TestSPA_FallbackToIndex(t *testing.T) {
 }
 
 func TestSPA_DirectIndexHTMLNoCache(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/index.html")
 	if err != nil {
@@ -876,9 +851,9 @@ func TestSPA_DirectIndexHTMLNoCache(t *testing.T) {
 // public/ 由来のファイルはハッシュを持たないので、差し替えても URL が変わらない。
 // immutable を付けたり無指定にすると古いファビコンが出続ける。
 func TestSPA_UnhashedAssetNoCache(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/favicon.svg")
 	if err != nil {
@@ -895,23 +870,11 @@ func TestSPA_UnhashedAssetNoCache(t *testing.T) {
 }
 
 func TestSPA_APITakesPrecedence(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
-	resp, err := http.Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	var body HealthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[HealthResponse](t, srv.URL+"/healthz")
 	if body.Status != "ok" {
 		t.Errorf("API /healthz should still work with SPA enabled, got status=%q", body.Status)
 	}
@@ -925,9 +888,9 @@ func TestMetrics_Endpoint(t *testing.T) {
 		Help: "test",
 	}))
 
-	router := NewRouter(RouterConfig{MetricsRegistry: reg})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.MetricsRegistry = reg
+	})
 
 	resp, err := http.Get(srv.URL + "/metrics")
 	if err != nil {
@@ -952,9 +915,7 @@ func TestMetrics_Endpoint(t *testing.T) {
 }
 
 func TestMetrics_DisabledWithoutRegistry(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
 	resp, err := http.Get(srv.URL + "/metrics")
 	if err != nil {
@@ -973,9 +934,7 @@ func TestMetrics_DisabledWithoutRegistry(t *testing.T) {
 // これによって初めて docs/overview.md が既に謳っていた
 // 「api ロールは scale-to-zero 可能」が名実ともに成立する。
 func TestEvents_NotMountedForAPIOnly(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
 	resp, err := http.Get(srv.URL + "/api/events")
 	if err != nil {
@@ -996,12 +955,10 @@ func TestEvents_NotMountedForAPIOnly(t *testing.T) {
 // Prometheus の scrape が 400 で落ちる。
 func TestAllowedHosts_InfraPathsAreExempt(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	router := NewRouter(RouterConfig{
-		AllowedHosts:    []string{"rokuban.local"},
-		MetricsRegistry: reg,
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.MetricsRegistry = reg
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	for _, path := range []string{"/healthz", "/metrics"} {
 		t.Run(path, func(t *testing.T) {
@@ -1042,9 +999,9 @@ func TestAllowedHosts_InfraPathsAreExempt(t *testing.T) {
 // localhost 系は allowlist の設定に関わらず許可すること
 // （docs/configuration.md の記述に合わせる）。
 func TestAllowedHosts_LocalhostAlwaysAllowed(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	for _, host := range []string{"localhost", "localhost:40773", "127.0.0.1:40773", "[::1]:40773"} {
 		t.Run(host, func(t *testing.T) {
@@ -1081,9 +1038,9 @@ func TestAllowedHosts_AlwaysAllowedHostsAreNormalizeHostFixedPoints(t *testing.T
 // Host ヘッダーの大文字・小文字の違いは allowlist の一致に影響しない
 // （DNS/HTTP のホスト名は case-insensitive）。
 func TestAllowedHosts_CaseInsensitiveMatch(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	for _, host := range []string{"ROKUBAN.LOCAL", "Rokuban.local"} {
 		t.Run(host, func(t *testing.T) {
@@ -1109,9 +1066,9 @@ func TestAllowedHosts_CaseInsensitiveMatch(t *testing.T) {
 // （設定側の正規化。片側だけ正規化すると運用者が大文字で書いた
 // だけで全リクエストが 400 になる）。
 func TestAllowedHosts_ConfigSideCaseIsNormalized(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"Rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"Rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -1131,9 +1088,9 @@ func TestAllowedHosts_ConfigSideCaseIsNormalized(t *testing.T) {
 
 // 末尾ドット（絶対 FQDN 表記）は DNS 上同じ名前なので許可する。
 func TestAllowedHosts_TrailingDotIsNormalized(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -1154,9 +1111,10 @@ func TestAllowedHosts_TrailingDotIsNormalized(t *testing.T) {
 // trust_forwarded_host: true の経路でも同じ正規化が効く
 // （片側だけ直すと、同じホスト名がプロキシ有無で結果が変わってしまう）。
 func TestAllowedHosts_ForwardedHostIsNormalized(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -1179,9 +1137,9 @@ func TestAllowedHosts_ForwardedHostIsNormalized(t *testing.T) {
 // 部分文字列として含むだけの別ホストは、正規化を足しても引き続き拒否する
 // （fail-open にしていないことの回帰確認。両方向で確認する）。
 func TestAllowedHosts_SuffixAndPrefixStillRejected(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	for _, host := range []string{"rokuban.local.evil.com", "evil-rokuban.local"} {
 		t.Run(host, func(t *testing.T) {
@@ -1241,9 +1199,10 @@ const nonASCIIForwardedHost = "roKuban.local"
 // （TestNormalizeHost_NonASCIICaseFoldingIsNotFolded だけでは検出できない
 // 経路の end-to-end 確認）。
 func TestAllowedHosts_ForwardedHostNonASCIICaseFoldingDoesNotBypassAllowlist(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}, TrustForwardedHost: true})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+		c.TrustForwardedHost = true
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/api/version", nil)
 	if err != nil {
@@ -1271,9 +1230,9 @@ func TestAllowedHosts_ForwardedHostNonASCIICaseFoldingDoesNotBypassAllowlist(t *
 // 書くだけで検証をすり抜けられてしまう。この経路を無条件 400 で塞いで
 // いることを、実際に生の HTTP バイト列を送って確認する（nc と等価）。
 func TestAllowedHosts_AbsoluteFormRequestTargetRejected(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
 	if err != nil {
@@ -1304,9 +1263,9 @@ func TestAllowedHosts_AbsoluteFormRequestTargetRejected(t *testing.T) {
 // 落とすと「無い」が「200 の HTML」になる。実害の出た経路が下の
 // TestSPA_LivePlaylistNotFoundWhenLiveDisabled で、こちらはその一般形。
 func TestSPA_APIPathsNotFallback(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/api/does-not-exist")
 	if err != nil {
@@ -1331,9 +1290,7 @@ func TestSPA_APIPathsNotFallback(t *testing.T) {
 
 // SPA を配らないロールでも /api/ 配下の未マッチは JSON 404 にする。
 func TestAPIPathsNotFoundWithoutSPA(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
 	resp, err := http.Get(srv.URL + "/api/does-not-exist")
 	if err != nil {
@@ -1372,9 +1329,9 @@ func TestAPIPathsNotFoundWithoutSPA(t *testing.T) {
 // TestLiveMount_DisabledDoesNotFallBackToSPA が持つ（あちらは有効時に同じ
 // パスが 404 でなくなることまで見る）。
 func TestSPA_LivePlaylistNotFoundWhenLiveDisabled(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/api/sites/default/networks/31920/services/53248/live/playlist.m3u8")
 	if err != nil {
@@ -1400,9 +1357,9 @@ func TestSPA_LivePlaylistNotFoundWhenLiveDisabled(t *testing.T) {
 // クライアントルートは従来どおり index.html に落ちる（/api/ の 404 化で
 // SPA のディープリンクを壊していないこと。/live 直リンクを含む）。
 func TestSPA_ClientRoutesStillFallback(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	for _, path := range []string{"/live", "/recordings", "/programs", "/apiary"} {
 		resp, err := http.Get(srv.URL + path)
@@ -1427,9 +1384,9 @@ func TestSPA_ClientRoutesStillFallback(t *testing.T) {
 // 有無で「404」と「HTML 200」に分かれ、docs の「`/api/` 配下は 404」という
 // 記述の境界が 1 文字ぶんずれる（issue #209 のレビュー指摘）。
 func TestSPA_APIRootNotFallback(t *testing.T) {
-	router := NewRouter(RouterConfig{DistFS: newTestDistFS()})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.DistFS = newTestDistFS()
+	})
 
 	resp, err := http.Get(srv.URL + "/api")
 	if err != nil {

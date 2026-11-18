@@ -206,7 +206,7 @@ func TestGetRecording_MatchesListElement_AcrossSessionTimeZone(t *testing.T) {
 	}
 	t.Cleanup(tzPool.Close)
 
-	srv := newAPIServer(t, tzPool)
+	srv := NewTestServer(t, tzPool)
 
 	base := time.Now().Truncate(time.Second)
 	id := dbtest.Recording(t, tzPool, func(p *dbtest.RecordingParams) {

@@ -110,9 +110,7 @@ func TestPatchProgramOverrides_CreatesOverrideForRuleReservation_NotIntent(t *te
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1100000110011234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -161,9 +159,7 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115011234
 	// 手動予約に後からルールがマッチした状態を直接作る: rule_id が付いた
@@ -219,9 +215,7 @@ func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	// 手動予約 + ルールが後からマッチした状況（rule_id 付き）を再現する。
 	const programID int64 = 1160000116011234
@@ -272,9 +266,7 @@ func TestPatchProgramOverrides_PartialUpdatePreservesOtherFields(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1200000120021234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -315,9 +307,7 @@ func TestPatchProgramOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1300000130031234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -354,9 +344,7 @@ func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) 
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1400000140041234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -394,9 +382,7 @@ func TestDeleteProgramOverrides_ClearsAll(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1600000160061234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -425,9 +411,7 @@ func TestPatchProgramOverrides_ValueAndResetConflict_Returns400(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1700000170071234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -448,9 +432,7 @@ func TestPatchProgramOverrides_UnknownResetField_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1800000180081234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -476,13 +458,9 @@ func TestPatchProgramOverrides_UnknownEncodeProfile(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		ReservationStore:   pgstoretest.Reservations(pool),
-		EncodeProfileNames: []string{"h264"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodeProfileNames = []string{"h264"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	const programID int64 = 1850000185081234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -532,9 +510,7 @@ func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1900000190091234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -596,9 +572,7 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1900000190099999
 	insertProgramSnapshotOnly(t, pool, ctx, programID, 19000, 1900)
@@ -632,9 +606,7 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 func TestPatchProgramOverrides_ProgramNotInProjection_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const missingProgramID = 999999
 
@@ -648,9 +620,7 @@ func TestPatchProgramOverrides_ProgramNotInProjection_Returns400(t *testing.T) {
 func TestDeleteProgramOverrides_NoRow_IsIdempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const missingProgramID = 999999
 
@@ -667,9 +637,7 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 2100000210111234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -719,9 +687,7 @@ func TestPatchProgramOverrides_UntilEncodedWithoutProfiles_Returns400(t *testing
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 2200000220121234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -752,9 +718,7 @@ func TestPatchProgramOverrides_UntilEncodedResetEncodeProfiles_Returns400(t *tes
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 2300000230131234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -795,9 +759,7 @@ func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *test
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 2400000240141234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -843,9 +805,9 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+	})
 
 	const programID int64 = 1950000195091234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -888,9 +850,9 @@ func TestDeleteRule_ReservationWithOnlySkipIntentIsDeleted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+	})
 
 	const programID int64 = 1960000196091234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -936,9 +898,9 @@ func TestDeleteRule_ReservationWithOnlyRecordIntentSurvivesDetached(t *testing.T
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+	})
 
 	const programID int64 = 1970000197091234
 	ruleID := insertRuleFixture(t, pool, ctx)

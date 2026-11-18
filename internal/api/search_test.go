@@ -56,9 +56,9 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		}
 	}
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{site}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{site}
+	})
 
 	apiMatches := postSearchPrograms(t, srv, map[string]any{
 		"textMatches": []map[string]any{
@@ -122,20 +122,9 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 }
 
-// searchMatchRow は検索 API のレスポンス 1 行（デコード用の複製）。
+// ProgramSearchMatch は検索 API のレスポンス 1 行（デコード用の複製）。
 // このファイルは package api、sites_multi_test.go は package api_test なので
 // 型を共有できず、この 1 ファイル内だけの複製として持つ。
-type searchMatchRow struct {
-	Site       string    `json:"site"`
-	ProgramId  int64     `json:"programId"`
-	NetworkId  int       `json:"networkId"`
-	ServiceId  int       `json:"serviceId"`
-	StartAt    time.Time `json:"startAt"`
-	DurationMs int64     `json:"durationMs"`
-	Name       string    `json:"name"`
-	IsFree     bool      `json:"isFree"`
-}
-
 // searchFixtureGenre は insertSearchProgramFixture が焼き込むジャンル
 // （テスト側の "genres": [9] 条件と対にして使う。両方の呼び出し元が同じ値を
 // 使うので定数化する）。
@@ -165,7 +154,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 }
 
 // postSearchPrograms は新しい検索 API を叩き、200 を要求して行にデコードする。
-func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any) []searchMatchRow {
+func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any) []ProgramSearchMatch {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -181,7 +170,7 @@ func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any)
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST %s status = %d, want 200 (body=%s)", path, resp.StatusCode, b)
 	}
-	var matches []searchMatchRow
+	var matches []ProgramSearchMatch
 	if err := json.NewDecoder(resp.Body).Decode(&matches); err != nil {
 		t.Fatal(err)
 	}
@@ -200,9 +189,9 @@ func TestSearchPrograms_IncludesDisplayFields(t *testing.T) {
 	)
 	insertSearchProgramFixture(t, pool, ctx, site, programID)
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{site}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{site}
+	})
 
 	matches := postSearchPrograms(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
@@ -238,9 +227,9 @@ func TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA", "siteB"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA", "siteB"}
+	})
 
 	matches := postSearchPrograms(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
@@ -267,9 +256,9 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA", "siteB"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA", "siteB"}
+	})
 
 	// 検索パスは site に依存せず、sites では siteB だけを指定する。
 	matches := postSearchPrograms(t, srv, map[string]any{
@@ -285,9 +274,9 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 // なることを確認する（validateRuleSites と同じ規律。#530 含むもの 2）。
 func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA"}
+	})
 
 	raw, err := json.Marshal(map[string]any{"sites": []string{"no-such-site"}})
 	if err != nil {
@@ -307,8 +296,9 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 // Postgres のエラー詳細が付くことを確認する（store 契約の移設前と同じ本文）。
 func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"default"}}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"default"}
+	})
 
 	raw, err := json.Marshal(map[string]any{"textMatches": []map[string]any{{"target": "name", "mode": "regex", "value": "(unclosed"}}})
 	if err != nil {
@@ -322,9 +312,7 @@ func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
-	var body struct {
-		Error string `json:"error"`
-	}
+	var body ErrorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
@@ -344,9 +332,9 @@ func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
 // SearchMatchRow の一覧が返ってこない）。
 func TestSearchPrograms_LegacySitePathIsGone(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA"}
+	})
 
 	resp, err := http.Post(srv.URL+"/api/sites/siteA/programs/search", "application/json", bytes.NewReader([]byte(`{}`)))
 	if err != nil {

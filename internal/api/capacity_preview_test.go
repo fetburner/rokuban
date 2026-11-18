@@ -13,17 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-type capacityPreviewOverage struct {
-	Site        string    `json:"site"`
-	StartAt     time.Time `json:"startAt"`
-	EndAt       time.Time `json:"endAt"`
-	Shortfall   int       `json:"shortfall"`
-	JammedTypes []string  `json:"jammedTypes"`
-}
 
 type capacityPreviewProgram struct {
 	ID        int64
@@ -120,17 +111,7 @@ RETURNING id`, dedupe).Scan(&id); err != nil {
 	return id
 }
 
-func newCapacityPreviewServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
-	t.Helper()
-	tunerStore := pgstoretest.Tuners(pool)
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), TunerReader: tunerStore, CapacityStore: tunerStore, Dedupe: pgstoretest.Reservations(pool), Sites: []string{"default"},
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func postCapacityPreview(t *testing.T, srv *httptest.Server, body map[string]any) []capacityPreviewOverage {
+func postCapacityPreview(t *testing.T, srv *httptest.Server, body map[string]any) []CapacityOverage {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -145,7 +126,7 @@ func postCapacityPreview(t *testing.T, srv *httptest.Server, body map[string]any
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST /api/capacity/preview status = %d, want 200 (body=%s)", resp.StatusCode, body)
 	}
-	var result []capacityPreviewOverage
+	var result []CapacityOverage
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +135,7 @@ func postCapacityPreview(t *testing.T, srv *httptest.Server, body map[string]any
 
 func TestPreviewCapacityOverages_AddsDistinctSearchCandidate(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 	insertPreviewTuner(t, pool)
 	insertPreviewReservation(t, pool, 50001, "27", start, nil)
@@ -172,7 +153,7 @@ func TestPreviewCapacityOverages_AddsDistinctSearchCandidate(t *testing.T) {
 // 放送済みの番組は epg_programs に retention_grace の間残るが録れないので需要に数えない。
 func TestPreviewCapacityOverages_ExcludesAlreadyBroadcastCandidates(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
 	insertPreviewTuner(t, pool)
 	insertPreviewReservation(t, pool, 50031, "27", start, nil)
@@ -185,7 +166,7 @@ func TestPreviewCapacityOverages_ExcludesAlreadyBroadcastCandidates(t *testing.T
 
 func TestPreviewCapacityOverages_SamePhysicalChannelDoesNotAddDemand(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 	insertPreviewTuner(t, pool)
 	insertPreviewReservation(t, pool, 50011, "27", start, nil)
@@ -198,7 +179,7 @@ func TestPreviewCapacityOverages_SamePhysicalChannelDoesNotAddDemand(t *testing.
 
 func TestPreviewCapacityOverages_ExcludesReservedSkippedAndFulfilledCandidates(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 	insertPreviewTuner(t, pool)
 	insertPreviewReservation(t, pool, 50021, "27", start, nil)
@@ -237,7 +218,7 @@ VALUES ('default', $1, 'skip')`, skipped.ID); err != nil {
 
 func TestPreviewCapacityOverages_UsesRulerDedupeForEditedRule(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 	insertPreviewTuner(t, pool)
 	insertPreviewReservation(t, pool, 50031, "27", start, nil)
@@ -268,7 +249,7 @@ func TestPreviewCapacityOverages_UsesRulerDedupeForEditedRule(t *testing.T) {
 
 func TestPreviewCapacityOverages_DedupeKeepsExplicitRecordIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 	insertPreviewTuner(t, pool)
 	insertPreviewReservation(t, pool, 50035, "27", start, nil)
@@ -306,7 +287,7 @@ VALUES ('default', $1, 'record')`, candidate.ID); err != nil {
 
 func TestPreviewCapacityOverages_ExcludesNeverScheduledEditedReservation(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 	insertPreviewTuner(t, pool)
 	ruleID := insertPreviewRule(t, pool, false)
@@ -326,7 +307,7 @@ func TestPreviewCapacityOverages_ExcludesNeverScheduledEditedReservation(t *test
 
 func TestPreviewCapacityOverages_RuleIdReservationCanBeReevaluatedAsCandidate(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 	insertPreviewTuner(t, pool)
 	ruleID := insertPreviewRule(t, pool, false)
@@ -350,7 +331,7 @@ func TestPreviewCapacityOverages_RuleIdReservationCanBeReevaluatedAsCandidate(t 
 // 存在しないルールの編集プレビューは 404 になる（契約の ErrNotFound を API が写す）。
 func TestPreviewCapacityOverages_UnknownRuleIsNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityPreviewServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	raw, err := json.Marshal(map[string]any{"genres": []int{searchFixtureGenre}, "ruleId": 999999})
 	if err != nil {
@@ -365,9 +346,7 @@ func TestPreviewCapacityOverages_UnknownRuleIsNotFound(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (body=%s)", resp.StatusCode, body)
 	}
-	var got struct {
-		Error string `json:"error"`
-	}
+	var got ErrorResponse
 	if err := json.Unmarshal(body, &got); err != nil || got.Error != "rule not found" {
 		t.Errorf("body = %s, want error \"rule not found\"", body)
 	}

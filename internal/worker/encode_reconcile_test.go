@@ -30,6 +30,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // encodeConfigWith は名前だけが意味を持つ encode 設定を作る（このパスは
@@ -59,9 +60,7 @@ func runEncodeReconcilePassArgs(t *testing.T, w *EncodeReconcileWorker, args Enc
 		enqueuer = newRecordingEnqueuer()
 		w.Enqueuer = enqueuer
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
-		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, args), "EncodeReconcileWorker.Work")
 	return enqueuer
 }
 
@@ -115,9 +114,7 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 	}
 	// 対象パスは候補を見ただけで、全件パスの完走（loop_success_markers の encode）を記録しない。
 	saved, err := markers.ReadLoopMarkers(context.Background(), store.LoopReconcilePass)
-	if err != nil {
-		t.Fatalf("ReadLoopMarkers: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ReadLoopMarkers")
 	if at, ok := saved[store.ReconcilePassEncode]; ok {
 		t.Errorf("targeted pass recorded a full encode pass at %v, want none", at)
 	}
@@ -137,16 +134,13 @@ func TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore(t *testin
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = "backpressure/original.ts"
 		params.SizeBytes = 1
 	})
 	// dbtest.MediaAsset はコピーを test-store に作る。その原本のコピーを edge の置き場へ移す。
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatalf("moving original copy to edge: %v", err)
-	}
+	testutil.MustExec(t, pool, "moving original copy to edge", `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID)
 	seedEncodePolicy(t, pool, recordingID, []string{"h265"})
 
 	for _, tc := range []struct {
@@ -217,9 +211,7 @@ func seedEdgeOriginal(t *testing.T, pool *pgxpool.Pool) (recordingID, assetID in
 		params.RelPath = "backlog/" + t.Name() + ".ts"
 		params.SizeBytes = 1
 	})
-	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatalf("moving original copy to edge: %v", err)
-	}
+	testutil.MustExec(t, pool, "moving original copy to edge", `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID)
 	seedEncodePolicy(t, pool, recordingID, []string{"h265"})
 	return recordingID, assetID
 }
@@ -227,9 +219,7 @@ func seedEdgeOriginal(t *testing.T, pool *pgxpool.Pool) (recordingID, assetID in
 // 転送が済んで原本が central にだけ残った状態にする（転送待ちは 0 件になる）。
 func moveOriginalToCentral(t *testing.T, pool *pgxpool.Pool, assetID int64) {
 	t.Helper()
-	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'central' WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatalf("moving original copy to central: %v", err)
-	}
+	testutil.MustExec(t, pool, "moving original copy to central", `UPDATE media_asset_copies SET store = 'central' WHERE media_asset_id = $1`, assetID)
 }
 
 // scrapeBacklogGauges は、DB から取り直す collector を通して edge の 2 本のゲージを読む。
@@ -243,9 +233,7 @@ func scrapeBacklogGauges(t *testing.T, pool *pgxpool.Pool, policy config.Storage
 	reg := prometheus.NewPedanticRegistry()
 	reg.MustRegister(metrics.NewTransferBacklogCollector(pgstoretest.Media(pool), limits))
 	families, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("gathering backlog gauges: %v", err)
-	}
+	testutil.RequireNoError(t, err, "gathering backlog gauges")
 	out := make(map[string]float64)
 	for _, family := range families {
 		for _, metric := range family.Metric {
@@ -442,9 +430,7 @@ func TestEncodeReconcile_LostSnapshotIsRebuiltAndWarnsAgain(t *testing.T) {
 		runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
 	}
 	pass()
-	if _, err := pool.Exec(t.Context(), `DELETE FROM transfer_backlog_snapshots`); err != nil {
-		t.Fatalf("losing snapshots: %v", err)
-	}
+	testutil.MustExec(t, pool, "losing snapshots", `DELETE FROM transfer_backlog_snapshots`)
 	if gauges := scrapeBacklogGauges(t, pool, policy); len(gauges) != 0 {
 		t.Fatalf("gauges after losing snapshots = %v, want none", gauges)
 	}
@@ -615,13 +601,8 @@ func TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow(t *testing.T)
 	seedCut := func(name string, frozen []chapters.Range) (int64, []chapters.Range, int64) {
 		t.Helper()
 		id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, name, []string{"cut"}, []byte("original"))
-		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
-			t.Fatalf("adopting chapters for %d: %v", id, err)
-		}
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
-			t.Fatalf("seeding chapters for %d: %v", id, err)
-		}
+		dbtest.AdoptChapters(t, pool, id)
+		dbtest.ChapterSpan(t, pool, id)
 		keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, id)
 		if err != nil || !owned || len(keep) == 0 {
 			t.Fatalf("currentCutKeep(%d) = %v, owned %v, err %v", id, keep, owned, err)
@@ -643,15 +624,11 @@ func TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow(t *testing.T)
 	// 所有の行が無い。押した時点の keep が確認なので、所有は投入の条件にしない。
 	unowned, unownedKeep, _ := seedCut("rebuild/unowned.m2ts", staleFrozen)
 	seedEncodedAssetRebuildRequest(t, pool, unowned, unownedKeep)
-	if _, err := pool.Exec(ctx, `DELETE FROM recording_chapter_ownership WHERE recording_id = $1`, unowned); err != nil {
-		t.Fatalf("resetting chapter ownership: %v", err)
-	}
+	testutil.MustExec(t, pool, "resetting chapter ownership", `DELETE FROM recording_chapter_ownership WHERE recording_id = $1`, unowned)
 
 	// 凍結区間が requested_keep と等しい = 満たされている。
 	satisfied, satisfiedKeep, assetID := seedCut("rebuild/satisfied.m2ts", staleFrozen)
-	if err := setFrozenCuts(t, pool, assetID, satisfiedKeep); err != nil {
-		t.Fatalf("freezing satisfied cut: %v", err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, satisfiedKeep), "freezing satisfied cut")
 	seedEncodedAssetRebuildRequest(t, pool, satisfied, satisfiedKeep)
 
 	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
@@ -698,12 +675,8 @@ func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing
 	}
 	ctx := context.Background()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/missing-asset.m2ts", []string{"cut"}, []byte("original"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatalf("adopting chapters: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
-		t.Fatalf("seeding chapter span: %v", err)
-	}
+	dbtest.AdoptChapters(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID)
 	keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
@@ -776,9 +749,7 @@ func TestEncodeReconcile_RebuildsPrecedeMissingProfilesAndSortByProfile(t *testi
 func mustKeepRanges(t *testing.T, keep []chapters.Range) pgstore.KeepRanges {
 	t.Helper()
 	ranges, err := pgstore.KeepRangesParam(keep)
-	if err != nil {
-		t.Fatalf("encoding requested keep ranges: %v", err)
-	}
+	testutil.RequireNoError(t, err, "encoding requested keep ranges")
 	return ranges
 }
 
@@ -796,16 +767,12 @@ func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testin
 	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
 	other := seedEncodedAsset(t, pool, id, "cut2", "rebuild/other-profile_cut2.mp4")
-	if err := setFrozenCuts(t, pool, other, keep); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, other, keep), "setFrozenCuts")
 	if got := unsatisfiedRebuildCount(t, pool, id); got != 1 {
 		t.Fatalf("unsatisfied rebuilds with only another profile's matching asset = %d, want 1", got)
 	}
 	same := seedEncodedAsset(t, pool, id, "cut", "rebuild/other-profile_cut.mp4")
-	if err := setFrozenCuts(t, pool, same, keep); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, same, keep), "setFrozenCuts")
 	if got := unsatisfiedRebuildCount(t, pool, id); got != 0 {
 		t.Fatalf("unsatisfied rebuilds with the same profile's matching asset = %d, want 0", got)
 	}
@@ -821,9 +788,8 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 	}
 	ctx := context.Background()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "targeted-trash/original.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, recordingID); err != nil {
-		t.Fatalf("soft deleting recording: %v", err)
-	}
+	_, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, recordingID)
+	testutil.RequireNoError(t, err, "soft deleting recording")
 
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)}
 	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
@@ -831,9 +797,8 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 		t.Fatalf("targeted encode jobs for trashed recording = %d, want 0", got)
 	}
 
-	if _, err := sqlcgen.New(pool).RestoreRecording(ctx, recordingID); err != nil {
-		t.Fatalf("restoring recording: %v", err)
-	}
+	_, err = sqlcgen.New(pool).RestoreRecording(ctx, recordingID)
+	testutil.RequireNoError(t, err, "restoring recording")
 	runEncodeReconcilePass(t, w)
 	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 1 {
 		t.Fatalf("full-pass encode jobs after restore = %d, want 1", got)
@@ -896,9 +861,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	job := IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"}
 
 	// Enqueuer を注入しない状態 = ヒントが飛ばない。
-	if err := runWorkerViaJobQFake(context.Background(), iw, job); err != nil {
-		t.Fatalf("IngestWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), iw, job), "IngestWorker.Work")
 
 	// 前提 1: desired は凍結された（この録画は h265 をエンコードすべき）。
 	if _, profiles := encodePolicyOfRecording(t, pool, recordingID); !slices.Equal(profiles, []string{"h265"}) {
@@ -959,15 +922,9 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	// (d) ingest 未完了（policy はあるが原本 media_asset が無い）→ 候補にしない。
 	incomplete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/incomplete.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_ts_scans WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM media_assets WHERE recording_id = $1`, incomplete); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "deleting media asset copies", `DELETE FROM media_asset_copies WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete)
+	testutil.MustExec(t, pool, "deleting media asset ts scans", `DELETE FROM media_asset_ts_scans WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete)
+	testutil.MustExec(t, pool, "deleting media assets", `DELETE FROM media_assets WHERE recording_id = $1`, incomplete)
 
 	// (e) 原本が物理削除済み（until_encoded の後始末）→ 候補にしない。
 	originalGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/gone.m2ts", []string{"h265"}, []byte("x"))
@@ -975,9 +932,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	// (f) ごみ箱の録画 → 候補にしない。
 	trashed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/trashed.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "marking recording deleted", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed)
 
 	// (g) encoded の行はあるが state='deleted'（復元後など）→ 候補。
 	// ListMissingEncodeProfiles が見るのは active な encoded だけ
@@ -1006,9 +961,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 		AttemptLimit:  jobs.EncodeAttemptLimit,
 		RowLimit:      encodeReconcileRowLimit,
 	})
-	if err != nil {
-		t.Fatalf("ListMissingEncodeProfiles: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListMissingEncodeProfiles")
 	want := []sqlcgen.ListMissingEncodeProfilesRow{
 		{RecordingID: missing, Profile: "h265"},
 		{RecordingID: encodedGone, Profile: "h264"},
@@ -1030,9 +983,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 		AttemptLimit:     jobs.EncodeAttemptLimit,
 		RowLimit:         encodeReconcileRowLimit,
 	})
-	if err != nil {
-		t.Fatalf("ListMissingEncodeProfiles with AfterRecordingID: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListMissingEncodeProfiles with AfterRecordingID")
 	wantAfter := []sqlcgen.ListMissingEncodeProfilesRow{{RecordingID: encodedGone, Profile: "h264"}}
 	if !equalMissingEncodeProfileRows(gotAfter, wantAfter) {
 		t.Errorf("missing encode profiles with AfterRecordingID=%d = %v, want %v", missing, gotAfter, wantAfter)
@@ -1041,9 +992,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// 落とした側（(h)/(i)）は数えて見せる --- 黙って落とすと「エンコードされない
 	// 録画」が静かに増える。
 	unsat, err := q.ListUnsatisfiableEncodeProfiles(ctx, []string{"h264", "h265"})
-	if err != nil {
-		t.Fatalf("ListUnsatisfiableEncodeProfiles: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListUnsatisfiableEncodeProfiles")
 	gotUnsat := map[string]int64{}
 	for _, r := range unsat {
 		gotUnsat[r.Profile] = r.Recordings
@@ -1127,9 +1076,7 @@ func poolWithQueryTracer(t *testing.T, pool *pgxpool.Pool, tracer pgx.QueryTrace
 	config := pool.Config()
 	config.ConnConfig.Tracer = tracer
 	traced, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatalf("creating traced pool: %v", err)
-	}
+	testutil.RequireNoError(t, err, "creating traced pool")
 	t.Cleanup(traced.Close)
 	return traced
 }
@@ -1170,9 +1117,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 		AttemptLimit:  jobs.EncodeAttemptLimit,
 		RowLimit:      encodeReconcileRowLimit,
 	})
-	if err != nil {
-		t.Fatalf("ListMissingEncodeProfiles: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListMissingEncodeProfiles")
 	if slices.IndexFunc(candidates, func(row sqlcgen.ListMissingEncodeProfilesRow) bool {
 		return row.RecordingID == recordingID
 	}) >= 0 {
@@ -1185,9 +1130,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	// 「desired が揃っている」という判定に永久に到達しない）。
 	dw := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := singleCopyState(t, pool, originalID); got != "active" {
 		t.Errorf("original copy state after delete reconcile = %q, want active "+
 			"(a config typo/rename must not make this original deletable; it must stay until the profile is re-encoded or restored)", got)
@@ -1302,9 +1245,7 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	}
 	if len(continuations) == 1 {
 		next := &EncodeReconcileWorker{Enqueuer: w.Enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 2}
-		if err := runWorkerViaJobQFake(context.Background(), next, continuations[0]); err != nil {
-			t.Fatalf("continuation after rebuild candidate: %v", err)
-		}
+		testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), next, continuations[0]), "continuation after rebuild candidate")
 		if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), third, "cut"); got != 1 {
 			t.Errorf("encode jobs for rebuild behind cursor = %d, want 1", got)
 		}
@@ -1316,9 +1257,7 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	// 全件パスの完走は DB の印に残る。これが無いと、完走の記録の書き込みを消しても
 	// パッケージ全体のテストが green のまま通り、停止したパスを検出できない。
 	saved, err := markers.ReadLoopMarkers(context.Background(), store.LoopReconcilePass)
-	if err != nil {
-		t.Fatalf("ReadLoopMarkers: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ReadLoopMarkers")
 	if _, ok := saved[store.ReconcilePassEncode]; !ok {
 		t.Error("encode pass marker was not recorded; a stalled pass would be undetectable")
 	}
@@ -1334,25 +1273,19 @@ func TestEncodeReconcileWorker_ExhaustedRebuildRequestReturnsAfterRetryRequest(t
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "retry-exhausted-rebuild/1.m2ts", []string{"cut"}, []byte("x"))
 	assetID := seedEncodedAsset(t, pool, id, "cut", "retry-exhausted-rebuild/cut.mp4")
-	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
-		t.Fatalf("seeding previous cut keep: %v", err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "seeding previous cut keep")
 	requestedKeep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	requestedJSON := seedEncodedAssetRebuildRequest(t, pool, id, requestedKeep)
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_encode_attempts
+	testutil.MustExec(t, pool, "seeding an exhausted rebuild attempt", `INSERT INTO recording_encode_attempts
 		(recording_id, profile, state, attempted_at, attempt_count)
-		VALUES ($1, 'cut', 'failed', now(), $2)`, id, jobs.EncodeAttemptLimit); err != nil {
-		t.Fatalf("seeding an exhausted rebuild attempt: %v", err)
-	}
+		VALUES ($1, 'cut', 'failed', now(), $2)`, id, jobs.EncodeAttemptLimit)
 
 	enqueuer := newRecordingEnqueuer()
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}
 	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("reconcile with an exhausted rebuild attempt: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}), "reconcile with an exhausted rebuild attempt")
 	if got := countEncodeJobs(t, enqueuer, id, "cut"); got != 0 {
 		t.Fatalf("encode jobs for exhausted rebuild candidate = %d, want 0", got)
 	}
@@ -1361,17 +1294,13 @@ func TestEncodeReconcileWorker_ExhaustedRebuildRequestReturnsAfterRetryRequest(t
 		RecordingID: id,
 		Profiles:    []string{"cut"},
 	})
-	if err != nil {
-		t.Fatalf("resetting failed rebuild attempt: %v", err)
-	}
+	testutil.RequireNoError(t, err, "resetting failed rebuild attempt")
 	if deleted != 1 {
 		t.Fatalf("failed rebuild attempts deleted = %d, want 1", deleted)
 	}
 	enqueuer.Reset()
 	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(ctx, secondWorker, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("reconcile after retry request: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, secondWorker, EncodeReconcileArgs{}), "reconcile after retry request")
 	if got := countEncodeJobs(t, enqueuer, id, "cut"); got != 1 {
 		t.Fatalf("encode jobs after rebuild retry request = %d, want 1", got)
 	}
@@ -1395,18 +1324,14 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 	if first >= second {
 		t.Fatalf("expected ascending recording IDs, got first=%d second=%d", first, second)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_encode_attempts
+	testutil.MustExec(t, pool, "seeding a retryable failed encode attempt", `INSERT INTO recording_encode_attempts
 		(recording_id, profile, state, attempted_at, attempt_count)
-		VALUES ($1, 'h265', 'failed', now(), 1)`, first); err != nil {
-		t.Fatalf("seeding a retryable failed encode attempt: %v", err)
-	}
+		VALUES ($1, 'h265', 'failed', now(), 1)`, first)
 
 	enqueuer := newRecordingEnqueuer()
 	profiles := encodeConfigWith("h265")
 	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("first reconcile page: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}), "first reconcile page")
 	if got := countEncodeJobs(t, enqueuer, first, "h265"); got != 1 {
 		t.Fatalf("first recording jobs after first page = %d, want 1", got)
 	}
@@ -1421,22 +1346,16 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 		t.Fatalf("first continuation cursor = %d, want first recording ID %d", continuations[0].AfterRecordingID, first)
 	}
 	wire, err := json.Marshal(continuations[0])
-	if err != nil {
-		t.Fatalf("marshaling continuation args: %v", err)
-	}
+	testutil.RequireNoError(t, err, "marshaling continuation args")
 	var nextPage EncodeReconcileArgs
-	if err := json.Unmarshal(wire, &nextPage); err != nil {
-		t.Fatalf("unmarshaling continuation args: %v", err)
-	}
+	testutil.RequireNoError(t, json.Unmarshal(wire, &nextPage), "unmarshaling continuation args")
 	if nextPage.AfterRecordingID != first {
 		t.Fatalf("continuation cursor after JSON round trip = %d, want %d", nextPage.AfterRecordingID, first)
 	}
 
 	// --once は各ジョブの後にプロセスを終了させる。次ページは新しい worker が引き継ぐ。
 	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(ctx, secondWorker, nextPage); err != nil {
-		t.Fatalf("second reconcile page: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, secondWorker, nextPage), "second reconcile page")
 	if got := countEncodeJobs(t, enqueuer, second, "h265"); got != 1 {
 		t.Fatalf("second recording jobs after continuation = %d, want 1", got)
 	}
@@ -1447,9 +1366,7 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 
 	// 末尾を越えたページはもう投入せず、継続の連鎖を止める。
 	lastWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(ctx, lastWorker, continuations[1]); err != nil {
-		t.Fatalf("page after the last candidate: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, lastWorker, continuations[1]), "page after the last candidate")
 	if got := len(enqueuedArgs[EncodeReconcileArgs](enqueuer, "encode_reconcile")); got != 2 {
 		t.Errorf("continuation jobs after the last page = %d, want 2", got)
 	}
@@ -1491,17 +1408,13 @@ func TestEncodeReconcileWorker_ExhaustedAttemptReturnsAfterRetryRequest(t *testi
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "retry-exhausted/1.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_encode_attempts
+	testutil.MustExec(t, pool, "seeding an exhausted encode attempt", `INSERT INTO recording_encode_attempts
 		(recording_id, profile, state, attempted_at, attempt_count)
-		VALUES ($1, 'h265', 'failed', now(), $2)`, id, jobs.EncodeAttemptLimit); err != nil {
-		t.Fatalf("seeding an exhausted encode attempt: %v", err)
-	}
+		VALUES ($1, 'h265', 'failed', now(), $2)`, id, jobs.EncodeAttemptLimit)
 	enqueuer := newRecordingEnqueuer()
 	profiles := encodeConfigWith("h265")
 	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("reconcile with an exhausted attempt: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}), "reconcile with an exhausted attempt")
 	if got := countEncodeJobs(t, enqueuer, id, "h265"); got != 0 {
 		t.Fatalf("encode jobs for exhausted candidate = %d, want 0", got)
 	}
@@ -1510,17 +1423,13 @@ func TestEncodeReconcileWorker_ExhaustedAttemptReturnsAfterRetryRequest(t *testi
 		RecordingID: id,
 		Profiles:    []string{"h265"},
 	})
-	if err != nil {
-		t.Fatalf("resetting failed encode attempts: %v", err)
-	}
+	testutil.RequireNoError(t, err, "resetting failed encode attempts")
 	if deleted != 1 {
 		t.Fatalf("failed encode attempts deleted = %d, want 1", deleted)
 	}
 	enqueuer.Reset()
 	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(ctx, secondWorker, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("reconcile after retry request: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, secondWorker, EncodeReconcileArgs{}), "reconcile after retry request")
 	if got := countEncodeJobs(t, enqueuer, id, "h265"); got != 1 {
 		t.Errorf("encode jobs after retry request = %d, want 1", got)
 	}
@@ -1559,9 +1468,7 @@ func TestEncodeReconcileWorker_RowLimitCountsRecordings(t *testing.T) {
 	}
 	// 1 profile ではなく 1 録画が RowLimit を消費する。次ページを新しい worker で処理する。
 	secondWorker := &EncodeReconcileWorker{Enqueuer: w.Enqueuer, Media: pgstoretest.Media(pool), Profiles: w.Profiles, RowLimit: 1}
-	if err := runWorkerViaJobQFake(context.Background(), secondWorker, continuations[0]); err != nil {
-		t.Fatalf("second reconcile page: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), secondWorker, continuations[0]), "second reconcile page")
 	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "h265"); got != 1 {
 		t.Errorf("pass 2: encode jobs for second/h265 = %d, want 1 (cursor must be a recording ID)", got)
 	}
@@ -1641,25 +1548,17 @@ func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.
 	}
 	ctx := context.Background()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "review/trash.m2ts", []string{"cut"}, []byte("original"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.AdoptChapters(t, pool, id)
+	dbtest.ChapterSpan(t, pool, id)
 	keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, id)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
 	assetID := seedEncodedAsset(t, pool, id, "cut", "review/trash_cut.mp4")
-	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
-	if _, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, id); err != nil {
-		t.Fatal(err)
-	}
+	_, err = sqlcgen.New(pool).SoftDeleteRecording(ctx, id)
+	testutil.RequireNoError(t, err, "SoftDeleteRecording")
 
 	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
 	w := &EncodeReconcileWorker{Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}, Media: pgstoretest.Media(pool)}
@@ -1672,9 +1571,8 @@ func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.
 		t.Fatalf("request rows after trashed pass = %d, err %v, want 1", rows, err)
 	}
 
-	if _, err := sqlcgen.New(pool).RestoreRecording(ctx, id); err != nil {
-		t.Fatal(err)
-	}
+	_, err = sqlcgen.New(pool).RestoreRecording(ctx, id)
+	testutil.RequireNoError(t, err, "RestoreRecording")
 	runEncodeReconcilePass(t, w)
 	if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
 		t.Fatalf("encode jobs after restore = %d, want 1", got)
@@ -1691,21 +1589,14 @@ func TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued(t *testi
 	}
 	ctx := context.Background()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "review/noorig.m2ts", []string{"cut"}, []byte("original"))
-	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.AdoptChapters(t, pool, id)
+	dbtest.ChapterSpan(t, pool, id)
 	keep, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, id)
 	if err != nil || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, err %v", keep, err)
 	}
 	assetID := seedEncodedAsset(t, pool, id, "cut", "review/noorig_cut.mp4")
-	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
 	setOriginal := func(state string) {
 		t.Helper()

@@ -2,40 +2,18 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// reservationSourceResp は本ファイルの回帰テストで確認したい source フィールド
-// だけを持つ。reservationResp（reservations_overrides_test.go）は source を含めて
-// いないため、ここでは別に最小のデコード用型を定義する。
-type reservationSourceResp struct {
-	Id     int64  `json:"id"`
-	Source string `json:"source"`
-}
-
-func getReservationJSON(t *testing.T, srv *httptest.Server, programID int64) reservationSourceResp {
+func getReservationJSON(t *testing.T, srv *httptest.Server, programID int64) api.Reservation {
 	t.Helper()
-	resp, err := http.Get(srv.URL + reservationPath(programID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
-	}
-	var got reservationSourceResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 	return got
 }
 
@@ -52,9 +30,7 @@ func TestGetReservation_SourceManualDespiteRuleMatch(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115021234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -82,9 +58,7 @@ func TestGetReservation_SourceRuleWithoutIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115031234
 	ruleID := insertRuleFixture(t, pool, ctx)

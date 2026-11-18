@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
@@ -46,7 +45,7 @@ func seedIngestProgress(t *testing.T, pool *pgxpool.Pool, recordingID, written i
 // 未 ingest の録画に「削除済み」と読める表示を出していた（issue #211）。
 func TestListRecordingsIngestState(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 
@@ -83,11 +82,7 @@ func TestListRecordingsIngestState(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "観測なし", base.Add(-5*time.Hour), "finished", 5
 	})
 
-	var got []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	byID := map[int64]Recording{}
 	for _, r := range got {
 		byID[r.Id] = r
@@ -144,11 +139,7 @@ func TestListRecordingsIngestState(t *testing.T) {
 
 	// 単体 GET は一覧要素と同形（openapi.yaml の getRecording）。射影が
 	// 一覧側にしか足されていない drift をここで捕まえる。
-	var single Recording
-	resp = getJSON(t, srv.URL+"/api/recordings/"+itoa(transferring), &single)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("single status = %d", resp.StatusCode)
-	}
+	single := GetJSON[Recording](t, srv.URL+"/api/recordings/"+itoa(transferring))
 	if single.Ingest == nil || single.Ingest.State != "transferring" {
 		t.Fatalf("single ingest = %+v, want state transferring", single.Ingest)
 	}
@@ -171,7 +162,7 @@ func TestListRecordingsIngestState(t *testing.T) {
 // --- issue #211 が潰したのと同じ形の誤りになる。
 func TestListRecordingsIngestNoJobComing(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 
@@ -209,10 +200,7 @@ func TestListRecordingsIngestNoJobComing(t *testing.T) {
 	})
 	seedRecordSync(t, pool, waiting, "rec-waiting", "finished", nil)
 
-	var got []Recording
-	if resp := getJSON(t, srv.URL+"/api/recordings", &got); resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	byID := map[int64]Recording{}
 	for _, r := range got {
 		byID[r.Id] = r
@@ -247,7 +235,7 @@ func TestListRecordingsIngestNoJobComing(t *testing.T) {
 // 省略することを固定する。
 func TestListRecordingsIngestExpectedBytesOmitted(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "分母なし転送中", time.Now().Truncate(time.Second), "finished", 1
@@ -255,10 +243,7 @@ func TestListRecordingsIngestExpectedBytesOmitted(t *testing.T) {
 	seedRecordSync(t, pool, id, "rec-1", "finished", nil)
 	seedIngestProgress(t, pool, id, 512, nil, time.Now())
 
-	var got []Recording
-	if resp := getJSON(t, srv.URL+"/api/recordings", &got); resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(got) != 1 {
 		t.Fatalf("recordings = %d, want 1", len(got))
 	}

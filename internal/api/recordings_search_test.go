@@ -40,11 +40,7 @@ func recordingsURL(base string, params url.Values) string {
 // 集合を返す（順序も見たいテストは呼び出し側で直接 got を使う）。
 func getRecordingsTitles(t *testing.T, srvURL string, params url.Values) []string {
 	t.Helper()
-	var got []Recording
-	resp := getJSON(t, recordingsURL(srvURL, params), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/recordings?%s status = %d, want 200", params.Encode(), resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, recordingsURL(srvURL, params))
 	titles := make([]string, len(got))
 	for i, r := range got {
 		titles[i] = r.Title
@@ -56,7 +52,7 @@ func getRecordingsTitles(t *testing.T, srvURL string, params url.Values) []strin
 // （EPG 検索 /search と同じ揺れ吸収。docs/data.md §5）。
 func TestListRecordings_KeywordSearch(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -93,7 +89,7 @@ func TestListRecordings_KeywordSearch(t *testing.T) {
 
 func TestListRecordings_KeywordSearchTreatsLikeMetacharactersLiterally(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -112,7 +108,7 @@ func TestListRecordings_KeywordSearchTreatsLikeMetacharactersLiterally(t *testin
 // genre（genre_lv1 の重なり）で絞り込める。recordings.genre_lv1 は生成列。
 func TestListRecordings_GenreFilter(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -149,7 +145,7 @@ func TestListRecordings_GenreFilter(t *testing.T) {
 // channelType / service は複数指定可。
 func TestListRecordings_ChannelTypeAndServiceID(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -191,7 +187,7 @@ func TestListRecordings_ChannelTypeAndServiceID(t *testing.T) {
 
 func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -272,7 +268,7 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 // 録画だけを返す（site を跨がない。issue #283）。
 func TestListRecordings_ServiceCrossSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	// 2 サイトが同じ service_id=100 を受けている。
@@ -317,7 +313,7 @@ func TestListRecordings_ServiceCrossSite(t *testing.T) {
 // status / source / ruleId は録画自身の観測・出自での絞り込み。
 func TestListRecordings_StatusSourceRuleID(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 	ruleID := seedRule(t, pool, "テストルール")
 
@@ -364,7 +360,7 @@ func TestListRecordings_StatusSourceRuleID(t *testing.T) {
 // from / to は program_start_at の範囲（from 以上 to 未満）。
 func TestListRecordings_FromTo(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -415,7 +411,7 @@ func TestListRecordings_FromTo(t *testing.T) {
 // 出ず、ごみ箱一覧では条件が同じように効く。
 func TestListRecordings_TrashOrthogonal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	live := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -461,7 +457,7 @@ func TestListRecordings_TrashOrthogonal(t *testing.T) {
 // タイ群の位置に依存しない検証になる。
 func TestListRecordings_KeysetPagination_DuplicateStartAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	// asc の正解順（program_start_at 昇順・タイは id 昇順）をそのまま記録する。
@@ -502,11 +498,7 @@ func TestListRecordings_KeysetPagination_DuplicateStartAt(t *testing.T) {
 						params.Set("before", before)
 						params.Set("beforeId", beforeID)
 					}
-					var got []Recording
-					resp := getJSON(t, recordingsURL(srv.URL, params), &got)
-					if resp.StatusCode != http.StatusOK {
-						t.Fatalf("page %d status = %d", page, resp.StatusCode)
-					}
+					got := GetJSON[[]Recording](t, recordingsURL(srv.URL, params))
 					if len(got) == 0 {
 						break
 					}
@@ -540,7 +532,7 @@ func equalInt64Slices(a, b []int64) bool {
 // 入力検証: before / beforeId は両方揃って初めて有効。limit は 1..200。
 func TestListRecordings_ValidationErrors(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	tests := []struct {
 		name   string
@@ -573,7 +565,11 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := getJSON(t, recordingsURL(srv.URL, tt.params), nil)
+			resp, err := http.Get(recordingsURL(srv.URL, tt.params))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", resp.StatusCode)
 			}
@@ -595,17 +591,17 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 
 	// 境界（limit=1, limit=200）は通る
 	for _, limit := range []string{"1", "200"} {
-		resp := getJSON(t, recordingsURL(srv.URL, url.Values{"limit": {limit}}), nil)
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("limit=%s status = %d, want 200", limit, resp.StatusCode)
+		status := GetStatus(t, recordingsURL(srv.URL, url.Values{"limit": {limit}}))
+		if status != http.StatusOK {
+			t.Errorf("limit=%s status = %d, want 200", limit, status)
 		}
 	}
 
 	// genre の境界（0, 15）と正しい enum 値は通る
 	for _, genre := range []string{"0", "15"} {
-		resp := getJSON(t, recordingsURL(srv.URL, url.Values{"genre": {genre}}), nil)
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("genre=%s status = %d, want 200", genre, resp.StatusCode)
+		status := GetStatus(t, recordingsURL(srv.URL, url.Values{"genre": {genre}}))
+		if status != http.StatusOK {
+			t.Errorf("genre=%s status = %d, want 200", genre, status)
 		}
 	}
 	for _, tt := range []struct {
@@ -623,9 +619,9 @@ func TestListRecordings_ValidationErrors(t *testing.T) {
 		{"service at the maximum", url.Values{"service": {"6553565535"}}},
 		{"site", url.Values{"site": {"default"}}},
 	} {
-		resp := getJSON(t, recordingsURL(srv.URL, tt.params), nil)
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("%s valid value status = %d, want 200", tt.name, resp.StatusCode)
+		status := GetStatus(t, recordingsURL(srv.URL, tt.params))
+		if status != http.StatusOK {
+			t.Errorf("%s valid value status = %d, want 200", tt.name, status)
 		}
 	}
 }

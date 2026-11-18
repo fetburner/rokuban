@@ -1,9 +1,6 @@
 package api
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -16,29 +13,14 @@ func intPtr(v int) *int { return &v }
 // name の集合だけでなく並びまで固定する。height は表示用で、0 は
 // 「スケールしない」を表す（値そのものが設定の写しであることも見る）。
 func TestListLiveProfiles(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		LiveProfiles: []LiveProfileSummary{
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.LiveProfiles = []LiveProfileSummary{
 			{Name: "high", Height: intPtr(720)},
 			{Name: "low", Height: intPtr(480)},
-		},
+		}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/live-profiles")
-	if err != nil {
-		t.Fatalf("GET /api/live-profiles: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body []LiveProfileSummary
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[[]LiveProfileSummary](t, srv.URL+"/api/live-profiles")
 	// 並びは設定順（リテラルで書く。実装の定数と比較しない）。
 	if len(body) != 2 {
 		t.Fatalf("len = %d, want 2: %#v", len(body), body)
@@ -58,24 +40,9 @@ func TestListLiveProfiles(t *testing.T) {
 // ときの形を見る。**null ではなく空配列** --- フロントは length で「セレクタを出すか」を
 // 決めるので、null は別の分岐を書かせる。
 func TestListLiveProfiles_EmptyWhenNotConfigured(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
-	resp, err := http.Get(srv.URL + "/api/live-profiles")
-	if err != nil {
-		t.Fatalf("GET /api/live-profiles: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body []LiveProfileSummary
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[[]LiveProfileSummary](t, srv.URL+"/api/live-profiles")
 	if body == nil {
 		t.Fatal("body is null, want empty array")
 	}
@@ -87,22 +54,11 @@ func TestListLiveProfiles_EmptyWhenNotConfigured(t *testing.T) {
 // TestListLiveProfiles_OmitsHeightWhenUnset は height 未設定（スケールしない）が
 // 省略されることを見る。0 を詰めると「未設定」と「0」が公開面で潰れる。
 func TestListLiveProfiles_OmitsHeightWhenUnset(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		LiveProfiles: []LiveProfileSummary{{Name: "original"}},
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.LiveProfiles = []LiveProfileSummary{{Name: "original"}}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/live-profiles")
-	if err != nil {
-		t.Fatalf("GET /api/live-profiles: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var body []LiveProfileSummary
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[[]LiveProfileSummary](t, srv.URL+"/api/live-profiles")
 	if len(body) != 1 {
 		t.Fatalf("len = %d, want 1", len(body))
 	}

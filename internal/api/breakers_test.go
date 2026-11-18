@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,15 +15,12 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func newBreakerRouter(pool *pgxpool.Pool) http.Handler {
-	return newBreakerRouterWithSites(pool, nil)
-}
-
-func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler {
-	return api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: sites,
-		StorageStoreNames: []string{"test-store", "s3main"},
-	})
+// withBreakers は発動の読み書き契約と、置き場範囲の再開先の名前を与える。
+func withBreakers(pool *pgxpool.Pool) func(*api.RouterConfig) {
+	return func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store", "s3main"}
+	}
 }
 
 // insertCircuitBreakerFixture は circuit_breakers 行を直接 INSERT する（ruler /
@@ -81,47 +77,17 @@ func existsCircuitBreakerForSite(t *testing.T, pool *pgxpool.Pool, ctx context.C
 	return n > 0
 }
 
-// circuitBreakerResp は GET /api/breakers のレスポンス要素から確認に要る部分だけを持つ。
-type circuitBreakerResp struct {
-	Site      string `json:"site"`
-	Store     string `json:"store"`
-	Name      string `json:"name"`
-	Pending   int    `json:"pending"`
-	Threshold int    `json:"threshold"`
-	Detail    struct {
-		Total    int `json:"total"`
-		Programs []struct {
-			ProgramID int64  `json:"programId"`
-			Title     string `json:"title"`
-		} `json:"programs"`
-	} `json:"detail"`
-}
-
 // 1. 発動しているブレーカーが一覧に現れ、detail の中身（total と programs）が読める。
 func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	detail := `{"total":42,"programs":[{"programId":1234,"title":"テスト番組"}]}`
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 42, 50, detail)
 
-	resp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-
-	var got []circuitBreakerResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 	if len(got) != 1 {
 		t.Fatalf("len(got) = %d, want 1", len(got))
 	}
@@ -135,8 +101,11 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 	if b.Detail.Total != 42 {
 		t.Errorf("detail.total = %d, want 42", b.Detail.Total)
 	}
-	if len(b.Detail.Programs) != 1 || b.Detail.Programs[0].ProgramID != 1234 || b.Detail.Programs[0].Title != "テスト番組" {
-		t.Errorf("detail.programs = %+v, want [{1234 テスト番組}]", b.Detail.Programs)
+	if b.Detail.Programs == nil || len(*b.Detail.Programs) != 1 {
+		t.Fatalf("detail.programs = %+v, want one program", b.Detail.Programs)
+	}
+	if p := (*b.Detail.Programs)[0]; p.ProgramId != 1234 || p.Title == nil || *p.Title != "テスト番組" {
+		t.Errorf("detail.programs = %+v, want [{1234 テスト番組}]", *b.Detail.Programs)
 	}
 }
 
@@ -144,9 +113,7 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 func TestListCircuitBreakers_EmptyWhenNoneTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	resp, err := http.Get(srv.URL + "/api/breakers")
 	if err != nil {
@@ -166,7 +133,7 @@ func TestListCircuitBreakers_EmptyWhenNoneTripped(t *testing.T) {
 		t.Errorf("body = %q, want literal empty array (not null)", body)
 	}
 
-	var got []circuitBreakerResp
+	var got []api.CircuitBreaker
 	if err := json.Unmarshal(bodyBytes, &got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
@@ -180,9 +147,7 @@ func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 
@@ -207,9 +172,7 @@ func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
 func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/ruler_deletes/resume", nil)
 	if err != nil {
@@ -229,9 +192,7 @@ func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
 func TestResumeCircuitBreaker_400WhenUnknownName(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/not_a_real_breaker/resume", nil)
 	if err != nil {
@@ -252,9 +213,7 @@ func TestResumeCircuitBreaker_OnlyDeletesTargetedBreaker(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 	insertCircuitBreakerFixture(t, pool, ctx, "reconcile_total_loss", 1, 1, `{"total":1}`)
@@ -296,9 +255,7 @@ func TestResumeCircuitBreaker_400WhenSiteMismatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	// 他サイト（このプロセスの site ではない）の発動を用意する。
 	if _, err := pool.Exec(ctx, `
@@ -352,9 +309,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
 
-			router := newBreakerRouter(pool)
-			srv := httptest.NewServer(router)
-			defer srv.Close()
+			srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 			// site 範囲は既定 site、置き場範囲はルーターに設定した置き場名。
 			scope := "default"
@@ -366,21 +321,10 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			insertCircuitBreakerFixtureForSite(t, pool, ctx, scope, name, 7, 10, `{"total":7}`)
 
 			// 発動中として一覧に出る。
-			resp, err := http.Get(srv.URL + "/api/breakers")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("GET /api/breakers status = %d, want 200", resp.StatusCode)
-			}
-			var got []circuitBreakerResp
-			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-				t.Fatalf("decoding response: %v", err)
-			}
+			got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 			found := false
 			for _, b := range got {
-				if b.Name == name {
+				if string(b.Name) == name {
 					found = true
 					break
 				}
@@ -429,9 +373,7 @@ func TestListCircuitBreakers_PassesThroughNameNotInEnumInsteadOfFailingWholeList
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	// 発動中の既知ブレーカーと、enum に無い名前を同時に発動させる —— 後者
 	// 1 件のせいで前者まで見えなくなってはいけない、というのがこのテストの
@@ -439,26 +381,13 @@ func TestListCircuitBreakers_PassesThroughNameNotInEnumInsteadOfFailingWholeList
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 	insertCircuitBreakerFixture(t, pool, ctx, "not_a_declared_breaker", 1, 1, `{"total":1}`)
 
-	resp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 200 (body: %s)", resp.StatusCode, body)
-	}
-
-	var got []circuitBreakerResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2 (both breakers should be visible): %+v", len(got), got)
 	}
 	names := map[string]bool{}
 	for _, b := range got {
-		names[b.Name] = true
+		names[string(b.Name)] = true
 	}
 	if !names["ruler_deletes"] {
 		t.Error("ruler_deletes missing from response — an unrelated enum-unknown row should not hide it")

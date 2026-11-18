@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"testing"
 	"time"
 
@@ -21,7 +20,7 @@ func TestWatchedGroupingSurvivesMarkedRowLeavingLiveSet(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			srv := newAPIServer(t, pool)
+			srv := NewTestServer(t, pool)
 			ctx := context.Background()
 			q := sqlcgen.New(pool)
 			start := time.Date(2026, 8, 2, 1, 0, 0, 0, time.UTC)
@@ -47,10 +46,7 @@ func TestWatchedGroupingSurvivesMarkedRowLeavingLiveSet(t *testing.T) {
 				t.Fatalf("move marked row out of live set: %v", err)
 			}
 
-			var list []Recording
-			if resp := getJSON(t, srv.URL+"/api/recordings", &list); resp.StatusCode != http.StatusOK {
-				t.Fatalf("list status = %d", resp.StatusCode)
-			}
+			list := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 			var listed *Recording
 			for i := range list {
 				if list[i].Id == other {
@@ -63,17 +59,11 @@ func TestWatchedGroupingSurvivesMarkedRowLeavingLiveSet(t *testing.T) {
 			if listed.WatchedAt == nil {
 				t.Errorf("list watchedAt = nil after marked sibling left live set, want non-nil")
 			}
-			var single Recording
-			if resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, other), &single); resp.StatusCode != http.StatusOK {
-				t.Fatalf("get status = %d", resp.StatusCode)
-			}
+			single := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, other))
 			if single.WatchedAt == nil {
 				t.Errorf("single GET watchedAt = nil after marked sibling left live set, want non-nil")
 			}
-			var cont []Recording
-			if resp := getJSON(t, srv.URL+"/api/recordings/continue-watching", &cont); resp.StatusCode != http.StatusOK {
-				t.Fatalf("continue-watching status = %d", resp.StatusCode)
-			}
+			cont := GetJSON[[]Recording](t, srv.URL+"/api/recordings/continue-watching")
 			for _, row := range cont {
 				if row.Id == other {
 					t.Errorf("continue-watching still lists recording %d whose event is watched", other)
