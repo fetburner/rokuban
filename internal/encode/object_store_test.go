@@ -128,6 +128,11 @@ func newObjectEnv(t *testing.T) objectEnv {
 	t.Helper()
 	objects, err := fsstore.New(t.TempDir())
 	testutil.RequireNoError(t, err, "creating filesystem object store")
+	return newObjectEnvWith(t, objects)
+}
+
+func newObjectEnvWith(t *testing.T, objects objstore.Store) objectEnv {
+	t.Helper()
 	pool := testutil.SetupDB(t)
 	return objectEnv{
 		pool:    pool,
