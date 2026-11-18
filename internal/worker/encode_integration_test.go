@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
+	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -290,13 +291,6 @@ func runEncodeReconcilePass(t *testing.T, w *encode.EncodeReconcileWorker) *reco
 	return runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
 }
 
-func mustKeepRanges(t *testing.T, keep []chapters.Range) pgstore.KeepRanges {
-	t.Helper()
-	ranges, err := pgstore.KeepRangesParam(keep)
-	testutil.RequireNoError(t, err, "encoding requested keep ranges")
-	return ranges
-}
-
 // cutFFmpegProfile は実 ffmpeg の統合テストが使う最小の cut プロファイル。
 // Scaler/Height を 0 にしてあるので、filtergraph は trim → concat → null だけに
 // なり、測っているものが「切り取り」だけであることが保証される。
@@ -422,7 +416,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	// 方向 B: 削除エンジンを 1 パス回しても、この録画の原本は消えない
 	// （until_encoded_deletable_originals は known_profiles で絞らないので、
 	// 「desired が揃っている」という判定に永久に到達しない）。
-	dw := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
+	dw := &storagemaint.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := singleCopyState(t, pool, originalID); got != "active" {

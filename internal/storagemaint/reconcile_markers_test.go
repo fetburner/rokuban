@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -41,7 +43,7 @@ func (m *markerRecorder) recordedStores() []string {
 
 func TestDeleteReconcileMarker_FullPassMarksTheStore(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -49,7 +51,7 @@ func TestDeleteReconcileMarker_FullPassMarksTheStore(t *testing.T) {
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "fs-a"), "writing store marker")
 	markers := &markerRecorder{}
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := markers.recordedStores(); !slices.Equal(got, []string{"fs-a"}) {
 		t.Fatalf("recorded delete markers = %v, want [fs-a]", got)
 	}
@@ -59,7 +61,7 @@ func TestDeleteReconcileMarker_FullPassMarksTheStore(t *testing.T) {
 // 2 件の候補に対して上限 1 にすると、必ずブレーカーが発動する。削除は行われない。
 func TestDeleteReconcileMarker_BreakerStopStillMarks(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -74,7 +76,7 @@ func TestDeleteReconcileMarker_BreakerStopStillMarks(t *testing.T) {
 	markers := &markerRecorder{}
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	w.MaxDeletesPerPass = 1
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := singleCopyState(t, pool, assetID); got == "deleted" {
 		t.Fatal("asset was deleted, want the breaker to withhold the pass")
 	}
@@ -85,7 +87,7 @@ func TestDeleteReconcileMarker_BreakerStopStillMarks(t *testing.T) {
 
 func TestDeleteReconcileMarker_FailedPassDoesNotMark(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -94,7 +96,7 @@ func TestDeleteReconcileMarker_FailedPassDoesNotMark(t *testing.T) {
 	markers := &markerRecorder{}
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	w.MediaDelete = failingPendingDelete{pgstoretest.Media(pool)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err == nil {
 		t.Fatal("DeleteReconcileWorker.Work = nil, want the listing error")
 	}
 	if got := markers.recordedStores(); len(got) != 0 {
@@ -104,7 +106,7 @@ func TestDeleteReconcileMarker_FailedPassDoesNotMark(t *testing.T) {
 
 func TestDeleteReconcileMarker_WriteFailureFailsThePass(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -112,7 +114,7 @@ func TestDeleteReconcileMarker_WriteFailureFailsThePass(t *testing.T) {
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "fs-a"), "writing store marker")
 	markers := &markerRecorder{err: errors.New("marker write rejected")}
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err == nil {
 		t.Fatal("DeleteReconcileWorker.Work = nil, want the marker write error")
 	}
 }

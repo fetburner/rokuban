@@ -511,8 +511,8 @@ jobs:
         run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
       - name: Run shared object store contract and upload token tests against RustFS
         run: go test -tags s3conformance ./internal/objstore/s3store -run '^(TestStoreContract|TestPutStoresUploadToken)$' -count=1 -timeout 5m -v
-      - name: Run S3 worker publication and recovery tests
-        run: go test -tags s3conformance ./internal/worker -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
+      - name: Run S3 publication and recovery tests
+        run: go test -tags s3conformance ./internal/storagemaint -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
       - name: Run S3 encode retry and generation test
         run: go test -tags s3conformance ./internal/encode -run '^TestS3EncodeRetryReservesNewGeneration$' -count=1 -timeout 5m -v
       - name: Run S3 thumbnail reselection test

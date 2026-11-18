@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"bytes"
@@ -28,7 +28,10 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/inplace"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -229,7 +232,7 @@ func buildDeleteReconcileWorker(t *testing.T, pool *pgxpool.Pool, mediaDir strin
 // ごみ箱の猶予を過ぎた録画の原本は物理削除され、行は deleted に遷移する。
 func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -247,7 +250,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("asset copy state = %q, want deleted", got)
@@ -268,7 +271,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 }
 
 func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
@@ -331,7 +334,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 				t.Fatal("delete reconcile did not reach the simulated crash point")
 			}
 		}()
-		testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work before simulated crash")
+		testutil.RequireNoError(t, w.Work(ctx, jobs.DeleteReconcileArgs{}), "Work before simulated crash")
 	}()
 	beforeMediaAssetUnlink = previousHook
 	copyState := func(copyID int64) string {
@@ -349,7 +352,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 		t.Fatal("old-generation file disappeared before unlink after simulated crash")
 	}
 
-	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "retrying delete reconcile")
+	testutil.RequireNoError(t, w.Work(ctx, jobs.DeleteReconcileArgs{}), "retrying delete reconcile")
 	if got := copyState(oldCopyID); got != "deleted" {
 		t.Errorf("old copy state after retry = %q, want deleted", got)
 	}
@@ -378,7 +381,7 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 // サイドカーの削除だけを狙って失敗させられる。
 func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDeletesEncoded(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -396,7 +399,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
 		t.Errorf("encoded asset copy state = %q, want deleted (sidecar failure must not block it)", got)
@@ -413,7 +416,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 // 本体削除は進む。
 func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_StillDeletes(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -431,7 +434,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
 		t.Errorf("encoded asset copy state = %q, want deleted (extensionless rel_path must not block it)", got)
@@ -444,7 +447,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 // 猶予期間内のごみ箱録画は削除されない（TrashPastRetention の逆方向）。
 func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -457,7 +460,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (not yet past retention)", got)
@@ -484,7 +487,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 // ごみ箱一覧から消えるべき。
 func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	// media_assets は 1 行も作らない。
@@ -503,7 +506,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.Webhook = client
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := purgedAt(t, pool, recordingID); got == nil {
 		t.Fatal("purged_at not set for a recording with zero media_assets")
@@ -525,7 +528,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	// 2 パス目では既に purged_at が立っているので二度と候補に上がらず、
 	// webhook も再発火しない（冪等）。
 	rec.reset()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() second pass error")
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("webhook fired again on the second pass: %+v", events)
 	}
@@ -538,7 +541,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 // 反転）。
 func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -554,7 +557,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
 		t.Fatalf("asset copy state = %q, want deleting (unlink blocked)", got)
@@ -571,7 +574,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 // （アセット 3 件を消しても 1 通。発火は録画単位）。
 func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Title = "テスト番組" })
 
@@ -586,7 +589,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 		w.TrashRetention = 30 * 24 * time.Hour
 		w.Webhook = client
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Fatalf("asset copy state = %q, want deleted", got)
@@ -618,7 +621,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 // 経路では原本が既に無いので一度も発火しない。
 func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWebhook(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -636,7 +639,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 		w.TrashRetention = 30 * 24 * time.Hour
 		w.Webhook = client
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
 		t.Fatalf("encoded copy state = %q, want deleted", got)
@@ -654,7 +657,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 // encoded で再生できる。TrashPurge_FiresRecordingDeletedWebhookOnce の逆方向）。
 func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDeletedWebhook(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -669,7 +672,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.Webhook = client
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Fatalf("original copy state = %q, want deleted", got)
@@ -690,7 +693,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 // 生きている）。
 func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -708,7 +711,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 		w.TrashRetention = 30 * 24 * time.Hour
 		w.Webhook = client
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 	if got := singleCopyState(t, pool, assetID); got != "deleting" {
 		t.Fatalf("asset copy state = %q, want deleting", got)
 	}
@@ -719,7 +722,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 	testutil.RequireNoError(t, os.Remove(blockerFile), "removing blocker file")
 	rec.reset()
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() second pass error")
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Fatalf("asset copy state after second pass = %q, want active (restored recordings must not be deleted, issue #105)", got)
 	}
@@ -735,7 +738,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFilesystem(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	recordingID := dbtest.Recording(t, pool)
@@ -769,7 +772,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 // そのもの ——「active なのにファイルが無い行」を作ってしまう。
 func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDeleted(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -789,7 +792,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Fatalf("asset copy state = %q, want deleted (file already gone; reverting to active would create an active row with no file)", got)
@@ -800,7 +803,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 // 消えた時点で発火すること（pending 経路からの発火も兼ねる）。
 func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "WriteStoreMarker")
 	recordingID := dbtest.Recording(t, pool)
@@ -824,7 +827,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 		w.TrashRetention = 30 * 24 * time.Hour
 		w.Webhook = client
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, blockedID); got != "deleting" {
 		t.Fatalf("blocked asset copy state = %q, want deleting", got)
@@ -835,7 +838,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 
 	// Store.Delete が復旧した次パスの pending 経路が拾い直し、そこで初めて発火する。
 	rec.reset()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() second pass error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() second pass error")
 
 	if got := singleCopyState(t, pool, blockedID); got != "deleted" {
 		t.Fatalf("blocked asset copy state after second pass = %q, want deleted", got)
@@ -867,7 +870,7 @@ func (s *failDeleteObjectStore) Delete(ctx context.Context, key string) error {
 // 「webhook 先が落ちていても本処理は完了する」の削除 reconcile 版）。
 func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -888,7 +891,7 @@ func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 		w.TrashRetention = 30 * 24 * time.Hour
 		w.Webhook = webhook.New(config.WebhookConfig{URL: srv.URL, Timeout: 50 * time.Millisecond})
 	})
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v (webhook の失敗で削除パスを落としてはいけない)", err)
 	}
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
@@ -900,7 +903,7 @@ func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 // タイムアウトさせないための安全弁）。
 func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/budget.m2ts", []byte("data"))
@@ -929,7 +932,7 @@ func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T
 }
 
 func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCollection(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
@@ -956,10 +959,12 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 			t.Errorf("locking recording for rebuild request: %v", err)
 			return
 		}
+		keep, err := pgstore.KeepRangesParam([]chapters.Range{{StartMs: 0, EndMs: 1000}})
+		testutil.RequireNoError(t, err, "encoding requested keep ranges")
 		if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
 			RecordingID:   recordingID,
 			Profile:       profile,
-			RequestedKeep: mustKeepRanges(t, []chapters.Range{{StartMs: 0, EndMs: 1000}}),
+			RequestedKeep: keep,
 		}); err != nil {
 			t.Errorf("inserting rebuild request after candidate collection: %v", err)
 			return
@@ -970,7 +975,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 	}
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work() error")
 	if got := singleCopyState(t, pool, originalID); got != "active" {
 		t.Fatalf("original copy state after concurrent rebuild request = %q, want active", got)
 	}
@@ -986,7 +991,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 // 添えれば通る。
 func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -1048,7 +1053,7 @@ func TestDeleteReconcileWorker_UntilEncodedOutcomes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			ctx := t.Context()
 			mediaDir := t.TempDir()
 			f := seedUntilEncodedRecording(t, pool, mediaDir)
@@ -1065,7 +1070,7 @@ func TestDeleteReconcileWorker_UntilEncodedOutcomes(t *testing.T) {
 			requestsBefore := countRequests()
 
 			w := buildDeleteReconcileWorker(t, pool, mediaDir)
-			testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
+			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work()")
 
 			wantState := "active"
 			if tc.wantDeleted {
@@ -1119,7 +1124,7 @@ func TestDeleteReconcileWorker_UntilEncodedWhileDeleting_RevertsToActive(t *test
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			ctx := context.Background()
 			mediaDir := t.TempDir()
 			recordingID := dbtest.Recording(t, pool)
@@ -1139,7 +1144,7 @@ func TestDeleteReconcileWorker_UntilEncodedWhileDeleting_RevertsToActive(t *test
 			assertUntilEncodedQualifies(t, pool, assetID, false)
 
 			w := buildDeleteReconcileWorker(t, pool, mediaDir)
-			testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
+			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work()")
 
 			if got := singleCopyState(t, pool, assetID); got != "active" {
 				t.Fatalf("original copy state = %q, want active (until_encoded predicate no longer qualifies this asset)", got)
@@ -1206,7 +1211,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 // M4-14 は新規 ingest 分だけ rel_path に "sites/{site}/" を前置し、既存行は
 // 移行しない（マイグレーションを書かない）ため、本番のメディアディレクトリは
 // 前置あり ("sites/tokyo/...") と前置なし ("legacy/...") が混在するツリーに
-// なる。walkMediaFiles（internal/worker/storage_audit.go）は catalog.Subdir
+// なる。walkMediaFiles（internal/storagemaint/storage_audit.go）は catalog.Subdir
 // の完全一致だけを SkipDir する汎用的な Walk で、site 由来の階層を特別扱いして
 // いないので理屈上は無関係のはずだが、将来 catalog.Subdir の判定が
 // strings.HasPrefix 等に緩められた場合に "sites/" を誤って引っ掛ける退行を防ぐ
@@ -1221,7 +1226,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 // orphan_files に**現れること**（= true orphan を見落とさない）も確認する。
 func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	legacyRecordingID := dbtest.Recording(t, pool)
@@ -1262,7 +1267,7 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, legacyAssetID); got != "active" {
 		t.Errorf("legacy (unprefixed) asset copy state = %q, want active (must survive orphan sweep)", got)
@@ -1298,7 +1303,7 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 // 誤報せず、未登録の古いファイルを孤児候補として記録する。
 func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMissing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	realMediaDir := t.TempDir()
 	mediaDir := filepath.Join(t.TempDir(), "media-link")
 	testutil.RequireNoError(t, os.Symlink(realMediaDir, mediaDir), "creating media dir symlink")
@@ -1317,7 +1322,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("registered asset copy state = %q, want active", got)
@@ -1346,7 +1351,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 // ようにする。
 func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	realMediaDir := t.TempDir()
 	mediaDir := filepath.Join(t.TempDir(), "media-link")
 	testutil.RequireNoError(t, os.Symlink(realMediaDir, mediaDir), "creating media dir symlink")
@@ -1361,7 +1366,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	var orphanCount int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
@@ -1421,14 +1426,14 @@ func TestWalkMediaFiles_MissingMediaDirIsNoopButNonDirectoryErrors(t *testing.T)
 // 「0 件成功に化けさせない」保証が消えてしまうため。
 func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	root := t.TempDir()
 	regularFile := filepath.Join(root, "media-file")
 	testutil.RequireNoError(t, os.WriteFile(regularFile, []byte("not a directory"), 0o644), "writing regular file")
 
 	w := buildDeleteReconcileWorker(t, pool, regularFile, func(w *DeleteReconcileWorker) {
 	})
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err == nil {
 		t.Fatal("Work() error = nil, want error for a non-directory media dir")
 	}
 }
@@ -1436,7 +1441,7 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 // 1 パスの孤児監査と実体無し監査は、同じ walk 結果を共有する。
 // 壊し方: reconcileMissingAssets に独自の walkMediaFiles 呼び出しを足すと、2 回で失敗する。
 func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	visibleRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, visibleRecordingID, "present/original.m2ts", []byte("present"))
@@ -1462,7 +1467,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.OrphanMTimeGrace = time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 	if walks != 1 {
 		t.Fatalf("walkMediaFiles calls = %d, want 1", walks)
 	}
@@ -1488,7 +1493,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 // .vtt が本当に孤児候補として orphan_files に記録されてしまい落ちる。
 func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 
@@ -1505,7 +1510,7 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
@@ -1521,7 +1526,7 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 // mtime が新しいファイルは孤児候補として記録しない。
 func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	orphanPath := filepath.Join(mediaDir, "unregistered-recent.dat")
@@ -1530,7 +1535,7 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
@@ -1547,7 +1552,7 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 // 孤児回収が古い temp を消しても、unlink はリンク数を減らすだけで canonical の中身は残る。
 func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	const canonicalRel = "sites/default/test/linked-orphan.m2ts"
@@ -1565,9 +1570,9 @@ func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 		w.OrphanAge = 14 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "first Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "first Work() error")
 	testutil.MustExec(t, pool, "aging ingest temp orphan row", "UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1", tempRel, time.Now().Add(-20*24*time.Hour))
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "second Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "second Work() error")
 	if fileExists(tempPath) {
 		t.Fatal("aged linked ingest temp still exists")
 	}
@@ -1581,7 +1586,7 @@ func TestDeleteReconcileWorker_Orphan_AgedTempLinkedToCanonicalLeavesCanonical(t
 // 部分ファイルが永久に残る。
 func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	const relPath = "sites/default/test/.rokuban-ingest-default-process-dead-g1"
@@ -1595,7 +1600,7 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 		w.OrphanAge = 14 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "first Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "first Work() error")
 	if !fileExists(tempPath) {
 		t.Fatal("ingest temp was deleted before orphan aging completed")
 	}
@@ -1608,14 +1613,14 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 
 	testutil.MustExec(t, pool, "aging ingest temp orphan row", "UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1", relPath, time.Now().Add(-20*24*time.Hour))
 	testutil.RequireNoError(t, os.Chtimes(tempPath, time.Now(), time.Now()), "refreshing ingest temp activity time")
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() with recent temp error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() with recent temp error")
 	if !fileExists(tempPath) {
 		t.Fatal("temp was deleted while its mtime was inside the grace period")
 	}
 	testutil.RequireNoError(t, os.Chtimes(tempPath, old, old), "aging ingest temp after retained pass")
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() rediscovering old ingest temp error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() rediscovering old ingest temp error")
 	testutil.MustExec(t, pool, "re-aging rediscovered ingest temp orphan row", "UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1", relPath, time.Now().Add(-20*24*time.Hour))
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "final Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "final Work() error")
 	if fileExists(tempPath) {
 		t.Fatal("aged ingest temp still exists")
 	}
@@ -1628,7 +1633,7 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 
 func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGeneration(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1637,17 +1642,20 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "local"), "WriteStoreMarker")
 	const recordID = "rec-ingest-orphan-generations"
 	recordingID := dbtest.Recording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, recordID)
+	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
+		Site: "default", RecordID: recordID, RecordingID: &recordingID,
+		ProgramID: 327361024000001, Status: "finished", Tags: []string{},
+	}), "inserting test record_sync")
 	media := pgstoretest.Media(pool)
 	oldOwner := uuid.New()
 	if _, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, oldOwner, time.Minute); err != nil || !acquired {
 		t.Fatalf("old writer Acquire = (acquired=%t, %v), want acquired", acquired, err)
 	}
-	dir := filepath.Join(mediaDir, "sites", "default", "test")
-	oldPath := ingestTempWriterFilePath(dir, "default", recordID, 1)
-	oldRelPath, err := ingestTempRelPath(mediaDir, oldPath)
-	testutil.RequireNoError(t, err, "ingestTempRelPath")
-	testutil.RequireNoError(t, os.MkdirAll(dir, 0o755), "MkdirAll")
+	const oldRelPath = "sites/default/test/.rokuban-ingest-default-rec%2Dingest%2Dorphan%2Dgenerations-g1"
+	const newRelPath = "sites/default/test/.rokuban-ingest-default-rec%2Dingest%2Dorphan%2Dgenerations-g2"
+	oldPath := filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))
+	newPath := filepath.Join(mediaDir, filepath.FromSlash(newRelPath))
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(oldPath), 0o755), "MkdirAll")
 	testutil.RequireNoError(t, os.WriteFile(oldPath, []byte("old visible prefix"), 0o600), "WriteFile")
 	testutil.RequireNoError(t, media.UpdateIngestProgress(ctx, store.IngestProgress{
 		RecordingID: recordingID, WrittenBytes: 100, TempRelPath: oldRelPath, TempGeneration: 23,
@@ -1658,9 +1666,6 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 	if err != nil || !acquired || checkpoint.WriterGeneration != 2 {
 		t.Fatalf("new writer Acquire = (%+v, %t, %v), want generation 2", checkpoint, acquired, err)
 	}
-	newPath := ingestTempWriterFilePath(dir, "default", recordID, checkpoint.WriterGeneration)
-	newRelPath, err := ingestTempRelPath(mediaDir, newPath)
-	testutil.RequireNoError(t, err, "ingestTempRelPath")
 	testutil.RequireNoError(t, os.WriteFile(newPath, []byte("new writer payload"), 0o600), "WriteFile")
 	writeProgress := func(written int64) error {
 		return media.UpdateIngestProgress(ctx, store.IngestProgress{
@@ -1691,7 +1696,7 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 // age を超えても孤児回収から unlink しない。
 func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	relPath := "orphan/canonical-" + filepath.Base(mediaDir) + ".m2ts"
@@ -1725,7 +1730,7 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 // 同じ rel_path へ別の録画の原本を commit する。tombstone が path を予約していれば commit は拒否される。
 // 予約していなければ commit は成功し、遅れた unlink がその新しいファイルを消す。
 func TestDeleteReconcileStaleWorkCannotUnlinkRepublishedPath(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	const oldRelPath = "originals/stale-delete.ts"
@@ -1760,8 +1765,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, old
 			t.Errorf("marking old copy deleted in hook: %v", err)
 			return
 		}
-		w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}
-		commitErr = w.commit(ctx, newRecordingID, oldRelPath, tempPath, oldPath, int64(len(republishedContent)), nil, uuid.Nil, 0)
+		commitErr = publishOriginalForDeleteTest(ctx, pool, newRecordingID, oldRelPath, tempPath, oldPath, int64(len(republishedContent)))
 	}
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
@@ -1792,7 +1796,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, old
 
 func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	paths := []string{
@@ -1870,7 +1874,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 		<-releaseWork
 	}
 	go func() {
-		workDone <- runWorkerViaJobQFake(ctx, worker, DeleteReconcileArgs{})
+		workDone <- jobqfaketest.RunWorkerOnce(ctx, worker, jobs.DeleteReconcileArgs{})
 		close(workFinished)
 	}()
 	select {
@@ -1883,8 +1887,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 
 	commitDone := make(chan error, 1)
 	go func() {
-		commitDone <- (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(ctx, recordingID,
-			relPath, tempPath, fullPath, int64(len(content)), nil, uuid.Nil, 0)
+		commitDone <- publishOriginalForDeleteTest(ctx, pool, recordingID, relPath, tempPath, fullPath, int64(len(content)))
 	}()
 	select {
 	case err := <-commitDone:
@@ -1918,7 +1921,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 
 // 壊し方: deleteOrphanFile の canonical 早期 return と agedUnpublishedOrphans の canonical 除外を消す。
 func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	worker := buildDeleteReconcileWorker(t, pool, mediaDir)
 	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/recording.m2ts", func() {})
@@ -1926,7 +1929,7 @@ func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *
 
 // 壊し方: 同上。cleanup 側の DB セッションが消えても公開内容が残ること。
 func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	cleanupPool, err := pgxpool.New(context.Background(), pool.Config().ConnString())
 	testutil.RequireNoError(t, err, "New")
@@ -1944,7 +1947,7 @@ func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t
 
 // canonical orphan は aging 後も残り、Warn とメトリクスに出る。削除数ブレーカーには入らない。
 func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	t.Cleanup(func() { metrics.OrphanFilesUnresolved.Set(0) })
 
@@ -1964,7 +1967,7 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 		w.OrphanAge = 14 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	for _, relPath := range relPaths {
 		if !fileExists(filepath.Join(mediaDir, relPath)) {
@@ -1992,7 +1995,7 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 //
 // 壊し方: reportAgedOrphanFiles の個別 Warn を消す、または予算で打ち切る条件を消す。
 func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	t.Cleanup(func() { metrics.OrphanFilesUnresolved.Set(0) })
@@ -2019,7 +2022,7 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 		w.OrphanAge = 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	logged := logBuf.String()
 	if got := strings.Count(logged, "aged canonical orphan needs review"); got != orphanFileLogBudget {
@@ -2036,7 +2039,7 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 
 func TestDeleteReconcileWorker_StagingOrphansAreDeleted(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	paths := []string{
@@ -2062,7 +2065,7 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeleted(t *testing.T) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 		w.OrphanAge = 14 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work()")
 	for _, relPath := range paths {
 		if fileExists(filepath.Join(mediaDir, filepath.FromSlash(relPath))) {
 			t.Errorf("aged staging file %q still exists", relPath)
@@ -2079,7 +2082,7 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeleted(t *testing.T) {
 
 func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	const relPath = mediapath.EncodeTempFilePrefix + "mtime-race"
@@ -2108,7 +2111,7 @@ func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
 
 func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	const relPath = "library/recoverable.ts"
@@ -2122,7 +2125,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 		w.OrphanAge = 14 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() before rescue")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work() before rescue")
 	if _, err := inplace.Register(ctx, pgstoretest.Media(pool), mediaDir, inplace.Input{
 		Recording: inplace.Recording{
 			Source: "manual", Site: "default", NetworkID: 1, ServiceID: 2,
@@ -2146,7 +2149,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 
 func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
 	const relPath = "recordings/pending-commit.ts"
@@ -2170,7 +2173,7 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 		w.OrphanMTimeGrace = 7 * 24 * time.Hour
 		w.OrphanAge = 14 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work() while asset insert is uncommitted")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work() while asset insert is uncommitted")
 	testutil.RequireNoError(t, tx.Commit(ctx), "committing media_asset")
 	if got, err := os.ReadFile(path); err != nil || string(got) != string(content) {
 		t.Fatalf("canonical after insert commit = %q, %v; want file preserved", got, err)
@@ -2194,7 +2197,7 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 // このテストはアサーション失敗で落ちる。
 func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	relPath := mediapath.GeneratedAssetTempFilePrefix + "canceled-ctx"
@@ -2215,7 +2218,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 // 候補数がしきい値を超えるとサーキットブレーカーが発動し、その回では何も消さない。
 func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	var assetIDs []int64
@@ -2232,7 +2235,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 		w.TrashRetention = 30 * 24 * time.Hour
 		w.MaxDeletesPerPass = 2 // 候補は 3 件 > 2 なので発動するはず
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	for _, id := range assetIDs {
 		if got := singleCopyState(t, pool, id); got != "active" {
@@ -2261,7 +2264,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 // active に戻してしまい、このテストの主張が成り立たない）。
 func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	markRecordingTrashed(t, pool, recordingID)
@@ -2284,7 +2287,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("stuck asset copy state = %q, want deleted (should resume regardless of breaker)", got)
@@ -2301,14 +2304,14 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 // スキップする」安全弁を踏まないようにする（そちらは別テストで確認する）。
 func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	recordingID := dbtest.Recording(t, pool)
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "present/original.m2ts", []byte("data"))
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (file is present, must not be touched)", got)
@@ -2323,7 +2326,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 
 func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	legacyRelPath := "legacy/original.m2ts"
@@ -2337,7 +2340,7 @@ func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 	testutil.MustExec(t, pool, "setting physical copy path", `UPDATE media_asset_copies SET rel_path = $2 WHERE media_asset_id = $1 AND store = 'test-store'`, assetID, copyRelPath)
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 	var orphanCount, missingCount int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM orphan_files WHERE store = 'test-store' AND rel_path = $1`, copyRelPath).Scan(&orphanCount), "checking copy path was not recorded as an orphan")
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.store = 'test-store' AND c.media_asset_id = $1`, assetID).Scan(&missingCount), "checking active copy was not recorded missing")
@@ -2351,7 +2354,7 @@ func TestDeleteReconcileWorker_ObservationsUseStoreCopyPaths(t *testing.T) {
 // （単発の走査揺れを確認済みの異常と区別する。孤児回収の OrphanAge と同じ
 // 非対称）。media_assets 自体には一切触れない（自動削除しない）。
 func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	// 全損シグネチャ（ゼロ件観測）を踏まないよう、実体のある資産を 1 つ
@@ -2375,7 +2378,7 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 		w.MediaStoreName = dbtest.StoreName
 	})
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
@@ -2394,7 +2397,7 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 // FS に残る derived copy は、storage.derived の切替後も FS の実体として監査する。
 func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesystem(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	recordingID := dbtest.Recording(t, pool)
@@ -2425,7 +2428,7 @@ func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesyst
 // first_seen をあらかじめ過去に投入し、14 日待たずに検証する
 // （TestDeleteReconcileWorker_Orphan_AgedOut_Deletes と同じ手法）。
 func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	otherRecordingID := dbtest.Recording(t, pool)
@@ -2447,7 +2450,7 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MissingAssetAge = 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
@@ -2472,7 +2475,7 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 // config.DefaultMissingAssetAge を使う。その場合 2h 前の候補は 24h 未満なので
 // 報告されず、最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Reported(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	otherRecordingID := dbtest.Recording(t, pool)
@@ -2493,7 +2496,7 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MissingAssetAge = 1 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active (missing-file detection never deletes)", got)
@@ -2515,7 +2518,7 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 // このテストが検出すべき変異: reportAgedMissingAssets から Reset() を削る。
 // その場合 2 パス目でも 1 パス目の値 (1) が残り、最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	otherRecordingID := dbtest.Recording(t, pool)
@@ -2536,7 +2539,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MissingAssetAge = 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() (pass 1) error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() (pass 1) error")
 	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 1 {
 		t.Fatalf("MediaAssetsMissing{kind=original} after pass 1 = %v, want 1 (aged candidate must be reported)", got)
 	}
@@ -2546,7 +2549,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(full), 0o755), "MkdirAll")
 	testutil.RequireNoError(t, os.WriteFile(full, []byte("data"), 0o644), "WriteFile")
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() (pass 2) error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() (pass 2) error")
 
 	var count int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
@@ -2564,7 +2567,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 // --- 形で検知して丸ごとスキップし、既存の確認済み状態も上書きしない
 // （issue #343 の受け入れ基準）。
 func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFailure(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir() // 空。MediaDir 配下に一切ファイルが無い状態を模す。
 
 	recordingID := dbtest.Recording(t, pool)
@@ -2576,7 +2579,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("asset copy state = %q, want active", got)
@@ -2596,13 +2599,13 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 // 無ければ、何もすることが無いので全損シグネチャ扱いにする必要はない
 // （疑わしいパスとして数えない）。
 func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDirNoActiveAssets_DoesNotTripSuspicion(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure); got != before {
 		t.Errorf("MissingAssetScanSuspectedStorageFailure changed from %v to %v, want unchanged (no active media_assets rows means nothing to be suspicious about)", before, got)
@@ -2614,7 +2617,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDirNoActiveAssets_DoesNotT
 // 前回までの確認済み状態を上書きしない。
 func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearExistingCandidates(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	recordingID := dbtest.Recording(t, pool)
@@ -2628,7 +2631,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 	// mediaDir は空のまま(この資産の実ファイルも他の資産も一切無い) ---
 	// このパスはゼロ件観測になり全損シグネチャでスキップされるはず。
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
@@ -2655,7 +2658,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 // （PR #390 の元の実装）。その場合、疑わしいパスでも Reset() が呼ばれて
 // 番兵値が実際の集計値に置き換わり、このテストの最終アサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir() // 空。active な資産が存在する疑わしいパスを作る。
 
 	recordingID := dbtest.Recording(t, pool)
@@ -2677,7 +2680,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MissingAssetAge = 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure); got != suspectedBefore+1 {
 		t.Fatalf("MissingAssetScanSuspectedStorageFailure = %v, want %v (this pass must be suspected — empty mediaDir with an active asset)", got, suspectedBefore+1)
@@ -2696,7 +2699,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 // その場合、個別ログの件数が missingAssetLogBudget を超え、要約行も
 // 出ないため、このテストのアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 
@@ -2729,7 +2732,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 		w.MissingAssetAge = 24 * time.Hour
 		w.MediaStoreName = dbtest.StoreName
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	logged := logBuf.String()
 	if got := strings.Count(logged, "active media asset copy has no file on disk"); got != missingAssetLogBudget {
@@ -2756,7 +2759,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 // `AND copy.state = 'active'` を外す。その場合、対象が deleted に遷移した後も
 // 報告され続け、最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir() // 空。対象の active 行が 0 件になるのでこれでよい
 	// （全損シグネチャの early return は len(active) == 0 の方が先に効く）。
 
@@ -2777,7 +2780,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MissingAssetAge = 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.MediaAssetsMissing.WithLabelValues("original")); got != 0 {
 		t.Errorf("MediaAssetsMissing{kind=original} = %v, want 0 (the asset is no longer active, must not be reported as a missing-file candidate)", got)
@@ -2796,7 +2799,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 // 呼び出しを飛ばす。どちらも最後のアサーションが落ちる。
 func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveExists(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	// 掃除ループに入るための条件を作る: active な資産が 1 件以上あり、かつ
@@ -2821,7 +2824,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MissingAssetAge = 24 * time.Hour
 	})
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	var count int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
@@ -2834,7 +2837,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 // 削除 reconcile は record_sweep と同じ理由で River 既定より長い上限を持つ。
 func TestDeleteReconcileWorker_HasGenerousTimeout(t *testing.T) {
 	t.Parallel()
-	args := DeleteReconcileArgs{}
+	args := jobs.DeleteReconcileArgs{}
 	got := args.Spec().Timeout(args)
 	if got <= time.Minute {
 		t.Errorf("Timeout() = %v, want > 1m (River default)", got)
@@ -2848,7 +2851,7 @@ func TestDeleteReconcileWorker_HasGenerousTimeout(t *testing.T) {
 // しまい何も主張しない。issue #185 のレビュー指摘）。
 func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 	t.Parallel()
-	args := DeleteReconcileArgs{}
+	args := jobs.DeleteReconcileArgs{}
 	if args.Kind() != "delete_reconcile" {
 		t.Errorf("Kind = %q", args.Kind())
 	}
@@ -2868,7 +2871,8 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 func replaceThumbnailForOldGeneration(t *testing.T, pool *pgxpool.Pool, mediaDir, originalRelPath string) (thumbID int64, oldPath, newPath string) {
 	t.Helper()
 	ctx := context.Background()
-	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, originalRelPath, nil, []byte("original"))
+	id := dbtest.Recording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, id, originalRelPath, []byte("original"))
 	media := pgstoretest.Media(pool)
 	original, err := media.GetActiveOriginalMediaAsset(ctx, id)
 	testutil.RequireNoError(t, err, "loading active original")
@@ -2907,7 +2911,7 @@ func ageCurrentThumbnailCopy(t *testing.T, pool *pgxpool.Pool, thumbID int64) {
 
 func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
@@ -2922,14 +2926,14 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 	})
 
 	// 作り直した直後は overlap の内側なので、旧世代のファイルを消さない。
-	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work inside the overlap window")
+	testutil.RequireNoError(t, w.Work(ctx, jobs.DeleteReconcileArgs{}), "Work inside the overlap window")
 	if !fileExists(oldPath) {
 		t.Fatal("old-generation file was removed inside the overlap window")
 	}
 
 	// 新世代のコピーが overlap より古くなると、旧世代だけが消える。
 	ageCurrentThumbnailCopy(t, pool, thumbID)
-	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work after the overlap window")
+	testutil.RequireNoError(t, w.Work(ctx, jobs.DeleteReconcileArgs{}), "Work after the overlap window")
 	if fileExists(oldPath) {
 		t.Error("old-generation file remains after the overlap window")
 	}
@@ -2948,7 +2952,7 @@ func TestDeleteReconcileWorker_RemovesOldGenerationLeftByPublishThumbnail(t *tes
 // 旧世代が唯一残った中身になりうるからである。
 func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
@@ -2963,7 +2967,7 @@ func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *te
 		w.TransferOverlap = time.Hour
 		w.MediaStoreName = dbtest.StoreName
 	})
-	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work with a missing current-generation file")
+	testutil.RequireNoError(t, w.Work(ctx, jobs.DeleteReconcileArgs{}), "Work with a missing current-generation file")
 	if !fileExists(oldPath) {
 		t.Fatal("old-generation file was removed while the current-generation copy is missing")
 	}
@@ -2977,7 +2981,7 @@ func TestDeleteReconcileWorker_KeepsOldGenerationWhileCurrentCopyIsMissing(t *te
 // 旧世代の削除も一括削除のブレーカーで数える。候補 2 件 > 上限 1 なので発動し、どれも消さない。
 func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
@@ -2996,7 +3000,7 @@ func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
 		w.MediaStoreName = dbtest.StoreName
 		w.MaxDeletesPerPass = 1
 	})
-	testutil.RequireNoError(t, w.Work(ctx, DeleteReconcileArgs{}), "Work")
+	testutil.RequireNoError(t, w.Work(ctx, jobs.DeleteReconcileArgs{}), "Work")
 	for _, p := range oldPaths {
 		if !fileExists(p) {
 			t.Errorf("old-generation file %s was removed although the breaker should have withheld deletes", p)
@@ -3009,4 +3013,29 @@ func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
 	if cb.Pending != 2 {
 		t.Errorf("breaker pending = %d, want 2", cb.Pending)
 	}
+}
+
+// seedIngestTempForCommit は公開時に原本へ引き継ぐ temp の世代を用意する。
+func seedIngestTempForCommit(t *testing.T, pool *pgxpool.Pool, recordingID int64, mediaDir, tempPath string) {
+	t.Helper()
+	tempRelPath, err := filepath.Rel(mediaDir, tempPath)
+	testutil.RequireNoError(t, err, "building temp_rel_path for direct commit fixture")
+	testutil.MustExec(t, pool, "seeding ingest temp progress", `
+INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_store, temp_generation)
+VALUES ($1, 0, $2, $3, $4)`, recordingID, filepath.ToSlash(tempRelPath), pgstoretest.TestStore, int64(1))
+}
+
+// publishOriginalForDeleteTest は、削除と競合する原本公開をストアのコミットと
+// 同じ inode を許す hard link で再現する。
+func publishOriginalForDeleteTest(ctx context.Context, pool *pgxpool.Pool, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
+	return pgstoretest.Media(pool).CommitOriginal(ctx, store.CommitOriginalInput{
+		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+	}, func(store.EncodePolicyInputs) (store.EncodePolicySnapshot, error) {
+		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{}}, nil
+	}, func() error {
+		if err := fsink.PublishLink(tempPath, fullPath); err != nil {
+			return err
+		}
+		return fsink.SyncParentDir(fullPath)
+	})
 }

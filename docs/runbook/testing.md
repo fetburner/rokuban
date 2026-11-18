@@ -74,7 +74,7 @@ mirakc を相手にするテストは `internal/mirakc/mirakctest` の fake を�
 
 この動的 suite は encode source 作成・worker kill・saved timeout の経過待ちがあるため CI では回さない。CI は fault scripts の shellcheck と Kubernetes manifest schema を検査する。
 
-`internal/worker` の recovery / deletion、DB 接続復旧、media asset 公開を変える PR の作者は、PR 前に `run.sh --faults` を回す。`deploy/k8s/e2e/faults/` を変える PR の作者も同じである。既定の `--faults` は F1〜F3 を走らせる。`E2E_FAULTS_ONLY=03` は F3 だけの判定に使えるが、一部実行なので成功時も終了コードは 2 になる。判定内容と注入の仕組みは [kind + KEDA harness](../../deploy/k8s/e2e/README.md) を参照。
+`internal/worker` の recovery、DB 接続復旧、media asset 公開を変える PR の作者は、PR 前に `run.sh --faults` を回す。`internal/storagemaint` の deletion と `deploy/k8s/e2e/faults/` を変える PR の作者も同じである。既定の `--faults` は F1〜F3 を走らせる。`E2E_FAULTS_ONLY=03` は F3 だけの判定に使えるが、一部実行なので成功時も終了コードは 2 になる。判定内容と注入の仕組みは [kind + KEDA harness](../../deploy/k8s/e2e/README.md) を参照。
 
 ### 実機に依存するテスト
 

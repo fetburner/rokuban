@@ -176,6 +176,10 @@ linters:
             - "!${config-path}/internal/encode/encode_publish_test.go"
             - "!${config-path}/internal/encode/encode_publish_desired_test.go"
             - "!${config-path}/internal/encode/encode_reconcile_test.go"
+            # worker から移した既存の転送・削除のテスト。
+            - "!${config-path}/internal/storagemaint/delete_reconcile_test.go"
+            - "!${config-path}/internal/storagemaint/delete_reconcile_removed_encoded_test.go"
+            - "!${config-path}/internal/storagemaint/s3_object_conformance_test.go"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: tests build state through store contracts or internal/db/dbtest
@@ -307,6 +311,18 @@ linters:
           deny:
             - pkg: github.com/fetburner/rokuban/internal/encode
               desc: encode imports are limited to internal/worker, internal/encode, and cmd/rokuban
+        storagemaint-worker-only:
+          # 不変条件 1: 転送と削除はファイルシステムを使う。
+          # api が移設先を経由して依存しないよう、本番コードからの import を worker に閉じ込める。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/worker/**"
+            - "!${config-path}/internal/storagemaint/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/storagemaint
+              desc: storagemaint imports are limited to internal/worker and internal/storagemaint
         worker-tsstat:
           # 不変条件 6: ingest は TS を読まず、TS の読者は解析ジョブへ閉じ込める。
           list-mode: lax
@@ -315,6 +331,7 @@ linters:
             - "${config-path}/internal/cmdetect/**"
             - "${config-path}/internal/thumbnail/**"
             - "${config-path}/internal/encode/**"
+            - "${config-path}/internal/storagemaint/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/tsstat

@@ -15,7 +15,7 @@
 // ファイル操作は MediaDir の走査（読み取りのみ）と、公開前孤児の候補に対する stat だけで、
 // flock・unlink はしない。ファイル操作の全体表は delete_execute.go の冒頭にある。
 
-package worker
+package storagemaint
 
 import (
 	"context"

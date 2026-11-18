@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
+	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -380,7 +381,7 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		deps := newStoreScopedDeps(pool, cfg, &worker.Deps{}, name, dir, objects)
-		w := &worker.DeleteReconcileWorker{MediaDir: dir, MediaStoreName: name, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: deps.DerivedObjects, DerivedObjectStoreName: deps.DerivedObjectStoreName, DerivedMediaDelete: deps.DerivedMediaDelete, DerivedStorage: deps.DerivedStorage, DerivedPendingReclaim: deps.DerivedPendingReclaim, Markers: markers}
+		w := &storagemaint.DeleteReconcileWorker{MediaDir: dir, MediaStoreName: name, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: deps.DerivedObjects, DerivedObjectStoreName: deps.DerivedObjectStoreName, DerivedMediaDelete: deps.DerivedMediaDelete, DerivedStorage: deps.DerivedStorage, DerivedPendingReclaim: deps.DerivedPendingReclaim, Markers: markers}
 		before, err := markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 		if err != nil {
 			t.Fatal(err)

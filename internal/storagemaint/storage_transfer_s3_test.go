@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"bytes"
@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -177,14 +178,14 @@ func TestStorageTransferReconcileRoutesS3CopiesToSourceQueue(t *testing.T) {
 	cfg := s3TransferTestConfig()
 	cfg.Stores["archive"] = config.StoreConfig{Kind: "fs"}
 	cfg.Originals = []config.OriginalStoreRule{{Store: "archive"}}
-	enqueuer := newRecordingEnqueuer()
+	enqueuer := &jobqfaketest.RecordingEnqueuer{}
 	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
 	var fsJobs, s3Jobs []jobs.StorageTransferArgs
-	for _, a := range enqueuer.Enqueued("storage_transfer") {
-		got, ok := a.(jobs.StorageTransferArgs)
+	for _, a := range enqueuer.CallsOfKind("storage_transfer") {
+		got, ok := a.Args.(jobs.StorageTransferArgs)
 		if !ok {
-			t.Fatalf("enqueued arg type = %T, want jobs.StorageTransferArgs", a)
+			t.Fatalf("enqueued arg type = %T, want jobs.StorageTransferArgs", a.Args)
 		}
 		if got.Store == "cloud" {
 			s3Jobs = append(s3Jobs, got)
@@ -292,16 +293,16 @@ func TestExistingTransferredObjectUsesHeadSHA256(t *testing.T) {
 func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	f := newS3DerivedFixture(t)
 	f.worker.Config.Transfer.Bandwidth = nil
-	enqueuer := newRecordingEnqueuer()
+	enqueuer := &jobqfaketest.RecordingEnqueuer{}
 	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMedia(f.pool, "test-store", ""), Config: f.cfg}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
-	queued := enqueuer.Enqueued("storage_transfer")
+	queued := enqueuer.CallsOfKind("storage_transfer")
 	if len(queued) != 1 {
 		t.Fatalf("enqueued storage_transfer jobs = %d, want 1", len(queued))
 	}
-	job, ok := queued[0].(jobs.StorageTransferArgs)
+	job, ok := queued[0].Args.(jobs.StorageTransferArgs)
 	if !ok || job.Store != "cloud" || job.SourceStore != "test-store" {
-		t.Fatalf("enqueued job = %#v, want a cloud copy sourced from test-store", queued[0])
+		t.Fatalf("enqueued job = %#v, want a cloud copy sourced from test-store", queued[0].Args)
 	}
 	f.args = job
 	f.driveToEnd(t)

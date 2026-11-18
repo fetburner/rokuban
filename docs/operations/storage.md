@@ -308,7 +308,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 - 既存の環境で、tokyo にある 30 日未満の高松の原本が待ちの件数に数えられ、エッジへは送られないこと: テストは無く未検証で、次のコードを読んで確かめた。
   - 判定: `internal/db/migrations/00050_storage_transfer_s3_target.sql` の `storage_transfer_candidate`。desired にコピーが無く、FS 置き場のどれかにコピーがある資産が候補になる。
   - 件数: `internal/db/queries/storage_transfer.sql` の `CountMediaAssetTransferCandidates`。
-  - 転送元: `internal/worker/storage_transfer_source.go` の `transferSourceStores`。マウントしている置き場と、`internal_url` を持つ置き場に限られる。
+  - 転送元: `internal/storagemaint/storage_transfer_source.go` の `transferSourceStores`。マウントしている置き場と、`internal_url` を持つ置き場に限られる。
   - エッジのワーカーは tokyo をマウントしない。導入手順の例の config では、tokyo に `internal_url` が無い。そのため `PrepareMediaAssetTransfer` は何も予約しない。
 
 </details>

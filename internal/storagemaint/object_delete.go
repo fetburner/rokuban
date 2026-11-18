@@ -8,7 +8,7 @@
 // 削除ブレーカーの範囲（scope）は派生物の置き場の名前で、FS の置き場のブレーカーとは件数を合算しない。
 // 公開されないまま猶予を過ぎた pending の回収も、新しい削除の判断としてこのブレーカーの件数に数える。
 
-package worker
+package storagemaint
 
 import (
 	"context"

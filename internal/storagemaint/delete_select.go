@@ -9,7 +9,7 @@
 // 規則（名前の分類と mtime の再確認）に依存するため、選定ではなく storage_audit.go が
 // 出して deleteCandidateSet に詰める。
 
-package worker
+package storagemaint
 
 import (
 	"context"

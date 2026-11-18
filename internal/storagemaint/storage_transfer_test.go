@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"bytes"
@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mediapublish"
@@ -1276,16 +1277,16 @@ func TestStorageTransferWorkerReconcileEnqueuesDesiredCopies(t *testing.T) {
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-	enqueuer := newRecordingEnqueuer()
+	enqueuer := &jobqfaketest.RecordingEnqueuer{}
 	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
-	args := enqueuer.Enqueued("storage_transfer")
+	args := enqueuer.CallsOfKind("storage_transfer")
 	if len(args) != 1 {
 		t.Fatalf("enqueued storage_transfer jobs = %d, want 1", len(args))
 	}
-	got, ok := args[0].(jobs.StorageTransferArgs)
+	got, ok := args[0].Args.(jobs.StorageTransferArgs)
 	if !ok {
-		t.Fatalf("enqueued arg type = %T, want jobs.StorageTransferArgs", args[0])
+		t.Fatalf("enqueued arg type = %T, want jobs.StorageTransferArgs", args[0].Args)
 	}
 	if got.MediaAssetID != assetID || got.Store != "archive" || got.PolicyFingerprint != fingerprint {
 		t.Fatalf("enqueued args = %+v, want copy for asset %d to archive with current fingerprint", got, assetID)
@@ -1326,7 +1327,7 @@ func TestStorageTransferReconcileWarnsForActiveDerivedCopyInNonDerivedS3(t *test
 	t.Cleanup(func() { metrics.StorageDerivedCopiesOutsideDerivedS3.Set(0) })
 
 	reconcile := StorageTransferReconcileWorker{
-		Enqueuer: newRecordingEnqueuer(), Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
+		Enqueuer: &jobqfaketest.RecordingEnqueuer{}, Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
 	}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 1 {
@@ -1364,7 +1365,7 @@ func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerived
 	t.Cleanup(func() { metrics.StorageDerivedCopiesOutsideDerivedS3.Set(0) })
 
 	reconcile := StorageTransferReconcileWorker{
-		Enqueuer: newRecordingEnqueuer(), Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
+		Enqueuer: &jobqfaketest.RecordingEnqueuer{}, Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
 	}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 0 {
@@ -1396,10 +1397,10 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 		metrics.StorageTransferWaitingBytes.Set(0)
 		metrics.StorageTransferExhaustedAssets.Set(0)
 	})
-	nearLimitEnqueuer := newRecordingEnqueuer()
+	nearLimitEnqueuer := &jobqfaketest.RecordingEnqueuer{}
 	nearLimitPass := StorageTransferReconcileWorker{Enqueuer: nearLimitEnqueuer, Storage: media, Config: archiveConfig}
 	testutil.RequireNoError(t, nearLimitPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "nearLimitPass.Work")
-	if got := len(nearLimitEnqueuer.Enqueued("storage_transfer")); got != 1 {
+	if got := len(nearLimitEnqueuer.CallsOfKind("storage_transfer")); got != 1 {
 		t.Fatalf("jobs after 9 failed attempts = %d, want 1", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.StorageTransferWaitingAssets); got != 1 {
@@ -1409,10 +1410,10 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 		t.Fatalf("exhausted assets after 9 failed attempts = %v, want 0", got)
 	}
 	testutil.RequireNoError(t, media.RecordMediaAssetTransferFailure(context.Background(), transfer.CopyID, "destination unavailable"), "recording the tenth failure")
-	firstEnqueuer := newRecordingEnqueuer()
+	firstEnqueuer := &jobqfaketest.RecordingEnqueuer{}
 	firstPass := StorageTransferReconcileWorker{Enqueuer: firstEnqueuer, Storage: media, Config: archiveConfig}
 	testutil.RequireNoError(t, firstPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "firstPass.Work")
-	if got := len(firstEnqueuer.Enqueued("storage_transfer")); got != 0 {
+	if got := len(firstEnqueuer.CallsOfKind("storage_transfer")); got != 0 {
 		t.Fatalf("jobs after exhausted attempts = %d, want 0", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.StorageTransferWaitingAssets); got != 0 {
@@ -1423,10 +1424,10 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 	}
 
 	coldConfig := transferTestConfig("cold", "archive", "cold", "test-store")
-	secondEnqueuer := newRecordingEnqueuer()
+	secondEnqueuer := &jobqfaketest.RecordingEnqueuer{}
 	secondPass := StorageTransferReconcileWorker{Enqueuer: secondEnqueuer, Storage: media, Config: coldConfig}
 	testutil.RequireNoError(t, secondPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "secondPass.Work")
-	if got := len(secondEnqueuer.Enqueued("storage_transfer")); got != 1 {
+	if got := len(secondEnqueuer.CallsOfKind("storage_transfer")); got != 1 {
 		t.Fatalf("jobs after desired store changes = %d, want 1", got)
 	}
 	var attempts int

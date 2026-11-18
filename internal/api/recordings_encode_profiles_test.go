@@ -26,10 +26,10 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
+	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // postEncodeProfiles は POST /api/recordings/{id}/encode-profiles を叩く。
@@ -557,7 +557,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	if err != nil {
 		t.Fatalf("creating derived object store: %v", err)
 	}
-	w := &worker.DeleteReconcileWorker{
+	w := &storagemaint.DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
 		RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool),
 		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
@@ -611,7 +611,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 		t.Errorf("keep_original = %q, want always", got)
 	}
 
-	w := &worker.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
+	w := &storagemaint.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}

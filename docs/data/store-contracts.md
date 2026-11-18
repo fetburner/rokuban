@@ -74,7 +74,7 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 - DB の時計で比べる前例（GC）: `internal/db/queries/reservations.sql` の `DeleteStaleNeverScheduledEvents`。`observed_at < now() - horizon` で比べ、`PruneNeverScheduled` が呼ぶ
 - DB の時計で比べる前例（孤児候補）: `internal/store/pgstore.Analysis.FailOrphanLogoCandidates`。`ListRunningCMLogoCandidates` が返す DB の `now()` を使う
-- 例外: `internal/worker/delete_reconcile.go` の `trashCutoff` と `recordings_trash.sql` の `deleted_at = now()`
+- 例外: `internal/storagemaint/delete_reconcile.go` の `trashCutoff` と `recordings_trash.sql` の `deleted_at = now()`
 
 </details>
 

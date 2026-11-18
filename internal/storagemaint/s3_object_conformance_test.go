@@ -1,6 +1,6 @@
 //go:build s3conformance
 
-package worker
+package storagemaint
 
 import (
 	"bytes"
@@ -63,7 +63,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 	t.Run("initial encoded output activates its pending S3 copy", func(t *testing.T) {
 		recordingID := dbtest.Recording(t, pool)
 		profile := "h264"
-		seedEncodePolicy(t, pool, recordingID, []string{profile})
+		dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) { p.EncodeProfiles = []string{profile} })
 		if _, err := sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
 			RecordingID: recordingID, Profile: profile,
 		}); err != nil {
