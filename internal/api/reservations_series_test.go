@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -132,15 +133,13 @@ func TestReservationSeries_FollowsEPGEffectiveSeries(t *testing.T) {
 	insertReservationWithSnapshot(t, pool, ctx, programID, title, "テスト局", 11500, 1150)
 	insertReservationWithSnapshot(t, pool, ctx, missingEPGProgramID, "EPG 消失番組", "テスト局", 11500, 1150)
 	insertReservationWithSnapshot(t, pool, ctx, nullSeriesProgramID, "！！！", "テスト局", 11500, 1150)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ('osaka', $1, '別作品　ドラマ　第1話', now() + interval '24 hours', 1800000,
-        11500, 1150, 'GR', '27', 1033, 'テスト局')`, programID); err != nil {
-		t.Fatalf("inserting same-id reservation snapshot at another site: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = "osaka"
+		p.Title = "別作品　ドラマ　第1話"
+		p.NetworkID = 11500
+		p.ServiceID = 1150
+		p.EventID = 1033
+	})
 	if _, err := pool.Exec(ctx, `INSERT INTO reservations (site, program_id, base) VALUES ('osaka', $1, '{}'::jsonb)`, programID); err != nil {
 		t.Fatalf("inserting same-id reservation at another site: %v", err)
 	}

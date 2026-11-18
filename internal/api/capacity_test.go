@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -32,14 +33,14 @@ VALUES ('default', $1, $2, $3, true, false)`, index, fmt.Sprintf("tuner-%d", ind
 func insertCapacityReservation(t *testing.T, pool *pgxpool.Pool, programID int64, channelType, channel string, startAt time.Time, duration time.Duration) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-) VALUES ('default', $1, 'テスト番組', $2, $3, 32678, 5168, $4, $5, $6, 'テスト局')`,
-		programID, startAt, duration.Milliseconds(), channelType, channel, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot row: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.StartAt = startAt
+		p.DurationMs = duration.Milliseconds()
+		p.NetworkID = 32678
+		p.ServiceID = 5168
+		p.ChannelType = channelType
+		p.Channel = channel
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base) VALUES ('default', $1, '{}')`,
 		programID); err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -227,14 +228,15 @@ func TestTunerSyncWorker_SetsCapacityOverageGauge(t *testing.T) {
 	ctx := context.Background()
 	for i, channel := range []string{"27", "25"} {
 		programID := int64(900 + i)
-		if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-) VALUES ($1, $2, 'ゲージ確認', $3, $4, 32678, 5168, 'GR', $5, $6, 'テスト局')`,
-			testSite, programID, start, time.Hour.Milliseconds(), channel, int32(programID)); err != nil {
-			t.Fatalf("inserting program_snapshot: %v", err)
-		}
+		dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+			p.Site = testSite
+			p.Title = "ゲージ確認"
+			p.StartAt = start
+			p.DurationMs = time.Hour.Milliseconds()
+			p.NetworkID = 32678
+			p.ServiceID = 5168
+			p.Channel = channel
+		})
 		if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 			testSite, programID); err != nil {

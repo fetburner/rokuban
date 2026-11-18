@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -53,14 +54,17 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 func seedContractDemand(t *testing.T, pool *pgxpool.Pool, site string, programID int64, ruleID *int64, channelType, channel string, startAt time.Time, durationMs int64) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel,
-  event_id, service_name
-) VALUES ($1, $2, 'store contract demand', $3, $4, 32678, 5168, $5, $6, $7, 'test service')`,
-		site, programID, startAt, durationMs, channelType, channel, int32(programID%100000)); err != nil {
-		t.Fatalf("seeding program snapshot: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = site
+		p.Title = "store contract demand"
+		p.StartAt = startAt
+		p.DurationMs = durationMs
+		p.NetworkID = 32678
+		p.ServiceID = 5168
+		p.ChannelType = channelType
+		p.Channel = channel
+		p.ServiceName = "test service"
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, rule_id, base)
 VALUES ($1, $2, $3, '{}'::jsonb)`, site, programID, ruleID); err != nil {

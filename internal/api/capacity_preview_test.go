@@ -73,14 +73,14 @@ VALUES ('default', $1, $2, '{}')`, programID, ruleArg); err != nil {
 
 func insertPreviewSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64, channel string, start time.Time, eventID int32) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-) VALUES ('default', $1, '既存予約', $2, 1800000, 32736, 5168, 'GR', $3, $4, '既存局')`,
-		programID, start, channel, eventID); err != nil {
-		t.Fatalf("inserting preview reservation snapshot: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = "既存予約"
+		p.StartAt = start
+		p.ServiceID = 5168
+		p.Channel = channel
+		p.EventID = eventID
+		p.ServiceName = "既存局"
+	})
 }
 
 func markPreviewNeverScheduled(t *testing.T, pool *pgxpool.Pool, program capacityPreviewProgram) {

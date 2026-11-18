@@ -4,11 +4,11 @@ import (
 	"context"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -18,22 +18,12 @@ import (
 // 模すには、program_snapshots は 1 回だけ作って reservations 側だけを作り直す
 // 必要があるため、insertReservationDirect（program_snapshots + reservations を
 // まとめて作る）とは別に切り出す。
-func insertProgramSnapshotFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, networkID, serviceID int32) {
+func insertProgramSnapshotFixture(t *testing.T, pool *pgxpool.Pool, programID int64, networkID, serviceID int32) {
 	t.Helper()
-	start := time.Now().Add(24 * time.Hour)
-	// 識別 6 列はすべて NOT NULL（issue #101）。event_id / service_name を
-	// 落とすと 23502 で落ちる —— このフィクスチャは #99（PR #147）で追加され、
-	// #101（PR #150）が NOT NULL 化を入れた。互いのブランチでは緑で、マージ後に
-	// 初めて落ちた（CLAUDE.md §並行作業「git が競合と見なさない意味的な競合」の
-	// テストフィクスチャの生 SQL の実例）。
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-    site, program_id, title, start_at, duration_ms,
-    network_id, service_id, channel_type, channel, event_id, service_name
-) VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27', $5, 'テスト局')`,
-		programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+	})
 }
 
 func programReservationPath(programID int64) string {
@@ -56,7 +46,7 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090011234
-	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9001)
+	insertProgramSnapshotFixture(t, pool, programID, 90000, 9001)
 
 	res1, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site: "default", ProgramID: programID,
@@ -96,12 +86,11 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 // 指定した (site, programId) に予約が無ければ 404。
 func TestGetProgramReservation_NoReservation_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
 
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090021234
-	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9002)
+	insertProgramSnapshotFixture(t, pool, programID, 90000, 9002)
 
 	resp, err := http.Get(srv.URL + programReservationPath(programID))
 	if err != nil {
@@ -122,7 +111,7 @@ func TestGetProgramReservation_UnknownSite_Returns404(t *testing.T) {
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090031234
-	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9003)
+	insertProgramSnapshotFixture(t, pool, programID, 90000, 9003)
 	if _, err := sqlcgen.New(pool).CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site: "default", ProgramID: programID,
 	}); err != nil {
