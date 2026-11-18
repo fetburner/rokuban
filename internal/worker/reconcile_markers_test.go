@@ -8,13 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // markerRecorder は全件パスと削除 reconcile の完走記録を残す。err を設定すると書き込みが失敗する。
@@ -102,9 +101,7 @@ func TestEncodeReconcileMarker_FullPassMarksOnlyAfterSuccess(t *testing.T) {
 	}
 	markers := &markerRecorder{}
 	w := &EncodeReconcileWorker{Enqueuer: newRecordingEnqueuer(), Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Markers: markers}
-	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}), "EncodeReconcileWorker.Work")
 	if got := markers.recordedPasses(); !slices.Equal(got, []string{store.ReconcilePassEncode}) {
 		t.Fatalf("recorded passes = %v, want [encode] after a completed full pass", got)
 	}
@@ -137,9 +134,7 @@ func TestEncodeReconcileMarker_TargetedPassDoesNotMark(t *testing.T) {
 		[]string{"h265"}, []byte("x"))
 	markers := &markerRecorder{}
 	w := &EncodeReconcileWorker{Enqueuer: newRecordingEnqueuer(), Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Markers: markers}
-	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
-		t.Fatalf("EncodeReconcileWorker.Work(targeted): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{RecordingID: recordingID}), "EncodeReconcileWorker.Work(targeted)")
 	if got := markers.recordedPasses(); len(got) != 0 {
 		t.Fatalf("recorded passes = %v after a targeted pass, want none", got)
 	}
@@ -156,9 +151,7 @@ func TestEncodeReconcileMarker_CandidateEnqueueFailureStillMarks(t *testing.T) {
 		[]string{"h265"}, []byte("x"))
 	markers := &markerRecorder{}
 	w := &EncodeReconcileWorker{Enqueuer: markerRejectingEnqueuer{}, Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Markers: markers}
-	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("EncodeReconcileWorker.Work: %v, want nil when only candidate enqueues fail", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}), "EncodeReconcileWorker.Work, want nil when only candidate enqueues fail")
 	if got := markers.recordedPasses(); !slices.Equal(got, []string{store.ReconcilePassEncode}) {
 		t.Fatalf("recorded passes = %v, want [encode]", got)
 	}
@@ -185,9 +178,7 @@ func TestThumbnailReconcileMarker_FullPassMarksOnlyAfterSuccess(t *testing.T) {
 	}
 	markers := &markerRecorder{}
 	w := &ThumbnailReconcileWorker{Enqueuer: newRecordingEnqueuer(), Media: pgstoretest.Media(pool), Markers: markers}
-	if err := runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}); err != nil {
-		t.Fatalf("ThumbnailReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}), "ThumbnailReconcileWorker.Work")
 	if got := markers.recordedPasses(); !slices.Equal(got, []string{store.ReconcilePassThumbnail}) {
 		t.Fatalf("recorded passes = %v, want [thumbnail]", got)
 	}
@@ -203,9 +194,7 @@ func TestThumbnailReconcileMarker_FailedSeekTilesListingDoesNotMark(t *testing.T
 	markers := &markerRecorder{}
 	w := &ThumbnailReconcileWorker{Enqueuer: newRecordingEnqueuer(),
 		Media: failingSeekTilesListing{pgstoretest.Media(pool)}, Markers: markers}
-	if err := runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}); err != nil {
-		t.Fatalf("ThumbnailReconcileWorker.Work: %v, want nil (the seek tiles failure is counted, not returned)", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}), "ThumbnailReconcileWorker.Work, want nil (the seek tiles failure is counted, not returned)")
 	if got := markers.recordedPasses(); len(got) != 0 {
 		t.Fatalf("recorded passes = %v after a failed seek tiles listing, want none", got)
 	}
@@ -220,9 +209,7 @@ func TestThumbnailReconcileMarker_TargetedPassDoesNotMark(t *testing.T) {
 	markers := &markerRecorder{}
 	recordingID := dbtest.Recording(t, pool)
 	w := &ThumbnailReconcileWorker{Enqueuer: newRecordingEnqueuer(), Media: pgstoretest.Media(pool), Markers: markers}
-	if err := runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{RecordingID: recordingID}); err != nil {
-		t.Fatalf("ThumbnailReconcileWorker.Work(targeted): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{RecordingID: recordingID}), "ThumbnailReconcileWorker.Work(targeted)")
 	if got := markers.recordedPasses(); len(got) != 0 {
 		t.Fatalf("recorded passes = %v after a targeted pass, want none", got)
 	}
@@ -235,14 +222,10 @@ func TestDeleteReconcileMarker_FullPassMarksTheStore(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, "fs-a"); err != nil {
-		t.Fatalf("writing store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "fs-a"), "writing store marker")
 	markers := &markerRecorder{}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := markers.recordedStores(); !slices.Equal(got, []string{"fs-a"}) {
 		t.Fatalf("recorded delete markers = %v, want [fs-a]", got)
 	}
@@ -257,9 +240,7 @@ func TestDeleteReconcileMarker_BreakerStopStillMarks(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, "fs-a"); err != nil {
-		t.Fatalf("writing store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "fs-a"), "writing store marker")
 	recordingID := dbtest.Recording(t, pool)
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "breaker/original.m2ts", []byte("data"))
 	profile := "h264"
@@ -267,11 +248,9 @@ func TestDeleteReconcileMarker_BreakerStopStillMarks(t *testing.T) {
 	markRecordingTrashed(t, pool, recordingID)
 
 	markers := &markerRecorder{}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	w.MaxDeletesPerPass = 1
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := singleCopyState(t, pool, assetID); got == "deleted" {
 		t.Fatal("asset was deleted, want the breaker to withhold the pass")
 	}
@@ -287,11 +266,9 @@ func TestDeleteReconcileMarker_FailedPassDoesNotMark(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, "fs-a"); err != nil {
-		t.Fatalf("writing store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "fs-a"), "writing store marker")
 	markers := &markerRecorder{}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	w.MediaDelete = failingPendingDelete{pgstoretest.Media(pool)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("DeleteReconcileWorker.Work = nil, want the listing error")
@@ -308,11 +285,9 @@ func TestDeleteReconcileMarker_WriteFailureFailsThePass(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, "fs-a"); err != nil {
-		t.Fatalf("writing store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "fs-a"), "writing store marker")
 	markers := &markerRecorder{err: errors.New("marker write rejected")}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("DeleteReconcileWorker.Work = nil, want the marker write error")
 	}
@@ -330,15 +305,11 @@ func (failingPendingDelete) ListPendingDeleteAssets(context.Context, time.Time, 
 // markerTestStore は削除 reconcile のテストで使う FS の置き場の名前。
 const markerTestStore = "fs-a"
 
-// newMarkedDeleteWorker は FS の置き場 markerTestStore 1 つ分の削除 reconcile を組み立てる。
-func newMarkedDeleteWorker(t *testing.T, pool *pgxpool.Pool, mediaDir string, markers store.LoopMarkers) *DeleteReconcileWorker {
-	return &DeleteReconcileWorker{
-		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge: pgstoretest.Recordings(pool),
-		Breakers:       pgstoretest.Breakers(pool),
-		MediaDir:       mediaDir, MediaStoreName: markerTestStore,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, markerTestStore, mediaDir),
-		TrashRetention: 30 * 24 * time.Hour,
-		Markers:        markers,
+// withMarkerStore は、置き場 markerTestStore 1 つを名乗り、完走を markers に記録する構成に上書きする。
+func withMarkerStore(t *testing.T, mediaDir string, markers store.LoopMarkers) func(*DeleteReconcileWorker) {
+	return func(w *DeleteReconcileWorker) {
+		w.MediaStoreName = markerTestStore
+		w.StorageObjects = testStorageObjects(t, markerTestStore, mediaDir)
+		w.Markers = markers
 	}
 }

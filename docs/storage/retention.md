@@ -87,7 +87,7 @@ desired を縮める経路があっても、この整理は保たれる。縮め
 
 <details><summary>根拠</summary>
 
-- 現在サイズに一致する TS scan: `TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan`
+- 現在サイズに一致する TS scan: `TestUntilEncodedDeletableOriginals`（`internal/db`。判定の SQL 関数を直接見る）
 - 消えたプロファイルの原本保持: `TestUnknownDesiredProfile_PredicateAsymmetry`
 - encode 完了後のジョブ再実行: `TestEncodeWorker_SuccessAndIdempotent`
 - thumbnail 完了後のジョブ再実行: `TestThumbnailWorker_IdempotentRerun`

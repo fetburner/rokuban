@@ -37,7 +37,7 @@ func TestDeleteReconcileAuditIsScopedToMountedStore(t *testing.T) {
 	bOnlyAssetID, _ := seedStoreScopedOriginalForAudit(t, pool, storeB, bOnlyRelPath)
 	aMissingAssetID, _ := seedStoreScopedOriginalForAudit(t, pool, storeA, aMissingRelPath)
 
-	worker := newStoreScopedDeleteWorker(pool, storeA, rootA)
+	worker := buildDeleteReconcileWorker(t, pool, rootA, scopedToStore(pool, storeA, rootA))
 	worker.OrphanMTimeGrace = time.Hour
 	worker.OrphanAge = 24 * time.Hour
 	worker.MissingAssetAge = 24 * time.Hour
@@ -86,8 +86,8 @@ func TestDeleteReconcileBreakerIsScopedToMountedStore(t *testing.T) {
 	if err := breaker.Trip(ctx, breakers, storeA, breaker.DeleteReconcile, 1, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping store-a delete breaker: %v", err)
 	}
-	workerA := newStoreScopedDeleteWorker(pool, storeA, rootA)
-	workerB := newStoreScopedDeleteWorker(pool, storeB, rootB)
+	workerA := buildDeleteReconcileWorker(t, pool, rootA, scopedToStore(pool, storeA, rootA))
+	workerB := buildDeleteReconcileWorker(t, pool, rootB, scopedToStore(pool, storeB, rootB))
 	for _, worker := range []*DeleteReconcileWorker{workerA, workerB} {
 		worker.TrashRetention = time.Hour
 		worker.MaxDeletesPerPass = 10
@@ -173,11 +173,16 @@ func seedStoreScopedOriginalForAudit(t *testing.T, pool *pgxpool.Pool, storeName
 	return assetID, recordingID
 }
 
-func newStoreScopedDeleteWorker(pool *pgxpool.Pool, storeName, root string) *DeleteReconcileWorker {
-	media := pgstore.NewMedia(pool, storeName, "")
-	return &DeleteReconcileWorker{
-		MediaDelete: media, Storage: media, RecordingPurge: pgstore.NewRecordings(pool, storeName),
-		Breakers: pgstoretest.Breakers(pool), MediaDir: root, StorageObjects: map[string]objstore.Store{storeName: testFSObjectStore(root)}, MediaStoreName: storeName,
+// scopedToStore は、組み立て済みのワーカーを置き場 storeName だけを見る構成に上書きする。
+// 派生物の置き場（DerivedObjects）は持たせない。
+func scopedToStore(pool *pgxpool.Pool, storeName, root string) func(*DeleteReconcileWorker) {
+	return func(w *DeleteReconcileWorker) {
+		media := pgstore.NewMedia(pool, storeName, "")
+		w.MediaDelete, w.Storage = media, media
+		w.RecordingPurge = pgstore.NewRecordings(pool, storeName)
+		w.MediaStoreName = storeName
+		w.StorageObjects = map[string]objstore.Store{storeName: testFSObjectStore(root)}
+		w.DerivedObjects = nil
 	}
 }
 
