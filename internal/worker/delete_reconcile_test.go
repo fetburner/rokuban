@@ -786,9 +786,6 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 		w.MediaStoreName = dbtest.StoreName
 		w.DerivedObjects = testFilesystemObjectStore(t, t.TempDir())
 		w.DerivedObjectStoreName = objectStoreName
-		w.Storage = nil
-		w.RecordingPurge = nil
-		w.Breakers = nil
 	})
 	testutil.RequireNoError(t, worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoring unqualified deleting copies")
 
@@ -1069,7 +1066,7 @@ func removeMediaAsset(t *testing.T, pool *pgxpool.Pool, assetID int64) {
 // TestDeleteReconcileWorker_UntilEncodedOutcomes は、worker が until_encoded_deletable_originals の
 // 返した原本を実際に削除することと、返さなかった原本を残すことを、1 件ずつ確かめる。
 // どの条件の組み合わせで返すかは SQL 関数のテスト（TestUntilEncodedDeletableOriginals）が持つ。
-// ここでは worker の反映だけを見る。rebuild 要求の行は worker が消さないことも両方で確かめる。
+// ここでは worker の反映だけを見る。rebuild 要求の行は、要求があるケース（保持側）で worker が消さないことを確かめる。
 func TestDeleteReconcileWorker_UntilEncodedOutcomes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1077,14 +1074,8 @@ func TestDeleteReconcileWorker_UntilEncodedOutcomes(t *testing.T) {
 		mutate      func(t *testing.T, pool *pgxpool.Pool, f untilEncodedRecording)
 		wantDeleted bool
 	}{
-		{name: "function returns the original: worker deletes it", wantDeleted: true, mutate: func(t *testing.T, pool *pgxpool.Pool, f untilEncodedRecording) {
-			testutil.MustExec(t, pool, "requesting cut rebuild",
-				`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
-				 VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, f.recordingID)
-			testutil.MustExec(t, pool, "freezing the requested keep",
-				`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, '{[0,1000)}'::int8multirange)`, f.encodedID)
-		}},
-		{name: "function does not return the original: worker keeps it", mutate: func(t *testing.T, pool *pgxpool.Pool, f untilEncodedRecording) {
+		{name: "complete derivatives: function returns the original, worker deletes it", wantDeleted: true},
+		{name: "pending cut rebuild: function does not return the original, worker keeps it", mutate: func(t *testing.T, pool *pgxpool.Pool, f untilEncodedRecording) {
 			testutil.MustExec(t, pool, "requesting cut rebuild",
 				`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 				 VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, f.recordingID)
@@ -1097,7 +1088,9 @@ func TestDeleteReconcileWorker_UntilEncodedOutcomes(t *testing.T) {
 			ctx := t.Context()
 			mediaDir := t.TempDir()
 			f := seedUntilEncodedRecording(t, pool, mediaDir)
-			tc.mutate(t, pool, f)
+			if tc.mutate != nil {
+				tc.mutate(t, pool, f)
+			}
 			countRequests := func() int {
 				var n int
 				testutil.RequireNoError(t, pool.QueryRow(ctx,
@@ -1470,8 +1463,6 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 	testutil.RequireNoError(t, os.WriteFile(regularFile, []byte("not a directory"), 0o644), "writing regular file")
 
 	w := buildDeleteReconcileWorker(t, pool, regularFile, func(w *DeleteReconcileWorker) {
-		w.StorageObjects = nil
-		w.DerivedObjects = nil
 	})
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("Work() error = nil, want error for a non-directory media dir")
@@ -1716,11 +1707,6 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.Storage = media
 		w.MediaStoreName = "local"
-		w.MediaDelete = nil
-		w.RecordingPurge = nil
-		w.Breakers = nil
-		w.StorageObjects = nil
-		w.DerivedObjects = nil
 	})
 	w.deleteOrphanFile(oldRelPath, 24*time.Hour)
 	w.deleteOrphanFile(newRelPath, 24*time.Hour)
@@ -1815,11 +1801,6 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, old
 	}
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
-		w.Storage = nil
-		w.RecordingPurge = nil
-		w.Breakers = nil
-		w.StorageObjects = nil
-		w.DerivedObjects = nil
 	})
 	w.deleteMediaAsset(ctx, store.MediaDeleteAsset{
 		ID: oldCopyID, MediaAssetID: oldAssetID, RecordingID: oldRecordingID,
@@ -2465,9 +2446,6 @@ func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesyst
 		w.MediaStoreName = dbtest.StoreName
 		w.DerivedObjects = testFilesystemObjectStore(t, t.TempDir())
 		w.DerivedObjectStoreName = objectStoreName
-		w.MediaDelete = nil
-		w.RecordingPurge = nil
-		w.Breakers = nil
 	})
 	if _, err := worker.reconcileMissingAssets(context.Background(), seenOnDisk); err != nil {
 		t.Fatalf("reconciling missing assets after derived-store switch: %v", err)
