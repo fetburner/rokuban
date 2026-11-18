@@ -220,7 +220,7 @@ func cmRecordingOptions(eventID int32) func(*dbtest.RecordingParams) {
 
 func seedCMDetectionState(t *testing.T, pool *pgxpool.Pool, mediaDir string, id int64) int64 {
 	t.Helper()
-	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET program_duration_ms = 10010 WHERE id = $1`, id)
+	testutil.MustExec(t, pool, "setting program_duration_ms", `UPDATE recordings SET program_duration_ms = 10010 WHERE id = $1`, id)
 	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 	markOriginalTSScanComplete(t, pool, assetID)
 	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
@@ -329,7 +329,7 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 	id := dbtest.Recording(t, pool, cmRecordingOptions(920))
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
-	testutil.MustExec(t, pool, "pool.Exec", `
+	testutil.MustExec(t, pool, "teaching logo area", `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`)
 
@@ -338,12 +338,12 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 		t.Errorf("logoframe ran (stat %v); a station without an adopted logo must wait for adoption", err)
 	}
 	var detections int
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "counting detections")
 	if detections != 0 {
 		t.Errorf("detections = %d, want 0 while the candidate is awaiting adoption", detections)
 	}
 	var state, stage string
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage), "reading attempt state and stage")
 	if state != "failed" || stage != "adopt" {
 		t.Errorf("attempt = %q/%q, want failed/adopt", state, stage)
 	}
@@ -357,7 +357,7 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 	id := dbtest.Recording(t, pool, cmRecordingOptions(921))
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
-	testutil.MustExec(t, pool, "pool.Exec", `
+	testutil.MustExec(t, pool, "teaching logo area", `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`)
 
@@ -380,7 +380,7 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 		`SELECT count(*) FROM cm_logos`,
 	} {
 		var n int
-		testutil.RequireNoError(t, pool.QueryRow(ctx, query).Scan(&n), "pool.QueryRow")
+		testutil.RequireNoError(t, pool.QueryRow(ctx, query).Scan(&n), "counting detections and logos")
 		if n != 0 {
 			t.Errorf("%s = %d rows, want 0", query, n)
 		}
@@ -394,7 +394,7 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 	id := dbtest.Recording(t, pool, cmRecordingOptions(926))
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
-	testutil.MustExec(t, pool, "pool.Exec", `
+	testutil.MustExec(t, pool, "teaching logo area", `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`)
 	area, err := sqlcgen.New(pool).GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
@@ -436,7 +436,7 @@ func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
 	id := dbtest.Recording(t, pool, cmRecordingOptions(927))
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
-	testutil.MustExec(t, pool, "pool.Exec", `
+	testutil.MustExec(t, pool, "teaching logo area", `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`)
 	area, err := sqlcgen.New(pool).GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
@@ -485,7 +485,7 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 		t.Errorf("logoframe ran (stat %v); the mismatched logo must not be used", statErr)
 	}
 	var state, stage string
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage), "reading attempt state and stage")
 	if state != "retrying" || stage != "resolution" {
 		t.Errorf("attempt = state %q stage %q, want retrying/resolution", state, stage)
 	}
@@ -511,7 +511,7 @@ func TestCMDetectWorkRejectsLowMatchForExistingLogo(t *testing.T) {
 		t.Fatalf("Work error = %v, want a low-match failure", err)
 	}
 	var stage string
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage), "reading attempt stage")
 	if stage != "match" {
 		t.Errorf("attempt stage = %q, want match", stage)
 	}
@@ -533,7 +533,7 @@ func TestCMDetectWorkDoesNotPersistLowMatchForNewLogo(t *testing.T) {
 		t.Fatalf("Work error = %v, want a low-match failure", err)
 	}
 	var stage string
-	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage), "reading attempt stage")
 	if stage != "match" {
 		t.Errorf("attempt stage = %q, want match", stage)
 	}
@@ -555,7 +555,7 @@ func TestCMDetectWorkRequiresLogoMatchOutput(t *testing.T) {
 		t.Fatalf("Work error = %v, want missing-match-output failure", err)
 	}
 	var stage string
-	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage), "reading attempt stage")
 	if stage != "logo" {
 		t.Errorf("attempt stage = %q, want logo", stage)
 	}
@@ -581,7 +581,7 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 			t.Fatalf("attempt %d: Work succeeded although chapter_exe exits 3", tt.attempt)
 		}
 		var detections int
-		testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "pool.QueryRow")
+		testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "counting detections")
 		if detections != 0 {
 			t.Fatalf("attempt %d: failure left %d result rows, want 0", tt.attempt, detections)
 		}
@@ -715,7 +715,7 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 		p.EncodeProfiles = []string{"h264"}
 	})
 	var n int
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n), "counting until_encoded-eligible originals")
 	if n != 1 {
 		t.Fatalf("cm_detect=false original without a CM result: eligible rows = %d, want 1", n)
 	}
@@ -781,11 +781,11 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		t.Fatalf("persisting late first-attempt result: %v", err)
 	}
 	var detections int
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, late).Scan(&detections), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, late).Scan(&detections), "counting detections")
 	if detections != 0 {
 		t.Errorf("late attempt wrote %d result rows, want 0", detections)
 	}
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, late).Scan(&state, &attemptCount), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, late).Scan(&state, &attemptCount), "reading attempt state and attempt count")
 	if state != "running" || attemptCount != 2 {
 		t.Errorf("current attempt after stale result = %q/%d, want running/2", state, attemptCount)
 	}
@@ -795,7 +795,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 func cmPolicyGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) int64 {
 	t.Helper()
 	var generation int64
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT cm_detect_generation FROM recording_processing_policy WHERE recording_id = $1`, id).Scan(&generation), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT cm_detect_generation FROM recording_processing_policy WHERE recording_id = $1`, id).Scan(&generation), "reading cm_detect_generation")
 	return generation
 }
 
@@ -886,13 +886,13 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 		t.Fatalf("saving result from pre-toggle worker: %v", err)
 	}
 	var detections int
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "counting detections")
 	if detections != 0 {
 		t.Errorf("pre-toggle worker wrote %d CM detection rows, want 0", detections)
 	}
 	var state string
 	var attemptCount int32
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &attemptCount), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &attemptCount), "reading attempt state and attempt count")
 	if state != "running" || attemptCount != 1 {
 		t.Fatalf("current attempt after stale worker result = %q/%d, want running/1", state, attemptCount)
 	}
@@ -902,7 +902,7 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	if _, err := w.DetectionStore.SaveDetection(ctx, newDetectionAttempt, nil); err != nil {
 		t.Fatalf("saving result from current worker: %v", err)
 	}
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "counting detections")
 	if detections != 1 {
 		t.Errorf("current worker wrote %d CM detection rows, want 1", detections)
 	}
@@ -1087,7 +1087,7 @@ func putAreaLikeAPI(t *testing.T, pool *pgxpool.Pool) {
 func countLogos(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
 	var n int
-	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM cm_logos`).Scan(&n), "pool.QueryRow")
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM cm_logos`).Scan(&n), "counting cm_logos")
 	return n
 }
 

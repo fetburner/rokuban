@@ -13,7 +13,7 @@ type ProcessingPolicyParams struct {
 	CMDetect       bool
 }
 
-// ProcessingPolicy は録画 recordingID の凍結済み処理方針（recording_processing_policy の行）を作る。既定値は keep_original = 'always'、encode_profiles = 空、cm_detect = false。opts で既定値を上書きする。行が既にあると失敗する（FreezeRecordingEncodePolicy は ON CONFLICT を持たない）。CHECK 制約により until_encoded には空でない encode_profiles が必要。
+// ProcessingPolicy は録画 recordingID の凍結済み処理方針（recording_processing_policy の行）を作る。既定値は keep_original = 'always'、encode_profiles = 空、cm_detect = false。opts で既定値を上書きする。行が既にあると失敗する（FreezeRecordingEncodePolicy は ON CONFLICT を持たない）。
 func ProcessingPolicy(t testing.TB, db sqlcgen.DBTX, recordingID int64, opts ...func(*ProcessingPolicyParams)) {
 	t.Helper()
 	params := ProcessingPolicyParams{
