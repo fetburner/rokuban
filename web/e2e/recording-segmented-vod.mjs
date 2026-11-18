@@ -57,7 +57,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
         // seek() と load() でリセットする。capture 中に呼ばれた callback 数と、readyState < 2 で読み飛ばした数。
         captureCalls: 0,
         captureNotReady: 0,
-        // seek() / load() 以降に積んだ最初の 3 件。末尾 3 件（frames）と合わせて、区間内の化けと区間の後の化けを分ける。
+        // seek() / load() 以降に積んだ最初の 3 件。区間内に callback が来なかった（最初のサンプルが区間より後で、currentTime と mediaTime が一致する）のか、区間内のサンプルの currentTime が化けた（最初のサンプルが区間の外の値）のかを分ける。
         seekFrames: [],
         frameError: null,
         hls: null,
