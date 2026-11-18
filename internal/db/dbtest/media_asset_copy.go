@@ -18,9 +18,9 @@ type MediaAssetCopyParams struct {
 	DeletedAt  *time.Time
 }
 
-// MediaAssetCopy は mediaAssetID の物理コピー（media_asset_copies の行）を作り、その id を返す。既定値は置き場 StoreName、相対パス test-copy/<mediaAssetID>.ts、世代 0、state = 'active'、created_at は現在時刻、deleted_at は無し。opts で既定値を上書きする。
+// MediaAssetCopy は mediaAssetID の物理コピー（media_asset_copies の行）を 1 件作る。既定値は置き場 StoreName、相対パス test-copy/<mediaAssetID>.ts、世代 0、state = 'active'、created_at は現在時刻、deleted_at は無し。opts で既定値を上書きする。
 // UpsertMediaAssetCopy で作るので、(store, rel_path) の行が既にあれば新しい行は作らず、その行の created_at を更新する。更新が起きなかったら失敗する。
-func MediaAssetCopy(t testing.TB, db sqlcgen.DBTX, mediaAssetID int64, opts ...func(*MediaAssetCopyParams)) int64 {
+func MediaAssetCopy(t testing.TB, db sqlcgen.DBTX, mediaAssetID int64, opts ...func(*MediaAssetCopyParams)) {
 	t.Helper()
 	params := MediaAssetCopyParams{
 		Store:      StoreName,
@@ -47,10 +47,4 @@ func MediaAssetCopy(t testing.TB, db sqlcgen.DBTX, mediaAssetID int64, opts ...f
 	if rows != 1 {
 		t.Fatalf("inserting media asset copy for asset %d in store %q affected %d rows, want 1", mediaAssetID, params.Store, rows)
 	}
-
-	var id int64
-	if err := db.QueryRow(t.Context(), `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, params.Store, params.RelPath).Scan(&id); err != nil {
-		t.Fatalf("reading id of media asset copy %q in store %q: %v", params.RelPath, params.Store, err)
-	}
-	return id
 }

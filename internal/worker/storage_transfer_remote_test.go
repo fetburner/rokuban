@@ -86,7 +86,7 @@ func newTransferTestRemoteFixture(t *testing.T, content []byte, knownSHA bool, s
 	assetID := seedOriginalAsset(t, pool, sourceRoot, recordingID, "sites/default/transfer/source.ts", content)
 	if knownSHA {
 		sum := sha256.Sum256(content)
-		testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, sum[:], assetID)
+		testutil.MustExec(t, pool, "setting the expected logical sha256", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, sum[:], assetID)
 	}
 	srv, streamer := newTransferTestRemoteStreamer(t, recordingID, content, serve)
 	cfg := transferTestConfig("archive", "archive", "test-store")
@@ -171,7 +171,7 @@ func TestStorageTransferWorkerCopiesOriginalFromInternalURL(t *testing.T) {
 				t.Fatalf("archive copy state = %q, want active", state)
 			}
 			var stored []byte
-			testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, f.assetID).Scan(&stored), "f.pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, f.assetID).Scan")
+			testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, f.assetID).Scan(&stored), "reading stored sha256")
 			want := sha256.Sum256(content)
 			if !bytes.Equal(stored, want[:]) {
 				t.Fatalf("stored SHA-256 = %x, want %x", stored, want[:])
@@ -529,7 +529,7 @@ func TestResumingRemoteReaderContinuesAfterDisconnect(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	body, err := newRemoteTransferSource(srv.URL, "edge", 42).open(context.Background(), 0)
-	testutil.RequireNoError(t, err, "open")
+	testutil.RequireNoError(t, err, "opening the remote source")
 	defer func() { _ = body.Close() }()
 	got, err := io.ReadAll(body)
 	testutil.RequireNoError(t, err, "ReadAll after disconnect")
@@ -566,7 +566,7 @@ func TestResumingRemoteReaderGivesUpAfterReconnectLimit(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	body, err := newRemoteTransferSource(srv.URL, "edge", 42).open(context.Background(), 0)
-	testutil.RequireNoError(t, err, "open")
+	testutil.RequireNoError(t, err, "opening the remote source")
 	defer func() { _ = body.Close() }()
 	if _, err := io.ReadAll(body); err == nil {
 		t.Fatal("ReadAll returned nil error after the reconnect limit")

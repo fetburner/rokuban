@@ -78,10 +78,10 @@ func newS3DerivedFixture(t *testing.T) s3DerivedFixture {
 	t.Cleanup(func() { storageTransferSlice = restore })
 
 	sourceFS, err := fsstore.New(roots["test-store"])
-	testutil.RequireNoError(t, err, "fsstore.New")
+	testutil.RequireNoError(t, err, "creating source fsstore")
 	cloudRoot := t.TempDir()
 	cloudFS, err := fsstore.New(cloudRoot)
-	testutil.RequireNoError(t, err, "fsstore.New")
+	testutil.RequireNoError(t, err, "creating cloud fsstore")
 	objects := map[string]objstore.Store{
 		"test-store": &fakeResumableStore{Store: sourceFS},
 		"cloud":      &fakeResumableStore{Store: cloudFS},
@@ -266,7 +266,7 @@ func TestExistingTransferredObjectUsesHeadSHA256(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fs, err := fsstore.New(t.TempDir())
-			testutil.RequireNoError(t, err, "fsstore.New")
+			testutil.RequireNoError(t, err, "creating temp fsstore")
 			testutil.RequireNoError(t, fs.Put(ctx, "encoded/head.mp4", strings.NewReader(string(content)), int64(len(content)), digest, "video/mp4"), "seeding object")
 			objects := &headSHAStore{Store: fs, sha: tt.headSHA}
 			exists, err := existingTransferredObjectMatches(ctx, objects, "encoded/head.mp4", digest[:], int64(len(content)), false)
@@ -307,7 +307,7 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	f.driveToEnd(t)
 
 	// S3 のコピーが overlap の期間を過ぎてから、FS の旧いコピーの配置の削除を走らせる。
-	testutil.MustExec(t, f.pool, "f.pool.Exec", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID)
+	testutil.MustExec(t, f.pool, "aging the cloud copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID)
 	media := pgstore.NewMedia(f.pool, "test-store", "")
 	deleter := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: f.cfg,
@@ -316,8 +316,7 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 		DerivedObjects: f.worker.ObjectStores["cloud"],
 	}
 	testutil.RequireNoError(t, deleter.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
-	var fsState string
-	testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, f.assetID).Scan(&fsState), "f.pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, f.assetID).Scan")
+	fsState := storeCopyState(t, f.pool, "test-store", f.assetID)
 	if fsState != "deleted" {
 		t.Fatalf("FS derived copy state = %q, want deleted once the S3 copy is active", fsState)
 	}
