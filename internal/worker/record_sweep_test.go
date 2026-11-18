@@ -108,7 +108,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 
 	var markerCount int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM record_sweep_snapshots WHERE site = $1`, testSite,
+		`SELECT count(*) FROM loop_success_markers WHERE loop = 'record_sweep' AND scope = $1`, testSite,
 	).Scan(&markerCount); err != nil {
 		t.Fatalf("querying record sweep marker: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 
 	var markerCount int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM record_sweep_snapshots WHERE site = $1`, testSite,
+		`SELECT count(*) FROM loop_success_markers WHERE loop = 'record_sweep' AND scope = $1`, testSite,
 	).Scan(&markerCount); err != nil {
 		t.Fatalf("querying record sweep marker: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 		t.Fatalf("RecordSweepWorker.Work: %v", err)
 	}
 	var markerCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM record_sweep_snapshots WHERE site = 'site-a'`).Scan(&markerCount); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loop_success_markers WHERE loop = 'record_sweep' AND scope = 'site-a'`).Scan(&markerCount); err != nil {
 		t.Fatalf("querying record sweep marker: %v", err)
 	}
 	if markerCount != 1 {

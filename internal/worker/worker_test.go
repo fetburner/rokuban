@@ -336,7 +336,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 
 	var markerCount int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM ruler_pass_snapshots WHERE site = $1`, site,
+		`SELECT count(*) FROM loop_success_markers WHERE loop = 'ruler' AND scope = $1`, site,
 	).Scan(&markerCount); err != nil {
 		t.Fatalf("querying ruler pass marker: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 
 	var markerCount int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM ruler_pass_snapshots WHERE site = $1`, "default",
+		`SELECT count(*) FROM loop_success_markers WHERE loop = 'ruler' AND scope = $1`, "default",
 	).Scan(&markerCount); err != nil {
 		t.Fatalf("querying ruler pass marker: %v", err)
 	}

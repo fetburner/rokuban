@@ -990,15 +990,6 @@ CREATE VIEW public.current_ts_scanned_originals AS
 COMMENT ON VIEW public.current_ts_scanned_originals IS 'CurrentTsScannedOriginal は、内容のリビジョンと計測サイズが現在の原本に一致する計測記録を持つ原本を表す。内容の書き手は同じ文で計測記録を取り消す。コピーの state は削除済み原本の drop summary を保つため条件に含めず、active 限定が必要な呼び出し側で絞る。';
 
 --
--- Name: delete_reconcile_snapshots; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.delete_reconcile_snapshots (
-    store text NOT NULL,
-    last_success_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
---
 -- Name: drop_positions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1181,6 +1172,17 @@ ALTER TABLE public.label_rules ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY 
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+--
+-- Name: loop_success_markers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.loop_success_markers (
+    loop text NOT NULL,
+    scope text NOT NULL,
+    last_success_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT loop_success_markers_loop_check CHECK ((loop = ANY (ARRAY['ruler'::text, 'record_sweep'::text, 'reconcile_pass'::text, 'delete_reconcile'::text])))
 );
 
 --
@@ -1447,24 +1449,6 @@ CREATE TABLE public.program_snapshots (
     event_id integer NOT NULL,
     service_name text NOT NULL,
     CONSTRAINT program_snapshots_channel_type_check CHECK ((channel_type = ANY (ARRAY['GR'::text, 'BS'::text, 'CS'::text, 'SKY'::text])))
-);
-
---
--- Name: reconcile_pass_snapshots; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.reconcile_pass_snapshots (
-    pass text NOT NULL,
-    last_success_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
---
--- Name: record_sweep_snapshots; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.record_sweep_snapshots (
-    site text NOT NULL,
-    last_success_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 --
@@ -1765,15 +1749,6 @@ CREATE TABLE public.ruler_input_revisions (
 );
 
 --
--- Name: ruler_pass_snapshots; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.ruler_pass_snapshots (
-    site text NOT NULL,
-    last_success_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
---
 -- Name: rules; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1968,13 +1943,6 @@ ALTER TABLE ONLY public.cm_logos
     ADD CONSTRAINT cm_logos_pkey PRIMARY KEY (network_id, service_id);
 
 --
--- Name: delete_reconcile_snapshots delete_reconcile_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.delete_reconcile_snapshots
-    ADD CONSTRAINT delete_reconcile_snapshots_pkey PRIMARY KEY (store);
-
---
 -- Name: drop_positions drop_positions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2029,6 +1997,13 @@ ALTER TABLE ONLY public.label_rule_hits
 
 ALTER TABLE ONLY public.label_rules
     ADD CONSTRAINT label_rules_pkey PRIMARY KEY (id);
+
+--
+-- Name: loop_success_markers loop_success_markers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.loop_success_markers
+    ADD CONSTRAINT loop_success_markers_pkey PRIMARY KEY (loop, scope);
 
 --
 -- Name: media_asset_copies media_asset_copies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2141,20 +2116,6 @@ ALTER TABLE ONLY public.program_overrides
 
 ALTER TABLE ONLY public.program_snapshots
     ADD CONSTRAINT program_snapshots_pkey PRIMARY KEY (site, program_id);
-
---
--- Name: reconcile_pass_snapshots reconcile_pass_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.reconcile_pass_snapshots
-    ADD CONSTRAINT reconcile_pass_snapshots_pkey PRIMARY KEY (pass);
-
---
--- Name: record_sweep_snapshots record_sweep_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.record_sweep_snapshots
-    ADD CONSTRAINT record_sweep_snapshots_pkey PRIMARY KEY (site);
 
 --
 -- Name: record_sync record_sync_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2316,13 +2277,6 @@ ALTER TABLE ONLY public.rule_times
 
 ALTER TABLE ONLY public.ruler_input_revisions
     ADD CONSTRAINT ruler_input_revisions_pkey PRIMARY KEY (site);
-
---
--- Name: ruler_pass_snapshots ruler_pass_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.ruler_pass_snapshots
-    ADD CONSTRAINT ruler_pass_snapshots_pkey PRIMARY KEY (site);
 
 --
 -- Name: rules rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -

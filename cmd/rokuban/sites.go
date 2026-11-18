@@ -216,7 +216,7 @@ func newTransferBacklogCollector(pool *pgxpool.Pool, storage config.StorageConfi
 // 読むのは DB の表だけなので、api を含むどのロールでも scrape できる。
 func newReconcileMarkerCollector(pool *pgxpool.Pool, storage config.StorageConfig) prometheus.Collector {
 	markers := pgstore.NewReservations(pool)
-	return metrics.NewReconcileMarkerCollector(markers, markers, pgstore.NewMediaWithStores(pool, "", "", ""), storage.FSStoreNames(), storage.TransferDestinationStoreNames())
+	return metrics.NewReconcileMarkerCollector(markers, pgstore.NewMediaWithStores(pool, "", "", ""), storage.FSStoreNames(), storage.TransferDestinationStoreNames())
 }
 
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。

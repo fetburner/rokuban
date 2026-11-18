@@ -88,21 +88,17 @@ type loopPassResult struct {
 }
 
 func (c *LoopPassCollector) read(ctx context.Context) (loopPassResult, error) {
-	markers, err := c.markers.ReadLoopMarkers(ctx, c.site)
+	rulers, err := c.markers.ReadLoopMarkers(ctx, store.LoopRuler)
 	if err != nil {
-		return loopPassResult{}, fmt.Errorf("reading loop pass markers: %w", err)
+		return loopPassResult{}, fmt.Errorf("reading ruler markers: %w", err)
+	}
+	sweeps, err := c.markers.ReadLoopMarkers(ctx, store.LoopRecordSweep)
+	if err != nil {
+		return loopPassResult{}, fmt.Errorf("reading record sweep markers: %w", err)
 	}
 
 	return loopPassResult{
-		rulerAt: timestampSeconds(markers.RulerLastSuccessAt),
-		sweepAt: timestampSeconds(markers.RecordSweepLastSuccessAt),
+		rulerAt: unixSecondsOrZero(rulers[c.site]),
+		sweepAt: unixSecondsOrZero(sweeps[c.site]),
 	}, nil
-}
-
-// timestampSeconds は未作成の marker を 0 に変換する。
-func timestampSeconds(at *time.Time) float64 {
-	if at == nil {
-		return 0
-	}
-	return float64(at.UnixNano()) / float64(time.Second)
 }

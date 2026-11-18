@@ -598,7 +598,7 @@ ruler は `RulerPass` から評価に必要なルール・意図・投資・予�
 - 契約: `internal/store.RulerPass`
 - PostgreSQL 実装: `internal/store/pgstore.Reservations`
 - 削除時の意図再評価、ブレーカーとの原子性、重複排除の類似度: `TestRulerPassContract`
-- ruler の成功 marker と record_sweep marker: `internal/store.LoopMarkers` / `TestLoopMarkersContract`
+- ループの成功時刻（ruler・record_sweep・全件パス・削除 reconcile）: `internal/store.LoopMarkers` / `TestLoopMarkersContract`
 
 </details>
 

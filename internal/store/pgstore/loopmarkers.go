@@ -2,16 +2,14 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// MarkRulerPasses は成功した複数 site の marker を 1 つのトランザクションで更新する。
+// MarkRulerPasses は成功した複数 site の ruler の時刻を 1 つのトランザクションで更新する。
 func (s *Reservations) MarkRulerPasses(ctx context.Context, sites []string) error {
 	if len(sites) == 0 {
 		return nil
@@ -23,7 +21,7 @@ func (s *Reservations) MarkRulerPasses(ctx context.Context, sites []string) erro
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 	for _, site := range sites {
-		if err := q.UpsertRulerPassSnapshot(ctx, site); err != nil {
+		if err := q.UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopRuler, Scope: site}); err != nil {
 			return fmt.Errorf("upserting ruler marker for site %q: %w", site, mapDatabaseError(err))
 		}
 	}
@@ -35,37 +33,39 @@ func (s *Reservations) MarkRulerPasses(ctx context.Context, sites []string) erro
 
 // MarkRecordSweep は site の record_sweep 成功時刻を更新する。
 func (s *Reservations) MarkRecordSweep(ctx context.Context, site string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning record sweep marker transaction: %w", err)
-	}
-	defer rollback(tx)
-	if err := sqlcgen.New(tx).UpsertRecordSweepSnapshot(ctx, site); err != nil {
+	if err := sqlcgen.New(s.pool).UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopRecordSweep, Scope: site}); err != nil {
 		return fmt.Errorf("upserting record sweep marker for site %q: %w", site, mapDatabaseError(err))
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing record sweep marker for site %q: %w", site, mapDatabaseError(err))
 	}
 	return nil
 }
 
-// ReadLoopMarkers は site の ruler と record_sweep の成功時刻を返す。
-func (s *Reservations) ReadLoopMarkers(ctx context.Context, site string) (store.LoopMarkerState, error) {
-	q := sqlcgen.New(s.pool)
-	var state store.LoopMarkerState
-	rulerAt, err := q.GetRulerPassSnapshot(ctx, site)
-	if err == nil {
-		state.RulerLastSuccessAt = &rulerAt
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return store.LoopMarkerState{}, fmt.Errorf("reading ruler marker for site %q: %w", site, err)
+// MarkReconcilePass は pass の全件パスが完走した時刻を保存する。
+func (s *Reservations) MarkReconcilePass(ctx context.Context, pass string) error {
+	if err := sqlcgen.New(s.pool).UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopReconcilePass, Scope: pass}); err != nil {
+		return fmt.Errorf("upserting reconcile pass marker %q: %w", pass, mapDatabaseError(err))
 	}
-	sweepAt, err := q.GetRecordSweepSnapshot(ctx, site)
-	if err == nil {
-		state.RecordSweepLastSuccessAt = &sweepAt
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return store.LoopMarkerState{}, fmt.Errorf("reading record sweep marker for site %q: %w", site, err)
+	return nil
+}
+
+// MarkDeleteReconcile は置き場 storeName の削除 reconcile が完走した時刻を保存する。
+func (s *Reservations) MarkDeleteReconcile(ctx context.Context, storeName string) error {
+	if err := sqlcgen.New(s.pool).UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopDeleteReconcile, Scope: storeName}); err != nil {
+		return fmt.Errorf("upserting delete reconcile marker for store %q: %w", storeName, mapDatabaseError(err))
 	}
-	return state, nil
+	return nil
+}
+
+// ReadLoopMarkers は loop の完走時刻を scope ごとに返す。
+func (s *Reservations) ReadLoopMarkers(ctx context.Context, loop string) (map[string]time.Time, error) {
+	rows, err := sqlcgen.New(s.pool).ListLoopSuccessMarkers(ctx, loop)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s markers: %w", loop, err)
+	}
+	out := make(map[string]time.Time, len(rows))
+	for _, row := range rows {
+		out[row.Scope] = row.LastSuccessAt
+	}
+	return out, nil
 }
 
 var _ store.LoopMarkers = (*Reservations)(nil)

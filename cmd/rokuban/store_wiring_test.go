@@ -381,14 +381,14 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 		}
 		deps := newStoreScopedDeps(pool, cfg, &worker.Deps{}, name, dir, objects)
 		w := &worker.DeleteReconcileWorker{MediaDir: dir, MediaStoreName: name, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: deps.DerivedObjects, DerivedObjectStoreName: deps.DerivedObjectStoreName, DerivedMediaDelete: deps.DerivedMediaDelete, DerivedStorage: deps.DerivedStorage, DerivedPendingReclaim: deps.DerivedPendingReclaim, Markers: markers}
-		before, err := markers.ReadDeleteReconcileMarkers(ctx)
+		before, err := markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := w.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
 			t.Fatal(err)
 		}
-		after, err := markers.ReadDeleteReconcileMarkers(ctx)
+		after, err := markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 		if err != nil {
 			t.Fatal(err)
 		}

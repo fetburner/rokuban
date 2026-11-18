@@ -144,8 +144,8 @@ func seedRecordSweepMarker(t *testing.T, pool *pgxpool.Pool) time.Time {
 	ctx := context.Background()
 	markerAt := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO record_sweep_snapshots (site, last_success_at)
-		VALUES ($1, $2)`, DefaultSite, markerAt,
+		INSERT INTO loop_success_markers (loop, scope, last_success_at)
+		VALUES ('record_sweep', $1, $2)`, DefaultSite, markerAt,
 	); err != nil {
 		t.Fatalf("seeding record sweep marker: %v", err)
 	}
@@ -156,7 +156,7 @@ func requireRecordSweepMarker(t *testing.T, pool *pgxpool.Pool, want time.Time) 
 	t.Helper()
 	var got time.Time
 	if err := pool.QueryRow(context.Background(), `
-		SELECT last_success_at FROM record_sweep_snapshots WHERE site = $1`, DefaultSite,
+		SELECT last_success_at FROM loop_success_markers WHERE loop = 'record_sweep' AND scope = $1`, DefaultSite,
 	).Scan(&got); err != nil {
 		t.Fatalf("reading record sweep marker: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 		t.Errorf("DeleteStaleRecordSyncs live IDs = %v, want %v", liveIDs, wantIDs)
 	}
 	var markerAt time.Time
-	if err := pool.QueryRow(ctx, `SELECT last_success_at FROM record_sweep_snapshots WHERE site = $1`, DefaultSite).Scan(&markerAt); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT last_success_at FROM loop_success_markers WHERE loop = 'record_sweep' AND scope = $1`, DefaultSite).Scan(&markerAt); err != nil {
 		t.Fatalf("reading successful sweep marker: %v", err)
 	}
 	if !markerAt.After(markerBefore) {
