@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func TestWalkMediaFiles_IgnoresReservedLockArtifacts(t *testing.T) {
@@ -13,27 +14,17 @@ func TestWalkMediaFiles_IgnoresReservedLockArtifacts(t *testing.T) {
 	mediaDir := t.TempDir()
 	canonicalPath := filepath.Join(mediaDir, "recording.m2ts")
 	const relPath = "recording.m2ts"
-	if err := os.WriteFile(canonicalPath, []byte("media"), 0o644); err != nil {
-		t.Fatalf("writing canonical file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(canonicalPath, []byte("media"), 0o644), "writing canonical file")
 	lockDir := filepath.Join(mediaDir, mediapath.MediaRelPathLockDirName)
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
-		t.Fatalf("creating lock directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(lockDir, "legacy-entry"), nil, 0o666); err != nil {
-		t.Fatalf("writing reserved lock directory entry: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(lockDir, 0o755), "creating lock directory")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(lockDir, "legacy-entry"), nil, 0o666), "writing reserved lock directory entry")
 	legacyPath := filepath.Join(mediaDir, ".rokuban-rel-path-lock-legacy.lock")
-	if err := os.WriteFile(legacyPath, nil, 0o666); err != nil {
-		t.Fatalf("writing legacy rel_path lock file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(legacyPath, nil, 0o666), "writing legacy rel_path lock file")
 
 	var got []string
-	if err := walkMediaFiles(mediaDir, func(path string, _ os.FileInfo) {
+	testutil.RequireNoError(t, walkMediaFiles(mediaDir, func(path string, _ os.FileInfo) {
 		got = append(got, path)
-	}); err != nil {
-		t.Fatalf("walking media files: %v", err)
-	}
+	}), "walking media files")
 	if len(got) != 1 || got[0] != relPath {
 		t.Fatalf("walked files = %v, want only %q", got, relPath)
 	}
@@ -42,23 +33,15 @@ func TestWalkMediaFiles_IgnoresReservedLockArtifacts(t *testing.T) {
 func TestWalkMediaFilesIgnoresOnlyRootStoreMarker(t *testing.T) {
 	t.Parallel()
 	mediaDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(mediaDir, ".rokuban-store"), []byte("tokyo"), 0o644); err != nil {
-		t.Fatalf("writing root store marker: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(mediaDir, ".rokuban-store"), []byte("tokyo"), 0o644), "writing root store marker")
 	nestedMarkerPath := filepath.Join(mediaDir, "nested", ".rokuban-store")
-	if err := os.MkdirAll(filepath.Dir(nestedMarkerPath), 0o755); err != nil {
-		t.Fatalf("creating nested directory: %v", err)
-	}
-	if err := os.WriteFile(nestedMarkerPath, []byte("media"), 0o644); err != nil {
-		t.Fatalf("writing nested media file: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(nestedMarkerPath), 0o755), "creating nested directory")
+	testutil.RequireNoError(t, os.WriteFile(nestedMarkerPath, []byte("media"), 0o644), "writing nested media file")
 
 	var got []string
-	if err := walkMediaFiles(mediaDir, func(relPath string, _ os.FileInfo) {
+	testutil.RequireNoError(t, walkMediaFiles(mediaDir, func(relPath string, _ os.FileInfo) {
 		got = append(got, relPath)
-	}); err != nil {
-		t.Fatalf("walking media files: %v", err)
-	}
+	}), "walking media files")
 	if len(got) != 1 || got[0] != "nested/.rokuban-store" {
 		t.Fatalf("walked files = %v, want only nested/.rokuban-store", got)
 	}

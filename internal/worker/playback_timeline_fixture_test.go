@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/streamer"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 const playbackTimelineOffsetSeconds = int64(10)
@@ -41,12 +42,8 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 		t.Skip("set ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR to export browser timeline fixtures")
 	}
 	ffmpeg, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		t.Fatalf("ffmpeg is required to export playback timeline fixtures: %v", err)
-	}
-	if err := os.MkdirAll(fixtureDir, 0o755); err != nil {
-		t.Fatalf("create fixture directory: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ffmpeg is required to export playback timeline fixtures")
+	testutil.RequireNoError(t, os.MkdirAll(fixtureDir, 0o755), "create fixture directory")
 
 	sourcePath := filepath.Join(fixtureDir, "original.ts")
 	filterParts := make([]string, 0, len(playbackTimelineMarkerFrames))
@@ -94,18 +91,12 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 	}
 	for _, offset := range []int64{0, playbackTimelineOffsetSeconds} {
 		dir := filepath.Join(fixtureDir, fmt.Sprintf("hls-offset-%d", offset))
-		if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
-			t.Fatalf("create HLS output directory: %v", err)
-		}
+		testutil.RequireNoError(t, os.MkdirAll(filepath.Join(dir, "segments"), 0o755), "create HLS output directory")
 		source, err := os.Open(sourcePath)
-		if err != nil {
-			t.Fatalf("open source TS for offset %d: %v", offset, err)
-		}
+		testutil.RequireNoError(t, err, fmt.Sprintf("open source TS for offset %d", offset))
 		args := streamer.BuildRecordingHLSFFmpegArgs(liveConfig, dir, false, offset)
 		runPlaybackTimelineFFmpeg(t, ffmpeg, args, []*os.File{source})
-		if err := source.Close(); err != nil {
-			t.Fatalf("close source TS after offset %d: %v", offset, err)
-		}
+		testutil.RequireNoError(t, source.Close(), fmt.Sprintf("close source TS after offset %d", offset))
 	}
 
 	// These are the h264 example settings in config.example.yml: progressive MP4,
@@ -126,12 +117,8 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 	manifest.HLS.Offset0 = "hls-offset-0/hd.m3u8"
 	manifest.HLS.Offset10 = fmt.Sprintf("hls-offset-%d/hd.m3u8", playbackTimelineOffsetSeconds)
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal fixture manifest: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(fixtureDir, "manifest.json"), append(manifestBytes, '\n'), 0o644); err != nil {
-		t.Fatalf("write fixture manifest: %v", err)
-	}
+	testutil.RequireNoError(t, err, "marshal fixture manifest")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(fixtureDir, "manifest.json"), append(manifestBytes, '\n'), 0o644), "write fixture manifest")
 }
 
 func runPlaybackTimelineFFmpeg(t *testing.T, ffmpeg string, args []string, extraFiles []*os.File) {

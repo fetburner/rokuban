@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func testStoreNameArg() *string {
@@ -84,9 +85,7 @@ func TestSeekTilesWorker_ExtractTileArgs(t *testing.T) {
 			return nil, os.WriteFile(out, tinyJPEG, 0o644)
 		},
 	}
-	if err := w.extractTile(context.Background(), "in.m2ts", out, 30*time.Second); err != nil {
-		t.Fatalf("extractTile: %v", err)
-	}
+	testutil.RequireNoError(t, w.extractTile(context.Background(), "in.m2ts", out, 30*time.Second), "extractTile")
 
 	ss := indexOfArg(gotArgs, "-ss")
 	if ss < 0 || ss+1 >= len(gotArgs) {
@@ -122,9 +121,7 @@ func TestSeekTilesWorker_ComposeSheetArgs(t *testing.T) {
 			return nil, nil
 		},
 	}
-	if err := w.composeSheet(context.Background(), "/scratch/frames", "out.jpg", 4); err != nil {
-		t.Fatalf("composeSheet: %v", err)
-	}
+	testutil.RequireNoError(t, w.composeSheet(context.Background(), "/scratch/frames", "out.jpg", 4), "composeSheet")
 	if got := gotArgs[indexOfArg(gotArgs, "-start_number")+1]; got != "0" {
 		t.Errorf("-start_number = %q, want %q", got, "0")
 	}
@@ -206,12 +203,8 @@ func seedOriginalForSeekTiles(t *testing.T, db sqlcgen.DBTX, mediaDir string, re
 	const content = "fake-ts"
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(full), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(full, []byte(content), 0o644), "os.WriteFile")
 	dbtest.MediaAsset(t, db, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = rel
 		fixtureParams.SizeBytes = int64(len(content))
@@ -320,9 +313,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 		ScratchDir: t.TempDir(),
 		runCmd:     cmd.run,
 	}
-	if err := runSeekTilesJob(t, w, recordingID); err != nil {
-		t.Fatalf("SeekTilesWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runSeekTilesJob(t, w, recordingID), "SeekTilesWorker.Work")
 
 	// 100 秒 / 10 秒 = 10 枚の抽出 + 1 回の合成。
 	if cmd.calls != 11 {
@@ -330,9 +321,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 	}
 
 	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(context.Background(), sqlcgen.GetSeekTilesMediaAssetForServingParams{RecordingID: recordingID})
-	if err != nil {
-		t.Fatalf("seek_tiles asset missing: %v", err)
-	}
+	testutil.RequireNoError(t, err, "seek_tiles asset missing")
 	if row.RelPath != "thumbnails/1_tiles.jpg" && row.RelPath != fmt.Sprintf("thumbnails/%d_tiles.jpg", recordingID) {
 		t.Errorf("rel_path = %q, want thumbnails/%d_tiles.jpg", row.RelPath, recordingID)
 	}
@@ -366,22 +355,16 @@ func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 	w := &SeekTilesWorker{
 		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, recordingID); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
+	testutil.RequireNoError(t, runSeekTilesJob(t, w, recordingID), "first run")
 	firstCalls := cmd.calls
-	if err := runSeekTilesJob(t, w, recordingID); err != nil {
-		t.Fatalf("second run: %v", err)
-	}
+	testutil.RequireNoError(t, runSeekTilesJob(t, w, recordingID), "second run")
 	if cmd.calls != firstCalls {
 		t.Errorf("ffmpeg calls on rerun = %d, want %d (no work)", cmd.calls, firstCalls)
 	}
 
 	var count int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'seek_tiles'`, recordingID).Scan(&count); err != nil {
-		t.Fatalf("counting seek_tiles rows: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'seek_tiles'`, recordingID).Scan(&count), "counting seek_tiles rows")
 	if count != 1 {
 		t.Errorf("seek_tiles rows = %d, want 1", count)
 	}
@@ -403,59 +386,35 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 		Media:           pgstoretest.Media(pool), MediaDir: mediaDir,
 		ScratchDir: t.TempDir(), runCmd: cmd.run,
 	}
-	if err := runSeekTilesJob(t, w, recordingID); err != nil {
-		t.Fatalf("initial Work: %v", err)
-	}
+	testutil.RequireNoError(t, runSeekTilesJob(t, w, recordingID), "initial Work")
 
 	var assetID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'seek_tiles'`, recordingID).Scan(&assetID); err != nil {
-		t.Fatalf("loading initial seek_tiles asset: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'seek_tiles'`, recordingID).Scan(&assetID), "loading initial seek_tiles asset")
 	var oldRelPath string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&oldRelPath); err != nil {
-		t.Fatalf("loading initial seek_tiles path: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatalf("tombstoning seek_tiles copy: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1`, assetID).Scan(&oldRelPath), "loading initial seek_tiles path")
+	testutil.MustExec(t, pool, "tombstoning seek_tiles copy", `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID)
 	oldAbs, err := mediapath.Resolve(mediaDir, oldRelPath)
-	if err != nil {
-		t.Fatalf("resolving tombstoned seek_tiles path: %v", err)
-	}
-	if err := os.Remove(oldAbs); err != nil {
-		t.Fatalf("removing tombstoned seek_tiles file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "resolving tombstoned seek_tiles path")
+	testutil.RequireNoError(t, os.Remove(oldAbs), "removing tombstoned seek_tiles file")
 
 	// Simulate a file left by a publish whose DB commit did not complete. The tombstone
 	// says generation 1 is next, so the occupied path advances it to generation 2.
 	orphanPath := seekTilesRelPath(recordingID, 1)
 	orphanAbs, err := mediapath.Resolve(mediaDir, orphanPath)
-	if err != nil {
-		t.Fatalf("resolving orphan seek_tiles path: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(orphanAbs), 0o755); err != nil {
-		t.Fatalf("creating orphan seek_tiles directory: %v", err)
-	}
+	testutil.RequireNoError(t, err, "resolving orphan seek_tiles path")
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(orphanAbs), 0o755), "creating orphan seek_tiles directory")
 	const orphanBytes = "left by an uncommitted publish"
-	if err := os.WriteFile(orphanAbs, []byte(orphanBytes), 0o644); err != nil {
-		t.Fatalf("writing orphan seek_tiles output: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(orphanAbs, []byte(orphanBytes), 0o644), "writing orphan seek_tiles output")
 
 	cmd.outputContent = []byte("replacement tile sheet")
-	if err := runSeekTilesJob(t, w, recordingID); err != nil {
-		t.Fatalf("recreating seek_tiles: %v", err)
-	}
+	testutil.RequireNoError(t, runSeekTilesJob(t, w, recordingID), "recreating seek_tiles")
 	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(ctx, sqlcgen.GetSeekTilesMediaAssetForServingParams{RecordingID: recordingID})
-	if err != nil {
-		t.Fatalf("loading recreated seek_tiles: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading recreated seek_tiles")
 	if want := seekTilesRelPath(recordingID, 2); row.RelPath != want {
 		t.Errorf("recreated rel_path = %q, want %q", row.RelPath, want)
 	}
 	var generation int64
-	if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, assetID).Scan(&generation); err != nil {
-		t.Fatalf("reading recreated generation: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, assetID).Scan(&generation), "reading recreated generation")
 	if generation != 2 {
 		t.Errorf("recreated generation = %d, want 2", generation)
 	}
@@ -475,9 +434,7 @@ func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 	w := &SeekTilesWorker{
 		Objects:         testFSObjectStore(t.TempDir()),
 		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: t.TempDir(), ScratchDir: t.TempDir(), runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, recordingID); err != nil {
-		t.Fatalf("SeekTilesWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runSeekTilesJob(t, w, recordingID), "SeekTilesWorker.Work")
 	if cmd.calls != 0 {
 		t.Errorf("ffmpeg calls without an original = %d, want 0", cmd.calls)
 	}
