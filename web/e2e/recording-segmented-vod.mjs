@@ -54,6 +54,10 @@ const HARNESS_HTML = String.raw`<!doctype html>
         stalls: [],
         hlsErrors: [],
         capture: false,
+        // seek() と load() でリセットする。capture 中に呼ばれた callback 数と、readyState < 2 で読み飛ばした数。
+        captureCalls: 0,
+        captureNotReady: 0,
+        frameError: null,
         hls: null,
         audioContext: null,
         audioAnalysers: null,
@@ -83,6 +87,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
       }
 
       function captureVideoFrame(now, metadata) {
+        if (state.capture) state.captureCalls += 1
         if (state.capture && video.readyState >= 2) {
           try {
             const sample = {
@@ -96,6 +101,8 @@ const HARNESS_HTML = String.raw`<!doctype html>
           } catch (error) {
             state.frameError = String(error)
           }
+        } else if (state.capture) {
+          state.captureNotReady += 1
         }
         frameCallbackId = video.requestVideoFrameCallback(captureVideoFrame)
       }
@@ -190,6 +197,8 @@ const HARNESS_HTML = String.raw`<!doctype html>
           state.stalls = []
           state.hlsErrors = []
           state.frameError = null
+          state.captureCalls = 0
+          state.captureNotReady = 0
           state.capture = false
           if (state.hls) {
             state.hls.destroy()
@@ -260,6 +269,9 @@ const HARNESS_HTML = String.raw`<!doctype html>
         // 停止して seeked を待ち、再生位置と停止中の映像フレームを読む。
         async seek(seconds, expectedFrame) {
           state.capture = false
+          state.captureCalls = 0
+          state.captureNotReady = 0
+          state.frameError = null
           video.pause()
           await new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('seeked が 10 秒以内に来ない')), 10_000)
@@ -356,6 +368,16 @@ const HARNESS_HTML = String.raw`<!doctype html>
 
         framesBetween(from, to) {
           return state.frames.filter((sample) => sample.currentTime >= from && sample.currentTime <= to)
+        },
+
+        // seek() 以降の切り分け用。失敗文言にだけ使い、判定には使わない。
+        captureStats() {
+          return {
+            captureCalls: state.captureCalls,
+            captureNotReady: state.captureNotReady,
+            frameError: state.frameError,
+            tail: state.frames.slice(-3).map((sample) => ({ currentTime: sample.currentTime, mediaTime: sample.mediaTime, frame: sample.frame })),
+          }
         },
 
         // 128 サンプルごとの RMS のうち、左右どちらかが 0.02 未満の連続数の最大値。
@@ -812,7 +834,10 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     const start = frames.findIndex((sample) => Math.abs(sample.mediaTime - target) <= 0.5)
     summary[`seek${target}`] = frames.slice(0, 8).map((sample) => `${sample.frame}@${sample.mediaTime.toFixed(2)}`).join(' ')
     if (frames.length === 0) {
-      add('seek-frame', `${target}s への seek の後にフレームが描かれない`)
+      // callback が来ないのか、readyState で読み飛ばしたのか、例外か、区間の外の currentTime かを切り分ける。
+      const stats = await adapter.evaluate(() => window.__e2e.captureStats())
+      const tail = stats.tail.map((sample) => `{cur=${sample.currentTime.toFixed(2)} media=${sample.mediaTime.toFixed(2)} frame=${sample.frame}}`).join(' ') || 'なし'
+      add('seek-frame', `${target}s への seek の後にフレームが描かれない: capture 中の callback=${stats.captureCalls} 回, readyState<2 で読み飛ばし=${stats.captureNotReady} 回, frameError=${stats.frameError ?? 'なし'}, 末尾のサンプル=${tail}`)
     } else if (start < 0) {
       add('seek-frame', `${target}s への seek の後に、シーク先 ±0.5s のフレームが描かれない: marker=${JSON.stringify(frames.slice(0, 5).map((sample) => sample.frame))}, mediaTime=${JSON.stringify(frames.slice(0, 5).map((sample) => Number(sample.mediaTime.toFixed(3))))}`)
     } else if (start > 2) {
