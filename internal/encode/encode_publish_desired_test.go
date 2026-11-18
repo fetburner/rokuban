@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -15,7 +16,7 @@ import (
 // 公開しない（成功で終わる）。判定が無いと外した版がここで復活する。削除 reconcile の
 // 後に来た公開なら、要求行の無い tombstone を active に戻して二度と消えない。
 func TestEncodeWorker_ProfileRemovedFromDesiredIsNotPublished(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -27,7 +28,7 @@ func TestEncodeWorker_ProfileRemovedFromDesiredIsNotPublished(t *testing.T) {
 	reached, release := pauseBeforeEncodeObjectPublication(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	done := make(chan error, 1)
-	go func() { done <- runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)) }()
+	go func() { done <- jobqfaketest.RunWorkerOnce(ctx, w, jobWithID(recordingID)) }()
 
 	waitReached(t, reached, done)
 	testutil.RequireNoError(t, sqlcgen.New(pool).RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{

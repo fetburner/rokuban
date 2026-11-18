@@ -15,13 +15,13 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/encode"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // setEncodeAttemptCount は seedEncodeAttempt が作った profile の行の attempt_count を上書きする。
@@ -316,7 +316,7 @@ func TestListRecordingsRejectsUnknownEncodeState(t *testing.T) {
 }
 
 // TestEncodeReconcileAndQueueAgreeOnPendingSet は、encode を投入する経路
-// （worker.EncodeReconcileWorker の全件パス。不足の補完と作り直し要求の両方）と、
+// （encode.EncodeReconcileWorker の全件パス。不足の補完と作り直し要求の両方）と、
 // 待機列（GET /api/encode-queue と GET /api/recordings?encodeState=）が同じ録画の
 // 集合に合意することを固定する。
 //
@@ -429,7 +429,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	}}
 
 	enqueuer := newRecordingEnqueuer()
-	if err := jobqtestutil.RunWorkerOnce(ctx, &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(ctx, &encode.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 	reconciled := map[string]bool{}

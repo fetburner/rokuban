@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"bytes"
@@ -23,6 +23,8 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -78,7 +80,7 @@ func encodeAttemptCount(t *testing.T, pool *pgxpool.Pool, recordingID int64, pro
 // 「行が一時的にできる」側は TestEncodeWorker_AttemptRow_FailedOnFailure が、
 // 「最終的に消える」側はここが見る。
 func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -112,8 +114,8 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 		},
 	}
 
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work()")
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work()")
 
 	if _, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
 		t.Errorf("recording_encode_attempts row remains after success; want cleared")
@@ -125,7 +127,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 // 入ることを固定する。
 func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -144,8 +146,8 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 		Profiles:        config.EncodeConfig{}, // "missing" は未定義 → 失敗する
 	}
 
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err == nil {
 		t.Fatal("expected error for unknown profile")
 	}
 
@@ -232,7 +234,7 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedM
 // これが無いと実 ffprobe の呼び出し（timeout 上限 3 秒）がこの待ちを
 // 不必要に長引かせる。
 func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -314,10 +316,10 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 
 	workErr := make(chan error, 1)
-	go func() { workErr <- runWorkerViaJobQFake(ctx, w, job) }()
+	go func() { workErr <- jobqfaketest.RunWorkerOnce(ctx, w, job) }()
 
 	// running 行が書かれる（cmd.Start より前）のを待つ。行自体はテストの
 	// アサーション対象（cancel 前の状態）でもあるので残す。
@@ -374,7 +376,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 
 func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -389,9 +391,9 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool),
 	}
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
 	for attempt := int32(1); attempt <= 25; attempt++ {
-		err := runWorkerViaJobQFake(context.Background(), w, job)
+		err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 		if attempt < 25 && err == nil {
 			t.Fatalf("Work at domain attempt %d succeeded; want retryable failure", attempt)
 		}
@@ -400,7 +402,7 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 		}
 	}
 	// 上限到達後の Work は runEncode の前に ErrDiscard を返す。
-	if err := runWorkerViaJobQFake(context.Background(), w, job); !errors.Is(err, jobq.ErrDiscard) {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); !errors.Is(err, jobq.ErrDiscard) {
 		t.Fatalf("Work after the domain limit = %v, want jobq.ErrDiscard", err)
 	}
 	if state, ok := encodeAttemptState(t, pool, recordingID, "missing"); !ok || state != "failed" {
@@ -413,7 +415,7 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 
 func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -448,7 +450,7 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 
 func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -465,7 +467,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 		t.Fatalf("queued timeout = %s, want 2h15m (90m recording × 1.5)", args.Timeout)
 	}
 	if got := args.Spec().Timeout(args); got != 135*time.Minute {
-		t.Errorf("EncodeJobArgs.Spec timeout = %s, want queued 2h15m", got)
+		t.Errorf("jobs.EncodeJobArgs.Spec timeout = %s, want queued 2h15m", got)
 	}
 	shortEndedAt := startedAt.Add(5 * time.Minute)
 	testutil.MustExec(t, pool, "updating recordings", `UPDATE recordings SET ended_at = $2 WHERE id = $1`, recordingID, shortEndedAt)
@@ -476,11 +478,11 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 		t.Fatalf("queued timeout for short recording = %s, want 1h floor (5m recording × rate 4 = 20m)", shortArgs.Timeout)
 	}
 	if got := shortArgs.Spec().Timeout(shortArgs); got != time.Hour {
-		t.Errorf("EncodeJobArgs.Spec timeout for short recording = %s, want queued 1h", got)
+		t.Errorf("jobs.EncodeJobArgs.Spec timeout for short recording = %s, want queued 1h", got)
 	}
-	legacy := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	legacy := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 	if got := legacy.Spec().Timeout(legacy); got != 12*time.Hour {
-		t.Errorf("EncodeJobArgs.Spec timeout for old args = %s, want 12h", got)
+		t.Errorf("jobs.EncodeJobArgs.Spec timeout for old args = %s, want 12h", got)
 	}
 	// started_at / ended_at が NULL（ライブラリ取り込み）なら番組長（既定 30 分）で計算する。
 	testutil.MustExec(t, pool, "updating recordings", `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 3 * 3600 * 1000 WHERE id = $1`, recordingID)
@@ -508,7 +510,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 // 上限到達後の POST encode-profiles 相当（failed 行の削除）で、次の Work が count 1 から走る。
 func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -538,7 +540,7 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 }
 
 func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -575,14 +577,14 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), encodeDeadline)
 	defer cancel()
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 	type workResult struct {
 		err        error
 		returnedAt time.Time
 	}
 	workDone := make(chan workResult, 1)
 	go func() {
-		err := runWorkerViaJobQFake(ctx, w, job)
+		err := jobqfaketest.RunWorkerOnce(ctx, w, job)
 		workDone <- workResult{err: err, returnedAt: time.Now()}
 	}()
 	waitFor(t, 6*time.Second, func() bool {
@@ -673,7 +675,7 @@ func TestTruncateEncodeAttemptError_ShortMessageUnchanged(t *testing.T) {
 // 判明）。
 func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -726,7 +728,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 // clearEncodeAttempt から attemptWriteContext を外すとこのテストが落ちる。
 func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -796,7 +798,7 @@ func installLeakyExitZeroFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath,
 // mediaexec.WaitDelay が実際に経過するのを待つ必要が
 // あるため、このテストは数秒かかる。
 func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -875,10 +877,10 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 		},
 	}
 
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 
 	start := time.Now()
-	go func() { workDone <- runWorkerViaJobQFake(context.Background(), w, job) }()
+	go func() { workDone <- jobqfaketest.RunWorkerOnce(context.Background(), w, job) }()
 	var workErr error
 	select {
 	case workErr = <-workDone:

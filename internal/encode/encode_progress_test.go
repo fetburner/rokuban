@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"context"
@@ -14,6 +14,8 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -166,7 +168,7 @@ func TestEncodeProgressReporter_DoesNotBlockFFmpegReader(t *testing.T) {
 }
 
 func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -200,9 +202,9 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 	}
 	workDone := make(chan error, 1)
 	go func() {
-		workDone <- runWorkerViaJobQFake(context.Background(), w,
+		workDone <- jobqfaketest.RunWorkerOnce(context.Background(), w,
 
-			EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
+			jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
 		)
 	}()
 
@@ -224,7 +226,7 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 }
 
 func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -254,9 +256,9 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 			Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
 	}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w,
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w,
 
-		EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
+		jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
 	), "Work")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)

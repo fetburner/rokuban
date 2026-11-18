@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"context"
@@ -31,7 +31,7 @@ func mustEncodedRelPath(t *testing.T, original, profile, container string, gener
 // 受け入れの 4 ケース、rescue 後の状態、作り直し要求だけの名前、証拠の無い名前を固定する。
 func TestCheckEncodeProfileMeaning(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -101,7 +101,7 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 
 func TestCheckEncodeProfileMeaningChecksEveryActivePath(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}

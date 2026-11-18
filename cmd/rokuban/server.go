@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -421,7 +422,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// cut の設定を読む両ロールで、待ち受けとジョブの購読より前に拒む
 		// （CheckEncodeProfileMeaning のコメント参照）。DB を読むだけなので、
 		// api が mirakc にもファイルシステムにも依存しないことは変わらない。
-		if err := worker.CheckEncodeProfileMeaning(ctx, mediaStore, cfg.Encode); err != nil {
+		if err := encode.CheckEncodeProfileMeaning(ctx, mediaStore, cfg.Encode); err != nil {
 			return fmt.Errorf("validating encode profile meaning: %w", err)
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -107,7 +108,7 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 		Height: 1080, Deinterlace: true, CRF: &crf, Preset: "medium",
 	}
 	encodedPath := filepath.Join(fixtureDir, "encoded.mp4")
-	encodedArgs := BuildFFmpegArgs(profile, sourcePath, encodedPath, false, nil)
+	encodedArgs := encode.BuildFFmpegArgs(profile, sourcePath, encodedPath, false, nil)
 	runPlaybackTimelineFFmpeg(t, ffmpeg, encodedArgs, nil)
 
 	manifest := playbackTimelineFixtureManifest{

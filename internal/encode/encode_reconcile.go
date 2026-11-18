@@ -1,8 +1,9 @@
-package worker
+package encode
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -119,10 +120,16 @@ type EncodeReconcileWorker struct {
 	Markers store.LoopMarkers
 }
 
-// enqueueEncodeReconcile は指定録画の reconcile を投入する。
+// EnqueueReconcile は指定録画の reconcile を投入する。
 // ingest 後の best-effort 投入なので、失敗しても呼び出し元の処理は巻き戻さない。
-func enqueueEncodeReconcile(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) {
-	if err := enqueueJob(ctx, enqueuer, jobs.EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
+func EnqueueReconcile(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) {
+	var err error
+	if enqueuer == nil {
+		err = errors.New("encode: job enqueuer is nil")
+	} else {
+		_, err = enqueuer.Enqueue(ctx, jobs.EncodeReconcileArgs{RecordingID: recordingID})
+	}
+	if err != nil {
 		slog.Error("encode_reconcile: failed to enqueue targeted pass", "recording_id", recordingID, "err", err)
 	}
 }
@@ -147,6 +154,10 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 		// このジョブの主目的が「encode ジョブを実際に投入すること」なので、client が取れないことを
 		// 黙った no-op にすると取りこぼしの回復そのものが消える。
 		return fmt.Errorf("encode reconcile: job enqueuer is nil")
+	}
+
+	if w.Media == nil {
+		return errors.New("encode reconcile: original locator is nil")
 	}
 
 	rowLimit := w.RowLimit
@@ -182,14 +193,12 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	// この録画数に適用され、window の再開位置も録画単位で進む。
 	candidates := make([]int64, 0, len(missing))
 	for _, row := range missing {
-		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
-			candidates = append(candidates, row.RecordingID)
-		}
+		candidates = appendCandidateRecordingID(candidates, row.RecordingID)
 	}
 	// 投入先の置き場は、原本のコピーがある置き場。候補の件数に比例して問い合わせないよう、まとめて引く。
-	originalStores, err := originalStoresOf(ctx, w.Media, candidates)
+	originalStores, err := w.Media.OriginalStores(ctx, candidates)
 	if err != nil {
-		return fmt.Errorf("encode reconcile: %w", err)
+		return fmt.Errorf("encode reconcile: locating originals: %w", err)
 	}
 	// 件数の集計は件数に比例して重いので、判断と表示に要るパスだけで数える（理由は backpressuredStores）。
 	limited := w.backlogLimitedStores()
@@ -201,9 +210,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	rebuildQueued, failed := 0, 0
 	cutSet := w.Profiles.CutProfileSet()
 	for _, row := range missing {
-		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
-			candidates = append(candidates, row.RecordingID)
-		}
+		candidates = appendCandidateRecordingID(candidates, row.RecordingID)
 		if row.IsRebuild && row.DecodeErr != nil {
 			failed++
 			slog.Error("encode_reconcile: decoding requested keep ranges",
@@ -247,7 +254,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 				continue
 			}
 		}
-		if err := enqueueJob(ctx, w.Enqueuer, args); err != nil {
+		if _, err := w.Enqueuer.Enqueue(ctx, args); err != nil {
 			failed++
 			slog.Error("encode_reconcile: failed to enqueue encode candidate",
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
@@ -292,6 +299,14 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 			"rebuild_requests", rebuildQueued, "failed", failed)
 	}
 	return nil
+}
+
+// appendCandidateRecordingID は、録画 ID 順の候補で同じ録画の複数プロファイルを 1 件にまとめる。
+func appendCandidateRecordingID(candidates []int64, recordingID int64) []int64 {
+	if len(candidates) == 0 || candidates[len(candidates)-1] != recordingID {
+		return append(candidates, recordingID)
+	}
+	return candidates
 }
 
 // needsBacklogCount は、このパスで転送待ちの件数を数えるかを返す。
@@ -369,7 +384,7 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 	if err != nil {
 		return nil, fmt.Errorf("reading database clock: %w", err)
 	}
-	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, w.StoragePolicy.FSStoreNames(), limited, w.StoragePolicy.Derived, storageTransferAttemptLimit)
+	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, w.StoragePolicy.FSStoreNames(), limited, w.StoragePolicy.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil {
 		return nil, fmt.Errorf("counting transfer backlog by source store: %w", err)
 	}
