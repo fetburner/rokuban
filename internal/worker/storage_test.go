@@ -192,6 +192,7 @@ func TestStorageSyncWorker_PartialStatFailureKeepsStaleRow(t *testing.T) {
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
 	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
 	staleScratch := storageSyncByRoot(t, pool, "scratch")
+	staleMedia := storageSyncByRoot(t, pool, "media")
 
 	time.Sleep(10 * time.Millisecond)
 
@@ -218,8 +219,8 @@ func TestStorageSyncWorker_PartialStatFailureKeepsStaleRow(t *testing.T) {
 	}
 
 	media := storageSyncByRoot(t, pool, "media")
-	if media.ObservedAt.Before(staleScratch.ObservedAt) {
-		t.Errorf("media ObservedAt did not advance despite succeeding this pass")
+	if !media.ObservedAt.After(staleMedia.ObservedAt) {
+		t.Errorf("media ObservedAt = %v, want after %v (succeeded this pass)", media.ObservedAt, staleMedia.ObservedAt)
 	}
 }
 
@@ -331,46 +332,10 @@ func (noopStorageObservation) UpsertStorageSync(context.Context, store.StorageOb
 	return nil
 }
 
-// StorageSyncLastSuccess（ジョブ全体のゲージ）は**全 root を観測できたパスだけ**
-// 進む。1 root でも失敗した部分成功では進めない --- PR #258 のレビューで指摘された
-// 欠陥（media が恒久的に壊れていても scratch が成功し続ける限りこのゲージが
-// 進み続け、機能の存在理由である容量枯渇の検知を見失う）の直接の受け入れ基準。
-func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
-	pool := setupTestPool(t)
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-
-	before := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName))
-
-	// 部分成功（scratch だけ失敗）では進まない。
-	w := &StorageSyncWorker{
-		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
-		Stat: fakeStat(
-			map[string]diskUsage{mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90}},
-			map[string]bool{scratchDir: true},
-		),
-	}
-	testutil.RequireNoError(t, runStorageSync(t, w), "Work() error")
-	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName)); got != before {
-		t.Errorf("StorageSyncLastSuccess = %v after partial success, want unchanged %v", got, before)
-	}
-
-	// 全 root 成功で進む。
-	w.Stat = fakeStat(map[string]diskUsage{
-		mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
-		scratchDir: {totalBytes: 200, usedBytes: 20, availableBytes: 180},
-	}, nil)
-	testutil.RequireNoError(t, runStorageSync(t, w), "Work() error")
-	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName)); got <= before {
-		t.Errorf("StorageSyncLastSuccess = %v after full success, want > %v", got, before)
-	}
-}
-
-// root ごとのゲージ（StorageRootLastSuccess / TotalBytes / UsedBytes /
-// AvailableBytes）は、その root の観測が実際に成功したときだけ更新される。
-// 失敗した root は前回の値のまま凍結する（PR #258 のレビュー指摘の核心 ---
-// このゲージの組がなければ「片方の root だけ壊れている」を Prometheus から
-// 検知できない）。
+// root ごとのバイト数ゲージ（TotalBytes / UsedBytes / AvailableBytes）は、その root の
+// 観測が実際に成功したときだけ更新される。失敗した root は前回の値のまま凍結する
+// （鮮度の判別は rokuban_storage_root_observed_timestamp_seconds 側で、DB 行の
+// observed_at を PartialStatFailureKeepsStaleRow が検査する）。
 func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -384,12 +349,9 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 		}, nil),
 	}
 	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
-	scratchLastSuccessBefore := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch"))
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 500 {
 		t.Fatalf("scratch TotalBytes = %v, want 500", got)
 	}
-
-	time.Sleep(10 * time.Millisecond)
 
 	// 2 回目: scratch の statfs が失敗、media は新しい値で成功する。
 	w.Stat = fakeStat(map[string]diskUsage{
@@ -397,16 +359,10 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 	}, map[string]bool{scratchDir: true})
 	testutil.RequireNoError(t, runStorageSync(t, w), "second Work() error")
 
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != scratchLastSuccessBefore {
-		t.Errorf("scratch StorageRootLastSuccess = %v, want unchanged %v (statfs failed this pass)", got, scratchLastSuccessBefore)
-	}
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 500 {
 		t.Errorf("scratch TotalBytes = %v, want unchanged 500 (statfs failed this pass)", got)
 	}
 
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "media")); got <= scratchLastSuccessBefore {
-		t.Errorf("media StorageRootLastSuccess = %v, want > %v (media succeeded this pass)", got, scratchLastSuccessBefore)
-	}
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "media")); got != 999 {
 		t.Errorf("media TotalBytes = %v, want 999 (updated this pass)", got)
 	}
@@ -434,8 +390,8 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 		}, nil),
 	}
 	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got == 0 {
-		t.Fatalf("scratch StorageRootLastSuccess = %v, want set (nonzero) before removal", got)
+	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got == 0 {
+		t.Fatalf("scratch TotalBytes = %v, want set (nonzero) before removal", got)
 	}
 
 	// 対象集合から scratch root が外れたパスを模す（本番の worker は空の
@@ -446,9 +402,6 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 	}, nil)
 	testutil.RequireNoError(t, runStorageSync(t, w), "second Work() error")
 
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
-		t.Errorf("scratch StorageRootLastSuccess = %v after removal, want 0 (DeleteLabelValues should have cleared it)", got)
-	}
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch TotalBytes = %v after removal, want 0", got)
 	}
@@ -461,9 +414,8 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 //
 // エッジトリガー実装（既存行を SELECT して差集合だけ掃除する）だと、行を消したのが
 // 他者だったパスでラベルが取り残され、二度と掃除されない ---
-// rokuban_storage_root_last_success_timestamp_seconds{store="test-store",root="scratch"} が凍結した
-// まま残り、その鮮度を判断材料に挙げる docs/operations/monitoring.md の
-// 読み方が Pod を再起動するまで消えない偽陽性を出し続ける。
+// rokuban_storage_root_total_bytes{store="test-store",root="scratch"} が凍結したまま
+// 残り、Pod を再起動するまで古い容量を示し続ける。
 func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -495,9 +447,6 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch TotalBytes = %v, want 0 (stale label must be cleared even when another replica deleted the row first)", got)
-	}
-	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
-		t.Errorf("scratch StorageRootLastSuccess = %v, want 0 (a frozen freshness gauge is a permanent false-positive alert)", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.StorageRootUsedBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch UsedBytes = %v, want 0", got)

@@ -111,9 +111,8 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 	// 掃除を賭けると、storage キューを引く別レプリカが先に行を消したパスで
 	// ラベルが取り残され、二度と掃除されない（不変条件 5: レベルトリガー。
 	// TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica で固定）。
-	// 取り残されたラベルは「凍結した鮮度ゲージ」= Pod を再起動するまで消えない
-	// 偽陽性アラートになる（docs/operations/monitoring.md §警告が出ないことは保証ではない が
-	// この鮮度を判断材料に挙げている）。
+	// 取り残されたラベルは「凍結した容量ゲージ」になり、Pod を再起動するまで
+	// 古い容量を示し続ける。
 	//
 	// 置き場単位の系列は掃除しない。置き場の集合は --stores でプロセスの寿命の間
 	// 固定されていて、再起動すると Prometheus のレジストリは空から始まるので、
@@ -122,7 +121,6 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 		if slices.Contains(desired, r.name) {
 			continue
 		}
-		metrics.StorageRootLastSuccess.DeleteLabelValues(storeName, r.name)
 		metrics.StorageRootTotalBytes.DeleteLabelValues(storeName, r.name)
 		metrics.StorageRootUsedBytes.DeleteLabelValues(storeName, r.name)
 		metrics.StorageRootAvailableBytes.DeleteLabelValues(storeName, r.name)
@@ -136,9 +134,8 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 			// 1 root の statfs 失敗でパス全体を失敗させない --- media と scratch は
 			// 別々のマウントであることが多く、片方の一時的な不調（アンマウント等）
 			// でもう片方の観測まで止める理由がない。前回の観測行・
-			// StorageRootLastSuccess / バイト数ゲージはそのまま残す（更新しない）。
-			// observed_at とこれらのゲージの鮮度だけが「観測が止まっている」
-			// ことを伝える手がかりになる（M7-6 で UI がこの鮮度を出せるように
+			// バイト数ゲージはそのまま残す（更新しない）。observed_at だけが
+			// 「観測が止まっている」ことを伝える手がかりになる（M7-6 で UI がこの鮮度を出せるように
 			// なる想定。metrics.TunerSyncLastSuccess と同じ「警告が出ないことは保証ではない」
 			// 姿勢）。
 			slog.Warn("storage sync: statfs failed, keeping previous observation",
@@ -156,10 +153,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 		}
 		observed++
 
-		// root ごとのゲージは、この root の観測が実際に成功した場合にだけ進める
-		// （StorageSyncLastSuccess の対になる、root 単位の鮮度シグナル。
-		// internal/metrics.StorageRootLastSuccess のコメント参照）。
-		metrics.StorageRootLastSuccess.WithLabelValues(storeName, r.name).SetToCurrentTime()
+		// root ごとのバイト数ゲージは、この root の観測が実際に成功した場合にだけ進める。
 		metrics.StorageRootTotalBytes.WithLabelValues(storeName, r.name).Set(float64(u.totalBytes))
 		metrics.StorageRootUsedBytes.WithLabelValues(storeName, r.name).Set(float64(u.usedBytes))
 		metrics.StorageRootAvailableBytes.WithLabelValues(storeName, r.name).Set(float64(u.availableBytes))
@@ -174,15 +168,6 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 		return fmt.Errorf("storage sync: all %d root(s) failed to observe", len(roots))
 	}
 
-	// StorageSyncLastSuccess は**全 root**を観測できたパスだけで進める。
-	// 1 root でも失敗した部分成功では進めない --- 進めてしまうと、片方の root が
-	// 恒久的に壊れていても他方が成功し続ける限り「最後に成功した時刻」が
-	// 現在時刻付近を保ち続け、まさにこの機能の存在理由（容量枯渇の検知）を
-	// 見失う（PR #258 のレビュー指摘）。root 単位の欠落は
-	// StorageRootLastSuccess で検知する。
-	if observed == len(roots) {
-		metrics.StorageSyncLastSuccess.WithLabelValues(storeName).SetToCurrentTime()
-	}
 	slog.Info("storage sync complete", "store", storeName, "roots", len(roots), "observed", observed)
 	return nil
 }
