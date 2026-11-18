@@ -20,11 +20,6 @@ import (
 // まとめて作る）とは別に切り出す。
 func insertProgramSnapshotFixture(t *testing.T, pool *pgxpool.Pool, programID int64, networkID, serviceID int32) {
 	t.Helper()
-	// 識別 6 列はすべて NOT NULL（issue #101）。event_id / service_name を
-	// 落とすと 23502 で落ちる —— このフィクスチャは #99（PR #147）で追加され、
-	// #101（PR #150）が NOT NULL 化を入れた。互いのブランチでは緑で、マージ後に
-	// 初めて落ちた（CLAUDE.md §並行作業「git が競合と見なさない意味的な競合」の
-	// テストフィクスチャの生 SQL の実例）。
 	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
 		p.NetworkID = networkID
 		p.ServiceID = serviceID

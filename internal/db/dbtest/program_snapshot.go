@@ -22,7 +22,7 @@ type ProgramSnapshotParams struct {
 }
 
 // ProgramSnapshot は番組 programID の事実のスナップショット（program_snapshots の行）を作る。既定値は site = "default"、title = "テスト番組"、開始時刻 = 呼び出し時点の現在時刻 + 24 時間、尺 = 30 分、network_id = 32736、service_id = 1024、channel_type = "GR"、channel = "27"、event_id = programID % 100000、service_name = "テスト局"。opts で既定値を上書きする。
-// UpsertProgramSnapshot で作るので、(site, program_id) の行が既にあれば新しい行は作らず、その行の全列を既定値（または上書き値）で置き換える。置き換えが起きなかったら失敗する。
+// UpsertProgramSnapshot で作るので、(site, program_id) の行が既にあっても失敗しない。既定値または上書き値のいずれかが既存行と違えば全列と updated_at を上書きし、すべて同じなら何も変わらない（updated_at も据え置き）。
 func ProgramSnapshot(t testing.TB, db sqlcgen.DBTX, programID int64, opts ...func(*ProgramSnapshotParams)) {
 	t.Helper()
 	params := ProgramSnapshotParams{

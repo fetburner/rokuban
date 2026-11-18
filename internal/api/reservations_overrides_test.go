@@ -538,19 +538,6 @@ func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 	_ = resp4.Body.Close()
 }
 
-// insertProgramSnapshotOnly は program_snapshots だけを作る（reservations 行は
-// 作らない）。overrides API が (site, programId) を自身の宛先に持ち、既存
-// schedule（導出射影である schedule_sync）の有無に依存しないことの確認に使う
-// （issue #312 の方針決定 (b): B 案（schedule の有無で拒否）を採らなかったこと
-// の明文化）。
-func insertProgramSnapshotOnly(t *testing.T, pool *pgxpool.Pool, programID int64, networkID, serviceID int32) {
-	t.Helper()
-	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
-		p.NetworkID = networkID
-		p.ServiceID = serviceID
-	})
-}
-
 // schedule どころか reservations 行すら無い（EPG 射影にだけ番組がある）予約に
 // contentPath を明示指定しても 200 系で成功すること。B 案（schedule_sync の有無で
 // 拒否する）を採らなかったことの直接の確認 — 拒否条件を導出射影に依存させると
@@ -563,7 +550,7 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1900000190099999
-	insertProgramSnapshotOnly(t, pool, programID, 19000, 1900)
+	insertProgramSnapshotFixture(t, pool, programID, 19000, 1900)
 
 	resp := doPatch(t, srv, overridesPath(programID), `{"contentPath":"custom/x"}`)
 	if resp.StatusCode != http.StatusNoContent {
