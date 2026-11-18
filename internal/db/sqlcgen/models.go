@@ -89,11 +89,6 @@ type CurrentTsScannedOriginal struct {
 	MediaAssetID int64
 }
 
-type DeleteReconcileSnapshot struct {
-	Store         string
-	LastSuccessAt time.Time
-}
-
 type DropPosition struct {
 	MediaAssetID int64
 	ByteOffset   int64
@@ -186,6 +181,12 @@ type LabelRule struct {
 type LabelRuleHit struct {
 	RecordingID int64
 	LabelRuleID int64
+}
+
+type LoopSuccessMarker struct {
+	Loop          string
+	Scope         string
+	LastSuccessAt time.Time
 }
 
 type MediaAsset struct {
@@ -340,16 +341,6 @@ type ProgramSnapshot struct {
 	UpdatedAt   time.Time
 	EventID     int32
 	ServiceName string
-}
-
-type ReconcilePassSnapshot struct {
-	Pass          string
-	LastSuccessAt time.Time
-}
-
-type RecordSweepSnapshot struct {
-	Site          string
-	LastSuccessAt time.Time
 }
 
 type RecordSync struct {
@@ -576,11 +567,6 @@ type RuleTime struct {
 type RulerInputRevision struct {
 	Site     string
 	Revision int64
-}
-
-type RulerPassSnapshot struct {
-	Site          string
-	LastSuccessAt time.Time
 }
 
 type ScheduleSync struct {

@@ -1418,7 +1418,7 @@ func TestRunPass_DoesNotMarkWhenGCFails(t *testing.T) {
 
 	var markerCount int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM ruler_pass_snapshots WHERE site = $1`, testSite,
+		`SELECT count(*) FROM loop_success_markers WHERE loop = 'ruler' AND scope = $1`, testSite,
 	).Scan(&markerCount); err != nil {
 		t.Fatalf("querying ruler pass marker: %v", err)
 	}

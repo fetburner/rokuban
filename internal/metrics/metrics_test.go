@@ -227,12 +227,21 @@ func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
 		t.Fatalf("upserting record sweep marker: %v", err)
 	}
 
-	c := NewLoopPassCollector(markers, testSite)
-	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got <= 0 {
-		t.Errorf("ruler last success = %v, want a positive DB timestamp", got)
+	// ruler と sweep の値の取り違え（読む loop の入れ替え）を見るため、時刻を別々に固定する。
+	rulerAt := time.Unix(1700001000, 0).UTC()
+	sweepAt := time.Unix(1700002000, 0).UTC()
+	for loop, at := range map[string]time.Time{"ruler": rulerAt, "record_sweep": sweepAt} {
+		if _, err := pool.Exec(ctx, `UPDATE loop_success_markers SET last_success_at = $3 WHERE loop = $1 AND scope = $2`, loop, testSite, at); err != nil {
+			t.Fatalf("setting %s marker time: %v", loop, err)
+		}
 	}
-	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got <= 0 {
-		t.Errorf("sweep last success = %v, want a positive DB timestamp", got)
+
+	c := NewLoopPassCollector(markers, testSite)
+	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got != float64(rulerAt.Unix()) {
+		t.Errorf("ruler last success = %v, want %v", got, rulerAt.Unix())
+	}
+	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got != float64(sweepAt.Unix()) {
+		t.Errorf("sweep last success = %v, want %v", got, sweepAt.Unix())
 	}
 }
 

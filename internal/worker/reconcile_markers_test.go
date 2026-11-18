@@ -35,7 +35,15 @@ func (m *markerRecorder) MarkReconcilePass(_ context.Context, pass string) error
 	return nil
 }
 
-func (m *markerRecorder) ReadReconcilePassMarkers(context.Context) (map[string]time.Time, error) {
+func (m *markerRecorder) MarkRulerPasses(context.Context, []string) error {
+	return errors.New("not used by the worker")
+}
+
+func (m *markerRecorder) MarkRecordSweep(context.Context, string) error {
+	return errors.New("not used by the worker")
+}
+
+func (m *markerRecorder) ReadLoopMarkers(context.Context, string) (map[string]time.Time, error) {
 	return nil, errors.New("not used by the worker")
 }
 
@@ -47,10 +55,6 @@ func (m *markerRecorder) MarkDeleteReconcile(_ context.Context, storeName string
 	}
 	m.stores = append(m.stores, storeName)
 	return nil
-}
-
-func (m *markerRecorder) ReadDeleteReconcileMarkers(context.Context) (map[string]time.Time, error) {
-	return nil, errors.New("not used by the worker")
 }
 
 func (m *markerRecorder) recordedPasses() []string {
@@ -327,7 +331,7 @@ func (failingPendingDelete) ListPendingDeleteAssets(context.Context, time.Time, 
 const markerTestStore = "fs-a"
 
 // newMarkedDeleteWorker は FS の置き場 markerTestStore 1 つ分の削除 reconcile を組み立てる。
-func newMarkedDeleteWorker(t *testing.T, pool *pgxpool.Pool, mediaDir string, markers store.DeleteReconcileMarkers) *DeleteReconcileWorker {
+func newMarkedDeleteWorker(t *testing.T, pool *pgxpool.Pool, mediaDir string, markers store.LoopMarkers) *DeleteReconcileWorker {
 	return &DeleteReconcileWorker{
 		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
 		RecordingPurge: pgstoretest.Recordings(pool),

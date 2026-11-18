@@ -835,8 +835,6 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		MirakcClients:            mirakcClients,
 		RulerPass:                reservationStore,
 		LoopMarkers:              reservationStore,
-		ReconcilePassMarkers:     reservationStore,
-		DeleteReconcileMarkers:   reservationStore,
 		Breakers:                 breakersStore,
 		NeverScheduled:           neverScheduledStore,
 		ScheduleSync:             scheduleSyncStore,

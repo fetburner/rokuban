@@ -38,13 +38,13 @@ flowchart TD
 
 `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は、プロセス内のゲージである。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、値は成功時刻を表さない。
 
-ruler と record_sweep については、この既存ゲージを互換性のために残したまま、DB-backed の site ラベル付きメトリクスを追加した。`ruler_pass` と `record_sweep` は、成功したパスの最後に site 単位の衛星表を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
+ruler と record_sweep については、この既存ゲージを互換性のために残したまま、DB-backed の site ラベル付きメトリクスを追加した。`ruler_pass` と `record_sweep` は、成功したパスの最後に `loop_success_markers` に site の行を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
 
 予約同期（reconcile）の鮮度には、この実測を踏まえて、DB-backed の `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。常駐 Pod や別の worker が scrape しても、同じ DB の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot からの経過時間として見える。
 
 `rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い、または 0 のときは、「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐構成と ScaledJob 構成の収集元・復旧条件は、[アラート設計](alerts.md) にまとめる。
 
-全件パスの reconcile（encode / thumbnail / ts_scan）と、置き場ごとの削除 reconcile も同じ作りにした。完走の記録は `reconcile_pass_snapshots` と `delete_reconcile_snapshots` に持つ。storage sync は表を足さず、既存の `storage_sync.observed_at` を読む。どの Pod が scrape しても、同じ DB の値が出る。
+全件パスの reconcile（encode / thumbnail / ts_scan）と、置き場ごとの削除 reconcile も同じ作りにした。完走の記録は `loop_success_markers` の `reconcile_pass` と `delete_reconcile` の行に持つ。storage sync は表を足さず、既存の `storage_sync.observed_at` を読む。どの Pod が scrape しても、同じ DB の値が出る。
 
 完走の記録には次の規則がある。
 

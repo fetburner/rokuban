@@ -116,7 +116,7 @@ type EncodeReconcileWorker struct {
 	StoragePolicy config.StorageConfig
 
 	// Markers は全件パスの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
-	Markers store.ReconcilePassMarkers
+	Markers store.LoopMarkers
 }
 
 // enqueueEncodeReconcile は指定録画の reconcile を投入する。
@@ -296,7 +296,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 }
 
 // markReconcilePass は全件パスの完走を記録する。markers が nil なら何もしない（記録を呼ばない部分テストだけ）。
-func markReconcilePass(ctx context.Context, markers store.ReconcilePassMarkers, pass string) error {
+func markReconcilePass(ctx context.Context, markers store.LoopMarkers, pass string) error {
 	if markers == nil {
 		return nil
 	}

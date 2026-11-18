@@ -59,6 +59,8 @@ CREATE TABLE schedule_sync_snapshots (
 
 コミットの単位は、全量 upsert・stale 行の削除・マーカー更新である。mirakc への GET が成功しただけでは、時刻は進まない。
 
+このマーカーを `loop_success_markers` に入れないのは、意味が違うからである。`snapshot_at` は `schedule_sync` の中身がいつの観測かを表す観測の属性である。presync collector は `ScheduleSync.SnapshotAt` 経由で観測行と組にして読み、pending を信じてよいかを判断する。ループの成功時刻はパスの成否しか表さず、他の表の中身がいつ時点かは表さない。加えて、入れると `ScheduleSync` と `LoopMarkers` という 2 つの store 契約が同じ表に書くことになる。
+
 この行の読み手は DB-backed metrics collector だけで、予約の desired/observed の導出結果や mirakc の予約 ID は永続化しない。reconciler が停止した場合はマーカーの時刻が古いまま残り、常駐プロセスの `/metrics` から観測できる。
 
 <details><summary>根拠</summary>
@@ -68,15 +70,21 @@ CREATE TABLE schedule_sync_snapshots (
 
 </details>
 
-### ruler_pass_snapshots / record_sweep_snapshots — ループのパス鮮度
+### loop_success_markers — ループの成功時刻
 
-ループの鮮度は、サイトごとに最後に成功したパスの時刻を持つ 2 つの衛星表で見る。ruler と record_sweep のパスが正常に完了した最後の時刻だけを記録する。
+ループの成功時刻は 1 つの衛星表に持つ。行は、ループの種類と scope の組ごとに、最後に成功した時刻を表す。
 
-ループの鮮度を、予約・record の観測・録画履歴の行の有無から推測しないための表である。それらの表に列を足さないのは、書き手も寿命もループの鮮度とは別だからである（不変条件 12）。
+loop は ruler・record_sweep・reconcile_pass・delete_reconcile のどれかである。scope は loop ごとに決まる。ruler と record_sweep はサイト、delete_reconcile は置き場の名前、reconcile_pass は全件パスの名前（encode / thumbnail / ts_scan）である。
+
+書き手は、そのループのパスが完了した後だけ書く。行は次の成功で上書きされ、行数は scope の数で頭打ちになる。4 つの loop の行は同じ寿命なので、1 つの表にまとめる（不変条件 12）。置き場を持たない全件パスは、scope に pass の名前を入れる。空の値を番兵にして同じ表の別の意味に使うことはしない。
+
+行の存在は「その scope が一度は成功した」だけを主張する。未成功の scope には行を作らない。ループの鮮度を、予約・record の観測・録画履歴の行の有無から推測しないための表である。
 
 <details><summary>根拠</summary>
 
-- 持つ列: `(site PK, last_success_at)` だけ
+- 持つ列: `(loop, scope)` PK と `last_success_at` だけ
+- loop の集合: CHECK 制約で閉じる
 - 推測の対象にしない表: `reservations` / `record_sync` / `recordings`
+- 読み手: 監視の collector だけ（API・readyz・UI は読まない）
 
 </details>

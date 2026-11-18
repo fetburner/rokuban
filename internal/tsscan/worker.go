@@ -74,7 +74,7 @@ type ReconcileWorker struct {
 	Locator  store.OriginalLocator
 	RowLimit int32
 	// Markers は全件パスの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
-	Markers store.ReconcilePassMarkers
+	Markers store.LoopMarkers
 }
 
 // Work enqueues one bounded window and persists the next page in a continuation job.

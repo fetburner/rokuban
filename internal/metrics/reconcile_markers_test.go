@@ -15,32 +15,29 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// fakeReconcileMarkers は全件パスと削除 reconcile の完走時刻の読み取りを差し替える。
+// fakeReconcileMarkers は loop_success_markers の読み取りと置き場の観測の読み取りを差し替える。
+// loops は loop 名ごとの scope → 時刻。err のキーは loop 名（reconcile_pass / delete_reconcile は
+// source 名と同じ値）か reconcileMarkerSourceStorage で、そこへの読み取りを失敗させる。
 type fakeReconcileMarkers struct {
-	passes  map[string]time.Time
-	stores  map[string]time.Time
+	loops   map[string]map[string]time.Time
 	storage []store.StorageSync
-	err     map[string]error // source ("reconcile_pass" など）→ 読み取りの失敗
+	err     map[string]error
 }
 
-func (f *fakeReconcileMarkers) ReadReconcilePassMarkers(context.Context) (map[string]time.Time, error) {
-	return f.passes, f.errFor(reconcileMarkerSourcePass)
-}
+func (f *fakeReconcileMarkers) MarkRulerPasses(context.Context, []string) error { return nil }
+
+func (f *fakeReconcileMarkers) MarkRecordSweep(context.Context, string) error { return nil }
 
 func (f *fakeReconcileMarkers) MarkReconcilePass(context.Context, string) error { return nil }
 
-func (f *fakeReconcileMarkers) ReadDeleteReconcileMarkers(context.Context) (map[string]time.Time, error) {
-	return f.stores, f.errFor(reconcileMarkerSourceDelete)
-}
-
 func (f *fakeReconcileMarkers) MarkDeleteReconcile(context.Context, string) error { return nil }
 
-func (f *fakeReconcileMarkers) ListStorageSync(context.Context) ([]store.StorageSync, error) {
-	return f.storage, f.errFor(reconcileMarkerSourceStorage)
+func (f *fakeReconcileMarkers) ReadLoopMarkers(_ context.Context, loop string) (map[string]time.Time, error) {
+	return f.loops[loop], f.err[loop]
 }
 
-func (f *fakeReconcileMarkers) errFor(source string) error {
-	return f.err[source]
+func (f *fakeReconcileMarkers) ListStorageSync(context.Context) ([]store.StorageSync, error) {
+	return f.storage, f.err[reconcileMarkerSourceStorage]
 }
 
 // collectReconcileSeries は Collect が出した系列を "name{label=value,...}" の形の
@@ -93,7 +90,8 @@ func descName(t *testing.T, desc string) string {
 
 func TestReconcileMarkerCollector_ZeroBeforeAnyPass(t *testing.T) {
 	t.Parallel()
-	c := NewReconcileMarkerCollector(&fakeReconcileMarkers{}, &fakeReconcileMarkers{}, &fakeReconcileMarkers{}, []string{"fs-b", "fs-a"}, []string{"fs-b", "fs-a"})
+	fake := &fakeReconcileMarkers{}
+	c := NewReconcileMarkerCollector(fake, fake, []string{"fs-b", "fs-a"}, []string{"fs-b", "fs-a"})
 	got := collectReconcileSeries(t, c)
 
 	want := map[string]float64{
@@ -119,22 +117,26 @@ func TestReconcileMarkerCollector_ReportsSavedTimesOfConfiguredStoresOnly(t *tes
 	deleteAt := time.Unix(1700000400, 0)
 	mediaAt := time.Unix(1700000500, 0)
 	scratchAt := time.Unix(1700000600, 0)
-	passes := &fakeReconcileMarkers{passes: map[string]time.Time{
-		store.ReconcilePassEncode:    encodeAt,
-		store.ReconcilePassThumbnail: thumbAt,
-		store.ReconcilePassTSScan:    tsAt,
-	}}
-	deletes := &fakeReconcileMarkers{stores: map[string]time.Time{
-		"fs-a":  deleteAt,
-		"s3-x":  deleteAt.Add(time.Hour), // 設定に無い置き場。出さない
-		"fs-zz": deleteAt.Add(time.Hour), // 設定に無い置き場。出さない
-	}}
-	storage := &fakeReconcileMarkers{storage: []store.StorageSync{
-		{Store: "fs-a", Root: "media", ObservedAt: mediaAt},
-		{Store: "fs-a", Root: "scratch", ObservedAt: scratchAt},
-		{Store: "s3-x", Root: "media", ObservedAt: mediaAt.Add(time.Hour)},
-	}}
-	c := NewReconcileMarkerCollector(passes, deletes, storage, []string{"fs-a", "fs-b"}, []string{"fs-a", "fs-b"})
+	fake := &fakeReconcileMarkers{
+		loops: map[string]map[string]time.Time{
+			store.LoopReconcilePass: {
+				store.ReconcilePassEncode:    encodeAt,
+				store.ReconcilePassThumbnail: thumbAt,
+				store.ReconcilePassTSScan:    tsAt,
+			},
+			store.LoopDeleteReconcile: {
+				"fs-a":  deleteAt,
+				"s3-x":  deleteAt.Add(time.Hour), // 設定に無い置き場。出さない
+				"fs-zz": deleteAt.Add(time.Hour), // 設定に無い置き場。出さない
+			},
+		},
+		storage: []store.StorageSync{
+			{Store: "fs-a", Root: "media", ObservedAt: mediaAt},
+			{Store: "fs-a", Root: "scratch", ObservedAt: scratchAt},
+			{Store: "s3-x", Root: "media", ObservedAt: mediaAt.Add(time.Hour)},
+		},
+	}
+	c := NewReconcileMarkerCollector(fake, fake, []string{"fs-a", "fs-b"}, []string{"fs-a", "fs-b"})
 	got := collectReconcileSeries(t, c)
 
 	want := map[string]float64{
@@ -187,12 +189,14 @@ func TestReconcileMarkerCollector_ReadFailureDropsOnlyItsSeries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			fake := &fakeReconcileMarkers{
-				passes:  map[string]time.Time{store.ReconcilePassEncode: at},
-				stores:  map[string]time.Time{"fs-a": at},
+				loops: map[string]map[string]time.Time{
+					store.LoopReconcilePass:   {store.ReconcilePassEncode: at},
+					store.LoopDeleteReconcile: {"fs-a": at},
+				},
 				storage: []store.StorageSync{{Store: "fs-a", Root: "media", ObservedAt: at}},
 				err:     map[string]error{tc.source: errBoom},
 			}
-			c := NewReconcileMarkerCollector(fake, fake, fake, []string{"fs-a"}, []string{"fs-a"})
+			c := NewReconcileMarkerCollector(fake, fake, []string{"fs-a"}, []string{"fs-a"})
 			got := collectReconcileSeries(t, c)
 
 			for _, name := range tc.failed {
@@ -255,11 +259,13 @@ func TestReconcileMarkerS3Series(t *testing.T) {
 			if s3 {
 				deletes = append(deletes, "s3-a")
 			}
-			fake := &fakeReconcileMarkers{stores: map[string]time.Time{"s3-a": time.Unix(123, 0)}}
-			c := NewReconcileMarkerCollector(fake, fake, fake, []string{"fs-a"}, deletes)
+			fake := &fakeReconcileMarkers{loops: map[string]map[string]time.Time{
+				store.LoopDeleteReconcile: {"s3-a": time.Unix(123, 0)},
+			}}
+			c := NewReconcileMarkerCollector(fake, fake, []string{"fs-a"}, deletes)
 			for _, want := range []float64{123, 0} {
 				if want == 0 {
-					delete(fake.stores, "s3-a")
+					delete(fake.loops[store.LoopDeleteReconcile], "s3-a")
 				}
 				got := collectReconcileSeries(t, c)
 				value, ok := got["rokuban_delete_reconcile_last_success_timestamp_seconds{store=s3-a}"]
