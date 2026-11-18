@@ -1,4 +1,4 @@
-package worker
+package thumbnail
 
 import (
 	"math"

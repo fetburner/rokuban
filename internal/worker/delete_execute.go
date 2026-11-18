@@ -40,6 +40,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 )
 
 // observeDeleteReconcile は削除 reconcile のブレーカー状態を DB の真実から観測する。
@@ -148,13 +149,13 @@ func (w *DeleteReconcileWorker) reclaimPendingFilesystemDerivedCopy(ctx context.
 		return
 	}
 	reclaimed, err := w.MediaPendingReclaim.ReclaimPendingMediaAssetCopy(ctx, copy.ID, before, func() error {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming pending derived object"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming pending derived object"); err != nil {
 			return err
 		}
 		if err := deletePendingObjectKey(ctx, objects, copy.RelPath, copy.Kind); err != nil {
 			return err
 		}
-		return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking pending derived object deleted")
+		return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking pending derived object deleted")
 	})
 	if err != nil {
 		log.Error("delete_reconcile: reclaiming pending filesystem derived copy", "err", err)
@@ -174,7 +175,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 	if ctx.Err() != nil {
 		return
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting stale placement copy"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting stale placement copy"); err != nil {
 		log.Warn("delete_reconcile: withholding placement deletion because the store marker did not match", "err", err)
 		return
 	}
@@ -195,7 +196,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 			return
 		}
 		beforeMediaAssetUnlink(candidate.RelPath)
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting stale derived placement copy"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting stale derived placement copy"); err != nil {
 			log.Warn("delete_reconcile: withholding derived placement deletion because the store marker did not match", "err", err)
 			return
 		}
@@ -203,7 +204,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 			log.Error("delete_reconcile: deleting stale derived placement object", "err", err)
 			return
 		}
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking stale derived placement copy deleted"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking stale derived placement copy deleted"); err != nil {
 			log.Warn("delete_reconcile: withholding deleted state because the store marker did not match", "err", err)
 			return
 		}
@@ -233,7 +234,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		return
 	}
 	beforeMediaAssetUnlink(candidate.RelPath)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking stale placement copy"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking stale placement copy"); err != nil {
 		log.Warn("delete_reconcile: withholding placement unlink because the store marker did not match", "err", err)
 		return
 	}
@@ -245,7 +246,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		log.Error("delete_reconcile: syncing directory after placement unlink", "err", err)
 		return
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking stale placement copy deleted"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking stale placement copy deleted"); err != nil {
 		log.Warn("delete_reconcile: withholding deleted state because the store marker did not match", "err", err)
 		return
 	}
@@ -273,7 +274,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 		log.Error("delete_reconcile: cannot reclaim pending transfer copy outside this worker's store")
 		return
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming obsolete pending transfer copy"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming obsolete pending transfer copy"); err != nil {
 		log.Warn("delete_reconcile: withholding pending transfer reclaim because the store marker did not match", "err", err)
 		return
 	}
@@ -309,7 +310,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 			if len(ownedRelPaths) != 0 {
 				return fmt.Errorf("original transfer copy %d has derived-object ownership records", candidate.CopyID)
 			}
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending transfer copy"); err != nil {
+			if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending transfer copy"); err != nil {
 				return err
 			}
 			owned := false
@@ -336,7 +337,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 			if err := fsink.SyncParentDir(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("syncing pending transfer directory: %w", err)
 			}
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking obsolete pending transfer copy deleted"); err != nil {
+			if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking obsolete pending transfer copy deleted"); err != nil {
 				return err
 			}
 			return nil
@@ -366,15 +367,15 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingDerivedTransferCopy(ctx co
 	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
 		ctx, candidate, rules, fsStores, w.StorageTransferPolicy.Derived,
 		func(ownedRelPaths []string) error {
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer copy"); err != nil {
+			if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer copy"); err != nil {
 				return err
 			}
 			if err := deleteOwnedTransferObjects(ctx, w.DerivedObjects, candidate.RelPath, candidate.Kind, ownedRelPaths, func() error {
-				return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer object")
+				return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer object")
 			}); err != nil {
 				return err
 			}
-			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking obsolete pending derived transfer copy deleted")
+			return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking obsolete pending derived transfer copy deleted")
 		},
 	)
 	if err != nil {
@@ -422,7 +423,7 @@ func pendingTransferDestinationOwnedByTemp(path, tempPath string) (bool, error) 
 // したかどうかを戻さない。
 func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.MediaDeleteAsset, source string) {
 	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath, "source", source)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting media asset"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "deleting media asset"); err != nil {
 		log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", err)
 		return
 	}
@@ -435,7 +436,9 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 			return
 		}
 		w.deleteObjectCopyWithStore(ctx, objects, w.MediaDelete, t, source, w.MediaStoreName,
-			func(operation string) error { return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation) })
+			func(operation string) error {
+				return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
+			})
 		return
 	}
 
@@ -468,7 +471,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		}
 	}
 	beforeMediaAssetUnlink(t.RelPath)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking media asset"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking media asset"); err != nil {
 		log.Warn("delete_reconcile: withholding asset unlink because media store marker did not match", "err", err)
 		return
 	}
@@ -482,7 +485,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 
 	// ErrNotExist も、unlink の成功と同じくこの 1 回の照合で deleted にしてよいと確かめる。
 	beforeMediaAssetMarkDeleted(t.ID)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking media asset deleted"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking media asset deleted"); err != nil {
 		log.Warn("delete_reconcile: withholding deleted state because media store marker did not match", "err", err)
 		return
 	}
@@ -556,7 +559,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 	afterDeletingAssetStat(a.RelPath)
 	if statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming deleting media asset is absent"); err != nil {
+			if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming deleting media asset is absent"); err != nil {
 				log.Warn("delete_reconcile: withholding missing-file decision because media store marker did not match", "err", err)
 				return
 			}
@@ -573,7 +576,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 		return
 	}
 
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reverting deleting media asset"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reverting deleting media asset"); err != nil {
 		log.Warn("delete_reconcile: withholding deleting-state resolution because media store marker did not match", "err", err)
 		return
 	}
@@ -624,7 +627,7 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 	}
 
 	beforeOrphanFileUnlink(relPath)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking orphan file"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking orphan file"); err != nil {
 		log.Warn("delete_reconcile: withholding orphan unlink because media store marker did not match", "err", err)
 		return
 	}
@@ -634,7 +637,7 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 	}
 	afterOrphanFileUnlink(relPath)
 	if !physicallyDeleted {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
 			log.Warn("delete_reconcile: withholding missing-orphan decision because media store marker did not match", "err", err)
 			return
 		}
@@ -693,7 +696,7 @@ func (w *DeleteReconcileWorker) deleteOrphanIngestTemp(path, relPath string, mti
 		}
 	}
 	beforeOrphanFileUnlink(relPath)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking orphan ingest temp"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking orphan ingest temp"); err != nil {
 		log.Warn("delete_reconcile: withholding ingest temp unlink because media store marker did not match", "err", err)
 		return
 	}
@@ -703,7 +706,7 @@ func (w *DeleteReconcileWorker) deleteOrphanIngestTemp(path, relPath string, mti
 	}
 	afterOrphanFileUnlink(relPath)
 	if !physicallyDeleted {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming ingest temp is absent"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming ingest temp is absent"); err != nil {
 			log.Warn("delete_reconcile: withholding missing-temp decision because media store marker did not match", "err", err)
 			return
 		}
@@ -757,7 +760,7 @@ func (w *DeleteReconcileWorker) deleteOrphanTransferTemp(path, relPath string, m
 	}
 
 	beforeOrphanFileUnlink(relPath)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking orphan file"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking orphan file"); err != nil {
 		log.Warn("delete_reconcile: withholding orphan unlink because media store marker did not match", "err", err)
 		return
 	}
@@ -767,7 +770,7 @@ func (w *DeleteReconcileWorker) deleteOrphanTransferTemp(path, relPath string, m
 	}
 	afterOrphanFileUnlink(relPath)
 	if !physicallyDeleted {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
 			log.Warn("delete_reconcile: withholding missing-orphan decision because media store marker did not match", "err", err)
 			return
 		}
@@ -827,7 +830,7 @@ func (w *DeleteReconcileWorker) clearOrphanFileRecord(relPath string, size int64
 // clearAbsentOrphanRecord は Stat / open が ErrNotExist だった孤児の記録を、目印を照合してから消す。
 // 目印が合わない置き場では「無い」が別の置き場の観測かもしれないので、記録を消さない。
 func (w *DeleteReconcileWorker) clearAbsentOrphanRecord(relPath string, log *slog.Logger) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
 		log.Warn("delete_reconcile: withholding missing-orphan decision because media store marker did not match", "err", err)
 		return
 	}

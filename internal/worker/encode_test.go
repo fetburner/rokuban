@@ -30,6 +30,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/fetburner/rokuban/internal/thumbnail"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -1019,7 +1020,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 		t.Fatalf("real encoded object has no MP4 ftyp header: %x", encodedBytes[:min(len(encodedBytes), 12)])
 	}
 
-	thumbnailWorker := &ThumbnailWorker{
+	thumbnailWorker := &thumbnail.ThumbnailWorker{
 		Media: pgstoretest.Media(pool), Objects: objects, ObjectPublisher: pgstoretest.Media(pool),
 		MediaDir: mediaDir, ScratchDir: t.TempDir(), FFmpeg: ffmpeg, FFprobe: ffprobe,
 	}

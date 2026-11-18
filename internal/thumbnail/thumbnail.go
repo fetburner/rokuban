@@ -1,4 +1,4 @@
-package worker
+package thumbnail
 
 import (
 	"context"
@@ -19,9 +19,11 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/mediapublish"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 )
 
 // サムネイルの代表フレーム位置ポリシー（固定。設定キーは設けない）:
@@ -90,7 +92,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		metrics.ThumbnailDuration.Observe(time.Since(started).Seconds())
 		metrics.ThumbnailJobs.WithLabelValues(result).Inc()
 	}()
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting thumbnail generation"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting thumbnail generation"); err != nil {
 		return err
 	}
 
@@ -139,9 +141,9 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: plan.relPath,
 		DerivedGeneration: plan.generation, ReserveNewGeneration: true,
 	}
-	size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, scratchPath, objectContentType(plan.relPath), false,
+	size, published, err = mediapublish.PublishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, scratchPath, mediapublish.ObjectContentType(plan.relPath), false,
 		func(operation string) error {
-			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
+			return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
 		},
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return w.ObjectPublisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
@@ -381,7 +383,7 @@ type thumbnailObserved struct {
 }
 
 func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (time.Duration, error) {
-	return probeDuration(ctx, w.FFprobe, inputPath, w.commandOutput)
+	return mediaexec.ProbeFormatDuration(ctx, w.FFprobe, inputPath, w.commandOutput)
 }
 
 func (w *ThumbnailWorker) extractFrame(ctx context.Context, inputPath, outputPath string, seek time.Duration) error {

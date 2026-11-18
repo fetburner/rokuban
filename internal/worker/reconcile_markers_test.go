@@ -88,15 +88,6 @@ func (failingEncodeListing) ListMissingEncodeProfiles(context.Context, store.Mis
 	return nil, errors.New("listing rejected")
 }
 
-// failingSeekTilesListing は seek_tiles の候補の列挙だけを失敗させる。
-type failingSeekTilesListing struct {
-	store.MediaReconcile
-}
-
-func (failingSeekTilesListing) ListMissingSeekTilesRecordings(context.Context, store.MediaReconcilePage) ([]int64, error) {
-	return nil, errors.New("seek tiles listing rejected")
-}
-
 func TestEncodeReconcileMarker_FullPassMarksOnlyAfterSuccess(t *testing.T) {
 	t.Parallel()
 	pool := setupTestPool(t)
@@ -171,51 +162,6 @@ func TestEncodeReconcileMarker_WriteFailureFailsThePass(t *testing.T) {
 	w := &EncodeReconcileWorker{Enqueuer: newRecordingEnqueuer(), Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Markers: markers}
 	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err == nil {
 		t.Fatal("EncodeReconcileWorker.Work = nil, want the marker write error")
-	}
-}
-
-func TestThumbnailReconcileMarker_FullPassMarksOnlyAfterSuccess(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	markers := &markerRecorder{}
-	w := &ThumbnailReconcileWorker{Enqueuer: newRecordingEnqueuer(), Media: pgstoretest.Media(pool), Markers: markers}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}), "ThumbnailReconcileWorker.Work")
-	if got := markers.recordedPasses(); !slices.Equal(got, []string{store.ReconcilePassThumbnail}) {
-		t.Fatalf("recorded passes = %v, want [thumbnail]", got)
-	}
-}
-
-// シークタイルの一覧が取れなかったパスは、完走として記録しない。ジョブ自体は失敗にしない（従来どおり）。
-func TestThumbnailReconcileMarker_FailedSeekTilesListingDoesNotMark(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	markers := &markerRecorder{}
-	w := &ThumbnailReconcileWorker{Enqueuer: newRecordingEnqueuer(),
-		Media: failingSeekTilesListing{pgstoretest.Media(pool)}, Markers: markers}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}), "ThumbnailReconcileWorker.Work, want nil (the seek tiles failure is counted, not returned)")
-	if got := markers.recordedPasses(); len(got) != 0 {
-		t.Fatalf("recorded passes = %v after a failed seek tiles listing, want none", got)
-	}
-}
-
-func TestThumbnailReconcileMarker_TargetedPassDoesNotMark(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	markers := &markerRecorder{}
-	recordingID := dbtest.Recording(t, pool)
-	w := &ThumbnailReconcileWorker{Enqueuer: newRecordingEnqueuer(), Media: pgstoretest.Media(pool), Markers: markers}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{RecordingID: recordingID}), "ThumbnailReconcileWorker.Work(targeted)")
-	if got := markers.recordedPasses(); len(got) != 0 {
-		t.Fatalf("recorded passes = %v after a targeted pass, want none", got)
 	}
 }
 

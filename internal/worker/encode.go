@@ -25,9 +25,11 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/mediapublish"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -118,7 +120,7 @@ func probeEncodeDuration(
 ) (time.Duration, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return probeDuration(probeCtx, ffprobe, inputPath, run)
+	return mediaexec.ProbeFormatDuration(probeCtx, ffprobe, inputPath, run)
 }
 
 // encodeMinTimeout は実尺から計算する締切の下限。
@@ -131,7 +133,7 @@ const encodeMinTimeout = time.Hour
 // jobq.ErrDiscard を返して、adapter に再配信不要と伝える。
 // POST /api/recordings/{id}/encode-profiles と cut 版の /reencode は failed 行を消して予算を戻す。
 func (w *EncodeWorker) Work(ctx context.Context, args jobs.EncodeJobArgs) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting encode"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting encode"); err != nil {
 		return err
 	}
 	start, err := w.beginEncodeAttempt(ctx, args.RecordingID, args.Profile)
@@ -229,13 +231,13 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	if w.Objects == nil {
 		return errors.New("derived object store is required")
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "checking encoded object key"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "checking encoded object key"); err != nil {
 		return err
 	}
-	if err := requireGeneratedObjectKeyAvailable(ctx, w.Objects, relPath); err != nil {
+	if err := mediapublish.RequireGeneratedObjectKeyAvailable(ctx, w.Objects, relPath); err != nil {
 		return err
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reserving encoded object copy"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reserving encoded object copy"); err != nil {
 		return err
 	}
 	if err := w.ObjectPublisher.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
@@ -737,7 +739,7 @@ type encodePublishInput struct {
 // pending を active にする。ファイルシステム固有の staging、rename、親 directory
 // fsync、上書き防止は fsstore.Put が担う。
 func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing encoded object"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing encoded object"); err != nil {
 		return 0, false, err
 	}
 	return w.publishEncodedObject(ctx, in)
@@ -770,22 +772,22 @@ func (w *EncodeWorker) publishEncodedObject(ctx context.Context, in encodePublis
 		RelPath: in.relPath, SizeBytes: info.Size(), DerivedGeneration: in.observed.generation,
 		ReserveNewGeneration: !in.pendingObjectPrepared,
 	}
-	var companions []objectCompanion
+	var companions []mediapublish.ObjectCompanion
 	if in.withSubtitles {
 		subtitleKey, err := mediapath.SubtitleSibling(in.relPath)
 		if err != nil {
 			return 0, false, fmt.Errorf("building subtitle object key: %w", err)
 		}
-		companions = append(companions, objectCompanion{Key: subtitleKey, Path: in.subtitleOut, ContentType: objectContentType(subtitleKey)})
+		companions = append(companions, mediapublish.ObjectCompanion{Key: subtitleKey, Path: in.subtitleOut, ContentType: mediapublish.ObjectContentType(subtitleKey)})
 	}
-	size, published, err = publishGeneratedObject(
-		ctx, w.Objects, w.ObjectPublisher, pending, in.scratchOut, objectContentType(in.relPath),
+	size, published, err = mediapublish.PublishGeneratedObject(
+		ctx, w.Objects, w.ObjectPublisher, pending, in.scratchOut, mediapublish.ObjectContentType(in.relPath),
 		in.pendingObjectPrepared,
 		func(operation string) error {
-			if operation == guardOperationPutObject {
+			if operation == mediapublish.GuardOperationPutObject {
 				beforeEncodeObjectPut(in.scratchOut)
 			}
-			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
+			return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
 		},
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			input.SizeBytes = size

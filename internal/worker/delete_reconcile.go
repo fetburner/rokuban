@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -203,7 +204,7 @@ func (w *DeleteReconcileWorker) placementPolicy() (rules []byte, derived string,
 
 // workFilesystem は FS の置き場の削除 reconcile を 1 パス実行する。
 func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSettings) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting delete reconcile"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting delete reconcile"); err != nil {
 		return err
 	}
 	// この worker が担当する置き場をブレーカーの scope に使う。

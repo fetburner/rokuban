@@ -1,4 +1,5 @@
-package worker
+// Package mediapublish は派生物を置き場と DB に公開する手順を持つ。
+package mediapublish
 
 import (
 	"context"
@@ -16,7 +17,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-type objectCompanion struct {
+// ObjectCompanion は本体と同じ公開手順で置く副ファイルを指す。
+type ObjectCompanion struct {
 	Key         string
 	Path        string
 	ContentType string
@@ -24,19 +26,20 @@ type objectCompanion struct {
 
 const generatedObjectCleanupTimeout = 10 * time.Second
 
-// publishGeneratedObject は派生物の置き場への公開を、予約・Put・DB 公開の順に進める。
+// GuardOperationPutObject は、guard に渡す本体の Put の前の操作名。呼び出し側がこの Put だけを見分けるのに使う。
+const GuardOperationPutObject = "putting generated object"
+
+// PublishGeneratedObject は派生物の置き場への公開を、予約・Put・DB 公開の順に進める。
+// encode・thumbnail・seek tiles は同じ pending copy の公開契約に従うため、この手順を共有する。
 //
 //  1. pending のコピー行を commit する（pendingPrepared なら呼び出し側が済ませている）。
 //  2. 宣言サイズどおりに読み切った全体の SHA-256 を照合しながら Put する。
 //  3. commit が公開の tx で pending を active にし、SHA-256 を論理行へ書く。
 //
-// guardOperationPutObject は、guard に渡す本体の Put の前の操作名。呼び出し側がこの Put だけを見分けるのに使う。
-const guardOperationPutObject = "putting generated object"
-
 // guard は Put と DB commit の直前に呼び、メディア置き場のマウント状態を再確認する。
 // commit は Put の後に呼ぶ。通常の未公開 pending は reclaim まで保持するが、
 // pending row が公開中に退役し、終了時に live copy が無ければ自分の key を削除する。
-func publishGeneratedObject(
+func PublishGeneratedObject(
 	ctx context.Context,
 	objects objstore.Store,
 	publisher store.DerivedMediaPublisher,
@@ -45,7 +48,7 @@ func publishGeneratedObject(
 	pendingPrepared bool,
 	guard func(operation string) error,
 	commit func(size int64, sha256 [sha256.Size]byte) (bool, error),
-	companions ...objectCompanion,
+	companions ...ObjectCompanion,
 ) (size int64, published bool, retErr error) {
 	if objects == nil || publisher == nil {
 		return 0, false, fmt.Errorf("object store and derived media publisher are required")
@@ -64,11 +67,11 @@ func publishGeneratedObject(
 		return 0, false, fmt.Errorf("hashing generated object %q: %w", pending.RelPath, err)
 	}
 	pending.SizeBytes = size
-	if err := requireGeneratedObjectKeyAvailable(ctx, objects, pending.RelPath); err != nil {
+	if err := RequireGeneratedObjectKeyAvailable(ctx, objects, pending.RelPath); err != nil {
 		return 0, false, err
 	}
 	for _, companion := range companions {
-		if err := requireGeneratedObjectKeyAvailable(ctx, objects, companion.Key); err != nil {
+		if err := RequireGeneratedObjectKeyAvailable(ctx, objects, companion.Key); err != nil {
 			return 0, false, err
 		}
 	}
@@ -81,7 +84,7 @@ func publishGeneratedObject(
 		}
 	}
 	if guard != nil {
-		if err := guard(guardOperationPutObject); err != nil {
+		if err := guard(GuardOperationPutObject); err != nil {
 			return 0, false, err
 		}
 	}
@@ -174,7 +177,9 @@ func deleteUnpublishedGeneratedObjects(ctx context.Context, objects objstore.Sto
 	return cleanupErr
 }
 
-func requireGeneratedObjectKeyAvailable(ctx context.Context, objects objstore.Store, key string) error {
+// RequireGeneratedObjectKeyAvailable は key に既存のオブジェクトがあればエラーを返す。
+// 公開時と encode の事前予約時は既存オブジェクトを上書きしないためにこの判定を共有する。
+func RequireGeneratedObjectKeyAvailable(ctx context.Context, objects objstore.Store, key string) error {
 	_, err := objects.Head(ctx, key)
 	if err == nil {
 		return fmt.Errorf("generated object key %q is already occupied: %w", key, objstore.ErrAlreadyExists)
@@ -200,7 +205,7 @@ func hashObjectFile(ctx context.Context, path string) (int64, [sha256.Size]byte,
 		return 0, checksum, fmt.Errorf("opening generated object: %w", err)
 	}
 	hash := sha256.New()
-	n, err := copyWithContext(ctx, hash, f)
+	n, err := CopyWithContext(ctx, hash, f)
 	closeErr := f.Close()
 	if err != nil {
 		return 0, checksum, fmt.Errorf("reading generated object: %w", err)
@@ -227,13 +232,9 @@ func (r contextReader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 
-func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+// CopyWithContext は公開と転送の読み取りをキャンセル時に止める。
+func CopyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
 	return io.Copy(dst, contextReader{ctx: ctx, r: src})
-}
-
-func uploadObjectFile(ctx context.Context, objects objstore.Store, key, path string, size int64, checksum [sha256.Size]byte, contentType string) error {
-	_, err := uploadObjectFileTracked(ctx, objects, key, path, size, checksum, contentType)
-	return err
 }
 
 func uploadObjectFileTracked(ctx context.Context, objects objstore.Store, key, path string, size int64, checksum [sha256.Size]byte, contentType string) (bool, error) {
@@ -253,7 +254,8 @@ func uploadObjectFileTracked(ctx context.Context, objects objstore.Store, key, p
 	return true, nil
 }
 
-func objectContentType(relPath string) string {
+// ObjectContentType は生成元と転送先で同じ拡張子に同じ Content-Type を付ける。
+func ObjectContentType(relPath string) string {
 	switch strings.ToLower(filepath.Ext(relPath)) {
 	case ".mp4", ".m4v":
 		return "video/mp4"

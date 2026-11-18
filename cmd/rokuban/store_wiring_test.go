@@ -51,8 +51,8 @@ func TestPeriodicThumbnailReconcileEnqueuesWithUnboundMedia(t *testing.T) {
 
 	media := pgstore.NewMediaWithStores(pool, "", "", dbtest.StoreName)
 	enq := &enqueueRecorder{}
-	w := &worker.ThumbnailReconcileWorker{Media: media, Enqueuer: enq}
-	if err := w.Work(context.Background(), jobs.ThumbnailReconcileArgs{}); err != nil {
+	registry := worker.NewWorkers(&worker.Deps{MediaReconcile: media, Enqueuer: enq})
+	if err := registry.Work(context.Background(), jobs.ThumbnailReconcileArgs{}); err != nil {
 		t.Fatalf("ThumbnailReconcileWorker.Work: %v", err)
 	}
 

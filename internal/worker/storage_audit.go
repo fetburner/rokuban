@@ -33,6 +33,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 )
 
 // reconcileDeleteObservations は孤児と欠損アセットを同じディスク走査結果で観測する。
@@ -122,7 +123,7 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 	}
 
 	// 走査の結果（候補の記録と、見えなくなった行の掃除）を DB へ書く前に 1 回照合する。
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording orphan candidates"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording orphan candidates"); err != nil {
 		return nil, err
 	}
 	for relPath := range candidates {
@@ -221,7 +222,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 
 	// seenOnDisk に無い行を「実体無し」として DB へ書く前に、ループの前で 1 回照合する。
 	// 目印が合わない置き場の走査結果は、active コピーの欠落ではなく別の置き場の観測かもしれない。
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording missing media asset"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording missing media asset"); err != nil {
 		return false, err
 	}
 	candidates := make(map[int64]struct{})
@@ -385,7 +386,7 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		info, statErr := os.Stat(path)
 		if statErr != nil {
 			if errors.Is(statErr, os.ErrNotExist) {
-				if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing vanished orphan record"); markerErr != nil {
+				if markerErr := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing vanished orphan record"); markerErr != nil {
 					return nil, markerErr
 				}
 				if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {

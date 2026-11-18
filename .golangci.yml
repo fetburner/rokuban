@@ -57,6 +57,8 @@ linters:
               desc: api role must not depend on the mirakc client
             - pkg: github.com/fetburner/rokuban/internal/mediapath
               desc: api role must not depend on filesystem paths
+            - pkg: github.com/fetburner/rokuban/internal/storemarker
+              desc: api role must not read filesystem store markers
             - pkg: github.com/fetburner/rokuban/internal/ffargs
               desc: api role must not depend on ffmpeg arguments
             - pkg: github.com/fetburner/rokuban/internal/tsstat
@@ -160,6 +162,13 @@ linters:
             - "!${config-path}/internal/cmdetect/cm_detect_test.go"
             - "!${config-path}/internal/cmdetect/cm_detect_work_test.go"
             - "!${config-path}/internal/cmdetect/cm_logo_candidate_test.go"
+            # worker から移した既存の派生物公開・thumbnail のテスト。
+            - "!${config-path}/internal/mediapublish/object_store_test.go"
+            - "!${config-path}/internal/mediapublish/publication_test.go"
+            - "!${config-path}/internal/thumbnail/s3_conformance_test.go"
+            - "!${config-path}/internal/thumbnail/seek_tiles_test.go"
+            - "!${config-path}/internal/thumbnail/thumbnail_reconcile_test.go"
+            - "!${config-path}/internal/thumbnail/thumbnail_test.go"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: tests build state through store contracts or internal/db/dbtest
@@ -237,16 +246,17 @@ linters:
               desc: os/exec is limited to worker, cmdetect, streamer, mediaexec, and config
         mediaexec-worker-only:
           # 不変条件 4: os/exec の制限が実行補助の import で迂回されないよう、
-          # 本番コードからの mediaexec の呼び出しを worker と cmdetect に閉じ込める。
+          # 本番コードからの mediaexec の呼び出しを worker・cmdetect・thumbnail に閉じ込める。
           list-mode: lax
           files:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/cmdetect/**"
+            - "!${config-path}/internal/thumbnail/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/mediaexec
-              desc: mediaexec imports are limited to internal/worker and internal/cmdetect
+              desc: mediaexec imports are limited to internal/worker, internal/cmdetect, and internal/thumbnail
         cmdetect-worker-only:
           # 不変条件 4: cmdetect は os/exec と mediaexec を使う。
           # cmdetect の import で exec の制限が迂回されないよう、本番コードからの import を worker に閉じ込める。
@@ -259,6 +269,18 @@ linters:
           deny:
             - pkg: github.com/fetburner/rokuban/internal/cmdetect
               desc: cmdetect imports are limited to internal/worker and internal/cmdetect
+        thumbnail-worker-only:
+          # 不変条件 4: thumbnail は mediaexec を使う。
+          # thumbnail の import で exec の制限が迂回されないよう、本番コードからの import を worker に閉じ込める。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/worker/**"
+            - "!${config-path}/internal/thumbnail/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/thumbnail
+              desc: thumbnail imports are limited to internal/worker and internal/thumbnail
         worker-tsstat:
           # 不変条件 6: ingest は TS を読まず、TS の読者は解析ジョブへ閉じ込める。
           list-mode: lax

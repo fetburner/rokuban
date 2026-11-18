@@ -25,6 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/mediapublish"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
@@ -585,7 +586,7 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	objects := transferTestObjectStores(t, roots)
 	targetRelPath := transfer.RelPath
 	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(targetRelPath))
-	testutil.RequireNoError(t, uploadObjectFile(context.Background(), objects["archive"], targetRelPath, filepath.Join(roots["test-store"], filepath.FromSlash(relPath)), int64(len(video)), sha256.Sum256(video), objectContentType(targetRelPath)), "putting pending derived destination")
+	testutil.RequireNoError(t, objects["archive"].Put(context.Background(), targetRelPath, bytes.NewReader(video), int64(len(video)), sha256.Sum256(video), mediapublish.ObjectContentType(targetRelPath)), "putting pending derived destination")
 	ownership, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", targetRelPath)
 	if err != nil || ownership != store.TransferObjectOwned {
 		t.Fatalf("recording pending destination ownership = (%d, %v), want owned", ownership, err)

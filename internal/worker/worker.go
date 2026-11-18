@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/thumbnail"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -249,7 +250,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LoopMarkers:        deps.LoopMarkers,
 		Webhook:            deps.Webhook,
 	})
-	riveradapter.Register(workers, &ThumbnailReconcileWorker{
+	riveradapter.Register(workers, &thumbnail.ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.MediaReconcile,
 		Markers:  deps.LoopMarkers,
@@ -304,7 +305,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 		}
 	}))
 	riveradapter.Register[jobs.ThumbnailJobArgs](workers, newStoreRoute("thumbnail", deps.perStore(), func(d *Deps) jobq.Worker[jobs.ThumbnailJobArgs] {
-		return &ThumbnailWorker{
+		return &thumbnail.ThumbnailWorker{
 			Media:            d.MediaReconcile,
 			ObjectPublisher:  d.DerivedMediaPublish,
 			Objects:          d.DerivedObjects,
@@ -317,7 +318,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 		}
 	}))
 	riveradapter.Register[jobs.SeekTilesJobArgs](workers, newStoreRoute("seek_tiles", deps.perStore(), func(d *Deps) jobq.Worker[jobs.SeekTilesJobArgs] {
-		return &SeekTilesWorker{
+		return &thumbnail.SeekTilesWorker{
 			Media:           d.MediaReconcile,
 			ObjectPublisher: d.DerivedMediaPublish,
 			Objects:         d.DerivedObjects,

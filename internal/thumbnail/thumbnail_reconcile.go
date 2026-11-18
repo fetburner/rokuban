@@ -1,7 +1,8 @@
-package worker
+package thumbnail
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -28,10 +29,8 @@ const (
 // DB だけでは恒久性を判定できない失敗は、level-triggered な再投入と候補窓の
 // 回転で扱う。
 //
-// thumbnail_reconcile は ThumbnailWorker / SeekTilesWorker と同じ thumbnail
-// キューを使う。queue adapter のキュー単位並列度はジョブ種を区別しないため、
-// thumbnail の抽出中はこのパスも待つが、次の周期に同じ desired−observed を
-// 再確認すればよい。
+// thumbnail_reconcile は cleanup キュー、ThumbnailWorker / SeekTilesWorker は
+// thumbnail キューを使う（TestNewWorkersRegistersThumbnailJobs）。
 //
 // missing thumbnail と再選択候補はどちらも poster の一部として同じキューへ積む。
 // **seek_tiles も同じパスが埋める**が、候補集合は別なので poster の窓と seek_tiles
@@ -61,12 +60,17 @@ type ThumbnailReconcileWorker struct {
 	Markers store.LoopMarkers
 }
 
+// errNoActiveOriginal は、読み取りジョブを積む置き場を決められない（active な原本のコピーが無い）ことを表す。
+// 次の reconcile が引き直す。
+var errNoActiveOriginal = errors.New("no active original copy to choose a store from")
+
 // enqueueThumbnail は原本のコピーがある置き場（storeName。無ければ空）のキューへ thumbnail を積む。
 func (w *ThumbnailReconcileWorker) enqueueThumbnail(ctx context.Context, recordingID int64, storeName string) error {
 	if storeName == "" {
 		return errNoActiveOriginal
 	}
-	return enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: recordingID, Store: storeName})
+	_, err := w.Enqueuer.Enqueue(ctx, jobs.ThumbnailJobArgs{RecordingID: recordingID, Store: storeName})
+	return err
 }
 
 // Work は thumbnail reconcile を全件または指定録画について実行する。
@@ -79,6 +83,10 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 	recordingID := args.RecordingID
 	if w.Enqueuer == nil {
 		return fmt.Errorf("thumbnail reconcile: job enqueuer is nil")
+	}
+
+	if w.Media == nil {
+		return fmt.Errorf("thumbnail reconcile: original locator is nil")
 	}
 
 	rowLimit := w.RowLimit
@@ -120,9 +128,9 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 	}
 
 	failed := 0
-	missingStores, err := originalStoresOf(ctx, w.Media, rows)
+	missingStores, err := w.Media.OriginalStores(ctx, rows)
 	if err != nil {
-		return fmt.Errorf("thumbnail reconcile: %w", err)
+		return fmt.Errorf("thumbnail reconcile: locating originals: %w", err)
 	}
 	for _, recordingID := range rows {
 		if err := w.enqueueThumbnail(ctx, recordingID, missingStores[recordingID]); err != nil {
@@ -148,7 +156,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 	}
 
 	seekTilesFailed, seekTilesAfter, seekTilesWindowFull, seekTilesDone, seekTilesListed := w.enqueueMissingSeekTiles(
-		ctx, w.Enqueuer, rowLimit, args.AfterSeekTilesRecordingID, args.SeekTilesDone, targetID,
+		ctx, rowLimit, args.AfterSeekTilesRecordingID, args.SeekTilesDone, targetID,
 	)
 	failed += seekTilesFailed
 
@@ -202,7 +210,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		if !seekTilesListed {
 			return nil
 		}
-		return markReconcilePass(ctx, w.Markers, store.ReconcilePassThumbnail)
+		return store.MarkReconcilePass(ctx, w.Markers, store.ReconcilePassThumbnail)
 	}
 	if len(rows) > 0 || len(reselectRows) > 0 || failed > 0 {
 		slog.Info("thumbnail_reconcile: targeted pass complete",
@@ -219,7 +227,6 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 // 既にチェーン内で完了している窓は、このパスで一覧を取る必要が無いので listed は真になる。
 func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 	ctx context.Context,
-	enqueuer jobq.Enqueuer,
 	rowLimit int32,
 	after int64,
 	done bool,
@@ -239,9 +246,9 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 		return 1, after, false, false, false
 	}
 
-	tileStores, err := originalStoresOf(ctx, w.Media, rows)
+	tileStores, err := w.Media.OriginalStores(ctx, rows)
 	if err != nil {
-		slog.Error("thumbnail_reconcile: locating originals for seek tiles failed", "err", err)
+		slog.Error("thumbnail_reconcile: locating originals for seek tiles failed", "err", fmt.Errorf("locating originals: %w", err))
 		return 1, after, false, false, false
 	}
 	for _, recordingID := range rows {
@@ -249,7 +256,7 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 		if storeName := tileStores[recordingID]; storeName == "" {
 			err = errNoActiveOriginal
 		} else {
-			err = enqueueJob(ctx, enqueuer, jobs.SeekTilesJobArgs{RecordingID: recordingID, Store: storeName})
+			_, err = w.Enqueuer.Enqueue(ctx, jobs.SeekTilesJobArgs{RecordingID: recordingID, Store: storeName})
 		}
 		if err != nil {
 			failed++

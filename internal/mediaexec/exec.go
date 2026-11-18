@@ -59,7 +59,7 @@ func CommandOutput(ctx context.Context, name string, args ...string) ([]byte, er
 			// が検査する。
 			// 孫は pipe が閉じられるまで out に追記しうる。worker の
 			// ThumbnailWorker.extractFrame は stdout を捨てる。コンテナの尺を読む
-			// worker の probeDuration は stdout を ParseFloat するので、数値以外の
+			// ProbeFormatDuration は stdout を ParseFloat するので、数値以外の
 			// 追記が混じるとパースが失敗しうる（実運用では未観測）。
 			// 再試行ループから見分けられるよう記録は残す。
 			slog.Warn("commandOutput: process exited successfully but WaitDelay expired before I/O completed",

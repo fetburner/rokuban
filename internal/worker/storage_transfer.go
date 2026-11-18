@@ -25,9 +25,11 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/mediapublish"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 )
 
 const (
@@ -181,7 +183,7 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 			metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
 			return fmt.Errorf("storage transfer: target store %q is not mounted on this worker", args.Store)
 		}
-		if err := requireMediaStoreMarker(root, args.Store, "starting storage transfer"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(root, args.Store, "starting storage transfer"); err != nil {
 			metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
 			return err
 		}
@@ -220,12 +222,12 @@ func (w *StorageTransferWorker) checkS3TransferWorker(args jobs.StorageTransferA
 }
 
 // requireDestinationMarker は派生物の経路で宛先の目印を確かめる。宛先が FS のときだけ確かめ、S3 の宛先では何もしない。
-// 原本の経路は宛先が常に FS なので、直接 requireMediaStoreMarker を呼ぶ。
+// 原本の経路は宛先が常に FS なので、直接 storemarker.RequireMediaStoreMarker を呼ぶ。
 func (w *StorageTransferWorker) requireDestinationMarker(targetRoot, targetStore, operation string) error {
 	if w.Config.Stores[targetStore].Kind == "s3" {
 		return nil
 	}
-	return requireMediaStoreMarker(targetRoot, targetStore, operation)
+	return storemarker.RequireMediaStoreMarker(targetRoot, targetStore, operation)
 }
 
 // abortAbandonedUploads は、置き場 storeName の掃除待ちの送信状態を置き場の Abort で片付ける。
@@ -270,7 +272,7 @@ func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, e
 		if root == "" {
 			continue
 		}
-		if err := requireMediaStoreMarker(root, name, "checking storage transfer mount"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(root, name, "checking storage transfer mount"); err != nil {
 			if name == targetStore {
 				metrics.StorageTransferMountMismatches.WithLabelValues(name).Inc()
 				return nil, fmt.Errorf("storage transfer: target store %q became unavailable before reservation: %w", name, err)
@@ -317,11 +319,11 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if err != nil {
 		return fmt.Errorf("resolving transfer destination: %w", err)
 	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "writing storage transfer destination"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(targetRoot, args.Store, "writing storage transfer destination"); err != nil {
 		return err
 	}
 	if sourceRoot != "" {
-		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading storage transfer source"); err != nil {
 			return err
 		}
 	}
@@ -372,7 +374,7 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	if handled, err := w.adoptExistingDestination(ctx, att, transfer, args, rules, targetPath, src, progress, log); handled {
 		return err
 	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "creating transfer destination directory"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(targetRoot, args.Store, "creating transfer destination directory"); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
@@ -428,7 +430,7 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	if len(transfer.SHA256) > 0 && !bytes.Equal(digest, transfer.SHA256) {
 		return w.startSourceVerification(ctx, att, transfer, src, slice.path, "transfer SHA-256 differs from logical asset", log)
 	}
-	if err := requireMediaStoreMarker(targetRoot, args.Store, "publishing storage transfer"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(targetRoot, args.Store, "publishing storage transfer"); err != nil {
 		return err
 	}
 	if err := fsink.PublishLink(slice.path, targetPath); err != nil {
@@ -748,7 +750,7 @@ func (w *StorageTransferWorker) copyTransferSlice(ctx context.Context, src trans
 // 保存で lease を失っていたら、他の試行が持っているので nil を返す（*saved は偽のまま）。
 // 宛先の目印が合わなければ保存しない。別の root に書いたバイトを、次の試行に引き継がせないためである。
 func (w *StorageTransferWorker) saveOriginalSlice(transfer store.MediaAssetTransfer, owner uuid.UUID, slice transferSlice, written int64, targetRoot, targetStore string, log *slog.Logger, saved *bool) error {
-	if err := requireMediaStoreMarker(targetRoot, targetStore, "saving transfer progress"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(targetRoot, targetStore, "saving transfer progress"); err != nil {
 		_ = slice.file.Close()
 		return err
 	}
@@ -784,7 +786,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("derived transfer object stores are not configured for %q -> %q", transfer.SourceStore, args.Store))
 	}
 	if sourceRoot := w.Roots[transfer.SourceStore]; sourceRoot != "" {
-		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading derived storage transfer source"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(sourceRoot, transfer.SourceStore, "reading derived storage transfer source"); err != nil {
 			return err
 		}
 	}
@@ -983,7 +985,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 		if err := w.requireDestinationMarker(targetRoot, args.Store, "starting derived upload"); err != nil {
 			return false, true, err
 		}
-		fresh, startErr := dest.StartUpload(ctx, transfer.RelPath, transfer.SizeBytes, checksum, objectContentType(transfer.RelPath))
+		fresh, startErr := dest.StartUpload(ctx, transfer.RelPath, transfer.SizeBytes, checksum, mediapublish.ObjectContentType(transfer.RelPath))
 		if startErr != nil {
 			metrics.RecordObjectStoreError("put", startErr)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("starting derived upload: %w", startErr))
@@ -1330,7 +1332,7 @@ func hashStoredObject(ctx context.Context, objects objstore.Store, key string) (
 	}
 	defer func() { _ = object.Close() }()
 	hasher := sha256.New()
-	n, err := copyWithContext(ctx, hasher, object)
+	n, err := mediapublish.CopyWithContext(ctx, hasher, object)
 	if err != nil {
 		return nil, n, err
 	}
@@ -1412,7 +1414,7 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, at
 }
 
 func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, src transferSource, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
-	if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
 		return err
 	}
 	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
@@ -1422,7 +1424,7 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *trans
 	if !active {
 		if rejection == "sha_mismatch" {
 			if createdCanonical {
-				if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing transfer rejected by a newer SHA-256 observation"); err != nil {
+				if err := storemarker.RequireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing transfer rejected by a newer SHA-256 observation"); err != nil {
 					return err
 				}
 				if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -1435,7 +1437,7 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *trans
 			return w.startSourceVerification(ctx, att, transfer, src, tempPath, "completion rejected a stale SHA-256", log)
 		}
 		if createdCanonical {
-			if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing uncommitted transfer"); err != nil {
+			if err := storemarker.RequireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing uncommitted transfer"); err != nil {
 				return err
 			}
 			if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -1456,7 +1458,7 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *trans
 		return nil
 	}
 	if tempPath != "" {
-		if err := requireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing committed transfer temp"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(w.Roots[args.Store], args.Store, "removing committed transfer temp"); err != nil {
 			log.Warn("storage transfer: skipping temp cleanup because store marker changed", "err", err)
 		} else if err := fsink.RemoveTemp(tempPath); err != nil {
 			log.Warn("storage transfer: removing committed temp failed", "path", tempPath, "err", err)
@@ -1517,7 +1519,7 @@ func (w *StorageTransferWorker) unlinkRetiredDerivedSource(ctx context.Context, 
 		return fmt.Errorf("derived source object store %q is not configured", transfer.SourceStore)
 	}
 	if sourceRoot != "" {
-		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "deleting corrupt derived source"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(sourceRoot, transfer.SourceStore, "deleting corrupt derived source"); err != nil {
 			return err
 		}
 	}
@@ -1534,7 +1536,7 @@ func (w *StorageTransferWorker) unlinkRetiredDerivedSource(ctx context.Context, 
 		}
 	}
 	if sourceRoot != "" {
-		if err := requireMediaStoreMarker(sourceRoot, transfer.SourceStore, "marking corrupt derived source deleted"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(sourceRoot, transfer.SourceStore, "marking corrupt derived source deleted"); err != nil {
 			return err
 		}
 	}

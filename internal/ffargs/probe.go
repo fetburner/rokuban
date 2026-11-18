@@ -46,7 +46,7 @@ func SubtitleProbeArgs(inputArgs []string, probeSize, analyzeDuration string) []
 // 尺の定義は用途ごとに異なるため、次の 3 builder は統合しない。
 
 // FormatDurationProbeArgs は format 全体の尺を読む argv を返す。サムネイルの seek 位置と
-// エンコード進捗の分母が、worker の probeDuration 経由でこの尺を使う。
+// エンコード進捗の分母が、mediaexec.ProbeFormatDuration 経由でこの尺を使う。
 func FormatDurationProbeArgs(inputPath string) []string {
 	return []string{
 		"-v", "error",
