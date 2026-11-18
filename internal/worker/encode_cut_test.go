@@ -444,9 +444,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	// 2 秒の素材を用意する（実 ffmpeg でデコードする）。
 	srcRel := "cut/replace.m2ts"
 	srcAbs := filepath.Join(mediaDir, filepath.FromSlash(srcRel))
-	if err := os.MkdirAll(filepath.Dir(srcAbs), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(srcAbs), 0o755), "MkdirAll")
 	gen := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
 		"-f", "lavfi", "-i", "testsrc=size=160x120:rate=30000/1001",
 		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
@@ -493,9 +491,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	// 旧世代のパスにファイルと行を置く（置き換えの前状態）。
 	oldRel := "cut/replace_cut.g1.mp4"
 	oldAbs := filepath.Join(mediaDir, filepath.FromSlash(oldRel))
-	if err := os.WriteFile(oldAbs, []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(oldAbs, []byte("old"), 0o644), "WriteFile")
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", oldRel)
 	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 2000}}), "setFrozenCuts")
 
@@ -555,12 +551,11 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 		DerivedGeneration: generation,
 	})
 	testutil.RequireNoError(t, err, "seeding encoded media_asset")
-	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+	_, err = sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath,
 		Generation: generation, State: "active",
-	}); err != nil {
-		t.Fatalf("seeding encoded media_asset copy: %v", err)
-	}
+	})
+	testutil.RequireNoError(t, err, "seeding encoded media_asset copy")
 	return assetID
 }
 
@@ -613,12 +608,11 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/stale_cut.mp4")
 	oldKeep := []chapters.Range{{StartMs: 0, EndMs: 200000}, {StartMs: 300000, EndMs: 1800000}}
 	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, oldKeep), "seeding frozen cut ranges")
-	if _, err := sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
+	_, err = sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
 		RecordingID: recordingID,
 		Profile:     "cut",
-	}); err != nil {
-		t.Fatalf("seeding running encode attempt: %v", err)
-	}
+	})
+	testutil.RequireNoError(t, err, "seeding running encode attempt")
 
 	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", &cutContext{keep: currentKeep})
 	testutil.RequireNoError(t, err, "observing stale encoded asset")
@@ -645,13 +639,11 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 
 func seedEncodedAssetRebuildRequest(t *testing.T, pool *pgxpool.Pool, recordingID int64, keep []chapters.Range) json.RawMessage {
 	t.Helper()
-	if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
 		RecordingID:   recordingID,
 		Profile:       "cut",
 		RequestedKeep: mustKeepRanges(t, keep),
-	}); err != nil {
-		t.Fatalf("seeding encoded asset rebuild request: %v", err)
-	}
+	}), "seeding encoded asset rebuild request")
 	requestedKeep, err := json.Marshal(keep)
 	testutil.RequireNoError(t, err, "encoding rebuild keep ranges")
 	return requestedKeep
@@ -744,12 +736,10 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
 	requestJSON := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
-	if err := sqlcgen.New(pool).DeleteEncodedAssetRebuildRequest(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestParams{
+	testutil.RequireNoError(t, sqlcgen.New(pool).DeleteEncodedAssetRebuildRequest(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestParams{
 		RecordingID: recordingID,
 		Profile:     "cut",
-	}); err != nil {
-		t.Fatalf("consuming rebuild request: %v", err)
-	}
+	}), "consuming rebuild request")
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
@@ -766,9 +756,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work = %v, want nil (skip without running ffmpeg)", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work = %v, want nil (skip without running ffmpeg)")
 	if _, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     stringPtr("cut"),
@@ -927,14 +915,11 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		// h264 を明示的に打ち消す → 実効値は cut だけ。
 		"encodeProfiles": []string{"cut"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+	testutil.RequireNoError(t, err, "json.Marshal")
+	_, err = q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID, Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("setting override: %v", err)
-	}
+	})
+	testutil.RequireNoError(t, err, "setting override")
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
@@ -995,14 +980,11 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
 
 	overrides, err := json.Marshal(map[string]any{"encodeProfiles": []string{"cut"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+	testutil.RequireNoError(t, err, "json.Marshal")
+	_, err = q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID, Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("setting override: %v", err)
-	}
+	})
+	testutil.RequireNoError(t, err, "setting override")
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
@@ -1047,13 +1029,10 @@ func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
 	mediaDir := t.TempDir()
 	seed := func(rel string, spans ...chapters.Span) int64 {
 		id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, rel, []string{"cut"}, []byte("x"))
-		if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 1800000 WHERE id = $1`, id); err != nil {
-			t.Fatal(err)
-		}
+		testutil.MustExec(t, pool, "setting program duration", `UPDATE recordings SET program_duration_ms = 1800000 WHERE id = $1`, id)
 		dbtest.AdoptChapters(t, pool, id)
 		for _, s := range spans {
 			dbtest.ChapterSpan(t, pool, id, func(p *dbtest.ChapterSpanParams) {

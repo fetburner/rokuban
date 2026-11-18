@@ -1,7 +1,6 @@
 package dbtest_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -21,7 +20,7 @@ func TestChapterSpan_DefaultsAndOptions(t *testing.T) {
 	}
 	readSpans := func(id int64) []span {
 		t.Helper()
-		rows, err := pool.Query(context.Background(), `
+		rows, err := pool.Query(t.Context(), `
 SELECT lower(span), upper(span), label, cut FROM recording_chapter_spans
 WHERE recording_id = $1 ORDER BY lower(span)`, id)
 		if err != nil {
@@ -31,14 +30,10 @@ WHERE recording_id = $1 ORDER BY lower(span)`, id)
 		var got []span
 		for rows.Next() {
 			var s span
-			if err := rows.Scan(&s.startMs, &s.endMs, &s.label, &s.cut); err != nil {
-				t.Fatalf("scanning chapter span: %v", err)
-			}
+			testutil.RequireNoError(t, rows.Scan(&s.startMs, &s.endMs, &s.label, &s.cut), "scanning chapter span")
 			got = append(got, s)
 		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("iterating chapter spans: %v", err)
-		}
+		testutil.RequireNoError(t, rows.Err(), "iterating chapter spans")
 		return got
 	}
 
@@ -65,10 +60,8 @@ func TestAdoptChapters_CreatesOwnershipOnce(t *testing.T) {
 	dbtest.AdoptChapters(t, pool, recordingID)
 
 	var count int
-	if err := pool.QueryRow(context.Background(), `
-SELECT count(*) FROM recording_chapter_ownership WHERE recording_id = $1`, recordingID).Scan(&count); err != nil {
-		t.Fatalf("counting ownership rows: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(t.Context(), `
+SELECT count(*) FROM recording_chapter_ownership WHERE recording_id = $1`, recordingID).Scan(&count), "counting ownership rows")
 	if count != 1 {
 		t.Fatalf("ownership rows = %d, want 1", count)
 	}

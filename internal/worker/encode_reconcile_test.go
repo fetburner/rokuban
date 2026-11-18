@@ -211,9 +211,7 @@ func seedEdgeOriginal(t *testing.T, pool *pgxpool.Pool) (recordingID, assetID in
 		params.RelPath = "backlog/" + t.Name() + ".ts"
 		params.SizeBytes = 1
 	})
-	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatalf("moving original copy to edge: %v", err)
-	}
+	testutil.MustExec(t, pool, "moving original copy to edge", `UPDATE media_asset_copies SET store = 'edge' WHERE media_asset_id = $1`, assetID)
 	seedEncodePolicy(t, pool, recordingID, []string{"h265"})
 	return recordingID, assetID
 }
@@ -221,9 +219,7 @@ func seedEdgeOriginal(t *testing.T, pool *pgxpool.Pool) (recordingID, assetID in
 // 転送が済んで原本が central にだけ残った状態にする（転送待ちは 0 件になる）。
 func moveOriginalToCentral(t *testing.T, pool *pgxpool.Pool, assetID int64) {
 	t.Helper()
-	if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET store = 'central' WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatalf("moving original copy to central: %v", err)
-	}
+	testutil.MustExec(t, pool, "moving original copy to central", `UPDATE media_asset_copies SET store = 'central' WHERE media_asset_id = $1`, assetID)
 }
 
 // scrapeBacklogGauges は、DB から取り直す collector を通して edge の 2 本のゲージを読む。
@@ -434,9 +430,7 @@ func TestEncodeReconcile_LostSnapshotIsRebuiltAndWarnsAgain(t *testing.T) {
 		runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
 	}
 	pass()
-	if _, err := pool.Exec(t.Context(), `DELETE FROM transfer_backlog_snapshots`); err != nil {
-		t.Fatalf("losing snapshots: %v", err)
-	}
+	testutil.MustExec(t, pool, "losing snapshots", `DELETE FROM transfer_backlog_snapshots`)
 	if gauges := scrapeBacklogGauges(t, pool, policy); len(gauges) != 0 {
 		t.Fatalf("gauges after losing snapshots = %v, want none", gauges)
 	}
@@ -773,16 +767,12 @@ func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testin
 	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
 	other := seedEncodedAsset(t, pool, id, "cut2", "rebuild/other-profile_cut2.mp4")
-	if err := setFrozenCuts(t, pool, other, keep); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, other, keep), "setFrozenCuts")
 	if got := unsatisfiedRebuildCount(t, pool, id); got != 1 {
 		t.Fatalf("unsatisfied rebuilds with only another profile's matching asset = %d, want 1", got)
 	}
 	same := seedEncodedAsset(t, pool, id, "cut", "rebuild/other-profile_cut.mp4")
-	if err := setFrozenCuts(t, pool, same, keep); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, same, keep), "setFrozenCuts")
 	if got := unsatisfiedRebuildCount(t, pool, id); got != 0 {
 		t.Fatalf("unsatisfied rebuilds with the same profile's matching asset = %d, want 0", got)
 	}
@@ -798,9 +788,8 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 	}
 	ctx := context.Background()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "targeted-trash/original.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, recordingID); err != nil {
-		t.Fatalf("soft deleting recording: %v", err)
-	}
+	_, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, recordingID)
+	testutil.RequireNoError(t, err, "soft deleting recording")
 
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)}
 	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
@@ -808,9 +797,8 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 		t.Fatalf("targeted encode jobs for trashed recording = %d, want 0", got)
 	}
 
-	if _, err := sqlcgen.New(pool).RestoreRecording(ctx, recordingID); err != nil {
-		t.Fatalf("restoring recording: %v", err)
-	}
+	_, err = sqlcgen.New(pool).RestoreRecording(ctx, recordingID)
+	testutil.RequireNoError(t, err, "restoring recording")
 	runEncodeReconcilePass(t, w)
 	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 1 {
 		t.Fatalf("full-pass encode jobs after restore = %d, want 1", got)
@@ -934,15 +922,9 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	// (d) ingest 未完了（policy はあるが原本 media_asset が無い）→ 候補にしない。
 	incomplete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/incomplete.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_ts_scans WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `DELETE FROM media_assets WHERE recording_id = $1`, incomplete); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "deleting media asset copies", `DELETE FROM media_asset_copies WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete)
+	testutil.MustExec(t, pool, "deleting media asset ts scans", `DELETE FROM media_asset_ts_scans WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete)
+	testutil.MustExec(t, pool, "deleting media assets", `DELETE FROM media_assets WHERE recording_id = $1`, incomplete)
 
 	// (e) 原本が物理削除済み（until_encoded の後始末）→ 候補にしない。
 	originalGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/gone.m2ts", []string{"h265"}, []byte("x"))
@@ -950,9 +932,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	// (f) ごみ箱の録画 → 候補にしない。
 	trashed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/trashed.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "marking recording deleted", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed)
 
 	// (g) encoded の行はあるが state='deleted'（復元後など）→ 候補。
 	// ListMissingEncodeProfiles が見るのは active な encoded だけ
@@ -1575,13 +1555,10 @@ func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
 	assetID := seedEncodedAsset(t, pool, id, "cut", "review/trash_cut.mp4")
-	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
-	if _, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, id); err != nil {
-		t.Fatal(err)
-	}
+	_, err = sqlcgen.New(pool).SoftDeleteRecording(ctx, id)
+	testutil.RequireNoError(t, err, "SoftDeleteRecording")
 
 	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
 	w := &EncodeReconcileWorker{Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}, Media: pgstoretest.Media(pool)}
@@ -1594,9 +1571,8 @@ func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.
 		t.Fatalf("request rows after trashed pass = %d, err %v, want 1", rows, err)
 	}
 
-	if _, err := sqlcgen.New(pool).RestoreRecording(ctx, id); err != nil {
-		t.Fatal(err)
-	}
+	_, err = sqlcgen.New(pool).RestoreRecording(ctx, id)
+	testutil.RequireNoError(t, err, "RestoreRecording")
 	runEncodeReconcilePass(t, w)
 	if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
 		t.Fatalf("encode jobs after restore = %d, want 1", got)
@@ -1620,9 +1596,7 @@ func TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued(t *testi
 		t.Fatalf("currentCutKeep = %v, err %v", keep, err)
 	}
 	assetID := seedEncodedAsset(t, pool, id, "cut", "review/noorig_cut.mp4")
-	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
 	setOriginal := func(state string) {
 		t.Helper()
