@@ -41,6 +41,21 @@ func (s *gatedProgramSearch) MatchProgramIDsForRule(ctx context.Context, site st
 	return s.ProgramSearch.MatchProgramIDsForRule(ctx, site, ruleID)
 }
 
+// failingSiteRulerPass は指定サイトの入力リビジョン取得だけにエラーを注入する。
+type failingSiteRulerPass struct {
+	store.RulerPass
+	site string
+	err  error
+}
+
+// GetRulerInputRevision は指定サイトでだけ評価用の入力取得エラーを返す。
+func (p failingSiteRulerPass) GetRulerInputRevision(ctx context.Context, site string) (int64, error) {
+	if site == p.site {
+		return 0, p.err
+	}
+	return p.RulerPass.GetRulerInputRevision(ctx, site)
+}
+
 func newRuler(sites []string, pool *pgxpool.Pool, cfg *ruler.Config) *ruler.Ruler {
 	reservations := pgstoretest.Reservations(pool)
 	return ruler.New(sites, reservations, pgstoretest.Breakers(pool), pgstoretest.NeverScheduledEvents(pool), reservations, cfg, pgstoretest.EPG(pool))
@@ -191,16 +206,16 @@ WHERE r.site = $1 AND r.program_id = $2`, testSite, programID).Scan(
 	return r, true
 }
 
-func basePriority(t *testing.T, raw []byte) *int {
+func baseOptions(t *testing.T, raw []byte) reservation.Options {
 	t.Helper()
-	if len(raw) == 0 {
-		return nil
-	}
 	var opts reservation.Options
+	if len(raw) == 0 {
+		return opts
+	}
 	if err := json.Unmarshal(raw, &opts); err != nil {
 		t.Fatalf("unmarshalling base %s: %v", raw, err)
 	}
-	return opts.Priority
+	return opts
 }
 
 // 受け入れ基準 1: ruler は program_intents を一切書かない（案 A の核心）。
@@ -489,7 +504,7 @@ func TestRunPass_WinnerByPriorityThenID(t *testing.T) {
 	if res.RuleID == nil || *res.RuleID != highID {
 		t.Errorf("rule_id = %v, want %d (higher priority rule)", res.RuleID, highID)
 	}
-	if p := basePriority(t, res.Base); p == nil || *p != 20 {
+	if p := baseOptions(t, res.Base).Priority; p == nil || *p != 20 {
 		t.Errorf("base priority = %v, want 20", p)
 	}
 
@@ -510,6 +525,48 @@ func TestRunPass_WinnerByPriorityThenID(t *testing.T) {
 	}
 	if res2.RuleID == nil || *res2.RuleID != highID {
 		t.Errorf("tie-break winner = %v, want %d (smaller id)", res2.RuleID, highID)
+	}
+}
+
+// TestRunPass_BaseFilenameTemplate は勝者ルールのテンプレートが設定されていれば
+// base にその値が入り、空なら filenameTemplate が省かれることを検査する。
+func TestRunPass_BaseFilenameTemplate(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		want     *string
+	}{
+		{name: "configured", template: "recording-template", want: new("recording-template")},
+		{name: "empty", template: "", want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			ctx := context.Background()
+
+			insertService(t, pool, ctx)
+			insertProgram(t, pool, ctx, 4002, "対象番組", time.Now().Add(24*time.Hour))
+			ruleID := insertRule(t, pool, ctx, "filename-template", 10)
+			insertRuleKeyword(t, pool, ctx, ruleID, "対象番組")
+			if _, err := pool.Exec(ctx, `UPDATE rules SET filename_template = $1 WHERE id = $2`, tc.template, ruleID); err != nil {
+				t.Fatalf("setting rule filename template: %v", err)
+			}
+
+			if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+				t.Fatalf("RunPass: %v", err)
+			}
+			res, ok := getReservation(t, pool, ctx, 4002)
+			if !ok || len(res.Base) == 0 {
+				t.Fatal("reservation with base not created")
+			}
+			got := baseOptions(t, res.Base).FilenameTemplate
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("base filenameTemplate = %q, want nil", *got)
+				}
+			} else if got == nil || *got != *tc.want {
+				t.Errorf("base = %s, want filenameTemplate %q", res.Base, *tc.want)
+			}
+		})
 	}
 }
 
@@ -1365,6 +1422,34 @@ func deleteAllEpgPrograms(t *testing.T, pool *pgxpool.Pool, ctx context.Context)
 	t.Helper()
 	if _, err := pool.Exec(ctx, `DELETE FROM epg_programs WHERE site = $1`, testSite); err != nil {
 		t.Fatalf("deleting all epg_programs fixtures: %v", err)
+	}
+}
+
+// TestRunPass_ReturnsSiteErrorWhenGCSucceeds は GC が成功しても RunPass が
+// サイト評価のエラーを返すことを検査する。
+// TestPassWorker_DoesNotMarkFailedPass のように ctx をキャンセルすると GC も失敗し、
+// サイト側の代入を消しても GC 側から firstErr にエラーが入る。
+// サイト評価だけを失敗させるため、runPassForSite の最初のストア呼び出しである
+// GetRulerInputRevision に注入する。GC の PruneEndedSnapshots は実ストアに委譲する。
+// GC 対象の予約が消えることを調べ、GC が成功したというテストの前提を確認する。
+func TestRunPass_ReturnsSiteErrorWhenGCSucceeds(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	const programID = 10000
+	insertReservationDirect(t, pool, ctx, programID, "終了番組", time.Now().Add(-2*time.Hour))
+
+	siteErr := errors.New("injected ruler input revision failure")
+	reservations := pgstoretest.Reservations(pool)
+	passes := failingSiteRulerPass{RulerPass: reservations, site: testSite, err: siteErr}
+	r := ruler.New([]string{testSite}, passes, pgstoretest.Breakers(pool),
+		pgstoretest.NeverScheduledEvents(pool), reservations,
+		&ruler.Config{RetentionGrace: time.Hour}, pgstoretest.EPG(pool))
+	if err := r.RunPass(ctx); !errors.Is(err, siteErr) {
+		t.Errorf("RunPass error = %v, want wrapped site error %v", err, siteErr)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation past end+grace should have been GC'd")
 	}
 }
 
