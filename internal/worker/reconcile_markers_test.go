@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -239,7 +237,7 @@ func TestDeleteReconcileMarker_FullPassMarksTheStore(t *testing.T) {
 		t.Fatalf("writing store marker: %v", err)
 	}
 	markers := &markerRecorder{}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
 	}
@@ -267,7 +265,7 @@ func TestDeleteReconcileMarker_BreakerStopStillMarks(t *testing.T) {
 	markRecordingTrashed(t, pool, recordingID)
 
 	markers := &markerRecorder{}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	w.MaxDeletesPerPass = 1
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
@@ -291,7 +289,7 @@ func TestDeleteReconcileMarker_FailedPassDoesNotMark(t *testing.T) {
 		t.Fatalf("writing store marker: %v", err)
 	}
 	markers := &markerRecorder{}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	w.MediaDelete = failingPendingDelete{pgstoretest.Media(pool)}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("DeleteReconcileWorker.Work = nil, want the listing error")
@@ -312,7 +310,7 @@ func TestDeleteReconcileMarker_WriteFailureFailsThePass(t *testing.T) {
 		t.Fatalf("writing store marker: %v", err)
 	}
 	markers := &markerRecorder{err: errors.New("marker write rejected")}
-	w := newMarkedDeleteWorker(t, pool, mediaDir, markers)
+	w := buildDeleteReconcileWorker(t, pool, mediaDir, withMarkerStore(t, mediaDir, markers))
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("DeleteReconcileWorker.Work = nil, want the marker write error")
 	}
@@ -330,15 +328,11 @@ func (failingPendingDelete) ListPendingDeleteAssets(context.Context, time.Time, 
 // markerTestStore は削除 reconcile のテストで使う FS の置き場の名前。
 const markerTestStore = "fs-a"
 
-// newMarkedDeleteWorker は FS の置き場 markerTestStore 1 つ分の削除 reconcile を組み立てる。
-func newMarkedDeleteWorker(t *testing.T, pool *pgxpool.Pool, mediaDir string, markers store.LoopMarkers) *DeleteReconcileWorker {
-	return &DeleteReconcileWorker{
-		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge: pgstoretest.Recordings(pool),
-		Breakers:       pgstoretest.Breakers(pool),
-		MediaDir:       mediaDir, MediaStoreName: markerTestStore,
-		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, markerTestStore, mediaDir),
-		TrashRetention: 30 * 24 * time.Hour,
-		Markers:        markers,
+// withMarkerStore は、置き場 markerTestStore 1 つを名乗り、完走を markers に記録する構成に上書きする。
+func withMarkerStore(t *testing.T, mediaDir string, markers store.LoopMarkers) func(*DeleteReconcileWorker) {
+	return func(w *DeleteReconcileWorker) {
+		w.MediaStoreName = markerTestStore
+		w.StorageObjects = testStorageObjects(t, markerTestStore, mediaDir)
+		w.Markers = markers
 	}
 }
