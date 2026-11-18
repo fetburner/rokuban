@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"bytes"
@@ -21,6 +21,8 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -143,8 +145,8 @@ func waitDone(t *testing.T, done <-chan error) error {
 	}
 }
 
-func jobWithID(recordingID int64) EncodeJobArgs {
-	return EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+func jobWithID(recordingID int64) jobs.EncodeJobArgs {
+	return jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 }
 
 func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int32) func(string) bool {
@@ -200,7 +202,7 @@ func assertNoEncodeTemp(t *testing.T, dir string) {
 // 派生物のキーは再利用しない。DB の行が無い既存オブジェクトも Put で上書きせず、
 // active copy として公開しない。
 func TestEncodeWorker_ExistingObjectKeyIsNotOverwritten(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -213,7 +215,7 @@ func TestEncodeWorker_ExistingObjectKeyIsNotOverwritten(t *testing.T) {
 	testutil.RequireNoError(t, os.WriteFile(finalPath, previous, 0o644), "os.WriteFile")
 
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
-	err := runWorkerViaJobQFake(context.Background(), w, jobWithID(recordingID))
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobWithID(recordingID))
 	if err == nil {
 		t.Fatal("Work succeeded while the derived object key was already occupied")
 	}
@@ -241,7 +243,7 @@ func TestEncodeWorker_ExistingObjectKeyIsNotOverwritten(t *testing.T) {
 // T2: B の古い attempt が Put した後に A が新しい世代を active にし、B が DB 公開へ
 // 進む順序。B の pending object は active copy を上書きせず、古い attempt は公開されない。
 func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -259,10 +261,10 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
-	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)) }()
+	go func() { doneB <- jobqfaketest.RunWorkerOnce(ctx, w, jobWithID(recordingID)) }()
 	waitReached(t, reached, doneB)
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)), "Work A")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobWithID(recordingID)), "Work A")
 	activeRelPath := currentCopyRelPath(t, pool, assetID)
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash(activeRelPath))
 	contentA, err := os.ReadFile(finalPath)
@@ -296,7 +298,7 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 // 既存 object key は pending reservation の前に拒み、通常の Work の経路はこの拒否を
 // 失敗した試行として記録する。
 func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -316,7 +318,7 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	w.Profiles.Profiles[0].Name = "a_b"
-	err := runWorkerViaJobQFake(ctx, w, EncodeJobArgs{RecordingID: candidateID, Profile: "a_b"})
+	err := jobqfaketest.RunWorkerOnce(ctx, w, jobs.EncodeJobArgs{RecordingID: candidateID, Profile: "a_b"})
 	if err == nil {
 		t.Fatal("Work succeeded with another active asset owning the rel_path")
 	}
@@ -370,7 +372,7 @@ func TestEncodeWorker_StaleCutPlanOnInactiveRowSkipsWithSuccess(t *testing.T) {
 
 func testStaleCutPlan(t *testing.T, rowState string) {
 	t.Helper()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -555,7 +557,7 @@ func unsatisfiedRebuildCount(t *testing.T, pool *pgxpool.Pool, recordingID int64
 // 残り、凍結区間との一致で満たされたとみなされる（未充足の view から外れる）ことを固定する。
 func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -593,7 +595,7 @@ func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
 // 押した後にチャプターを編集しても、押した時点の keep で公開されることを固定する。
 func TestEncodeWorker_PublishUsesRequestedKeepWhenChaptersChangeAfterRebuildRequest(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -616,7 +618,7 @@ func TestEncodeWorker_PublishUsesRequestedKeepWhenChaptersChangeAfterRebuildRequ
 // 上書きされていれば、古い keep のジョブが公開しないことを固定する。
 func TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -662,7 +664,7 @@ func TestEncodeWorker_InitialCutPublishChecksCurrentChapters(t *testing.T) {
 		{"not-edited", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -690,7 +692,7 @@ func TestEncodeWorker_InitialCutPublishChecksCurrentChapters(t *testing.T) {
 
 func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -746,7 +748,7 @@ func TestShouldCountEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
 // T4: scratch は recording/profile/domain attempt ごと。別の実行中 attempt の scratch は
 // 各試行が自分の scratch dir に持つ flock により、cleanup は実行中の試行の dir を消さず、先行 attempt が終わるまで残る。
 func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -759,10 +761,10 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	reached, release := pauseBeforeEncodeObjectPublication(t, func(string) bool { return first.CompareAndSwap(false, true) })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
-	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)) }()
+	go func() { doneB <- jobqfaketest.RunWorkerOnce(ctx, w, jobWithID(recordingID)) }()
 	waitReached(t, reached, doneB)
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)), "Work A")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobWithID(recordingID)), "Work A")
 	bScratchPattern := filepath.Join(scratchDir, "encode", encodeScratchScope(recordingID, "h264")+"-1-*", "out.mp4")
 	bScratch, err := filepath.Glob(bScratchPattern)
 	testutil.RequireNoError(t, err, "finding B's scratch output")
@@ -782,7 +784,7 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 
 // Put が完了してから DB transaction が active copy を公開することを固定する。
 func TestEncodeWorker_PutPrecedesActiveCommit(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -830,7 +832,7 @@ func TestEncodeWorker_PutPrecedesActiveCommit(t *testing.T) {
 // 触れない（行は残り、満たされたとみなされる）ことを固定する。
 func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}

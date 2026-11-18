@@ -32,7 +32,7 @@ import (
 )
 
 // TestS3DerivedObjectPublicationAndRecovery は、実際の S3 API の実装（CI では RustFS）に対して、
-// 派生物の公開・回収・入力の読み出しを測る。DB の振る舞いは object_store_test.go が fsstore で測るので、
+// 派生物の公開・回収を測る。DB の振る舞いは object_store_test.go が fsstore で測るので、
 // ここは S3 の応答（条件付き書き込み・multipart・HEAD の SHA-256・List）に依存する部分に絞る。
 func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 	ctx := t.Context()
@@ -93,59 +93,6 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		testutil.RequireNoError(t, err, "heading published object")
 		if object.Size != int64(len(payload)) || object.SHA256 != fmt.Sprintf("%x", sha256.Sum256(payload)) {
 			t.Fatalf("published object metadata = (size %d, sha256 %q), want (%d, %x)", object.Size, object.SHA256, len(payload), sha256.Sum256(payload))
-		}
-	})
-
-	t.Run("retry after an uploaded pending copy reserves a new generation", func(t *testing.T) {
-		recordingID := dbtest.Recording(t, pool)
-		mediaDir := t.TempDir()
-		testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing local media store marker")
-		sourceRel := fmt.Sprintf("s3-retry-%d/source.m2ts", time.Now().UnixNano())
-		prepareEncodeInput(t, pool, recordingID, mediaDir, sourceRel, []string{"h264"}, []byte("original source"))
-		initialKey, err := EncodedRelPath(sourceRel, "h264", "mp4", 0, false)
-		testutil.RequireNoError(t, err, "building initial encoded key")
-		retryKey, err := EncodedRelPath(sourceRel, "h264", "mp4", 1, false)
-		testutil.RequireNoError(t, err, "building retry encoded key")
-		t.Cleanup(func() {
-			for _, key := range []string{initialKey, retryKey} {
-				if err := objects.Delete(context.Background(), key); err != nil {
-					t.Errorf("deleting S3 test key %q: %v", key, err)
-				}
-			}
-		})
-
-		worker := newH264Worker(pool, mediaDir, t.TempDir(), installCountingFFmpeg(t))
-		worker.MediaStoreName = dbtest.StoreName
-		worker.Objects = objects
-		worker.ObjectPublisher = media
-		worker.Media = media
-		worker.Attempts = media
-
-		originalHook := beforeEncodeCommit
-		t.Cleanup(func() { beforeEncodeCommit = originalHook })
-		failOnce := true
-		beforeEncodeCommit = func(string) error {
-			if failOnce {
-				failOnce = false
-				return errors.New("simulated stop after PUT and before DB publication")
-			}
-			return nil
-		}
-		args := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-		if err := worker.Work(ctx, args); err == nil {
-			t.Fatal("first encode succeeded, want a failure after the S3 PUT")
-		}
-		firstBytes := env.readObject(t, initialKey)
-		testutil.RequireNoError(t, worker.Work(ctx, args), "retrying encode with a new generation")
-		secondBytes := env.readObject(t, retryKey)
-		if bytes.Equal(firstBytes, secondBytes) {
-			t.Fatalf("two ffmpeg attempts produced identical fixtures %q; want differing bytes", firstBytes)
-		}
-		if got := env.copyState(t, retryKey); got != "active" {
-			t.Fatalf("retry copy state = %q, want active", got)
-		}
-		if got := env.copyState(t, initialKey); got != "pending" {
-			t.Errorf("first copy state = %q, want pending", got)
 		}
 	})
 

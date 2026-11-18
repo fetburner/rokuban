@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -88,7 +89,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -119,7 +120,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
+			if err := jobqfaketest.RunWorkerOnce(ctx, w, job); err != nil {
 				t.Fatalf("Work = %v, want nil (skip without running ffmpeg)", err)
 			}
 			if !strings.Contains(logBuf.String(), "reason="+tt.wantReason) {
@@ -141,7 +142,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 // 投入側が所有していない録画を除くので、来るのは想定外の状態である。失敗として見えるようにする。
 func TestEncodeWorker_OrdinaryCutJobWithoutOwnershipFails(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}

@@ -64,7 +64,7 @@ func SplitUncutGeneration(s string) (head string, n int, ok bool) {
 // `…_{name}.g{n}.{container}`、uncut の再生成なら `…_{name}.u{n}.{container}`）
 // の 1 成分に入れて SanitizeContentPath を通す。`.` で終わる名前は、続く `.` と
 // 合わさった `..` が潰され、書いた rel_path から cut の世代も container も読めない。
-// 起動時の意味の検査（worker.CheckEncodeProfileMeaning）は rel_path を過去の意味の
+// 起動時の意味の検査（encode.CheckEncodeProfileMeaning）は rel_path を過去の意味の
 // 証拠にするので、読めない名前は、設定を変えていなくても起動を拒む誤検知になる。
 //
 // 次の名前は、同じ原本から、別の名前と同じ rel_path を作る。
@@ -77,7 +77,7 @@ func SplitUncutGeneration(s string) (head string, n int, ok bool) {
 // これらを拒むと、同じ原本から作る rel_path は、名前と世代ごとに異なる。別の原本
 // どうしでは同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。
 //
-// 書き手（worker.EncodedRelPath）も、この関数で名前を検査する。設定が通す名前と
+// 書き手（encode.EncodedRelPath）も、この関数で名前を検査する。設定が通す名前と
 // 書き手が書ける名前を、同じ規則から引くためである。
 //
 // `rescue-` で始まる名前は、rescue が拾った encoded（EncodedRelPath の形を持たない）を

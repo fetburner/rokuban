@@ -8,6 +8,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// MediaAssetTransferAttemptLimit はメディア資産の転送の試行上限。
+// 転送候補を選ぶクエリと、encode reconcile が背圧判定用に転送待ちを数えるクエリは、
+// 試行を使い切った行を同じ上限で除外する必要がある。上限の変更が両方に反映されるよう、
+// 転送クエリの契約と同じ store に置く。
+const MediaAssetTransferAttemptLimit int32 = 10
+
 // ErrTransferLeaseLost は、転送の進捗の lease を別の試行が取った、または lease が切れたことを表す。
 // 保存や世代の上げ直しがこれを返したら、呼び出し側は進捗に触れずに止まる。
 var ErrTransferLeaseLost = errors.New("transfer progress lease lost")

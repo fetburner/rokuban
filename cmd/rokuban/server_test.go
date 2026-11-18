@@ -26,6 +26,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -33,7 +34,6 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 func writeServerTestConfig(t *testing.T, content string) string {
@@ -420,7 +420,7 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 		fixtureParams.Site = "home"
 	})
 
-	relPath, err := worker.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1, true)
+	relPath, err := encode.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1, true)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
@@ -472,7 +472,7 @@ func writeCutProfileConfig(t *testing.T, cut bool) (path, addr string) {
 }
 
 // cut の設定を読む api と worker は、同じ名前のまま cut を反転させた設定を、DB に
-// 繋いだ直後に拒む（worker.CheckEncodeProfileMeaning）。片方だけが拒むと、起動した
+// 繋いだ直後に拒む（encode.CheckEncodeProfileMeaning）。片方だけが拒むと、起動した
 // もう片方が食い違った設定で書く。api なら作り直し要求の行を、worker なら食い違った
 // 意味の encoded を書く。合う設定では、api も encode worker も同じ検査を通って起動する。
 func TestServerCmd_RejectsEncodeProfileWithChangedMeaning(t *testing.T) {

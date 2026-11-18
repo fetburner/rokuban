@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/cmdetect"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -900,7 +901,7 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	}
 	w.removeLinkedTempAfterCommit(ctx, recordingID, args, log)
 	// 原本があるなら対象を絞った reconcile をヒントとして投入する。
-	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
+	encode.EnqueueReconcile(ctx, w.Enqueuer, recordingID)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 	}
@@ -1035,7 +1036,7 @@ func recordIngestMetrics(offset int64) {
 // TS scan もヒント。候補の真実は periodic reconcile が DB から取り直す。
 // すべて best-effort で、投入失敗はログに残して ingest の成否には影響させない。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
-	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
+	encode.EnqueueReconcile(ctx, w.Enqueuer, recordingID)
 	if enqueueErr := cmdetect.EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 	}

@@ -169,6 +169,13 @@ linters:
             - "!${config-path}/internal/thumbnail/seek_tiles_test.go"
             - "!${config-path}/internal/thumbnail/thumbnail_reconcile_test.go"
             - "!${config-path}/internal/thumbnail/thumbnail_test.go"
+            # worker から移した既存の encode のテスト。
+            - "!${config-path}/internal/encode/encode_attempts_test.go"
+            - "!${config-path}/internal/encode/encode_cut_test.go"
+            - "!${config-path}/internal/encode/encode_preflight_test.go"
+            - "!${config-path}/internal/encode/encode_publish_test.go"
+            - "!${config-path}/internal/encode/encode_publish_desired_test.go"
+            - "!${config-path}/internal/encode/encode_reconcile_test.go"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: tests build state through store contracts or internal/db/dbtest
@@ -228,7 +235,7 @@ linters:
             - pkg: database/sql
               desc: notifier reaches the database only through a Source subpackage
         exec-role:
-          # os/exec は worker・cmdetect・streamer と共用補助の mediaexec が実行に使う。
+          # os/exec は worker・cmdetect・encode・streamer と共用補助の mediaexec が実行に使う。
           # config は LookPath でツールの存在だけを検証する。テストの子プロセス起動は対象外。
           # conformance/harness は複数のテストパッケージが共有するため _test.go に置けないが、
           # conformance タグ付きでテストからしか使われない（docker / go build を起動する）。
@@ -238,25 +245,27 @@ linters:
             - "!${config-path}/internal/mirakc/conformance/harness/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/cmdetect/**"
+            - "!${config-path}/internal/encode/**"
             - "!${config-path}/internal/streamer/**"
             - "!${config-path}/internal/mediaexec/*.go"
             - "!${config-path}/internal/config/**"
           deny:
             - pkg: os/exec
-              desc: os/exec is limited to worker, cmdetect, streamer, mediaexec, and config
+              desc: os/exec is limited to worker, cmdetect, encode, streamer, mediaexec, and config
         mediaexec-worker-only:
           # 不変条件 4: os/exec の制限が実行補助の import で迂回されないよう、
-          # 本番コードからの mediaexec の呼び出しを worker・cmdetect・thumbnail に閉じ込める。
+          # 本番コードからの mediaexec の呼び出しを worker・cmdetect・thumbnail・encode に閉じ込める。
           list-mode: lax
           files:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/cmdetect/**"
+            - "!${config-path}/internal/encode/**"
             - "!${config-path}/internal/thumbnail/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/mediaexec
-              desc: mediaexec imports are limited to internal/worker, internal/cmdetect, and internal/thumbnail
+              desc: mediaexec imports are limited to internal/worker, internal/cmdetect, internal/thumbnail, and internal/encode
         cmdetect-worker-only:
           # 不変条件 4: cmdetect は os/exec と mediaexec を使う。
           # cmdetect の import で exec の制限が迂回されないよう、本番コードからの import を worker に閉じ込める。
@@ -281,11 +290,31 @@ linters:
           deny:
             - pkg: github.com/fetburner/rokuban/internal/thumbnail
               desc: thumbnail imports are limited to internal/worker and internal/thumbnail
+        encode-worker-only:
+          # 不変条件 4: encode は os/exec と mediaexec を使う。
+          # encode の import で exec の制限が迂回されないよう、本番コードからの import を worker と cmd/rokuban に閉じ込める。
+          # 起動時検査の呼び出し元は server.go の 1 か所で、ジョブ登録とは独立している。
+          # 検査への依存を起動コードで明示するため、cmd/rokuban を除外に加える。
+          # cmd/rokuban は移設前から worker を import し、worker.NewWorkers で encode ジョブを登録している。
+          # cmd/rokuban からの os/exec の直接 import は引き続き exec-role が拒む。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/worker/**"
+            - "!${config-path}/internal/encode/**"
+            - "!${config-path}/cmd/rokuban/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/encode
+              desc: encode imports are limited to internal/worker, internal/encode, and cmd/rokuban
         worker-tsstat:
           # 不変条件 6: ingest は TS を読まず、TS の読者は解析ジョブへ閉じ込める。
           list-mode: lax
           files:
             - "${config-path}/internal/worker/**"
+            - "${config-path}/internal/cmdetect/**"
+            - "${config-path}/internal/thumbnail/**"
+            - "${config-path}/internal/encode/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/tsstat

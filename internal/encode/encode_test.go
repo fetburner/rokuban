@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"bytes"
@@ -24,6 +24,8 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -460,7 +462,7 @@ func prepareEncodeInput(t *testing.T, pool *pgxpool.Pool, recordingID int64, med
 
 // 同じ recording/profile の stale scratch は消し、別 profile、別 recording、別 kind は残す。
 func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -499,8 +501,8 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
 	}
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() = %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -514,7 +516,7 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 }
 
 func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -554,9 +556,9 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 		},
 	}
 
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() first run")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() first run")
 
 	encRel := "20240101/show_h264.mp4"
 	outPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
@@ -581,7 +583,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	// ファイルを触って「上書きされない」ことを見る。
 	marker := []byte("already-committed-should-not-overwrite")
 	testutil.RequireNoError(t, os.WriteFile(outPath, marker, 0o644), "os.WriteFile")
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() second run")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() second run")
 	got2, err := os.ReadFile(outPath)
 	testutil.RequireNoError(t, err, "os.ReadFile")
 	if string(got2) != string(marker) {
@@ -610,7 +612,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 
 // 成功時に encode.finished が発火し、ペイロードに profile が載ること。
 func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -654,8 +656,8 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 		Webhook: client,
 	}
 
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work")
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work")
 
 	events := rec.received()
 	if len(events) != 1 {
@@ -684,7 +686,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 
 	// 冪等スキップ（既に active な encoded がある）では再発火しない。
 	rec.reset()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() second run")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() second run")
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("webhook fired on idempotent skip: %+v", events)
 	}
@@ -695,7 +697,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 // 試行ごとに配送されるので、受け側が最終試行を見分けられるようにする）。
 func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -723,7 +725,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 		Webhook:         client,
 	}
 
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
 	for i := int32(0); i < 2; i++ {
 		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "missing")
 		testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
@@ -732,7 +734,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 			t.Fatalf("recording prior failure %d: updated=%v err=%v", i+1, updated, err)
 		}
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err == nil {
 		t.Fatal("expected error for unknown profile")
 	}
 
@@ -788,7 +790,7 @@ func TestShouldCountEncodeFailure(t *testing.T) {
 // TestShouldCountEncodeFailure が見る（ここは Work 越しに POST が飛ばないことの確認）。
 func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -821,8 +823,8 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-	if err := runWorkerViaJobQFake(ctx, w, job); err == nil {
+	job := jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
+	if err := jobqfaketest.RunWorkerOnce(ctx, w, job); err == nil {
 		t.Fatal("expected error with canceled ctx")
 	}
 	if events := rec.received(); len(events) != 0 {
@@ -832,7 +834,7 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 
 func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
 	t.Parallel()
-	spec := EncodeJobArgs{}.Spec()
+	spec := jobs.EncodeJobArgs{}.Spec()
 	if spec.Queue != "encode" {
 		t.Errorf("Spec().Queue = %q, want encode", spec.Queue)
 	}
@@ -978,7 +980,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 	if ffmpegErr != nil || ffprobeErr != nil {
 		t.Skipf("ffmpeg/ffprobe not in PATH: %v %v", ffmpegErr, ffprobeErr)
 	}
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1003,7 +1005,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 	encodeWorker.Profiles = config.EncodeConfig{FFmpeg: ffmpeg, Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Preset: "ultrafast",
 	}}}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), encodeWorker, EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}), "real encode Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), encodeWorker, jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}), "real encode Work")
 	encoded, err := pgstoretest.Media(pool).GetEncodedMediaAssetForServing(context.Background(), recordingID, "h264")
 	testutil.RequireNoError(t, err, "loading active encoded asset")
 	objects := testFSObjectStore(mediaDir)
@@ -1024,7 +1026,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 		Media: pgstoretest.Media(pool), Objects: objects, ObjectPublisher: pgstoretest.Media(pool),
 		MediaDir: mediaDir, ScratchDir: t.TempDir(), FFmpeg: ffmpeg, FFprobe: ffprobe,
 	}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), thumbnailWorker, ThumbnailJobArgs{RecordingID: recordingID}), "real thumbnail Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), thumbnailWorker, jobs.ThumbnailJobArgs{RecordingID: recordingID}), "real thumbnail Work")
 	thumbnail, err := pgstoretest.Media(pool).GetThumbnailMediaAssetForServing(context.Background(), recordingID)
 	testutil.RequireNoError(t, err, "loading active thumbnail asset")
 	thumbnailObject, err := objects.Head(context.Background(), thumbnail.RelPath)

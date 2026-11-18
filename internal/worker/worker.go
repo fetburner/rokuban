@@ -5,6 +5,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/cmdetect"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -200,7 +201,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 			RecordingHLSEnabled: d.RecordingHLSEnabled,
 		}
 	}))
-	riveradapter.Register(workers, &EncodeReconcileWorker{
+	riveradapter.Register(workers, &encode.EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.MediaReconcile,
 		// 転送待ちが backlog_limit に達した置き場への encode 投入を止める（背圧）。
@@ -281,7 +282,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 // マウントしていないプロセスでは、どれもファイルに触れる前に失敗する（newStoreRoute）。
 func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps.perStore(), func(d *Deps) jobq.Worker[jobs.EncodeJobArgs] {
-		return &EncodeWorker{
+		return &encode.EncodeWorker{
 			Media:           d.MediaReconcile,
 			Attempts:        d.EncodeAttempts,
 			Publisher:       d.MediaPublish,

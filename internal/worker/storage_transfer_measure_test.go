@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -126,7 +127,7 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -221,19 +222,19 @@ func TestStorageTransferWorkerCountsVerifiedFailureAtAttemptLimitEdge(t *testing
 	expected := sha256.Sum256(content)
 	f := newAdoptVerifyFixture(t, content, other, expected)
 	ctx := context.Background()
-	transfer, ok, err := f.media.PrepareMediaAssetTransfer(ctx, f.assetID, "archive", mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), f.cfg.Derived, storageTransferAttemptLimit)
+	transfer, ok, err := f.media.PrepareMediaAssetTransfer(ctx, f.assetID, "archive", mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
-	for range storageTransferAttemptLimit - 1 {
+	for range store.MediaAssetTransferAttemptLimit - 1 {
 		testutil.RequireNoError(t, f.media.RecordMediaAssetTransferFailure(ctx, transfer.CopyID, "earlier attempt"), "f.media.RecordMediaAssetTransferFailure")
 	}
-	snoozes := f.drivePastVerification(t, int(storageTransferAttemptLimit)-1)
+	snoozes := f.drivePastVerification(t, int(store.MediaAssetTransferAttemptLimit)-1)
 	if snoozes < 2 {
 		t.Fatalf("verification finished after %d snoozes; want the slice limit to split it", snoozes)
 	}
 	n, last := transferAttemptCount(t, f.pool, transfer.CopyID)
-	if n != int(storageTransferAttemptLimit) || !strings.Contains(last, "destination differs from the valid source") {
+	if n != int(store.MediaAssetTransferAttemptLimit) || !strings.Contains(last, "destination differs from the valid source") {
 		t.Fatalf("recorded failure = (%d, %q), want the limit reached by the verified failure", n, last)
 	}
 }
@@ -249,7 +250,7 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
 	}

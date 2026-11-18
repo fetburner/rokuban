@@ -188,7 +188,7 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 	content := []byte("resumed remote original: the checkpointed prefix is kept and only the suffix is requested")
 	f := newTransferTestRemoteFixture(t, content, true, nil)
 	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, storageTransferAttemptLimit)
+		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing checkpointed remote transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -293,7 +293,7 @@ func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
 			content := []byte("range answers must start exactly where the checkpointed prefix ends")
 			f := newTransferTestRemoteFixture(t, content, true, tc.serve)
 			transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-				mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, storageTransferAttemptLimit)
+				mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 			}
@@ -382,7 +382,7 @@ func TestPrepareMediaAssetTransferReservesUnmountedSourceOnlyWithInternalURL(t *
 	f := newTransferTestRemoteFixture(t, content, true, nil)
 	reserve := func(cfg config.StorageConfig) (bool, error) {
 		_, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-			mustOriginalRules(t, cfg), []string{"archive"}, transferSourceStores(cfg, []string{"archive"}), []string{"archive"}, cfg.Derived, storageTransferAttemptLimit)
+			mustOriginalRules(t, cfg), []string{"archive"}, transferSourceStores(cfg, []string{"archive"}), []string{"archive"}, cfg.Derived, store.MediaAssetTransferAttemptLimit)
 		return ok, err
 	}
 
@@ -413,7 +413,7 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 	reserve := func(fsStores, sourceStores []string) bool {
 		t.Helper()
 		_, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive",
-			mustOriginalRules(t, cfg), fsStores, sourceStores, fsStores, cfg.Derived, storageTransferAttemptLimit)
+			mustOriginalRules(t, cfg), fsStores, sourceStores, fsStores, cfg.Derived, store.MediaAssetTransferAttemptLimit)
 		testutil.RequireNoError(t, err, "preparing derived transfer")
 		return ok
 	}
@@ -431,7 +431,7 @@ func TestStorageTransferWorkerDoesNotAdoptUnverifiableRemoteDestination(t *testi
 	content := []byte("unverified destination with an old row that has no SHA-256")
 	f := newTransferTestRemoteFixture(t, content, false, nil)
 	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, storageTransferAttemptLimit)
+		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing unverified destination = (%+v, %t, %v)", transfer, ok, err)
 	}

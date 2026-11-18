@@ -33,9 +33,8 @@ import (
 )
 
 const (
-	storageTransferAttemptLimit int32 = 10
-	storageTransferRowLimit     int32 = 1000
-	storageTransferLockSnooze         = 30 * time.Second
+	storageTransferRowLimit   int32 = 1000
+	storageTransferLockSnooze       = 30 * time.Second
 	// abandonedUploadRowLimit は 1 回の Work で Abort する掃除待ちの上限である。
 	abandonedUploadRowLimit int32 = 100
 	// abandonedUploadCleanupTimeout は 1 回の Work の掃除に許す時間である。掃除は Work の締切と同じ ctx を使うので、
@@ -88,18 +87,18 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	if rowLimit <= 0 {
 		rowLimit = storageTransferRowLimit
 	}
-	assets, byteCount, err := w.Storage.CountMediaAssetTransferCandidates(ctx, rules, fsStores, w.Config.Derived, storageTransferAttemptLimit)
+	assets, byteCount, err := w.Storage.CountMediaAssetTransferCandidates(ctx, rules, fsStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil {
 		return fmt.Errorf("counting storage transfer candidates: %w", err)
 	}
 	metrics.StorageTransferWaitingAssets.Set(float64(assets))
 	metrics.StorageTransferWaitingBytes.Set(float64(byteCount))
-	exhausted, err := w.Storage.CountMediaAssetTransferExhausted(ctx, rules, fsStores, w.Config.Derived, storageTransferAttemptLimit)
+	exhausted, err := w.Storage.CountMediaAssetTransferExhausted(ctx, rules, fsStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil {
 		return fmt.Errorf("counting exhausted storage transfers: %w", err)
 	}
 	metrics.StorageTransferExhaustedAssets.Set(float64(exhausted))
-	transfers, err := w.Storage.ListMediaAssetTransferCandidates(ctx, rules, fsStores, w.Config.Derived, storageTransferAttemptLimit, rowLimit)
+	transfers, err := w.Storage.ListMediaAssetTransferCandidates(ctx, rules, fsStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit, rowLimit)
 	if err != nil {
 		return fmt.Errorf("listing storage transfer candidates: %w", err)
 	}
@@ -287,7 +286,7 @@ func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, e
 
 func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte, fsStores, sourceStores, mountedStores []string, targetRoot string) (retErr error) {
 	transfer, ok, err := w.Storage.PrepareMediaAssetTransfer(
-		ctx, args.MediaAssetID, args.Store, rules, fsStores, sourceStores, mountedStores, w.Config.Derived, storageTransferAttemptLimit,
+		ctx, args.MediaAssetID, args.Store, rules, fsStores, sourceStores, mountedStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit,
 	)
 	if err != nil || !ok {
 		return err

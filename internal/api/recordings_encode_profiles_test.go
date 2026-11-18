@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -1050,7 +1051,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}
-	reconcileWorker := &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles}
+	reconcileWorker := &encode.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles}
 
 	srv := NewTestServer(t, pool, func(c *RouterConfig) {
 		c.EncodePolicyStore = pgstoretest.Media(pool)
@@ -1157,7 +1158,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 		t.Fatalf("targeted encode_reconcile enqueue calls = %d, want 1", targetedPasses)
 	}
 
-	encodeReconcileWorker := &worker.EncodeReconcileWorker{
+	encodeReconcileWorker := &encode.EncodeReconcileWorker{
 		Enqueuer: enqueuer,
 
 		Media:    pgstoretest.Media(pool),

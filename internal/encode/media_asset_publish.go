@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"crypto/sha256"

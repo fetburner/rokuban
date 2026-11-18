@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,8 +22,8 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -429,7 +428,7 @@ func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
 // 固定する: 新しい世代のパスに置き換わり、旧パスが消え、凍結区間が差し替わる。
 func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -498,7 +497,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestedKeep
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work")
 
 	profileName := "cut"
 	row, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
@@ -525,7 +524,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	// 2 回目は冪等にスキップする（凍結区間が一致しているので作り直さない）。
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, newCutEncodeJob(recordingID)), "second Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, newCutEncodeJob(recordingID)), "second Work")
 	again, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID, Profile: &profileName,
 	})
@@ -591,7 +590,7 @@ func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapt
 
 func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -669,7 +668,7 @@ func rebuildRequestExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) b
 // 要求の keep を凍結した版があるとき、ffmpeg を起動せず、要求行も消さないことを固定する。
 func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRow(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -701,7 +700,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestedKeep
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work")
 	if !rebuildRequestExists(t, pool, recordingID) {
 		t.Fatal("satisfied rebuild request is missing; want it kept (only api removes it)")
 	}
@@ -723,7 +722,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 // 公開 tx では要求行をロック下で読み直す。
 func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -756,7 +755,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(ctx, w, job); err != nil {
 		t.Fatalf("Work = %v, want nil (skip without running ffmpeg)", err)
 	}
 	if _, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
@@ -772,7 +771,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 // 描くことを固定する（エンコード前の判定は要求行の keep と照合し、現在の章とは比べない）。
 func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -815,7 +814,7 @@ func newCutEncodeJob(recordingID int64) jobs.EncodeJobArgs {
 // （この 2 つが同じループで分岐していることが要点）。
 func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -847,7 +846,7 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 // asset complete while a different profile is added to desired.
 func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -874,17 +873,17 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 		cutFFmpegProfile(), {Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 	}}
 	enqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Profiles: cfg, Media: pgstoretest.Media(pool)},
-		EncodeReconcileArgs{RecordingID: recordingID})
+		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 	if got := pendingEncodeProfiles(t, enqueuer, recordingID); !slices.Equal(got, []string{"h264"}) {
 		t.Fatalf("pending profiles after adding h264 = %v, want [h264] (stale cut requires an explicit rebuild command)", got)
 	}
 }
 
 // pendingEncodeProfiles は記録した encode 投入要求のプロファイル名をソートして返す。
-func pendingEncodeProfiles(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64) []string {
+func pendingEncodeProfiles(t *testing.T, enqueuer *jobqfaketest.RecordingEnqueuer, recordingID int64) []string {
 	t.Helper()
 	var out []string
-	for _, args := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, (jobs.EncodeJobArgs{}).Kind()) {
+	for _, args := range recordedArgs[jobs.EncodeJobArgs](t, enqueuer.CallsOfKind((jobs.EncodeJobArgs{}).Kind())) {
 		if args.RecordingID == recordingID {
 			out = append(out, args.Profile)
 		}
@@ -893,141 +892,12 @@ func pendingEncodeProfiles(t *testing.T, enqueuer *recordingEnqueuer, recordingI
 	return out
 }
 
-// TestIngestWorker_ClampsCutOnlyProfileSelection は受け入れの「マージ結果が cut
-// のみになったら cut が落ちる」を、4 経路のうちの ingest の凍結で固定する。
-//
-// ルール単独（cut + h264）と override 単独（h264 を明示的に打ち消す）はどちらも
-// 禁則を満たしているが、マージ結果は cut だけになる。**書く前に安全側へ倒さないと
-// cut だけの録画が凍結され、確認に再生が要り・再生に encode が要り・encode に確認が
-// 要る循環に落ちる。**
-func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	programID := int64(900000000000007)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "cut だけになる予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
-
-	overrides, err := json.Marshal(map[string]any{
-		// h264 を明示的に打ち消す → 実効値は cut だけ。
-		"encodeProfiles": []string{"cut"},
-	})
-	testutil.RequireNoError(t, err, "json.Marshal")
-	_, err = q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID, Overrides: overrides,
-	})
-	testutil.RequireNoError(t, err, "setting override")
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
-	})
-
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
-	})
-	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only", programID)
-
-	fake := newFullTransferFake(t, "rec-policy-cut-only", makeTSData(20), "test/policy-cut-only.m2ts")
-	mc := mirakc.NewClient(fake.URL(), nil)
-
-	w := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		StallTimeout:  5 * time.Second,
-		// cut: true のプロファイル名（本番では config から注入される）。
-		CutProfiles: map[string]struct{}{"cut": {}},
-		Precheck:    pgstoretest.Media(pool),
-	}
-	w.CMDetectionStore = pgstoretest.Analysis(pool)
-
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only"}
-	w.Enqueuer = newRecordingEnqueuer()
-	workCtx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
-
-	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
-	if keepOriginal != "always" {
-		t.Errorf("keep_original = %q, want always", keepOriginal)
-	}
-	// cut が落ちて空になる（cut でないプロファイルが 1 つも無いので、安全側は
-	// 「エンコードしない」）。空のまま凍結されることが要点で、cut が残っては
-	// ならない。
-	for _, p := range profiles {
-		if p == "cut" {
-			t.Errorf("encode_profiles = %v, want cut dropped", profiles)
-		}
-	}
-}
-
-// TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive は原本 HLS が使える構成で
-// 凍結時のクランプが cut profile を落とさないことを固定する。
-func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	programID := int64(900000000000008)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "live 有効で cut だけになる予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
-
-	overrides, err := json.Marshal(map[string]any{"encodeProfiles": []string{"cut"}})
-	testutil.RequireNoError(t, err, "json.Marshal")
-	_, err = q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID, Overrides: overrides,
-	})
-	testutil.RequireNoError(t, err, "setting override")
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
-	})
-
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
-	})
-	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only-live", programID)
-
-	fake := newFullTransferFake(t, "rec-policy-cut-only-live", makeTSData(20), "test/policy-cut-only-live.m2ts")
-	mc := mirakc.NewClient(fake.URL(), nil)
-	w := &IngestWorker{
-		Publisher:           pgstoretest.Media(pool),
-		MirakcClients:       singleSiteClients("", mc),
-		MediaDir:            t.TempDir(),
-		RecordTarget:        pgstoretest.Recordings(pool),
-		StallTimeout:        5 * time.Second,
-		CutProfiles:         map[string]struct{}{"cut": {}},
-		RecordingHLSEnabled: true,
-		Precheck:            pgstoretest.Media(pool),
-	}
-	w.CMDetectionStore = pgstoretest.Analysis(pool)
-
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"}
-	w.Enqueuer = newRecordingEnqueuer()
-	workCtx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
-
-	_, profiles := encodePolicyOfRecording(t, pool, recordingID)
-	if len(profiles) != 1 || profiles[0] != "cut" {
-		t.Errorf("encode_profiles = %v, want [cut] with live enabled", profiles)
-	}
-}
-
 // TestEncodeReconcile_AllCutRecordingEnqueuesNothing は「全区間カットの録画は、
 // 確認済みでも cut のジョブを投入しない」を固定する。投入しても observeEncodePlan が
 // "has no keep ranges" で失敗し続けるため、一部だけ切る録画だけを投入する。
 func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}

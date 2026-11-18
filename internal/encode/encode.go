@@ -1,4 +1,4 @@
-package worker
+package encode
 
 import (
 	"bufio"
@@ -32,6 +32,10 @@ import (
 	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
+
+// errNoActiveOriginal は、読み取りジョブを積む置き場を決められない（active な原本のコピーが無い）ことを表す。
+// 次の reconcile が引き直す。
+var errNoActiveOriginal = errors.New("no active original copy to choose a store from")
 
 // EncodeWorker は原本 media_asset から構造化プロファイルで派生物を作る。
 // 原本は mediapath.Resolve で読み、ffmpeg 出力はローカル scratch に書く。完成した
@@ -85,7 +89,7 @@ import (
 // EncodeJobArgs は site を持たない。エンコードは
 // 原本 media_asset（mediapath.Resolve でこの worker の MediaDir 配下に解決する）を読み、
 // 派生物は object store に公開するだけで mirakc には一切触れない（不変条件 4「ffmpeg/ffprobe の exec は
-// worker / streamer パッケージのみ」であって mirakc 呼び出しではない）。
+// worker / cmdetect / encode / streamer パッケージと共用の実行補助のみ」であって mirakc 呼び出しではない）。
 // 録画資産は全 site で共有される（docs/storage.md）ため、
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。

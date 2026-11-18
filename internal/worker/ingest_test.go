@@ -29,6 +29,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -176,7 +177,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	if len(data) != len(tsData) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
-	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindOriginal, "", data)
+	assertOriginalAssetSHA256(t, pool, recordingID, data)
 
 	if fake.CallCount(http.MethodDelete, "/api/recording/records/rec-001") == 0 {
 		t.Error("edge record was not deleted after successful commit")
@@ -2620,7 +2621,7 @@ func TestIngestWorker_RetriesCommitOnlyAfterLinkedPublicationFailed(t *testing.T
 	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
 		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
 	}
-	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
+	assertOriginalAssetSHA256(t, env.pool, env.recordingID, env.tsData)
 }
 
 // 最初の Work が候補名をチェックポイントへ保存し、公開失敗後も再試行が同じ名前を使う。
@@ -2674,7 +2675,7 @@ func TestIngestWorker_LinkedRetryCommitsReceivedSHA256WithoutReadingCanonical(t 
 	if got := env.streamGets(); got != getsAfterFirst {
 		t.Errorf("stream GET calls = %d after retry, want %d (no transfer)", got, getsAfterFirst)
 	}
-	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
+	assertOriginalAssetSHA256(t, env.pool, env.recordingID, env.tsData)
 }
 
 // link の前に commit が失敗しても、保存済みの最終 handoff（offset = 全量）から再開して commit できる。
@@ -2714,7 +2715,7 @@ func TestIngestWorker_ResumesFinalHandoffWhenPublicationFailedBeforeLink(t *test
 	if data, err := os.ReadFile(env.fullPath); err != nil || !bytes.Equal(data, env.tsData) {
 		t.Errorf("canonical bytes = (%d bytes, %v), want the transferred bytes", len(data), err)
 	}
-	assertMediaAssetSHA256(t, env.pool, env.recordingID, store.AssetKindOriginal, "", env.tsData)
+	assertOriginalAssetSHA256(t, env.pool, env.recordingID, env.tsData)
 }
 
 // 公開済みの canonical は、mirakc が長い stream を返しても 1 バイトも変わらない。
@@ -3087,7 +3088,7 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	if targetedPasses != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", targetedPasses)
 	}
-	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Profiles: config.EncodeConfig{
+	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: config.EncodeConfig{
 		Profiles: []config.EncodeProfile{cutFFmpegProfile()},
 	}, Media: pgstoretest.Media(pool),
 	}, EncodeReconcileArgs{RecordingID: recordingID})
@@ -3197,7 +3198,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
-	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)},
+	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)},
 		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
 	if got := countEncodeJobs(t, passEnqueuer, recordingID, "h265"); got != 1 {
@@ -3277,7 +3278,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
-	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Profiles: encodeConfigWith("h264", "h265"), Media: pgstoretest.Media(pool)},
+	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: encodeConfigWith("h264", "h265"), Media: pgstoretest.Media(pool)},
 		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
 	if got := countEncodeJobs(t, passEnqueuer, recordingID, "h265"); got != 1 {
@@ -3602,7 +3603,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
-	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)},
+	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)},
 		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
 	if got := countEncodeJobs(t, passEnqueuer, recordingID, "h265"); got != 1 {
