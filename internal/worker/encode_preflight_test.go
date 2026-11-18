@@ -18,6 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg は、公開 tx だけが弾いていた古いジョブを、
@@ -63,9 +64,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			seed: func(t *testing.T, pool *pgxpool.Pool, id int64) jobs.EncodeJobArgs {
 				adoptChapters(t, pool, id)
 				assetID := seedEncodedAsset(t, pool, id, "cut", "preflight/old.g1.mp4")
-				if err := setFrozenCuts(t, pool, assetID, keepOld); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, keepOld), "setFrozenCuts")
 				return newCutEncodeJob(id)
 			},
 			wantReason: "active_cut_protected",
@@ -75,13 +74,11 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			name:     "rebuild request on a profile that is not cut",
 			profiles: []string{"h264"},
 			seed: func(t *testing.T, pool *pgxpool.Pool, id int64) jobs.EncodeJobArgs {
-				if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+				testutil.RequireNoError(t, sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
 					RecordingID:   id,
 					Profile:       "h264",
 					RequestedKeep: mustKeepRanges(t, keepOld),
-				}); err != nil {
-					t.Fatal(err)
-				}
+				}), "UpsertEncodedAssetRebuildRequest")
 				job := rebuildJob(t, id, keepOld)
 				job.Profile = "h264"
 				return job
@@ -163,9 +160,7 @@ func TestEncodeWorker_OrdinaryCutJobWithoutOwnershipFails(t *testing.T) {
 func rebuildJob(t *testing.T, recordingID int64, keep []chapters.Range) jobs.EncodeJobArgs {
 	t.Helper()
 	raw, err := json.Marshal(keep)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "json.Marshal")
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = raw
 	return job
@@ -173,17 +168,13 @@ func rebuildJob(t *testing.T, recordingID int64, keep []chapters.Range) jobs.Enc
 
 func adoptChapters(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "inserting into recording_chapter_ownership", `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID)
 }
 
 func countEncodedAssets(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'encoded'`, recordingID).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'encoded'`, recordingID).Scan(&n), "selecting from media_assets")
 	return n
 }

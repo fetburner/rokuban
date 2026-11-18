@@ -8,6 +8,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // 判定 (c)。派生物 Put の後にユーザーが h264 を外すと、外す前に積まれたジョブは
@@ -29,29 +30,23 @@ func TestEncodeWorker_ProfileRemovedFromDesiredIsNotPublished(t *testing.T) {
 	go func() { done <- runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)) }()
 
 	waitReached(t, reached, done)
-	if err := sqlcgen.New(pool).RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{
+	testutil.RequireNoError(t, sqlcgen.New(pool).RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{
 		RecordingID: recordingID, Profile: "h264",
-	}); err != nil {
-		t.Fatalf("RemoveRecordingEncodeProfile: %v", err)
-	}
+	}), "RemoveRecordingEncodeProfile")
 	release()
 	if err := waitDone(t, done); err != nil {
 		t.Fatalf("Work: %v, want success (skipped publish)", err)
 	}
 
 	var activeCopies int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
-		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`, recordingID).Scan(&activeCopies); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`, recordingID).Scan(&activeCopies), "selecting from media_assets")
 	if activeCopies != 0 {
 		t.Errorf("active encoded copies = %d, want none after desired profile removal", activeCopies)
 	}
 	var pendingCopies int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
-		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'pending'`, recordingID).Scan(&pendingCopies); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
+		WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'pending'`, recordingID).Scan(&pendingCopies), "selecting from media_assets")
 	if pendingCopies != 1 {
 		t.Errorf("pending encoded copies = %d, want one unexposed copy", pendingCopies)
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/streamer"
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -335,9 +336,7 @@ func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
 func TestEncodedRelPath(t *testing.T) {
 	t.Parallel()
 	got, err := EncodedRelPath("20240101/120000_title_1024.m2ts", "h264", "mp4", 0, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "EncodedRelPath")
 	want := "20240101/120000_title_1024_h264.mp4"
 	if got != want {
 		t.Errorf("EncodedRelPath = %q, want %q", got, want)
@@ -421,13 +420,9 @@ printf 'out_time_ms=1000\nprogress=continue\n'
 printf 'out_time_ms=2000\nprogress=end\n'
 cp "$input" "$output"
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
 	oldPath := os.Getenv("PATH")
-	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath), "os.Setenv")
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
 	return path
 }
@@ -446,12 +441,8 @@ func seedEncodePolicy(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 func writeEncodeOriginal(t *testing.T, mediaDir, relPath string, content []byte) {
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(full), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(full, content, 0o644), "os.WriteFile")
 }
 
 func prepareEncodeInput(t *testing.T, pool *pgxpool.Pool, recordingID int64, mediaDir, relPath string, profiles []string, content []byte) int64 {
@@ -484,9 +475,7 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	})
 	mk := func(rel string) string {
 		dir := filepath.Join(scratchDir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, os.MkdirAll(dir, 0o700), "os.MkdirAll")
 		return dir
 	}
 	stale := mk(filepath.Join("encode", encodeScratchScope(recordingID, "h264")+"-3-abc"))
@@ -565,29 +554,23 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() first run: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() first run")
 
 	encRel := "20240101/show_h264.mp4"
 	outPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
 	got, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatalf("reading encoded file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading encoded file")
 	if string(got) != string(content) {
 		t.Errorf("encoded content = %q, want copy of input", got)
 	}
 
 	// media_assets 行が 1 件。
 	var count int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
 		 WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`,
 		recordingID,
-	).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	).Scan(&count), "selecting from media_assets")
 	if count != 1 {
 		t.Fatalf("encoded assets = %d, want 1", count)
 	}
@@ -595,25 +578,17 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	// 2 回目は冪等（再エンコードせず成功）。
 	// ファイルを触って「上書きされない」ことを見る。
 	marker := []byte("already-committed-should-not-overwrite")
-	if err := os.WriteFile(outPath, marker, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() second run: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(outPath, marker, 0o644), "os.WriteFile")
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() second run")
 	got2, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.ReadFile")
 	if string(got2) != string(marker) {
 		t.Errorf("second run rewrote file; idempotent skip failed")
 	}
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'encoded'`,
 		recordingID,
-	).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
+	).Scan(&count), "selecting from media_assets")
 	if count != 1 {
 		t.Errorf("after second run encoded assets = %d, want 1", count)
 	}
@@ -678,9 +653,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 	}
 
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work")
 
 	events := rec.received()
 	if len(events) != 1 {
@@ -709,9 +682,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 
 	// 冪等スキップ（既に active な encoded がある）では再発火しない。
 	rec.reset()
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() second run: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() second run")
 	if events := rec.received(); len(events) != 0 {
 		t.Errorf("webhook fired on idempotent skip: %+v", events)
 	}
@@ -753,9 +724,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
 	for i := int32(0); i < 2; i++ {
 		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "missing")
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 		updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "missing", start.Count, errors.New("previous failure"))
 		if err != nil || !updated {
 			t.Fatalf("recording prior failure %d: updated=%v err=%v", i+1, updated, err)
@@ -957,9 +926,7 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 	dir := t.TempDir()
 	subtitles := filepath.Join(dir, "captions.srt")
 	srt := "1\n00:00:00,100 --> 00:00:01,500\ncaption fixture\n"
-	if err := os.WriteFile(subtitles, []byte(srt), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(subtitles, []byte(srt), 0o600), "os.WriteFile")
 	input := filepath.Join(dir, "input.mkv")
 	createArgs := []string{
 		"-hide_banner", "-loglevel", "error", "-y",
@@ -975,9 +942,7 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 	}
 
 	withSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, input, commandOutput)
-	if err != nil {
-		t.Fatalf("probing subtitle fixture: %v", err)
-	}
+	testutil.RequireNoError(t, err, "probing subtitle fixture")
 	if !withSubtitles {
 		t.Fatal("real ffprobe did not find the fixture subtitle stream")
 	}
@@ -987,27 +952,21 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 		t.Fatalf("creating captionless fixture: %v: %s", err, out)
 	}
 	captionlessHasSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, captionless, commandOutput)
-	if err != nil {
-		t.Fatalf("probing captionless fixture: %v", err)
-	}
+	testutil.RequireNoError(t, err, "probing captionless fixture")
 	if captionlessHasSubtitles {
 		t.Fatal("real ffprobe found a subtitle stream in the captionless fixture")
 	}
 
 	output := filepath.Join(dir, "encoded.mkv")
 	subtitleOut, err := mediapath.SubtitleSibling(output)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 	profile := config.EncodeProfile{
 		Name: "fixture", Container: "matroska", VideoCodec: "mpeg2video", AudioCodec: "mp2", Subtitles: "webvtt",
 	}
 	w := &EncodeWorker{FFmpeg: ffmpeg}
-	if err := w.runEncodeCommand(context.Background(), encodeCommandInput{
+	testutil.RequireNoError(t, w.runEncodeCommand(context.Background(), encodeCommandInput{
 		profile: profile, inputPath: input, scratchOut: output, subtitleOut: subtitleOut, withSubtitles: withSubtitles,
-	}, func(time.Duration) {}, slog.Default()); err != nil {
-		t.Fatalf("encoding subtitle fixture: %v", err)
-	}
+	}, func(time.Duration) {}, slog.Default()), "encoding subtitle fixture")
 }
 
 func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
@@ -1033,9 +992,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 		t.Fatalf("creating real encode fixture: %v: %s", err, out)
 	}
 	original, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.ReadFile")
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
 	const originalRelPath = "20261030/real-encode.ts"
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, originalRelPath, []string{"h264"}, original)
@@ -1044,13 +1001,9 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 	encodeWorker.Profiles = config.EncodeConfig{FFmpeg: ffmpeg, Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Preset: "ultrafast",
 	}}}
-	if err := runWorkerViaJobQFake(context.Background(), encodeWorker, EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}); err != nil {
-		t.Fatalf("real encode Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), encodeWorker, EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}), "real encode Work")
 	encoded, err := pgstoretest.Media(pool).GetEncodedMediaAssetForServing(context.Background(), recordingID, "h264")
-	if err != nil {
-		t.Fatalf("loading active encoded asset: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading active encoded asset")
 	objects := testFSObjectStore(mediaDir)
 	encodedObject, err := objects.Head(context.Background(), encoded.RelPath)
 	if err != nil {
@@ -1060,9 +1013,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 		t.Fatalf("encoded object size = %d, active asset size = %d; want matching non-empty output", encodedObject.Size, encoded.SizeBytes)
 	}
 	encodedBytes, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(encoded.RelPath)))
-	if err != nil {
-		t.Fatalf("reading real encoded object: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading real encoded object")
 	if len(encodedBytes) < 8 || string(encodedBytes[4:8]) != "ftyp" {
 		t.Fatalf("real encoded object has no MP4 ftyp header: %x", encodedBytes[:min(len(encodedBytes), 12)])
 	}
@@ -1071,13 +1022,9 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 		Media: pgstoretest.Media(pool), Objects: objects, ObjectPublisher: pgstoretest.Media(pool),
 		MediaDir: mediaDir, ScratchDir: t.TempDir(), FFmpeg: ffmpeg, FFprobe: ffprobe,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), thumbnailWorker, ThumbnailJobArgs{RecordingID: recordingID}); err != nil {
-		t.Fatalf("real thumbnail Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), thumbnailWorker, ThumbnailJobArgs{RecordingID: recordingID}), "real thumbnail Work")
 	thumbnail, err := pgstoretest.Media(pool).GetThumbnailMediaAssetForServing(context.Background(), recordingID)
-	if err != nil {
-		t.Fatalf("loading active thumbnail asset: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading active thumbnail asset")
 	thumbnailObject, err := objects.Head(context.Background(), thumbnail.RelPath)
 	if err != nil {
 		t.Fatalf("Head real thumbnail object %q: %v", thumbnail.RelPath, err)
@@ -1086,9 +1033,7 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 		t.Fatalf("thumbnail object size = %d, active asset size = %d; want matching non-empty output", thumbnailObject.Size, thumbnail.SizeBytes)
 	}
 	thumbnailBytes, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(thumbnail.RelPath)))
-	if err != nil {
-		t.Fatalf("reading real thumbnail object: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading real thumbnail object")
 	if len(thumbnailBytes) < 4 || !bytes.Equal(thumbnailBytes[:2], []byte{0xff, 0xd8}) {
 		t.Fatalf("real thumbnail is not a JPEG: %x", thumbnailBytes[:min(len(thumbnailBytes), 8)])
 	}
@@ -1106,14 +1051,10 @@ func TestDerivedFSStorePublishesRealEncodeAndThumbnail(t *testing.T) {
 	}
 	request.Header.Set("Range", "bytes=0-9")
 	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("requesting a range from the real encoded object: %v", err)
-	}
+	testutil.RequireNoError(t, err, "requesting a range from the real encoded object")
 	defer func() { _ = response.Body.Close() }()
 	rangeBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatalf("reading encoded range response: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading encoded range response")
 	if response.StatusCode != http.StatusPartialContent {
 		t.Fatalf("encoded Range status = %d, want 206", response.StatusCode)
 	}

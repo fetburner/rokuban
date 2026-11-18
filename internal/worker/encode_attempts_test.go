@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // waitFor は cond が true を返すまで最大 timeout 待つ（10ms 間隔でポーリング）。
@@ -111,9 +112,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 	}
 
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work(): %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work()")
 
 	if _, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
 		t.Errorf("recording_encode_attempts row remains after success; want cleared")
@@ -158,12 +157,10 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 	}
 
 	var errMsg *string
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT error FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2`,
 		recordingID, "missing",
-	).Scan(&errMsg); err != nil {
-		t.Fatalf("reading error column: %v", err)
-	}
+	).Scan(&errMsg), "reading error column")
 	if errMsg == nil || *errMsg == "" {
 		t.Errorf("error = %v, want a non-empty message", errMsg)
 	}
@@ -194,9 +191,7 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedM
 		"echo $! > " + childPIDMarker + "\n" +
 		": > " + startedMarker + "\n" +
 		"wait\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
 	return path, startedMarker, childPIDMarker
 }
 
@@ -311,9 +306,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 		},
 	}
 	prior, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", prior.Count, errors.New("previous failure"))
 	if err != nil || !updated {
 		t.Fatalf("setting previous attempt: updated=%v err=%v", updated, err)
@@ -428,9 +421,7 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
 	for attempt := int32(1); attempt <= 25; attempt++ {
 		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 		if start.Count != attempt {
 			t.Fatalf("started attempt count = %d, want %d", start.Count, attempt)
 		}
@@ -442,9 +433,7 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 		}
 	}
 	terminal, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 	if !terminal.Terminal || terminal.Count != 25 || terminal.DeadAttempt != 25 {
 		t.Fatalf("terminal start = %+v, want terminal count/dead attempt 25", terminal)
 	}
@@ -467,14 +456,10 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/timeout-snapshot.m2ts", []string{"h264"}, []byte("data"))
 	startedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	endedAt := startedAt.Add(90 * time.Minute)
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $3 WHERE id = $1`, recordingID, startedAt, endedAt); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "updating recordings", `UPDATE recordings SET started_at = $2, ended_at = $3 WHERE id = $1`, recordingID, startedAt, endedAt)
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "h264", Rate: 1.5}}}
 	args, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeJobArgs")
 	if args.Timeout != 135*time.Minute {
 		t.Fatalf("queued timeout = %s, want 2h15m (90m recording × 1.5)", args.Timeout)
 	}
@@ -482,14 +467,10 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 		t.Errorf("EncodeJobArgs.Spec timeout = %s, want queued 2h15m", got)
 	}
 	shortEndedAt := startedAt.Add(5 * time.Minute)
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET ended_at = $2 WHERE id = $1`, recordingID, shortEndedAt); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "updating recordings", `UPDATE recordings SET ended_at = $2 WHERE id = $1`, recordingID, shortEndedAt)
 	shortProfiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "h264", Rate: 4}}}
 	shortArgs, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", shortProfiles)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeJobArgs")
 	if shortArgs.Timeout != time.Hour {
 		t.Fatalf("queued timeout for short recording = %s, want 1h floor (5m recording × rate 4 = 20m)", shortArgs.Timeout)
 	}
@@ -501,35 +482,23 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 		t.Errorf("EncodeJobArgs.Spec timeout for old args = %s, want 12h", got)
 	}
 	// started_at / ended_at が NULL（ライブラリ取り込み）なら番組長（既定 30 分）で計算する。
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 3 * 3600 * 1000 WHERE id = $1`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "updating recordings", `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 3 * 3600 * 1000 WHERE id = $1`, recordingID)
 	fromProgram, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeJobArgs")
 	if fromProgram.Timeout != 270*time.Minute {
 		t.Errorf("queued timeout from program_duration_ms = %s, want 4h30m (3h × 1.5)", fromProgram.Timeout)
 	}
 	// started_at == ended_at（rescue 再スキャン）でも番組長を使う。
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $2 WHERE id = $1`, recordingID, startedAt); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "updating recordings", `UPDATE recordings SET started_at = $2, ended_at = $2 WHERE id = $1`, recordingID, startedAt)
 	zeroLen, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeJobArgs")
 	if zeroLen.Timeout != 270*time.Minute {
 		t.Errorf("queued timeout with started_at == ended_at = %s, want 4h30m", zeroLen.Timeout)
 	}
 	// 実尺も番組長も無ければ 12 時間。
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 0 WHERE id = $1`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "updating recordings", `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 0 WHERE id = $1`, recordingID)
 	unknown, err := newEncodeJobArgs(ctx, pgstoretest.Media(pool), recordingID, dbtest.StoreName, "h264", profiles)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeJobArgs")
 	if unknown.Timeout != 12*time.Hour {
 		t.Errorf("queued timeout with unknown duration = %s, want 12h", unknown.Timeout)
 	}
@@ -544,11 +513,8 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/reset-after-limit.m2ts", nil, []byte("data"))
-	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO recording_encode_attempts (recording_id, profile, state, error, attempted_at, attempt_count)
-		 VALUES ($1, 'missing', 'failed', 'x', now(), 25)`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "inserting into recording_encode_attempts", `INSERT INTO recording_encode_attempts (recording_id, profile, state, error, attempted_at, attempt_count)
+		 VALUES ($1, 'missing', 'failed', 'x', now(), 25)`, recordingID)
 	w := &EncodeWorker{
 		Publisher:       pgstoretest.Media(pool),
 		Progress:        pgstoretest.Media(pool),
@@ -564,9 +530,7 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "missing")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 	if start.Terminal || start.Count != 1 {
 		t.Fatalf("start after reset = %+v, want count 1 and not terminal", start)
 	}
@@ -591,9 +555,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	startedPath := filepath.Join(ffmpegDir, "started")
 	pidPath := filepath.Join(ffmpegDir, "pid")
 	script := "#!/bin/sh\necho $$ > " + pidPath + "\n: > " + startedPath + "\nexec sleep 60\n"
-	if err := os.WriteFile(ffmpegPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(ffmpegPath, []byte(script), 0o755), "os.WriteFile")
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
 		Progress:  pgstoretest.Media(pool),
@@ -652,17 +614,11 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 		t.Errorf("attempt_count after deadline = %d, ok=%v, want 1", count, ok)
 	}
 	pidBytes, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.ReadFile")
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "strconv.Atoi")
 	process, err := os.FindProcess(pid)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.FindProcess")
 	if err := process.Signal(syscall.Signal(0)); err == nil {
 		t.Fatalf("fake ffmpeg PID %d still exists after Work returned", pid)
 	}
@@ -726,9 +682,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
 	longMsg := strings.Repeat("日", 1000)
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", start.Count, errors.New(longMsg))
 	if err != nil || !updated {
 		t.Fatalf("markEncodeAttemptFailed() = (%v, %v), want updated", updated, err)
@@ -743,12 +697,10 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 	}
 
 	var errMsg *string
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT error FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2`,
 		recordingID, "h264",
-	).Scan(&errMsg); err != nil {
-		t.Fatalf("reading error column: %v", err)
-	}
+	).Scan(&errMsg), "reading error column")
 	if errMsg == nil || *errMsg == "" {
 		t.Fatalf("error = %v, want a non-empty truncated message", errMsg)
 	}
@@ -782,18 +734,14 @@ func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 
 	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "running" {
 		t.Fatalf("fixture: state = %q, ok = %v, want running", state, ok)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := w.clearEncodeAttempt(ctx, recordingID, "h264", start.Count); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, w.clearEncodeAttempt(ctx, recordingID, "h264", start.Count), "w.clearEncodeAttempt")
 
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
 		t.Errorf("attempt row remains (state = %q) after clearEncodeAttempt with canceled ctx; want deleted", state)
@@ -832,9 +780,7 @@ func installLeakyExitZeroFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath,
 		"printf 'out_time_ms=1000\\nprogress=continue\\n'\n" +
 		"printf 'out_time_ms=2000\\nprogress=end\\n'\n" +
 		"cp \"$input\" \"$output\"\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
 	return path, childPIDMarker
 }
 
@@ -960,13 +906,11 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// 行が一度も書かれなかった回帰も見逃す（TestEncodeWorker_SuccessAndIdempotent
 	// と同じ形の検査）。
 	var encodedCount int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id
 		 WHERE a.recording_id = $1 AND a.kind = 'encoded' AND a.profile = 'h264' AND c.state = 'active'`,
 		recordingID,
-	).Scan(&encodedCount); err != nil {
-		t.Fatal(err)
-	}
+	).Scan(&encodedCount), "selecting from media_assets")
 	if encodedCount != 1 {
 		t.Errorf("active encoded media_assets = %d, want 1 (WaitDelay-on-success must still commit)", encodedCount)
 	}
@@ -999,13 +943,9 @@ func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *test
 		"cp \"$input\" \"$output\"\n" +
 		"printf '%s\\n' \"$$\" > \"$dir/pid\"\n" +
 		"printf 'out_time_ms=2000000\\nprogress=end\\n'\n"
-	if err := os.WriteFile(ffmpegPath, []byte(ffmpegScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(ffmpegPath, []byte(ffmpegScript), 0o755), "os.WriteFile")
 	inputPath := filepath.Join(tmp, "input.ts")
-	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(inputPath, []byte("input"), 0o600), "os.WriteFile")
 	outputPath := filepath.Join(tmp, "output.mp4")
 
 	firstProgress := make(chan struct{})
@@ -1101,13 +1041,9 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 		"head -c 1048577 /dev/zero\n" +
 		"i=0; while [ $i -lt 200 ]; do printf '\\nout_time_ms=1000000\\nprogress=continue\\n'; i=$((i+1)); done\n" +
 		"echo out > \"$output\"\n"
-	if err := os.WriteFile(ffmpegPath, []byte(longLineFFmpegScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(ffmpegPath, []byte(longLineFFmpegScript), 0o755), "os.WriteFile")
 	inputPath := filepath.Join(tmp, "input.ts")
-	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(inputPath, []byte("input"), 0o600), "os.WriteFile")
 
 	const testName = "^TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine$"
 	cmd := exec.Command(os.Args[0], "-test.run="+testName)
@@ -1120,9 +1056,7 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 	var helperOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &helperOut, &helperOut
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start test helper: %v", err)
-	}
+	testutil.RequireNoError(t, cmd.Start(), "start test helper")
 	helperDone := make(chan error, 1)
 	go func() { helperDone <- cmd.Wait() }()
 	select {

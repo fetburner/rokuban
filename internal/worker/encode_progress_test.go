@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 type encodeProgressReporterFunc func(context.Context, store.EncodeProgress) error
@@ -176,9 +177,7 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "show.m2ts", []string{"mobile"}, []byte("fake input"))
 
 	listenConn, err := pool.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "pool.Acquire")
 	defer listenConn.Release()
 	if _, err := listenConn.Exec(context.Background(), "LISTEN rokuban"); err != nil {
 		t.Fatal(err)
@@ -211,9 +210,7 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 	defer cancel()
 	for {
 		n, err := listenConn.Conn().WaitForNotification(ctx)
-		if err != nil {
-			t.Fatalf("waiting for encode progress: %v", err)
-		}
+		testutil.RequireNoError(t, err, "waiting for encode progress")
 		var got serverevent.EncodeProgressEvent
 		if json.Unmarshal([]byte(n.Payload), &got) != nil || got.Type != serverevent.EncodeProgressEventType {
 			continue
@@ -223,9 +220,7 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 		}
 		break
 	}
-	if err := <-workDone; err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, <-workDone, "Work")
 }
 
 func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
@@ -239,9 +234,7 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "show.m2ts", []string{"mobile"}, []byte("fake input"))
 	listenConn, err := pool.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "pool.Acquire")
 	defer listenConn.Release()
 	if _, err := listenConn.Exec(context.Background(), "LISTEN rokuban"); err != nil {
 		t.Fatal(err)
@@ -261,12 +254,10 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 			Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w,
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w,
 
 		EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
-	); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	), "Work")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
@@ -299,13 +290,9 @@ func installFakeFFprobe(t *testing.T, duration string, succeed bool) {
 	} else {
 		script += "exit 1\n"
 	}
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
 	oldPath := os.Getenv("PATH")
-	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath), "os.Setenv")
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
 }
 
@@ -327,8 +314,6 @@ sleep 2
 printf 'out_time_ms=4000000\nprogress=end\n'
 cp "$input" "$output"
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
 	return path
 }
