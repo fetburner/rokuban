@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func TestIngestTempFilePathEscapesIdentityAndIncludesWriterGeneration(t *testing.T) {
@@ -163,13 +164,9 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 	}
 	var firstByteGeneration, visibleBytes int64
 	var visiblePath string
-	if err := pool.QueryRow(context.Background(), `SELECT temp_generation, written_bytes, temp_rel_path FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&firstByteGeneration, &visibleBytes, &visiblePath); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT temp_generation, written_bytes, temp_rel_path FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&firstByteGeneration, &visibleBytes, &visiblePath), "pool.QueryRow")
 	firstTempRelPath, err := ingestTempRelPath(mediaDir, firstTemp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "ingestTempRelPath")
 	if visiblePath != firstTempRelPath {
 		t.Fatalf("visible temp path after cancellation = %q, want the first writer path %q", visiblePath, firstTempRelPath)
 	}
@@ -190,16 +187,12 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 	}
 	var pathBeforeCatchup string
 	var bytesBeforeCatchup, generationBeforeCatchup int64
-	if err := pool.QueryRow(context.Background(), `SELECT temp_rel_path, written_bytes, temp_generation FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&pathBeforeCatchup, &bytesBeforeCatchup, &generationBeforeCatchup); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT temp_rel_path, written_bytes, temp_generation FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&pathBeforeCatchup, &bytesBeforeCatchup, &generationBeforeCatchup), "pool.QueryRow")
 	if pathBeforeCatchup != firstTempRelPath || bytesBeforeCatchup != int64(cutoff) || generationBeforeCatchup != firstByteGeneration {
 		t.Fatalf("visible progress before catch-up = (%q, %d, %d), want old pointer/offset/generation (%q, %d, %d)", pathBeforeCatchup, bytesBeforeCatchup, generationBeforeCatchup, firstTempRelPath, cutoff, firstByteGeneration)
 	}
 	releaseRetryStream()
-	if err := <-retryDone; err != nil {
-		t.Fatalf("retry Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, <-retryDone, "retry Work() error")
 	if _, err := os.Stat(secondTemp); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("new writer temp after commit: err=%v, want os.ErrNotExist", err)
 	}
@@ -207,9 +200,7 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 		t.Errorf("superseded writer temp after commit: err=%v, want os.ErrNotExist", err)
 	}
 	got, err := os.ReadFile(fullPath)
-	if err != nil {
-		t.Fatalf("reading committed original: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading committed original")
 	if !bytes.Equal(got, full) {
 		t.Fatalf("committed original differs: got %d bytes, want %d", len(got), len(full))
 	}
@@ -217,9 +208,7 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 		t.Errorf("retry Range offset = %d, want Range 0 after an unclean handoff", got)
 	}
 	var committedByteGeneration int64
-	if err := pool.QueryRow(context.Background(), `SELECT ingest_generation FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, recordingID).Scan(&committedByteGeneration); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT ingest_generation FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, recordingID).Scan(&committedByteGeneration), "pool.QueryRow")
 	if committedByteGeneration != firstByteGeneration {
 		t.Errorf("committed byte generation = %d, want the unchanged HLS generation %d after writer catch-up", committedByteGeneration, firstByteGeneration)
 	}
@@ -243,9 +232,7 @@ func TestIngestWorker_RejectsSymlinkedCleanHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	hashState, err := fsink.MarshalHashState(hasher)
-	if err != nil {
-		t.Fatalf("marshaling checkpoint hash state: %v", err)
-	}
+	testutil.RequireNoError(t, err, "marshaling checkpoint hash state")
 	firstOwner := uuid.New()
 	checkpoint, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, firstOwner, time.Minute)
 	if err != nil || !acquired {
@@ -253,20 +240,12 @@ func TestIngestWorker_RejectsSymlinkedCleanHandoff(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	dir := filepath.Join(mediaDir, "sites", "default", "test")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(dir, 0o755), "os.MkdirAll")
 	tempPath := ingestTempWriterFilePath(dir, "default", "rec-symlink", checkpoint.WriterGeneration)
 	externalPath := filepath.Join(t.TempDir(), "outside")
-	if err := os.WriteFile(externalPath, prefix, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(externalPath, tempPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.SaveIngestCheckpoint(ctx, recordingID, firstOwner, checkpoint.WriterGeneration, int64(len(prefix)), hashState); err != nil {
-		t.Fatalf("saving clean handoff: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(externalPath, prefix, 0o600), "os.WriteFile")
+	testutil.RequireNoError(t, os.Symlink(externalPath, tempPath), "os.Symlink")
+	testutil.RequireNoError(t, media.SaveIngestCheckpoint(ctx, recordingID, firstOwner, checkpoint.WriterGeneration, int64(len(prefix)), hashState), "saving clean handoff")
 	secondOwner := uuid.New()
 	checkpoint, acquired, err = media.AcquireIngestCheckpoint(ctx, recordingID, secondOwner, time.Minute)
 	if err != nil || !acquired || !checkpoint.Resumed {
@@ -277,9 +256,7 @@ func TestIngestWorker_RejectsSymlinkedCleanHandoff(t *testing.T) {
 	checkpoint, openedPath, _, file, offset, err := w.openIngestWriterFile(
 		ctx, dir, "default", "rec-symlink", recordingID, secondOwner, checkpoint,
 	)
-	if err != nil {
-		t.Fatalf("opening replacement writer: %v", err)
-	}
+	testutil.RequireNoError(t, err, "opening replacement writer")
 	defer func() { _ = file.Close() }()
 	if checkpoint.WriterGeneration != 2 || checkpoint.Resumed || offset != 0 {
 		t.Fatalf("checkpoint after rejecting symlink = (%+v, offset %d), want fresh generation 2 at zero", checkpoint, offset)

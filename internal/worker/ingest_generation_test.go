@@ -25,6 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
@@ -126,11 +127,9 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 				t.Fatalf("retry after %s: %v", mode, err)
 			}
 			var committedGeneration int64
-			if err := pool.QueryRow(context.Background(),
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 				`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
-				recordingID).Scan(&committedGeneration); err != nil {
-				t.Fatalf("reading committed ingest generation: %v", err)
-			}
+				recordingID).Scan(&committedGeneration), "reading committed ingest generation")
 			if committedGeneration <= firstGeneration {
 				t.Fatalf("committed generation = %d after invalidated generation %d; want a newer sequence value", committedGeneration, firstGeneration)
 			}
@@ -172,25 +171,15 @@ func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) 
 	worker.CMDetectionStore = pgstoretest.Analysis(pool)
 
 	oldGeneration, err := pgstoretest.Media(pool).NextIngestTempGeneration(context.Background())
-	if err != nil {
-		t.Fatalf("allocating old generation: %v", err)
-	}
+	testutil.RequireNoError(t, err, "allocating old generation")
 	dir := filepath.Join(mediaDir, "sites", "default", "test")
 	oldTempPath := filepath.Join(dir, ".rokuban-ingest-default-rec-ingest-create-crash")
 	oldTempRelPath, err := ingestTempRelPath(mediaDir, oldTempPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "ingestTempRelPath")
 	seedIngestTempProgress(t, pool, recordingID, oldTempRelPath, oldGeneration)
-	if _, err := pool.Exec(context.Background(), `UPDATE recording_ingest_progress SET written_bytes = 10 WHERE recording_id = $1`, recordingID); err != nil {
-		t.Fatalf("setting old visible offset: %v", err)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(oldTempPath, []byte("old-prefix"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "setting old visible offset", `UPDATE recording_ingest_progress SET written_bytes = 10 WHERE recording_id = $1`, recordingID)
+	testutil.RequireNoError(t, os.MkdirAll(dir, 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(oldTempPath, []byte("old-prefix"), 0o600), "os.WriteFile")
 
 	previousHook := afterIngestTempCreate
 	afterIngestTempCreate = func() error { return errors.New("simulated process stop after temp creation") }
@@ -201,9 +190,7 @@ func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) 
 	}
 	var visiblePath string
 	var visibleBytes, visibleGeneration int64
-	if err := pool.QueryRow(context.Background(), `SELECT temp_rel_path, written_bytes, temp_generation FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&visiblePath, &visibleBytes, &visibleGeneration); err != nil {
-		t.Fatalf("reading old visible progress after creating replacement: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT temp_rel_path, written_bytes, temp_generation FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&visiblePath, &visibleBytes, &visibleGeneration), "reading old visible progress after creating replacement")
 	if visiblePath != oldTempRelPath || visibleBytes != 10 || visibleGeneration != oldGeneration {
 		t.Fatalf("visible progress after creating replacement = (%q, %d, %d), want old pointer at 10 bytes and generation %d", visiblePath, visibleBytes, visibleGeneration, oldGeneration)
 	}
@@ -213,15 +200,11 @@ func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) 
 	}
 
 	afterIngestTempCreate = previousHook
-	if err := runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
-		t.Fatalf("retry: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID}), "retry")
 	var committed int64
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
-		recordingID).Scan(&committed); err != nil {
-		t.Fatalf("reading committed generation: %v", err)
-	}
+		recordingID).Scan(&committed), "reading committed generation")
 	if committed != oldGeneration {
 		t.Fatalf("committed generation = %d, want the unchanged byte generation %d", committed, oldGeneration)
 	}
@@ -260,26 +243,20 @@ func readIngestTempGeneration(t *testing.T, pool *pgxpool.Pool, recordingID int6
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", 0, false
 	}
-	if err != nil {
-		t.Fatalf("reading ingest temp generation: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading ingest temp generation")
 	return path, generation, true
 }
 
 func seedIngestTempProgress(t *testing.T, pool *pgxpool.Pool, recordingID int64, tempRelPath string, generation int64) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
+	testutil.MustExec(t, pool, "seeding ingest temp progress", `
 INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_store, temp_generation)
-VALUES ($1, 0, $2, $3, $4)`, recordingID, tempRelPath, pgstoretest.TestStore, generation); err != nil {
-		t.Fatalf("seeding ingest temp progress: %v", err)
-	}
+VALUES ($1, 0, $2, $3, $4)`, recordingID, tempRelPath, pgstoretest.TestStore, generation)
 }
 
 func seedIngestTempForCommit(t *testing.T, pool *pgxpool.Pool, recordingID int64, mediaDir, tempPath string) {
 	t.Helper()
 	tempRelPath, err := ingestTempRelPath(mediaDir, tempPath)
-	if err != nil {
-		t.Fatalf("building temp_rel_path for direct commit fixture: %v", err)
-	}
+	testutil.RequireNoError(t, err, "building temp_rel_path for direct commit fixture")
 	seedIngestTempProgress(t, pool, recordingID, tempRelPath, 1)
 }
