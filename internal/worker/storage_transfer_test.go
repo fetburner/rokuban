@@ -193,13 +193,11 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 	file, err := os.OpenFile(tempPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	testutil.RequireNoError(t, err, "os.OpenFile")
 	defer func() { _ = file.Close() }()
-	if _, err := file.Write(partial); err != nil {
-		t.Fatal(err)
-	}
+	_, err = file.Write(partial)
+	testutil.RequireNoError(t, err, "file.Write")
 	hasher := sha256.New()
-	if _, err := hasher.Write(partial); err != nil {
-		t.Fatal(err)
-	}
+	_, err = hasher.Write(partial)
+	testutil.RequireNoError(t, err, "hasher.Write")
 	testutil.RequireNoError(t, fsink.SaveCheckpoint(file, int64(len(partial)), hasher, func(c fsink.Checkpoint) error {
 		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.WriterGeneration, c.Offset, c.HashState, nil)
 	}), "saving transfer progress")
@@ -745,9 +743,8 @@ func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
 			default:
 				extra, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_APPEND, 0)
 				testutil.RequireNoError(t, err, "os.OpenFile")
-				if _, err := extra.Write(bytes.Repeat([]byte("j"), tc.extend)); err != nil {
-					t.Fatal(err)
-				}
+				_, err = extra.Write(bytes.Repeat([]byte("j"), tc.extend))
+				testutil.RequireNoError(t, err, "extra.Write")
 				testutil.RequireNoError(t, extra.Close(), "extra.Close")
 			}
 			fingerprint, err := cfg.PolicyFingerprint()

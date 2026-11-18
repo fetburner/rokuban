@@ -40,9 +40,7 @@ func TestStorageTransferWorkerRejectsDerivedDestinationWithoutResumableSupport(t
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, relPath, content)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	objects := transferTestObjectStores(t, roots)
 	target := &storeWithoutResumable{Store: objects["archive"]}
 	objects["archive"] = target
@@ -92,9 +90,7 @@ func TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport(t *testing
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, relPath, content)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	objects := transferTestObjectStores(t, roots)
 	objects["test-store"] = &storeWithoutRangeReader{Store: objects["test-store"]}
 	worker := StorageTransferWorker{

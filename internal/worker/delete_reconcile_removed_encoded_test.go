@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // removedEncodedFixture は「原本 + h264 + h265」の録画で、h264 を外した状態の材料。
@@ -104,9 +105,7 @@ func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 	rows, err := q.ListRemovedEncodedAssetsToDelete(context.Background(), sqlcgen.ListRemovedEncodedAssetsToDeleteParams{
 		StoreName: dbtest.StoreName, RowLimit: deleteReconcileRowLimit,
 	})
-	if err != nil {
-		t.Fatalf("ListRemovedEncodedAssetsToDelete: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListRemovedEncodedAssetsToDelete")
 	var got []int64
 	for _, r := range rows {
 		got = append(got, r.MediaAssetID)
@@ -131,9 +130,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, f.h264ID); got != "deleted" {
 		t.Errorf("h264 copy state = %q, want deleted", got)
@@ -160,9 +157,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 		AttemptLimit:  jobs.EncodeAttemptLimit,
 		RowLimit:      100,
 	})
-	if err != nil {
-		t.Fatalf("ListMissingEncodeProfiles: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListMissingEncodeProfiles")
 	for _, m := range missing {
 		if m.RecordingID == f.recordingID {
 			t.Errorf("missing encode profile %q listed for the recording, want none (h264 was removed from desired)", m.Profile)
@@ -179,9 +174,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
-	if err := breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}); err != nil {
-		t.Fatalf("tripping breaker: %v", err)
-	}
+	testutil.RequireNoError(t, breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}), "tripping breaker")
 
 	readded := seedRemovedEncodedRecording(t, pool, mediaDir, 9301, []string{"h265"})
 	requestEncodedRemoval(t, pool, readded.recordingID, "h264")
@@ -201,9 +194,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, readded.h264ID); got != "active" {
 		t.Errorf("re-added h264 copy state = %q, want active", got)
@@ -227,10 +218,8 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 
 	trashed := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 9401 })
 	trashAsset := seedOriginalAsset(t, pool, mediaDir, trashed, "trip/trash.m2ts", []byte("data"))
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", time.Now().Add(-40*24*time.Hour), trashed); err != nil {
-		t.Fatalf("marking recording deleted: %v", err)
-	}
+	testutil.MustExec(t, pool, "marking recording deleted",
+		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", time.Now().Add(-40*24*time.Hour), trashed)
 	a := seedRemovedEncodedRecording(t, pool, mediaDir, 9402, []string{"h265"})
 	requestEncodedRemoval(t, pool, a.recordingID, "h264")
 	b := seedRemovedEncodedRecording(t, pool, mediaDir, 9403, []string{"h265"})
@@ -244,9 +233,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MaxDeletesPerPass: 2,
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
 
 	for _, id := range []int64{trashAsset, a.h264ID, b.h264ID} {
 		if got := singleCopyState(t, pool, id); got != "active" {
@@ -256,9 +243,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 	cb, err := sqlcgen.New(pool).GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{
 		Scope: "", Name: breaker.DeleteReconcile,
 	})
-	if err != nil {
-		t.Fatalf("expected circuit breaker to be tripped, got error: %v", err)
-	}
+	testutil.RequireNoError(t, err, "expected circuit breaker to be tripped, got error")
 	if cb.Pending != 3 {
 		t.Errorf("breaker pending = %d, want 3", cb.Pending)
 	}
@@ -283,15 +268,11 @@ func TestRemovedEncodedAssets_PresentCopies(t *testing.T) {
 			requestEncodedRemoval(t, pool, f.recordingID, "h264")
 			for id, missing := range map[int64]bool{f.originalID: tc.originalMissing, f.h265ID: tc.otherMissing, f.h264ID: tc.targetMissing} {
 				if missing {
-					if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_copy_id) SELECT id FROM media_asset_copies WHERE media_asset_id = $1`, id); err != nil {
-						t.Fatal(err)
-					}
+					testutil.MustExec(t, pool, "marking the copy missing", `INSERT INTO missing_media_assets (media_asset_copy_id) SELECT id FROM media_asset_copies WHERE media_asset_id = $1`, id)
 				}
 			}
 			var got bool
-			if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1)`, f.h264ID).Scan(&got); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM removed_encoded_assets WHERE asset_id = $1)`, f.h264ID).Scan(&got), "pool.QueryRow")
 			if got != tc.want {
 				t.Fatalf("removed encoded candidate = %v, want %v", got, tc.want)
 			}

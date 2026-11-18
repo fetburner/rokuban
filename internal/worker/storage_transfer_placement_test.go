@@ -36,19 +36,11 @@ func placementDeletingFixture(t *testing.T, pool *pgxpool.Pool, roots map[string
 	recordingID := dbtest.Recording(t, pool)
 	assetID = seedOriginalAsset(t, pool, roots["test-store"], recordingID, relPath, []byte("placement bytes"))
 	archivePath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(archivePath, []byte("placement bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(archivePath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(archivePath, []byte("placement bytes"), 0o644), "os.WriteFile")
 	transferTestAddCopy(t, pool, assetID, "archive", relPath)
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "backdating the archive copy", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID)
+	testutil.MustExec(t, pool, "marking the test-store copy deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1 AND store = 'test-store'`, assetID)
 	return assetID, filepath.Join(roots["test-store"], filepath.FromSlash(relPath))
 }
 
@@ -68,9 +60,7 @@ func TestDeleteReconcilePendingPathFinishesPlacementDeleting(t *testing.T) {
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	assetID, sourcePath := placementDeletingFixture(t, pool, roots)
 
-	if err := placementDeleteWorker(pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, placementDeleteWorker(pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := copyStateIn(t, pool, assetID, "test-store"); got != "deleted" {
 		t.Errorf("deleting placement copy state after one pass = %q, want deleted", got)
 	}
@@ -83,11 +73,9 @@ func TestDeleteReconcileRevertsPlacementDeletingWhenDesiredMissing(t *testing.T)
 	t.Parallel()
 	setMissing := func(t *testing.T, pool *pgxpool.Pool, assetID int64) {
 		t.Helper()
-		if _, err := pool.Exec(context.Background(), `
+		testutil.MustExec(t, pool, "marking the archive copy missing", `
 INSERT INTO missing_media_assets (media_asset_copy_id)
-SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID); err != nil {
-			t.Fatal(err)
-		}
+SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID)
 	}
 	t.Run("desired copy marked missing returns the deleting copy to active", func(t *testing.T) {
 		pool := testutil.SetupDB(t)
@@ -96,9 +84,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 		assetID, sourcePath := placementDeletingFixture(t, pool, roots)
 		setMissing(t, pool, assetID)
 
-		if err := placementDeleteWorker(pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-			t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-		}
+		testutil.RequireNoError(t, placementDeleteWorker(pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 		if got := copyStateIn(t, pool, assetID, "test-store"); got != "active" {
 			t.Errorf("deleting copy state after its desired copy was marked missing = %q, want active", got)
 		}
@@ -133,13 +119,9 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("unqualified deleting rows = %+v, %v; want the placement copy", rows, err)
 		}
-		if _, err := pool.Exec(context.Background(), `DELETE FROM missing_media_assets`); err != nil {
-			t.Fatal(err)
-		}
+		testutil.MustExec(t, pool, "clearing missing_media_assets", `DELETE FROM missing_media_assets`)
 		reverted, err := media.RevertToActive(context.Background(), rows[0].ID, grace, overlap, rules, "archive")
-		if err != nil {
-			t.Fatalf("RevertToActive: %v", err)
-		}
+		testutil.RequireNoError(t, err, "RevertToActive")
 		if reverted {
 			t.Error("RevertToActive returned true although the desired copy is present again")
 		}
@@ -163,17 +145,13 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 	assertPresent := func(t *testing.T, step string) {
 		t.Helper()
 		rows, err := pool.Query(context.Background(), `SELECT store, rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active'`, assetID)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "pool.Query")
 		defer rows.Close()
 		present := 0
 		for rows.Next() {
 			var storeName string
 			var path string
-			if err := rows.Scan(&storeName, &path); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, rows.Scan(&storeName, &path), "rows.Scan")
 			if fileExists(filepath.Join(roots[storeName], filepath.FromSlash(path))) {
 				present++
 			}
@@ -185,9 +163,7 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 	for i, desired := range []string{"archive", "test-store", "archive"} {
 		cfg := transferTestConfig(desired, "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 		transfer := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		deleters := []*DeleteReconcileWorker{
 			placementDeleteWorker(pool, cfg, roots, "test-store"), placementDeleteWorker(pool, cfg, roots, "archive"),
@@ -207,15 +183,11 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 		}
 		var stores []string
 		rows, err := pool.Query(context.Background(), `SELECT store, rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND state <> 'deleted' ORDER BY store`, assetID)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "pool.Query")
 		for rows.Next() {
 			var storeName string
 			var path string
-			if err := rows.Scan(&storeName, &path); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, rows.Scan(&storeName, &path), "rows.Scan")
 			stores = append(stores, storeName)
 			if !fileExists(filepath.Join(roots[storeName], filepath.FromSlash(path))) {
 				t.Errorf("round %d: active copy %q in %s has no file", i, path, storeName)
@@ -227,16 +199,12 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 		}
 		if i == 1 {
 			var returnedRelPath string
-			if err := pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store' AND state <> 'deleted'`, assetID).Scan(&returnedRelPath); err != nil {
-				t.Fatalf("reading returned A copy path: %v", err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store' AND state <> 'deleted'`, assetID).Scan(&returnedRelPath), "reading returned A copy path")
 			if returnedRelPath == relPath {
 				t.Fatalf("A→B→A reused tombstoned path %q", relPath)
 			}
 			var oldPathState string
-			if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store' AND rel_path = $2`, assetID, relPath).Scan(&oldPathState); err != nil {
-				t.Fatalf("reading previous A path state: %v", err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store' AND rel_path = $2`, assetID, relPath).Scan(&oldPathState), "reading previous A path state")
 			if oldPathState != "deleted" {
 				t.Fatalf("previous A path state = %q, want deleted tombstone", oldPathState)
 			}
@@ -258,21 +226,15 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 	}
 	recorded := []byte("0123456789abcdef0123456789abcdef")
 	observed := []byte("fedcba9876543210fedcba9876543210")
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, recorded, assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "recording the expected sha256", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, recorded, assetID)
 
 	active, outcome, err := media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", cfg.Derived, rules, observed)
-	if err != nil {
-		t.Fatalf("CompleteMediaAssetTransfer: %v", err)
-	}
+	testutil.RequireNoError(t, err, "CompleteMediaAssetTransfer")
 	if active || outcome != "sha_mismatch" {
 		t.Errorf("CompleteMediaAssetTransfer = (active=%t, %q), want (false, sha_mismatch)", active, outcome)
 	}
 	var sha []byte
-	if err := pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, assetID).Scan(&sha); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, assetID).Scan(&sha), "pool.QueryRow")
 	if string(sha) != string(recorded) {
 		t.Errorf("media_assets.sha256 = %x, want the recorded %x kept", sha, recorded)
 	}
@@ -318,7 +280,7 @@ func TestStorageTransferCorruptRetirementSerializesWithUntilEncoded(t *testing.T
 				gatedCopyID = thumbnailCopyID
 			}
 
-			if _, err := pool.Exec(ctx, fmt.Sprintf(`
+			testutil.MustExec(t, pool, "creating gate trigger function", fmt.Sprintf(`
 CREATE FUNCTION public.gate_storage_copy_delete_for_test() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -328,24 +290,18 @@ BEGIN
     END IF;
     RETURN NEW;
 END
-$$`, gatedCopyID, gateKey, gateKey)); err != nil {
-				t.Fatalf("creating gate trigger function: %v", err)
-			}
-			if _, err := pool.Exec(ctx, `
+$$`, gatedCopyID, gateKey, gateKey))
+			testutil.MustExec(t, pool, "creating gate trigger", `
 CREATE TRIGGER gate_storage_copy_delete_for_test
 BEFORE UPDATE OF state ON media_asset_copies
-FOR EACH ROW EXECUTE FUNCTION public.gate_storage_copy_delete_for_test()`); err != nil {
-				t.Fatalf("creating gate trigger: %v", err)
-			}
+FOR EACH ROW EXECUTE FUNCTION public.gate_storage_copy_delete_for_test()`)
 			t.Cleanup(func() {
 				_, _ = pool.Exec(ctx, `DROP TRIGGER IF EXISTS gate_storage_copy_delete_for_test ON media_asset_copies`)
 				_, _ = pool.Exec(ctx, `DROP FUNCTION IF EXISTS public.gate_storage_copy_delete_for_test()`)
 			})
 
 			gate, err := pool.Acquire(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "pool.Acquire")
 			if _, err := gate.Exec(ctx, `SELECT pg_advisory_lock($1)`, int64(gateKey)); err != nil {
 				t.Fatal(err)
 			}
@@ -389,9 +345,7 @@ FOR EACH ROW EXECUTE FUNCTION public.gate_storage_copy_delete_for_test()`); err 
 			deadline := time.Now().Add(10 * time.Second)
 			for {
 				var waiting int
-				if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1`, int64(gateKey)).Scan(&waiting); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1`, int64(gateKey)).Scan(&waiting), "pool.QueryRow")
 				if waiting == 1 {
 					break
 				}

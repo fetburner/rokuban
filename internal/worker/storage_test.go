@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
@@ -32,9 +33,7 @@ func runStorageSyncForStore(t *testing.T, w *StorageSyncWorker, storeName string
 func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {
 	t.Helper()
 	rows, err := sqlcgen.New(pool).ListStorageSync(context.Background(), dbtest.StoreName)
-	if err != nil {
-		t.Fatalf("ListStorageSync: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListStorageSync")
 	return rows
 }
 
@@ -63,9 +62,7 @@ func TestStorageSyncWorker_FullSync(t *testing.T) {
 	scratchDir := t.TempDir()
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
 
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "Work() error")
 
 	rows := allStorageSync(t, pool)
 	if len(rows) != 2 {
@@ -96,9 +93,7 @@ func TestStorageSyncWorker_ScratchOptional(t *testing.T) {
 	mediaDir := t.TempDir()
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: ""}
 
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "Work() error")
 
 	rows := allStorageSync(t, pool)
 	if len(rows) != 1 {
@@ -136,18 +131,14 @@ func TestStorageSyncWorker_RestartConverges(t *testing.T) {
 
 	// 1 回目のパス（1 プロセスの寿命を模す）。
 	w1 := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
-	if err := runStorageSync(t, w1); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w1), "first Work() error")
 	first := storageSyncByRoot(t, pool, "media")
 
 	time.Sleep(10 * time.Millisecond)
 
 	// 「プロセスが落ちて再起動した」を新しい *StorageSyncWorker インスタンスで模す。
 	w2 := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
-	if err := runStorageSync(t, w2); err != nil {
-		t.Fatalf("second Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w2), "second Work() error")
 
 	rows := allStorageSync(t, pool)
 	if len(rows) != 2 {
@@ -170,9 +161,7 @@ func TestStorageSyncWorker_ConfigChangeSweepsRemovedRoot(t *testing.T) {
 	scratchDir := t.TempDir()
 
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
 	if len(allStorageSync(t, pool)) != 2 {
 		t.Fatalf("expected 2 rows before config change")
 	}
@@ -180,9 +169,7 @@ func TestStorageSyncWorker_ConfigChangeSweepsRemovedRoot(t *testing.T) {
 	// 対象集合から scratch root が外れたパスを模す（本番の worker は空の
 	// scratch_dir で起動しないので、ここでは部分構成で外す）。
 	w.ScratchDir = ""
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("second Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "second Work() error")
 
 	rows := allStorageSync(t, pool)
 	if len(rows) != 1 {
@@ -203,9 +190,7 @@ func TestStorageSyncWorker_PartialStatFailureKeepsStaleRow(t *testing.T) {
 
 	// 1 回目: 両方成功させて scratch 行を作る。
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
 	staleScratch := storageSyncByRoot(t, pool, "scratch")
 
 	time.Sleep(10 * time.Millisecond)
@@ -303,9 +288,7 @@ func TestStorageSyncWorker_CapacityGaugesKeepEachMountedStore(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(metrics.StorageRootTotalBytes)
 	families, err := reg.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "reg.Gather")
 	wantByStore := map[string]float64{"tokyo": 100, "takamatsu": 200}
 	var mediaTotals []float64
 	gotByStore := make(map[string]float64)
@@ -367,9 +350,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 			map[string]bool{scratchDir: true},
 		),
 	}
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "Work() error")
 	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName)); got != before {
 		t.Errorf("StorageSyncLastSuccess = %v after partial success, want unchanged %v", got, before)
 	}
@@ -379,9 +360,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 		mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 		scratchDir: {totalBytes: 200, usedBytes: 20, availableBytes: 180},
 	}, nil)
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "Work() error")
 	if got := promtestutil.ToFloat64(metrics.StorageSyncLastSuccess.WithLabelValues(dbtest.StoreName)); got <= before {
 		t.Errorf("StorageSyncLastSuccess = %v after full success, want > %v", got, before)
 	}
@@ -404,9 +383,7 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
 		}, nil),
 	}
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
 	scratchLastSuccessBefore := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch"))
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 500 {
 		t.Fatalf("scratch TotalBytes = %v, want 500", got)
@@ -418,9 +395,7 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 	w.Stat = fakeStat(map[string]diskUsage{
 		mediaDir: {totalBytes: 999, usedBytes: 111, availableBytes: 888},
 	}, map[string]bool{scratchDir: true})
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("second Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "second Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != scratchLastSuccessBefore {
 		t.Errorf("scratch StorageRootLastSuccess = %v, want unchanged %v (statfs failed this pass)", got, scratchLastSuccessBefore)
@@ -458,9 +433,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
 		}, nil),
 	}
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
 	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got == 0 {
 		t.Fatalf("scratch StorageRootLastSuccess = %v, want set (nonzero) before removal", got)
 	}
@@ -471,9 +444,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 	w.Stat = fakeStat(map[string]diskUsage{
 		mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 	}, nil)
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("second Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "second Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.StorageRootLastSuccess.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch StorageRootLastSuccess = %v after removal, want 0 (DeleteLabelValues should have cleared it)", got)
@@ -505,9 +476,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 			scratchDir: {totalBytes: 777, usedBytes: 77, availableBytes: 700},
 		}, nil),
 	}
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("first Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "first Work() error")
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 777 {
 		t.Fatalf("scratch TotalBytes = %v, want 777 before removal", got)
 	}
@@ -515,18 +484,14 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 	// storage キューを引く 2 台目の worker レプリカが、新しい config で先に 1 パス
 	// 走って scratch 行を消した状況を模す（このプロセスから見ると、config 変更に
 	// 気付いたときには DB 行がもう無い）。
-	if _, err := pool.Exec(context.Background(), "DELETE FROM storage_sync WHERE root = 'scratch'"); err != nil {
-		t.Fatalf("simulating another replica's sweep: %v", err)
-	}
+	testutil.MustExec(t, pool, "simulating another replica's sweep", "DELETE FROM storage_sync WHERE root = 'scratch'")
 
 	// このプロセスも新しい config（scratch_dir 空）で 1 パス走る。
 	w.ScratchDir = ""
 	w.Stat = fakeStat(map[string]diskUsage{
 		mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 	}, nil)
-	if err := runStorageSync(t, w); err != nil {
-		t.Fatalf("second Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runStorageSync(t, w), "second Work() error")
 
 	if got := promtestutil.ToFloat64(metrics.StorageRootTotalBytes.WithLabelValues(dbtest.StoreName, "scratch")); got != 0 {
 		t.Errorf("scratch TotalBytes = %v, want 0 (stale label must be cleared even when another replica deleted the row first)", got)
