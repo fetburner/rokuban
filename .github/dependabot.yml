@@ -43,8 +43,8 @@ updates:
       # 触らないので、ここを自動で上げるとテストを通したコンパイラと出荷
       # バイナリのコンパイラがずれる。
       - dependency-name: golang
-      # Dockerfile の FROM node: だけを上げる PR は .node-version と食い違うので
-      # 単体ではマージできない（両者を同じ PR で揃える規約。CLAUDE.md）。
+      # Dockerfile の FROM node: だけを上げる PR は .node-version と食い違い、
+      # `scripts/versioncheck` の検査で落ちるので単体ではマージできない（両者を同じ PR で揃える）。
       # npm ecosystem 側に置いていた ignore は node が /web の依存ではないので
       # 効かず、実際に Dockerfile 単独の bump PR が来た。
       - dependency-name: node
