@@ -15,15 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// capacityOverageResp は GET /api/capacity/overages のレスポンス要素。
-type capacityOverageResp struct {
-	Site        string    `json:"site"`
-	StartAt     time.Time `json:"startAt"`
-	EndAt       time.Time `json:"endAt"`
-	Shortfall   int       `json:"shortfall"`
-	JammedTypes []string  `json:"jammedTypes"`
-}
-
+// api.CapacityOverage は GET /api/capacity/overages のレスポンス要素。
 func insertCapacityTuner(t *testing.T, pool *pgxpool.Pool, index int, types []string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
@@ -62,7 +54,7 @@ func overagesURL(baseURL string, start, end time.Time) string {
 	return baseURL + "/api/capacity/overages?" + q.Encode()
 }
 
-func getOverages(t *testing.T, baseURL string, start, end time.Time) (int, []capacityOverageResp) {
+func getOverages(t *testing.T, baseURL string, start, end time.Time) (int, []api.CapacityOverage) {
 	t.Helper()
 	resp, err := http.Get(overagesURL(baseURL, start, end))
 	if err != nil {
@@ -73,7 +65,7 @@ func getOverages(t *testing.T, baseURL string, start, end time.Time) (int, []cap
 	if resp.StatusCode != http.StatusOK {
 		return resp.StatusCode, nil
 	}
-	var got []capacityOverageResp
+	var got []api.CapacityOverage
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}

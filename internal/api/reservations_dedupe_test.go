@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,35 +32,13 @@ type reservationDedupeResp struct {
 
 func getReservationDedupeJSON(t *testing.T, srv *httptest.Server, programID int64) reservationDedupeResp {
 	t.Helper()
-	resp, err := http.Get(srv.URL + reservationPath(programID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
-	}
-	var got reservationDedupeResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[reservationDedupeResp](t, srv.URL+reservationPath(programID))
 	return got
 }
 
 func listReservationsDedupeJSON(t *testing.T, srv *httptest.Server) []reservationDedupeResp {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/api/reservations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/reservations status = %d, want 200", resp.StatusCode)
-	}
-	var got []reservationDedupeResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]reservationDedupeResp](t, srv.URL+"/api/reservations")
 	return got
 }
 

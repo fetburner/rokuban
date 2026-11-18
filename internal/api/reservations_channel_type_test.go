@@ -2,8 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"testing"
 	"time"
 
@@ -62,30 +60,14 @@ func TestReservation_ChannelTypeExposed(t *testing.T) {
 	insertReservationWithChannelType(t, pool, ctx, programID, "BS")
 
 	t.Run("(site, programId) 読み取り", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + reservationPath(programID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got reservationChannelTypeResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[reservationChannelTypeResp](t, srv.URL+reservationPath(programID))
 		if got.ChannelType != "BS" {
 			t.Errorf("channelType = %q, want %q（未設定なら空文字が返る）", got.ChannelType, "BS")
 		}
 	})
 
 	t.Run("一覧", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/reservations")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got []reservationChannelTypeResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[[]reservationChannelTypeResp](t, srv.URL+"/api/reservations")
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}

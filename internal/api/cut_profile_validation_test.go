@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -30,19 +29,18 @@ import (
 func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:               pool.Ping,
-		RuleStore:           pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch:       pgstoretest.EPG(pool),
-		EncodePolicyStore:   pgstoretest.Media(pool),
-		ReservationStore:    pgstoretest.Reservations(pool),
-		MediaReader:         pgstoretest.Media(pool),
-		EncodeProfileNames:  []string{"h264", "cut"},
-		CutProfileNames:     []string{"cut"},
-		LiveEnabled:         true, // live.enabled=true でも録画 HLS が無ければ拒否する
-		RecordingHLSEnabled: false,
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, nil, func(c *api.RouterConfig) {
+		c.Ready = pool.Ping
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.ProgramSearch = pgstoretest.EPG(pool)
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.ReservationStore = pgstoretest.Reservations(pool)
+		c.MediaReader = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+		c.LiveEnabled = true
+		c.RecordingHLSEnabled = false
+	})
 
 	// 1. ルール（POST /api/rules）。
 	t.Run("rule", func(t *testing.T) {
@@ -135,19 +133,18 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:               pool.Ping,
-		RuleStore:           pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch:       pgstoretest.EPG(pool),
-		EncodePolicyStore:   pgstoretest.Media(pool),
-		ReservationStore:    pgstoretest.Reservations(pool),
-		MediaReader:         pgstoretest.Media(pool),
-		EncodeProfileNames:  []string{"h264", "cut"},
-		CutProfileNames:     []string{"cut"},
-		LiveEnabled:         false, // live.enabled=false でも録画 HLS があれば許す
-		RecordingHLSEnabled: true,
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, nil, func(c *api.RouterConfig) {
+		c.Ready = pool.Ping
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.ProgramSearch = pgstoretest.EPG(pool)
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.ReservationStore = pgstoretest.Reservations(pool)
+		c.MediaReader = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+		c.LiveEnabled = false
+		c.RecordingHLSEnabled = true
+	})
 
 	t.Run("rule", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"name": "cut-only-live", "encodeProfiles": []string{"cut"}})
@@ -576,10 +573,7 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	}
 	queued := func() int64 {
 		t.Helper()
-		var got struct {
-			Queued  int64 `json:"queued"`
-			Running int64 `json:"running"`
-		}
+		var got api.EncodeQueueSummary
 		resp, err := http.Get(srv.URL + "/api/encode-queue")
 		if err != nil {
 			t.Fatal(err)
@@ -642,10 +636,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	dbtest.SetRecordingMediaAssetState(t, pool, id, "original", "deleting")
 	queued := func() int64 {
 		t.Helper()
-		var got struct {
-			Queued  int64 `json:"queued"`
-			Running int64 `json:"running"`
-		}
+		var got api.EncodeQueueSummary
 		resp, err := http.Get(srv.URL + "/api/encode-queue")
 		if err != nil {
 			t.Fatal(err)

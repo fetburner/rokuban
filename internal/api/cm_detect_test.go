@@ -322,18 +322,9 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	stage := "logo"
 	markCMDetectionFailureForTest(t, context.Background(), pool, q, id, attemptCount, &stage, nil)
 
-	resp, err := http.Get(srv.URL + "/api/cm-logos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var logos []CMLogoState
-	if err := json.NewDecoder(resp.Body).Decode(&logos); err != nil {
-		_ = resp.Body.Close()
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || len(logos) != 1 {
-		t.Fatalf("logo list status=%d rows=%d; want 200/1", resp.StatusCode, len(logos))
+	logos := GetJSON[[]CMLogoState](t, srv.URL+"/api/cm-logos")
+	if len(logos) != 1 {
+		t.Fatalf("logo list rows=%d; want 1", len(logos))
 	}
 	if logos[0].State != CMLogoStateStateFailed || logos[0].FailedCount != 1 || logos[0].PendingCount != 0 ||
 		logos[0].DetectedCount != 0 || logos[0].RedetectableCount != 0 || logos[0].Site != "default" ||
@@ -358,7 +349,7 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,18 +579,7 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 
 func fetchCMLogos(t *testing.T, baseURL string) []CMLogoState {
 	t.Helper()
-	resp, err := http.Get(baseURL + "/api/cm-logos")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("logo list status = %d, want 200", resp.StatusCode)
-	}
-	var logos []CMLogoState
-	if err := json.NewDecoder(resp.Body).Decode(&logos); err != nil {
-		t.Fatal(err)
-	}
+	logos := GetJSON[[]CMLogoState](t, baseURL+"/api/cm-logos")
 	return logos
 }
 

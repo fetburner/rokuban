@@ -2,8 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"testing"
 	"time"
 
@@ -71,30 +69,14 @@ func TestReservation_ServiceNameExposed(t *testing.T) {
 	insertReservationWithSnapshot(t, pool, ctx, programID, "テスト番組", "NHK総合", 1, 1)
 
 	t.Run("単体取得", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + reservationPath(programID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got reservationServiceNameResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[reservationServiceNameResp](t, srv.URL+reservationPath(programID))
 		if got.ServiceName != "NHK総合" {
 			t.Errorf("serviceName = %q, want %q（未設定なら空文字が返る）", got.ServiceName, "NHK総合")
 		}
 	})
 
 	t.Run("一覧", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/reservations")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got []reservationServiceNameResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[[]reservationServiceNameResp](t, srv.URL+"/api/reservations")
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}
@@ -120,15 +102,7 @@ func TestReservation_ServiceNameDistinguishesSameTitle(t *testing.T) {
 	insertReservationWithSnapshot(t, pool, ctx, programA, title, "NHK総合・高松", 1, 101)
 	insertReservationWithSnapshot(t, pool, ctx, programB, title, "NHK Eテレ・高松", 1, 102)
 
-	resp, err := http.Get(srv.URL + "/api/reservations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var got []reservationServiceNameResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]reservationServiceNameResp](t, srv.URL+"/api/reservations")
 	if len(got) != 2 {
 		t.Fatalf("len(reservations) = %d, want 2", len(got))
 	}

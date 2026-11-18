@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,25 +11,10 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// reservationStateResp は state フィールドだけを見るデコード用型。
-type reservationStateResp struct {
-	State string `json:"state"`
-}
-
-func getReservationStateJSON(t *testing.T, srv *httptest.Server, programID int64) reservationStateResp {
+// api.Reservation は state フィールドだけを見るデコード用型。
+func getReservationStateJSON(t *testing.T, srv *httptest.Server, programID int64) api.Reservation {
 	t.Helper()
-	resp, err := http.Get(srv.URL + reservationPath(programID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
-	}
-	var got reservationStateResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 	return got
 }
 

@@ -12,16 +12,31 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
-// NewTestServer は pool から組んだ既定の RouterConfig で API サーバーを起動し、
-// t.Cleanup で閉じる。テストごとの差は overrides で渡す（例: func(c *RouterConfig) { c.Enqueuer = q }）。
-// 上書きで表せない構成（ルートを足すミドルウェア等）は直接 httptest を使う。
-// api_test パッケージのテストからも使うので、名前を大文字で出している。
+// NewTestServer は API サーバーを起動し、t.Cleanup で閉じる。pool が nil なら
+// 既定は空の RouterConfig（DB を使わないテスト用）、非 nil なら pool から組んだ
+// 全ストアの構成になる。テストごとの差は overrides で渡す
+// （例: func(c *RouterConfig) { c.Mounter = m }）。api_test パッケージからも
+// 使うので、名前を大文字で出している。
 func NewTestServer(t *testing.T, pool *pgxpool.Pool, overrides ...func(*RouterConfig)) *httptest.Server {
 	t.Helper()
+	var cfg RouterConfig
+	if pool != nil {
+		cfg = defaultTestRouterConfig(pool)
+	}
+	for _, override := range overrides {
+		override(&cfg)
+	}
+	srv := httptest.NewServer(NewRouter(cfg))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// defaultTestRouterConfig は pool の全ストアを載せた既定の RouterConfig。
+func defaultTestRouterConfig(pool *pgxpool.Pool) RouterConfig {
 	tunerStore := pgstoretest.Tuners(pool)
 	media := pgstoretest.Media(pool)
 	recordingStore := pgstoretest.Recordings(pool)
-	cfg := RouterConfig{
+	return RouterConfig{
 		Ready:               pool.Ping,
 		EPGReader:           pgstoretest.EPG(pool),
 		ProgramSearch:       pgstoretest.EPG(pool),
@@ -36,12 +51,6 @@ func NewTestServer(t *testing.T, pool *pgxpool.Pool, overrides ...func(*RouterCo
 		LabelRules:          pgstoretest.LabelRules(pool),
 		Dedupe:              pgstoretest.Reservations(pool),
 	}
-	for _, override := range overrides {
-		override(&cfg)
-	}
-	srv := httptest.NewServer(NewRouter(cfg))
-	t.Cleanup(srv.Close)
-	return srv
 }
 
 // GetJSON は url を GET し、状態コードが 200 でなければ本文を含めて失敗し、

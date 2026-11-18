@@ -26,16 +26,7 @@ VALUES ('test-store', $1, $2, $3, $4, $5)`, root, path, total, used, available);
 	}
 }
 
-// storageRootResp は GET /api/storage のレスポンス要素。
-type storageRootResp struct {
-	Root           string    `json:"root"`
-	Path           string    `json:"path"`
-	TotalBytes     int64     `json:"totalBytes"`
-	UsedBytes      int64     `json:"usedBytes"`
-	AvailableBytes int64     `json:"availableBytes"`
-	ObservedAt     time.Time `json:"observedAt"`
-}
-
+// api.StorageRoot は GET /api/storage のレスポンス要素。
 // 1. 観測済みの root が一覧に現れ、バイト数と observedAt が読める。
 func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -56,7 +47,7 @@ func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	var got []storageRootResp
+	var got []api.StorageRoot
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
@@ -64,7 +55,7 @@ func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 		t.Fatalf("len(got) = %d, want 2", len(got))
 	}
 
-	byRoot := map[string]storageRootResp{}
+	byRoot := map[api.StorageRootRoot]api.StorageRoot{}
 	for _, r := range got {
 		byRoot[r.Root] = r
 	}

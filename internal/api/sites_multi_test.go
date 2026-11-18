@@ -30,18 +30,7 @@ func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
 		c.Sites = []string{"tokyo", "osaka"}
 	})
 
-	resp, err := http.Get(srv.URL + "/api/sites")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var got []string
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
+	got := api.GetJSON[[]string](t, srv.URL+"/api/sites")
 	want := []string{"tokyo", "osaka"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("sites = %v, want %v (定義順)", got, want)
@@ -54,15 +43,7 @@ func TestListSites_DefaultsToDefaultSiteWhenUnconfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := api.NewTestServer(t, pool)
 
-	resp, err := http.Get(srv.URL + "/api/sites")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var got []string
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
+	got := api.GetJSON[[]string](t, srv.URL+"/api/sites")
 	if len(got) != 1 || got[0] != store.DefaultSite {
 		t.Errorf("sites = %v, want [%q]", got, store.DefaultSite)
 	}
@@ -200,10 +181,7 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 			// レジストリ全件が対象になり両サイトの行が返るので（TestSearchPrograms_
 			// SitesOmittedDefaultsToAllRegisteredSites が別途確認する）、この
 			// テストの目的（site の取り違え検出）には合わない。
-			var searchMatches []struct {
-				Site      string `json:"site"`
-				ProgramId int64  `json:"programId"`
-			}
+			var searchMatches []api.ProgramSearchMatch
 			sresp, err := http.Post(srv.URL+"/api/programs/search", "application/json",
 				strings.NewReader(fmt.Sprintf(`{"sites":[%q]}`, r.site)))
 			if err != nil {
@@ -350,18 +328,7 @@ func TestListRecordings_ReturnsRowsFromAllSites(t *testing.T) {
 	dbtest.Recording(t, pool, siteRecordingOptions("tokyo", 1001))
 	dbtest.Recording(t, pool, siteRecordingOptions("osaka", 1002))
 
-	resp, err := http.Get(srv.URL + "/api/recordings")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var got []api.Recording
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
+	got := api.GetJSON[[]api.Recording](t, srv.URL+"/api/recordings")
 	sites := map[string]bool{}
 	for _, r := range got {
 		sites[r.Site] = true
@@ -390,18 +357,7 @@ func TestListReservations_ReturnsRowsFromAllSites(t *testing.T) {
 	insertReservationFixtureForSite(t, pool, ctx, "tokyo", 300000000000001, 30001, 40001)
 	insertReservationFixtureForSite(t, pool, ctx, "osaka", 300000000000002, 30002, 40002)
 
-	resp, err := http.Get(srv.URL + "/api/reservations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var got []api.Reservation
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
+	got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 	sites := map[string]bool{}
 	for _, r := range got {
 		sites[r.Site] = true
@@ -455,18 +411,7 @@ func TestListCapacityOverages_ReturnsOveragesFromAllSites(t *testing.T) {
 	insertCapacityReservationForSite(t, pool, ctx, "osaka", 500004, "25", start)
 
 	q := "?start=" + start.Add(-time.Hour).Format(time.RFC3339Nano) + "&end=" + start.Add(2*time.Hour).Format(time.RFC3339Nano)
-	resp, err := http.Get(srv.URL + "/api/capacity/overages" + q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	var got []api.CapacityOverage
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
+	got := api.GetJSON[[]api.CapacityOverage](t, srv.URL+"/api/capacity/overages"+q)
 	sites := map[string]bool{}
 	for _, o := range got {
 		sites[o.Site] = true

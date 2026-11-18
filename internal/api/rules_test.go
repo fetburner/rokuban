@@ -51,15 +51,7 @@ func TestRulesCRUD(t *testing.T) {
 	}
 
 	// List
-	resp, err = http.Get(srv.URL + "/api/rules")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var list []Rule
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		t.Fatal(err)
-	}
+	list := GetJSON[[]Rule](t, srv.URL+"/api/rules")
 	if len(list) != 1 {
 		t.Fatalf("list len = %d", len(list))
 	}
@@ -340,15 +332,7 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 	}
 
 	// 未知 site を含むルールが保存されていないことを確認する（一覧が空のまま）。
-	listResp, err := http.Get(srv.URL + "/api/rules")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = listResp.Body.Close() }()
-	var list []Rule
-	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
-		t.Fatal(err)
-	}
+	list := GetJSON[[]Rule](t, srv.URL+"/api/rules")
 	if len(list) != 0 {
 		t.Fatalf("rules were persisted despite unknown site: %+v", list)
 	}
@@ -408,15 +392,7 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 
 	// 400 の後、既存の rule_sites が変わっていないことを実際に GET して確認する
 	// （validate は tx の外なので今は自明に不変だが、将来 tx 内に移す変更を止める資産にする）。
-	getResp, err := http.Get(srv.URL + "/api/rules/" + itoa(created.Id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = getResp.Body.Close() }()
-	var afterFailedUpdate Rule
-	if err := json.NewDecoder(getResp.Body).Decode(&afterFailedUpdate); err != nil {
-		t.Fatal(err)
-	}
+	afterFailedUpdate := GetJSON[Rule](t, srv.URL+"/api/rules/"+itoa(created.Id))
 	if afterFailedUpdate.Sites == nil || !slices.Equal(*afterFailedUpdate.Sites, []string{"osaka", "tokyo"}) {
 		t.Fatalf("sites after rejected update = %v, want unchanged [osaka tokyo]", afterFailedUpdate.Sites)
 	}

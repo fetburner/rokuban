@@ -341,9 +341,7 @@ func TestPutRecordingChapterEdits_WaitsForDetectionResultTransaction(t *testing.
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
-		var body struct {
-			Error string `json:"error"`
-		}
+		var body ErrorResponse
 		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil && resp.StatusCode != http.StatusNoContent {
 			done <- struct {
 				status  int

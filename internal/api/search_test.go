@@ -122,20 +122,9 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 }
 
-// searchMatchRow は検索 API のレスポンス 1 行（デコード用の複製）。
+// ProgramSearchMatch は検索 API のレスポンス 1 行（デコード用の複製）。
 // このファイルは package api、sites_multi_test.go は package api_test なので
 // 型を共有できず、この 1 ファイル内だけの複製として持つ。
-type searchMatchRow struct {
-	Site       string    `json:"site"`
-	ProgramId  int64     `json:"programId"`
-	NetworkId  int       `json:"networkId"`
-	ServiceId  int       `json:"serviceId"`
-	StartAt    time.Time `json:"startAt"`
-	DurationMs int64     `json:"durationMs"`
-	Name       string    `json:"name"`
-	IsFree     bool      `json:"isFree"`
-}
-
 // searchFixtureGenre は insertSearchProgramFixture が焼き込むジャンル
 // （テスト側の "genres": [9] 条件と対にして使う。両方の呼び出し元が同じ値を
 // 使うので定数化する）。
@@ -165,7 +154,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 }
 
 // postSearchPrograms は新しい検索 API を叩き、200 を要求して行にデコードする。
-func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any) []searchMatchRow {
+func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any) []ProgramSearchMatch {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -181,7 +170,7 @@ func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any)
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST %s status = %d, want 200 (body=%s)", path, resp.StatusCode, b)
 	}
-	var matches []searchMatchRow
+	var matches []ProgramSearchMatch
 	if err := json.NewDecoder(resp.Body).Decode(&matches); err != nil {
 		t.Fatal(err)
 	}
@@ -323,9 +312,7 @@ func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
-	var body struct {
-		Error string `json:"error"`
-	}
+	var body ErrorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}

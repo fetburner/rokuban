@@ -3,16 +3,13 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
 func TestListEncodeProfiles(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		EncodeProfileNames: []string{"h264", "hevc"},
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.EncodeProfileNames = []string{"h264", "hevc"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/encode-profiles")
 	if err != nil {
@@ -41,9 +38,7 @@ func TestListEncodeProfiles(t *testing.T) {
 }
 
 func TestListEncodeProfiles_EmptyWhenNotConfigured(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
 	resp, err := http.Get(srv.URL + "/api/encode-profiles")
 	if err != nil {

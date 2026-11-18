@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -16,14 +15,12 @@ func intPtr(v int) *int { return &v }
 // name の集合だけでなく並びまで固定する。height は表示用で、0 は
 // 「スケールしない」を表す（値そのものが設定の写しであることも見る）。
 func TestListLiveProfiles(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		LiveProfiles: []LiveProfileSummary{
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.LiveProfiles = []LiveProfileSummary{
 			{Name: "high", Height: intPtr(720)},
 			{Name: "low", Height: intPtr(480)},
-		},
+		}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/live-profiles")
 	if err != nil {
@@ -58,9 +55,7 @@ func TestListLiveProfiles(t *testing.T) {
 // ときの形を見る。**null ではなく空配列** --- フロントは length で「セレクタを出すか」を
 // 決めるので、null は別の分岐を書かせる。
 func TestListLiveProfiles_EmptyWhenNotConfigured(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
 	resp, err := http.Get(srv.URL + "/api/live-profiles")
 	if err != nil {
@@ -87,11 +82,9 @@ func TestListLiveProfiles_EmptyWhenNotConfigured(t *testing.T) {
 // TestListLiveProfiles_OmitsHeightWhenUnset は height 未設定（スケールしない）が
 // 省略されることを見る。0 を詰めると「未設定」と「0」が公開面で潰れる。
 func TestListLiveProfiles_OmitsHeightWhenUnset(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		LiveProfiles: []LiveProfileSummary{{Name: "original"}},
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.LiveProfiles = []LiveProfileSummary{{Name: "original"}}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/live-profiles")
 	if err != nil {

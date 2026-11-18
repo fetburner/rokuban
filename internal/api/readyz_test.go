@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -16,10 +15,9 @@ import (
 )
 
 // readyzStatus は /readyz を 1 回叩いて (ステータスコード, body の status) を返す。
-func readyzStatus(t *testing.T, router http.Handler) (int, string) {
+func readyzStatus(t *testing.T, overrides ...func(*RouterConfig)) (int, string) {
 	t.Helper()
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, overrides...)
 
 	resp, err := http.Get(srv.URL + "/readyz")
 	if err != nil {
@@ -38,7 +36,7 @@ func readyzStatus(t *testing.T, router http.Handler) (int, string) {
 func TestReadyz_DBReachable(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	code, status := readyzStatus(t, NewRouter(RouterConfig{Ready: pool.Ping}))
+	code, status := readyzStatus(t, func(c *RouterConfig) { c.Ready = pool.Ping })
 	if code != http.StatusOK {
 		t.Errorf("status = %d, want 200", code)
 	}
@@ -70,7 +68,7 @@ func TestReadyz_DBUnreachable(t *testing.T) {
 	}
 	defer pool.Close()
 
-	code, status := readyzStatus(t, NewRouter(RouterConfig{Ready: pool.Ping}))
+	code, status := readyzStatus(t, func(c *RouterConfig) { c.Ready = pool.Ping })
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", code)
 	}
@@ -130,8 +128,9 @@ func TestReadyz_HangingDBTimesOut(t *testing.T) {
 	}
 	defer pool.Close()
 
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping}))
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.Ready = pool.Ping
+	})
 
 	// クライアント側の上限はハンドラ側の上限（readyzTimeout = 2s）より十分長く
 	// 取る。ここで先にタイムアウトすると、測っているものがクライアントの上限に
@@ -172,7 +171,7 @@ func TestReadyz_HangingDBTimesOut(t *testing.T) {
 // 確認関数が未設定なら fail-closed（503）。DB の応答を確かめていないプロセスを
 // Service の後ろに入れないため。
 func TestReadyz_NoReadyFunc(t *testing.T) {
-	code, status := readyzStatus(t, NewRouter(RouterConfig{}))
+	code, status := readyzStatus(t)
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", code)
 	}
@@ -184,9 +183,9 @@ func TestReadyz_NoReadyFunc(t *testing.T) {
 // /readyz は Host allowlist を免除する。免除し忘れると probe が 400 で落ち、
 // Pod は永久に Service の後ろに入らない。
 func TestReadyz_HostAllowlistExempt(t *testing.T) {
-	router := NewRouter(RouterConfig{AllowedHosts: []string{"rokuban.local"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.AllowedHosts = []string{"rokuban.local"}
+	})
 
 	req, err := http.NewRequest("GET", srv.URL+"/readyz", nil)
 	if err != nil {

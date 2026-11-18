@@ -346,18 +346,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			insertCircuitBreakerFixtureForSite(t, pool, ctx, scope, name, 7, 10, `{"total":7}`)
 
 			// 発動中として一覧に出る。
-			resp, err := http.Get(srv.URL + "/api/breakers")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("GET /api/breakers status = %d, want 200", resp.StatusCode)
-			}
-			var got []circuitBreakerResp
-			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-				t.Fatalf("decoding response: %v", err)
-			}
+			got := api.GetJSON[[]circuitBreakerResp](t, srv.URL+"/api/breakers")
 			found := false
 			for _, b := range got {
 				if b.Name == name {

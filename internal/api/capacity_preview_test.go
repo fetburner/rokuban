@@ -16,14 +16,6 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-type capacityPreviewOverage struct {
-	Site        string    `json:"site"`
-	StartAt     time.Time `json:"startAt"`
-	EndAt       time.Time `json:"endAt"`
-	Shortfall   int       `json:"shortfall"`
-	JammedTypes []string  `json:"jammedTypes"`
-}
-
 type capacityPreviewProgram struct {
 	ID        int64
 	ServiceID int32
@@ -119,7 +111,7 @@ RETURNING id`, dedupe).Scan(&id); err != nil {
 	return id
 }
 
-func postCapacityPreview(t *testing.T, srv *httptest.Server, body map[string]any) []capacityPreviewOverage {
+func postCapacityPreview(t *testing.T, srv *httptest.Server, body map[string]any) []CapacityOverage {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -134,7 +126,7 @@ func postCapacityPreview(t *testing.T, srv *httptest.Server, body map[string]any
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST /api/capacity/preview status = %d, want 200 (body=%s)", resp.StatusCode, body)
 	}
-	var result []capacityPreviewOverage
+	var result []CapacityOverage
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
@@ -354,9 +346,7 @@ func TestPreviewCapacityOverages_UnknownRuleIsNotFound(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (body=%s)", resp.StatusCode, body)
 	}
-	var got struct {
-		Error string `json:"error"`
-	}
+	var got ErrorResponse
 	if err := json.Unmarshal(body, &got); err != nil || got.Error != "rule not found" {
 		t.Errorf("body = %s, want error \"rule not found\"", body)
 	}

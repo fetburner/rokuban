@@ -2,8 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -23,18 +21,7 @@ type reservationSourceResp struct {
 
 func getReservationJSON(t *testing.T, srv *httptest.Server, programID int64) reservationSourceResp {
 	t.Helper()
-	resp, err := http.Get(srv.URL + reservationPath(programID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
-	}
-	var got reservationSourceResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[reservationSourceResp](t, srv.URL+reservationPath(programID))
 	return got
 }
 

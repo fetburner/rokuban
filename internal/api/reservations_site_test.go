@@ -2,8 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
@@ -38,30 +36,14 @@ func TestReservation_SiteExposed(t *testing.T) {
 	insertReservationDirect(t, pool, ctx, programID, nil, 11500, 1150)
 
 	t.Run("単体取得", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + reservationPath(programID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got reservationSiteResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[reservationSiteResp](t, srv.URL+reservationPath(programID))
 		if got.Site != store.DefaultSite {
 			t.Errorf("site = %q, want %q（未設定なら空文字が返る）", got.Site, store.DefaultSite)
 		}
 	})
 
 	t.Run("一覧", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/reservations")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got []reservationSiteResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[[]reservationSiteResp](t, srv.URL+"/api/reservations")
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}
