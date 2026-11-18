@@ -113,7 +113,7 @@ func registryNames(registry []config.MirakcSite) []string {
 // **worker が 0 サイト（中央プロセス）で site 束縛キューを要求する構成は
 // 起動エラーのまま**。`jobs.RequiresSiteBinding` が true（`worker.queues` が
 // 空、または ingest/epg/reconciler/watcher のいずれかを含む）なら、届く
-// site 単位のジョブは Deps.MirakcClients が空 map のため verifySite が必ず
+// site 単位のジョブは Deps.MirakcClients が空 map のため jobs.VerifySite が必ず
 // 拒み、全滅して再試行し続けるだけの構成になる。0 サイトの worker を許すのは
 // `worker.queues` を ruler/encode/thumbnail/cleanup/storage 等の site 非依存
 // キューに絞ったときだけ（site が 0 件でも、これらのキューの

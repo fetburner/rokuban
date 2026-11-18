@@ -1,4 +1,4 @@
-package worker
+package watcher
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -14,22 +15,14 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// record_sweep は Args.Spec で既定より長い有限の締切を持つ。
-func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
-	t.Parallel()
-	args := RecordSweepArgs{}
-	got := args.Spec().Timeout(args)
-	if got != 10*time.Minute {
-		t.Errorf("Timeout() = %v, want 10m", got)
-	}
-}
+const testSite = DefaultSite
 
 // record_sweep ジョブが投入され、実際に実行されて未処理の record が処理されること。
 // SSE が一切動いていない状態（handleEvent を経由しない）でも、sweep だけで
 // finished record を拾って recordings を作り ingest ジョブを投入できることを確認する
 // （docs/recording.md §3.3「SSE 断中に finished になった record を sweep が拾う」の
 // 受け入れ基準）。
-func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
+func TestSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -80,15 +73,15 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 
 	fake := newRecordSweepFake(t, []mirakc.Record{record})
 
-	enqueuer := newRecordingEnqueuer()
-	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
+	w := &SweepWorker{
+		MirakcClients:      map[string]*mirakc.Client{testSite: mirakc.NewClient(fake.URL(), nil)},
 		RecordObservations: pgstoretest.Recordings(pool),
 		LoopMarkers:        pgstoretest.Reservations(pool),
 		Enqueuer:           enqueuer,
 	}
-	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: testSite}); err != nil {
-		t.Fatalf("RecordSweepWorker.Work: %v", err)
+	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.RecordSweepArgs{Site: testSite}); err != nil {
+		t.Fatalf("SweepWorker.Work: %v", err)
 	}
 
 	var recCount int
@@ -101,7 +94,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		t.Fatalf("recordings count = %d, want 1 (record_sweep ジョブが未処理の finished record を拾ったはず)", recCount)
 	}
 
-	ingest := enqueuedArgs[jobs.IngestJobArgs](enqueuer, "ingest")
+	ingest := enqueuedIngestArgs(enqueuer)
 	if len(ingest) != 1 || ingest[0].Site != testSite || ingest[0].RecordID != record.ID {
 		t.Errorf("enqueued ingest args = %+v, want one job with site=%q record_id=%q", ingest, testSite, record.ID)
 	}
@@ -119,20 +112,20 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 
 // mirakc の全量取得に失敗した record_sweep は成功扱いにせず、前回成功時刻を
 // 進めない。ScaledJob の停止検出で「HTTP 障害なのに新鮮」と誤認させないため。
-func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
+func TestSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 
 	fake := newRecordSweepFake(t, nil)
 	fake.FailNext(http.MethodGet, "/api/recording/records", 1, http.StatusServiceUnavailable)
 
-	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients(testSite, mirakc.NewClient(fake.URL(), nil)),
+	w := &SweepWorker{
+		MirakcClients:      map[string]*mirakc.Client{testSite: mirakc.NewClient(fake.URL(), nil)},
 		RecordObservations: pgstoretest.Recordings(pool),
 		LoopMarkers:        pgstoretest.Reservations(pool),
 	}
 	job := jobs.RecordSweepArgs{Site: testSite}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
+	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, job); err == nil {
 		t.Fatal("Work() error = nil, want record list failure")
 	}
 
@@ -160,27 +153,39 @@ func newRecordSweepFake(t *testing.T, records []mirakc.Record) *mirakctest.Fake 
 	return fake
 }
 
-// TestRecordSweepWorker_VerifySiteDirect は verifySite（issue #139）を Work() へ
-// 直接呼び出して確認する二次防御のテスト（epg_test.go の
-// TestEpgSyncWorker_SiteMismatch / reconcile_pass_test.go の
-// TestReconcilePassWorker_SiteMismatch と同じ形）。queue 修飾（一次防御。
-// internal/jobq/riveradapter/queue_scoping_test.go の TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues）を素通りしてしまうケース
-// （手で INSERT した / 将来のヒント投入のバグで queue と args.Site がずれた場合）
-// への保険が効いていることを、queue 選択を経由せずに固定する。
-func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
+// enqueuedIngestArgs は記録された ingest ジョブの引数だけを返す。
+func enqueuedIngestArgs(enqueuer *jobqtestutil.RecordingEnqueuer) []jobs.IngestJobArgs {
+	var found []jobs.IngestJobArgs
+	for _, call := range enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind()) {
+		if args, ok := call.Args.(jobs.IngestJobArgs); ok {
+			found = append(found, args)
+		}
+	}
+	return found
+}
+
+// TestSweepWorker_VerifySiteDirect は jobs.VerifySite（issue #139）を Work() へ
+// 直接呼び出して確認する二次防御のテスト。queue 修飾（一次防御。
+// internal/jobq/riveradapter/queue_scoping_test.go の TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues）を
+// 素通りしてしまうケース（手で INSERT した / 将来のヒント投入のバグで queue と args.Site が
+// ずれた場合）への保険が効いていることを、queue 選択を経由せずに固定する。
+func TestSweepWorker_VerifySiteDirect(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 
 	fake := newRecordSweepFake(t, nil)
 
-	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
+	// Enqueuer を置く。nil だと Work は enqueuer の nil チェックで先に落ち、照合を
+	// 外しても通ってしまう（照合の判定そのものを測れない）。
+	w := &SweepWorker{
+		MirakcClients:      map[string]*mirakc.Client{"site-a": mirakc.NewClient(fake.URL(), nil)},
 		RecordObservations: pgstoretest.Recordings(pool),
 		LoopMarkers:        pgstoretest.Reservations(pool),
+		Enqueuer:           jobqtestutil.NewRecordingEnqueuer(),
 	}
 
-	job := RecordSweepArgs{Site: "site-b"}
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	job := jobs.RecordSweepArgs{Site: "site-b"}
+	err := jobqtestutil.RunWorkerOnce(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -189,23 +194,23 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 	}
 }
 
-// TestRecordSweepWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
-// 処理されることを確認する（TestRecordSweepWorker_VerifySiteDirect と対になる確認）。
-func TestRecordSweepWorker_SiteMatch(t *testing.T) {
+// TestSweepWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
+// 処理されることを確認する（TestSweepWorker_VerifySiteDirect と対になる確認）。
+func TestSweepWorker_SiteMatch(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
 	fake := newRecordSweepFake(t, nil)
 
-	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
+	w := &SweepWorker{
+		MirakcClients:      map[string]*mirakc.Client{"site-a": mirakc.NewClient(fake.URL(), nil)},
 		RecordObservations: pgstoretest.Recordings(pool),
 		LoopMarkers:        pgstoretest.Reservations(pool),
-		Enqueuer:           newRecordingEnqueuer(),
+		Enqueuer:           jobqtestutil.NewRecordingEnqueuer(),
 	}
-	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: "site-a"}); err != nil {
-		t.Fatalf("RecordSweepWorker.Work: %v", err)
+	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.RecordSweepArgs{Site: "site-a"}); err != nil {
+		t.Fatalf("SweepWorker.Work: %v", err)
 	}
 	var markerCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loop_success_markers WHERE loop = 'record_sweep' AND scope = 'site-a'`).Scan(&markerCount); err != nil {

@@ -301,7 +301,7 @@ ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キ�
 
 <details><summary>根拠</summary>
 
-- 空のキュー指定が全キューに化けると site 束縛キューで全滅する: `verifySite`
+- 空のキュー指定が全キューに化けると site 束縛キューで全滅する: `jobs.VerifySite`
 
 </details>
 

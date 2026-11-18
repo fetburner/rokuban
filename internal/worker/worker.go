@@ -1,8 +1,6 @@
 package worker
 
 import (
-	"fmt"
-	"sort"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -11,72 +9,13 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/reconciler"
+	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
+	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
-
-// verifySite は、mirakc かファイルシステムに触るワーカーが処理しようとしている
-// ジョブの site（jobSite）が、このワーカープロセスが束縛している mirakc
-// クライアントの集合（clients、site → *mirakc.Client。Deps.MirakcClients /
-// `--sites` の束縛）に含まれるかを検査する fail-fast ガード（issue #139。
-// 1 プロセスが N site を束縛できるようになった issue #532 で map 化した）。
-//
-// mirakc の record id / programId はインスタンススコープであり、DB の site 列は
-// そのスコープの境界を表現するために存在する（issue #31、docs/schema.md
-// §1-5）。**一次防御はキュー選択そのもの**: site 単位のキュー（ingest/epg/
-// reconciler/watcher）は物理名を site で修飾する（River adapter、issue #185
-// M4-13）ため、site A 宛のキューを購読していない worker は site B 向けのジョブを
-// 購読すらしない（cmd/rokuban.validateSiteBinding が worker.queues とサイト束縛の
-// 組み合わせも検査する）。verifySite はその後ろに立つ**二次防御**で、キュー選択が
-// 正しくてもジョブの Args.Site 自体が壊れている経路（手で INSERT した / 将来の
-// ヒント投入のバグ / River の一意性判定が旧キューの残骸と合流して args だけが
-// 別サイトのまま挿入された、等）を捕まえる。掴んだまま mirakc/FS に触れると、
-// A の mirakc に B の id を投げて A の別番組を B の recording としてコミットし
-// うる（不変条件 3「コミット = DB 行」への違反。詳細は issue #139 本文）。
-//
-// **1 プロセスが N site を束縛しうるため、もはや「一致するか」ではなく「clients に
-// jobSite のエントリがあるか」を見る。** 同じ IngestWorker/EpgSyncWorker/... の
-// 1 インスタンスが複数 site の物理キューを同時に購読しうる（riveradapter の buildConfig が
-// site ごとに物理名を組み立てて subscribe する）ため、ワーカーはもう単一の
-// 「自分自身の site」を持たない。見つかれば、呼び出し側がそのまま使う
-// *mirakc.Client を返す（呼び出し側が再度 map を引く必要をなくし、verifySite が
-// 通した site とその後実際に使うクライアントがズレる経路を作らない）。
-//
-// **jobSite は正規化しない。空文字列は無条件に拒む。** config のバリデーションが
-// site 名の非空を要求するため、clients のキーは常に実際の site 名であり、
-// 空文字列がキーになることはない。jobSite を store.DefaultSite へ読み替えてから
-// 引くと、たまたま "default" という名前の site が束縛されているデプロイでは
-// `Site: ""` の（本来壊れている）ジョブが素通りしてしまう --- 二次防御としての
-// verifySite が拾いたいのはまさにこの「args.Site 自体が壊れている経路」
-// （このコメント冒頭の説明）なので、jobSite を素の値のまま引く。
-//
-// 呼び出し側は mirakc/FS に触れる**前**（最初の HTTP 呼び出し・一時ファイル作成等より
-// 前）に呼ぶこと。合わないジョブは即座に失敗させ、再試行は River に委ねる
-// （同じジョブが必ず自サイトの worker に回る保証はないが、他サイトの worker が
-// いずれ拾う。うるさいが安全 --- issue #139 本文の「id が自サイトに存在しない」
-// ケースと同じ扱いに揃う）。
-func verifySite(clients map[string]*mirakc.Client, jobSite, queue string) (*mirakc.Client, error) {
-	client, ok := clients[jobSite]
-	if !ok {
-		return nil, fmt.Errorf(
-			"%s: job site %q is not among this worker's bound sites %s, refusing before touching mirakc/FS (issue #139)",
-			queue, jobSite, sortedSiteNames(clients))
-	}
-	return client, nil
-}
-
-// sortedSiteNames は clients のキー（site 名）をソートして返す。verifySite の
-// エラーメッセージ用（sortedQueueNames と同じ理由 --- map の反復順は不定なので、
-// エラーメッセージが実行のたびに揺れないようにする）。
-func sortedSiteNames(clients map[string]*mirakc.Client) []string {
-	sites := make([]string, 0, len(clients))
-	for site := range clients {
-		sites = append(sites, site)
-	}
-	sort.Strings(sites)
-	return sites
-}
 
 // Deps は各ワーカーに注入する依存。
 type Deps struct {
@@ -112,11 +51,11 @@ type Deps struct {
 	// map（issue #532。1 プロセスが N site を束縛できるようになったため、
 	// 単一の MirakcClient / Site string の対を置き換えた）。mirakc/FS に触る
 	// ワーカー（Ingest / EpgSync / TunerSync / ReconcilePass / RecordSweep）は
-	// これと自分が処理するジョブの args.Site を verifySite で照合してから
+	// これと自分が処理するジョブの args.Site を jobs.VerifySite で照合してから
 	// 実際に使うクライアントを取り出す（issue #139）。
 	//
 	// 空 map（0 site 束縛の中央プロセス）でも構築時にはエラーにしない ---
-	// site 単位のキューを実際に購読していれば、届いたジョブは verifySite が
+	// site 単位のキューを実際に購読していれば、届いたジョブは jobs.VerifySite が
 	// 必ず拒む（起動時には validateSiteBinding が
 	// この組み合わせ自体を防ぐ）。
 	MirakcClients map[string]*mirakc.Client
@@ -282,7 +221,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		TunerStore:    deps.TunerStore,
 		CapacityStore: deps.CapacityStore,
 	})
-	riveradapter.Register(workers, &RulerPassWorker{
+	riveradapter.Register(workers, &ruler.PassWorker{
 		Enqueuer:          deps.Enqueuer,
 		RulerPass:         deps.RulerPass,
 		Breakers:          deps.Breakers,
@@ -294,14 +233,14 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		RetractGrace:      deps.RulerRetractGrace,
 	})
 	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
-	riveradapter.Register(workers, &ReconcilePassWorker{
+	riveradapter.Register(workers, &reconciler.PassWorker{
 		MirakcClients:   deps.MirakcClients,
 		ScheduleSync:    deps.ScheduleSync,
 		Breakers:        deps.Breakers,
 		NeverScheduled:  deps.NeverScheduled,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
 	})
-	riveradapter.Register(workers, &RecordSweepWorker{
+	riveradapter.Register(workers, &watcher.SweepWorker{
 		Enqueuer:           deps.Enqueuer,
 		MirakcClients:      deps.MirakcClients,
 		RecordObservations: deps.RecordObservations,

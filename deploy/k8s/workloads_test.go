@@ -167,7 +167,7 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 		q, ok := flagValue(args, "queues")
 		if !ok {
 			t.Errorf("%s does not pass --queues; it would subscribe to every queue "+
-				"(including site-bound ones, which die in verifySite)", w.id())
+				"(including site-bound ones, which die in jobs.VerifySite)", w.id())
 			continue
 		}
 		byQueue[q] = append(byQueue[q], w)
@@ -474,7 +474,7 @@ func triggerQuery(t *testing.T, w workload) string {
 // （internal/jobs の PhysicalQueueName）ので、クエリに論理名を書くと
 // **誰も入れないキューを数え続けて永久にスケールしない**。逆にサイトを跨いだ
 // 名前を書くと、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は
-// verifySite で死んでまた起きる（受け入れ判定ハーネスの判定 5）。
+// jobs.VerifySite で死んでまた起きる（受け入れ判定ハーネスの判定 5）。
 //
 // 数える状態が `available` と `retryable` の 2 つであることも一緒に見る。
 // `retryable` を落とすと、失敗したジョブを `available` へ戻す `JobScheduler` を

@@ -1,8 +1,8 @@
 // Package reconciler は予約（desired）と mirakc の schedules（observed）の差分を
 // POST/DELETE で消す 1 パス評価ロジック。
 //
-// reconciler はシングルトンではなくジョブ（internal/worker の
-// ReconcilePassWorker）として実行される。パスを跨ぐ状態を持たない（サーキット
+// reconciler はシングルトンではなくジョブ（このパッケージの
+// PassWorker）として実行される。パスを跨ぐ状態を持たない（サーキット
 // ブレーカーの発動状態も含め毎パス DB と mirakc から読み直す。発動のラッチ自体は
 // internal/breaker が circuit_breakers に持続させる）。共通契約（jobq）は排他を
 // 保証せず、現行の重複抑止はジョブエンジン adapter の UniqueOpts（サイト単位）による（docs/data.md §2）。
@@ -88,7 +88,7 @@ type Reconciler struct {
 
 // New は Reconciler を生成する。cfg が nil の場合はデフォルト設定を使う。
 //
-// 呼び出し元の internal/worker.ReconcilePassWorker はジョブ引数のサイト 1 つに
+// 呼び出し元の PassWorker はジョブ引数のサイト 1 つに
 // 対して 1 個の Reconciler を作る（ジョブの排他がサイト単位のため）。
 func New(site string, mc *mirakc.Client, scheduleSync store.ScheduleSync, breakers store.Breakers, neverScheduled store.NeverScheduledEvents, cfg *Config) *Reconciler {
 	c := defaultConfig()

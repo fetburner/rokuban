@@ -2,8 +2,8 @@
 # 判定 5: サイト B の滞留でサイト A の Job が起きない。
 #
 # **これが壊れると自己増殖する。** キューが共有だと、サイト A のスケーラが
-# サイト B の滞留を見て A に Job を起こし、起きた Job は verifySite
-# （internal/worker/worker.go）で即死し、滞留は減らないのでまた起きる。
+# サイト B の滞留を見て A に Job を起こし、起きた Job は jobs.VerifySite
+# （internal/jobs/site.go）で即死し、滞留は減らないのでまた起きる。
 # CPU を焼き続けるだけで、症状は「B が遅い」ではなく「A のノードが埋まる」に
 # なる。
 #

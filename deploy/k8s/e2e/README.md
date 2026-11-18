@@ -247,7 +247,7 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 
   ただし実物の worker 込みでハーネスを 1 周させた確認はまだ無い。
 
-- **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。** 判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。ところが intent の PUT が入れるのは `ruler_pass` のヒントである（`internal/api/rules.go` の `insertRulerPassHint`）。`reconcile_pass` はその `ruler_pass` が入れる（`internal/worker/ruler_pass.go`）。`ruler` を引く Pod が無いと 1.7 は TODO ではなく **240 秒待って FAIL** する。しかもメッセージは「予約が mirakc に届かない … reservations=0」なので **reconciler を疑わせる**。
+- **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。** 判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。ところが intent の PUT が入れるのは `ruler_pass` のヒントである（`internal/api/rules.go` の `insertRulerPassHint`）。`reconcile_pass` はその `ruler_pass` が入れる（`internal/ruler/worker.go`）。`ruler` を引く Pod が無いと 1.7 は TODO ではなく **240 秒待って FAIL** する。しかもメッセージは「予約が mirakc に届かない … reservations=0」なので **reconciler を疑わせる**。
 - **判定 3 の producer は既定を差し替えてある**（`lib/env.sh` の `E2E_ENCODE_PRODUCER` = `lib/kube.sh` の `produce_real_encode_job`）。既定の `insert_probe_job` では緑にならない。`e2e_probe` は実物の worker には未登録 kind なので数秒で終わり、「3.1 は PASS、3.2 / 3.3 / 3.4 が `completed` 分岐で TODO」になる。TODO が 1 件でも `summary` は exit 2 を返す。差し替えが噛み合わせているものは 5 つで、**どれか 1 つでも欠けると判定 3 は「殺された」ではなく TODO で抜ける**:
     - `overlays/e2e/config.yml` の `encode.profiles`（`e2e-slow`）。**狙って遅くしてある。** 3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を取るので、エンコードはその合計より長く走り続ける必要がある
     - ffmpeg 入りイメージ。触る場所は 3 つある（`lib/env.sh` の `E2E_FULL_IMAGE`、`lib/cluster.sh` の build と `kind load`、`overlays/e2e/kustomization.yaml` の `images:`）
