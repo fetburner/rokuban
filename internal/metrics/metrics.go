@@ -548,16 +548,12 @@ var (
 
 // ストレージ観測（issue #238 M7-5）のメトリクス。
 //
-// StorageSyncLastSuccess はジョブ全体（1 パス）の完走を見るゲージで、
-// **root ごとの健全性は見分けられない**。「media は何日も観測できていないが
-// scratch は健全」という部分故障（PR #258 のレビューで指摘）では、
-// StorageSyncLastSuccess は scratch が成功するたびに現在時刻へ進み続けるため、
-// このゲージ単体では検知できない --- 根本原因（存在理由そのものである
-// アーカイブの容量）を見失う。そのための root 別シグナルが
-// StorageRootLastSuccess / StorageRootTotalBytes / StorageRootUsedBytes /
-// StorageRootAvailableBytes の 4 つ。「観測が止まっている」と「statfs が
-// 失敗し続けている」をログ無しで区別できるのはこの 4 つの組であり、
-// StorageSyncLastSuccess 単体ではできない。
+// 置き場と root ごとの最終観測時刻は、プロセス内のゲージではなく DB の storage_sync から
+// 読む rokuban_storage_root_observed_timestamp_seconds（reconcile_markers.go）で出す。
+// プロセス内のゲージは ScaledJob の --once では scrape できず、常駐 Pod では値を持たない。
+//
+// 容量の 3 本（StorageRootTotalBytes など）は、その root の観測が成功したときだけ
+// 更新される。統計に失敗した root は前回の値のまま残るので、鮮度は observed の系列で判別する。
 var (
 	// StoreMarkerMismatch counts storage operations withheld because the configured
 	// media store marker was missing, unreadable, or named a different store.
@@ -607,28 +603,11 @@ var (
 		Help: "Total transfer jobs withheld because the target root is not mounted or its store marker does not match.",
 	}, []string{"store"})
 
-	// StorageSyncLastSuccess は store ごとに最後に**全 root を観測できた**パスの時刻（UNIX 秒）。
-	// 1 root でも失敗したパスでは進めない（部分成功を「成功」に数えない。
-	// internal/worker/storage.go の StorageSyncWorker.Work 参照）。
-	StorageSyncLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "rokuban_storage_sync_last_success_timestamp_seconds",
-		Help: "Unix time of the last storage sync pass where every configured root for this store was observed successfully. Use with time() to detect a degraded sync; check rokuban_storage_root_last_success_timestamp_seconds{store,root} for which root is stale.",
-	}, []string{"store"})
-
-	// StorageRootLastSuccess は置き場と root ごとに最後に観測できた時刻（UNIX 秒）。
-	// 統計に失敗した root は更新しない（前回の値のまま残る）ので、
-	// time() との差分がその root だけ伸び続けることで壊れた root を特定できる。
-	StorageRootLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "rokuban_storage_root_last_success_timestamp_seconds",
-		Help: "Unix time of the last successful statfs observation for this store and root. Use with time() to detect a specific root that has stopped being observed.",
-	}, []string{"store", "root"})
-
 	// StorageRootTotalBytes / StorageRootUsedBytes / StorageRootAvailableBytes は
 	// store と root ごとの直近の観測バイト数。GET /api/storage を経由せずに Prometheus 側で
 	// 直接容量アラートを組めるようにするための対（PR #258 のレビュー指摘）。
-	// 統計に失敗した root は更新しない（前回値のまま。StorageRootLastSuccess と
-	// 同じ「警告が出ないことは保証ではない」姿勢 --- 値が古くなっていることは
-	// StorageRootLastSuccess の鮮度で判別する）。
+	// 統計に失敗した root は更新しない（前回値のまま。値が古くなっていることは
+	// rokuban_storage_root_observed_timestamp_seconds の鮮度で判別する）。
 	StorageRootTotalBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_storage_total_bytes",
 		Help: "Total filesystem capacity of this store and root, as of the last successful observation.",
@@ -845,7 +824,6 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		CutAwaitingReview,
 		ThumbnailReconcileCandidates,
 
-		StorageSyncLastSuccess,
 		StoreMarkerMismatch,
 		StorageTransferWaitingAssets,
 		StorageTransferWaitingBytes,
@@ -856,7 +834,6 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		StorageTransferCorruptSourcesRetired,
 		StorageTransferMountMismatches,
 		StoreRouteMismatches,
-		StorageRootLastSuccess,
 		StorageRootTotalBytes,
 		StorageRootUsedBytes,
 		StorageRootAvailableBytes,

@@ -167,8 +167,6 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_storage_derived_copies_outside_derived_s3` | Gauge | 設定中の S3 のうち、現在の `storage.derived` 以外にある active な現世代の派生コピー数 |
 | `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
 | `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
-| `rokuban_storage_sync_last_success_timestamp_seconds{store}` | Gauge | 置き場の全 root を観測できたパスの時刻（プロセス内。ScaledJob では scrape できない） |
-| `rokuban_storage_root_last_success_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最終観測時刻（プロセス内。ScaledJob では scrape できない） |
 | `rokuban_storage_root_observed_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最後の観測時刻を `storage_sync` から DB で読んだ値。観測できていない置き場は `root="media"` が 0。ScaledJob でも使える |
 | `rokuban_reconcile_marker_scrape_errors_total{source}` | Counter | 完走時刻と観測時刻の読み取りに失敗した回数（`source` は `reconcile_pass` / `delete_reconcile` / `storage_sync`）。読めなかった表の系列は出さず、0 にも置き換えない |
 | `rokuban_storage_total_bytes{store,root}` / `rokuban_storage_used_bytes{store,root}` / `rokuban_storage_available_bytes{store,root}` | Gauge | 置き場と root ごとの直近観測バイト数 |
@@ -199,9 +197,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 置き場の観測は、root ごとの鮮度と置き場ごとの容量で読む。
 
-`rokuban_storage_sync_last_success_timestamp_seconds{store}` は、その置き場の全 root を観測できたパスの時刻で、1 root でも失敗した部分成功では進まない。これと `rokuban_storage_root_last_success_timestamp_seconds{store,root}` は、どちらもプロセス内のゲージである。ScaledJob 構成では使えない。ジョブを走らせた Pod は `--once` で 1 件処理して終了するので scrape できる窓がなく、常駐 Pod はそのジョブを走らせないので値を持たない（理由は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
-
-ScaledJob 構成では、DB の `storage_sync` から読む `rokuban_storage_root_observed_timestamp_seconds{store,root}` を使う。`time() - min by (store) (...) > 閾値` で、置き場の中で最も古い root を見る（式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。どの root が止まっているかは、root ラベルの系列で確かめる。常駐構成（`worker.periodic_jobs: true`）では、プロセス内のゲージでもアラートを組める（「警告が出ないことは保証ではない」）。
+置き場の鮮度は、置き場の中で最も古い root の観測時刻で読む。1 つの root の観測が止まると、置き場の最小値も進まなくなる。式は `time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾値` である。式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)。どの root が止まっているかは、root ラベルの系列で確かめる。
 
 容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。
 

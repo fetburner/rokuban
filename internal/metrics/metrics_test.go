@@ -164,6 +164,10 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
 		"rokuban_delete_reconcile_last_pass_timestamp_seconds",
 		"rokuban_reconcile_last_pass_timestamp_seconds",
+		// storage 観測の最終時刻も DB の storage_sync から読む系列に一本化した
+		// （rokuban_storage_root_observed_timestamp_seconds）。
+		"rokuban_storage_sync_last_success_timestamp_seconds",
+		"rokuban_storage_root_last_success_timestamp_seconds",
 	} {
 		if got[name] {
 			t.Errorf("removed metric %q is still registered", name)
