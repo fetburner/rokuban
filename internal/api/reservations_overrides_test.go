@@ -495,11 +495,13 @@ func TestPatchProgramOverrides_UnknownEncodeProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading known-profile overrides: %v", err)
 	}
-	var stored api.ProgramOverridesInput
+	var stored struct {
+		EncodeProfiles []string `json:"encodeProfiles"`
+	}
 	if err := json.Unmarshal(row.Overrides, &stored); err != nil {
 		t.Fatalf("unmarshalling stored overrides %s: %v", row.Overrides, err)
 	}
-	if stored.EncodeProfiles == nil || len(*stored.EncodeProfiles) != 1 || (*stored.EncodeProfiles)[0] != "h264" {
+	if len(stored.EncodeProfiles) != 1 || stored.EncodeProfiles[0] != "h264" {
 		t.Errorf("stored encodeProfiles = %v, want [h264]", stored.EncodeProfiles)
 	}
 }
@@ -586,7 +588,9 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 	if err != nil {
 		t.Fatalf("getting program overrides: %v", err)
 	}
-	var stored api.ProgramOverridesInput
+	var stored struct {
+		ContentPath *string `json:"contentPath"`
+	}
 	if err := json.Unmarshal(row.Overrides, &stored); err != nil {
 		t.Fatalf("unmarshalling overrides: %v", err)
 	}
