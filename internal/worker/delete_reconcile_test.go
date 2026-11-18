@@ -1030,10 +1030,7 @@ func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 		t.Fatal("expected a CHECK violation for until_encoded with empty encode_profiles, got no error")
 	}
 
-	dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) {
-		p.KeepOriginal = "until_encoded"
-		p.EncodeProfiles = []string{"h264"}
-	})
+	testutil.MustExec(t, pool, "expected until_encoded with a non-empty profile list to be allowed, got error", "INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', $2)", recordingID, []string{"h264"})
 }
 
 // untilEncodedRecording は until_encoded の判定の入力になる録画 1 件の資産 ID と、原本のパス。
