@@ -56,6 +56,9 @@ const CHAPTERS = { source: 'auto', version: 'auto:detected:1', detectionPending:
 let currentChapters = CHAPTERS
 const chapterEditBodies = []
 const seekTileRequests = []
+// seek-tiles 以外に API から取りに行った画像。編集画面がシークプレビューと別の画像を
+// 要求しないことを見る（docs/frontend/recordings/detail.md）。
+const otherImageRequests = []
 let tileResponseStatus = 200
 let chapterResetCount = 0
 
@@ -315,6 +318,12 @@ const context = await browser.newContext({
 })
 const page = await context.newPage()
 await installApiStubs(page, apiHandler)
+page.on('request', (request) => {
+  const { pathname } = new URL(request.url())
+  if (request.resourceType() === 'image' && pathname.startsWith('/api/') && !pathname.endsWith('/seek-tiles')) {
+    otherImageRequests.push(pathname)
+  }
+})
 
 const video = page.locator('video')
 await page.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
@@ -1144,6 +1153,7 @@ if (narrowPaused) ng.push('⑨ md 未満の幅でマウスで映像を押して�
 await page.setViewportSize({ width: 1280, height: 900 })
 
 log('\n=== #1019 編集モード: 入り口・<video> を作り直さず再生位置と再生状態を保つ ===')
+const otherImagesBeforeEdit = otherImageRequests.length
 await page.setViewportSize({ width: 1280, height: 800 })
 // 通常速度を 1.5x にしてから編集へ入り、編集用 2x と保存先が分かれていることも見る。
 await video.evaluate((v) => {
@@ -1712,8 +1722,13 @@ if ((await targetBoundary.count()) !== 1) {
     ng.push(`#1019: PUT本文にframe調整済み境界と元versionが無い（${JSON.stringify(submitted)}）`)
   }
 }
-if (seekTileRequests.length !== 1) {
-  ng.push(`#1019: seek-tile格子画像が一回のGETで共有されていない（GET数=${seekTileRequests.length}）`)
+// GET の回数は数えない。<img> と CSS の background-image が同じ URL の要求をまとめるかは
+// Chromium のメモリキャッシュ次第で、Playwright 1.65.1 では 2 回目の GET がときどき出る。
+// 設計が決めているのは「同じ格子画像を使い、別の画像は取りに行かない」までである
+// （格子画像を使っていることは上のタイルの画素判定が見ている）。
+const otherImagesInEdit = otherImageRequests.slice(otherImagesBeforeEdit)
+if (otherImagesInEdit.length > 0) {
+  ng.push(`#1019: 編集画面が seek-tile 以外の画像を取りに行った（${JSON.stringify(otherImagesInEdit)}）`)
 }
 
 log('\n=== #1019 dirty cancel: 確認中は編集を続けられ、破棄で戻る ===')
@@ -1806,6 +1821,7 @@ if ((await routeBoundary.count()) === 1) {
 
 log('\n=== #1019 tile 404: 画像なしでも境界調整を続けられる ===')
 tileResponseStatus = 404
+const seekTileRequestsBefore404 = seekTileRequests.length
 await page.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
 await video.waitFor({ timeout: 15000 })
 await page.waitForFunction(
@@ -1824,8 +1840,10 @@ if ((await page.locator('[data-testid="chapter-filmstrip-boundary"]').count()) =
 if (await page.getByRole('button', { name: '選択中の境界を 1 フレーム進める' }).isDisabled()) {
   ng.push('#1019: seek-tileが404だと境界調整が使えない')
 }
-if (seekTileRequests.length !== 2) {
-  ng.push(`#1019: tile 404 を含む各編集画面が1回ずつタイル画像を要求していない（GET数=${seekTileRequests.length}）`)
+// 404 の間は background-image を描かないので、要求するのは <img> の 1 回だけになる。
+const seekTileRequestsOn404 = seekTileRequests.length - seekTileRequestsBefore404
+if (seekTileRequestsOn404 !== 1) {
+  ng.push(`#1019: tile 404 の編集画面がタイル画像をちょうど1回要求していない（GET数=${seekTileRequestsOn404}）`)
 }
 if (await page.getByRole('button', { name: '自動に戻す', exact: true }).isVisible()) {
   if (await page.getByRole('button', { name: '自動に戻す', exact: true }).isDisabled()) {
