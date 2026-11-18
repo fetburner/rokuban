@@ -182,7 +182,7 @@ func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordin
 func beginEncodeAttemptForProfilePublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
 	t.Helper()
 	start, err := (&EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
-	testutil.RequireNoError(t, err, "TODO")
+	testutil.RequireNoError(t, err, "beginEncodeAttempt")
 	return start.Count
 }
 
@@ -508,7 +508,7 @@ func newRebuildPublishScene(t *testing.T, pool *pgxpool.Pool, name string) rebui
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/"+name+".m2ts", []string{"cut"}, []byte("original"))
 	testutil.MustExec(t, pool, "inserting into recording_chapter_ownership", `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID)
-	dbtest.ChapterSpan(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) { p.StartMs, p.EndMs = 600000, 900000 })
 	requestedKeep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(requestedKeep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", requestedKeep, owned, err)
@@ -838,7 +838,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/txskip.m2ts", []string{"cut"}, []byte("original"))
 	testutil.MustExec(t, pool, "inserting into recording_chapter_ownership", `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID)
-	dbtest.ChapterSpan(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) { p.StartMs, p.EndMs = 600000, 900000 })
 	keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
