@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -751,35 +751,13 @@ func TestProbeDuration_IgnoresStderr(t *testing.T) {
 		"printf '%s\\n' '" + wantSeconds + "'\n"
 	testutil.RequireNoError(t, os.WriteFile(ffprobe, []byte(script), 0o755), "os.WriteFile")
 
-	got, err := probeDuration(context.Background(), ffprobe, "input.m2ts", commandOutput)
+	got, err := probeDuration(context.Background(), ffprobe, "input.m2ts", mediaexec.CommandOutput)
 	testutil.RequireNoError(t, err, "probeDuration() error")
 	wantSec, err := strconv.ParseFloat(wantSeconds, 64)
 	testutil.RequireNoError(t, err, "strconv.ParseFloat")
 	want := time.Duration(wantSec * float64(time.Second))
 	if got != want {
 		t.Errorf("probeDuration() = %v, want %v", got, want)
-	}
-}
-
-// TestCommandOutput_IncludesStderrOnFailure は commandOutput が失敗時、
-// *exec.ExitError の Stderr をエラーメッセージへ載せることを固定する
-// （cmd.Output() は cmd.CombinedOutput() と違い stderr を戻り値に混ぜないため、
-// 失敗時の診断はこの分岐でしか出てこない）。
-func TestCommandOutput_IncludesStderrOnFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fake := filepath.Join(dir, "fake-ffprobe")
-	script := "#!/bin/sh\n" +
-		"echo 'diagnostic: something went wrong' >&2\n" +
-		"exit 1\n"
-	testutil.RequireNoError(t, os.WriteFile(fake, []byte(script), 0o755), "os.WriteFile")
-
-	_, err := commandOutput(context.Background(), fake)
-	if err == nil {
-		t.Fatal("commandOutput() error = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "diagnostic: something went wrong") {
-		t.Errorf("commandOutput() error = %q, want it to contain stderr diagnostic", err.Error())
 	}
 }
 
@@ -811,71 +789,6 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
-}
-
-// TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess は、
-// TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess（encode.go の
-// runEncode）と双子の分岐である commandOutput 側の WaitDelay-on-success 扱いを
-// 固定する。ThumbnailWorker.runCmd はテストフックとして commandOutput 自体を
-// 迂回してしまうので、ここでは実 commandOutput を fd を漏らす偽 ffmpeg で直接
-// 駆動する（installLeakyExitZeroFakeFFmpeg は encode_attempts_test.go と共有）。
-//
-// workerExecWaitDelay が実際に経過するのを待つ必要があるため数秒かかる。
-func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
-	setWorkerExecWaitDelayForTest(t, time.Second)
-	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
-	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
-	sleepStartedAt := time.Now()
-	defer func() {
-		if time.Since(sleepStartedAt) > time.Duration(sleepSeconds)*time.Second {
-			return
-		}
-		pidBytes, err := os.ReadFile(childPIDMarker)
-		if err != nil {
-			return
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
-		if err != nil {
-			return
-		}
-		if process, err := os.FindProcess(pid); err == nil {
-			_ = process.Kill()
-		}
-	}()
-
-	dir := t.TempDir()
-	inputPath := filepath.Join(dir, "input.ts")
-	testutil.RequireNoError(t, os.WriteFile(inputPath, []byte("fake-input"), 0o644), "os.WriteFile")
-	outputPath := filepath.Join(dir, "output.bin")
-
-	var logBuf bytes.Buffer
-	origLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
-	t.Cleanup(func() { slog.SetDefault(origLogger) })
-
-	start := time.Now()
-	out, err := commandOutput(context.Background(), leakyFFmpeg, "-i", inputPath, outputPath)
-	if err != nil {
-		t.Fatalf("commandOutput(): %v (log: %s)", err, logBuf.String())
-	}
-	// WaitDelay の経路を実際に踏んだことの裏付け --- 踏んでいなければ即座に
-	// 返り、この分岐は何も検証していないことになる。
-	if elapsed := time.Since(start); elapsed < workerExecWaitDelay/2 {
-		t.Fatalf("commandOutput() returned after %s; want roughly workerExecWaitDelay (%s), the leaky child fd did not force a WaitDelay wait", elapsed, workerExecWaitDelay)
-	}
-	if !strings.Contains(logBuf.String(), "WaitDelay expired before I/O completed") {
-		t.Errorf("log output = %q, want a warning distinguishing the WaitDelay-on-success path", logBuf.String())
-	}
-	// out が捨てられていないこと（installLeakyExitZeroFakeFFmpeg は progress
-	// 行を標準出力へ書く。Output は stdout を返す）。
-	if !strings.Contains(string(out), "progress=end") {
-		t.Errorf("out = %q, want captured stdout to survive the WaitDelay-success path", out)
-	}
-	got, err := os.ReadFile(outputPath)
-	testutil.RequireNoError(t, err, "reading output file")
-	if string(got) != "fake-input" {
-		t.Errorf("output file = %q, want copy of input", got)
-	}
 }
 
 // 再選択の入口は候補クエリ 1 本なので、チャプター無し・ごみ箱の録画は、後続 id に

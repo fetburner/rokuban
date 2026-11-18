@@ -114,7 +114,7 @@ flowchart RL
 
 矢印は接続を張る向き（リクエストの向き）で、ラベルはその用途を表す。**線の無い組み合わせは触らない。**
 
-lint が判定するのは次の 2 つの境界である。api は mirakc・ファイルシステム・ffmpeg に依存しない（不変条件 1）。os/exec を使えるのは worker・streamer と、起動時にツールを検査する設定の読み込み部だけである（不変条件 4）。それ以外の線は lint では判定していない。
+lint が判定するのは次の 2 つの境界である。api は mirakc・ファイルシステム・ffmpeg に依存しない（不変条件 1）。os/exec を使えるのは worker・streamer、worker のジョブが共用する実行補助（worker だけが import 可）、起動時にツールを検査する設定の読み込み部だけである（不変条件 4）。それ以外の線は lint では判定していない。
 
 <details><summary>根拠</summary>
 

@@ -1,4 +1,4 @@
-// Package fsink は、再開可能なファイル書き込みに必要な POSIX 操作をまとめる。
+// Package fsink は、試行用の一時ディレクトリと再開可能なファイル書き込みに必要な POSIX 操作をまとめる。
 package fsink
 
 import (

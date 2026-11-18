@@ -802,7 +802,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		if scratchPath != "" {
 			return scratchPath, nil
 		}
-		path, err := newWorkerScratchDir(w.ScratchDir, "storage-transfer", fmt.Sprintf("derived-%d-%d-", transfer.MediaAssetID, transfer.CopyID))
+		path, err := fsink.NewScratchDir(w.ScratchDir, "storage-transfer", fmt.Sprintf("derived-%d-%d-", transfer.MediaAssetID, transfer.CopyID))
 		if err != nil {
 			return "", fmt.Errorf("creating derived transfer scratch: %w", err)
 		}

@@ -15,7 +15,9 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -101,7 +103,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		return nil
 	}
 
-	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "thumbnail", fmt.Sprintf("%d-", recordingID))
+	scratchDir, err := fsink.NewScratchDir(w.ScratchDir, "thumbnail", fmt.Sprintf("%d-", recordingID))
 	if err != nil {
 		return fmt.Errorf("creating scratch dir: %w", err)
 	}
@@ -414,7 +416,7 @@ func (w *ThumbnailWorker) commandOutput(ctx context.Context, name string, args .
 	if w.runCmd != nil {
 		return w.runCmd(ctx, name, args...)
 	}
-	return commandOutput(ctx, name, args...)
+	return mediaexec.CommandOutput(ctx, name, args...)
 }
 
 // copyScratchFileFsync は scratch 上の src を scratch 上の dst へコピーし、dst を fsync する。

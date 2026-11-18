@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -91,7 +93,7 @@ func (w *CMLogoCandidateWorker) analyze(
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("resolving original path: %w", err))
 	}
-	jobDir, err := newWorkerScratchDir(w.ScratchDir, "cm-logo-candidate",
+	jobDir, err := fsink.NewScratchDir(w.ScratchDir, "cm-logo-candidate",
 		fmt.Sprintf("%d-%d-", args.RecordingID, attemptedAt.UnixMicro()))
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("creating scratch directory: %w", err))
@@ -106,7 +108,7 @@ func (w *CMLogoCandidateWorker) analyze(
 	if err := os.Symlink(original, inputPath); err != nil {
 		return cmFailure("setup", fmt.Errorf("linking original into scratch: %w", err))
 	}
-	geometry, err := probeVideoGeometry(ctx, commandOutput, w.FFprobe, inputPath)
+	geometry, err := probeVideoGeometry(ctx, mediaexec.CommandOutput, w.FFprobe, inputPath)
 	if err != nil {
 		return cmFailure("probe", fmt.Errorf("probing original size: %w", err))
 	}

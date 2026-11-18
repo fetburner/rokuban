@@ -547,44 +547,10 @@ func TestNewEncodeScratchDirSupportsLongProfileNames(t *testing.T) {
 	}
 }
 
-func TestNewWorkerScratchDirIsUniqueForSameRecording(t *testing.T) {
+func TestNewDomainScratchDirRejectsEmptyRoot(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	first, err := newWorkerScratchDir(root, "thumbnail", "42-")
-	testutil.RequireNoError(t, err, "newWorkerScratchDir")
-	second, err := newWorkerScratchDir(root, "thumbnail", "42-")
-	testutil.RequireNoError(t, err, "newWorkerScratchDir")
-	if first == second {
-		t.Fatalf("scratch directory reused: %q", first)
-	}
-	for _, path := range []string{first, second} {
-		if info, err := os.Stat(path); err != nil || !info.IsDir() {
-			t.Errorf("scratch path %q is not a directory: info=%v err=%v", path, info, err)
-		}
-	}
-}
-
-func TestScratchDirectoryHelpersRejectEmptyRoot(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		make func() (string, error)
-	}{
-		{
-			name: "attempt-unique",
-			make: func() (string, error) { return newWorkerScratchDir("", "thumbnail", "42-") },
-		},
-		{
-			name: "domain-fixed",
-			make: func() (string, error) { return newDomainScratchDir("", "cm_detect", "42-1") },
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if dir, err := tc.make(); err == nil || err.Error() != "scratch dir is empty" {
-				t.Fatalf("scratch directory = %q, error = %v, want empty-root error", dir, err)
-			}
-		})
+	if dir, err := newDomainScratchDir("", "cm_detect", "42-1"); err == nil || err.Error() != "scratch dir is empty" {
+		t.Fatalf("scratch directory = %q, error = %v, want empty-root error", dir, err)
 	}
 }
 

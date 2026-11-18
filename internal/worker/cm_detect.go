@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -211,7 +212,7 @@ func (w *CMDetectWorker) detect(
 	}
 	// 人が教えた枠は記録上の解像度の座標なので、まず原本の実際の大きさを取る。
 	// poster やシークタイルの座標は使えない（あちらは SAR を焼き込んでいる）。
-	geometry, err := probeVideoGeometry(ctx, commandOutput, w.FFprobe, inputPath)
+	geometry, err := probeVideoGeometry(ctx, mediaexec.CommandOutput, w.FFprobe, inputPath)
 	if err != nil {
 		return cmFailure("probe", fmt.Errorf("probing original size: %w", err))
 	}
@@ -267,7 +268,7 @@ func (w *CMDetectWorker) detect(
 	}
 	// 総尺は EPG の尺ではなく原本の実尺から取る。録画は EIT 追従で延長されうるので、
 	// program_duration_ms で打ち切ると延長分の本編と CM を捨てる。
-	videoDuration, err := probeVideoDuration(ctx, commandOutput, w.FFprobe, inputPath)
+	videoDuration, err := mediaexec.ProbeVideoDuration(ctx, mediaexec.CommandOutput, w.FFprobe, inputPath)
 	if err != nil {
 		return cmFailure("probe", fmt.Errorf("probing original duration: %w", err))
 	}
@@ -330,7 +331,7 @@ func (w *CMDetectWorker) persistNewStationLogo(
 // videoGeometry は映像ストリームの記録上の大きさ（SAR を掛ける前の画素数）。
 type videoGeometry struct{ width, height int }
 
-// probeVideoGeometry は最初の映像ストリームの大きさを返す。run は commandOutput か、
+// probeVideoGeometry は最初の映像ストリームの大きさを返す。run は mediaexec.CommandOutput か、
 // テストで差し替えた実行フック。問い合わせと出力の読み方は ffargs にあり、
 // streamer の /frame と共有する。
 //
@@ -367,16 +368,16 @@ func runCMTool(ctx context.Context, dir, binary string, args ...string) ([]byte,
 	}
 	cmd.Env = append(cmd.Env, "HOME="+dir)
 	// 孫プロセスが stdout を握ったままでも、ctx キャンセル後に Work が戻れるようにする。
-	setWorkerExecWaitDelay(cmd)
+	mediaexec.SetWaitDelay(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// ctx キャンセルを WaitDelay-success 分岐より先に見る（commandOutput と同型）。
+		// ctx キャンセルを WaitDelay-success 分岐より先に見る（mediaexec.CommandOutput と同型）。
 		if ctx.Err() != nil {
 			return output, ctx.Err()
 		}
 		if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 			slog.Warn("runCMTool: process exited successfully but WaitDelay expired before I/O completed",
-				"binary", filepath.Base(binary), "wait_delay", workerExecWaitDelay)
+				"binary", filepath.Base(binary), "wait_delay", mediaexec.WaitDelay)
 			return output, nil
 		}
 		message := strings.TrimSpace(string(output))

@@ -212,8 +212,8 @@ linters:
             - pkg: database/sql
               desc: notifier reaches the database only through a Source subpackage
         exec-role:
-          # os/exec は worker/streamer が実行に使い、config は LookPath で
-          # ツールの存在だけを検証する。テストの子プロセス起動は対象外。
+          # os/exec は worker/streamer と共用補助の mediaexec が実行に使う。
+          # config は LookPath でツールの存在だけを検証する。テストの子プロセス起動は対象外。
           # conformance/harness は複数のテストパッケージが共有するため _test.go に置けないが、
           # conformance タグ付きでテストからしか使われない（docker / go build を起動する）。
           list-mode: lax
@@ -222,10 +222,22 @@ linters:
             - "!${config-path}/internal/mirakc/conformance/harness/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/streamer/**"
+            - "!${config-path}/internal/mediaexec/*.go"
             - "!${config-path}/internal/config/**"
           deny:
             - pkg: os/exec
-              desc: os/exec is limited to worker, streamer, and config
+              desc: os/exec is limited to worker, streamer, mediaexec, and config
+        mediaexec-worker-only:
+          # 不変条件 4: os/exec の制限が実行補助の import で迂回されないよう、
+          # 本番コードからの mediaexec の呼び出しを worker に閉じ込める。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/worker/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/mediaexec
+              desc: mediaexec imports are limited to internal/worker
         worker-tsstat:
           # 不変条件 6: ingest は TS を読まず、TS の読者は解析ジョブへ閉じ込める。
           list-mode: lax

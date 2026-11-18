@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -141,7 +143,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	rows := (tiles + seekTilesColumns - 1) / seekTilesColumns
 
 	// 毎回 MkdirTemp で新規に作り、終了時に消す。部分成果を残さない。
-	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "seek_tiles", fmt.Sprintf("%d-", recordingID))
+	scratchDir, err := fsink.NewScratchDir(w.ScratchDir, "seek_tiles", fmt.Sprintf("%d-", recordingID))
 	if err != nil {
 		return fmt.Errorf("creating scratch dir: %w", err)
 	}
@@ -283,7 +285,7 @@ func seekTileAt(i int, videoDuration time.Duration) time.Duration {
 // ストリーム（音声など）で決まり映像の終端より後ろになるので、抜き出し位置の
 // 上限には使えない。
 func (w *SeekTilesWorker) probeVideoDuration(ctx context.Context, inputPath string) (time.Duration, error) {
-	return probeVideoDuration(ctx, w.commandOutput, w.FFprobe, inputPath)
+	return mediaexec.ProbeVideoDuration(ctx, w.commandOutput, w.FFprobe, inputPath)
 }
 
 // extractTile は 1 枚のタイルを scratch へ書き出す。
@@ -347,5 +349,5 @@ func (w *SeekTilesWorker) commandOutput(ctx context.Context, name string, args .
 	if w.runCmd != nil {
 		return w.runCmd(ctx, name, args...)
 	}
-	return commandOutput(ctx, name, args...)
+	return mediaexec.CommandOutput(ctx, name, args...)
 }
