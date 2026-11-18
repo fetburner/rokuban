@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func meaningCfg(name string, cut bool, container string) config.EncodeConfig {
@@ -55,10 +56,8 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 	delID := seedEncodedAsset(t, pool, recID, "gone", mustEncodedRelPath(t, orig, "gone", "mp4", 0, false))
 	dbtest.SetMediaAssetState(t, pool, delID, "deleted")
 	// "reqonly" は作り直し要求の行だけがある（active な encoded は無い）。
-	if _, err := pool.Exec(ctx, `INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
-		VALUES ($1, 'reqonly', '{[0,1000)}'::int8multirange)`, recID); err != nil {
-		t.Fatalf("seeding rebuild request: %v", err)
-	}
+	testutil.MustExec(t, pool, "seeding rebuild request", `INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		VALUES ($1, 'reqonly', '{[0,1000)}'::int8multirange)`, recID)
 
 	cases := []struct {
 		name    string
@@ -114,9 +113,7 @@ func TestCheckEncodeProfileMeaningChecksEveryActivePath(t *testing.T) {
 	seedEncodedAsset(t, pool, second, profile, "evidence/second_multi-path.mkv")
 
 	evidence, err := pgstoretest.Media(pool).ListEncodedMeaningEvidence(ctx)
-	if err != nil {
-		t.Fatalf("ListEncodedMeaningEvidence(): %v", err)
-	}
+	testutil.RequireNoError(t, err, "ListEncodedMeaningEvidence()")
 	paths := make(map[string]bool)
 	for _, item := range evidence {
 		if item.Profile == profile {
