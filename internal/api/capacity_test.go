@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -13,19 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// capacityOverageResp は GET /api/capacity/overages のレスポンス要素。
-type capacityOverageResp struct {
-	Site        string    `json:"site"`
-	StartAt     time.Time `json:"startAt"`
-	EndAt       time.Time `json:"endAt"`
-	Shortfall   int       `json:"shortfall"`
-	JammedTypes []string  `json:"jammedTypes"`
-}
-
+// api.CapacityOverage は GET /api/capacity/overages のレスポンス要素。
 func insertCapacityTuner(t *testing.T, pool *pgxpool.Pool, index int, types []string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
@@ -64,7 +54,7 @@ func overagesURL(baseURL string, start, end time.Time) string {
 	return baseURL + "/api/capacity/overages?" + q.Encode()
 }
 
-func getOverages(t *testing.T, baseURL string, start, end time.Time) (int, []capacityOverageResp) {
+func getOverages(t *testing.T, baseURL string, start, end time.Time) (int, []api.CapacityOverage) {
 	t.Helper()
 	resp, err := http.Get(overagesURL(baseURL, start, end))
 	if err != nil {
@@ -75,27 +65,17 @@ func getOverages(t *testing.T, baseURL string, start, end time.Time) (int, []cap
 	if resp.StatusCode != http.StatusOK {
 		return resp.StatusCode, nil
 	}
-	var got []capacityOverageResp
+	var got []api.CapacityOverage
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
 	return resp.StatusCode, got
 }
 
-func newCapacityServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
-	t.Helper()
-	tunerStore := pgstoretest.Tuners(pool)
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, TunerReader: tunerStore, CapacityStore: tunerStore,
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // GR 1 本しかない構成で、別チャンネル 2 予約の区間が不足本数と詰まった種別つきで返る。
 func TestListCapacityOverages_ReturnsShortfallAndJammedTypes(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityServer(t, pool)
+	srv := api.NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 
 	insertCapacityTuner(t, pool, 0, []string{"GR"})
@@ -128,7 +108,7 @@ func TestListCapacityOverages_ReturnsShortfallAndJammedTypes(t *testing.T) {
 // 「収まります」と言わないのが正しい）ので、レスポンスは空配列でしかない。
 func TestListCapacityOverages_SaysNothingWhenNotExceeded(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityServer(t, pool)
+	srv := api.NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 
 	insertCapacityTuner(t, pool, 0, []string{"GR"})
@@ -148,7 +128,7 @@ func TestListCapacityOverages_SaysNothingWhenNotExceeded(t *testing.T) {
 // 窓は範囲検索。地平線全体を 1 回解いた結果を交差で切り出す。
 func TestListCapacityOverages_FiltersByWindow(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityServer(t, pool)
+	srv := api.NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 
 	insertCapacityTuner(t, pool, 0, []string{"GR"})
@@ -184,7 +164,7 @@ func TestListCapacityOverages_FiltersByWindow(t *testing.T) {
 // 不正な窓は 400。
 func TestListCapacityOverages_RejectsInvalidWindow(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityServer(t, pool)
+	srv := api.NewTestServer(t, pool)
 	now := time.Now().UTC()
 
 	for _, tc := range []struct {
@@ -212,7 +192,7 @@ func TestListCapacityOverages_RejectsInvalidWindow(t *testing.T) {
 // {BS}: 2 ≤ 1 が破れる。素朴な「重なり数 vs 総本数」では検出できないケース。
 func TestListCapacityOverages_DetectsJamThatTotalCountMisses(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityServer(t, pool)
+	srv := api.NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 
 	insertCapacityTuner(t, pool, 0, []string{"GR"})
@@ -247,7 +227,7 @@ func TestListCapacityOverages_DetectsJamThatTotalCountMisses(t *testing.T) {
 // 同一物理チャンネルの複数予約は 1 本のチューナーに相乗りできるので需要 1。
 func TestListCapacityOverages_SamePhysicalChannelSharesOneTuner(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newCapacityServer(t, pool)
+	srv := api.NewTestServer(t, pool)
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 
 	insertCapacityTuner(t, pool, 0, []string{"GR"})

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -15,34 +14,10 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 const rfc3339 = time.RFC3339
-
-func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
-	t.Helper()
-	tunerStore := pgstoretest.Tuners(pool)
-	media := pgstoretest.Media(pool)
-	recordingStore := pgstoretest.Recordings(pool)
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:               pool.Ping,
-		EPGReader:           pgstoretest.EPG(pool),
-		ProgramSearch:       pgstoretest.EPG(pool),
-		MediaReader:         media,
-		StorageObservation:  media,
-		TunerReader:         tunerStore,
-		CapacityStore:       tunerStore,
-		PlaybackStateStore:  pgstoretest.Playback(pool),
-		RecordingTrashStore: recordingStore,
-		RecordingQuery:      recordingStore,
-		ReservationStore:    pgstoretest.Reservations(pool),
-		LabelRules:          pgstoretest.LabelRules(pool),
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
 
 // seedEpgService は epg_services に 1 行入れる。
 func seedEpgService(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, remoteKey int32, name, channel string) {
@@ -96,19 +71,12 @@ func seedEpgProgram(t *testing.T, pool *pgxpool.Pool, programID int64, networkID
 	}
 }
 
-func getJSON(t *testing.T, url string, out any) *http.Response {
-	t.Helper()
-	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
-	if out != nil && resp.StatusCode == http.StatusOK {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			t.Fatalf("decoding %s: %v", url, err)
-		}
-	}
-	return resp
+// programWire は番組一覧の応答を、フィールド名（programId / recordingId / intent）と
+// 欠落（omitempty）をワイヤの形のまま検査するための型。生成型は使わない。
+type programWire struct {
+	ProgramID   int64           `json:"programId"`
+	RecordingID *int64          `json:"recordingId"`
+	Intent      json.RawMessage `json:"intent"`
 }
 
 func programsURL(base string, start, end time.Time, extra ...string) string {
@@ -123,16 +91,12 @@ func programsURL(base string, start, end time.Time, extra ...string) string {
 
 func TestListServices(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	seedEpgService(t, pool, 32678, 5168, 8, "ＯＨＫ", "27")
 	seedEpgService(t, pool, 32676, 5152, 6, "ＲＳＫテレビ", "21")
 
-	var got []Service
-	resp := getJSON(t, srv.URL+"/api/sites/default/services", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Service](t, srv.URL+"/api/sites/default/services")
 	if len(got) != 2 {
 		t.Fatalf("services = %d, want 2", len(got))
 	}
@@ -160,7 +124,7 @@ func TestListServices(t *testing.T) {
 // を返す ListServices 自体はこのフラグで行を落とさない（番組ゼロの局も返る）。
 func TestListServices_HasPrograms(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	// 5168 は番組を持つ、5152 はサブサービスのように番組を持たない
 	seedEpgService(t, pool, 32678, 5168, 8, "ＯＨＫ", "27")
@@ -168,11 +132,7 @@ func TestListServices_HasPrograms(t *testing.T) {
 	base := time.Now().Truncate(time.Hour)
 	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "OHK番組", base, false)
 
-	var got []Service
-	resp := getJSON(t, srv.URL+"/api/sites/default/services", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Service](t, srv.URL+"/api/sites/default/services")
 	// 番組ゼロのサービスも一覧からは落ちない（射影の正当な構成員のため）
 	if len(got) != 2 {
 		t.Fatalf("services = %d, want 2 (番組ゼロのサービスも返る)", len(got))
@@ -192,7 +152,7 @@ func TestListServices_HasPrograms(t *testing.T) {
 
 func TestListPrograms_Window(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour)
 	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "A-1", base, true)
@@ -212,11 +172,7 @@ func TestListPrograms_Window(t *testing.T) {
 	seedProgramIntent(t, pool, 2, base.Add(time.Hour), 32678, 5168, 2, "skip")
 
 	// 窓に一部でも重なる番組が入る（開区間）
-	var got []ProgramListItem
-	resp := getJSON(t, programsURL(srv.URL, base.Add(45*time.Minute), base.Add(75*time.Minute)), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]ProgramListItem](t, programsURL(srv.URL, base.Add(45*time.Minute), base.Add(75*time.Minute)))
 	if len(got) != 3 {
 		t.Fatalf("programs = %d, want 3 (窓に重なるものすべて)", len(got))
 	}
@@ -246,12 +202,7 @@ func TestListPrograms_Window(t *testing.T) {
 	if got[1].RecordingId != nil || got[2].RecordingId != nil {
 		t.Errorf("non-matching recordings should be omitted: B-1=%v A-2=%v", got[1].RecordingId, got[2].RecordingId)
 	}
-	var wire []struct {
-		ProgramID   int64           `json:"programId"`
-		RecordingID *int64          `json:"recordingId"`
-		Intent      json.RawMessage `json:"intent"`
-	}
-	getJSON(t, programsURL(srv.URL, base.Add(45*time.Minute), base.Add(75*time.Minute)), &wire)
+	wire := GetJSON[[]programWire](t, programsURL(srv.URL, base.Add(45*time.Minute), base.Add(75*time.Minute)))
 	byID := make(map[int64]json.RawMessage, len(wire))
 	recordingByID := make(map[int64]*int64, len(wire))
 	for _, item := range wire {
@@ -272,8 +223,7 @@ func TestListPrograms_Window(t *testing.T) {
 	}
 
 	// 窓にちょうど接するだけの番組は入らない（A-1 は end == window_start）
-	got = nil
-	getJSON(t, programsURL(srv.URL, base.Add(time.Hour), base.Add(2*time.Hour)), &got)
+	got = GetJSON[[]ProgramListItem](t, programsURL(srv.URL, base.Add(time.Hour), base.Add(2*time.Hour)))
 	for _, p := range got {
 		if p.Name == "A-1" {
 			t.Error("A-1 should not overlap [01:00, 02:00)")
@@ -283,7 +233,7 @@ func TestListPrograms_Window(t *testing.T) {
 
 func TestListPrograms_ServiceFilter(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour)
 	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "OHK", base, false)
@@ -295,19 +245,17 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 	var got []ProgramListItem
 	// 上限ちょうど（65535*100000+65535）は通す。400 のケースだけでは、上限を
 	// 下げる変異（実在しうる networkId=65535 を弾く）が緑のまま通る。
-	if resp := getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "6553565535"), nil); resp.StatusCode != http.StatusOK {
-		t.Errorf("service=6553565535（上限ちょうど）status = %d, want 200", resp.StatusCode)
+	if status := GetStatus(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "6553565535")); status != http.StatusOK {
+		t.Errorf("service=6553565535（上限ちょうど）status = %d, want 200", status)
 	}
 
 	// service は (networkId, serviceId) の組を複数 OR できる。
-	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "400101"), &got)
+	got = GetJSON[[]ProgramListItem](t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "400101"))
 	if len(got) != 1 || got[0].Name != "BS 101" {
 		t.Fatalf("exact service 400101 = %+v, want only BS 101", got)
 	}
-	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour))+
-		"&service=600101&service=3267605152", &got)
+	got = GetJSON[[]ProgramListItem](t, programsURL(srv.URL, base, base.Add(time.Hour))+
+		"&service=600101&service=3267605152")
 	if len(got) != 2 || got[0].Name != "CS 101" || got[1].Name != "RSK" {
 		t.Fatalf("exact services = %+v, want CS 101 and RSK", got)
 	}
@@ -315,8 +263,7 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 	// serviceId は network をまたぐと一意でない。公式割当には BS (4, 101) と
 	// 110度CS (6, 101) の実例があり、組で指定した側だけが返ること
 	// （serviceId だけで両方拾わないこと）をここで固定する。
-	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "600101"), &got)
+	got = GetJSON[[]ProgramListItem](t, programsURL(srv.URL, base, base.Add(time.Hour), "service", "600101"))
 	if len(got) != 1 || got[0].Name != "CS 101" {
 		t.Fatalf("exact service 600101 = %+v, want only CS 101", got)
 	}
@@ -330,15 +277,14 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 		// どちらも 0 件・誤った行ではなく 400 で止める。
 		"6553565536", "429500003201024",
 	} {
-		resp := getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", value), nil)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("service=%q status = %d, want 400", value, resp.StatusCode)
+		status := GetStatus(t, programsURL(srv.URL, base, base.Add(time.Hour), "service", value))
+		if status != http.StatusBadRequest {
+			t.Errorf("service=%q status = %d, want 400", value, status)
 		}
 	}
 
 	// serviceId を渡さないと全件返る
-	got = nil
-	getJSON(t, programsURL(srv.URL, base, base.Add(time.Hour)), &got)
+	got = GetJSON[[]ProgramListItem](t, programsURL(srv.URL, base, base.Add(time.Hour)))
 	if len(got) != 5 {
 		t.Fatalf("unfiltered = %d, want 5", len(got))
 	}
@@ -347,7 +293,7 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 // 広すぎる窓・逆順の窓は無言で切り詰めず 400 で拒否する。
 func TestListPrograms_InvalidWindow(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour)
 	tests := []struct {
@@ -360,11 +306,15 @@ func TestListPrograms_InvalidWindow(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var body ErrorResponse
-			resp := getJSON(t, programsURL(srv.URL, tt.start, tt.end), nil)
+			resp, err := http.Get(programsURL(srv.URL, tt.start, tt.end))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", resp.StatusCode)
 			}
+			var body ErrorResponse
 			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 				t.Fatalf("decoding error body: %v", err)
 			}
@@ -375,26 +325,22 @@ func TestListPrograms_InvalidWindow(t *testing.T) {
 	}
 
 	// 上限ちょうどは通る
-	resp := getJSON(t, programsURL(srv.URL, base, base.Add(maxProgramWindow)), nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("exact max window status = %d, want 200", resp.StatusCode)
+	status := GetStatus(t, programsURL(srv.URL, base, base.Add(maxProgramWindow)))
+	if status != http.StatusOK {
+		t.Errorf("exact max window status = %d, want 200", status)
 	}
 }
 
 func TestGetProgram(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour)
 	seedEpgProgram(t, pool, 42, 32678, 5168, 1, "詳細あり", base, true)
 	seedEpgProgram(t, pool, 43, 32678, 5168, 2, "詳細なし", base.Add(time.Hour), false)
 	seedProgramIntent(t, pool, 42, base, 32678, 5168, 1, "skip")
 
-	var got Program
-	resp := getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/42", srv.URL), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[Program](t, fmt.Sprintf("%s/api/sites/default/programs/42", srv.URL))
 	if got.Name != "詳細あり" {
 		t.Errorf("name = %q", got.Name)
 	}
@@ -415,20 +361,17 @@ func TestGetProgram(t *testing.T) {
 	}
 
 	// jsonb が NULL の番組は省略される（空オブジェクトを返さない）
-	var bare Program
-	getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/43", srv.URL), &bare)
+	bare := GetJSON[Program](t, fmt.Sprintf("%s/api/sites/default/programs/43", srv.URL))
 	if bare.Extended != nil || bare.Video != nil || bare.Audios != nil || bare.GenreDetails != nil || bare.Intent != nil {
 		t.Errorf("bare program should omit detail payloads, got %+v", bare)
 	}
-	var bareWire map[string]json.RawMessage
-	getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/43", srv.URL), &bareWire)
+	bareWire := GetJSON[map[string]json.RawMessage](t, fmt.Sprintf("%s/api/sites/default/programs/43", srv.URL))
 	if _, present := bareWire["intent"]; present {
 		t.Errorf("program without intent should omit the JSON field: %s", bareWire["intent"])
 	}
 
-	resp = getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/999", srv.URL), nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("missing program status = %d, want 404", resp.StatusCode)
+	if status := GetStatus(t, fmt.Sprintf("%s/api/sites/default/programs/999", srv.URL)); status != http.StatusNotFound {
+		t.Errorf("missing program status = %d, want 404", status)
 	}
 }
 

@@ -2,24 +2,14 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-// reservationChannelTypeResp は channelType だけを見るデコード用型。
-type reservationChannelTypeResp struct {
-	Id          int64  `json:"id"`
-	ChannelType string `json:"channelType"`
-}
 
 // insertReservationWithChannelType は program_snapshots.channel_type を指定して
 // program_snapshots + reservations 行を直接作る（ruler を経由しない）。
@@ -58,38 +48,20 @@ func TestReservation_ChannelTypeExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115041299
 	insertReservationWithChannelType(t, pool, ctx, programID, "BS")
 
 	t.Run("(site, programId) 読み取り", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + reservationPath(programID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got reservationChannelTypeResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 		if got.ChannelType != "BS" {
 			t.Errorf("channelType = %q, want %q（未設定なら空文字が返る）", got.ChannelType, "BS")
 		}
 	})
 
 	t.Run("一覧", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/reservations")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got []reservationChannelTypeResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}

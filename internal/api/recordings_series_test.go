@@ -41,11 +41,7 @@ func createSeriesLabelRule(t *testing.T, baseURL string, value, keyword string) 
 // listRecordingsForSeries は `GET /api/recordings?seriesOf=` を叩いて id を返す。
 func listRecordingsForSeries(t *testing.T, baseURL string, query string) []int64 {
 	t.Helper()
-	var got []Recording
-	resp := getJSON(t, baseURL+"/api/recordings?"+query, &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (%s)", resp.StatusCode, query)
-	}
+	got := GetJSON[[]Recording](t, baseURL+"/api/recordings?"+query)
 	ids := make([]int64, len(got))
 	for i, rec := range got {
 		ids[i] = rec.Id
@@ -57,7 +53,7 @@ func listRecordingsForSeries(t *testing.T, baseURL string, query string) []int64
 // 2 拠点から録れていれば 2 行のまま並ぶ（行の同一性を変えない）。
 func TestListRecordings_SeriesOfReturnsTheSameSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	// 同じ棚（自動キー 作品X）の 3 件。
@@ -107,7 +103,7 @@ func TestListRecordings_SeriesOfReturnsTheSameSeries(t *testing.T) {
 // 録画」の一覧で、枠を譲った行はその回の録画ではない）。
 func TestListRecordings_SeriesOfExcludesSuperseded(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	first := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -128,11 +124,7 @@ func TestListRecordings_SeriesOfExcludesSuperseded(t *testing.T) {
 
 	// **superseded を外すのは `seriesOf` を付けたときだけ。** 無条件一覧は
 	// 従来どおり履歴として両方を返す（この絞り込みが一覧の既定を変えていないこと）。
-	var all []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings", &all)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	all := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(all) != 2 {
 		t.Errorf("the unfiltered list returned %d rows, want 2 (seriesOf must not change the default)", len(all))
 	}
@@ -142,7 +134,7 @@ func TestListRecordings_SeriesOfExcludesSuperseded(t *testing.T) {
 // 絞らないので、そのシリーズの生きている行を返す（openapi.yaml の `seriesOf`）。
 func TestListRecordings_SeriesOfFromPurgedTombstoneReturnsTheSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	origin := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -167,7 +159,7 @@ func TestListRecordings_SeriesOfFromPurgedTombstoneReturnsTheSeries(t *testing.T
 // 全部集めたハブ」が返る。存在しない id も同じく 0 件。
 func TestListRecordings_SeriesOfWithNoSeriesIsEmpty(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	nullSeries := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -196,7 +188,7 @@ func TestListRecordings_SeriesOfWithNoSeriesIsEmpty(t *testing.T) {
 // ルールがそれを割る（docs/data/series.md §8「2 層: 分類ルール → 自動キー」）。
 func TestListRecordings_SeriesOfUsesTheLabelRuleValue(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	// **ルールを先に作る。** 当たりは録画の INSERT トリガーが付けるので、
 	// 後から足したルールは全件再評価（worker のジョブ）を待つ。
@@ -220,7 +212,7 @@ func TestListRecordings_SeriesOfUsesTheLabelRuleValue(t *testing.T) {
 // キーセットページングは `seriesOf` を付けても動く（カーソル軸は変わらない）。
 func TestListRecordings_SeriesOfKeepsKeysetPaging(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	first := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -233,11 +225,7 @@ func TestListRecordings_SeriesOfKeepsKeysetPaging(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第3話", base, "finished", 3
 	})
 
-	var page []Recording
-	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings?seriesOf=%d&limit=2", first), &page)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	page := GetJSON[[]Recording](t, srv.URL+fmt.Sprintf("/api/recordings?seriesOf=%d&limit=2", first))
 	if len(page) != 2 || page[0].Id != third || page[1].Id != second {
 		t.Fatalf("first page = %v, want [%d %d] (descending)", recordingIDs(page), third, second)
 	}
@@ -245,11 +233,7 @@ func TestListRecordings_SeriesOfKeepsKeysetPaging(t *testing.T) {
 	last := page[len(page)-1]
 	next := fmt.Sprintf("/api/recordings?seriesOf=%d&limit=2&before=%s&beforeId=%d",
 		first, url.QueryEscape(last.StartAt.UTC().Format(time.RFC3339Nano)), last.Id)
-	var secondPage []Recording
-	resp = getJSON(t, srv.URL+next, &secondPage)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (%s)", resp.StatusCode, next)
-	}
+	secondPage := GetJSON[[]Recording](t, srv.URL+next)
 	if len(secondPage) != 1 || secondPage[0].Id != first {
 		t.Errorf("second page = %v, want [%d]", recordingIDs(secondPage), first)
 	}
@@ -268,7 +252,7 @@ func recordingIDs(recs []Recording) []int64 {
 // EPG の番組を返す。site は畳まない（同じ放送が 2 拠点にあれば 2 行）。
 func TestListRecordingUpcoming_ReturnsFutureProgramsOfTheSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	origin := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -282,11 +266,7 @@ func TestListRecordingUpcoming_ReturnsFutureProgramsOfTheSeries(t *testing.T) {
 	seedEpgProgramAt(t, pool, store.DefaultSite, 4, "アニメ　作品Y　第1話", base.Add(24*time.Hour))
 	seedEpgProgramAt(t, pool, store.DefaultSite, 5, "【特集】", base.Add(24*time.Hour))
 
-	var got []ProgramSearchMatch
-	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]ProgramSearchMatch](t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin))
 	if len(got) != 2 {
 		t.Fatalf("upcoming = %+v, want the 2 rows of the same broadcast on 2 sites", got)
 	}
@@ -308,7 +288,7 @@ func TestListRecordingUpcoming_ReturnsFutureProgramsOfTheSeries(t *testing.T) {
 // 絞らないので、そのシリーズの未来の番組を 200 で返す（ハブは purged の起点でも開く）。
 func TestListRecordingUpcoming_FromPurgedTombstoneReturnsTheSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	origin := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -320,11 +300,7 @@ func TestListRecordingUpcoming_FromPurgedTombstoneReturnsTheSeries(t *testing.T)
 		t.Fatalf("purging: %v", err)
 	}
 
-	var got []ProgramSearchMatch
-	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[[]ProgramSearchMatch](t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin))
 	if len(got) != 1 || got[0].ProgramId != 1 {
 		t.Errorf("upcoming from a purged origin = %+v, want the one future program of the series", got)
 	}
@@ -333,7 +309,7 @@ func TestListRecordingUpcoming_FromPurgedTombstoneReturnsTheSeries(t *testing.T)
 // 起点の実効シリーズが NULL、または行が無ければ空配列（null ではなく `[]`）。
 func TestListRecordingUpcoming_EmptySeriesIsAnEmptyArray(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	origin := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -342,11 +318,7 @@ func TestListRecordingUpcoming_EmptySeriesIsAnEmptyArray(t *testing.T) {
 	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "【特集】", base.Add(time.Hour))
 
 	for _, id := range []int64{origin, 999999} {
-		var raw json.RawMessage
-		resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", id), &raw)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want 200", resp.StatusCode)
-		}
+		raw := GetJSON[json.RawMessage](t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", id))
 		if string(raw) != "[]" {
 			t.Errorf("upcoming for %d = %s, want []", id, raw)
 		}
@@ -357,7 +329,7 @@ func TestListRecordingUpcoming_EmptySeriesIsAnEmptyArray(t *testing.T) {
 // 実効シリーズが同じ空間であることの検査。ここがずれると「次回」が常に空になる）。
 func TestListRecordingUpcoming_UsesTheLabelRuleValue(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	createSeriesLabelRule(t, srv.URL, "数学I", "数学")
 	base := time.Now().Truncate(time.Second)
@@ -369,11 +341,7 @@ func TestListRecordingUpcoming_UsesTheLabelRuleValue(t *testing.T) {
 	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "NHK高校講座　数学I　第2回", base.Add(24*time.Hour))
 	seedEpgProgramAt(t, pool, store.DefaultSite, 2, "NHK高校講座　化学　第2回", base.Add(24*time.Hour))
 
-	var got []ProgramSearchMatch
-	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]ProgramSearchMatch](t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin))
 	if len(got) != 1 || got[0].ProgramId != 1 {
 		t.Errorf("upcoming = %+v, want the 数学I program only", got)
 	}

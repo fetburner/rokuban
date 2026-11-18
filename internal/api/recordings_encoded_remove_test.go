@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -89,24 +87,12 @@ func removalRequests(t *testing.T, pool *pgxpool.Pool, id int64) []string {
 
 func listedEncodedProfiles(t *testing.T, base string, id int64) []string {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", base, id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET recording status = %d", resp.StatusCode)
-	}
-	var rec struct {
-		EncodedAssets []struct {
-			Profile string `json:"profile"`
-		} `json:"encodedAssets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&rec); err != nil {
-		t.Fatalf("decoding recording: %v", err)
-	}
+	rec := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", base, id))
 	profiles := []string{}
-	for _, a := range rec.EncodedAssets {
+	if rec.EncodedAssets == nil {
+		return profiles
+	}
+	for _, a := range *rec.EncodedAssets {
 		profiles = append(profiles, a.Profile)
 	}
 	return profiles
@@ -116,8 +102,10 @@ func listedEncodedProfiles(t *testing.T, base string, id int64) []string {
 // h264 が消える。もう一度外しても 204（冪等）。足し直すと要求行も消える。
 func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstoretest.Recordings(pool), EncodePolicyStore: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264", "h265"}}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "h265"}
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "版を外す", time.Now().Truncate(time.Second), "finished", 701
@@ -166,12 +154,10 @@ func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 
 func TestRemoveRecordingEncodedAsset_AllowsTrashedRecording(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "h265"},
-	}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "h265"}
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ごみ箱から版を外す", time.Now().Truncate(time.Second), "finished", 703
@@ -196,8 +182,9 @@ func TestRemoveRecordingEncodedAsset_AllowsTrashedRecording(t *testing.T) {
 // 原本なしでも、外していない版が残るなら 204。最後の 1 本は 409 で、何も書かない。
 func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本なし", time.Now().Truncate(time.Second), "finished", 702
@@ -236,8 +223,9 @@ func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 // 該当する active な版が無い・録画が無いのはいずれも 404。
 func TestRemoveRecordingEncodedAsset_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "版なし", time.Now().Truncate(time.Second), "finished", 703
@@ -260,8 +248,9 @@ func TestRemoveRecordingEncodedAsset_NotFound(t *testing.T) {
 // 残る desired があるときは until_encoded のまま。
 func TestRemoveRecordingEncodedAsset_UntilEncodedClampsToAlways(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "クランプ", time.Now().Truncate(time.Second), "finished", 704
@@ -296,8 +285,9 @@ func TestRemoveRecordingEncodedAsset_UntilEncodedClampsToAlways(t *testing.T) {
 // 待つのでこのテストは通る（変異で確認）。
 func TestRemoveRecordingEncodedAsset_ConcurrentRemovalsLeaveOneCopy(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+	})
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -360,8 +350,9 @@ func TestRemoveRecordingEncodedAsset_ConcurrentRemovalsLeaveOneCopy(t *testing.T
 // 検査を待つ循環を作らない。
 func TestRemoveRecordingEncodedAssetLocksRecordingBeforePolicy(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+	})
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -471,8 +462,10 @@ func TestRemoveRecordingEncodedAssetLocksRecordingBeforePolicy(t *testing.T) {
 // 足し直し側は policy 行のロックを待ち、外す側の commit 後のスナップショットで要求行を消す。
 func TestAddRecordingEncodeProfiles_WaitsForConcurrentRemovalAndClearsRequest(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264", "h265"}}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "h265"}
+	})
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -540,8 +533,10 @@ func policyRowCount(t *testing.T, pool *pgxpool.Pool, id int64) int {
 // あれば凍結済みとみなし、always / 空 desired で行を作ってから外す。
 func TestRemoveRecordingEncodedAsset_NoPolicyRowFreezesAndRemoves(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstoretest.Recordings(pool), EncodePolicyStore: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264", "h265"}}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "h265"}
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "policy 無し", time.Now().Truncate(time.Second), "finished", 707
@@ -573,8 +568,10 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowFreezesAndRemoves(t *testing.T) 
 // policy 行が無く最後の版を外そうとして 409 になると、作りかけの policy 行も残らない。
 func TestRemoveRecordingEncodedAsset_NoPolicyRowLastCopyRollsBackFreeze(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264", "h265"}}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "h265"}
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "policy 無し最後", time.Now().Truncate(time.Second), "finished", 708
@@ -595,24 +592,22 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowLastCopyRollsBackFreeze(t *testi
 	}
 }
 
-func cutRouterForRemoval(pool *pgxpool.Pool, live bool) http.Handler {
-	return NewRouter(RouterConfig{
-		Ready:               pool.Ping,
-		EncodePolicyStore:   pgstoretest.Media(pool),
-		EncodeProfileNames:  []string{"h264", "cut", "cut2"},
-		CutProfileNames:     []string{"cut", "cut2"},
-		RecordingHLSEnabled: live,
-	})
+// withCutRemoval は cut 削除テストの構成（encode の名前と live の有効・無効）を与える。
+func withCutRemoval(pool *pgxpool.Pool, live bool) func(*RouterConfig) {
+	return func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "cut", "cut2"}
+		c.CutProfileNames = []string{"cut", "cut2"}
+		c.RecordingHLSEnabled = live
+	}
 }
 
 // live 無効で、外した後の desired がカット版だけになる削除は 400 で何も書かない。
 // cut を外す削除（h264 が残る）は 204。live 有効なら cut だけが残っても 204。
 func TestRemoveRecordingEncodedAsset_CutOnlyResultRejectedUnlessLive(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srvOff := httptest.NewServer(cutRouterForRemoval(pool, false))
-	defer srvOff.Close()
-	srvOn := httptest.NewServer(cutRouterForRemoval(pool, true))
-	defer srvOn.Close()
+	srvOff := NewTestServer(t, pool, withCutRemoval(pool, false))
+	srvOn := NewTestServer(t, pool, withCutRemoval(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "cut 規則", time.Now().Truncate(time.Second), "finished", 709
@@ -659,8 +654,7 @@ func TestRemoveRecordingEncodedAsset_CutOnlyResultRejectedUnlessLive(t *testing.
 // 判定すると [cut2] の追加が通り、live 無効で禁止の「カット版だけ」になる。
 func TestAddRecordingEncodeProfiles_CutRuleUsesDesiredAfterConcurrentRemoval(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(cutRouterForRemoval(pool, false))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withCutRemoval(pool, false))
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {

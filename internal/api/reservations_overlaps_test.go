@@ -72,7 +72,7 @@ VALUES ($1, $2, $3, $4, $5)`, site, networkID, serviceID, eventID, programStartA
 func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
@@ -84,11 +84,7 @@ func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
 	reserveViaAPI(t, srv.URL, pool, ctx, 201)
 	reserveViaAPI(t, srv.URL, pool, ctx, 202)
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 200), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 200))
 	if got.Count != 1 {
 		t.Fatalf("count = %d, want 1 (重なる番組の予約 1 件だけ)", got.Count)
 	}
@@ -103,7 +99,7 @@ func TestGetProgramOverlaps_CountsOverlapping(t *testing.T) {
 func TestGetProgramOverlaps_AdjacentProgramNotCounted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
@@ -116,11 +112,7 @@ func TestGetProgramOverlaps_AdjacentProgramNotCounted(t *testing.T) {
 	reserveViaAPI(t, srv.URL, pool, ctx, 211)
 	reserveViaAPI(t, srv.URL, pool, ctx, 212)
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 210), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 210))
 	if got.Count != 0 {
 		t.Errorf("count = %d, want 0 (前後番組は接しているだけで重ならない): %+v", got.Count, got.Reservations)
 	}
@@ -131,7 +123,7 @@ func TestGetProgramOverlaps_AdjacentProgramNotCounted(t *testing.T) {
 func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
@@ -139,11 +131,7 @@ func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 220)
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 220), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 220))
 	if got.Count != 0 {
 		t.Errorf("count = %d, want 0 (自分自身は数えない): %+v", got.Count, got.Reservations)
 	}
@@ -155,7 +143,7 @@ func TestGetProgramOverlaps_ExcludesSelf(t *testing.T) {
 func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
@@ -165,11 +153,7 @@ func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	reserveViaAPI(t, srv.URL, pool, ctx, 231)
 	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2, base.Add(30*time.Minute))
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 230), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 230))
 	if got.Count != 0 {
 		t.Errorf("count = %d, want 0 (never-scheduled な予約は数えない): %+v", got.Count, got.Reservations)
 	}
@@ -181,7 +165,7 @@ func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 func TestGetProgramOverlaps_NeverScheduledExclusionWinsOverRecording(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
@@ -194,11 +178,7 @@ func TestGetProgramOverlaps_NeverScheduledExclusionWinsOverRecording(t *testing.
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "never-scheduled 後に録画された番組", base.Add(30*time.Minute), "finished", 2
 	})
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 232), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 232))
 	if got.Count != 0 {
 		t.Errorf("count = %d, want 0 (never_scheduled_events があれば recordings があっても数えない): %+v", got.Count, got.Reservations)
 	}
@@ -210,7 +190,7 @@ func TestGetProgramOverlaps_NeverScheduledExclusionWinsOverRecording(t *testing.
 func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32679, 5169, 9, "テスト局", "27")
@@ -234,11 +214,7 @@ func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
 		t.Fatalf("setting mid-recording failure quality events: %v", err)
 	}
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 240), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 240))
 	if got.Count != 1 {
 		t.Errorf("count = %d, want 1 (never-scheduled マーカー無しの failed 行は除外してはいけない): %+v", got.Count, got.Reservations)
 	}
@@ -263,7 +239,7 @@ func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
 func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	q := sqlcgen.New(pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
@@ -300,11 +276,7 @@ INSERT INTO reservations (site, program_id) VALUES ('default', $1)`,
 		t.Fatalf("inserting reservation row for skipped program: %v", err)
 	}
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 240), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 240))
 	if got.Count != 0 {
 		t.Errorf("count = %d, want 0 (effective.skip=true の予約は数えない): %+v", got.Count, got.Reservations)
 	}
@@ -315,7 +287,7 @@ INSERT INTO reservations (site, program_id) VALUES ('default', $1)`,
 func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
@@ -324,11 +296,7 @@ func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 251)
 
-	var got ProgramOverlaps
-	resp := getJSON(t, overlapsURL(srv.URL, 250), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[ProgramOverlaps](t, overlapsURL(srv.URL, 250))
 	if len(got.Reservations) != 1 {
 		t.Fatalf("reservations = %+v, want 1 entry", got.Reservations)
 	}
@@ -350,10 +318,10 @@ func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 // 番組が EPG プロジェクションに無ければ 404。
 func TestGetProgramOverlaps_ProgramNotInProjection(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
-	resp := getJSON(t, overlapsURL(srv.URL, 999999), nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", resp.StatusCode)
+	status := GetStatus(t, overlapsURL(srv.URL, 999999))
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", status)
 	}
 }

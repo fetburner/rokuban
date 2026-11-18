@@ -2,10 +2,8 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -19,35 +17,22 @@ import (
 func TestListCircuitBreakers_ReturnsStoreScopes(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: []string{"tokyo"},
-		StorageStoreNames: []string{"test-store", "s3main"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.Sites = []string{"tokyo"}
+		c.StorageStoreNames = []string{"test-store", "s3main"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "test-store", "delete_reconcile", 10, 20, `{"total":10}`)
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "s3main", "delete_reconcile", 11, 20, `{"total":11}`)
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "tokyo", "ruler_deletes", 12, 30, `{"total":12}`)
 
-	resp, err := http.Get(srv.URL + "/api/breakers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/breakers status = %d, want 200", resp.StatusCode)
-	}
-
-	var got []circuitBreakerResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.CircuitBreaker](t, srv.URL+"/api/breakers")
 	if len(got) != 3 {
 		t.Fatalf("len(got) = %d, want 3: %+v", len(got), got)
 	}
-	byStore := make(map[string]circuitBreakerResp, 2)
-	var siteBreaker *circuitBreakerResp
+	byStore := make(map[string]api.CircuitBreaker, 2)
+	var siteBreaker *api.CircuitBreaker
 	for i := range got {
 		switch got[i].Name {
 		case "delete_reconcile":
@@ -79,12 +64,10 @@ func TestListCircuitBreakers_ReturnsStoreScopes(t *testing.T) {
 func TestResumeStoreCircuitBreaker_OnlyDeletesRequestedStore(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool),
-		StorageStoreNames: []string{"test-store", "s3main"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store", "s3main"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	for _, scope := range []string{"test-store", "s3main"} {
 		insertCircuitBreakerFixtureForSite(t, pool, ctx, scope, "delete_reconcile", 10, 20, `{"total":10}`)
@@ -116,12 +99,10 @@ func TestResumeStoreCircuitBreaker_OnlyDeletesRequestedStore(t *testing.T) {
 // TestResumeStoreCircuitBreaker_400WhenStoreIsNotConfigured は、設定に無い置き場名は 400 になる。
 func TestResumeStoreCircuitBreaker_400WhenStoreIsNotConfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool),
-		StorageStoreNames: []string{"test-store", "s3main"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store", "s3main"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/stores/unknown/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
@@ -137,12 +118,10 @@ func TestResumeStoreCircuitBreaker_400WhenStoreIsNotConfigured(t *testing.T) {
 func TestResumeStoreCircuitBreaker_400WhenNameIsNotStoreScoped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool),
-		StorageStoreNames: []string{"test-store"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "default", "ruler_deletes", 10, 20, `{"total":10}`)
 
 	resp, err := http.Post(srv.URL+"/api/stores/test-store/breakers/ruler_deletes/resume", "application/json", nil)
@@ -163,12 +142,11 @@ func TestResumeStoreCircuitBreaker_400WhenNameIsNotStoreScoped(t *testing.T) {
 func TestResumeCircuitBreaker_400WhenNameIsStoreScoped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: []string{"tokyo"},
-		StorageStoreNames: []string{"test-store"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.Sites = []string{"tokyo"}
+		c.StorageStoreNames = []string{"test-store"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 	insertCircuitBreakerFixtureForSite(t, pool, ctx, "test-store", "delete_reconcile", 10, 20, `{"total":10}`)
 
 	// default は Sites に無い。site の検証より先に置き場の範囲を判定するので、
@@ -196,12 +174,10 @@ func TestResumeCircuitBreaker_400WhenNameIsStoreScoped(t *testing.T) {
 // TestResumeStoreCircuitBreaker_400WhenNameIsUnknown は、未知のブレーカー名は 400 になる。
 func TestResumeStoreCircuitBreaker_400WhenNameIsUnknown(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool),
-		StorageStoreNames: []string{"test-store"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/stores/test-store/breakers/unknown/resume", "application/json", nil)
 	if err != nil {
@@ -216,12 +192,10 @@ func TestResumeStoreCircuitBreaker_400WhenNameIsUnknown(t *testing.T) {
 // TestResumeStoreCircuitBreaker_404WhenNotTripped は、発動していないブレーカーの再開は 404 になる。
 func TestResumeStoreCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool),
-		StorageStoreNames: []string{"test-store"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/stores/test-store/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {
@@ -236,12 +210,10 @@ func TestResumeStoreCircuitBreaker_404WhenNotTripped(t *testing.T) {
 // TestResumeLegacySitelessCircuitBreakerRouteIsRemoved は、site を持たない旧経路 /api/breakers/{name}/resume は 404 になる。
 func TestResumeLegacySitelessCircuitBreakerRouteIsRemoved(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool),
-		StorageStoreNames: []string{"test-store"},
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/breakers/delete_reconcile/resume", "application/json", nil)
 	if err != nil {

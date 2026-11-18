@@ -2,26 +2,14 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-// reservationServiceNameResp は title / serviceName だけを見るデコード用型。
-type reservationServiceNameResp struct {
-	Id          int64  `json:"id"`
-	ProgramId   int64  `json:"programId"`
-	Title       string `json:"title"`
-	ServiceName string `json:"serviceName"`
-}
 
 // insertReservationWithSnapshot は program_snapshots + reservations を直接
 // 作る（ruler を経由しない）。title / serviceName を呼び出し側で指定できる点が
@@ -67,38 +55,20 @@ func TestReservation_ServiceNameExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115041234
 	insertReservationWithSnapshot(t, pool, ctx, programID, "テスト番組", "NHK総合", 1, 1)
 
 	t.Run("単体取得", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + reservationPath(programID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got reservationServiceNameResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 		if got.ServiceName != "NHK総合" {
 			t.Errorf("serviceName = %q, want %q（未設定なら空文字が返る）", got.ServiceName, "NHK総合")
 		}
 	})
 
 	t.Run("一覧", func(t *testing.T) {
-		resp, err := http.Get(srv.URL + "/api/reservations")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		var got []reservationServiceNameResp
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decoding response: %v", err)
-		}
+		got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}
@@ -116,9 +86,7 @@ func TestReservation_ServiceNameDistinguishesSameTitle(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const title = "ゆう6かがわ▽県内ニュース・気象　ほか"
 	const programA int64 = 1150000115041001
@@ -126,20 +94,12 @@ func TestReservation_ServiceNameDistinguishesSameTitle(t *testing.T) {
 	insertReservationWithSnapshot(t, pool, ctx, programA, title, "NHK総合・高松", 1, 101)
 	insertReservationWithSnapshot(t, pool, ctx, programB, title, "NHK Eテレ・高松", 1, 102)
 
-	resp, err := http.Get(srv.URL + "/api/reservations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var got []reservationServiceNameResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 	if len(got) != 2 {
 		t.Fatalf("len(reservations) = %d, want 2", len(got))
 	}
 
-	byProgram := make(map[int64]reservationServiceNameResp, 2)
+	byProgram := make(map[int64]api.Reservation, 2)
 	for _, r := range got {
 		if r.Title != title {
 			t.Errorf("programId %d: title = %q, want %q", r.ProgramId, r.Title, title)

@@ -3,40 +3,23 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
 // getCapabilities は GET /api/capabilities を叩いて応答をデコードする。
-func getCapabilities(t *testing.T, cfg RouterConfig) Capabilities {
+func getCapabilities(t *testing.T, overrides ...func(*RouterConfig)) Capabilities {
 	t.Helper()
-
-	srv := httptest.NewServer(NewRouter(cfg))
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/api/capabilities")
-	if err != nil {
-		t.Fatalf("GET /api/capabilities: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	var body Capabilities
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
-	return body
+	srv := NewTestServer(t, nil, overrides...)
+	return GetJSON[Capabilities](t, srv.URL+"/api/capabilities")
 }
 
 // live は config の live.enabled をそのまま映す。**両方向を見る** ---
 // 片方だけだと定数を返す実装（常に true / 常に false）が通ってしまう。
 func TestGetCapabilities_LiveFollowsConfig(t *testing.T) {
-	if got := getCapabilities(t, RouterConfig{LiveEnabled: true}); !got.Live {
+	if got := getCapabilities(t, func(c *RouterConfig) { c.LiveEnabled = true }); !got.Live {
 		t.Errorf("live = false, want true (LiveEnabled: true)")
 	}
-	if got := getCapabilities(t, RouterConfig{LiveEnabled: false}); got.Live {
+	if got := getCapabilities(t, func(c *RouterConfig) { c.LiveEnabled = false }); got.Live {
 		t.Errorf("live = true, want false (LiveEnabled: false)")
 	}
 }
@@ -44,7 +27,7 @@ func TestGetCapabilities_LiveFollowsConfig(t *testing.T) {
 // 未注入（テストの部分構成）は「すべて無効」に倒す。無効な機能の導線が
 // 出る側に倒れると issue #209 の壊れ方（機能しない導線）を再演する。
 func TestGetCapabilities_DefaultsToDisabled(t *testing.T) {
-	if got := getCapabilities(t, RouterConfig{}); got.Live {
+	if got := getCapabilities(t); got.Live {
 		t.Errorf("live = true, want false (未注入の既定)")
 	}
 }
@@ -52,8 +35,9 @@ func TestGetCapabilities_DefaultsToDisabled(t *testing.T) {
 // JSON のキー名は契約。フロント（orval 生成物）がこの名前で読むので、
 // Go の構造体だけ見るテストでは守れない。
 func TestGetCapabilities_JSONShape(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(RouterConfig{LiveEnabled: true}))
-	defer srv.Close()
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.LiveEnabled = true
+	})
 
 	resp, err := http.Get(srv.URL + "/api/capabilities")
 	if err != nil {
@@ -81,8 +65,8 @@ func TestGetCapabilities_JSONShape(t *testing.T) {
 // 同じ値を返すことを固定する。cmd 側の代入位置は cmd/rokuban の
 // TestServerRouterConfig_LiveEnabledIsRoleIndependent が見る。
 func TestGetCapabilities_IndependentOfSPAServing(t *testing.T) {
-	withSPA := getCapabilities(t, RouterConfig{LiveEnabled: true, DistFS: newTestDistFS()})
-	withoutSPA := getCapabilities(t, RouterConfig{LiveEnabled: true})
+	withSPA := getCapabilities(t, func(c *RouterConfig) { c.LiveEnabled = true; c.DistFS = newTestDistFS() })
+	withoutSPA := getCapabilities(t, func(c *RouterConfig) { c.LiveEnabled = true })
 
 	if withSPA != withoutSPA {
 		t.Errorf("capabilities differ by SPA serving: %+v vs %+v", withSPA, withoutSPA)
@@ -93,10 +77,10 @@ func TestGetCapabilities_IndependentOfSPAServing(t *testing.T) {
 }
 
 func TestGetCapabilities_CMDetectFollowsConfig(t *testing.T) {
-	if got := getCapabilities(t, RouterConfig{CMDetectEnabled: true}); !got.CmDetect {
+	if got := getCapabilities(t, func(c *RouterConfig) { c.CMDetectEnabled = true }); !got.CmDetect {
 		t.Errorf("cmDetect = false, want true (CMDetectEnabled: true)")
 	}
-	if got := getCapabilities(t, RouterConfig{}); got.CmDetect {
+	if got := getCapabilities(t); got.CmDetect {
 		t.Errorf("cmDetect = true, want false (未注入の既定)")
 	}
 }

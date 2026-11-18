@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -18,12 +16,10 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			srv := httptest.NewServer(NewRouter(RouterConfig{
-				RecordingQuery:      pgstoretest.Recordings(pool),
-				RecordingHLSEnabled: enabled,
-				LiveProfiles:        []LiveProfileSummary{{Name: "sd"}, {Name: "hd"}},
-			}))
-			defer srv.Close()
+			srv := NewTestServer(t, pool, func(c *RouterConfig) {
+				c.RecordingHLSEnabled = enabled
+				c.LiveProfiles = []LiveProfileSummary{{Name: "sd"}, {Name: "hd"}}
+			})
 			for _, tc := range []struct {
 				name, asset, status, removal string
 				generation                   *int64
@@ -87,15 +83,13 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 					}
 					hidden := tc.removal == "purged_at"
 					var detail Recording
-					resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &detail)
+					detailURL := fmt.Sprintf("%s/api/recordings/%d", srv.URL, id)
 					if hidden {
-						if resp.StatusCode != http.StatusNotFound {
-							t.Fatalf("detail status=%d, want 404", resp.StatusCode)
+						if status := GetStatus(t, detailURL); status != http.StatusNotFound {
+							t.Fatalf("detail status=%d, want 404", status)
 						}
 					} else {
-						if resp.StatusCode != http.StatusOK {
-							t.Fatalf("detail status=%d", resp.StatusCode)
-						}
+						detail = GetJSON[Recording](t, detailURL)
 						if !reflect.DeepEqual(detail.HlsPlayback, want) {
 							t.Errorf("detail hlsPlayback=%#v, want %#v", detail.HlsPlayback, want)
 						}
@@ -105,9 +99,7 @@ func TestRecordingsHLSPlayback(t *testing.T) {
 					if tc.removal == "deleted_at" || tc.removal == "purged_at" {
 						listURL += "?trash=true"
 					}
-					if resp := getJSON(t, listURL, &list); resp.StatusCode != http.StatusOK {
-						t.Fatalf("list status=%d", resp.StatusCode)
-					}
+					list = GetJSON[[]Recording](t, listURL)
 					found := false
 					for _, rec := range list {
 						if rec.Id == id {

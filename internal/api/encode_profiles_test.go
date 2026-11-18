@@ -1,33 +1,15 @@
 package api
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
 func TestListEncodeProfiles(t *testing.T) {
-	router := NewRouter(RouterConfig{
-		EncodeProfileNames: []string{"h264", "hevc"},
+	srv := NewTestServer(t, nil, func(c *RouterConfig) {
+		c.EncodeProfileNames = []string{"h264", "hevc"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/encode-profiles")
-	if err != nil {
-		t.Fatalf("GET /api/encode-profiles: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body []EncodeProfileSummary
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[[]EncodeProfileSummary](t, srv.URL+"/api/encode-profiles")
 	if len(body) != 2 {
 		t.Fatalf("len = %d, want 2: %#v", len(body), body)
 	}
@@ -41,24 +23,9 @@ func TestListEncodeProfiles(t *testing.T) {
 }
 
 func TestListEncodeProfiles_EmptyWhenNotConfigured(t *testing.T) {
-	router := NewRouter(RouterConfig{})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, nil)
 
-	resp, err := http.Get(srv.URL + "/api/encode-profiles")
-	if err != nil {
-		t.Fatalf("GET /api/encode-profiles: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-
-	var body []EncodeProfileSummary
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	body := GetJSON[[]EncodeProfileSummary](t, srv.URL+"/api/encode-profiles")
 	// null ではなく空配列。UI が length で分岐できるようにする。
 	if body == nil {
 		t.Fatal("body is null, want empty array")

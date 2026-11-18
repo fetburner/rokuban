@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,7 +13,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -24,45 +22,15 @@ import (
 // （base + overrides + program_intents.action）で、根拠 2 列は ruler が毎パス
 // 作り直す導出列をそのまま出す。
 
-// reservationDedupeResp は本ファイルで確認したいフィールドだけを持つ。
-// dedup 2 列と skip は他のテストのデコード用型に含まれていないので別に定義する。
-type reservationDedupeResp struct {
-	Skip                  bool     `json:"skip"`
-	DedupMatchRecordingId *int64   `json:"dedupMatchRecordingId"`
-	DedupSimilarity       *float32 `json:"dedupSimilarity"`
-}
-
-func getReservationDedupeJSON(t *testing.T, srv *httptest.Server, programID int64) reservationDedupeResp {
+func getReservationDedupeJSON(t *testing.T, srv *httptest.Server, programID int64) api.Reservation {
 	t.Helper()
-	resp, err := http.Get(srv.URL + reservationPath(programID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, want 200", reservationPath(programID), resp.StatusCode)
-	}
-	var got reservationDedupeResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[api.Reservation](t, srv.URL+reservationPath(programID))
 	return got
 }
 
-func listReservationsDedupeJSON(t *testing.T, srv *httptest.Server) []reservationDedupeResp {
+func listReservationsDedupeJSON(t *testing.T, srv *httptest.Server) []api.Reservation {
 	t.Helper()
-	resp, err := http.Get(srv.URL + "/api/reservations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/reservations status = %d, want 200", resp.StatusCode)
-	}
-	var got []reservationDedupeResp
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
+	got := api.GetJSON[[]api.Reservation](t, srv.URL+"/api/reservations")
 	return got
 }
 
@@ -104,9 +72,7 @@ func TestGetReservation_DedupeSkipExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115041234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -153,9 +119,7 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115051234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -195,9 +159,7 @@ func TestGetReservation_NoDedupeEvidenceOmitsFields(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115061234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -223,9 +185,7 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115071234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -250,9 +210,7 @@ func TestGetReservation_BrokenBaseJSONFails(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115081234
 	ruleID := insertRuleFixture(t, pool, ctx)

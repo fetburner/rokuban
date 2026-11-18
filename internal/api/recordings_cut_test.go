@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +12,6 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -27,13 +24,10 @@ import (
 // 見逃す**（下の (c) がその向きを押さえる）。
 func TestGetRecording_EncodedAssetCutAndStale(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		RecordingQuery:     pgstoretest.Recordings(pool),
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 
 	base := time.Now().Truncate(time.Second)
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -124,10 +118,7 @@ func setFrozenCutsText(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []c
 
 func getRecordingForTest(t *testing.T, base string, id int64) Recording {
 	t.Helper()
-	var rec Recording
-	if resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", base, id), &rec); resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	rec := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", base, id))
 	return rec
 }
 
