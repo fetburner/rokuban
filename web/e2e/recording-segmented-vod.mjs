@@ -57,6 +57,8 @@ const HARNESS_HTML = String.raw`<!doctype html>
         // seek() と load() でリセットする。capture 中に呼ばれた callback 数と、readyState < 2 で読み飛ばした数。
         captureCalls: 0,
         captureNotReady: 0,
+        // seek() / load() 以降に積んだ最初の 3 件。末尾 3 件（frames）と合わせて、区間内の化けと区間の後の化けを分ける。
+        seekFrames: [],
         frameError: null,
         hls: null,
         audioContext: null,
@@ -97,6 +99,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
               frame: decodeFrameMarker(),
             }
             state.frames.push(sample)
+            if (state.seekFrames.length < 3) state.seekFrames.push(sample)
             if (state.frames.length > 4000) state.frames.shift()
           } catch (error) {
             state.frameError = String(error)
@@ -199,6 +202,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
           state.frameError = null
           state.captureCalls = 0
           state.captureNotReady = 0
+          state.seekFrames = []
           state.capture = false
           if (state.hls) {
             state.hls.destroy()
@@ -271,6 +275,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
           state.capture = false
           state.captureCalls = 0
           state.captureNotReady = 0
+          state.seekFrames = []
           state.frameError = null
           video.pause()
           await new Promise((resolve, reject) => {
@@ -376,6 +381,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
             captureCalls: state.captureCalls,
             captureNotReady: state.captureNotReady,
             frameError: state.frameError,
+            head: state.seekFrames.map((sample) => ({ currentTime: sample.currentTime, mediaTime: sample.mediaTime, frame: sample.frame })),
             tail: state.frames.slice(-3).map((sample) => ({ currentTime: sample.currentTime, mediaTime: sample.mediaTime, frame: sample.frame })),
           }
         },
@@ -836,8 +842,8 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     if (frames.length === 0) {
       // callback が来ないのか、readyState で読み飛ばしたのか、例外か、区間の外の currentTime かを切り分ける。
       const stats = await adapter.evaluate(() => window.__e2e.captureStats())
-      const tail = stats.tail.map((sample) => `{cur=${sample.currentTime.toFixed(2)} media=${sample.mediaTime.toFixed(2)} frame=${sample.frame}}`).join(' ') || 'なし'
-      add('seek-frame', `${target}s への seek の後にフレームが描かれない: capture 中の callback=${stats.captureCalls} 回, readyState<2 で読み飛ばし=${stats.captureNotReady} 回, frameError=${stats.frameError ?? 'なし'}, 末尾のサンプル=${tail}`)
+      const sampleText = (samples) => samples.map((sample) => `{cur=${sample.currentTime.toFixed(2)} media=${sample.mediaTime.toFixed(2)} frame=${sample.frame}}`).join(' ') || 'なし'
+      add('seek-frame', `${target}s への seek の後にフレームが描かれない: capture 中の callback=${stats.captureCalls} 回, readyState<2 で読み飛ばし=${stats.captureNotReady} 回, frameError=${stats.frameError ?? 'なし'}, 最初のサンプル=${sampleText(stats.head)}, 末尾のサンプル=${sampleText(stats.tail)}`)
     } else if (start < 0) {
       add('seek-frame', `${target}s への seek の後に、シーク先 ±0.5s のフレームが描かれない: marker=${JSON.stringify(frames.slice(0, 5).map((sample) => sample.frame))}, mediaTime=${JSON.stringify(frames.slice(0, 5).map((sample) => Number(sample.mediaTime.toFixed(3))))}`)
     } else if (start > 2) {
