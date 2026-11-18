@@ -48,7 +48,7 @@ func New(site string, mc *mirakc.Client, records store.RecordObservations, marke
 // Run は SSE 購読を開始し、ctx がキャンセルされるまでブロックする。
 //
 // M2-18 で定期の全量突き合わせ（3 段構えの (c)、docs/recording.md §3.3）を
-// record_sweep ジョブ（internal/worker.RecordSweepWorker）に切り出したため、
+// record_sweep ジョブ（RecordSweepWorker、このパッケージ）に切り出したため、
 // Watcher は SSE 購読と handleEvent だけの常駐になった。真実（レベルトリガー）は
 // ジョブ側にあり、Watcher はヒント源（(a) record-saved の即時反映 / (b) 接続時の
 // 全 record 再送）に徹する。
@@ -141,7 +141,7 @@ var beforeSweepProcessRecords func()
 // TestSweep_ListSchedulesFailureDoesNotAdvanceMarker、
 // TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker が検証する。
 //
-// M2-18 で record_sweep ジョブ（internal/worker.RecordSweepWorker）から呼ばれる形に
+// M2-18 で record_sweep ジョブ（RecordSweepWorker、このパッケージ）から呼ばれる形に
 // 公開メソッドとして切り出した。processRecord は M2-16 で record_sync の
 // (site, record_id) 行ロックにより冪等化されているため、SSE 由来の handleEvent と
 // このメソッドが同一 record を並行処理しても recordings は重複しない

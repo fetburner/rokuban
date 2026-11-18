@@ -284,7 +284,7 @@ func (w *CMDetectWorker) detect(
 	if saved {
 		// CM ranges make an existing thumbnail eligible for reselection. This is only
 		// a hint; thumbnail_reconcile remains the durable backstop if enqueueing fails.
-		if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID, Store: w.StoreName}); enqueueErr != nil {
+		if enqueueErr := jobs.Enqueue(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID, Store: w.StoreName}); enqueueErr != nil {
 			slog.Warn("cm_detect: failed to enqueue thumbnail reselection hint",
 				"recording_id", item.ID, "err", enqueueErr)
 		}

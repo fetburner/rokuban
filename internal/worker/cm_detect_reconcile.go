@@ -65,7 +65,7 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 		if storeName := detectStores[recording.RecordingID]; storeName == "" {
 			err = errNoActiveOriginal
 		} else {
-			err = enqueueJob(ctx, w.Enqueuer, jobs.CMDetectJobArgs{
+			err = jobs.Enqueue(ctx, w.Enqueuer, jobs.CMDetectJobArgs{
 				Store:       storeName,
 				RecordingID: recording.RecordingID, RecordingDurationMs: recording.RecordingDurationMs,
 			})
@@ -97,7 +97,7 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 		if storeName := candidateStores[candidate.RecordingID]; storeName == "" {
 			err = errNoActiveOriginal
 		} else {
-			err = enqueueJob(ctx, w.Enqueuer, jobs.CMLogoCandidateJobArgs{
+			err = jobs.Enqueue(ctx, w.Enqueuer, jobs.CMLogoCandidateJobArgs{
 				Store:     storeName,
 				NetworkID: candidate.Station.NetworkID, ServiceID: candidate.Station.ServiceID,
 				RecordingID: candidate.RecordingID, AreaUpdatedAt: candidate.AreaUpdatedAt,
@@ -132,7 +132,7 @@ func EnqueueCMDetectionIfNeeded(ctx context.Context, detectionStore store.CMDete
 	if err != nil {
 		return fmt.Errorf("getting recording %d duration for CM detection: %w", recordingID, err)
 	}
-	if err := enqueueJob(ctx, enqueuer, jobs.CMDetectJobArgs{
+	if err := jobs.Enqueue(ctx, enqueuer, jobs.CMDetectJobArgs{
 		Store:       storeName,
 		RecordingID: recordingID, RecordingDurationMs: durationMs,
 	}); err != nil {

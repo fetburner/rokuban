@@ -35,7 +35,7 @@ type EpgSyncWorker struct {
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の epg_<site> キューを同時に購読しうる。Work は
-	// verifySite で args.Site に対応するクライアントを取り出してから使う
+	// jobs.VerifySite で args.Site に対応するクライアントを取り出してから使う
 	// （issue #139）。
 	MirakcClients map[string]*mirakc.Client
 	Store         store.EPGSync
@@ -66,7 +66,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、別インスタンスの EPG をこのサイトの投影として書きうる
 	// （issue #139）。ListServices/ListPrograms より前に照合する。
-	client, err := verifySite(w.MirakcClients, site, jobs.EpgQueue)
+	client, err := jobs.VerifySite(w.MirakcClients, site, jobs.EpgQueue)
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 		}
 	}
 	if w.Enqueuer != nil {
-		if insertErr := enqueueJob(ctx, w.Enqueuer, jobs.RulerPassArgs{Site: site}); insertErr != nil {
+		if insertErr := jobs.Enqueue(ctx, w.Enqueuer, jobs.RulerPassArgs{Site: site}); insertErr != nil {
 			log.Warn("epg sync: inserting ruler_pass hint failed", "err", insertErr)
 		}
 	}

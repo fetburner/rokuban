@@ -1,4 +1,4 @@
-package worker
+package reconciler_test
 
 import (
 	"context"
@@ -6,17 +6,22 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
+	"github.com/fetburner/rokuban/internal/reconciler"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+const testSite = store.DefaultSite
+
 // reconciler は Args.Spec で既定より長い有限の締切を持つ。
 func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
 	t.Parallel()
-	args := ReconcilePassArgs{}
+	args := jobs.ReconcilePassArgs{}
 	got := args.Spec().Timeout(args)
 	if got != 10*time.Minute {
 		t.Errorf("Timeout() = %v, want 10m", got)
@@ -59,13 +64,13 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 		t.Fatalf("creating reservation fixture: %v", err)
 	}
 
-	w := &ReconcilePassWorker{
-		MirakcClients:  singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
+	w := &reconciler.ReconcilePassWorker{
+		MirakcClients:  map[string]*mirakc.Client{testSite: mirakc.NewClient(fake.URL(), nil)},
 		ScheduleSync:   pgstoretest.ScheduleSync(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 	}
-	if err := runWorkerViaJobQFake(ctx, w, ReconcilePassArgs{Site: testSite}); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.ReconcilePassArgs{Site: testSite}); err != nil {
 		t.Fatalf("ReconcilePassWorker.Work: %v", err)
 	}
 
@@ -74,38 +79,11 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 	}
 }
 
-// ruler パスの完了は reconcile_pass 起動契機のヒントの 1 つ（docs/recording.md
-// §3.2「ruler パスの完了」）。base が変われば mirakc に反映すべき差分が増えるため、
-// reconcile を早める。
-func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	enqueuer := newRecordingEnqueuer()
-	reservations := pgstoretest.Reservations(pool)
-	w := &RulerPassWorker{
-		RulerPass:      reservations,
-		Breakers:       pgstoretest.Breakers(pool),
-		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
-		LoopMarkers:    reservations,
-		ProgramSearch:  pgstoretest.EPG(pool),
-		Enqueuer:       enqueuer,
-	}
-	if err := runWorkerViaJobQFake(ctx, w, RulerPassArgs{Site: testSite}); err != nil {
-		t.Fatalf("RulerPassWorker.Work: %v", err)
-	}
-	hints := enqueuedArgs[jobs.ReconcilePassArgs](enqueuer, "reconcile_pass")
-	if len(hints) != 1 || hints[0].Site != testSite {
-		t.Fatalf("enqueued reconcile_pass hints = %+v, want one hint for site %q", hints, testSite)
-	}
-}
-
-// TestReconcilePassWorker_SiteMismatch は、job.Args.Site がワーカー自身の site
-// （w.Site）と一致しないジョブが mirakc に一切触れずに fail-fast することを
-// 確認する（issue #139）。scheduleStub は 200 を返す（弱いテストにしないため。
-// issue #139 のテスト規律）。reconciler.RunPass はデスクトップ側の予約が
-// 0 件でも常に GET /api/recording/schedules を行う（reconciler.go の RunPass
-// 実装）ため、DB は空のままでよい。
+// TestReconcilePassWorker_SiteMismatch は、job.Args.Site がワーカーの束縛に無い site の
+// ジョブが mirakc に一切触れずに fail-fast することを確認する（issue #139）。
+// 束縛は site-a だけなので、site-b のジョブは jobs.VerifySite で拒まれる。
+// reconciler.RunPass はデスクトップ側の予約が 0 件でも常に GET /api/recording/schedules を
+// 行うため、照合が外れていればこの fake に 1 件以上のリクエストが届く。DB は空のままでよい。
 func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
@@ -113,15 +91,15 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 	fake := mirakctest.New(t)
 
 	// このワーカープロセスは site-a の mirakc を向いている。
-	w := &ReconcilePassWorker{
-		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
+	w := &reconciler.ReconcilePassWorker{
+		MirakcClients:  map[string]*mirakc.Client{"site-a": mirakc.NewClient(fake.URL(), nil)},
 		ScheduleSync:   pgstoretest.ScheduleSync(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 	}
 
-	job := ReconcilePassArgs{Site: "site-b"}
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	job := jobs.ReconcilePassArgs{Site: "site-b"}
+	err := jobqtestutil.RunWorkerOnce(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -139,15 +117,15 @@ func TestReconcilePassWorker_SiteMatch(t *testing.T) {
 
 	fake := mirakctest.New(t)
 
-	w := &ReconcilePassWorker{
-		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
+	w := &reconciler.ReconcilePassWorker{
+		MirakcClients:  map[string]*mirakc.Client{"site-a": mirakc.NewClient(fake.URL(), nil)},
 		ScheduleSync:   pgstoretest.ScheduleSync(pool),
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 	}
 
-	job := ReconcilePassArgs{Site: "site-a"}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
+	job := jobs.ReconcilePassArgs{Site: "site-a"}
+	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 }

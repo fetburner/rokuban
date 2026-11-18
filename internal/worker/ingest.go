@@ -299,7 +299,7 @@ type IngestWorker struct {
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532。1 プロセスが
 	// N site を束縛できるため、この 1 インスタンスが複数 site の ingest_<site>
-	// キューを同時に購読しうる）。Work は verifySite で args.Site に対応する
+	// キューを同時に購読しうる）。Work は jobs.VerifySite で args.Site に対応する
 	// クライアントを取り出してから使う。
 	MirakcClients    map[string]*mirakc.Client
 	Publisher        store.MediaPublish
@@ -407,7 +407,7 @@ func (w *IngestWorker) Work(ctx context.Context, args jobs.IngestJobArgs) (err e
 	// プロセスの mirakc に投げると、別番組をこの recording としてコミットしうる
 	// （issue #139）。DB 参照（lookupRecordingID）や mirakc/FS への一切の
 	// アクセスより前に照合する。
-	client, err := verifySite(w.MirakcClients, args.Site, jobs.IngestQueue)
+	client, err := jobs.VerifySite(w.MirakcClients, args.Site, jobs.IngestQueue)
 	if err != nil {
 		return err
 	}
@@ -1037,7 +1037,7 @@ func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirak
 	if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 	}
-	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}); enqueueErr != nil {
+	if enqueueErr := jobs.Enqueue(ctx, w.Enqueuer, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue thumbnail reconcile", "recording_id", recordingID, "err", enqueueErr)
 	}
 	if enqueueErr := tsscan.EnqueueScan(ctx, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {

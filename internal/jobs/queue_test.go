@@ -195,7 +195,7 @@ func TestRequiresSiteBinding_LogicalQueueNamesStayUnqualified(t *testing.T) {
 }
 
 // qualifyQueueName は base_site の形にする。空文字列 site は store.DefaultSite に
-// 解決する（verifySite / DeleteReconcileWorker.Work と同じ規約。issue #185）。
+// 解決する（jobs.VerifySite / DeleteReconcileWorker.Work と同じ規約。issue #185）。
 func TestQualifyQueueName(t *testing.T) {
 	tests := []struct {
 		name string

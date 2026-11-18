@@ -66,7 +66,7 @@ func (w *ThumbnailReconcileWorker) enqueueThumbnail(ctx context.Context, recordi
 	if storeName == "" {
 		return errNoActiveOriginal
 	}
-	return enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: recordingID, Store: storeName})
+	return jobs.Enqueue(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: recordingID, Store: storeName})
 }
 
 // Work は thumbnail reconcile を全件または指定録画について実行する。
@@ -249,7 +249,7 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 		if storeName := tileStores[recordingID]; storeName == "" {
 			err = errNoActiveOriginal
 		} else {
-			err = enqueueJob(ctx, enqueuer, jobs.SeekTilesJobArgs{RecordingID: recordingID, Store: storeName})
+			err = jobs.Enqueue(ctx, enqueuer, jobs.SeekTilesJobArgs{RecordingID: recordingID, Store: storeName})
 		}
 		if err != nil {
 			failed++

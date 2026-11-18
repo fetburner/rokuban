@@ -5,17 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/store"
 )
-
-func enqueueJob(ctx context.Context, enqueuer jobq.Enqueuer, args jobq.Args) error {
-	if enqueuer == nil {
-		return errors.New("worker: job enqueuer is nil")
-	}
-	_, err := enqueuer.Enqueue(ctx, args)
-	return err
-}
 
 // errNoActiveOriginal は、読み取りジョブを積む置き場を決められない（active な原本のコピーが無い）ことを表す。
 // 次の reconcile が引き直す。

@@ -85,7 +85,7 @@ const (
 //   - `--queues=`（明示的な空）→ 起動エラー。「全キュー」を意味させない ---
 //     ScaledJob の argv で値が空になる事故（テンプレートの変数未展開など）が
 //     「全キューを引く Pod」に化けると、site 束縛キューまで掴んで
-//     verifySite で全滅する構成が黙って生まれる
+//     jobs.VerifySite で全滅する構成が黙って生まれる
 //   - フラグと config の両方が非空 → 起動エラー（下記）
 //   - worker ロールが無い → 起動エラー。キューを引くのは worker ロールだけ
 //     （`--roles api --queues=encode` は encode の ScaledJob の argv からの

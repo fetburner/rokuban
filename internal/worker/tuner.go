@@ -22,7 +22,7 @@ type TunerSyncWorker struct {
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の epg_<site> キューを同時に購読しうる。Work は
-	// verifySite で args.Site に対応するクライアントを取り出してから
+	// jobs.VerifySite で args.Site に対応するクライアントを取り出してから
 	// ListTuners を呼ぶ（issue #139。TunerSyncArgs は EpgSyncArgs と同じ epg
 	// キューを使う「使い捨てプロジェクションの全量同期」で、mirakc への
 	// アクセスを伴うため EpgSyncWorker と同じ理由でガードが要る）。
@@ -42,7 +42,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、別インスタンスのチューナー構成をこのサイトの投影として
 	// 書きうる（issue #139）。ListTuners より前に照合する。
-	client, err := verifySite(w.MirakcClients, site, jobs.EpgQueue)
+	client, err := jobs.VerifySite(w.MirakcClients, site, jobs.EpgQueue)
 	if err != nil {
 		return err
 	}
