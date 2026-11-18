@@ -86,9 +86,7 @@ func newTransferTestRemoteFixture(t *testing.T, content []byte, knownSHA bool, s
 	assetID := seedOriginalAsset(t, pool, sourceRoot, recordingID, "sites/default/transfer/source.ts", content)
 	if knownSHA {
 		sum := sha256.Sum256(content)
-		if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, sum[:], assetID); err != nil {
-			t.Fatal(err)
-		}
+		testutil.MustExec(t, pool, "setting the expected logical sha256", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, sum[:], assetID)
 	}
 	srv, streamer := newTransferTestRemoteStreamer(t, recordingID, content, serve)
 	cfg := transferTestConfig("archive", "archive", "test-store")
@@ -96,9 +94,7 @@ func newTransferTestRemoteFixture(t *testing.T, content []byte, knownSHA bool, s
 	source.InternalURL = srv.URL
 	cfg.Stores["test-store"] = source
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	return transferTestRemoteFixture{
 		pool: pool, roots: transferTestRoots(t, "archive"), cfg: cfg, fingerprint: fingerprint,
 		assetID: assetID, recordingID: recordingID, content: content, streamer: streamer,
@@ -136,12 +132,10 @@ func (f transferTestRemoteFixture) failureText(t *testing.T) (string, int) {
 	t.Helper()
 	var lastError string
 	var attempts int
-	if err := f.pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `
 SELECT attempt.last_error, attempt.attempt_count FROM media_asset_transfer_attempts attempt
 JOIN media_asset_copies copy ON copy.id = attempt.copy_id
-WHERE copy.media_asset_id = $1 AND copy.store = 'archive'`, f.assetID).Scan(&lastError, &attempts); err != nil {
-		t.Fatalf("reading recorded transfer failure: %v", err)
-	}
+WHERE copy.media_asset_id = $1 AND copy.store = 'archive'`, f.assetID).Scan(&lastError, &attempts), "reading recorded transfer failure")
 	return lastError, attempts
 }
 
@@ -168,9 +162,7 @@ func TestStorageTransferWorkerCopiesOriginalFromInternalURL(t *testing.T) {
 			content := []byte("original bytes read from the source store's streamer over internal_url")
 			f := newTransferTestRemoteFixture(t, content, tc.knownSHA, nil)
 			worker := f.worker(t)
-			if err := worker.Work(context.Background(), f.args()); err != nil {
-				t.Fatalf("Work from internal_url: %v", err)
-			}
+			testutil.RequireNoError(t, worker.Work(context.Background(), f.args()), "Work from internal_url")
 			got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, f.pool, f.assetID, "archive"))))
 			if err != nil || !bytes.Equal(got, content) {
 				t.Fatalf("destination = %q, %v; want %q", got, err, content)
@@ -179,9 +171,7 @@ func TestStorageTransferWorkerCopiesOriginalFromInternalURL(t *testing.T) {
 				t.Fatalf("archive copy state = %q, want active", state)
 			}
 			var stored []byte
-			if err := f.pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, f.assetID).Scan(&stored); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, f.assetID).Scan(&stored), "reading stored sha256")
 			want := sha256.Sum256(content)
 			if !bytes.Equal(stored, want[:]) {
 				t.Fatalf("stored SHA-256 = %x, want %x", stored, want[:])
@@ -207,9 +197,7 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 	saveTransferProgressForTest(t, f.storageMedia, transfer, f.roots["archive"], prefix)
 
 	worker := f.worker(t)
-	if err := worker.Work(context.Background(), f.args()); err != nil {
-		t.Fatalf("resuming remote transfer: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), f.args()), "resuming remote transfer")
 	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(transfer.RelPath)))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("resumed destination = %q, %v; want %q", got, err, content)
@@ -263,9 +251,7 @@ func TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect(t *te
 	broken = false
 	mu.Unlock()
 	seenBefore := len(f.streamer.seenRanges())
-	if err := worker.Work(context.Background(), f.args()); err != nil {
-		t.Fatalf("second Work: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), f.args()), "second Work")
 	got, err := os.ReadFile(filepath.Join(f.roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, f.pool, f.assetID, "archive"))))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("destination = %q, %v; want %q", got, err, content)
@@ -371,9 +357,7 @@ func TestStorageTransferWorkerRemoteBytesDifferingFromLogicalSHAAreMismatch(t *t
 		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(served))
 	})
 	worker := f.worker(t)
-	if err := worker.Work(context.Background(), f.args()); err != nil {
-		t.Fatalf("Work with differing remote bytes: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), f.args()), "Work with differing remote bytes")
 	lastError, attempts := f.failureText(t)
 	if !strings.Contains(lastError, "does not match the logical media asset") {
 		t.Fatalf("recorded failure = %q, want the original SHA-256 mismatch", lastError)
@@ -430,9 +414,7 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 		t.Helper()
 		_, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive",
 			mustOriginalRules(t, cfg), fsStores, sourceStores, fsStores, cfg.Derived, storageTransferAttemptLimit)
-		if err != nil {
-			t.Fatalf("preparing derived transfer: %v", err)
-		}
+		testutil.RequireNoError(t, err, "preparing derived transfer")
 		return ok
 	}
 	if reserve([]string{"archive"}, []string{"archive", "test-store"}) {
@@ -454,17 +436,11 @@ func TestStorageTransferWorkerDoesNotAdoptUnverifiableRemoteDestination(t *testi
 		t.Fatalf("preparing unverified destination = (%+v, %t, %v)", transfer, ok, err)
 	}
 	destination := filepath.Join(f.roots["archive"], filepath.FromSlash(transfer.RelPath))
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(destination), 0o755), "os.MkdirAll")
 	other := bytes.Repeat([]byte("x"), len(content))
-	if err := os.WriteFile(destination, other, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(destination, other, 0o644), "os.WriteFile")
 	worker := f.worker(t)
-	if err := worker.Work(context.Background(), f.args()); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), f.args()), "Work")
 	lastError, attempts := f.failureText(t)
 	for _, want := range []string{"no SHA-256", "mount a store", "remove"} {
 		if !strings.Contains(lastError, want) {
@@ -490,11 +466,12 @@ func TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy(t *testing.T
 	// seedOriginalAsset の copy 行は dbtest.StoreName（test-store）に載る。それが新しい方（remote のみ）になる。
 	// マウントした local-src の古い copy 行を、1 時間前の created_at で足す。
 	assetID := seedOriginalAsset(t, pool, roots["local-src"], recordingID, "sites/default/transfer/source.ts", content)
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, created_at)
-VALUES ($1, 'local-src', 'sites/default/transfer/source.ts', 0, 'active', now() - interval '1 hour')`, assetID); err != nil {
-		t.Fatalf("adding older mounted copy: %v", err)
-	}
+	oneHourAgo := time.Now().Add(-time.Hour)
+	dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.Store = "local-src"
+		p.RelPath = "sites/default/transfer/source.ts"
+		p.CreatedAt = &oneHourAgo
+	})
 	srv, streamer := newTransferTestRemoteStreamer(t, recordingID, content, nil)
 
 	cfg := transferTestConfig("archive", "archive", "local-src", "test-store")
@@ -502,16 +479,12 @@ VALUES ($1, 'local-src', 'sites/default/transfer/source.ts', 0, 'active', now() 
 	source.InternalURL = srv.URL
 	cfg.Stores["test-store"] = source
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{
 		Storage: pgstore.NewMedia(pool, "archive", ""), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 	}
-	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")
 	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, pool, assetID, "archive"))))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("destination = %q, %v; want %q", got, err, content)
@@ -556,14 +529,10 @@ func TestResumingRemoteReaderContinuesAfterDisconnect(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	body, err := newRemoteTransferSource(srv.URL, "edge", 42).open(context.Background(), 0)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	testutil.RequireNoError(t, err, "opening the remote source")
 	defer func() { _ = body.Close() }()
 	got, err := io.ReadAll(body)
-	if err != nil {
-		t.Fatalf("ReadAll after disconnect: %v", err)
-	}
+	testutil.RequireNoError(t, err, "ReadAll after disconnect")
 	if !bytes.Equal(got, content) {
 		t.Fatalf("read %d bytes, want the %d original bytes", len(got), len(content))
 	}
@@ -597,9 +566,7 @@ func TestResumingRemoteReaderGivesUpAfterReconnectLimit(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	body, err := newRemoteTransferSource(srv.URL, "edge", 42).open(context.Background(), 0)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	testutil.RequireNoError(t, err, "opening the remote source")
 	defer func() { _ = body.Close() }()
 	if _, err := io.ReadAll(body); err == nil {
 		t.Fatal("ReadAll returned nil error after the reconnect limit")
