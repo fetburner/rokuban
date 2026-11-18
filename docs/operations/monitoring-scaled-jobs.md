@@ -27,7 +27,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 プロセス内の最終パス時刻は、ScaledJob 構成では scrape できず、常駐 Pod の値も成功時刻を表さない。ジョブを走らせるプロセスは、1 件消化して終了する一回実行なので、その値を scrape できる窓が実質的に無い。常駐 Pod はそのジョブを一度も走らせないので、値は成功時刻を表さない。成功時刻は、DB に保存された値で見る。
 
-ruler・record_sweep・予約同期（reconciler）・全件パスの reconcile（encode / thumbnail / ts_scan）・削除 reconcile には、プロセス内の最終パス時刻ゲージが無い。鮮度は、上の表の DB に保存された系列だけで読む。
+ruler・record_sweep・予約同期（reconciler）・全件パスの reconcile（encode / thumbnail / ts_scan）・削除 reconcile には、プロセス内の最終時刻ゲージが無い。置き場の観測（storage sync）も同じである。鮮度は、上の表の DB に保存された系列だけで読む。
 
 `ruler_pass`、`record_sweep`、reconciler のパスは、成功したパスの最後に `loop_success_markers` に site の行を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
 
