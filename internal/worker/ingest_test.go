@@ -3842,89 +3842,78 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 // 原本を "sites/tokyo/{entropy}/{filename}" に置き、DB の相対パスと同じ場所に
 // 実ファイルを作ることを確認する。
 //
-// catalog.SiteRelPath が site 前置をしなくなると rel_path が
-// "20240101/prog.m2ts" のままになり、このテストは失敗する。
+// 各行が固定するのは保存名の出どころである。
+//   - ContentPath: mirakc の contentPath（ユーザーが指定した保存先）は保存名に使わず、
+//     Content.Path のファイル名を使う。contentPath の basename を変えてあるので、
+//     contentPath を使う変異はこの行で落ちる。
+//   - FallbackContentPath: contentPath が nil でも Content.Path のファイル名を使う。
+//     contentPath を nil のまま読む変異はこの行で落ちる（nil 参照の panic）。
+//
+// catalog.SiteRelPath が site 前置をしなくなると rel_path が "{uuid}/prog.m2ts" の
+// ままになり、assertIngestRelPath が "sites/tokyo/<entropy>/prog.m2ts" を期待して落ちる。
 func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	t.Parallel()
-	tsData := makeTSData(10)
-	const recordID = "rec-tokyo"
-	fake := newRecordPathFake(t, recordID, tsData, strPtr("20240101/prog.m2ts"), "/recording/20240101/prog.m2ts")
+	for _, tc := range []struct {
+		name        string
+		contentPath *string
+		contentFile string
+		wantName    string
+	}{
+		{
+			name:        "ContentPath",
+			contentPath: strPtr("user/chosen.m2ts"),
+			contentFile: "/recording/20240101/prog.m2ts",
+			wantName:    "prog.m2ts",
+		},
+		{
+			name:        "FallbackContentPath",
+			contentPath: nil,
+			contentFile: "/recording/fallback/plain.m2ts",
+			wantName:    "plain.m2ts",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const recordID = "rec-tokyo"
+			tsData := makeTSData(10)
+			fake := newRecordPathFake(t, recordID, tsData, tc.contentPath, tc.contentFile)
 
-	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(fake.URL(), nil)
+			mediaDir := t.TempDir()
+			mc := mirakc.NewClient(fake.URL(), nil)
 
-	w := &IngestWorker{
-		MirakcClients: singleSiteClients("tokyo", mc),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("tokyo", mc),
+				MediaDir:      mediaDir,
+				StallTimeout:  5 * time.Second,
+			}
+
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			w.Precheck = pgstoretest.Media(pool)
+			w.Publisher = pgstoretest.Media(pool)
+			w.RecordTarget = pgstoretest.Recordings(pool)
+			w.CMDetectionStore = pgstoretest.Analysis(pool)
+
+			recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+				fixtureParams.Site, fixtureParams.EventID = "tokyo", 101
+			})
+			insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000101)
+
+			job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
+			testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
+
+			q := sqlcgen.New(pool)
+			asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
+			testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
+			assertIngestRelPath(t, asset.RelPath, "tokyo", tc.wantName)
+			fullPath := filepath.Join(mediaDir, filepath.FromSlash(asset.RelPath))
+			if _, err := os.Stat(fullPath); err != nil {
+				t.Errorf("expected file at %s (site-prefixed dir): %v", fullPath, err)
+			}
+		})
 	}
-
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	w.Precheck = pgstoretest.Media(pool)
-	w.Publisher = pgstoretest.Media(pool)
-	w.RecordTarget = pgstoretest.Recordings(pool)
-	w.CMDetectionStore = pgstoretest.Analysis(pool)
-
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Site, fixtureParams.EventID = "tokyo", 101
-	})
-	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000101)
-
-	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
-
-	q := sqlcgen.New(pool)
-	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
-	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
-	assertIngestRelPath(t, asset.RelPath, "tokyo", "prog.m2ts")
-	fullPath := filepath.Join(mediaDir, filepath.FromSlash(asset.RelPath))
-	if _, err := os.Stat(fullPath); err != nil {
-		t.Errorf("expected file at %s (site-prefixed dir): %v", fullPath, err)
-	}
-}
-
-// TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath は mirakc の
-// contentPath が空でも record.Content.Path のファイル名を保存名に使うことを確認する。
-func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) {
-	t.Parallel()
-	tsData := makeTSData(10)
-	// ContentPath を nil にしてフォールバック経路を通す。
-	const recordID = "rec-tokyo-fallback"
-	fake := newRecordPathFake(t, recordID, tsData, nil, "/recording/fallback/plain.m2ts")
-
-	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(fake.URL(), nil)
-
-	w := &IngestWorker{
-		MirakcClients: singleSiteClients("tokyo", mc),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
-	}
-
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	w.Precheck = pgstoretest.Media(pool)
-	w.Publisher = pgstoretest.Media(pool)
-	w.RecordTarget = pgstoretest.Recordings(pool)
-	w.CMDetectionStore = pgstoretest.Analysis(pool)
-
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Site, fixtureParams.EventID = "tokyo", 102
-	})
-	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000102)
-
-	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
-
-	q := sqlcgen.New(pool)
-	asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
-	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
-	assertIngestRelPath(t, asset.RelPath, "tokyo", "plain.m2ts")
 }
 
 // TestIngestWorker_DegenerateContentPath_Rejected は、mirakc の contentPath /
