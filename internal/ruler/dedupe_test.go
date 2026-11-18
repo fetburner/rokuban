@@ -483,7 +483,7 @@ func TestRunPass_DedupeEvidenceFrozenWhenRuleUnmatches(t *testing.T) {
 	// 上書きを置いて、ルールが外れても予約行が消えず detached で残るようにする
 	// （docs/recording.md §4.3）。program_overrides への FK（#27）を満たすため、
 	// ruler が動く前に program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, f.programID, "再放送テスト 第1話", f.start)
+	insertProgramSnapshotDirect(t, pool, f.programID, "再放送テスト 第1話", f.start)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO program_overrides (site, program_id, overrides)
 VALUES ($1, $2, '{"priority":7}'::jsonb)`,

@@ -369,16 +369,11 @@ func TestListReservations_ReturnsRowsFromAllSites(t *testing.T) {
 
 func insertReservationFixtureForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site string, programID int64, networkID, serviceID int32) {
 	t.Helper()
-	start := time.Now().Add(24 * time.Hour)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ($1, $2, 'テスト番組', $3, 1800000, $4, $5, 'GR', '27', $6, 'テスト局')`,
-		site, programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = site
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base)
 VALUES ($1, $2, '{}'::jsonb)`, site, programID); err != nil {
@@ -432,14 +427,14 @@ VALUES ($1, $2, $3, $4, true, false)`, site, index, "tuner-"+site, types); err !
 
 func insertCapacityReservationForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site string, programID int64, channel string, startAt time.Time) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-) VALUES ($1, $2, 'テスト番組', $3, 3600000, 32678, 5168, 'GR', $4, $5, 'テスト局')`,
-		site, programID, startAt, channel, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot row: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = site
+		p.StartAt = startAt
+		p.DurationMs = 3600000
+		p.NetworkID = 32678
+		p.ServiceID = 5168
+		p.Channel = channel
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 		site, programID); err != nil {

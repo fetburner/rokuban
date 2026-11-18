@@ -44,16 +44,10 @@ func insertDedupeSkippedReservation(
 	programID int64, ruleID, recordingID int64, similarity float32,
 ) {
 	t.Helper()
-	start := time.Now().Add(24 * time.Hour)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ('default', $1, 'テスト番組', $2, 1800000, 11500, 1150, 'GR', '27', $3, 'テスト局')`,
-		programID, start, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.NetworkID = 11500
+		p.ServiceID = 1150
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (
   site, program_id, rule_id, base,

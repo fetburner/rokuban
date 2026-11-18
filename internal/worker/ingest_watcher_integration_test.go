@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -122,15 +123,12 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 func seedIngestLifecycleReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_snapshots (
-			site, program_id, title, start_at, duration_ms,
-			network_id, service_id, channel_type, channel, event_id, service_name
-		)
-		VALUES ('default', $1, 'SHA-256 lifecycle', now(), 3600000, 32736, 1024, 'GR', '27', 100, 'テスト局')`, programID,
-	); err != nil {
-		t.Fatalf("creating program snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = "SHA-256 lifecycle"
+		p.StartAt = time.Now()
+		p.DurationMs = 3600000
+		p.EventID = 100
+	})
 	if _, err := pool.Exec(ctx, "INSERT INTO reservations (site, program_id) VALUES ('default', $1)", programID); err != nil {
 		t.Fatalf("creating reservation fixture: %v", err)
 	}

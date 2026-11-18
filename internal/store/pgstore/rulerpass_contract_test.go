@@ -82,14 +82,15 @@ INSERT INTO epg_programs (
 		site, programID, networkID, serviceID, eventID, startAt, title); err != nil {
 		t.Fatalf("seeding ruler pass EPG program: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-) VALUES ($1, $2, $3, $4, 1800000, $5, $6, 'GR', '27', $7, 'ruler pass contract')`,
-		site, programID, title, startAt, networkID, serviceID, eventID); err != nil {
-		t.Fatalf("seeding ruler pass snapshot: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = site
+		p.Title = title
+		p.StartAt = startAt
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+		p.EventID = eventID
+		p.ServiceName = "ruler pass contract"
+	})
 	return contracttest.RulerProgram{Site: site, ProgramID: programID, EventID: eventID, Title: title, StartAt: startAt}
 }
 

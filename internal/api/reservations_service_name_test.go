@@ -3,11 +3,11 @@ package api_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -25,16 +25,12 @@ func insertReservationWithSnapshot(
 	networkID, serviceID int32,
 ) {
 	t.Helper()
-	start := time.Now().Add(24 * time.Hour)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ('default', $1, $2, $3, 1800000, $4, $5, 'GR', '27', $6, $7)`,
-		programID, title, start, networkID, serviceID, int32(programID%100000), serviceName); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = title
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+		p.ServiceName = serviceName
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base)
 VALUES ('default', $1, '{}'::jsonb)`, programID); err != nil {

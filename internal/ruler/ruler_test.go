@@ -217,7 +217,7 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 
 	// program_intents への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 1001, "ニュース7", start)
+	insertProgramSnapshotDirect(t, pool, 1001, "ニュース7", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 1001, Action: reservation.IntentRecord,
@@ -266,7 +266,7 @@ func TestRunPass_DoesNotWriteProgramOverrides(t *testing.T) {
 
 	// program_overrides への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 1101, "上書きテスト", start)
+	insertProgramSnapshotDirect(t, pool, 1101, "上書きテスト", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: testSite, ProgramID: 1101, Overrides: []byte(`{"priority":9}`),
@@ -313,7 +313,7 @@ func TestRunPass_OverridesAloneKeepReservationDetached(t *testing.T) {
 
 	// program_overrides への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 1201, "上書き生存", start)
+	insertProgramSnapshotDirect(t, pool, 1201, "上書き生存", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: testSite, ProgramID: 1201, Overrides: []byte(`{"priority":9}`),
@@ -364,7 +364,7 @@ func TestRunPass_SkipIntentPreventsReservation(t *testing.T) {
 
 	// program_intents への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 2001, "映画スペシャル", start)
+	insertProgramSnapshotDirect(t, pool, 2001, "映画スペシャル", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 2001,
@@ -404,7 +404,7 @@ func TestRunPass_SkipIntentWithOverrideSurvivesViaOverride(t *testing.T) {
 	// この番組はどのルールにもマッチさせない（winner から意図的に外す）。
 	// program_intents / program_overrides への FK（#27）を満たすため、
 	// ruler が動く前に program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 2011, "スキップと上書き併存", start)
+	insertProgramSnapshotDirect(t, pool, 2011, "スキップと上書き併存", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 2011,
@@ -689,7 +689,7 @@ func TestRunPass_ObservesProgramIDReuse(t *testing.T) {
 	insertService(t, pool, ctx)
 	const programID int64 = 67501
 	oldStart := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
-	insertProgramSnapshotDirect(t, pool, ctx, programID, "旧番組", oldStart)
+	insertProgramSnapshotDirect(t, pool, programID, "旧番組", oldStart)
 	newStart := time.Now().Add(8 * 24 * time.Hour).Truncate(time.Second)
 	insertProgram(t, pool, ctx, programID, "新番組", newStart)
 	q := sqlcgen.New(pool)
@@ -724,7 +724,7 @@ func TestRunPass_ProgramIDReuseIgnoresUnendedSnapshot(t *testing.T) {
 	insertService(t, pool, ctx)
 	const programID int64 = 67502
 	oldStart := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
-	insertProgramSnapshotDirect(t, pool, ctx, programID, "放送中の旧番組", oldStart)
+	insertProgramSnapshotDirect(t, pool, programID, "放送中の旧番組", oldStart)
 	insertProgram(t, pool, ctx, programID, "新番組", time.Now().Add(8*24*time.Hour).Truncate(time.Second))
 
 	before := programIDReuseCount(t)
@@ -747,7 +747,7 @@ func TestRunPass_ProgramIDReuseIgnoresSmallStartShift(t *testing.T) {
 	insertService(t, pool, ctx)
 	const programID int64 = 67503
 	oldStart := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
-	insertProgramSnapshotDirect(t, pool, ctx, programID, "繰り下げ前", oldStart)
+	insertProgramSnapshotDirect(t, pool, programID, "繰り下げ前", oldStart)
 	insertProgram(t, pool, ctx, programID, "繰り下げ後", oldStart.Add(time.Hour))
 
 	before := programIDReuseCount(t)
@@ -779,7 +779,7 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 
 	// program_intents への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 7002, "対象B", start)
+	insertProgramSnapshotDirect(t, pool, 7002, "対象B", start)
 	q := sqlcgen.New(pool)
 	// 7002 には record intent が付いている（例: ユーザーが個別に上書き済み）
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
@@ -1025,7 +1025,7 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	// 予約行自体は detached として生存させるための投資（program_overrides）。
 	// program_overrides への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 31001, "マッチ掃除", start)
+	insertProgramSnapshotDirect(t, pool, 31001, "マッチ掃除", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: testSite, ProgramID: 31001, Overrides: []byte(`{"priority":9}`),
@@ -1185,7 +1185,7 @@ func TestRunPass_FulfilledWithInvestmentStillRemoved(t *testing.T) {
 	start := time.Now().Add(-time.Hour).Truncate(time.Second)
 	const programID = 41004
 	insertProgram(t, pool, ctx, programID, "録画済み番組", start)
-	insertProgramSnapshotDirect(t, pool, ctx, programID, "録画済み番組", start)
+	insertProgramSnapshotDirect(t, pool, programID, "録画済み番組", start)
 
 	ruleID := insertRule(t, pool, ctx, "fulfilled-investment", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
@@ -1286,19 +1286,15 @@ func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, programID int64,
 // トランザクション内で「program_snapshots → program_intents/overrides →
 // reservations」の順に書くのと同じ順序を、意図・上書きだけを単独で用意したい
 // テストのために切り出したもの。
-func insertProgramSnapshotDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
+func insertProgramSnapshotDirect(t *testing.T, pool *pgxpool.Pool, programID int64, title string, startAt time.Time) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ($1, $2, $3, $4, $5, 32736, 1024, 'GR', '27', 1, 'テスト局')
-ON CONFLICT (site, program_id) DO UPDATE SET
-  title = EXCLUDED.title, start_at = EXCLUDED.start_at, duration_ms = EXCLUDED.duration_ms`,
-		testSite, programID, title, startAt, testDurationMs); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = testSite
+		p.Title = title
+		p.StartAt = startAt
+		p.DurationMs = testDurationMs
+		p.EventID = 1
+	})
 }
 
 // insertReservationDirect は program_snapshots + reservations 行を ruler を
@@ -1309,7 +1305,7 @@ ON CONFLICT (site, program_id) DO UPDATE SET
 // 予約行より先に program_snapshots を作る必要がある。
 func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
 	t.Helper()
-	insertProgramSnapshotDirect(t, pool, ctx, programID, title, startAt)
+	insertProgramSnapshotDirect(t, pool, programID, title, startAt)
 	_, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id)
 VALUES ($1, $2)`,
@@ -1410,7 +1406,7 @@ func TestRunPass_DoesNotMarkWhenGCFails(t *testing.T) {
 		t.Fatalf("creating test trigger: %v", err)
 	}
 
-	insertProgramSnapshotDirect(t, pool, ctx, 10000, "GC エラー", time.Now().Add(-2*time.Hour))
+	insertProgramSnapshotDirect(t, pool, 10000, "GC エラー", time.Now().Add(-2*time.Hour))
 	r := newRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
 	if err := r.RunPass(ctx); err == nil {
 		t.Fatal("RunPass() error = nil, want GC failure")
@@ -1798,7 +1794,7 @@ func TestRunPass_TrippedCircuitBreakerStillCreatesAndUpdatesReservations(t *test
 	// 21000 は record intent で常に desired に残す。ブレーカー発動後にこの番組の
 	// スナップショット追従（延長）が続くことを確認するため。program_intents への
 	// FK（#27）を満たすため、ruler が動く前に program_snapshots 行を用意しておく。
-	insertProgramSnapshotDirect(t, pool, ctx, 21000, "対象0", start)
+	insertProgramSnapshotDirect(t, pool, 21000, "対象0", start)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: 21000, Action: reservation.IntentRecord,
@@ -2235,7 +2231,7 @@ SELECT EXISTS (
 func insertManualReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, title string, startAt time.Time) {
 	t.Helper()
 	insertProgram(t, pool, ctx, programID, title, startAt)
-	insertProgramSnapshotDirect(t, pool, ctx, programID, title, startAt)
+	insertProgramSnapshotDirect(t, pool, programID, title, startAt)
 	q := sqlcgen.New(pool)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,

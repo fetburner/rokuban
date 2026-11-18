@@ -45,15 +45,15 @@ func seedReservation(
 		base = "{}"
 	}
 	ctx := context.Background()
-	eventID := int32(programID % 100000)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms, network_id, service_id, channel_type, channel,
-  event_id, service_name
-) VALUES ($1, $2, 'テスト番組', $3, $4, 32678, 5168, $5, $6, $7, 'テスト局')`,
-		testSite, programID, startAt, duration.Milliseconds(), channelType, channel, eventID); err != nil {
-		t.Fatalf("inserting program_snapshot row: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = testSite
+		p.StartAt = startAt
+		p.DurationMs = duration.Milliseconds()
+		p.NetworkID = 32678
+		p.ServiceID = 5168
+		p.ChannelType = channelType
+		p.Channel = channel
+	})
 
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base)

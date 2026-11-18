@@ -3,11 +3,11 @@ package api_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -15,16 +15,11 @@ import (
 // program_snapshots + reservations 行を直接作る（ruler を経由しない）。
 func insertReservationWithChannelType(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, channelType string) {
 	t.Helper()
-	start := time.Now().Add(24 * time.Hour)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ('default', $1, 'テスト番組', $2, 1800000, 11500, 1150, $3, '27', $4, 'テスト局')`,
-		programID, start, channelType, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.NetworkID = 11500
+		p.ServiceID = 1150
+		p.ChannelType = channelType
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, base)
 VALUES ('default', $1, '{}'::jsonb)`, programID); err != nil {

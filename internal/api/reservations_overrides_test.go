@@ -8,12 +8,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -44,16 +44,10 @@ func insertRuleFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) in
 // 予約行より先に program_snapshots を作る。
 func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, ruleID *int64, networkID, serviceID int32) {
 	t.Helper()
-	start := time.Now().Add(24 * time.Hour)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27', $5, 'テスト局')`,
-		programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+	})
 	_, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, rule_id, base)
 VALUES ('default', $1, $2, '{}'::jsonb)
@@ -549,18 +543,12 @@ func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 // schedule（導出射影である schedule_sync）の有無に依存しないことの確認に使う
 // （issue #312 の方針決定 (b): B 案（schedule の有無で拒否）を採らなかったこと
 // の明文化）。
-func insertProgramSnapshotOnly(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, networkID, serviceID int32) {
+func insertProgramSnapshotOnly(t *testing.T, pool *pgxpool.Pool, programID int64, networkID, serviceID int32) {
 	t.Helper()
-	start := time.Now().Add(24 * time.Hour)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms,
-  network_id, service_id, channel_type, channel, event_id, service_name
-)
-VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27', $5, 'テスト局')`,
-		programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
-		t.Fatalf("inserting program_snapshot fixture: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+	})
 }
 
 // schedule どころか reservations 行すら無い（EPG 射影にだけ番組がある）予約に
@@ -575,7 +563,7 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1900000190099999
-	insertProgramSnapshotOnly(t, pool, ctx, programID, 19000, 1900)
+	insertProgramSnapshotOnly(t, pool, programID, 19000, 1900)
 
 	resp := doPatch(t, srv, overridesPath(programID), `{"contentPath":"custom/x"}`)
 	if resp.StatusCode != http.StatusNoContent {
