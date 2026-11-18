@@ -10,7 +10,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// RulerPassWorker は ruler の 1 パス評価を実行する queue worker。
+// PassWorker は ruler の 1 パス評価を実行する queue worker。
 //
 // 評価ロジックは Ruler（このパッケージ）に置き、永続化は store 契約を使う。ruler は
 // mirakc に触れない（不変条件 1）。ジョブの種類・キューの定義は internal/jobs にある。
@@ -22,7 +22,7 @@ import (
 // 「A の mirakc に B の id を投げる」形の壊れ方（issue #139 本文）が原理的に
 // 起きないので、jobs.VerifySite を呼ばない（「まだ書いていないだけ」ではなく
 // 不要と判断した結果）。
-type RulerPassWorker struct {
+type PassWorker struct {
 	Enqueuer       jobq.Enqueuer
 	RulerPass      store.RulerPass
 	Breakers       store.Breakers
@@ -50,7 +50,7 @@ type RulerPassWorker struct {
 // Work は ruler の 1 パス評価を実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （New はサイトのスライスを受け取れるが、ジョブの排他がサイト単位のため
 // ここでは常に長さ 1 で渡す）。
-func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) error {
+func (w *PassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) error {
 	r := New([]string{args.Site}, w.RulerPass, w.Breakers, w.NeverScheduled, w.LoopMarkers, &Config{
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
@@ -66,7 +66,7 @@ func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) err
 	// トランザクション整合の要求はなく、あくまで定期パスを前倒しするヒントなので、
 	// Enqueuer が無い場合は投入せず次の定期パスに委ねる。
 	if w.Enqueuer != nil {
-		if insertErr := jobs.Enqueue(ctx, w.Enqueuer, jobs.ReconcilePassArgs(args)); insertErr != nil {
+		if _, insertErr := w.Enqueuer.Enqueue(ctx, jobs.ReconcilePassArgs(args)); insertErr != nil {
 			slog.Warn("ruler pass: inserting reconcile_pass hint failed", "err", insertErr)
 		}
 	}

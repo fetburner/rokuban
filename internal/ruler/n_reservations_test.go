@@ -18,7 +18,7 @@ import (
 // 直接測る（issue #528）。
 //
 // 実運用では ruler のサイトループ（RunPass の `for _, site := range r.sites`）は
-// 1 周しか回らない --- 呼び出し元の ruler.RulerPassWorker がジョブ
+// 1 周しか回らない --- 呼び出し元の ruler.PassWorker がジョブ
 // 引数のサイトを 1 つだけ渡す（排他がサイト単位のため。ruler.go の New の doc
 // コメント参照）。それでもこのファイルは `ruler.New` に複数サイトを渡す経路を
 // 直接使う: N 予約は「複数サイト構成でマッチした全サイトに予約ができる」という

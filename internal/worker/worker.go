@@ -221,7 +221,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		TunerStore:    deps.TunerStore,
 		CapacityStore: deps.CapacityStore,
 	})
-	riveradapter.Register(workers, &ruler.RulerPassWorker{
+	riveradapter.Register(workers, &ruler.PassWorker{
 		Enqueuer:          deps.Enqueuer,
 		RulerPass:         deps.RulerPass,
 		Breakers:          deps.Breakers,
@@ -233,14 +233,14 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		RetractGrace:      deps.RulerRetractGrace,
 	})
 	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
-	riveradapter.Register(workers, &reconciler.ReconcilePassWorker{
+	riveradapter.Register(workers, &reconciler.PassWorker{
 		MirakcClients:   deps.MirakcClients,
 		ScheduleSync:    deps.ScheduleSync,
 		Breakers:        deps.Breakers,
 		NeverScheduled:  deps.NeverScheduled,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
 	})
-	riveradapter.Register(workers, &watcher.RecordSweepWorker{
+	riveradapter.Register(workers, &watcher.SweepWorker{
 		Enqueuer:           deps.Enqueuer,
 		MirakcClients:      deps.MirakcClients,
 		RecordObservations: deps.RecordObservations,

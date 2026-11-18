@@ -7,10 +7,10 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
-// VerifySite は、mirakc かファイルシステムに触るジョブ（処理のワーカー）が処理しようとしている
+// VerifySite は、mirakc かファイルシステムに触るジョブ worker が処理しようとしている
 // ジョブの site（jobSite）が、このプロセスが束縛している mirakc クライアントの集合
-// （clients、site → *mirakc.Client。Deps.MirakcClients / `--sites` の束縛）に含まれるかを
-// 検査する fail-fast ガード（issue #139。1 プロセスが N site を束縛できるようになった
+// （clients、site → *mirakc.Client。worker.Deps.MirakcClients / `--sites` の束縛）に
+// 含まれるかを検査する fail-fast ガード（issue #139。1 プロセスが N site を束縛できるようになった
 // issue #532 で map 化した）。
 //
 // mirakc の record id / programId はインスタンススコープであり、DB の site 列は

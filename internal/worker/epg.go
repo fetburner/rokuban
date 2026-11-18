@@ -148,7 +148,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 		}
 	}
 	if w.Enqueuer != nil {
-		if insertErr := jobs.Enqueue(ctx, w.Enqueuer, jobs.RulerPassArgs{Site: site}); insertErr != nil {
+		if insertErr := enqueueJob(ctx, w.Enqueuer, jobs.RulerPassArgs{Site: site}); insertErr != nil {
 			log.Warn("epg sync: inserting ruler_pass hint failed", "err", insertErr)
 		}
 	}

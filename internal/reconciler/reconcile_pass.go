@@ -9,12 +9,12 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// ReconcilePassWorker は reconciler の 1 パス突き合わせを実行する queue worker。
+// PassWorker は reconciler の 1 パス突き合わせを実行する queue worker。
 //
 // ロジックは Reconciler にそのまま置いてあり、ここでは呼び出すだけ
 // （ロジックの移植はしない）。reconciler は mirakc への HTTP を伴うため、ruler と
 // 違って MirakcClients を依存として持つ。
-type ReconcilePassWorker struct {
+type PassWorker struct {
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の reconciler_<site> キューを同時に購読しうる。
@@ -40,7 +40,7 @@ type ReconcilePassWorker struct {
 // circuit_breakers テーブルに永続化される（issue #24 M2-5）。RunPass はパスの
 // 先頭でその状態を DB から読み直すので、ここで毎回新規生成しても発動状態は
 // 失われない。
-func (w *ReconcilePassWorker) Work(ctx context.Context, args jobs.ReconcilePassArgs) error {
+func (w *PassWorker) Work(ctx context.Context, args jobs.ReconcilePassArgs) error {
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、別インスタンスの schedules をこのサイトの予約として
 	// 作成/削除しうる（issue #139）。New/RunPass より前に照合する。

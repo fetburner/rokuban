@@ -111,7 +111,7 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 			}
 			job.SourceStore = candidate.SourceStore
 		}
-		if err := jobs.Enqueue(ctx, w.Enqueuer, job); err != nil {
+		if err := enqueueJob(ctx, w.Enqueuer, job); err != nil {
 			slog.Error("storage transfer reconcile: failed to enqueue copy", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store, "source_store", job.SourceStore, "err", err)
 		}
 	}

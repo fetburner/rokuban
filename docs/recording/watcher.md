@@ -46,7 +46,7 @@ record の反映と、録画済み record の取り込み漏れは、3 つの仕
 
 - 冪等投入: River unique job
 - 常駐の購読と処理: `Watcher.Run` の SSE 購読 + `handleEvent`
-- (c) のジョブ: `internal/watcher` の `RecordSweepWorker`（`record_sweep`）が `Watcher.Sweep` を呼ぶ
+- (c) のジョブ: `internal/watcher` の `SweepWorker`（`record_sweep`）が `Watcher.Sweep` を呼ぶ
 - 繰り返し観測と別理由の抑制: `TestRecordObservationsContract/failed quality observation is idempotent`
 - イベント配信後の観測: `TestRecordObservationsContract/SSE failure suppresses sweeps including changed reasons`
 - イベント履歴の時刻: `TestRecordObservationsContract/quality events carry a readable time`

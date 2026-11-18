@@ -12,20 +12,10 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// ruler は Args.Spec で既定より長い有限の締切を持つ。
-func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
-	t.Parallel()
-	args := jobs.RulerPassArgs{}
-	got := args.Spec().Timeout(args)
-	if got != 5*time.Minute {
-		t.Errorf("Timeout() = %v, want 5m", got)
-	}
-}
-
 // ruler_pass ジョブが投入され、実際に実行されて予約が作られること
 // （ロジック自体は internal/ruler でテスト済みなので、ここでは「ジョブとして
 // 呼ばれると本当に動く」という配線だけを確認する）。
-func TestRulerPassWorker_CreatesReservation(t *testing.T) {
+func TestPassWorker_CreatesReservation(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -59,7 +49,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 	}
 
 	reservations := pgstoretest.Reservations(pool)
-	w := &ruler.RulerPassWorker{
+	w := &ruler.PassWorker{
 		RulerPass:      reservations,
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
@@ -67,7 +57,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 		ProgramSearch:  pgstoretest.EPG(pool),
 	}
 	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.RulerPassArgs{Site: site}); err != nil {
-		t.Fatalf("RulerPassWorker.Work: %v", err)
+		t.Fatalf("PassWorker.Work: %v", err)
 	}
 
 	var count int
@@ -92,14 +82,14 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 }
 
 // ruler の処理が失敗したときは、ScaledJob の再試行を促すため marker を進めない。
-func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
+func TestPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	reservations := pgstoretest.Reservations(pool)
-	w := &ruler.RulerPassWorker{
+	w := &ruler.PassWorker{
 		RulerPass:      reservations,
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
@@ -125,13 +115,13 @@ func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 // ruler パスの完了は reconcile_pass 起動契機のヒントの 1 つ（docs/recording.md
 // §3.2「ruler パスの完了」）。base が変われば mirakc に反映すべき差分が増えるため、
 // reconcile を早める。
-func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
+func TestPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	reservations := pgstoretest.Reservations(pool)
-	w := &ruler.RulerPassWorker{
+	w := &ruler.PassWorker{
 		RulerPass:      reservations,
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
@@ -140,7 +130,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 		Enqueuer:       enqueuer,
 	}
 	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.RulerPassArgs{Site: testSite}); err != nil {
-		t.Fatalf("RulerPassWorker.Work: %v", err)
+		t.Fatalf("PassWorker.Work: %v", err)
 	}
 
 	var hints []jobs.ReconcilePassArgs

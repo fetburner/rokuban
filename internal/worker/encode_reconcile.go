@@ -122,7 +122,7 @@ type EncodeReconcileWorker struct {
 // enqueueEncodeReconcile は指定録画の reconcile を投入する。
 // ingest 後の best-effort 投入なので、失敗しても呼び出し元の処理は巻き戻さない。
 func enqueueEncodeReconcile(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) {
-	if err := jobs.Enqueue(ctx, enqueuer, jobs.EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
+	if err := enqueueJob(ctx, enqueuer, jobs.EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
 		slog.Error("encode_reconcile: failed to enqueue targeted pass", "recording_id", recordingID, "err", err)
 	}
 }
@@ -247,7 +247,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 				continue
 			}
 		}
-		if err := jobs.Enqueue(ctx, w.Enqueuer, args); err != nil {
+		if err := enqueueJob(ctx, w.Enqueuer, args); err != nil {
 			failed++
 			slog.Error("encode_reconcile: failed to enqueue encode candidate",
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
