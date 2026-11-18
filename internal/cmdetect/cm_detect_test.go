@@ -1,4 +1,4 @@
-package worker
+package cmdetect
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -430,12 +429,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 		fixtureParams.ServiceID = 1024
 		fixtureParams.EventID = 901
 	})
-	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
-	markOriginalTSScanComplete(t, pool, assetID)
-	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindEncoded, &profile, fmt.Sprintf("cm/%d-h264.mp4", id), []byte("encoded"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
-	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
+	seedUntilEncodedAssets(t, pool, mediaDir, id)
 	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
 		p.KeepOriginal = "until_encoded"
 		p.EncodeProfiles = []string{"h264"}
@@ -509,12 +503,7 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 		fixtureParams.ServiceID = 1024
 		fixtureParams.EventID = 902
 	})
-	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
-	markOriginalTSScanComplete(t, pool, assetID)
-	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindEncoded, &profile, fmt.Sprintf("cm/%d-h264.mp4", id), []byte("encoded"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
-	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
+	seedUntilEncodedAssets(t, pool, mediaDir, id)
 	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
 		p.KeepOriginal = "until_encoded"
 		p.EncodeProfiles = []string{"h264"}

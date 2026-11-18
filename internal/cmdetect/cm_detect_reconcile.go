@@ -1,7 +1,8 @@
-package worker
+package cmdetect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,13 +12,15 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
-// It has no cursor because the CM recording view drops a candidate after detection
-// succeeds or its current attempt fails (unless a newer station logo was learned),
-// while the station view drops it as soon as a logo-candidate row exists. Unlike
-// encode reconcile, it does not filter candidates in Go after the SQL query. If
-// Go-side filtering is added, review whether it can leave candidates at the head of
-// a full window and therefore require a cursor.
+// errNoActiveOriginal は、読み取りジョブを積む置き場を決められない（active な原本のコピーが無い）ことを表す。
+// 次の reconcile が引き直す。
+var errNoActiveOriginal = errors.New("no active original copy to choose a store from")
+
+// CMDetectReconcileWorker は、希望状態に残る CM 検出とロゴ候補のジョブを補う。
+// 録画の view は、検出が成功するか現在の試行が失敗すると録画を候補から外す（新しい局ロゴを学習すると再び候補になる）。
+// 局の view は候補行が作られた時点で局を候補から外す。これらのため、カーソルを持たない。
+// encode reconcile と違い、SQL の後に Go 側で候補を絞り込まない。
+// Go 側に絞り込みを足すなら、満杯の窓の先頭に候補が残り続けてカーソルが必要にならないか見直す。
 type CMDetectReconcileWorker struct {
 	Enqueuer       jobq.Enqueuer
 	DetectionStore store.CMDetection
@@ -32,7 +35,7 @@ func cmDetectionTimeout(durationMs int64) time.Duration {
 	return args.Spec().Timeout(args)
 }
 
-// Work schedules the current desired set and fails candidates without active jobs.
+// Work は検出とロゴ候補を投入し、対応するジョブの無い候補を失敗にする。
 func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectReconcileArgs) error {
 	if w.Enqueuer == nil {
 		return fmt.Errorf("CM detection reconcile: job enqueuer is nil")
@@ -56,16 +59,19 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	for _, recording := range rows {
 		detectIDs = append(detectIDs, recording.RecordingID)
 	}
-	detectStores, err := originalStoresOf(ctx, w.Locator, detectIDs)
+	if w.Locator == nil {
+		return fmt.Errorf("CM detection reconcile: original locator is nil")
+	}
+	detectStores, err := w.Locator.OriginalStores(ctx, detectIDs)
 	if err != nil {
-		return fmt.Errorf("CM detection reconcile: %w", err)
+		return fmt.Errorf("CM detection reconcile: locating originals: %w", err)
 	}
 	for _, recording := range rows {
 		var err error
 		if storeName := detectStores[recording.RecordingID]; storeName == "" {
 			err = errNoActiveOriginal
 		} else {
-			err = enqueueJob(ctx, w.Enqueuer, jobs.CMDetectJobArgs{
+			_, err = w.Enqueuer.Enqueue(ctx, jobs.CMDetectJobArgs{
 				Store:       storeName,
 				RecordingID: recording.RecordingID, RecordingDurationMs: recording.RecordingDurationMs,
 			})
@@ -88,16 +94,16 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	for _, candidate := range candidateRows {
 		candidateIDs = append(candidateIDs, candidate.RecordingID)
 	}
-	candidateStores, err := originalStoresOf(ctx, w.Locator, candidateIDs)
+	candidateStores, err := w.Locator.OriginalStores(ctx, candidateIDs)
 	if err != nil {
-		return fmt.Errorf("CM detection reconcile: %w", err)
+		return fmt.Errorf("CM detection reconcile: locating originals: %w", err)
 	}
 	for _, candidate := range candidateRows {
 		var err error
 		if storeName := candidateStores[candidate.RecordingID]; storeName == "" {
 			err = errNoActiveOriginal
 		} else {
-			err = enqueueJob(ctx, w.Enqueuer, jobs.CMLogoCandidateJobArgs{
+			_, err = w.Enqueuer.Enqueue(ctx, jobs.CMLogoCandidateJobArgs{
 				Store:     storeName,
 				NetworkID: candidate.Station.NetworkID, ServiceID: candidate.Station.ServiceID,
 				RecordingID: candidate.RecordingID, AreaUpdatedAt: candidate.AreaUpdatedAt,
@@ -118,7 +124,7 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	return nil
 }
 
-// EnqueueCMDetectionIfNeeded shares the periodic pass predicate for ingest's immediate hint.
+// EnqueueCMDetectionIfNeeded は定期投入と同じ候補判定を使い、ingest の直後に検出を投入する。
 // storeName は原本を書いた置き場で、検出ジョブの物理キューの置き場になる。
 func EnqueueCMDetectionIfNeeded(ctx context.Context, detectionStore store.CMDetection, enqueuer jobq.Enqueuer, recordingID int64, storeName string) error {
 	desired, err := detectionStore.IsDetectionDesired(ctx, recordingID)
@@ -132,7 +138,10 @@ func EnqueueCMDetectionIfNeeded(ctx context.Context, detectionStore store.CMDete
 	if err != nil {
 		return fmt.Errorf("getting recording %d duration for CM detection: %w", recordingID, err)
 	}
-	if err := enqueueJob(ctx, enqueuer, jobs.CMDetectJobArgs{
+	if enqueuer == nil {
+		return fmt.Errorf("inserting CM detection for recording %d: %w", recordingID, errJobEnqueuerNil)
+	}
+	if _, err := enqueuer.Enqueue(ctx, jobs.CMDetectJobArgs{
 		Store:       storeName,
 		RecordingID: recordingID, RecordingDurationMs: durationMs,
 	}); err != nil {

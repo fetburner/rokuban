@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/cmdetect"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -1034,7 +1035,7 @@ func recordIngestMetrics(offset int64) {
 // すべて best-effort で、投入失敗はログに残して ingest の成否には影響させない。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
 	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
-	if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
+	if enqueueErr := cmdetect.EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 	}
 	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}); enqueueErr != nil {

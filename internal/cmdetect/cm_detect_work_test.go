@@ -1,4 +1,4 @@
-package worker
+package cmdetect
 
 import (
 	"bytes"
@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -247,7 +248,7 @@ func TestCMDetectWorkRejectsEmptyScratchInsteadOfUsingCurrentDirectory(t *testin
 
 	w := newCMDetectTestWorker(pool, mediaDir, tools)
 	w.ScratchDir = ""
-	err := runWorkerViaJobQFake(ctx, w, cmJob(id))
+	err := jobqfaketest.RunWorkerOnce(ctx, w, cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "scratch dir is empty") {
 		args, readErr := os.ReadFile(tools.logoframeArgs)
 		t.Fatalf("Work error = %v, want empty-scratch error; logoframe args = %q (read error %v)", err, args, readErr)
@@ -276,7 +277,7 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "20.020000")
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
 	args, err := os.ReadFile(tools.logoframeArgs)
 	testutil.RequireNoError(t, err, "reading logoframe args")
 	logoDir, ok := cmArgumentValue(string(args), "-logo-dir")
@@ -313,7 +314,7 @@ func TestCMDetectWorkSavesLogoWhenPreviewCannotBeRendered(t *testing.T) {
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, []byte("not an lgd"), 0, "Trim(0,299)", "10.010000")
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
 	var lgd, preview []byte
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT lgd, preview_png FROM cm_logos WHERE network_id = 32736 AND service_id = 1024`).Scan(&lgd, &preview), "logo row")
 	if string(lgd) != "not an lgd" || preview != nil {
@@ -333,7 +334,7 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`)
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
 	if _, err := os.Stat(tools.logoframeArgs); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("logoframe ran (stat %v); a station without an adopted logo must wait for adoption", err)
 	}
@@ -361,7 +362,7 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`)
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
 	if _, statErr := os.Stat(tools.logoframeArgs); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("logoframe ran (stat %v); the mismatched area must not be used", statErr)
 	}
@@ -403,7 +404,7 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 		Store: pgstoretest.Analysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt)), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt)), "Work")
 	candidate, err := sqlcgen.New(pool).GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
 	testutil.RequireNoError(t, err, "q.GetCMLogoCandidate")
 	if candidate.State != "ready" || candidate.Stage != nil || candidate.RecordingID == nil || *candidate.RecordingID != id {
@@ -445,7 +446,7 @@ func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
 		Store: pgstoretest.Analysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
-	err = runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt))
+	err = jobqfaketest.RunWorkerOnce(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt))
 	if err == nil || !strings.Contains(err.Error(), "1440x1080") {
 		t.Fatalf("Work error = %v, want resolution mismatch", err)
 	}
@@ -470,7 +471,7 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
 	}), "UpsertCMLogo")
 
-	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
+	err := jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil {
 		t.Fatal("Work succeeded although the learned logo is for another resolution")
 	}
@@ -502,7 +503,7 @@ func TestCMDetectWorkRejectsLowMatchForExistingLogo(t *testing.T) {
 		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
 	}), "UpsertCMLogo")
 
-	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
+	err := jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "below") {
 		t.Fatalf("Work error = %v, want a low-match failure", err)
 	}
@@ -524,7 +525,7 @@ func TestCMDetectWorkDoesNotPersistLowMatchForNewLogo(t *testing.T) {
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
 
-	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
+	err := jobqfaketest.RunWorkerOnce(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "below") {
 		t.Fatalf("Work error = %v, want a low-match failure", err)
 	}
@@ -546,7 +547,7 @@ func TestCMDetectWorkRequiresLogoMatchOutput(t *testing.T) {
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "")
 
-	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
+	err := jobqfaketest.RunWorkerOnce(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "does not contain") {
 		t.Fatalf("Work error = %v, want missing-match-output failure", err)
 	}
@@ -573,7 +574,7 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 		attempt   int
 		wantState string
 	}{{1, "retrying"}, {2, "retrying"}, {3, "failed"}} {
-		if err := runWorkerViaJobQFake(ctx, w, cmJob(id)); err == nil {
+		if err := jobqfaketest.RunWorkerOnce(ctx, w, cmJob(id)); err == nil {
 			t.Fatalf("attempt %d: Work succeeded although chapter_exe exits 3", tt.attempt)
 		}
 		var detections int
@@ -646,7 +647,7 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				done <- runWorkerViaJobQFake(workCtx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
+				done <- jobqfaketest.RunWorkerOnce(workCtx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 			}()
 			waitForCMLogoframeStart(t, tools)
 			if tc.cancelWork {
@@ -700,12 +701,7 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 913 })
-	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
-	markOriginalTSScanComplete(t, pool, assetID)
-	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindEncoded, &profile, fmt.Sprintf("cm/%d-h264.mp4", id), []byte("encoded"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
-	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
+	seedUntilEncodedAssets(t, pool, mediaDir, id)
 	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
 		p.KeepOriginal = "until_encoded"
 		p.EncodeProfiles = []string{"h264"}
@@ -736,7 +732,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		// Leave the state running to model a process that died before returning.
 	}
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(dead)), "Work after the third dead execution")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(dead)), "Work after the third dead execution")
 	var state string
 	var stage, message *string
 	var attemptCount int32
@@ -1039,7 +1035,7 @@ func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset
 	testutil.RequireNoError(t, os.WriteFile(tools.hold, nil, 0o600), "writing test file")
 	done := make(chan error, 1)
 	go func() {
-		done <- runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
+		done <- jobqfaketest.RunWorkerOnce(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {

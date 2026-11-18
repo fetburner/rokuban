@@ -3,6 +3,7 @@ package worker
 import (
 	"time"
 
+	"github.com/fetburner/rokuban/internal/cmdetect"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
@@ -253,7 +254,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Media:    deps.MediaReconcile,
 		Markers:  deps.LoopMarkers,
 	})
-	riveradapter.Register(workers, &CMDetectReconcileWorker{
+	riveradapter.Register(workers, &cmdetect.CMDetectReconcileWorker{
 		Enqueuer:       deps.Enqueuer,
 		Locator:        deps.OriginalLocator,
 		DetectionStore: deps.CMDetectionStore,
@@ -328,7 +329,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 		}
 	}))
 	riveradapter.Register[jobs.CMDetectJobArgs](workers, newStoreRoute("cm_detect", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CMDetectJobArgs] {
-		return &CMDetectWorker{
+		return &cmdetect.CMDetectWorker{
 			Enqueuer:       d.Enqueuer,
 			DetectionStore: d.CMDetectionStore,
 			MediaDir:       d.MediaDir,
@@ -339,7 +340,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 		}
 	}))
 	riveradapter.Register[jobs.CMLogoCandidateJobArgs](workers, newStoreRoute("cm_logo_candidate", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CMLogoCandidateJobArgs] {
-		return &CMLogoCandidateWorker{
+		return &cmdetect.CMLogoCandidateWorker{
 			Store:      d.CMStationStore,
 			MediaDir:   d.MediaDir,
 			ScratchDir: d.ScratchDir,

@@ -1,4 +1,4 @@
-package worker
+package cmdetect
 
 import (
 	"context"
@@ -24,6 +24,8 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
 )
+
+var errJobEnqueuerNil = errors.New("cmdetect: job enqueuer is nil")
 
 const (
 	cmDetectMaxTries       = 3
@@ -72,7 +74,7 @@ func cmFailureStage(err error) *string {
 	return &stage
 }
 
-// CMDetectWorker analyzes a committed original and stores its commercial ranges.
+// CMDetectWorker はコミット済みの原本を解析し、CM 区間を保存する。
 type CMDetectWorker struct {
 	Enqueuer       jobq.Enqueuer
 	DetectionStore store.CMDetection
@@ -85,7 +87,7 @@ type CMDetectWorker struct {
 	FFprobe string
 }
 
-// Work learns a missing station logo, runs JL analysis, and commits only a complete result.
+// Work は局ロゴがなければ学習し、JL 解析を実行して完全な結果だけを確定する。
 func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) error {
 	started := time.Now()
 	defer func() { metrics.CMDetectDuration.Observe(time.Since(started).Seconds()) }()
@@ -285,7 +287,13 @@ func (w *CMDetectWorker) detect(
 	if saved {
 		// CM ranges make an existing thumbnail eligible for reselection. This is only
 		// a hint; thumbnail_reconcile remains the durable backstop if enqueueing fails.
-		if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID, Store: w.StoreName}); enqueueErr != nil {
+		var enqueueErr error
+		if w.Enqueuer == nil {
+			enqueueErr = errJobEnqueuerNil
+		} else {
+			_, enqueueErr = w.Enqueuer.Enqueue(ctx, jobs.ThumbnailJobArgs{RecordingID: item.ID, Store: w.StoreName})
+		}
+		if enqueueErr != nil {
 			slog.Warn("cm_detect: failed to enqueue thumbnail reselection hint",
 				"recording_id", item.ID, "err", enqueueErr)
 		}

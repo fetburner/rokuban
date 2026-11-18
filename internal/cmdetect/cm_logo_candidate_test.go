@@ -1,4 +1,4 @@
-package worker
+package cmdetect
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -81,7 +82,7 @@ func TestCMLogoCandidateWorkerRecordingLookupFailureUsesSetupStage(t *testing.T)
 		err:       errors.New("injected recording lookup failure"),
 	}
 
-	err := runWorkerViaJobQFake(context.Background(), worker, cmLogoCandidateJob(id, areaAt))
+	err := jobqfaketest.RunWorkerOnce(context.Background(), worker, cmLogoCandidateJob(id, areaAt))
 	if err == nil {
 		t.Fatal("Work succeeded, want the recording lookup failure")
 	}
@@ -97,7 +98,7 @@ func candidateWorkHeld(ctx context.Context, t *testing.T, w *CMLogoCandidateWork
 	testutil.RequireNoError(t, os.WriteFile(tools.hold, nil, 0o600), "writing test file")
 	done := make(chan error, 1)
 	go func() {
-		done <- runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(recordingID, areaUpdatedAt))
+		done <- jobqfaketest.RunWorkerOnce(ctx, w, cmLogoCandidateJob(recordingID, areaUpdatedAt))
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -150,7 +151,7 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 			tools, recordingID := tc.setup(t, pool, mediaDir)
 			areaAt := seedTaughtArea(t, pool, 1180)
 
-			err := runWorkerViaJobQFake(ctx, newCandidateTestWorker(pool, mediaDir, tools), cmLogoCandidateJob(recordingID, areaAt))
+			err := jobqfaketest.RunWorkerOnce(ctx, newCandidateTestWorker(pool, mediaDir, tools), cmLogoCandidateJob(recordingID, areaAt))
 			if err == nil {
 				t.Fatal("Work succeeded, want the failure returned")
 			}
@@ -352,7 +353,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	enqueuer := newRecordingEnqueuer()
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
 	setRecordingDuration := func(recordingID int64) {
 		t.Helper()
 		testutil.MustExec(t, pool, "updating recordings", `
@@ -367,7 +368,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	testutil.RequireNoError(t, EnqueueCMDetectionIfNeeded(ctx, analysis, enqueuer, hintRecording, dbtest.StoreName), "EnqueueCMDetectionIfNeeded")
 	assertDuration := func(recordingID int64) {
 		t.Helper()
-		for _, args := range enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind()) {
+		for _, args := range recordedArgs[jobs.CMDetectJobArgs](t, enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind())) {
 			if args.RecordingID == recordingID {
 				if args.RecordingDurationMs != 45*60*1000 {
 					t.Errorf("recording %d job duration = %dms, want 2700000ms", recordingID, args.RecordingDurationMs)
@@ -381,7 +382,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 
 	reconcileRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(952)))
 	setRecordingDuration(reconcileRecording)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: analysis}), jobs.CMDetectReconcileArgs{}), "runWorkerViaJobQFake")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: analysis}), jobs.CMDetectReconcileArgs{}), "jobqfaketest.RunWorkerOnce")
 	assertDuration(reconcileRecording)
 }
 
@@ -390,7 +391,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	enqueuer := newRecordingEnqueuer()
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
 
 	newFailedRecording := func(eventID int32) int64 {
 		t.Helper()
@@ -432,7 +433,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	}
 
 	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: pgstoretest.Analysis(pool)}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}), "runWorkerViaJobQFake")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.CMDetectReconcileArgs{}), "jobqfaketest.RunWorkerOnce")
 	if got := attemptRows(disabled); got != 0 {
 		t.Errorf("disabled policy attempt rows = %d, want 0", got)
 	}
@@ -445,7 +446,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	if desired, err := q.IsCMDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
 		t.Errorf("desired after stale attempt cleanup = %v, %v; want true", desired, err)
 	}
-	enqueuedJobs := enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind())
+	enqueuedJobs := recordedArgs[jobs.CMDetectJobArgs](t, enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind()))
 	if len(enqueuedJobs) != 1 || enqueuedJobs[0].RecordingID != quicklyReenabled {
 		t.Errorf("reconciled CM jobs = %#v, want only recording %d", enqueuedJobs, quicklyReenabled)
 	}
@@ -456,7 +457,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	enqueuer := newRecordingEnqueuer()
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(949)))
 	testutil.MustExec(t, pool, "updating recordings", `
 		UPDATE recordings
@@ -464,17 +465,17 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 		WHERE id = $1`, id)
 	areaAt := seedTaughtArea(t, pool, 1180)
 	count := func() int {
-		return len(enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind()))
+		return len(enqueuer.CallsOfKind(jobs.CMLogoCandidateJobArgs{}.Kind()))
 	}
 	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: pgstoretest.Analysis(pool)}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}), "runWorkerViaJobQFake")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.CMDetectReconcileArgs{}), "jobqfaketest.RunWorkerOnce")
 	if got := count(); got != 1 {
 		t.Fatalf("candidate jobs after the first pass = %d, want 1", got)
 	}
-	if got := len(enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())); got != 0 {
+	if got := len(enqueuer.CallsOfKind(jobs.CMDetectReconcileArgs{}.Kind())); got != 0 {
 		t.Errorf("continuation jobs for short detection and candidate pages = %d, want 0", got)
 	}
-	candidateArgs := enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind())[0]
+	candidateArgs := recordedArgs[jobs.CMLogoCandidateJobArgs](t, enqueuer.CallsOfKind(jobs.CMLogoCandidateJobArgs{}.Kind()))[0]
 	if candidateArgs.RecordingID != id || candidateArgs.NetworkID != 32736 || candidateArgs.RecordingDurationMs != 45*60*1000 {
 		t.Errorf("candidate args = %#v, want station 32736, recording %d, and 2700000ms", candidateArgs, id)
 	}
@@ -487,7 +488,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}), "runWorkerViaJobQFake")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.CMDetectReconcileArgs{}), "jobqfaketest.RunWorkerOnce")
 	if got := count(); got != 1 {
 		t.Errorf("candidate jobs after a failed candidate = %d, want still 1", got)
 	}
@@ -539,7 +540,7 @@ func TestCMDetectWorkWritesAdoptAttemptWhileCandidateExists(t *testing.T) {
 		t.Fatalf("IsCMDetectionDesired = %v, %v; want true so the adopt attempt can be written", desired, err)
 	}
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
 	var state, stage string
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage), "attempt row")
 	if state != "failed" || stage != "adopt" {
