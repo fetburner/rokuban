@@ -112,7 +112,7 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 1. **api ロールは mirakc に問い合わせない**。ファイルシステムにも依存しない（go:embed は可）。import 境界は `.golangci.yml` の `depguard` が判定する
 2. **mirakc とのやりとりは常に API**、自身のストレージでは、原本は常にファイル I/O、派生物は置き場のインターフェース越し（FS 実装か S3 API 実装）で扱う
 3. **コミット = DB 行**。ファイルの存在はコミットではない
-4. **ffmpeg/ffprobe の exec は worker / cmdetect / streamer パッケージと、共用の実行補助 `internal/mediaexec` のみ**。本番コードで mediaexec を import できるのは worker と cmdetect、cmdetect を import できるのは worker だけ。import 境界は `.golangci.yml` の `depguard` が判定する
+4. **ffmpeg/ffprobe の exec は worker / cmdetect / streamer パッケージと、共用の実行補助 `internal/mediaexec` のみ**。本番コードで mediaexec を import できるのは worker・cmdetect・thumbnail、cmdetect と thumbnail を import できるのは worker だけ。import 境界は `.golangci.yml` の `depguard` が判定する
 5. **レベルトリガー**: イベント（SSE/NOTIFY）はヒント。正しい状態は定期 reconcile が再取得する
 6. **TS のストリーム処理をしない**（原本コミット後の読み取り専用解析のみ例外）。統計のための PSI 読み取りは PAT / PMT の `stream_type` までで、**記述子は読まない**（[docs/recording.md](docs/recording.md) §1「例外の境界」）。**フロントエンドも放送 TS を解釈しない**（ffmpeg の出力だけを扱う。同 §1「ブラウザにも同じ境界を適用する」）
 7. **mirakc 固有の概念を永続テーブル（rules / media_assets / 履歴）に入れない**

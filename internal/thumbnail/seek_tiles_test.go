@@ -1,4 +1,4 @@
-package worker
+package thumbnail
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -213,15 +215,15 @@ func seedOriginalForSeekTiles(t *testing.T, db sqlcgen.DBTX, mediaDir string, re
 
 func runSeekTilesJob(t *testing.T, w *SeekTilesWorker, recordingID int64) error {
 	t.Helper()
-	return runWorkerViaJobQFake(context.Background(), w,
+	return jobqfaketest.RunWorkerOnce(context.Background(), w,
 
-		SeekTilesJobArgs{RecordingID: recordingID},
+		jobs.SeekTilesJobArgs{RecordingID: recordingID},
 	)
 }
 
 func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -256,9 +258,9 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	}
 
 	for attempt := 3; attempt <= 4; attempt++ {
-		job := SeekTilesJobArgs{RecordingID: recordingID}
-		go func(job SeekTilesJobArgs) {
-			results <- runWorkerViaJobQFake(context.Background(), w, job)
+		job := jobs.SeekTilesJobArgs{RecordingID: recordingID}
+		go func(job jobs.SeekTilesJobArgs) {
+			results <- jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 		}(job)
 	}
 
@@ -300,7 +302,7 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 // 枚数はリテラル（100 秒 → 10 枚 → 1 行）で固定する。
 func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tiles.m2ts")
@@ -329,7 +331,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 		t.Errorf("size_bytes = %d, want %d", row.SizeBytes, len(tinyJPEG))
 	}
 	assertMediaAssetCopy(t, pool, row.ID, row.RelPath)
-	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindSeekTiles, "", tinyJPEG)
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindSeekTiles, tinyJPEG)
 	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err != nil {
 		t.Errorf("tile sheet not written to media: %v", err)
 	}
@@ -346,7 +348,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 // 既に active な seek_tiles があるなら ffmpeg を走らせない（冪等）。
 func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/idem.m2ts")
@@ -374,7 +376,7 @@ func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 // uncommitted publish also advances the candidate instead of being overwritten.
 func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -418,7 +420,7 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 	if generation != 2 {
 		t.Errorf("recreated generation = %d, want 2", generation)
 	}
-	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindSeekTiles, "", cmd.outputContent)
+	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindSeekTiles, cmd.outputContent)
 	if got, err := os.ReadFile(orphanAbs); err != nil || string(got) != orphanBytes {
 		t.Errorf("occupied generation path changed: got %q, err %v", got, err)
 	}
@@ -427,7 +429,7 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 // original が無ければ何もせず成功で終える（レベルトリガー。再試行しても埋まらない）。
 func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	recordingID := dbtest.Recording(t, pool)
 
 	cmd := &countingRunCmd{duration: "30"}
@@ -444,7 +446,7 @@ func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 // （行の存在 = 全部そろっている）。
 func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -485,7 +487,7 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 // 原本削除の条件も満たしてしまう。
 func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/noprobe.m2ts")
@@ -511,7 +513,7 @@ func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
 // （image2 は連番の穴で読むのをやめ、以降が黒のまま合成される）。
 func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -559,7 +561,7 @@ func TestSeekTileAt(t *testing.T) {
 // 毎回同じ枚で失敗し続けて until_encoded の原本が消えなくなる。
 func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tail.m2ts")
@@ -584,7 +586,7 @@ func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 // 長さ 0 秒も「取れない」と同じ扱いにする（1 枚の格子をコミットしない）。
 func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/zero.m2ts")
@@ -608,7 +610,7 @@ func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 // 進む。埋めないと毎回同じ枚で落ち、until_encoded の原本が消えなくなる。
 func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/longgop.m2ts")
@@ -634,7 +636,7 @@ func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 // 1 枚しか無いときは埋める元が無いので失敗する。
 func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
@@ -662,7 +664,7 @@ func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 // 映像の終端を越える。
 func TestSeekTilesWorker_UsesVideoStreamDuration(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/shortvideo.m2ts")

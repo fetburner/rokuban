@@ -2882,7 +2882,8 @@ func replaceThumbnailForOldGeneration(t *testing.T, pool *pgxpool.Pool, mediaDir
 		}
 	}
 
-	oldRel, newRel := thumbnailRelPath(id, 0), thumbnailRelPath(id, 1)
+	oldRel := fmt.Sprintf("thumbnails/%d.jpg", id)
+	newRel := fmt.Sprintf("thumbnails/%d.g1.jpg", id)
 	if published, err := media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 		RecordingID: id, RelPath: oldRel, SizeBytes: 3, InputAssetID: original.ID, DerivedGeneration: 0,
 	}, writeFile(oldRel, "old")); err != nil || !published {

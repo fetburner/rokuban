@@ -8,6 +8,7 @@ import (
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 )
 
 // CatalogExportWorker はコアメタデータを、この worker が担当する FS 置き場の root
@@ -31,7 +32,7 @@ func (w *CatalogExportWorker) Work(ctx context.Context, args jobs.CatalogExportA
 	if w.MediaDir == "" {
 		return fmt.Errorf("media dir is empty")
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting catalog export"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting catalog export"); err != nil {
 		return err
 	}
 
@@ -41,7 +42,9 @@ func (w *CatalogExportWorker) Work(ctx context.Context, args jobs.CatalogExportA
 	}
 
 	genDir, err := catalog.Write(w.MediaDir, doc, args.Keep,
-		func() error { return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing catalog") })
+		func() error {
+			return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing catalog")
+		})
 	if err != nil {
 		return err
 	}

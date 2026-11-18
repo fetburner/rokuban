@@ -284,23 +284,12 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 				"after_recording_id", after, "continuation_after_recording_id", continuationAfter)
 		}
 		// 完走の記録は継続の投入より後に置く。書けずに失敗したら、次の定期パスが同じ位置から引き直す。
-		return markReconcilePass(ctx, w.Markers, store.ReconcilePassEncode)
+		return store.MarkReconcilePass(ctx, w.Markers, store.ReconcilePassEncode)
 	}
 	if len(candidates) > 0 || failed > 0 {
 		slog.Info("encode_reconcile: targeted pass complete",
 			"recording_id", recordingID, "candidates", len(candidates),
 			"rebuild_requests", rebuildQueued, "failed", failed)
-	}
-	return nil
-}
-
-// markReconcilePass は全件パスの完走を記録する。markers が nil なら何もしない（記録を呼ばない部分テストだけ）。
-func markReconcilePass(ctx context.Context, markers store.LoopMarkers, pass string) error {
-	if markers == nil {
-		return nil
-	}
-	if err := markers.MarkReconcilePass(ctx, pass); err != nil {
-		return fmt.Errorf("%s reconcile: marking completed pass: %w", pass, err)
 	}
 	return nil
 }

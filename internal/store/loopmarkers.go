@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -39,4 +40,18 @@ type LoopMarkers interface {
 	MarkReconciler(ctx context.Context, site string) error
 	// ReadLoopMarkers は loop の scope ごとの成功時刻を返す。一度も成功していない scope は含まない。
 	ReadLoopMarkers(ctx context.Context, loop string) (map[string]time.Time, error)
+}
+
+// MarkReconcilePass は全件パスの完走を記録する。
+// worker の encode と thumbnail は完走の記録とエラーの扱いを共有する。
+// 両パッケージが参照する LoopMarkers の契約と同じ store に置く。
+// markers が nil なら何もしない（記録を呼ばない部分テストだけ）。
+func MarkReconcilePass(ctx context.Context, markers LoopMarkers, pass string) error {
+	if markers == nil {
+		return nil
+	}
+	if err := markers.MarkReconcilePass(ctx, pass); err != nil {
+		return fmt.Errorf("%s reconcile: marking completed pass: %w", pass, err)
+	}
+	return nil
 }

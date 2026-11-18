@@ -29,6 +29,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -236,7 +237,7 @@ func (w *IngestWorker) saveIngestWriterHandoff(
 	writerGeneration, offset int64,
 	hasher hash.Hash,
 ) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving ingest writer handoff"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving ingest writer handoff"); err != nil {
 		return err
 	}
 	if err := file.Sync(); err != nil {
@@ -253,7 +254,7 @@ func (w *IngestWorker) saveSyncedIngestWriterHandoff(
 	writerGeneration, offset int64,
 	hasher hash.Hash,
 ) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving synced ingest writer handoff"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving synced ingest writer handoff"); err != nil {
 		return err
 	}
 	if err := file.Close(); err != nil {
@@ -412,7 +413,7 @@ func (w *IngestWorker) Work(ctx context.Context, args jobs.IngestJobArgs) (err e
 	if err != nil {
 		return err
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting ingest"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting ingest"); err != nil {
 		return err
 	}
 	if err := w.ensureStorageProbed(); err != nil {
@@ -512,7 +513,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		return fmt.Errorf("ingest: rel_path %q is already used by another media_asset that has not been deleted (recording_id=%d); refusing to overwrite its file (recording_id=%d)",
 			relPath, conflictRecordingID, recordingID)
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "creating ingest directory"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "creating ingest directory"); err != nil {
 		return err
 	}
 
@@ -574,7 +575,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		if !removeTemp {
 			return
 		}
-		if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "discarding ingest temp"); markerErr != nil {
+		if markerErr := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "discarding ingest temp"); markerErr != nil {
 			log.Warn("ingest: skipping temp cleanup because media store marker did not match", "err", markerErr)
 			return
 		}
@@ -779,7 +780,7 @@ func (w *IngestWorker) commitAndFinish(ctx context.Context, client *mirakc.Clien
 
 // removePublishedIngestTemp は commit 済みの temp を消す。失敗はログだけにする。
 func (w *IngestWorker) removePublishedIngestTemp(tempPath string, log *slog.Logger) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing committed ingest temp"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing committed ingest temp"); err != nil {
 		log.Warn("ingest: skipping committed temp cleanup because media store marker did not match", "err", err)
 		return
 	}
@@ -792,7 +793,7 @@ func (w *IngestWorker) removeSupersededIngestTempsAfterCommit(dir, site, recordI
 	if writerGeneration <= 0 {
 		return
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing superseded ingest temp generations after commit"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing superseded ingest temp generations after commit"); err != nil {
 		log.Warn("ingest: skipping superseded temp cleanup because media store marker did not match", "err", err)
 		return
 	}
@@ -1138,7 +1139,7 @@ func (w *IngestWorker) determineRelPath(args jobs.IngestJobArgs, record *mirakc.
 // link 前の失敗では、中身の不一致や record の cancel / fail と確定した場合だけ呼び出し側が
 // tempPath を消し、それ以外は次の試行へ残す。
 func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, contentSHA256 []byte, owner uuid.UUID, writerGeneration int64) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing original"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing original"); err != nil {
 		return err
 	}
 	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{

@@ -33,6 +33,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -278,7 +279,7 @@ func verifyStoreMarkersAtStartup(roles []string, roots map[string]string) bool {
 	}
 	ok := true
 	for _, name := range sortedKeys(roots) {
-		if err := worker.VerifyMediaStoreMarker(roots[name], name); err != nil {
+		if err := storemarker.VerifyMediaStoreMarker(roots[name], name); err != nil {
 			slog.Warn("media store marker could not be verified at startup; filesystem-dependent worker operations will be withheld",
 				"store", name, "err", err)
 			ok = false

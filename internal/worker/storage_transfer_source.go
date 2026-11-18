@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 )
 
 // transferSource は原本の転送元を、ローカルのファイルか内部 URL の streamer から読む形で抽象化する。
@@ -250,7 +251,7 @@ func transferSourceStores(cfg config.StorageConfig, mounted []string) []string {
 // 内部 URL の streamer。どちらも無い置き場は PrepareMediaAssetTransfer が転送元に選ばないので、ここに来たら内部の不整合。
 func (w *StorageTransferWorker) originalTransferSource(transfer store.MediaAssetTransfer) (transferSource, error) {
 	if root := w.Roots[transfer.SourceStore]; root != "" {
-		if err := requireMediaStoreMarker(root, transfer.SourceStore, "reading storage transfer source"); err != nil {
+		if err := storemarker.RequireMediaStoreMarker(root, transfer.SourceStore, "reading storage transfer source"); err != nil {
 			return nil, err
 		}
 		path, err := mediapath.Resolve(root, transfer.SourceRelPath)

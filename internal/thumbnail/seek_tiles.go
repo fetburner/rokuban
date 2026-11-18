@@ -1,4 +1,4 @@
-package worker
+package thumbnail
 
 import (
 	"context"
@@ -15,9 +15,11 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/mediapublish"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/storemarker"
 )
 
 // シークプレビュー用タイルの形（固定。設定キーは設けない。poster と同じ流儀）:
@@ -87,7 +89,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 		metrics.SeekTilesDuration.Observe(time.Since(started).Seconds())
 		metrics.SeekTilesJobs.WithLabelValues(result).Inc()
 	}()
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting seek tile generation"); err != nil {
+	if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting seek tile generation"); err != nil {
 		return err
 	}
 
@@ -194,9 +196,9 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 		RecordingID: recordingID, Kind: store.AssetKindSeekTiles, RelPath: relPath,
 		DerivedGeneration: generation, ReserveNewGeneration: true,
 	}
-	size, published, err = publishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, sheetPath, objectContentType(relPath), false,
+	size, published, err = mediapublish.PublishGeneratedObject(ctx, w.Objects, w.ObjectPublisher, pending, sheetPath, mediapublish.ObjectContentType(relPath), false,
 		func(operation string) error {
-			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
+			return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, operation)
 		},
 		func(size int64, sum [sha256.Size]byte) (bool, error) {
 			return w.ObjectPublisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
