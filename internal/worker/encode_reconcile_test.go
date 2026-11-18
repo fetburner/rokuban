@@ -1313,10 +1313,8 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 			t.Errorf("third rebuild keep = %s, want %s", thirdJob.RequestedCutKeep, thirdRequested)
 		}
 	}
-	// 最後に完走したパスの時刻が DB の印に残ること（TestEncodeReconcileWorker_
-	// RowLimitLeavesLaterRecordingsUnreached が固定していたアサーションを移設。
-	// これが無いと完走の記録を消しても パッケージ全体のテストが green のまま通ってしまい、
-	// 停止したパスが検出できなくなる）。
+	// 全件パスの完走は DB の印に残る。これが無いと、完走の記録の書き込みを消しても
+	// パッケージ全体のテストが green のまま通り、停止したパスを検出できない。
 	saved, err := markers.ReadLoopMarkers(context.Background(), store.LoopReconcilePass)
 	if err != nil {
 		t.Fatalf("ReadLoopMarkers: %v", err)

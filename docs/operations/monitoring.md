@@ -311,7 +311,7 @@ ruler の停止は最終成功時刻の系列で、書き込みの異常は予�
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | 1 の間は導出削除が一切走らない（手動再開まで止まるラッチ）。いま止まっているかに答える |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` | DB に確定した site 単位の最終成功時刻。ScaledJob ではこちらで停止を検出する |
 
-ruler の停止は `time() - rokuban_ruler_last_success_timestamp_seconds{site}` で見る。ブレーカーのゲージは、カウンタと違って「いま止まっているか」に答える。
+最終成功時刻を使うのは、ゲージが凍る問題への対策である。ブレーカーのゲージは、カウンタと違って「いま止まっているか」に答える。
 
 #### 予約の action の値
 

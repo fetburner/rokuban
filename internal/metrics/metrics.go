@@ -258,8 +258,8 @@ var (
 	// シングルトンのロックを取れていない・ループが死んでいる場合を
 	// time() - この値 で検出する。
 	//
-	// schedule snapshot の確定（schedule_snapshot_last_success）はパスの先頭で
-	// 起きるので、この値とは一致しない。snapshot だけ進んでパスが後段で失敗しうる。
+	// schedule snapshot は、desired を列挙する前のパスの前半で確定する。そのため
+	// それより後の失敗は、完走させずに snapshot だけを進める。
 	ReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_reconcile_last_pass_timestamp_seconds",
 		Help: "Unix time of the last completed reconcile pass. Use with time() to detect a stalled reconciler.",
