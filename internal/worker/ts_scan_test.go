@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -55,9 +56,7 @@ func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID in
 	t.Helper()
 	worker := &tsscan.ScanWorker{Media: pgstoretest.Media(pool), MediaDir: mediaDir}
 	job := tsscan.ScanArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(context.Background(), worker, job); err != nil {
-		t.Fatalf("ScanWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), worker, job), "ScanWorker.Work")
 }
 
 // TestTSScan_StatisticsAreWrittenAfterIngestCommit verifies ingest leaves TS
@@ -84,36 +83,26 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	mediaDir := t.TempDir()
 	relPath := "scan-parity/original.m2ts"
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		t.Fatalf("creating original directory: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755), "creating original directory")
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-test")
-	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
-		t.Fatalf("writing ingest temporary file: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(tempPath, data, 0o600), "writing ingest temporary file")
 	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
-	if err := (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(
+	testutil.RequireNoError(t, (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(
 		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), nil, uuid.Nil, 0,
-	); err != nil {
-		t.Fatalf("IngestWorker.commit: %v", err)
-	}
+	), "IngestWorker.commit")
 
 	var assetID int64
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, recordingID,
-	).Scan(&assetID); err != nil {
-		t.Fatalf("querying original media asset: %v", err)
-	}
+	).Scan(&assetID), "querying original media asset")
 	gotStats, gotPositions := readTSScanRows(t, pool, assetID)
 	if len(gotStats) != 0 || len(gotPositions) != 0 {
 		t.Fatalf("drop rows after ingest commit = stats:%#v positions:%#v, want none before scan", gotStats, gotPositions)
 	}
 	var scanRows int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
-	).Scan(&scanRows); err != nil {
-		t.Fatalf("querying scan marker after ingest commit: %v", err)
-	}
+	).Scan(&scanRows), "querying scan marker after ingest commit")
 	if scanRows != 0 {
 		t.Fatalf("scan markers after ingest commit = %d, want 0", scanRows)
 	}
@@ -142,9 +131,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 
 	// A duplicate or stale job for an already measured size is a no-op, even if
 	// the file disappeared after the successful scan.
-	if err := os.Remove(fullPath); err != nil {
-		t.Fatalf("removing original after scan: %v", err)
-	}
+	testutil.RequireNoError(t, os.Remove(fullPath), "removing original after scan")
 	runTSScan(t, pool, mediaDir, recordingID)
 }
 
@@ -212,9 +199,7 @@ func readTSScanRows(t *testing.T, pool *pgxpool.Pool, assetID int64) ([]tsScanSt
 	rows, err := pool.Query(ctx, `
 		SELECT pid, packets, drops, errors, scrambled, pid_type
 		FROM drop_stats WHERE media_asset_id = $1 ORDER BY pid`, assetID)
-	if err != nil {
-		t.Fatalf("querying drop_stats: %v", err)
-	}
+	testutil.RequireNoError(t, err, "querying drop_stats")
 	for rows.Next() {
 		var row tsScanStatRow
 		if err := rows.Scan(&row.pid, &row.packets, &row.drops, &row.errors, &row.scrambled, &row.pidType); err != nil {
@@ -233,9 +218,7 @@ func readTSScanRows(t *testing.T, pool *pgxpool.Pool, assetID int64) ([]tsScanSt
 	rows, err = pool.Query(ctx, `
 		SELECT byte_offset, pid, elapsed_ms
 		FROM drop_positions WHERE media_asset_id = $1 ORDER BY byte_offset`, assetID)
-	if err != nil {
-		t.Fatalf("querying drop_positions: %v", err)
-	}
+	testutil.RequireNoError(t, err, "querying drop_positions")
 	for rows.Next() {
 		var row tsScanPositionRow
 		if err := rows.Scan(&row.offset, &row.pid, &row.elapsed); err != nil {
@@ -255,11 +238,9 @@ func readTSScanRows(t *testing.T, pool *pgxpool.Pool, assetID int64) ([]tsScanSt
 func scannedSize(t *testing.T, pool *pgxpool.Pool, assetID int64) int64 {
 	t.Helper()
 	var size int64
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT scanned_size_bytes FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
-	).Scan(&size); err != nil {
-		t.Fatalf("querying scan size: %v", err)
-	}
+	).Scan(&size), "querying scan size")
 	return size
 }
 

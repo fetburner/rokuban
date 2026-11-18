@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // planningSpy はエンコード前の判定が読む状態だけを差し替える。
@@ -44,9 +45,7 @@ func TestEncodeWorkerPreflightUsesSnapshotAndLogsReasons(t *testing.T) {
 	keepA := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	keepB := []chapters.Range{{StartMs: 0, EndMs: 2000}}
 	requestedKeep, err := json.Marshal(keepA)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "json.Marshal")
 	tests := []struct {
 		name           string
 		profile        config.EncodeProfile

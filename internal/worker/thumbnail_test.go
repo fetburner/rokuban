@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // tinyJPEG は最小限の有効な JPEG（SOI + EOI）。fake ffmpeg が書き出す。
@@ -152,20 +153,14 @@ func TestThumbnailRelPathUsesPersistedGeneration(t *testing.T) {
 func TestNextUnusedThumbnailRelPathAdvancesPastExistingFile(t *testing.T) {
 	t.Parallel()
 	mediaDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(mediaDir, "thumbnails"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(mediaDir, "thumbnails", "12.g3.jpg"), tinyJPEG, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Join(mediaDir, "thumbnails"), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(mediaDir, "thumbnails", "12.g3.jpg"), tinyJPEG, 0o644), "os.WriteFile")
 	w := &ThumbnailWorker{
 		Objects:  testFSObjectStore(mediaDir),
 		MediaDir: mediaDir,
 	}
 	path, generation, err := w.nextUnusedThumbnailRelPath(context.Background(), 12, 3)
-	if err != nil {
-		t.Fatalf("nextUnusedThumbnailRelPath: %v", err)
-	}
+	testutil.RequireNoError(t, err, "nextUnusedThumbnailRelPath")
 	if path != "thumbnails/12.g4.jpg" || generation != 4 {
 		t.Fatalf("nextUnusedThumbnailRelPath = (%q, %d), want (%q, 4)", path, generation, "thumbnails/12.g4.jpg")
 	}
@@ -229,12 +224,8 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	// 原本ファイル + media_assets 行。
 	origRel := "shows/ep1.m2ts"
 	origPath := filepath.Join(mediaDir, filepath.FromSlash(origRel))
-	if err := os.MkdirAll(filepath.Dir(origPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(origPath, []byte("fake-ts-content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(origPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(origPath, []byte("fake-ts-content"), 0o644), "os.WriteFile")
 	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = int64(len("fake-ts-content"))
@@ -253,24 +244,18 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	}
 
 	job := ThumbnailJobArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 
 	// DB 行が 1 つ。
 	id, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), sqlcgen.GetActiveThumbnailMediaAssetIDParams{
 		RecordingID: recordingID, StoreName: testStoreNameArg(),
 	})
-	if err != nil {
-		t.Fatalf("thumbnail asset missing: %v", err)
-	}
+	testutil.RequireNoError(t, err, "thumbnail asset missing")
 	if id == 0 {
 		t.Fatal("thumbnail asset id is 0")
 	}
 	state, err := sqlcgen.New(pool).LockActiveThumbnailMediaAsset(context.Background(), sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
-	if err != nil {
-		t.Fatalf("loading thumbnail seek: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading thumbnail seek")
 	if state.SeekMs == nil || *state.SeekMs != 10000 {
 		t.Errorf("initial thumbnail seek_ms = %v, want 10000", state.SeekMs)
 	}
@@ -279,9 +264,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	// メディア上に JPEG がある。
 	dest := filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d.jpg", recordingID))
 	data, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatalf("reading thumbnail file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading thumbnail file")
 	if !bytesEqual(data, tinyJPEG) {
 		t.Errorf("thumbnail content = %v, want tinyJPEG", data)
 	}
@@ -313,18 +296,14 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindThumbnail, nil, oldRelPath, []byte("old thumbnail generation"))
 	q := sqlcgen.New(pool)
-	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+	testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
 		SeekMs:       30000,
-	}); err != nil {
-		t.Fatalf("seeding old thumbnail seek: %v", err)
-	}
-	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+	}), "seeding old thumbnail seek")
+	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 		RecordingID: recordingID,
 		CmRanges:    "{[0,60000)}",
-	}); err != nil {
-		t.Fatalf("seeding CM ranges: %v", err)
-	}
+	}), "seeding CM ranges")
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
@@ -349,9 +328,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 		},
 	}
 	job := ThumbnailJobArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work() error")
 	// chapter boundary 60,000ms is quantized to source frame 59,993ms; the
 	// 30s policy seek therefore maps to 89,993ms on the original timeline.
 	if gotInputSeek != "89.993" {
@@ -359,9 +336,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	}
 
 	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
-	if err != nil {
-		t.Fatalf("loading thumbnail planning state: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading thumbnail planning state")
 	if state.ID != thumbnailID {
 		t.Errorf("thumbnail row id = %d, want unchanged id %d", state.ID, thumbnailID)
 	}
@@ -397,27 +372,21 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 	profile := "cut-profile"
 	cutAssetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindEncoded, &profile, "encoded/cut.mp4", []byte("fake-mp4"))
-	if _, err := pool.Exec(ctx,
+	testutil.MustExec(t, pool, "seeding cut keep ranges",
 		`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, $2::int8multirange)`,
-		cutAssetID, "{[60000,960000)}"); err != nil {
-		t.Fatalf("seeding cut keep ranges: %v", err)
-	}
+		cutAssetID, "{[60000,960000)}")
 	oldRelPath := thumbnailRelPath(recordingID, 0)
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
 	q := sqlcgen.New(pool)
-	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+	testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
 		SeekMs:       30000,
-	}); err != nil {
-		t.Fatalf("seeding old thumbnail seek: %v", err)
-	}
-	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+	}), "seeding old thumbnail seek")
+	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 		RecordingID: recordingID,
 		CmRanges:    "{[0,60000)}",
-	}); err != nil {
-		t.Fatalf("seeding CM ranges: %v", err)
-	}
+	}), "seeding CM ranges")
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
@@ -438,16 +407,12 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 		},
 	}
 	job := ThumbnailJobArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work() error")
 	if gotInputSeek != "30.000" {
 		t.Errorf("cut input -ss = %q, want 30.000 seconds", gotInputSeek)
 	}
 	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
-	if err != nil {
-		t.Fatalf("loading thumbnail planning state: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading thumbnail planning state")
 	if state.SeekMs == nil || *state.SeekMs != 90000 {
 		t.Errorf("cut-only thumbnail seek_ms = %v, want 90000", state.SeekMs)
 	}
@@ -473,18 +438,14 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), tinyJPEG)
 	q := sqlcgen.New(pool)
-	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+	testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
 		SeekMs:       30000,
-	}); err != nil {
-		t.Fatalf("seeding old thumbnail seek: %v", err)
-	}
-	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+	}), "seeding old thumbnail seek")
+	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 		RecordingID: recordingID,
 		CmRanges:    "{[0,60000)}",
-	}); err != nil {
-		t.Fatalf("seeding CM ranges: %v", err)
-	}
+	}), "seeding CM ranges")
 
 	var gotInputSeek string
 	var gotInput []byte
@@ -513,9 +474,7 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 		},
 	}
 	job := ThumbnailJobArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work() error")
 	if gotInputSeek != "89.993" {
 		t.Errorf("uncut encoded input -ss = %q, want 89.993 seconds", gotInputSeek)
 	}
@@ -523,9 +482,7 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 		t.Errorf("ffmpeg input bytes = %q, want the uncut encoded object", gotInput)
 	}
 	state, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: recordingID, StoreName: dbtest.StoreName})
-	if err != nil {
-		t.Fatalf("loading thumbnail planning state: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading thumbnail planning state")
 	if state.SeekMs == nil || *state.SeekMs != 89993 {
 		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
 	}
@@ -544,12 +501,8 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 
 	origRel := "shows/ep2.m2ts"
 	origPath := filepath.Join(mediaDir, filepath.FromSlash(origRel))
-	if err := os.MkdirAll(filepath.Dir(origPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(origPath, []byte("ts"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(origPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(origPath, []byte("ts"), 0o644), "os.WriteFile")
 	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = 2
@@ -577,12 +530,8 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 	}
 
 	job := ThumbnailJobArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("first Work: %v", err)
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("second Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "first Work")
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "second Work")
 
 	// 2 回目は active thumbnail を見てスキップするので ffmpeg は 1 回だけ。
 	if ffmpegCalls != 1 {
@@ -591,12 +540,10 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 
 	// 行は 1 つだけ。
 	var n int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`,
 		recordingID,
-	).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	).Scan(&n), "counting thumbnail media assets")
 	if n != 1 {
 		t.Errorf("thumbnail rows = %d, want 1", n)
 	}
@@ -623,9 +570,7 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 	}
 
 	job := ThumbnailJobArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 }
 
 func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
@@ -642,12 +587,8 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 
 	origRel := "shows/race.m2ts"
 	origPath := filepath.Join(mediaDir, filepath.FromSlash(origRel))
-	if err := os.MkdirAll(filepath.Dir(origPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(origPath, []byte("ts"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(origPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(origPath, []byte("ts"), 0o644), "os.WriteFile")
 	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = 2
@@ -663,21 +604,18 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 
 	// 同じ値で再度 upsert しても既存行の conflict にならず成功する。
 	generation := int64(0)
-	if _, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
+	_, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID:       recordingID,
 		SizeBytes:         int64(len(tinyJPEG)),
 		DerivedGeneration: generation,
-	}); err != nil {
-		t.Fatalf("UpsertDerivedMediaAsset(thumbnail) over existing active row: %v", err)
-	}
+	})
+	testutil.RequireNoError(t, err, "UpsertDerivedMediaAsset(thumbnail) over existing active row")
 
 	var n int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`,
 		recordingID,
-	).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	).Scan(&n), "counting thumbnail media assets")
 	if n != 1 {
 		t.Errorf("thumbnail rows = %d, want 1 (upsert must not duplicate)", n)
 	}
@@ -699,12 +637,8 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 
 	origRel := "shows/ep3.m2ts"
 	origPath := filepath.Join(mediaDir, filepath.FromSlash(origRel))
-	if err := os.MkdirAll(filepath.Dir(origPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(origPath, []byte("ts"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(origPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(origPath, []byte("ts"), 0o644), "os.WriteFile")
 	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = 2
@@ -736,29 +670,23 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	}
 
 	job := ThumbnailJobArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 
 	// tombstone が active に戻り、GetActiveThumbnailMediaAssetID が引ける。
 	id, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), sqlcgen.GetActiveThumbnailMediaAssetIDParams{
 		RecordingID: recordingID, StoreName: testStoreNameArg(),
 	})
-	if err != nil {
-		t.Fatalf("thumbnail asset not revived to active: %v", err)
-	}
+	testutil.RequireNoError(t, err, "thumbnail asset not revived to active")
 	if id == 0 {
 		t.Fatal("thumbnail asset id is 0")
 	}
 
 	// 新規行を積まず、tombstone 行そのものを書き換えている（行は 1 つだけ）。
 	var n int
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`,
 		recordingID,
-	).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	).Scan(&n), "counting thumbnail media assets")
 	if n != 1 {
 		t.Errorf("thumbnail rows = %d, want 1 (tombstone should be revived, not duplicated)", n)
 	}
@@ -802,9 +730,7 @@ func TestExtractFrameBakesSAR(t *testing.T) {
 			return nil, nil
 		},
 	}
-	if err := w.extractFrame(context.Background(), "in.ts", "out.jpg", 3*time.Second); err != nil {
-		t.Fatalf("extractFrame: %v", err)
-	}
+	testutil.RequireNoError(t, w.extractFrame(context.Background(), "in.ts", "out.jpg", 3*time.Second), "extractFrame")
 	i := indexOfArg(gotArgs, "-vf")
 	if i < 0 || i+1 >= len(gotArgs) {
 		t.Fatalf("no -vf filter in args: %v", gotArgs)
@@ -823,18 +749,12 @@ func TestProbeDuration_IgnoresStderr(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"echo '[mpeg2video @ 0x1234] Invalid frame dimensions 0x0.' >&2\n" +
 		"printf '%s\\n' '" + wantSeconds + "'\n"
-	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(ffprobe, []byte(script), 0o755), "os.WriteFile")
 
 	got, err := probeDuration(context.Background(), ffprobe, "input.m2ts", commandOutput)
-	if err != nil {
-		t.Fatalf("probeDuration() error: %v", err)
-	}
+	testutil.RequireNoError(t, err, "probeDuration() error")
 	wantSec, err := strconv.ParseFloat(wantSeconds, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "strconv.ParseFloat")
 	want := time.Duration(wantSec * float64(time.Second))
 	if got != want {
 		t.Errorf("probeDuration() = %v, want %v", got, want)
@@ -852,9 +772,7 @@ func TestCommandOutput_IncludesStderrOnFailure(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"echo 'diagnostic: something went wrong' >&2\n" +
 		"exit 1\n"
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(fake, []byte(script), 0o755), "os.WriteFile")
 
 	_, err := commandOutput(context.Background(), fake)
 	if err == nil {
@@ -927,9 +845,7 @@ func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) 
 
 	dir := t.TempDir()
 	inputPath := filepath.Join(dir, "input.ts")
-	if err := os.WriteFile(inputPath, []byte("fake-input"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(inputPath, []byte("fake-input"), 0o644), "os.WriteFile")
 	outputPath := filepath.Join(dir, "output.bin")
 
 	var logBuf bytes.Buffer
@@ -956,9 +872,7 @@ func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) 
 		t.Errorf("out = %q, want captured stdout to survive the WaitDelay-success path", out)
 	}
 	got, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("reading output file: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading output file")
 	if string(got) != "fake-input" {
 		t.Errorf("output file = %q, want copy of input", got)
 	}
@@ -981,23 +895,17 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 		seedOriginalAsset(t, pool, mediaDir, id, name+"/original.ts", []byte("fake-ts"))
 		rel := thumbnailRelPath(id, 0)
 		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, rel, tinyJPEG)
-		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 			MediaAssetID: thumbID, SeekMs: 30000,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		}), "q.UpsertMediaAssetThumbnailSeek")
 		if ranges != "" {
-			if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: ranges}); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: ranges}), "q.SaveCMDetection")
 		}
 		return id, rel
 	}
 	noChapters, noChaptersRel := seed("nochap", "")
 	trashed, trashedRel := seed("trash", "{[0,60000)}")
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "soft deleting recording", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed)
 	seed("candidate", "{[0,60000)}")
 
 	w := &ThumbnailWorker{
@@ -1011,13 +919,9 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 	}
 	for id, rel := range map[int64]string{noChapters: noChaptersRel, trashed: trashedRel} {
 		job := ThumbnailJobArgs{RecordingID: id}
-		if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-			t.Fatalf("Work(%d) error: %v", id, err)
-		}
+		testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), fmt.Sprintf("Work(%d) error", id))
 		cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: id, StoreName: dbtest.StoreName})
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "q.LockActiveThumbnailMediaAsset")
 		if cur.RelPath != rel {
 			t.Errorf("recording %d rel_path = %q, want unchanged %q", id, cur.RelPath, rel)
 		}

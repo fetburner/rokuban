@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 type cancelDuringCopyReader struct {
@@ -32,16 +33,14 @@ type cancelDuringCopyReader struct {
 func assertMediaAssetCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, wantRelPath string) {
 	t.Helper()
 	var gotStore, gotRelPath, gotState string
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT copy.store, copy.rel_path, copy.state
 FROM media_asset_copies copy
 JOIN media_assets asset ON asset.id = copy.media_asset_id
 WHERE copy.media_asset_id = $1 AND copy.store = $2
   AND copy.generation = asset.derived_generation
   AND copy.state = 'active'`, assetID, dbtest.StoreName,
-	).Scan(&gotStore, &gotRelPath, &gotState); err != nil {
-		t.Fatalf("reading media asset copy %d in store %q: %v", assetID, dbtest.StoreName, err)
-	}
+	).Scan(&gotStore, &gotRelPath, &gotState), fmt.Sprintf("reading media asset copy %d in store %q", assetID, dbtest.StoreName))
 	if gotRelPath != wantRelPath || gotState != "active" {
 		t.Fatalf("media asset copy = %q/%q/%q, want %s/%q/active", gotStore, gotRelPath, gotState, dbtest.StoreName, wantRelPath)
 	}
@@ -74,9 +73,7 @@ const stagedPrefixForTest = ".rokuban-media-asset-"
 func stagedFiles(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.ReadDir")
 	var out []string
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), stagedPrefixForTest) {
@@ -96,9 +93,7 @@ func activeAssetSize(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind s
 	if errors.Is(err, pgx5.ErrNoRows) {
 		return 0, false
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "reading active media asset size")
 	return size, true
 }
 
@@ -113,9 +108,7 @@ func assertMediaAssetSHA256(t *testing.T, pool *pgxpool.Pool, recordingID int64,
 		args = append(args, profile)
 	}
 	var got []byte
-	if err := pool.QueryRow(context.Background(), query, args...).Scan(&got); err != nil {
-		t.Fatalf("reading active %s media asset SHA-256 for recording %d: %v", kind, recordingID, err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), query, args...).Scan(&got), fmt.Sprintf("reading active %s media asset SHA-256 for recording %d", kind, recordingID))
 	want := sha256.Sum256(content)
 	if !bytes.Equal(got, want[:]) {
 		t.Fatalf("active %s SHA-256 = %x, want %x", kind, got, want)
@@ -131,18 +124,14 @@ func TestThumbnailWorkerPublishesThroughObjectStore(t *testing.T) {
 		p.Kind = store.AssetKindThumbnail
 		p.RelPath = thumbnailRelPath(id, 0)
 	})
-	if _, err := pool.Exec(context.Background(), `
-UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, deletedID); err != nil {
-		t.Fatalf("seeding deleted thumbnail copy: %v", err)
-	}
+	testutil.MustExec(t, pool, "seeding deleted thumbnail copy", `
+UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, deletedID)
 	w := &ThumbnailWorker{
 		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
 	relPath := thumbnailRelPath(id, 1)
-	if err := runWorkerViaJobQFake(context.Background(), w, ThumbnailJobArgs{RecordingID: id}); err != nil {
-		t.Fatalf("ThumbnailWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, ThumbnailJobArgs{RecordingID: id}), "ThumbnailWorker.Work")
 	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if got, err := os.ReadFile(canonicalPath); err != nil || !bytes.Equal(got, tinyJPEG) {
 		t.Fatalf("published thumbnail = (%q, %v), want %q", got, err, tinyJPEG)
@@ -152,9 +141,7 @@ UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_
 	}
 	assertMediaAssetSHA256(t, pool, id, "thumbnail", "", tinyJPEG)
 	var assetID int64
-	if err := pool.QueryRow(context.Background(), `SELECT a.id FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.recording_id = $1 AND a.kind = 'thumbnail' AND c.state = 'active'`, id).Scan(&assetID); err != nil {
-		t.Fatalf("reading active thumbnail id: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT a.id FROM media_assets a JOIN media_asset_copies c ON c.media_asset_id = a.id WHERE a.recording_id = $1 AND a.kind = 'thumbnail' AND c.state = 'active'`, id).Scan(&assetID), "reading active thumbnail id")
 	assertMediaAssetCopy(t, pool, assetID, relPath)
 }
 
@@ -243,9 +230,7 @@ func TestSeekTilesWorkerPublishesThroughObjectStore(t *testing.T) {
 	w := &SeekTilesWorker{
 		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, id); err != nil {
-		t.Fatalf("SeekTilesWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, runSeekTilesJob(t, w, id), "SeekTilesWorker.Work")
 	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(seekTilesRelPath(id, 0)))
 	if got, err := os.ReadFile(canonicalPath); err != nil || !bytes.Equal(got, tinyJPEG) {
 		t.Fatalf("published seek tiles = (%q, %v), want %q", got, err, tinyJPEG)
@@ -290,9 +275,7 @@ func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scra
 func writeScratchForTest(t *testing.T, b []byte) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "scratch.jpg")
-	if err := os.WriteFile(p, b, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(p, b, 0o644), "os.WriteFile")
 	return p
 }
 
@@ -304,34 +287,25 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/skip-active.m2ts", nil, []byte("original"))
 	relPath := thumbnailRelPath(id, 0)
 	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(canonicalPath), 0o755), "os.MkdirAll")
 	prior := []byte("committed by another attempt")
-	if err := os.WriteFile(canonicalPath, prior, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(canonicalPath, prior, 0o644), "os.WriteFile")
 	generation := int64(0)
 	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
 		RecordingID: id, SizeBytes: int64(len(prior)),
 		DerivedGeneration: generation,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
+	testutil.RequireNoError(t, err, "seeding active thumbnail asset")
+	_, err = sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
 		Store:        dbtest.StoreName,
 		RelPath:      relPath,
 		State:        "active",
-	}); err != nil {
-		t.Fatalf("seeding active thumbnail copy: %v", err)
-	}
+	})
+	testutil.RequireNoError(t, err, "seeding active thumbnail copy")
 
 	size, published, err := publishThumbnailForTest(pool, mediaDir, id, writeScratchForTest(t, []byte("late attempt bytes")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "publishThumbnailForTest")
 	if published || size != 0 {
 		t.Fatalf("published = %v size = %d, want false 0", published, size)
 	}
@@ -343,10 +317,8 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 		t.Errorf("unpublished pending generation is missing: %v", err)
 	}
 	var pendingState string
-	if err := pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
-		dbtest.StoreName, thumbnailRelPath(id, 1)).Scan(&pendingState); err != nil {
-		t.Fatalf("reading skipped generation state: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
+		dbtest.StoreName, thumbnailRelPath(id, 1)).Scan(&pendingState), "reading skipped generation state")
 	if pendingState != "pending" {
 		t.Errorf("skipped generation state = %q, want pending", pendingState)
 	}
@@ -367,9 +339,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 	dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleting")
 
 	_, published, err := publishThumbnailForTest(pool, mediaDir, id, writeScratchForTest(t, []byte("orphan bytes")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "publishThumbnailForTest")
 	if published {
 		t.Fatal("published = true, want false")
 	}
@@ -382,10 +352,8 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 		t.Error("active thumbnail row created for deleted recording")
 	}
 	var pendingState string
-	if err := pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
-		dbtest.StoreName, key).Scan(&pendingState); err != nil {
-		t.Fatalf("reading skipped thumbnail state: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT c.state FROM media_asset_copies c WHERE c.store = $1 AND c.rel_path = $2`,
+		dbtest.StoreName, key).Scan(&pendingState), "reading skipped thumbnail state")
 	if pendingState != "pending" {
 		t.Errorf("skipped thumbnail state = %q, want pending", pendingState)
 	}
@@ -400,9 +368,7 @@ func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
 	makeDir := func(rel string) string {
 		t.Helper()
 		path := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, os.MkdirAll(path, 0o700), "os.MkdirAll")
 		return path
 	}
 	stale1 := makeDir(filepath.Join("encode", encodeScratchScope(7, "h264")+"-1-old"))
@@ -432,16 +398,12 @@ func TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	live, liveLock, err := newEncodeScratchDir(root, 7, "h264", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeScratchDir")
 	t.Cleanup(func() { _ = closeEncodeScratchLock(liveLock) })
 	var dead []string
 	for _, name := range []string{"-1-dead", "-3-dead"} {
 		d := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+name)
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, os.MkdirAll(d, 0o700), "os.MkdirAll")
 		dead = append(dead, d)
 	}
 
@@ -455,9 +417,7 @@ func TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope(t *testing.T) {
 			t.Errorf("dead sibling %s stat error = %v, want os.ErrNotExist", filepath.Base(d), err)
 		}
 	}
-	if err := closeEncodeScratchLock(liveLock); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, closeEncodeScratchLock(liveLock), "closeEncodeScratchLock")
 	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
 	if _, err := os.Stat(live); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("released attempt stat error = %v, want os.ErrNotExist", err)
@@ -469,19 +429,13 @@ func TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	otherRecording, l1, err := newEncodeScratchDir(root, 70, "h264", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeScratchDir")
 	t.Cleanup(func() { _ = closeEncodeScratchLock(l1) })
 	otherProfile, l2, err := newEncodeScratchDir(root, 7, "cut", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeScratchDir")
 	t.Cleanup(func() { _ = closeEncodeScratchLock(l2) })
 	dead := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+"-1-dead")
-	if err := os.MkdirAll(dead, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(dead, 0o700), "os.MkdirAll")
 
 	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
 
@@ -501,16 +455,10 @@ func TestRemoveStaleEncodeScratchWaitsForScratchCreationGate(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	dead := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+"-1-dead")
-	if err := os.MkdirAll(dead, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(dead, 0o700), "os.MkdirAll")
 	gate, err := openEncodeScratchGate(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := flockScratch(gate, syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "openEncodeScratchGate")
+	testutil.RequireNoError(t, flockScratch(gate, syscall.LOCK_EX), "flockScratch")
 	done := make(chan struct{})
 	go func() {
 		removeStaleEncodeScratch(root, 7, "h264", slog.Default())
@@ -524,9 +472,7 @@ func TestRemoveStaleEncodeScratchWaitsForScratchCreationGate(t *testing.T) {
 	if _, err := os.Stat(dead); err != nil {
 		t.Errorf("dead scratch removed while gate held: %v", err)
 	}
-	if err := closeEncodeScratchLock(gate); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, closeEncodeScratchLock(gate), "closeEncodeScratchLock")
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -542,12 +488,8 @@ func TestNewEncodeScratchDirWaitsForScratchCreationGate(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	gate, err := openEncodeScratchGate(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := flockScratch(gate, syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "openEncodeScratchGate")
+	testutil.RequireNoError(t, flockScratch(gate, syscall.LOCK_EX), "flockScratch")
 	type result struct {
 		lock *os.File
 		err  error
@@ -562,9 +504,7 @@ func TestNewEncodeScratchDirWaitsForScratchCreationGate(t *testing.T) {
 		t.Fatal("scratch creation ran while the gate was held")
 	case <-time.After(200 * time.Millisecond):
 	}
-	if err := closeEncodeScratchLock(gate); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, closeEncodeScratchLock(gate), "closeEncodeScratchLock")
 	select {
 	case r := <-done:
 		if r.err != nil {
@@ -580,9 +520,7 @@ func TestNewEncodeScratchDirUsesRecordingProfileAndAttempt(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	dir, lock, err := newEncodeScratchDir(root, 42, "h264", 3)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeScratchDir")
 	t.Cleanup(func() { _ = closeEncodeScratchLock(lock) })
 
 	wantPrefix := filepath.Join(root, "encode", "42-72a6c9135f1b59693330c8ae39e10e2c1fcc87a6c40865ca66b59d24dadacf60-3-")
@@ -599,9 +537,7 @@ func TestNewEncodeScratchDirSupportsLongProfileNames(t *testing.T) {
 	root := t.TempDir()
 	profile := strings.Repeat("profile", 128)
 	dir, lock, err := newEncodeScratchDir(root, 42, profile, 3)
-	if err != nil {
-		t.Fatalf("newEncodeScratchDir with long profile name: %v", err)
-	}
+	testutil.RequireNoError(t, err, "newEncodeScratchDir with long profile name")
 	t.Cleanup(func() { _ = closeEncodeScratchLock(lock) })
 	if got, want := filepath.Base(dir), fmt.Sprintf("42-%x-3-", sha256.Sum256([]byte(profile))); !strings.HasPrefix(got, want) {
 		t.Errorf("encode scratch directory = %q, want prefix %q", got, want)
@@ -615,13 +551,9 @@ func TestNewWorkerScratchDirIsUniqueForSameRecording(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	first, err := newWorkerScratchDir(root, "thumbnail", "42-")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newWorkerScratchDir")
 	second, err := newWorkerScratchDir(root, "thumbnail", "42-")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newWorkerScratchDir")
 	if first == second {
 		t.Fatalf("scratch directory reused: %q", first)
 	}
@@ -660,18 +592,12 @@ func TestNewDomainScratchDirClearsPreviousResidue(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	dir, err := newDomainScratchDir(root, "cm_detect", "42-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newDomainScratchDir")
 	marker := filepath.Join(dir, "stale-output")
-	if err := os.WriteFile(marker, []byte("stale"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(marker, []byte("stale"), 0o600), "os.WriteFile")
 
 	otherJobDir, err := newDomainScratchDir(root, "cm_detect", "43-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newDomainScratchDir")
 	if otherJobDir == dir {
 		t.Fatalf("different jobs share scratch directory %q", dir)
 	}
@@ -680,9 +606,7 @@ func TestNewDomainScratchDirClearsPreviousResidue(t *testing.T) {
 	}
 
 	restartedDir, err := newDomainScratchDir(root, "cm_detect", "42-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newDomainScratchDir")
 	if restartedDir != dir {
 		t.Fatalf("restarted scratch = %q, want stable path %q", restartedDir, dir)
 	}
