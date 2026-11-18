@@ -27,7 +27,7 @@ const (
 //
 // encode / thumbnail / ts_scan の reconcile と削除 reconcile は ScaledJob の --once で
 // 動くため、プロセス内ゲージは常駐プロセスの /metrics から読めない。この collector は
-// 完走時刻を保存した表（reconcile_pass_snapshots / delete_reconcile_snapshots）と、
+// 完走時刻を保存した loop_success_markers（loop = reconcile_pass / delete_reconcile）と、
 // 既存の storage_sync.observed_at を読んで、どの Pod からも同じ値を出す。
 //
 // 削除の集合は削除パスを書く worker がある置き場、容量観測の集合は FS の置き場とする。
@@ -36,8 +36,7 @@ const (
 // 3 つの読み取りは独立に扱う。失敗した読み取りの系列だけを落とし、0 に置き換えずに
 // reconcileMarkerScrapeErrors を進める（LoopPassCollector と同じ方針）。
 type ReconcileMarkerCollector struct {
-	passes       store.ReconcilePassMarkers
-	deletes      store.DeleteReconcileMarkers
+	markers      store.LoopMarkers
 	storage      store.StorageSyncReader
 	stores       []string
 	deleteStores []string
@@ -52,7 +51,7 @@ type ReconcileMarkerCollector struct {
 
 // NewReconcileMarkerCollector は全件パスの完走時刻と FS の置き場の観測時刻を出す collector を作る。
 // stores は FS の置き場、deleteStores は削除パスを書く worker がある置き場の名前。
-func NewReconcileMarkerCollector(passes store.ReconcilePassMarkers, deletes store.DeleteReconcileMarkers, storage store.StorageSyncReader, stores []string, deleteStores []string) *ReconcileMarkerCollector {
+func NewReconcileMarkerCollector(markers store.LoopMarkers, storage store.StorageSyncReader, stores []string, deleteStores []string) *ReconcileMarkerCollector {
 	names := slices.Clone(stores)
 	slices.Sort(names)
 	readErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -64,8 +63,7 @@ func NewReconcileMarkerCollector(passes store.ReconcilePassMarkers, deletes stor
 		readErrors.WithLabelValues(source)
 	}
 	return &ReconcileMarkerCollector{
-		passes:       passes,
-		deletes:      deletes,
+		markers:      markers,
 		storage:      storage,
 		stores:       names,
 		deleteStores: slices.Clone(deleteStores),
@@ -120,7 +118,7 @@ func (c *ReconcileMarkerCollector) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (c *ReconcileMarkerCollector) collectPasses(ctx context.Context, ch chan<- prometheus.Metric) {
-	saved, err := c.passes.ReadReconcilePassMarkers(ctx)
+	saved, err := c.markers.ReadLoopMarkers(ctx, store.LoopReconcilePass)
 	if err != nil {
 		c.recordError(reconcileMarkerSourcePass, err)
 		return
@@ -138,7 +136,7 @@ func (c *ReconcileMarkerCollector) collectPasses(ctx context.Context, ch chan<- 
 }
 
 func (c *ReconcileMarkerCollector) collectDeletes(ctx context.Context, ch chan<- prometheus.Metric) {
-	saved, err := c.deletes.ReadDeleteReconcileMarkers(ctx)
+	saved, err := c.markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 	if err != nil {
 		c.recordError(reconcileMarkerSourceDelete, err)
 		return

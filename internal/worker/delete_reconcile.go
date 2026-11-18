@@ -114,7 +114,7 @@ type DeleteReconcileWorker struct {
 	Webhook *webhook.Client
 
 	// Markers は置き場ごとの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
-	Markers store.DeleteReconcileMarkers
+	Markers store.LoopMarkers
 }
 
 // markDeleteReconcile は指定した置き場の削除 reconcile の完走を記録する。

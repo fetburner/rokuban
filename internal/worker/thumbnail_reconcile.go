@@ -58,7 +58,7 @@ type ThumbnailReconcileWorker struct {
 	RowLimit int32
 
 	// Markers は全件パスの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
-	Markers store.ReconcilePassMarkers
+	Markers store.LoopMarkers
 }
 
 // enqueueThumbnail は原本のコピーがある置き場（storeName。無ければ空）のキューへ thumbnail を積む。

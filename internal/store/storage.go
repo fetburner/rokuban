@@ -87,3 +87,10 @@ type StorageObservation interface {
 	// 経過時間は候補を書いた DB の時計で比べる。
 	ListAgedMissingMediaAssets(ctx context.Context, age time.Duration) ([]AgedMissingMediaAsset, error)
 }
+
+// StorageSyncReader は置き場ごと・root ごとの最後の観測時刻を読む契約である。
+// 書き込みは StorageObservation が持つ。監視の読み取りだけを切り出す。
+type StorageSyncReader interface {
+	// ListStorageSync は全置き場の root 別観測値を返す。
+	ListStorageSync(ctx context.Context) ([]StorageSync, error)
+}

@@ -93,12 +93,8 @@ type Deps struct {
 	ProgramSearch store.ProgramSearch
 	// RulerPass は ruler が予約の導出と適用に使う永続化契約。
 	RulerPass store.RulerPass
-	// LoopMarkers は ruler と record_sweep の成功時刻を記録する契約。
+	// LoopMarkers はループの成功時刻（ruler / record_sweep / 全件パス / 削除 reconcile）を記録し、監視が読む契約。
 	LoopMarkers store.LoopMarkers
-	// ReconcilePassMarkers は encode / thumbnail / ts_scan の全件パスの完走時刻を記録する契約。
-	ReconcilePassMarkers store.ReconcilePassMarkers
-	// DeleteReconcileMarkers は置き場ごとの削除 reconcile の完走時刻を記録する契約。
-	DeleteReconcileMarkers store.DeleteReconcileMarkers
 	// Breakers は worker がサーキットブレーカーを発動・観測する契約。
 	Breakers store.Breakers
 	// NeverScheduled は、番組終了後に schedule が観測されなかった事実を記録・削除する契約。
@@ -272,7 +268,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
-		Markers:  deps.ReconcilePassMarkers,
+		Markers:  deps.LoopMarkers,
 	})
 	riveradapter.Register(workers, &EpgSyncWorker{
 		Enqueuer:       deps.Enqueuer,
@@ -315,7 +311,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.MediaReconcile,
-		Markers:  deps.ReconcilePassMarkers,
+		Markers:  deps.LoopMarkers,
 	})
 	riveradapter.Register(workers, &CMDetectReconcileWorker{
 		Enqueuer:       deps.Enqueuer,
@@ -335,7 +331,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		ObjectStores: deps.StorageObjects,
 		ScratchDir:   deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan, Locator: deps.OriginalLocator, Markers: deps.ReconcilePassMarkers})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
 	return workers
 }
 
@@ -451,6 +447,6 @@ func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
 		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
 		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
 		Webhook:                deps.Webhook,
-		Markers:                deps.DeleteReconcileMarkers,
+		Markers:                deps.LoopMarkers,
 	}
 }

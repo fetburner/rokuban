@@ -26,7 +26,19 @@ func (m *tsScanMarkerRecorder) MarkReconcilePass(_ context.Context, pass string)
 	return nil
 }
 
-func (m *tsScanMarkerRecorder) ReadReconcilePassMarkers(context.Context) (map[string]time.Time, error) {
+func (m *tsScanMarkerRecorder) MarkRulerPasses(context.Context, []string) error {
+	return errors.New("not used by the worker")
+}
+
+func (m *tsScanMarkerRecorder) MarkRecordSweep(context.Context, string) error {
+	return errors.New("not used by the worker")
+}
+
+func (m *tsScanMarkerRecorder) MarkDeleteReconcile(context.Context, string) error {
+	return errors.New("not used by the worker")
+}
+
+func (m *tsScanMarkerRecorder) ReadLoopMarkers(context.Context, string) (map[string]time.Time, error) {
 	return nil, errors.New("not used by the worker")
 }
 

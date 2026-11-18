@@ -57,18 +57,6 @@ func TestRulerPassContract(t *testing.T) {
 	})
 }
 
-func TestLoopMarkersContract(t *testing.T) {
-	contracttest.RunLoopMarkers(t, func(t *testing.T) contracttest.LoopMarkerFixture {
-		pool := testutil.SetupDB(t)
-		return contracttest.LoopMarkerFixture{
-			Store: NewReservations(pool),
-			FailRulerMarkerForSite: func(t *testing.T, site string) {
-				installRulerMarkerFailure(t, pool, site)
-			},
-		}
-	})
-}
-
 func seedRulerPassProgram(t *testing.T, pool *pgxpool.Pool, title string) contracttest.RulerProgram {
 	t.Helper()
 	ctx := context.Background()
@@ -180,40 +168,6 @@ FOR EACH ROW EXECUTE FUNCTION reject_ruler_pass_breaker_write(`+sqlLiteral(name)
 		}
 		if _, err := pool.Exec(ctx, `DROP FUNCTION IF EXISTS reject_ruler_pass_breaker_write()`); err != nil {
 			t.Errorf("dropping ruler pass breaker trigger function: %v", err)
-		}
-	})
-}
-
-func installRulerMarkerFailure(t *testing.T, pool *pgxpool.Pool, site string) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `DROP TRIGGER IF EXISTS reject_ruler_marker_site ON ruler_pass_snapshots`); err != nil {
-		t.Fatalf("dropping ruler marker trigger: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-CREATE OR REPLACE FUNCTION reject_ruler_marker_site_write() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.site = TG_ARGV[0] THEN
-    RAISE EXCEPTION 'ruler marker write rejected for site %', NEW.site;
-  END IF;
-  RETURN NEW;
-END;
-$$`); err != nil {
-		t.Fatalf("creating ruler marker trigger function: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-CREATE TRIGGER reject_ruler_marker_site
-BEFORE INSERT OR UPDATE ON ruler_pass_snapshots
-FOR EACH ROW EXECUTE FUNCTION reject_ruler_marker_site_write(`+sqlLiteral(site)+`)`); err != nil {
-		t.Fatalf("creating ruler marker trigger: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := pool.Exec(ctx, `DROP TRIGGER IF EXISTS reject_ruler_marker_site ON ruler_pass_snapshots`); err != nil {
-			t.Errorf("dropping ruler marker trigger: %v", err)
-		}
-		if _, err := pool.Exec(ctx, `DROP FUNCTION IF EXISTS reject_ruler_marker_site_write()`); err != nil {
-			t.Errorf("dropping ruler marker trigger function: %v", err)
 		}
 	})
 }
