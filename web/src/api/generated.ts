@@ -1783,7 +1783,7 @@ export interface StorageRoot {
 }
 
 export type GetLabelRuleValueKeyParams = {
-value: string;
+  value: string;
 };
 
 export type GetLabelRuleValueKey200 = {
@@ -1792,127 +1792,109 @@ export type GetLabelRuleValueKey200 = {
 };
 
 export type ListProgramsParams = {
-/**
- * 時間窓の開始（この時刻より後に終わる番組が対象）
- */
-start: string;
-/**
- * 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日
- */
-end: string;
-/**
- * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
- * @items.minimum 1
- * @items.maximum 6553565535
- */
-service?: number[];
+  /** 時間窓の開始（この時刻より後に終わる番組が対象） */
+  start: string;
+  /** 時間窓の終了（この時刻より前に始まる番組が対象）。start からの幅は最大 7 日 */
+  end: string;
+  /**
+   * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+   * @items.minimum 1
+   * @items.maximum 6553565535
+   */
+  service?: number[];
 };
 
 export type ListRecordingsParams = {
-/**
- * キーワード（部分一致）。qTarget が対象列を決める
- */
-q?: string;
-qTarget?: ListRecordingsQTarget;
-/**
- * genre_lv1（ジャンル大分類）との重なり。複数指定可
- * @items.minimum 0
- * @items.maximum 15
- */
-genre?: number[];
-channelType?: ListRecordingsChannelTypeItem[];
-/**
- * mirakc サイト名。複数指定は OR。site 名の構文は
- * `config.mirakcs` レジストリと同じ（`internal/config` の
- * `mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには
- * せず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、
- * 存在しない値の指定は空の結果として素直に読める。
- * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*$
- */
-site?: string[];
-/**
- * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
- *
- * **site は含めない**（`site` パラメータが別軸）。他の絞り込み軸と
- * 同じく「軸内は OR、軸間は AND」で、`?site=tokyo&service=400101` は
- * 「tokyo の BS 101」を意味する。
- * @items.minimum 1
- * @items.maximum 6553565535
- */
-service?: number[];
-/**
- * recordings.status の CHECK と一致させた 4 値（'canceled' は issue #130 で
- * CHECK に追加済み）。
- *
- * `status=failed` は通常一覧（`trash=false`）に限り supersede 済みの
- * failed 行を返さない。本物の record が観測されて置き換わった擬似
- * failed 行を「録画失敗」として返さないため（ホームの警告が偽陽性を
- * 出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。
- */
-status?: ListRecordingsStatus;
-/**
- * `queued` / `running` はエンコード待機列の状態。`queued` は現在の desired で
- * 未観測のプロファイルがあり実行中の試行が無い録画、`running` は実行中の試行が
- * ある録画で、`GET /api/encode-queue` と同じ行から導出する。1 本に両方の行が
- * あれば両方の絞り込みに現れる。`awaiting_review` は、確認待ちの cut プロファイルが
- * ある録画で、待機列とは別の述語から録画単位で導出する。
- */
-encodeState?: ListRecordingsEncodeState;
-source?: ListRecordingsSource;
-/**
- * 特定ルール由来の録画に絞る
- */
-ruleId?: number;
-/**
- * 番組ハブ（`/recordings/$id/series`）の一覧。指定した録画 id の**実効
- * シリーズ**と同じ実効シリーズの録画だけを返す（実効シリーズは分類
- * ルールが当たればその値、当たらなければ自動キー）。
- *
- * **行の同一性（1 行 = 1 録画）は変えない。** N 予約で同じ放送が 2 拠点
- * から録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の
- * 「次のエピソード」の表示だけである。
- *
- * 起点の実効シリーズが NULL（自動キーを導出できず、どのルールも
- * 当たらない録画）なら 0 件を 200 で返す。そのため UI は
- * `Recording.series` が null の録画にハブの導線を出さない。存在しない
- * id も 0 件になる（起点は録画の行そのもので、行が無ければ値も無い）。
- * 完全削除（purge）済みの tombstone は行が残るので、そのシリーズを
- * 返す（`recording_series` は `purged_at` で絞らない）。
- *
- * `superseded_at` が立った行は外れる（本物の record に枠を譲った
- * 擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。
- *
- * キーセットページングは他の場合と同じ `(program_start_at, id)` の
- * 複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。
- * シリーズ内の並びは放送日時順で、話数は持たない。
- */
-seriesOf?: number;
-/**
- * program_start_at がこの時刻以上
- */
-from?: string;
-/**
- * program_start_at がこの時刻未満
- */
-to?: string;
-order?: ListRecordingsOrder;
-/**
- * true のときごみ箱（論理削除済み）を返す
- */
-trash?: boolean;
-/**
- * @minimum 1
- * @maximum 200
- */
-limit?: number;
-/**
- * キーセットカーソル。前ページ最後の要素の startAt。beforeId と対で使う
- */
-before?: string;
-/**
- * キーセットカーソル。前ページ最後の要素の id。before と対で使う
- */
-beforeId?: number;
+  /** キーワード（部分一致）。qTarget が対象列を決める */
+  q?: string;
+  qTarget?: ListRecordingsQTarget;
+  /**
+   * genre_lv1（ジャンル大分類）との重なり。複数指定可
+   * @items.minimum 0
+   * @items.maximum 15
+   */
+  genre?: number[];
+  channelType?: ListRecordingsChannelTypeItem[];
+  /**
+   * mirakc サイト名。複数指定は OR。site 名の構文は
+   * `config.mirakcs` レジストリと同じ（`internal/config` の
+   * `mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには
+   * せず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、
+   * 存在しない値の指定は空の結果として素直に読める。
+   * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*$
+   */
+  site?: string[];
+  /**
+   * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+   *
+   * **site は含めない**（`site` パラメータが別軸）。他の絞り込み軸と
+   * 同じく「軸内は OR、軸間は AND」で、`?site=tokyo&service=400101` は
+   * 「tokyo の BS 101」を意味する。
+   * @items.minimum 1
+   * @items.maximum 6553565535
+   */
+  service?: number[];
+  /**
+   * recordings.status の CHECK と一致させた 4 値（'canceled' は issue #130 で
+   * CHECK に追加済み）。
+   *
+   * `status=failed` は通常一覧（`trash=false`）に限り supersede 済みの
+   * failed 行を返さない。本物の record が観測されて置き換わった擬似
+   * failed 行を「録画失敗」として返さないため（ホームの警告が偽陽性を
+   * 出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。
+   */
+  status?: ListRecordingsStatus;
+  /**
+   * `queued` / `running` はエンコード待機列の状態。`queued` は現在の desired で
+   * 未観測のプロファイルがあり実行中の試行が無い録画、`running` は実行中の試行が
+   * ある録画で、`GET /api/encode-queue` と同じ行から導出する。1 本に両方の行が
+   * あれば両方の絞り込みに現れる。`awaiting_review` は、確認待ちの cut プロファイルが
+   * ある録画で、待機列とは別の述語から録画単位で導出する。
+   */
+  encodeState?: ListRecordingsEncodeState;
+  source?: ListRecordingsSource;
+  /** 特定ルール由来の録画に絞る */
+  ruleId?: number;
+  /**
+   * 番組ハブ（`/recordings/$id/series`）の一覧。指定した録画 id の**実効
+   * シリーズ**と同じ実効シリーズの録画だけを返す（実効シリーズは分類
+   * ルールが当たればその値、当たらなければ自動キー）。
+   *
+   * **行の同一性（1 行 = 1 録画）は変えない。** N 予約で同じ放送が 2 拠点
+   * から録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の
+   * 「次のエピソード」の表示だけである。
+   *
+   * 起点の実効シリーズが NULL（自動キーを導出できず、どのルールも
+   * 当たらない録画）なら 0 件を 200 で返す。そのため UI は
+   * `Recording.series` が null の録画にハブの導線を出さない。存在しない
+   * id も 0 件になる（起点は録画の行そのもので、行が無ければ値も無い）。
+   * 完全削除（purge）済みの tombstone は行が残るので、そのシリーズを
+   * 返す（`recording_series` は `purged_at` で絞らない）。
+   *
+   * `superseded_at` が立った行は外れる（本物の record に枠を譲った
+   * 擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。
+   *
+   * キーセットページングは他の場合と同じ `(program_start_at, id)` の
+   * 複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。
+   * シリーズ内の並びは放送日時順で、話数は持たない。
+   */
+  seriesOf?: number;
+  /** program_start_at がこの時刻以上 */
+  from?: string;
+  /** program_start_at がこの時刻未満 */
+  to?: string;
+  order?: ListRecordingsOrder;
+  /** true のときごみ箱（論理削除済み）を返す */
+  trash?: boolean;
+  /**
+   * @minimum 1
+   * @maximum 200
+   */
+  limit?: number;
+  /** キーセットカーソル。前ページ最後の要素の startAt。beforeId と対で使う */
+  before?: string;
+  /** キーセットカーソル。前ページ最後の要素の id。before と対で使う */
+  beforeId?: number;
 };
 
 export type ListRecordingsQTarget = typeof ListRecordingsQTarget[keyof typeof ListRecordingsQTarget];
@@ -1970,48 +1952,38 @@ export const ListRecordingsOrder = {
 } as const;
 
 export type ListRecordingShelvesParams = {
-/**
- * 棚の軸。M8 は series だけ。
- */
-key?: ListRecordingShelvesKey;
-/**
- * キーワード（部分一致）。`GET /api/recordings` の `q` と同じ
- */
-q?: string;
-qTarget?: ListRecordingShelvesQTarget;
-/**
- * genre_lv1（ジャンル大分類）との重なり。複数指定可
- * @items.minimum 0
- * @items.maximum 15
- */
-genre?: number[];
-channelType?: ListRecordingShelvesChannelTypeItem[];
-/**
- * mirakc サイト名。複数指定は OR。`GET /api/recordings` の `site` と同じ
- * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*$
- */
-site?: string[];
-/**
- * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
- * site は含めない（`GET /api/recordings` の `service` と同じ）
- * @items.minimum 1
- * @items.maximum 6553565535
- */
-service?: number[];
-status?: ListRecordingShelvesStatus;
-source?: ListRecordingShelvesSource;
-/**
- * 特定ルール由来の録画に絞る
- */
-ruleId?: number;
-/**
- * program_start_at がこの時刻以上
- */
-from?: string;
-/**
- * program_start_at がこの時刻未満
- */
-to?: string;
+  /** 棚の軸。M8 は series だけ。 */
+  key?: ListRecordingShelvesKey;
+  /** キーワード（部分一致）。`GET /api/recordings` の `q` と同じ */
+  q?: string;
+  qTarget?: ListRecordingShelvesQTarget;
+  /**
+   * genre_lv1（ジャンル大分類）との重なり。複数指定可
+   * @items.minimum 0
+   * @items.maximum 15
+   */
+  genre?: number[];
+  channelType?: ListRecordingShelvesChannelTypeItem[];
+  /**
+   * mirakc サイト名。複数指定は OR。`GET /api/recordings` の `site` と同じ
+   * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*$
+   */
+  site?: string[];
+  /**
+   * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+   * site は含めない（`GET /api/recordings` の `service` と同じ）
+   * @items.minimum 1
+   * @items.maximum 6553565535
+   */
+  service?: number[];
+  status?: ListRecordingShelvesStatus;
+  source?: ListRecordingShelvesSource;
+  /** 特定ルール由来の録画に絞る */
+  ruleId?: number;
+  /** program_start_at がこの時刻以上 */
+  from?: string;
+  /** program_start_at がこの時刻未満 */
+  to?: string;
 };
 
 export type ListRecordingShelvesKey = typeof ListRecordingShelvesKey[keyof typeof ListRecordingShelvesKey];
@@ -2067,18 +2039,34 @@ export type PutRecordingPlaybackPositionBody = {
 };
 
 export type ListCapacityOveragesParams = {
-/**
- * 時間窓の開始（この時刻より後に終わる区間が対象）
- */
-start: string;
-/**
- * 時間窓の終了（この時刻より前に始まる区間が対象）
- */
-end: string;
+  /** 時間窓の開始（この時刻より後に終わる区間が対象） */
+  start: string;
+  /** 時間窓の終了（この時刻より前に始まる区間が対象） */
+  end: string;
 };
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
 
+
+const getHeaders = (...sources: (RequestInit['headers'] | Record<string, string | undefined>)[]) => {
+  const seen = new Set<string>();
+  const layers: [string, string | readonly string[]][][] = [];
+  for (const source of sources.reverse()) {
+    if (!source) continue;
+    const entries = source instanceof Headers
+      ? source.entries()
+      : Symbol.iterator in source
+        ? Array.from(source as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string])
+        : Object.entries<string | readonly string[] | undefined>(source);
+    const layer: [string, string | readonly string[]][] = [];
+    for (const [name, value] of entries) {
+      if (value !== undefined && !seen.has(name.toLowerCase())) layer.push([name, value]);
+    }
+    for (const [name] of layer) seen.add(name.toLowerCase());
+    layers.push(layer);
+  }
+  return Object.fromEntries(layers.reverse().flat()) as Extract<RequestInit['headers'], Record<string, unknown>>;
+};
 
 
 const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKey: K } => {
@@ -2163,6 +2151,7 @@ export type HealthzQueryResult = NonNullable<Awaited<ReturnType<typeof healthz>>
 export type HealthzQueryError = unknown
 
 
+/** @summary Health check */
 export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -2173,6 +2162,7 @@ export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError =
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Health check */
 export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -2183,14 +2173,12 @@ export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError =
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Health check */
 export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary Health check
- */
-
+/** @summary Health check */
 export function useHealthz<TData = Awaited<ReturnType<typeof healthz>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -2302,6 +2290,28 @@ export type ReadyzQueryResult = NonNullable<Awaited<ReturnType<typeof readyz>>>
 export type ReadyzQueryError = HealthResponse
 
 
+/**
+ * **ロードバランサ（k8s の Service）向けの readiness 専用**。DB への
+ * ping が通れば 200、通らなければ 503 を返す。
+ *
+ * `/healthz`（liveness）とは目的が違うので分けている。liveness に依存
+ * チェックを入れると DB の瞬断で全 Pod が同時に再起動する（回復を待つ
+ * べき状況で、回復を最も妨げる挙動）。一方 readiness で DB を見ないと、
+ * DB に繋がっていない Pod に Service がトラフィックを振る窓が開く。
+ *
+ * **見るのは DB への ping だけで、mirakc への到達性は見ない**（不変条件
+ * 1「api ロールは mirakc に問い合わせない」。ハイブリッド構成では
+ * クラウド側 api から mirakc に到達できないのが正常状態）。
+ *
+ * `/healthz` / `/metrics` と同じく Host allowlist を免除する
+ * （probe は Pod IP で叩くので allowlist に載せようがない）。
+ *
+ * **`/metrics` と違ってこの spec に載せる**のは、JSON を返す
+ * リクエスト/レスポンスの契約であり、`/healthz` と同じ形だから
+ * （`/metrics` は Prometheus の text exposition format なので載せない）。
+ * フロントから呼ぶ面ではないので、生成クライアントの readyz は使われない。
+ * @summary Readiness check (DB ping)
+ */
 export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -2312,6 +2322,28 @@ export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = H
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * **ロードバランサ（k8s の Service）向けの readiness 専用**。DB への
+ * ping が通れば 200、通らなければ 503 を返す。
+ *
+ * `/healthz`（liveness）とは目的が違うので分けている。liveness に依存
+ * チェックを入れると DB の瞬断で全 Pod が同時に再起動する（回復を待つ
+ * べき状況で、回復を最も妨げる挙動）。一方 readiness で DB を見ないと、
+ * DB に繋がっていない Pod に Service がトラフィックを振る窓が開く。
+ *
+ * **見るのは DB への ping だけで、mirakc への到達性は見ない**（不変条件
+ * 1「api ロールは mirakc に問い合わせない」。ハイブリッド構成では
+ * クラウド側 api から mirakc に到達できないのが正常状態）。
+ *
+ * `/healthz` / `/metrics` と同じく Host allowlist を免除する
+ * （probe は Pod IP で叩くので allowlist に載せようがない）。
+ *
+ * **`/metrics` と違ってこの spec に載せる**のは、JSON を返す
+ * リクエスト/レスポンスの契約であり、`/healthz` と同じ形だから
+ * （`/metrics` は Prometheus の text exposition format なので載せない）。
+ * フロントから呼ぶ面ではないので、生成クライアントの readyz は使われない。
+ * @summary Readiness check (DB ping)
+ */
 export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -2322,14 +2354,54 @@ export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = H
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * **ロードバランサ（k8s の Service）向けの readiness 専用**。DB への
+ * ping が通れば 200、通らなければ 503 を返す。
+ *
+ * `/healthz`（liveness）とは目的が違うので分けている。liveness に依存
+ * チェックを入れると DB の瞬断で全 Pod が同時に再起動する（回復を待つ
+ * べき状況で、回復を最も妨げる挙動）。一方 readiness で DB を見ないと、
+ * DB に繋がっていない Pod に Service がトラフィックを振る窓が開く。
+ *
+ * **見るのは DB への ping だけで、mirakc への到達性は見ない**（不変条件
+ * 1「api ロールは mirakc に問い合わせない」。ハイブリッド構成では
+ * クラウド側 api から mirakc に到達できないのが正常状態）。
+ *
+ * `/healthz` / `/metrics` と同じく Host allowlist を免除する
+ * （probe は Pod IP で叩くので allowlist に載せようがない）。
+ *
+ * **`/metrics` と違ってこの spec に載せる**のは、JSON を返す
+ * リクエスト/レスポンスの契約であり、`/healthz` と同じ形だから
+ * （`/metrics` は Prometheus の text exposition format なので載せない）。
+ * フロントから呼ぶ面ではないので、生成クライアントの readyz は使われない。
+ * @summary Readiness check (DB ping)
+ */
 export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * **ロードバランサ（k8s の Service）向けの readiness 専用**。DB への
+ * ping が通れば 200、通らなければ 503 を返す。
+ *
+ * `/healthz`（liveness）とは目的が違うので分けている。liveness に依存
+ * チェックを入れると DB の瞬断で全 Pod が同時に再起動する（回復を待つ
+ * べき状況で、回復を最も妨げる挙動）。一方 readiness で DB を見ないと、
+ * DB に繋がっていない Pod に Service がトラフィックを振る窓が開く。
+ *
+ * **見るのは DB への ping だけで、mirakc への到達性は見ない**（不変条件
+ * 1「api ロールは mirakc に問い合わせない」。ハイブリッド構成では
+ * クラウド側 api から mirakc に到達できないのが正常状態）。
+ *
+ * `/healthz` / `/metrics` と同じく Host allowlist を免除する
+ * （probe は Pod IP で叩くので allowlist に載せようがない）。
+ *
+ * **`/metrics` と違ってこの spec に載せる**のは、JSON を返す
+ * リクエスト/レスポンスの契約であり、`/healthz` と同じ形だから
+ * （`/metrics` は Prometheus の text exposition format なので載せない）。
+ * フロントから呼ぶ面ではないので、生成クライアントの readyz は使われない。
  * @summary Readiness check (DB ping)
  */
-
 export function useReadyz<TData = Awaited<ReturnType<typeof readyz>>, TError = HealthResponse>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof readyz>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -2415,6 +2487,7 @@ export type GetVersionQueryResult = NonNullable<Awaited<ReturnType<typeof getVer
 export type GetVersionQueryError = unknown
 
 
+/** @summary Get server version */
 export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -2425,6 +2498,7 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get server version */
 export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -2435,14 +2509,12 @@ export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get server version */
 export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary Get server version
- */
-
+/** @summary Get server version */
 export function useGetVersion<TData = Awaited<ReturnType<typeof getVersion>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getVersion>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -2542,6 +2614,23 @@ export type GetCapabilitiesQueryResult = NonNullable<Awaited<ReturnType<typeof g
 export type GetCapabilitiesQueryError = unknown
 
 
+/**
+ * **オプション機能の導線を出してよいかをフロントが判断するための公開面**
+ * （issue #209）。フロントは config を読めない（api ロールは設定ファイルを
+ * 配らない。不変条件 1）ため、`live.enabled` のように「無効なら導線ごと
+ * 消したい」設定は API で観測できる必要がある。
+ *
+ * **設定値そのものではなく「導線を出してよいか」だけを返す。** 返すのは
+ * 真偽値だけで、config のキー名・値・ffmpeg のパス・プロファイル定義は
+ * 載せない（`GET /api/encode-profiles` / `GET /api/sites` と同じ規律）。
+ *
+ * **機能が「有効」であることは「今すぐ使える」ことを意味しない。**
+ * `live: true` はこのデプロイの config が `live.enabled: true` である
+ * ことだけを表し、streamer ロールが実際に動いている / チューナーが空いて
+ * いることは表さない（後者はプレイリスト取得の 404 / 503 として出る。
+ * docs/frontend/live.md）。
+ * @summary Report which optional features this deployment has enabled
+ */
 export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -2552,6 +2641,23 @@ export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabili
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * **オプション機能の導線を出してよいかをフロントが判断するための公開面**
+ * （issue #209）。フロントは config を読めない（api ロールは設定ファイルを
+ * 配らない。不変条件 1）ため、`live.enabled` のように「無効なら導線ごと
+ * 消したい」設定は API で観測できる必要がある。
+ *
+ * **設定値そのものではなく「導線を出してよいか」だけを返す。** 返すのは
+ * 真偽値だけで、config のキー名・値・ffmpeg のパス・プロファイル定義は
+ * 載せない（`GET /api/encode-profiles` / `GET /api/sites` と同じ規律）。
+ *
+ * **機能が「有効」であることは「今すぐ使える」ことを意味しない。**
+ * `live: true` はこのデプロイの config が `live.enabled: true` である
+ * ことだけを表し、streamer ロールが実際に動いている / チューナーが空いて
+ * いることは表さない（後者はプレイリスト取得の 404 / 503 として出る。
+ * docs/frontend/live.md）。
+ * @summary Report which optional features this deployment has enabled
+ */
 export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -2562,14 +2668,44 @@ export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabili
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * **オプション機能の導線を出してよいかをフロントが判断するための公開面**
+ * （issue #209）。フロントは config を読めない（api ロールは設定ファイルを
+ * 配らない。不変条件 1）ため、`live.enabled` のように「無効なら導線ごと
+ * 消したい」設定は API で観測できる必要がある。
+ *
+ * **設定値そのものではなく「導線を出してよいか」だけを返す。** 返すのは
+ * 真偽値だけで、config のキー名・値・ffmpeg のパス・プロファイル定義は
+ * 載せない（`GET /api/encode-profiles` / `GET /api/sites` と同じ規律）。
+ *
+ * **機能が「有効」であることは「今すぐ使える」ことを意味しない。**
+ * `live: true` はこのデプロイの config が `live.enabled: true` である
+ * ことだけを表し、streamer ロールが実際に動いている / チューナーが空いて
+ * いることは表さない（後者はプレイリスト取得の 404 / 503 として出る。
+ * docs/frontend/live.md）。
+ * @summary Report which optional features this deployment has enabled
+ */
 export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * **オプション機能の導線を出してよいかをフロントが判断するための公開面**
+ * （issue #209）。フロントは config を読めない（api ロールは設定ファイルを
+ * 配らない。不変条件 1）ため、`live.enabled` のように「無効なら導線ごと
+ * 消したい」設定は API で観測できる必要がある。
+ *
+ * **設定値そのものではなく「導線を出してよいか」だけを返す。** 返すのは
+ * 真偽値だけで、config のキー名・値・ffmpeg のパス・プロファイル定義は
+ * 載せない（`GET /api/encode-profiles` / `GET /api/sites` と同じ規律）。
+ *
+ * **機能が「有効」であることは「今すぐ使える」ことを意味しない。**
+ * `live: true` はこのデプロイの config が `live.enabled: true` である
+ * ことだけを表し、streamer ロールが実際に動いている / チューナーが空いて
+ * いることは表さない（後者はプレイリスト取得の 404 / 503 として出る。
+ * docs/frontend/live.md）。
  * @summary Report which optional features this deployment has enabled
  */
-
 export function useGetCapabilities<TData = Awaited<ReturnType<typeof getCapabilities>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getCapabilities>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -2662,6 +2798,16 @@ export type ListSitesQueryResult = NonNullable<Awaited<ReturnType<typeof listSit
 export type ListSitesQueryError = unknown
 
 
+/**
+ * `config.mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+ * site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
+ * パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
+ * `DEFAULT_SITE` 決め打ちを撤去する対応）。
+ *
+ * **機微情報は載せない。** mirakc の URL は返さない（site 名の配列のみ。
+ * `GET /api/encode-profiles` が ffmpeg のパス等を出さないのと同じ規律）。
+ * @summary List the mirakc sites this deployment knows about
+ */
 export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -2672,6 +2818,16 @@ export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TErr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `config.mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+ * site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
+ * パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
+ * `DEFAULT_SITE` 決め打ちを撤去する対応）。
+ *
+ * **機微情報は載せない。** mirakc の URL は返さない（site 名の配列のみ。
+ * `GET /api/encode-profiles` が ffmpeg のパス等を出さないのと同じ規律）。
+ * @summary List the mirakc sites this deployment knows about
+ */
 export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -2682,14 +2838,30 @@ export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TErr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `config.mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+ * site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
+ * パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
+ * `DEFAULT_SITE` 決め打ちを撤去する対応）。
+ *
+ * **機微情報は載せない。** mirakc の URL は返さない（site 名の配列のみ。
+ * `GET /api/encode-profiles` が ffmpeg のパス等を出さないのと同じ規律）。
+ * @summary List the mirakc sites this deployment knows about
+ */
 export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * `config.mirakcs` レジストリの公開面（issue #184 M4-12）。api は
+ * site に束縛されない（不変条件 1）ため、フロントが正しい `{site}` を
+ * パスに埋めるにはこの一覧が要る（旧 `web/src/lib/site.ts` の
+ * `DEFAULT_SITE` 決め打ちを撤去する対応）。
+ *
+ * **機微情報は載せない。** mirakc の URL は返さない（site 名の配列のみ。
+ * `GET /api/encode-profiles` が ffmpeg のパス等を出さないのと同じ規律）。
  * @summary List the mirakc sites this deployment knows about
  */
-
 export function useListSites<TData = Awaited<ReturnType<typeof listSites>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listSites>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -2780,6 +2952,14 @@ export type ListEncodeProfilesQueryResult = NonNullable<Awaited<ReturnType<typeo
 export type ListEncodeProfilesQueryError = unknown
 
 
+/**
+ * `config.encode.profiles` に定義されたプロファイルの公開面。UI が
+ * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
+ *
+ * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
+ * 名前（と表示用の container）だけを返す。
+ * @summary List configured encode profile names
+ */
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -2790,6 +2970,14 @@ export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEnco
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `config.encode.profiles` に定義されたプロファイルの公開面。UI が
+ * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
+ *
+ * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
+ * 名前（と表示用の container）だけを返す。
+ * @summary List configured encode profile names
+ */
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -2800,14 +2988,26 @@ export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEnco
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `config.encode.profiles` に定義されたプロファイルの公開面。UI が
+ * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
+ *
+ * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
+ * 名前（と表示用の container）だけを返す。
+ * @summary List configured encode profile names
+ */
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * `config.encode.profiles` に定義されたプロファイルの公開面。UI が
+ * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
+ *
+ * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
+ * 名前（と表示用の container）だけを返す。
  * @summary List configured encode profile names
  */
-
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listEncodeProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -2911,6 +3111,27 @@ export type ListLiveProfilesQueryResult = NonNullable<Awaited<ReturnType<typeof 
 export type ListLiveProfilesQueryError = unknown
 
 
+/**
+ * `config.live.profiles` に定義されたプロファイルの公開面。`/live` の
+ * 画質セレクタが選べる名前を出すために使う（M4-21 / issue #869）。
+ *
+ * **機微情報は載せない。** ffmpeg のパス・extra_args・品質指定は出さない。
+ * 名前と表示用の `height` だけを返す（`GET /api/encode-profiles` と同じ規律）。
+ *
+ * **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定で、
+ * サーバー側の `live.profiles` の並びがそのまま順序になる。フロントは並びを
+ * 変えない。
+ *
+ * **`live.enabled` は見ない。** 返すのは `config.live.profiles` の写しそのもので、
+ * **無効なデプロイでも profiles が書かれていれば返る**。有効かどうかは
+ * `GET /api/capabilities` の `live` の側の問いである（2 箇所で判定しない）。
+ * 未定義なら空配列。
+ *
+ * **ロール分割で api と streamer に別の config を配る構成では、この一覧と
+ * 実際に配られるプロファイルはずれる。** ずれを検出する手段は無い ---
+ * 一覧にあるから見られる、とは言えない（下界主義。docs/api/media.md）。
+ * @summary List configured live (HLS) profile names
+ */
 export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -2921,6 +3142,27 @@ export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLivePr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `config.live.profiles` に定義されたプロファイルの公開面。`/live` の
+ * 画質セレクタが選べる名前を出すために使う（M4-21 / issue #869）。
+ *
+ * **機微情報は載せない。** ffmpeg のパス・extra_args・品質指定は出さない。
+ * 名前と表示用の `height` だけを返す（`GET /api/encode-profiles` と同じ規律）。
+ *
+ * **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定で、
+ * サーバー側の `live.profiles` の並びがそのまま順序になる。フロントは並びを
+ * 変えない。
+ *
+ * **`live.enabled` は見ない。** 返すのは `config.live.profiles` の写しそのもので、
+ * **無効なデプロイでも profiles が書かれていれば返る**。有効かどうかは
+ * `GET /api/capabilities` の `live` の側の問いである（2 箇所で判定しない）。
+ * 未定義なら空配列。
+ *
+ * **ロール分割で api と streamer に別の config を配る構成では、この一覧と
+ * 実際に配られるプロファイルはずれる。** ずれを検出する手段は無い ---
+ * 一覧にあるから見られる、とは言えない（下界主義。docs/api/media.md）。
+ * @summary List configured live (HLS) profile names
+ */
 export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -2931,14 +3173,52 @@ export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLivePr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `config.live.profiles` に定義されたプロファイルの公開面。`/live` の
+ * 画質セレクタが選べる名前を出すために使う（M4-21 / issue #869）。
+ *
+ * **機微情報は載せない。** ffmpeg のパス・extra_args・品質指定は出さない。
+ * 名前と表示用の `height` だけを返す（`GET /api/encode-profiles` と同じ規律）。
+ *
+ * **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定で、
+ * サーバー側の `live.profiles` の並びがそのまま順序になる。フロントは並びを
+ * 変えない。
+ *
+ * **`live.enabled` は見ない。** 返すのは `config.live.profiles` の写しそのもので、
+ * **無効なデプロイでも profiles が書かれていれば返る**。有効かどうかは
+ * `GET /api/capabilities` の `live` の側の問いである（2 箇所で判定しない）。
+ * 未定義なら空配列。
+ *
+ * **ロール分割で api と streamer に別の config を配る構成では、この一覧と
+ * 実際に配られるプロファイルはずれる。** ずれを検出する手段は無い ---
+ * 一覧にあるから見られる、とは言えない（下界主義。docs/api/media.md）。
+ * @summary List configured live (HLS) profile names
+ */
 export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * `config.live.profiles` に定義されたプロファイルの公開面。`/live` の
+ * 画質セレクタが選べる名前を出すために使う（M4-21 / issue #869）。
+ *
+ * **機微情報は載せない。** ffmpeg のパス・extra_args・品質指定は出さない。
+ * 名前と表示用の `height` だけを返す（`GET /api/encode-profiles` と同じ規律）。
+ *
+ * **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定で、
+ * サーバー側の `live.profiles` の並びがそのまま順序になる。フロントは並びを
+ * 変えない。
+ *
+ * **`live.enabled` は見ない。** 返すのは `config.live.profiles` の写しそのもので、
+ * **無効なデプロイでも profiles が書かれていれば返る**。有効かどうかは
+ * `GET /api/capabilities` の `live` の側の問いである（2 箇所で判定しない）。
+ * 未定義なら空配列。
+ *
+ * **ロール分割で api と streamer に別の config を配る構成では、この一覧と
+ * 実際に配られるプロファイルはずれる。** ずれを検出する手段は無い ---
+ * 一覧にあるから見られる、とは言えない（下界主義。docs/api/media.md）。
  * @summary List configured live (HLS) profile names
  */
-
 export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -3024,6 +3304,7 @@ export type ListRulesQueryResult = NonNullable<Awaited<ReturnType<typeof listRul
 export type ListRulesQueryError = unknown
 
 
+/** @summary List recording rules */
 export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -3034,6 +3315,7 @@ export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TErr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary List recording rules */
 export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -3044,14 +3326,12 @@ export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TErr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary List recording rules */
 export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary List recording rules
- */
-
+/** @summary List recording rules */
 export function useListRules<TData = Awaited<ReturnType<typeof listRules>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -3102,25 +3382,11 @@ export const getCreateRuleUrl = () => {
  */
 export const createRule = async (ruleInput: RuleInput, options?: Parameters<typeof customInstance>[1]): Promise<createRuleResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<createRuleResponse>(getCreateRuleUrl(),
+  return customInstance<createRuleResponse>(getCreateRuleUrl(),
   {
     ...options,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(ruleInput)
   }
 );}
@@ -3163,9 +3429,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type CreateRuleMutationError = ErrorResponse
     export type CreateRuleMutationVariables = {data: RuleInput}
 
-    /**
- * @summary Create a recording rule
- */
+    /** @summary Create a recording rule */
 export const useCreateRule = <TError = ErrorResponse,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createRule>>, TError,CreateRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -3251,6 +3515,7 @@ export type GetRuleQueryResult = NonNullable<Awaited<ReturnType<typeof getRule>>
 export type GetRuleQueryError = ErrorResponse
 
 
+/** @summary Get a recording rule */
 export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
  id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -3261,6 +3526,7 @@ export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError =
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get a recording rule */
 export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -3271,14 +3537,12 @@ export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError =
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get a recording rule */
 export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary Get a recording rule
- */
-
+/** @summary Get a recording rule */
 export function useGetRule<TData = Awaited<ReturnType<typeof getRule>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -3335,25 +3599,11 @@ export const getUpdateRuleUrl = (id: number,) => {
 export const updateRule = async (id: number,
     ruleInput: RuleInput, options?: Parameters<typeof customInstance>[1]): Promise<updateRuleResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<updateRuleResponse>(getUpdateRuleUrl(id),
+  return customInstance<updateRuleResponse>(getUpdateRuleUrl(id),
   {
     ...options,
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(ruleInput)
   }
 );}
@@ -3396,9 +3646,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type UpdateRuleMutationError = ErrorResponse
     export type UpdateRuleMutationVariables = {id: number;data: RuleInput}
 
-    /**
- * @summary Update a recording rule
- */
+    /** @summary Update a recording rule */
 export const useUpdateRule = <TError = ErrorResponse,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateRule>>, TError,UpdateRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -3493,6 +3741,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteRuleMutationVariables = {id: number}
 
     /**
+ * 導出予約の整理を伴う。overrides のない rule 予約は削除し、
+ * overrides 付きは detached 化して生き残る（recording.md §4.3）。
+ * 応答に影響内訳を載せる。
  * @summary Delete a recording rule
  */
 export const useDeleteRule = <TError = ErrorResponse,
@@ -3573,6 +3824,7 @@ export type ListLabelRulesQueryResult = NonNullable<Awaited<ReturnType<typeof li
 export type ListLabelRulesQueryError = unknown
 
 
+/** @summary List series label rules */
 export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -3583,6 +3835,7 @@ export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRul
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary List series label rules */
 export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -3593,14 +3846,12 @@ export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRul
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary List series label rules */
 export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary List series label rules
- */
-
+/** @summary List series label rules */
 export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -3654,25 +3905,11 @@ export const getCreateLabelRuleUrl = () => {
  */
 export const createLabelRule = async (labelRuleInput: LabelRuleInput, options?: Parameters<typeof customInstance>[1]): Promise<createLabelRuleResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<createLabelRuleResponse>(getCreateLabelRuleUrl(),
+  return customInstance<createLabelRuleResponse>(getCreateLabelRuleUrl(),
   {
     ...options,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(labelRuleInput)
   }
 );}
@@ -3716,6 +3953,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type CreateLabelRuleMutationVariables = {data: LabelRuleInput}
 
     /**
+ * 作成は録画全件の再評価を同じトランザクションで投入する
+ * （`label_rule_reconcile`）。トリガーは自分の行しか見ないので、既に
+ * コミット済みの録画はこのジョブでしか新しいルールに追従しない。
  * @summary Create a series label rule
  */
 export const useCreateLabelRule = <TError = ErrorResponse,
@@ -3805,6 +4045,11 @@ export type GetLabelRuleValueKeyQueryResult = NonNullable<Awaited<ReturnType<typ
 export type GetLabelRuleValueKeyQueryError = unknown
 
 
+/**
+ * 入力中の値が棚のキーとして何になるかを返す（フォームのプレビュー用）。
+ * 正規化は SQL 関数 `series_key` の 1 箇所にあり、クライアントへ複製しない。
+ * @summary Normalize a label rule value into its shelf key
+ */
 export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
  params: GetLabelRuleValueKeyParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -3815,6 +4060,11 @@ export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLab
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 入力中の値が棚のキーとして何になるかを返す（フォームのプレビュー用）。
+ * 正規化は SQL 関数 `series_key` の 1 箇所にあり、クライアントへ複製しない。
+ * @summary Normalize a label rule value into its shelf key
+ */
 export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
  params: GetLabelRuleValueKeyParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -3825,14 +4075,20 @@ export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLab
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 入力中の値が棚のキーとして何になるかを返す（フォームのプレビュー用）。
+ * 正規化は SQL 関数 `series_key` の 1 箇所にあり、クライアントへ複製しない。
+ * @summary Normalize a label rule value into its shelf key
+ */
 export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
  params: GetLabelRuleValueKeyParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 入力中の値が棚のキーとして何になるかを返す（フォームのプレビュー用）。
+ * 正規化は SQL 関数 `series_key` の 1 箇所にあり、クライアントへ複製しない。
  * @summary Normalize a label rule value into its shelf key
  */
-
 export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
  params: GetLabelRuleValueKeyParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -3925,6 +4181,7 @@ export type GetLabelRuleQueryResult = NonNullable<Awaited<ReturnType<typeof getL
 export type GetLabelRuleQueryError = ErrorResponse
 
 
+/** @summary Get a series label rule */
 export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
  id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -3935,6 +4192,7 @@ export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get a series label rule */
 export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -3945,14 +4203,12 @@ export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get a series label rule */
 export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary Get a series label rule
- */
-
+/** @summary Get a series label rule */
 export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -4011,25 +4267,11 @@ export const getUpdateLabelRuleUrl = (id: number,) => {
 export const updateLabelRule = async (id: number,
     labelRuleInput: LabelRuleInput, options?: Parameters<typeof customInstance>[1]): Promise<updateLabelRuleResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<updateLabelRuleResponse>(getUpdateLabelRuleUrl(id),
+  return customInstance<updateLabelRuleResponse>(getUpdateLabelRuleUrl(id),
   {
     ...options,
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(labelRuleInput)
   }
 );}
@@ -4073,6 +4315,8 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type UpdateLabelRuleMutationVariables = {id: number;data: LabelRuleInput}
 
     /**
+ * 上書き更新（部分更新ではない）。keyword・priority・value のどれを変えても
+ * 録画全件の再評価になるので、同じトランザクションで投入する。
  * @summary Update a series label rule
  */
 export const useUpdateLabelRule = <TError = ErrorResponse,
@@ -4169,6 +4413,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteLabelRuleMutationVariables = {id: number}
 
     /**
+ * **削除も録画全件の再評価が要る。** 当たりの表は勝者しか持たないので、
+ * 勝者が消えた録画の次点はその表から分からない（外部キーの CASCADE は
+ * 安全網で、次点には移らない）。同じトランザクションで再評価を投入する。
  * @summary Delete a series label rule
  */
 export const useDeleteLabelRule = <TError = ErrorResponse,
@@ -4256,6 +4503,16 @@ export type ListReservationsQueryResult = NonNullable<Awaited<ReturnType<typeof 
 export type ListReservationsQueryError = unknown
 
 
+/**
+ * 導出結果の読み取り専用ビュー（issue #29）。書き込みは
+ * `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
+ * `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
+ * —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
+ *
+ * **全サイトの予約を返す**（issue #184 M4-12）。各要素の `site` で区別する。
+ * 絞り込みパラメータは持たない（不変条件 11: 必要になった時点で足す）。
+ * @summary List reservations
+ */
 export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -4266,6 +4523,16 @@ export function useListReservations<TData = Awaited<ReturnType<typeof listReserv
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 導出結果の読み取り専用ビュー（issue #29）。書き込みは
+ * `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
+ * `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
+ * —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
+ *
+ * **全サイトの予約を返す**（issue #184 M4-12）。各要素の `site` で区別する。
+ * 絞り込みパラメータは持たない（不変条件 11: 必要になった時点で足す）。
+ * @summary List reservations
+ */
 export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -4276,14 +4543,30 @@ export function useListReservations<TData = Awaited<ReturnType<typeof listReserv
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 導出結果の読み取り専用ビュー（issue #29）。書き込みは
+ * `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
+ * `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
+ * —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
+ *
+ * **全サイトの予約を返す**（issue #184 M4-12）。各要素の `site` で区別する。
+ * 絞り込みパラメータは持たない（不変条件 11: 必要になった時点で足す）。
+ * @summary List reservations
+ */
 export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 導出結果の読み取り専用ビュー（issue #29）。書き込みは
+ * `PUT/DELETE /api/sites/{site}/programs/{programId}/intent` と
+ * `PATCH/DELETE /api/sites/{site}/programs/{programId}/overrides` で行う
+ * —— `reservations` の書き手は ruler だけであり、api はここを一切書かない。
+ *
+ * **全サイトの予約を返す**（issue #184 M4-12）。各要素の `site` で区別する。
+ * 絞り込みパラメータは持たない（不変条件 11: 必要になった時点で足す）。
  * @summary List reservations
  */
-
 export function useListReservations<TData = Awaited<ReturnType<typeof listReservations>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listReservations>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -4389,6 +4672,18 @@ export type GetProgramReservationQueryResult = NonNullable<Awaited<ReturnType<ty
 export type GetProgramReservationQueryError = ErrorResponse
 
 
+/**
+ * `(site, programId)` を主キーに予約を読む（issue #99）。このキーで一意に
+ * 予約が定まる。予約行が再実体化されても、この URL・クエリキーは変わらない
+ * —— ブックマーク・共有した URL、TanStack Query の
+ * クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
+ * 放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
+ * 不変条件 9「導出器が作るキーを宛先にしない」）。
+ *
+ * 指定した番組に対する予約が無ければ 404（`reservations` に行が無い、
+ * または site が設定と一致しない）。
+ * @summary Get the reservation for a program, keyed by (site, programId)
+ */
 export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
  site: string,
     programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>> & Pick<
@@ -4400,6 +4695,18 @@ export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getPr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `(site, programId)` を主キーに予約を読む（issue #99）。このキーで一意に
+ * 予約が定まる。予約行が再実体化されても、この URL・クエリキーは変わらない
+ * —— ブックマーク・共有した URL、TanStack Query の
+ * クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
+ * 放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
+ * 不変条件 9「導出器が作るキーを宛先にしない」）。
+ *
+ * 指定した番組に対する予約が無ければ 404（`reservations` に行が無い、
+ * または site が設定と一致しない）。
+ * @summary Get the reservation for a program, keyed by (site, programId)
+ */
 export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>> & Pick<
@@ -4411,15 +4718,35 @@ export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getPr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `(site, programId)` を主キーに予約を読む（issue #99）。このキーで一意に
+ * 予約が定まる。予約行が再実体化されても、この URL・クエリキーは変わらない
+ * —— ブックマーク・共有した URL、TanStack Query の
+ * クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
+ * 放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
+ * 不変条件 9「導出器が作るキーを宛先にしない」）。
+ *
+ * 指定した番組に対する予約が無ければ 404（`reservations` に行が無い、
+ * または site が設定と一致しない）。
+ * @summary Get the reservation for a program, keyed by (site, programId)
+ */
 export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * `(site, programId)` を主キーに予約を読む（issue #99）。このキーで一意に
+ * 予約が定まる。予約行が再実体化されても、この URL・クエリキーは変わらない
+ * —— ブックマーク・共有した URL、TanStack Query の
+ * クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
+ * 放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
+ * 不変条件 9「導出器が作るキーを宛先にしない」）。
+ *
+ * 指定した番組に対する予約が無ければ 404（`reservations` に行が無い、
+ * または site が設定と一致しない）。
  * @summary Get the reservation for a program, keyed by (site, programId)
  */
-
 export function useGetProgramReservation<TData = Awaited<ReturnType<typeof getProgramReservation>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramReservation>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
@@ -4518,6 +4845,14 @@ export type ListServicesQueryResult = NonNullable<Awaited<ReturnType<typeof list
 export type ListServicesQueryError = ErrorResponse
 
 
+/**
+ * EPG プロジェクションのサービス一覧。channelType, remoteControlKeyId, serviceId 順。
+ *
+ * サブサービス（ＮＨＫ総合２ 等）も含む全サービスを返す。マルチ編成のない
+ * サブサービスは番組を持たないため、UI は時間窓内に番組があるサービスだけを
+ * 表示することが期待される（issue #17 の S3）。
+ * @summary List EPG services (channels)
+ */
 export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
  site: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -4528,6 +4863,14 @@ export function useListServices<TData = Awaited<ReturnType<typeof listServices>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * EPG プロジェクションのサービス一覧。channelType, remoteControlKeyId, serviceId 順。
+ *
+ * サブサービス（ＮＨＫ総合２ 等）も含む全サービスを返す。マルチ編成のない
+ * サブサービスは番組を持たないため、UI は時間窓内に番組があるサービスだけを
+ * 表示することが期待される（issue #17 の S3）。
+ * @summary List EPG services (channels)
+ */
 export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
  site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -4538,14 +4881,26 @@ export function useListServices<TData = Awaited<ReturnType<typeof listServices>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * EPG プロジェクションのサービス一覧。channelType, remoteControlKeyId, serviceId 順。
+ *
+ * サブサービス（ＮＨＫ総合２ 等）も含む全サービスを返す。マルチ編成のない
+ * サブサービスは番組を持たないため、UI は時間窓内に番組があるサービスだけを
+ * 表示することが期待される（issue #17 の S3）。
+ * @summary List EPG services (channels)
+ */
 export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
  site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * EPG プロジェクションのサービス一覧。channelType, remoteControlKeyId, serviceId 順。
+ *
+ * サブサービス（ＮＨＫ総合２ 等）も含む全サービスを返す。マルチ編成のない
+ * サブサービスは番組を持たないため、UI は時間窓内に番組があるサービスだけを
+ * 表示することが期待される（issue #17 の S3）。
  * @summary List EPG services (channels)
  */
-
 export function useListServices<TData = Awaited<ReturnType<typeof listServices>>, TError = ErrorResponse>(
  site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listServices>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -4648,6 +5003,19 @@ export type ListTunersQueryResult = NonNullable<Awaited<ReturnType<typeof listTu
 export type ListTunersQueryError = ErrorResponse
 
 
+/**
+ * `tuner_sync`（worker が周期で mirakc の `/api/tuners` を投影する使い捨て
+ * プロジェクション）の行をそのまま返す。導出はしない（不変条件 9・11）。
+ * 列の意味の権威は docs/data/capacity.md §6.5。
+ *
+ * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に
+ * 無いため、このエンドポイントも持たない（watcher の観測対象を広げる
+ * 別の判断）。
+ *
+ * 射影が 1 行も無いサイトは空配列を返す（「射影が 1 行も無いサイトは
+ * 何も主張しない」docs/data/capacity.md §6.5）。
+ * @summary List projected tuners
+ */
 export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
  site: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -4658,6 +5026,19 @@ export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `tuner_sync`（worker が周期で mirakc の `/api/tuners` を投影する使い捨て
+ * プロジェクション）の行をそのまま返す。導出はしない（不変条件 9・11）。
+ * 列の意味の権威は docs/data/capacity.md §6.5。
+ *
+ * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に
+ * 無いため、このエンドポイントも持たない（watcher の観測対象を広げる
+ * 別の判断）。
+ *
+ * 射影が 1 行も無いサイトは空配列を返す（「射影が 1 行も無いサイトは
+ * 何も主張しない」docs/data/capacity.md §6.5）。
+ * @summary List projected tuners
+ */
 export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
  site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -4668,14 +5049,36 @@ export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * `tuner_sync`（worker が周期で mirakc の `/api/tuners` を投影する使い捨て
+ * プロジェクション）の行をそのまま返す。導出はしない（不変条件 9・11）。
+ * 列の意味の権威は docs/data/capacity.md §6.5。
+ *
+ * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に
+ * 無いため、このエンドポイントも持たない（watcher の観測対象を広げる
+ * 別の判断）。
+ *
+ * 射影が 1 行も無いサイトは空配列を返す（「射影が 1 行も無いサイトは
+ * 何も主張しない」docs/data/capacity.md §6.5）。
+ * @summary List projected tuners
+ */
 export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
  site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * `tuner_sync`（worker が周期で mirakc の `/api/tuners` を投影する使い捨て
+ * プロジェクション）の行をそのまま返す。導出はしない（不変条件 9・11）。
+ * 列の意味の権威は docs/data/capacity.md §6.5。
+ *
+ * 「いまどの局を掴んでいるか」「ライブ視聴が何本か」は `tuner_sync` に
+ * 無いため、このエンドポイントも持たない（watcher の観測対象を広げる
+ * 別の判断）。
+ *
+ * 射影が 1 行も無いサイトは空配列を返す（「射影が 1 行も無いサイトは
+ * 何も主張しない」docs/data/capacity.md §6.5）。
  * @summary List projected tuners
  */
-
 export function useListTuners<TData = Awaited<ReturnType<typeof listTuners>>, TError = ErrorResponse>(
  site: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listTuners>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -4741,25 +5144,11 @@ export const getSearchProgramsUrl = () => {
  */
 export const searchPrograms = async (programSearchRequest: ProgramSearchRequest, options?: Parameters<typeof customInstance>[1]): Promise<searchProgramsResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<searchProgramsResponse>(getSearchProgramsUrl(),
+  return customInstance<searchProgramsResponse>(getSearchProgramsUrl(),
   {
     ...options,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(programSearchRequest)
   }
 );}
@@ -4803,6 +5192,21 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type SearchProgramsMutationVariables = {data: ProgramSearchRequest}
 
     /**
+ * ルール条件と同じコンパイラ（internal/rulequery）で epg_programs を検索する。
+ * ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
+ *
+ * **`sites`（絞り込み条件、空または省略 = 全サイト）が検索対象のサイト軸を決める。**
+ * レスポンスは表示用の最小情報を持つフラットな行の配列で、同一放送が複数サイトで
+ * マッチすれば行が複数出る（畳まない）。ruler はマッチした全サイトで予約を作る
+ * （N 予約が既定。docs/recording/ruler.md「サイトの扱い」）ため、行数がそのまま
+ * 実体化される予約数になる。番組名・開始時刻・長さ・サービス識別子・有料表示は
+ * 検索対象の `epg_programs` 行から同じクエリで返し、番組詳細エンドポイントを
+ * 行ごとに追加取得する必要はない。
+ *
+ * `sites` の既定を「空 = 全サイト」と定義するのは、Go 側がレジストリ全件を埋めて
+ * `Compile` に渡す前提のため。旧パス `POST /api/sites/{site}/programs/search` は
+ * 廃止し、互換ルートは提供しない（web と API を同時に更新でき、運用開始前の
+ * 破壊的変更であるため）。
  * @summary Search EPG programs by rule-style conditions
  */
 export const useSearchPrograms = <TError = ErrorResponse,
@@ -4925,6 +5329,20 @@ export type ListProgramsQueryResult = NonNullable<Awaited<ReturnType<typeof list
 export type ListProgramsQueryError = ErrorResponse
 
 
+/**
+ * 指定した時間窓に**一部でも重なる**番組を start_at 昇順で返す
+ * （`start_at < end AND end_at > start`）。窓開始前に始まった放送中の番組も含む。
+ *
+ * 無限スクロールで窓を継ぎ足す場合、境界をまたぐ番組は隣接する 2 つの窓の
+ * 両方に現れる。クライアントは programId で重複排除すること。
+ *
+ * ページネーショントークンは持たない。時間窓そのものがカーソルであり、
+ * 同じ窓は常に同じ完全な結果を返す。
+ *
+ * レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
+ * それらは `GET /api/sites/{site}/programs/{programId}` で取得する。
+ * @summary List EPG programs in a time window
+ */
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
  site: string,
     params: ListProgramsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
@@ -4936,6 +5354,20 @@ export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 指定した時間窓に**一部でも重なる**番組を start_at 昇順で返す
+ * （`start_at < end AND end_at > start`）。窓開始前に始まった放送中の番組も含む。
+ *
+ * 無限スクロールで窓を継ぎ足す場合、境界をまたぐ番組は隣接する 2 つの窓の
+ * 両方に現れる。クライアントは programId で重複排除すること。
+ *
+ * ページネーショントークンは持たない。時間窓そのものがカーソルであり、
+ * 同じ窓は常に同じ完全な結果を返す。
+ *
+ * レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
+ * それらは `GET /api/sites/{site}/programs/{programId}` で取得する。
+ * @summary List EPG programs in a time window
+ */
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
  site: string,
     params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>> & Pick<
@@ -4947,15 +5379,39 @@ export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 指定した時間窓に**一部でも重なる**番組を start_at 昇順で返す
+ * （`start_at < end AND end_at > start`）。窓開始前に始まった放送中の番組も含む。
+ *
+ * 無限スクロールで窓を継ぎ足す場合、境界をまたぐ番組は隣接する 2 つの窓の
+ * 両方に現れる。クライアントは programId で重複排除すること。
+ *
+ * ページネーショントークンは持たない。時間窓そのものがカーソルであり、
+ * 同じ窓は常に同じ完全な結果を返す。
+ *
+ * レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
+ * それらは `GET /api/sites/{site}/programs/{programId}` で取得する。
+ * @summary List EPG programs in a time window
+ */
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
  site: string,
     params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 指定した時間窓に**一部でも重なる**番組を start_at 昇順で返す
+ * （`start_at < end AND end_at > start`）。窓開始前に始まった放送中の番組も含む。
+ *
+ * 無限スクロールで窓を継ぎ足す場合、境界をまたぐ番組は隣接する 2 つの窓の
+ * 両方に現れる。クライアントは programId で重複排除すること。
+ *
+ * ページネーショントークンは持たない。時間窓そのものがカーソルであり、
+ * 同じ窓は常に同じ完全な結果を返す。
+ *
+ * レスポンスは一覧向けの軽い形で、extended / video / audios は含まない。
+ * それらは `GET /api/sites/{site}/programs/{programId}` で取得する。
  * @summary List EPG programs in a time window
  */
-
 export function useListPrograms<TData = Awaited<ReturnType<typeof listPrograms>>, TError = ErrorResponse>(
  site: string,
     params: ListProgramsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listPrograms>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
@@ -5053,6 +5509,7 @@ export type GetProgramQueryResult = NonNullable<Awaited<ReturnType<typeof getPro
 export type GetProgramQueryError = ErrorResponse
 
 
+/** @summary Get a single EPG program with full detail */
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
  site: string,
     programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
@@ -5064,6 +5521,7 @@ export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get a single EPG program with full detail */
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>> & Pick<
@@ -5075,15 +5533,13 @@ export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary Get a single EPG program with full detail */
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary Get a single EPG program with full detail
- */
-
+/** @summary Get a single EPG program with full detail */
 export function useGetProgram<TData = Awaited<ReturnType<typeof getProgram>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgram>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
@@ -5199,6 +5655,27 @@ export type GetProgramOverlapsQueryResult = NonNullable<Awaited<ReturnType<typeo
 export type GetProgramOverlapsQueryError = ErrorResponse
 
 
+/**
+ * 指定番組の放送時間帯（EPG プロジェクションから引く）と半開区間で重なる
+ * 既存予約の件数と内訳を返す（`a.start < b.end AND b.start < a.end`。番組表は
+ * 連続しているため、閉区間で判定すると隣接番組がすべて重なりになってしまう）。
+ *
+ * 対象は同じ site の予約のうち、自分自身（同じ programId の予約）を除き、
+ * 実効オプション（`reservation.EffectiveOptions`）の `skip` が true でない予約。
+ * ただし、`never_scheduled_events` に行がある放送イベントに紐づく予約は除外する
+ * （同期評価・容量需要と同じ述語）。`state` は評価しない。
+ *
+ * **これは重なりの件数だけを返す。チューナー本数との比較や容量超過の判定は
+ * 行わない**（[issue #21](https://github.com/fetburner/rokuban/issues/21) の
+ * 「案 C」、docs/data.md §6.5 が扱う M2-10 の領分）。`count` が 0 より大きくても
+ * 「録画できない」とは限らず（同一物理チャンネルなら 1 本のチューナーで
+ * 複数番組を賄える）、逆に `count` が 0 でも他サイトや mirakc の他の消費者
+ * （並走 EPGStation・ライブ視聴・EPG 収集）の存在は考慮されていない。
+ * 呼び出し側は件数を「事実」として提示し、勝敗や可否を断定してはならない。
+ *
+ * 番組が EPG プロジェクションに無ければ 404。
+ * @summary Count reservations overlapping this program's broadcast time
+ */
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
  site: string,
     programId: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
@@ -5210,6 +5687,27 @@ export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 指定番組の放送時間帯（EPG プロジェクションから引く）と半開区間で重なる
+ * 既存予約の件数と内訳を返す（`a.start < b.end AND b.start < a.end`。番組表は
+ * 連続しているため、閉区間で判定すると隣接番組がすべて重なりになってしまう）。
+ *
+ * 対象は同じ site の予約のうち、自分自身（同じ programId の予約）を除き、
+ * 実効オプション（`reservation.EffectiveOptions`）の `skip` が true でない予約。
+ * ただし、`never_scheduled_events` に行がある放送イベントに紐づく予約は除外する
+ * （同期評価・容量需要と同じ述語）。`state` は評価しない。
+ *
+ * **これは重なりの件数だけを返す。チューナー本数との比較や容量超過の判定は
+ * 行わない**（[issue #21](https://github.com/fetburner/rokuban/issues/21) の
+ * 「案 C」、docs/data.md §6.5 が扱う M2-10 の領分）。`count` が 0 より大きくても
+ * 「録画できない」とは限らず（同一物理チャンネルなら 1 本のチューナーで
+ * 複数番組を賄える）、逆に `count` が 0 でも他サイトや mirakc の他の消費者
+ * （並走 EPGStation・ライブ視聴・EPG 収集）の存在は考慮されていない。
+ * 呼び出し側は件数を「事実」として提示し、勝敗や可否を断定してはならない。
+ *
+ * 番組が EPG プロジェクションに無ければ 404。
+ * @summary Count reservations overlapping this program's broadcast time
+ */
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>> & Pick<
@@ -5221,15 +5719,53 @@ export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgr
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 指定番組の放送時間帯（EPG プロジェクションから引く）と半開区間で重なる
+ * 既存予約の件数と内訳を返す（`a.start < b.end AND b.start < a.end`。番組表は
+ * 連続しているため、閉区間で判定すると隣接番組がすべて重なりになってしまう）。
+ *
+ * 対象は同じ site の予約のうち、自分自身（同じ programId の予約）を除き、
+ * 実効オプション（`reservation.EffectiveOptions`）の `skip` が true でない予約。
+ * ただし、`never_scheduled_events` に行がある放送イベントに紐づく予約は除外する
+ * （同期評価・容量需要と同じ述語）。`state` は評価しない。
+ *
+ * **これは重なりの件数だけを返す。チューナー本数との比較や容量超過の判定は
+ * 行わない**（[issue #21](https://github.com/fetburner/rokuban/issues/21) の
+ * 「案 C」、docs/data.md §6.5 が扱う M2-10 の領分）。`count` が 0 より大きくても
+ * 「録画できない」とは限らず（同一物理チャンネルなら 1 本のチューナーで
+ * 複数番組を賄える）、逆に `count` が 0 でも他サイトや mirakc の他の消費者
+ * （並走 EPGStation・ライブ視聴・EPG 収集）の存在は考慮されていない。
+ * 呼び出し側は件数を「事実」として提示し、勝敗や可否を断定してはならない。
+ *
+ * 番組が EPG プロジェクションに無ければ 404。
+ * @summary Count reservations overlapping this program's broadcast time
+ */
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 指定番組の放送時間帯（EPG プロジェクションから引く）と半開区間で重なる
+ * 既存予約の件数と内訳を返す（`a.start < b.end AND b.start < a.end`。番組表は
+ * 連続しているため、閉区間で判定すると隣接番組がすべて重なりになってしまう）。
+ *
+ * 対象は同じ site の予約のうち、自分自身（同じ programId の予約）を除き、
+ * 実効オプション（`reservation.EffectiveOptions`）の `skip` が true でない予約。
+ * ただし、`never_scheduled_events` に行がある放送イベントに紐づく予約は除外する
+ * （同期評価・容量需要と同じ述語）。`state` は評価しない。
+ *
+ * **これは重なりの件数だけを返す。チューナー本数との比較や容量超過の判定は
+ * 行わない**（[issue #21](https://github.com/fetburner/rokuban/issues/21) の
+ * 「案 C」、docs/data.md §6.5 が扱う M2-10 の領分）。`count` が 0 より大きくても
+ * 「録画できない」とは限らず（同一物理チャンネルなら 1 本のチューナーで
+ * 複数番組を賄える）、逆に `count` が 0 でも他サイトや mirakc の他の消費者
+ * （並走 EPGStation・ライブ視聴・EPG 収集）の存在は考慮されていない。
+ * 呼び出し側は件数を「事実」として提示し、勝敗や可否を断定してはならない。
+ *
+ * 番組が EPG プロジェクションに無ければ 404。
  * @summary Count reservations overlapping this program's broadcast time
  */
-
 export function useGetProgramOverlaps<TData = Awaited<ReturnType<typeof getProgramOverlaps>>, TError = ErrorResponse>(
  site: string,
     programId: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getProgramOverlaps>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
@@ -5295,25 +5831,11 @@ export const putProgramIntent = async (site: string,
     programId: number,
     programIntentInput: ProgramIntentInput, options?: Parameters<typeof customInstance>[1]): Promise<putProgramIntentResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<putProgramIntentResponse>(getPutProgramIntentUrl(site,programId),
+  return customInstance<putProgramIntentResponse>(getPutProgramIntentUrl(site,programId),
   {
     ...options,
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(programIntentInput)
   }
 );}
@@ -5357,6 +5879,17 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PutProgramIntentMutationVariables = {site: string;programId: number;data: ProgramIntentInput}
 
     /**
+ * ユーザー意図（`program_intents`）を `(site, programId)` を自身のキーとして
+ * 書く（issue #29）。導出行（`reservations`）の有無に依存しないので、
+ * `base.skip` が立っている番組にも `action=record` を立てられる
+ * （旧 `POST /api/reservations` は導出行が「無い」ときしか書けなかった）。
+ *
+ * 意図だけを書き、`reservations` は同一トランザクションで作らない
+ * （`reservations` の書き手は ruler だけにする。issue #29 の決定）。
+ * `insertRulerPassHint` で ruler_pass を即座に投入するので、実体化は
+ * 秒オーダー。フロントエンドは楽観更新で一覧に即時反映する。
+ *
+ * 番組が EPG プロジェクションに無ければ 400。
  * @summary Assert record/skip intent for a program
  */
 export const usePutProgramIntent = <TError = ErrorResponse,
@@ -5456,6 +5989,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteProgramIntentMutationVariables = {site: string;programId: number}
 
     /**
+ * `program_intents` の行を削除するだけ（意見なし。純粋にルール由来へ戻す）。
+ * 取消（「録るな」の明示的な主張）は `PUT .../intent {action: skip}`。
+ * こちらは「何も主張しない」状態に戻す操作で、`program_overrides` には
+ * 一切触れない（別表・別軸。issue #29）。冪等（行が無くても 204）。
  * @summary Clear intent for a program (defer to the rule)
  */
 export const useDeleteProgramIntent = <TError = ErrorResponse,
@@ -5520,25 +6057,11 @@ export const patchProgramOverrides = async (site: string,
     programId: number,
     programOverridesInput: ProgramOverridesInput, options?: Parameters<typeof customInstance>[1]): Promise<patchProgramOverridesResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<patchProgramOverridesResponse>(getPatchProgramOverridesUrl(site,programId),
+  return customInstance<patchProgramOverridesResponse>(getPatchProgramOverridesUrl(site,programId),
   {
     ...options,
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(programOverridesInput)
   }
 );}
@@ -5582,6 +6105,22 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PatchProgramOverridesMutationVariables = {site: string;programId: number;data: ProgramOverridesInput}
 
     /**
+ * 値を書いたフィールドはそのフィールドの override を設定する。`reset`
+ * 配列に名前を挙げたフィールドは override を削除する（フィールド単位の
+ * 「ルールに戻す」）。どちらにも現れないフィールドは変更しない。
+ *
+ * `null` で消す形にはしない（`*T` は「キーが無い」と `null` を区別できず、
+ * 「消す」が「変更しない」に化けて黙って壊れるため。
+ * docs/recording.md §4.2「overrides API の形」）。
+ *
+ * 同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので
+ * 推測しない）。`reset` に未知のフィールド名があっても 400。
+ *
+ * `skip` は overrides のキーではない（`program_intents.action` が担う）ので
+ * ここでは扱わない。取消は `PUT .../intent {action: skip}`。
+ *
+ * `(site, programId)` を自身のキーとして `program_overrides` を書く
+ * （issue #29）。導出行（`reservations`）の有無には依存しない。
  * @summary Update per-program overrides
  */
 export const usePatchProgramOverrides = <TError = ErrorResponse,
@@ -5680,6 +6219,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteProgramOverridesMutationVariables = {site: string;programId: number}
 
     /**
+ * `program_overrides` の行を削除するだけ。`action`（record/skip。
+ * `program_intents` 側）は触らない（別表・別軸。docs/recording.md §4.2
+ * 「overrides は program_intents とは別の表に置く」）。冪等（行が無くても 204）。
  * @summary Reset all overrides for a program (revert to rule)
  */
 export const useDeleteProgramOverrides = <TError = ErrorResponse,
@@ -5830,6 +6372,57 @@ export type ListRecordingsQueryResult = NonNullable<Awaited<ReturnType<typeof li
 export type ListRecordingsQueryError = ErrorResponse
 
 
+/**
+ * 録画履歴。既定は program_start_at 降順（`order=asc` で昇順）。ドロップ統計は
+ * PID 別の合計のみを含む。PID 別の内訳は `GET /api/recordings/{id}/drop-stats`
+ * で取得する。
+ *
+ * 既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
+ * （`deleted_at IS NOT NULL AND purged_at IS NULL`）を返す。完全削除
+ * （purge）が完了した tombstone（`purged_at` が立った行、issue #135）は
+ * ファイルが既に無いため、ごみ箱にも通常一覧にも出ない。`trash` と各
+ * 絞り込み条件は直交する --- `trash=true` でも条件は同じように効く。
+ *
+ * ## 絞り込み
+ *
+ * - `q` はキーワードの部分一致。`qTarget`（既定 `titleDescription`）で対象を
+ *   `title` 単体に絞れる。全角/半角の揺れは `normalize_search_text` で吸収する
+ *   （docs/data.md §5）。`/search`（EPG 検索）と同じ正規化方言を使うが、
+ *   エンジン（`internal/rulequery`）は共有しない --- 理由は docs/data.md §5
+ *   「録画検索は rulequery を共有しない」
+ * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
+ *   重なりで絞る（複数指定は OR）
+ * - `site` / `channelType` / `service` は複数指定可（`style: form,
+ *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
+ *   **すべての軸は「軸内は OR、軸間は AND」**
+ * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
+ * - `encodeState=queued|running` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。`awaiting_review` は確認待ちの述語にある録画で絞る。
+ * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
+ *
+ * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
+ * `order`、ドメイン外の `genre`）は無視・切り詰めせず 400 にする。
+ *
+ * ## ページング（キーセット）
+ *
+ * トークンを発行しない。返った配列の**最後の要素**の `startAt` / `id` を、
+ * 次のリクエストの `before` / `beforeId` にそのまま渡す（EPG の時間窓カーソル
+ * --- docs/api.md「時間窓がカーソル」--- と同じ思想だが、録画は有界に増え続ける
+ * ため境界は時間窓ではなく `(program_start_at, id)` の複合キーになる。同一
+ * `program_start_at` の録画（同時刻開始の別チャンネル）が普通に発生するため、
+ * `id` を tie-breaker にしないとページ跨ぎで重複・欠落が出る）。`before` /
+ * `beforeId` は両方揃って初めて有効（片方だけの指定は 400）。`order=asc` では
+ * カーソルの不等号を反転する。総件数は返さない（別クエリが要り、キーセットの
+ * 利点を打ち消すため。必要になったら別 issue）。`limit` の既定は 50、上限は
+ * 200（超えると 400）。
+ *
+ * `trash=true` でもカーソル軸は `program_start_at` のまま（旧
+ * `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
+ * docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
+ *
+ * **既定では全サイトの録画を返す**（issue #184 M4-12）。`?site=` で
+ * 絞り込める。各要素の `site` フィールドでも区別できる。
+ * @summary List recordings
+ */
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params: undefined |  ListRecordingsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -5840,6 +6433,57 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 録画履歴。既定は program_start_at 降順（`order=asc` で昇順）。ドロップ統計は
+ * PID 別の合計のみを含む。PID 別の内訳は `GET /api/recordings/{id}/drop-stats`
+ * で取得する。
+ *
+ * 既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
+ * （`deleted_at IS NOT NULL AND purged_at IS NULL`）を返す。完全削除
+ * （purge）が完了した tombstone（`purged_at` が立った行、issue #135）は
+ * ファイルが既に無いため、ごみ箱にも通常一覧にも出ない。`trash` と各
+ * 絞り込み条件は直交する --- `trash=true` でも条件は同じように効く。
+ *
+ * ## 絞り込み
+ *
+ * - `q` はキーワードの部分一致。`qTarget`（既定 `titleDescription`）で対象を
+ *   `title` 単体に絞れる。全角/半角の揺れは `normalize_search_text` で吸収する
+ *   （docs/data.md §5）。`/search`（EPG 検索）と同じ正規化方言を使うが、
+ *   エンジン（`internal/rulequery`）は共有しない --- 理由は docs/data.md §5
+ *   「録画検索は rulequery を共有しない」
+ * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
+ *   重なりで絞る（複数指定は OR）
+ * - `site` / `channelType` / `service` は複数指定可（`style: form,
+ *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
+ *   **すべての軸は「軸内は OR、軸間は AND」**
+ * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
+ * - `encodeState=queued|running` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。`awaiting_review` は確認待ちの述語にある録画で絞る。
+ * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
+ *
+ * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
+ * `order`、ドメイン外の `genre`）は無視・切り詰めせず 400 にする。
+ *
+ * ## ページング（キーセット）
+ *
+ * トークンを発行しない。返った配列の**最後の要素**の `startAt` / `id` を、
+ * 次のリクエストの `before` / `beforeId` にそのまま渡す（EPG の時間窓カーソル
+ * --- docs/api.md「時間窓がカーソル」--- と同じ思想だが、録画は有界に増え続ける
+ * ため境界は時間窓ではなく `(program_start_at, id)` の複合キーになる。同一
+ * `program_start_at` の録画（同時刻開始の別チャンネル）が普通に発生するため、
+ * `id` を tie-breaker にしないとページ跨ぎで重複・欠落が出る）。`before` /
+ * `beforeId` は両方揃って初めて有効（片方だけの指定は 400）。`order=asc` では
+ * カーソルの不等号を反転する。総件数は返さない（別クエリが要り、キーセットの
+ * 利点を打ち消すため。必要になったら別 issue）。`limit` の既定は 50、上限は
+ * 200（超えると 400）。
+ *
+ * `trash=true` でもカーソル軸は `program_start_at` のまま（旧
+ * `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
+ * docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
+ *
+ * **既定では全サイトの録画を返す**（issue #184 M4-12）。`?site=` で
+ * 絞り込める。各要素の `site` フィールドでも区別できる。
+ * @summary List recordings
+ */
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -5850,14 +6494,112 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 録画履歴。既定は program_start_at 降順（`order=asc` で昇順）。ドロップ統計は
+ * PID 別の合計のみを含む。PID 別の内訳は `GET /api/recordings/{id}/drop-stats`
+ * で取得する。
+ *
+ * 既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
+ * （`deleted_at IS NOT NULL AND purged_at IS NULL`）を返す。完全削除
+ * （purge）が完了した tombstone（`purged_at` が立った行、issue #135）は
+ * ファイルが既に無いため、ごみ箱にも通常一覧にも出ない。`trash` と各
+ * 絞り込み条件は直交する --- `trash=true` でも条件は同じように効く。
+ *
+ * ## 絞り込み
+ *
+ * - `q` はキーワードの部分一致。`qTarget`（既定 `titleDescription`）で対象を
+ *   `title` 単体に絞れる。全角/半角の揺れは `normalize_search_text` で吸収する
+ *   （docs/data.md §5）。`/search`（EPG 検索）と同じ正規化方言を使うが、
+ *   エンジン（`internal/rulequery`）は共有しない --- 理由は docs/data.md §5
+ *   「録画検索は rulequery を共有しない」
+ * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
+ *   重なりで絞る（複数指定は OR）
+ * - `site` / `channelType` / `service` は複数指定可（`style: form,
+ *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
+ *   **すべての軸は「軸内は OR、軸間は AND」**
+ * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
+ * - `encodeState=queued|running` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。`awaiting_review` は確認待ちの述語にある録画で絞る。
+ * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
+ *
+ * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
+ * `order`、ドメイン外の `genre`）は無視・切り詰めせず 400 にする。
+ *
+ * ## ページング（キーセット）
+ *
+ * トークンを発行しない。返った配列の**最後の要素**の `startAt` / `id` を、
+ * 次のリクエストの `before` / `beforeId` にそのまま渡す（EPG の時間窓カーソル
+ * --- docs/api.md「時間窓がカーソル」--- と同じ思想だが、録画は有界に増え続ける
+ * ため境界は時間窓ではなく `(program_start_at, id)` の複合キーになる。同一
+ * `program_start_at` の録画（同時刻開始の別チャンネル）が普通に発生するため、
+ * `id` を tie-breaker にしないとページ跨ぎで重複・欠落が出る）。`before` /
+ * `beforeId` は両方揃って初めて有効（片方だけの指定は 400）。`order=asc` では
+ * カーソルの不等号を反転する。総件数は返さない（別クエリが要り、キーセットの
+ * 利点を打ち消すため。必要になったら別 issue）。`limit` の既定は 50、上限は
+ * 200（超えると 400）。
+ *
+ * `trash=true` でもカーソル軸は `program_start_at` のまま（旧
+ * `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
+ * docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
+ *
+ * **既定では全サイトの録画を返す**（issue #184 M4-12）。`?site=` で
+ * 絞り込める。各要素の `site` フィールドでも区別できる。
+ * @summary List recordings
+ */
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 録画履歴。既定は program_start_at 降順（`order=asc` で昇順）。ドロップ統計は
+ * PID 別の合計のみを含む。PID 別の内訳は `GET /api/recordings/{id}/drop-stats`
+ * で取得する。
+ *
+ * 既定は生きている録画（`deleted_at IS NULL`）のみ。`trash=true` でごみ箱
+ * （`deleted_at IS NOT NULL AND purged_at IS NULL`）を返す。完全削除
+ * （purge）が完了した tombstone（`purged_at` が立った行、issue #135）は
+ * ファイルが既に無いため、ごみ箱にも通常一覧にも出ない。`trash` と各
+ * 絞り込み条件は直交する --- `trash=true` でも条件は同じように効く。
+ *
+ * ## 絞り込み
+ *
+ * - `q` はキーワードの部分一致。`qTarget`（既定 `titleDescription`）で対象を
+ *   `title` 単体に絞れる。全角/半角の揺れは `normalize_search_text` で吸収する
+ *   （docs/data.md §5）。`/search`（EPG 検索）と同じ正規化方言を使うが、
+ *   エンジン（`internal/rulequery`）は共有しない --- 理由は docs/data.md §5
+ *   「録画検索は rulequery を共有しない」
+ * - `genre` は `genre_lv1`（ジャンル大分類。`genres` から生成列で導出）との
+ *   重なりで絞る（複数指定は OR）
+ * - `site` / `channelType` / `service` は複数指定可（`style: form,
+ *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
+ *   **すべての軸は「軸内は OR、軸間は AND」**
+ * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
+ * - `encodeState=queued|running` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。`awaiting_review` は確認待ちの述語にある録画で絞る。
+ * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
+ *
+ * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
+ * `order`、ドメイン外の `genre`）は無視・切り詰めせず 400 にする。
+ *
+ * ## ページング（キーセット）
+ *
+ * トークンを発行しない。返った配列の**最後の要素**の `startAt` / `id` を、
+ * 次のリクエストの `before` / `beforeId` にそのまま渡す（EPG の時間窓カーソル
+ * --- docs/api.md「時間窓がカーソル」--- と同じ思想だが、録画は有界に増え続ける
+ * ため境界は時間窓ではなく `(program_start_at, id)` の複合キーになる。同一
+ * `program_start_at` の録画（同時刻開始の別チャンネル）が普通に発生するため、
+ * `id` を tie-breaker にしないとページ跨ぎで重複・欠落が出る）。`before` /
+ * `beforeId` は両方揃って初めて有効（片方だけの指定は 400）。`order=asc` では
+ * カーソルの不等号を反転する。総件数は返さない（別クエリが要り、キーセットの
+ * 利点を打ち消すため。必要になったら別 issue）。`limit` の既定は 50、上限は
+ * 200（超えると 400）。
+ *
+ * `trash=true` でもカーソル軸は `program_start_at` のまま（旧
+ * `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更。理由は
+ * docs/api.md「録画一覧: 絞り込み + キーセットページング」参照）。
+ *
+ * **既定では全サイトの録画を返す**（issue #184 M4-12）。`?site=` で
+ * 絞り込める。各要素の `site` フィールドでも区別できる。
  * @summary List recordings
  */
-
 export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordings>>, TError = ErrorResponse>(
  params?: ListRecordingsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordings>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -6004,6 +6746,48 @@ export type ListRecordingShelvesQueryResult = NonNullable<Awaited<ReturnType<typ
 export type ListRecordingShelvesQueryError = ErrorResponse
 
 
+/**
+ * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー（画面はこれをシリーズ名として
+ * 出す。キーを名前にすると `ドラマ` のような過剰併合が一目で分かる）、
+ * `title` は代表の録画の生のタイトル（副見出し。枠のキーでも中身が分かる）。
+ *
+ * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
+ * 録画中・取り込み待ち・失敗を含むすべての録画。ごみ箱・superseded は
+ * 除外する。`playableCount` はこの母集団のうち、原本の media_asset がある
+ * か encoded の派生物がある録画の件数。
+ *
+ * 代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
+ * `value` が null の棚（自動キーを導出できず、どのルールも当たらない
+ * 録画）も返す --- UI は番組ハブを開けないので表示しない。
+ *
+ * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
+ * と id=`shelves` で曖昧になる。
+ *
+ * ## 絞り込み
+ *
+ * `q` / `qTarget` / `genre` / `channelType` / `site` / `service` /
+ * `status` / `source` / `ruleId` / `from` / `to` は `GET /api/recordings`
+ * と同じ意味で、同じ組み立て（サーバーの WHERE ビルダ）を通る。不正な値も
+ * 同じく 400 にする。
+ *
+ * **絞り込みはグループ化の前に、上の母集団の録画 1 件ずつに当てる。**
+ * `count` / `playableCount` / `unwatchedCount` / `latestStartAt` / 代表録画
+ * （`title` / `representativeId`）は、絞り込んだ後の録画から出す。
+ * 該当する録画が 0 件の棚は返らない。2 つの期間にまたがるシリーズは、
+ * どちらの期間で絞っても返り、件数はその期間内の回数になる。期間は
+ * 放送時期（`program_start_at`）で、再放送は放送した期に入る。
+ *
+ * **視聴済み印は絞り込みの外から読む。** `unwatchedCount` が束ねる放送
+ * イベントは絞り込んだ録画から作るが、そのイベントが視聴済みかは全録画
+ * （ごみ箱・supersede 済み・別 site を含む）の印で決める。`site` で
+ * 絞っても、別 site の録画で見た回は既読のまま数える。
+ *
+ * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
+ * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
+ * 待機列の行（録画 × プロファイル）で絞るので、棚の件数が膨らむ。
+ * @summary List series shelves
+ */
 export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
  params: undefined |  ListRecordingShelvesParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -6014,6 +6798,48 @@ export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRe
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー（画面はこれをシリーズ名として
+ * 出す。キーを名前にすると `ドラマ` のような過剰併合が一目で分かる）、
+ * `title` は代表の録画の生のタイトル（副見出し。枠のキーでも中身が分かる）。
+ *
+ * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
+ * 録画中・取り込み待ち・失敗を含むすべての録画。ごみ箱・superseded は
+ * 除外する。`playableCount` はこの母集団のうち、原本の media_asset がある
+ * か encoded の派生物がある録画の件数。
+ *
+ * 代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
+ * `value` が null の棚（自動キーを導出できず、どのルールも当たらない
+ * 録画）も返す --- UI は番組ハブを開けないので表示しない。
+ *
+ * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
+ * と id=`shelves` で曖昧になる。
+ *
+ * ## 絞り込み
+ *
+ * `q` / `qTarget` / `genre` / `channelType` / `site` / `service` /
+ * `status` / `source` / `ruleId` / `from` / `to` は `GET /api/recordings`
+ * と同じ意味で、同じ組み立て（サーバーの WHERE ビルダ）を通る。不正な値も
+ * 同じく 400 にする。
+ *
+ * **絞り込みはグループ化の前に、上の母集団の録画 1 件ずつに当てる。**
+ * `count` / `playableCount` / `unwatchedCount` / `latestStartAt` / 代表録画
+ * （`title` / `representativeId`）は、絞り込んだ後の録画から出す。
+ * 該当する録画が 0 件の棚は返らない。2 つの期間にまたがるシリーズは、
+ * どちらの期間で絞っても返り、件数はその期間内の回数になる。期間は
+ * 放送時期（`program_start_at`）で、再放送は放送した期に入る。
+ *
+ * **視聴済み印は絞り込みの外から読む。** `unwatchedCount` が束ねる放送
+ * イベントは絞り込んだ録画から作るが、そのイベントが視聴済みかは全録画
+ * （ごみ箱・supersede 済み・別 site を含む）の印で決める。`site` で
+ * 絞っても、別 site の録画で見た回は既読のまま数える。
+ *
+ * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
+ * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
+ * 待機列の行（録画 × プロファイル）で絞るので、棚の件数が膨らむ。
+ * @summary List series shelves
+ */
 export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
  params?: ListRecordingShelvesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -6024,14 +6850,94 @@ export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRe
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー（画面はこれをシリーズ名として
+ * 出す。キーを名前にすると `ドラマ` のような過剰併合が一目で分かる）、
+ * `title` は代表の録画の生のタイトル（副見出し。枠のキーでも中身が分かる）。
+ *
+ * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
+ * 録画中・取り込み待ち・失敗を含むすべての録画。ごみ箱・superseded は
+ * 除外する。`playableCount` はこの母集団のうち、原本の media_asset がある
+ * か encoded の派生物がある録画の件数。
+ *
+ * 代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
+ * `value` が null の棚（自動キーを導出できず、どのルールも当たらない
+ * 録画）も返す --- UI は番組ハブを開けないので表示しない。
+ *
+ * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
+ * と id=`shelves` で曖昧になる。
+ *
+ * ## 絞り込み
+ *
+ * `q` / `qTarget` / `genre` / `channelType` / `site` / `service` /
+ * `status` / `source` / `ruleId` / `from` / `to` は `GET /api/recordings`
+ * と同じ意味で、同じ組み立て（サーバーの WHERE ビルダ）を通る。不正な値も
+ * 同じく 400 にする。
+ *
+ * **絞り込みはグループ化の前に、上の母集団の録画 1 件ずつに当てる。**
+ * `count` / `playableCount` / `unwatchedCount` / `latestStartAt` / 代表録画
+ * （`title` / `representativeId`）は、絞り込んだ後の録画から出す。
+ * 該当する録画が 0 件の棚は返らない。2 つの期間にまたがるシリーズは、
+ * どちらの期間で絞っても返り、件数はその期間内の回数になる。期間は
+ * 放送時期（`program_start_at`）で、再放送は放送した期に入る。
+ *
+ * **視聴済み印は絞り込みの外から読む。** `unwatchedCount` が束ねる放送
+ * イベントは絞り込んだ録画から作るが、そのイベントが視聴済みかは全録画
+ * （ごみ箱・supersede 済み・別 site を含む）の印で決める。`site` で
+ * 絞っても、別 site の録画で見た回は既読のまま数える。
+ *
+ * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
+ * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
+ * 待機列の行（録画 × プロファイル）で絞るので、棚の件数が膨らむ。
+ * @summary List series shelves
+ */
 export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
  params?: ListRecordingShelvesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー（画面はこれをシリーズ名として
+ * 出す。キーを名前にすると `ドラマ` のような過剰併合が一目で分かる）、
+ * `title` は代表の録画の生のタイトル（副見出し。枠のキーでも中身が分かる）。
+ *
+ * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
+ * 録画中・取り込み待ち・失敗を含むすべての録画。ごみ箱・superseded は
+ * 除外する。`playableCount` はこの母集団のうち、原本の media_asset がある
+ * か encoded の派生物がある録画の件数。
+ *
+ * 代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
+ * `value` が null の棚（自動キーを導出できず、どのルールも当たらない
+ * 録画）も返す --- UI は番組ハブを開けないので表示しない。
+ *
+ * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
+ * と id=`shelves` で曖昧になる。
+ *
+ * ## 絞り込み
+ *
+ * `q` / `qTarget` / `genre` / `channelType` / `site` / `service` /
+ * `status` / `source` / `ruleId` / `from` / `to` は `GET /api/recordings`
+ * と同じ意味で、同じ組み立て（サーバーの WHERE ビルダ）を通る。不正な値も
+ * 同じく 400 にする。
+ *
+ * **絞り込みはグループ化の前に、上の母集団の録画 1 件ずつに当てる。**
+ * `count` / `playableCount` / `unwatchedCount` / `latestStartAt` / 代表録画
+ * （`title` / `representativeId`）は、絞り込んだ後の録画から出す。
+ * 該当する録画が 0 件の棚は返らない。2 つの期間にまたがるシリーズは、
+ * どちらの期間で絞っても返り、件数はその期間内の回数になる。期間は
+ * 放送時期（`program_start_at`）で、再放送は放送した期に入る。
+ *
+ * **視聴済み印は絞り込みの外から読む。** `unwatchedCount` が束ねる放送
+ * イベントは絞り込んだ録画から作るが、そのイベントが視聴済みかは全録画
+ * （ごみ箱・supersede 済み・別 site を含む）の印で決める。`site` で
+ * 絞っても、別 site の録画で見た回は既読のまま数える。
+ *
+ * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
+ * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
+ * 待機列の行（録画 × プロファイル）で絞るので、棚の件数が膨らむ。
  * @summary List series shelves
  */
-
 export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
  params?: ListRecordingShelvesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -6122,6 +7028,14 @@ export type ListContinueWatchingQueryResult = NonNullable<Awaited<ReturnType<typ
 export type ListContinueWatchingQueryError = unknown
 
 
+/**
+ * 再生位置があり、録画中または完了で supersede されていない録画を、
+ * 位置の更新時刻の降順で返す。ごみ箱・purge 済みの録画は含めない。
+ * 同じ放送イベントのいずれかの録画が視聴済みなら除外する。
+ * home 専用の一覧で、履歴の更新順を番組開始時刻順の一覧と分ける。
+ * 上限は 6 件。位置の更新時刻は応答には含めない。
+ * @summary List recordings to resume
+ */
 export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -6132,6 +7046,14 @@ export function useListContinueWatching<TData = Awaited<ReturnType<typeof listCo
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 再生位置があり、録画中または完了で supersede されていない録画を、
+ * 位置の更新時刻の降順で返す。ごみ箱・purge 済みの録画は含めない。
+ * 同じ放送イベントのいずれかの録画が視聴済みなら除外する。
+ * home 専用の一覧で、履歴の更新順を番組開始時刻順の一覧と分ける。
+ * 上限は 6 件。位置の更新時刻は応答には含めない。
+ * @summary List recordings to resume
+ */
 export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -6142,14 +7064,26 @@ export function useListContinueWatching<TData = Awaited<ReturnType<typeof listCo
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 再生位置があり、録画中または完了で supersede されていない録画を、
+ * 位置の更新時刻の降順で返す。ごみ箱・purge 済みの録画は含めない。
+ * 同じ放送イベントのいずれかの録画が視聴済みなら除外する。
+ * home 専用の一覧で、履歴の更新順を番組開始時刻順の一覧と分ける。
+ * 上限は 6 件。位置の更新時刻は応答には含めない。
+ * @summary List recordings to resume
+ */
 export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 再生位置があり、録画中または完了で supersede されていない録画を、
+ * 位置の更新時刻の降順で返す。ごみ箱・purge 済みの録画は含めない。
+ * 同じ放送イベントのいずれかの録画が視聴済みなら除外する。
+ * home 専用の一覧で、履歴の更新順を番組開始時刻順の一覧と分ける。
+ * 上限は 6 件。位置の更新時刻は応答には含めない。
  * @summary List recordings to resume
  */
-
 export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -6260,6 +7194,27 @@ export type GetRecordingQueryResult = NonNullable<Awaited<ReturnType<typeof getR
 export type GetRecordingQueryError = ErrorResponse
 
 
+/**
+ * 一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
+ * 予約からの導線が着地する先。
+ *
+ * **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す。** メディア配信の
+ * 404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。
+ * docs/api/media.md）とメタデータの可視性は別の判断 --- 一覧が
+ * `trash=true` で既にごみ箱の録画のメタデータを 200 で返しているため、
+ * 単体 GET だけ厳しくする理由が無い。単体ページ（`/recordings/$id`）は
+ * この `deletedAt` を見て再生系（プレイヤー・原本リンク）を出さない
+ * （docs/frontend/recordings.md）。
+ *
+ * **完全削除（purge）済みの tombstone（`purged_at` が立った行、issue
+ * #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも
+ * 現れない行なので、単体 GET だけ見える形にしない。
+ *
+ * ごみ箱の行では一覧と同じく `encodedAssets` を省略する
+ * （一覧・単体とも常に射影し、Go 側で落とす。プレイヤーを出さないので
+ * 揃える必要が無い）。
+ * @summary Get a single recording by id
+ */
 export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
  id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -6270,6 +7225,27 @@ export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
+ * 予約からの導線が着地する先。
+ *
+ * **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す。** メディア配信の
+ * 404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。
+ * docs/api/media.md）とメタデータの可視性は別の判断 --- 一覧が
+ * `trash=true` で既にごみ箱の録画のメタデータを 200 で返しているため、
+ * 単体 GET だけ厳しくする理由が無い。単体ページ（`/recordings/$id`）は
+ * この `deletedAt` を見て再生系（プレイヤー・原本リンク）を出さない
+ * （docs/frontend/recordings.md）。
+ *
+ * **完全削除（purge）済みの tombstone（`purged_at` が立った行、issue
+ * #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも
+ * 現れない行なので、単体 GET だけ見える形にしない。
+ *
+ * ごみ箱の行では一覧と同じく `encodedAssets` を省略する
+ * （一覧・単体とも常に射影し、Go 側で落とす。プレイヤーを出さないので
+ * 揃える必要が無い）。
+ * @summary Get a single recording by id
+ */
 export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -6280,14 +7256,52 @@ export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
+ * 予約からの導線が着地する先。
+ *
+ * **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す。** メディア配信の
+ * 404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。
+ * docs/api/media.md）とメタデータの可視性は別の判断 --- 一覧が
+ * `trash=true` で既にごみ箱の録画のメタデータを 200 で返しているため、
+ * 単体 GET だけ厳しくする理由が無い。単体ページ（`/recordings/$id`）は
+ * この `deletedAt` を見て再生系（プレイヤー・原本リンク）を出さない
+ * （docs/frontend/recordings.md）。
+ *
+ * **完全削除（purge）済みの tombstone（`purged_at` が立った行、issue
+ * #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも
+ * 現れない行なので、単体 GET だけ見える形にしない。
+ *
+ * ごみ箱の行では一覧と同じく `encodedAssets` を省略する
+ * （一覧・単体とも常に射影し、Go 側で落とす。プレイヤーを出さないので
+ * 揃える必要が無い）。
+ * @summary Get a single recording by id
+ */
 export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
+ * 予約からの導線が着地する先。
+ *
+ * **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す。** メディア配信の
+ * 404 契約（`recordings.deleted_at IS NOT NULL` を 404 にする。
+ * docs/api/media.md）とメタデータの可視性は別の判断 --- 一覧が
+ * `trash=true` で既にごみ箱の録画のメタデータを 200 で返しているため、
+ * 単体 GET だけ厳しくする理由が無い。単体ページ（`/recordings/$id`）は
+ * この `deletedAt` を見て再生系（プレイヤー・原本リンク）を出さない
+ * （docs/frontend/recordings.md）。
+ *
+ * **完全削除（purge）済みの tombstone（`purged_at` が立った行、issue
+ * #135）は 404。** ファイルが既に無く、通常一覧・ごみ箱一覧のどちらにも
+ * 現れない行なので、単体 GET だけ見える形にしない。
+ *
+ * ごみ箱の行では一覧と同じく `encodedAssets` を省略する
+ * （一覧・単体とも常に射影し、Go 側で落とす。プレイヤーを出さないので
+ * 揃える必要が無い）。
  * @summary Get a single recording by id
  */
-
 export function useGetRecording<TData = Awaited<ReturnType<typeof getRecording>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecording>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -6389,6 +7403,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteRecordingMutationVariables = {id: number}
 
     /**
+ * 論理削除。`recordings.deleted_at = now()` を立てるだけ。ファイルには触れない
+ * （docs/storage.md「ごみ箱 = 論理削除」）。既に削除済みなら冪等に 204。
+ * 行が無ければ 404。
  * @summary Soft-delete a recording (move to trash)
  */
 export const useDeleteRecording = <TError = ErrorResponse,
@@ -6443,25 +7460,11 @@ export const getPutRecordingPlaybackPositionUrl = (id: number,) => {
 export const putRecordingPlaybackPosition = async (id: number,
     putRecordingPlaybackPositionBody: PutRecordingPlaybackPositionBody, options?: Parameters<typeof customInstance>[1]): Promise<putRecordingPlaybackPositionResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<putRecordingPlaybackPositionResponse>(getPutRecordingPlaybackPositionUrl(id),
+  return customInstance<putRecordingPlaybackPositionResponse>(getPutRecordingPlaybackPositionUrl(id),
   {
     ...options,
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(putRecordingPlaybackPositionBody)
   }
 );}
@@ -6505,6 +7508,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PutRecordingPlaybackPositionMutationVariables = {id: number;data: PutRecordingPlaybackPositionBody}
 
     /**
+ * 原本の時間軸上の位置をミリ秒で保存する。カット版の位置は
+ * 現在のファイルに凍結された keep 区間で原本の時間軸へ変換する。
+ * 先頭付近と終端 90% 以降の位置はクライアントが送らない。
  * @summary Save a recording playback position
  */
 export const usePutRecordingPlaybackPosition = <TError = ErrorResponse,
@@ -6599,6 +7605,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteRecordingPlaybackPositionMutationVariables = {id: number}
 
     /**
+ * 位置の行を削除する。既に無い場合も 204。
  * @summary Clear a recording playback position
  */
 export const useDeleteRecordingPlaybackPosition = <TError = ErrorResponse,
@@ -6695,6 +7702,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PutRecordingWatchedMutationVariables = {id: number}
 
     /**
+ * 指定した録画に印を立て、同じトランザクションでその録画の再生位置を消す。
+ * 一覧の watchedAt は同じ放送イベント
+ * (networkId, serviceId, startAt) の全行から束ねて読む。
  * @summary Mark a recording watched
  */
 export const usePutRecordingWatched = <TError = ErrorResponse,
@@ -6789,6 +7799,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteRecordingWatchedMutationVariables = {id: number}
 
     /**
+ * 同じ放送イベントに属する全録画の印を削除する。既に無い場合も 204。
  * @summary Mark a broadcast event unwatched
  */
 export const useDeleteRecordingWatched = <TError = ErrorResponse,
@@ -6887,6 +7898,27 @@ export type ListRecordingUpcomingQueryResult = NonNullable<Awaited<ReturnType<ty
 export type ListRecordingUpcomingQueryError = unknown
 
 
+/**
+ * 番組ハブの「次回」。起点の録画の**実効シリーズ**と同じ実効シリーズを持ち、
+ * まだ始まっていない（`start_at > now()`）EPG の番組を放送順に返す。
+ *
+ * **形は `POST /api/programs/search` の結果（`ProgramSearchMatch`）と同じ。**
+ * site を運び、畳まない --- 同じ放送が 2 拠点の EPG にあれば 2 行出る。
+ * 番組は site ごとの射影なので、まとめるのは表示側の仕事である。
+ *
+ * **予約状態は結合しない。** 予約は頻繁に変わり番組はほとんど変わらない
+ * （キャッシュの寿命が違う。docs/api/rest.md「予約状態は番組と結合しない」）
+ * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
+ *
+ * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * purge 済みの tombstone は行が残るので、そのシリーズの番組を返す。
+ * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
+ * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
+ * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を
+ * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
+ * 「資源同定: 起点は録画 id」）。
+ * @summary List upcoming programs in the recording's series
+ */
 export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
  id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -6897,6 +7929,27 @@ export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listR
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 番組ハブの「次回」。起点の録画の**実効シリーズ**と同じ実効シリーズを持ち、
+ * まだ始まっていない（`start_at > now()`）EPG の番組を放送順に返す。
+ *
+ * **形は `POST /api/programs/search` の結果（`ProgramSearchMatch`）と同じ。**
+ * site を運び、畳まない --- 同じ放送が 2 拠点の EPG にあれば 2 行出る。
+ * 番組は site ごとの射影なので、まとめるのは表示側の仕事である。
+ *
+ * **予約状態は結合しない。** 予約は頻繁に変わり番組はほとんど変わらない
+ * （キャッシュの寿命が違う。docs/api/rest.md「予約状態は番組と結合しない」）
+ * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
+ *
+ * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * purge 済みの tombstone は行が残るので、そのシリーズの番組を返す。
+ * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
+ * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
+ * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を
+ * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
+ * 「資源同定: 起点は録画 id」）。
+ * @summary List upcoming programs in the recording's series
+ */
 export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -6907,14 +7960,52 @@ export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listR
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 番組ハブの「次回」。起点の録画の**実効シリーズ**と同じ実効シリーズを持ち、
+ * まだ始まっていない（`start_at > now()`）EPG の番組を放送順に返す。
+ *
+ * **形は `POST /api/programs/search` の結果（`ProgramSearchMatch`）と同じ。**
+ * site を運び、畳まない --- 同じ放送が 2 拠点の EPG にあれば 2 行出る。
+ * 番組は site ごとの射影なので、まとめるのは表示側の仕事である。
+ *
+ * **予約状態は結合しない。** 予約は頻繁に変わり番組はほとんど変わらない
+ * （キャッシュの寿命が違う。docs/api/rest.md「予約状態は番組と結合しない」）
+ * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
+ *
+ * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * purge 済みの tombstone は行が残るので、そのシリーズの番組を返す。
+ * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
+ * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
+ * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を
+ * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
+ * 「資源同定: 起点は録画 id」）。
+ * @summary List upcoming programs in the recording's series
+ */
 export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 番組ハブの「次回」。起点の録画の**実効シリーズ**と同じ実効シリーズを持ち、
+ * まだ始まっていない（`start_at > now()`）EPG の番組を放送順に返す。
+ *
+ * **形は `POST /api/programs/search` の結果（`ProgramSearchMatch`）と同じ。**
+ * site を運び、畳まない --- 同じ放送が 2 拠点の EPG にあれば 2 行出る。
+ * 番組は site ごとの射影なので、まとめるのは表示側の仕事である。
+ *
+ * **予約状態は結合しない。** 予約は頻繁に変わり番組はほとんど変わらない
+ * （キャッシュの寿命が違う。docs/api/rest.md「予約状態は番組と結合しない」）
+ * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
+ *
+ * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * purge 済みの tombstone は行が残るので、そのシリーズの番組を返す。
+ * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
+ * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
+ * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を
+ * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
+ * 「資源同定: 起点は録画 id」）。
  * @summary List upcoming programs in the recording's series
  */
-
 export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -7022,6 +8113,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type RestoreRecordingMutationVariables = {id: number}
 
     /**
+ * `deleted_at` を消し、即時削除の要求（`recording_purge_requests` の行）を
+ * 取り消すだけ（ファイル操作ゼロ・即時）。
+ * ごみ箱に入っていない、または行が無い場合は 404。
+ * 同一イベントに生きている録画があると partial unique index で衝突し 409。
  * @summary Restore a soft-deleted recording from trash
  */
 export const useRestoreRecording = <TError = ErrorResponse,
@@ -7118,6 +8213,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PurgeRecordingMutationVariables = {id: number}
 
     /**
+ * 即時物理削除の要求。`recording_purge_requests` に行を入れ、未 soft-delete
+ * なら `deleted_at` も同時に立てる。**ファイルは消さない**（M3-8 の削除
+ * reconcile がこの要求を拾って unlink する）。既に要求済みでも冪等に 204。
  * @summary Mark a recording for immediate physical purge
  */
 export const usePurgeRecording = <TError = ErrorResponse,
@@ -7193,25 +8291,11 @@ export const getAddRecordingEncodeProfilesUrl = (id: number,) => {
 export const addRecordingEncodeProfiles = async (id: number,
     addEncodeProfilesInput: AddEncodeProfilesInput, options?: Parameters<typeof customInstance>[1]): Promise<addRecordingEncodeProfilesResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<addRecordingEncodeProfilesResponse>(getAddRecordingEncodeProfilesUrl(id),
+  return customInstance<addRecordingEncodeProfilesResponse>(getAddRecordingEncodeProfilesUrl(id),
   {
     ...options,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(addEncodeProfilesInput)
   }
 );}
@@ -7255,6 +8339,25 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type AddRecordingEncodeProfilesMutationVariables = {id: number;data: AddEncodeProfilesInput}
 
     /**
+ * 録画の処理方針にプロファイルを追加する。初期値は ingest 完了時に確定し、
+ * その後は録画単位の API で変更できる。この操作は追加専用（union + dedup）で、
+ * 既存の指定を誤って消さないよう全置換はしない。
+ * 版の削除は `DELETE /api/recordings/{id}/encoded/{profile}` を使う。
+ *
+ * 原本の現行コピー（active かつ現行世代）がどの置き場にも無い録画には 409 を返す。
+ * これは次のいずれかに当たる --- 本当に削除済み（`keep_original=until_encoded`
+ * でエンコード完了後に原本削除 reconcile が消した等）、原本のコピーが
+ * `state = 'deleting'`（unlink 待ち。一覧では「原本あり」に見えるが
+ * 事後追加は決定的に 409 になる）、
+ * またはそもそも ingest が完了しておらず original 行自体が無い。
+ * api 層で明示的に検査してサイレントな失敗にしない。
+ *
+ * store がプロファイル追加を commit した後、対象録画の `encode_reconcile` を
+ * ヒントとして投入する。投入に失敗しても成功応答は変えず、worker の定期パスが
+ * DB の desired から不足分を拾う。対象限定パスと定期パスは同じ候補 query を使う。
+ * ごみ箱の録画も desired は更新できるが候補から除外され、復元後の定期パスが拾う。
+ * 既に完了済み/pending のプロファイル名を再指定してもエラーにはならず、
+ * 冪等に 204 を返す。
  * @summary Request additional encode profiles for an already-ingested recording
  */
 export const useAddRecordingEncodeProfiles = <TError = ErrorResponse,
@@ -7374,6 +8477,20 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type RemoveRecordingEncodedAssetMutationVariables = {id: number;profile: string}
 
     /**
+ * エンコード版を 1 本だけ外す（容量を空けるための操作。ごみ箱は経由しない）。
+ * ごみ箱にある録画でも、消去前なら利用できる。
+ * `encode_profiles` から profile を外し、「この版を外した」という要求を記録する。
+ * **ファイルは消さない**。削除 reconcile の次のパス（既定 15 分）が unlink する。
+ * 外した版は応答の直後から `encodedAssets` に出ない。
+ *
+ * `keep_original = until_encoded` で desired が空になるなら、同じトランザクションで
+ * `always` に切り替える。外した後に active な原本も、外していない active な
+ * エンコード版も残らないなら 409（録画ごと消すならごみ箱を使う）。
+ * 対象の active なエンコード版が無ければ 404。既に外した版を再指定しても 204。
+ * 外した後の desired が live 無効でカット版だけになるなら 400（事後追加と同じ
+ * cut の選択規則）。
+ * この録画だけが対象で、ルールは変えない。足し直しは
+ * `POST /api/recordings/{id}/encode-profiles`（原本が active な間だけ）。
  * @summary Remove one encoded version of a recording
  */
 export const useRemoveRecordingEncodedAsset = <TError = ErrorResponse,
@@ -7500,6 +8617,27 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type ReencodeRecordingProfileMutationVariables = {id: number;profile: string}
 
     /**
+ * cut 版を作り直す（`encodedAssets[].cutStale` が真のときのユーザーの
+ * 明示的な操作）。チャプターを直しても**自動では作り直さない** ---
+ * 自動で作り直すと、ユーザーが確認していない区間が黙って本編から消える。
+ *
+ * 1 つのトランザクションの中で、論理資産の `size_bytes` と `derived_generation`
+ * を更新し、新しい世代のコピー行を足し、`media_asset_cuts.keep_ranges` を差し替える。
+ * 新しい世代のファイル（`…_{profile}.g{n+1}.{container}`）はその commit の直前に
+ * 置く。commit 後に削除 reconcile が旧世代のコピーを unlink する。URL は `?profile=` のままで
+ * 世代を含めない（資源同定は変えない）ので、
+ * **置き換えた瞬間に視聴中のクライアントの再生は壊れる**（受け入れ済み。
+ * 再読み込みで直る）。
+ *
+ * 原本の現行コピーがどの置き場にも無い録画には 409 を返す
+ * （カット版は原本から作り直すしかない。`POST
+ * /api/recordings/{id}/encode-profiles` と同じ判定）。チャプターが未確認、
+ * または全区間がカットで keep が空のときも 409 を返す。
+ * 指定プロファイルが録画の desired（`encodeProfiles`）に無いときも 409 を返す。
+ * どちらも、204 を返すと作り直しが起きないことにユーザーが気付けないためである。
+ * 204 は、操作時点の keep 区間を作り直し要求として DB に記録したことを示す。
+ * ごみ箱状態でも要求を記録できる。ごみ箱の間は候補から除外され、復元後の定期
+ * reconcile が拾う。commit 後に投入するヒントが失われても、定期 reconcile が要求を拾う。
  * @summary Rebuild the cut version of a recording with the current chapters
  */
 export const useReencodeRecordingProfile = <TError = ErrorResponse,
@@ -7576,25 +8714,11 @@ export const getSetRecordingEncodePolicyUrl = (id: number,) => {
 export const setRecordingEncodePolicy = async (id: number,
     setRecordingEncodePolicyInput: SetRecordingEncodePolicyInput, options?: Parameters<typeof customInstance>[1]): Promise<setRecordingEncodePolicyResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<setRecordingEncodePolicyResponse>(getSetRecordingEncodePolicyUrl(id),
+  return customInstance<setRecordingEncodePolicyResponse>(getSetRecordingEncodePolicyUrl(id),
   {
     ...options,
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(setRecordingEncodePolicyInput)
   }
 );}
@@ -7638,6 +8762,26 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type SetRecordingEncodePolicyMutationVariables = {id: number;data: SetRecordingEncodePolicyInput}
 
     /**
+ * 録画ごとの原本保持ポリシーと CM 検出設定を変更する。
+ * `encode_profiles` はこの API では変更しない。事後追加は POST
+ * `/api/recordings/{id}/encode-profiles` を使う。
+ *
+ * `keepOriginal` を指定した場合は従来の保持ポリシー変更を行う。
+ * `cmDetect: true` は active な原本を適用時に確認し、未凍結録画なら
+ * `always` / 空の encode profiles と共に policy 行を作る。原本が無ければ 409。
+ * `cm_detect.enabled` が false のデプロイでは `cmDetect: true` も 409 にする。
+ * `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
+ * プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
+ * `recording_processing_policy` 行が無い場合は 409 を返すので、先に事後エンコード
+ * 追加を依頼すること。`always` への変更は原本の状態を検査せず、削除
+ * reconcile が保持ポリシーを適用の瞬間に再評価する。
+ *
+ * この API はファイルを削除せず、River ジョブも投入しない。CM 検出の投入は
+ * 定期 reconcile が行う。削除 reconcile の
+ * 定期パス（既定 15 分）が desired を再評価するため、`until_encoded` への変更は
+ * 条件を満たせば最大 15 分後に原本削除へ反映される。レベルトリガーの定期評価が
+ * 真実なので、ヒントジョブを追加する必要はなく、encode-profiles の事後追加と
+ * は非対称になる。
  * @summary Change the original retention policy for a recording
  */
 export const useSetRecordingEncodePolicy = <TError = ErrorResponse,
@@ -7735,9 +8879,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type RetryRecordingCMDetectionMutationError = ErrorResponse
     export type RetryRecordingCMDetectionMutationVariables = {id: number}
 
-    /**
- * @summary Retry CM detection for a recording
- */
+    /** @summary Retry CM detection for a recording */
 export const useRetryRecordingCMDetection = <TError = ErrorResponse,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof retryRecordingCMDetection>>, TError,RetryRecordingCMDetectionMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -7843,6 +8985,29 @@ export type GetRecordingChaptersQueryResult = NonNullable<Awaited<ReturnType<typ
 export type GetRecordingChaptersQueryError = ErrorResponse
 
 
+/**
+ * この録画の有効なタイムラインのうち、CM とユーザーが置いた区間だけを返す。
+ * **隙間の本編は返さない。** DB が持つ長さは EPG 上の番組長
+ * （`recordings.program_duration_ms`）だけで、ファイルの実際の長さを api は
+ * 知らない（原本は録画後に削除されうるし、EIT 追従で延長もされる）。隙間を
+ * 本編として扱うのはクライアントで、再生中の `<video>.duration` で閉じる。
+ *
+ * `source` はどの層を読んだかを表す。`user` は
+ * `recording_chapter_ownership` に行がある録画（= ユーザーが確認済み）で、
+ * 自動層は読まない。`auto` は検出結果（`recording_cm_detections`）。
+ *
+ * **CM 率が 50% を超える自動層は CM 無しとして返す**（本編の半分以上を CM と
+ * 主張する検出は壊れているとみなす安全弁）。判定は Go の純関数 1 か所にあり、
+ * 引き取りでユーザー層へ複製されるときも同じ扱いになる。
+ *
+ * `version` は返した層の版で、PUT（`/chapter-edits`）へそのまま返す。
+ * `detectionPending` が真の間、自動層の空は「CM 無し」ではなく「まだ検出中」
+ * で、編集の基にしてはならない。この 2 つを返すのは、サーバー側の 409 だけでは
+ * 窓が閉じないため（検出中に GET した空の層を基に下書きを作り、409 の後で検出が
+ * commit されてから同じ下書きで再 PUT すると、行ロックは通ってしまい検出された
+ * CM が消える）。どちらも毎回導出する（列は持たない）。
+ * @summary Get the effective chapter timeline of a recording
+ */
 export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
  id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -7853,6 +9018,29 @@ export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRec
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * この録画の有効なタイムラインのうち、CM とユーザーが置いた区間だけを返す。
+ * **隙間の本編は返さない。** DB が持つ長さは EPG 上の番組長
+ * （`recordings.program_duration_ms`）だけで、ファイルの実際の長さを api は
+ * 知らない（原本は録画後に削除されうるし、EIT 追従で延長もされる）。隙間を
+ * 本編として扱うのはクライアントで、再生中の `<video>.duration` で閉じる。
+ *
+ * `source` はどの層を読んだかを表す。`user` は
+ * `recording_chapter_ownership` に行がある録画（= ユーザーが確認済み）で、
+ * 自動層は読まない。`auto` は検出結果（`recording_cm_detections`）。
+ *
+ * **CM 率が 50% を超える自動層は CM 無しとして返す**（本編の半分以上を CM と
+ * 主張する検出は壊れているとみなす安全弁）。判定は Go の純関数 1 か所にあり、
+ * 引き取りでユーザー層へ複製されるときも同じ扱いになる。
+ *
+ * `version` は返した層の版で、PUT（`/chapter-edits`）へそのまま返す。
+ * `detectionPending` が真の間、自動層の空は「CM 無し」ではなく「まだ検出中」
+ * で、編集の基にしてはならない。この 2 つを返すのは、サーバー側の 409 だけでは
+ * 窓が閉じないため（検出中に GET した空の層を基に下書きを作り、409 の後で検出が
+ * commit されてから同じ下書きで再 PUT すると、行ロックは通ってしまい検出された
+ * CM が消える）。どちらも毎回導出する（列は持たない）。
+ * @summary Get the effective chapter timeline of a recording
+ */
 export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -7863,14 +9051,56 @@ export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRec
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * この録画の有効なタイムラインのうち、CM とユーザーが置いた区間だけを返す。
+ * **隙間の本編は返さない。** DB が持つ長さは EPG 上の番組長
+ * （`recordings.program_duration_ms`）だけで、ファイルの実際の長さを api は
+ * 知らない（原本は録画後に削除されうるし、EIT 追従で延長もされる）。隙間を
+ * 本編として扱うのはクライアントで、再生中の `<video>.duration` で閉じる。
+ *
+ * `source` はどの層を読んだかを表す。`user` は
+ * `recording_chapter_ownership` に行がある録画（= ユーザーが確認済み）で、
+ * 自動層は読まない。`auto` は検出結果（`recording_cm_detections`）。
+ *
+ * **CM 率が 50% を超える自動層は CM 無しとして返す**（本編の半分以上を CM と
+ * 主張する検出は壊れているとみなす安全弁）。判定は Go の純関数 1 か所にあり、
+ * 引き取りでユーザー層へ複製されるときも同じ扱いになる。
+ *
+ * `version` は返した層の版で、PUT（`/chapter-edits`）へそのまま返す。
+ * `detectionPending` が真の間、自動層の空は「CM 無し」ではなく「まだ検出中」
+ * で、編集の基にしてはならない。この 2 つを返すのは、サーバー側の 409 だけでは
+ * 窓が閉じないため（検出中に GET した空の層を基に下書きを作り、409 の後で検出が
+ * commit されてから同じ下書きで再 PUT すると、行ロックは通ってしまい検出された
+ * CM が消える）。どちらも毎回導出する（列は持たない）。
+ * @summary Get the effective chapter timeline of a recording
+ */
 export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * この録画の有効なタイムラインのうち、CM とユーザーが置いた区間だけを返す。
+ * **隙間の本編は返さない。** DB が持つ長さは EPG 上の番組長
+ * （`recordings.program_duration_ms`）だけで、ファイルの実際の長さを api は
+ * 知らない（原本は録画後に削除されうるし、EIT 追従で延長もされる）。隙間を
+ * 本編として扱うのはクライアントで、再生中の `<video>.duration` で閉じる。
+ *
+ * `source` はどの層を読んだかを表す。`user` は
+ * `recording_chapter_ownership` に行がある録画（= ユーザーが確認済み）で、
+ * 自動層は読まない。`auto` は検出結果（`recording_cm_detections`）。
+ *
+ * **CM 率が 50% を超える自動層は CM 無しとして返す**（本編の半分以上を CM と
+ * 主張する検出は壊れているとみなす安全弁）。判定は Go の純関数 1 か所にあり、
+ * 引き取りでユーザー層へ複製されるときも同じ扱いになる。
+ *
+ * `version` は返した層の版で、PUT（`/chapter-edits`）へそのまま返す。
+ * `detectionPending` が真の間、自動層の空は「CM 無し」ではなく「まだ検出中」
+ * で、編集の基にしてはならない。この 2 つを返すのは、サーバー側の 409 だけでは
+ * 窓が閉じないため（検出中に GET した空の層を基に下書きを作り、409 の後で検出が
+ * commit されてから同じ下書きで再 PUT すると、行ロックは通ってしまい検出された
+ * CM が消える）。どちらも毎回導出する（列は持たない）。
  * @summary Get the effective chapter timeline of a recording
  */
-
 export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -7962,25 +9192,11 @@ export const getPutRecordingChapterEditsUrl = (id: number,) => {
 export const putRecordingChapterEdits = async (id: number,
     chapterEditsInput: ChapterEditsInput, options?: Parameters<typeof customInstance>[1]): Promise<putRecordingChapterEditsResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<putRecordingChapterEditsResponse>(getPutRecordingChapterEditsUrl(id),
+  return customInstance<putRecordingChapterEditsResponse>(getPutRecordingChapterEditsUrl(id),
   {
     ...options,
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(chapterEditsInput)
   }
 );}
@@ -8024,6 +9240,36 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PutRecordingChapterEditsMutationVariables = {id: number;data: ChapterEditsInput}
 
     /**
+ * タイムライン全体を置き換える。部分更新は無い（境界の修正は「その時点の
+ * 検出結果に対する差分」なので、差分だけを送る形にすると再検出で境界が動いた
+ * 瞬間に意味を失う）。
+ *
+ * 最初の PUT が `recording_chapter_ownership` の行を作り、以後この録画では
+ * 自動層を読まない（引き取り）。ユーザーの修正は二度と再取得できない事実
+ * なので、再検出が上書きすることはない。
+ *
+ * 送る区間は **cut する区間とラベルのある区間だけ**で、本編は送らない
+ * （隙間 = 本編）。そのためラベルも無く `cut: false` の区間は 400、空の区間と
+ * 重なる区間も 400 になる。境界はサーバー側で最も近いフレーム境界へ丸める
+ * （30000/1001 fps 固定）ので、クライアントが量子化する必要はない。
+ *
+ * **`version` は必須**（GET が返した値）。行ロックの後で現在の版と比べ、
+ * 違えば 409（下書きの基になった層がその後に変わった。再取得を促す）。所有
+ * 済みでも比べる。所有前は、検出の終端（結果行か失敗行）と検出時刻を版に
+ * 含めるので、検出中の空の層を基にした下書きは検出 commit 後に必ず弾かれる。
+ *
+ * 所有前で検出が終端に達していない間も 409（版が一致していても、検出中の
+ * 空の層を「CM 無し」として引き取らせない）。所有後は自動層を読まないので
+ * 検出状態は無関係で、再検出中でも 409 にならない。ごみ箱の録画は 404。
+ * この tx は先頭で `recordings` の行を
+ * `FOR UPDATE` でロックしてから条件を評価し、CM 検出の結果を書く tx も同じ
+ * 行をロックする。ロックが無いと READ COMMITTED で条件が文の開始時点の
+ * スナップショットから評価され、commit 済みの検出結果が見えないまま
+ * **空の自動層で引き取る**窓が開く（docs/storage/retention.md §7「復元と
+ * 即時削除要求の競合」と同じ形）。
+ *
+ * `cm_detect.enabled` が false のデプロイでは検出ジョブが積まれないので、
+ * 409 にはならない（永久に終端へ達しない録画を編集できなくしないため）。
  * @summary Replace the whole chapter timeline with a user-owned one
  */
 export const usePutRecordingChapterEdits = <TError = ErrorResponse,
@@ -8123,6 +9369,12 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteRecordingChapterEditsMutationVariables = {id: number}
 
     /**
+ * `recording_chapter_ownership` の行を消す（区間は CASCADE で落ちる）。以後は
+ * 自動層に戻る。冪等（所有していなくても 204）。
+ *
+ * **取り込み直しは作らない。** 出自（自動 / 手動）と意図（切るかどうか）を
+ * 1 つの列に載せると、手で直した CM 境界が「取り込み直す」で上書きされる。
+ * やり直しはこの「自動に戻す」だけである。
  * @summary Discard the user timeline and go back to the automatic layer
  */
 export const useDeleteRecordingChapterEdits = <TError = ErrorResponse,
@@ -8203,6 +9455,7 @@ export type ListCMLogosQueryResult = NonNullable<Awaited<ReturnType<typeof listC
 export type ListCMLogosQueryError = unknown
 
 
+/** @summary List learned CM logos and station detection failures */
 export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -8213,6 +9466,7 @@ export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, 
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary List learned CM logos and station detection failures */
 export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -8223,14 +9477,12 @@ export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, 
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/** @summary List learned CM logos and station detection failures */
 export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-/**
- * @summary List learned CM logos and station detection failures
- */
-
+/** @summary List learned CM logos and station detection failures */
 export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -8323,9 +9575,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteCMLogoMutationError = unknown
     export type DeleteCMLogoMutationVariables = {networkId: number;serviceId: number}
 
-    /**
- * @summary Forget a station logo so the next CM job learns it again
- */
+    /** @summary Forget a station logo so the next CM job learns it again */
 export const useDeleteCMLogo = <TError = unknown,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogo>>, TError,DeleteCMLogoMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -8377,25 +9627,11 @@ export const putCMLogoArea = async (networkId: number,
     serviceId: number,
     cMLogoAreaInput: CMLogoAreaInput, options?: Parameters<typeof customInstance>[1]): Promise<putCMLogoAreaResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<putCMLogoAreaResponse>(getPutCMLogoAreaUrl(networkId,serviceId),
+  return customInstance<putCMLogoAreaResponse>(getPutCMLogoAreaUrl(networkId,serviceId),
   {
     ...options,
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(cMLogoAreaInput)
   }
 );}
@@ -8438,9 +9674,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PutCMLogoAreaMutationError = ErrorResponse
     export type PutCMLogoAreaMutationVariables = {networkId: number;serviceId: number;data: CMLogoAreaInput}
 
-    /**
- * @summary Save a station's CM logo area and start candidate analysis
- */
+    /** @summary Save a station's CM logo area and start candidate analysis */
 export const usePutCMLogoArea = <TError = ErrorResponse,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putCMLogoArea>>, TError,PutCMLogoAreaMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -8526,9 +9760,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteCMLogoAreaMutationError = unknown
     export type DeleteCMLogoAreaMutationVariables = {networkId: number;serviceId: number}
 
-    /**
- * @summary Return a station's logo area to automatic detection
- */
+    /** @summary Return a station's logo area to automatic detection */
 export const useDeleteCMLogoArea = <TError = unknown,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogoArea>>, TError,DeleteCMLogoAreaMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -8575,25 +9807,11 @@ export const adoptCMLogoCandidate = async (networkId: number,
     serviceId: number,
     cMLogoCandidateAdoptInput?: CMLogoCandidateAdoptInput, options?: Parameters<typeof customInstance>[1]): Promise<adoptCMLogoCandidateResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<adoptCMLogoCandidateResponse>(getAdoptCMLogoCandidateUrl(networkId,serviceId),
+  return customInstance<adoptCMLogoCandidateResponse>(getAdoptCMLogoCandidateUrl(networkId,serviceId),
   {
     ...options,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(cMLogoCandidateAdoptInput)
   }
 );}
@@ -8636,9 +9854,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type AdoptCMLogoCandidateMutationError = ErrorResponse
     export type AdoptCMLogoCandidateMutationVariables = {networkId: number;serviceId: number;data?: CMLogoCandidateAdoptInput}
 
-    /**
- * @summary Adopt the ready CM logo candidate
- */
+    /** @summary Adopt the ready CM logo candidate */
 export const useAdoptCMLogoCandidate = <TError = ErrorResponse,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adoptCMLogoCandidate>>, TError,AdoptCMLogoCandidateMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -8724,9 +9940,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteCMLogoCandidateMutationError = unknown
     export type DeleteCMLogoCandidateMutationVariables = {networkId: number;serviceId: number}
 
-    /**
- * @summary Discard the CM logo candidate
- */
+    /** @summary Discard the CM logo candidate */
 export const useDeleteCMLogoCandidate = <TError = unknown,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogoCandidate>>, TError,DeleteCMLogoCandidateMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient): UseMutationResult<
@@ -8811,6 +10025,15 @@ export type ListRecordingDropStatsQueryResult = NonNullable<Awaited<ReturnType<t
 export type ListRecordingDropStatsQueryError = unknown
 
 
+/**
+ * 原本 TS の計測記録が保存サイズと一致するときだけ PID 行を返す
+ * （`Recording.dropSummary` と同じ判定）。未計測や、in-place 更新後の再計測待ちは
+ * `[]` を返す。ごみ箱の録画や、原本を削除した後でも、計測記録が一致すれば返す。
+ *
+ * 未計測と計測済みの空の区別は `Recording.dropSummary` の有無で行う。
+ * 既存クライアントの型を変えないため、応答は包まない。
+ * @summary Get per-PID drop statistics for a recording
+ */
 export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
  id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -8821,6 +10044,15 @@ export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof list
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 原本 TS の計測記録が保存サイズと一致するときだけ PID 行を返す
+ * （`Recording.dropSummary` と同じ判定）。未計測や、in-place 更新後の再計測待ちは
+ * `[]` を返す。ごみ箱の録画や、原本を削除した後でも、計測記録が一致すれば返す。
+ *
+ * 未計測と計測済みの空の区別は `Recording.dropSummary` の有無で行う。
+ * 既存クライアントの型を変えないため、応答は包まない。
+ * @summary Get per-PID drop statistics for a recording
+ */
 export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -8831,14 +10063,28 @@ export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof list
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 原本 TS の計測記録が保存サイズと一致するときだけ PID 行を返す
+ * （`Recording.dropSummary` と同じ判定）。未計測や、in-place 更新後の再計測待ちは
+ * `[]` を返す。ごみ箱の録画や、原本を削除した後でも、計測記録が一致すれば返す。
+ *
+ * 未計測と計測済みの空の区別は `Recording.dropSummary` の有無で行う。
+ * 既存クライアントの型を変えないため、応答は包まない。
+ * @summary Get per-PID drop statistics for a recording
+ */
 export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 原本 TS の計測記録が保存サイズと一致するときだけ PID 行を返す
+ * （`Recording.dropSummary` と同じ判定）。未計測や、in-place 更新後の再計測待ちは
+ * `[]` を返す。ごみ箱の録画や、原本を削除した後でも、計測記録が一致すれば返す。
+ *
+ * 未計測と計測済みの空の区別は `Recording.dropSummary` の有無で行う。
+ * 既存クライアントの型を変えないため、応答は包まない。
  * @summary Get per-PID drop statistics for a recording
  */
-
 export function useListRecordingDropStats<TData = Awaited<ReturnType<typeof listRecordingDropStats>>, TError = unknown>(
  id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingDropStats>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -8962,6 +10208,33 @@ export type ListCapacityOveragesQueryResult = NonNullable<Awaited<ReturnType<typ
 export type ListCapacityOveragesQueryError = ErrorResponse
 
 
+/**
+ * チューナーが不足している**区間**を結合済みで返す（M2-10、issue #21 /
+ * docs/data.md §6.5）。
+ *
+ * **主張は下界に限る。** 「この区間は超過している」は確実だが、返らなかった
+ * 区間が「収まる」ことは保証しない。Rokuban から見えない消費者（並走する
+ * EPGStation・ライブ視聴・EPG 収集ジョブ）がいるうえ、mirakc の
+ * `excluded_channels` は `/api/tuners` に載らないため、既知の盲点はすべて
+ * 「警告を見逃す」方向に偏っている。**沈黙を「大丈夫」と読ませてはならない。**
+ *
+ * 返すのは区間の性質だけで、**どの番組が負けるかは主張しない**。勝敗を決めるのは
+ * mirakc であり、Rokuban には見えない消費者がいるので予測できない。UI の文言も
+ * 「この予約は競合しています」ではなく「この時間帯はチューナーが不足しています」。
+ *
+ * 需要の単位は予約件数ではなく**異なる物理チャンネル数**（同一物理チャンネルなら
+ * 1 本のチューナーに相乗りできる。副産物としてマルチ編成のサブサービスが
+ * 自然に畳まれる）。数えるのは reconciler が実際に schedule を作る予約だけで、
+ * `effective.skip` が true の行と `state = 'orphaned'` の行は需要にならない。
+ *
+ * 判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
+ * Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
+ * 副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+ *
+ * 判定はサイトごとに独立に行われ、**全サイトの超過区間を返す**
+ * （issue #184 M4-12）。各要素の `site` で区別する。
+ * @summary List intervals where tuner capacity is exceeded
+ */
 export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
  params: ListCapacityOveragesParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -8972,6 +10245,33 @@ export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCa
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * チューナーが不足している**区間**を結合済みで返す（M2-10、issue #21 /
+ * docs/data.md §6.5）。
+ *
+ * **主張は下界に限る。** 「この区間は超過している」は確実だが、返らなかった
+ * 区間が「収まる」ことは保証しない。Rokuban から見えない消費者（並走する
+ * EPGStation・ライブ視聴・EPG 収集ジョブ）がいるうえ、mirakc の
+ * `excluded_channels` は `/api/tuners` に載らないため、既知の盲点はすべて
+ * 「警告を見逃す」方向に偏っている。**沈黙を「大丈夫」と読ませてはならない。**
+ *
+ * 返すのは区間の性質だけで、**どの番組が負けるかは主張しない**。勝敗を決めるのは
+ * mirakc であり、Rokuban には見えない消費者がいるので予測できない。UI の文言も
+ * 「この予約は競合しています」ではなく「この時間帯はチューナーが不足しています」。
+ *
+ * 需要の単位は予約件数ではなく**異なる物理チャンネル数**（同一物理チャンネルなら
+ * 1 本のチューナーに相乗りできる。副産物としてマルチ編成のサブサービスが
+ * 自然に畳まれる）。数えるのは reconciler が実際に schedule を作る予約だけで、
+ * `effective.skip` が true の行と `state = 'orphaned'` の行は需要にならない。
+ *
+ * 判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
+ * Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
+ * 副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+ *
+ * 判定はサイトごとに独立に行われ、**全サイトの超過区間を返す**
+ * （issue #184 M4-12）。各要素の `site` で区別する。
+ * @summary List intervals where tuner capacity is exceeded
+ */
 export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
  params: ListCapacityOveragesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -8982,14 +10282,64 @@ export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCa
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * チューナーが不足している**区間**を結合済みで返す（M2-10、issue #21 /
+ * docs/data.md §6.5）。
+ *
+ * **主張は下界に限る。** 「この区間は超過している」は確実だが、返らなかった
+ * 区間が「収まる」ことは保証しない。Rokuban から見えない消費者（並走する
+ * EPGStation・ライブ視聴・EPG 収集ジョブ）がいるうえ、mirakc の
+ * `excluded_channels` は `/api/tuners` に載らないため、既知の盲点はすべて
+ * 「警告を見逃す」方向に偏っている。**沈黙を「大丈夫」と読ませてはならない。**
+ *
+ * 返すのは区間の性質だけで、**どの番組が負けるかは主張しない**。勝敗を決めるのは
+ * mirakc であり、Rokuban には見えない消費者がいるので予測できない。UI の文言も
+ * 「この予約は競合しています」ではなく「この時間帯はチューナーが不足しています」。
+ *
+ * 需要の単位は予約件数ではなく**異なる物理チャンネル数**（同一物理チャンネルなら
+ * 1 本のチューナーに相乗りできる。副産物としてマルチ編成のサブサービスが
+ * 自然に畳まれる）。数えるのは reconciler が実際に schedule を作る予約だけで、
+ * `effective.skip` が true の行と `state = 'orphaned'` の行は需要にならない。
+ *
+ * 判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
+ * Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
+ * 副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+ *
+ * 判定はサイトごとに独立に行われ、**全サイトの超過区間を返す**
+ * （issue #184 M4-12）。各要素の `site` で区別する。
+ * @summary List intervals where tuner capacity is exceeded
+ */
 export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
  params: ListCapacityOveragesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * チューナーが不足している**区間**を結合済みで返す（M2-10、issue #21 /
+ * docs/data.md §6.5）。
+ *
+ * **主張は下界に限る。** 「この区間は超過している」は確実だが、返らなかった
+ * 区間が「収まる」ことは保証しない。Rokuban から見えない消費者（並走する
+ * EPGStation・ライブ視聴・EPG 収集ジョブ）がいるうえ、mirakc の
+ * `excluded_channels` は `/api/tuners` に載らないため、既知の盲点はすべて
+ * 「警告を見逃す」方向に偏っている。**沈黙を「大丈夫」と読ませてはならない。**
+ *
+ * 返すのは区間の性質だけで、**どの番組が負けるかは主張しない**。勝敗を決めるのは
+ * mirakc であり、Rokuban には見えない消費者がいるので予測できない。UI の文言も
+ * 「この予約は競合しています」ではなく「この時間帯はチューナーが不足しています」。
+ *
+ * 需要の単位は予約件数ではなく**異なる物理チャンネル数**（同一物理チャンネルなら
+ * 1 本のチューナーに相乗りできる。副産物としてマルチ編成のサブサービスが
+ * 自然に畳まれる）。数えるのは reconciler が実際に schedule を作る予約だけで、
+ * `effective.skip` が true の行と `state = 'orphaned'` の行は需要にならない。
+ *
+ * 判定は種別部分集合に縮約した Hall 条件（`∀A ⊆ {GR,BS,CS,SKY}:
+ * Σ_{t∈A} d[t] ≤ cap(A)`）。破れた `A` から不足本数と詰まった種別が
+ * 副産物として出るので、`shortfall` / `jammedTypes` で「BS が 1 本不足」まで言える。
+ *
+ * 判定はサイトごとに独立に行われ、**全サイトの超過区間を返す**
+ * （issue #184 M4-12）。各要素の `site` で区別する。
  * @summary List intervals where tuner capacity is exceeded
  */
-
 export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCapacityOverages>>, TError = ErrorResponse>(
  params: ListCapacityOveragesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCapacityOverages>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -9062,25 +10412,11 @@ export const getPreviewCapacityOveragesUrl = () => {
  */
 export const previewCapacityOverages = async (capacityPreviewRequest: CapacityPreviewRequest, options?: Parameters<typeof customInstance>[1]): Promise<previewCapacityOveragesResponse> => {
 
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-return customInstance<previewCapacityOveragesResponse>(getPreviewCapacityOveragesUrl(),
+  return customInstance<previewCapacityOveragesResponse>(getPreviewCapacityOveragesUrl(),
   {
     ...options,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    headers: getHeaders({ 'Content-Type': 'application/json' }, options?.headers),
     body: JSON.stringify(capacityPreviewRequest)
   }
 );}
@@ -9124,6 +10460,23 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PreviewCapacityOveragesMutationVariables = {data: CapacityPreviewRequest}
 
     /**
+ * 検索画面でルールを保存した場合に**新たに生じる**容量不足区間を返す。
+ * 既存の予約需要に検索結果のうち実際に予約へ進む候補を加え、
+ * `capacity.Compute` の Hall 条件を再評価する。追加の区間は保存前の同一 site の
+ * 区間と比べ、保存後の不足本数が保存前以下の部分を除く。既存の不足が悪化した
+ * 部分も返す。
+ *
+ * この計算は予約・意図・録画履歴・チューナー射影を組み合わせるため、検索結果に
+ * 含めず独立したエンドポイントにする。検索 API の応答と処理量はそのまま保ち、
+ * 検索画面だけが保存前の仮定を問い合わせる。結果は導出値であり永続化しない。
+ * api ロールは PostgreSQL のみを読み、mirakc には問い合わせない。
+ *
+ * `ruleId` は既存ルールを編集するときだけ指定する。そのルールが勝者だった予約を
+ * 保存前需要から外し、候補として再評価する。重複排除は ruler と共有する判定器で
+ * 行い、`skip` 意図・fulfilled・既存予約も候補から除く。
+ *
+ * 不足区間が無い応答は「収まる」保証ではない。見えない消費者やチューナーの
+ * `excluded_channels` があり、この判定が主張できるのは不足が確認できた区間だけ。
  * @summary Preview tuner shortfalls for a program search
  */
 export const usePreviewCapacityOverages = <TError = ErrorResponse,
@@ -9216,6 +10569,21 @@ export type GetEncodeQueueQueryResult = NonNullable<Awaited<ReturnType<typeof ge
 export type GetEncodeQueueQueryError = unknown
 
 
+/**
+ * 現在の desired（録画の処理方針）で、active な encoded がまだ無い
+ * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
+ * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
+ * encoded があっても待機列に含める。`awaitingReview` は確認待ちの cut を持つ録画数で、
+ * 1 録画に複数の cut プロファイルがあっても 1 件と数える。
+ * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
+ * 達して worker が作らない行は、不足行も作り直し要求も数えない。作り直しを
+ * 押し直すと試行の予算が戻り、再び数える。ごみ箱の録画と設定に無い
+ * プロファイルも数えない。
+ *
+ * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
+ * 待機件数には使わない。ジョブエンジンの状態名はこの API の外へ出さない。
+ * @summary Get encode queue counts
+ */
 export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -9226,6 +10594,21 @@ export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQue
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 現在の desired（録画の処理方針）で、active な encoded がまだ無い
+ * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
+ * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
+ * encoded があっても待機列に含める。`awaitingReview` は確認待ちの cut を持つ録画数で、
+ * 1 録画に複数の cut プロファイルがあっても 1 件と数える。
+ * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
+ * 達して worker が作らない行は、不足行も作り直し要求も数えない。作り直しを
+ * 押し直すと試行の予算が戻り、再び数える。ごみ箱の録画と設定に無い
+ * プロファイルも数えない。
+ *
+ * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
+ * 待機件数には使わない。ジョブエンジンの状態名はこの API の外へ出さない。
+ * @summary Get encode queue counts
+ */
 export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -9236,14 +10619,40 @@ export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQue
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 現在の desired（録画の処理方針）で、active な encoded がまだ無い
+ * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
+ * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
+ * encoded があっても待機列に含める。`awaitingReview` は確認待ちの cut を持つ録画数で、
+ * 1 録画に複数の cut プロファイルがあっても 1 件と数える。
+ * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
+ * 達して worker が作らない行は、不足行も作り直し要求も数えない。作り直しを
+ * 押し直すと試行の予算が戻り、再び数える。ごみ箱の録画と設定に無い
+ * プロファイルも数えない。
+ *
+ * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
+ * 待機件数には使わない。ジョブエンジンの状態名はこの API の外へ出さない。
+ * @summary Get encode queue counts
+ */
 export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 現在の desired（録画の処理方針）で、active な encoded がまだ無い
+ * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
+ * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
+ * encoded があっても待機列に含める。`awaitingReview` は確認待ちの cut を持つ録画数で、
+ * 1 録画に複数の cut プロファイルがあっても 1 件と数える。
+ * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
+ * 達して worker が作らない行は、不足行も作り直し要求も数えない。作り直しを
+ * 押し直すと試行の予算が戻り、再び数える。ごみ箱の録画と設定に無い
+ * プロファイルも数えない。
+ *
+ * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
+ * 待機件数には使わない。ジョブエンジンの状態名はこの API の外へ出さない。
  * @summary Get encode queue counts
  */
-
 export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getEncodeQueue>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -9343,6 +10752,23 @@ export type GetStorageQueryResult = NonNullable<Awaited<ReturnType<typeof getSto
 export type GetStorageQueryError = unknown
 
 
+/**
+ * 置き場ごとの root（`storage.stores.<name>.root`、無ければ `storage.media_dir`）と
+ * `storage.scratch_dir`（ローカルスクラッチ）の容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
+ * （不変条件 1）ので、ファイルシステムを持つ worker が定期的に statfs 相当で
+ * 観測して DB に射影し、ここはその射影を読むだけ。
+ *
+ * 毎パス全量を作り直す観測値であり、過去の観測を積むログではない
+ * （不変条件 9）。`observedAt` は「最後にいつ観測できたか」を表し、UI が
+ * 鮮度を示すために必ず使う --- 観測ループが止まっていても行は消えない
+ * ので、鮮度が古いことだけが異常の手がかりになる（沈黙は保証ではない）。
+ *
+ * `scratch` は `storage.scratch_dir` が設定されているときだけ現れる
+ * （空文字列に設定を変えると、次の観測パスで消える）。`media` は
+ * `storage.media_dir` が必須なので常に現れるはずだが、初回の観測パスが
+ * まだ走っていない/失敗し続けている場合は配列が空になることもある。
+ * @summary Get observed storage usage
+ */
 export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -9353,6 +10779,23 @@ export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 置き場ごとの root（`storage.stores.<name>.root`、無ければ `storage.media_dir`）と
+ * `storage.scratch_dir`（ローカルスクラッチ）の容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
+ * （不変条件 1）ので、ファイルシステムを持つ worker が定期的に statfs 相当で
+ * 観測して DB に射影し、ここはその射影を読むだけ。
+ *
+ * 毎パス全量を作り直す観測値であり、過去の観測を積むログではない
+ * （不変条件 9）。`observedAt` は「最後にいつ観測できたか」を表し、UI が
+ * 鮮度を示すために必ず使う --- 観測ループが止まっていても行は消えない
+ * ので、鮮度が古いことだけが異常の手がかりになる（沈黙は保証ではない）。
+ *
+ * `scratch` は `storage.scratch_dir` が設定されているときだけ現れる
+ * （空文字列に設定を変えると、次の観測パスで消える）。`media` は
+ * `storage.media_dir` が必須なので常に現れるはずだが、初回の観測パスが
+ * まだ走っていない/失敗し続けている場合は配列が空になることもある。
+ * @summary Get observed storage usage
+ */
 export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -9363,14 +10806,44 @@ export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TE
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 置き場ごとの root（`storage.stores.<name>.root`、無ければ `storage.media_dir`）と
+ * `storage.scratch_dir`（ローカルスクラッチ）の容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
+ * （不変条件 1）ので、ファイルシステムを持つ worker が定期的に statfs 相当で
+ * 観測して DB に射影し、ここはその射影を読むだけ。
+ *
+ * 毎パス全量を作り直す観測値であり、過去の観測を積むログではない
+ * （不変条件 9）。`observedAt` は「最後にいつ観測できたか」を表し、UI が
+ * 鮮度を示すために必ず使う --- 観測ループが止まっていても行は消えない
+ * ので、鮮度が古いことだけが異常の手がかりになる（沈黙は保証ではない）。
+ *
+ * `scratch` は `storage.scratch_dir` が設定されているときだけ現れる
+ * （空文字列に設定を変えると、次の観測パスで消える）。`media` は
+ * `storage.media_dir` が必須なので常に現れるはずだが、初回の観測パスが
+ * まだ走っていない/失敗し続けている場合は配列が空になることもある。
+ * @summary Get observed storage usage
+ */
 export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 置き場ごとの root（`storage.stores.<name>.root`、無ければ `storage.media_dir`）と
+ * `storage.scratch_dir`（ローカルスクラッチ）の容量観測（issue #238 M7-5）。api ロールはファイルシステムに依存しない
+ * （不変条件 1）ので、ファイルシステムを持つ worker が定期的に statfs 相当で
+ * 観測して DB に射影し、ここはその射影を読むだけ。
+ *
+ * 毎パス全量を作り直す観測値であり、過去の観測を積むログではない
+ * （不変条件 9）。`observedAt` は「最後にいつ観測できたか」を表し、UI が
+ * 鮮度を示すために必ず使う --- 観測ループが止まっていても行は消えない
+ * ので、鮮度が古いことだけが異常の手がかりになる（沈黙は保証ではない）。
+ *
+ * `scratch` は `storage.scratch_dir` が設定されているときだけ現れる
+ * （空文字列に設定を変えると、次の観測パスで消える）。`media` は
+ * `storage.media_dir` が必須なので常に現れるはずだが、初回の観測パスが
+ * まだ走っていない/失敗し続けている場合は配列が空になることもある。
  * @summary Get observed storage usage
  */
-
 export function useGetStorage<TData = Awaited<ReturnType<typeof getStorage>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getStorage>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -9464,6 +10937,17 @@ export type ListCircuitBreakersQueryResult = NonNullable<Awaited<ReturnType<type
 export type ListCircuitBreakersQueryError = unknown
 
 
+/**
+ * 大量削除サーキットブレーカー（docs/recording.md §3.2）の発動状態。
+ * 行の存在が発動中を表すため、発動していないブレーカーは結果に現れない。
+ * `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
+ * 手動確認の材料になる。
+ *
+ * site の範囲の行は `site` に site 名を、置き場の範囲の行は `store` に
+ * 置き場名を返す。該当しない方のフィールドは空文字列になる。置き場の
+ * 行を再開するときは `POST /api/stores/{store}/breakers/{name}/resume` を使う。
+ * @summary List tripped circuit breakers
+ */
 export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
   options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
@@ -9474,6 +10958,17 @@ export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCir
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 大量削除サーキットブレーカー（docs/recording.md §3.2）の発動状態。
+ * 行の存在が発動中を表すため、発動していないブレーカーは結果に現れない。
+ * `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
+ * 手動確認の材料になる。
+ *
+ * site の範囲の行は `site` に site 名を、置き場の範囲の行は `store` に
+ * 置き場名を返す。該当しない方のフィールドは空文字列になる。置き場の
+ * 行を再開するときは `POST /api/stores/{store}/breakers/{name}/resume` を使う。
+ * @summary List tripped circuit breakers
+ */
 export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
@@ -9484,14 +10979,32 @@ export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCir
       >, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 大量削除サーキットブレーカー（docs/recording.md §3.2）の発動状態。
+ * 行の存在が発動中を表すため、発動していないブレーカーは結果に現れない。
+ * `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
+ * 手動確認の材料になる。
+ *
+ * site の範囲の行は `site` に site 名を、置き場の範囲の行は `store` に
+ * 置き場名を返す。該当しない方のフィールドは空文字列になる。置き場の
+ * 行を再開するときは `POST /api/stores/{store}/breakers/{name}/resume` を使う。
+ * @summary List tripped circuit breakers
+ */
 export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
+ * 大量削除サーキットブレーカー（docs/recording.md §3.2）の発動状態。
+ * 行の存在が発動中を表すため、発動していないブレーカーは結果に現れない。
+ * `detail` は発動時に「何が消されようとしていたか」を説明する抜粋で、
+ * 手動確認の材料になる。
+ *
+ * site の範囲の行は `site` に site 名を、置き場の範囲の行は `store` に
+ * 置き場名を返す。該当しない方のフィールドは空文字列になる。置き場の
+ * 行を再開するときは `POST /api/stores/{store}/breakers/{name}/resume` を使う。
  * @summary List tripped circuit breakers
  */
-
 export function useListCircuitBreakers<TData = Awaited<ReturnType<typeof listCircuitBreakers>>, TError = unknown>(
   options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCircuitBreakers>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
  , queryClient?: QueryClient
@@ -9600,6 +11113,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type ResumeCircuitBreakerMutationVariables = {site: string;name: string}
 
     /**
+ * 手動確認後の再開。発動中の行が表す資源のキーは `(site, name)` なので、
+ * パスでその行を指定する。運用者の操作は「確認したので再開する」であり、
+ * 行の削除は実装詳細なので DELETE にはしない。置き場の範囲を持つ名前には使えない。
  * @summary Resume a site-scoped circuit breaker (manual acknowledgement)
  */
 export const useResumeCircuitBreaker = <TError = ErrorResponse,
@@ -9704,6 +11220,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type ResumeStoreCircuitBreakerMutationVariables = {store: string;name: string}
 
     /**
+ * 手動確認後の再開。`store` と `name` で発動中の行を 1 件指定する。
+ * 運用者の操作は「確認したので再開する」であり、行の削除は実装詳細なので
+ * DELETE にはしない。store は `config.storage.stores` に定義された名前で
+ * 検証し、置き場の実体は参照しない。
  * @summary Resume a store-scoped circuit breaker (manual acknowledgement)
  */
 export const useResumeStoreCircuitBreaker = <TError = ErrorResponse,

@@ -1524,7 +1524,7 @@ describe('ホーム: 取得失敗はセクションを隠さずエラー表示�
     renderHome('/?mode=watch')
 
     expect(await screen.findByRole('heading', { name: 'ホーム' })).toBeInTheDocument()
-    expect(screen.getByText('録画中の取得に失敗しました')).toBeInTheDocument()
+    expect(await screen.findByText('録画中の取得に失敗しました')).toBeInTheDocument()
   })
 })
 

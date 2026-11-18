@@ -8192,11 +8192,11 @@ shall terminate as of the date such litigation is filed.
 
 
 Component: @babel/runtime
-Version: 7.29.7
+Version: 8.1.2
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2014-present Sebastian McKenzie and other contributors
 License: MIT
-Source: https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.7.tgz
+Source: https://registry.npmjs.org/@babel/runtime/-/runtime-8.1.2.tgz
 Upstream: https://github.com/babel/babel
 
 ----- LICENSE (license text) -----
@@ -8225,11 +8225,11 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 Component: @base-ui/react
-Version: 1.8.0
+Version: 1.9.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2019 Material-UI SAS
 License: MIT
-Source: https://registry.npmjs.org/@base-ui/react/-/react-1.8.0.tgz
+Source: https://registry.npmjs.org/@base-ui/react/-/react-1.9.0.tgz
 Upstream: https://github.com/mui/base-ui
 
 ----- LICENSE (license text) -----
@@ -8257,11 +8257,11 @@ SOFTWARE.
 
 
 Component: @base-ui/utils
-Version: 0.4.0
+Version: 0.5.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2019 Material-UI SAS
 License: MIT
-Source: https://registry.npmjs.org/@base-ui/utils/-/utils-0.4.0.tgz
+Source: https://registry.npmjs.org/@base-ui/utils/-/utils-0.5.0.tgz
 Upstream: https://github.com/mui/base-ui
 
 ----- LICENSE (license text) -----
@@ -8517,11 +8517,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
 Component: @fontsource-variable/noto-sans-jp
-Version: 5.3.0
+Version: 5.3.1
 Included in: Production Web dependency bundled in web/dist
 Copyright: Google Inc.
 License: OFL-1.1
-Source: https://registry.npmjs.org/@fontsource-variable/noto-sans-jp/-/noto-sans-jp-5.3.0.tgz
+Source: https://registry.npmjs.org/@fontsource-variable/noto-sans-jp/-/noto-sans-jp-5.3.1.tgz
 Upstream: https://github.com/fontsource/font-files
 
 ----- LICENSE (license text) -----
@@ -8621,11 +8621,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
 Component: @tanstack/history
-Version: 1.162.4
+Version: 1.162.5
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/history/-/history-1.162.4.tgz
+Source: https://registry.npmjs.org/@tanstack/history/-/history-1.162.5.tgz
 Upstream: https://github.com/TanStack/router
 
 ----- LICENSE (license text) -----
@@ -8653,11 +8653,11 @@ SOFTWARE.
 
 
 Component: @tanstack/query-core
-Version: 5.104.0
+Version: 5.107.1
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.104.0.tgz
+Source: https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.107.1.tgz
 Upstream: https://github.com/TanStack/query
 
 ----- LICENSE (license text) -----
@@ -8685,11 +8685,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-query
-Version: 5.104.0
+Version: 5.107.1
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.104.0.tgz
+Source: https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.107.1.tgz
 Upstream: https://github.com/TanStack/query
 
 ----- LICENSE (license text) -----
@@ -8717,11 +8717,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-router
-Version: 1.170.40
+Version: 1.170.46
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-router/-/react-router-1.170.40.tgz
+Source: https://registry.npmjs.org/@tanstack/react-router/-/react-router-1.170.46.tgz
 Upstream: https://github.com/TanStack/router
 
 ----- LICENSE (license text) -----
@@ -8781,11 +8781,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-virtual
-Version: 3.14.13
+Version: 3.14.26
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-virtual/-/react-virtual-3.14.13.tgz
+Source: https://registry.npmjs.org/@tanstack/react-virtual/-/react-virtual-3.14.26.tgz
 Upstream: https://github.com/TanStack/virtual
 
 ----- LICENSE (license text) -----
@@ -8813,11 +8813,11 @@ SOFTWARE.
 
 
 Component: @tanstack/router-core
-Version: 1.171.33
+Version: 1.171.39
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/router-core/-/router-core-1.171.33.tgz
+Source: https://registry.npmjs.org/@tanstack/router-core/-/router-core-1.171.39.tgz
 Upstream: https://github.com/TanStack/router
 
 ----- LICENSE (license text) -----
@@ -8877,11 +8877,11 @@ SOFTWARE.
 
 
 Component: @tanstack/virtual-core
-Version: 3.17.11
+Version: 3.19.11
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/virtual-core/-/virtual-core-3.17.11.tgz
+Source: https://registry.npmjs.org/@tanstack/virtual-core/-/virtual-core-3.19.11.tgz
 Upstream: https://github.com/TanStack/virtual
 
 ----- LICENSE (license text) -----
@@ -9169,11 +9169,11 @@ SOFTWARE.
 
 
 Component: hls.js
-Version: 1.7.3
+Version: 1.7.4
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2017 Dailymotion (http://www.dailymotion.com) / Copyright (c) 2013-2015 Brightcove
 License: Apache-2.0
-Source: https://registry.npmjs.org/hls.js/-/hls.js-1.7.3.tgz
+Source: https://registry.npmjs.org/hls.js/-/hls.js-1.7.4.tgz
 Upstream: https://github.com/video-dev/hls.js
 
 ----- LICENSE (license text) -----
@@ -9208,11 +9208,11 @@ THE SOFTWARE.
 
 
 Component: isbot
-Version: 5.2.2
+Version: 5.2.3
 Included in: Production Web dependency bundled in web/dist
 Copyright: Included license/notice files below
 License: Unlicense
-Source: https://registry.npmjs.org/isbot/-/isbot-5.2.2.tgz
+Source: https://registry.npmjs.org/isbot/-/isbot-5.2.3.tgz
 Upstream: https://github.com/omrilotan/isbot
 
 ----- LICENSE (license text) -----
@@ -9245,11 +9245,11 @@ For more information, please refer to <http://unlicense.org/>
 
 
 Component: lucide-react
-Version: 1.48.0
+Version: 1.73.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2026 Lucide Icons and Contributors / Copyright (c) 2013-present Cole Bemis
 License: ISC
-Source: https://registry.npmjs.org/lucide-react/-/lucide-react-1.48.0.tgz
+Source: https://registry.npmjs.org/lucide-react/-/lucide-react-1.73.0.tgz
 Upstream: https://github.com/lucide-icons/lucide
 
 ----- LICENSE (license text) -----
@@ -9299,11 +9299,11 @@ SOFTWARE.
 
 
 Component: react
-Version: 19.3.0
+Version: 19.3.1
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
-Source: https://registry.npmjs.org/react/-/react-19.3.0.tgz
+Source: https://registry.npmjs.org/react/-/react-19.3.1.tgz
 Upstream: https://github.com/react/react
 
 ----- LICENSE (license text) -----
@@ -9331,11 +9331,11 @@ SOFTWARE.
 
 
 Component: react-dom
-Version: 19.3.0
+Version: 19.3.1
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
-Source: https://registry.npmjs.org/react-dom/-/react-dom-19.3.0.tgz
+Source: https://registry.npmjs.org/react-dom/-/react-dom-19.3.1.tgz
 Upstream: https://github.com/react/react
 
 ----- LICENSE (license text) -----
@@ -9427,11 +9427,11 @@ SOFTWARE.
 
 
 Component: seroval
-Version: 1.6.8
+Version: 1.8.2
 Included in: Production Web dependency bundled in web/dist
 Copyright: MIT License Copyright (c) 2025 Alexis Munsayac <alexis.munsayac@gmail.com>
 License: MIT
-Source: https://registry.npmjs.org/seroval/-/seroval-1.6.8.tgz
+Source: https://registry.npmjs.org/seroval/-/seroval-1.8.2.tgz
 Upstream: https://github.com/lxsmnsyc/seroval
 
 ----- LICENSE (license text) -----
@@ -9445,11 +9445,11 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 
 Component: seroval-plugins
-Version: 1.6.8
+Version: 1.8.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: MIT License Copyright (c) 2025 Alexis Munsayac <alexis.munsayac@gmail.com>
 License: MIT
-Source: https://registry.npmjs.org/seroval-plugins/-/seroval-plugins-1.6.8.tgz
+Source: https://registry.npmjs.org/seroval-plugins/-/seroval-plugins-1.8.0.tgz
 Upstream: https://github.com/lxsmnsyc/seroval
 
 ----- LICENSE (license text) -----
@@ -9559,11 +9559,11 @@ SOFTWARE.
 
 
 Component: zod
-Version: 4.6.6
+Version: 4.6.7
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2025 Colin McDonnell
 License: MIT
-Source: https://registry.npmjs.org/zod/-/zod-4.6.6.tgz
+Source: https://registry.npmjs.org/zod/-/zod-4.6.7.tgz
 Upstream: https://github.com/colinhacks/zod
 
 ----- LICENSE (license text) -----
