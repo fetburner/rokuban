@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -43,9 +41,7 @@ func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, StorageObservation: pgstoretest.Media(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	before := time.Now().Add(-time.Second)
 	insertStorageSyncFixture(t, pool, ctx, "media", "/mnt/media", 1000, 400, 600)
@@ -98,9 +94,7 @@ func TestGetStorage_ReturnsObservedRoots(t *testing.T) {
 func TestGetStorage_EmptyWhenNoObservation(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, StorageObservation: pgstoretest.Media(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	resp, err := http.Get(srv.URL + "/api/storage")
 	if err != nil {

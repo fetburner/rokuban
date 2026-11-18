@@ -3,13 +3,11 @@ package api_test
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -19,9 +17,7 @@ func TestPutProgramIntent_SnapshotsChannelIdentity(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 400000600021234
 	insertProgramFixture(t, pool, ctx, programID, 40000, 6000)
@@ -70,9 +66,7 @@ func TestPutProgramIntent_SnapshotsProgramFactsFromProjection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 700000800091234
 	insertProgramFixture(t, pool, ctx, programID, 70000, 8000)
@@ -129,9 +123,7 @@ func TestPutProgramIntent_ProgramNotInProjection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 111222333444555
 	body := `{"action":"record"}`

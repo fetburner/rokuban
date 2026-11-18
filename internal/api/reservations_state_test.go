@@ -62,9 +62,9 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		ctx := context.Background()
 
-		router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ReservationStore: pgstoretest.Reservations(pool)})
-		srv := httptest.NewServer(router)
-		defer srv.Close()
+		srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+			c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		})
 
 		const programID int64 = 1990000199011234
 		ruleID := insertRuleFixture(t, pool, ctx)
@@ -100,9 +100,9 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		ctx := context.Background()
 
-		router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ReservationStore: pgstoretest.Reservations(pool)})
-		srv := httptest.NewServer(router)
-		defer srv.Close()
+		srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+			c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		})
 
 		const programID int64 = 1990000199021234
 		ruleID := insertRuleFixture(t, pool, ctx)

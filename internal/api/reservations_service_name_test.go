@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -67,9 +65,7 @@ func TestReservation_ServiceNameExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115041234
 	insertReservationWithSnapshot(t, pool, ctx, programID, "テスト番組", "NHK総合", 1, 1)
@@ -116,9 +112,7 @@ func TestReservation_ServiceNameDistinguishesSameTitle(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const title = "ゆう6かがわ▽県内ニュース・気象　ほか"
 	const programA int64 = 1150000115041001

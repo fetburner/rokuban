@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -24,31 +23,12 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// getJSONForTest は GET して 200 なら body を out にデコードする（epg_test.go の
-// getJSON と同じ形。あちらは package api、こちらは package api_test なので
-// 共有できず、この 1 ファイル内だけの複製として持つ）。
-func getJSONForTest(t *testing.T, url string, out any) *http.Response {
-	t.Helper()
-	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
-	if out != nil && resp.StatusCode == http.StatusOK {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			t.Fatalf("decoding %s: %v", url, err)
-		}
-	}
-	return resp
-}
-
 // GET /api/sites はレジストリを定義順のまま返す。
 func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool),
-		ReservationStore: pgstoretest.Reservations(pool), Sites: []string{"tokyo", "osaka"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.Sites = []string{"tokyo", "osaka"}
+	})
 
 	resp, err := http.Get(srv.URL + "/api/sites")
 	if err != nil {
@@ -72,9 +52,7 @@ func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
 // （既存の「site が空なら store.DefaultSite」規約を集合に持ち上げただけ）。
 func TestListSites_DefaultsToDefaultSiteWhenUnconfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool), ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	resp, err := http.Get(srv.URL + "/api/sites")
 	if err != nil {
@@ -142,10 +120,10 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool), BreakerAdmin: pgstoretest.Breakers(pool),
-		ReservationStore: pgstoretest.Reservations(pool), Sites: []string{"tokyo", "osaka"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.Sites = []string{"tokyo", "osaka"}
+	})
 
 	const (
 		programIDTokyo int64 = 100000000000001
@@ -183,11 +161,7 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 		t.Run("registered/"+r.site, func(t *testing.T) {
 			// GET .../services も自サイトの service だけを返す（site を取り違えると
 			// 他サイトの networkID が混ざる／自サイトの networkID が返らない）。
-			var services []api.Service
-			svcresp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/services", &services)
-			if svcresp.StatusCode != http.StatusOK {
-				t.Fatalf("GET .../services (site=%s) status = %d, want 200", r.site, svcresp.StatusCode)
-			}
+			services := api.GetJSON[[]api.Service](t, srv.URL+"/api/sites/"+r.site+"/services")
 			networkIDs := make([]int, 0, len(services))
 			for _, s := range services {
 				networkIDs = append(networkIDs, s.NetworkId)
@@ -201,11 +175,7 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 
 			// GET .../programs は自サイトの programId だけを返す（他サイトの
 			// programId が混ざる／返らないことの両方を見る）。
-			var programs []api.ProgramListItem
-			presp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/programs?start="+windowStart+"&end="+windowEnd, &programs)
-			if presp.StatusCode != http.StatusOK {
-				t.Fatalf("GET .../programs status = %d, want 200", presp.StatusCode)
-			}
+			programs := api.GetJSON[[]api.ProgramListItem](t, srv.URL+"/api/sites/"+r.site+"/programs?start="+windowStart+"&end="+windowEnd)
 			ids := make([]string, 0, len(programs))
 			for _, p := range programs {
 				ids = append(ids, itoa(p.ProgramId))
@@ -219,11 +189,7 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 
 			// GET .../programs/{programId} 単体取得（site を取り違えると
 			// 「別サイトのプロジェクションに存在しない」404 になる）。
-			var program api.Program
-			gresp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID, &program)
-			if gresp.StatusCode != http.StatusOK {
-				t.Fatalf("GET .../programs/%s (site=%s) status = %d, want 200", r.programID, r.site, gresp.StatusCode)
-			}
+			program := api.GetJSON[api.Program](t, srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID)
 			if itoa(program.ProgramId) != r.programID {
 				t.Errorf("GET .../programs/%s (site=%s) returned programId=%d", r.programID, r.site, program.ProgramId)
 			}
@@ -311,11 +277,7 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 
 			// GET .../programs/{programId}/reservation は (site, programId) を
 			// 宛先に引く（issue #99）。取り違えると「予約が無い」404 になる。
-			var reservation api.Reservation
-			rresp := getJSONForTest(t, srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID+"/reservation", &reservation)
-			if rresp.StatusCode != http.StatusOK {
-				t.Fatalf("GET .../reservation (site=%s) status = %d, want 200", r.site, rresp.StatusCode)
-			}
+			reservation := api.GetJSON[api.Reservation](t, srv.URL+"/api/sites/"+r.site+"/programs/"+r.programID+"/reservation")
 			if reservation.Site != r.site {
 				t.Errorf("GET .../reservation (site=%s) returned reservation.Site=%q", r.site, reservation.Site)
 			}
@@ -383,10 +345,7 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 // このテストが落ちる。
 func TestListRecordings_ReturnsRowsFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
-		RecordingQuery: pgstoretest.Recordings(pool), EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool), ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	dbtest.Recording(t, pool, siteRecordingOptions("tokyo", 1001))
 	dbtest.Recording(t, pool, siteRecordingOptions("osaka", 1002))
@@ -426,9 +385,7 @@ func siteRecordingOptions(site string, eventID int32) func(*dbtest.RecordingPara
 func TestListReservations_ReturnsRowsFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool), ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	insertReservationFixtureForSite(t, pool, ctx, "tokyo", 300000000000001, 30001, 40001)
 	insertReservationFixtureForSite(t, pool, ctx, "osaka", 300000000000002, 30002, 40002)
@@ -480,9 +437,10 @@ func TestListCapacityOverages_ReturnsOveragesFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	tunerStore := pgstoretest.Tuners(pool)
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool), TunerReader: tunerStore, CapacityStore: tunerStore, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.TunerReader = tunerStore
+		c.CapacityStore = tunerStore
+	})
 
 	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
 
@@ -549,10 +507,11 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool),
-		ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Enqueuer = enqueuer
+		c.Sites = []string{"tokyo", "osaka"}
+	})
 
 	resp, err := http.Post(srv.URL+"/api/rules", "application/json", strings.NewReader(`{"name":"全サイト対象"}`))
 	if err != nil {
@@ -574,10 +533,11 @@ func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing
 func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool),
-		ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Enqueuer = enqueuer
+		c.Sites = []string{"tokyo", "osaka"}
+	})
 
 	resp, err := http.Post(srv.URL+"/api/rules", "application/json", strings.NewReader(`{"name":"東京限定","sites":["tokyo"]}`))
 	if err != nil {
@@ -601,10 +561,11 @@ func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), EPGReader: pgstoretest.EPG(pool), ProgramSearch: pgstoretest.EPG(pool),
-		ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Enqueuer = enqueuer
+		c.Sites = []string{"tokyo", "osaka"}
+	})
 
 	resp, err := http.Post(srv.URL+"/api/rules", "application/json", strings.NewReader(`{"name":"大阪限定","sites":["osaka"]}`))
 	if err != nil {

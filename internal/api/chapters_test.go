@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -26,12 +25,12 @@ func chaptersURL(base string, id int64) string {
 
 func strPtr(s string) *string { return &s }
 
-func chapterRouter(pool *pgxpool.Pool, cmDetectEnabled bool) http.Handler {
-	return NewRouter(RouterConfig{
-		Ready:           pool.Ping,
-		ChapterStore:    pgstoretest.Analysis(pool),
-		CMDetectEnabled: cmDetectEnabled,
-	})
+// withChapters は章の編集契約と CM 検出の有効・無効を与える。
+func withChapters(pool *pgxpool.Pool, cmDetectEnabled bool) func(*RouterConfig) {
+	return func(c *RouterConfig) {
+		c.ChapterStore = pgstoretest.Analysis(pool)
+		c.CMDetectEnabled = cmDetectEnabled
+	}
 }
 
 // doChapters はボディ付きのリクエストを投げる。t.Fatal を呼ばないので
@@ -124,8 +123,7 @@ func saveCMDetection(t *testing.T, pool *pgxpool.Pool, id int64, ranges string) 
 
 func TestGetRecordingChapters_AutoLayerReturnsCMAsCutSpans(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "自動層", time.Now().Truncate(time.Second), "finished", 981
@@ -147,8 +145,7 @@ func TestGetRecordingChapters_AutoLayerReturnsCMAsCutSpans(t *testing.T) {
 
 func TestGetRecordingChapters_DropsImplausibleAutoLayer(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "壊れた検出", time.Now().Truncate(time.Second), "finished", 982
@@ -168,8 +165,7 @@ func TestGetRecordingChapters_DropsImplausibleAutoLayer(t *testing.T) {
 
 func TestPutRecordingChapterEdits_AdoptsAndIgnoresRedetection(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "引き取り", time.Now().Truncate(time.Second), "finished", 983
@@ -198,8 +194,7 @@ func TestPutRecordingChapterEdits_AdoptsAndIgnoresRedetection(t *testing.T) {
 
 func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "検出中", time.Now().Truncate(time.Second), "finished", 984
@@ -223,8 +218,7 @@ func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 
 func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -273,8 +267,7 @@ func TestPutRecordingChapterEdits_AllowsEditWhenDeploymentHasNoCMDetection(t *te
 	pool := testutil.SetupDB(t)
 	// cm_detect.enabled=false のデプロイ。誰も検出ジョブを積まないので、終端に
 	// 達しないことを理由に編集を封じない。
-	srv := httptest.NewServer(chapterRouter(pool, false))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, false))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "無効デプロイ", time.Now().Truncate(time.Second), "finished", 985
@@ -296,8 +289,7 @@ func TestPutRecordingChapterEdits_AllowsEditWhenDeploymentHasNoCMDetection(t *te
 // 落ちる形）。
 func TestPutRecordingChapterEdits_WaitsForDetectionResultTransaction(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "直列化", time.Now().Truncate(time.Second), "finished", 986
@@ -422,8 +414,7 @@ func waitForRecordingLockWaiter(t *testing.T, pool *pgxpool.Pool) {
 // 空の層で消す（このテストが落ちる形）。
 func TestPutRecordingChapterEdits_RejectsVersionFromBeforeDetectionCommit(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "古い版", time.Now().Truncate(time.Second), "finished", 990
@@ -469,8 +460,7 @@ func TestPutRecordingChapterEdits_RejectsVersionFromBeforeDetectionCommit(t *tes
 // ただし版の比較は所有済みでも効く。
 func TestPutRecordingChapterEdits_OwnedRecordingIgnoresRedetection(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "再検出中の所有", time.Now().Truncate(time.Second), "finished", 991
@@ -507,8 +497,7 @@ func TestPutRecordingChapterEdits_OwnedRecordingIgnoresRedetection(t *testing.T)
 // TestChapterEdits_RejectTrashedRecording はごみ箱の録画が編集できないことを確かめる。
 func TestChapterEdits_RejectTrashedRecording(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, false))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, false))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ごみ箱", time.Now().Truncate(time.Second), "finished", 992
@@ -534,8 +523,7 @@ func TestChapterEdits_RejectTrashedRecording(t *testing.T) {
 
 func TestDeleteRecordingChapterEdits_ReturnsToAutoLayer(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, true))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, true))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "自動に戻す", time.Now().Truncate(time.Second), "finished", 987
@@ -578,8 +566,7 @@ func TestDeleteRecordingChapterEdits_ReturnsToAutoLayer(t *testing.T) {
 
 func TestPutRecordingChapterEdits_RejectsInvalidSpans(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, false))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, false))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "不正な区間", time.Now().Truncate(time.Second), "finished", 988
@@ -616,8 +603,7 @@ func TestPutRecordingChapterEdits_RejectsInvalidSpans(t *testing.T) {
 // 黙って消えない）。版のハッシュから spans を外すと 2 回目も 204 になり落ちる。
 func TestPutRecordingChapterEdits_OwnedVersionChangesWithEachEdit(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(chapterRouter(pool, false))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, withChapters(pool, false))
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "2タブ", time.Now().Truncate(time.Second), "finished", 993

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -91,8 +90,11 @@ func patchCMDetection(t *testing.T, url string, enabled bool) *http.Response {
 
 func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool), CMStationStore: pgstoretest.Analysis(pool), CMDetectEnabled: true}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.CMStationStore = pgstoretest.Analysis(pool)
+		c.CMDetectEnabled = true
+	})
 
 	activeID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "復旧原本", time.Now().Truncate(time.Second), "finished", 980
@@ -149,8 +151,11 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool), CMStationStore: pgstoretest.Analysis(pool), CMDetectEnabled: true}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.CMStationStore = pgstoretest.Analysis(pool)
+		c.CMDetectEnabled = true
+	})
 
 	cases := []struct {
 		name         string
@@ -219,8 +224,13 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
 	analysisStore := pgstoretest.Analysis(pool)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: analysisStore, CMDetectionStore: analysisStore, CMDetectEnabled: true, Enqueuer: enqueuer, OriginalLocator: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = analysisStore
+		c.CMDetectionStore = analysisStore
+		c.CMDetectEnabled = true
+		c.Enqueuer = enqueuer
+		c.OriginalLocator = pgstoretest.Media(pool)
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "再試行", time.Now().Truncate(time.Second), "finished", 982
@@ -288,8 +298,9 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 
 func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ロゴ管理", time.Now().Truncate(time.Second), "finished", 983
@@ -362,13 +373,10 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 
 func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:           pool.Ping,
-		RecordingQuery:  pgstoretest.Recordings(pool),
-		CMStationStore:  pgstoretest.Analysis(pool),
-		CMDetectEnabled: true,
-	}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+		c.CMDetectEnabled = true
+	})
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -391,10 +399,7 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 	}
 	readBoth := func() recordingPair {
 		t.Helper()
-		var list []Recording
-		if resp := getJSON(t, srv.URL+"/api/recordings", &list); resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET /api/recordings status = %d, want 200", resp.StatusCode)
-		}
+		list := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 		var listed *Recording
 		for i := range list {
 			if list[i].Id == id {
@@ -405,10 +410,7 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 		if listed == nil {
 			t.Fatalf("recording %d missing from GET /api/recordings", id)
 		}
-		var detail Recording
-		if resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &detail); resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET /api/recordings/%d status = %d, want 200", id, resp.StatusCode)
-		}
+		detail := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
 		return recordingPair{list: *listed, detail: detail}
 	}
 	assertDetection := func(pair recordingPair, wantState CMDetectionState, wantFailure bool) {
@@ -438,8 +440,10 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 // 一覧は教えた枠と候補の無い待ち状態を返す（このテストは River 無し）。
 func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool), OriginalLocator: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+		c.OriginalLocator = pgstoretest.Media(pool)
+	})
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
@@ -676,8 +680,9 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 		}
 	}
 	insertCandidate([]byte("candidate-one"))
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+	})
 
 	request := func(body string) *http.Response {
 		t.Helper()
@@ -755,8 +760,12 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool), Enqueuer: enqueuer, CMDetectEnabled: true, OriginalLocator: pgstoretest.Media(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+		c.Enqueuer = enqueuer
+		c.CMDetectEnabled = true
+		c.OriginalLocator = pgstoretest.Media(pool)
+	})
 
 	queued := func(want int) {
 		t.Helper()
@@ -848,8 +857,11 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool), CMStationStore: pgstoretest.Analysis(pool), Enqueuer: enqueuer}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.CMStationStore = pgstoretest.Analysis(pool)
+		c.Enqueuer = enqueuer
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "無効構成", time.Now().Truncate(time.Second), "finished", 984
@@ -921,8 +933,9 @@ func TestCMLogoCandidateAdoptRejectsUnadoptableCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+	})
 	insert := func(state string, observed time.Time) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `DELETE FROM cm_logo_candidates`); err != nil {
@@ -990,8 +1003,9 @@ func TestCMLogoCandidateDiscardKeepsAreaAndLogo(t *testing.T) {
 		) VALUES (32678, 5168, 'ready', 1180, 24, 240, 96, 1440, 1080, $1, $2, 'new')`, id, area.UpdatedAt); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+	})
 
 	resp := cmLogoRequest(t, http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/candidate", "")
 	if resp.StatusCode != http.StatusNoContent {
@@ -1035,8 +1049,9 @@ func TestCMLogoAreaDeleteClearsOnlyThisStationsAdoptAttempts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+	})
 
 	resp := cmLogoRequest(t, http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/area", "")
 	if resp.StatusCode != http.StatusNoContent {

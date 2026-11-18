@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -56,9 +54,7 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090011234
 	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9001)
@@ -125,9 +121,7 @@ func TestGetProgramReservation_NoReservation_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090021234
 	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9002)
@@ -148,9 +142,7 @@ func TestGetProgramReservation_UnknownSite_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090031234
 	insertProgramSnapshotFixture(t, pool, ctx, programID, 90000, 9003)

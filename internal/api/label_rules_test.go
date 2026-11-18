@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,11 +19,15 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // postLabelRule は分類ルールを作り、応答を返す。
+// labelValueKeyWire は value-key 応答の valueKey だけを、JSON のフィールド名のまま検査する型。
+type labelValueKeyWire struct {
+	ValueKey string `json:"valueKey"`
+}
+
 func postLabelRule(t *testing.T, srvURL string, body map[string]any) (*http.Response, LabelRule) {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -67,11 +70,7 @@ func seedPlayableRecording(t *testing.T, pool *pgxpool.Pool, title string, event
 
 func getShelves(t *testing.T, srvURL string, query url.Values) []RecordingShelf {
 	t.Helper()
-	var got []RecordingShelf
-	resp := getJSON(t, srvURL+"/api/recording-shelves?"+query.Encode(), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/recording-shelves?%s status = %d, want 200", query.Encode(), resp.StatusCode)
-	}
+	got := GetJSON[[]RecordingShelf](t, srvURL+"/api/recording-shelves?"+query.Encode())
 	return got
 }
 
@@ -80,7 +79,7 @@ func getShelves(t *testing.T, srvURL string, query url.Values) []RecordingShelf 
 // count は生きている録画全体、playableCount はそのうち再生できる録画だけを数える。
 func TestListRecordingShelves_GroupsByEffectiveSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base.Add(-time.Hour))
@@ -116,7 +115,7 @@ func TestListRecordingShelves_GroupsByEffectiveSeries(t *testing.T) {
 // 棚には残す。再生できる件数は別列で返す。
 func TestListRecordingShelves_IncludesLivePopulation(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
 
@@ -157,7 +156,7 @@ func TestListRecordingShelves_IncludesLivePopulation(t *testing.T) {
 // 失敗の録画も棚の母集団に残し、再生可能件数を別に返す。encoded だけの録画も再生できる。
 func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
 
@@ -223,7 +222,7 @@ func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 // 未視聴は放送イベント単位で数え、別拠点・ごみ箱・supersede 済み・purge 済みの録画の視聴済み印も束ねる。
 func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
 
@@ -343,7 +342,7 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 // 件数が水増しされる（自動 PUT は行ごとに印を付けるので実際に起きる）。
 func TestListRecordingShelves_WatchedOnEveryRowDoesNotInflateCounts(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
 
@@ -368,9 +367,13 @@ func TestListRecordingShelves_WatchedOnEveryRowDoesNotInflateCounts(t *testing.T
 // key が未知の値なら 400（黙って 0 件にしない。docs/api/rest.md の規約）。
 func TestListRecordingShelves_RejectsUnknownKey(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
-	resp := getJSON(t, srv.URL+"/api/recording-shelves?key=genre", nil)
+	resp, err := http.Get(srv.URL + "/api/recording-shelves?key=genre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("key=genre status = %d, want 400", resp.StatusCode)
 	}
@@ -392,11 +395,9 @@ func TestCreateLabelRule_EnqueuesReconcileAfterCommit(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	baseEnqueuer := newRecordingEnqueuer()
 	enqueuer := &labelRuleCommitCheckingEnqueuer{recordingEnqueuer: baseEnqueuer, pool: pool}
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:          pool.Ping,
-		RecordingQuery: pgstoretest.Recordings(pool), LabelRules: pgstoretest.LabelRules(pool), Enqueuer: enqueuer,
-	}))
-	t.Cleanup(srv.Close)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Enqueuer = enqueuer
+	})
 
 	resp, created := postLabelRule(t, srv.URL, map[string]any{
 		"value": "作品X", "keyword": "作品X", "priority": 10,
@@ -435,7 +436,8 @@ func (e *labelRuleCommitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq
 
 func TestCreateLabelRule_StoreFailureDoesNotEnqueue(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
+	enqueuer := newRecordingEnqueuer()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) { c.Enqueuer = enqueuer })
 	const constraint = "label_rules_test_reject_keyword"
 	if _, err := pool.Exec(context.Background(), `ALTER TABLE label_rules ADD CONSTRAINT `+constraint+` CHECK (keyword <> 'db-failure')`); err != nil {
 		t.Fatalf("adding rejecting constraint: %v", err)
@@ -459,7 +461,8 @@ func TestCreateLabelRule_StoreFailureDoesNotEnqueue(t *testing.T) {
 // では次点のルールに移らない（docs/data/series.md §8）。
 func TestDeleteLabelRule_EnqueuesReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
+	enqueuer := newRecordingEnqueuer()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) { c.Enqueuer = enqueuer })
 
 	_, created := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X"})
 	enqueuer.Reset()
@@ -492,7 +495,8 @@ func TestDeleteLabelRule_EnqueuesReconcile(t *testing.T) {
 // 2 回続けて編集すると、API が再評価の投入を 2 回依頼する。
 func TestCreateLabelRule_TwoEditsEnqueueTwoJobs(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
+	enqueuer := newRecordingEnqueuer()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) { c.Enqueuer = enqueuer })
 
 	postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X"})
 	postLabelRule(t, srv.URL, map[string]any{"value": "作品Y", "keyword": "作品Y"})
@@ -505,7 +509,8 @@ func TestCreateLabelRule_TwoEditsEnqueueTwoJobs(t *testing.T) {
 // PATCH は上書きで、keyword の変更も再評価を投入する。存在しない id は 404。
 func TestUpdateLabelRule_EnqueuesReconcileAndReports404(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
+	enqueuer := newRecordingEnqueuer()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) { c.Enqueuer = enqueuer })
 
 	_, created := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X", "priority": 0})
 	enqueuer.Reset()
@@ -547,7 +552,7 @@ func TestUpdateLabelRule_EnqueuesReconcileAndReports404(t *testing.T) {
 // 場合と、キーワードが空の場合。
 func TestCreateLabelRule_RejectsMeaninglessRules(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, _ := newAPIServerWithRecordingEnqueuer(t, pool)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) { c.Enqueuer = newRecordingEnqueuer() })
 
 	cases := []struct {
 		name string
@@ -571,7 +576,7 @@ func TestCreateLabelRule_RejectsMeaninglessRules(t *testing.T) {
 // 一覧・単体の Recording に実効シリーズが載る。分類ルールを当てると値が変わる。
 func TestListRecordings_ExposesEffectiveSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -619,11 +624,7 @@ func TestListRecordings_ExposesEffectiveSeries(t *testing.T) {
 		if r.SeriesKey == nil || *r.SeriesKey != "NHK高校講座" {
 			t.Errorf("seriesKey after adding a rule = %q, want NHK高校講座", ptrStr(r.SeriesKey))
 		}
-		var detail Recording
-		resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d", r.Id), &detail)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("detail status = %d, want 200", resp.StatusCode)
-		}
+		detail := GetJSON[Recording](t, srv.URL+fmt.Sprintf("/api/recordings/%d", r.Id))
 		if detail.Series == nil || *detail.Series != "日本史" || detail.SeriesKey == nil || *detail.SeriesKey != "NHK高校講座" {
 			t.Errorf("detail series/seriesKey = %q/%q, want 日本史/NHK高校講座", ptrStr(detail.Series), ptrStr(detail.SeriesKey))
 		}
@@ -658,23 +659,8 @@ SELECT (SELECT count(*) FROM upserted) + (SELECT count(*) FROM removed)`
 
 func getRecordingsSeries(t *testing.T, srvURL string) []Recording {
 	t.Helper()
-	var got []Recording
-	resp := getJSON(t, srvURL+"/api/recordings", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/recordings status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srvURL+"/api/recordings")
 	return got
-}
-
-func newAPIServerWithRecordingEnqueuer(t *testing.T, pool *pgxpool.Pool) (*httptest.Server, *recordingEnqueuer) {
-	t.Helper()
-	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:          pool.Ping,
-		RecordingQuery: pgstoretest.Recordings(pool), LabelRules: pgstoretest.LabelRules(pool), Enqueuer: enqueuer,
-	}))
-	t.Cleanup(srv.Close)
-	return srv, enqueuer
 }
 
 // value は自動キーと同じ正規化を通るので、最初の空白で切れる。API は実効の棚キー
@@ -682,7 +668,7 @@ func newAPIServerWithRecordingEnqueuer(t *testing.T, pool *pgxpool.Pool) (*httpt
 // `NHK高校講座 化学` は同じ棚キーになる（割るつもりのルールが同じ棚に落ちる）。
 func TestLabelRule_ValueKeyIsTheTruncatedShelfKey(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, _ := newAPIServerWithRecordingEnqueuer(t, pool)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) { c.Enqueuer = newRecordingEnqueuer() })
 
 	resp, created := postLabelRule(t, srv.URL, map[string]any{"value": "NHK高校講座 数学I", "keyword": "数学"})
 	if resp.StatusCode != http.StatusCreated {
@@ -692,26 +678,18 @@ func TestLabelRule_ValueKeyIsTheTruncatedShelfKey(t *testing.T) {
 		t.Errorf("created value/valueKey = %q / %q, want %q / %q",
 			created.Value, created.ValueKey, "NHK高校講座 数学I", "NHK高校講座")
 	}
-	var list []LabelRule
-	if r := getJSON(t, srv.URL+"/api/label-rules", &list); r.StatusCode != http.StatusOK {
-		t.Fatalf("list status = %d", r.StatusCode)
-	}
+	list := GetJSON[[]LabelRule](t, srv.URL+"/api/label-rules")
 	if len(list) != 1 || list[0].ValueKey != "NHK高校講座" {
 		t.Errorf("listed valueKey = %+v, want NHK高校講座", list)
 	}
 
-	var preview struct {
-		ValueKey string `json:"valueKey"`
-	}
 	q := url.Values{"value": {"ドラマ「半沢直樹」"}}
-	if r := getJSON(t, srv.URL+"/api/label-rule-value-key?"+q.Encode(), &preview); r.StatusCode != http.StatusOK {
-		t.Fatalf("value-key status = %d", r.StatusCode)
-	}
+	preview := GetJSON[labelValueKeyWire](t, srv.URL+"/api/label-rule-value-key?"+q.Encode())
 	if preview.ValueKey != "ドラマ" {
 		t.Errorf("preview valueKey = %q, want %q", preview.ValueKey, "ドラマ")
 	}
 	q = url.Values{"value": {"【】"}}
-	getJSON(t, srv.URL+"/api/label-rule-value-key?"+q.Encode(), &preview)
+	preview = GetJSON[labelValueKeyWire](t, srv.URL+"/api/label-rule-value-key?"+q.Encode())
 	if preview.ValueKey != "" {
 		t.Errorf("preview valueKey for symbols only = %q, want empty", preview.ValueKey)
 	}
@@ -721,7 +699,7 @@ func TestLabelRule_ValueKeyIsTheTruncatedShelfKey(t *testing.T) {
 // priority が int32 を外れる値も黙って折り返さず 400。
 func TestCreateLabelRule_RejectsBlankKeywordAndOutOfRangePriority(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, _ := newAPIServerWithRecordingEnqueuer(t, pool)
+	srv := NewTestServer(t, pool, func(c *RouterConfig) { c.Enqueuer = newRecordingEnqueuer() })
 
 	cases := []struct {
 		name string
@@ -773,7 +751,7 @@ func TestListRecordingShelves_LatestStartAtIsUTC(t *testing.T) {
 		t.Fatalf("creating JST-scanning pool: %v", err)
 	}
 	t.Cleanup(jstPool.Close)
-	srv := newAPIServer(t, jstPool)
+	srv := NewTestServer(t, jstPool)
 
 	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 
@@ -804,7 +782,7 @@ func shelfByValue(shelves []RecordingShelf, value string) (RecordingShelf, bool)
 // ジャンルで絞ると、そのジャンルでない回は棚の件数から除かれ、該当する回が 0 件の棚は返らない。
 func TestListRecordingShelves_FilterByGenreCountsOnlyMatchingEpisodes(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 	anime := `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`
 	drama := `[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`
@@ -836,7 +814,7 @@ func TestListRecordingShelves_FilterByGenreCountsOnlyMatchingEpisodes(t *testing
 // 2 つのクールにまたがるシリーズは、どちらの期間で絞っても返り、件数・代表・最新はその期間内の回から出す。
 func TestListRecordingShelves_FilterByPeriodSplitsSeriesAcrossCours(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	jst := time.FixedZone("JST", 9*60*60)
 	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, time.Date(2026, 1, 8, 1, 0, 0, 0, jst))
 	winter2 := seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, time.Date(2026, 3, 26, 1, 0, 0, 0, jst))
@@ -872,7 +850,7 @@ func TestListRecordingShelves_FilterByPeriodSplitsSeriesAcrossCours(t *testing.T
 // 絞り込みは束ねる側の母集団にだけ当て、視聴済み印の参照には当てない。
 func TestListRecordingShelves_FilterKeepsWatchedMarksFromOutsideTheFilter(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
 	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
@@ -899,7 +877,7 @@ func TestListRecordingShelves_FilterKeepsWatchedMarksFromOutsideTheFilter(t *tes
 // パラメータを詰め替える経路（recordingsFilterFromShelvesParams）で 1 つ落とすとここで落ちる。
 func TestListRecordingShelves_FiltersMatchListRecordings(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	ruleID := seedRule(t, pool, "作品Xを録る")
 
@@ -938,10 +916,7 @@ func TestListRecordingShelves_FiltersMatchListRecordings(t *testing.T) {
 		{"from": {base.Add(time.Hour).Format(time.RFC3339)}},
 		{"to": {base.Add(time.Hour).Format(time.RFC3339)}},
 	} {
-		var recordings []Recording
-		if resp := getJSON(t, srv.URL+"/api/recordings?"+q.Encode(), &recordings); resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET /api/recordings?%s status = %d", q.Encode(), resp.StatusCode)
-		}
+		recordings := GetJSON[[]Recording](t, srv.URL+"/api/recordings?"+q.Encode())
 		total := 0
 		for _, s := range getShelves(t, srv.URL, q) {
 			total += s.Count
@@ -955,11 +930,11 @@ func TestListRecordingShelves_FiltersMatchListRecordings(t *testing.T) {
 // 不正な絞り込みは録画一覧と同じく 400 にする。
 func TestListRecordingShelves_RejectsInvalidFilters(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	for _, q := range []string{"genre=16", "status=bogus", "qTarget=bogus", "channelType=XX", "source=bogus"} {
-		resp := getJSON(t, srv.URL+"/api/recording-shelves?"+q, nil)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("GET /api/recording-shelves?%s status = %d, want 400", q, resp.StatusCode)
+		status := GetStatus(t, srv.URL+"/api/recording-shelves?"+q)
+		if status != http.StatusBadRequest {
+			t.Errorf("GET /api/recording-shelves?%s status = %d, want 400", q, status)
 		}
 	}
 }

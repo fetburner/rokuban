@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -16,9 +15,9 @@ import (
 //nolint:funlen // ルール CRUD の一連のシナリオを 1 本の結合テストにしている。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
 func TestRulesCRUD(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+	})
 
 	// Create
 	body := map[string]any{
@@ -250,14 +249,10 @@ func TestRulesCRUD(t *testing.T) {
 // 既知名は通ることも両方向で確認する。
 func TestCreateRule_UnknownEncodeProfile(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{
-		Ready:              pool.Ping,
-		RuleStore:          pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch:      pgstoretest.EPG(pool),
-		EncodeProfileNames: []string{"h264"},
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.EncodeProfileNames = []string{"h264"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	// 未知プロファイル → 400
 	body := map[string]any{
@@ -297,9 +292,9 @@ func TestCreateRule_UnknownEncodeProfile(t *testing.T) {
 	}
 
 	// EncodeProfileNames 未注入なら検証スキップ（後方互換・部分構成のテスト）
-	routerNoProfiles := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool)})
-	srv2 := httptest.NewServer(routerNoProfiles)
-	defer srv2.Close()
+	srv2 := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+	})
 	raw, _ = json.Marshal(body)
 	resp, err = http.Post(srv2.URL+"/api/rules", "application/json", bytes.NewReader(raw))
 	if err != nil {
@@ -317,14 +312,10 @@ func TestCreateRule_UnknownEncodeProfile(t *testing.T) {
 // 辿り着けない「意図したサイトで録られない」に化ける）。
 func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{
-		Ready:         pool.Ping,
-		RuleStore:     pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch: pgstoretest.EPG(pool),
-		Sites:         []string{"tokyo", "osaka"},
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Sites = []string{"tokyo", "osaka"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	// 未知の site 名 → 400（保存されない）
 	badBody := map[string]any{
@@ -436,14 +427,10 @@ func TestRuleSites_UnknownSiteRejected(t *testing.T) {
 // validateEncodeProfiles が空名を拒否する流儀に揃える）。
 func TestRuleSites_EmptyElementRejected(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{
-		Ready:         pool.Ping,
-		RuleStore:     pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch: pgstoretest.EPG(pool),
-		Sites:         []string{"tokyo", "osaka"},
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Sites = []string{"tokyo", "osaka"}
 	})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
 
 	body := map[string]any{
 		"name":  "empty-site-element",
@@ -470,14 +457,10 @@ func TestRuleSites_RegistryDriftAllowsRoundTripUpdate(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
 	// tokyo がまだレジストリにある間に作成する。
-	routerBefore := NewRouter(RouterConfig{
-		Ready:         pool.Ping,
-		RuleStore:     pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch: pgstoretest.EPG(pool),
-		Sites:         []string{"tokyo", "osaka"},
+	srvBefore := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Sites = []string{"tokyo", "osaka"}
 	})
-	srvBefore := httptest.NewServer(routerBefore)
-	defer srvBefore.Close()
 
 	body := map[string]any{
 		"name":  "site-later-removed",
@@ -498,14 +481,10 @@ func TestRuleSites_RegistryDriftAllowsRoundTripUpdate(t *testing.T) {
 	}
 
 	// tokyo がレジストリから消えたプロセスに切り替える（同じ DB、別 config を模す）。
-	routerAfter := NewRouter(RouterConfig{
-		Ready:         pool.Ping,
-		RuleStore:     pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch: pgstoretest.EPG(pool),
-		Sites:         []string{"osaka"},
+	srvAfter := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Sites = []string{"osaka"}
 	})
-	srvAfter := httptest.NewServer(routerAfter)
-	defer srvAfter.Close()
 
 	patch := func(t *testing.T, bodyMap map[string]any) (int, Rule) {
 		t.Helper()
@@ -595,13 +574,10 @@ func TestRuleSites_RegistryDriftRejectsFork(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
 	// tokyo がまだレジストリにある間に「フォーク元」を作る。
-	srvBefore := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:         pool.Ping,
-		RuleStore:     pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch: pgstoretest.EPG(pool),
-		Sites:         []string{"tokyo", "osaka"},
-	}))
-	defer srvBefore.Close()
+	srvBefore := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Sites = []string{"tokyo", "osaka"}
+	})
 
 	raw, _ := json.Marshal(map[string]any{"name": "fork-source", "sites": []string{"tokyo"}})
 	resp, err := http.Post(srvBefore.URL+"/api/rules", "application/json", bytes.NewReader(raw))
@@ -621,13 +597,10 @@ func TestRuleSites_RegistryDriftRejectsFork(t *testing.T) {
 	}
 
 	// tokyo がレジストリから消えたプロセスに切り替える。
-	srvAfter := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:         pool.Ping,
-		RuleStore:     pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch: pgstoretest.EPG(pool),
-		Sites:         []string{"osaka"},
-	}))
-	defer srvAfter.Close()
+	srvAfter := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Sites = []string{"osaka"}
+	})
 
 	// web のフォークが送るボディ（GET で得た sites をそのまま preserve して POST）。
 	rawFork, _ := json.Marshal(map[string]any{
@@ -674,13 +647,10 @@ func TestRuleSites_RegistryDriftRejectsFork(t *testing.T) {
 // 404 を先に返す実装として意識的にやること）。UpdateRule のコメントと対になるテスト。
 func TestUpdateRule_UnknownSiteBeatsNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready:         pool.Ping,
-		RuleStore:     pgstoretest.Rules(pool, []string{"default"}...),
-		ProgramSearch: pgstoretest.EPG(pool),
-		Sites:         []string{"tokyo"},
-	}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
+		c.Sites = []string{"tokyo"}
+	})
 
 	patch := func(t *testing.T, body map[string]any) int {
 		t.Helper()

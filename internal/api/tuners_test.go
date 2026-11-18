@@ -30,7 +30,7 @@ func seedTunerSync(t *testing.T, pool *pgxpool.Pool, site string, index int32, n
 
 func TestListTuners(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 
 	// tuner_index 降順に投入し、応答が tuner_index 昇順であることを確かめる。
@@ -53,11 +53,7 @@ func TestListTuners(t *testing.T) {
 		t.Fatalf("backdating observed_at: %v", err)
 	}
 
-	var got []Tuner
-	resp := getJSON(t, srv.URL+"/api/sites/default/tuners", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Tuner](t, srv.URL+"/api/sites/default/tuners")
 	if len(got) != 3 {
 		t.Fatalf("tuners = %d, want 3", len(got))
 	}
@@ -105,13 +101,9 @@ func TestListTuners(t *testing.T) {
 // 何も主張しない」。空配列そのものがその主張）。
 func TestListTuners_EmptyProjection(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
-	var got []Tuner
-	resp := getJSON(t, srv.URL+"/api/sites/default/tuners", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Tuner](t, srv.URL+"/api/sites/default/tuners")
 	if len(got) != 0 {
 		t.Fatalf("tuners = %d, want 0", len(got))
 	}
@@ -119,10 +111,10 @@ func TestListTuners_EmptyProjection(t *testing.T) {
 
 func TestListTuners_UnknownSite_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
-	resp := getJSON(t, srv.URL+"/api/sites/nonexistent/tuners", nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	status := GetStatus(t, srv.URL+"/api/sites/nonexistent/tuners")
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
 	}
 }

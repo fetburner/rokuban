@@ -198,14 +198,11 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 
 	add := func(id int64, profile string) int {
 		raw, _ := json.Marshal(map[string]any{"profiles": []string{profile}})
@@ -260,14 +257,11 @@ func seedDesiredEncodeProfiles(t *testing.T, pool *pgxpool.Pool, ctx context.Con
 func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 21000
 		p.ServiceID = 2100
@@ -305,14 +299,11 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 func TestReencodeRecordingProfile_AllowsTrashedRecording(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 21000
@@ -353,15 +344,12 @@ func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) 
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		Enqueuer:           enqueuer,
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.Enqueuer = enqueuer
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 21000
 		p.ServiceID = 2100
@@ -449,14 +437,11 @@ func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) 
 func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 
 	seed := func(owned bool, cutFrom, cutTo int64) int64 {
 		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -510,15 +495,12 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		Enqueuer:           enqueuer,
-		EncodeProfileNames: []string{"h264", "cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.Enqueuer = enqueuer
+		c.EncodeProfileNames = []string{"h264", "cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 
 	for name, desired := range map[string]string{"cut not desired": `{h264}`, "no policy row": ""} {
 		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -561,14 +543,11 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudget(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 21000
 		p.ServiceID = 2100
@@ -632,14 +611,11 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstoretest.Media(pool),
-		MediaReader:        pgstoretest.Media(pool),
-		EncodeProfileNames: []string{"cut"},
-		CutProfileNames:    []string{"cut"},
-	}))
-	t.Cleanup(srv.Close)
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.EncodePolicyStore = pgstoretest.Media(pool)
+		c.EncodeProfileNames = []string{"cut"}
+		c.CutProfileNames = []string{"cut"}
+	})
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 21000
 		p.ServiceID = 2100

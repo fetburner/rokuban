@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,15 +15,12 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func newBreakerRouter(pool *pgxpool.Pool) http.Handler {
-	return newBreakerRouterWithSites(pool, nil)
-}
-
-func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler {
-	return api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: sites,
-		StorageStoreNames: []string{"test-store", "s3main"},
-	})
+// withBreakers は発動の読み書き契約と、置き場範囲の再開先の名前を与える。
+func withBreakers(pool *pgxpool.Pool) func(*api.RouterConfig) {
+	return func(c *api.RouterConfig) {
+		c.BreakerAdmin = pgstoretest.Breakers(pool)
+		c.StorageStoreNames = []string{"test-store", "s3main"}
+	}
 }
 
 // insertCircuitBreakerFixture は circuit_breakers 行を直接 INSERT する（ruler /
@@ -102,9 +98,7 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	detail := `{"total":42,"programs":[{"programId":1234,"title":"テスト番組"}]}`
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 42, 50, detail)
@@ -144,9 +138,7 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 func TestListCircuitBreakers_EmptyWhenNoneTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	resp, err := http.Get(srv.URL + "/api/breakers")
 	if err != nil {
@@ -180,9 +172,7 @@ func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 
@@ -207,9 +197,7 @@ func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
 func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/ruler_deletes/resume", nil)
 	if err != nil {
@@ -229,9 +217,7 @@ func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
 func TestResumeCircuitBreaker_400WhenUnknownName(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/sites/default/breakers/not_a_real_breaker/resume", nil)
 	if err != nil {
@@ -252,9 +238,7 @@ func TestResumeCircuitBreaker_OnlyDeletesTargetedBreaker(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	insertCircuitBreakerFixture(t, pool, ctx, "ruler_deletes", 10, 50, `{"total":10}`)
 	insertCircuitBreakerFixture(t, pool, ctx, "reconcile_total_loss", 1, 1, `{"total":1}`)
@@ -296,9 +280,7 @@ func TestResumeCircuitBreaker_400WhenSiteMismatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	// 他サイト（このプロセスの site ではない）の発動を用意する。
 	if _, err := pool.Exec(ctx, `
@@ -352,9 +334,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
 
-			router := newBreakerRouter(pool)
-			srv := httptest.NewServer(router)
-			defer srv.Close()
+			srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 			// site 範囲は既定 site、置き場範囲はルーターに設定した置き場名。
 			scope := "default"
@@ -429,9 +409,7 @@ func TestListCircuitBreakers_PassesThroughNameNotInEnumInsteadOfFailingWholeList
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := newBreakerRouter(pool)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, withBreakers(pool))
 
 	// 発動中の既知ブレーカーと、enum に無い名前を同時に発動させる —— 後者
 	// 1 件のせいで前者まで見えなくなってはいけない、というのがこのテストの

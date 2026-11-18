@@ -14,7 +14,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -104,9 +103,7 @@ func TestGetReservation_DedupeSkipExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115041234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -153,9 +150,7 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115051234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -195,9 +190,7 @@ func TestGetReservation_NoDedupeEvidenceOmitsFields(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115061234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -223,9 +216,7 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115071234
 	ruleID := insertRuleFixture(t, pool, ctx)
@@ -250,9 +241,7 @@ func TestGetReservation_BrokenBaseJSONFails(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1150000115081234
 	ruleID := insertRuleFixture(t, pool, ctx)

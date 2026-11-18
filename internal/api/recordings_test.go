@@ -67,7 +67,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 
 func TestListRecordings(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	older := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -88,11 +88,7 @@ func TestListRecordings(t *testing.T) {
 		0x100: {800, 0, 0, 0},
 	})
 
-	var got []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(got) != 3 {
 		t.Fatalf("recordings = %d, want 3", len(got))
 	}
@@ -144,7 +140,7 @@ func TestListRecordings(t *testing.T) {
 // dropSummary は原本の存在ではなく、保存サイズに一致した TS 計測記録がある場合だけ返す。
 func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
 
@@ -190,11 +186,7 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 		}
 	}
 
-	var list []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings", &list)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list status = %d, want 200", resp.StatusCode)
-	}
+	list := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(list) != len(want) {
 		t.Fatalf("recordings = %d, want %d", len(list), len(want))
 	}
@@ -203,20 +195,12 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 	}
 
 	for id := range want {
-		var detail Recording
-		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &detail)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("detail %d status = %d, want 200", id, resp.StatusCode)
-		}
+		detail := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
 		assertSummary(detail, "detail")
 
 		// PID 別内訳も同じ判定で、3 件とも空配列（null ではない）。unmeasured と stale は
 		// PID 行があっても未計測として返さず、measuredZero は計測済みだが行が無いから。
-		var stats []DropStat
-		resp = getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &stats)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("drop-stats %d status = %d, want 200", id, resp.StatusCode)
-		}
+		stats := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 		if stats == nil || len(stats) != 0 {
 			t.Errorf("drop-stats for recording %d = %+v, want empty non-null array", id, stats)
 		}
@@ -227,7 +211,7 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 // supersede 済み行だけを除き、無条件一覧には置換前後の履歴を残すことを固定する。
 func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	// watcher の createRecording と同じ順序: 生きた failed 行を supersede してから
@@ -251,21 +235,13 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	})
 
 	// `?status=failed` は superseded 済みの failed 行を返さない（0 件）。
-	var failedOnly []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings?status=failed", &failedOnly)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	failedOnly := GetJSON[[]Recording](t, srv.URL+"/api/recordings?status=failed")
 	if len(failedOnly) != 0 {
 		t.Errorf("?status=failed = %d rows, want 0 (superseded failed row must be excluded)", len(failedOnly))
 	}
 
 	// 無条件一覧は履歴 2 行（supersede 元 + supersede 先）を残す。
-	var all []Recording
-	resp = getJSON(t, srv.URL+"/api/recordings", &all)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	all := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(all) != 2 {
 		t.Errorf("unconditional list = %d rows, want 2 (both history rows retained)", len(all))
 	}
@@ -281,7 +257,7 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 // 合わせて直す必要がある。
 func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本 unlink 待ち", time.Now().Truncate(time.Second), "finished", 401
@@ -289,11 +265,7 @@ func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
 	seedIngested(t, pool, id, 500, nil)
 	dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleting")
 
-	var got []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(got) != 1 {
 		t.Fatalf("recordings = %d, want 1", len(got))
 	}
@@ -308,7 +280,7 @@ func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
 // committed のままにする（docs/storage/retention.md §6「安全性」）。
 func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -344,11 +316,7 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 
 	fetchListRecording := func() Recording {
 		t.Helper()
-		var recordings []Recording
-		resp := getJSON(t, srv.URL+"/api/recordings", &recordings)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("list status = %d, want 200", resp.StatusCode)
-		}
+		recordings := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 		if len(recordings) != 1 || recordings[0].Id != id {
 			t.Fatalf("list recordings = %+v, want recording %d", recordings, id)
 		}
@@ -356,20 +324,12 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	}
 	fetchDetail := func() Recording {
 		t.Helper()
-		var recording Recording
-		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &recording)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("detail status = %d, want 200", resp.StatusCode)
-		}
+		recording := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
 		return recording
 	}
 	fetchDropStats := func() []DropStat {
 		t.Helper()
-		var stats []DropStat
-		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &stats)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("drop-stats status = %d, want 200", resp.StatusCode)
-		}
+		stats := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 		return stats
 	}
 
@@ -422,7 +382,7 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 // media_asset が deleted になった後も dropSummary を保つ（issue #737）。
 func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -437,11 +397,7 @@ func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 
 	fetchTrash := func() Recording {
 		t.Helper()
-		var recordings []Recording
-		resp := getJSON(t, srv.URL+"/api/recordings?trash=true", &recordings)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("trash list status = %d, want 200", resp.StatusCode)
-		}
+		recordings := GetJSON[[]Recording](t, srv.URL+"/api/recordings?trash=true")
 		if len(recordings) != 1 || recordings[0].Id != id {
 			t.Fatalf("trash recordings = %+v, want recording %d", recordings, id)
 		}
@@ -469,7 +425,7 @@ func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 // （ブラウザ再生用。issue #236 M7-3 で単なる名前の配列からサイズ付きに変わった）。
 func TestListRecordings_EncodedProfiles(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -505,11 +461,7 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	}
 	dbtest.SetMediaAssetState(t, pool, legacyID, "deleted")
 
-	var got []Recording
-	resp := getJSON(t, srv.URL+"/api/recordings", &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	var rec *Recording
 	for i := range got {
 		if got[i].Id == id {
@@ -537,7 +489,7 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 
 func TestListRecordings_QualityEvents(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "問題あり", time.Now().Truncate(time.Second), "failed", 1
@@ -557,8 +509,7 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 		t.Fatalf("appending quality events: %v", err)
 	}
 
-	var got []Recording
-	getJSON(t, srv.URL+"/api/recordings", &got)
+	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(got) != 1 {
 		t.Fatalf("recordings = %d, want 1", len(got))
 	}
@@ -573,8 +524,7 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "正常", time.Now().Add(time.Hour).Truncate(time.Second), "finished", 2
 	})
-	got = nil
-	getJSON(t, srv.URL+"/api/recordings", &got)
+	got = GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	for _, r := range got {
 		if r.Title == "正常" && r.QualityEvents != nil {
 			t.Errorf("clean recording should omit qualityEvents, got %v", r.QualityEvents)
@@ -584,7 +534,7 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 
 func TestListRecordingDropStats(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "録画", time.Now().Truncate(time.Second), "finished", 1
@@ -594,11 +544,7 @@ func TestListRecordingDropStats(t *testing.T) {
 		0x100: {500, 2, 1, 0},
 	})
 
-	var got []DropStat
-	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 	if len(got) != 2 {
 		t.Fatalf("drop stats = %d, want 2", len(got))
 	}
@@ -622,11 +568,7 @@ func TestListRecordingDropStats(t *testing.T) {
 	bare := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未 ingest", time.Now().Add(time.Hour).Truncate(time.Second), "recording", 2
 	})
-	var empty []DropStat
-	resp = getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, bare), &empty)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	empty := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, bare))
 	if empty == nil {
 		t.Error("drop stats should be an empty array, not null")
 	}
@@ -638,7 +580,7 @@ func TestListRecordingDropStats(t *testing.T) {
 // PID 種別（M2-13）。値がある行は pidType が付き、無い行では省略される。
 func TestListRecordingDropStats_PIDType(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "種別あり", time.Now().Truncate(time.Second), "finished", 1
@@ -670,11 +612,7 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 		t.Fatalf("seeding typed drop_stat batch: %v", err)
 	}
 
-	var got []DropStat
-	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 	if len(got) != 4 {
 		t.Fatalf("drop stats = %d, want 4", len(got))
 	}
@@ -702,8 +640,7 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 	}
 
 	// JSON でもキーが省略されていること（空文字を返してはいけない）
-	var decoded []map[string]any
-	getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &decoded)
+	decoded := GetJSON[[]map[string]any](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 	for _, m := range decoded {
 		pid := int(m["pid"].(float64))
 		_, has := m["pidType"]
@@ -718,7 +655,7 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 
 func TestListRecordingDropStats_Positions(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "位置付き録画", time.Now().Truncate(time.Second), "finished", 1
@@ -749,11 +686,7 @@ func TestListRecordingDropStats_Positions(t *testing.T) {
 		t.Fatalf("seeding drop position batch: %v", err)
 	}
 
-	var got []DropStat
-	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
+	got := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 	if len(got) != 1 || len(got[0].Positions) != 2 {
 		t.Fatalf("drop stats = %+v, want one PID with two positions", got)
 	}
@@ -801,7 +734,7 @@ func doRecordingMethod(t *testing.T, method, url string) *http.Response {
 // ファイル I/O は伴わない（api ロールは DB のみ）。
 func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -809,8 +742,7 @@ func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
 	})
 
 	// 通常一覧にいる
-	var list []Recording
-	getJSON(t, srv.URL+"/api/recordings", &list)
+	list := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(list) != 1 || list[0].Id != id {
 		t.Fatalf("initial list = %+v, want id=%d", list, id)
 	}
@@ -822,15 +754,13 @@ func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
 	}
 
 	// 通常一覧から消える
-	list = nil
-	getJSON(t, srv.URL+"/api/recordings", &list)
+	list = GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(list) != 0 {
 		t.Fatalf("list after delete = %d, want 0", len(list))
 	}
 
 	// ごみ箱に出る（deletedAt 付き）
-	var trash []Recording
-	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	trash := GetJSON[[]Recording](t, srv.URL+"/api/recordings?trash=true")
 	if len(trash) != 1 || trash[0].Id != id {
 		t.Fatalf("trash = %+v, want id=%d", trash, id)
 	}
@@ -848,8 +778,7 @@ func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
 	}
 
 	// 通常一覧に戻る
-	list = nil
-	getJSON(t, srv.URL+"/api/recordings", &list)
+	list = GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	if len(list) != 1 || list[0].Id != id {
 		t.Fatalf("list after restore = %+v, want id=%d", list, id)
 	}
@@ -858,8 +787,7 @@ func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
 	}
 
 	// ごみ箱は空
-	trash = nil
-	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	trash = GetJSON[[]Recording](t, srv.URL+"/api/recordings?trash=true")
 	if len(trash) != 0 {
 		t.Fatalf("trash after restore = %d, want 0", len(trash))
 	}
@@ -868,7 +796,7 @@ func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
 // soft delete は冪等。既に削除済みでも 204。存在しない id は 404。
 func TestDeleteRecording_IdempotentAndNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "冪等", time.Now().Truncate(time.Second), "finished", 11
@@ -892,7 +820,7 @@ func TestDeleteRecording_IdempotentAndNotFound(t *testing.T) {
 // restore は論理削除を解除し、即時 purge 要求も取り下げる。
 func TestRestoreRecording_Success(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "復元", time.Now().Truncate(time.Second), "finished", 111
@@ -931,7 +859,7 @@ func TestRestoreRecording_Success(t *testing.T) {
 // restore はごみ箱に無い行に対して 404。
 func TestRestoreRecording_NotInTrash(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "生きている", time.Now().Truncate(time.Second), "finished", 12
@@ -952,7 +880,7 @@ func TestRestoreRecording_NotInTrash(t *testing.T) {
 // ファイルは消さない。
 func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -997,8 +925,7 @@ func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 	}
 
 	// ごみ箱に出る
-	var trash []Recording
-	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	trash := GetJSON[[]Recording](t, srv.URL+"/api/recordings?trash=true")
 	if len(trash) != 1 || trash[0].Id != id {
 		t.Fatalf("trash after purge = %+v", trash)
 	}
@@ -1052,7 +979,7 @@ func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 // が消える。
 func TestRestoreRecording_NotInTrash_KeepsPurgeRequest(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -1089,7 +1016,7 @@ func TestRestoreRecording_NotInTrash_KeepsPurgeRequest(t *testing.T) {
 // restore は同一イベントに生きている録画があると 409。
 func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	// 同じ (site, network, service, event, program_start_at) で 1 本 soft-delete、もう 1 本 active。
@@ -1120,7 +1047,7 @@ func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 // purged_at IS NULL を要求する）。
 func TestRestoreRecording_PurgedNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -1142,8 +1069,7 @@ func TestRestoreRecording_PurgedNotFound(t *testing.T) {
 	}
 
 	// ごみ箱一覧にはもう出ない。
-	var trash []Recording
-	getJSON(t, srv.URL+"/api/recordings?trash=true", &trash)
+	trash := GetJSON[[]Recording](t, srv.URL+"/api/recordings?trash=true")
 	if len(trash) != 0 {
 		t.Fatalf("trash after purge = %+v, want empty", trash)
 	}
@@ -1173,7 +1099,7 @@ func TestRestoreRecording_PurgedNotFound(t *testing.T) {
 // GetRecording は一覧要素と同形の 1 件を返す（issue #232 M6-4）。
 func TestGetRecording_Found(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -1183,11 +1109,7 @@ func TestGetRecording_Found(t *testing.T) {
 		0x100: {500, 2, 1, 0},
 	})
 
-	var got Recording
-	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	got := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
 	if got.Id != id {
 		t.Errorf("id = %d, want %d", got.Id, id)
 	}
@@ -1215,7 +1137,7 @@ func TestGetRecording_Found(t *testing.T) {
 // 存在しない id は 404。
 func TestGetRecording_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	resp := doRecordingMethod(t, http.MethodGet, fmt.Sprintf("%s/api/recordings/999999", srv.URL))
 	if resp.StatusCode != http.StatusNotFound {
@@ -1229,7 +1151,7 @@ func TestGetRecording_NotFound(t *testing.T) {
 // 無い。docs/frontend/recordings.md）。
 func TestGetRecording_Trash(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -1249,11 +1171,7 @@ func TestGetRecording_Trash(t *testing.T) {
 		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
 	}
 
-	var got Recording
-	resp = getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &got)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (trash はメタデータを返す)", resp.StatusCode)
-	}
+	got := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
 	if got.DeletedAt == nil {
 		t.Error("trash の録画は deletedAt を含むべき")
 	}
@@ -1267,7 +1185,7 @@ func TestGetRecording_Trash(t *testing.T) {
 // 単体 GET だけ見える形にしない。
 func TestGetRecording_Purged(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -1301,7 +1219,7 @@ func TestGetRecording_Purged(t *testing.T) {
 // 一通り持つ録画で、両エンドポイントがまったく同じ形を返すことを見る。
 func TestGetRecording_MatchesListElement(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
+	srv := NewTestServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
 	desc := "一覧要素と単体取得が一致するかの確認用"
@@ -1336,8 +1254,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 		t.Fatalf("appending quality events: %v", err)
 	}
 
-	var list []Recording
-	getJSON(t, srv.URL+"/api/recordings", &list)
+	list := GetJSON[[]Recording](t, srv.URL+"/api/recordings")
 	var fromList *Recording
 	for i := range list {
 		if list[i].Id == id {
@@ -1349,11 +1266,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 		t.Fatalf("recording %d not found in list %+v", id, list)
 	}
 
-	var fromDetail Recording
-	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &fromDetail)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	fromDetail := GetJSON[Recording](t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id))
 
 	if !reflect.DeepEqual(*fromList, fromDetail) {
 		t.Errorf("GET /api/recordings element and GET /api/recordings/{id} differ:\nlist   = %+v\ndetail = %+v", *fromList, fromDetail)

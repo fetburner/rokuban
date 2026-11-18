@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -122,10 +120,9 @@ func assertReservationSeries(t *testing.T, got *string, want string) {
 func TestReservationSeries_FollowsEPGEffectiveSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
-		ReservationStore: pgstoretest.Reservations(pool), Sites: []string{"default", "osaka"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
+		c.Sites = []string{"default", "osaka"}
+	})
 
 	const programID int64 = 1150000115041031
 	const missingEPGProgramID int64 = 1150000115041032

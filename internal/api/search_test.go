@@ -56,9 +56,9 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		}
 	}
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{site}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{site}
+	})
 
 	apiMatches := postSearchPrograms(t, srv, map[string]any{
 		"textMatches": []map[string]any{
@@ -200,9 +200,9 @@ func TestSearchPrograms_IncludesDisplayFields(t *testing.T) {
 	)
 	insertSearchProgramFixture(t, pool, ctx, site, programID)
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{site}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{site}
+	})
 
 	matches := postSearchPrograms(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
@@ -238,9 +238,9 @@ func TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA", "siteB"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA", "siteB"}
+	})
 
 	matches := postSearchPrograms(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
@@ -267,9 +267,9 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA", "siteB"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA", "siteB"}
+	})
 
 	// 検索パスは site に依存せず、sites では siteB だけを指定する。
 	matches := postSearchPrograms(t, srv, map[string]any{
@@ -285,9 +285,9 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 // なることを確認する（validateRuleSites と同じ規律。#530 含むもの 2）。
 func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA"}
+	})
 
 	raw, err := json.Marshal(map[string]any{"sites": []string{"no-such-site"}})
 	if err != nil {
@@ -307,8 +307,9 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 // Postgres のエラー詳細が付くことを確認する（store 契約の移設前と同じ本文）。
 func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"default"}}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"default"}
+	})
 
 	raw, err := json.Marshal(map[string]any{"textMatches": []map[string]any{{"target": "name", "mode": "regex", "value": "(unclosed"}}})
 	if err != nil {
@@ -344,9 +345,9 @@ func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
 // SearchMatchRow の一覧が返ってこない）。
 func TestSearchPrograms_LegacySitePathIsGone(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), Sites: []string{"siteA"}})
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.Sites = []string{"siteA"}
+	})
 
 	resp, err := http.Post(srv.URL+"/api/sites/siteA/programs/search", "application/json", bytes.NewReader([]byte(`{}`)))
 	if err != nil {

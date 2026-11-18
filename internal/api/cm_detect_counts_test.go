@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -18,8 +17,9 @@ import (
 func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
-	defer srv.Close()
+	srv := NewTestServer(t, pool, func(c *RouterConfig) {
+		c.CMStationStore = pgstoretest.Analysis(pool)
+	})
 
 	q := sqlcgen.New(pool)
 	ids := make([]int64, 3)
