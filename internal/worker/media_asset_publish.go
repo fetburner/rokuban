@@ -9,19 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-)
 
-// newWorkerScratchDir は指定されたキーに乱数接尾辞を付けた scratch directory を作る。
-func newWorkerScratchDir(scratchRoot, kind, prefix string) (string, error) {
-	if scratchRoot == "" {
-		return "", fmt.Errorf("scratch dir is empty")
-	}
-	root := filepath.Join(scratchRoot, kind)
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return "", fmt.Errorf("creating %s scratch root: %w", kind, err)
-	}
-	return os.MkdirTemp(root, prefix)
-}
+	"github.com/fetburner/rokuban/internal/fsink"
+)
 
 // encodeScratchScope は profile の固定長 digest を含む filesystem prefix を返す。
 func encodeScratchScope(recordingID int64, profile string) string {
@@ -77,7 +67,7 @@ func newEncodeScratchDir(scratchRoot string, recordingID int64, profile string, 
 		return "", nil, fmt.Errorf("locking encode scratch gate: %w", err)
 	}
 	prefix := fmt.Sprintf("%s-%d-", encodeScratchScope(recordingID, profile), attemptCount)
-	dir, err := newWorkerScratchDir(scratchRoot, "encode", prefix)
+	dir, err := fsink.NewScratchDir(scratchRoot, "encode", prefix)
 	if err != nil {
 		return "", nil, fmt.Errorf("creating encode scratch directory: %w", err)
 	}

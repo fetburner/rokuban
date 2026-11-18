@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -941,7 +942,7 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 		t.Fatalf("creating subtitle fixture: %v: %s", err, out)
 	}
 
-	withSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, input, commandOutput)
+	withSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, input, mediaexec.CommandOutput)
 	testutil.RequireNoError(t, err, "probing subtitle fixture")
 	if !withSubtitles {
 		t.Fatal("real ffprobe did not find the fixture subtitle stream")
@@ -951,7 +952,7 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 		"-i", input, "-map", "0", "-map", "-0:s", "-c", "copy", captionless).CombinedOutput(); err != nil {
 		t.Fatalf("creating captionless fixture: %v: %s", err, out)
 	}
-	captionlessHasSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, captionless, commandOutput)
+	captionlessHasSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, captionless, mediaexec.CommandOutput)
 	testutil.RequireNoError(t, err, "probing captionless fixture")
 	if captionlessHasSubtitles {
 		t.Fatal("real ffprobe found a subtitle stream in the captionless fixture")

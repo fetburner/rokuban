@@ -571,8 +571,8 @@ func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr error, k
 	if waitErr != nil && ctx.Err() == nil {
 		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdin/stderr の
-			// fd を握ったままで WaitDelay が先に切れた（internal/worker の
-			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
+			// fd を握ったままで WaitDelay が先に切れた（worker の
+			// encodeCommandError と mediaexec.CommandOutput も同じ条件で成功扱いする）。正常な
 			// セッション終了なので運用者向けの Error にはしない。
 			slog.Warn("streamer: ffmpeg exited successfully but WaitDelay expired before I/O completed",
 				"kind", kind, "session_id", sessionID, "wait_delay", cmd.WaitDelay)

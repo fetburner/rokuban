@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -248,16 +249,16 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	// CI のランナーは全て Linux（.github/workflows/ci.yml、/bin/sh は
 	// dash）なので #552 は Linux 上で起きたフレーク --- macOS 固有の話ではない。
 	// sleep は WaitDelay と十分離す。短すぎると WaitDelay が無くてもテストが
-	// 通ってしまい、回帰を検出できない。両方を workerExecWaitDelay の同じ
+	// 通ってしまい、回帰を検出できない。両方を mediaexec.WaitDelay の同じ
 	// スケールの倍数で導出する（3d > 2d は d をどう変えても成立する。加法の
 	// 余裕（例: d + 3s）を混ぜると、d を十分小さくしたときに sleep <=
-	// workReturnTimeout に潰れ、setWorkerExecWaitDelay を消しても検出できない
+	// workReturnTimeout に潰れ、mediaexec.SetWaitDelay を消しても検出できない
 	// 無言の後退が起こり得る）。sleep は秒単位の整数しか取れないので、切り捨て
 	// ではなく切り上げる --- 切り捨てると d が秒の整数倍でないとき（例: 1500ms
 	// なら sleep 3s / workReturnTimeout 3s）に上の不等式が等号に潰れる。
 	setWorkerExecWaitDelayForTest(t, time.Second)
-	slowFFmpegSleepSeconds := int((workerExecWaitDelay*3 + time.Second - 1) / time.Second)
-	workReturnTimeout := 2 * workerExecWaitDelay
+	slowFFmpegSleepSeconds := int((mediaexec.WaitDelay*3 + time.Second - 1) / time.Second)
+	workReturnTimeout := 2 * mediaexec.WaitDelay
 	slowFFmpeg, ffmpegStarted, childPIDMarker := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
 	sleepStartedAt := time.Now()
 	defer func() {
@@ -595,14 +596,14 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	var result workResult
 	select {
 	case result = <-workDone:
-	case <-time.After(time.Until(deadline.Add(workerExecWaitDelay + waitDelayMargin))):
-		t.Fatalf("Work did not return within WaitDelay=%s plus %s after its context deadline", workerExecWaitDelay, waitDelayMargin)
+	case <-time.After(time.Until(deadline.Add(mediaexec.WaitDelay + waitDelayMargin))):
+		t.Fatalf("Work did not return within WaitDelay=%s plus %s after its context deadline", mediaexec.WaitDelay, waitDelayMargin)
 	}
 	if result.returnedAt.Before(deadline) {
 		t.Fatalf("Work returned before its context deadline: %v", result.err)
 	}
 	if elapsed := result.returnedAt.Sub(deadline); elapsed > workReturnTimeout {
-		t.Fatalf("Work returned %s after its context deadline; want <= %s (WaitDelay=%s), so WaitDelay may have released it", elapsed, workReturnTimeout, workerExecWaitDelay)
+		t.Fatalf("Work returned %s after its context deadline; want <= %s (WaitDelay=%s), so WaitDelay may have released it", elapsed, workReturnTimeout, mediaexec.WaitDelay)
 	}
 	if !errors.Is(result.err, context.DeadlineExceeded) {
 		t.Fatalf("Work returned %v after its deadline, want context.DeadlineExceeded", result.err)
@@ -792,7 +793,7 @@ func installLeakyExitZeroFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath,
 // 「ffmpeg failed: exec: WaitDelay expired before I/O complete」として failed
 // 行になり、River が再試行し続ける（MaxAttempts 25）。
 //
-// workerExecWaitDelay（internal/worker/exec.go）が実際に経過するのを待つ必要が
+// mediaexec.WaitDelay が実際に経過するのを待つ必要が
 // あるため、このテストは数秒かかる。
 func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	pool := setupTestPool(t)
@@ -809,10 +810,10 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// installSlowFakeFFmpeg のような cancel との競合はない。PID 再利用を避ける
 	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
 	setWorkerExecWaitDelayForTest(t, time.Second)
-	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
+	sleepSeconds := int(mediaexec.WaitDelay/time.Second*3) + 5
 	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせる。`<-progressDone` を Wait の
 	// 前に置く順序では、sleep が自然終了する前に失敗させる。
-	workReturnTimeout := 5 * workerExecWaitDelay
+	workReturnTimeout := 5 * mediaexec.WaitDelay
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
 	sleepStartedAt := time.Now()
 	workDone := make(chan error, 1)
@@ -838,7 +839,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 				if err != nil {
 					t.Logf("Work stopped after killing the leaky child: %v", err)
 				}
-			case <-time.After(2 * workerExecWaitDelay):
+			case <-time.After(2 * mediaexec.WaitDelay):
 				t.Error("Work did not stop after killing the leaky child")
 			}
 		}
@@ -890,8 +891,8 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	}
 	// WaitDelay の経路を実際に踏んだことの裏付け --- 踏んでいなければ ffmpeg が
 	// 即座に完了して Work() もすぐ返り、この分岐は何も検証していないことになる。
-	if elapsed := time.Since(start); elapsed < workerExecWaitDelay/2 {
-		t.Fatalf("Work() returned after %s; want roughly workerExecWaitDelay (%s), the leaky child fd did not force a WaitDelay wait", elapsed, workerExecWaitDelay)
+	if elapsed := time.Since(start); elapsed < mediaexec.WaitDelay/2 {
+		t.Fatalf("Work() returned after %s; want roughly mediaexec.WaitDelay (%s), the leaky child fd did not force a WaitDelay wait", elapsed, mediaexec.WaitDelay)
 	}
 
 	if !strings.Contains(logBuf.String(), "WaitDelay expired before I/O completed") {
@@ -1077,13 +1078,13 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 	}
 }
 
-// setWorkerExecWaitDelayForTest は workerExecWaitDelay を delay に差し替え、t.Cleanup で戻す。
+// setWorkerExecWaitDelayForTest は mediaexec.WaitDelay を delay に差し替え、t.Cleanup で戻す。
 // WaitDelay の経過を待つテストは、本番既定の 5 秒を毎回払わないよう短くする（sleep や
-// timeout は workerExecWaitDelay の倍数で導出しているので比率は変わらない）。WaitDelay に
+// timeout は mediaexec.WaitDelay の倍数で導出しているので比率は変わらない）。WaitDelay に
 // 救われていないことを確かめるテストは長くする。
 func setWorkerExecWaitDelayForTest(t *testing.T, delay time.Duration) {
 	t.Helper()
-	prev := workerExecWaitDelay
-	workerExecWaitDelay = delay
-	t.Cleanup(func() { workerExecWaitDelay = prev })
+	prev := mediaexec.WaitDelay
+	mediaexec.WaitDelay = delay
+	t.Cleanup(func() { mediaexec.WaitDelay = prev })
 }

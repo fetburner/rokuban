@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -457,7 +458,7 @@ func (w *EncodeWorker) selectStreams(ctx context.Context, inputPath string) (vid
 	ffprobe := ffargs.FFprobePath(w.FFprobe)
 	probeCtx, cancel := context.WithTimeout(ctx, streamProbeTimeout)
 	defer cancel()
-	out, err := commandOutput(probeCtx, ffprobe,
+	out, err := mediaexec.CommandOutput(probeCtx, ffprobe,
 		"-v", "error",
 		"-show_entries", "stream=index,codec_type,width,height,channels",
 		"-of", "csv=p=0", inputPath,
@@ -551,7 +552,7 @@ func (w *EncodeWorker) prepareEncodeInput(ctx context.Context, args jobs.EncodeJ
 	if _, err := os.Stat(inputPath); err != nil {
 		return config.EncodeProfile{}, "", "", 0, fmt.Errorf("original file %s: %w", inputPath, err)
 	}
-	duration, probeErr := probeEncodeDuration(ctx, w.FFprobe, inputPath, encodeDurationProbeTimeout, commandOutput)
+	duration, probeErr := probeEncodeDuration(ctx, w.FFprobe, inputPath, encodeDurationProbeTimeout, mediaexec.CommandOutput)
 	if probeErr != nil {
 		log.Warn("encode: probing input duration failed; progress percentage disabled", "err", probeErr)
 	}
@@ -568,7 +569,7 @@ func (w *EncodeWorker) prepareEncodeSubtitles(ctx context.Context, profile confi
 	withSubtitles := false
 	var err error
 	if profile.Subtitles == "webvtt" {
-		withSubtitles, err = probeHasSubtitlesWithTimeout(ctx, w.FFprobe, inputPath, commandOutput)
+		withSubtitles, err = probeHasSubtitlesWithTimeout(ctx, w.FFprobe, inputPath, mediaexec.CommandOutput)
 		if err != nil {
 			log.Warn("encode: probing subtitle streams failed; continuing without subtitle sidecar", "err", err)
 		}
@@ -623,7 +624,7 @@ func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInp
 	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
 	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
 	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles, in.filter)...)
-	setWorkerExecWaitDelay(cmd)
+	mediaexec.SetWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
 	stdout, stdoutWriter := io.Pipe()
 	cmd.Stdout = stdoutWriter
@@ -683,7 +684,7 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 		// 検査は呼び出し元 runEncodeCommand が cmd.Wait() の直後（この関数を
 		// 呼んだすぐ後）に行う --- この関数はエラー変換だけを担い、出力の
 		// 検証はしない。
-		log.Warn("encode: ffmpeg exited successfully but WaitDelay expired before I/O completed", "wait_delay", workerExecWaitDelay)
+		log.Warn("encode: ffmpeg exited successfully but WaitDelay expired before I/O completed", "wait_delay", mediaexec.WaitDelay)
 		return nil
 	}
 	stderr = strings.TrimSpace(stderr)
