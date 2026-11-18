@@ -46,6 +46,10 @@ func (m *markerRecorder) ReadLoopMarkers(context.Context, string) (map[string]ti
 	return nil, errors.New("not used by the worker")
 }
 
+func (m *markerRecorder) MarkReconciler(context.Context, string) error {
+	return errors.New("not used by the worker")
+}
+
 func (m *markerRecorder) MarkDeleteReconcile(_ context.Context, storeName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

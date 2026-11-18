@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -25,12 +26,14 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/reconciler"
+	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func newReconciler(mc *mirakc.Client, pool *pgxpool.Pool, cfg *reconciler.Config) *reconciler.Reconciler {
-	return reconciler.New("default", mc, pgstoretest.ScheduleSync(pool), pgstoretest.Breakers(pool), pgstoretest.NeverScheduledEvents(pool), cfg)
+	return reconciler.New("default", mc, pgstoretest.ScheduleSync(pool), pgstoretest.Breakers(pool), pgstoretest.NeverScheduledEvents(pool), pgstoretest.Reservations(pool), cfg)
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -495,6 +498,55 @@ func TestReconciler_ScheduleSnapshotBatchFailureRollsBack(t *testing.T) {
 	}
 	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err == nil {
 		t.Error("schedule snapshot marker was committed despite batch failure")
+	}
+}
+
+// failingListDesired は listDesired（ListForSyncEvaluation）だけを失敗させる。
+// observeSchedules は本物のまま動くので、snapshot が確定した後にパスが落ちる形を作れる。
+type failingListDesired struct{ store.ScheduleSync }
+
+func (failingListDesired) ListForSyncEvaluation(context.Context, string) ([]reservation.SyncEvaluationRow, error) {
+	return nil, errors.New("injected listDesired failure")
+}
+
+// reconcilerMarkerAt は reconciler の完走時刻を site "default" について読む。
+func reconcilerMarkerAt(t *testing.T, markers store.LoopMarkers) (time.Time, bool) {
+	t.Helper()
+	got, err := markers.ReadLoopMarkers(context.Background(), store.LoopReconciler)
+	if err != nil {
+		t.Fatalf("ReadLoopMarkers(reconciler): %v", err)
+	}
+	at, ok := got["default"]
+	return at, ok
+}
+
+// 完走したパスだけが reconciler の完走時刻を進める。snapshot の確定の後で
+// listDesired が落ちたパスは、snapshot だけ進み、完走時刻は進まない。
+func TestReconciler_PassMarkerAdvancesOnlyOnCompletedPass(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	markers := pgstoretest.Reservations(pool)
+	mc := mirakc.NewClient(mirakctest.New(t).URL(), nil)
+	before := time.Now().Add(-time.Minute)
+
+	failing := reconciler.New("default", mc, failingListDesired{pgstoretest.ScheduleSync(pool)}, pgstoretest.Breakers(pool), pgstoretest.NeverScheduledEvents(pool), markers, nil)
+	err := failing.RunPass(ctx)
+	if err == nil || !strings.Contains(err.Error(), "listing desired reservations") {
+		t.Fatalf("RunPass with failing listDesired = %v, want listing desired error", err)
+	}
+	if _, err := sqlcgen.New(pool).GetScheduleSyncSnapshot(ctx, "default"); err != nil {
+		t.Fatalf("snapshot was not committed before listDesired failed (the premise of this test): %v", err)
+	}
+	if _, ok := reconcilerMarkerAt(t, markers); ok {
+		t.Fatal("reconciler marker advanced although the pass failed in listDesired")
+	}
+
+	if err := newReconciler(mc, pool, nil).RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+	at, ok := reconcilerMarkerAt(t, markers)
+	if !ok || at.Before(before) {
+		t.Fatalf("reconciler marker after a completed pass = %v (present %v), want a recent time", at, ok)
 	}
 }
 
@@ -2905,8 +2957,11 @@ func TestReconciler_StartDelayDetectionErrorKeepsGaugeAndCounts(t *testing.T) {
 	// 開始遅延の検出クエリまで進み、前半の DB 読み取りは成功したままにできる。
 	createReservation(t, ctx, q, 100000500030009, "追加予約", time.Now().Add(time.Hour))
 	closePoolOnPost.Store(true)
-	if err := rec.RunPass(ctx); err != nil {
-		t.Fatalf("RunPass (detection error): %v", err)
+	// 開始遅延の検出失敗はパスを止めない。ただしパスの末尾で完走の印を書くときにはプールが
+	// 閉じているので、RunPass はその書き込みの error を返す。その error まで進んだこと自体が、
+	// 検出の失敗がパスを止めなかったことの証拠になる。
+	if err := rec.RunPass(ctx); err == nil || !strings.Contains(err.Error(), "marking reconciler pass") {
+		t.Fatalf("RunPass (detection error) = %v, want the marker write error after the pool was closed", err)
 	}
 
 	if got := startDelayGauge(t); got != 1 {

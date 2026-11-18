@@ -6,22 +6,13 @@
 
 ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期全量突き合わせ）は River のジョブである。advisory lock が取れているかは、停止の検出に使わない。
 
-```mermaid
-flowchart TD
-  A[ループの停止を検出したい] --> B{KEDA ScaledJob で動かしているか}
-  B -- はい --> C[DB に保存された成功時刻を見る]
-  B -- いいえ --> D[プロセス内の最終パス時刻でも見られる]
-  C --> E[現在時刻との差が周期を大きく超えたら止まっている]
-  D --> E
-```
-
 #### 停止を見分けるメトリクスと症状
 
 止まり方ごとに、見るものが違う。
 
 | 見るもの | 意味 |
 |---|---|
-| `rokuban_reconcile_last_pass_timestamp_seconds` | プロセス内のゲージ。`time() - この値` が周期を大きく超えたら止まっている。KEDA ScaledJob の構成では使えない。予約同期の完走は DB に保存されず、このゲージだけが持つ（理由は下の節）
+| `rokuban_reconcile_last_success_timestamp_seconds{site}` | DB に保存された site 単位の予約同期の完走時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` | DB に保存された site 単位の成功時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
 | `rokuban_encode_reconcile_last_success_timestamp_seconds` / `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` / `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | DB に保存された全件パスの完走時刻。ScaledJob でも止まっているかを検出できる |
 | `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | DB に保存された置き場ごとの削除 reconcile の完走時刻 |
@@ -34,15 +25,13 @@ flowchart TD
 
 #### 常駐 Pod のゲージが使えない理由
 
-プロセス内の最終パス時刻は、ScaledJob 構成では scrape できず、常駐 Pod の値も成功時刻を表さない。成功時刻は、DB に保存された値で見る。
+プロセス内の最終パス時刻は、ScaledJob 構成では scrape できず、常駐 Pod の値も成功時刻を表さない。ジョブを走らせるプロセスは、1 件消化して終了する一回実行なので、その値を scrape できる窓が実質的に無い。常駐 Pod はそのジョブを一度も走らせないので、値は成功時刻を表さない。成功時刻は、DB に保存された値で見る。
 
-`rokuban_reconcile_last_pass_timestamp_seconds` は、プロセス内のゲージである。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、値は成功時刻を表さない。
+ruler・record_sweep・予約同期（reconciler）・全件パスの reconcile（encode / thumbnail / ts_scan）・削除 reconcile には、プロセス内の最終パス時刻ゲージが無い。鮮度は、上の表の DB に保存された系列だけで読む。
 
-ruler / record_sweep / 全件パスの reconcile（encode / thumbnail / ts_scan）/ 削除 reconcile にはプロセス内の最終パス時刻ゲージが無い。鮮度は、上の表の DB に保存された系列だけで読む。`ruler_pass` と `record_sweep` は、成功したパスの最後に `loop_success_markers` に site の行を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
+`ruler_pass`、`record_sweep`、reconciler のパスは、成功したパスの最後に `loop_success_markers` に site の行を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり、「最後に試みた時刻」ではない。
 
-予約同期（reconcile）の鮮度は、DB-backed の `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` で読む。常駐 Pod や別の worker が scrape しても、同じ DB の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot からの経過時間として見える。
-
-パスの完走だけは DB に系列が無い。snapshot はパスの前半で確定し、その後にパスが失敗すると、snapshot だけが進んでパスは完走しない。そのため reconcile だけは、完走時刻のプロセス内ゲージを残している。
+予約同期の完走は `rokuban_reconcile_last_success_timestamp_seconds{site}` で読む。snapshot の鮮度（`rokuban_schedule_snapshot_last_success_timestamp_seconds{site}`）とは別の系列として、並べて読む。snapshot はパスの前半で確定するので、後半で失敗したパスでも先に進む。
 
 `rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い、または 0 のときは、「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐構成と ScaledJob 構成の収集元・復旧条件は、[アラート設計](alerts.md) にまとめる。
 
@@ -65,6 +54,7 @@ ruler / record_sweep / 全件パスの reconcile（encode / thumbnail / ts_scan�
 
 ```
 time() - max(rokuban_encode_reconcile_last_success_timestamp_seconds) > 閾値
+time() - max by (site) (rokuban_reconcile_last_success_timestamp_seconds) > 閾値
 time() - max by (store) (rokuban_delete_reconcile_last_success_timestamp_seconds) > 閾値
 time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾値
 ```

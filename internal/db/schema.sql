@@ -1182,7 +1182,7 @@ CREATE TABLE public.loop_success_markers (
     loop text NOT NULL,
     scope text NOT NULL,
     last_success_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT loop_success_markers_loop_check CHECK ((loop = ANY (ARRAY['ruler'::text, 'record_sweep'::text, 'reconcile_pass'::text, 'delete_reconcile'::text])))
+    CONSTRAINT loop_success_markers_loop_check CHECK ((loop = ANY (ARRAY['ruler'::text, 'record_sweep'::text, 'reconcile_pass'::text, 'delete_reconcile'::text, 'reconciler'::text])))
 );
 
 --

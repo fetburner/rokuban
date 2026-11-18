@@ -32,6 +32,8 @@ func (f *fakeReconcileMarkers) MarkReconcilePass(context.Context, string) error 
 
 func (f *fakeReconcileMarkers) MarkDeleteReconcile(context.Context, string) error { return nil }
 
+func (f *fakeReconcileMarkers) MarkReconciler(context.Context, string) error { return nil }
+
 func (f *fakeReconcileMarkers) ReadLoopMarkers(_ context.Context, loop string) (map[string]time.Time, error) {
 	return f.loops[loop], f.err[loop]
 }

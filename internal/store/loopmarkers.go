@@ -6,13 +6,15 @@ import (
 )
 
 // loop の名前。ReadLoopMarkers の loop に入れる値で、loop_success_markers の loop 列と一致する。
-// scope の意味は loop ごとに決まる（LoopRuler / LoopRecordSweep は site、LoopDeleteReconcile は置き場、
-// LoopReconcilePass は下の全件パスの名前）。
+// scope の意味は loop ごとに決まる（LoopRuler / LoopRecordSweep / LoopReconciler は site、
+// LoopDeleteReconcile は置き場、LoopReconcilePass は下の全件パスの名前）。
+// LoopReconciler は予約同期（reconciler ジョブ）で、全件パスの LoopReconcilePass とは別の loop。
 const (
 	LoopRuler           = "ruler"
 	LoopRecordSweep     = "record_sweep"
 	LoopReconcilePass   = "reconcile_pass"
 	LoopDeleteReconcile = "delete_reconcile"
+	LoopReconciler      = "reconciler"
 )
 
 // 全件パスの名前。MarkReconcilePass の pass に入れる値で、置き場を持たないパスだけを並べる。
@@ -33,6 +35,8 @@ type LoopMarkers interface {
 	MarkReconcilePass(ctx context.Context, pass string) error
 	// MarkDeleteReconcile は置き場 store の削除 reconcile が完走した時刻を今の時刻で保存する。
 	MarkDeleteReconcile(ctx context.Context, store string) error
+	// MarkReconciler は site の予約同期（reconciler）のパスが完走した時刻を今の時刻で保存する。
+	MarkReconciler(ctx context.Context, site string) error
 	// ReadLoopMarkers は loop の scope ごとの成功時刻を返す。一度も成功していない scope は含まない。
 	ReadLoopMarkers(ctx context.Context, loop string) (map[string]time.Time, error)
 }

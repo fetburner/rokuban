@@ -55,6 +55,14 @@ func (s *Reservations) MarkDeleteReconcile(ctx context.Context, storeName string
 	return nil
 }
 
+// MarkReconciler は site の予約同期（reconciler）のパスが完走した時刻を保存する。
+func (s *Reservations) MarkReconciler(ctx context.Context, site string) error {
+	if err := sqlcgen.New(s.pool).UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopReconciler, Scope: site}); err != nil {
+		return fmt.Errorf("upserting reconciler marker for site %q: %w", site, mapDatabaseError(err))
+	}
+	return nil
+}
+
 // ReadLoopMarkers は loop の完走時刻を scope ごとに返す。
 func (s *Reservations) ReadLoopMarkers(ctx context.Context, loop string) (map[string]time.Time, error) {
 	rows, err := sqlcgen.New(s.pool).ListLoopSuccessMarkers(ctx, loop)

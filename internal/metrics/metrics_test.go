@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	rokutest "github.com/fetburner/rokuban/internal/testutil"
 )
@@ -51,7 +53,6 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	ReconcileCircuitBreakerTrips.Add(1)
 	ReconcileScheduleLost.Add(1)
 	ReconcileWriteWithheld.WithLabelValues("delete", "gone").Inc()
-	ReconcileLastPass.SetToCurrentTime()
 	ReconcileStartDelayed.WithLabelValues(testSite).Set(0)
 	ReconcileStartDelayErrors.WithLabelValues(testSite).Inc()
 	RulerProgramIDReuses.Inc()
@@ -106,7 +107,6 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_reconcile_circuit_breaker_trips_total",
 		"rokuban_reconcile_schedule_lost_total",
 		"rokuban_reconcile_write_withheld_total",
-		"rokuban_reconcile_last_pass_timestamp_seconds",
 		"rokuban_reconcile_start_delayed",
 		"rokuban_reconcile_start_delay_errors_total",
 		"rokuban_recordings_failed_total",
@@ -163,6 +163,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_encode_reconcile_last_pass_timestamp_seconds",
 		"rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
 		"rokuban_delete_reconcile_last_pass_timestamp_seconds",
+		"rokuban_reconcile_last_pass_timestamp_seconds",
 	} {
 		if got[name] {
 			t.Errorf("removed metric %q is still registered", name)
@@ -227,11 +228,15 @@ func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
 	if err := markers.MarkRecordSweep(ctx, testSite); err != nil {
 		t.Fatalf("upserting record sweep marker: %v", err)
 	}
+	if err := markers.MarkReconciler(ctx, testSite); err != nil {
+		t.Fatalf("upserting reconciler marker: %v", err)
+	}
 
-	// ruler と sweep の値の取り違え（読む loop の入れ替え）を見るため、時刻を別々に固定する。
+	// ruler と sweep と reconciler の値の取り違え（読む loop の入れ替え）を見るため、時刻を別々に固定する。
 	rulerAt := time.Unix(1700001000, 0).UTC()
 	sweepAt := time.Unix(1700002000, 0).UTC()
-	for loop, at := range map[string]time.Time{"ruler": rulerAt, "record_sweep": sweepAt} {
+	reconcilerAt := time.Unix(1700003000, 0).UTC()
+	for loop, at := range map[string]time.Time{"ruler": rulerAt, "record_sweep": sweepAt, "reconciler": reconcilerAt} {
 		if _, err := pool.Exec(ctx, `UPDATE loop_success_markers SET last_success_at = $3 WHERE loop = $1 AND scope = $2`, loop, testSite, at); err != nil {
 			t.Fatalf("setting %s marker time: %v", loop, err)
 		}
@@ -243,6 +248,39 @@ func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
 	}
 	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got != float64(sweepAt.Unix()) {
 		t.Errorf("sweep last success = %v, want %v", got, sweepAt.Unix())
+	}
+	if got := gaugeValue(t, c, "rokuban_reconcile_last_success_timestamp_seconds"); got != float64(reconcilerAt.Unix()) {
+		t.Errorf("reconcile last success = %v, want %v", got, reconcilerAt.Unix())
+	}
+}
+
+// 読み取りが失敗したら、reconciler の系列は出さず（0 にもせず）エラーカウンタだけを進める。
+func TestLoopPassCollector_ReadFailureOmitsReconcileSeries(t *testing.T) {
+	t.Parallel()
+	fake := &fakeReconcileMarkers{err: map[string]error{store.LoopReconciler: errors.New("boom")}}
+	c := NewLoopPassCollector(fake, testSite)
+	got := collectReconcileSeries(t, c)
+
+	if _, ok := got["rokuban_reconcile_last_success_timestamp_seconds{site=default}"]; ok {
+		t.Error("reconcile last success series was emitted despite the read failure")
+	}
+	if v := got["rokuban_loop_pass_marker_scrape_errors_total{site=default}"]; v != 1 {
+		t.Errorf("scrape errors = %v, want 1", v)
+	}
+}
+
+// reconciler の系列は site ラベルで出る。値は loop_success_markers の scope = site の時刻。
+func TestLoopPassCollector_ReconcileSeriesIsLabeledBySite(t *testing.T) {
+	t.Parallel()
+	at := time.Unix(1700004000, 0)
+	fake := &fakeReconcileMarkers{loops: map[string]map[string]time.Time{
+		store.LoopReconciler: {testSite: at, "other": time.Unix(1, 0)},
+	}}
+	c := NewLoopPassCollector(fake, testSite)
+	got := collectReconcileSeries(t, c)
+
+	if v := got["rokuban_reconcile_last_success_timestamp_seconds{site=default}"]; v != float64(at.Unix()) {
+		t.Errorf("reconcile last success = %v, want %v", v, at.Unix())
 	}
 }
 
@@ -257,6 +295,9 @@ func TestLoopPassCollector_ReportsZeroBeforeFirstPass(t *testing.T) {
 	}
 	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got != 0 {
 		t.Errorf("sweep last success before first pass = %v, want 0", got)
+	}
+	if got := gaugeValue(t, c, "rokuban_reconcile_last_success_timestamp_seconds"); got != 0 {
+		t.Errorf("reconcile last success before first pass = %v, want 0", got)
 	}
 }
 

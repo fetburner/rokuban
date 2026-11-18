@@ -251,20 +251,6 @@ var (
 		Help: "Schedule DELETEs and recreates the reconciler withheld after re-observing the schedule just before the write, by action and reason.",
 	}, []string{"action", "reason"})
 
-	// ReconcileLastPass は最後に完走したパスの時刻（UNIX 秒）。
-	//
-	// ゲージは値が凍結するので、ReconcilePendingDiff だけでは
-	// 「収束した」と「reconciler が動いていない」を区別できない。
-	// シングルトンのロックを取れていない・ループが死んでいる場合を
-	// time() - この値 で検出する。
-	//
-	// schedule snapshot は、desired を列挙する前のパスの前半で確定する。そのため
-	// それより後の失敗は、完走させずに snapshot だけを進める。
-	ReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_reconcile_last_pass_timestamp_seconds",
-		Help: "Unix time of the last completed reconcile pass. Use with time() to detect a stalled reconciler.",
-	})
-
 	// ReconcileStartDelayed は開始遅延検出器（issue #24 M2-7、docs/recording.md
 	// §3.3「開始遅延検出器」）が直近に成功したパスで見つけた件数 --- 「開始時刻 + 猶予
 	// （StartDelayGrace）を過ぎたのに recordings.started_at が観測されていない
@@ -825,7 +811,6 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		ReconcileCircuitBreakerTrips,
 		ReconcileScheduleLost,
 		ReconcileWriteWithheld,
-		ReconcileLastPass,
 		ReconcileStartDelayed,
 		ReconcileStartDelayErrors,
 
