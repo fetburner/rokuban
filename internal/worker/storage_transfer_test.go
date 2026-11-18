@@ -51,9 +51,7 @@ func transferTestRoots(t *testing.T, stores ...string) map[string]string {
 	roots := make(map[string]string, len(stores))
 	for _, name := range stores {
 		root := t.TempDir()
-		if err := mediapath.WriteStoreMarker(root, name); err != nil {
-			t.Fatalf("writing %s store marker: %v", name, err)
-		}
+		testutil.RequireNoError(t, mediapath.WriteStoreMarker(root, name), fmt.Sprintf("writing %s store marker", name))
 		roots[name] = root
 	}
 	return roots
@@ -64,9 +62,7 @@ func transferTestObjectStores(t *testing.T, roots map[string]string) map[string]
 	objects := make(map[string]objstore.Store, len(roots))
 	for name, root := range roots {
 		store, err := fsstore.New(root)
-		if err != nil {
-			t.Fatalf("creating %s test object store: %v", name, err)
-		}
+		testutil.RequireNoError(t, err, fmt.Sprintf("creating %s test object store", name))
 		objects[name] = store
 	}
 	return objects
@@ -81,36 +77,30 @@ func transferTestOriginal(t *testing.T, pool *pgxpool.Pool, sourceRoot string, c
 func transferTestCopyID(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName string) int64 {
 	t.Helper()
 	var id int64
-	if err := pool.QueryRow(context.Background(), `
-SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, assetID, storeName).Scan(&id); err != nil {
-		t.Fatalf("reading copy ID for asset %d in %s: %v", assetID, storeName, err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
+SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, assetID, storeName).Scan(&id), fmt.Sprintf("reading copy ID for asset %d in %s", assetID, storeName))
 	return id
 }
 
 func transferTestCopyRelPath(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName string) string {
 	t.Helper()
 	var relPath string
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT rel_path FROM media_asset_copies
 WHERE media_asset_id = $1 AND store = $2 AND state <> 'deleted'
-ORDER BY id DESC LIMIT 1`, assetID, storeName).Scan(&relPath); err != nil {
-		t.Fatalf("reading copy rel_path for asset %d in %s: %v", assetID, storeName, err)
-	}
+ORDER BY id DESC LIMIT 1`, assetID, storeName).Scan(&relPath), fmt.Sprintf("reading copy rel_path for asset %d in %s", assetID, storeName))
 	return relPath
 }
 
 func transferTestLatestCopyRelPath(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName string) string {
 	t.Helper()
 	var relPath string
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT COALESCE((
     SELECT rel_path FROM media_asset_copies
     WHERE media_asset_id = $1 AND store = $2
     ORDER BY id DESC LIMIT 1
-), '')`, assetID, storeName).Scan(&relPath); err != nil {
-		t.Fatalf("reading latest copy rel_path for asset %d in %s: %v", assetID, storeName, err)
-	}
+), '')`, assetID, storeName).Scan(&relPath), fmt.Sprintf("reading latest copy rel_path for asset %d in %s", assetID, storeName))
 	return relPath
 }
 
@@ -127,22 +117,18 @@ func transferTestPayloadFiles(t *testing.T, root string) []string {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking transfer test store %s: %v", root, err)
-	}
+	testutil.RequireNoError(t, err, fmt.Sprintf("walking transfer test store %s", root))
 	return paths
 }
 
 func transferTestAddCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName, relPath string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
+	testutil.MustExec(t, pool, fmt.Sprintf("adding active copy in %s", storeName), `
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
 SELECT a.id, $2, $3, a.derived_generation, 'active'
 FROM media_assets a WHERE a.id = $1
 ON CONFLICT (media_asset_id, store, generation) WHERE state <> 'deleted' DO UPDATE
-SET rel_path = EXCLUDED.rel_path, state = 'active', deleted_at = NULL, created_at = now()`, assetID, storeName, relPath); err != nil {
-		t.Fatalf("adding active copy in %s: %v", storeName, err)
-	}
+SET rel_path = EXCLUDED.rel_path, state = 'active', deleted_at = NULL, created_at = now()`, assetID, storeName, relPath)
 }
 
 // prepareAdoptedTransferTemp は、宛先を採用する時点の転送 temp を作る。
@@ -163,20 +149,12 @@ func prepareAdoptedTransferTemp(t *testing.T, media *pgstore.Media, cfg config.S
 		t.Fatalf("acquiring progress for the previous attempt = (%+v, %t, %v)", progress, acquired, err)
 	}
 	tempPath := transferTempPath(targetPath, assetID, transfer.CopyID, progress.WriterGeneration)
-	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(tempPath, content, 0o644), "os.WriteFile")
 	if owner == "linked" {
-		if err := os.Remove(targetPath); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Link(tempPath, targetPath); err != nil {
-			t.Fatalf("linking destination to transfer temp: %v", err)
-		}
+		testutil.RequireNoError(t, os.Remove(targetPath), "os.Remove")
+		testutil.RequireNoError(t, os.Link(tempPath, targetPath), "linking destination to transfer temp")
 	}
-	if err := media.ReleaseMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner); err != nil {
-		t.Fatalf("releasing progress of the previous attempt: %v", err)
-	}
+	testutil.RequireNoError(t, media.ReleaseMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner), "releasing progress of the previous attempt")
 	return tempPath
 }
 
@@ -211,13 +189,9 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 	}
 	targetPath := filepath.Join(root, filepath.FromSlash(transfer.RelPath))
 	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.WriterGeneration)
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(tempPath), 0o755), "os.MkdirAll")
 	file, err := os.OpenFile(tempPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "os.OpenFile")
 	defer func() { _ = file.Close() }()
 	if _, err := file.Write(partial); err != nil {
 		t.Fatal(err)
@@ -226,11 +200,9 @@ func saveTransferProgressForTest(t *testing.T, media *pgstore.Media, transfer st
 	if _, err := hasher.Write(partial); err != nil {
 		t.Fatal(err)
 	}
-	if err := fsink.SaveCheckpoint(file, int64(len(partial)), hasher, func(c fsink.Checkpoint) error {
+	testutil.RequireNoError(t, fsink.SaveCheckpoint(file, int64(len(partial)), hasher, func(c fsink.Checkpoint) error {
 		return media.SaveMediaAssetTransferProgress(ctx, transfer.CopyID, owner, progress.WriterGeneration, c.Offset, c.HashState, nil)
-	}); err != nil {
-		t.Fatalf("saving transfer progress: %v", err)
-	}
+	}), "saving transfer progress")
 	return tempPath
 }
 
@@ -283,9 +255,7 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 			cfg := transferTestConfig("archive", "archive", "test-store")
 			fingerprint, err := cfg.PolicyFingerprint()
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 			media := pgstore.NewMedia(pool, "test-store", "")
 			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
 			if err != nil || !ok {
@@ -293,26 +263,20 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			}
 			targetPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
 			if tc.existing {
-				if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(targetPath, content, 0o644); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(targetPath), 0o755), "os.MkdirAll")
+				testutil.RequireNoError(t, os.WriteFile(targetPath, content, 0o644), "os.WriteFile")
 			}
 			if tc.resume {
 				saveTransferProgressForTest(t, media, transfer, roots["archive"], content[:len(content)/2])
 			}
 			adoptedTempPath := prepareAdoptedTransferTemp(t, media, cfg, assetID, targetPath, content, tc.tempOwner)
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-			if err := settleTransferWork(t, func() error {
+			testutil.RequireNoError(t, settleTransferWork(t, func() error {
 				return worker.Work(context.Background(), jobs.StorageTransferArgs{
 					MediaAssetID: assetID,
 					Store:        "archive", PolicyFingerprint: fingerprint,
 				})
-			}); err != nil {
-				t.Fatalf("StorageTransferWorker.Work: %v", err)
-			}
+			}), "StorageTransferWorker.Work")
 			assertAdoptedTransferTemp(t, adoptedTempPath, tc.tempOwner)
 			got, err := os.ReadFile(targetPath)
 			if err != nil || !bytes.Equal(got, content) {
@@ -321,22 +285,16 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			expectedSHA := sha256.Sum256(content)
 			var assetSHA []byte
 			var copyState string
-			if err := pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, assetID).Scan(&assetSHA); err != nil {
-				t.Fatalf("reading observed SHA-256: %v", err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT sha256 FROM media_assets WHERE id = $1`, assetID).Scan(&assetSHA), "reading observed SHA-256")
 			if !bytes.Equal(assetSHA, expectedSHA[:]) {
 				t.Fatalf("media_assets.sha256 = %x, want %x", assetSHA, expectedSHA)
 			}
-			if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copyState); err != nil {
-				t.Fatalf("reading destination copy state: %v", err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copyState), "reading destination copy state")
 			if copyState != "active" {
 				t.Fatalf("destination copy state = %q, want active", copyState)
 			}
 			var progressRows int
-			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copy_transfer_progress`).Scan(&progressRows); err != nil {
-				t.Fatalf("counting transfer progress rows: %v", err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copy_transfer_progress`).Scan(&progressRows), "counting transfer progress rows")
 			if progressRows != 0 {
 				t.Fatalf("transfer progress rows after the copy became active = %d, want 0", progressRows)
 			}
@@ -374,19 +332,13 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 			video := []byte("encoded-video")
 			assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, video)
 			subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 			if tc.sourceSubtitle {
-				if err := os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte(sourceCaptions), 0o644); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte(sourceCaptions), 0o644), "os.WriteFile")
 			}
 			cfg := transferTestConfig("archive", "archive", "test-store")
 			fingerprint, err := cfg.PolicyFingerprint()
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 			media := pgstore.NewMedia(pool, "test-store", "")
 			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
 			if err != nil || !ok {
@@ -394,23 +346,15 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 			}
 			targetRelPath := transfer.RelPath
 			targetSubtitleRelPath, err := mediapath.SubtitleSibling(targetRelPath)
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 			targetVideo := filepath.Join(roots["archive"], filepath.FromSlash(targetRelPath))
 			targetSubtitle := filepath.Join(roots["archive"], filepath.FromSlash(targetSubtitleRelPath))
-			if err := os.MkdirAll(filepath.Dir(targetVideo), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(targetVideo), 0o755), "os.MkdirAll")
 			if tc.existingVideo {
-				if err := os.WriteFile(targetVideo, video, 0o644); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.WriteFile(targetVideo, video, 0o644), "os.WriteFile")
 			}
 			if tc.targetSubtitle != "" {
-				if err := os.WriteFile(targetSubtitle, []byte(tc.targetSubtitle), 0o644); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.WriteFile(targetSubtitle, []byte(tc.targetSubtitle), 0o644), "os.WriteFile")
 			}
 			if tc.targetOwned {
 				if ownership, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", targetSubtitleRelPath); err != nil || ownership != store.TransferObjectOwned {
@@ -418,11 +362,9 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 				}
 			}
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-			if err := settleTransferWork(t, func() error {
+			testutil.RequireNoError(t, settleTransferWork(t, func() error {
 				return worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint})
-			}); err != nil {
-				t.Fatalf("StorageTransferWorker.Work: %v", err)
-			}
+			}), "StorageTransferWorker.Work")
 
 			got, err := os.ReadFile(targetSubtitle)
 			if tc.wantTargetVTT != "" {
@@ -433,9 +375,7 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 				t.Fatalf("destination subtitle read error = %v, want removed", err)
 			}
 			var state string
-			if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
 			wantState := "pending"
 			if tc.wantActive {
 				wantState = "active"
@@ -444,9 +384,7 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 				t.Fatalf("destination copy state = %q, want %q", state, wantState)
 			}
 			var attempts int
-			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts a JOIN media_asset_copies c ON c.id = a.copy_id WHERE c.media_asset_id = $1`, assetID).Scan(&attempts); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts a JOIN media_asset_copies c ON c.id = a.copy_id WHERE c.media_asset_id = $1`, assetID).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts a JOIN media_asset_copies c ON c.id = a.copy_id WHERE c.media_asset_id = $1`, assetID).Scan")
 			if (attempts == 1) == tc.wantActive {
 				t.Errorf("transfer failure attempts = %d, want a recorded failure exactly when the copy is not activated (active=%t)", attempts, tc.wantActive)
 			}
@@ -463,25 +401,13 @@ func TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar(t *testin
 	relPath := "sites/default/transfer/captions.mp4"
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, []byte("encoded-video"))
 	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\nsource captions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(roots["archive"], filepath.FromSlash(relPath))), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(roots["archive"], filepath.FromSlash(relPath)), []byte("encoded-video"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\nsource captions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\nsource captions\n"), 0o644), "os.WriteFile")
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(filepath.Join(roots["archive"], filepath.FromSlash(relPath))), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(roots["archive"], filepath.FromSlash(relPath)), []byte("encoded-video"), 0o644), "os.WriteFile")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\nsource captions\n"), 0o644), "os.WriteFile")
 	transferTestAddCopy(t, pool, assetID, "archive", relPath)
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "test-store", "")
 	objects := transferTestObjectStores(t, roots)
@@ -491,9 +417,7 @@ func TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar(t *testin
 		MediaDir: roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 		DerivedObjects: objects["archive"],
 	}
-	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	for _, path := range []string{filepath.Join(roots["test-store"], filepath.FromSlash(relPath)), filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath))} {
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("retired placement path %q stat error = %v, want not-exist", path, err)
@@ -510,26 +434,18 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	video := []byte("encoded-video")
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, video)
 	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\nabandoned captions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\nabandoned captions\n"), 0o644), "os.WriteFile")
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "archive", "")
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, storageTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing abandoned copy = (%+v, %t, %v)", transfer, ok, err)
 	}
-	if err := media.RecordMediaAssetTransferFailure(context.Background(), transfer.CopyID, "destination interrupted"); err != nil {
-		t.Fatalf("recording failed transfer attempt: %v", err)
-	}
+	testutil.RequireNoError(t, media.RecordMediaAssetTransferFailure(context.Background(), transfer.CopyID, "destination interrupted"), "recording failed transfer attempt")
 	targetRelPath := transfer.RelPath
 	targetSubtitleRelPath, err := mediapath.SubtitleSibling(targetRelPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 	objects := transferTestObjectStores(t, roots)
 	for _, object := range []struct {
 		key         string
@@ -537,20 +453,14 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 		contentType string
 	}{{targetRelPath, video, "video/mp4"}, {targetSubtitleRelPath, []byte("abandoned captions"), "text/vtt; charset=utf-8"}} {
 		sum := sha256.Sum256(object.content)
-		if err := objects["archive"].Put(context.Background(), object.key, bytes.NewReader(object.content), int64(len(object.content)), sum, object.contentType); err != nil {
-			t.Fatalf("putting owned pending transfer object %q: %v", object.key, err)
-		}
+		testutil.RequireNoError(t, objects["archive"].Put(context.Background(), object.key, bytes.NewReader(object.content), int64(len(object.content)), sum, object.contentType), fmt.Sprintf("putting owned pending transfer object %q", object.key))
 		ownership, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", object.key)
 		if err != nil || ownership != store.TransferObjectOwned {
 			t.Fatalf("recording ownership of pending transfer object %q = (%d, %v)", object.key, ownership, err)
 		}
 	}
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() - interval '2 hours' WHERE id = $1`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID)
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET deleted_at = now() - interval '2 hours' WHERE id = $1`, recordingID)
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
@@ -561,9 +471,7 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 		DerivedMediaDelete: media, DerivedPendingReclaim: media, DerivedStorage: media,
 	}
 	deletedBefore := promtestutil.ToFloat64(metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim"))
-	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := promtestutil.ToFloat64(metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim")); got != deletedBefore+1 {
 		t.Errorf("pending transfer reclaim metric = %v, want one increment from %v", got, deletedBefore)
 	}
@@ -576,23 +484,17 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 		}
 	}
 	var copyState string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan")
 	if copyState != "deleted" {
 		t.Errorf("abandoned pending copy state = %q, want deleted", copyState)
 	}
 	var attempts int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1`, transfer.CopyID).Scan(&attempts); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1`, transfer.CopyID).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1`, transfer.CopyID).Scan")
 	if attempts != 0 {
 		t.Errorf("retired pending copy attempts = %d, want 0", attempts)
 	}
 	var purged bool
-	if err := pool.QueryRow(context.Background(), `SELECT purged_at IS NOT NULL FROM recordings WHERE id = $1`, recordingID).Scan(&purged); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT purged_at IS NOT NULL FROM recordings WHERE id = $1`, recordingID).Scan(&purged), "pool.QueryRow(context.Background(), `SELECT purged_at IS NOT NULL FROM recordings WHERE id = $1`, recordingID).Scan")
 	if !purged {
 		t.Fatal("recording remains unpurged after its last pending FS copy was reclaimed")
 	}
@@ -616,34 +518,22 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	}
 	targetRelPath := transfer.RelPath
 	targetSubtitleRelPath, err := mediapath.SubtitleSibling(targetRelPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(targetRelPath))
 	targetSubtitlePath := filepath.Join(roots["archive"], filepath.FromSlash(targetSubtitleRelPath))
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetPath, collision, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(targetSubtitlePath, collisionSubtitle, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(targetPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(targetPath, collision, 0o644), "os.WriteFile")
+	testutil.RequireNoError(t, os.WriteFile(targetSubtitlePath, collisionSubtitle, 0o644), "os.WriteFile")
 
 	fingerprint, err := transferConfig.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "transferConfig.PolicyFingerprint")
 	objects := transferTestObjectStores(t, roots)
 	transferWorker := StorageTransferWorker{Storage: media, Config: transferConfig, Roots: roots, ObjectStores: objects, ScratchDir: t.TempDir()}
-	if err := settleTransferWork(t, func() error {
+	testutil.RequireNoError(t, settleTransferWork(t, func() error {
 		return transferWorker.Work(context.Background(), jobs.StorageTransferArgs{
 			MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
 		})
-	}); err != nil {
-		t.Fatalf("StorageTransferWorker.Work on destination collision: %v", err)
-	}
+	}), "StorageTransferWorker.Work on destination collision")
 	if got, err := os.ReadFile(targetPath); err != nil || !bytes.Equal(got, collision) {
 		t.Fatalf("destination after rejected transfer = %q, %v; want preserved collision %q", got, err, collision)
 	}
@@ -660,9 +550,7 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 		MediaPendingReclaim: deleteMedia,
 		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
 	}
-	if err := deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got, err := os.ReadFile(targetPath); err != nil || !bytes.Equal(got, collision) {
 		t.Errorf("destination after pending reclaim = %q, %v; want preserved collision %q", got, err, collision)
 	}
@@ -670,16 +558,12 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 		t.Errorf("subtitle after pending reclaim = %q, %v; want preserved collision %q", got, err, collisionSubtitle)
 	}
 	var copyState string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copyState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copyState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
 	if copyState != "deleted" {
 		t.Errorf("obsolete pending copy state = %q, want deleted", copyState)
 	}
 	var ownedObjects int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_objects WHERE copy_id = (SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive')`, assetID).Scan(&ownedObjects); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_objects WHERE copy_id = (SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive')`, assetID).Scan(&ownedObjects), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_objects WHERE copy_id = (SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive')`, assetID).Scan")
 	if ownedObjects != 0 {
 		t.Errorf("pending transfer ownership rows after reclaim = %d, want none", ownedObjects)
 	}
@@ -705,24 +589,16 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	objects := transferTestObjectStores(t, roots)
 	targetRelPath := transfer.RelPath
 	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(targetRelPath))
-	if err := uploadObjectFile(context.Background(), objects["archive"], targetRelPath, filepath.Join(roots["test-store"], filepath.FromSlash(relPath)), int64(len(video)), sha256.Sum256(video), objectContentType(targetRelPath)); err != nil {
-		t.Fatalf("putting pending derived destination: %v", err)
-	}
+	testutil.RequireNoError(t, uploadObjectFile(context.Background(), objects["archive"], targetRelPath, filepath.Join(roots["test-store"], filepath.FromSlash(relPath)), int64(len(video)), sha256.Sum256(video), objectContentType(targetRelPath)), "putting pending derived destination")
 	ownership, err := media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", targetRelPath)
 	if err != nil || ownership != store.TransferObjectOwned {
 		t.Fatalf("recording pending destination ownership = (%d, %v), want owned", ownership, err)
 	}
 	subtitleRelPath, err := mediapath.SubtitleSibling(targetRelPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 	subtitlePath := filepath.Join(roots["archive"], filepath.FromSlash(subtitleRelPath))
-	if err := os.Mkdir(subtitlePath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("making subtitle removal fail: %v", err)
-	}
+	testutil.RequireNoError(t, os.Mkdir(subtitlePath, 0o755), "os.Mkdir")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644), "making subtitle removal fail")
 	ownership, err = media.MarkMediaAssetTransferObjectOwned(context.Background(), transfer.CopyID, "archive", subtitleRelPath)
 	if err != nil || ownership != store.TransferObjectOwned {
 		t.Fatalf("recording pending subtitle ownership = (%d, %v), want owned", ownership, err)
@@ -735,35 +611,23 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 		MediaPendingReclaim: media,
 		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
 	}
-	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work with unremovable subtitle: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work with unremovable subtitle")
 	if !fileExists(targetPath) {
 		t.Fatal("canonical object was removed before subtitle cleanup succeeded")
 	}
 	var copyState string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan")
 	if copyState != "pending" {
 		t.Fatalf("pending copy state after interrupted reclaim = %q, want pending", copyState)
 	}
 
-	if err := os.RemoveAll(subtitlePath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\ncaption\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := worker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("retrying DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, os.RemoveAll(subtitlePath), "os.RemoveAll")
+	testutil.RequireNoError(t, os.WriteFile(subtitlePath, []byte("WEBVTT\n\ncaption\n"), 0o644), "os.WriteFile")
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "retrying DeleteReconcileWorker.Work")
 	if fileExists(targetPath) || fileExists(subtitlePath) {
 		t.Fatal("canonical or subtitle remains after pending reclaim retry")
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&copyState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan")
 	if copyState != "deleted" {
 		t.Errorf("pending copy state after successful reclaim = %q, want deleted", copyState)
 	}
@@ -779,9 +643,7 @@ func TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix(t *
 	content := []byte("known SHA-256 makes the saved destination prefix authoritative")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	expectedSHA := sha256.Sum256(content)
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "test-store", "")
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
@@ -793,17 +655,11 @@ func TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix(t *
 	changedSource := bytes.Clone(content)
 	changedSource[0] ^= 0xff
 	sourcePath := filepath.Join(roots["test-store"], filepath.FromSlash(transfer.SourceRelPath))
-	if err := os.WriteFile(sourcePath, changedSource, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(sourcePath, changedSource, 0o644), "os.WriteFile")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-		t.Fatalf("resuming known-SHA transfer: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "resuming known-SHA transfer")
 	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("resumed destination = %q, %v; want saved prefix plus original source suffix %q", got, err, content)
@@ -819,9 +675,7 @@ func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *tes
 	content := []byte("an unsaved previous slice must not be continued from its temp")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	expectedSHA := sha256.Sum256(content)
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	media := pgstore.NewMedia(pool, "test-store", "")
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10)
@@ -834,33 +688,21 @@ func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *tes
 		t.Fatalf("acquiring progress = (%+v, %t, %v)", progress, acquired, err)
 	}
 	tempPath := transferTempPath(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)), assetID, transfer.CopyID, progress.WriterGeneration)
-	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(tempPath), 0o755), "os.MkdirAll")
 	damaged := bytes.Clone(content[:len(content)/2])
 	damaged[0] ^= 0xff
-	if err := os.WriteFile(tempPath, damaged, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := media.ReleaseMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(tempPath, damaged, 0o644), "os.WriteFile")
+	testutil.RequireNoError(t, media.ReleaseMediaAssetTransferProgress(context.Background(), transfer.CopyID, leaseOwner), "media.ReleaseMediaAssetTransferProgress")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-		t.Fatalf("Work after an unsaved slice: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work after an unsaved slice")
 	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath)))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("destination = %q, %v; want the source from its start %q", got, err, content)
 	}
 	var attempts int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1`, transfer.CopyID).Scan(&attempts); err != nil {
-		t.Fatalf("counting transfer attempts: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1`, transfer.CopyID).Scan(&attempts), "counting transfer attempts")
 	if attempts != 0 {
 		t.Fatalf("transfer attempts after a lease-expired previous slice = %d, want 0 (an expired lease is not a failure)", attempts)
 	}
@@ -899,46 +741,32 @@ func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
 			tempPath := saveTransferProgressForTest(t, media, transfer, roots["archive"], saved)
 			switch {
 			case tc.remove:
-				if err := os.Remove(tempPath); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.Remove(tempPath), "os.Remove")
 			case tc.shorten > 0:
-				if err := os.Truncate(tempPath, int64(len(saved)-tc.shorten)); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.Truncate(tempPath, int64(len(saved)-tc.shorten)), "os.Truncate")
 			default:
 				extra, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_APPEND, 0)
-				if err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, err, "os.OpenFile")
 				if _, err := extra.Write(bytes.Repeat([]byte("j"), tc.extend)); err != nil {
 					t.Fatal(err)
 				}
-				if err := extra.Close(); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, extra.Close(), "extra.Close")
 			}
 			fingerprint, err := cfg.PolicyFingerprint()
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 			worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 			args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
-			if err := worker.Work(context.Background(), args); err != nil {
-				t.Fatalf("first Work with an inconsistent saved transfer: %v", err)
-			}
+			testutil.RequireNoError(t, worker.Work(context.Background(), args), "first Work with an inconsistent saved transfer")
 			destination := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
 			if fileExists(destination) {
 				t.Fatal("destination was published from an inconsistent saved transfer")
 			}
 			var attempts int32
 			var lastError string
-			if err := pool.QueryRow(context.Background(), `
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT a.attempt_count, a.last_error
 FROM media_asset_transfer_attempts a
-WHERE a.copy_id = $1`, transferTestCopyID(t, pool, assetID, "archive")).Scan(&attempts, &lastError); err != nil {
-				t.Fatalf("reading recorded transfer attempt: %v", err)
-			}
+WHERE a.copy_id = $1`, transferTestCopyID(t, pool, assetID, "archive")).Scan(&attempts, &lastError), "reading recorded transfer attempt")
 			if attempts != 1 || !strings.Contains(lastError, "saved offset is") {
 				t.Fatalf("recorded attempt = (%d, %q), want one failure naming the saved offset", attempts, lastError)
 			}
@@ -946,9 +774,7 @@ WHERE a.copy_id = $1`, transferTestCopyID(t, pool, assetID, "archive")).Scan(&at
 			if !tc.remove && !fileExists(tempPath) {
 				t.Fatal("inconsistent temp was removed by the failed attempt; the next attempt should remove it")
 			}
-			if err := worker.Work(context.Background(), args); err != nil {
-				t.Fatalf("second Work after the failure: %v", err)
-			}
+			testutil.RequireNoError(t, worker.Work(context.Background(), args), "second Work after the failure")
 			got, err := os.ReadFile(destination)
 			if err != nil || !bytes.Equal(got, content) {
 				t.Fatalf("destination after the restart = %q, %v; want %q", got, err, content)
@@ -970,9 +796,7 @@ func TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice(t *testing.T
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	restore := storageTransferSlice
 	storageTransferSlice = 300 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
@@ -1013,9 +837,7 @@ func TestStorageTransferWorkerSliceStopsAndResumesToCompletion(t *testing.T) {
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
@@ -1042,10 +864,8 @@ func TestStorageTransferWorkerSliceStopsAndResumesToCompletion(t *testing.T) {
 		}
 		var handedOff bool
 		var offset int64
-		if err := pool.QueryRow(context.Background(), `
-SELECT handed_off, offset_bytes FROM media_asset_copy_transfer_progress WHERE copy_id = $1`, copyID).Scan(&handedOff, &offset); err != nil {
-			t.Fatalf("reading saved progress after a slice: %v", err)
-		}
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
+SELECT handed_off, offset_bytes FROM media_asset_copy_transfer_progress WHERE copy_id = $1`, copyID).Scan(&handedOff, &offset), "reading saved progress after a slice")
 		if !handedOff || offset <= 0 || offset >= int64(len(content)) {
 			t.Fatalf("saved progress after slice %d = handed_off %t offset %d, want handed_off with 0 < offset < %d", snoozes, handedOff, offset, len(content))
 		}
@@ -1068,20 +888,14 @@ func TestStorageTransferWorkerChecksMountsBeforePrepare(t *testing.T) {
 		assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("source"))
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 		worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err == nil {
 			t.Fatal("Work with unmounted target succeeded")
 		}
 		var copies, attempts int
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copies); err != nil {
-			t.Fatal(err)
-		}
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copies), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan")
 		if copies != 0 || attempts != 0 {
 			t.Fatalf("copies/attempts after missing target = %d/%d, want 0/0", copies, attempts)
 		}
@@ -1093,28 +907,20 @@ func TestStorageTransferWorkerChecksMountsBeforePrepare(t *testing.T) {
 	t.Run("wrong target marker does not reserve or count an attempt", func(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		roots := transferTestRoots(t, "test-store", "archive")
-		if err := os.WriteFile(filepath.Join(roots["archive"], mediapath.StoreMarkerFileName), []byte("wrong\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, os.WriteFile(filepath.Join(roots["archive"], mediapath.StoreMarkerFileName), []byte("wrong\n"), 0o600), "os.WriteFile")
 		metrics.StorageTransferMountMismatches.DeleteLabelValues("archive")
 		t.Cleanup(func() { metrics.StorageTransferMountMismatches.DeleteLabelValues("archive") })
 		assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("source"))
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 		worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err == nil {
 			t.Fatal("Work with mismatched target marker succeeded")
 		}
 		var copies, attempts int
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copies); err != nil {
-			t.Fatal(err)
-		}
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copies), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan")
 		if copies != 0 || attempts != 0 {
 			t.Fatalf("copies/attempts after mismatched target marker = %d/%d, want 0/0", copies, attempts)
 		}
@@ -1129,20 +935,12 @@ func TestStorageTransferWorkerChecksMountsBeforePrepare(t *testing.T) {
 		assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("source"))
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 		worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: map[string]string{"archive": roots["archive"]}, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-		if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-			t.Fatalf("Work with unmounted source: %v", err)
-		}
+		testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work with unmounted source")
 		var copies, attempts int
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copies); err != nil {
-			t.Fatal(err)
-		}
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copies), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan")
 		if copies != 0 || attempts != 0 {
 			t.Fatalf("copies/attempts after missing source = %d/%d, want 0/0", copies, attempts)
 		}
@@ -1156,9 +954,7 @@ func TestStorageTransferWorkerSnoozesWhenSourceLockIsBusyWithoutAttempt(t *testi
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("source"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	media := pgstore.NewMedia(pool, "test-store", "")
 	lease, acquired, err := media.AcquireTransferSourceBandwidth(context.Background(), "test-store")
 	if err != nil || !acquired {
@@ -1175,9 +971,7 @@ func TestStorageTransferWorkerSnoozesWhenSourceLockIsBusyWithoutAttempt(t *testi
 		t.Fatalf("Work snooze = (%s, %v) with error %v, want %s", delay, ok, err, storageTransferLockSnooze)
 	}
 	var attempts int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan")
 	if attempts != 0 {
 		t.Fatalf("transfer attempts while source lock is busy = %d, want 0", attempts)
 	}
@@ -1192,9 +986,7 @@ func TestStorageTransferWorkerSnoozesDerivedWhenSourceLockIsBusyWithoutAttempt(t
 		store.AssetKindThumbnail, nil, "sites/default/transfer/thumbnail.jpg", []byte("thumbnail source"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	media := pgstore.NewMedia(pool, "test-store", "")
 	lease, acquired, err := media.AcquireTransferSourceBandwidth(context.Background(), "test-store")
 	if err != nil || !acquired {
@@ -1214,9 +1006,7 @@ func TestStorageTransferWorkerSnoozesDerivedWhenSourceLockIsBusyWithoutAttempt(t
 		t.Fatalf("derived transfer snooze = (%s, %v) with error %v, want %s", delay, ok, err, storageTransferLockSnooze)
 	}
 	var attempts int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan")
 	if attempts != 0 {
 		t.Fatalf("derived transfer attempts while source lock is busy = %d, want 0", attempts)
 	}
@@ -1230,11 +1020,11 @@ func TestPrepareMediaAssetTransferDoesNotReviveDeletingCopy(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("source"))
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-VALUES ($1, 'archive', 'sites/default/transfer/source.ts', 0, 'deleting')`, assetID); err != nil {
-		t.Fatalf("seeding deleting destination: %v", err)
-	}
+	dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.Store = "archive"
+		p.RelPath = "sites/default/transfer/source.ts"
+		p.State = "deleting"
+	})
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	transfer, ok, err := pgstore.NewMedia(pool, "test-store", "").PrepareMediaAssetTransfer(
 		context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, 10,
@@ -1243,9 +1033,7 @@ VALUES ($1, 'archive', 'sites/default/transfer/source.ts', 0, 'deleting')`, asse
 		t.Fatalf("preparing while destination is deleting = (%+v, %t, %v), want no reservation", transfer, ok, err)
 	}
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
 	if state != "deleting" {
 		t.Fatalf("destination state after prepare = %q, want deleting", state)
 	}
@@ -1258,21 +1046,15 @@ func TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource(t *te
 	actual := []byte("badbytes")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], actual)
 	expected := sha256.Sum256([]byte("goodbyte"))
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expected[:], assetID); err != nil {
-		t.Fatalf("setting expected source checksum: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting expected source checksum", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expected[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{
 		MediaAssetID: assetID,
 		Store:        "archive", PolicyFingerprint: fingerprint,
-	}); err != nil {
-		t.Fatalf("Work mismatch: %v", err)
-	}
+	}), "Work mismatch")
 	if !hasCurrentCopyInStore(t, pool, assetID, "test-store") {
 		t.Fatal("current original copy in the source store is missing after mismatch")
 	}
@@ -1283,9 +1065,7 @@ func TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource(t *te
 		t.Fatal("mismatched source was published to destination")
 	}
 	var attempts int
-	if err := pool.QueryRow(context.Background(), `SELECT attempt.attempt_count FROM media_asset_transfer_attempts attempt JOIN media_asset_copies copy ON copy.id = attempt.copy_id WHERE copy.media_asset_id = $1 AND copy.store = 'archive'`, assetID).Scan(&attempts); err != nil {
-		t.Fatalf("reading failed attempt: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT attempt.attempt_count FROM media_asset_transfer_attempts attempt JOIN media_asset_copies copy ON copy.id = attempt.copy_id WHERE copy.media_asset_id = $1 AND copy.store = 'archive'`, assetID).Scan(&attempts), "reading failed attempt")
 	if attempts != 1 {
 		t.Fatalf("transfer attempt count = %d, want 1", attempts)
 	}
@@ -1330,49 +1110,35 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 			sidecarPath := ""
 			if tc.encoded {
 				sidecarRelPath, err := mediapath.SubtitleSibling(relPath)
-				if err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 				sidecarPath = filepath.Join(roots["test-store"], filepath.FromSlash(sidecarRelPath))
-				if err := os.WriteFile(sidecarPath, []byte("WEBVTT\n\ncaptions\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, os.WriteFile(sidecarPath, []byte("WEBVTT\n\ncaptions\n"), 0o644), "os.WriteFile")
 				markRecordingUntilEncoded(t, pool, recordingID, []string{"web"})
 			}
 			wrongSHA := sha256.Sum256([]byte("different derived bytes"))
-			if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", wrongSHA[:], assetID); err != nil {
-				t.Fatalf("setting mismatched logical checksum: %v", err)
-			}
+			testutil.MustExec(t, pool, "setting mismatched logical checksum", "UPDATE media_assets SET sha256 = $1 WHERE id = $2", wrongSHA[:], assetID)
 			cfg := transferTestConfig("archive", "archive", "test-store")
 			fingerprint, err := cfg.PolicyFingerprint()
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 			retiredBefore := promtestutil.ToFloat64(metrics.StorageTransferCorruptSourcesRetired)
 			bound := tc.boundStore
 			if bound == "" {
 				bound = "test-store"
 			}
 			worker := StorageTransferWorker{Storage: pgstore.NewMedia(pool, bound, ""), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
-			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
+			testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{
 				MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
-			}); err != nil {
-				t.Fatalf("Work with corrupt sole derived copy: %v", err)
-			}
+			}), "Work with corrupt sole derived copy")
 
 			var sourceState, targetState string
-			if err := pool.QueryRow(context.Background(),
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 				"SELECT source.state, target.state FROM media_asset_copies source JOIN media_asset_copies target ON target.media_asset_id = source.media_asset_id AND target.generation = source.generation WHERE source.media_asset_id = $1 AND source.store = $2 AND target.store = $3",
-				assetID, "test-store", "archive").Scan(&sourceState, &targetState); err != nil {
-				t.Fatalf("reading copy states after derived source mismatch: %v", err)
-			}
+				assetID, "test-store", "archive").Scan(&sourceState, &targetState), "reading copy states after derived source mismatch")
 			if sourceState != tc.wantSource || targetState != tc.wantTarget {
 				t.Fatalf("source/target copy states = %q/%q, want %q/%q", sourceState, targetState, tc.wantSource, tc.wantTarget)
 			}
 			var attempts int
-			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts attempt JOIN media_asset_copies copy ON copy.id = attempt.copy_id WHERE copy.media_asset_id = $1`, assetID).Scan(&attempts); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts attempt JOIN media_asset_copies copy ON copy.id = attempt.copy_id WHERE copy.media_asset_id = $1`, assetID).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts attempt JOIN media_asset_copies copy ON copy.id = attempt.copy_id WHERE copy.media_asset_id = $1`, assetID).Scan")
 			if attempts != tc.wantAttempts {
 				t.Fatalf("transfer attempt rows = %d, want %d", attempts, tc.wantAttempts)
 			}
@@ -1397,9 +1163,7 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 			}
 			if tc.encoded {
 				var missingProfile bool
-				if err := pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM unencoded_desired_profiles WHERE recording_id = $1 AND profile = 'web')`, recordingID).Scan(&missingProfile); err != nil {
-					t.Fatal(err)
-				}
+				testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM unencoded_desired_profiles WHERE recording_id = $1 AND profile = 'web')`, recordingID).Scan(&missingProfile), "pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM unencoded_desired_profiles WHERE recording_id = $1 AND profile = 'web')`, recordingID).Scan")
 				if missingProfile != retired {
 					t.Fatalf("unencoded_desired_profiles has the retired profile = %t, want %t", missingProfile, retired)
 				}
@@ -1417,21 +1181,15 @@ func TestStorageTransferWorkerUsesObjectStoreForDerivedCopies(t *testing.T) {
 	content := []byte("derived bytes copied through objstore")
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindThumbnail, nil, relPath, content)
 	expectedSHA := sha256.Sum256(content)
-	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", expectedSHA[:], assetID); err != nil {
-		t.Fatalf("setting logical checksum: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting logical checksum", "UPDATE media_assets SET sha256 = $1 WHERE id = $2", expectedSHA[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{
 		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 	}
-	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")
 	destination := filepath.Join(roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, pool, assetID, "archive")))
 	got, err := os.ReadFile(destination)
 	if err != nil || !bytes.Equal(got, content) {
@@ -1441,11 +1199,9 @@ func TestStorageTransferWorkerUsesObjectStoreForDerivedCopies(t *testing.T) {
 		t.Fatal("derived transfer left an FS transfer temp beside the object key")
 	}
 	var sourceState, targetState string
-	if err := pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		"SELECT source.state, target.state FROM media_asset_copies source JOIN media_asset_copies target ON target.media_asset_id = source.media_asset_id AND target.generation = source.generation WHERE source.media_asset_id = $1 AND source.store = $2 AND target.store = $3",
-		assetID, "test-store", "archive").Scan(&sourceState, &targetState); err != nil {
-		t.Fatalf("reading copy states: %v", err)
-	}
+		assetID, "test-store", "archive").Scan(&sourceState, &targetState), "reading copy states")
 	if sourceState != "active" || targetState != "active" {
 		t.Fatalf("source/target states = %q/%q, want active/active", sourceState, targetState)
 	}
@@ -1460,38 +1216,26 @@ func TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy(t
 	media := pgstore.NewMedia(pool, "test-store", "")
 	oldConfig := transferTestConfig("archive", "archive", "cold", "test-store")
 	oldFingerprint, err := oldConfig.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "oldConfig.PolicyFingerprint")
 	newConfig := transferTestConfig("cold", "archive", "cold", "test-store")
 	newFingerprint, err := newConfig.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "newConfig.PolicyFingerprint")
 	oldJob := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: oldFingerprint}
 	worker := StorageTransferWorker{Storage: media, Config: newConfig, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 	if err := worker.Work(context.Background(), oldJob); !errors.Is(err, jobq.ErrDiscard) {
 		t.Fatalf("old policy job error = %v, want jobq.ErrDiscard", err)
 	}
 	var archiveCopies int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&archiveCopies); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&archiveCopies), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
 	if archiveCopies != 0 {
 		t.Fatalf("old policy created %d archive copies, want 0", archiveCopies)
 	}
-	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{
 		MediaAssetID: assetID, Store: "cold", PolicyFingerprint: newFingerprint,
-	}); err != nil {
-		t.Fatalf("copying under new policy: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cold'`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	}), "copying under new policy")
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cold'`, assetID)
 	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), mustOriginalRules(t, newConfig), "cold", time.Now().Add(-newConfig.Transfer.Overlap), 10)
-	if err != nil {
-		t.Fatalf("listing stale copies after policy switch: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing stale copies after policy switch")
 	var sourceCandidate *store.MediaAssetCopyDeleteCandidate
 	for i := range candidates {
 		if candidates[i].Store == "test-store" {
@@ -1507,35 +1251,25 @@ func TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy(t
 		RecordingPurge: pgstore.NewRecordings(pool, "test-store"), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 	}
-	if err := deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("deleting stale source copy: %v", err)
-	}
+	testutil.RequireNoError(t, deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "deleting stale source copy")
 	if fileExists(filepath.Join(roots["test-store"], "sites/default/transfer/source.ts")) {
 		t.Fatal("stale source file remains after delete reconcile")
 	}
 	var sourceState string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, assetID).Scan(&sourceState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, assetID).Scan(&sourceState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, assetID).Scan")
 	if sourceState != "deleted" {
 		t.Fatalf("stale source copy state = %q, want deleted", sourceState)
 	}
 	var activeStores []string
 	rows, err := pool.Query(context.Background(), `SELECT store FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active' ORDER BY store`, assetID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "pool.Query")
 	defer rows.Close()
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, rows.Scan(&name), "rows.Scan")
 		activeStores = append(activeStores, name)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, rows.Err(), "rows.Err")
 	if !slices.Equal(activeStores, []string{"cold"}) {
 		t.Fatalf("active stores after old-copy deletion mark = %v, want [cold]", activeStores)
 	}
@@ -1547,14 +1281,10 @@ func TestStorageTransferWorkerReconcileEnqueuesDesiredCopies(t *testing.T) {
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("pending transfer"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	enqueuer := newRecordingEnqueuer()
 	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg}
-	if err := reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
-		t.Fatalf("reconcile Work: %v", err)
-	}
+	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
 	args := enqueuer.Enqueued("storage_transfer")
 	if len(args) != 1 {
 		t.Fatalf("enqueued storage_transfer jobs = %d, want 1", len(args))
@@ -1604,9 +1334,7 @@ func TestStorageTransferReconcileWarnsForActiveDerivedCopyInNonDerivedS3(t *test
 	reconcile := StorageTransferReconcileWorker{
 		Enqueuer: newRecordingEnqueuer(), Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
 	}
-	if err := reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
-		t.Fatalf("storage transfer reconcile: %v", err)
-	}
+	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 1 {
 		t.Fatalf("active derived copies outside current S3 = %v, want 1", got)
 	}
@@ -1623,9 +1351,7 @@ func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerived
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/deleted-s3.mp4", []byte("encoded"))
 	transferTestAddCopy(t, pool, assetID, "s3-a", "sites/default/transfer/deleted-s3.mp4")
 	transferTestAddCopy(t, pool, assetID, "s3-b", "sites/default/transfer/current-s3.mp4")
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted' WHERE media_asset_id = $1 AND store = 's3-a'`, assetID); err != nil {
-		t.Fatalf("retiring old S3 copy: %v", err)
-	}
+	testutil.MustExec(t, pool, "retiring old S3 copy", `UPDATE media_asset_copies SET state = 'deleted' WHERE media_asset_id = $1 AND store = 's3-a'`, assetID)
 	cfg := config.StorageConfig{
 		Stores: map[string]config.StoreConfig{
 			"test-store": {Kind: "fs"},
@@ -1646,9 +1372,7 @@ func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerived
 	reconcile := StorageTransferReconcileWorker{
 		Enqueuer: newRecordingEnqueuer(), Storage: pgstore.NewMedia(pool, "", ""), Config: cfg,
 	}
-	if err := reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
-		t.Fatalf("storage transfer reconcile: %v", err)
-	}
+	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 0 {
 		t.Fatalf("active derived copies outside current S3 = %v, want 0", got)
 	}
@@ -1668,9 +1392,7 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 		t.Fatalf("preparing failed transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
 	for i := int32(0); i < storageTransferAttemptLimit; i++ {
-		if err := media.RecordMediaAssetTransferFailure(context.Background(), transfer.CopyID, "destination unavailable"); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, media.RecordMediaAssetTransferFailure(context.Background(), transfer.CopyID, "destination unavailable"), "media.RecordMediaAssetTransferFailure")
 	}
 	metrics.StorageTransferWaitingAssets.Set(0)
 	metrics.StorageTransferWaitingBytes.Set(0)
@@ -1682,9 +1404,7 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 	})
 	firstEnqueuer := newRecordingEnqueuer()
 	firstPass := StorageTransferReconcileWorker{Enqueuer: firstEnqueuer, Storage: media, Config: archiveConfig}
-	if err := firstPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, firstPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "firstPass.Work")
 	if got := len(firstEnqueuer.Enqueued("storage_transfer")); got != 0 {
 		t.Fatalf("jobs after exhausted attempts = %d, want 0", got)
 	}
@@ -1698,16 +1418,12 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 	coldConfig := transferTestConfig("cold", "archive", "cold", "test-store")
 	secondEnqueuer := newRecordingEnqueuer()
 	secondPass := StorageTransferReconcileWorker{Enqueuer: secondEnqueuer, Storage: media, Config: coldConfig}
-	if err := secondPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, secondPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "secondPass.Work")
 	if got := len(secondEnqueuer.Enqueued("storage_transfer")); got != 1 {
 		t.Fatalf("jobs after desired store changes = %d, want 1", got)
 	}
 	var attempts int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan(&attempts), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_attempts`).Scan")
 	if attempts != 0 {
 		t.Fatalf("obsolete attempts after policy switch = %d, want 0", attempts)
 	}
@@ -1732,9 +1448,7 @@ func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.
 			name: "trashed recording",
 			change: func(t *testing.T, pool *pgxpool.Pool, recordingID, _ int64) {
 				t.Helper()
-				if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, recordingID); err != nil {
-					t.Fatal(err)
-				}
+				testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, recordingID)
 			},
 			policy:  func() config.StorageConfig { return transferTestConfig("archive", "archive", "test-store") },
 			wantOne: true,
@@ -1743,9 +1457,7 @@ func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.
 			name: "new generation",
 			change: func(t *testing.T, pool *pgxpool.Pool, _, assetID int64) {
 				t.Helper()
-				if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID); err != nil {
-					t.Fatal(err)
-				}
+				testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID)
 			},
 			policy:  func() config.StorageConfig { return transferTestConfig("archive", "archive", "test-store") },
 			wantOne: true,
@@ -1775,9 +1487,7 @@ func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.
 			}
 			policy := tc.policy()
 			copies, err := media.ListObsoletePendingMediaAssetTransferCopies(context.Background(), mustOriginalRules(t, policy), policy.FSStoreNames(), policy.Derived, 10)
-			if err != nil {
-				t.Fatalf("listing obsolete pending copies: %v", err)
-			}
+			testutil.RequireNoError(t, err, "listing obsolete pending copies")
 			if gotOne := len(copies) == 1; gotOne != tc.wantOne {
 				t.Fatalf("obsolete pending copy count = %d, want one=%t (rows: %+v)", len(copies), tc.wantOne, copies)
 			}
@@ -1798,31 +1508,23 @@ func TestStorageTransferPendingReclaimRechecksAfterRecordingRestore(t *testing.T
 	if err != nil || !ok {
 		t.Fatalf("preparing pending copy = (%+v, %t, %v)", transfer, ok, err)
 	}
-	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, recordingID)
 	candidates, err := media.ListObsoletePendingMediaAssetTransferCopies(context.Background(), mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10)
 	if err != nil || len(candidates) != 1 {
 		t.Fatalf("obsolete candidates before restore = %+v, %v; want one", candidates, err)
 	}
-	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = NULL WHERE id = $1`, recordingID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET deleted_at = NULL WHERE id = $1`, recordingID)
 	called := false
 	reclaimed, err := media.ReclaimObsoletePendingMediaAssetTransferCopy(
 		context.Background(), candidates[0], mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived,
 		func([]string) error { called = true; return nil },
 	)
-	if err != nil {
-		t.Fatalf("reclaiming a restored pending copy: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reclaiming a restored pending copy")
 	if reclaimed || called {
 		t.Fatalf("reclaim after restore = (reclaimed %t, delete called %t), want no-op", reclaimed, called)
 	}
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&state), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan")
 	if state != "pending" {
 		t.Fatalf("pending copy after restore = %q, want pending", state)
 	}
@@ -1846,12 +1548,8 @@ func prepareUntilEncodedPendingOriginal(t *testing.T, pool *pgxpool.Pool, roots 
 		t.Helper()
 		assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, kind, profile, relPath, content)
 		archivePath := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-		if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(archivePath, content, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(archivePath), 0o755), "os.MkdirAll")
+		testutil.RequireNoError(t, os.WriteFile(archivePath, content, 0o644), "os.WriteFile")
 		transferTestAddCopy(t, pool, assetID, "archive", relPath)
 		return assetID
 	}
@@ -1860,10 +1558,8 @@ func prepareUntilEncodedPendingOriginal(t *testing.T, pool *pgxpool.Pool, roots 
 	seekTilesID := addDerived(store.AssetKindSeekTiles, "sites/default/retention/tiles.jpg", nil, []byte("tiles"))
 	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
 	var eligible bool
-	if err := pool.QueryRow(context.Background(), `
-SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1)`, originalID).Scan(&eligible); err != nil {
-		t.Fatalf("checking desired-store until_encoded eligibility: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
+SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1)`, originalID).Scan(&eligible), "checking desired-store until_encoded eligibility")
 	if !eligible {
 		t.Fatal("until_encoded fixture does not qualify for original deletion")
 	}
@@ -1877,21 +1573,15 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	originalID, transfer, cfg, _ := prepareUntilEncodedPendingOriginal(t, pool, roots, recordingID)
 	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(targetPath), 0o755), "os.MkdirAll")
 	// 実際の試行と同じく、進捗の行を作ってから世代の名前で temp を書く。回収は行の世代で temp を見つける。
 	progress, acquired, err := pgstore.NewMedia(pool, "archive", cfg.Derived).AcquireMediaAssetTransferProgress(context.Background(), transfer.CopyID, uuid.New(), time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquiring transfer progress = (%+v, %t, %v)", progress, acquired, err)
 	}
 	tempPath := transferTempPath(targetPath, transfer.MediaAssetID, transfer.CopyID, progress.WriterGeneration)
-	if err := os.WriteFile(tempPath, []byte("source-original"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(tempPath, targetPath); err != nil {
-		t.Fatalf("linking published pending destination to transfer temp: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(tempPath, []byte("source-original"), 0o644), "os.WriteFile")
+	testutil.RequireNoError(t, os.Link(tempPath, targetPath), "linking published pending destination to transfer temp")
 
 	objects := transferTestObjectStores(t, roots)
 	derivedMedia := pgstore.NewMedia(pool, "archive", cfg.Derived)
@@ -1909,32 +1599,24 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 		}
 		return worker
 	}
-	if err := newWorker("test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("deleting source original after until_encoded: %v", err)
-	}
+	testutil.RequireNoError(t, newWorker("test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}), "deleting source original after until_encoded")
 	if fileExists(filepath.Join(roots["test-store"], filepath.FromSlash("sites/default/retention/pending-original.ts"))) {
 		t.Fatal("until_encoded source original remains after deletion reconcile")
 	}
 	var sourceState string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, originalID).Scan(&sourceState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, originalID).Scan(&sourceState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, originalID).Scan")
 	if sourceState != "deleted" {
 		t.Fatalf("until_encoded source copy state = %q, want deleted", sourceState)
 	}
 	if !fileExists(targetPath) {
 		t.Fatal("fixture destination should remain before its pending reservation is reclaimed")
 	}
-	if err := newWorker("archive").Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("reclaiming until_encoded pending destination: %v", err)
-	}
+	testutil.RequireNoError(t, newWorker("archive").Work(context.Background(), jobs.DeleteReconcileArgs{}), "reclaiming until_encoded pending destination")
 	if fileExists(targetPath) || fileExists(tempPath) {
 		t.Fatal("pending destination or transfer temp remains after until_encoded made its transfer obsolete")
 	}
 	var targetState string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&targetState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&targetState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan")
 	if targetState != "deleted" {
 		t.Fatalf("until_encoded pending copy state = %q, want deleted", targetState)
 	}
@@ -1953,14 +1635,10 @@ func TestStorageTransferPendingReclaimRechecksUntilEncodedEligibility(t *testing
 	if err != nil || len(candidates) != 1 || candidates[0].CopyID != transfer.CopyID {
 		t.Fatalf("until_encoded obsolete candidates = %+v, %v; want pending original copy %d", candidates, err, transfer.CopyID)
 	}
-	if _, err := pool.Exec(context.Background(), `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, seekTilesCopyID); err != nil {
-		t.Fatalf("making until_encoded eligibility false: %v", err)
-	}
+	testutil.MustExec(t, pool, "making until_encoded eligibility false", `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, seekTilesCopyID)
 	var eligible bool
-	if err := pool.QueryRow(context.Background(), `
-SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1)`, transfer.MediaAssetID).Scan(&eligible); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
+SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1)`, transfer.MediaAssetID).Scan(&eligible), "pool.QueryRow(context.Background(), `\nSELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1)`, transfer.MediaAssetID).Scan")
 	if eligible {
 		t.Fatal("fixture still qualifies for until_encoded after desired seek tiles were marked missing")
 	}
@@ -1969,16 +1647,12 @@ SELECT EXISTS (SELECT 1 FROM until_encoded_deletable_originals('archive') WHERE 
 		context.Background(), candidates[0], mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived,
 		func([]string) error { called = true; return nil },
 	)
-	if err != nil {
-		t.Fatalf("rechecking pending original retention: %v", err)
-	}
+	testutil.RequireNoError(t, err, "rechecking pending original retention")
 	if reclaimed || called {
 		t.Fatalf("reclaim after until_encoded eligibility changed = (reclaimed %t, delete called %t), want no-op", reclaimed, called)
 	}
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan(&state), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE id = $1`, transfer.CopyID).Scan")
 	if state != "pending" {
 		t.Fatalf("pending copy after retention recheck = %q, want pending", state)
 	}
@@ -1999,9 +1673,7 @@ func TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore(t *testi
 	assertOriginalEligibility := func(want bool) {
 		t.Helper()
 		var count int
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1`, originalID).Scan(&count); err != nil {
-			t.Fatalf("querying desired-store retention predicate: %v", err)
-		}
+		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM until_encoded_deletable_originals('archive') WHERE asset_id = $1`, originalID).Scan(&count), "querying desired-store retention predicate")
 		if got := count == 1; got != want {
 			t.Fatalf("until_encoded eligibility = %t, want %t", got, want)
 		}
@@ -2013,22 +1685,16 @@ func TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore(t *testi
 	transferTestAddCopy(t, pool, seekTilesID, "archive", "sites/default/retention/tiles.jpg")
 	assertOriginalEligibility(true)
 	seekTilesCopyID := transferTestCopyID(t, pool, seekTilesID, "archive")
-	if _, err := pool.Exec(context.Background(), `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, seekTilesCopyID); err != nil {
-		t.Fatalf("marking desired seek tiles copy missing: %v", err)
-	}
+	testutil.MustExec(t, pool, "marking desired seek tiles copy missing", `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, seekTilesCopyID)
 	assertOriginalEligibility(false)
-	if _, err := pool.Exec(context.Background(), `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, seekTilesCopyID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, seekTilesCopyID)
 	assertOriginalEligibility(true)
 
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	candidates, err := pgstore.NewMedia(pool, "test-store", "").ListMediaAssetTransferCandidates(
 		context.Background(), mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.Derived, 10, 100,
 	)
-	if err != nil {
-		t.Fatalf("listing transfer candidates after until_encoded eligibility: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing transfer candidates after until_encoded eligibility")
 	for _, candidate := range candidates {
 		if candidate.MediaAssetID == originalID {
 			t.Fatal("until_encoded original remained a transfer candidate after the desired derived copies were present")
@@ -2048,22 +1714,18 @@ func TestUntilEncodedOriginalStallsWhenEncodedExistsOnlyInOldS3AfterDerivedStore
 	seekTilesID := seedSeekTilesAsset(t, pool, mediaDir, recordingID, "sites/default/s3-switch/tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
 	derivedIDs := []int64{encodedID, thumbnailID, seekTilesID}
-	if _, err := pool.Exec(context.Background(), `
+	testutil.MustExec(t, pool, "retiring fixture FS copies", `
 UPDATE media_asset_copies
 SET state = 'deleted', deleted_at = now()
-WHERE media_asset_id = ANY($1::bigint[]) AND store = 'test-store'`, derivedIDs); err != nil {
-		t.Fatalf("retiring fixture FS copies: %v", err)
-	}
+WHERE media_asset_id = ANY($1::bigint[]) AND store = 'test-store'`, derivedIDs)
 	for _, assetID := range derivedIDs {
 		transferTestAddCopy(t, pool, assetID, "s3-a", fmt.Sprintf("sites/default/s3-switch/s3-a-%d", assetID))
 	}
 
 	var activeElsewhere int
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT count(*) FROM media_asset_copies
-WHERE media_asset_id = ANY($1::bigint[]) AND state = 'active' AND store <> 's3-a'`, derivedIDs).Scan(&activeElsewhere); err != nil {
-		t.Fatalf("checking active derived copies outside s3-a: %v", err)
-	}
+WHERE media_asset_id = ANY($1::bigint[]) AND state = 'active' AND store <> 's3-a'`, derivedIDs).Scan(&activeElsewhere), "checking active derived copies outside s3-a")
 	if activeElsewhere != 0 {
 		t.Fatalf("active derived copies outside s3-a = %d, want 0", activeElsewhere)
 	}
@@ -2079,12 +1741,10 @@ WHERE media_asset_id = ANY($1::bigint[]) AND state = 'active' AND store <> 's3-a
 		Transfer:  config.StorageTransferConfig{Overlap: time.Hour},
 	}
 	var deletable bool
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT EXISTS (
   SELECT 1 FROM until_encoded_deletable_originals('s3-b') WHERE asset_id = $1
-)`, originalID).Scan(&deletable); err != nil {
-		t.Fatalf("querying until_encoded deletion eligibility for s3-b: %v", err)
-	}
+)`, originalID).Scan(&deletable), "querying until_encoded deletion eligibility for s3-b")
 	if deletable {
 		t.Fatal("until_encoded original became deletable although derived copies exist only in s3-a")
 	}
@@ -2096,9 +1756,7 @@ SELECT EXISTS (
 		AttemptLimit:  10,
 		RowLimit:      10,
 	})
-	if err != nil {
-		t.Fatalf("listing missing encode profiles for s3-b: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing missing encode profiles for s3-b")
 	for _, row := range missing {
 		if row.RecordingID == recordingID && row.Profile == profile {
 			t.Fatalf("old-S3 encoded profile was queued for re-encode: %+v", row)
@@ -2106,15 +1764,11 @@ SELECT EXISTS (
 	}
 
 	rules, err := cfg.OriginalRulesJSON()
-	if err != nil {
-		t.Fatalf("encoding storage original rules: %v", err)
-	}
+	testutil.RequireNoError(t, err, "encoding storage original rules")
 	candidates, err := pgstore.NewMedia(pool, "", "s3-b").ListMediaAssetTransferCandidates(
 		context.Background(), rules, cfg.FSStoreNames(), cfg.Derived, 10, 100,
 	)
-	if err != nil {
-		t.Fatalf("listing derived transfer candidates for s3-b: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing derived transfer candidates for s3-b")
 	for _, candidate := range candidates {
 		if candidate.MediaAssetID == encodedID && candidate.SourceStore != "" {
 			t.Fatalf("encoded asset in s3-a has transfer source %q, want no FS source", candidate.SourceStore)
@@ -2140,23 +1794,15 @@ func TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap(t *testing.
 	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now().Add(-time.Hour), 10); err != nil || len(candidates) != 0 {
 		t.Fatalf("deletion candidates before overlap = %+v, %v; want none", candidates, err)
 	}
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID)
 	archiveCopyID := transferTestCopyID(t, pool, assetID, "archive")
-	if _, err := pool.Exec(context.Background(), `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, archiveCopyID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, archiveCopyID)
 	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10); err != nil || len(candidates) != 0 {
 		t.Fatalf("deletion candidates with desired copy marked missing = %+v, %v; want none", candidates, err)
 	}
-	if _, err := pool.Exec(context.Background(), `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, archiveCopyID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, archiveCopyID)
 	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "media.ListMediaAssetCopiesToDelete")
 	if len(candidates) != 1 || candidates[0].Store != "test-store" {
 		t.Fatalf("stale copy candidates = %+v, want only test-store", candidates)
 	}
@@ -2193,11 +1839,9 @@ func TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore(t *testin
 		t.Fatalf("marking copy with no desired store = %v, %v; want false, nil", marked, err)
 	}
 	var activeCopies int
-	if err := pool.QueryRow(context.Background(), `
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `
 SELECT count(*) FROM media_asset_copies
-WHERE media_asset_id = $1 AND state = 'active' AND store IN ('archive', 'cold')`, assetID).Scan(&activeCopies); err != nil {
-		t.Fatalf("counting surviving copies: %v", err)
-	}
+WHERE media_asset_id = $1 AND state = 'active' AND store IN ('archive', 'cold')`, assetID).Scan(&activeCopies), "counting surviving copies")
 	if activeCopies != 2 {
 		t.Fatalf("active copies after no-policy deletion = %d, want both copies retained", activeCopies)
 	}
@@ -2216,17 +1860,13 @@ func TestStorageTransferDeletionSerializesPolicySwitches(t *testing.T) {
 	newRules := mustOriginalRules(t, newConfig)
 	transferTestAddCopy(t, pool, assetID, "archive", "sites/default/policy-switch/source.ts")
 	transferTestAddCopy(t, pool, assetID, "cold", "sites/default/policy-switch/source.ts")
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID)
 	// 作成時刻を十分過去に固定し、DB と Go の時計差を除いて削除印の直列化を検証する。
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = '2000-01-01T00:00:00Z'::timestamptz WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE media_asset_copies SET created_at = '2000-01-01T00:00:00Z'::timestamptz WHERE media_asset_id = $1`, assetID)
 	archive := store.MediaAssetCopyDeleteCandidate{CopyID: transferTestCopyID(t, pool, assetID, "archive"), MediaAssetID: assetID, Store: "archive", RelPath: "sites/default/policy-switch/source.ts"}
 	cold := store.MediaAssetCopyDeleteCandidate{CopyID: transferTestCopyID(t, pool, assetID, "cold"), MediaAssetID: assetID, Store: "cold", RelPath: "sites/default/policy-switch/source.ts"}
 
-	if _, err := pool.Exec(context.Background(), `
+	testutil.MustExec(t, pool, "creating delete-race trigger function", `
 CREATE FUNCTION public.pause_storage_copy_delete_for_test() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -2235,15 +1875,11 @@ BEGIN
     END IF;
     RETURN NEW;
 END
-$$`); err != nil {
-		t.Fatalf("creating delete-race trigger function: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `
+$$`)
+	testutil.MustExec(t, pool, "creating delete-race trigger", `
 CREATE TRIGGER pause_storage_copy_delete_for_test
 BEFORE UPDATE OF state ON media_asset_copies
-FOR EACH ROW EXECUTE FUNCTION public.pause_storage_copy_delete_for_test()`); err != nil {
-		t.Fatalf("creating delete-race trigger: %v", err)
-	}
+FOR EACH ROW EXECUTE FUNCTION public.pause_storage_copy_delete_for_test()`)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS pause_storage_copy_delete_for_test ON media_asset_copies`)
 		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS public.pause_storage_copy_delete_for_test()`)
@@ -2291,9 +1927,7 @@ FOR EACH ROW EXECUTE FUNCTION public.pause_storage_copy_delete_for_test()`); err
 		t.Fatalf("deletion marks across old/new policies = %d, want exactly one", markedCount)
 	}
 	var activeCount int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active'`, assetID).Scan(&activeCount); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active'`, assetID).Scan(&activeCount), "pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active'`, assetID).Scan")
 	if activeCount != 1 {
 		t.Fatalf("active copies after concurrent policy switch = %d, want 1", activeCount)
 	}
@@ -2302,9 +1936,7 @@ FOR EACH ROW EXECUTE FUNCTION public.pause_storage_copy_delete_for_test()`); err
 func mustOriginalRules(t *testing.T, cfg config.StorageConfig) []byte {
 	t.Helper()
 	rules, err := cfg.OriginalRulesJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.OriginalRulesJSON")
 	return rules
 }
 
@@ -2320,33 +1952,23 @@ func TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch(t *testing.T)
 	content := []byte("encoded bytes streamed without a scratch copy")
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, content)
 	sum := sha256.Sum256(content)
-	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID)
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(blocker, nil, 0o644), "os.WriteFile")
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{
 		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: filepath.Join(blocker, "scratch"),
 	}
-	if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")
 	got, err := os.ReadFile(filepath.Join(roots["archive"], filepath.FromSlash(transferTestCopyRelPath(t, pool, assetID, "archive"))))
 	if err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("destination = %q, %v; want the source bytes", got, err)
 	}
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan")
 	if state != "active" {
 		t.Fatalf("destination copy state = %q, want active", state)
 	}
@@ -2380,21 +2002,15 @@ func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *t
 			content := []byte("encoded bytes that disagree with the logical row")
 			assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, content)
 			size, sum := tc.declare(content)
-			if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1, size_bytes = $2 WHERE id = $3", sum[:], size, assetID); err != nil {
-				t.Fatal(err)
-			}
+			testutil.MustExec(t, pool, "pool.Exec", "UPDATE media_assets SET sha256 = $1, size_bytes = $2 WHERE id = $3", sum[:], size, assetID)
 			cfg := transferTestConfig("archive", "archive", "test-store")
 			fingerprint, err := cfg.PolicyFingerprint()
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 			worker := StorageTransferWorker{
 				Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots,
 				ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 			}
-			if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err != nil {
-				t.Fatalf("Work: %v", err)
-			}
+			testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")
 			targetRelPath := transferTestLatestCopyRelPath(t, pool, assetID, "archive")
 			if targetRelPath != "" && fileExists(filepath.Join(roots["archive"], filepath.FromSlash(targetRelPath))) {
 				t.Fatal("a mismatched derived source created the destination key")
@@ -2404,9 +2020,7 @@ func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *t
 			}
 			// 原本が残っているので、不一致の source は再構築のために退役する（handleTransferMismatch）。
 			var sourceState string
-			if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, assetID).Scan(&sourceState); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, assetID).Scan(&sourceState), "pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, assetID).Scan")
 			if sourceState != "deleted" {
 				t.Fatalf("mismatched source copy state = %q, want deleted (treated as a source mismatch)", sourceState)
 			}
@@ -2437,9 +2051,7 @@ func TestTransferTempOrphanCleanupFollowsProgressGeneration(t *testing.T) {
 		if err != nil || !acquired || progress.WriterGeneration != want {
 			t.Fatalf("acquire #%d = (%+v, %t, %v), want generation %d", want, progress, acquired, err, want)
 		}
-		if err := media.ReleaseMediaAssetTransferProgress(ctx, transfer.CopyID, owner); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, media.ReleaseMediaAssetTransferProgress(ctx, transfer.CopyID, owner), "media.ReleaseMediaAssetTransferProgress")
 	}
 	const noProgressCopyID = 987654
 	type candidate struct {
@@ -2463,17 +2075,11 @@ func TestTransferTempOrphanCleanupFollowsProgressGeneration(t *testing.T) {
 		relPath := filepath.ToSlash(filepath.Join(filepath.Dir(filepath.FromSlash(transfer.RelPath)),
 			fmt.Sprintf("%s%d-%d-g%d", mediapath.StorageTransferTempFilePrefix, assetID, c.copyID, c.gen)))
 		path := filepath.Join(roots["archive"], filepath.FromSlash(relPath))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("partial"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "os.MkdirAll")
+		testutil.RequireNoError(t, os.WriteFile(path, []byte("partial"), 0o644), "os.WriteFile")
 		if c.aged {
 			old := time.Now().Add(-2 * time.Hour)
-			if err := os.Chtimes(path, old, old); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, os.Chtimes(path, old, old), "os.Chtimes")
 		}
 		candidates = append(candidates, candidate{relPath: relPath, aged: c.aged, keep: c.keep})
 	}

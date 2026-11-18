@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -67,28 +68,20 @@ func newS3DerivedFixture(t *testing.T) s3DerivedFixture {
 	content := bytes.Repeat([]byte("s3-derived-bytes-"), 20000)
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, content)
 	sum := sha256.Sum256(content)
-	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID); err != nil {
-		t.Fatalf("setting logical checksum: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting logical checksum", "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID)
 	cfg := s3TransferTestConfig()
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
 
 	sourceFS, err := fsstore.New(roots["test-store"])
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "fsstore.New")
 	cloudRoot := t.TempDir()
 	cloudFS, err := fsstore.New(cloudRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "fsstore.New")
 	objects := map[string]objstore.Store{
 		"test-store": &fakeResumableStore{Store: sourceFS},
 		"cloud":      &fakeResumableStore{Store: cloudFS},
@@ -112,9 +105,7 @@ func (f s3DerivedFixture) cloudCopyState(t *testing.T) string {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ""
 	}
-	if err != nil {
-		t.Fatalf("reading cloud copy state: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading cloud copy state")
 	return state
 }
 
@@ -188,9 +179,7 @@ func TestStorageTransferReconcileRoutesS3CopiesToSourceQueue(t *testing.T) {
 	cfg.Originals = []config.OriginalStoreRule{{Store: "archive"}}
 	enqueuer := newRecordingEnqueuer()
 	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg}
-	if err := reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
-		t.Fatalf("reconcile Work: %v", err)
-	}
+	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
 	var fsJobs, s3Jobs []jobs.StorageTransferArgs
 	for _, a := range enqueuer.Enqueued("storage_transfer") {
 		got, ok := a.(jobs.StorageTransferArgs)
@@ -221,18 +210,15 @@ func TestStorageTransferReconcileRoutesS3CopiesToSourceQueue(t *testing.T) {
 // 掃除の判定が消さないことを確かめる。派生物の宛先は p_derived_store で判定される。
 func TestStorageTransferS3PendingReservationIsNotObsolete(t *testing.T) {
 	f := newS3DerivedFixture(t)
-	if _, err := f.pool.Exec(context.Background(), `
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
-SELECT a.id, 'cloud', a.id::text || '.mp4', a.derived_generation, 'pending'
-FROM media_assets a WHERE a.id = $1`, f.assetID); err != nil {
-		t.Fatalf("inserting pending S3 reservation: %v", err)
-	}
+	dbtest.MediaAssetCopy(t, f.pool, f.assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.Store = "cloud"
+		p.RelPath = fmt.Sprintf("%d.mp4", f.assetID)
+		p.State = "pending"
+	})
 	rules := mustOriginalRules(t, f.cfg)
 	cloud := pgstore.NewMedia(f.pool, "cloud", "")
 	obsolete, err := cloud.ListObsoletePendingMediaAssetTransferCopies(context.Background(), rules, f.cfg.FSStoreNames(), f.cfg.Derived, 10)
-	if err != nil {
-		t.Fatalf("listing obsolete pending copies: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing obsolete pending copies")
 	if len(obsolete) != 0 {
 		t.Fatalf("obsolete pending copies = %+v, want none for a current S3 derived reservation", obsolete)
 	}
@@ -280,12 +266,8 @@ func TestExistingTransferredObjectUsesHeadSHA256(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fs, err := fsstore.New(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := fs.Put(ctx, "encoded/head.mp4", strings.NewReader(string(content)), int64(len(content)), digest, "video/mp4"); err != nil {
-				t.Fatalf("seeding object: %v", err)
-			}
+			testutil.RequireNoError(t, err, "fsstore.New")
+			testutil.RequireNoError(t, fs.Put(ctx, "encoded/head.mp4", strings.NewReader(string(content)), int64(len(content)), digest, "video/mp4"), "seeding object")
 			objects := &headSHAStore{Store: fs, sha: tt.headSHA}
 			exists, err := existingTransferredObjectMatches(ctx, objects, "encoded/head.mp4", digest[:], int64(len(content)), false)
 			if tt.wantErr != nil {
@@ -312,9 +294,7 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	f.worker.Config.Transfer.Bandwidth = nil
 	enqueuer := newRecordingEnqueuer()
 	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMedia(f.pool, "test-store", ""), Config: f.cfg}
-	if err := reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}); err != nil {
-		t.Fatalf("reconcile Work: %v", err)
-	}
+	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
 	queued := enqueuer.Enqueued("storage_transfer")
 	if len(queued) != 1 {
 		t.Fatalf("enqueued storage_transfer jobs = %d, want 1", len(queued))
@@ -327,9 +307,7 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	f.driveToEnd(t)
 
 	// S3 のコピーが overlap の期間を過ぎてから、FS の旧いコピーの配置の削除を走らせる。
-	if _, err := f.pool.Exec(context.Background(), `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, f.pool, "f.pool.Exec", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID)
 	media := pgstore.NewMedia(f.pool, "test-store", "")
 	deleter := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: f.cfg,
@@ -337,13 +315,9 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 		MediaDir: f.root, StorageObjects: testStorageObjects(t, "test-store", f.root), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 		DerivedObjects: f.worker.ObjectStores["cloud"],
 	}
-	if err := deleter.Work(context.Background(), jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, deleter.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	var fsState string
-	if err := f.pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, f.assetID).Scan(&fsState); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, f.assetID).Scan(&fsState), "f.pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, f.assetID).Scan")
 	if fsState != "deleted" {
 		t.Fatalf("FS derived copy state = %q, want deleted once the S3 copy is active", fsState)
 	}
