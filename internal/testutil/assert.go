@@ -1,7 +1,6 @@
 package testutil
 
 import (
-	"context"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,7 +19,7 @@ func RequireNoError(t testing.TB, err error, what string) {
 // テストのフィクスチャを SQL で直接作る・書き換えるときに使う。
 func MustExec(t testing.TB, pool *pgxpool.Pool, what, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(t.Context(), sql, args...); err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
 }

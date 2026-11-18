@@ -50,12 +50,12 @@ func removeMediaAsset(t *testing.T, pool *pgxpool.Pool, assetID int64) {
 	testutil.MustExec(t, pool, "removing media asset", `DELETE FROM media_assets WHERE id = $1`, assetID)
 }
 
-// untilEncodedOriginals は until_encoded_deletable_originals を呼び、録画 recordingID について
-// 返った asset_id を返す。desiredStore が nil なら NULL を渡す。
-func untilEncodedOriginals(t *testing.T, pool *pgxpool.Pool, recordingID int64, desiredStore *string) []int64 {
+// untilEncodedOriginals は until_encoded_deletable_originals の全件の asset_id を、昇順で返す。
+// desiredStore が nil なら NULL を渡す。録画で絞らないので、データベース内の全録画が対象になる。
+func untilEncodedOriginals(t *testing.T, pool *pgxpool.Pool, desiredStore *string) []int64 {
 	t.Helper()
 	rows, err := pool.Query(t.Context(),
-		`SELECT asset_id FROM until_encoded_deletable_originals($1) WHERE recording_id = $2`, desiredStore, recordingID)
+		`SELECT asset_id FROM until_encoded_deletable_originals($1) ORDER BY asset_id`, desiredStore)
 	testutil.RequireNoError(t, err, "querying until_encoded_deletable_originals")
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
 	testutil.RequireNoError(t, err, "collecting until_encoded_deletable_originals")
@@ -64,8 +64,10 @@ func untilEncodedOriginals(t *testing.T, pool *pgxpool.Pool, recordingID int64, 
 
 // TestUntilEncodedDeletableOriginals は、原本を until_encoded で削除してよいかの判定
 // （SQL 関数 until_encoded_deletable_originals）を、条件 1 つずつの表で固定する。
-// 各ケースは完備な録画から条件を 1 つ崩し、返る原本の集合を見る。
-// 1 件目の完備な録画が返ることも毎回確かめるので、崩す条件以外で空になる変異も検出する。
+// 各ケースは完備な録画（対象）から条件を 1 つ崩し、返る原本の全件を見る。
+// 同じ状態の対照録画（崩さない）を別に 1 件作り、それは毎回返ることを確かめる。
+// 対照が返らなければ、関数そのものが空を返す変異（対象だけ崩れて見える）を見分けられないので、
+// 対象の不在だけで通る偽の合格を防ぐ。
 func TestUntilEncodedDeletableOriginals(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -99,7 +101,7 @@ func TestUntilEncodedDeletableOriginals(t *testing.T) {
 			removeMediaAsset(t, pool, f.tilesID)
 		}},
 		{name: "empty encode profiles do not qualify", mutate: func(t *testing.T, pool *pgxpool.Pool, f untilEncodedFixture) {
-			// 旧判定は「欠けたプロファイルが無い」と恒真になり、原本を消していた（issue #104）。
+			// 旧判定は「欠けたプロファイルが無い」と恒真になり、原本を消していた。
 			// CHECK 制約は通常これを阻むので、外してから作る。
 			testutil.MustExec(t, pool, "dropping processing policy check",
 				`ALTER TABLE recording_processing_policy DROP CONSTRAINT recording_processing_policy_check`)
@@ -177,6 +179,7 @@ func TestUntilEncodedDeletableOriginals(t *testing.T) {
 			t.Parallel()
 			pool := testutil.SetupDB(t)
 			f := seedUntilEncodedComplete(t, pool)
+			control := seedUntilEncodedComplete(t, pool)
 			if tc.mutate != nil {
 				tc.mutate(t, pool, f)
 			}
@@ -185,13 +188,19 @@ func TestUntilEncodedDeletableOriginals(t *testing.T) {
 				s := dbtest.StoreName
 				store = &s
 			}
-			got := untilEncodedOriginals(t, pool, f.recordingID, store)
-			var want []int64
-			if tc.want {
-				want = []int64{f.originalID}
+			got := untilEncodedOriginals(t, pool, store)
+			// 対照は崩していないので、NULL の置き場以外では必ず返る。
+			want := []int64{}
+			if !tc.nullStore {
+				want = append(want, control.originalID)
+				if tc.want {
+					want = append(want, f.originalID)
+				}
 			}
+			slices.Sort(want)
 			if !slices.Equal(got, want) {
-				t.Fatalf("until_encoded_deletable_originals returned %v for recording %d, want %v", got, f.recordingID, want)
+				t.Fatalf("until_encoded_deletable_originals returned %v, want %v (control recording %d, case recording %d)",
+					got, want, control.recordingID, f.recordingID)
 			}
 		})
 	}
