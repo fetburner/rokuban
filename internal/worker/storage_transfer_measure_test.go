@@ -122,9 +122,7 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], source)
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expected[:], assetID); err != nil {
-		t.Fatalf("setting logical checksum: %v", err)
-	}
+	testutil.MustExec(t, pool, "setting logical checksum", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expected[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	media := pgstore.NewMedia(pool, "test-store", "")
@@ -133,16 +131,10 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
 	destinationPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(destinationPath, destination, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(destinationPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(destinationPath, destination, 0o644), "os.WriteFile")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
@@ -181,9 +173,7 @@ func (f adoptVerifyFixture) drivePastVerification(t *testing.T, wantDuring int) 
 func (f adoptVerifyFixture) sourceBytes(t *testing.T) []byte {
 	t.Helper()
 	got, err := os.ReadFile(filepath.Join(f.roots["test-store"], filepath.FromSlash(adoptVerifyRelPath)))
-	if err != nil {
-		t.Fatalf("reading source: %v", err)
-	}
+	testutil.RequireNoError(t, err, "reading source")
 	return got
 }
 
@@ -236,9 +226,7 @@ func TestStorageTransferWorkerCountsVerifiedFailureAtAttemptLimitEdge(t *testing
 		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
 	for range storageTransferAttemptLimit - 1 {
-		if err := f.media.RecordMediaAssetTransferFailure(ctx, transfer.CopyID, "earlier attempt"); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, f.media.RecordMediaAssetTransferFailure(ctx, transfer.CopyID, "earlier attempt"), "f.media.RecordMediaAssetTransferFailure")
 	}
 	snoozes := f.drivePastVerification(t, int(storageTransferAttemptLimit)-1)
 	if snoozes < 2 {
@@ -266,16 +254,10 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
 	destinationPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(destinationPath, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(destinationPath), 0o755), "os.MkdirAll")
+	testutil.RequireNoError(t, os.WriteFile(destinationPath, content, 0o644), "os.WriteFile")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
@@ -320,9 +302,7 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 func transferTestCopyState(t *testing.T, pool *pgxpool.Pool, assetID int64) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state); err != nil {
-		t.Fatalf("reading archive copy state: %v", err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&state), "reading archive copy state")
 	return state
 }
 
@@ -410,15 +390,11 @@ func TestStorageTransferWorkerResumesSourceVerificationAfterHandoff(t *testing.T
 			wantRange := fmt.Sprintf("bytes=%d-", row.offset)
 			if tc.uncleanHandoff {
 				// 持ち主が保存せずに止まった（lease だけが切れた）。次の試行は先頭から読み直す。
-				if _, err := f.pool.Exec(ctx, `
-UPDATE media_asset_copy_transfer_progress SET handed_off = false, lease_expires_at = now() - interval '1 minute' WHERE copy_id = $1`, copyID); err != nil {
-					t.Fatalf("expiring verification lease: %v", err)
-				}
+				testutil.MustExec(t, f.pool, "expiring verification lease", `
+UPDATE media_asset_copy_transfer_progress SET handed_off = false, lease_expires_at = now() - interval '1 minute' WHERE copy_id = $1`, copyID)
 				wantRange = ""
 			}
-			if err := worker.Work(ctx, f.args()); err != nil {
-				t.Fatalf("verification Work after the handoff: %v", err)
-			}
+			testutil.RequireNoError(t, worker.Work(ctx, f.args()), "verification Work after the handoff")
 			ranges = f.streamer.seenRanges()
 			if got := ranges[len(ranges)-1]; got != wantRange {
 				t.Fatalf("verification request after the handoff had Range %q, want %q", got, wantRange)
@@ -489,9 +465,7 @@ func TestStorageTransferWorkerDoesNotRecordSHA256AfterGenerationChanges(t *testi
 	// 測定を 1 Work に収める。帯域制限を外すので、設定を作り直して fingerprint も合わせる。
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	restore := storageTransferSlice
 	storageTransferSlice = time.Minute
 	t.Cleanup(func() { storageTransferSlice = restore })
@@ -530,9 +504,7 @@ func progressUploadStore(t *testing.T, pool *pgxpool.Pool, copyID int64) *string
 func (f derivedResumeFixture) scratchEntries(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(f.worker.ScratchDir)
-	if err != nil {
-		t.Fatalf("listing scratch: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing scratch")
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		names = append(names, e.Name())

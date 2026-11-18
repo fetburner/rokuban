@@ -748,9 +748,8 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 	}
 
 	// ここでユーザーがごみ箱から復元する。
-	if _, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID); err != nil {
-		t.Fatalf("restoring recording: %v", err)
-	}
+	_, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID)
+	testutil.RequireNoError(t, err, "restoring recording")
 	testutil.RequireNoError(t, os.Remove(blockerFile), "removing blocker file")
 	rec.reset()
 
@@ -818,9 +817,8 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// ここでユーザーがごみ箱から復元する。
-	if _, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID); err != nil {
-		t.Fatalf("restoring recording: %v", err)
-	}
+	_, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID)
+	testutil.RequireNoError(t, err, "restoring recording")
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
@@ -1032,7 +1030,10 @@ func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 		t.Fatal("expected a CHECK violation for until_encoded with empty encode_profiles, got no error")
 	}
 
-	testutil.MustExec(t, pool, "expected until_encoded with a non-empty profile list to be allowed, got error", "INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', $2)", recordingID, []string{"h264"})
+	dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) {
+		p.KeepOriginal = "until_encoded"
+		p.EncodeProfiles = []string{"h264"}
+	})
 }
 
 // untilEncodedRecording は until_encoded の判定の入力になる録画 1 件の資産 ID と、原本のパス。
@@ -2447,9 +2448,8 @@ func TestDeleteReconcileWorker_MissingAssetAfterDerivedStoreSwitchChecksFilesyst
 		w.DerivedObjects = testFilesystemObjectStore(t, t.TempDir())
 		w.DerivedObjectStoreName = objectStoreName
 	})
-	if _, err := worker.reconcileMissingAssets(context.Background(), seenOnDisk); err != nil {
-		t.Fatalf("reconciling missing assets after derived-store switch: %v", err)
-	}
+	_, err := worker.reconcileMissingAssets(context.Background(), seenOnDisk)
+	testutil.RequireNoError(t, err, "reconciling missing assets after derived-store switch")
 	var missingCount int
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM missing_media_assets m JOIN media_asset_copies c ON c.id = m.media_asset_copy_id WHERE c.media_asset_id = $1", assetID).Scan(&missingCount), "querying missing_media_assets")

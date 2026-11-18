@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // 転送の帯域上限は転送元の置き場ごとに掛かり、上限の無い置き場は絞られない。
@@ -39,9 +40,7 @@ func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reader, err := w.transferSourceReader(context.Background(), tc.sourceStore, bytes.NewReader(make([]byte, 4000)))
-			if err != nil {
-				t.Fatalf("transferSourceReader: %v", err)
-			}
+			testutil.RequireNoError(t, err, "transferSourceReader")
 			if tc.sourceStore == "central" {
 				if _, ok := reader.(*storageTransferContextReader); !ok {
 					t.Fatalf("central reader = %T, want context reader without rate limit", reader)
@@ -50,9 +49,7 @@ func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
 			start := time.Now()
 			copied, err := io.Copy(io.Discard, reader)
 			elapsed := time.Since(start)
-			if err != nil {
-				t.Fatalf("copying through transferSourceReader: %v", err)
-			}
+			testutil.RequireNoError(t, err, "copying through transferSourceReader")
 			if copied != 4000 {
 				t.Fatalf("copied %d bytes, want 4000", copied)
 			}
@@ -94,12 +91,9 @@ func TestTransferSourceReaderDoesNotCatchUpAfterStall(t *testing.T) {
 	}}}
 	src := &stallingReader{src: bytes.NewReader(make([]byte, 4100)), chunk: 400, stall: 1200 * time.Millisecond}
 	reader, err := w.transferSourceReader(context.Background(), "edge", src)
-	if err != nil {
-		t.Fatalf("transferSourceReader: %v", err)
-	}
-	if _, err := io.Copy(io.Discard, reader); err != nil {
-		t.Fatalf("copying through transferSourceReader: %v", err)
-	}
+	testutil.RequireNoError(t, err, "transferSourceReader")
+	_, err = io.Copy(io.Discard, reader)
+	testutil.RequireNoError(t, err, "copying through transferSourceReader")
 	// 止まりが明けた後の 4000 バイトのうち、最初の 400 バイトは直ちに返ってよい。残り 3600 バイトは 8KBps で約 450ms かかる。
 	if after := time.Since(src.resumed); after < 350*time.Millisecond {
 		t.Fatalf("reading after the stall took %v, want at least 350ms under the 8KBps limit", after)

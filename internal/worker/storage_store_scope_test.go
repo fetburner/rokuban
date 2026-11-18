@@ -41,9 +41,7 @@ func TestDeleteReconcileAuditIsScopedToMountedStore(t *testing.T) {
 	worker.OrphanMTimeGrace = time.Hour
 	worker.OrphanAge = 24 * time.Hour
 	worker.MissingAssetAge = 24 * time.Hour
-	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work(): %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(ctx, jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work()")
 
 	if got := countStoreOrphan(t, pool, storeA, sharedRelPath); got != 1 {
 		t.Errorf("store-a orphan observation for a path copied only in store-b = %d, want 1", got)
@@ -83,27 +81,21 @@ func TestDeleteReconcileBreakerIsScopedToMountedStore(t *testing.T) {
 	}
 
 	breakers := pgstoretest.Breakers(pool)
-	if err := breaker.Trip(ctx, breakers, storeA, breaker.DeleteReconcile, 1, breaker.Sample{Total: 1}); err != nil {
-		t.Fatalf("tripping store-a delete breaker: %v", err)
-	}
+	testutil.RequireNoError(t, breaker.Trip(ctx, breakers, storeA, breaker.DeleteReconcile, 1, breaker.Sample{Total: 1}), "tripping store-a delete breaker")
 	workerA := buildDeleteReconcileWorker(t, pool, rootA, scopedToStore(pool, storeA, rootA))
 	workerB := buildDeleteReconcileWorker(t, pool, rootB, scopedToStore(pool, storeB, rootB))
 	for _, worker := range []*DeleteReconcileWorker{workerA, workerB} {
 		worker.TrashRetention = time.Hour
 		worker.MaxDeletesPerPass = 10
 	}
-	if err := workerA.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("store-a DeleteReconcileWorker.Work(): %v", err)
-	}
+	testutil.RequireNoError(t, workerA.Work(ctx, jobs.DeleteReconcileArgs{}), "store-a DeleteReconcileWorker.Work()")
 	if got := storeCopyState(t, pool, storeA, assetA); got != "active" {
 		t.Errorf("store-a copy state with store-a breaker tripped = %q, want active", got)
 	}
 	if _, err := os.Stat(filepath.Join(rootA, filepath.FromSlash(pathA))); err != nil {
 		t.Errorf("store-a file after its breaker stopped deletion: %v", err)
 	}
-	if err := workerB.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("store-b DeleteReconcileWorker.Work(): %v", err)
-	}
+	testutil.RequireNoError(t, workerB.Work(ctx, jobs.DeleteReconcileArgs{}), "store-b DeleteReconcileWorker.Work()")
 	if got := storeCopyState(t, pool, storeB, assetB); got != "deleted" {
 		t.Errorf("store-b copy state while store-a breaker is tripped = %q, want deleted", got)
 	}
@@ -126,12 +118,8 @@ func TestDeleteReconcileBreakerIsScopedToMountedStore(t *testing.T) {
 		t.Errorf("store-b breaker = (%t, %v), want (false, nil)", tripped, err)
 	}
 
-	if err := breakers.Resume(ctx, storeA, breaker.DeleteReconcile); err != nil {
-		t.Fatalf("resuming store-a breaker: %v", err)
-	}
-	if err := workerA.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("store-a DeleteReconcileWorker.Work() after resume: %v", err)
-	}
+	testutil.RequireNoError(t, breakers.Resume(ctx, storeA, breaker.DeleteReconcile), "resuming store-a breaker")
+	testutil.RequireNoError(t, workerA.Work(ctx, jobs.DeleteReconcileArgs{}), "store-a DeleteReconcileWorker.Work() after resume")
 	if got := storeCopyState(t, pool, storeA, assetA); got != "deleted" {
 		t.Errorf("store-a copy state after resume = %q, want deleted", got)
 	}

@@ -127,16 +127,12 @@ func newDerivedResumeFixtureWithSHA(t *testing.T, knownSHA bool) derivedResumeFi
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, content)
 	if knownSHA {
 		sum := sha256.Sum256(content)
-		if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID); err != nil {
-			t.Fatalf("setting logical checksum: %v", err)
-		}
+		testutil.MustExec(t, pool, "setting logical checksum", "UPDATE media_assets SET sha256 = $1 WHERE id = $2", sum[:], assetID)
 	}
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	fingerprint, err := cfg.PolicyFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
@@ -182,9 +178,7 @@ func (f derivedResumeFixture) copyID(t *testing.T) int64 {
 func (f derivedResumeFixture) copyState(t *testing.T) string {
 	t.Helper()
 	var state string
-	if err := f.pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, f.assetID).Scan(&state); err != nil {
-		t.Fatalf("reading archive copy state: %v", err)
-	}
+	testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, f.assetID).Scan(&state), "reading archive copy state")
 	return state
 }
 
@@ -192,9 +186,7 @@ func (f derivedResumeFixture) copyState(t *testing.T) string {
 func (f derivedResumeFixture) stagingFiles(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Dir(filepath.Join(f.roots["archive"], filepath.FromSlash(f.relPath))))
-	if err != nil {
-		t.Fatalf("listing destination directory: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing destination directory")
 	var names []string
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), mediapath.GeneratedAssetTempFilePrefix) {
@@ -207,29 +199,23 @@ func (f derivedResumeFixture) stagingFiles(t *testing.T) []string {
 func (f derivedResumeFixture) abandonedCount(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_abandoned_uploads WHERE store = 'archive'`).Scan(&n); err != nil {
-		t.Fatalf("counting abandoned uploads: %v", err)
-	}
+	testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_transfer_abandoned_uploads WHERE store = 'archive'`).Scan(&n), "counting abandoned uploads")
 	return n
 }
 
 func (f derivedResumeFixture) attemptCount(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := f.pool.QueryRow(context.Background(), `SELECT COALESCE((SELECT attempt_count FROM media_asset_transfer_attempts WHERE copy_id = $1), 0)`, f.copyID(t)).Scan(&n); err != nil {
-		t.Fatalf("counting transfer attempts: %v", err)
-	}
+	testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT COALESCE((SELECT attempt_count FROM media_asset_transfer_attempts WHERE copy_id = $1), 0)`, f.copyID(t)).Scan(&n), "counting transfer attempts")
 	return n
 }
 
 // expireLease は、前の試行が保存せずに抜けた（lease だけが切れた）状態にする。期限は DB の now() で比べる。
 func (f derivedResumeFixture) expireLease(t *testing.T) {
 	t.Helper()
-	if _, err := f.pool.Exec(context.Background(), `
+	testutil.MustExec(t, f.pool, "expiring transfer lease", `
 UPDATE media_asset_copy_transfer_progress SET handed_off = false, lease_expires_at = now() - interval '1 minute'
-WHERE copy_id = $1`, f.copyID(t)); err != nil {
-		t.Fatalf("expiring transfer lease: %v", err)
-	}
+WHERE copy_id = $1`, f.copyID(t))
 }
 
 // driveToEnd は Work を繰り返し、コピーが active になるまで進める。途中の snooze は slice の期限だけを許す。
@@ -496,9 +482,7 @@ func TestStorageTransferWorkerRestartsAfterSourceLengthMismatch(t *testing.T) {
 
 	// 宣言より 1 バイト長い転送元にする。送信は宣言の長さを超えたところで ErrChecksumMismatch になる。
 	sourcePath := filepath.Join(f.roots["test-store"], filepath.FromSlash(f.relPath))
-	if err := os.WriteFile(sourcePath, append(bytes.Clone(f.content), '!'), 0o644); err != nil {
-		t.Fatalf("lengthening the source: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(sourcePath, append(bytes.Clone(f.content), '!'), 0o644), "lengthening the source")
 	var prev []byte
 	var err error
 	for range 300 {
@@ -522,9 +506,7 @@ func TestStorageTransferWorkerRestartsAfterSourceLengthMismatch(t *testing.T) {
 	}
 
 	// 転送元を正しい長さに戻す。次の試行は保存された状態から続かず、新しいアップロードを始める。
-	if err := os.WriteFile(sourcePath, f.content, 0o644); err != nil {
-		t.Fatalf("restoring the source: %v", err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(sourcePath, f.content, 0o644), "restoring the source")
 	requireSliceSnooze(t, f.work(t), "next attempt")
 	if after := uploadStateOf(t, f); bytes.Equal(after, prev) {
 		t.Fatal("the next attempt continued the previous upload state; want a new upload")
@@ -569,9 +551,7 @@ func (f derivedResumeFixture) driveToDone(t *testing.T) {
 func (f derivedResumeFixture) copyRelPath(t *testing.T) string {
 	t.Helper()
 	var relPath string
-	if err := f.pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies WHERE id = $1`, f.copyID(t)).Scan(&relPath); err != nil {
-		t.Fatalf("reading copy rel_path: %v", err)
-	}
+	testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `SELECT rel_path FROM media_asset_copies WHERE id = $1`, f.copyID(t)).Scan(&relPath), "reading copy rel_path")
 	return relPath
 }
 
@@ -579,9 +559,7 @@ func (f derivedResumeFixture) copyRelPath(t *testing.T) string {
 func (f derivedResumeFixture) subtitleRelPath(t *testing.T) string {
 	t.Helper()
 	sub, err := mediapath.SubtitleSibling(f.copyRelPath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 	return sub
 }
 
@@ -589,12 +567,8 @@ func (f derivedResumeFixture) subtitleRelPath(t *testing.T) string {
 func (f derivedResumeFixture) writeSourceSubtitle(t *testing.T, captions []byte) {
 	t.Helper()
 	sub, err := mediapath.SubtitleSibling(f.relPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(f.roots["test-store"], filepath.FromSlash(sub)), captions, 0o644); err != nil {
-		t.Fatalf("writing source subtitle: %v", err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(f.roots["test-store"], filepath.FromSlash(sub)), captions, 0o644), "writing source subtitle")
 }
 
 // TestStorageTransferWorkerKeepsDerivedMainWhenAnotherAttemptActivatedCopy は、遅れて再開した試行が
