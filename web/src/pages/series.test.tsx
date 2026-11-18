@@ -10,71 +10,8 @@ import type { LabelRule, LabelRuleInput, RecordingShelf } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { SeriesPage } from '@/pages/series'
 import { routeTree } from '@/routes'
+import { type ApiRoutes, jsonResponse, stubApi } from '@/test/api-stub'
 import { renderInRouter } from '@/test/router'
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
-}
-
-function stubApi(shelves: RecordingShelf[], rules: LabelRule[] = []) {
-  let labelRuleState = [...rules]
-  const posted: LabelRuleInput[] = []
-  const patched: { id: number; body: LabelRuleInput }[] = []
-  const deleted: number[] = []
-  let labelRulesReadCount = 0
-  globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input), 'http://localhost')
-    const method = init?.method ?? 'GET'
-    if (url.pathname === '/api/recording-shelves' && method === 'GET') {
-      return Promise.resolve(jsonResponse(shelves))
-    }
-    // 絞り込みパネル（RecordingFilters）の選択肢。
-    if (url.pathname === '/api/sites' && method === 'GET') return Promise.resolve(jsonResponse([]))
-    if (url.pathname === '/api/rules' && method === 'GET') return Promise.resolve(jsonResponse([]))
-    if (url.pathname === '/api/label-rules' && method === 'GET') {
-      labelRulesReadCount += 1
-      return Promise.resolve(jsonResponse(labelRuleState))
-    }
-    if (url.pathname === '/api/label-rules' && method === 'POST') {
-      const body = JSON.parse(String(init?.body)) as LabelRuleInput
-      posted.push(body)
-      const created = labelRule(
-        99,
-        body.keyword,
-        body.value,
-        body.value.split(' ')[0] ?? body.value,
-        body.priority,
-      )
-      labelRuleState = [...labelRuleState, created]
-      return Promise.resolve(jsonResponse(created, 201))
-    }
-    if (url.pathname === '/api/label-rule-value-key' && method === 'GET') {
-      return Promise.resolve(
-        jsonResponse({ valueKey: (url.searchParams.get('value') ?? '').split(' ')[0] }),
-      )
-    }
-    const match = /^\/api\/label-rules\/(\d+)$/.exec(url.pathname)
-    if (match && method === 'PATCH') {
-      const id = Number(match[1])
-      const body = JSON.parse(String(init?.body)) as LabelRuleInput
-      patched.push({ id, body })
-      const updated = labelRule(id, body.keyword, body.value, body.value, body.priority)
-      labelRuleState = labelRuleState.map((rule) => (rule.id === id ? updated : rule))
-      return Promise.resolve(jsonResponse(updated))
-    }
-    if (match && method === 'DELETE') {
-      const id = Number(match[1])
-      deleted.push(id)
-      labelRuleState = labelRuleState.filter((rule) => rule.id !== id)
-      return Promise.resolve(new Response(null, { status: 204 }))
-    }
-    throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
-  }) as unknown as typeof fetch
-  return { posted, patched, deleted, labelRulesReadCount: () => labelRulesReadCount }
-}
 
 function labelRule(
   id: number,
@@ -133,6 +70,17 @@ const rule: LabelRule = {
   updatedAt: '2026-01-01T00:00:00Z',
 }
 
+/**
+ * seriesRoutes は、このファイルの大半のテストが共通に使う応答。
+ * 値の正規化（最初の空白で切る）はこの画面のテスト用の近似で、サーバーの規則そのものではない。
+ */
+const seriesRoutes = {
+  'GET /api/recording-shelves': shelves,
+  'GET /api/label-rule-value-key': ({ url }) => ({
+    valueKey: (url.searchParams.get('value') ?? '').split(' ')[0] ?? '',
+  }),
+} satisfies ApiRoutes
+
 afterEach(() => {
   vi.restoreAllMocks()
   localStorage.clear()
@@ -140,7 +88,7 @@ afterEach(() => {
 
 describe('SeriesPage', () => {
   it('件数 1 と見られる件数 0 の棚も表示し、NULL の棚だけを除外する', async () => {
-    stubApi(shelves)
+    stubApi(seriesRoutes)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -153,7 +101,7 @@ describe('SeriesPage', () => {
   })
 
   it('タイル全体を代表録画の番組ハブへリンクする', async () => {
-    stubApi(shelves)
+    stubApi(seriesRoutes)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -165,7 +113,7 @@ describe('SeriesPage', () => {
   })
 
   it('サムネイルは棚が返した thumbnailUrl をそのまま使う', async () => {
-    stubApi(shelves)
+    stubApi(seriesRoutes)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -176,11 +124,14 @@ describe('SeriesPage', () => {
   it('既定は新着順で、件数順・名前順へ切り替えられる（先頭が 3 通りとも異なる）', async () => {
     const user = userEvent.setup()
     // 名前順の先頭 = アニメA、件数順の先頭 = ドラマB、新着順の先頭 = バラエティC。
-    stubApi([
-      shelf('ドラマB', 'ドラマ　B　第1話', 50, 50, '2026-01-02T00:00:00Z', 21),
-      shelf('バラエティC', 'バラエティ　C', 10, 10, '2026-01-09T00:00:00Z', 22),
-      shelf('アニメA', 'アニメ　A　第1話', 3, 3, '2026-01-01T00:00:00Z', 23),
-    ])
+    stubApi({
+      ...seriesRoutes,
+      'GET /api/recording-shelves': [
+        shelf('ドラマB', 'ドラマ　B　第1話', 50, 50, '2026-01-02T00:00:00Z', 21),
+        shelf('バラエティC', 'バラエティ　C', 10, 10, '2026-01-09T00:00:00Z', 22),
+        shelf('アニメA', 'アニメ　A　第1話', 3, 3, '2026-01-01T00:00:00Z', 23),
+      ],
+    })
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -199,7 +150,10 @@ describe('SeriesPage', () => {
   })
 
   it('分類ルールの valueKey と一致する棚にだけ手動の札を付ける', async () => {
-    stubApi(shelves, [rule])
+    stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': [rule],
+    })
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -210,7 +164,10 @@ describe('SeriesPage', () => {
 
   it('valueKey が一致する棚に札を付け、名前に分類ルールの生の値を出さない', async () => {
     // 値 `NHK高校講座 数学I` は正規化で棚 `NHK高校講座` に落ちる（value !== valueKey）。
-    stubApi(shelves, [{ ...rule, value: 'NHK高校講座 数学I', valueKey: 'NHK高校講座' }])
+    stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': [{ ...rule, value: 'NHK高校講座 数学I', valueKey: 'NHK高校講座' }],
+    })
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -222,26 +179,28 @@ describe('SeriesPage', () => {
   })
 
   it('棚の value と等しいだけで valueKey が違うルールには札を付けない', async () => {
-    stubApi(shelves, [{ ...rule, value: 'NHK高校講座', valueKey: '別のキー' }])
+    stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': [{ ...rule, value: 'NHK高校講座', valueKey: '別のキー' }],
+    })
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
     const link = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
-    // ルールの取得が終わってから否定を確かめる。
-    await waitFor(() =>
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/label-rules'),
-        expect.anything(),
-      ),
-    )
+    // fetch が呼ばれただけではルールはまだ描かれていない。描かれてから否定を確かめる。
+    const manager = within(content).getByRole('region', { name: 'シリーズ分類' })
+    await within(manager).findByText('「日本史」→ NHK高校講座')
     expect(link).not.toHaveTextContent('手動')
   })
 
   it('分類ルールの管理を棚の後ろに置き、一覧を API の順で表示する', async () => {
-    stubApi(shelves, [
-      labelRule(1, '日本史', '日本史', '日本史', 5),
-      labelRule(2, '数学', '数学', '数学'),
-    ])
+    stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': [
+        labelRule(1, '日本史', '日本史', '日本史', 5),
+        labelRule(2, '数学', '数学', '数学'),
+      ],
+    })
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -257,7 +216,10 @@ describe('SeriesPage', () => {
   })
 
   it('分類ルールの取得に失敗したら、エラーを 1 か所だけ示して手動バッジを出さない', async () => {
-    stubApi(shelves, [labelRule(1, '作品X', '作品X', '作品X')])
+    stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': [labelRule(1, '作品X', '作品X', '作品X')],
+    })
     const base = globalThis.fetch
     globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), 'http://localhost')
@@ -278,7 +240,17 @@ describe('SeriesPage', () => {
 
   it('作成後に一覧と同じ label_rules クエリが更新され、棚の手動バッジも付く', async () => {
     const user = userEvent.setup()
-    const api = stubApi(shelves)
+    let rules: LabelRule[] = []
+    const api = stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': () => rules,
+      'POST /api/label-rules': ({ body }) => {
+        const input = body as LabelRuleInput
+        const created = labelRule(99, input.keyword, input.value, input.value, input.priority)
+        rules = [...rules, created]
+        return created
+      },
+    })
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -290,16 +262,20 @@ describe('SeriesPage', () => {
     await user.click(within(dialog).getByRole('button', { name: '作成' }))
 
     await waitFor(() => {
-      expect(api.posted).toEqual([{ keyword: '作品X', value: '作品X', priority: 0 }])
+      expect(api.calls.filter((c) => c.method === 'POST').map((c) => c.body)).toEqual([
+        { keyword: '作品X', value: '作品X', priority: 0 },
+      ])
       expect(within(manager).getByText('「作品X」→ 作品X')).toBeInTheDocument()
       expect(within(content).getByRole('link', { name: '作品Xのシリーズ' })).toHaveTextContent('手動')
     })
-    expect(api.labelRulesReadCount()).toBeGreaterThanOrEqual(2)
+    expect(
+      api.calls.filter((c) => c.method === 'GET' && c.url.pathname === '/api/label-rules').length,
+    ).toBeGreaterThanOrEqual(2)
   })
 
   it('分類ルールを作成すると棚のキーが追従し、入力中の実効キーを示す', async () => {
     const user = userEvent.setup()
-    stubApi(shelves)
+    stubApi(seriesRoutes)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const manager = await screen.findByRole('region', { name: 'シリーズ分類' })
@@ -317,7 +293,14 @@ describe('SeriesPage', () => {
 
   it('分類ルールを編集すると PATCH に変更後の内容が飛ぶ', async () => {
     const user = userEvent.setup()
-    const api = stubApi(shelves, [labelRule(7, '日本史', '日本史', '日本史', 5)])
+    const api = stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': [labelRule(7, '日本史', '日本史', '日本史', 5)],
+      'PATCH /api/label-rules/:id': ({ params, body }) => {
+        const input = body as LabelRuleInput
+        return labelRule(Number(params.id), input.keyword, input.value, input.value, input.priority)
+      },
+    })
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const manager = await screen.findByRole('region', { name: 'シリーズ分類' })
@@ -330,14 +313,27 @@ describe('SeriesPage', () => {
     await user.type(within(dialog).getByLabelText('優先度'), '9')
     await user.click(within(dialog).getByRole('button', { name: '保存' }))
 
-    await waitFor(() => expect(api.patched).toEqual([
-      { id: 7, body: { keyword: '日本史', value: '日本史', priority: 9 } },
-    ]))
+    await waitFor(() =>
+      expect(
+        api.calls
+          .filter((c) => c.method === 'PATCH')
+          .map((c) => ({ id: Number(c.params.id), body: c.body })),
+      ).toEqual([{ id: 7, body: { keyword: '日本史', value: '日本史', priority: 9 } }]),
+    )
   })
 
   it('分類ルールは削除確認後に DELETE し、棚の手動バッジも更新する', async () => {
     const user = userEvent.setup()
-    const api = stubApi(shelves, [rule])
+    let rules: LabelRule[] = [rule]
+    const api = stubApi({
+      ...seriesRoutes,
+      'GET /api/label-rules': () => rules,
+      'DELETE /api/label-rules/:id': ({ params }) => {
+        rules = rules.filter((r) => r.id !== Number(params.id))
+      },
+    })
+    const deletedIds = () =>
+      api.calls.filter((c) => c.method === 'DELETE').map((c) => Number(c.params.id))
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -346,12 +342,12 @@ describe('SeriesPage', () => {
     expect(manual).toHaveTextContent('手動')
 
     await user.click(within(manager).getByRole('button', { name: '削除' }))
-    expect(api.deleted).toEqual([])
+    expect(deletedIds()).toEqual([])
     const dialog = await screen.findByRole('dialog')
     await user.click(within(dialog).getByRole('button', { name: '削除する' }))
 
     await waitFor(() => {
-      expect(api.deleted).toEqual([1])
+      expect(deletedIds()).toEqual([1])
       expect(within(manager).getByText('分類ルールがありません')).toBeInTheDocument()
       expect(manual).not.toHaveTextContent('手動')
     })
@@ -359,7 +355,7 @@ describe('SeriesPage', () => {
 
   it('録画一覧と同じ localStorage キーでカード表示を保存する', async () => {
     const user = userEvent.setup()
-    stubApi(shelves)
+    stubApi(seriesRoutes)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('page-content')
@@ -375,15 +371,9 @@ describe('SeriesPage', () => {
  * ルートではなく実際のルート定義を使う。棚への GET の URL を記録する。
  */
 function renderSeriesRoute(path: string, shelvesBody: RecordingShelf[] = shelves) {
-  const shelvesRequests: URL[] = []
-  globalThis.fetch = vi.fn((input: string | URL | Request) => {
-    const url = new URL(String(input), 'http://localhost')
-    if (url.pathname === '/api/recording-shelves') {
-      shelvesRequests.push(url)
-      return Promise.resolve(jsonResponse(shelvesBody))
-    }
-    return Promise.resolve(jsonResponse([]))
-  }) as unknown as typeof fetch
+  const api = stubApi({ ...seriesRoutes, 'GET /api/recording-shelves': shelvesBody })
+  const shelvesRequests = () =>
+    api.calls.filter((c) => c.url.pathname === '/api/recording-shelves').map((c) => c.url)
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) })
   render(
@@ -406,8 +396,8 @@ describe('SeriesPage の絞り込み', () => {
     const chips = await screen.findByRole('group', { name: '適用中の条件' })
     expect(within(chips).getByText(/ジャンル: アニメ・特撮/)).toBeInTheDocument()
     expect(within(chips).getByText(/^期間: /)).toBeInTheDocument()
-    await waitFor(() => expect(shelvesRequests.length).toBeGreaterThan(0))
-    const params = shelvesRequests.at(-1)!.searchParams
+    await waitFor(() => expect(shelvesRequests().length).toBeGreaterThan(0))
+    const params = shelvesRequests().at(-1)!.searchParams
     expect(params.getAll('genre')).toEqual(['7'])
     expect(params.get('from')).toBe('2026-01-01T00:00:00.000Z')
     expect(params.get('to')).toBe('2026-04-01T00:00:00.000Z')
@@ -426,8 +416,8 @@ describe('SeriesPage の絞り込み', () => {
     expect(screen.queryByText(/エンコード: /)).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: '並び順' })).not.toBeInTheDocument()
     expect(router.state.location.search).toEqual({ genre: [7] })
-    await waitFor(() => expect(shelvesRequests.length).toBeGreaterThan(0))
-    const params = shelvesRequests.at(-1)!.searchParams
+    await waitFor(() => expect(shelvesRequests().length).toBeGreaterThan(0))
+    const params = shelvesRequests().at(-1)!.searchParams
     expect([...params.keys()].sort()).toEqual(['genre', 'key'])
   })
 
@@ -438,7 +428,7 @@ describe('SeriesPage の絞り込み', () => {
     const chips = await screen.findByRole('group', { name: '適用中の条件' })
     await user.click(within(chips).getByRole('button', { name: /ジャンル: アニメ・特撮/ }))
     await waitFor(() => expect(router.state.location.search).toEqual({ genre: [3] }))
-    await waitFor(() => expect(shelvesRequests.at(-1)!.searchParams.getAll('genre')).toEqual(['3']))
+    await waitFor(() => expect(shelvesRequests().at(-1)!.searchParams.getAll('genre')).toEqual(['3']))
   })
 
   it('「録画」への切り替えは同じ条件を引き継ぐ', async () => {
@@ -465,8 +455,8 @@ describe('SeriesPage の絞り込み', () => {
     await user.click(within(toggle).getByRole('link', { name: 'シリーズ' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/series'))
     expect(router.state.location.search).toEqual({ genre: [7], site: ['tokyo'] })
-    await waitFor(() => expect(shelvesRequests.length).toBeGreaterThan(0))
-    expect(shelvesRequests.at(-1)!.searchParams.getAll('site')).toEqual(['tokyo'])
+    await waitFor(() => expect(shelvesRequests().length).toBeGreaterThan(0))
+    expect(shelvesRequests().at(-1)!.searchParams.getAll('site')).toEqual(['tokyo'])
   })
 
   it('条件があって棚が 0 件なら、条件に一致しない旨を出す', async () => {
