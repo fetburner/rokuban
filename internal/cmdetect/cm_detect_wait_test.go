@@ -1,4 +1,4 @@
-package worker
+package cmdetect
 
 import (
 	"context"
@@ -8,13 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // 孫プロセスが stdout を握ったまま残っても、ctx キャンセル後に runCMTool が戻る
 // （WaitDelay が無いと CombinedOutput は孫の終了まで返らず、Work の復帰が遅れる）。
 func TestRunCMToolReturnsAfterCancelWhenGrandchildHoldsStdout(t *testing.T) {
-	setWorkerExecWaitDelayForTest(t, time.Second)
+	previous := mediaexec.WaitDelay
+	mediaexec.WaitDelay = time.Second
+	t.Cleanup(func() { mediaexec.WaitDelay = previous })
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "fake-tool.sh")
 	testutil.RequireNoError(t, os.WriteFile(tool, []byte("#!/bin/sh\nsleep 10 &\nsleep 10\n"), 0o755), "writing test file")

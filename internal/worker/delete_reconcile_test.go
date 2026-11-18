@@ -148,14 +148,6 @@ func markRecordingUntilEncoded(t *testing.T, pool *pgxpool.Pool, recordingID int
 		   updated_at      = now()`, recordingID, profiles)
 }
 
-func markOriginalTSScanComplete(t *testing.T, pool *pgxpool.Pool, assetID int64) {
-	t.Helper()
-	testutil.MustExec(t, pool, "marking original as scanned", `
-		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
-		SELECT id, size_bytes FROM media_assets WHERE id = $1 AND kind = 'original'
-		ON CONFLICT (media_asset_id) DO NOTHING`, assetID)
-}
-
 // markRecordingTrashed は録画をごみ箱に入れ、猶予（既定 30 日）を過ぎた状態にする。
 func markRecordingTrashed(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
 	t.Helper()

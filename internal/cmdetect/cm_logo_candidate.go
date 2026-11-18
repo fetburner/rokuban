@@ -1,4 +1,4 @@
-package worker
+package cmdetect
 
 import (
 	"context"
@@ -17,9 +17,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// CMLogoCandidateWorker creates one station-level candidate from the taught area.
-// It deliberately has no retry budget: saving the area again is the user-visible
-// retry operation and leaves the previous candidate available for inspection.
+// CMLogoCandidateWorker は、教示枠を使って局ごとのロゴ候補を作る。
+// 意図的に再試行の予算を持たない。利用者は教示枠を保存し直して再試行し、前回の候補は確認用に残る。
 type CMLogoCandidateWorker struct {
 	Store      store.CMStation
 	MediaDir   string
@@ -28,8 +27,8 @@ type CMLogoCandidateWorker struct {
 	FFprobe    string
 }
 
-// Work persists running before touching the original. Every analysis failure after
-// that point becomes a failed candidate row, so the desired view cannot hot-loop.
+// Work は原本に触る前に running を永続化する。
+// それ以降の解析失敗はすべて failed の候補行になるため、希望状態の view は同じ候補を投げ続けない。
 func (w *CMLogoCandidateWorker) Work(ctx context.Context, args jobs.CMLogoCandidateJobArgs) error {
 	station := store.CMStationRef{NetworkID: args.NetworkID, ServiceID: args.ServiceID}
 	area, err := w.Store.GetLogoArea(ctx, station)

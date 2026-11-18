@@ -1,4 +1,4 @@
-package worker
+package cmdetect
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -86,7 +87,7 @@ FROM media_assets a WHERE copy.media_asset_id = a.id AND a.recording_id = $1`, i
 			if scratch := tt.tamper(t, tools, mediaDir, id); scratch != "" {
 				w.ScratchDir = scratch
 			}
-			if err := runWorkerViaJobQFake(ctx, w, cmJob(id)); err == nil {
+			if err := jobqfaketest.RunWorkerOnce(ctx, w, cmJob(id)); err == nil {
 				t.Fatal("Work succeeded on a broken path")
 			}
 			var state string
