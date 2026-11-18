@@ -23,6 +23,8 @@ import { ruleDisambiguator } from '@/lib/rule-label'
 import { serviceDisambiguator } from '@/lib/service-label'
 import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 import { cn } from '@/lib/utils'
+import { nextHourBoundary } from '@/lib/day-offset'
+import { useNow } from '@/lib/use-now'
 import {
   clearRecordingsFilters,
   describeRecordingsFilters,
@@ -93,7 +95,7 @@ export function RecordingFilters({
   }
 
   // 期間ボタンとチップは同じ now で `periodLabel` を呼ぶ（「今週」の判定を食い違わせない）。
-  const now = new Date()
+  const now = new Date(useNow({ wakeAtMs: nextHourBoundary }))
   const chips = describeRecordingsFilters(search, serviceLabelById, rules, now)
   const onlyPeriodChip = chips.every((chip) => chip.key === 'period')
 
