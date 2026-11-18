@@ -35,9 +35,7 @@ func startCMDetectionTestAttempt(t *testing.T, ctx context.Context, q *sqlcgen.Q
 func cmAttemptGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, recordingID int64) int64 {
 	t.Helper()
 	var generation int64
-	if err := pool.QueryRow(ctx, `SELECT policy_generation FROM recording_cm_attempts WHERE recording_id = $1`, recordingID).Scan(&generation); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT policy_generation FROM recording_cm_attempts WHERE recording_id = $1`, recordingID).Scan(&generation), "pool.QueryRow")
 	return generation
 }
 
@@ -106,9 +104,7 @@ func TestCMFrameTimeConversionsUse30000Over1001(t *testing.T) {
 func TestCMRangesFromCutAVSInvertsMainIntervals(t *testing.T) {
 	t.Parallel()
 	got, err := cmRangesFromCutAVS("Trim(150,269) ++ Trim(30,89)", 10010)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cmRangesFromCutAVS")
 	want := []frameRange{{start: 0, end: 30}, {start: 90, end: 150}, {start: 270, end: 300}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CM frame ranges = %#v, want %#v", got, want)
@@ -122,9 +118,7 @@ func TestCMRangesFromCutAVSInvertsMainIntervals(t *testing.T) {
 func TestCMRangesFromCutAVSNoCommercialsAndInvalidOutput(t *testing.T) {
 	t.Parallel()
 	got, err := cmRangesFromCutAVS("Trim(0,299)", 10010)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "cmRangesFromCutAVS")
 	if len(got) != 0 || len(chapterRangesFromFrames(got, 10010)) != 0 {
 		t.Fatalf("full-program Trim produced CM ranges %#v", got)
 	}
@@ -178,46 +172,34 @@ func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1101)))
 	startedAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	endedAt := startedAt.Add(45 * time.Minute)
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $3, program_duration_ms = 1 WHERE id = $1`, id, startedAt, endedAt); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET started_at = $2, ended_at = $3, program_duration_ms = 1 WHERE id = $1`, id, startedAt, endedAt)
 	q := sqlcgen.New(pool)
 	duration, err := q.GetCMRecordingDuration(ctx, id)
 	if err != nil || duration != 45*60*1000 {
 		t.Fatalf("GetCMRecordingDuration = %d, %v; want 2700000", duration, err)
 	}
 	detections, err := q.ListMissingCMDetections(ctx, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "q.ListMissingCMDetections")
 	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != duration {
 		t.Errorf("ListMissingCMDetections = %#v, want recording %d at %dms", detections, id, duration)
 	}
 	seedTaughtArea(t, pool, 1180)
 	candidates, err := q.ListMissingCMLogoCandidates(ctx, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "q.ListMissingCMLogoCandidates")
 	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != duration {
 		t.Errorf("ListMissingCMLogoCandidates = %#v, want recording %d at %dms", candidates, id, duration)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 2400000 WHERE id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 2400000 WHERE id = $1`, id)
 	if duration, err := q.GetCMRecordingDuration(ctx, id); err != nil || duration != 2400000 {
 		t.Errorf("duration with unconfirmed recording times = %d, %v; want program_duration_ms 2400000", duration, err)
 	}
 	detections, err = q.ListMissingCMDetections(ctx, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "q.ListMissingCMDetections")
 	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != 2400000 {
 		t.Errorf("ListMissingCMDetections with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", detections, id)
 	}
 	candidates, err = q.ListMissingCMLogoCandidates(ctx, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "q.ListMissingCMLogoCandidates")
 	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != 2400000 {
 		t.Errorf("ListMissingCMLogoCandidates with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", candidates, id)
 	}
@@ -274,19 +256,13 @@ func TestStationLogoFilesUseLogoframeLatestConvention(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	logo := []byte("LGD fixture")
-	if err := writeStationLogo(dir, "n1-s2", logo); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, writeStationLogo(dir, "n1-s2", logo), "writeStationLogo")
 	got, err := readStationLogo(dir, "n1-s2")
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "readStationLogo")
 	if string(got) != string(logo) {
 		t.Fatalf("logo bytes = %q, want %q", got, logo)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte("../outside.lgd\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte("../outside.lgd\n"), 0o600), "os.WriteFile")
 	if _, err := readStationLogo(dir, "n1-s2"); err == nil {
 		t.Fatal("unsafe latest pointer must fail")
 	}
@@ -306,26 +282,14 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 			fixtureParams.EventID = int32(800 + i)
 		})
 		seedOriginalAsset(t, pool, mediaDir, ids[i], fmt.Sprintf("cm/%d.ts", ids[i]), []byte("ts"))
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
-			VALUES ($1, 'always', '{}', true)`, ids[i]); err != nil {
-			t.Fatalf("enabling CM detection for %d: %v", ids[i], err)
-		}
+		dbtest.ProcessingPolicy(t, pool, ids[i], func(p *dbtest.ProcessingPolicyParams) { p.CMDetect = true })
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recording_processing_policy SET cm_detect = false WHERE recording_id = $1`, ids[1]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, ids[2]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recording_processing_policy SET cm_detect = false WHERE recording_id = $1`, ids[1])
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, ids[2])
+	testutil.MustExec(t, pool, "pool.Exec", `
 		INSERT INTO missing_media_assets (media_asset_copy_id)
-		SELECT copy.id FROM media_asset_copies copy JOIN media_assets asset ON asset.id = copy.media_asset_id WHERE asset.recording_id = $1 AND asset.kind = 'original' AND copy.store = 'test-store'`, ids[3]); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: ids[4], CmRanges: "{}"}); err != nil {
-		t.Fatal(err)
-	}
+		SELECT copy.id FROM media_asset_copies copy JOIN media_assets asset ON asset.id = copy.media_asset_id WHERE asset.recording_id = $1 AND asset.kind = 'original' AND copy.store = 'test-store'`, ids[3])
+	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: ids[4], CmRanges: "{}"}), "q.SaveCMDetection")
 	for _, id := range []int64{ids[5], ids[6]} {
 		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
 		state := "failed"
@@ -334,9 +298,7 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 		}
 		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, state, nil, nil)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, ids[5]); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, ids[5])
 
 	for _, id := range []int64{ids[0], ids[6]} {
 		desired, err := q.IsCMDetectionDesired(ctx, id)
@@ -354,9 +316,7 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	logo := sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &ids[5], CodedWidth: 1440, CodedHeight: 1080,
 	}
-	if err := q.UpsertCMLogo(ctx, logo); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, q.UpsertCMLogo(ctx, logo), "q.UpsertCMLogo")
 	desired, err := q.IsCMDetectionDesired(ctx, ids[5])
 	if err != nil || !desired {
 		t.Errorf("failed recording with a newly learned station logo: desired = %v, err = %v; want true", desired, err)
@@ -364,19 +324,13 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	updatedAttempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
 		RecordingID: ids[5], MaxAttempts: cmDetectMaxTries,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "q.BeginCMDetectionAttempt")
 	if !updatedAttempt.ShouldRun || updatedAttempt.AttemptCount != 1 {
 		t.Errorf("BeginCMDetectionAttempt after a new logo = %#v, want running attempt 1 (a new desire starts a new budget)", updatedAttempt)
 	}
-	if err := q.DeleteCMDetectionAttempt(ctx, ids[5]); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, q.DeleteCMDetectionAttempt(ctx, ids[5]), "q.DeleteCMDetectionAttempt")
 	rows, err := q.ListMissingCMDetections(ctx, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "q.ListMissingCMDetections")
 	want := []int64{ids[0], ids[5], ids[6]}
 	got := make([]int64, len(rows))
 	for i := range rows {
@@ -403,11 +357,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 			fixtureParams.EventID = eventID
 		})
 		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
-			VALUES ($1, 'always', '{}', true)`, id); err != nil {
-			t.Fatal(err)
-		}
+		dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) { p.CMDetect = true })
 		return id
 	}
 	id := seed(830)
@@ -420,16 +370,12 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	wantDesired := func(t *testing.T, id int64, want bool) {
 		t.Helper()
 		desired, err := q.IsCMDetectionDesired(ctx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "q.IsCMDetectionDesired")
 		if desired != want {
 			t.Fatalf("IsCMDetectionDesired(%d) = %v, want %v", id, desired, want)
 		}
 		ids, err := q.ListMissingCMDetections(ctx, 100)
-		if err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, err, "q.ListMissingCMDetections")
 		listed := false
 		for _, got := range ids {
 			listed = listed || got.RecordingID == id
@@ -453,16 +399,12 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	// Work 冒頭の再評価も IsCMDetectionDesired を通る）。外すと adopt の attempt が書かれず、
 	// pending にも failed にも出ない見えない停止になる。
 	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
+	testutil.RequireNoError(t, err, "q.GetCMLogoArea")
+	testutil.MustExec(t, pool, "pool.Exec", `
 		INSERT INTO cm_logo_candidates (
 			network_id, service_id, state, x, y, w, h, coded_width, coded_height,
 			recording_id, observed_area_updated_at, lgd
-		) VALUES (32736, 1024, 'ready', 1180, 24, 240, 96, 1440, 1080, $1, $2, 'lgd')`, id, area.UpdatedAt); err != nil {
-		t.Fatal(err)
-	}
+		) VALUES (32736, 1024, 'ready', 1180, 24, 240, 96, 1440, 1080, $1, $2, 'lgd')`, id, area.UpdatedAt)
 	fresh := seed(831)
 	wantDesired(t, fresh, true)
 
@@ -470,9 +412,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	adopt := "adopt"
 	fail(t, fresh, &adopt)
 	wantDesired(t, fresh, false)
-	if _, err := pool.Exec(ctx, `DELETE FROM cm_logo_candidates`); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `DELETE FROM cm_logo_candidates`)
 	wantDesired(t, fresh, false)
 
 	// 採用でロゴができると、失敗していた録画（adopt 待ちを含む）が desired に戻る。
@@ -502,17 +442,15 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindEncoded, &profile, fmt.Sprintf("cm/%d-h264.mp4", id), []byte("encoded"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
-		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
+		p.KeepOriginal = "until_encoded"
+		p.EncodeProfiles = []string{"h264"}
+		p.CMDetect = true
+	})
 	count := func() int {
 		t.Helper()
 		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
+		testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n), "pool.QueryRow")
 		return n
 	}
 	if got := count(); got != 0 {
@@ -523,27 +461,19 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals while retrying = %d, want 0", got)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET state = 'failed' WHERE recording_id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recording_cm_attempts SET state = 'failed' WHERE recording_id = $1`, id)
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after final failure = %d, want 1", got)
 	}
-	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, id), "q.ClearRecordingCMDetection")
 	if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
 		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
 	}
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals after quick re-enable with an old failure = %d, want 0", got)
 	}
-	if err := q.DeleteCMDetectionAttempt(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: "{}"}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, q.DeleteCMDetectionAttempt(ctx, id), "q.DeleteCMDetectionAttempt")
+	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: "{}"}), "q.SaveCMDetection")
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after zero-CM successful result = %d, want 1", got)
 	}
@@ -564,12 +494,8 @@ func TestReadStationLogoLatestFormats(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "n1-s2-v0001.lgd"), []byte("LGD"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte(tt.latest), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2-v0001.lgd"), []byte("LGD"), 0o600), "os.WriteFile")
+			testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte(tt.latest), 0o600), "os.WriteFile")
 			got, err := readStationLogo(dir, "n1-s2")
 			if (err == nil) != tt.ok || (tt.ok && string(got) != "LGD") {
 				t.Fatalf("got %q, %v; want ok=%v", got, err, tt.ok)
@@ -595,28 +521,22 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindEncoded, &profile, fmt.Sprintf("cm/%d-h264.mp4", id), []byte("encoded"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
-		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
+		p.KeepOriginal = "until_encoded"
+		p.EncodeProfiles = []string{"h264"}
+		p.CMDetect = true
+	})
 	attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
 	stage := "adopt"
 	markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", &stage, nil)
 	var eligible int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible), "pool.QueryRow")
 	if eligible != 0 {
 		t.Fatalf("adoption-waiting original is eligible = %d, want 0", eligible)
 	}
 	stage = "logo"
-	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET stage = 'logo' WHERE recording_id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustExec(t, pool, "pool.Exec", `UPDATE recording_cm_attempts SET stage = 'logo' WHERE recording_id = $1`, id)
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible), "pool.QueryRow")
 	if eligible != 1 {
 		t.Fatalf("ordinary failed original is eligible = %d, want 1", eligible)
 	}
