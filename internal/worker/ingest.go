@@ -29,6 +29,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -553,7 +554,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			// 5 分の Work 時限に収まらない大きさでは、この再試行が終わらず、進捗行が link 済みの temp を指したままになる見込み（未測定）。
 			// 読み直すとディスク上の破損が producer の値として commit される（保存済み hash を使えない場合の代償）。
 			// 転送中の hash 採用の判定（EEXIST 採用）も同じく全量を読む。
-			digest, size, hashErr := hashTransferFile(ctx, oldTempPath)
+			digest, size, hashErr := storagemaint.HashTransferFile(ctx, oldTempPath)
 			if hashErr != nil {
 				return fmt.Errorf("hashing ingest temp already linked to canonical path: %w", hashErr)
 			}
@@ -1154,7 +1155,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 			if !errors.Is(err, fsink.ErrForeignDestination) {
 				return fmt.Errorf("linking ingest temporary file into canonical path: %w", err)
 			}
-			_, _, matches, checkErr := verifyExistingFileSHA256(ctx, fullPath, size, contentSHA256)
+			_, _, matches, checkErr := storagemaint.VerifyExistingFileSHA256(ctx, fullPath, size, contentSHA256)
 			if checkErr != nil {
 				return errors.Join(err, fmt.Errorf("checking existing canonical file: %w", checkErr))
 			}

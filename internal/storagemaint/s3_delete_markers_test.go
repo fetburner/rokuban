@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -120,7 +122,7 @@ func TestS3DeleteMarkers(t *testing.T) {
 				w.DerivedPendingReclaim = nil
 			}
 			for i := 1; i <= 2; i++ {
-				err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{})
+				err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{})
 				if (err != nil) != (tc.fail || tc.reject) {
 					t.Fatalf("Work error = %v", err)
 				}

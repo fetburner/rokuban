@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -75,7 +76,7 @@ func setAssetState(t *testing.T, pool *pgxpool.Pool, id int64, state string) {
 // 「要求行がある」だけでも消えないこと、最後の版は消えないことを、入口クエリで見る。
 func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
 
@@ -123,14 +124,14 @@ func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 // 外した版は再エンコードの候補にもならない。
 func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	f := seedRemovedEncodedRecording(t, pool, mediaDir, 9201, []string{"h265"})
 	requestEncodedRemoval(t, pool, f.recordingID, "h264")
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, f.h264ID); got != "deleted" {
 		t.Errorf("h264 copy state = %q, want deleted", got)
@@ -171,7 +172,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 // 誤って active に戻した行も同じパスの新規候補として消え、結果が区別できない。
 func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResumes(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
 	testutil.RequireNoError(t, breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}), "tripping breaker")
@@ -194,7 +195,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	if got := singleCopyState(t, pool, readded.h264ID); got != "active" {
 		t.Errorf("re-added h264 copy state = %q, want active", got)
@@ -213,7 +214,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 // 外した版もブレーカーの 1 パス合計に入る。ごみ箱 1 件 + 外した版 2 件で閾値 2 を超える。
 func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	trashed := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 9401 })
@@ -233,7 +234,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir), StorageObjects: testStorageObjects(t, "", mediaDir),
 		MaxDeletesPerPass: 2,
 	}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
 	for _, id := range []int64{trashAsset, a.h264ID, b.h264ID} {
 		if got := singleCopyState(t, pool, id); got != "active" {
@@ -262,7 +263,7 @@ func TestRemovedEncodedAssets_PresentCopies(t *testing.T) {
 		{"missing target with present original", false, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			ctx := context.Background()
 			f := seedRemovedEncodedRecording(t, pool, t.TempDir(), 9801, []string{"h265"})
 			requestEncodedRemoval(t, pool, f.recordingID, "h264")

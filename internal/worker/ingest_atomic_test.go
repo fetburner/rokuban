@@ -21,9 +21,11 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/fsink"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
+	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -176,9 +178,9 @@ func newConcurrentIngestServer(t *testing.T, tsData []byte, contentPath string, 
 	return srv
 }
 
-// TestIngestWorker_CanonicalOrphanSurvivesPublishCallbackFailure は、rename 後に
-// publish callback が失敗しても canonical を孤児回収が消さず、orphan_files の
-// 追跡記録も保持することを確認する。
+// TestIngestWorker_CanonicalOrphanSurvivesPublishCallbackFailure は、link 後の
+// publish callback を失敗させる。停止中も失敗後も削除 reconcile が canonical の
+// 内容を保持し、失敗後はエイジング済みの孤児記録も残ることを確認する。
 func TestIngestWorker_CanonicalOrphanSurvivesPublishCallbackFailure(t *testing.T) {
 	runCanonicalOrphanSurvives(t, "sites/default/lock/callback-failure.m2ts", true,
 		func(t *testing.T, _ *pgxpool.Pool, paused func(), wait <-chan struct{}) {
@@ -192,9 +194,9 @@ func TestIngestWorker_CanonicalOrphanSurvivesPublishCallbackFailure(t *testing.T
 		})
 }
 
-// TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect は、rename の前に DB セッションが
-// 失われると、publish は成功しても commit が失敗する。このとき canonical を孤児回収が消さず、
-// orphan_files の追跡記録も保持することを確認する。
+// TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect は、link の前に DB セッションを
+// 切断する。停止中の削除 reconcile を挟んでも link でき、commit の失敗後に
+// エイジングした canonical 孤児の内容と追跡記録が削除 reconcile 後も残ることを確認する。
 func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 	runCanonicalOrphanSurvives(t, "sites/default/lock/db-disconnect.m2ts", false,
 		func(t *testing.T, pool *pgxpool.Pool, paused func(), wait <-chan struct{}) {
@@ -209,13 +211,15 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 		})
 }
 
-// runCanonicalOrphanSurvives は commit の失敗で残った canonical が孤児として扱われる経路を検査する。
+// runCanonicalOrphanSurvives は、公開の停止中と、commit 失敗で残った canonical が
+// 孤児としてエイジングした後に削除 reconcile を実行する。link 済みなら canonical の
+// 内容を確認し、失敗後はエイジング済みの孤児記録が残ることも確認する。
 // install は公開関数の途中に止める hook を入れ、止まったら paused を呼び、wait が閉じるまで待つ。
-// renamedWhilePaused は止まっている間に canonical が既にあるかを表す。
+// linkedWhilePaused は止まっている間に canonical が既にあるかを表す。
 func runCanonicalOrphanSurvives(
 	t *testing.T,
 	relPath string,
-	renamedWhilePaused bool,
+	linkedWhilePaused bool,
 	install func(t *testing.T, pool *pgxpool.Pool, paused func(), wait <-chan struct{}),
 ) {
 	pool := setupTestPool(t)
@@ -229,10 +233,6 @@ func runCanonicalOrphanSurvives(
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-db-disconnect")
 	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755), "creating commit directory")
 	testutil.RequireNoError(t, os.WriteFile(tempPath, []byte(content), 0o644), "writing commit temp")
-	testutil.MustExec(t, pool, "seeding orphan record", "INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, now())", relPath)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "DELETE FROM orphan_files WHERE rel_path = $1", relPath)
-	})
 	recordingID := dbtest.Recording(t, pool)
 	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 
@@ -271,17 +271,11 @@ func runCanonicalOrphanSurvives(
 		t.Fatalf("commit did not reach the publication hook (result: %v)", err)
 	}
 
-	// Canonical orphan cleanup is report-only, including while the publication transaction is unresolved.
-	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
+	// 停止中は既定の猶予で走らせる。作成直後の temp は孤児候補に入らない。
+	cleanup := &storagemaint.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
-	cleanup.deleteOrphanFile(relPath, 0)
-	var orphanCount int
-	testutil.RequireNoError(t, pool.QueryRow(ctx,
-		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount), "querying orphan record while commit is paused")
-	if orphanCount != 1 {
-		t.Fatalf("orphan record count while commit is paused = %d, want 1", orphanCount)
-	}
-	if renamedWhilePaused {
+	testutil.RequireNoError(t, cleanup.Work(ctx, jobs.DeleteReconcileArgs{}), "reconciling while publication is paused")
+	if linkedWhilePaused {
 		if got, err := os.ReadFile(fullPath); err != nil || string(got) != content {
 			t.Fatalf("canonical file while publication is paused = %q, err %v; want %q", got, err, content)
 		}
@@ -305,16 +299,22 @@ func runCanonicalOrphanSurvives(
 		t.Errorf("canonical file after commit failure = %q, want %q", got, content)
 	}
 
-	// A later cleanup pass still cannot infer publication state from this canonical
-	// name, so it must preserve both the file and its orphan record.
-	cleanup.deleteOrphanFile(relPath, 0)
-	if _, err := os.Stat(fullPath); err != nil {
-		t.Errorf("canonical file after report-only cleanup: %v", err)
+	// 失敗後の canonical を既定の mtime 猶予とエイジング期間を過ぎた状態にする。
+	// hard link した temp の mtime も変わるが、古い孤児記録は canonical だけに与える。
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	testutil.RequireNoError(t, os.Chtimes(fullPath, old, old), "aging canonical file after commit failure")
+	testutil.MustExec(t, pool, "seeding aged canonical orphan", `
+INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ($1, $2, $3)`, dbtest.StoreName, relPath, old)
+	// canonical 名だけでは公開状態が決まらない。失敗後もファイルと孤児記録が残ることを検査する。
+	testutil.RequireNoError(t, cleanup.Work(ctx, jobs.DeleteReconcileArgs{}), "reconciling aged canonical orphan")
+	if got, err := os.ReadFile(fullPath); err != nil || string(got) != content {
+		t.Errorf("canonical file after reconciling aged orphan = %q, err %v; want %q", got, err, content)
 	}
+	var orphanCount int
 	testutil.RequireNoError(t, pool.QueryRow(ctx,
-		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount), "querying orphan record after deferred cleanup")
+		"SELECT count(*) FROM orphan_files WHERE store = $1 AND rel_path = $2", dbtest.StoreName, relPath).Scan(&orphanCount), "querying canonical orphan record after reconcile")
 	if orphanCount != 1 {
-		t.Errorf("orphan record count after report-only cleanup = %d, want 1", orphanCount)
+		t.Errorf("canonical orphan record count after reconcile = %d, want 1", orphanCount)
 	}
 }
 

@@ -82,7 +82,7 @@ type ListActiveMediaAssetsRow struct {
 // このファイルの他のソースと違って row_limit を持たない。判定が差集合なので
 // 入力を切ると答えが変わる（窓の外の行が「もう候補でない」と見なされて
 // first_seen が毎パス消え、エイジングが永久に完了しない）。理由の全文は
-// internal/worker/storage_audit.go の reconcileMissingAssets の
+// internal/storagemaint/storage_audit.go の reconcileMissingAssets の
 // doc コメント。
 func (q *Queries) ListActiveMediaAssets(ctx context.Context, storeName string) ([]ListActiveMediaAssetsRow, error) {
 	rows, err := q.db.Query(ctx, listActiveMediaAssets, storeName)

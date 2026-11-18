@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/ruler"
+	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/thumbnail"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -262,12 +263,12 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		DetectionStore: deps.CMDetectionStore,
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
-	riveradapter.Register(workers, &StorageTransferReconcileWorker{
+	riveradapter.Register(workers, &storagemaint.StorageTransferReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Storage:  deps.StorageTransfer,
 		Config:   deps.StorageTransferPolicy,
 	})
-	riveradapter.Register(workers, &StorageTransferWorker{
+	riveradapter.Register(workers, &storagemaint.StorageTransferWorker{
 		Storage:      deps.StorageTransfer,
 		Config:       deps.StorageTransferPolicy,
 		Roots:        deps.StorageRoots,
@@ -366,8 +367,8 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 }
 
 // newDeleteReconcileWorker は削除 reconcile worker を Deps から組み立てる。
-func newDeleteReconcileWorker(deps *Deps) *DeleteReconcileWorker {
-	return &DeleteReconcileWorker{
+func newDeleteReconcileWorker(deps *Deps) *storagemaint.DeleteReconcileWorker {
+	return &storagemaint.DeleteReconcileWorker{
 		MediaDelete:            deps.MediaDelete,
 		MediaPendingReclaim:    deps.MediaPendingReclaim,
 		StorageTransfer:        deps.StorageTransfer,

@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
@@ -100,7 +102,7 @@ func derivedS3SwitchedWorker(t *testing.T, mediaDir string, fsObjects objstore.S
 func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFilesystemStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	profile := "h264"
@@ -115,7 +117,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 	w := derivedS3SwitchedWorker(t, mediaDir, recorder, media, media)
 	w.RecordingPurge = pgstoretest.Recordings(pool)
 	w.Breakers = pgstoretest.Breakers(pool)
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work()")
 
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("filesystem derived copy state = %q, want deleted", got)
@@ -135,7 +137,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFilesystemStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	profile := "h264"
@@ -184,7 +186,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 func TestDeleteReconcileWorker_FilesystemStagingOrphanIsRemovedWithoutAskingTheDerivedStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	const relPath = mediapath.GeneratedAssetTempFilePrefix + "leftover"
 	full := filepath.Join(mediaDir, relPath)
@@ -198,7 +200,7 @@ func TestDeleteReconcileWorker_FilesystemStagingOrphanIsRemovedWithoutAskingTheD
 	w.Breakers = pgstoretest.Breakers(pool)
 	w.OrphanMTimeGrace = 7 * 24 * time.Hour
 	w.OrphanAge = 14 * 24 * time.Hour
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}), "Work()")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.DeleteReconcileArgs{}), "Work()")
 	if _, err := os.Lstat(full); !os.IsNotExist(err) {
 		t.Errorf("aged staging file stat error = %v, want not-exist", err)
 	}

@@ -24,7 +24,7 @@
 //
 // 原本のコピー path は再利用しない。ingest temp は writer lease と別世代の path で隔離する。
 
-package worker
+package storagemaint
 
 import (
 	"context"

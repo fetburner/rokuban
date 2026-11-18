@@ -26,7 +26,7 @@ site は省略も重複もできず、文字種と長さを制約する。
 
 <details><summary>根拠</summary>
 
-- 置き場の範囲のブレーカー: `breaker.DeleteReconcile`、`internal/worker/delete_reconcile.go`
+- 置き場の範囲のブレーカー: `breaker.DeleteReconcile`、`internal/storagemaint/delete_reconcile.go`
 - 理由と経緯の置き場所: `DeleteReconcileWorker` の doc コメント
 
 </details>

@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"bytes"
@@ -112,7 +112,7 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 			}
 			job.SourceStore = candidate.SourceStore
 		}
-		if err := enqueueJob(ctx, w.Enqueuer, job); err != nil {
+		if _, err := w.Enqueuer.Enqueue(ctx, job); err != nil {
 			slog.Error("storage transfer reconcile: failed to enqueue copy", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store, "source_store", job.SourceStore, "err", err)
 		}
 	}
@@ -1402,7 +1402,7 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, at
 		}
 		return true, w.measureAdoptedSource(ctx, att, transfer, src, progress, log)
 	}
-	destinationSHA, size, matches, err := verifyExistingFileSHA256(ctx, targetPath, transfer.SizeBytes, transfer.SHA256)
+	destinationSHA, size, matches, err := VerifyExistingFileSHA256(ctx, targetPath, transfer.SizeBytes, transfer.SHA256)
 	if err != nil {
 		return true, w.recordTransferFailure(ctx, transfer, log, err)
 	}
@@ -1562,7 +1562,8 @@ func (w *StorageTransferWorker) recordTransferFailure(ctx context.Context, trans
 	return nil
 }
 
-func hashTransferFile(ctx context.Context, path string) ([]byte, int64, error) {
+// HashTransferFile はファイルの SHA-256 とサイズを返す。
+func HashTransferFile(ctx context.Context, path string) ([]byte, int64, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("stating transfer file: %w", err)
@@ -1589,9 +1590,9 @@ func hashTransferFile(ctx context.Context, path string) ([]byte, int64, error) {
 	return hasher.Sum(nil), count, nil
 }
 
-// verifyExistingFileSHA256 は既存の canonical を、期待サイズと SHA-256 の両方で照合する。
+// VerifyExistingFileSHA256 は既存の canonical を、期待サイズと SHA-256 の両方で照合する。
 // ingest と storage transfer が EEXIST を採用する条件を同じ実装に保つ。
-func verifyExistingFileSHA256(ctx context.Context, path string, expectedSize int64, expectedSHA256 []byte) ([]byte, int64, bool, error) {
+func VerifyExistingFileSHA256(ctx context.Context, path string, expectedSize int64, expectedSHA256 []byte) ([]byte, int64, bool, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, 0, false, nil
@@ -1605,7 +1606,7 @@ func verifyExistingFileSHA256(ctx context.Context, path string, expectedSize int
 	if info.Size() != expectedSize {
 		return nil, info.Size(), false, nil
 	}
-	digest, size, err := hashTransferFile(ctx, path)
+	digest, size, err := HashTransferFile(ctx, path)
 	if err != nil {
 		return nil, size, false, err
 	}

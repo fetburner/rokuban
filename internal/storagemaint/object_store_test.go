@@ -1,4 +1,4 @@
-package worker
+package storagemaint
 
 import (
 	"bytes"
@@ -51,7 +51,7 @@ func testFilesystemObjectStore(t *testing.T, root string) objstore.Store {
 
 func newObjectEnvWith(t *testing.T, objects objstore.Store) objectEnv {
 	t.Helper()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	return objectEnv{
 		pool: pool, objects: objects,
 		media: pgstore.NewMediaWithStores(pool, objectStoreName, dbtest.StoreName, objectStoreName),
@@ -287,7 +287,7 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 // ブレーカーに数えたうえで Store.Delete 経由で回収する。
 func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -400,7 +400,7 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 
 func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
