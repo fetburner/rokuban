@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // objectStoreName は S3 の派生物の置き場の名前。FS の原本の置き場（dbtest.StoreName）とは別にする。
@@ -97,9 +98,7 @@ func newObjectEnv(t *testing.T) objectEnv {
 func testFilesystemObjectStore(t *testing.T, root string) objstore.Store {
 	t.Helper()
 	objects, err := fsstore.New(root)
-	if err != nil {
-		t.Fatalf("creating filesystem object store: %v", err)
-	}
+	testutil.RequireNoError(t, err, "creating filesystem object store")
 	return objects
 }
 
@@ -246,9 +245,7 @@ func TestObjectPublishTreatsIdenticalExistingKeyAsAnotherPublisher(t *testing.T)
 	t.Parallel()
 	ctx := context.Background()
 	base, err := fsstore.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("creating filesystem object store: %v", err)
-	}
+	testutil.RequireNoError(t, err, "creating filesystem object store")
 	publisher := &objectPublishOwnershipPublisher{}
 	const key = "thumbnails/earlier-publisher.jpg"
 	payload := []byte("identical object from the earlier publisher")
@@ -283,9 +280,7 @@ func TestObjectPublishTreatsIdenticalExistingKeyAsAnotherPublisher(t *testing.T)
 		t.Fatalf("cleanup ownership checks = %d, want 0 for a key this Put did not create", publisher.ownershipChecks)
 	}
 	body, _, err := base.Open(ctx, key)
-	if err != nil {
-		t.Fatalf("opening the earlier publisher's object: %v", err)
-	}
+	testutil.RequireNoError(t, err, "opening the earlier publisher's object")
 	got, readErr := io.ReadAll(body)
 	closeErr := body.Close()
 	if readErr != nil || closeErr != nil {
@@ -316,21 +311,15 @@ func TestObjectPublishKeepsPreviousGenerationUntilOverlapElapses(t *testing.T) {
 
 	worker := env.deleter(100)
 	worker.TransferOverlap = 48 * time.Hour
-	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
-		t.Fatalf("delete reconcile inside the overlap: %v", err)
-	}
+	testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile inside the overlap")
 	if !env.objectExists(t, oldKey) || env.copyState(t, oldKey) != "active" {
 		t.Fatal("previous generation was deleted inside the overlap window")
 	}
 
-	if _, err := env.pool.Exec(ctx,
+	testutil.MustExec(t, env.pool, "aging the new generation",
 		`UPDATE media_asset_copies SET created_at = now() - interval '49 hours' WHERE store = $1 AND rel_path = $2`,
-		objectStoreName, newKey); err != nil {
-		t.Fatalf("aging the new generation: %v", err)
-	}
-	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
-		t.Fatalf("delete reconcile after the overlap: %v", err)
-	}
+		objectStoreName, newKey)
+	testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile after the overlap")
 	if env.objectExists(t, oldKey) || env.copyState(t, oldKey) != "deleted" {
 		t.Fatalf("previous generation after the overlap: object exists %t, copy state %q; want removed and deleted",
 			env.objectExists(t, oldKey), env.copyState(t, oldKey))
@@ -411,24 +400,18 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 	ctx := context.Background()
 	scopes := func(env objectEnv) []string {
 		rows, err := env.pool.Query(ctx, `SELECT scope FROM circuit_breakers WHERE name = $1 ORDER BY scope`, breaker.DeleteReconcile)
-		if err != nil {
-			t.Fatalf("listing breakers: %v", err)
-		}
+		testutil.RequireNoError(t, err, "listing breakers")
 		defer rows.Close()
 		var out []string
 		for rows.Next() {
 			var scope string
-			if err := rows.Scan(&scope); err != nil {
-				t.Fatalf("scanning breaker scope: %v", err)
-			}
+			testutil.RequireNoError(t, rows.Scan(&scope), "scanning breaker scope")
 			out = append(out, scope)
 		}
 		return out
 	}
 	ageAll := func(env objectEnv) {
-		if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '72 hours' WHERE store = $1`, objectStoreName); err != nil {
-			t.Fatalf("aging copies: %v", err)
-		}
+		testutil.MustExec(t, env.pool, "aging copies", `UPDATE media_asset_copies SET created_at = now() - interval '72 hours' WHERE store = $1`, objectStoreName)
 	}
 
 	t.Run("exceeding the limit trips only the derived store scope", func(t *testing.T) {
@@ -441,9 +424,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		ageAll(env)
 		worker := env.deleter(2)
 		worker.TransferOverlap = 48 * time.Hour
-		if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
-			t.Fatalf("delete reconcile over the limit: %v", err)
-		}
+		testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile over the limit")
 		if got := scopes(env); len(got) != 1 || got[0] != objectStoreName {
 			t.Fatalf("tripped breaker scopes = %v, want only [%s]", got, objectStoreName)
 		}
@@ -458,14 +439,10 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		env := newObjectEnv(t)
 		oldKey, _ := env.replaceThumbnail(t)
 		ageAll(env)
-		if err := breaker.Trip(ctx, pgstore.NewBreakers(env.pool), dbtest.StoreName, breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}); err != nil {
-			t.Fatalf("tripping the filesystem scope: %v", err)
-		}
+		testutil.RequireNoError(t, breaker.Trip(ctx, pgstore.NewBreakers(env.pool), dbtest.StoreName, breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}), "tripping the filesystem scope")
 		worker := env.deleter(100)
 		worker.TransferOverlap = 48 * time.Hour
-		if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
-			t.Fatalf("delete reconcile: %v", err)
-		}
+		testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile")
 		if env.objectExists(t, oldKey) {
 			t.Fatal("a tripped breaker of the filesystem store stopped the S3 delete")
 		}
@@ -475,14 +452,10 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		env := newObjectEnv(t)
 		oldKey, _ := env.replaceThumbnail(t)
 		ageAll(env)
-		if err := breaker.Trip(ctx, pgstore.NewBreakers(env.pool), objectStoreName, breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}); err != nil {
-			t.Fatalf("tripping the derived store scope: %v", err)
-		}
+		testutil.RequireNoError(t, breaker.Trip(ctx, pgstore.NewBreakers(env.pool), objectStoreName, breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}), "tripping the derived store scope")
 		worker := env.deleter(100)
 		worker.TransferOverlap = 48 * time.Hour
-		if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
-			t.Fatalf("delete reconcile: %v", err)
-		}
+		testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile")
 		if !env.objectExists(t, oldKey) {
 			t.Fatal("the derived store breaker was ignored and the object was deleted")
 		}
@@ -498,38 +471,26 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 	for range 2 {
 		recordingID := dbtest.Recording(t, env.pool)
 		key := thumbnailRelPath(recordingID, 0)
-		if err := env.media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+		testutil.RequireNoError(t, env.media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
 			RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
-		}); err != nil {
-			t.Fatalf("reserving pending copy: %v", err)
-		}
+		}), "reserving pending copy")
 		payload := []byte("uploaded before the worker stopped " + key)
-		if err := env.objects.Put(ctx, key, bytes.NewReader(payload), int64(len(payload)), sha256.Sum256(payload), "image/jpeg"); err != nil {
-			t.Fatalf("uploading object: %v", err)
-		}
+		testutil.RequireNoError(t, env.objects.Put(ctx, key, bytes.NewReader(payload), int64(len(payload)), sha256.Sum256(payload), "image/jpeg"), "uploading object")
 		keys = append(keys, key)
 	}
-	if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE store = $1`, objectStoreName); err != nil {
-		t.Fatalf("aging pending copies: %v", err)
-	}
+	testutil.MustExec(t, env.pool, "aging pending copies", `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE store = $1`, objectStoreName)
 
 	worker := env.deleter(1)
-	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
-		t.Fatalf("delete reconcile: %v", err)
-	}
+	testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile")
 	for _, key := range keys {
 		if !env.objectExists(t, key) {
 			t.Fatalf("pending object %q was reclaimed before the breaker was consulted", key)
 		}
 	}
 
-	if _, err := env.pool.Exec(ctx, `DELETE FROM circuit_breakers`); err != nil {
-		t.Fatalf("resuming the breaker: %v", err)
-	}
+	testutil.MustExec(t, env.pool, "resuming the breaker", `DELETE FROM circuit_breakers`)
 	worker = env.deleter(100)
-	if err := worker.workObjectStore(ctx, worker.settings()); err != nil {
-		t.Fatalf("delete reconcile after resume: %v", err)
-	}
+	testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile after resume")
 	for _, key := range keys {
 		if env.objectExists(t, key) || env.copyState(t, key) != "deleted" {
 			t.Fatalf("aged pending %q: object exists %t, state %q; want removed and deleted", key, env.objectExists(t, key), env.copyState(t, key))
@@ -547,9 +508,7 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	objects := testFSObjectStore(mediaDir)
 	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, dbtest.StoreName)
 	keys := make([]string, 0, 2)
@@ -582,21 +541,15 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 	}
 	originalRelPath := "original/pending-transfer.ts"
 	originalPath := filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))
-	if err := os.MkdirAll(filepath.Dir(originalPath), 0o755); err != nil {
-		t.Fatalf("creating original directory: %v", err)
-	}
-	if err := os.WriteFile(originalPath, []byte("original remains file-backed"), 0o644); err != nil {
-		t.Fatalf("writing pending original: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(originalPath), 0o755), "creating original directory")
+	testutil.RequireNoError(t, os.WriteFile(originalPath, []byte("original remains file-backed"), 0o644), "writing pending original")
 	originalRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	originalAssetID := dbtest.MediaAsset(t, pool, originalRecordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath, p.SizeBytes = originalRelPath, int64(len("original remains file-backed"))
 	})
-	if _, err := pool.Exec(ctx,
+	testutil.MustExec(t, pool, "aging pending original copy",
 		`UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE media_asset_id = $1 AND store = $2`,
-		originalAssetID, dbtest.StoreName); err != nil {
-		t.Fatalf("aging pending original copy: %v", err)
-	}
+		originalAssetID, dbtest.StoreName)
 
 	worker := &DeleteReconcileWorker{
 		MediaDelete: media, MediaPendingReclaim: media,
@@ -606,9 +559,7 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 		TrashRetention: 24 * time.Hour, OrphanMTimeGrace: 24 * time.Hour, OrphanAge: 24 * time.Hour,
 		MissingAssetAge: 24 * time.Hour, MaxDeletesPerPass: 1,
 	}
-	if err := worker.workFilesystem(ctx, worker.settings()); err != nil {
-		t.Fatalf("delete reconcile with breaker limit: %v", err)
-	}
+	testutil.RequireNoError(t, worker.workFilesystem(ctx, worker.settings()), "delete reconcile with breaker limit")
 	var breakerCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM circuit_breakers WHERE name = $1 AND scope = $2`, breaker.DeleteReconcile, dbtest.StoreName,
@@ -632,13 +583,9 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 			t.Fatalf("pending copy %q state = %q, want pending while breaker is latched", key, state)
 		}
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM circuit_breakers WHERE name = $1 AND scope = $2`, breaker.DeleteReconcile, dbtest.StoreName); err != nil {
-		t.Fatalf("resuming filesystem delete breaker: %v", err)
-	}
+	testutil.MustExec(t, pool, "resuming filesystem delete breaker", `DELETE FROM circuit_breakers WHERE name = $1 AND scope = $2`, breaker.DeleteReconcile, dbtest.StoreName)
 	worker.MaxDeletesPerPass = 100
-	if err := worker.workFilesystem(ctx, worker.settings()); err != nil {
-		t.Fatalf("delete reconcile after resuming breaker: %v", err)
-	}
+	testutil.RequireNoError(t, worker.workFilesystem(ctx, worker.settings()), "delete reconcile after resuming breaker")
 	for _, key := range keys {
 		if _, err := objects.Head(ctx, key); !errors.Is(err, objstore.ErrNotFound) {
 			t.Errorf("Head after pending reclaim for %q = %v, want ErrNotFound", key, err)
@@ -672,9 +619,7 @@ func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t 
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	objects := testFilesystemObjectStore(t, mediaDir)
 	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, dbtest.StoreName)
 	recordingID := dbtest.Recording(t, pool)
@@ -682,61 +627,41 @@ func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t 
 	relPath := "pending/sidecar-retry.mp4"
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("pending encoded object"))
 	subtitleRelPath, err := mediapath.SubtitleSibling(relPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 	subtitlePath := filepath.Join(mediaDir, filepath.FromSlash(subtitleRelPath))
 	if err := os.Remove(subtitlePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("removing seeded subtitle: %v", err)
 	}
-	if err := os.MkdirAll(subtitlePath, 0o755); err != nil {
-		t.Fatalf("creating blocked subtitle directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("making subtitle deletion fail: %v", err)
-	}
+	testutil.RequireNoError(t, os.MkdirAll(subtitlePath, 0o755), "creating blocked subtitle directory")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644), "making subtitle deletion fail")
 	copyID := transferTestCopyID(t, pool, assetID, dbtest.StoreName)
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE id = $1`, copyID); err != nil {
-		t.Fatalf("aging pending encoded copy: %v", err)
-	}
+	testutil.MustExec(t, pool, "aging pending encoded copy", `UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE id = $1`, copyID)
 	worker := &DeleteReconcileWorker{
 		MediaDelete: media, MediaPendingReclaim: media, Storage: media,
 		RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
 		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName, OrphanAge: time.Hour,
 	}
-	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("DeleteReconcileWorker.Work with blocked subtitle: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(ctx, jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work with blocked subtitle")
 	if _, err := objects.Head(ctx, relPath); err != nil {
 		t.Fatalf("main object was removed before subtitle cleanup succeeded: %v", err)
 	}
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state), "reading copy state after blocked subtitle cleanup")
 	if state != "pending" {
 		t.Fatalf("copy state after blocked subtitle cleanup = %q, want pending", state)
 	}
 
-	if err := os.RemoveAll(subtitlePath); err != nil {
-		t.Fatalf("removing blocked subtitle directory: %v", err)
-	}
-	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\ncaption\n"), 0o644); err != nil {
-		t.Fatalf("restoring subtitle object: %v", err)
-	}
-	if err := worker.Work(ctx, jobs.DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("retrying DeleteReconcileWorker.Work: %v", err)
-	}
+	testutil.RequireNoError(t, os.RemoveAll(subtitlePath), "removing blocked subtitle directory")
+	testutil.RequireNoError(t, os.WriteFile(subtitlePath, []byte("WEBVTT\n\ncaption\n"), 0o644), "restoring subtitle object")
+	testutil.RequireNoError(t, worker.Work(ctx, jobs.DeleteReconcileArgs{}), "retrying DeleteReconcileWorker.Work")
 	if _, err := objects.Head(ctx, relPath); !errors.Is(err, objstore.ErrNotFound) {
 		t.Errorf("main object after successful retry = %v, want ErrNotFound", err)
 	}
 	if _, err := objects.Head(ctx, subtitleRelPath); !errors.Is(err, objstore.ErrNotFound) {
 		t.Errorf("subtitle object after successful retry = %v, want ErrNotFound", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state), "reading copy state after successful retry")
 	if state != "deleted" {
 		t.Errorf("copy state after successful retry = %q, want deleted", state)
 	}
@@ -750,13 +675,9 @@ func TestObjectPendingReclaimSkipsCopyPublishedFirst(t *testing.T) {
 	recordingID := dbtest.Recording(t, env.pool)
 	originalID := dbtest.MediaAsset(t, env.pool, recordingID)
 	key := env.publishThumbnail(t, recordingID, originalID, 0, nil, []byte("published"))
-	if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE store = $1`, objectStoreName); err != nil {
-		t.Fatalf("aging the copy: %v", err)
-	}
+	testutil.MustExec(t, env.pool, "aging the copy", `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE store = $1`, objectStoreName)
 	var copyID int64
-	if err := env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID); err != nil {
-		t.Fatalf("loading copy: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID), "loading copy")
 	called := false
 	reclaimed, err := env.media.ReclaimPendingMediaAssetCopy(ctx, copyID, time.Now(), func() error { called = true; return nil })
 	if err != nil || reclaimed || called {
@@ -775,18 +696,12 @@ func TestObjectPublishFailsWhenPendingCopyWasReclaimed(t *testing.T) {
 	recordingID := dbtest.Recording(t, env.pool)
 	originalID := dbtest.MediaAsset(t, env.pool, recordingID)
 	key := thumbnailRelPath(recordingID, 0)
-	if err := env.media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+	testutil.RequireNoError(t, env.media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
 		RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
-	}); err != nil {
-		t.Fatalf("reserving pending copy: %v", err)
-	}
+	}), "reserving pending copy")
 	var copyID int64
-	if err := env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID); err != nil {
-		t.Fatalf("loading copy: %v", err)
-	}
-	if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID); err != nil {
-		t.Fatalf("aging the copy: %v", err)
-	}
+	testutil.RequireNoError(t, env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID), "loading copy")
+	testutil.MustExec(t, env.pool, "aging the copy", `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID)
 	reclaimed, err := env.media.ReclaimPendingMediaAssetCopy(ctx, copyID, time.Now(), func() error { return nil })
 	if err != nil || !reclaimed {
 		t.Fatalf("reclaiming pending copy = (%t, %v), want (true, nil)", reclaimed, err)
@@ -820,16 +735,10 @@ func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T)
 			pending := store.PendingMediaAssetCopy{
 				RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key,
 			}
-			if err := env.media.PreparePendingMediaAssetCopy(ctx, pending); err != nil {
-				t.Fatalf("reserving pending copy: %v", err)
-			}
+			testutil.RequireNoError(t, env.media.PreparePendingMediaAssetCopy(ctx, pending), "reserving pending copy")
 			var copyID int64
-			if err := env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID); err != nil {
-				t.Fatalf("loading copy: %v", err)
-			}
-			if _, err := env.pool.Exec(ctx, `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID); err != nil {
-				t.Fatalf("aging the copy: %v", err)
-			}
+			testutil.RequireNoError(t, env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID), "loading copy")
+			testutil.MustExec(t, env.pool, "aging the copy", `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID)
 			scratch := filepath.Join(t.TempDir(), "thumbnail.jpg")
 			writeFile(t, scratch, []byte("thumbnail"))
 			reclaimed := false
@@ -948,9 +857,7 @@ func TestObjectPublishCleanupDoesNotDeleteNewerThumbnailGeneration(t *testing.T)
 	originalID := dbtest.MediaAsset(t, env.pool, recordingID)
 	oldKey := env.publishThumbnail(t, recordingID, originalID, 0, nil, []byte("generation zero"))
 	current, err := env.media.GetThumbnailMediaAssetForServing(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("loading current thumbnail: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading current thumbnail")
 	seekMs := int64(1000)
 	expected := &store.ThumbnailObservation{
 		ID: current.ID, RelPath: current.RelPath, SeekMs: &seekMs, DerivedGeneration: 0,
@@ -1084,19 +991,13 @@ func TestObjectEncodeReservationNeverReusesAnInterruptedGeneration(t *testing.T)
 			RelPath: fmt.Sprintf("encoded/reuse.u%d.mp4", generation), DerivedGeneration: generation, ReserveNewGeneration: true,
 		})
 	}
-	if err := reserve(1); err != nil {
-		t.Fatalf("first reservation: %v", err)
-	}
+	testutil.RequireNoError(t, reserve(1), "first reservation")
 	if err := reserve(1); !errors.Is(err, store.ErrGenerationAdvanced) {
 		t.Fatalf("reserving the generation of an interrupted attempt = %v, want ErrGenerationAdvanced", err)
 	}
-	if err := reserve(2); err != nil {
-		t.Fatalf("reserving the next generation: %v", err)
-	}
+	testutil.RequireNoError(t, reserve(2), "reserving the next generation")
 	state, err := env.media.GetEncodedPublishState(ctx, recordingID, profile, false, false)
-	if err != nil {
-		t.Fatalf("loading encode publish state: %v", err)
-	}
+	testutil.RequireNoError(t, err, "loading encode publish state")
 	if state.MaxCopyGeneration == nil || *state.MaxCopyGeneration != 2 {
 		t.Fatalf("MaxCopyGeneration = %v, want 2 so that the next plan skips used generations", state.MaxCopyGeneration)
 	}
@@ -1109,17 +1010,13 @@ func TestObjectReplacementAddsRowAndNeverRewritesGeneration(t *testing.T) {
 	ctx := context.Background()
 	oldKey, newKey := env.replaceThumbnail(t)
 	rows, err := env.pool.Query(ctx, `SELECT rel_path, generation FROM media_asset_copies WHERE store = $1 ORDER BY id`, objectStoreName)
-	if err != nil {
-		t.Fatalf("listing copies: %v", err)
-	}
+	testutil.RequireNoError(t, err, "listing copies")
 	defer rows.Close()
 	got := map[string]int64{}
 	for rows.Next() {
 		var key string
 		var generation int64
-		if err := rows.Scan(&key, &generation); err != nil {
-			t.Fatalf("scanning copy: %v", err)
-		}
+		testutil.RequireNoError(t, rows.Scan(&key, &generation), "scanning copy")
 		got[key] = generation
 	}
 	if len(got) != 2 || got[oldKey] != 0 || got[newKey] != 1 {
@@ -1134,19 +1031,13 @@ func TestObjectEncodeRetryAfterInterruptedPublishUsesNewGeneration(t *testing.T)
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, env.pool)
 	mediaDir := t.TempDir()
-	if err := mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName); err != nil {
-		t.Fatalf("writing local media store marker: %v", err)
-	}
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing local media store marker")
 	sourceRel := fmt.Sprintf("s3-retry-%d/source.m2ts", time.Now().UnixNano())
 	prepareEncodeInput(t, env.pool, recordingID, mediaDir, sourceRel, []string{"h264"}, []byte("original source"))
 	initialKey, err := EncodedRelPath(sourceRel, "h264", "mp4", 0, false)
-	if err != nil {
-		t.Fatalf("building initial encoded key: %v", err)
-	}
+	testutil.RequireNoError(t, err, "building initial encoded key")
 	retryKey, err := EncodedRelPath(sourceRel, "h264", "mp4", 1, false)
-	if err != nil {
-		t.Fatalf("building retry encoded key: %v", err)
-	}
+	testutil.RequireNoError(t, err, "building retry encoded key")
 
 	worker := newH264Worker(env.pool, mediaDir, t.TempDir(), installCountingFFmpeg(t))
 	worker.MediaStoreName = dbtest.StoreName
@@ -1173,9 +1064,7 @@ func TestObjectEncodeRetryAfterInterruptedPublishUsesNewGeneration(t *testing.T)
 		t.Fatalf("after the interrupted attempt: object exists %t, copy state %q; want the uploaded key still pending",
 			env.objectExists(t, initialKey), env.copyState(t, initialKey))
 	}
-	if err := worker.Work(ctx, args); err != nil {
-		t.Fatalf("retrying encode: %v", err)
-	}
+	testutil.RequireNoError(t, worker.Work(ctx, args), "retrying encode")
 	if env.copyState(t, retryKey) != "active" {
 		t.Fatalf("retry copy state = %q, want active at %s", env.copyState(t, retryKey), retryKey)
 	}

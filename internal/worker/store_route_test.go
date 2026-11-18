@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // recordingStoreWorker は、どの置き場のワーカーが呼ばれたかを記録する。
@@ -44,12 +45,8 @@ func TestStoreRouteRunsTheWorkerBoundToTheJobsStore(t *testing.T) {
 	t.Parallel()
 	var calls []string
 	route := newTestEncodeRoute(&calls, "tokyo", "takamatsu")
-	if err := route.Work(context.Background(), jobs.EncodeJobArgs{Store: "takamatsu", RecordingID: 1, Profile: "p"}); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
-	if err := route.Work(context.Background(), jobs.EncodeJobArgs{Store: "tokyo", RecordingID: 2, Profile: "p"}); err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, route.Work(context.Background(), jobs.EncodeJobArgs{Store: "takamatsu", RecordingID: 1, Profile: "p"}), "Work")
+	testutil.RequireNoError(t, route.Work(context.Background(), jobs.EncodeJobArgs{Store: "tokyo", RecordingID: 2, Profile: "p"}), "Work")
 	if got, want := strings.Join(calls, ","), "takamatsu,tokyo"; got != want {
 		t.Fatalf("workers called = %s, want literal %s", got, want)
 	}
@@ -152,9 +149,7 @@ func TestIngestRouteLogsFallbackDestination(t *testing.T) {
 			route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
 				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 			})
-			if err := route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}); err != nil {
-				t.Fatalf("Work: %v", err)
-			}
+			testutil.RequireNoError(t, route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}), "Work")
 			if got := strings.Join(calls, ","); got != tt.want {
 				t.Fatalf("ingest wrote to %q, want literal %q", got, tt.want)
 			}
@@ -201,9 +196,7 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 			route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
 				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 			})
-			if err := route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}); err != nil {
-				t.Fatalf("Work: %v", err)
-			}
+			testutil.RequireNoError(t, route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}), "Work")
 			if len(calls) != 1 || calls[0] != tc.want {
 				t.Fatalf("ingest wrote to %v, want literal [%s]", calls, tc.want)
 			}
@@ -221,9 +214,7 @@ func TestEncodeReconcileQueuesForTheStoreHoldingTheOriginal(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "route/moved.m2ts", []string{"h265"}, []byte("x"))
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET store = 'takamatsu' WHERE store = $1`, dbtest.StoreName); err != nil {
-		t.Fatalf("moving the original copy to another store: %v", err)
-	}
+	testutil.MustExec(t, pool, "moving the original copy to another store", `UPDATE media_asset_copies SET store = 'takamatsu' WHERE store = $1`, dbtest.StoreName)
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)}
 	enqueuer := runEncodeReconcilePass(t, w)
 	got := findEncodeJob(t, enqueuer, id, "h265")

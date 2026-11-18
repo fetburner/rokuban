@@ -8,6 +8,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // emptyDeleteStores は空の置き場を返す。呼ばない更新メソッドは埋め込みで panic させる。
@@ -99,9 +100,7 @@ func TestS3DeleteMarkers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := mediapath.WriteStoreMarker(dir, "fs-a"); err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, mediapath.WriteStoreMarker(dir, "fs-a"), "mediapath.WriteStoreMarker")
 			empty := &emptyDeleteStores{stopped: tc.stopped}
 			markers := &selectiveMarkers{reject: tc.reject}
 			w := &DeleteReconcileWorker{MediaDir: dir, MediaStoreName: "fs-a", MediaDelete: empty, Storage: empty, RecordingPurge: empty, Breakers: empty, Markers: markers}
