@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // 孫プロセスが stdout を握ったまま残っても、ctx キャンセル後に runCMTool が戻る
@@ -15,9 +17,7 @@ func TestRunCMToolReturnsAfterCancelWhenGrandchildHoldsStdout(t *testing.T) {
 	setWorkerExecWaitDelayForTest(t, time.Second)
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "fake-tool.sh")
-	if err := os.WriteFile(tool, []byte("#!/bin/sh\nsleep 10 &\nsleep 10\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, os.WriteFile(tool, []byte("#!/bin/sh\nsleep 10 &\nsleep 10\n"), 0o755), "writing test file")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

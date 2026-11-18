@@ -110,7 +110,7 @@ type cmToolset struct {
 
 func writeExecutable(t *testing.T, path, body string) {
 	t.Helper()
-	testutil.RequireNoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755), "os.WriteFile")
+	testutil.RequireNoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755), "writing test file")
 }
 
 // newFakeCMTools は JLSE の 3 バイナリと ffprobe の代役を作る。logoframe は未学習の局なら
@@ -134,7 +134,7 @@ func newFakeCMToolsWithSizeAndReport(t *testing.T, lgd []byte, chapterExit int, 
 	t.Helper()
 	dir := t.TempDir()
 	lgdPath := filepath.Join(dir, "fixture.lgd")
-	testutil.RequireNoError(t, os.WriteFile(lgdPath, lgd, 0o600), "os.WriteFile")
+	testutil.RequireNoError(t, os.WriteFile(lgdPath, lgd, 0o600), "writing test file")
 	// logoframe は渡された引数を 1 行ずつ argsPath に残す（呼び出し側が何を渡したかを
 	// テストから読めるようにする）。作業ディレクトリは実行後に消えるので外に置く。
 	argsPath := filepath.Join(dir, "logoframe-args.txt")
@@ -465,12 +465,10 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 	id := dbtest.Recording(t, pool, cmRecordingOptions(922))
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
-	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
 		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}), "UpsertCMLogo")
 
 	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil {
@@ -499,12 +497,10 @@ func TestCMDetectWorkRejectsLowMatchForExistingLogo(t *testing.T) {
 	id := dbtest.Recording(t, pool, cmRecordingOptions(923))
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
-	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
 		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}), "UpsertCMLogo")
 
 	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "below") {
@@ -639,7 +635,7 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 				markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "retrying", nil, nil)
 			}
 			tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
-			testutil.RequireNoError(t, os.WriteFile(tools.hold, nil, 0o600), "os.WriteFile")
+			testutil.RequireNoError(t, os.WriteFile(tools.hold, nil, 0o600), "writing test file")
 			var workCtx context.Context
 			var cancel context.CancelFunc
 			if tc.cancelWork {
@@ -744,10 +740,8 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	var state string
 	var stage, message *string
 	var attemptCount int32
-	if err := pool.QueryRow(ctx, `SELECT state, stage, error, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, dead).
-		Scan(&state, &stage, &message, &attemptCount); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, stage, error, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, dead).
+		Scan(&state, &stage, &message, &attemptCount), "reading attempt row")
 	if state != "failed" || stage == nil || *stage != "stopped" || message == nil || !strings.Contains(*message, "process stopped") || attemptCount != 3 {
 		t.Errorf("dead attempt row = (%q, %v, %v, %d), want failed/stopped/process stopped/3", state, stage, message, attemptCount)
 	}
@@ -823,9 +817,7 @@ func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
 	if got := cmPolicyGeneration(t, ctx, pool, id); got != 1 {
 		t.Fatalf("generation after disable = %d, want 1", got)
 	}
-	if err := q.ClearRecordingCMDetection(ctx, id); err != nil { // idempotent re-send
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, id), "q.ClearRecordingCMDetection") // idempotent re-send
 	if got := cmPolicyGeneration(t, ctx, pool, id); got != 1 {
 		t.Fatalf("generation after idempotent disable = %d, want 1", got)
 	}
@@ -1044,7 +1036,7 @@ func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
 // 実 logoframe が長く走る間に API が割り込む窓の再現。
 func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset, id int64, during func()) error {
 	t.Helper()
-	testutil.RequireNoError(t, os.WriteFile(tools.hold, nil, 0o600), "os.WriteFile")
+	testutil.RequireNoError(t, os.WriteFile(tools.hold, nil, 0o600), "writing test file")
 	done := make(chan error, 1)
 	go func() {
 		done <- runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
@@ -1060,7 +1052,7 @@ func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset
 		time.Sleep(20 * time.Millisecond)
 	}
 	during()
-	testutil.RequireNoError(t, os.Remove(tools.hold), "os.Remove")
+	testutil.RequireNoError(t, os.Remove(tools.hold), "removing hold file")
 	return <-done
 }
 
@@ -1073,11 +1065,9 @@ func putAreaLikeAPI(t *testing.T, pool *pgxpool.Pool) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 	testutil.RequireNoError(t, q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: 32736, ServiceID: 1024}), "q.LockCMStation")
-	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+	testutil.RequireNoError(t, q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
 		NetworkID: 32736, ServiceID: 1024, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}), "q.UpsertCMLogoArea")
 	if _, err := q.DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
 		t.Fatal(err)
 	}
@@ -1116,21 +1106,17 @@ func TestCMDetectWorkDoesNotWriteBackAnOldLogoDeletedDuringTheJob(t *testing.T) 
 	id := dbtest.Recording(t, pool, cmRecordingOptions(931))
 	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
-	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
 		CodedWidth: 1440, CodedHeight: 1080,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}), "UpsertCMLogo")
 
 	err := workHeld(t, pool, mediaDir, tools, id, func() {
 		if _, err := pool.Exec(ctx, `DELETE FROM cm_logos`); err != nil {
 			t.Error(err)
 		}
 	})
-	if err != nil {
-		t.Fatalf("Work: %v", err)
-	}
+	testutil.RequireNoError(t, err, "Work")
 	if n := countLogos(t, pool); n != 0 {
 		t.Errorf("cm_logos rows = %d, want 0: the old logo read at job start must not be written back", n)
 	}

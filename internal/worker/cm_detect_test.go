@@ -242,9 +242,7 @@ func TestCMLogoMatchPercentParsesLogoframeOutput(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
+			testutil.RequireNoError(t, err, "cmLogoMatchPercent")
 			if got != tt.want {
 				t.Errorf("cmLogoMatchPercent = %v, want %v", got, tt.want)
 			}
@@ -262,7 +260,7 @@ func TestStationLogoFilesUseLogoframeLatestConvention(t *testing.T) {
 	if string(got) != string(logo) {
 		t.Fatalf("logo bytes = %q, want %q", got, logo)
 	}
-	testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte("../outside.lgd\n"), 0o600), "os.WriteFile")
+	testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte("../outside.lgd\n"), 0o600), "writing test file")
 	if _, err := readStationLogo(dir, "n1-s2"); err == nil {
 		t.Fatal("unsafe latest pointer must fail")
 	}
@@ -387,12 +385,10 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	fail(t, id, nil)
 	wantDesired(t, id, false)
 
-	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+	testutil.RequireNoError(t, q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
 		NetworkID: 32736, ServiceID: 1024, X: 1180, Y: 24, W: 240, H: 96,
 		CodedWidth: 1440, CodedHeight: 1080,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}), "q.UpsertCMLogoArea")
 	wantDesired(t, id, false) // 枠だけでは再投入しない
 
 	// 候補が存在しても、枠あり・ロゴなしの局の新しい録画は desired のまま（ingest ヒントも
@@ -416,11 +412,9 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	wantDesired(t, fresh, false)
 
 	// 採用でロゴができると、失敗していた録画（adopt 待ちを含む）が desired に戻る。
-	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+	testutil.RequireNoError(t, q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	}), "q.UpsertCMLogo")
 	wantDesired(t, id, true)
 	wantDesired(t, fresh, true)
 }
@@ -494,8 +488,8 @@ func TestReadStationLogoLatestFormats(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2-v0001.lgd"), []byte("LGD"), 0o600), "os.WriteFile")
-			testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte(tt.latest), 0o600), "os.WriteFile")
+			testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2-v0001.lgd"), []byte("LGD"), 0o600), "writing test file")
+			testutil.RequireNoError(t, os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte(tt.latest), 0o600), "writing test file")
 			got, err := readStationLogo(dir, "n1-s2")
 			if (err == nil) != tt.ok || (tt.ok && string(got) != "LGD") {
 				t.Fatalf("got %q, %v; want ok=%v", got, err, tt.ok)
