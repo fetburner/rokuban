@@ -30,14 +30,18 @@ func TestNewWorkersRegistersThumbnailJobs(t *testing.T) {
 
 	tokyoErr := errors.New("Tokyo media queried")
 	nagoyaErr := errors.New("Nagoya media queried")
+	unscopedErr := errors.New("unscoped media queried")
 	tokyoRoot, nagoyaRoot := t.TempDir(), t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(tokyoRoot, "tokyo"), "marking Tokyo root")
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(nagoyaRoot, "nagoya"), "marking Nagoya root")
-	registry := NewWorkers(&Deps{PerStore: map[string]*Deps{
-		"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo", MediaReconcile: thumbnailRouteMedia{err: tokyoErr}},
-		"nagoya":  {MediaDir: nagoyaRoot, MediaStoreName: "nagoya", MediaReconcile: thumbnailRouteMedia{err: nagoyaErr}},
-		"swapped": {MediaDir: tokyoRoot, MediaStoreName: "swapped", MediaReconcile: thumbnailRouteMedia{err: tokyoErr}},
-	}})
+	registry := NewWorkers(&Deps{
+		UnscopedMediaReconcile: thumbnailRouteMedia{err: unscopedErr},
+		PerStore: map[string]*StoreDeps{
+			"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo", MediaReconcile: thumbnailRouteMedia{err: tokyoErr}},
+			"nagoya":  {MediaDir: nagoyaRoot, MediaStoreName: "nagoya", MediaReconcile: thumbnailRouteMedia{err: nagoyaErr}},
+			"swapped": {MediaDir: tokyoRoot, MediaStoreName: "swapped", MediaReconcile: thumbnailRouteMedia{err: tokyoErr}},
+		},
+	})
 
 	for _, tc := range []struct {
 		kind, payload, queue string

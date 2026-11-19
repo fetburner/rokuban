@@ -29,11 +29,11 @@ func (w recordingStoreWorker) Work(context.Context, jobs.EncodeJobArgs) error {
 }
 
 func newTestEncodeRoute(calls *[]string, stores ...string) *storeRoute[jobs.EncodeJobArgs] {
-	perStore := make(map[string]*Deps, len(stores))
+	perStore := make(map[string]*StoreDeps, len(stores))
 	for _, name := range stores {
-		perStore[name] = &Deps{MediaStoreName: name}
+		perStore[name] = &StoreDeps{MediaStoreName: name}
 	}
-	return newStoreRoute("encode", perStore, func(d *Deps) jobq.Worker[jobs.EncodeJobArgs] {
+	return newStoreRoute("encode", &Deps{}, perStore, func(_ *Deps, d *StoreDeps) jobq.Worker[jobs.EncodeJobArgs] {
 		return recordingStoreWorker{store: d.MediaStoreName, calls: calls}
 	})
 }
@@ -133,9 +133,9 @@ func TestIngestRouteLogsFallbackDestination(t *testing.T) {
 			previous := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 			t.Cleanup(func() { slog.SetDefault(previous) })
-			perStore := make(map[string]*Deps, len(tt.mounted))
+			perStore := make(map[string]*StoreDeps, len(tt.mounted))
 			for _, name := range tt.mounted {
-				perStore[name] = &Deps{MediaStoreName: name}
+				perStore[name] = &StoreDeps{MediaStoreName: name}
 			}
 			var calls []string
 			deps := &Deps{
@@ -144,7 +144,7 @@ func TestIngestRouteLogsFallbackDestination(t *testing.T) {
 				IngestStores:          fixedStoreChooser{tt.chosen},
 				StorageTransferPolicy: policy,
 			}
-			route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
+			route := newIngestRoute(deps, func(_ *Deps, d *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
 				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 			})
 			testutil.RequireNoError(t, route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}), "Work")
@@ -186,12 +186,12 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []string
-			perStore := map[string]*Deps{}
+			perStore := map[string]*StoreDeps{}
 			for _, name := range tc.mounted {
-				perStore[name] = &Deps{MediaStoreName: name}
+				perStore[name] = &StoreDeps{MediaStoreName: name}
 			}
 			deps := &Deps{PerStore: perStore, MountedStores: tc.mounted, IngestStores: fixedStoreChooser{tc.chosen}, StorageTransferPolicy: policy}
-			route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
+			route := newIngestRoute(deps, func(_ *Deps, d *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
 				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 			})
 			testutil.RequireNoError(t, route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}), "Work")
@@ -218,9 +218,9 @@ func TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail(t *testing.T
 		Derived:   "tokyo",
 	}
 	var calls []string
-	perStore := map[string]*Deps{"tokyo": {MediaStoreName: "tokyo"}, "takamatsu": {MediaStoreName: "takamatsu"}}
+	perStore := map[string]*StoreDeps{"tokyo": {MediaStoreName: "tokyo"}, "takamatsu": {MediaStoreName: "takamatsu"}}
 	deps := &Deps{PerStore: perStore, MountedStores: []string{"tokyo", "takamatsu"}, IngestStores: failingStoreChooser{}, StorageTransferPolicy: policy}
-	route := newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
+	route := newIngestRoute(deps, func(_ *Deps, d *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
 		return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 	})
 	if err := route.Work(context.Background(), jobs.IngestJobArgs{Site: "home", RecordID: "r"}); err != nil {

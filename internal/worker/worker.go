@@ -47,10 +47,6 @@ type Deps struct {
 	ScheduleSync store.ScheduleSync
 	// RecordObservations は mirakc の record 観測を永続化する契約。
 	RecordObservations store.RecordObservations
-	// IngestTarget は ingest が record_sync から転送先を読む契約。
-	IngestTarget store.IngestTarget
-	// Catalog は catalog の export と restore を行う契約。
-	Catalog store.Catalog
 
 	// MirakcClients は `--sites` で束縛された site 名から mirakc クライアントへの
 	// map（issue #532。1 プロセスが N site を束縛できるようになったため、
@@ -64,50 +60,38 @@ type Deps struct {
 	// 必ず拒む（起動時には validateSiteBinding が
 	// この組み合わせ自体を防ぐ）。
 	MirakcClients map[string]*mirakc.Client
-	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
-	CMStationStore store.CMStation
-	// CMDetectionStore は CM 検出 worker・reconcile の永続化契約。
-	CMDetectionStore store.CMDetection
+	// UnscopedCMDetectionStore は CM 検出 worker・reconcile の永続化契約。置き場ごとの worker は
+	// StoreDeps の値を使い、この値は置き場に束ねない reconcile が使う。StoreDeps.CMDetectionStore と
+	// build 内で取り違えないよう、置き場に束ねないことを名前で示す。
+	UnscopedCMDetectionStore store.CMDetection
 	// TunerStore はチューナー同期の永続化契約。
 	TunerStore store.TunerSync
 	// CapacityStore はチューナー worker の容量判定読み取り契約。
 	CapacityStore store.Capacity
-	// RecordingPurge は録画の物理削除の永続化契約。
-	RecordingPurge store.RecordingPurge
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
 	LabelRuleReevaluation store.LabelRuleReevaluation
-	MediaReconcile        store.MediaReconcile
-	MediaPublish          store.MediaPublish
-	// DerivedMediaPublish と DerivedObjects は派生物の置き場に束ねた契約。
-	DerivedMediaPublish    store.DerivedMediaPublisher
+	// UnscopedMediaReconcile は置き場に束ねない reconcile の永続化契約。
+	// thumbnail / encode の周期 reconcile が使う値は意図的に未束縛である。StoreDeps.MediaReconcile と
+	// build 内で取り違えないよう、置き場に束ねないことを名前で示す。
+	UnscopedMediaReconcile store.MediaReconcile
+	// DerivedObjects は派生物の置き場に束ねた object store で、全置き場のワーカーに同じ値を渡す。
+	// StoreDeps.DerivedMediaPublish と組み合わせて使う。
 	DerivedObjects         objstore.Store
 	DerivedObjectStoreName string
-	// DerivedMediaDelete・DerivedPendingReclaim・DerivedStorage は、独立した派生物置き場の
-	// 削除 reconcile 用の store。
-	DerivedMediaDelete    store.MediaDelete
-	DerivedPendingReclaim store.PendingCopyReclaim
-	DerivedStorage        store.StorageObservation
-	StorageObjects        map[string]objstore.Store
-	IngestPrecheck        store.IngestPrecheck
-	EncodeProgress        store.EncodeProgressReporter
-	MediaDelete           store.MediaDelete
-	// MediaPendingReclaim は共有 FS にある派生物 pending copy の aged reclaim 用。
-	MediaPendingReclaim   store.PendingCopyReclaim
-	StorageTransfer       store.StorageTransfer
-	StorageTransferPolicy config.StorageConfig
-	StorageRoots          map[string]string
-	TSScan                store.TSScan
-	EncodeAttempts        store.EncodeAttempts
-	StorageObservation    store.StorageObservation
-	// MediaDir と MediaStoreName は、このワーカー群が束ねた 1 つの置き場の root と名前である。
-	// 置き場で修飾するキューのワーカー（PerStore）と ingest は、置き場ごとの Deps のこの値を使う。
-	MediaDir       string
-	MediaStoreName string
-	// PerStore は、マウントした FS 置き場ごとに束ねた Deps（置き場の名前から）。MediaDir・
-	// MediaStoreName と、置き場に束ねた store（MediaReconcile など）を置き場ごとに持つ。
+	StorageObjects         map[string]objstore.Store
+	// UnscopedStorageTransfer は置き場に束ねない transfer reconcile の永続化契約。
+	// StoreDeps.StorageTransfer と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
+	UnscopedStorageTransfer store.StorageTransfer
+	StorageTransferPolicy   config.StorageConfig
+	StorageRoots            map[string]string
+	// UnscopedTSScan は置き場に束ねない TS scan reconcile の永続化契約。
+	// StoreDeps.TSScan と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
+	UnscopedTSScan store.TSScan
+	// PerStore は、マウントした FS 置き場ごとに束ねた StoreDeps（置き場の名前から）。
+	// root・名前と置き場に束ねた store（MediaReconcile など）を置き場ごとに持つ。
 	// 空なら置き場で修飾したワーカーは登録されず、その kind のジョブは置き場の不一致で失敗する。
 	// このトップレベルの store は置き場に束ねず、DB だけを触る reconcile が使う。
-	PerStore map[string]*Deps
+	PerStore map[string]*StoreDeps
 	// MountedStores はマウントした FS 置き場の名前を `--stores` の順で持つ。ingest が規則で
 	// 選べなかったときに書く先頭の置き場を決める（名前順ではない。内容は PerStore と同じ集合）。
 	MountedStores []string
@@ -173,8 +157,53 @@ type Deps struct {
 	Cleanup config.CleanupConfig
 }
 
-// perStore は置き場ごとの Deps を返す。空なら置き場で修飾したワーカーを 1 つも登録しない。
-func (deps *Deps) perStore() map[string]*Deps {
+// StoreDeps は、1 つの置き場に束ねた root・名前・store だけを持つ。
+// 置き場（store）に束ねた依存で、build がプロセス共通の Deps と対で受け取るので、この名前にした。
+// Deps を複製して値を上書きする形では、置き場に束ねた store の代入漏れでも、base の束ねない store が
+// 黙って残ってコンパイルが通る。この型ではその状態を表せない。代入漏れで生じた nil は
+// TestNewStoreScopedDepsInitializesEveryStoreDependency が検出する。
+type StoreDeps struct {
+	// MediaDir と MediaStoreName は、このワーカー群が束ねた 1 つの置き場の root と名前である。
+	// 置き場で修飾するキューのワーカー（PerStore）と ingest は、置き場ごとの StoreDeps のこの値を使う。
+	MediaDir       string
+	MediaStoreName string
+
+	// MediaReconcile は、この置き場に束ねた reconcile の永続化契約。
+	MediaReconcile store.MediaReconcile
+	MediaPublish   store.MediaPublish
+	// IngestPrecheck は ingest が既存メディアを確認する永続化契約。
+	IngestPrecheck store.IngestPrecheck
+	// EncodeProgress は encode の進捗を報告する永続化契約。
+	EncodeProgress store.EncodeProgressReporter
+	MediaDelete    store.MediaDelete
+	// MediaPendingReclaim は共有 FS にある派生物 pending copy の aged reclaim 用。
+	MediaPendingReclaim store.PendingCopyReclaim
+	StorageTransfer     store.StorageTransfer
+	TSScan              store.TSScan
+	EncodeAttempts      store.EncodeAttempts
+	StorageObservation  store.StorageObservation
+	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
+	CMStationStore store.CMStation
+	// CMDetectionStore は CM 検出 worker の永続化契約。
+	CMDetectionStore store.CMDetection
+	// IngestTarget は ingest が record_sync から転送先を読む契約。
+	IngestTarget store.IngestTarget
+	// RecordingPurge は録画の物理削除の永続化契約。
+	RecordingPurge store.RecordingPurge
+	// Catalog は catalog の export と restore を行う契約。
+	Catalog store.Catalog
+
+	// DerivedMediaPublish は、この置き場で生成した派生物を DB に公開する契約。
+	DerivedMediaPublish store.DerivedMediaPublisher
+	// DerivedMediaDelete・DerivedPendingReclaim・DerivedStorage は、独立した派生物置き場の
+	// 削除 reconcile 用の store。
+	DerivedMediaDelete    store.MediaDelete
+	DerivedPendingReclaim store.PendingCopyReclaim
+	DerivedStorage        store.StorageObservation
+}
+
+// perStore は置き場ごとの StoreDeps を返す。空なら置き場で修飾したワーカーを 1 つも登録しない。
+func (deps *Deps) perStore() map[string]*StoreDeps {
 	return deps.PerStore
 }
 
@@ -186,28 +215,14 @@ func (deps *Deps) perStore() map[string]*Deps {
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
 	registerStoreRoutedWorkers(workers, deps)
-	riveradapter.Register(workers, newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
-		return &ingest.IngestWorker{
-			StorageProbed:       d.IngestStorageProbed,
-			Enqueuer:            d.Enqueuer,
-			MirakcClients:       d.MirakcClients,
-			Publisher:           d.MediaPublish,
-			Precheck:            d.IngestPrecheck,
-			RecordTarget:        d.IngestTarget,
-			CMDetectionStore:    d.CMDetectionStore,
-			MediaDir:            d.MediaDir,
-			MediaStoreName:      d.MediaStoreName,
-			StallTimeout:        d.IngestStallTimeout,
-			CMDetect:            d.CMDetect,
-			CutProfiles:         d.Encode.CutProfileSet(),
-			RecordingHLSEnabled: d.RecordingHLSEnabled,
-		}
+	riveradapter.Register(workers, newIngestRoute(deps, func(d *Deps, s *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
+		return newIngestWorker(d, s)
 	}))
 	riveradapter.Register(workers, &encode.EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
-		Media:    deps.MediaReconcile,
+		Media:    deps.UnscopedMediaReconcile,
 		// 転送待ちが backlog_limit に達した置き場への encode 投入を止める（背圧）。
-		Transfers:     deps.StorageTransfer,
+		Transfers:     deps.UnscopedStorageTransfer,
 		StoragePolicy: deps.StorageTransferPolicy,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
@@ -257,44 +272,63 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &thumbnail.ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
-		Media:    deps.MediaReconcile,
+		Media:    deps.UnscopedMediaReconcile,
 		Markers:  deps.LoopMarkers,
 	})
 	riveradapter.Register(workers, &cmdetect.CMDetectReconcileWorker{
 		Enqueuer:       deps.Enqueuer,
 		Locator:        deps.OriginalLocator,
-		DetectionStore: deps.CMDetectionStore,
+		DetectionStore: deps.UnscopedCMDetectionStore,
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
 	riveradapter.Register(workers, &storagemaint.StorageTransferReconcileWorker{
 		Enqueuer: deps.Enqueuer,
-		Storage:  deps.StorageTransfer,
+		Storage:  deps.UnscopedStorageTransfer,
 		Config:   deps.StorageTransferPolicy,
 	})
 	riveradapter.Register(workers, &storagemaint.StorageTransferWorker{
-		Storage:      deps.StorageTransfer,
+		Storage:      deps.UnscopedStorageTransfer,
 		Config:       deps.StorageTransferPolicy,
 		Roots:        deps.StorageRoots,
 		ObjectStores: deps.StorageObjects,
 		ScratchDir:   deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.UnscopedTSScan, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
 	return workers
+}
+
+// newIngestWorker はプロセス共通の Deps と置き場の StoreDeps から ingest worker を組み立てる。
+func newIngestWorker(d *Deps, s *StoreDeps) *ingest.IngestWorker {
+	return &ingest.IngestWorker{
+		StorageProbed:       d.IngestStorageProbed,
+		Enqueuer:            d.Enqueuer,
+		MirakcClients:       d.MirakcClients,
+		Publisher:           s.MediaPublish,
+		Precheck:            s.IngestPrecheck,
+		RecordTarget:        s.IngestTarget,
+		CMDetectionStore:    s.CMDetectionStore,
+		MediaDir:            s.MediaDir,
+		MediaStoreName:      s.MediaStoreName,
+		StallTimeout:        d.IngestStallTimeout,
+		CMDetect:            d.CMDetect,
+		CutProfiles:         d.Encode.CutProfileSet(),
+		RecordingHLSEnabled: d.RecordingHLSEnabled,
+	}
 }
 
 // registerStoreRoutedWorkers は、原本のある置き場に束ねて動くワーカーを登録する。ジョブの置き場を
 // マウントしていないプロセスでは、どれもファイルに触れる前に失敗する（newStoreRoute）。
 func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
-	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps.perStore(), func(d *Deps) jobq.Worker[jobs.EncodeJobArgs] {
+	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.EncodeJobArgs] {
 		return &encode.EncodeWorker{
-			Media:           d.MediaReconcile,
-			Attempts:        d.EncodeAttempts,
-			Publisher:       d.MediaPublish,
-			ObjectPublisher: d.DerivedMediaPublish,
+			Media:           s.MediaReconcile,
+			Attempts:        s.EncodeAttempts,
+			Publisher:       s.MediaPublish,
+			ObjectPublisher: s.DerivedMediaPublish,
 			Objects:         d.DerivedObjects,
-			Progress:        d.EncodeProgress,
-			MediaDir:        d.MediaDir,
-			MediaStoreName:  d.MediaStoreName,
+			Progress:        s.EncodeProgress,
+			MediaDir:        s.MediaDir,
+			MediaStoreName:  s.MediaStoreName,
 			ScratchDir:      d.ScratchDir,
 			FFmpeg:          d.Encode.FFmpeg,
 			FFprobe:         d.Encode.FFprobe,
@@ -302,90 +336,90 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 			Webhook:         d.Webhook,
 		}
 	}))
-	riveradapter.Register[jobs.CatalogExportArgs](workers, newStoreRoute("catalog_export", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CatalogExportArgs] {
+	riveradapter.Register[jobs.CatalogExportArgs](workers, newStoreRoute("catalog_export", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CatalogExportArgs] {
 		return &CatalogExportWorker{
-			Store:          d.Catalog,
-			MediaDir:       d.MediaDir,
-			MediaStoreName: d.MediaStoreName,
+			Store:          s.Catalog,
+			MediaDir:       s.MediaDir,
+			MediaStoreName: s.MediaStoreName,
 		}
 	}))
-	riveradapter.Register[jobs.ThumbnailJobArgs](workers, newStoreRoute("thumbnail", deps.perStore(), func(d *Deps) jobq.Worker[jobs.ThumbnailJobArgs] {
+	riveradapter.Register[jobs.ThumbnailJobArgs](workers, newStoreRoute("thumbnail", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.ThumbnailJobArgs] {
 		return &thumbnail.ThumbnailWorker{
-			Media:            d.MediaReconcile,
-			ObjectPublisher:  d.DerivedMediaPublish,
+			Media:            s.MediaReconcile,
+			ObjectPublisher:  s.DerivedMediaPublish,
 			Objects:          d.DerivedObjects,
-			MediaDir:         d.MediaDir,
-			MediaStoreName:   d.MediaStoreName,
+			MediaDir:         s.MediaDir,
+			MediaStoreName:   s.MediaStoreName,
 			DerivedStoreName: d.DerivedObjectStoreName,
 			ScratchDir:       d.ScratchDir,
 			FFmpeg:           d.Encode.FFmpeg,
 			FFprobe:          d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.SeekTilesJobArgs](workers, newStoreRoute("seek_tiles", deps.perStore(), func(d *Deps) jobq.Worker[jobs.SeekTilesJobArgs] {
+	riveradapter.Register[jobs.SeekTilesJobArgs](workers, newStoreRoute("seek_tiles", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.SeekTilesJobArgs] {
 		return &thumbnail.SeekTilesWorker{
-			Media:           d.MediaReconcile,
-			ObjectPublisher: d.DerivedMediaPublish,
+			Media:           s.MediaReconcile,
+			ObjectPublisher: s.DerivedMediaPublish,
 			Objects:         d.DerivedObjects,
-			MediaDir:        d.MediaDir,
-			MediaStoreName:  d.MediaStoreName,
+			MediaDir:        s.MediaDir,
+			MediaStoreName:  s.MediaStoreName,
 			ScratchDir:      d.ScratchDir,
 			FFmpeg:          d.Encode.FFmpeg,
 			FFprobe:         d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.CMDetectJobArgs](workers, newStoreRoute("cm_detect", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CMDetectJobArgs] {
+	riveradapter.Register[jobs.CMDetectJobArgs](workers, newStoreRoute("cm_detect", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CMDetectJobArgs] {
 		return &cmdetect.CMDetectWorker{
 			Enqueuer:       d.Enqueuer,
-			DetectionStore: d.CMDetectionStore,
-			MediaDir:       d.MediaDir,
-			StoreName:      d.MediaStoreName,
+			DetectionStore: s.CMDetectionStore,
+			MediaDir:       s.MediaDir,
+			StoreName:      s.MediaStoreName,
 			ScratchDir:     d.ScratchDir,
 			CMDetect:       d.CMDetect,
 			FFprobe:        d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.CMLogoCandidateJobArgs](workers, newStoreRoute("cm_logo_candidate", deps.perStore(), func(d *Deps) jobq.Worker[jobs.CMLogoCandidateJobArgs] {
+	riveradapter.Register[jobs.CMLogoCandidateJobArgs](workers, newStoreRoute("cm_logo_candidate", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CMLogoCandidateJobArgs] {
 		return &cmdetect.CMLogoCandidateWorker{
-			Store:      d.CMStationStore,
-			MediaDir:   d.MediaDir,
+			Store:      s.CMStationStore,
+			MediaDir:   s.MediaDir,
 			ScratchDir: d.ScratchDir,
 			CMDetect:   d.CMDetect,
 			FFprobe:    d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.DeleteReconcileArgs](workers, newStoreRoute("delete_reconcile", deps.perStore(), func(d *Deps) jobq.Worker[jobs.DeleteReconcileArgs] {
-		return newDeleteReconcileWorker(d)
+	riveradapter.Register[jobs.DeleteReconcileArgs](workers, newStoreRoute("delete_reconcile", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.DeleteReconcileArgs] {
+		return newDeleteReconcileWorker(d, s)
 	}))
-	riveradapter.Register[jobs.StorageSyncArgs](workers, newStoreRoute("storage_sync", deps.perStore(), func(d *Deps) jobq.Worker[jobs.StorageSyncArgs] {
+	riveradapter.Register[jobs.StorageSyncArgs](workers, newStoreRoute("storage_sync", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.StorageSyncArgs] {
 		return &StorageSyncWorker{
-			Storage:    d.StorageObservation,
-			MediaDir:   d.MediaDir,
+			Storage:    s.StorageObservation,
+			MediaDir:   s.MediaDir,
 			ScratchDir: d.ScratchDir,
 		}
 	}))
-	riveradapter.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps.perStore(), func(d *Deps) jobq.Worker[tsscan.ScanArgs] {
-		return &tsscan.ScanWorker{Media: d.TSScan, MediaDir: d.MediaDir}
+	riveradapter.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[tsscan.ScanArgs] {
+		return &tsscan.ScanWorker{Media: s.TSScan, MediaDir: s.MediaDir}
 	}))
 }
 
-// newDeleteReconcileWorker は削除 reconcile worker を Deps から組み立てる。
-func newDeleteReconcileWorker(deps *Deps) *storagemaint.DeleteReconcileWorker {
+// newDeleteReconcileWorker は削除 reconcile worker を Deps と StoreDeps から組み立てる。
+func newDeleteReconcileWorker(deps *Deps, scoped *StoreDeps) *storagemaint.DeleteReconcileWorker {
 	return &storagemaint.DeleteReconcileWorker{
-		MediaDelete:            deps.MediaDelete,
-		MediaPendingReclaim:    deps.MediaPendingReclaim,
-		StorageTransfer:        deps.StorageTransfer,
+		MediaDelete:            scoped.MediaDelete,
+		MediaPendingReclaim:    scoped.MediaPendingReclaim,
+		StorageTransfer:        scoped.StorageTransfer,
 		StorageTransferPolicy:  deps.StorageTransferPolicy,
-		RecordingPurge:         deps.RecordingPurge,
+		RecordingPurge:         scoped.RecordingPurge,
 		Breakers:               deps.Breakers,
-		Storage:                deps.StorageObservation,
-		MediaDir:               deps.MediaDir,
-		MediaStoreName:         deps.MediaStoreName,
+		Storage:                scoped.StorageObservation,
+		MediaDir:               scoped.MediaDir,
+		MediaStoreName:         scoped.MediaStoreName,
 		DerivedObjects:         deps.DerivedObjects,
 		DerivedObjectStoreName: deps.DerivedObjectStoreName,
-		DerivedMediaDelete:     deps.DerivedMediaDelete,
-		DerivedPendingReclaim:  deps.DerivedPendingReclaim,
-		DerivedStorage:         deps.DerivedStorage,
+		DerivedMediaDelete:     scoped.DerivedMediaDelete,
+		DerivedPendingReclaim:  scoped.DerivedPendingReclaim,
+		DerivedStorage:         scoped.DerivedStorage,
 		StorageObjects:         deps.StorageObjects,
 		TransferOverlap:        deps.TransferOverlap,
 		TrashRetention:         deps.Cleanup.TrashRetention,

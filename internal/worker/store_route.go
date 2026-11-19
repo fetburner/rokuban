@@ -57,10 +57,11 @@ type queueStoreArgs interface {
 }
 
 // newStoreRoute は置き場ごとにワーカーを作り、Args の QueueStore で振り分ける worker を返す。
-func newStoreRoute[T queueStoreArgs](kind string, stores map[string]*Deps, build func(*Deps) jobq.Worker[T]) *storeRoute[T] {
+// build にはプロセス共通の Deps と、その置き場の StoreDeps を別々に渡す。
+func newStoreRoute[T queueStoreArgs](kind string, deps *Deps, stores map[string]*StoreDeps, build func(*Deps, *StoreDeps) jobq.Worker[T]) *storeRoute[T] {
 	workers := make(map[string]jobq.Worker[T], len(stores))
-	for name, deps := range stores {
-		workers[name] = build(deps)
+	for name, scoped := range stores {
+		workers[name] = build(deps, scoped)
 	}
 	return &storeRoute[T]{
 		kind:    kind,
@@ -105,11 +106,12 @@ func chooseIngestStore(ctx context.Context, deps *Deps, site string) (string, er
 // 設定と SQL の評価が食い違ったときだけである。このときも Warn にする。
 //
 // 規則の評価は SQL の関数が行い、ここには規則の写しを置かない。
-func newIngestRoute(deps *Deps, build func(*Deps) jobq.Worker[jobs.IngestJobArgs]) *storeRoute[jobs.IngestJobArgs] {
+// build にはプロセス共通の Deps と、振り分け先の StoreDeps を別々に渡す。
+func newIngestRoute(deps *Deps, build func(*Deps, *StoreDeps) jobq.Worker[jobs.IngestJobArgs]) *storeRoute[jobs.IngestJobArgs] {
 	stores := deps.perStore()
 	workers := make(map[string]jobq.Worker[jobs.IngestJobArgs], len(stores))
-	for name, d := range stores {
-		workers[name] = build(d)
+	for name, scoped := range stores {
+		workers[name] = build(deps, scoped)
 	}
 	mounted := deps.MountedStores
 	return &storeRoute[jobs.IngestJobArgs]{

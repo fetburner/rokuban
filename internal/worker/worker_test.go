@@ -65,14 +65,14 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 
 	// 置き場を 1 つ束ねた構成として組む。PerStore を持たない Deps からは置き場のワーカーは登録されない。
 	registry := NewWorkers(&Deps{
-		MountedStores: []string{""},
-		PerStore: map[string]*Deps{"": {
-			MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(fake.URL(), nil)),
-			MediaPublish:       media,
-			IngestTarget:       pgstoretest.Recordings(pool),
-			IngestPrecheck:     media,
-			Enqueuer:           newRecordingEnqueuer(),
-			IngestStallTimeout: time.Second,
+		MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(fake.URL(), nil)),
+		Enqueuer:           newRecordingEnqueuer(),
+		MountedStores:      []string{""},
+		IngestStallTimeout: time.Second,
+		PerStore: map[string]*StoreDeps{"": {
+			MediaPublish:   media,
+			IngestTarget:   pgstoretest.Recordings(pool),
+			IngestPrecheck: media,
 		}},
 	})
 	testutil.RequireNoError(t, registry.Work(context.Background(), jobs.IngestJobArgs{Site: store.DefaultSite, RecordID: recordID}), "registered ingest worker Work()")

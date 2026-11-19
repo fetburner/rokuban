@@ -34,10 +34,14 @@ func TestNewWorkersRegistersCMJobs(t *testing.T) {
 
 	tokyoErr := errors.New("Tokyo analysis store called")
 	nagoyaErr := errors.New("Nagoya analysis store called")
-	registry := NewWorkers(&Deps{PerStore: map[string]*Deps{
-		"tokyo":  {MediaStoreName: "tokyo", CMDetectionStore: cmDetectionRouteStore{err: tokyoErr}, CMStationStore: cmStationRouteStore{err: tokyoErr}},
-		"nagoya": {MediaStoreName: "nagoya", CMDetectionStore: cmDetectionRouteStore{err: nagoyaErr}, CMStationStore: cmStationRouteStore{err: nagoyaErr}},
-	}})
+	unscopedErr := errors.New("unscoped analysis store called")
+	registry := NewWorkers(&Deps{
+		UnscopedCMDetectionStore: cmDetectionRouteStore{err: unscopedErr},
+		PerStore: map[string]*StoreDeps{
+			"tokyo":  {MediaStoreName: "tokyo", CMDetectionStore: cmDetectionRouteStore{err: tokyoErr}, CMStationStore: cmStationRouteStore{err: tokyoErr}},
+			"nagoya": {MediaStoreName: "nagoya", CMDetectionStore: cmDetectionRouteStore{err: nagoyaErr}, CMStationStore: cmStationRouteStore{err: nagoyaErr}},
+		},
+	})
 
 	for _, tc := range []struct {
 		kind, payload, queue string
@@ -73,5 +77,20 @@ func TestNewWorkersRegistersCMJobs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewIngestWorkerUsesStoreScopedCMDetectionStore(t *testing.T) {
+	t.Parallel()
+
+	unscopedErr := errors.New("unscoped CM detection store called")
+	scopedErr := errors.New("store-scoped CM detection store called")
+	w := newIngestWorker(
+		&Deps{UnscopedCMDetectionStore: cmDetectionRouteStore{err: unscopedErr}},
+		&StoreDeps{CMDetectionStore: cmDetectionRouteStore{err: scopedErr}},
+	)
+	_, err := w.CMDetectionStore.GetWorkItem(t.Context(), 1)
+	if !errors.Is(err, scopedErr) {
+		t.Fatalf("ingest CM detection store error = %v, want store-scoped error %v", err, scopedErr)
 	}
 }
