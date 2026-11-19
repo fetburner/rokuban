@@ -99,6 +99,8 @@
 
 置き場の規則は、置き場の定義・原本の置き場の規則・派生物の置き場・転送の設定からなる。形はサンプル設定と検証が持つので、ここには判断だけを書く。
 
+置き場の規則の一部のキーは実験的であり、どれが該当するかは `config.example.yml` のコメントが示す。判定基準は [overview.md](../overview.md)「互換を約束する面」にある。
+
 `storage.stores` は、`recording_hls.enabled` を有効にしたとき、または `originals` / `derived` / `transfer` のどれかを書いたときに必須である。
 
 置き場の名前の長さは、River のキュー名 `{queue}_{store}` が 64 文字に収まる式で決まる。
