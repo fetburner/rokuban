@@ -2,15 +2,87 @@ package cmdetect
 
 import (
 	"context"
+	"slices"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+// vanishingLocator は、候補の列挙（本物）が録画を出した後、置き場の引き当てで原本のコピーを
+// 無くす。候補に出てから原本が消える割り込みを、本物の列挙と引き当ての経路で作る。
+type vanishingLocator struct {
+	store.OriginalLocator
+	pool        *pgxpool.Pool
+	recordingID int64
+	vanished    bool
+}
+
+func (m *vanishingLocator) OriginalStores(ctx context.Context, ids []int64) (map[int64]string, error) {
+	if !m.vanished && slices.Contains(ids, m.recordingID) {
+		m.vanished = true
+		if _, err := m.pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original')`, m.recordingID); err != nil {
+			return nil, err
+		}
+	}
+	return m.OriginalLocator.OriginalStores(ctx, ids)
+}
+
+// 検出の候補に出た録画の原本が、置き場を引く前に消えたら検出ジョブを積まない。
+func TestCMDetectReconcile_OriginalGoneAfterListingIsNotEnqueued(t *testing.T) {
+	t.Parallel()
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(15121)))
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
+	locator := &vanishingLocator{OriginalLocator: pgstoretest.Media(pool), pool: pool, recordingID: id}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: locator, DetectionStore: pgstoretest.Analysis(pool)}
+
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.CMDetectReconcileArgs{}), "CM detection reconcile pass")
+
+	if !locator.vanished {
+		t.Fatal("the recording never reached the original lookup; the test does not exercise the path")
+	}
+	if got := len(recordedArgs[jobs.CMDetectJobArgs](t, enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind()))); got != 0 {
+		t.Errorf("detection jobs for a recording whose original vanished after listing = %d, want 0", got)
+	}
+}
+
+// logo 候補の列挙に出た録画の原本が、置き場を引く前に消えたら logo 候補ジョブを積まない。
+// 録画に cm_detect の方針を付けないので検出の候補にはならず、引き当てを呼ぶのは logo 候補だけになる。
+func TestCMDetectReconcile_LogoCandidateOriginalGoneAfterListingIsNotEnqueued(t *testing.T) {
+	t.Parallel()
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := dbtest.Recording(t, pool, cmRecordingOptions(15122))
+	seedOriginalAsset(t, pool, t.TempDir(), id, "cm/logo-vanished.ts", []byte("ts"))
+	seedTaughtArea(t, pool, 1180)
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
+	locator := &vanishingLocator{OriginalLocator: pgstoretest.Media(pool), pool: pool, recordingID: id}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: locator, DetectionStore: pgstoretest.Analysis(pool)}
+
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.CMDetectReconcileArgs{}), "CM detection reconcile pass")
+
+	if !locator.vanished {
+		t.Fatal("the recording never reached the logo candidate lookup; the test does not exercise the path")
+	}
+	got := 0
+	for _, args := range recordedArgs[jobs.CMLogoCandidateJobArgs](t, enqueuer.CallsOfKind(jobs.CMLogoCandidateJobArgs{}.Kind())) {
+		if args.RecordingID == id {
+			got++
+		}
+	}
+	if got != 0 {
+		t.Errorf("logo candidate jobs for a recording whose original vanished after listing = %d, want 0", got)
+	}
+}
 
 func TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate(t *testing.T) {
 	t.Parallel()
