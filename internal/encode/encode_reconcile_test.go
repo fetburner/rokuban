@@ -1411,83 +1411,74 @@ func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 	}
 }
 
-// TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued は、ごみ箱の録画に
-// 作り直し要求が残っていても定期パスが encode を投入せず、復元後の全件パスで
-// 投入することを両方向で固定する。要求行は消さない。
-func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.T) {
+// TestEncodeReconcile_RebuildRequestWithoutEncodableRecordingIsNotQueued は、encodable_recordings の外に
+// 出た録画（ごみ箱・原本が active でない）の作り直し要求から encode を投入せず、戻った後の
+// パスで投入することを行ごとに固定する。encodable_recordings の外にある間のパスでは要求行を消さない（消すのは api だけ）。
+// 行の名前は、表にまとめる前のテスト名。
+func TestEncodeReconcile_RebuildRequestWithoutEncodableRecordingIsNotQueued(t *testing.T) {
 	t.Parallel()
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "review/trash.m2ts", []string{"cut"}, []byte("original"))
-	dbtest.AdoptChapters(t, pool, id)
-	dbtest.ChapterSpan(t, pool, id)
-	keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, id)
-	if err != nil || !owned || len(keep) == 0 {
-		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
-	}
-	assetID := seedEncodedAsset(t, pool, id, "cut", "review/trash_cut.mp4")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
-	seedEncodedAssetRebuildRequest(t, pool, id, keep)
-	_, err = sqlcgen.New(pool).SoftDeleteRecording(ctx, id)
-	testutil.RequireNoError(t, err, "SoftDeleteRecording")
+	for _, tc := range []struct {
+		name  string
+		leave func(t *testing.T, pool *pgxpool.Pool, id int64)
+		enter func(t *testing.T, pool *pgxpool.Pool, id int64)
+	}{
+		{
+			name: "RebuildRequestOnTrashedRecordingIsNotQueued",
+			leave: func(t *testing.T, pool *pgxpool.Pool, id int64) {
+				_, err := sqlcgen.New(pool).SoftDeleteRecording(t.Context(), id)
+				testutil.RequireNoError(t, err, "SoftDeleteRecording")
+			},
+			enter: func(t *testing.T, pool *pgxpool.Pool, id int64) {
+				_, err := sqlcgen.New(pool).RestoreRecording(t.Context(), id)
+				testutil.RequireNoError(t, err, "RestoreRecording")
+			},
+		},
+		{
+			name: "RebuildRequestWithoutActiveOriginalIsNotQueued",
+			leave: func(t *testing.T, pool *pgxpool.Pool, id int64) {
+				dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "deleting")
+			},
+			enter: func(t *testing.T, pool *pgxpool.Pool, id int64) {
+				dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, "active")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := testutil.SetupDB(t)
+			if pool == nil {
+				return
+			}
+			ctx := t.Context()
+			id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "review/gate.m2ts", []string{"cut"}, []byte("original"))
+			dbtest.AdoptChapters(t, pool, id)
+			dbtest.ChapterSpan(t, pool, id)
+			keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, id)
+			if err != nil || !owned || len(keep) == 0 {
+				t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
+			}
+			assetID := seedEncodedAsset(t, pool, id, "cut", "review/gate_cut.mp4")
+			testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
+			seedEncodedAssetRebuildRequest(t, pool, id, keep)
 
-	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
-	w := &EncodeReconcileWorker{Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}, Media: pgstoretest.Media(pool)}
-	enq := runEncodeReconcilePass(t, w)
-	if got := countEncodeJobs(t, enq, id, "cut"); got != 0 {
-		t.Fatalf("encode jobs for trashed recording's rebuild request = %d, want 0", got)
-	}
-	var rows int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, id).Scan(&rows); err != nil || rows != 1 {
-		t.Fatalf("request rows after trashed pass = %d, err %v, want 1", rows, err)
-	}
+			tc.leave(t, pool, id)
+			cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
+			w := &EncodeReconcileWorker{Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}, Media: pgstoretest.Media(pool)}
+			enq := runEncodeReconcilePass(t, w)
+			if got := countEncodeJobs(t, enq, id, "cut"); got != 0 {
+				t.Fatalf("encode jobs while the recording is not encodable = %d, want 0", got)
+			}
+			var rows int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, id).Scan(&rows); err != nil || rows != 1 {
+				t.Fatalf("request rows while not encodable = %d, err %v, want 1", rows, err)
+			}
 
-	_, err = sqlcgen.New(pool).RestoreRecording(ctx, id)
-	testutil.RequireNoError(t, err, "RestoreRecording")
-	runEncodeReconcilePass(t, w)
-	if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
-		t.Fatalf("encode jobs after restore = %d, want 1", got)
-	}
-}
-
-// TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued は、原本が active でない
-// 録画の作り直し要求から encode を投入せず、原本が active に戻れば投入することを固定する。
-func TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "review/noorig.m2ts", []string{"cut"}, []byte("original"))
-	dbtest.AdoptChapters(t, pool, id)
-	dbtest.ChapterSpan(t, pool, id)
-	keep, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, id)
-	if err != nil || len(keep) == 0 {
-		t.Fatalf("currentCutKeep = %v, err %v", keep, err)
-	}
-	assetID := seedEncodedAsset(t, pool, id, "cut", "review/noorig_cut.mp4")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
-	seedEncodedAssetRebuildRequest(t, pool, id, keep)
-	setOriginal := func(state string) {
-		t.Helper()
-		dbtest.SetRecordingMediaAssetState(t, pool, id, store.AssetKindOriginal, state)
-	}
-	setOriginal("deleting")
-
-	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
-	w := &EncodeReconcileWorker{Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}, Media: pgstoretest.Media(pool)}
-	enq := runEncodeReconcilePass(t, w)
-	if got := countEncodeJobs(t, enq, id, "cut"); got != 0 {
-		t.Fatalf("encode jobs without active original = %d, want 0", got)
-	}
-	setOriginal("active")
-	runEncodeReconcilePass(t, w)
-	if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
-		t.Fatalf("encode jobs with active original = %d, want 1", got)
+			tc.enter(t, pool, id)
+			runEncodeReconcilePass(t, w)
+			if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
+				t.Fatalf("encode jobs after the recording is encodable again = %d, want 1", got)
+			}
+		})
 	}
 }
 
