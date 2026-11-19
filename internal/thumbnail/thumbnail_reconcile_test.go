@@ -856,8 +856,10 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 	}
 }
 
-// 本番の既存サムネイルには衛星表の行が無い。チャプターが無い録画は作り直さず、
-// 検出済みの録画だけを作り直す（崩れるとデプロイ直後に全録画が作り直される）。
+// 本番の既存サムネイルには衛星表の行が無い。ここでは、検出済みの録画が作り直しの
+// 候補として積まれることと、チャプターも検出も無い録画で ThumbnailWorker が ffmpeg を
+// 起動しないことを見る。チャプターも検出も無い録画が候補から外れることは、internal/db の
+// TestListThumbnailReselectCandidates が検査する。
 func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
@@ -884,9 +886,6 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 
 	reconcileWorker := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), Enqueuer: jobqfaketest.NewRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, reconcileWorker)
-	if got := countThumbnailJobs(t, reconcileWorker.Enqueuer.(*jobqfaketest.RecordingEnqueuer), noChapters); got != 0 {
-		t.Errorf("thumbnail jobs without chapters = %d, want 0", got)
-	}
 	if got := countThumbnailJobs(t, reconcileWorker.Enqueuer.(*jobqfaketest.RecordingEnqueuer), detected); got != 1 {
 		t.Errorf("thumbnail jobs with CM detection = %d, want 1", got)
 	}
