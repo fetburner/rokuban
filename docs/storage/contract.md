@@ -298,7 +298,7 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 
 - `.rokuban-locks/` を `rel_path` に使わない検査: `mediapath.Resolve`
 - record filename から作る UUID directory 付き path: `internal/ingest/ingest.go` の `determineRelPath`
-- `sites/{site}/` 前置と basename の検査: `internal/catalog/rescue_scan.go` の `SiteRelPath`
+- `sites/{site}/` 前置と basename の検査: `internal/mediapath/site_rel_path.go` の `SiteRelPath`
 - 孤児回収の file walk と root symlink の解決: `internal/storagemaint/storage_audit.go` の `walkMediaFiles`
 - rescue が root symlink を解決し、in-place 登録時に symlink を拒否すること: `rescueStorage`、`inplace.Register`
 - `catalog/` の除外と相対パスの基準に同じ root を使うこと: `filepath.Rel`

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/programid"
@@ -97,7 +96,7 @@ type LibraryImportResult struct {
 // GetEncodedMediaAssetForServing 等）が不整合を起こすため、"encoded" は
 // インポートせず警告して捨てる（"ts" だけを kind=original として登録する）。
 //
-// "ts" は kind=original として登録する前に catalog.SiteRelPath で rel_path へ
+// "ts" は kind=original として登録する前に mediapath.SiteRelPath で rel_path へ
 // site を前置する。原本は必ず `sites/{site}/` 名前空間に
 // 入っていることを worker 起動時に検査する（internal/worker/media_asset_namespace.go）
 // ので、import 経路もこれに合わせないと import 済みの録画で worker が
@@ -115,7 +114,7 @@ func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, 
 		for _, vf := range item.VideoFiles {
 			switch vf.Type {
 			case "ts":
-				relPath, err := catalog.SiteRelPath(site, vf.RelPath)
+				relPath, err := mediapath.SiteRelPath(site, vf.RelPath)
 				if err != nil {
 					return res, fmt.Errorf("building original rel_path for %q: %w", vf.RelPath, err)
 				}

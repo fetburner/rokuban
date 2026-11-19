@@ -304,12 +304,13 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 	}
 }
 
-// The ingest hint and periodic reconciliation both pass the actual recording duration in Args.
-func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
+// The CM detection reconciliation pass passes the actual recording duration in Args.
+func TestCMDetectReconcileUsesRecordingDuration(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqfaketest.NewRecordingEnqueuer()
+	analysis := pgstoretest.Analysis(pool)
 	setRecordingDuration := func(recordingID int64) {
 		t.Helper()
 		testutil.MustExec(t, pool, "updating recordings", `
@@ -318,10 +319,6 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 			WHERE id = $1`, recordingID)
 	}
 
-	hintRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(951)))
-	setRecordingDuration(hintRecording)
-	analysis := pgstoretest.Analysis(pool)
-	testutil.RequireNoError(t, EnqueueCMDetectionIfNeeded(ctx, analysis, enqueuer, hintRecording, dbtest.StoreName), "EnqueueCMDetectionIfNeeded")
 	assertDuration := func(recordingID int64) {
 		t.Helper()
 		for _, args := range recordedArgs[jobs.CMDetectJobArgs](t, enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind())) {
@@ -334,8 +331,6 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 		}
 		t.Errorf("no CM detection job for recording %d", recordingID)
 	}
-	assertDuration(hintRecording)
-
 	reconcileRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(952)))
 	setRecordingDuration(reconcileRecording)
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: analysis}), jobs.CMDetectReconcileArgs{}), "jobqfaketest.RunWorkerOnce")

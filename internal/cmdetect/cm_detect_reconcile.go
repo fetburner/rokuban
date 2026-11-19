@@ -123,29 +123,3 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	}
 	return nil
 }
-
-// EnqueueCMDetectionIfNeeded は定期投入と同じ候補判定を使い、ingest の直後に検出を投入する。
-// storeName は原本を書いた置き場で、検出ジョブの物理キューの置き場になる。
-func EnqueueCMDetectionIfNeeded(ctx context.Context, detectionStore store.CMDetection, enqueuer jobq.Enqueuer, recordingID int64, storeName string) error {
-	desired, err := detectionStore.IsDetectionDesired(ctx, recordingID)
-	if err != nil {
-		return fmt.Errorf("checking desired CM detection for recording %d: %w", recordingID, err)
-	}
-	if !desired {
-		return nil
-	}
-	durationMs, err := detectionStore.GetRecordingDuration(ctx, recordingID)
-	if err != nil {
-		return fmt.Errorf("getting recording %d duration for CM detection: %w", recordingID, err)
-	}
-	if enqueuer == nil {
-		return fmt.Errorf("inserting CM detection for recording %d: %w", recordingID, errJobEnqueuerNil)
-	}
-	if _, err := enqueuer.Enqueue(ctx, jobs.CMDetectJobArgs{
-		Store:       storeName,
-		RecordingID: recordingID, RecordingDurationMs: durationMs,
-	}); err != nil {
-		return fmt.Errorf("inserting CM detection for recording %d: %w", recordingID, err)
-	}
-	return nil
-}

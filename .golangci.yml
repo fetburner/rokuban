@@ -297,7 +297,6 @@ linters:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/cmdetect/**"
-            - "!${config-path}/internal/ingest/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/cmdetect
@@ -326,7 +325,6 @@ linters:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/encode/**"
-            - "!${config-path}/internal/ingest/**"
             - "!${config-path}/cmd/rokuban/**"
             - "!$test"
           deny:
@@ -340,7 +338,6 @@ linters:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/storagemaint/**"
-            - "!${config-path}/internal/ingest/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/storagemaint

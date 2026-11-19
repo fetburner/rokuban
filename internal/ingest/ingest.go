@@ -18,10 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/cmdetect"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -29,7 +26,6 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
-	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -554,7 +550,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			// 5 分の Work 時限に収まらない大きさでは、この再試行が終わらず、進捗行が link 済みの temp を指したままになる見込み（未測定）。
 			// 読み直すとディスク上の破損が producer の値として commit される（保存済み hash を使えない場合の代償）。
 			// 転送中の hash 採用の判定（EEXIST 採用）も同じく全量を読む。
-			digest, size, hashErr := storagemaint.HashTransferFile(ctx, oldTempPath)
+			digest, size, hashErr := fsink.HashTransferFile(ctx, oldTempPath)
 			if hashErr != nil {
 				return fmt.Errorf("hashing ingest temp already linked to canonical path: %w", hashErr)
 			}
@@ -902,7 +898,7 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	}
 	w.removeLinkedTempAfterCommit(ctx, recordingID, args, log)
 	// 原本があるなら対象を絞った reconcile をヒントとして投入する。
-	encode.EnqueueReconcile(ctx, w.Enqueuer, recordingID)
+	enqueueEncodeReconcileHint(ctx, w.Enqueuer, recordingID)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 	}
@@ -1027,6 +1023,52 @@ func recordIngestMetrics(offset int64) {
 	metrics.IngestBytes.Add(float64(offset))
 }
 
+// enqueueEncodeReconcileHint は指定録画の reconcile を投入する。
+// ingest 後の best-effort 投入なので、失敗しても呼び出し元の処理は巻き戻さない。
+// 投入に要るのは EncodeReconcileArgs だけで、実行パッケージ encode は要らない（API も自身の操作後に同じ引数を直接積む）。
+// そのため ingest に置く（TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored）。
+func enqueueEncodeReconcileHint(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) {
+	var err error
+	if enqueuer == nil {
+		err = errors.New("encode: job enqueuer is nil")
+	} else {
+		_, err = enqueuer.Enqueue(ctx, jobs.EncodeReconcileArgs{RecordingID: recordingID})
+	}
+	if err != nil {
+		slog.Error("encode_reconcile: failed to enqueue targeted pass", "recording_id", recordingID, "err", err)
+	}
+}
+
+// enqueueCMDetectionIfNeeded は定期投入と同じ候補判定を使い、ingest の直後に検出を投入する。
+// storeName は原本を書いた置き場で、検出ジョブの物理キューの置き場になる。
+// desired と録画尺をコミット直後に読み直すのは ingest だけである。API の利用者が求めた再試行は RetryDetection の結果を、
+// 定期 reconcile は ListMissingDetections の候補を使う。3 経路は同じ jobs.CMDetectJobArgs を作るが、
+// 引数の出どころが違うので同じ理由では変わらない。そのため store を読む処理は ingest に置く
+// （TestIngestFollowupEnqueuesTSScanAndCMDetectionHints）。
+func enqueueCMDetectionIfNeeded(ctx context.Context, detectionStore store.CMDetection, enqueuer jobq.Enqueuer, recordingID int64, storeName string) error {
+	desired, err := detectionStore.IsDetectionDesired(ctx, recordingID)
+	if err != nil {
+		return fmt.Errorf("checking desired CM detection for recording %d: %w", recordingID, err)
+	}
+	if !desired {
+		return nil
+	}
+	durationMs, err := detectionStore.GetRecordingDuration(ctx, recordingID)
+	if err != nil {
+		return fmt.Errorf("getting recording %d duration for CM detection: %w", recordingID, err)
+	}
+	if enqueuer == nil {
+		return fmt.Errorf("inserting CM detection for recording %d: %w", recordingID, errors.New("cmdetect: job enqueuer is nil"))
+	}
+	if _, err := enqueuer.Enqueue(ctx, jobs.CMDetectJobArgs{
+		Store:       storeName,
+		RecordingID: recordingID, RecordingDurationMs: durationMs,
+	}); err != nil {
+		return fmt.Errorf("inserting CM detection for recording %d: %w", recordingID, err)
+	}
+	return nil
+}
+
 // enqueueIngestFollowups はコミット済み ingest の encode / thumbnail 対象 reconcile と
 // mirakc record の削除を行う。補助処理の失敗はログに記録して本処理を成功扱いにする。
 //
@@ -1037,8 +1079,8 @@ func recordIngestMetrics(offset int64) {
 // TS scan もヒント。候補の真実は periodic reconcile が DB から取り直す。
 // すべて best-effort で、投入失敗はログに残して ingest の成否には影響させない。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
-	encode.EnqueueReconcile(ctx, w.Enqueuer, recordingID)
-	if enqueueErr := cmdetect.EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
+	enqueueEncodeReconcileHint(ctx, w.Enqueuer, recordingID)
+	if enqueueErr := enqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 	}
 	var thumbErr error
@@ -1125,7 +1167,7 @@ func (w *IngestWorker) determineRelPath(args jobs.IngestJobArgs, record *mirakc.
 		return "", fmt.Errorf("mirakc record %s has no usable content filename", args.RecordID)
 	}
 	relPath := filepath.Join(uuid.NewString(), base)
-	relPath, err := catalog.SiteRelPath(args.Site, relPath)
+	relPath, err := mediapath.SiteRelPath(args.Site, relPath)
 	if err != nil {
 		return "", fmt.Errorf("building site rel_path for mirakc record %s: %w", args.RecordID, err)
 	}
@@ -1161,7 +1203,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 			if !errors.Is(err, fsink.ErrForeignDestination) {
 				return fmt.Errorf("linking ingest temporary file into canonical path: %w", err)
 			}
-			_, _, matches, checkErr := storagemaint.VerifyExistingFileSHA256(ctx, fullPath, size, contentSHA256)
+			_, _, matches, checkErr := fsink.VerifyExistingFileSHA256(ctx, fullPath, size, contentSHA256)
 			if checkErr != nil {
 				return errors.Join(err, fmt.Errorf("checking existing canonical file: %w", checkErr))
 			}
