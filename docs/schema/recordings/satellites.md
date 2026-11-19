@@ -238,7 +238,7 @@ writer が異常終了して Range 0 から取り直す間は、旧 `temp_rel_pa
 
 <details><summary>根拠</summary>
 
-- 書き手の実装: `internal/worker/ingest_progress.go`
+- 書き手の実装: `internal/ingest/ingest_progress.go`
 - 転送中を表す行: `recording_ingest_progress`
 - 書き込みバイト数: `written_bytes`
 - 期待バイト数のコピー元: `expected_bytes`、`record_sync.content_length`

@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"context"
@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -56,7 +58,7 @@ func setRecordSyncContentLength(t *testing.T, pool *pgxpool.Pool, recordID strin
 // Write が interval 内なら DB へ書かれないことを確認する。
 func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -174,7 +176,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -198,9 +200,9 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runWorkerViaJobQFake(context.Background(), w,
+		done <- jobqfaketest.RunWorkerOnce(context.Background(), w,
 
-			IngestJobArgs{Site: "default", RecordID: "rec-progress"},
+			jobs.IngestJobArgs{Site: "default", RecordID: "rec-progress"},
 		)
 	}()
 
@@ -309,7 +311,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pool = setupTestPool(t)
+	pool = testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -327,9 +329,9 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	recordingID = dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-interrupted-progress")
 
-	err := runWorkerViaJobQFake(context.Background(), w,
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w,
 
-		IngestJobArgs{Site: "default", RecordID: "rec-interrupted-progress"},
+		jobs.IngestJobArgs{Site: "default", RecordID: "rec-interrupted-progress"},
 	)
 	if err == nil {
 		t.Fatal("Work() succeeded, want transfer failure")
@@ -397,7 +399,7 @@ func TestIngestWorker_ProgressClearedWhenTempDiscarded(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -415,9 +417,9 @@ func TestIngestWorker_ProgressClearedWhenTempDiscarded(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-failing")
 
-	err := runWorkerViaJobQFake(context.Background(), w,
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w,
 
-		IngestJobArgs{Site: "default", RecordID: "rec-failing"},
+		jobs.IngestJobArgs{Site: "default", RecordID: "rec-failing"},
 	)
 	if err == nil {
 		t.Fatal("Work() succeeded, want size mismatch error")
@@ -468,7 +470,7 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -487,9 +489,9 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runWorkerViaJobQFake(ctx, w,
+		done <- jobqfaketest.RunWorkerOnce(ctx, w,
 
-			IngestJobArgs{Site: "default", RecordID: "rec-clean-ranges"},
+			jobs.IngestJobArgs{Site: "default", RecordID: "rec-clean-ranges"},
 		)
 	}()
 	defer func() {

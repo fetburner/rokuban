@@ -21,7 +21,7 @@ import (
 // seedIngested は録画に原本 media_asset と PID 別 drop_stats を付け、
 // 作った原本アセットの ID を返す。
 //
-// 実運用の ingest（internal/worker/ingest.go の commit）は原本 media_asset の
+// 実運用の ingest（internal/ingest/ingest.go の commit）は原本 media_asset の
 // INSERT と同一 tx で recording_processing_policy を必ず凍結する（issue #159。
 // 解決に失敗しても既定値で凍結する。resolveAndSnapshotEncodePolicy の doc
 // コメント参照）。この関数は本物の ingest ワーカーを経由しないテスト用

@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"context"
@@ -21,6 +21,8 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
@@ -32,7 +34,7 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 	for _, mode := range []string{"size mismatch", "hash mismatch", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			setFastIngestFollow(t)
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -103,7 +105,7 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 			}
 			worker := newWorker()
 
-			err := runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID})
+			err := jobqfaketest.RunWorkerOnce(context.Background(), worker, jobs.IngestJobArgs{Site: "default", RecordID: recordID})
 			if err == nil {
 				t.Fatal("first Work() succeeded; want temp invalidation")
 			}
@@ -123,7 +125,7 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 			}
 
 			badAttempt.Store(false)
-			if err := runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
+			if err := jobqfaketest.RunWorkerOnce(context.Background(), worker, jobs.IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
 				t.Fatalf("retry after %s: %v", mode, err)
 			}
 			var committedGeneration int64
@@ -144,7 +146,7 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 // 新 writer が追いつく前後で維持される。
 func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) {
 	setFastIngestFollow(t)
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -184,7 +186,7 @@ func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) 
 	previousHook := afterIngestTempCreate
 	afterIngestTempCreate = func() error { return errors.New("simulated process stop after temp creation") }
 	defer func() { afterIngestTempCreate = previousHook }()
-	err = runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID})
+	err = jobqfaketest.RunWorkerOnce(context.Background(), worker, jobs.IngestJobArgs{Site: "default", RecordID: recordID})
 	if err == nil || !strings.Contains(err.Error(), "simulated process stop") {
 		t.Fatalf("first Work() error = %v, want simulated process stop", err)
 	}
@@ -200,7 +202,7 @@ func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) 
 	}
 
 	afterIngestTempCreate = previousHook
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID}), "retry")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), worker, jobs.IngestJobArgs{Site: "default", RecordID: recordID}), "retry")
 	var committed int64
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
 		`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,

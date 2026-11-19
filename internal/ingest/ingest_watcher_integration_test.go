@@ -1,4 +1,4 @@
-package worker_test
+package ingest_test
 
 import (
 	"bytes"
@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -29,7 +30,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/watcher"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
@@ -46,7 +46,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(originalLogger) })
 	mc := mirakc.NewClient(mcServer.server.URL, nil)
 	mediaDir := t.TempDir()
-	ingestWorker := &worker.IngestWorker{
+	ingestWorker := &ingest.IngestWorker{
 		MirakcClients: map[string]*mirakc.Client{watcher.DefaultSite: mc},
 		Publisher:     pgstoretest.Media(pool),
 		RecordTarget:  pgstoretest.Recordings(pool),
@@ -237,7 +237,7 @@ func newIngestLifecycleMirakc(t *testing.T, initial mirakc.Record, tsData []byte
 }
 
 type ingestLifecycleWorker struct {
-	worker *worker.IngestWorker
+	worker *ingest.IngestWorker
 	result chan<- error
 }
 
@@ -280,7 +280,7 @@ func (worker ingestLifecycleWorker) Work(ctx context.Context, args jobs.IngestJo
 	return nil
 }
 
-func newIngestLifecycleQueue(t *testing.T, ingestWorker *worker.IngestWorker, workResults chan<- error) *jobqfake.Queue {
+func newIngestLifecycleQueue(t *testing.T, ingestWorker *ingest.IngestWorker, workResults chan<- error) *jobqfake.Queue {
 	t.Helper()
 	registry := jobq.NewRegistry()
 	jobq.Register(registry, ingestLifecycleWorker{worker: ingestWorker, result: workResults})

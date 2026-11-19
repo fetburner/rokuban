@@ -57,7 +57,7 @@ func storageSyncByRoot(t *testing.T, pool *pgxpool.Pool, root string) sqlcgen.St
 // が、config の増減に応じて対象集合が正しく変わることを検査する。
 func TestStorageSyncWorker_FullSync(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
@@ -89,7 +89,7 @@ func TestStorageSyncWorker_FullSync(t *testing.T) {
 // ScratchDir が空文字列なら scratch root は観測しない（media だけの 1 行）。
 func TestStorageSyncWorker_ScratchOptional(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: ""}
 
@@ -108,7 +108,7 @@ func TestStorageSyncWorker_ScratchOptional(t *testing.T) {
 // を信頼しきらない安全弁。storage_sync に行が増えていないことも確認する）。
 func TestStorageSyncWorker_EmptyMediaDirFails(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: ""}
 
 	if err := runStorageSync(t, w); err == nil {
@@ -125,7 +125,7 @@ func TestStorageSyncWorker_EmptyMediaDirFails(t *testing.T) {
 // 2 パス目も同じ 2 行のまま（重複が増えない）で、observed_at が前進すること。
 func TestStorageSyncWorker_RestartConverges(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 
@@ -156,7 +156,7 @@ func TestStorageSyncWorker_RestartConverges(t *testing.T) {
 // 設計の受け入れ基準。
 func TestStorageSyncWorker_ConfigChangeSweepsRemovedRoot(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 
@@ -184,7 +184,7 @@ func TestStorageSyncWorker_ConfigChangeSweepsRemovedRoot(t *testing.T) {
 // そのまま残る（observed_at が更新されない = 鮮度で異常を伝える）。
 func TestStorageSyncWorker_PartialStatFailureKeepsStaleRow(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 
@@ -229,7 +229,7 @@ func TestStorageSyncWorker_PartialStatFailureKeepsStaleRow(t *testing.T) {
 // ジョブの失敗としても表出させる）。
 func TestStorageSyncWorker_AllRootsFailReturnsError(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	w := &StorageSyncWorker{
@@ -337,7 +337,7 @@ func (noopStorageObservation) UpsertStorageSync(context.Context, store.StorageOb
 // （鮮度の判別は rokuban_storage_root_observed_timestamp_seconds 側で、DB 行の
 // observed_at を PartialStatFailureKeepsStaleRow が検査する）。
 func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 
@@ -378,7 +378,7 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 // （DeleteLabelValues）。残すと二度と更新されない値が Prometheus に居座り続ける
 // （PR #258 のレビュー指摘）。
 func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 
@@ -417,7 +417,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 // rokuban_storage_root_total_bytes{store="test-store",root="scratch"} が凍結したまま
 // 残り、Pod を再起動するまで古い容量を示し続ける。
 func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 

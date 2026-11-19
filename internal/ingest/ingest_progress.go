@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"context"

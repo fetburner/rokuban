@@ -178,7 +178,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 凍結する値が制約に違反すると、取り込みのトランザクションごと失敗して録画そのものを失う。そのため、エンコードプロファイルが空なのに原本を消す設定になっていたら、「原本を常に残す」に直してから書く。
 
-冪等性について。`FreezeRecordingEncodePolicy` は `ON CONFLICT` を持たない素の INSERT で、既存の派生物の有無を見て分岐しない。これは「この tx は録画ごとに 1 回しか実行されない」という別の不変（`internal/worker/ingest.go` の `Work` が転送開始前に原本 media_asset の有無で冪等性チェックする）に依っている。一部のエンコードが既に完了しているからといって、desired を空に戻す分岐を作らない。
+冪等性について。`FreezeRecordingEncodePolicy` は `ON CONFLICT` を持たない素の INSERT で、既存の派生物の有無を見て分岐しない。これは「この tx は録画ごとに 1 回しか実行されない」という別の不変（`internal/ingest/ingest.go` の `Work` が転送開始前に原本 media_asset の有無で冪等性チェックする）に依っている。一部のエンコードが既に完了しているからといって、desired を空に戻す分岐を作らない。
 
 `EncodeProfiles` の nil について。`reservation.Options.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_processing_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` にまとめる。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない。
 

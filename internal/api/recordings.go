@@ -70,7 +70,7 @@ func utcTimePtr(t *time.Time) *time.Time {
 //  5. どれでもなければ unknown --- 取り込みが始まった観測が無い。record 自体が
 //     観測されていないか、mirakc の record が failed / canceled になった。
 //     録画中に投入済みの ingest ジョブがあっても、status を failed / canceled と
-//     観測したジョブは進捗行を消してから終端する（internal/worker/ingest.go の
+//     観測したジョブは進捗行を消してから終端する（internal/ingest/ingest.go の
 //     Work。TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry）ので、
 //     この分岐へ落ちる。ジョブがまだ観測していない間は 2（transferring）が拾う。
 //

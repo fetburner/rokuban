@@ -42,7 +42,7 @@ var (
 	// IngestJobs は ingest ジョブの結果別の件数。result は success / failure /
 	// canceled の 3 値で、増やさない。River の soft stop はどれにも数えない。
 	// 各値の意味と分母の違いは docs/operations/monitoring.md、判定と既知の窓は
-	// internal/worker/ingest.go の Work。
+	// internal/ingest/ingest.go の Work。
 	IngestJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ingest_jobs_total",
 		Help: "Ingest jobs by result.",

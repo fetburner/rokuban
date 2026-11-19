@@ -133,7 +133,7 @@ func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) {
 // 読む。行が無い（未凍結。原本 media_asset がまだコミットされていない）場合は
 // 空のプロファイル一覧を返す --- このテストファイルの呼び出し元はいずれも
 // seedIngested 後（原本コミット後。resolveAndSnapshotEncodePolicy が既定値でも
-// 必ず凍結する。internal/worker/ingest.go 参照）に呼ぶので、実運用では行が
+// 必ず凍結する。internal/ingest/ingest.go 参照）に呼ぶので、実運用では行が
 // 見つかるはずだが、防御的に nil スキャンにはしない。
 func getRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64) []string {
 	t.Helper()
