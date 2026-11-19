@@ -771,8 +771,8 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// 再選択の入口は候補クエリ 1 本なので、チャプター無し・ごみ箱の録画は、後続 id に
-// 本物の候補があっても作り直さない（`after = id-1, limit 1` が別録画の行を返す形）。
+// 再選択の入口は候補クエリ 1 本なので、チャプター無しの録画は、後続 id に本物の候補があっても
+// 作り直さない（`after = id-1, limit 1` が別録画の行を返す形）。候補の判定は SQL 側のテストが持つ。
 func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandidate(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
@@ -797,8 +797,6 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 		return id, rel
 	}
 	noChapters, noChaptersRel := seed("nochap", "")
-	trashed, trashedRel := seed("trash", "{[0,60000)}")
-	testutil.MustExec(t, pool, "soft deleting recording", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed)
 	seed("candidate", "{[0,60000)}")
 
 	w := &ThumbnailWorker{
@@ -810,13 +808,11 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 			return nil, fmt.Errorf("unexpected command")
 		},
 	}
-	for id, rel := range map[int64]string{noChapters: noChaptersRel, trashed: trashedRel} {
-		job := jobs.ThumbnailJobArgs{RecordingID: id}
-		testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), fmt.Sprintf("Work(%d) error", id))
-		cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: id, StoreName: dbtest.StoreName})
-		testutil.RequireNoError(t, err, "q.LockActiveThumbnailMediaAsset")
-		if cur.RelPath != rel {
-			t.Errorf("recording %d rel_path = %q, want unchanged %q", id, cur.RelPath, rel)
-		}
+	job := jobs.ThumbnailJobArgs{RecordingID: noChapters}
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
+	cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: noChapters, StoreName: dbtest.StoreName})
+	testutil.RequireNoError(t, err, "q.LockActiveThumbnailMediaAsset")
+	if cur.RelPath != noChaptersRel {
+		t.Errorf("recording %d rel_path = %q, want unchanged %q", noChapters, cur.RelPath, noChaptersRel)
 	}
 }
