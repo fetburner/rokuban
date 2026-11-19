@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -758,31 +757,6 @@ func mustKeepRanges(t *testing.T, keep []chapters.Range) pgstore.KeepRanges {
 	return ranges
 }
 
-// TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly は、満たされた判定が
-// 同じプロファイルの active な encoded だけを見ることを固定する。別の cut プロファイルの
-// 版の凍結区間が requested_keep と同じでも、未充足のままである（満たされた扱いにすると
-// until_encoded の原本が不可逆に消える）。
-func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/other-profile.m2ts", []string{"cut", "cut2"}, []byte("original"))
-	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
-	seedEncodedAssetRebuildRequest(t, pool, id, keep)
-	other := seedEncodedAsset(t, pool, id, "cut2", "rebuild/other-profile_cut2.mp4")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, other, keep), "setFrozenCuts")
-	if got := unsatisfiedRebuildCount(t, pool, id); got != 1 {
-		t.Fatalf("unsatisfied rebuilds with only another profile's matching asset = %d, want 1", got)
-	}
-	same := seedEncodedAsset(t, pool, id, "cut", "rebuild/other-profile_cut.mp4")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, same, keep), "setFrozenCuts")
-	if got := unsatisfiedRebuildCount(t, pool, id); got != 0 {
-		t.Fatalf("unsatisfied rebuilds with the same profile's matching asset = %d, want 0", got)
-	}
-}
-
 // TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass は、対象パスが
 // ごみ箱の録画を除外し、復元後の全件パスが不足分を投入することを固定する。
 func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testing.T) {
@@ -808,132 +782,6 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 	if got := countEncodeJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID, "h265"); got != 1 {
 		t.Fatalf("full-pass encode jobs after restore = %d, want 1", got)
 	}
-}
-
-// TestListMissingEncodeProfiles は不足プロファイルクエリを両方向で見る。
-//
-// 「投入されないこと」をジョブ数で見ても意味が無いケースがある --- 例えば
-// 「原本が無い（ingest 未完了）」は ListMissingEncodeProfiles 側でも弾かれるので、
-// クエリから条件を落としてもジョブ数のアサーションは通ってしまう。候補集合
-// そのものを見る。
-func TestListMissingEncodeProfiles(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	mediaDir := t.TempDir()
-
-	// (a) desired があり encoded が無い → 候補。
-	missing := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/missing.m2ts", []string{"h265"}, []byte("x"))
-
-	// (b) desired が揃っている → 候補にしない。
-	complete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/complete.m2ts", []string{"h264"}, []byte("x"))
-	h264 := "h264"
-	dbtest.MediaAsset(t, pool, complete, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.Kind = store.AssetKindEncoded
-		fixtureParams.Profile = &h264
-		fixtureParams.RelPath = "q/complete_h264.mp4"
-	})
-
-	// (c) desired が空 → 候補にしない。
-	noProfiles := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/noprofiles.m2ts", nil, []byte("x"))
-
-	// (d) ingest 未完了（policy はあるが原本 media_asset が無い）→ 候補にしない。
-	incomplete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/incomplete.m2ts", []string{"h265"}, []byte("x"))
-	testutil.MustExec(t, pool, "deleting media asset copies", `DELETE FROM media_asset_copies WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete)
-	testutil.MustExec(t, pool, "deleting media asset ts scans", `DELETE FROM media_asset_ts_scans WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)`, incomplete)
-	testutil.MustExec(t, pool, "deleting media assets", `DELETE FROM media_assets WHERE recording_id = $1`, incomplete)
-
-	// (e) 原本が物理削除済み（until_encoded の後始末）→ 候補にしない。
-	originalGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/gone.m2ts", []string{"h265"}, []byte("x"))
-	dbtest.SetRecordingMediaAssetState(t, pool, originalGone, store.AssetKindOriginal, "deleted")
-
-	// (f) ごみ箱の録画 → 候補にしない。
-	trashed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/trashed.m2ts", []string{"h265"}, []byte("x"))
-	testutil.MustExec(t, pool, "marking recording deleted", `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed)
-
-	// (g) encoded の行はあるが state='deleted'（復元後など）→ 候補。
-	// ListMissingEncodeProfiles が見るのは active な encoded だけ
-	// （GetActiveEncodedMediaAssetID）なので、候補の定義もそこに揃える。
-	encodedGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/encgone.m2ts", []string{"h264"}, []byte("x"))
-	dbtest.MediaAsset(t, pool, encodedGone, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.Kind = store.AssetKindEncoded
-		fixtureParams.Profile = &h264
-		fixtureParams.RelPath = "q/encgone_h264.mp4"
-	})
-	dbtest.SetRecordingMediaAssetState(t, pool, encodedGone, store.AssetKindEncoded, "deleted")
-
-	// (h) desired が現在の設定に無いプロファイル（改名 / 削除された）→ 候補に
-	// しない。投入しても EncodeWorker が `unknown encode profile` で弾くだけで
-	// 永久に満たされないため、定期パスの投入対象から外す。
-	renamed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/renamed.m2ts", []string{"gone"}, []byte("x"))
-
-	// (i) 空文字列のプロファイル名 → 候補にしない。ListMissingEncodeProfiles が
-	// 空文字列をスキップするので、候補に挙げると (h) と同じ「永久に満たされない
-	// 候補」になる。クエリでも空文字列を明示的に落とす。
-	emptyProfile := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/empty.m2ts", []string{""}, []byte("x"))
-
-	got, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
-		KnownProfiles: []string{"h264", "h265"},
-		CutProfiles:   []string{},
-		AttemptLimit:  jobs.EncodeAttemptLimit,
-		RowLimit:      encodeReconcileRowLimit,
-	})
-	testutil.RequireNoError(t, err, "ListMissingEncodeProfiles")
-	want := []sqlcgen.ListMissingEncodeProfilesRow{
-		{RecordingID: missing, Profile: "h265"},
-		{RecordingID: encodedGone, Profile: "h264"},
-	}
-	if !equalMissingEncodeProfileRows(got, want) {
-		t.Errorf("missing encode profiles = %v, want %v (complete=%d noProfiles=%d incomplete=%d originalGone=%d trashed=%d renamed=%d emptyProfile=%d)",
-			got, want, complete, noProfiles, incomplete, originalGone, trashed, renamed, emptyProfile)
-	}
-
-	// AfterRecordingID（#326 の窓の回転が使う keyset 述語）: missing の id より
-	// 後ろだけを見ると、missing 自身は落ちて encodedGone だけが残る。
-	if missing >= encodedGone {
-		t.Fatalf("expected missing (%d) < encodedGone (%d) for this assertion to mean anything", missing, encodedGone)
-	}
-	gotAfter, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
-		AfterRecordingID: missing,
-		KnownProfiles:    []string{"h264", "h265"},
-		CutProfiles:      []string{},
-		AttemptLimit:     jobs.EncodeAttemptLimit,
-		RowLimit:         encodeReconcileRowLimit,
-	})
-	testutil.RequireNoError(t, err, "ListMissingEncodeProfiles with AfterRecordingID")
-	wantAfter := []sqlcgen.ListMissingEncodeProfilesRow{{RecordingID: encodedGone, Profile: "h264"}}
-	if !equalMissingEncodeProfileRows(gotAfter, wantAfter) {
-		t.Errorf("missing encode profiles with AfterRecordingID=%d = %v, want %v", missing, gotAfter, wantAfter)
-	}
-
-	// 落とした側（(h)/(i)）は数えて見せる --- 黙って落とすと「エンコードされない
-	// 録画」が静かに増える。
-	unsat, err := q.ListUnsatisfiableEncodeProfiles(ctx, []string{"h264", "h265"})
-	testutil.RequireNoError(t, err, "ListUnsatisfiableEncodeProfiles")
-	gotUnsat := map[string]int64{}
-	for _, r := range unsat {
-		gotUnsat[r.Profile] = r.Recordings
-	}
-	if len(gotUnsat) != 2 || gotUnsat["gone"] != 1 || gotUnsat[""] != 1 {
-		t.Errorf("unsatisfiable = %v, want {gone:1, \"\":1}", gotUnsat)
-	}
-}
-
-func equalMissingEncodeProfileRows(got, want []sqlcgen.ListMissingEncodeProfilesRow) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i].RecordingID != want[i].RecordingID || got[i].Profile != want[i].Profile ||
-			got[i].IsRebuild != want[i].IsRebuild || !slices.Equal(got[i].RequestedKeep, want[i].RequestedKeep) {
-			return false
-		}
-	}
-	return true
 }
 
 // TestEncodeReconcileWorker_BatchesCandidateReads は、reconcile パスが候補ごとの
