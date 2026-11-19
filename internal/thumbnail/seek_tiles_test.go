@@ -442,97 +442,68 @@ func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 	}
 }
 
-// 途中で失敗したら部分成果をコミットせず、ジョブ固有 scratch も消す
-// （行の存在 = 全部そろっている）。
-func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
+// TestSeekTilesWorker_CommitsNothingOnFailure は途中で失敗した実行が行を作らないことを、
+// 失敗の形ごとに固定する（行の存在 = 全部そろっている。行ができると定期パスは作り直さず、
+// until_encoded の原本削除の条件まで満たしてしまう）。どの形でも、タイル格子は media に
+// 出ず、scratch に残骸を残さない。
+func TestSeekTilesWorker_CommitsNothingOnFailure(t *testing.T) {
 	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/partial.m2ts")
+	tests := []struct {
+		name string
+		cmd  countingRunCmd
+		// noFFmpeg は長さが取れない形。ffmpeg は 1 回も呼ばれない。
+		noFFmpeg bool
+	}{
+		// 3 枚中 2 枚目の抽出で落とす。最後の 1 枚は直前のタイルで埋めるので、途中の失敗で見る。
+		{name: "PartialFailure", cmd: countingRunCmd{duration: "30", failOn: "000001.jpg"}},
+		// 長さが取れないときは 1 枚だけの格子をコミットせずに失敗する。
+		{name: "ProbeFailure", cmd: countingRunCmd{duration: "30", probeErr: true}, noFFmpeg: true},
+		// ffmpeg が 0 フレームで終了コード 0 を返しても、穴の空いた格子をコミットしない
+		// （image2 は連番の穴で読むのをやめ、以降が黒のまま合成される）。
+		{name: "MissingTile", cmd: countingRunCmd{duration: "30", silentOn: "000001.jpg"}},
+		// 長さ 0 秒も「取れない」と同じ扱いにする（1 枚の格子をコミットしない）。
+		{name: "ZeroDuration", cmd: countingRunCmd{duration: "0.000000"}},
+		// 1 枚しか無いときは埋める元が無いので失敗する。
+		{name: "SingleTileFailure", cmd: countingRunCmd{duration: "5", failOn: "000000.jpg"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pool := testutil.SetupDB(t)
+			mediaDir := t.TempDir()
+			scratchDir := t.TempDir()
+			recordingID := dbtest.Recording(t, pool)
+			seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/failure.m2ts")
 
-	// 3 枚中 2 枚目（000001.jpg）の抽出で落とす。最後の 1 枚は直前のタイルで
-	// 埋めるので、途中の失敗で見る。
-	cmd := &countingRunCmd{
-		duration: "30",
-		failOn:   "000001.jpg",
-	}
-	w := &SeekTilesWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, recordingID); err == nil {
-		t.Fatal("Work() succeeded, want an error from the injected extraction failure")
-	}
-
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err == nil {
-		t.Error("seek_tiles row was committed even though the extraction failed partway")
-	}
-	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err == nil {
-		t.Error("tile sheet was written to media even though the extraction failed partway")
-	}
-	entries, err := os.ReadDir(filepath.Join(scratchDir, "seek_tiles"))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("reading scratch dir after failure: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("scratch dirs left behind after a failed run: %v", entries)
-	}
-}
-
-// 長さが取れないときは 1 枚だけの格子をコミットせずに失敗する。コミットすると
-// 行が「全部そろっている」を主張し、定期パスが作り直さず、until_encoded の
-// 原本削除の条件も満たしてしまう。
-func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/noprobe.m2ts")
-
-	cmd := &countingRunCmd{probeErr: true}
-	w := &SeekTilesWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, recordingID); err == nil {
-		t.Fatal("Work() succeeded, want an error when ffprobe fails")
-	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err == nil {
-		t.Error("seek_tiles row was committed even though the duration was unknown")
-	}
-	if cmd.calls != 0 {
-		t.Errorf("ffmpeg calls after a probe failure = %d, want 0", cmd.calls)
-	}
-}
-
-// ffmpeg が 0 フレームで終了コード 0 を返しても、穴の空いた格子をコミットしない
-// （image2 は連番の穴で読むのをやめ、以降が黒のまま合成される）。
-func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/hole.m2ts")
-
-	cmd := &countingRunCmd{
-		duration: "30",
-		silentOn: "000001.jpg",
-	}
-	w := &SeekTilesWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, recordingID); err == nil {
-		t.Fatal("Work() succeeded, want an error when a tile was not written")
-	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err == nil {
-		t.Error("seek_tiles row was committed with a missing tile")
+			cmd := tt.cmd
+			w := &SeekTilesWorker{
+				Objects:         testFSObjectStore(mediaDir),
+				ObjectPublisher: pgstoretest.Media(pool),
+				Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+				runCmd: cmd.run,
+			}
+			if err := runSeekTilesJob(t, w, recordingID); err == nil {
+				t.Fatal("Work() succeeded, want an error")
+			}
+			if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+				RecordingID: recordingID, StoreName: testStoreNameArg(),
+			}); err == nil {
+				t.Error("seek_tiles row was committed even though the run failed")
+			}
+			if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err == nil {
+				t.Error("tile sheet was written to media even though the run failed")
+			}
+			entries, err := os.ReadDir(filepath.Join(scratchDir, "seek_tiles"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatalf("reading scratch dir after failure: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("scratch dirs left behind after a failed run: %v", entries)
+			}
+			if tt.noFFmpeg && cmd.calls != 0 {
+				t.Errorf("ffmpeg calls = %d, want 0", cmd.calls)
+			}
+		})
 	}
 }
 
@@ -583,28 +554,6 @@ func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 	}
 }
 
-// 長さ 0 秒も「取れない」と同じ扱いにする（1 枚の格子をコミットしない）。
-func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/zero.m2ts")
-
-	cmd := &countingRunCmd{duration: "0.000000"}
-	w := &SeekTilesWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, recordingID); err == nil {
-		t.Fatal("Work() succeeded, want an error for a zero duration")
-	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err == nil {
-		t.Error("seek_tiles row was committed for a zero duration")
-	}
-}
-
 // GOP の長い H.264 では最後のキーフレームより後ろが取れない（x264 GOP 5 秒で、
 // 終端の 2 秒手前でも失敗した）。最後の 1 枚だけは直前のタイルで埋めてコミットまで
 // 進む。埋めないと毎回同じ枚で落ち、until_encoded の原本が消えなくなる。
@@ -630,32 +579,6 @@ func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 		RecordingID: recordingID, StoreName: testStoreNameArg(),
 	}); err != nil {
 		t.Errorf("seek_tiles row was not committed: %v", err)
-	}
-}
-
-// 1 枚しか無いときは埋める元が無いので失敗する。
-func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/single.m2ts")
-
-	cmd := &countingRunCmd{
-		duration: "5",
-		failOn:   "000000.jpg",
-	}
-	w := &SeekTilesWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
-	if err := runSeekTilesJob(t, w, recordingID); err == nil {
-		t.Fatal("Work() succeeded, want an error when the only tile fails")
-	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err == nil {
-		t.Error("seek_tiles row was committed without any extracted tile")
 	}
 }
 
