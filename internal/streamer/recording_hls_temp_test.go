@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/testexec"
 )
 
 func recordingHLSVideoPlaylistPath() string {
@@ -315,9 +316,7 @@ func TestRecordingHLSCanceledIngestReturns404AndStopsTransform(t *testing.T) {
 		t.Skip("starts a child process")
 	}
 	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte("#!/bin/sh\nexec sleep 30\n"))
 	h := newRecordingHLSTestHarness(t, false, false, 50*time.Millisecond, ffmpeg)
 	h.useTemp()
 	if response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts")); response.Code != http.StatusServiceUnavailable {
@@ -350,9 +349,7 @@ func TestRecordingHLSTempFollowsAndOriginalHasKnownEnd(t *testing.T) {
 			argsPath := filepath.Join(t.TempDir(), "ffmpeg-args")
 			ffmpeg := filepath.Join(t.TempDir(), "fake-ffmpeg")
 			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit 7\n", argsPath)
-			if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			testexec.WriteExecutable(t, ffmpeg, []byte(script))
 			h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, ffmpeg, recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20)})
 			if kind == store.RecordingHLSInputTemp {
 				h.useTemp()

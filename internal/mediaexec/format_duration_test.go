@@ -2,13 +2,13 @@ package mediaexec_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/mediaexec"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -20,7 +20,7 @@ func TestProbeDuration_IgnoresStderr(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"echo '[mpeg2video @ 0x1234] Invalid frame dimensions 0x0.' >&2\n" +
 		"printf '%s\\n' '" + wantSeconds + "'\n"
-	testutil.RequireNoError(t, os.WriteFile(ffprobe, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, ffprobe, []byte(script))
 
 	got, err := mediaexec.ProbeFormatDuration(context.Background(), ffprobe, "input.m2ts", mediaexec.CommandOutput)
 	testutil.RequireNoError(t, err, "mediaexec.ProbeFormatDuration() error")

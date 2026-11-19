@@ -27,6 +27,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -194,7 +195,7 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedM
 		"echo $! > " + childPIDMarker + "\n" +
 		": > " + startedMarker + "\n" +
 		"wait\n"
-	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path, startedMarker, childPIDMarker
 }
 
@@ -558,7 +559,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	startedPath := filepath.Join(ffmpegDir, "started")
 	pidPath := filepath.Join(ffmpegDir, "pid")
 	script := "#!/bin/sh\necho $$ > " + pidPath + "\n: > " + startedPath + "\nexec sleep 60\n"
-	testutil.RequireNoError(t, os.WriteFile(ffmpegPath, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, ffmpegPath, []byte(script))
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
 		Progress:  pgstoretest.Media(pool),
@@ -783,7 +784,7 @@ func installLeakyExitZeroFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath,
 		"printf 'out_time_ms=1000\\nprogress=continue\\n'\n" +
 		"printf 'out_time_ms=2000\\nprogress=end\\n'\n" +
 		"cp \"$input\" \"$output\"\n"
-	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path, childPIDMarker
 }
 
@@ -946,7 +947,7 @@ func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *test
 		"cp \"$input\" \"$output\"\n" +
 		"printf '%s\\n' \"$$\" > \"$dir/pid\"\n" +
 		"printf 'out_time_ms=2000000\\nprogress=end\\n'\n"
-	testutil.RequireNoError(t, os.WriteFile(ffmpegPath, []byte(ffmpegScript), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, ffmpegPath, []byte(ffmpegScript))
 	inputPath := filepath.Join(tmp, "input.ts")
 	testutil.RequireNoError(t, os.WriteFile(inputPath, []byte("input"), 0o600), "os.WriteFile")
 	outputPath := filepath.Join(tmp, "output.mp4")
@@ -1044,7 +1045,7 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 		"head -c 1048577 /dev/zero\n" +
 		"i=0; while [ $i -lt 200 ]; do printf '\\nout_time_ms=1000000\\nprogress=continue\\n'; i=$((i+1)); done\n" +
 		"echo out > \"$output\"\n"
-	testutil.RequireNoError(t, os.WriteFile(ffmpegPath, []byte(longLineFFmpegScript), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, ffmpegPath, []byte(longLineFFmpegScript))
 	inputPath := filepath.Join(tmp, "input.ts")
 	testutil.RequireNoError(t, os.WriteFile(inputPath, []byte("input"), 0o600), "os.WriteFile")
 

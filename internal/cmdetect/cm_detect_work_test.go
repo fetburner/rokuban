@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -111,7 +112,7 @@ type cmToolset struct {
 
 func writeExecutable(t *testing.T, path, body string) {
 	t.Helper()
-	testutil.RequireNoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755), "writing test file")
+	testexec.WriteExecutable(t, path, []byte("#!/bin/sh\n"+body))
 }
 
 // newFakeCMTools は JLSE の 3 バイナリと ffprobe の代役を作る。logoframe は未学習の局なら

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/testexec"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -2060,9 +2061,7 @@ func TestLiveConfig_ValidateTools_MPEG2Decoder(t *testing.T) {
 			line = " V..... mpeg2video           MPEG-2 video"
 		}
 		path := filepath.Join(t.TempDir(), "fake-ffmpeg")
-		if err := os.WriteFile(path, []byte("#!/bin/sh\necho '"+line+"'\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		testexec.WriteExecutable(t, path, []byte("#!/bin/sh\necho '"+line+"'\n"))
 		return path
 	}
 
@@ -2091,13 +2090,9 @@ func TestLiveConfig_ValidateTools_ListsDecodersOnce(t *testing.T) {
 	calls := filepath.Join(dir, "calls")
 	script := "#!/bin/sh\necho x >> " + calls + "\necho ' V..... mpeg2video MPEG-2 video'\necho ' S..... libaribcaption ARIB'\n"
 	ffmpeg := filepath.Join(dir, "fake-ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte(script))
 	ffprobe := filepath.Join(dir, "fake-ffprobe")
-	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffprobe, []byte("#!/bin/sh\n"))
 	cfg := LiveConfig{Enabled: true, Captions: true, FFmpeg: ffmpeg, FFprobe: ffprobe}
 	if err := cfg.ValidateTools(); err != nil {
 		t.Fatalf("ValidateTools() = %v, want success", err)
@@ -2126,9 +2121,7 @@ func writeFakeFFmpegDecoders(t *testing.T, includeARIB bool) string {
 	script := "#!/bin/sh\necho \"" + line + "\"\n"
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-ffmpeg")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("writing fake ffmpeg: %v", err)
-	}
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path
 }
 

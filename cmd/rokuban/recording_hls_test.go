@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -84,13 +84,9 @@ func writeFakeFFTools(t *testing.T) string {
 	dir := t.TempDir()
 	ffmpeg := filepath.Join(dir, "ffmpeg")
 	script := "#!/bin/sh\necho ' V....D mpeg2video           MPEG-2 video'\n"
-	if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte(script))
 	ffprobe := filepath.Join(dir, "ffprobe")
-	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffprobe, []byte("#!/bin/sh\nexit 1\n"))
 	return fmt.Sprintf("  ffmpeg: %s\n  ffprobe: %s\n", ffmpeg, ffprobe)
 }
 

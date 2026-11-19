@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/testexec"
 )
 
 func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *testing.T) {
@@ -188,9 +189,7 @@ func writeWrapAtTestTS(t *testing.T, ffmpeg, path string, wrapAt, seconds int) {
 func TestSegmentTransformDoesNotJoinTempAndOriginalInputs(t *testing.T) {
 	t.Parallel()
 	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"))
 	inputPath := filepath.Join(t.TempDir(), "input.ts")
 	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1603,9 +1602,7 @@ for a in "$@"; do
 done
 exec "` + ffmpeg + `" "${args[@]}"
 `
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path
 }
 
@@ -2677,9 +2674,7 @@ func startupMarkerFFmpeg(t *testing.T) (ffmpeg, marker string) {
 	marker = filepath.Join(dir, "started")
 	ffmpeg = filepath.Join(dir, "ffmpeg")
 	script := "#!/bin/sh\ntouch " + marker + "\nexec sleep 60\n"
-	if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte(script))
 	return ffmpeg, marker
 }
 

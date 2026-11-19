@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/testexec"
 )
 
 // TestCommandOutput_IncludesStderrOnFailure は失敗時に *exec.ExitError の
@@ -21,9 +23,7 @@ func TestCommandOutput_IncludesStderrOnFailure(t *testing.T) {
 	t.Parallel()
 	fake := filepath.Join(t.TempDir(), "fake-ffprobe")
 	script := "#!/bin/sh\necho 'diagnostic: something went wrong' >&2\nexit 1\n"
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, fake, []byte(script))
 
 	_, err := CommandOutput(context.Background(), fake)
 	if err == nil || !strings.Contains(err.Error(), "diagnostic: something went wrong") {
@@ -109,9 +109,7 @@ func installLeakyCommand(t *testing.T) (tool, marker string) {
 	tool = filepath.Join(dir, "fake-tool")
 	marker = filepath.Join(dir, "pids")
 	script := "#!/bin/sh\nsleep 10 &\nprintf '%s %s\\n' \"$$\" \"$!\" > \"$1\"\nprintf 'progress=end\\n'\n"
-	if err := os.WriteFile(tool, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, tool, []byte(script))
 	start := time.Now()
 	t.Cleanup(func() {
 		if time.Since(start) < 10*time.Second {

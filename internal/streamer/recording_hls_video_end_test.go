@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/testexec"
 )
 
 // writeOffsetTestTS は、全ストリームが offsetSeconds 秒から始まる TS を書く。映像と音声の長さは別々に決められる。
@@ -161,9 +163,7 @@ func TestMeasureRecordingHLSVideoDurationPipesOnlyTheTail(t *testing.T) {
 	received := filepath.Join(dir, "received")
 	ffprobe := filepath.Join(dir, "recording-ffprobe")
 	script := fmt.Sprintf("#!/bin/sh\ncat > %q\nprintf 'pts=90000|duration=3600|\\n'\n", received)
-	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffprobe, []byte(script))
 	content := bytes.Repeat([]byte("0123456789abcdef"), 1024) // 16 KiB
 	path := filepath.Join(dir, "input.ts")
 	if err := os.WriteFile(path, content, 0o600); err != nil {
@@ -199,9 +199,7 @@ func TestMeasureRecordingHLSVideoDurationWidensWhenTheWindowHasNoPacket(t *testi
 	ffprobe := filepath.Join(dir, "recording-ffprobe")
 	// 標準入力が 4096 バイトを超えたときだけ、映像パケットを返す。
 	script := "#!/bin/sh\nsize=$(wc -c)\nif [ \"$size\" -gt 4096 ]; then printf 'pts=90000|duration=3600|\\n'; else printf 'pts=N/A|duration=N/A|\\n'; fi\n"
-	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffprobe, []byte(script))
 	path := filepath.Join(dir, "input.ts")
 	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 16384), 0o600); err != nil {
 		t.Fatal(err)
@@ -222,9 +220,7 @@ func TestMeasureRecordingHLSVideoDurationWidensWhenTheWindowHasNoPacket(t *testi
 func TestMeasureRecordingHLSVideoDurationStopsWithContext(t *testing.T) {
 	t.Parallel()
 	ffprobe := filepath.Join(t.TempDir(), "sleeping-ffprobe")
-	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffprobe, []byte("#!/bin/sh\nexec sleep 30\n"))
 	path := filepath.Join(t.TempDir(), "input.ts")
 	if err := os.WriteFile(path, []byte("input"), 0o600); err != nil {
 		t.Fatal(err)
