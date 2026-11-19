@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -101,16 +102,17 @@ func runEpgSync(t *testing.T, w *EpgSyncWorker) {
 }
 
 // allPrograms は site の全番組を program_id 昇順で返す。
+// 窓は現在時刻の前後 100 日（窓の外の番組は数えない）。
 func allPrograms(t *testing.T, pool *pgxpool.Pool) []sqlcgen.EpgProgram {
 	t.Helper()
-	rows, err := sqlcgen.New(pool).ListEpgPrograms(context.Background(), sqlcgen.ListEpgProgramsParams{
-		Site:        testSite,
-		WindowStart: time.Now().Add(-100 * 24 * time.Hour),
-		WindowEnd:   time.Now().Add(100 * 24 * time.Hour),
-	})
-	testutil.RequireNoError(t, err, "ListEpgPrograms")
-	slices.SortFunc(rows, func(a, b sqlcgen.EpgProgram) int { return int(a.ProgramID - b.ProgramID) })
-	return rows
+	rows, err := pool.Query(context.Background(),
+		`SELECT * FROM epg_programs WHERE site = $1 AND start_at < $2 AND end_at > $3`,
+		testSite, time.Now().Add(100*24*time.Hour), time.Now().Add(-100*24*time.Hour))
+	testutil.RequireNoError(t, err, "querying epg_programs")
+	programs, err := pgx.CollectRows(rows, pgx.RowToStructByName[sqlcgen.EpgProgram])
+	testutil.RequireNoError(t, err, "collecting epg_programs")
+	slices.SortFunc(programs, func(a, b sqlcgen.EpgProgram) int { return int(a.ProgramID - b.ProgramID) })
+	return programs
 }
 
 func TestEpgSyncWorker_FullSync(t *testing.T) {
