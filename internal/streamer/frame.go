@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -265,7 +266,9 @@ func (s *Streamer) runCommand(ctx context.Context, name string, args ...string) 
 	if s.runCmd != nil {
 		return s.runCmd(ctx, name, args...)
 	}
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	cmd := exec.CommandContext(ctx, name, args...)
+	mediaexec.SetWaitDelay(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		message := err.Error()
 		var exitErr *exec.ExitError

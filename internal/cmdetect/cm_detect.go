@@ -379,14 +379,14 @@ func runCMTool(ctx context.Context, dir, binary string, args ...string) ([]byte,
 	mediaexec.SetWaitDelay(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// ctx キャンセルを WaitDelay-success 分岐より先に見る（mediaexec.CommandOutput と同型）。
-		if ctx.Err() != nil {
-			return output, ctx.Err()
-		}
-		if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// WaitDelay の成功判定は mediaexec.WaitDelayExpiredOnSuccess が持つ。
+		if mediaexec.WaitDelayExpiredOnSuccess(ctx, cmd, err) {
 			slog.Warn("runCMTool: process exited successfully but WaitDelay expired before I/O completed",
 				"binary", filepath.Base(binary), "wait_delay", mediaexec.WaitDelay)
 			return output, nil
+		}
+		if ctx.Err() != nil {
+			return output, ctx.Err()
 		}
 		message := strings.TrimSpace(string(output))
 		if len(message) > 4096 {

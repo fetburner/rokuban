@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 )
 
 const (
@@ -49,6 +50,7 @@ func measureRecordingHLSVideoDuration(ctx context.Context, ffprobe string, file 
 			"-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts,duration",
 			"-of", "compact=p=0", "-i", "pipe:0",
 		)
+		mediaexec.SetWaitDelay(cmd)
 		cmd.Stdin = io.NewSectionReader(file, offset, size-offset)
 		output, err := cmd.Output()
 		if err != nil {

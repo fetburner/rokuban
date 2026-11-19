@@ -14,19 +14,35 @@ import (
 )
 
 // WaitDelay は、コンテキストの終了またはプロセスの終了が観測された後に
-// os/exec が標準入出力の完了を待つ上限。
-// streamer/session.go と同じ 5 秒に揃える。上限がかかるのは kill 後や
-// 正常終了後の後始末なので、ライブ配信よりジョブの寿命が長くてもこの値でよい。
+// os/exec が子プロセスと標準入出力の完了を待つ上限。worker 側の各スライスと
+// streamer の外部コマンドで共有する 5 秒。
+// コマンドが動いている間の時間には上限をかけない。タイマーは ctx の終了または
+// Wait がプロセスの終了を観測した時点の早い方で始まる（os/exec.Cmd.WaitDelay）。
 //
 // テストで差し替えられるよう var にしてある。差し替えは直列テストで行う。
 var WaitDelay = 5 * time.Second
 
-// SetWaitDelay は、worker が実行する外部コマンドに共通の WaitDelay を設定する。
+// SetWaitDelay は、worker 側と streamer が実行する外部コマンドに共通の WaitDelay を設定する。
 // stdout/stderr を *os.File 以外の Writer に接続すると、Wait はコピー goroutine の
 // 終了も待つ。孫プロセスがその fd を継承したまま残る場合に待機の上限が必要になる。
 // TestRunCMToolReturnsAfterCancelWhenGrandchildHoldsStdout がキャンセル時の復帰を検査する。
 func SetWaitDelay(cmd *exec.Cmd) {
 	cmd.WaitDelay = WaitDelay
+}
+
+// WaitDelayExpiredOnSuccess は、ctx がキャンセルされておらず、err が
+// exec.ErrWaitDelay で、cmd が成功終了した場合に true を返す。
+// 親が exit 0 した直後に watchCtx がキャンセルを拾い、Cmd.Cancel が
+// os.ErrProcessDone を返すと、キャンセルは Wait のエラーにならない（Cmd.Cancel の契約）。
+// 孫が fd を保持していれば後から exec.ErrWaitDelay が返りうる。ctx がキャンセルされた後に
+// WaitDelay が切れた場合を成功扱いしないことで、queue worker の停止が重なったときに
+// 成功扱いになるのを防ぐ（TestCommandOutput_CancellationTakesPriorityOverWaitDelay、
+// TestWaitDelayExpiredOnSuccess）。
+func WaitDelayExpiredOnSuccess(ctx context.Context, cmd *exec.Cmd, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	return errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success()
 }
 
 // CommandOutput はコマンドの stdout を返し、失敗時は stderr を診断に使う。
@@ -41,17 +57,8 @@ func CommandOutput(ctx context.Context, name string, args ...string) ([]byte, er
 	// stdout だけを返し、stderr はコマンド失敗時の診断にだけ使う。
 	out, err := cmd.Output()
 	if err != nil {
-		// worker の encodeCommandError と同じ順序で ctx のエラーを判定する。
-		// 親が exit 0 した直後に os/exec の watchCtx がキャンセルを拾い、
-		// Cmd.Cancel が os.ErrProcessDone を返すと、キャンセルは Wait の
-		// エラーにならない（Cmd.Cancel の契約）。孫が fd を保持していれば
-		// 後から ErrWaitDelay が返りうる。ctx.Err() を先に見て、queue worker
-		// の停止が重なったときに成功扱いになるのを防ぐ
-		// （TestCommandOutput_CancellationTakesPriorityOverWaitDelay）。
-		if ctx.Err() != nil {
-			return out, ctx.Err()
-		}
-		if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// 終了結果の判定は WaitDelayExpiredOnSuccess に委ねる。
+		if WaitDelayExpiredOnSuccess(ctx, cmd, err) {
 			// 親は exit 0 で完走したが、孫が fd を保持したまま待機の上限に達した。
 			// コピー goroutine は親の生存中から読み取るので、終了までに取り込んだ
 			// 出力は pipe を閉じた後も out に残る。親が出す短い stdout が切れずに
@@ -65,6 +72,9 @@ func CommandOutput(ctx context.Context, name string, args ...string) ([]byte, er
 			slog.Warn("commandOutput: process exited successfully but WaitDelay expired before I/O completed",
 				"name", name, "wait_delay", WaitDelay)
 			return out, nil
+		}
+		if ctx.Err() != nil {
+			return out, ctx.Err()
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

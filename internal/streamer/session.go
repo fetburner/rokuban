@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
 
@@ -513,13 +514,14 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	cmd.Stdin = input
 	stderr := newCappedWriter(stderrCap)
 	cmd.Stderr = stderr
-	// ctx がキャンセルされてプロセスを kill した後、I/O をコピーするゴルーチン
-	// （cmd.Stdin 用の内部パイプ）が終わるまで Wait は最大この時間だけ待つ。
+	// ctx がキャンセルされた後も Wait は子プロセスと I/O の完了を待つ。WaitDelay は
+	// 子プロセスの終了を待つ時間と、内部 pipe のコピーを待つ時間に上限をかける。
+	// os/exec の契約上、cmd.Stdin に渡した Reader の Read が返るまで Wait も戻らないことがある。
 	// ffmpeg が孫プロセスを fork していて標準入出力の fd を握ったまま残ると
 	// （通常は起きないが）、Wait が無期限にブロックしうる。stop() は
-	// idle GC / shutdown から呼ばれるので、ここが詰まるとチューナー解放も
-	// 詰まる --- 上限を設けて必ず前に進めるようにする。
-	cmd.WaitDelay = 5 * time.Second
+	// idle GC / shutdown から呼ばれるので、ここが詰まるとチューナー解放も詰まる。
+	// この待ちに上限をかけて終了処理を先へ進めるため、WaitDelay を設定する。
+	mediaexec.SetWaitDelay(cmd)
 
 	if err := cmd.Start(); err != nil {
 		s.startErr = fmt.Errorf("starting live ffmpeg: %w", err)
@@ -568,15 +570,15 @@ func probeLiveStreamInput(
 
 // ffmpegSessionCompleted は ffmpeg の終了状態をログに残す。
 func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr error, kind string, sessionID int64, stderr *cappedWriter) {
-	if waitErr != nil && ctx.Err() == nil {
-		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+	if waitErr != nil {
+		if mediaexec.WaitDelayExpiredOnSuccess(ctx, cmd, waitErr) {
 			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdin/stderr の
-			// fd を握ったままで WaitDelay が先に切れた（worker の
-			// encodeCommandError と mediaexec.CommandOutput も同じ条件で成功扱いする）。正常な
-			// セッション終了なので運用者向けの Error にはしない。
+			// fd を握ったままで WaitDelay が先に切れた。判定は
+			// mediaexec.WaitDelayExpiredOnSuccess が持つ。正常なセッション終了なので
+			// 運用者向けの Error にはしない。
 			slog.Warn("streamer: ffmpeg exited successfully but WaitDelay expired before I/O completed",
 				"kind", kind, "session_id", sessionID, "wait_delay", cmd.WaitDelay)
-		} else {
+		} else if ctx.Err() == nil {
 			// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
 			// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
 			slog.Error("streamer: ffmpeg exited unexpectedly",
@@ -843,6 +845,7 @@ func probeLiveStreamInfo(ctx context.Context, ffprobe string, prefix []byte) (li
 		"-v", "error", "-probesize", "5M", "-analyzeduration", "3M",
 		"-show_entries", "stream=codec_type", "-of", "json", "-i", "pipe:0",
 	)
+	mediaexec.SetWaitDelay(cmd)
 	cmd.Stdin = bytes.NewReader(prefix)
 	out, err := cmd.Output()
 	if err != nil {
