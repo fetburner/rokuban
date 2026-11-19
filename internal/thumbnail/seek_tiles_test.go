@@ -602,4 +602,9 @@ func TestSeekTilesWorker_UsesVideoStreamDuration(t *testing.T) {
 	if want := []string{"0.000", "10.000"}; !slices.Equal(cmd.seeks, want) {
 		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
 	}
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
+		RecordingID: recordingID, StoreName: testStoreNameArg(),
+	}); err != nil {
+		t.Errorf("seek_tiles row was not committed: %v", err)
+	}
 }
