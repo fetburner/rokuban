@@ -63,9 +63,9 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 タグ付きのテストは、タグを付けた検査でしか見えない。型検査は lint が、実行は CI の専用ジョブが担う。
 
-`//go:build s3conformance` と `//go:build conformance` のファイルは、タグを付けたときだけコンパイルされる。`go build ./...`・`go vet ./...`・`go test ./...` はこれらを見ない。手元でタグ付きを手作業で検査するなら `go vet -tags s3conformance,conformance ./...` を回す。
+`//go:build s3conformance` と `//go:build conformance` のファイルは、タグを付けたときだけコンパイルされる。`go build ./...`・`go vet ./...`・`go test ./...` はこれらを見ない。lint を使わずに確かめるなら `go vet -tags s3conformance,conformance ./...` を回す。
 
-`golangci-lint run` は見る。`.golangci.yml` の `run.build-tags` で両方のタグを型検査と lint に入れてあるので、参照切れと、タグ付きだけが使う関数の `unused` 誤報がここで出る。s3-conformance ジョブの step に載らない `Test` は、`go test ./scripts/s3conformance/`（DB 不要）が落とす。`conformance` タグのテストは mirakc-conformance ジョブがパッケージごと実行するので、この検査の対象外。
+`golangci-lint run` はこれらも見る。`.golangci.yml` の `run.build-tags` で両方のタグを入れてあるので、タグ付きファイルの参照切れはここで落ち、タグ付きだけが使う関数を `unused` と誤報することもない。s3-conformance ジョブの step に載らない `Test` は、`go test ./scripts/s3conformance/`（DB 不要）が落とす。`conformance` タグのテストは mirakc-conformance ジョブがパッケージごと実行するので、この検査の対象外。
 
 手元で s3-conformance を回すには、同じジョブの `services`（RustFS と Postgres）を同じイメージ・環境変数・ポートでローカルに起動し、ジョブの `env` を export する。そのうえで、そのジョブの `go test -tags s3conformance` の step を実行する。イメージ名や版は `.github/workflows/ci.yml` を読む。
 
