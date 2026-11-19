@@ -115,9 +115,9 @@ func candidateWorkHeld(ctx context.Context, t *testing.T, w *CMLogoCandidateWork
 	return <-done
 }
 
-// 解析の失敗（logoframe の失敗・一致率不足・原本なし）はすべて failed の候補行になり、
-// 定期パスの desired（ListMissingCMLogoCandidates）に戻らない。
-func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testing.T) {
+// 解析の失敗（logoframe の失敗・一致率不足・原本なし）はすべて failed の候補行になる。
+// 行が定期パスの desired に戻らないことは internal/db の TestCMLogoCandidateDesired が見る。
+func TestCMLogoCandidateWorkerFailuresBecomeFailedRows(t *testing.T) {
 	cases := []struct {
 		name  string
 		stage string
@@ -158,11 +158,6 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 			state, stage, ok := candidateRow(t, pool)
 			if !ok || state != "failed" || stage != tc.stage {
 				t.Fatalf("candidate = %q/%q (exists %v), want failed/%s", state, stage, ok, tc.stage)
-			}
-			rows, err := sqlcgen.New(pool).ListMissingCMLogoCandidates(ctx, 100)
-			testutil.RequireNoError(t, err, "ListMissingCMLogoCandidates")
-			if len(rows) != 0 {
-				t.Errorf("ListMissingCMLogoCandidates = %v, want none after a failed analysis", rows)
 			}
 		})
 	}
