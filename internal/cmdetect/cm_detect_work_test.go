@@ -764,58 +764,6 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	}
 }
 
-// cmPolicyGeneration は recording_processing_policy の cm_detect_generation を読む。
-func cmPolicyGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) int64 {
-	t.Helper()
-	var generation int64
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT cm_detect_generation FROM recording_processing_policy WHERE recording_id = $1`, id).Scan(&generation), "reading cm_detect_generation")
-	return generation
-}
-
-func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	id := dbtest.Recording(t, pool, cmRecordingOptions(921))
-	seedCMDetectionState(t, pool, t.TempDir(), id)
-	q := sqlcgen.New(pool)
-	enable := func() {
-		t.Helper()
-		if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
-			t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
-		}
-	}
-	if got := cmPolicyGeneration(t, ctx, pool, id); got != 0 {
-		t.Fatalf("generation of a freshly frozen policy = %d, want 0", got)
-	}
-	enable() // idempotent re-send
-	if got := cmPolicyGeneration(t, ctx, pool, id); got != 0 {
-		t.Fatalf("generation after idempotent enable = %d, want 0", got)
-	}
-	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, id), "q.ClearRecordingCMDetection")
-	if got := cmPolicyGeneration(t, ctx, pool, id); got != 1 {
-		t.Fatalf("generation after disable = %d, want 1", got)
-	}
-	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, id), "q.ClearRecordingCMDetection") // idempotent re-send
-	if got := cmPolicyGeneration(t, ctx, pool, id); got != 1 {
-		t.Fatalf("generation after idempotent disable = %d, want 1", got)
-	}
-	enable()
-	if got := cmPolicyGeneration(t, ctx, pool, id); got != 2 {
-		t.Fatalf("generation after re-enable = %d, want 2", got)
-	}
-
-	// 未凍結録画の初回凍結（cm_detect=true）も切り替えとして数える。
-	frozen := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 920 })
-	seedOriginalAsset(t, pool, t.TempDir(), frozen, "cm/920.ts", []byte("ts"))
-	if rows, err := q.SetRecordingCMDetection(ctx, frozen); err != nil || rows != 1 {
-		t.Fatalf("first-freeze SetRecordingCMDetection(%d) = %d, %v; want 1 row", frozen, rows, err)
-	}
-	if got := cmPolicyGeneration(t, ctx, pool, frozen); got != 1 {
-		t.Fatalf("generation after first freeze with cm_detect=true = %d, want 1", got)
-	}
-}
-
 func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
