@@ -3,13 +3,12 @@ package cmdetect
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/mediaexec"
-	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/fetburner/rokuban/internal/testexec"
 )
 
 // 孫プロセスが stdout を握ったまま残っても、ctx キャンセル後に runCMTool が戻る
@@ -20,7 +19,7 @@ func TestRunCMToolReturnsAfterCancelWhenGrandchildHoldsStdout(t *testing.T) {
 	t.Cleanup(func() { mediaexec.WaitDelay = previous })
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "fake-tool.sh")
-	testutil.RequireNoError(t, os.WriteFile(tool, []byte("#!/bin/sh\nsleep 10 &\nsleep 10\n"), 0o755), "writing test file")
+	testexec.WriteExecutable(t, tool, []byte("#!/bin/sh\nsleep 10 &\nsleep 10\n"))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

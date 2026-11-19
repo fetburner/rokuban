@@ -197,6 +197,13 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 - 分岐を直したら**両方向**で確認する（片側だけ見ると反転しても気付かない）
 - **jsdom が測れないもの（レイアウト・スクロール位置・要素の可視性）は、ユニットテストが全部通っても何の保証にもならない**。この領域の機能は**実装より先に判定手段を作る** —— 実ブラウザで機械的に合否が出る形にしてから着手する（`web/e2e/`）。番組リストの遡行では、これを怠って「`pnpm test` が通った」を根拠に 3 回リリースし、3 回とも実機で正しく動いていなかった。失敗の仕方は毎回違ったが、いずれも jsdom では原理的に検出できないものだった（詳細は `web/e2e/README.md`）。足した判定が**直す前の実装で実際に落ちること**も確認する
 - **テストを足す前に、同じ対象・同じ主張の既存テストを探す。** あれば表に行を足す。store の主張は `internal/store/contracttest` で検査し、worker のテストは配線と状態遷移を検査して同じ主張を繰り返さない
+- **テストで実行ファイルを書くときは `testexec.WriteExecutable` を使う。** `os.WriteFile` の直後の exec は ETXTBSY で落ちることがある
+
+<details><summary>根拠</summary>
+
+- ETXTBSY の再現は `TestWriteExecutableSurvivesConcurrentFork`（Linux でだけ実行される）。計測値はそのテストの doc comment
+
+</details>
 
 ### 並行作業（複数エージェント）
 

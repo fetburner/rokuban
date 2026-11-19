@@ -30,6 +30,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/programid"
+	"github.com/fetburner/rokuban/internal/testexec"
 )
 
 const testLiveSite = "default"
@@ -337,9 +338,7 @@ done
 # cmd.Wait（= stop の完了待ち）が毎回そのぶん延びる。
 exec sleep 3600
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path
 }
 
@@ -1267,9 +1266,7 @@ mv "$master.tmp" "$master"
 # cmd.Wait（= stop の完了待ち）が毎回そのぶん延びる。
 exec sleep 3600
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path
 }
 
@@ -1285,9 +1282,7 @@ func installFakeFFprobeAlwaysReportsSubtitle(t *testing.T) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-ffprobe-subtitle")
 	script := "#!/bin/sh\nexpected='-v error -probesize 5M -analyzeduration 3M -show_entries stream=codec_type -of json -i pipe:0'\n[ \"$*\" = \"$expected\" ] || exit 19\necho '{\"streams\":[{\"codec_type\":\"video\"},{\"codec_type\":\"audio\"},{\"codec_type\":\"subtitle\"}]}'\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path
 }
 
@@ -1595,9 +1590,7 @@ func TestLiveStreamer_Playlist_ImmediateFFmpegExitStays504(t *testing.T) {
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	exitPath := filepath.Join(t.TempDir(), "fake-ffmpeg-exit")
-	if err := os.WriteFile(exitPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("writing fake ffmpeg: %v", err)
-	}
+	testexec.WriteExecutable(t, exitPath, []byte("#!/bin/sh\nexit 1\n"))
 	cfg.FFmpeg = exitPath
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 

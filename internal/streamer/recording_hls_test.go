@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -183,9 +184,7 @@ case " $* " in
   *) printf '%%s\n' '%[5]s' ;;
 esac
 `, filepath.Join(dir, "calls"), delay, filepath.Join(dir, "tail"), probe.firstPacketPTS, streams)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, path, []byte(script))
 	if err := os.WriteFile(filepath.Join(dir, "tail"), []byte(probe.tail), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -460,9 +459,7 @@ func TestRecordingHLSTempTransformErrorsAreRetryableAndDoNotEndPlaylist(t *testi
 		t.Run(fmt.Sprintf("ffmpeg exit %d", exitCode), func(t *testing.T) {
 			ffmpeg := filepath.Join(t.TempDir(), "fake-ffmpeg")
 			script := fmt.Sprintf("#!/bin/sh\nexit %d\n", exitCode)
-			if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			testexec.WriteExecutable(t, ffmpeg, []byte(script))
 			h := newRecordingHLSTestHarness(t, false, false, time.Second, ffmpeg)
 			target := h.store.target
 			target.Kind = store.RecordingHLSInputTemp
@@ -487,9 +484,7 @@ func TestRecordingHLSUsesConfiguredHardwareAcceleration(t *testing.T) {
 	t.Parallel()
 	argsPath := filepath.Join(t.TempDir(), "args")
 	ffmpeg := filepath.Join(t.TempDir(), "ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit 7\n", argsPath)), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit 7\n", argsPath)))
 	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, ffmpeg, defaultRecordingHLSTestProbe, &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"})
 	response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))
 	if response.Code != http.StatusInternalServerError {
@@ -627,9 +622,7 @@ func TestRecordingHLSTrashReturns404AndStopsCache(t *testing.T) {
 func startRunningRecordingHLSTransform(t *testing.T) recordingHLSTestHarness {
 	t.Helper()
 	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte("#!/bin/sh\nexec sleep 30\n"))
 	h := newRecordingHLSTestHarness(t, false, false, 50*time.Millisecond, ffmpeg)
 	response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))
 	if response.Code != http.StatusServiceUnavailable {
@@ -773,9 +766,7 @@ func TestRecordingHLSCacheMissTimesOutAs503(t *testing.T) {
 		t.Skip("starts a child process")
 	}
 	ffmpeg := filepath.Join(t.TempDir(), "sleeping-ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	testexec.WriteExecutable(t, ffmpeg, []byte("#!/bin/sh\nexec sleep 5\n"))
 	h := newRecordingHLSTestHarness(t, false, false, 25*time.Millisecond, ffmpeg)
 
 	response := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/0.ts"))

@@ -26,6 +26,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -92,7 +93,7 @@ cp "$input" "$output"
 printf 'attempt-%s:' "$n" >> "$output"
 yes | head -c $((n*10)) >> "$output"
 `
-	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, path, []byte(script))
 	oldPath := os.Getenv("PATH")
 	testutil.RequireNoError(t, os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath), "os.Setenv")
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })

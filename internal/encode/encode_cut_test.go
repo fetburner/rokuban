@@ -27,6 +27,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -383,7 +384,7 @@ func TestBuildFFmpegArgs_CutHWDecodeUsesPreInput(t *testing.T) {
 func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
 	t.Parallel()
 	ffprobe := filepath.Join(t.TempDir(), "ffprobe")
-	testutil.RequireNoError(t, os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '0,video,1440,1080,\\n1,audio,,,2\\n'\n"), 0o755), "write fake ffprobe")
+	testexec.WriteExecutable(t, ffprobe, []byte("#!/bin/sh\nprintf '0,video,1440,1080,\\n1,audio,,,2\\n'\n"))
 	w := &EncodeWorker{FFprobe: ffprobe}
 	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	cases := []struct {

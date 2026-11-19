@@ -31,6 +31,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/streamer"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/thumbnail"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -424,7 +425,7 @@ printf 'out_time_ms=1000\nprogress=continue\n'
 printf 'out_time_ms=2000\nprogress=end\n'
 cp "$input" "$output"
 `
-	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, path, []byte(script))
 	oldPath := os.Getenv("PATH")
 	testutil.RequireNoError(t, os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath), "os.Setenv")
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })

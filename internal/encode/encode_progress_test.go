@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -292,7 +293,7 @@ func installFakeFFprobe(t *testing.T, duration string, succeed bool) {
 	} else {
 		script += "exit 1\n"
 	}
-	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, path, []byte(script))
 	oldPath := os.Getenv("PATH")
 	testutil.RequireNoError(t, os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath), "os.Setenv")
 	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
@@ -316,6 +317,6 @@ sleep 2
 printf 'out_time_ms=4000000\nprogress=end\n'
 cp "$input" "$output"
 `
-	testutil.RequireNoError(t, os.WriteFile(path, []byte(script), 0o755), "os.WriteFile")
+	testexec.WriteExecutable(t, path, []byte(script))
 	return path
 }
