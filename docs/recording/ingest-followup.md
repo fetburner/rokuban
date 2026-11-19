@@ -144,7 +144,8 @@ cm_detect ジョブは `(recording_id, recording_duration_ms)`、cm_logo_candida
 - 失敗済み検出試行の後ろへ進むこと: `TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate`
 - 既存の局ロゴ候補行の後ろへ進むこと: `TestCMDetectReconcileCandidateRowMovesPastFirstStation`
 - 遅れて来た cm_detect の試行結果が捨てられること（試行回数の不一致）: `TestCMDetectCountsDeadAttemptsAndFencesLateResults`
-- 遅れて来た cm_logo_candidate の試行結果が捨てられること（`attempted_at` の不一致）: `TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate`
+- 遅れて来た cm_logo_candidate の試行結果が捨てられること（`attempted_at` の不一致）: `TestCMLogoCandidateAttemptFence`
+- 遅れて来た試行が、作り直された cm_logo_candidate を消さないこと: `TestCMStationContract/discarding_an_old_attempt_leaves_a_recreated_candidate`
 
 </details>
 
